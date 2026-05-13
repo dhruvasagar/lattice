@@ -76,8 +76,8 @@ impl App {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
 
-    use crate::app::*;
     use crate::app::test_helpers::app_with;
+    use crate::app::*;
     use lattice_grammar::{Args, CommandInvocation, ModalState, Target};
 
     #[test]

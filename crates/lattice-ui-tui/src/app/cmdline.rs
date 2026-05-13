@@ -553,10 +553,10 @@ fn subsequence_match_ranges(needle_lower: &str, haystack: &str) -> Vec<std::ops:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::*;
     use crate::app::test_helpers::{
         app_in_command_mode, app_with, invoke_motion, submit_ex, unique_tempdir,
     };
+    use crate::app::*;
 
     #[test]
     fn prefer_aliases_rewrites_canonical_to_alias() {
@@ -1085,5 +1085,4 @@ mod tests {
             );
         }
     }
-
 }

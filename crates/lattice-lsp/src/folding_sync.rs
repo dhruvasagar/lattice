@@ -110,7 +110,8 @@ mod tests {
     fn on_deactivate_restores_prior() {
         let reg = ConfigRegistry::new();
         reg.init_from_linkme();
-        reg.set_typed::<FoldMethodOption>(FoldMethod::Syntax).unwrap();
+        reg.set_typed::<FoldMethodOption>(FoldMethod::Syntax)
+            .unwrap();
         on_activate(&reg);
         on_deactivate(&reg, FoldMethod::Syntax);
         assert_eq!(

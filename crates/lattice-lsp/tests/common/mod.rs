@@ -151,10 +151,7 @@ impl MockServer {
 
     /// Inner helper -- both `start_with_capabilities` and
     /// `start_with_logger` route here.
-    pub async fn start_with_caps_and_logger(
-        caps: ServerCapabilities,
-        logger: LspLogger,
-    ) -> Self {
+    pub async fn start_with_caps_and_logger(caps: ServerCapabilities, logger: LspLogger) -> Self {
         Self::start_with_caps_logger_id(caps, logger, "mock".into()).await
     }
 
@@ -191,16 +188,12 @@ impl MockServer {
             push_rx,
         ));
 
-        let mock = MockController {
-            state,
-            push_tx,
-        };
+        let mock = MockController { state, push_tx };
 
         // Build a minimal config. Workspace root is the cwd of
         // the test runner -- doesn't matter for in-process tests
         // since we don't spawn a real binary.
-        let config =
-            ServerConfig::new(id, std::path::PathBuf::from("mock-server"), "rust");
+        let config = ServerConfig::new(id, std::path::PathBuf::from("mock-server"), "rust");
         let workspace_root = std::env::current_dir().expect("cwd");
 
         let handle = spawn_with_io(

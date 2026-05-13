@@ -45,9 +45,7 @@ use lattice_grammar::{CommandInvocation, SourceLocation};
 
 use crate::chord::{ChordParseError, KeyChord, parse_chord_sequence};
 use crate::keymap::BindingMode;
-use crate::keymap_trie::{
-    BoundCommand, ChordPattern, KeymapLayer, KeymapTrie, LookupResult,
-};
+use crate::keymap_trie::{BoundCommand, ChordPattern, KeymapLayer, KeymapTrie, LookupResult};
 
 /// Privilege bundle a writer presents when calling
 /// capability-gated bind APIs (slice 8.h). Mirrors the WIT
@@ -124,14 +122,10 @@ fn capability_allows(capability: KeymapCapability, layer: KeymapLayer) -> bool {
     match (capability, layer) {
         (KeymapCapability::Full, _) => true,
         (KeymapCapability::User, KeymapLayer::User) => true,
-        (
-            KeymapCapability::MinorMode,
-            KeymapLayer::MinorMode(_) | KeymapLayer::Buffer,
-        ) => true,
-        (
-            KeymapCapability::OwnedLayer { layer_id },
-            KeymapLayer::MinorMode(id),
-        ) => layer_id.raw() == id,
+        (KeymapCapability::MinorMode, KeymapLayer::MinorMode(_) | KeymapLayer::Buffer) => true,
+        (KeymapCapability::OwnedLayer { layer_id }, KeymapLayer::MinorMode(id)) => {
+            layer_id.raw() == id
+        }
         _ => false,
     }
 }
@@ -334,11 +328,7 @@ impl KeymapHandle {
         let merged = {
             let mut inner = self.registry.inner.lock().expect("registry mutex");
             let layer_ref = inner.layer_mut(layer, &label);
-            layer_ref
-                .modes
-                .entry(mode)
-                .or_default()
-                .insert(path, bound);
+            layer_ref.modes.entry(mode).or_default().insert(path, bound);
             inner.build_merged()
         };
         self.registry.merged.store(Arc::new(merged));
@@ -497,10 +487,8 @@ impl KeymapHandle {
         command: CommandInvocation,
         source: SourceLocation,
     ) -> Result<(), KeymapError> {
-        let chords =
-            parse_chord_sequence(chord_str).map_err(KeymapError::InvalidChord)?;
-        let path: Vec<ChordPattern> =
-            chords.into_iter().map(ChordPattern::Literal).collect();
+        let chords = parse_chord_sequence(chord_str).map_err(KeymapError::InvalidChord)?;
+        let path: Vec<ChordPattern> = chords.into_iter().map(ChordPattern::Literal).collect();
         self.try_bind(capability, layer, mode, &path, command, source)
     }
 
@@ -711,10 +699,7 @@ mod tests {
         let normal = h.lookup(BindingMode::Normal, &[pressed('j')]);
         let visual = h.lookup(BindingMode::Visual, &[pressed('j')]);
         match (normal, visual) {
-            (
-                LookupResult::Bound { command: nb, .. },
-                LookupResult::Bound { command: vb, .. },
-            ) => {
+            (LookupResult::Bound { command: nb, .. }, LookupResult::Bound { command: vb, .. }) => {
                 assert_eq!(nb.command.command, CommandId::new(1));
                 assert_eq!(vb.command.command, CommandId::new(2));
             }
@@ -951,8 +936,10 @@ mod tests {
                 invocation(1),
                 src("init.rs"),
             );
-            assert!(matches!(r, Err(KeymapError::CapabilityDenied { .. })),
-                "User must deny {layer:?}");
+            assert!(
+                matches!(r, Err(KeymapError::CapabilityDenied { .. })),
+                "User must deny {layer:?}"
+            );
         }
     }
 
@@ -989,8 +976,10 @@ mod tests {
                 invocation(1),
                 src("plugin"),
             );
-            assert!(matches!(r, Err(KeymapError::CapabilityDenied { .. })),
-                "MinorMode must deny {layer:?}");
+            assert!(
+                matches!(r, Err(KeymapError::CapabilityDenied { .. })),
+                "MinorMode must deny {layer:?}"
+            );
         }
     }
 
@@ -999,16 +988,8 @@ mod tests {
         let h = KeymapHandle::new();
         // Push two minor-mode layers; only the first's id is
         // authorised by the OwnedLayer capability we mint.
-        let id_a = h.push_layer(
-            PushLayerKind::MinorMode,
-            "plugin-a",
-            HashMap::new(),
-        );
-        let id_b = h.push_layer(
-            PushLayerKind::MinorMode,
-            "plugin-b",
-            HashMap::new(),
-        );
+        let id_a = h.push_layer(PushLayerKind::MinorMode, "plugin-a", HashMap::new());
+        let id_b = h.push_layer(PushLayerKind::MinorMode, "plugin-b", HashMap::new());
         let cap = KeymapCapability::OwnedLayer { layer_id: id_a };
 
         // Plugin-a writes to its own MinorMode(id_a) -- ok.
@@ -1191,11 +1172,7 @@ mod tests {
         let h = KeymapHandle::new();
 
         // Plugin A pushes its layer + binds `<leader>x`.
-        let id_a = h.push_layer(
-            PushLayerKind::MinorMode,
-            "plugin-a",
-            HashMap::new(),
-        );
+        let id_a = h.push_layer(PushLayerKind::MinorMode, "plugin-a", HashMap::new());
         h.try_bind(
             KeymapCapability::OwnedLayer { layer_id: id_a },
             KeymapLayer::MinorMode(id_a.raw()),
@@ -1207,11 +1184,7 @@ mod tests {
         .unwrap();
 
         // Plugin B pushes after A -- higher LayerId, wins.
-        let id_b = h.push_layer(
-            PushLayerKind::MinorMode,
-            "plugin-b",
-            HashMap::new(),
-        );
+        let id_b = h.push_layer(PushLayerKind::MinorMode, "plugin-b", HashMap::new());
         h.try_bind(
             KeymapCapability::OwnedLayer { layer_id: id_b },
             KeymapLayer::MinorMode(id_b.raw()),
@@ -1255,11 +1228,7 @@ mod tests {
     #[test]
     fn plugin_binds_chord_that_fires_plugin_command() {
         let h = KeymapHandle::new();
-        let id = h.push_layer(
-            PushLayerKind::MinorMode,
-            "plugin-foo",
-            HashMap::new(),
-        );
+        let id = h.push_layer(PushLayerKind::MinorMode, "plugin-foo", HashMap::new());
         let cap = KeymapCapability::OwnedLayer { layer_id: id };
         let plugin_cmd = invocation(0xFEED);
 

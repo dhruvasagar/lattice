@@ -18,8 +18,8 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use lattice_completion::{CandidateKind, RawCandidate};
 use lattice_picker::{
-    PickerAcceptOutcome, PickerContext, PickerInitResult, PickerSourceGenerator,
-    PickerSourceSpec, RoutingPayload, SourceResult,
+    PickerAcceptOutcome, PickerContext, PickerInitResult, PickerSourceGenerator, PickerSourceSpec,
+    RoutingPayload, SourceResult,
 };
 
 use crate::registry::SnippetRegistry;
@@ -50,11 +50,7 @@ impl PickerSourceGenerator for SnippetsSource {
         &self.spec
     }
 
-    fn init(
-        &self,
-        ctx: &PickerContext<'_>,
-        _args: &[String],
-    ) -> SourceResult<PickerInitResult> {
+    fn init(&self, ctx: &PickerContext<'_>, _args: &[String]) -> SourceResult<PickerInitResult> {
         let language = ctx.active_buffer.language.unwrap_or("plain");
         let snapshot = self.registry.load();
         let mut metas = snapshot.meta_for_language(language);
@@ -77,10 +73,7 @@ impl PickerSourceGenerator for SnippetsSource {
         let pairs = metas
             .into_iter()
             .map(|meta| {
-                let description = meta
-                    .description
-                    .clone()
-                    .unwrap_or_else(String::new);
+                let description = meta.description.clone().unwrap_or_else(String::new);
                 let display = if description.is_empty() {
                     format!(
                         "{:<width$}  {}",
@@ -97,8 +90,7 @@ impl PickerSourceGenerator for SnippetsSource {
                         width = prefix_width,
                     )
                 };
-                let mut cand =
-                    RawCandidate::plain(meta.prefix.clone(), CandidateKind::Plain);
+                let mut cand = RawCandidate::plain(meta.prefix.clone(), CandidateKind::Plain);
                 cand.display = display;
                 // ExpandSnippet routing carries the snippet
                 // `name` (stable id) -- the host resolves the
@@ -107,7 +99,9 @@ impl PickerSourceGenerator for SnippetsSource {
                 // name, so frequent-snippet rows float.
                 (
                     cand,
-                    RoutingPayload::ExpandSnippet { id: meta.name.clone() },
+                    RoutingPayload::ExpandSnippet {
+                        id: meta.name.clone(),
+                    },
                 )
             })
             .collect();

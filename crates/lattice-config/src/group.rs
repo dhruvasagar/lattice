@@ -124,8 +124,7 @@ pub const fn ends_with_mode_suffix(s: &str) -> bool {
 pub struct Editor;
 impl OptionGroup for Editor {
     const NAME: &'static str = "editor";
-    const DOC: &'static str =
-        "Bare-named editor options (tabstop, number, wrap, foldmethod, ...). \
+    const DOC: &'static str = "Bare-named editor options (tabstop, number, wrap, foldmethod, ...). \
          Reserved namespace -- plugins must use their own prefix.";
 }
 
@@ -135,8 +134,7 @@ impl OptionGroup for Editor {
 pub struct Display;
 impl OptionGroup for Display {
     const NAME: &'static str = "display";
-    const DOC: &'static str =
-        "Visual-presentation options across modes \
+    const DOC: &'static str = "Visual-presentation options across modes \
          (line numbers, wrap, whitespace visualization, ...).";
 }
 
@@ -145,8 +143,7 @@ impl OptionGroup for Display {
 pub struct Editing;
 impl OptionGroup for Editing {
     const NAME: &'static str = "editing";
-    const DOC: &'static str =
-        "Editing-related options (search, indent, auto-pair, ...).";
+    const DOC: &'static str = "Editing-related options (search, indent, auto-pair, ...).";
 }
 
 /// LSP umbrella group: collects every option owned by an LSP
@@ -155,8 +152,7 @@ impl OptionGroup for Editing {
 pub struct Lsp;
 impl OptionGroup for Lsp {
     const NAME: &'static str = "lsp";
-    const DOC: &'static str =
-        "Every option owned by an LSP mode. \
+    const DOC: &'static str = "Every option owned by an LSP mode. \
          `:customize lsp` shows the union sectioned by owning mode.";
 }
 

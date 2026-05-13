@@ -195,10 +195,7 @@ impl std::ops::DerefMut for HelpContent {
 /// their visible labels and indexing each link's range against
 /// the cleaned text. The buffer's content is the cleaned text;
 /// links land on the metadata.
-pub fn parse_help_lines(
-    title: impl Into<String>,
-    lines: Vec<String>,
-) -> HelpContent {
+pub fn parse_help_lines(title: impl Into<String>, lines: Vec<String>) -> HelpContent {
     parse_help_lines_and_anchors(title, lines, Vec::new())
 }
 
@@ -308,7 +305,6 @@ impl HelpContent {
     ) -> Self {
         parse_help_lines_and_anchors(title, lines, anchors)
     }
-
 }
 
 impl HelpBuffer {
@@ -531,7 +527,6 @@ pub fn mode_link(name: &str) -> String {
 pub fn one_line(s: &str) -> String {
     s.lines().collect::<Vec<_>>().join(" / ")
 }
-
 
 pub fn extract_links_and_clean(text: &str) -> (String, Vec<HelpLink>) {
     let bytes = text.as_bytes();
@@ -1055,7 +1050,8 @@ mod tests {
             .with_markdown_syntax(registry);
         // Line 0 (the heading) should carry a Heading1 span.
         assert!(
-            h.metadata.highlights
+            h.metadata
+                .highlights
                 .first()
                 .map(|spans| spans
                     .iter()
@@ -1165,7 +1161,10 @@ mod tests {
     #[test]
     fn slugify_heading_matches_github_style() {
         assert_eq!(slugify_heading("# Quick reference"), "quick-reference");
-        assert_eq!(slugify_heading("## 1. Tree-sitter, core"), "1-tree-sitter-core");
+        assert_eq!(
+            slugify_heading("## 1. Tree-sitter, core"),
+            "1-tree-sitter-core"
+        );
         assert_eq!(
             slugify_heading("### Step 1 -- pin the grammar crate"),
             "step-1-pin-the-grammar-crate"

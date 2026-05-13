@@ -103,10 +103,7 @@ fn open_large_buffer(c: &mut Criterion) {
     // Pre-build the source strings once outside the timing loop --
     // we want to measure ropey, not memory allocation of the
     // String.
-    for &(label, target_bytes) in &[
-        ("10mb", 10 * 1024 * 1024),
-        ("100mb", 100 * 1024 * 1024),
-    ] {
+    for &(label, target_bytes) in &[("10mb", 10 * 1024 * 1024), ("100mb", 100 * 1024 * 1024)] {
         let mut text = String::with_capacity(target_bytes + 64);
         let line = "line: the quick brown fox jumps over the lazy dog\n";
         while text.len() < target_bytes {
@@ -159,16 +156,12 @@ fn buffer_clone_vs_text(c: &mut Criterion) {
     for size in [10usize, 1_000, 100_000] {
         let text = build_buffer(size);
         let buffer = Buffer::from_text(&text);
-        g.bench_with_input(
-            BenchmarkId::new("clone", size),
-            &buffer,
-            |bencher, buf| {
-                bencher.iter(|| {
-                    let cloned = black_box(buf.clone());
-                    black_box(cloned);
-                });
-            },
-        );
+        g.bench_with_input(BenchmarkId::new("clone", size), &buffer, |bencher, buf| {
+            bencher.iter(|| {
+                let cloned = black_box(buf.clone());
+                black_box(cloned);
+            });
+        });
         g.bench_with_input(
             BenchmarkId::new("as_string", size),
             &buffer,

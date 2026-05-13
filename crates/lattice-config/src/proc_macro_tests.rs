@@ -98,8 +98,14 @@ fn build_spec_carries_alias_and_validator() {
     let registry = ConfigRegistry::new();
     let _h = registry.register(spec);
     // Aliases are reachable via the registry's lookup-by-name.
-    assert_eq!(registry.lookup("ts2").map(|o| o.name()), Some("test-proc.with-aliases"));
-    assert_eq!(registry.lookup("tsalt").map(|o| o.name()), Some("test-proc.with-aliases"));
+    assert_eq!(
+        registry.lookup("ts2").map(|o| o.name()),
+        Some("test-proc.with-aliases")
+    );
+    assert_eq!(
+        registry.lookup("tsalt").map(|o| o.name()),
+        Some("test-proc.with-aliases")
+    );
 
     // Validator: out-of-range write rejected.
     let registry2 = ConfigRegistry::new();
@@ -179,10 +185,7 @@ fn overrides_macro_builds_typed_set() {
     assert_eq!(set.len(), 2);
     let entries: Vec<_> = set.iter().collect();
     // Each entry's TypeId matches its declaration's TypeId.
-    assert_eq!(
-        entries[0].option_type_id,
-        std::any::TypeId::of::<Simple>()
-    );
+    assert_eq!(entries[0].option_type_id, std::any::TypeId::of::<Simple>());
     assert_eq!(
         entries[1].option_type_id,
         std::any::TypeId::of::<WithAliases>()

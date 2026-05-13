@@ -63,7 +63,10 @@ pub enum SnippetToken {
     Placeholder { idx: u32, default: SnippetBody },
     /// `${N|opt1,opt2,opt3|}` -- pick from a fixed list. The
     /// host's choice-picker UI surfaces these on focus.
-    Choice { idx: u32, options: Vec<ChoiceOption> },
+    Choice {
+        idx: u32,
+        options: Vec<ChoiceOption>,
+    },
     /// `$NAME` / `${NAME}` / `${NAME:fallback}` -- variable
     /// substitution. `default` runs only when the variable
     /// resolves to None.

@@ -276,10 +276,7 @@ mod tests {
         #[derive(Debug)]
         struct StubSource;
         impl SyncCompletionSource for StubSource {
-            fn produce(
-                &self,
-                _ctx: &lattice_completion::InsertContext<'_>,
-            ) -> Vec<RawCandidate> {
+            fn produce(&self, _ctx: &lattice_completion::InsertContext<'_>) -> Vec<RawCandidate> {
                 vec![RawCandidate::plain("stub", CandidateKind::Plain)]
             }
         }

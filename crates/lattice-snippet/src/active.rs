@@ -85,9 +85,7 @@ impl ActiveSnippet {
                 index: idx,
                 ranges: ranges
                     .iter()
-                    .map(|r| {
-                        (origin_offset + r.range.start)..(origin_offset + r.range.end)
-                    })
+                    .map(|r| (origin_offset + r.range.start)..(origin_offset + r.range.end))
                     .collect(),
                 has_default: ranges.iter().any(|r| r.has_default),
                 is_choice: ranges.iter().any(|r| r.is_choice),
@@ -100,9 +98,7 @@ impl ActiveSnippet {
                 index: 0,
                 ranges: zero_ranges
                     .iter()
-                    .map(|r| {
-                        (origin_offset + r.range.start)..(origin_offset + r.range.end)
-                    })
+                    .map(|r| (origin_offset + r.range.start)..(origin_offset + r.range.end))
                     .collect(),
                 has_default: false,
                 is_choice: false,

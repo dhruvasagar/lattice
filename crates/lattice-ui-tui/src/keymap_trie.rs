@@ -181,9 +181,7 @@ impl KeymapTrie {
         let mut node = &mut self.root;
         for seg in path {
             node = match seg {
-                ChordPattern::Literal(chord) => {
-                    node.children.entry(*chord).or_default()
-                }
+                ChordPattern::Literal(chord) => node.children.entry(*chord).or_default(),
                 ChordPattern::CharLiteral => node
                     .char_wildcard
                     .get_or_insert_with(|| Box::new(TrieNode::default())),
@@ -230,11 +228,12 @@ impl KeymapTrie {
             // wildcard intended for `'a` / `"a` / `fX`.
             if chord.mods.is_empty()
                 && let KeyKind::Char(c) = chord.key
-                    && let Some(wild) = node.char_wildcard.as_deref() {
-                        captured.push(c);
-                        node = wild;
-                        continue;
-                    }
+                && let Some(wild) = node.char_wildcard.as_deref()
+            {
+                captured.push(c);
+                node = wild;
+                continue;
+            }
             return LookupResult::Unbound;
         }
         match node.binding.as_ref() {
@@ -419,10 +418,7 @@ mod tests {
         match r {
             LookupResult::Bound { command, captured } => {
                 assert!(Arc::ptr_eq(&command, &exact));
-                assert!(
-                    captured.is_empty(),
-                    "exact-match path captures nothing"
-                );
+                assert!(captured.is_empty(), "exact-match path captures nothing");
             }
             other => panic!("expected Bound, got {other:?}"),
         }
@@ -541,10 +537,7 @@ mod tests {
         base.merge_over(&over);
         let r = base.lookup(&[pressed('f'), pressed('z')]);
         match r {
-            LookupResult::Bound {
-                command,
-                captured,
-            } => {
+            LookupResult::Bound { command, captured } => {
                 assert!(Arc::ptr_eq(&command, &over_find));
                 assert_eq!(captured, vec!['z']);
             }
@@ -559,10 +552,7 @@ mod tests {
         t.insert(&[lit('k')], fake_bound("k"));
         t.insert(&[lit('g'), lit('d')], fake_bound("gd"));
         t.insert(&[lit('g'), lit('g')], fake_bound("gg"));
-        t.insert(
-            &[lit('f'), ChordPattern::CharLiteral],
-            fake_bound("find"),
-        );
+        t.insert(&[lit('f'), ChordPattern::CharLiteral], fake_bound("find"));
         assert_eq!(t.binding_count(), 5);
     }
 

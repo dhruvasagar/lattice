@@ -92,10 +92,7 @@ pub fn parse_header_block(block: &[u8]) -> Result<FrameHeader, FrameError> {
 /// [`parse_header_block`] with an explicit ceiling. Tests use
 /// this to verify the bound is enforced; production paths go
 /// through the public wrapper.
-pub fn parse_header_block_with_limit(
-    block: &[u8],
-    limit: u64,
-) -> Result<FrameHeader, FrameError> {
+pub fn parse_header_block_with_limit(block: &[u8], limit: u64) -> Result<FrameHeader, FrameError> {
     let text = str::from_utf8(block).map_err(|_| FrameError::NonAsciiHeader)?;
     if !text.is_ascii() {
         return Err(FrameError::NonAsciiHeader);
@@ -125,10 +122,7 @@ pub fn parse_header_block_with_limit(
                 .parse()
                 .map_err(|_| FrameError::InvalidContentLength(value.to_string()))?;
             if parsed > limit {
-                return Err(FrameError::OverlargeMessage {
-                    got: parsed,
-                    limit,
-                });
+                return Err(FrameError::OverlargeMessage { got: parsed, limit });
             }
             content_length = Some(parsed);
         } else if name.eq_ignore_ascii_case("content-type") {
@@ -169,7 +163,8 @@ mod tests {
 
     #[test]
     fn parses_header_with_content_type() {
-        let block = b"Content-Length: 13\r\nContent-Type: application/vscode-jsonrpc; charset=utf-8";
+        let block =
+            b"Content-Length: 13\r\nContent-Type: application/vscode-jsonrpc; charset=utf-8";
         let h = parse_header_block(block).unwrap();
         assert_eq!(h.content_length, 13);
         assert_eq!(
@@ -239,7 +234,13 @@ mod tests {
         assert!(parse_header_block(b"Content-Length: 1024").is_ok());
         // Above the ceiling, error out.
         let err = parse_header_block_with_limit(b"Content-Length: 1024", 1023).unwrap_err();
-        assert!(matches!(err, FrameError::OverlargeMessage { got: 1024, limit: 1023 }));
+        assert!(matches!(
+            err,
+            FrameError::OverlargeMessage {
+                got: 1024,
+                limit: 1023
+            }
+        ));
     }
 
     #[test]

@@ -225,7 +225,11 @@ impl App {
         if self.buffers.oil(id).is_none() {
             return;
         }
-        let oil_cursor = self.buffers.oil(id).map(|o| o.cursor).unwrap_or(Position::ZERO);
+        let oil_cursor = self
+            .buffers
+            .oil(id)
+            .map(|o| o.cursor)
+            .unwrap_or(Position::ZERO);
         let oil_scroll = self.buffers.oil(id).map(|o| o.scroll).unwrap_or(0);
         self.active_buffer = BufferKind::Oil;
         let pane = self.pane_tree.active_mut();
@@ -244,7 +248,10 @@ impl App {
     /// existing keymap + render paths transparently target it.
     pub(super) fn activate_help_in_pane(&mut self, id: BufferId) {
         if self.buffers.help(id).is_none() {
-            self.set_message(EchoLevel::Error, format!("buffer #{} not a help buffer", id.0));
+            self.set_message(
+                EchoLevel::Error,
+                format!("buffer #{} not a help buffer", id.0),
+            );
             return;
         }
         // Skip the auto-jump push during picker-preview hovers --
@@ -593,7 +600,10 @@ impl App {
             let dir_display = dir.display().to_string();
             if let Some(oil) = self.buffers.oil_mut(oil_id) {
                 match oil.apply(&dir) {
-                    Ok(()) => self.set_message(EchoLevel::Info, format!("oil: applied changes in {dir_display}")),
+                    Ok(()) => self.set_message(
+                        EchoLevel::Info,
+                        format!("oil: applied changes in {dir_display}"),
+                    ),
                     Err(e) => self.set_message(EchoLevel::Error, format!("oil apply error: {e}")),
                 }
             }
@@ -631,11 +641,7 @@ impl App {
                 .buffers
                 .document_ids_sorted()
                 .into_iter()
-                .find(|id| {
-                    self.buffers
-                        .document(*id)
-                        .is_some_and(|d| d.handle.dirty())
-                });
+                .find(|id| self.buffers.document(*id).is_some_and(|d| d.handle.dirty()));
             if let Some(id) = dirty_id {
                 self.set_message(
                     EchoLevel::Error,
@@ -813,8 +819,7 @@ impl App {
                         .unwrap_or_default();
                     lines.push(format!(
                         "  {active_marker}{listed_marker} #{:<3} oil      {}",
-                        id.0,
-                        dir
+                        id.0, dir
                     ));
                 }
             }
@@ -1053,12 +1058,13 @@ impl App {
         // ("don't bother LSP for this buffer") is honoured at
         // the editor layer rather than per-server.
         if self.lsp_mode_enabled_for(self.document_buffer_id) {
-            self.event_bus.publish_typed(lattice_lsp::LspDocumentChanged {
-                id: snap.id,
-                path,
-                version: snap.version,
-                edits,
-            });
+            self.event_bus
+                .publish_typed(lattice_lsp::LspDocumentChanged {
+                    id: snap.id,
+                    path,
+                    version: snap.version,
+                    edits,
+                });
         }
         // Slice B.2 part 2: accumulate tree-sitter-shaped edit
         // deltas for the next syntax reparse request.
@@ -1150,20 +1156,11 @@ impl App {
     /// path (`JumpToLspLocation`) and the `do_help_follow_link`
     /// Source-link dispatch. Pushes the pre-jump cursor onto
     /// position history with `PluginPush` so `<C-o>` walks back.
-    pub(super) fn jump_to_file_line_col(
-        &mut self,
-        path: &std::path::Path,
-        line: u32,
-        col: u32,
-    ) {
+    pub(super) fn jump_to_file_line_col(&mut self, path: &std::path::Path, line: u32, col: u32) {
         // Push pre-jump cursor before any state mutates.
         self.push_position_history(self.cursor, PositionSource::PluginPush);
 
-        let same_buffer = self
-            .document
-            .path()
-            .map(|p| p == path)
-            .unwrap_or(false);
+        let same_buffer = self.document.path().map(|p| p == path).unwrap_or(false);
         if !same_buffer {
             self.do_edit(Some(path.to_path_buf()), false);
         }
@@ -1310,9 +1307,7 @@ impl App {
         &self,
         id: BufferId,
     ) -> Option<&lattice_syntax::SyntaxHandle> {
-        if id == self.document_buffer_id
-            && matches!(self.active_buffer, BufferKind::Document)
-        {
+        if id == self.document_buffer_id && matches!(self.active_buffer, BufferKind::Document) {
             return self.syntax.as_ref();
         }
         self.buffer_locals
@@ -1327,9 +1322,7 @@ impl App {
     /// non-document buffers).
     #[allow(dead_code)]
     pub(crate) fn document_folds_for(&self, id: BufferId) -> &[crate::app::Fold] {
-        if id == self.document_buffer_id
-            && matches!(self.active_buffer, BufferKind::Document)
-        {
+        if id == self.document_buffer_id && matches!(self.active_buffer, BufferKind::Document) {
             return &self.folds;
         }
         self.buffer_locals
@@ -1342,9 +1335,7 @@ impl App {
     /// Mode-owned `last_parsed_text_version` for `id`.
     #[allow(dead_code)]
     pub(crate) fn document_last_parsed_text_version_for(&self, id: BufferId) -> u64 {
-        if id == self.document_buffer_id
-            && matches!(self.active_buffer, BufferKind::Document)
-        {
+        if id == self.document_buffer_id && matches!(self.active_buffer, BufferKind::Document) {
             return self.last_parsed_text_version;
         }
         self.buffer_locals
@@ -1357,9 +1348,7 @@ impl App {
     /// Mode-owned `last_synced_syntax_version` for `id`.
     #[allow(dead_code)]
     pub(crate) fn document_last_synced_syntax_version_for(&self, id: BufferId) -> u64 {
-        if id == self.document_buffer_id
-            && matches!(self.active_buffer, BufferKind::Document)
-        {
+        if id == self.document_buffer_id && matches!(self.active_buffer, BufferKind::Document) {
             return self.last_synced_syntax_version;
         }
         self.buffer_locals
@@ -1387,11 +1376,7 @@ impl App {
         // `workspace/didCreateFiles` so servers can update
         // module trees / import graphs / etc. without waiting
         // for a file-watcher round-trip.
-        let pre_save_existed = snap
-            .path
-            .as_ref()
-            .map(|p| p.exists())
-            .unwrap_or(false);
+        let pre_save_existed = snap.path.as_ref().map(|p| p.exists()).unwrap_or(false);
         // LSP textDocument/willSave (Phase 4.3) fan-out: every
         // server attached to the buffer that advertises the
         // notification gets a heads-up before the disk write.
@@ -1446,13 +1431,9 @@ impl App {
         if handles.is_empty() {
             return;
         }
-        let uri_string = lattice_lsp::actor::uri_from_path(path)
-            .as_str()
-            .to_string();
+        let uri_string = lattice_lsp::actor::uri_from_path(path).as_str().to_string();
         let params = lsp_types::CreateFilesParams {
-            files: vec![lsp_types::FileCreate {
-                uri: uri_string,
-            }],
+            files: vec![lsp_types::FileCreate { uri: uri_string }],
         };
         for h in handles {
             if !h.capabilities().supports_did_create_files() {
@@ -1499,8 +1480,7 @@ impl App {
     /// concern (1.5s+ stalls for multi-server saves) without
     /// the behavioural change of fully-async save.
     fn run_will_save_wait_until_blocking(&mut self) {
-        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned()
-        else {
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
             return;
         };
         let handles = self.lsp.servers_for(&uri);
@@ -1524,9 +1504,7 @@ impl App {
         let pending: Vec<_> = interested
             .iter()
             .zip(tokens.iter())
-            .map(|(handle, token)| {
-                handle.will_save_wait_until(params.clone(), token.clone())
-            })
+            .map(|(handle, token)| handle.will_save_wait_until(params.clone(), token.clone()))
             .collect();
         let cancel_tokens = tokens.clone();
         let all_edits: Vec<lsp_types::TextEdit> = block_on(async move {
@@ -1537,9 +1515,7 @@ impl App {
             let mut set: tokio::task::JoinSet<Vec<lsp_types::TextEdit>> =
                 tokio::task::JoinSet::new();
             for fut in pending {
-                set.spawn(async move {
-                    fut.await.ok().flatten().unwrap_or_default()
-                });
+                set.spawn(async move { fut.await.ok().flatten().unwrap_or_default() });
             }
             let deadline = tokio::time::sleep(Duration::from_millis(500));
             tokio::pin!(deadline);
@@ -1601,9 +1577,7 @@ impl App {
                 None
             };
             let params = lsp_types::DidSaveTextDocumentParams {
-                text_document: lsp_types::TextDocumentIdentifier {
-                    uri: uri.clone(),
-                },
+                text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
                 text,
             };
             let _ = h.did_save(params);
@@ -1669,8 +1643,11 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
 
     use super::*;
+    use crate::app::test_helpers::{
+        app_with, attach_test_syntax, fresh_workspace, invoke_motion, set_rust_syntax, submit_ex,
+        unique_tempdir, write_temp_file, write_workspace_config,
+    };
     use crate::app::*;
-    use crate::app::test_helpers::{app_with, attach_test_syntax, fresh_workspace, invoke_motion, set_rust_syntax, submit_ex, unique_tempdir, write_temp_file, write_workspace_config};
     use lattice_protocol::edit::Edit;
 
     #[test]
@@ -2001,14 +1978,10 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-
     #[test]
     fn open_help_in_pane_registers_buffer_and_activates_pane() {
         let mut app = app_with("hi\n", 5);
-        let buf = HelpContent::from_lines(
-            "test-help",
-            vec!["# heading".into(), "body".into()],
-        );
+        let buf = HelpContent::from_lines("test-help", vec!["# heading".into(), "body".into()]);
         let id = app.open_help_in_pane(buf);
         // Lives in the registry as a Help variant.
         assert!(app.buffers.help(id).is_some());
@@ -2016,10 +1989,7 @@ mod tests {
         assert_eq!(app.active_pane_buffer_id(), id);
         assert!(matches!(app.active_buffer, BufferKind::Help));
         // Hot-path popup slot mirrors the registry copy.
-        assert_eq!(
-            app.popup_help().unwrap().title,
-            "test-help"
-        );
+        assert_eq!(app.popup_help().unwrap().title, "test-help");
         // :ls walks the registry; help variants count.
         assert!(app.buffers.help_ids_sorted().contains(&id));
     }
@@ -2027,10 +1997,7 @@ mod tests {
     #[test]
     fn open_help_in_pane_dedups_by_title() {
         let mut app = app_with("hi\n", 5);
-        let id1 = app.open_help_in_pane(HelpContent::from_lines(
-            "lsp:rust",
-            vec!["v1".into()],
-        ));
+        let id1 = app.open_help_in_pane(HelpContent::from_lines("lsp:rust", vec!["v1".into()]));
         let id2 = app.open_help_in_pane(HelpContent::from_lines(
             "lsp:rust",
             vec!["v2 (refreshed)".into()],
@@ -2157,8 +2124,6 @@ mod tests {
         );
     }
 
-
-
     #[test]
     fn load_persistent_config_applies_scalar_override_from_project_toml() {
         let ws = fresh_workspace("scalar-override");
@@ -2208,10 +2173,7 @@ mod tests {
         // plugin host exists. Loader buckets it; nothing warns;
         // the host (Phase 7) drains it when it registers.
         let ws = fresh_workspace("plugin-deferred");
-        write_workspace_config(
-            &ws,
-            "[plugin.rust-analyzer]\nclippy = true\n",
-        );
+        write_workspace_config(&ws, "[plugin.rust-analyzer]\nclippy = true\n");
         let mut a = app_with("", 5);
         a.load_persistent_config(Some(&ws));
         let paths = a.pending_structural_section_paths("plugin");
@@ -2232,11 +2194,7 @@ mod tests {
         let msg = a.last_message.as_ref().expect("warning echoed");
         assert_eq!(msg.level, EchoLevel::Warn);
         assert!(msg.text.contains("config:"), "got `{}`", msg.text);
-        assert!(
-            msg.text.contains("no_such_option"),
-            "got `{}`",
-            msg.text,
-        );
+        assert!(msg.text.contains("no_such_option"), "got `{}`", msg.text,);
     }
 
     #[test]
@@ -2412,10 +2370,8 @@ mod tests {
 
     #[test]
     fn file_tree_locals_carry_owner_metadata() {
-        let tmp = std::env::temp_dir().join(format!(
-            "lattice-m3-2-c-2-meta-{}",
-            std::process::id()
-        ));
+        let tmp =
+            std::env::temp_dir().join(format!("lattice-m3-2-c-2-meta-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&tmp);
         let mut a = app_with("hi", 5);
         a.do_open_file_tree(Some(tmp.clone()));
@@ -2535,9 +2491,7 @@ mod tests {
         a.do_lsp_status();
         // viewport_height is now the popup's inner height (small).
         // Set it explicitly to mimic what runtime would do.
-        a.set_viewport_height(
-            a.help_popup_inner_height(30).unwrap_or(a.viewport_height),
-        );
+        a.set_viewport_height(a.help_popup_inner_height(30).unwrap_or(a.viewport_height));
         // Dismiss the popup (the dispatch path calls this on Esc).
         a.dismiss_popup();
         // Now simulate what `apply` does post-dispatch: the fix is
@@ -2571,9 +2525,7 @@ mod tests {
         // viewport. Each iteration mirrors the runtime: refresh
         // viewport_height, then process the keystroke.
         for _ in 0..(inner + 5) {
-            a.set_viewport_height(
-                a.help_popup_inner_height(30).unwrap_or(a.viewport_height),
-            );
+            a.set_viewport_height(a.help_popup_inner_height(30).unwrap_or(a.viewport_height));
             crate::app::test_helpers::press(
                 &mut a,
                 KeyEvent::new(KeyCode::Char('j'), KeyModifiers::empty()),
@@ -2641,7 +2593,10 @@ mod tests {
         let id = a.document_buffer_id;
         let locals = a.buffer_locals.get(&id).unwrap();
         let descriptors: Vec<_> = locals.iter_descriptors().collect();
-        for d in descriptors.iter().filter(|d| d.name.starts_with("text-mode.")) {
+        for d in descriptors
+            .iter()
+            .filter(|d| d.name.starts_with("text-mode."))
+        {
             assert_eq!(d.owner_mode, "text-mode");
         }
         // At minimum the four document locals.
@@ -2658,10 +2613,8 @@ mod tests {
         // directly seed a new filename in the rope, run :w,
         // verify the file exists on disk. Tests the diff-and-
         // apply pipeline.
-        let tmp = std::env::temp_dir().join(format!(
-            "lattice-oil-create-test-{}",
-            std::process::id()
-        ));
+        let tmp =
+            std::env::temp_dir().join(format!("lattice-oil-create-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).expect("create tmp");
 
@@ -2700,10 +2653,7 @@ mod tests {
     fn oil_navigate_up_from_oil_buffer_goes_to_parent() {
         // `-` key from an oil buffer navigates to the parent
         // dir.
-        let tmp = std::env::temp_dir().join(format!(
-            "lattice-oil-up-test-{}",
-            std::process::id()
-        ));
+        let tmp = std::env::temp_dir().join(format!("lattice-oil-up-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(tmp.join("nested")).expect("nested");
 
@@ -2746,10 +2696,8 @@ mod tests {
         // press `o` (Normal: open line below + Insert), type
         // a filename, press <Esc>, run :w. Verify the file is
         // created on disk.
-        let tmp = std::env::temp_dir().join(format!(
-            "lattice-oil-o-write-test-{}",
-            std::process::id()
-        ));
+        let tmp =
+            std::env::temp_dir().join(format!("lattice-oil-o-write-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).expect("create tmp");
         // Seed a file so there's an existing row to position
@@ -2761,7 +2709,9 @@ mod tests {
         a.apply(crate::app::Action::OpenLineBelow);
         assert_eq!(a.modal, lattice_grammar::ModalState::Insert);
         a.apply(crate::app::Action::Insert("new.rs".into()));
-        a.apply(crate::app::Action::EnterMode(lattice_grammar::ModalState::Normal));
+        a.apply(crate::app::Action::EnterMode(
+            lattice_grammar::ModalState::Normal,
+        ));
         a.do_write(None);
         let new_path = tmp.join("new.rs");
         assert!(
@@ -2784,10 +2734,8 @@ mod tests {
         // typed. Now the dispatch routes through a temp
         // Document and copies the resulting buffer back onto
         // `oil.content`.
-        let tmp = std::env::temp_dir().join(format!(
-            "lattice-oil-keystroke-test-{}",
-            std::process::id()
-        ));
+        let tmp =
+            std::env::temp_dir().join(format!("lattice-oil-keystroke-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).expect("create tmp");
         // Seed one file so the listing has a row.
@@ -2799,7 +2747,10 @@ mod tests {
         // Initial rope has one row: `existing.txt`.
         let initial = a.buffers.oil(oil_id).map(|o| o.content.as_string());
         assert!(
-            initial.as_ref().map(|s| s.contains("existing.txt")).unwrap_or(false),
+            initial
+                .as_ref()
+                .map(|s| s.contains("existing.txt"))
+                .unwrap_or(false),
             "expected `existing.txt` in initial listing: {:?}",
             initial,
         );
@@ -2869,9 +2820,17 @@ mod tests {
         let names: Vec<String> = a
             .buffers
             .oil(oil_id)
-            .map(|o| o.snapshot_entries().iter().map(|e| e.name.clone()).collect())
+            .map(|o| {
+                o.snapshot_entries()
+                    .iter()
+                    .map(|e| e.name.clone())
+                    .collect()
+            })
             .unwrap_or_default();
-        let a_txt_row = names.iter().position(|n| n == "a.txt").expect("a.txt in listing");
+        let a_txt_row = names
+            .iter()
+            .position(|n| n == "a.txt")
+            .expect("a.txt in listing");
         a.cursor.line = a_txt_row as u32;
         a.do_oil_follow();
         let opened = a.document.path().map(|p| p.to_path_buf());
@@ -2901,9 +2860,17 @@ mod tests {
         let names: Vec<String> = a
             .buffers
             .oil(oil_id)
-            .map(|o| o.snapshot_entries().iter().map(|e| e.name.clone()).collect())
+            .map(|o| {
+                o.snapshot_entries()
+                    .iter()
+                    .map(|e| e.name.clone())
+                    .collect()
+            })
             .unwrap_or_default();
-        let sub_row = names.iter().position(|n| n == "sub").expect("sub in listing");
+        let sub_row = names
+            .iter()
+            .position(|n| n == "sub")
+            .expect("sub in listing");
         a.cursor.line = sub_row as u32;
         a.cursor.byte = 0;
         a.do_oil_follow();
@@ -2915,7 +2882,12 @@ mod tests {
         let names_after: Vec<String> = a
             .buffers
             .oil(oil_id)
-            .map(|o| o.snapshot_entries().iter().map(|e| e.name.clone()).collect())
+            .map(|o| {
+                o.snapshot_entries()
+                    .iter()
+                    .map(|e| e.name.clone())
+                    .collect()
+            })
             .unwrap_or_default();
         let inside_row = names_after
             .iter()
@@ -2958,11 +2930,20 @@ mod tests {
         let names: Vec<String> = a
             .buffers
             .oil(oil_id)
-            .map(|o| o.snapshot_entries().iter().map(|e| e.name.clone()).collect())
+            .map(|o| {
+                o.snapshot_entries()
+                    .iter()
+                    .map(|e| e.name.clone())
+                    .collect()
+            })
             .unwrap_or_default();
         assert_eq!(
             names,
-            vec!["alpha.txt".to_string(), "beta.txt".into(), "gamma.txt".into()],
+            vec![
+                "alpha.txt".to_string(),
+                "beta.txt".into(),
+                "gamma.txt".into()
+            ],
         );
 
         // Move the cursor to row 2 (gamma.txt). Pre-fix: follow
@@ -2987,10 +2968,7 @@ mod tests {
 
     #[test]
     fn oil_navigate_into_subdir_replaces_listing() {
-        let tmp = std::env::temp_dir().join(format!(
-            "lattice-oil-nav-test-{}",
-            std::process::id()
-        ));
+        let tmp = std::env::temp_dir().join(format!("lattice-oil-nav-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(tmp.join("subdir")).expect("create subdir");
         std::fs::write(tmp.join("subdir/inner.txt"), "hi").expect("write inner");
@@ -3013,11 +2991,7 @@ mod tests {
         // Move cursor to the subdir entry. The exact line index
         // depends on sort: dirs first, so subdir is at 0 (or 1
         // if `..` is included). Let's find it.
-        let snap = a
-            .buffers
-            .oil(oil_id)
-            .expect("oil")
-            .snapshot_entries();
+        let snap = a.buffers.oil(oil_id).expect("oil").snapshot_entries();
         let subdir_line = snap
             .iter()
             .position(|e| e.name == "subdir")
@@ -3051,20 +3025,14 @@ mod tests {
 
     #[test]
     fn open_oil_seeds_oil_locals() {
-        let tmp = std::env::temp_dir().join(format!(
-            "lattice-m3-2-c-3-{}",
-            std::process::id()
-        ));
+        let tmp = std::env::temp_dir().join(format!("lattice-m3-2-c-3-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&tmp);
 
         let mut a = app_with("hi", 5);
         a.do_open_oil(Some(tmp.clone()));
         let oil_id = a.active_pane_buffer_id();
 
-        let locals = a
-            .buffer_locals
-            .get(&oil_id)
-            .expect("oil locals seeded");
+        let locals = a.buffer_locals.get(&oil_id).expect("oil locals seeded");
         let dir = locals
             .get::<crate::modes::OilDir>()
             .expect("OilDir local present");
@@ -3081,5 +3049,4 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
-
 }

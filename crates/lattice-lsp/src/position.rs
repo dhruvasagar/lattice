@@ -37,11 +37,7 @@ use lsp_types::PositionEncodingKind;
 /// callers passing larger values get the count for the whole
 /// line plus their over-shoot, matching Rust's `&str` slicing
 /// semantics.
-pub fn byte_to_lsp_character(
-    line: &str,
-    byte: u32,
-    encoding: &PositionEncodingKind,
-) -> u32 {
+pub fn byte_to_lsp_character(line: &str, byte: u32, encoding: &PositionEncodingKind) -> u32 {
     if encoding == &PositionEncodingKind::UTF8 {
         return byte;
     }
@@ -55,11 +51,7 @@ pub fn byte_to_lsp_character(
 /// Convert an LSP `character` value (in the negotiated encoding)
 /// to a UTF-8 byte offset within `line`. Used for ranges that
 /// arrive FROM the server (definitions, diagnostics, etc.).
-pub fn lsp_character_to_byte(
-    line: &str,
-    character: u32,
-    encoding: &PositionEncodingKind,
-) -> u32 {
+pub fn lsp_character_to_byte(line: &str, character: u32, encoding: &PositionEncodingKind) -> u32 {
     if encoding == &PositionEncodingKind::UTF8 {
         // Clamp to line length so a server reporting an offset
         // past EOL doesn't yield an out-of-bounds byte index.

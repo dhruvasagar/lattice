@@ -60,10 +60,7 @@ impl App {
         // captures the prior selection -- exactly what `:grep`
         // would want as its default pattern when invoked after
         // selecting a word.
-        let selection = self
-            .last_visual
-            .as_ref()
-            .map(|v| (v.anchor, v.head));
+        let selection = self.last_visual.as_ref().map(|v| (v.anchor, v.head));
 
         // Collect tree-sitter symbol locations once per
         // picker-open. Cost is O(parse-tree-size); reads through
@@ -158,10 +155,7 @@ impl App {
     /// Translate a picker source's typed outcome into App-state
     /// mutation. Single dispatch site -- adding a new outcome
     /// variant requires editing exactly this match.
-    pub(super) fn apply_picker_outcome(
-        &mut self,
-        outcome: lattice_picker::PickerAcceptOutcome,
-    ) {
+    pub(super) fn apply_picker_outcome(&mut self, outcome: lattice_picker::PickerAcceptOutcome) {
         use lattice_picker::PickerAcceptOutcome::*;
         match outcome {
             OpenFile { path } => {
@@ -175,7 +169,11 @@ impl App {
                     self.activate_buffer(id);
                 }
             }
-            JumpInBuffer { buffer_id, line, col } => {
+            JumpInBuffer {
+                buffer_id,
+                line,
+                col,
+            } => {
                 self.push_position_history(self.cursor, super::PositionSource::PluginPush);
                 let id = BufferId(buffer_id);
                 if id != self.active_pane_buffer_id() {
@@ -251,16 +249,9 @@ impl App {
                 // path so tab-stop tracking + mark plumbing
                 // match `:snippet-expand` and the `<C-x><C-s>`
                 // chord.
-                let snippet = self
-                    .snippet_registry
-                    .load()
-                    .by_name(&id)
-                    .cloned();
+                let snippet = self.snippet_registry.load().by_name(&id).cloned();
                 let Some(snippet) = snippet else {
-                    self.set_message(
-                        EchoLevel::Error,
-                        format!("picker: no snippet named `{id}`"),
-                    );
+                    self.set_message(EchoLevel::Error, format!("picker: no snippet named `{id}`"));
                     return;
                 };
                 self.expand_snippet(&snippet.body, self.cursor);
@@ -443,18 +434,12 @@ impl App {
         // (e.g. `:lsp-log rust` with one rust workspace).
         let matches: Vec<&lattice_picker::LspInstanceRow> = rows
             .iter()
-            .filter(|r| {
-                effective
-                    .as_ref()
-                    .is_none_or(|want| r.server_id == *want)
-            })
+            .filter(|r| effective.as_ref().is_none_or(|want| r.server_id == *want))
             .collect();
         if matches.len() == 1 {
             let server_id = matches[0].server_id.clone();
             match on_accept {
-                lattice_picker::PickerAction::OpenLspLog => {
-                    self.open_lsp_log_in_pane(&server_id)
-                }
+                lattice_picker::PickerAction::OpenLspLog => self.open_lsp_log_in_pane(&server_id),
                 lattice_picker::PickerAction::OpenLspTraceLog => {
                     self.open_lsp_trace_log_in_pane(&server_id)
                 }
@@ -597,10 +582,7 @@ impl App {
                     rx,
                     cancel,
                 });
-                self.set_message(
-                    EchoLevel::Info,
-                    format!("picker: {source}... (loading)"),
-                );
+                self.set_message(EchoLevel::Info, format!("picker: {source}... (loading)"));
             }
             lattice_picker::PickerInitResult::Stream(_) => {
                 // Streaming sources land once the seat-on-batch
@@ -656,11 +638,7 @@ impl App {
     /// + buffer-switcher preview ergonomics behave
     /// identically regardless of how the candidates were
     /// produced.
-    fn seat_picker_from_pairs(
-        &mut self,
-        source: String,
-        pairs: lattice_picker::CandidateBatch,
-    ) {
+    fn seat_picker_from_pairs(&mut self, source: String, pairs: lattice_picker::CandidateBatch) {
         let title = source.clone();
         // MRU bonus snapshot -- per-keystroke refilter reads
         // cached bonuses, not the live MRU HashMap. Honors
@@ -680,15 +658,12 @@ impl App {
         let bonuses: Vec<f64> = if mru_enabled {
             pairs
                 .iter()
-                .map(|(_cand, routing)| match lattice_picker::routing_identity(routing) {
-                    Some(id) => self.picker_mru.frecency_bonus(
-                        &source,
-                        &id,
-                        now,
-                        half_life,
-                    ),
-                    None => 0.0,
-                })
+                .map(
+                    |(_cand, routing)| match lattice_picker::routing_identity(routing) {
+                        Some(id) => self.picker_mru.frecency_bonus(&source, &id, now, half_life),
+                        None => 0.0,
+                    },
+                )
                 .collect()
         } else {
             vec![0.0; pairs.len()]
@@ -768,14 +743,16 @@ impl App {
         let Some(picker) = self.picker.as_ref() else {
             return;
         };
-        if !matches!(picker.on_accept, lattice_picker::PickerAction::SwitchToBuffer) {
+        if !matches!(
+            picker.on_accept,
+            lattice_picker::PickerAction::SwitchToBuffer
+        ) {
             return;
         }
         let Some(c) = picker.selected_candidate() else {
             return;
         };
-        let Some(lattice_picker::RoutingPayload::Buffer { id: raw_id }) =
-            picker.routing_for(c)
+        let Some(lattice_picker::RoutingPayload::Buffer { id: raw_id }) = picker.routing_for(c)
         else {
             return;
         };
@@ -809,9 +786,8 @@ impl App {
         // queue advance opens the next picker (which sets
         // `self.picker` again so the preview-restore branch
         // below must not run for SMR).
-        if let lattice_picker::PickerSource::LspShowMessageRequest {
-            request_id, ..
-        } = picker.source
+        if let lattice_picker::PickerSource::LspShowMessageRequest { request_id, .. } =
+            picker.source
         {
             self.finalize_show_message_request(request_id, None);
             self.open_next_queued_show_message_request();
@@ -873,8 +849,7 @@ impl App {
             None => {
                 self.set_message(
                     EchoLevel::Error,
-                    "picker: candidate carries no routing payload"
-                        .to_string(),
+                    "picker: candidate carries no routing payload".to_string(),
                 );
                 if let Some(origin) = picker.preview_origin {
                     self.previewing = true;
@@ -917,9 +892,7 @@ impl App {
                 .map(|b| *b)
                 .unwrap_or(true);
             let identity = lattice_picker::routing_identity(&routing);
-            if mru_enabled
-                && let Some(identity) = identity.as_deref()
-            {
+            if mru_enabled && let Some(identity) = identity.as_deref() {
                 self.picker_mru.record(&source_id_owned, identity);
                 self.persist_picker_mru_best_effort();
             }
@@ -972,8 +945,7 @@ impl App {
                     _ => {
                         self.set_message(
                             EchoLevel::Error,
-                            "picker: lsp-instance routing on non-lsp-log action"
-                                .to_string(),
+                            "picker: lsp-instance routing on non-lsp-log action".to_string(),
                         );
                     }
                 }
@@ -1030,7 +1002,11 @@ impl App {
                 self.prepare_pane_for_picker_result();
                 self.do_edit(Some(path), false);
             }
-            lattice_picker::RoutingPayload::JumpInBuffer { buffer_id, line, col } => {
+            lattice_picker::RoutingPayload::JumpInBuffer {
+                buffer_id,
+                line,
+                col,
+            } => {
                 // Legacy fallback only fires when a picker without
                 // a `source_id` emits JumpInBuffer. Today's
                 // emitters all set `source_id` (trait-driven path
@@ -1039,36 +1015,33 @@ impl App {
                 // fire, route it through the same outcome
                 // translator the trait path uses so the behavior
                 // doesn't diverge.
-                self.apply_picker_outcome(
-                    lattice_picker::PickerAcceptOutcome::JumpInBuffer {
-                        buffer_id,
-                        line,
-                        col,
-                    },
-                );
+                self.apply_picker_outcome(lattice_picker::PickerAcceptOutcome::JumpInBuffer {
+                    buffer_id,
+                    line,
+                    col,
+                });
             }
             lattice_picker::RoutingPayload::InvokeCommand { id, args } => {
                 // Reachability-guard for the same reason as
                 // `JumpInBuffer`: trait-driven sources set
                 // `source_id` and intercept above.
-                self.apply_picker_outcome(
-                    lattice_picker::PickerAcceptOutcome::InvokeCommand { id, args },
-                );
+                self.apply_picker_outcome(lattice_picker::PickerAcceptOutcome::InvokeCommand {
+                    id,
+                    args,
+                });
             }
             lattice_picker::RoutingPayload::PasteRegister { name } => {
-                self.apply_picker_outcome(
-                    lattice_picker::PickerAcceptOutcome::PasteRegister { name },
-                );
+                self.apply_picker_outcome(lattice_picker::PickerAcceptOutcome::PasteRegister {
+                    name,
+                });
             }
             lattice_picker::RoutingPayload::JumpToMark { name } => {
-                self.apply_picker_outcome(
-                    lattice_picker::PickerAcceptOutcome::JumpToMark { name },
-                );
+                self.apply_picker_outcome(lattice_picker::PickerAcceptOutcome::JumpToMark { name });
             }
             lattice_picker::RoutingPayload::ExpandSnippet { id } => {
-                self.apply_picker_outcome(
-                    lattice_picker::PickerAcceptOutcome::ExpandSnippet { id },
-                );
+                self.apply_picker_outcome(lattice_picker::PickerAcceptOutcome::ExpandSnippet {
+                    id,
+                });
             }
             // 4.4.b: server-initiated showMessageRequest. Look
             // up the inbound slot by `request_id`, ferry the
@@ -1080,10 +1053,7 @@ impl App {
                 request_id,
                 action_index,
             } => {
-                self.finalize_show_message_request(
-                    request_id,
-                    Some(action_index),
-                );
+                self.finalize_show_message_request(request_id, Some(action_index));
                 self.open_next_queued_show_message_request();
             }
             // 4.5.d: accept one code lens. Resolve if needed,
@@ -1106,14 +1076,10 @@ impl App {
 /// accepted event publish so subscribers that care about
 /// the path (telemetry, recent-file logs, plugin hooks)
 /// don't have to repeat the routing-payload match.
-fn routing_payload_path(
-    payload: &lattice_picker::RoutingPayload,
-) -> Option<std::path::PathBuf> {
+fn routing_payload_path(payload: &lattice_picker::RoutingPayload) -> Option<std::path::PathBuf> {
     match payload {
         lattice_picker::RoutingPayload::OpenFile { path }
-        | lattice_picker::RoutingPayload::LspLocation { path, .. } => {
-            Some(path.clone())
-        }
+        | lattice_picker::RoutingPayload::LspLocation { path, .. } => Some(path.clone()),
         _ => None,
     }
 }
@@ -1148,12 +1114,7 @@ fn picker_buffer_entry(
                 .unwrap_or_else(|| "[no root]".to_string());
             ("tree".to_string(), root, title, false)
         }
-        BufferData::Help(h) => (
-            "help".to_string(),
-            None,
-            h.title.clone(),
-            false,
-        ),
+        BufferData::Help(h) => ("help".to_string(), None, h.title.clone(), false),
         BufferData::Oil(_) => {
             let dir = buffer_locals
                 .get(&entry.id)
@@ -1260,7 +1221,10 @@ pub(super) fn raw_buffer_candidates(
     registry: &BufferRegistry,
     buffer_locals: &std::collections::HashMap<BufferId, lattice_mode::BufferLocals>,
     active: BufferId,
-) -> Vec<(lattice_completion::RawCandidate, lattice_picker::RoutingPayload)> {
+) -> Vec<(
+    lattice_completion::RawCandidate,
+    lattice_picker::RoutingPayload,
+)> {
     let mut ids = registry.sorted_ids();
     ids.sort_by_key(|id| (*id == active, *id));
     let mut out = Vec::with_capacity(ids.len());
@@ -1334,8 +1298,8 @@ pub(super) fn raw_buffer_candidates(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
 
-    use crate::app::*;
     use crate::app::test_helpers::app_with;
+    use crate::app::*;
     use crate::help::HelpContent;
 
     #[test]
@@ -1343,18 +1307,10 @@ mod tests {
         let mut app = app_with("hi\n", 5);
         // Add a help buffer so the picker has more than just the
         // initial document to filter against.
-        let _help_id = app.open_help_in_pane(HelpContent::from_lines(
-            "lsp:rust",
-            vec!["a".into()],
-        ));
+        let _help_id = app.open_help_in_pane(HelpContent::from_lines("lsp:rust", vec!["a".into()]));
         // Activate back to the document so the picker's "active"
         // marker doesn't land on the help buffer.
-        let doc_id = app
-            .buffers
-            .document_ids_sorted()
-            .first()
-            .copied()
-            .unwrap();
+        let doc_id = app.buffers.document_ids_sorted().first().copied().unwrap();
         app.activate_document(doc_id);
         app.open_buffer_picker();
         let p = app.picker.as_ref().expect("picker should be open");
@@ -1367,16 +1323,9 @@ mod tests {
     #[test]
     fn picker_accept_switches_to_selected_buffer() {
         let mut app = app_with("hi\n", 5);
-        let help_id = app.open_help_in_pane(HelpContent::from_lines(
-            "test-target",
-            vec!["body".into()],
-        ));
-        let doc_id = app
-            .buffers
-            .document_ids_sorted()
-            .first()
-            .copied()
-            .unwrap();
+        let help_id =
+            app.open_help_in_pane(HelpContent::from_lines("test-target", vec!["body".into()]));
+        let doc_id = app.buffers.document_ids_sorted().first().copied().unwrap();
         // Start on the doc.
         app.activate_document(doc_id);
         assert!(matches!(app.active_buffer, BufferKind::Document));
@@ -1395,12 +1344,7 @@ mod tests {
     #[test]
     fn picker_dismiss_leaves_active_pane_unchanged() {
         let mut app = app_with("hi\n", 5);
-        let doc_id = app
-            .buffers
-            .document_ids_sorted()
-            .first()
-            .copied()
-            .unwrap();
+        let doc_id = app.buffers.document_ids_sorted().first().copied().unwrap();
         app.activate_document(doc_id);
         app.open_buffer_picker();
         app.apply(Action::PickerDismiss);
@@ -1414,16 +1358,9 @@ mod tests {
         // doc immediately previews the alternate (help) buffer in
         // the active pane.
         let mut app = app_with("hi\n", 5);
-        let help_id = app.open_help_in_pane(HelpContent::from_lines(
-            "alt",
-            vec!["alt body".into()],
-        ));
-        let doc_id = app
-            .buffers
-            .document_ids_sorted()
-            .first()
-            .copied()
-            .unwrap();
+        let help_id =
+            app.open_help_in_pane(HelpContent::from_lines("alt", vec!["alt body".into()]));
+        let doc_id = app.buffers.document_ids_sorted().first().copied().unwrap();
         app.activate_document(doc_id);
         // Sanity: starting state.
         assert_eq!(app.active_pane_buffer_id(), doc_id);
@@ -1437,16 +1374,9 @@ mod tests {
     #[test]
     fn picker_dismiss_restores_origin_when_previewing() {
         let mut app = app_with("hi\n", 5);
-        let _help_id = app.open_help_in_pane(HelpContent::from_lines(
-            "alt",
-            vec!["alt body".into()],
-        ));
-        let doc_id = app
-            .buffers
-            .document_ids_sorted()
-            .first()
-            .copied()
-            .unwrap();
+        let _help_id =
+            app.open_help_in_pane(HelpContent::from_lines("alt", vec!["alt body".into()]));
+        let doc_id = app.buffers.document_ids_sorted().first().copied().unwrap();
         app.activate_document(doc_id);
         app.open_buffer_picker();
         // Preview moved us off the doc.
@@ -1461,27 +1391,19 @@ mod tests {
     #[test]
     fn picker_select_next_re_previews_new_candidate() {
         let mut app = app_with("hi\n", 5);
-        let help_a = app.open_help_in_pane(HelpContent::from_lines(
-            "alpha-help",
-            vec!["a".into()],
-        ));
-        let help_b = app.open_help_in_pane(HelpContent::from_lines(
-            "beta-help",
-            vec!["b".into()],
-        ));
-        let doc_id = app
-            .buffers
-            .document_ids_sorted()
-            .first()
-            .copied()
-            .unwrap();
+        let help_a = app.open_help_in_pane(HelpContent::from_lines("alpha-help", vec!["a".into()]));
+        let help_b = app.open_help_in_pane(HelpContent::from_lines("beta-help", vec!["b".into()]));
+        let doc_id = app.buffers.document_ids_sorted().first().copied().unwrap();
         app.activate_document(doc_id);
         app.open_buffer_picker();
         let first_preview = app.active_pane_buffer_id();
         // Move down -- previews the next candidate.
         app.apply(Action::PickerSelectNext);
         let second_preview = app.active_pane_buffer_id();
-        assert_ne!(first_preview, second_preview, "selection moved -> different preview");
+        assert_ne!(
+            first_preview, second_preview,
+            "selection moved -> different preview"
+        );
         // Both previews land on one of the help buffers we set up.
         assert!(first_preview == help_a || first_preview == help_b || first_preview == doc_id);
         assert!(second_preview == help_a || second_preview == help_b || second_preview == doc_id);
@@ -1495,20 +1417,9 @@ mod tests {
         // Hover-previewing through several candidates should not
         // push to the jump list; only an *accepted* switch should.
         let mut app = app_with("hi\n", 5);
-        let _h1 = app.open_help_in_pane(HelpContent::from_lines(
-            "h-one",
-            vec!["a".into()],
-        ));
-        let _h2 = app.open_help_in_pane(HelpContent::from_lines(
-            "h-two",
-            vec!["b".into()],
-        ));
-        let doc_id = app
-            .buffers
-            .document_ids_sorted()
-            .first()
-            .copied()
-            .unwrap();
+        let _h1 = app.open_help_in_pane(HelpContent::from_lines("h-one", vec!["a".into()]));
+        let _h2 = app.open_help_in_pane(HelpContent::from_lines("h-two", vec!["b".into()]));
+        let doc_id = app.buffers.document_ids_sorted().first().copied().unwrap();
         app.activate_document(doc_id);
         let history_before = app.position_history.len();
         app.open_buffer_picker();
@@ -1528,8 +1439,7 @@ mod tests {
     /// dotfiles.
     #[test]
     fn file_picker_walks_root_and_skips_ignored() {
-        let tmp = std::env::temp_dir()
-            .join(format!("lattice-files-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("lattice-files-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
         std::fs::write(tmp.join("a.rs"), "").unwrap();
@@ -1559,8 +1469,7 @@ mod tests {
     /// re-pushing the same path collapses to one entry.
     #[test]
     fn push_recent_file_is_mru_and_dedupes() {
-        let tmp = std::env::temp_dir()
-            .join(format!("lattice-recent-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("lattice-recent-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
         let a_path = tmp.join("a.rs");
@@ -1577,7 +1486,10 @@ mod tests {
         let canon_a = std::fs::canonicalize(&a_path).unwrap();
         let canon_b = std::fs::canonicalize(&b_path).unwrap();
         let canon_c = std::fs::canonicalize(&c_path).unwrap();
-        assert_eq!(app.recent_files, vec![canon_c.clone(), canon_b.clone(), canon_a.clone()]);
+        assert_eq!(
+            app.recent_files,
+            vec![canon_c.clone(), canon_b.clone(), canon_a.clone()]
+        );
         // Re-pushing `a` floats it to the front and drops the
         // older occurrence -- list length stays at 3.
         app.push_recent_file(&a_path);
@@ -1602,8 +1514,7 @@ mod tests {
     /// does today (every row routes to `OpenFile`).
     #[test]
     fn open_picker_files_seeds_open_file_routing() {
-        let tmp = std::env::temp_dir()
-            .join(format!("lattice-picker-files-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("lattice-picker-files-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
         std::fs::write(tmp.join("a.rs"), "").unwrap();
@@ -1663,8 +1574,17 @@ mod tests {
         assert_eq!(
             ids,
             vec![
-                "buffers", "commands", "files", "grep", "jumps", "lines",
-                "marks", "outline", "recent", "registers", "snippets",
+                "buffers",
+                "commands",
+                "files",
+                "grep",
+                "jumps",
+                "lines",
+                "marks",
+                "outline",
+                "recent",
+                "registers",
+                "snippets",
             ]
         );
         // Sanity: matches what the registry itself reports.
@@ -1686,8 +1606,7 @@ mod tests {
             Arc::new(lattice_picker::PickerRegistry::new());
         let weak: Weak<lattice_picker::PickerRegistry> = Arc::downgrade(&reg);
         drop(reg);
-        let generator =
-            crate::host_generators::PickerSourcesGenerator { registry: weak };
+        let generator = crate::host_generators::PickerSourcesGenerator { registry: weak };
         // Build a minimal GenerateContext via an App fixture --
         // we just need a real Buffer + CommandRegistry.
         let app = app_with("hi\n", 5);
@@ -1698,9 +1617,7 @@ mod tests {
             registry: &app.registry,
             case_sensitive: false,
         };
-        let candidates = lattice_completion::traits::CandidateGenerator::generate(
-            &generator, &ctx,
-        );
+        let candidates = lattice_completion::traits::CandidateGenerator::generate(&generator, &ctx);
         assert!(candidates.is_empty());
     }
 
@@ -1748,7 +1665,11 @@ mod tests {
         app.open_picker("snippets".into(), Vec::new());
         assert!(app.picker.is_none());
         let msg = app.last_message.as_ref().expect("echo");
-        assert!(msg.text.contains("no snippets registered"), "got `{}`", msg.text);
+        assert!(
+            msg.text.contains("no snippets registered"),
+            "got `{}`",
+            msg.text
+        );
     }
 
     /// Slice 14c: accepting a candidate records it in
@@ -1758,8 +1679,7 @@ mod tests {
     /// to the top of the popup.
     #[test]
     fn picker_mru_floats_previously_accepted_to_top() {
-        let tmp = std::env::temp_dir()
-            .join(format!("lattice-mru-e2e-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("lattice-mru-e2e-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
         std::fs::write(tmp.join("alpha.rs"), "").unwrap();
@@ -1803,7 +1723,10 @@ mod tests {
                 other => panic!("expected OpenFile, got {other:?}"),
             }
         };
-        assert_eq!(top, first_id, "previously-accepted file should float to top");
+        assert_eq!(
+            top, first_id,
+            "previously-accepted file should float to top"
+        );
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -1814,17 +1737,15 @@ mod tests {
     /// `source_id`, `identity`, and `ts` populated.
     #[test]
     fn picker_accept_publishes_typed_event() {
-        let tmp = std::env::temp_dir()
-            .join(format!("lattice-evt-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("lattice-evt-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
         std::fs::write(tmp.join("alpha.rs"), "").unwrap();
         let mut app = app_with("hi\n", 5);
         app.picker_mru_path = None;
         // Subscribe before firing the picker.
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<
-            lattice_picker::events::PickerAccepted,
-        >();
+        let (tx, mut rx) =
+            tokio::sync::mpsc::unbounded_channel::<lattice_picker::events::PickerAccepted>();
         app.event_bus.subscribe_typed(tx);
         app.open_picker("files".into(), vec![tmp.display().to_string()]);
         let _ = app.picker.as_ref().expect("picker open");
@@ -1845,9 +1766,8 @@ mod tests {
     #[test]
     fn picker_open_publishes_typed_event() {
         let mut app = app_with("hi\n", 5);
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<
-            lattice_picker::events::PickerOpened,
-        >();
+        let (tx, mut rx) =
+            tokio::sync::mpsc::unbounded_channel::<lattice_picker::events::PickerOpened>();
         app.event_bus.subscribe_typed(tx);
         // `:picker buffers` always seats (the App's
         // BufferRegistry has at least the active doc).
@@ -1862,8 +1782,7 @@ mod tests {
     /// MRU index is unchanged.
     #[test]
     fn picker_mru_enabled_false_skips_record() {
-        let tmp = std::env::temp_dir()
-            .join(format!("lattice-mru-off-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("lattice-mru-off-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
         std::fs::write(tmp.join("alpha.rs"), "").unwrap();

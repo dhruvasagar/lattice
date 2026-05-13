@@ -184,11 +184,7 @@ impl App {
     /// Used by hover (`K`), signature help, and any future
     /// cursor-anchored quick-info popup that wants the
     /// "popup floats; doc keeps focus" shape.
-    pub(crate) fn open_floating_popup(
-        &mut self,
-        content: HelpContent,
-        placement: PopupPlacement,
-    ) {
+    pub(crate) fn open_floating_popup(&mut self, content: HelpContent, placement: PopupPlacement) {
         let HelpContent { buffer, metadata } = content;
         let buffer_id = buffer.id;
         // Drop any previous popup buffer cleanly before adopting
@@ -267,8 +263,7 @@ impl App {
     /// `None` when no popup is open or the registry entry has been
     /// torn down.
     pub fn popup_help(&self) -> Option<&crate::help::HelpBuffer> {
-        self.popup_buffer
-            .and_then(|id| self.buffers.help(id))
+        self.popup_buffer.and_then(|id| self.buffers.help(id))
     }
 
     /// Mutable counterpart to [`Self::popup_help`]. Used by the
@@ -291,7 +286,11 @@ impl App {
         buffer_id: crate::buffers::BufferId,
         metadata: HelpMetadata,
     ) {
-        let HelpMetadata { links, anchors, highlights } = metadata;
+        let HelpMetadata {
+            links,
+            anchors,
+            highlights,
+        } = metadata;
         let locals = self.buffer_locals.entry(buffer_id).or_default();
         locals.insert(crate::modes::HelpLinks(links));
         locals.insert(crate::modes::HelpAnchors(anchors));
@@ -388,15 +387,14 @@ impl App {
     /// across in-popup navigation. Updates the buffer's rope,
     /// title, cursor, scroll, placement, and the
     /// `links`/`anchors`/`highlights` buffer-locals.
-    pub(super) fn swap_popup_content(
-        &mut self,
-        content: HelpContent,
-        placement: PopupPlacement,
-    ) {
+    pub(super) fn swap_popup_content(&mut self, content: HelpContent, placement: PopupPlacement) {
         let Some(id) = self.popup_buffer else {
             return;
         };
-        let HelpContent { buffer: new_buf, metadata } = content;
+        let HelpContent {
+            buffer: new_buf,
+            metadata,
+        } = content;
         // Update the registered HelpBuffer in place. We retain `id`
         // (the existing popup's id) -- not `new_buf.id` -- so every
         // outer-state slot keyed on the popup id stays coherent.
@@ -574,8 +572,14 @@ mod tests {
         let first_id = a.popup_buffer.expect("first popup open");
         a.do_lsp_status();
         let second_id = a.popup_buffer.expect("second popup open");
-        assert_eq!(first_id, second_id, "popup id should be reused on in-Help reopen");
-        assert!(a.buffers.get(first_id).is_some(), "popup buffer survives the swap");
+        assert_eq!(
+            first_id, second_id,
+            "popup id should be reused on in-Help reopen"
+        );
+        assert!(
+            a.buffers.get(first_id).is_some(),
+            "popup buffer survives the swap"
+        );
         // The prior frame is recorded on the back-stack so `<C-o>`
         // can restore it.
         assert_eq!(a.popup_back_stack.len(), 1);

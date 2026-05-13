@@ -63,16 +63,15 @@ pub struct EventsGenerator;
 
 impl CandidateGenerator for EventsGenerator {
     fn generate(&self, _ctx: &GenerateContext<'_>) -> Vec<RawCandidate> {
-        let mut out: Vec<RawCandidate> =
-            lattice_protocol::event_registry::registered_events()
-                .map(|d| RawCandidate {
-                    text: d.name.to_string(),
-                    display: d.name.to_string(),
-                    kind: CandidateKind::Plain,
-                    data: CandidateData::Plain,
-                    source: None,
-                })
-                .collect();
+        let mut out: Vec<RawCandidate> = lattice_protocol::event_registry::registered_events()
+            .map(|d| RawCandidate {
+                text: d.name.to_string(),
+                display: d.name.to_string(),
+                kind: CandidateKind::Plain,
+                data: CandidateData::Plain,
+                source: None,
+            })
+            .collect();
         out.sort_by(|a, b| a.text.cmp(&b.text));
         out
     }

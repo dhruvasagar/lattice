@@ -66,9 +66,7 @@ pub use source::{
 
 use std::path::PathBuf;
 
-use lattice_completion::{
-    CandidateData, MatchScore, RawCandidate, RenderedCandidate, fuzzy_match,
-};
+use lattice_completion::{CandidateData, MatchScore, RawCandidate, RenderedCandidate, fuzzy_match};
 
 /// `CandidateData::Extension { kind_id }` value the picker stamps
 /// on every candidate it builds. Each candidate's payload bytes
@@ -113,11 +111,7 @@ pub enum RoutingPayload {
     /// line, col)` the host's `jump_to_file_line_col` consumes.
     /// LSP 0-based line + utf-8 byte column; the host already
     /// converted these utf-8 host-side at ingestion time.
-    LspLocation {
-        path: PathBuf,
-        line: u32,
-        col: u32,
-    },
+    LspLocation { path: PathBuf, line: u32, col: u32 },
     /// `PickerAction::AcceptLspCompletion` -- numeric index into
     /// the host's `pending_completion_items` snapshot.
     LspCompletion { index: u32 },
@@ -148,7 +142,10 @@ pub enum RoutingPayload {
     /// pre-supplied positional arguments (the command palette
     /// today emits `Args::None`; future "pick a thing, then
     /// run a command on it" flows will carry richer values).
-    InvokeCommand { id: String, args: lattice_grammar::args::Args },
+    InvokeCommand {
+        id: String,
+        args: lattice_grammar::args::Args,
+    },
     /// Paste a named register's contents at the cursor.
     /// Emitted by `:picker registers`; `name` is the single-
     /// char register identifier (`a`..`z`, `0`..`9`, `+`,
@@ -359,11 +356,7 @@ pub struct Picker {
 }
 
 impl Picker {
-    pub fn new(
-        title: impl Into<String>,
-        source: PickerSource,
-        on_accept: PickerAction,
-    ) -> Self {
+    pub fn new(title: impl Into<String>, source: PickerSource, on_accept: PickerAction) -> Self {
         Self {
             title: title.into(),
             query: String::new(),
@@ -481,10 +474,7 @@ impl Picker {
     /// accept dispatch reads the index back, indexes the
     /// sidecar, and matches on the typed enum variant. Replaces
     /// the prior `text`-tab-encoded string-parsing path.
-    pub fn set_raw_candidates_with_routing(
-        &mut self,
-        items: Vec<(RawCandidate, RoutingPayload)>,
-    ) {
+    pub fn set_raw_candidates_with_routing(&mut self, items: Vec<(RawCandidate, RoutingPayload)>) {
         let mut raw: Vec<RawCandidate> = Vec::with_capacity(items.len());
         let mut routing: Vec<RoutingPayload> = Vec::with_capacity(items.len());
         for (mut cand, payload) in items {
@@ -506,10 +496,7 @@ impl Picker {
     /// `Extension` payload (defensive; the picker only ever
     /// builds candidates through [`Self::set_raw_candidates_with_routing`]
     /// in the new world). Used by the accept dispatch.
-    pub fn routing_for(
-        &self,
-        candidate: &RenderedCandidate,
-    ) -> Option<&RoutingPayload> {
+    pub fn routing_for(&self, candidate: &RenderedCandidate) -> Option<&RoutingPayload> {
         let CandidateData::Extension { kind_id, payload } = &candidate.raw.data else {
             return None;
         };
@@ -528,8 +515,10 @@ impl Picker {
     /// diagnostics. Caller builds + sorts + dedups the `Vec`
     /// host-side; the picker just stores + refilters.
     pub fn set_lsp_locations(&mut self, rows: Vec<LspLocationRow>) {
-        let items: Vec<(RawCandidate, RoutingPayload)> =
-            rows.into_iter().map(|r| r.into_candidate_with_routing()).collect();
+        let items: Vec<(RawCandidate, RoutingPayload)> = rows
+            .into_iter()
+            .map(|r| r.into_candidate_with_routing())
+            .collect();
         self.set_raw_candidates_with_routing(items);
     }
 
@@ -574,12 +563,8 @@ impl Picker {
         // override. The matcher's stable string score still
         // dominates; MRU floats recently-used candidates within
         // their tier.
-        let mut scored: Vec<(
-            RawCandidate,
-            MatchScore,
-            Vec<std::ops::Range<usize>>,
-            f64,
-        )> = Vec::new();
+        let mut scored: Vec<(RawCandidate, MatchScore, Vec<std::ops::Range<usize>>, f64)> =
+            Vec::new();
         for raw in &self.raw {
             if let Some((score, ranges)) = fuzzy_match(&self.query, &raw.display) {
                 let bonus = bonus_for_raw(raw, &self.mru_bonuses);
@@ -751,11 +736,7 @@ impl LspLocationRow {
     /// Build a row from a fully-resolved location triple. Reads
     /// the line text from disk best-effort (callers may also
     /// pre-populate `preview`).
-    pub fn from_path_line_col(
-        path: impl Into<PathBuf>,
-        line: u32,
-        col: u32,
-    ) -> Self {
+    pub fn from_path_line_col(path: impl Into<PathBuf>, line: u32, col: u32) -> Self {
         Self {
             path: path.into(),
             line,
@@ -834,16 +815,22 @@ mod tests {
 
     #[test]
     fn empty_query_returns_all_candidates_in_source_order() {
-        let mut p =
-            Picker::new("buffers", PickerSource::Buffers, PickerAction::SwitchToBuffer);
+        let mut p = Picker::new(
+            "buffers",
+            PickerSource::Buffers,
+            PickerAction::SwitchToBuffer,
+        );
         p.set_raw_candidates(buffer_fixture());
         assert_eq!(p.candidates.len(), 2);
     }
 
     #[test]
     fn typing_query_filters_to_substring_matches() {
-        let mut p =
-            Picker::new("buffers", PickerSource::Buffers, PickerAction::SwitchToBuffer);
+        let mut p = Picker::new(
+            "buffers",
+            PickerSource::Buffers,
+            PickerAction::SwitchToBuffer,
+        );
         p.set_raw_candidates(buffer_fixture());
         p.append_query('r');
         p.append_query('u');
@@ -856,8 +843,11 @@ mod tests {
 
     #[test]
     fn case_insensitive_substring_match() {
-        let mut p =
-            Picker::new("buffers", PickerSource::Buffers, PickerAction::SwitchToBuffer);
+        let mut p = Picker::new(
+            "buffers",
+            PickerSource::Buffers,
+            PickerAction::SwitchToBuffer,
+        );
         p.set_raw_candidates(buffer_fixture());
         p.append_query('R');
         p.append_query('U');
@@ -868,8 +858,11 @@ mod tests {
 
     #[test]
     fn selection_wraps_at_boundaries() {
-        let mut p =
-            Picker::new("buffers", PickerSource::Buffers, PickerAction::SwitchToBuffer);
+        let mut p = Picker::new(
+            "buffers",
+            PickerSource::Buffers,
+            PickerAction::SwitchToBuffer,
+        );
         p.set_raw_candidates(buffer_fixture());
         p.select_prev(); // wraps to last
         assert_eq!(p.selected, 1);
@@ -879,8 +872,11 @@ mod tests {
 
     #[test]
     fn backspace_repopulates_filter_results() {
-        let mut p =
-            Picker::new("buffers", PickerSource::Buffers, PickerAction::SwitchToBuffer);
+        let mut p = Picker::new(
+            "buffers",
+            PickerSource::Buffers,
+            PickerAction::SwitchToBuffer,
+        );
         p.set_raw_candidates(buffer_fixture());
         p.append_query('r');
         p.append_query('u');
@@ -896,11 +892,20 @@ mod tests {
         // the App's `raw_buffer_candidates_with_routing` does:
         // each (RawCandidate, RoutingPayload::Buffer { id }) pair.
         let pairs: Vec<(RawCandidate, RoutingPayload)> = vec![
-            (buffer_candidate(1, "lsp:rust", "help", false), RoutingPayload::Buffer { id: 1 }),
-            (buffer_candidate(2, "describe-command write", "help", false), RoutingPayload::Buffer { id: 2 }),
+            (
+                buffer_candidate(1, "lsp:rust", "help", false),
+                RoutingPayload::Buffer { id: 1 },
+            ),
+            (
+                buffer_candidate(2, "describe-command write", "help", false),
+                RoutingPayload::Buffer { id: 2 },
+            ),
         ];
-        let mut p =
-            Picker::new("buffers", PickerSource::Buffers, PickerAction::SwitchToBuffer);
+        let mut p = Picker::new(
+            "buffers",
+            PickerSource::Buffers,
+            PickerAction::SwitchToBuffer,
+        );
         p.set_raw_candidates_with_routing(pairs);
         let c = p.selected_candidate().expect("first candidate");
         match p.routing_for(c) {
@@ -992,7 +997,10 @@ mod tests {
         p.set_lsp_instances(rows);
         let c = p.selected_candidate().expect("first candidate");
         match p.routing_for(c) {
-            Some(RoutingPayload::LspInstance { server_id, workspace }) => {
+            Some(RoutingPayload::LspInstance {
+                server_id,
+                workspace,
+            }) => {
                 assert_eq!(server_id, "rust");
                 assert_eq!(*workspace, PathBuf::from("/proj/example"));
             }
@@ -1002,8 +1010,11 @@ mod tests {
 
     #[test]
     fn selected_candidate_is_none_when_filter_empties_list() {
-        let mut p =
-            Picker::new("buffers", PickerSource::Buffers, PickerAction::SwitchToBuffer);
+        let mut p = Picker::new(
+            "buffers",
+            PickerSource::Buffers,
+            PickerAction::SwitchToBuffer,
+        );
         p.set_raw_candidates(buffer_fixture());
         p.append_query('z'); // matches nothing
         p.append_query('z');
@@ -1024,7 +1035,9 @@ mod tests {
                     r.display = "alpha-file".into();
                     r
                 },
-                RoutingPayload::OpenFile { path: PathBuf::from("/tmp/alpha") },
+                RoutingPayload::OpenFile {
+                    path: PathBuf::from("/tmp/alpha"),
+                },
             ),
             (
                 {
@@ -1032,11 +1045,12 @@ mod tests {
                     r.display = "beta-file".into();
                     r
                 },
-                RoutingPayload::OpenFile { path: PathBuf::from("/tmp/beta") },
+                RoutingPayload::OpenFile {
+                    path: PathBuf::from("/tmp/beta"),
+                },
             ),
         ];
-        let mut p =
-            Picker::new("files", PickerSource::Files, PickerAction::OpenFile);
+        let mut p = Picker::new("files", PickerSource::Files, PickerAction::OpenFile);
         p.set_raw_candidates_with_routing(pairs);
         // Empty-query match scores are uniform so the tie-
         // breaker is the MRU bonus alone.
@@ -1059,10 +1073,11 @@ mod tests {
                 r.display = "only-file".into();
                 r
             },
-            RoutingPayload::OpenFile { path: PathBuf::from("/tmp/only") },
+            RoutingPayload::OpenFile {
+                path: PathBuf::from("/tmp/only"),
+            },
         )];
-        let mut p =
-            Picker::new("files", PickerSource::Files, PickerAction::OpenFile);
+        let mut p = Picker::new("files", PickerSource::Files, PickerAction::OpenFile);
         p.set_raw_candidates_with_routing(pairs);
         // 2 bonuses for 1 candidate -- mismatch.
         p.set_mru_bonuses(vec![10.0, 20.0]);

@@ -45,8 +45,7 @@ pub struct HelpLinks(pub Vec<HelpLink>);
 
 impl BufferLocal for HelpLinks {
     const NAME: &'static str = "help-mode.links";
-    const DOC: &'static str =
-        "Parsed `[label](url)` markdown links; produced at \
+    const DOC: &'static str = "Parsed `[label](url)` markdown links; produced at \
          buffer construction by the help-text parser.";
     const OWNER_MODE: &'static str = "help-mode";
     fn describe(&self) -> String {
@@ -61,8 +60,7 @@ pub struct HelpAnchors(pub Vec<HelpAnchor>);
 
 impl BufferLocal for HelpAnchors {
     const NAME: &'static str = "help-mode.anchors";
-    const DOC: &'static str =
-        "Named scroll targets inside the help body. Heading \
+    const DOC: &'static str = "Named scroll targets inside the help body. Heading \
          slugs auto-generated; introspection renderers may add \
          additional `kind:name` anchors.";
     const OWNER_MODE: &'static str = "help-mode";
@@ -79,8 +77,7 @@ pub struct HelpHighlights(pub Vec<Vec<lattice_syntax::StyledSpan>>);
 
 impl BufferLocal for HelpHighlights {
     const NAME: &'static str = "help-mode.highlights";
-    const DOC: &'static str =
-        "Pre-computed per-line markdown highlight spans, indexed \
+    const DOC: &'static str = "Pre-computed per-line markdown highlight spans, indexed \
          by visible line. Populated by `with_markdown_syntax`.";
     const OWNER_MODE: &'static str = "help-mode";
     fn describe(&self) -> String {
@@ -136,8 +133,7 @@ pub struct DocumentSyntax(pub Option<lattice_syntax::SyntaxHandle>);
 
 impl BufferLocal for DocumentSyntax {
     const NAME: &'static str = "text-mode.syntax";
-    const DOC: &'static str =
-        "Per-document tree-sitter syntax handle. Drives the highlight \
+    const DOC: &'static str = "Per-document tree-sitter syntax handle. Drives the highlight \
          walk + the fold computation. Owned by the document's active \
          language major (text-mode for `Lang::Plain`, the matching \
          language mode otherwise); the handle's runtime data lives in \
@@ -161,8 +157,7 @@ pub struct DocumentLastParsedTextVersion(pub u64);
 
 impl BufferLocal for DocumentLastParsedTextVersion {
     const NAME: &'static str = "text-mode.last-parsed-text-version";
-    const DOC: &'static str =
-        "Document version (rope monotonic) of the most recent \
+    const DOC: &'static str = "Document version (rope monotonic) of the most recent \
          successful parse. Cheap idempotency check on the highlight \
          hot path: equal version means the cached spans are still \
          current; unequal triggers a reparse.";
@@ -184,8 +179,7 @@ pub struct DocumentLastSyncedSyntaxVersion(pub u64);
 
 impl BufferLocal for DocumentLastSyncedSyntaxVersion {
     const NAME: &'static str = "text-mode.last-synced-syntax-version";
-    const DOC: &'static str =
-        "Document version baseline most recently sent to the syntax \
+    const DOC: &'static str = "Document version baseline most recently sent to the syntax \
          worker. Worker uses it as `from_version` to verify edits \
          apply against the expected tree before running tree.edit().";
     const OWNER_MODE: &'static str = "text-mode";
@@ -205,8 +199,7 @@ pub struct DocumentFolds(pub Vec<crate::app::Fold>);
 
 impl BufferLocal for DocumentFolds {
     const NAME: &'static str = "text-mode.folds";
-    const DOC: &'static str =
-        "Per-document fold list. Empty until the activation hook \
+    const DOC: &'static str = "Per-document fold list. Empty until the activation hook \
          seeds from the buffer's foldmethod; thereafter holds the \
          user's open / closed state across buffer-switch \
          round-trips.";

@@ -58,11 +58,7 @@ impl App {
     /// commits to "every buffer has a major mode" but the
     /// implementation tolerates the bootstrap window where the
     /// registration hasn't completed.
-    pub fn activate_major_for_buffer_kind(
-        &mut self,
-        buffer_id: BufferId,
-        kind: BufferKind,
-    ) {
+    pub fn activate_major_for_buffer_kind(&mut self, buffer_id: BufferId, kind: BufferKind) {
         // Only Document buffers consult Lang; the others have
         // a fixed mode regardless of content.
         let lang = match kind {
@@ -81,14 +77,8 @@ impl App {
         // dummy value because mode-event subscribers don't use
         // it yet.
         let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
-        let mut active = self
-            .active_modes
-            .remove(&buffer_id)
-            .unwrap_or_default();
-        let mut locals = self
-            .buffer_locals
-            .remove(&buffer_id)
-            .unwrap_or_default();
+        let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
+        let mut locals = self.buffer_locals.remove(&buffer_id).unwrap_or_default();
         match self.mode_registry.activate_major(
             &mut active,
             &mut locals,
@@ -134,15 +124,16 @@ impl App {
                 proto_id,
                 minor_id,
                 lattice_mode::CapabilitySet::empty(),
-            ) {
-                self.set_message(
-                    EchoLevel::Warn,
-                    format!(
-                        "mode: activate_minor({}) for buffer {} failed: {}",
-                        minor_id, buffer_id.0, e,
-                    ),
-                );
-            }
+            )
+        {
+            self.set_message(
+                EchoLevel::Warn,
+                format!(
+                    "mode: activate_minor({}) for buffer {} failed: {}",
+                    minor_id, buffer_id.0, e,
+                ),
+            );
+        }
         // CSM.K1: auto-activate `completion-mode` on writable
         // kinds so `<C-Space>` opens the popup. Read-only kinds
         // return an empty Vec from
@@ -276,7 +267,10 @@ impl App {
         if let Err(e) = result {
             self.set_message(
                 EchoLevel::Warn,
-                format!("mode: activate({mode_id}) for buffer {} failed: {e}", buffer_id.0),
+                format!(
+                    "mode: activate({mode_id}) for buffer {} failed: {e}",
+                    buffer_id.0
+                ),
             );
         }
         self.active_modes.insert(buffer_id, active);
@@ -347,7 +341,10 @@ impl App {
         if let Err(e) = result {
             self.set_message(
                 EchoLevel::Warn,
-                format!("mode: deactivate({mode_id}) for buffer {} failed: {e}", buffer_id.0),
+                format!(
+                    "mode: deactivate({mode_id}) for buffer {} failed: {e}",
+                    buffer_id.0
+                ),
             );
         }
         self.active_modes.insert(buffer_id, active);
@@ -598,17 +595,26 @@ mod tests {
         // boot doesn't fire OptionChanged, so the mode isn't
         // pre-activated. Verify by explicit set.
         a.do_set("nonumber");
-        assert!(!a.active_modes.get(&id).unwrap().has_minor(
-            lattice_mode::modes::LineNumbersMode::mode_id()
-        ));
+        assert!(
+            !a.active_modes
+                .get(&id)
+                .unwrap()
+                .has_minor(lattice_mode::modes::LineNumbersMode::mode_id())
+        );
         a.do_set("number");
-        assert!(a.active_modes.get(&id).unwrap().has_minor(
-            lattice_mode::modes::LineNumbersMode::mode_id()
-        ));
+        assert!(
+            a.active_modes
+                .get(&id)
+                .unwrap()
+                .has_minor(lattice_mode::modes::LineNumbersMode::mode_id())
+        );
         a.do_set("nonumber");
-        assert!(!a.active_modes.get(&id).unwrap().has_minor(
-            lattice_mode::modes::LineNumbersMode::mode_id()
-        ));
+        assert!(
+            !a.active_modes
+                .get(&id)
+                .unwrap()
+                .has_minor(lattice_mode::modes::LineNumbersMode::mode_id())
+        );
     }
 
     #[test]
@@ -663,14 +669,20 @@ mod tests {
         assert!(!a.show_line_numbers());
         // Mode activation flips the mode-contribution layer.
         a.toggle_mode_by_name("line-numbers-mode");
-        assert!(a.show_line_numbers(), "mode contribution overrides set false");
+        assert!(
+            a.show_line_numbers(),
+            "mode contribution overrides set false"
+        );
         // `:set number` activates the mode (already active --
         // no-op) and flips the typed-option layer.
         a.do_set("number");
         assert!(a.show_line_numbers());
-        assert!(a.active_modes.get(&id).unwrap().has_minor(
-            lattice_mode::modes::LineNumbersMode::mode_id()
-        ));
+        assert!(
+            a.active_modes
+                .get(&id)
+                .unwrap()
+                .has_minor(lattice_mode::modes::LineNumbersMode::mode_id())
+        );
     }
 
     #[test]
@@ -854,10 +866,7 @@ mod tests {
         // Swap major.
         a.toggle_mode_by_name("markdown-mode");
         let modes = a.active_modes.get(&id).expect("modes for buffer");
-        assert_eq!(
-            modes.major(),
-            Some(lattice_syntax::MarkdownMode::mode_id())
-        );
+        assert_eq!(modes.major(), Some(lattice_syntax::MarkdownMode::mode_id()));
         // Minor unaffected by major swap (M.5 design).
         assert!(modes.has_minor(lattice_lsp::modes::LspMode::mode_id()));
     }
@@ -881,7 +890,11 @@ mod tests {
         // No bundled server matches `*.unknown_ext`, so lsp-mode
         // should stay inactive even after the major activates.
         use crate::app::test_helpers::app_with_path;
-        let a = app_with_path("plain text", 5, std::path::PathBuf::from("notes.unknown_ext"));
+        let a = app_with_path(
+            "plain text",
+            5,
+            std::path::PathBuf::from("notes.unknown_ext"),
+        );
         let id = a.pane_tree.active().buffer_id;
         assert!(
             !a.lsp_mode_enabled_for(id),
@@ -913,8 +926,7 @@ mod tests {
         let id = a.pane_tree.active().buffer_id;
         // Subscribe AFTER auto-activation so the channel only
         // captures the deactivate path.
-        let (tx, mut rx) =
-            tokio::sync::mpsc::unbounded_channel::<lattice_lsp::LspBufferDetached>();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<lattice_lsp::LspBufferDetached>();
         a.event_bus.subscribe_typed(tx);
         assert!(a.lsp_mode_enabled_for(id));
         a.toggle_mode_by_name("lsp-mode");

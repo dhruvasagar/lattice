@@ -1405,10 +1405,7 @@ fn last_addressable_line(buffer: &lattice_core::Buffer) -> u32 {
 /// whether the source line had a trailing newline, so yank
 /// appends `\n` to the original slice rather than walking the
 /// buffer.
-fn extend_linewise_range(
-    buffer: &lattice_core::Buffer,
-    range: ProtoRange,
-) -> ProtoRange {
+fn extend_linewise_range(buffer: &lattice_core::Buffer, range: ProtoRange) -> ProtoRange {
     let last = last_addressable_line(buffer);
     let end_line = range.end.line;
     if end_line < last {

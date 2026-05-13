@@ -74,11 +74,11 @@ use lattice_grammar::YankKind;
 use lattice_grammar::builtins::Builtins;
 use lattice_grammar::command::CommandInvocation;
 use lattice_grammar::register::Register;
+use lattice_lsp::{DiagnosticsLayer, LspLogger, LspSupervisorHandle};
 use lattice_protocol::Event;
 use lattice_protocol::position::{Position, Range as ProtoRange};
 #[cfg(test)]
 use lattice_protocol::selection::{Selection, SelectionSet};
-use lattice_lsp::{DiagnosticsLayer, LspLogger, LspSupervisorHandle};
 use lattice_runtime::{DocumentHandle, EventBus, SnapshotCache};
 use lattice_syntax::{LangRegistry, StyledSpan};
 
@@ -100,8 +100,8 @@ use crate::pane::{PaneDirection, PaneTree};
 mod boot;
 mod cmdline;
 mod completion;
-mod display;
 mod dispatch;
+mod display;
 mod edit;
 mod file_tree;
 mod folds;
@@ -236,7 +236,6 @@ pub(super) fn resolve_command_name_or_alias(
     let canonical = crate::excommand::aliases().get(name).copied()?;
     registry.id_by_name(canonical)
 }
-
 
 #[derive(Debug, Clone)]
 pub enum Action {
@@ -988,9 +987,7 @@ pub(crate) fn apply_semantic_token_edits(
     for edit in edits {
         let start = edit.start as usize;
         let delete_count = edit.delete_count as usize;
-        let end = start
-            .checked_add(delete_count)
-            .ok_or(())?;
+        let end = start.checked_add(delete_count).ok_or(())?;
         if end > raw_data.len() {
             return Err(());
         }
@@ -1137,9 +1134,7 @@ pub enum DocumentHighlightOutcome {
     /// Server returned null (cursor not on a known symbol);
     /// the pump clears the cache so we don't paint stale
     /// highlights.
-    Empty {
-        buffer_id: BufferId,
-    },
+    Empty { buffer_id: BufferId },
 }
 
 pub struct App {
@@ -1257,7 +1252,8 @@ pub struct App {
     /// in [`Self::drain_pending_definitions`]; single-result
     /// case jumps in-place, multi-result case echoes a count
     /// (picker buffer lands with 4.2.d).
-    pub pending_definition_rx: Option<tokio::sync::mpsc::UnboundedReceiver<Vec<lsp_types::Location>>>,
+    pub pending_definition_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<Vec<lsp_types::Location>>>,
     /// Cancellation token of the most recent goto-definition
     /// request. Flipped on a follow-up `gd` so a slow server's
     /// stale response can't drop a popup over a moved cursor.
@@ -1280,8 +1276,7 @@ pub struct App {
     /// -- references opens a buffer-backed list view rather than
     /// jumping. The two surfaces could coexist (a hover popup +
     /// a references list), so they don't fight over the slot.
-    pub pending_references_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<ReferencesOutcome>>,
+    pub pending_references_rx: Option<tokio::sync::mpsc::UnboundedReceiver<ReferencesOutcome>>,
     /// Cancellation token for the most recent references request.
     /// Flipped on follow-up `gr` so a slow server's response
     /// can't open a list against a moved cursor.
@@ -1290,12 +1285,10 @@ pub struct App {
     /// 4.2.e). Same shape as references -- the merged symbol
     /// outline arrives as a `Vec<SymbolRow>` ready to seed the
     /// picker.
-    pub pending_symbols_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<SymbolsOutcome>>,
+    pub pending_symbols_rx: Option<tokio::sync::mpsc::UnboundedReceiver<SymbolsOutcome>>,
     pub pending_symbols_token: Option<lattice_protocol::CancellationToken>,
     /// Receiver for in-flight format responses (Phase 4.3).
-    pub pending_format_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<FormatOutcome>>,
+    pub pending_format_rx: Option<tokio::sync::mpsc::UnboundedReceiver<FormatOutcome>>,
     pub pending_format_token: Option<lattice_protocol::CancellationToken>,
     /// Receiver for in-flight signature help responses (Phase
     /// 4.3). The drain feeds the markdown body into the same
@@ -1308,8 +1301,7 @@ pub struct App {
     /// 4.2.g). The accept path stitches the chosen item's
     /// insert_text into the buffer at the captured replace
     /// range.
-    pub pending_completion_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<CompletionOutcome>>,
+    pub pending_completion_rx: Option<tokio::sync::mpsc::UnboundedReceiver<CompletionOutcome>>,
     pub pending_completion_token: Option<lattice_protocol::CancellationToken>,
     /// Captured at request fire so the accept path can splice
     /// the chosen item's text into the buffer at the right
@@ -1319,20 +1311,17 @@ pub struct App {
     /// Each request creates a fresh channel; the drain
     /// (`drain_pending_moniker`) reads at most one summary line
     /// per tick and surfaces it as a minibuffer echo.
-    pub pending_moniker_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<String>>,
+    pub pending_moniker_rx: Option<tokio::sync::mpsc::UnboundedReceiver<String>>,
     /// Receiver for in-flight `:rename` responses (Phase 4.3).
     /// Drained per-frame; the `Edits` arm fans out across every
     /// affected URI applying TextEdits (one undo unit per file
     /// in v1; cross-file atomic application is queued).
-    pub pending_rename_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<RenameOutcome>>,
+    pub pending_rename_rx: Option<tokio::sync::mpsc::UnboundedReceiver<RenameOutcome>>,
     pub pending_rename_token: Option<lattice_protocol::CancellationToken>,
     /// Receiver for in-flight `:code-actions` responses (Phase
     /// 4.3). Drained per-frame; the Items arm pins items on
     /// the App and opens a picker.
-    pub pending_code_action_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<CodeActionOutcome>>,
+    pub pending_code_action_rx: Option<tokio::sync::mpsc::UnboundedReceiver<CodeActionOutcome>>,
     pub pending_code_action_token: Option<lattice_protocol::CancellationToken>,
     /// Pinned code-action items, indexed by the picker's
     /// candidate `text` (`#<idx>`). Cleared on dismiss /
@@ -1409,9 +1398,8 @@ pub struct App {
     /// drain ([`Self::drain_message_events`]) coalesces
     /// bursts and rebuilds the `*messages*` buffer view once
     /// per frame.
-    pub pending_message_event_rx: Option<
-        tokio::sync::mpsc::UnboundedReceiver<lattice_runtime::MessagePushed>,
-    >,
+    pub pending_message_event_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_runtime::MessagePushed>>,
     /// Set by [`Action::RedrawScreen`] (`<C-l>`); the runtime
     /// clears this on its next frame after issuing a full
     /// terminal-clear so any leftover ANSI / stale glyph state
@@ -1650,10 +1638,8 @@ pub struct App {
     /// pull mode contributions. `Document.modes` and this map
     /// converge in M.4 when `ActiveModes` joins
     /// `DocumentSnapshot`.
-    pub active_modes: std::collections::HashMap<
-        crate::buffers::BufferId,
-        lattice_mode::ActiveModes,
-    >,
+    pub active_modes:
+        std::collections::HashMap<crate::buffers::BufferId, lattice_mode::ActiveModes>,
     /// Per-buffer mode-owned local state (M.3.2.a). Modes
     /// populate locals via the `BufferLocal` typed-map during
     /// `on_activate`; the App routes
@@ -1664,10 +1650,8 @@ pub struct App {
     /// to thread through the new activation API and to back
     /// `:describe-buffer`'s inspection (no entries until
     /// M.3.2.b).
-    pub buffer_locals: std::collections::HashMap<
-        crate::buffers::BufferId,
-        lattice_mode::BufferLocals,
-    >,
+    pub buffer_locals:
+        std::collections::HashMap<crate::buffers::BufferId, lattice_mode::BufferLocals>,
     /// Per-buffer mode-resolved options cache (M.2.1, see
     /// `mode-architecture.md` §6.3 / §9.4 — note: the doc shows
     /// this on `Document`, but lattice-core cannot depend on
@@ -1677,19 +1661,15 @@ pub struct App {
     /// `lattice_protocol::BufferId`). Refreshed eagerly on mode
     /// toggle and option write per §6.3.1. Reads via type-keyed
     /// access against the cached snapshot are O(1).
-    pub resolved_options: std::collections::HashMap<
-        crate::buffers::BufferId,
-        lattice_config::ResolvedOptions,
-    >,
+    pub resolved_options:
+        std::collections::HashMap<crate::buffers::BufferId, lattice_config::ResolvedOptions>,
     /// Buffer-local explicit overrides (`:setlocal foo=bar`)
     /// per buffer. Inputs to resolution; the resolver chains
     /// these with mode contributions before writing
     /// [`Self::resolved_options`]. Empty for buffers the user
     /// has never run `:setlocal` against.
-    pub buffer_local_overrides: std::collections::HashMap<
-        crate::buffers::BufferId,
-        lattice_config::OptionOverrideSet,
-    >,
+    pub buffer_local_overrides:
+        std::collections::HashMap<crate::buffers::BufferId, lattice_config::OptionOverrideSet>,
     /// Free-form help topic registry (DESIGN.md §5.11). `:help`
     /// reads from this; built-ins are sourced from `docs/user/*.md`
     /// at build time. Plugins / future LSP integrations register
@@ -1778,8 +1758,7 @@ pub struct App {
     /// completion request. Flipped on every re-trigger
     /// (isIncomplete refresh, manual `<C-Space>` re-fire) so a
     /// slow server's stale response can't pollute the popup.
-    pub pending_insert_completion_lsp_token:
-        Option<lattice_protocol::CancellationToken>,
+    pub pending_insert_completion_lsp_token: Option<lattice_protocol::CancellationToken>,
     /// Receiver for in-flight `completionItem/resolve` results
     /// (Phase 4.2.g.3). Populates the focused candidate's
     /// LspCompletionMeta `documentation` field + the docs
@@ -1787,8 +1766,7 @@ pub struct App {
     /// closes / fresher resolve fires.
     pub pending_completion_resolve_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<CompletionResolveOutcome>>,
-    pub pending_completion_resolve_token:
-        Option<lattice_protocol::CancellationToken>,
+    pub pending_completion_resolve_token: Option<lattice_protocol::CancellationToken>,
     /// Per-language snippet registry (Phase 4.2.g.4). Loaded
     /// at startup from bundled / user / project paths via
     /// `lattice-snippet::load`; the `gen:snippet` source
@@ -1832,8 +1810,7 @@ pub struct App {
     /// who writes `[plugin.X]` optimistically doesn't lose the
     /// content -- it's preserved here for the plugin host to pick
     /// up when it registers.
-    pub pending_config_structural_sections:
-        std::collections::BTreeMap<String, toml::Table>,
+    pub pending_config_structural_sections: std::collections::BTreeMap<String, toml::Table>,
     /// Per-language insert-completion overrides (Phase 4.2.g.5
     /// (3b/3); spec at `docs/dev/architecture/insert-completion.md` §9). Seeded
     /// at App init from
@@ -1932,8 +1909,7 @@ pub struct App {
     /// the logger snapshot so `*lsp*` / `*lsp:<server>*` /
     /// `*lsp:<server>:trace*` views update live without the
     /// user having to reopen them.
-    pub lsp_log_event_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspLogPushed>>,
+    pub lsp_log_event_rx: Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspLogPushed>>,
     /// Receiver for [`lattice_lsp::LspProgressUpdate`] events
     /// (4.4.c). Drained once per main-loop tick by
     /// [`Self::drain_lsp_progress_events`]; the modeline reads
@@ -1968,9 +1944,8 @@ pub struct App {
     /// requesting server, forcing the next render tick to issue
     /// a fresh `semanticTokens/full` baseline rather than a
     /// delta against a now-stale id.
-    pub pending_semantic_tokens_refresh_rx: Option<
-        tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspSemanticTokensRefresh>,
-    >,
+    pub pending_semantic_tokens_refresh_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspSemanticTokensRefresh>>,
     /// Accumulated `$/progress` state keyed by
     /// (server_id, token). `Begin` inserts; `Report` updates;
     /// `End` removes. The modeline picks the most recent
@@ -2024,21 +1999,18 @@ pub struct App {
     /// `foldingRange` request. Single-flight: a new request
     /// cancels any predecessor.
     pub pending_folding_range_token: Option<lattice_protocol::CancellationToken>,
-    pub pending_folding_range_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<FoldingRangeOutcome>>,
+    pub pending_folding_range_rx: Option<tokio::sync::mpsc::UnboundedReceiver<FoldingRangeOutcome>>,
     /// 4.4.g: per-buffer `inlayHint` cache. Refilled by the
     /// per-tick pump when the document version changes; the
     /// renderer overlay splices each hint as virtual text.
-    pub lsp_inlay_hints_cache:
-        std::collections::HashMap<BufferId, LspInlayHintCache>,
+    pub lsp_inlay_hints_cache: std::collections::HashMap<BufferId, LspInlayHintCache>,
     /// 4.5.c: per-buffer `documentLink` cache. Refilled by
     /// the per-tick pump on document-version change; consumed
     /// by `gx` (Normal-mode keystroke) -- the first link whose
     /// range covers the cursor wins. The renderer overlay
     /// (underline link ranges) is queued; today the cache only
     /// drives navigation, not visuals.
-    pub lsp_document_links_cache:
-        std::collections::HashMap<BufferId, LspDocumentLinksCache>,
+    pub lsp_document_links_cache: std::collections::HashMap<BufferId, LspDocumentLinksCache>,
     /// 4.5.c: in-flight `documentLink` single-flight slot.
     pub pending_document_links_token: Option<lattice_protocol::CancellationToken>,
     pub pending_document_links_rx:
@@ -2049,12 +2021,10 @@ pub struct App {
     /// lenses). Cleared via `workspace/codeLens/refresh` so
     /// servers that recompute lenses out-of-band (test runs,
     /// debug session start) can force a refetch.
-    pub lsp_code_lens_cache:
-        std::collections::HashMap<BufferId, LspCodeLensCache>,
+    pub lsp_code_lens_cache: std::collections::HashMap<BufferId, LspCodeLensCache>,
     /// 4.5.d: in-flight `codeLens` single-flight slot.
     pub pending_code_lens_token: Option<lattice_protocol::CancellationToken>,
-    pub pending_code_lens_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<CodeLensOutcome>>,
+    pub pending_code_lens_rx: Option<tokio::sync::mpsc::UnboundedReceiver<CodeLensOutcome>>,
     /// 4.5.d: workspace/codeLens/refresh inbound stream. The
     /// actor publishes `LspCodeLensRefresh`; the drain pulls
     /// from this rx (subscribed via `event_bus.subscribe_typed`)
@@ -2071,8 +2041,7 @@ pub struct App {
     /// the originating server (commands are server-specific).
     pub pending_code_lens_server: Option<std::sync::Arc<str>>,
     /// 4.5.e: per-buffer `documentColor` cache.
-    pub lsp_document_color_cache:
-        std::collections::HashMap<BufferId, LspDocumentColorCache>,
+    pub lsp_document_color_cache: std::collections::HashMap<BufferId, LspDocumentColorCache>,
     /// 4.5.e: in-flight `documentColor` single-flight slot.
     pub pending_document_color_token: Option<lattice_protocol::CancellationToken>,
     pub pending_document_color_rx:
@@ -2088,14 +2057,12 @@ pub struct App {
     pub pending_color_range: Option<lsp_types::Range>,
     /// 4.4.g: in-flight inlayHint single-flight slot.
     pub pending_inlay_hint_token: Option<lattice_protocol::CancellationToken>,
-    pub pending_inlay_hint_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<InlayHintOutcome>>,
+    pub pending_inlay_hint_rx: Option<tokio::sync::mpsc::UnboundedReceiver<InlayHintOutcome>>,
     /// 4.4.h: per-buffer semantic-tokens cache. Refilled when
     /// the document version changes; the renderer overlay
     /// repaints span ranges that fall under a token with a
     /// kind-driven style.
-    pub lsp_semantic_tokens_cache:
-        std::collections::HashMap<BufferId, LspSemanticTokensCache>,
+    pub lsp_semantic_tokens_cache: std::collections::HashMap<BufferId, LspSemanticTokensCache>,
     /// 4.4.h: in-flight semanticTokens/full single-flight slot.
     pub pending_semantic_tokens_token: Option<lattice_protocol::CancellationToken>,
     pub pending_semantic_tokens_rx:
@@ -2105,8 +2072,7 @@ pub struct App {
     /// can be answered as `Unchanged` cheaply. The pump
     /// re-issues on document-version change OR cache miss
     /// (e.g. after `workspace/diagnostic/refresh` evicts).
-    pub lsp_pull_diagnostics_cache:
-        std::collections::HashMap<BufferId, LspPullDiagnosticsCache>,
+    pub lsp_pull_diagnostics_cache: std::collections::HashMap<BufferId, LspPullDiagnosticsCache>,
     /// 4.4.j: in-flight `textDocument/diagnostic` single-flight
     /// slot. Each new request cancels its predecessor.
     pub pending_pull_diagnostics_token: Option<lattice_protocol::CancellationToken>,
@@ -2118,9 +2084,8 @@ pub struct App {
     /// drain evicts `lsp_pull_diagnostics_cache` entries for
     /// buffers attached to that server, and the next render
     /// tick re-pulls.
-    pub pending_diagnostic_refresh_rx: Option<
-        tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspDiagnosticRefresh>,
-    >,
+    pub pending_diagnostic_refresh_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspDiagnosticRefresh>>,
     // 4.4.f: stash for `lsp-folding-mode` activation moved
     // into `BufferLocals` (owned by the mode via the
     // `PriorFoldmethod` typed local in
@@ -2186,26 +2151,23 @@ pub struct App {
     /// per-section `serde_json::Value`s via the embedded
     /// oneshot. Same take-and-restore pattern as the other
     /// drain channels.
-    pub pending_configuration_rx: Option<
-        tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::InboundConfigurationRequest>,
-    >,
+    pub pending_configuration_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::InboundConfigurationRequest>>,
     /// 4.4.b: server-initiated `window/showDocument` request
     /// stream. Drained per-frame by
     /// [`Self::drain_inbound_show_documents`]; each request
     /// opens the supplied URI (in a buffer for `file://`, in
     /// the OS handler when `external` is set) and writes
     /// `{ success }` back via the oneshot.
-    pub pending_show_document_rx: Option<
-        tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::InboundShowDocument>,
-    >,
+    pub pending_show_document_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::InboundShowDocument>>,
     /// 4.4.b: server-initiated `window/showMessageRequest`
     /// request stream. Drained per-frame by
     /// [`Self::drain_inbound_show_message_requests`]; each
     /// request opens an action picker and writes the user's
     /// selection (or `None` on dismiss) back via the oneshot.
-    pub pending_show_message_request_rx: Option<
-        tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::InboundShowMessageRequest>,
-    >,
+    pub pending_show_message_request_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::InboundShowMessageRequest>>,
     /// 4.4.b picker UX: in-flight `showMessageRequest` slots
     /// keyed by an App-local `u32` request id. The drain
     /// registers each inbound request here before opening the
@@ -2264,7 +2226,6 @@ pub struct CompletionState {
     pub original_line: String,
 }
 
-
 /// One contiguous fold range in a document buffer.
 ///
 /// `identity` is the stable handle used to carry closed-state across
@@ -2303,9 +2264,7 @@ pub enum HoverOutcome {
     /// their `K` was processed but the position has nothing
     /// useful (e.g. cursor on whitespace, or rust-analyzer is
     /// still indexing).
-    NoBody {
-        servers_tried: usize,
-    },
+    NoBody { servers_tried: usize },
     /// The buffer's URI maps to no attached servers (matching
     /// servers' spawn failed at boot, or the file extension
     /// isn't covered). Echo so the user can `:lsp-status` /
@@ -2492,9 +2451,7 @@ pub enum FormatOutcome {
     /// No attached server advertises the relevant formatting
     /// provider (`is_range` distinguishes whole-buffer from
     /// range-format providers since they're separate caps).
-    NoProvider {
-        is_range: bool,
-    },
+    NoProvider { is_range: bool },
 }
 
 /// One row of a document-symbol / workspace-symbol picker. Carries
@@ -2521,10 +2478,7 @@ pub struct SymbolRow {
 /// drained per frame and either opens a picker or echoes.
 #[derive(Debug, Clone)]
 pub enum SymbolsOutcome {
-    Found {
-        title: String,
-        rows: Vec<SymbolRow>,
-    },
+    Found { title: String, rows: Vec<SymbolRow> },
     NoServers,
 }
 
@@ -2878,7 +2832,6 @@ pub(crate) fn line_byte_len(buf: &Buffer, line: u32) -> u32 {
     buf.line_byte_len(line)
 }
 
-
 pub(crate) fn last_addressable_line(buf: &Buffer) -> u32 {
     let lc = buf.line_count();
     if lc == 0 {
@@ -2943,11 +2896,8 @@ pub(super) fn dedup_rendered_by_text(rendered: &mut Vec<lattice_completion::Rend
 /// segment; the trigger anchor breaks at `/` (dir boundary)
 /// rather than at these characters.
 pub(super) fn is_path_byte(b: u8) -> bool {
-    b.is_ascii_alphanumeric()
-        || matches!(b, b'_' | b'-' | b'.' | b'~' | b'+' | b'@')
+    b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b'~' | b'+' | b'@')
 }
-
-
 
 /// True if `line_idx` is empty or whitespace-only. Used by the
 /// fold-aware j/k snap to swallow trailing blanks between sibling
@@ -2959,10 +2909,6 @@ pub(super) fn is_blank_line(buffer: &lattice_core::Buffer, line_idx: u32) -> boo
         .map(|s| s.trim().is_empty())
         .unwrap_or(true)
 }
-
-
-
-
 
 /// Phase 4.2 features (hover, definition, references, completion)
 /// all need this; later we'll thread the per-server negotiated
@@ -3182,11 +3128,13 @@ pub(crate) async fn workspace_symbol_to_row(
             if !handle.capabilities().workspace_symbol_resolve_provider() {
                 (path, 0, 0)
             } else {
-                match handle.workspace_symbol_resolve(sym.clone(), token.clone()).await {
+                match handle
+                    .workspace_symbol_resolve(sym.clone(), token.clone())
+                    .await
+                {
                     Ok(resolved) => match resolved.location {
                         OneOf::Left(loc) => (
-                            lattice_lsp::actor::uri_to_path(&loc.uri)
-                                .unwrap_or(path),
+                            lattice_lsp::actor::uri_to_path(&loc.uri).unwrap_or(path),
                             loc.range.start.line,
                             loc.range.start.character,
                         ),
@@ -3214,9 +3162,7 @@ pub(crate) async fn workspace_symbol_to_row(
     })
 }
 
-pub(crate) fn symbol_information_to_row(
-    sym: &lsp_types::SymbolInformation,
-) -> Option<SymbolRow> {
+pub(crate) fn symbol_information_to_row(sym: &lsp_types::SymbolInformation) -> Option<SymbolRow> {
     let path = lattice_lsp::actor::uri_to_path(&sym.location.uri)?;
     Some(SymbolRow {
         name: sym.name.clone(),
@@ -3258,11 +3204,9 @@ pub(crate) fn call_hierarchy_to_row(
 /// semantics on a link's rightmost char). Used by the `gx`
 /// keystroke to find the first cached `documentLink` under
 /// the cursor.
-pub(crate) fn range_covers(
-    range: lsp_types::Range,
-    position: lsp_types::Position,
-) -> bool {
-    let after_start = (range.start.line, range.start.character) <= (position.line, position.character);
+pub(crate) fn range_covers(range: lsp_types::Range, position: lsp_types::Position) -> bool {
+    let after_start =
+        (range.start.line, range.start.character) <= (position.line, position.character);
     let before_end = (position.line, position.character) <= (range.end.line, range.end.character);
     after_start && before_end
 }
@@ -3361,9 +3305,7 @@ pub(crate) fn flatten_workspace_edit(
 /// the standard kinds (quickfix, refactor*, source*) to a
 /// short visual marker for the picker margin. Unknown / custom
 /// kinds and bare `Command` payloads land on `?`.
-pub(crate) fn code_action_kind_glyph(
-    kind: Option<&lsp_types::CodeActionKind>,
-) -> &'static str {
+pub(crate) fn code_action_kind_glyph(kind: Option<&lsp_types::CodeActionKind>) -> &'static str {
     use lsp_types::CodeActionKind as K;
     let Some(kind) = kind else {
         return "?";
@@ -3537,14 +3479,13 @@ pub(super) fn previous_position(buf: &Buffer, p: Position) -> Position {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
-    use super::*;
     use super::test_helpers::{
         app_with, attach_test_syntax, invoke_motion, submit_ex, write_temp_file,
     };
+    use super::*;
     use crate::help::HelpContent;
 
     /// Sanity check: a bare motion drives the cursor through
@@ -3617,9 +3558,6 @@ mod tests {
     // reparse correctness is covered by lattice-syntax's parity
     // tests; these App-level tests pin the plumbing.
 
-
-
-
     // ---- Initial state ----
 
     #[test]
@@ -3685,7 +3623,6 @@ mod tests {
 
     // ---- Command-line minibuffer ----
 
-
     #[test]
     fn submitting_returns_to_normal_modal() {
         let mut a = app_with("hello", 10);
@@ -3712,7 +3649,6 @@ mod tests {
     }
     // ---- change operator end-to-end ----
 
-
     // ---- Substitute (:s/foo/bar/[g]) ----
 
     // ---- Line join (J / gJ) ----
@@ -3735,7 +3671,9 @@ mod tests {
         // `zz` was interpreted as `zj` (GotoNextFold) and emitted "no
         // more folds". Now expressed against partial_chord.
         let mut a = app_with("a\nb\nc\nd\ne", 10);
-        a.apply(Action::AbsorbPartialChord(crate::chord::KeyChord::char('z')));
+        a.apply(Action::AbsorbPartialChord(crate::chord::KeyChord::char(
+            'z',
+        )));
         a.apply(Action::ScrollCursorTo(ScrollPos::Center));
         assert!(a.partial_chord.is_empty());
     }
@@ -3743,12 +3681,13 @@ mod tests {
     #[test]
     fn play_macro_clears_partial_chord() {
         let mut a = app_with("hello", 10);
-        a.apply(Action::AbsorbPartialChord(crate::chord::KeyChord::char('@')));
+        a.apply(Action::AbsorbPartialChord(crate::chord::KeyChord::char(
+            '@',
+        )));
         // No macro recorded; this errors but should still clear partial_chord.
         a.apply(Action::PlayMacro('z'));
         assert!(a.partial_chord.is_empty());
     }
-
 
     // ---- §5.1.1 unified position history ----
 
@@ -3964,7 +3903,6 @@ mod tests {
         assert_eq!(a.document.text(), "hello world");
     }
 
-
     #[test]
     fn goto_first_line_into_closed_fold_auto_opens() {
         let initial = "# H1\nbody\nbody2\n# H2\nafter\n";
@@ -4035,8 +3973,14 @@ mod tests {
         a.apply(Action::Invoke(inv));
         // With foldenable=false, dd should affect just one line.
         let text = a.document.text();
-        assert!(!text.contains("# H1"), "heading should be deleted: {text:?}");
-        assert!(text.contains("body one"), "body one should remain: {text:?}");
+        assert!(
+            !text.contains("# H1"),
+            "heading should be deleted: {text:?}"
+        );
+        assert!(
+            text.contains("body one"),
+            "body one should remain: {text:?}"
+        );
     }
 
     #[test]
@@ -4216,7 +4160,6 @@ mod tests {
 
     // ---- Multiple Document buffers (DESIGN.md §5.9, B.1.c) ----
 
-
     #[test]
     fn bnext_cycles_through_open_buffers() {
         let path = write_temp_file("b", "one\n");
@@ -4294,8 +4237,6 @@ mod tests {
 
     // ---- Typed options registry (DESIGN.md §5.12, B.2) ----
 
-
-
     // ---- Hover popup (DESIGN.md §5.9.6, B.3) ----
 
     // ---- LSP hover (Phase 4.2.b) ----
@@ -4308,13 +4249,22 @@ mod tests {
     #[test]
     fn range_covers_inclusive_at_both_ends() {
         let r = lsp_types::Range {
-            start: lsp_types::Position { line: 2, character: 4 },
-            end: lsp_types::Position { line: 2, character: 10 },
+            start: lsp_types::Position {
+                line: 2,
+                character: 4,
+            },
+            end: lsp_types::Position {
+                line: 2,
+                character: 10,
+            },
         };
         // Inside.
         assert!(super::range_covers(
             r,
-            lsp_types::Position { line: 2, character: 6 }
+            lsp_types::Position {
+                line: 2,
+                character: 6
+            }
         ));
         // Boundary (inclusive).
         assert!(super::range_covers(r, r.start));
@@ -4322,21 +4272,33 @@ mod tests {
         // Before start -> miss.
         assert!(!super::range_covers(
             r,
-            lsp_types::Position { line: 2, character: 3 }
+            lsp_types::Position {
+                line: 2,
+                character: 3
+            }
         ));
         // After end -> miss.
         assert!(!super::range_covers(
             r,
-            lsp_types::Position { line: 2, character: 11 }
+            lsp_types::Position {
+                line: 2,
+                character: 11
+            }
         ));
         // Different line outside the range.
         assert!(!super::range_covers(
             r,
-            lsp_types::Position { line: 1, character: 7 }
+            lsp_types::Position {
+                line: 1,
+                character: 7
+            }
         ));
         assert!(!super::range_covers(
             r,
-            lsp_types::Position { line: 3, character: 0 }
+            lsp_types::Position {
+                line: 3,
+                character: 0
+            }
         ));
     }
 
@@ -4345,23 +4307,38 @@ mod tests {
     #[test]
     fn range_covers_multi_line_range() {
         let r = lsp_types::Range {
-            start: lsp_types::Position { line: 2, character: 4 },
-            end: lsp_types::Position { line: 4, character: 8 },
+            start: lsp_types::Position {
+                line: 2,
+                character: 4,
+            },
+            end: lsp_types::Position {
+                line: 4,
+                character: 8,
+            },
         };
         // Mid-range second line: covered regardless of column.
         assert!(super::range_covers(
             r,
-            lsp_types::Position { line: 3, character: 0 }
+            lsp_types::Position {
+                line: 3,
+                character: 0
+            }
         ));
         // First line before start column -> miss.
         assert!(!super::range_covers(
             r,
-            lsp_types::Position { line: 2, character: 3 }
+            lsp_types::Position {
+                line: 2,
+                character: 3
+            }
         ));
         // Last line after end column -> miss.
         assert!(!super::range_covers(
             r,
-            lsp_types::Position { line: 4, character: 9 }
+            lsp_types::Position {
+                line: 4,
+                character: 9
+            }
         ));
     }
 
@@ -4457,7 +4434,6 @@ mod tests {
         assert_eq!(h.title, "help folding");
     }
 
-
     #[test]
     fn after_change_user_can_type_and_replacement_lands() {
         let mut a = app_with("hello world", 10);
@@ -4469,7 +4445,6 @@ mod tests {
         a.apply(Action::Insert("HEY ".into()));
         assert_eq!(a.document.text(), "HEY world");
     }
-
 
     // ---- LSP wiring tests (Phase 4.1.i) ---------------------
 
@@ -4502,7 +4477,10 @@ mod tests {
         let k = entries
             .iter()
             .find(|e| e.chord == "K" && e.mode == BindingMode::Normal);
-        assert!(k.is_some(), "K should be registered as a Normal-mode binding");
+        assert!(
+            k.is_some(),
+            "K should be registered as a Normal-mode binding"
+        );
         let entry = k.unwrap();
         assert!(
             entry.doc.to_lowercase().contains("hover"),
@@ -4535,11 +4513,10 @@ mod tests {
             .with_text("fn main() {}")
             .build();
         let app = App::new(doc);
-        let expected =
-            <lattice_lsp::Uri as FromStr>::from_str(
-                lattice_lsp::actor::uri_from_path(&path).as_str(),
-            )
-            .unwrap();
+        let expected = <lattice_lsp::Uri as FromStr>::from_str(
+            lattice_lsp::actor::uri_from_path(&path).as_str(),
+        )
+        .unwrap();
         assert_eq!(
             app.buffer_uri(app.document_buffer_id),
             Some(&expected),
@@ -4548,7 +4525,6 @@ mod tests {
     }
 
     // ---- Snippet host integration (Phase 4.2.g.4) ----
-
 
     /// Test helper: attach a freshly-parsed `Syntax` for `lang`
     /// to `a`, wrapped in a [`SyntaxHandle`]. Mirrors the audit
@@ -4561,12 +4537,11 @@ mod tests {
         // text), confirm the deduped vec keeps the first
         // occurrence and preserves order otherwise.
         use lattice_completion::{
-            CandidateKind, MatchScore, RawCandidate, RenderedCandidate, ScoredCandidate,
-            SourceId,
+            CandidateKind, MatchScore, RawCandidate, RenderedCandidate, ScoredCandidate, SourceId,
         };
         let mk = |text: &str, source: &str, score: u32| {
-            let raw = RawCandidate::plain(text, CandidateKind::Plain)
-                .with_source(SourceId::new(source));
+            let raw =
+                RawCandidate::plain(text, CandidateKind::Plain).with_source(SourceId::new(source));
             RenderedCandidate::from_scored(ScoredCandidate {
                 raw,
                 score: MatchScore(score),
@@ -4638,20 +4613,15 @@ mod tests {
             insert_text_format: lsp_types::InsertTextFormat::PLAIN_TEXT,
             replace_range: None,
             server_id: "test-server".to_string(),
-            original_item: lsp_types::CompletionItem::new_simple(
-                text.to_string(),
-                String::new(),
-            ),
+            original_item: lsp_types::CompletionItem::new_simple(text.to_string(), String::new()),
             resolved: false,
         };
         let payload = lattice_lsp::completion::encode_meta(&meta);
-        let mut raw = lattice_completion::RawCandidate::plain(
-            text,
-            lattice_completion::CandidateKind::Plain,
-        )
-        .with_source(lattice_completion::SourceId::new(
-            lattice_completion::LSP_COMPLETION_SOURCE_ID,
-        ));
+        let mut raw =
+            lattice_completion::RawCandidate::plain(text, lattice_completion::CandidateKind::Plain)
+                .with_source(lattice_completion::SourceId::new(
+                    lattice_completion::LSP_COMPLETION_SOURCE_ID,
+                ));
         raw.data = lattice_completion::CandidateData::Extension {
             kind_id: LSP_COMPLETION_KIND_ID,
             payload,
@@ -4666,12 +4636,7 @@ mod tests {
         let mut a = app_with("foo", 10);
         a.modal = ModalState::Insert;
         a.cursor = Position::new(0, 3);
-        install_lsp_candidate_with_commit_chars(
-            &mut a,
-            "foo",
-            vec!['.', '('],
-            Position::new(0, 0),
-        );
+        install_lsp_candidate_with_commit_chars(&mut a, "foo", vec!['.', '('], Position::new(0, 0));
         a.do_completion_accept_then_insert('.');
         // Popup closed; accept replaced the partial with the
         // full LSP insert, then `.` was appended.
@@ -4684,12 +4649,7 @@ mod tests {
         let mut a = app_with("foo", 10);
         a.modal = ModalState::Insert;
         a.cursor = Position::new(0, 3);
-        install_lsp_candidate_with_commit_chars(
-            &mut a,
-            "foo",
-            vec!['.'],
-            Position::new(0, 0),
-        );
+        install_lsp_candidate_with_commit_chars(&mut a, "foo", vec!['.'], Position::new(0, 0));
         a.do_completion_accept_then_insert('a');
         // `a` isn't a commit char -> the focused candidate
         // wasn't accepted; `a` was inserted plainly. The
@@ -4706,12 +4666,7 @@ mod tests {
         a.cursor = Position::new(0, 3);
         // Server says no commit chars; the global option
         // adds `,`.
-        install_lsp_candidate_with_commit_chars(
-            &mut a,
-            "foo",
-            Vec::new(),
-            Position::new(0, 0),
-        );
+        install_lsp_candidate_with_commit_chars(&mut a, "foo", Vec::new(), Position::new(0, 0));
         a.do_set("completion.extra_commit_chars=,");
         a.do_completion_accept_then_insert(',');
         assert!(a.insert_completion.is_none());
@@ -4745,7 +4700,6 @@ mod tests {
         assert!(text.ends_with("alpha;"), "got `{text}`");
     }
 
-
     #[test]
     fn populate_insert_completion_sync_drops_disabled_source() {
         // Inject a per-language override that limits rust to
@@ -4772,12 +4726,7 @@ mod tests {
         // snippet items. Buffer-words mustn't appear.
         if let Some(state) = a.insert_completion.as_ref() {
             for cand in &state.rendered {
-                let src = cand
-                    .raw
-                    .source
-                    .as_ref()
-                    .map(|s| s.as_str())
-                    .unwrap_or("");
+                let src = cand.raw.source.as_ref().map(|s| s.as_str()).unwrap_or("");
                 assert_ne!(
                     src,
                     lattice_completion::BufferWordsSource::ID,
@@ -4787,11 +4736,9 @@ mod tests {
         }
     }
 
-
     // ---- M.3.0: built-in major modes registered at boot ----
 
     // ---- M.3.1: ReadOnly option flows from major modes ----
-
 
     #[test]
     fn document_buffer_active_mode_is_text_mode() {
@@ -4801,8 +4748,6 @@ mod tests {
         let active = a.active_modes.get(&buf).expect("active_modes populated");
         assert_eq!(active.major(), Some(lattice_mode::TextMode::mode_id()));
     }
-
-
 
     // ---- M.3.2.b.1: help-mode locals seeded at construction ----
 
@@ -4849,7 +4794,6 @@ mod tests {
     // ---- M.3.2.c.2: file-tree-mode locals seeded + readers ----
 
     // ---- M.3.2.c.3: oil-mode locals seeded ----
-
 
     #[test]
     fn list_registers_with_no_state_says_so() {
@@ -4934,7 +4878,9 @@ mod tests {
     #[test]
     fn fold_action_clears_partial_chord() {
         let mut a = app_with("a\nb\nc", 10);
-        a.apply(Action::AbsorbPartialChord(crate::chord::KeyChord::char('z')));
+        a.apply(Action::AbsorbPartialChord(crate::chord::KeyChord::char(
+            'z',
+        )));
         a.apply(Action::OpenFoldAtCursor);
         assert!(a.partial_chord.is_empty());
     }
@@ -5093,10 +5039,8 @@ mod tests {
         attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
         assert!(a.syntax.is_some(), "fixture syntax wired");
         // Open a help buffer in pane (mimics `:lsp-log rust`).
-        let _help_id = a.open_help_in_pane(HelpContent::from_lines(
-            "lsp:rust",
-            vec!["log line".into()],
-        ));
+        let _help_id =
+            a.open_help_in_pane(HelpContent::from_lines("lsp:rust", vec!["log line".into()]));
         assert!(matches!(a.active_buffer, BufferKind::Help));
         // The document's syntax must remain on the hot path so the
         // pane underneath paints with highlights.
@@ -5105,12 +5049,7 @@ mod tests {
             "syntax must stay live during help-in-pane overlay"
         );
         // Round-trip back to the document.
-        let doc_id = a
-            .buffers
-            .document_ids_sorted()
-            .first()
-            .copied()
-            .unwrap();
+        let doc_id = a.buffers.document_ids_sorted().first().copied().unwrap();
         a.activate_document(doc_id);
         assert!(matches!(a.active_buffer, BufferKind::Document));
         assert!(
@@ -5138,12 +5077,18 @@ mod tests {
         a.command_line = format!("Filetree {}", dir.display());
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        assert!(matches!(a.active_buffer, crate::buffers::BufferKind::FileTree));
+        assert!(matches!(
+            a.active_buffer,
+            crate::buffers::BufferKind::FileTree
+        ));
         // `:TreeClose` (the path `q` takes in the tree).
         a.command_line = "FiletreeClose".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        assert!(matches!(a.active_buffer, crate::buffers::BufferKind::Document));
+        assert!(matches!(
+            a.active_buffer,
+            crate::buffers::BufferKind::Document
+        ));
         assert!(
             a.syntax.is_some(),
             "syntax must survive the tree round-trip"
@@ -5297,14 +5242,12 @@ mod tests {
         let mut a = app_with("xx", 10);
         a.modal = ModalState::Insert;
         a.cursor = Position::ZERO;
-        a.insert_completion = Some(
-            lattice_completion::InsertCompletionState::open(
-                lattice_completion::CompletionTrigger::Manual,
-                Position::ZERO,
-                Position::ZERO,
-                String::new(),
-            ),
-        );
+        a.insert_completion = Some(lattice_completion::InsertCompletionState::open(
+            lattice_completion::CompletionTrigger::Manual,
+            Position::ZERO,
+            Position::ZERO,
+            String::new(),
+        ));
         a.do_completion_toggle_docs();
         // Even with no candidate, the popup opens with an
         // empty body slot. Toggling again closes it.
@@ -5328,14 +5271,12 @@ mod tests {
         let mut a = app_with("xx", 10);
         a.modal = ModalState::Insert;
         a.cursor = Position::ZERO;
-        a.insert_completion = Some(
-            lattice_completion::InsertCompletionState::open(
-                lattice_completion::CompletionTrigger::Manual,
-                Position::ZERO,
-                Position::ZERO,
-                String::new(),
-            ),
-        );
+        a.insert_completion = Some(lattice_completion::InsertCompletionState::open(
+            lattice_completion::CompletionTrigger::Manual,
+            Position::ZERO,
+            Position::ZERO,
+            String::new(),
+        ));
         a.do_completion_toggle_docs();
         // Default scroll is 0; up clamps at 0.
         assert_eq!(
@@ -5388,8 +5329,7 @@ mod tests {
         // arm just echoed "(file open arrives with multi-buffer)"
         // -- we already had multi-buffer; the placeholder was
         // stale.
-        let path = std::env::temp_dir()
-            .join(format!("lattice-srclink-{}.rs", std::process::id()));
+        let path = std::env::temp_dir().join(format!("lattice-srclink-{}.rs", std::process::id()));
         std::fs::write(&path, "first\nsecond\nthird\nfourth\n").unwrap();
         let mut a = app_with("xx", 10);
         // Open a help buffer so the active modal/buffer state
@@ -5452,8 +5392,8 @@ mod tests {
 
     #[test]
     fn follow_link_source_clamps_line_past_eof() {
-        let path = std::env::temp_dir()
-            .join(format!("lattice-srclink-clamp-{}.rs", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("lattice-srclink-clamp-{}.rs", std::process::id()));
         std::fs::write(&path, "only-line\n").unwrap();
         let mut a = app_with("xx", 10);
         a.command_line = "help".into();
@@ -5529,12 +5469,7 @@ mod tests {
             .help_with_title("lsp:rust")
             .expect("buffer registered");
         assert_eq!(app.active_pane_buffer_id(), help_id);
-        let body = app
-            .buffers
-            .help(help_id)
-            .unwrap()
-            .content
-            .as_string();
+        let body = app.buffers.help(help_id).unwrap().content.as_string();
         assert!(body.contains("compile error"));
     }
 
@@ -5557,12 +5492,7 @@ mod tests {
         );
         app.open_lsp_log_in_pane("rust");
         let help_id = app.buffers.help_with_title("lsp:rust").unwrap();
-        let body = app
-            .buffers
-            .help(help_id)
-            .unwrap()
-            .content
-            .as_string();
+        let body = app.buffers.help(help_id).unwrap().content.as_string();
         // Trace records go to the trace buffer; lifecycle here.
         assert!(!body.contains("→ Request"));
         assert!(body.contains("lifecycle"));
@@ -5587,12 +5517,7 @@ mod tests {
         );
         app.open_lsp_trace_log_in_pane("rust");
         let help_id = app.buffers.help_with_title("lsp:rust:trace").unwrap();
-        let body = app
-            .buffers
-            .help(help_id)
-            .unwrap()
-            .content
-            .as_string();
+        let body = app.buffers.help(help_id).unwrap().content.as_string();
         // Trace yes, lifecycle no.
         assert!(body.contains("→ Request"));
         assert!(!body.contains("lifecycle"));
@@ -5655,10 +5580,7 @@ mod tests {
     fn open_file_tree_seeds_file_tree_locals() {
         // Construct a temp dir + file, open as a tree, confirm
         // the locals are populated.
-        let tmp = std::env::temp_dir().join(format!(
-            "lattice-m3-2-c-2-{}",
-            std::process::id()
-        ));
+        let tmp = std::env::temp_dir().join(format!("lattice-m3-2-c-2-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&tmp);
         let f = tmp.join("file.txt");
         let _ = std::fs::write(&f, "hi");
@@ -5701,10 +5623,8 @@ mod tests {
         // glyphs, so a palette flip must re-render every open
         // tree -- otherwise the user keeps seeing `?` boxes (or
         // BMP fallbacks) until they reopen the tree.
-        let tmp = std::env::temp_dir().join(format!(
-            "lattice-tree-nerd-rerender-{}",
-            std::process::id()
-        ));
+        let tmp =
+            std::env::temp_dir().join(format!("lattice-tree-nerd-rerender-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&tmp);
         std::fs::write(tmp.join("main.rs"), "").unwrap();
 
@@ -5716,8 +5636,14 @@ mod tests {
         // the source-code middle-dot, not the nerd-font rust
         // glyph.
         let body = a.buffers.file_tree(tree_id).unwrap().content.as_string();
-        assert!(body.contains("· main.rs"), "expected BMP fallback in rope, got: {body}");
-        assert!(!body.contains("󱘗 "), "nerd-font glyph leaked into default rope: {body}");
+        assert!(
+            body.contains("· main.rs"),
+            "expected BMP fallback in rope, got: {body}"
+        );
+        assert!(
+            !body.contains("󱘗 "),
+            "nerd-font glyph leaked into default rope: {body}"
+        );
 
         // Flip the typed option via the same path `:set` takes.
         // The change handler must re-render every open tree
@@ -5725,7 +5651,10 @@ mod tests {
         submit_ex(&mut a, "set ui.nerd_fonts=on");
 
         let body = a.buffers.file_tree(tree_id).unwrap().content.as_string();
-        assert!(body.contains("󱘗 main.rs"), "expected nerd-font glyph post-toggle, got: {body}");
+        assert!(
+            body.contains("󱘗 main.rs"),
+            "expected nerd-font glyph post-toggle, got: {body}"
+        );
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -5787,5 +5716,4 @@ mod tests {
             msg.text
         );
     }
-
 }

@@ -178,7 +178,8 @@ impl ModeRegistry {
                 mode: prev_id,
             });
             if let Some(prev) = self.modes.get(&prev_id) {
-                let mut prev_ctx = ModeContext::new(buffer, prev_id, locals, config, events, services);
+                let mut prev_ctx =
+                    ModeContext::new(buffer, prev_id, locals, config, events, services);
                 prev.on_deactivate(&mut prev_ctx)?
             }
             active.set_major(None);
@@ -201,8 +202,9 @@ impl ModeRegistry {
             if active.has_minor(dep) {
                 continue;
             }
-            let dep_events =
-                self.activate_minor_inner(active, locals, config, events, services, buffer, dep, caps)?;
+            let dep_events = self.activate_minor_inner(
+                active, locals, config, events, services, buffer, dep, caps,
+            )?;
             emitted.extend(dep_events);
         }
 
@@ -269,20 +271,22 @@ impl ModeRegistry {
         }
         if let Some(major) = active.major()
             && let Some(major_entry) = self.modes.get(&major)
-                && major_entry.conflicts_with().contains(&mode) {
-                    return Err(ModeActivationError::Conflict {
-                        mode,
-                        active: major,
-                    });
-                }
+            && major_entry.conflicts_with().contains(&mode)
+        {
+            return Err(ModeActivationError::Conflict {
+                mode,
+                active: major,
+            });
+        }
         for &active_minor in active.minors() {
             if let Some(minor_entry) = self.modes.get(&active_minor)
-                && minor_entry.conflicts_with().contains(&mode) {
-                    return Err(ModeActivationError::Conflict {
-                        mode,
-                        active: active_minor,
-                    });
-                }
+                && minor_entry.conflicts_with().contains(&mode)
+            {
+                return Err(ModeActivationError::Conflict {
+                    mode,
+                    active: active_minor,
+                });
+            }
         }
 
         {
@@ -300,8 +304,9 @@ impl ModeRegistry {
             if active.has_minor(dep) {
                 continue;
             }
-            let dep_events =
-                self.activate_minor_inner(active, locals, config, events, services, buffer, dep, caps)?;
+            let dep_events = self.activate_minor_inner(
+                active, locals, config, events, services, buffer, dep, caps,
+            )?;
             emitted.extend(dep_events);
         }
 
@@ -387,8 +392,8 @@ impl ModeRegistry {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
-    use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc as StdArc;
+    use std::sync::atomic::{AtomicU32, Ordering};
 
     /// Tracking mock mode for tests. Counts on_activate /
     /// on_deactivate calls and exposes hooks for asserting
@@ -545,7 +550,16 @@ mod tests {
         let mut a = ActiveModes::new();
         let mut l = locals();
         let err = r
-            .activate_major(&mut a, &mut l, &cfg(), &events(), &svc(), buf(), id, CapabilitySet::empty())
+            .activate_major(
+                &mut a,
+                &mut l,
+                &cfg(),
+                &events(),
+                &svc(),
+                buf(),
+                id,
+                CapabilitySet::empty(),
+            )
             .unwrap_err();
         assert!(matches!(err, ModeActivationError::WrongKind { .. }));
     }
@@ -559,7 +573,16 @@ mod tests {
         let mut a = ActiveModes::new();
         let mut l = locals();
         let err = r
-            .activate_minor(&mut a, &mut l, &cfg(), &events(), &svc(), buf(), id, CapabilitySet::empty())
+            .activate_minor(
+                &mut a,
+                &mut l,
+                &cfg(),
+                &events(),
+                &svc(),
+                buf(),
+                id,
+                CapabilitySet::empty(),
+            )
             .unwrap_err();
         match err {
             ModeActivationError::MissingCapability { mode, missing } => {
@@ -579,7 +602,16 @@ mod tests {
         let mut a = ActiveModes::new();
         let mut l = locals();
         let events = r
-            .activate_major(&mut a, &mut l, &cfg(), &events(), &svc(), buf(), id, CapabilitySet::empty())
+            .activate_major(
+                &mut a,
+                &mut l,
+                &cfg(),
+                &events(),
+                &svc(),
+                buf(),
+                id,
+                CapabilitySet::empty(),
+            )
             .unwrap();
         assert_eq!(events.len(), 1);
         assert!(matches!(events[0], ModeEvent::MajorEntered { mode, .. } if mode == id));
@@ -598,10 +630,28 @@ mod tests {
         let new_id = r.register(new).unwrap();
         let mut a = ActiveModes::new();
         let mut l = locals();
-        r.activate_major(&mut a, &mut l, &cfg(), &events(), &svc(), buf(), prev_id, CapabilitySet::empty())
-            .unwrap();
+        r.activate_major(
+            &mut a,
+            &mut l,
+            &cfg(),
+            &events(),
+            &svc(),
+            buf(),
+            prev_id,
+            CapabilitySet::empty(),
+        )
+        .unwrap();
         let events = r
-            .activate_major(&mut a, &mut l, &cfg(), &events(), &svc(), buf(), new_id, CapabilitySet::empty())
+            .activate_major(
+                &mut a,
+                &mut l,
+                &cfg(),
+                &events(),
+                &svc(),
+                buf(),
+                new_id,
+                CapabilitySet::empty(),
+            )
             .unwrap();
         // Expected event order: MajorExiting(prev), MajorEntered(new).
         assert_eq!(events.len(), 2);
@@ -621,11 +671,29 @@ mod tests {
         let id = r.register(mock).unwrap();
         let mut a = ActiveModes::new();
         let mut l = locals();
-        r.activate_major(&mut a, &mut l, &cfg(), &events(), &svc(), buf(), id, CapabilitySet::empty())
-            .unwrap();
+        r.activate_major(
+            &mut a,
+            &mut l,
+            &cfg(),
+            &events(),
+            &svc(),
+            buf(),
+            id,
+            CapabilitySet::empty(),
+        )
+        .unwrap();
         // Reload: activate the same major again.
-        r.activate_major(&mut a, &mut l, &cfg(), &events(), &svc(), buf(), id, CapabilitySet::empty())
-            .unwrap();
+        r.activate_major(
+            &mut a,
+            &mut l,
+            &cfg(),
+            &events(),
+            &svc(),
+            buf(),
+            id,
+            CapabilitySet::empty(),
+        )
+        .unwrap();
         assert_eq!(act.load(Ordering::SeqCst), 2);
         assert_eq!(deact.load(Ordering::SeqCst), 1);
     }
@@ -638,12 +706,39 @@ mod tests {
         let three = r.register(MockMode::minor("c-mode")).unwrap();
         let mut a = ActiveModes::new();
         let mut l = locals();
-        r.activate_minor(&mut a, &mut l, &cfg(), &events(), &svc(), buf(), one, CapabilitySet::empty())
-            .unwrap();
-        r.activate_minor(&mut a, &mut l, &cfg(), &events(), &svc(), buf(), two, CapabilitySet::empty())
-            .unwrap();
-        r.activate_minor(&mut a, &mut l, &cfg(), &events(), &svc(), buf(), three, CapabilitySet::empty())
-            .unwrap();
+        r.activate_minor(
+            &mut a,
+            &mut l,
+            &cfg(),
+            &events(),
+            &svc(),
+            buf(),
+            one,
+            CapabilitySet::empty(),
+        )
+        .unwrap();
+        r.activate_minor(
+            &mut a,
+            &mut l,
+            &cfg(),
+            &events(),
+            &svc(),
+            buf(),
+            two,
+            CapabilitySet::empty(),
+        )
+        .unwrap();
+        r.activate_minor(
+            &mut a,
+            &mut l,
+            &cfg(),
+            &events(),
+            &svc(),
+            buf(),
+            three,
+            CapabilitySet::empty(),
+        )
+        .unwrap();
         assert_eq!(a.minors(), &[one, two, three]);
     }
 
@@ -655,10 +750,28 @@ mod tests {
         let id = r.register(mock).unwrap();
         let mut a = ActiveModes::new();
         let mut l = locals();
-        r.activate_minor(&mut a, &mut l, &cfg(), &events(), &svc(), buf(), id, CapabilitySet::empty())
-            .unwrap();
+        r.activate_minor(
+            &mut a,
+            &mut l,
+            &cfg(),
+            &events(),
+            &svc(),
+            buf(),
+            id,
+            CapabilitySet::empty(),
+        )
+        .unwrap();
         let events = r
-            .activate_minor(&mut a, &mut l, &cfg(), &events(), &svc(), buf(), id, CapabilitySet::empty())
+            .activate_minor(
+                &mut a,
+                &mut l,
+                &cfg(),
+                &events(),
+                &svc(),
+                buf(),
+                id,
+                CapabilitySet::empty(),
+            )
             .unwrap();
         assert!(events.is_empty(), "double-activation should be no-op");
         assert_eq!(act.load(Ordering::SeqCst), 1);
@@ -675,7 +788,16 @@ mod tests {
         let mut a = ActiveModes::new();
         let mut l = locals();
         let events = r
-            .activate_minor(&mut a, &mut l, &cfg(), &events(), &svc(), buf(), rlnum, CapabilitySet::empty())
+            .activate_minor(
+                &mut a,
+                &mut l,
+                &cfg(),
+                &events(),
+                &svc(),
+                buf(),
+                rlnum,
+                CapabilitySet::empty(),
+            )
             .unwrap();
         // Two events: parent first, then implied dep.
         assert_eq!(events.len(), 2);
@@ -695,9 +817,21 @@ mod tests {
         let mut a = ActiveModes::new();
         let mut l = locals();
         let err = r
-            .activate_minor(&mut a, &mut l, &cfg(), &events(), &svc(), buf(), id, CapabilitySet::empty())
+            .activate_minor(
+                &mut a,
+                &mut l,
+                &cfg(),
+                &events(),
+                &svc(),
+                buf(),
+                id,
+                CapabilitySet::empty(),
+            )
             .unwrap_err();
-        assert!(matches!(err, ModeActivationError::UnregisteredDependency { .. }));
+        assert!(matches!(
+            err,
+            ModeActivationError::UnregisteredDependency { .. }
+        ));
     }
 
     #[test]
@@ -713,10 +847,28 @@ mod tests {
         assert_eq!(two, two_id);
         let mut a = ActiveModes::new();
         let mut l = locals();
-        r.activate_minor(&mut a, &mut l, &cfg(), &events(), &svc(), buf(), two, CapabilitySet::empty())
-            .unwrap();
+        r.activate_minor(
+            &mut a,
+            &mut l,
+            &cfg(),
+            &events(),
+            &svc(),
+            buf(),
+            two,
+            CapabilitySet::empty(),
+        )
+        .unwrap();
         let err = r
-            .activate_minor(&mut a, &mut l, &cfg(), &events(), &svc(), buf(), one, CapabilitySet::empty())
+            .activate_minor(
+                &mut a,
+                &mut l,
+                &cfg(),
+                &events(),
+                &svc(),
+                buf(),
+                one,
+                CapabilitySet::empty(),
+            )
             .unwrap_err();
         match err {
             ModeActivationError::Conflict { mode, active } => {
@@ -741,12 +893,30 @@ mod tests {
         assert_eq!(one, one_id);
         let mut a = ActiveModes::new();
         let mut l = locals();
-        r.activate_minor(&mut a, &mut l, &cfg(), &events(), &svc(), buf(), two, CapabilitySet::empty())
-            .unwrap();
+        r.activate_minor(
+            &mut a,
+            &mut l,
+            &cfg(),
+            &events(),
+            &svc(),
+            buf(),
+            two,
+            CapabilitySet::empty(),
+        )
+        .unwrap();
         // Now activating `one` should fail because `two`
         // declared `one` as a conflict.
         let err = r
-            .activate_minor(&mut a, &mut l, &cfg(), &events(), &svc(), buf(), one, CapabilitySet::empty())
+            .activate_minor(
+                &mut a,
+                &mut l,
+                &cfg(),
+                &events(),
+                &svc(),
+                buf(),
+                one,
+                CapabilitySet::empty(),
+            )
             .unwrap_err();
         assert!(matches!(err, ModeActivationError::Conflict { .. }));
     }
@@ -759,9 +929,20 @@ mod tests {
         let id = r.register(mock).unwrap();
         let mut a = ActiveModes::new();
         let mut l = locals();
-        r.activate_minor(&mut a, &mut l, &cfg(), &events(), &svc(), buf(), id, CapabilitySet::empty())
+        r.activate_minor(
+            &mut a,
+            &mut l,
+            &cfg(),
+            &events(),
+            &svc(),
+            buf(),
+            id,
+            CapabilitySet::empty(),
+        )
+        .unwrap();
+        let events = r
+            .deactivate_minor(&mut a, &mut l, &cfg(), &events(), &svc(), buf(), id)
             .unwrap();
-        let events = r.deactivate_minor(&mut a, &mut l, &cfg(), &events(), &svc(), buf(), id).unwrap();
         assert_eq!(events.len(), 1);
         assert!(matches!(events[0], ModeEvent::MinorDeactivated { mode, .. } if mode == id));
         assert_eq!(deact.load(Ordering::SeqCst), 1);
@@ -774,7 +955,9 @@ mod tests {
         let id = r.register(MockMode::minor("a-mode")).unwrap();
         let mut a = ActiveModes::new();
         let mut l = locals();
-        let events = r.deactivate_minor(&mut a, &mut l, &cfg(), &events(), &svc(), buf(), id).unwrap();
+        let events = r
+            .deactivate_minor(&mut a, &mut l, &cfg(), &events(), &svc(), buf(), id)
+            .unwrap();
         assert!(events.is_empty());
     }
 
@@ -786,9 +969,20 @@ mod tests {
         let id = r.register(mock).unwrap();
         let mut a = ActiveModes::new();
         let mut l = locals();
-        r.activate_major(&mut a, &mut l, &cfg(), &events(), &svc(), buf(), id, CapabilitySet::empty())
+        r.activate_major(
+            &mut a,
+            &mut l,
+            &cfg(),
+            &events(),
+            &svc(),
+            buf(),
+            id,
+            CapabilitySet::empty(),
+        )
+        .unwrap();
+        let events = r
+            .deactivate_major(&mut a, &mut l, &cfg(), &events(), &svc(), buf())
             .unwrap();
-        let events = r.deactivate_major(&mut a, &mut l, &cfg(), &events(), &svc(), buf()).unwrap();
         assert_eq!(events.len(), 1);
         assert!(matches!(events[0], ModeEvent::MajorExiting { mode, .. } if mode == id));
         assert_eq!(deact.load(Ordering::SeqCst), 1);
@@ -800,7 +994,9 @@ mod tests {
         let r = ModeRegistry::new();
         let mut a = ActiveModes::new();
         let mut l = locals();
-        let events = r.deactivate_major(&mut a, &mut l, &cfg(), &events(), &svc(), buf()).unwrap();
+        let events = r
+            .deactivate_major(&mut a, &mut l, &cfg(), &events(), &svc(), buf())
+            .unwrap();
         assert!(events.is_empty());
     }
 }

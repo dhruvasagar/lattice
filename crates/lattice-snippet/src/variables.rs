@@ -97,7 +97,9 @@ impl VariableContext {
             "TM_LINE_NUMBER" => self.line_index.map(|n| (n + 1).to_string()),
             "TM_FILENAME" => self.filename.clone(),
             "TM_FILENAME_BASE" => self.filename.as_ref().map(|f| {
-                f.rsplit_once('.').map(|(s, _)| s.to_string()).unwrap_or(f.clone())
+                f.rsplit_once('.')
+                    .map(|(s, _)| s.to_string())
+                    .unwrap_or(f.clone())
             }),
             "TM_DIRECTORY" => self.directory.clone(),
             "TM_FILEPATH" => self.filepath.clone(),
@@ -121,9 +123,7 @@ impl VariableContext {
             "CURRENT_DAY_NAME" => Some(self.now().day_name.to_string()),
             "CURRENT_DAY_NAME_SHORT" => Some(self.now().day_name_short.to_string()),
             "CURRENT_MONTH_NAME" => Some(self.now().month_name.to_string()),
-            "CURRENT_MONTH_NAME_SHORT" => {
-                Some(self.now().month_name_short.to_string())
-            }
+            "CURRENT_MONTH_NAME_SHORT" => Some(self.now().month_name_short.to_string()),
             "RANDOM" => Some(format!("{:06}", self.random() % 1_000_000)),
             "RANDOM_HEX" => Some(format!("{:06x}", self.random() & 0xff_ffff)),
             "UUID" => Some(uuid_v4_str(self.random())),
@@ -294,7 +294,7 @@ fn day_of_week_zeller(year: u32, month: u32, day: u32) -> u32 {
     };
     let k = y % 100;
     let j = y / 100;
-    
+
     (day + (13 * (m + 1)) / 5 + k + k / 4 + j / 4 + 5 * j) % 7
 }
 
@@ -320,9 +320,7 @@ fn uuid_v4_str(seed: u64) -> String {
     let mut p4 = ((hi >> 32) & 0x3fff) as u16;
     p4 |= 0x8000;
     let p5 = hi & 0xffff_ffff_ffff;
-    format!(
-        "{p1:08x}-{p2:04x}-{p3:04x}-{p4:04x}-{p5:012x}"
-    )
+    format!("{p1:08x}-{p2:04x}-{p3:04x}-{p4:04x}-{p5:012x}")
 }
 
 #[cfg(test)]
@@ -383,9 +381,12 @@ mod tests {
         // Modulo 1_000_000 then zero-padded to 6 digits.
         assert_eq!(ctx.resolve("RANDOM"), Some("456789".into()));
         // Hex variant -- low 6 hex digits.
-        assert!(ctx.resolve("RANDOM_HEX").unwrap().chars().all(|c| {
-            c.is_ascii_hexdigit()
-        }));
+        assert!(
+            ctx.resolve("RANDOM_HEX")
+                .unwrap()
+                .chars()
+                .all(|c| { c.is_ascii_hexdigit() })
+        );
     }
 
     #[test]

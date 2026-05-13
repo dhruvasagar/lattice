@@ -38,8 +38,7 @@ impl ServiceRegistry {
     /// type was already registered (last-write-wins — typically
     /// called once per type at boot).
     pub fn register<T: Any + Send + Sync>(&mut self, service: T) {
-        self.services
-            .insert(TypeId::of::<T>(), Arc::new(service));
+        self.services.insert(TypeId::of::<T>(), Arc::new(service));
     }
 
     /// Look up a service by type. Returns a fresh `Arc<T>` clone

@@ -391,7 +391,10 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     ("describe-event", "ex:describe-event"),
     ("list-modes", "ex:list-modes"),
     ("describe-mode", "ex:describe-mode"),
-    ("describe-option-resolution", "ex:describe-option-resolution"),
+    (
+        "describe-option-resolution",
+        "ex:describe-option-resolution",
+    ),
     ("customize", "ex:customize"),
     ("tutor", "ex:tutor"),
     ("Tutor", "ex:tutor"),

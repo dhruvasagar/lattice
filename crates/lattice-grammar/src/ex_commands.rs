@@ -510,10 +510,12 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             accepts_bang: false,
             accepts_range: false,
             parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::OpenPicker {
-                source: "recent".into(),
-                args: Vec::new(),
-            })),
+            apply: Box::new(|_| {
+                Ok(Effect::OpenPicker {
+                    source: "recent".into(),
+                    args: Vec::new(),
+                })
+            }),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -532,9 +534,10 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             apply: Box::new(|ctx| {
                 // `parse_picker_args` always produces an `Args::List`
                 // with `source` at index 0 + raw arg tokens after.
-                let list = ctx.args.as_list().ok_or_else(|| {
-                    CommandError::BadArgs("picker: expected list args".into())
-                })?;
+                let list = ctx
+                    .args
+                    .as_list()
+                    .ok_or_else(|| CommandError::BadArgs("picker: expected list args".into()))?;
                 let source = list
                     .first()
                     .and_then(|v| v.as_str())
@@ -790,9 +793,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 Args::None => Ok(Effect::Tutor { lesson: None }),
                 Args::String(s) => {
                     let n: u32 = s.parse().map_err(|_| {
-                        CommandError::BadArgs(format!(
-                            "expected lesson number, got `{s}`"
-                        ))
+                        CommandError::BadArgs(format!("expected lesson number, got `{s}`"))
                     })?;
                     Ok(Effect::Tutor { lesson: Some(n) })
                 }
@@ -2204,12 +2205,8 @@ mod tests {
         // argument; each must offer `gen:lsp-servers` so `<Tab>`
         // surfaces the currently-running set.
         let (registry, ex, _) = fixture();
-        let cases: &[crate::ExCommandId] = &[
-            ex.lsp_log,
-            ex.lsp_trace,
-            ex.lsp_restart,
-            ex.lsp_log_clear,
-        ];
+        let cases: &[crate::ExCommandId] =
+            &[ex.lsp_log, ex.lsp_trace, ex.lsp_restart, ex.lsp_log_clear];
         for id in cases {
             let cmd = registry.lookup(id.0).unwrap();
             let spec = registry.ex_command_spec(id.0).unwrap();

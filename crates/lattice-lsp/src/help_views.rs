@@ -16,8 +16,7 @@ use lattice_help::{HelpContent, one_line};
 
 use crate::{
     Capabilities, DiagnosticSeverity, DiagnosticsLayer, LogRecord, LogSource, LspLogger,
-    LspSupervisor, LspSupervisorHandle,
-    actor::uri_to_path,
+    LspSupervisor, LspSupervisorHandle, actor::uri_to_path,
 };
 
 /// Build a help buffer listing every workspace diagnostic
@@ -220,7 +219,7 @@ pub fn lsp_server_trace_help(logger: &LspLogger, server_id: &std::sync::Arc<str>
 /// everything reachable through the existing help-buffer machinery.
 pub fn lsp_server_log_listing_help(supervisor: &LspSupervisor) -> HelpContent {
     let mut actors = supervisor.running_actors();
-    actors.sort_by(|a, b| a.0 .1.cmp(&b.0 .1).then_with(|| a.0 .0.cmp(&b.0 .0)));
+    actors.sort_by(|a, b| a.0.1.cmp(&b.0.1).then_with(|| a.0.0.cmp(&b.0.0)));
     let mut lines: Vec<String> = Vec::new();
     lines.push(format!(
         "# :lsp-server-log ({} server actor(s) running)",

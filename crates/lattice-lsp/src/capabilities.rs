@@ -142,11 +142,9 @@ fn workspace_capabilities() -> WorkspaceClientCapabilities {
             dynamic_registration: Some(false),
             symbol_kind: None,
             tag_support: None,
-            resolve_support: Some(
-                lsp_types::WorkspaceSymbolResolveSupportCapability {
-                    properties: vec!["location.range".into()],
-                },
-            ),
+            resolve_support: Some(lsp_types::WorkspaceSymbolResolveSupportCapability {
+                properties: vec!["location.range".into()],
+            }),
         }),
         // Single-root workspace for v1; multi-root WorkspaceFolder
         // arrives later. Advertising true here means we send
@@ -202,11 +200,9 @@ fn workspace_capabilities() -> WorkspaceClientCapabilities {
         // build time; runtime registration of new keys is a
         // post-1.0 feature (it would need WASM plugins to
         // declare option schemas).
-        did_change_configuration: Some(
-            lsp_types::DynamicRegistrationClientCapabilities {
-                dynamic_registration: Some(false),
-            },
-        ),
+        did_change_configuration: Some(lsp_types::DynamicRegistrationClientCapabilities {
+            dynamic_registration: Some(false),
+        }),
         // 4.4.n: we honour dynamic registration of
         // `workspace/didChangeWatchedFiles`. Servers (notably
         // rust-analyzer + tsserver) register file-watcher
@@ -221,12 +217,10 @@ fn workspace_capabilities() -> WorkspaceClientCapabilities {
         // anchor patterns to a `WorkspaceFolder` rather than
         // emitting absolute globs -- matters once 4.4.l's
         // file-watcher pump consumes the registrations.
-        did_change_watched_files: Some(
-            lsp_types::DidChangeWatchedFilesClientCapabilities {
-                dynamic_registration: Some(true),
-                relative_pattern_support: Some(true),
-            },
-        ),
+        did_change_watched_files: Some(lsp_types::DidChangeWatchedFilesClientCapabilities {
+            dynamic_registration: Some(true),
+            relative_pattern_support: Some(true),
+        }),
         // 4.4.m: workspace file-operation hooks. Advertising
         // each as `Some(true)` tells the server we honour the
         // corresponding will/did request or notification. The
@@ -238,17 +232,15 @@ fn workspace_capabilities() -> WorkspaceClientCapabilities {
         // registered `FileOperationFilter`s, so a server that
         // doesn't care about a particular path stays quiet
         // even when we advertise interest.
-        file_operations: Some(
-            lsp_types::WorkspaceFileOperationsClientCapabilities {
-                dynamic_registration: Some(false),
-                did_create: Some(true),
-                will_create: Some(true),
-                did_rename: Some(true),
-                will_rename: Some(true),
-                did_delete: Some(true),
-                will_delete: Some(true),
-            },
-        ),
+        file_operations: Some(lsp_types::WorkspaceFileOperationsClientCapabilities {
+            dynamic_registration: Some(false),
+            did_create: Some(true),
+            will_create: Some(true),
+            did_rename: Some(true),
+            will_rename: Some(true),
+            did_delete: Some(true),
+            will_delete: Some(true),
+        }),
         // Other 4.4 workspace-side advertisements
         // (codeLens.refresh, diagnostics.refresh) are added when
         // those phases land.
@@ -285,59 +277,47 @@ fn text_document_capabilities() -> TextDocumentClientCapabilities {
         // us anything because the host can't suppress the
         // commands at register time -- they probe `supports_*`
         // on each invocation.
-        call_hierarchy: Some(
-            lsp_types::DynamicRegistrationClientCapabilities {
-                dynamic_registration: Some(false),
-            },
-        ),
+        call_hierarchy: Some(lsp_types::DynamicRegistrationClientCapabilities {
+            dynamic_registration: Some(false),
+        }),
         // 4.5.b: tell servers we honour the type-hierarchy
         // pipeline (`textDocument/prepareTypeHierarchy` →
         // `typeHierarchy/{super,sub}types`). Same shape
         // rationale as `call_hierarchy` above.
-        type_hierarchy: Some(
-            lsp_types::DynamicRegistrationClientCapabilities {
-                dynamic_registration: Some(false),
-            },
-        ),
+        type_hierarchy: Some(lsp_types::DynamicRegistrationClientCapabilities {
+            dynamic_registration: Some(false),
+        }),
         // 4.5.g: tell servers we honour
         // `textDocument/moniker`. Useful for cross-project
         // navigation (SCIP/LSIF-style indexes); the host
         // surfaces results via `:lsp-moniker` as a plain echo.
-        moniker: Some(
-            lsp_types::DynamicRegistrationClientCapabilities {
-                dynamic_registration: Some(false),
-            },
-        ),
+        moniker: Some(lsp_types::DynamicRegistrationClientCapabilities {
+            dynamic_registration: Some(false),
+        }),
         // 4.5.c: tell servers we honour
         // `textDocument/documentLink`. `tooltip_support = true`
         // lets the server emit the `tooltip` field; future
         // hover-on-link UX consumes it (the renderer overlay
         // / `gx` path doesn't need it today, but advertising
         // is harmless).
-        document_link: Some(
-            lsp_types::DocumentLinkClientCapabilities {
-                dynamic_registration: Some(false),
-                tooltip_support: Some(true),
-            },
-        ),
+        document_link: Some(lsp_types::DocumentLinkClientCapabilities {
+            dynamic_registration: Some(false),
+            tooltip_support: Some(true),
+        }),
         // 4.5.d: tell servers we honour `textDocument/codeLens`.
         // No `tooltipSupport` / `commandSupport` fields here
         // (LSP doesn't model them); the wire wrapper consumes
         // every lens shape the server emits.
-        code_lens: Some(
-            lsp_types::DynamicRegistrationClientCapabilities {
-                dynamic_registration: Some(false),
-            },
-        ),
+        code_lens: Some(lsp_types::DynamicRegistrationClientCapabilities {
+            dynamic_registration: Some(false),
+        }),
         // 4.5.e: tell servers we honour `textDocument/documentColor`
         // (+ `colorPresentation`). The host caches color
         // ranges per buffer; `:lsp-color-presentation` opens
         // the alternative-format picker at the cursor.
-        color_provider: Some(
-            lsp_types::DynamicRegistrationClientCapabilities {
-                dynamic_registration: Some(false),
-            },
-        ),
+        color_provider: Some(lsp_types::DynamicRegistrationClientCapabilities {
+            dynamic_registration: Some(false),
+        }),
         ..Default::default()
     }
 }
@@ -496,15 +476,13 @@ impl Capabilities {
     /// Server's `definitionProvider` presence. Consults the
     /// dynamic registry (4.4.n).
     pub fn supports_definition(&self) -> bool {
-        self.server.definition_provider.is_some()
-            || self.dynamic.has("textDocument/definition")
+        self.server.definition_provider.is_some() || self.dynamic.has("textDocument/definition")
     }
 
     /// Server's `referencesProvider` presence -- gates 4.2.d's
     /// `gr` dispatch. Consults the dynamic registry (4.4.n).
     pub fn supports_references(&self) -> bool {
-        self.server.references_provider.is_some()
-            || self.dynamic.has("textDocument/references")
+        self.server.references_provider.is_some() || self.dynamic.has("textDocument/references")
     }
 
     /// Server's `documentSymbolProvider` presence -- gates the
@@ -519,8 +497,7 @@ impl Capabilities {
     /// `:workspace-symbols` picker (Phase 4.2.f). Consults the
     /// dynamic registry (4.4.n).
     pub fn supports_workspace_symbol(&self) -> bool {
-        self.server.workspace_symbol_provider.is_some()
-            || self.dynamic.has("workspace/symbol")
+        self.server.workspace_symbol_provider.is_some() || self.dynamic.has("workspace/symbol")
     }
 
     /// Whether the server advertises `resolveProvider` on its
@@ -543,8 +520,7 @@ impl Capabilities {
     /// `gen:lsp-completion` source. Consults the dynamic
     /// registry (4.4.n).
     pub fn supports_completion(&self) -> bool {
-        self.server.completion_provider.is_some()
-            || self.dynamic.has("textDocument/completion")
+        self.server.completion_provider.is_some() || self.dynamic.has("textDocument/completion")
     }
 
     /// Whether the server advertises `resolveProvider` on its
@@ -679,8 +655,7 @@ impl Capabilities {
     /// renderer overlay splices each hint's label at its
     /// position. Consults the dynamic registry (4.4.n).
     pub fn supports_inlay_hint(&self) -> bool {
-        self.server.inlay_hint_provider.is_some()
-            || self.dynamic.has("textDocument/inlayHint")
+        self.server.inlay_hint_provider.is_some() || self.dynamic.has("textDocument/inlayHint")
     }
 
     /// 4.4.g follow-up: `InlayHintOptions.resolve_provider`.
@@ -768,16 +743,12 @@ impl Capabilities {
     /// splices into the cached token vec. Falls back to full
     /// when `false`.
     pub fn supports_semantic_tokens_delta(&self) -> bool {
-        use lsp_types::{
-            SemanticTokensFullOptions, SemanticTokensServerCapabilities,
-        };
+        use lsp_types::{SemanticTokensFullOptions, SemanticTokensServerCapabilities};
         let Some(p) = self.server.semantic_tokens_provider.as_ref() else {
             return false;
         };
         let full = match p {
-            SemanticTokensServerCapabilities::SemanticTokensOptions(opts) => {
-                opts.full.as_ref()
-            }
+            SemanticTokensServerCapabilities::SemanticTokensOptions(opts) => opts.full.as_ref(),
             SemanticTokensServerCapabilities::SemanticTokensRegistrationOptions(opts) => {
                 opts.semantic_tokens_options.full.as_ref()
             }
@@ -799,9 +770,7 @@ impl Capabilities {
             return false;
         };
         let range_opt = match p {
-            SemanticTokensServerCapabilities::SemanticTokensOptions(opts) => {
-                opts.range.as_ref()
-            }
+            SemanticTokensServerCapabilities::SemanticTokensOptions(opts) => opts.range.as_ref(),
             SemanticTokensServerCapabilities::SemanticTokensRegistrationOptions(opts) => {
                 opts.semantic_tokens_options.range.as_ref()
             }
@@ -816,16 +785,13 @@ impl Capabilities {
     /// Insert mode -- returns the first character that fires
     /// the request, plus more in `more_trigger_character`.
     pub fn supports_on_type_formatting(&self) -> bool {
-        self.server
-            .document_on_type_formatting_provider
-            .is_some()
+        self.server.document_on_type_formatting_provider.is_some()
     }
 
     /// Trigger characters for onTypeFormatting. Empty when
     /// the provider isn't advertised.
     pub fn on_type_formatting_trigger_chars(&self) -> Vec<char> {
-        let Some(p) = self.server.document_on_type_formatting_provider.as_ref()
-        else {
+        let Some(p) = self.server.document_on_type_formatting_provider.as_ref() else {
             return Vec::new();
         };
         let mut out: Vec<char> = Vec::new();
@@ -835,9 +801,10 @@ impl Capabilities {
         if let Some(more) = p.more_trigger_character.as_ref() {
             for s in more {
                 if let Some(c) = s.chars().next()
-                    && !out.contains(&c) {
-                        out.push(c);
-                    }
+                    && !out.contains(&c)
+                {
+                    out.push(c);
+                }
             }
         }
         out
@@ -918,8 +885,7 @@ impl Capabilities {
     pub fn supports_moniker(&self) -> bool {
         let static_ok = matches!(
             self.server.moniker_provider,
-            Some(lsp_types::OneOf::Left(true))
-                | Some(lsp_types::OneOf::Right(_))
+            Some(lsp_types::OneOf::Left(true)) | Some(lsp_types::OneOf::Right(_))
         );
         static_ok || self.dynamic.has("textDocument/moniker")
     }
@@ -951,8 +917,7 @@ impl Capabilities {
     /// `:lsp-code-lens` picker. Consults the dynamic
     /// registry (4.4.n).
     pub fn supports_code_lens(&self) -> bool {
-        self.server.code_lens_provider.is_some()
-            || self.dynamic.has("textDocument/codeLens")
+        self.server.code_lens_provider.is_some() || self.dynamic.has("textDocument/codeLens")
     }
 
     /// 4.5.d: whether `codeLensProvider.resolveProvider` is
@@ -1013,37 +978,43 @@ impl Capabilities {
     /// `WorkspaceEdit` BEFORE the file is created on disk; the
     /// host applies the edits in the same save txn).
     pub fn supports_will_create_files(&self) -> bool {
-        self.file_operations_options(FileOpKind::WillCreate).is_some()
+        self.file_operations_options(FileOpKind::WillCreate)
+            .is_some()
     }
 
     /// 4.4.m: server advertises interest in
     /// `workspace/didCreateFiles` notifications.
     pub fn supports_did_create_files(&self) -> bool {
-        self.file_operations_options(FileOpKind::DidCreate).is_some()
+        self.file_operations_options(FileOpKind::DidCreate)
+            .is_some()
     }
 
     /// 4.4.m: server advertises interest in
     /// `workspace/willRenameFiles` requests.
     pub fn supports_will_rename_files(&self) -> bool {
-        self.file_operations_options(FileOpKind::WillRename).is_some()
+        self.file_operations_options(FileOpKind::WillRename)
+            .is_some()
     }
 
     /// 4.4.m: server advertises interest in
     /// `workspace/didRenameFiles` notifications.
     pub fn supports_did_rename_files(&self) -> bool {
-        self.file_operations_options(FileOpKind::DidRename).is_some()
+        self.file_operations_options(FileOpKind::DidRename)
+            .is_some()
     }
 
     /// 4.4.m: server advertises interest in
     /// `workspace/willDeleteFiles` requests.
     pub fn supports_will_delete_files(&self) -> bool {
-        self.file_operations_options(FileOpKind::WillDelete).is_some()
+        self.file_operations_options(FileOpKind::WillDelete)
+            .is_some()
     }
 
     /// 4.4.m: server advertises interest in
     /// `workspace/didDeleteFiles` notifications.
     pub fn supports_did_delete_files(&self) -> bool {
-        self.file_operations_options(FileOpKind::DidDelete).is_some()
+        self.file_operations_options(FileOpKind::DidDelete)
+            .is_some()
     }
 
     /// 4.4.m: borrow the server-supplied
@@ -1215,7 +1186,9 @@ mod tests {
         let caps = client_capabilities();
         let td = caps.text_document.unwrap();
         let sig = td.signature_help.expect("signature_help advertised");
-        let info = sig.signature_information.expect("signature info advertised");
+        let info = sig
+            .signature_information
+            .expect("signature info advertised");
         let formats = info
             .documentation_format
             .expect("documentation_format advertised");
@@ -1356,23 +1329,19 @@ mod tests {
         let server = ServerCapabilities {
             workspace: Some(lsp_types::WorkspaceServerCapabilities {
                 workspace_folders: None,
-                file_operations: Some(
-                    lsp_types::WorkspaceFileOperationsServerCapabilities {
-                        did_create: Some(
-                            lsp_types::FileOperationRegistrationOptions {
-                                filters: vec![lsp_types::FileOperationFilter {
-                                    scheme: Some("file".into()),
-                                    pattern: lsp_types::FileOperationPattern {
-                                        glob: "**/*.rs".into(),
-                                        matches: None,
-                                        options: None,
-                                    },
-                                }],
+                file_operations: Some(lsp_types::WorkspaceFileOperationsServerCapabilities {
+                    did_create: Some(lsp_types::FileOperationRegistrationOptions {
+                        filters: vec![lsp_types::FileOperationFilter {
+                            scheme: Some("file".into()),
+                            pattern: lsp_types::FileOperationPattern {
+                                glob: "**/*.rs".into(),
+                                matches: None,
+                                options: None,
                             },
-                        ),
-                        ..Default::default()
-                    },
-                ),
+                        }],
+                    }),
+                    ..Default::default()
+                }),
             }),
             ..Default::default()
         };

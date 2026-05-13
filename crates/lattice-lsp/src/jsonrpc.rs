@@ -212,16 +212,13 @@ impl Message {
         let has_error = obj.contains_key("error");
 
         if has_method && has_id {
-            let req: Request =
-                serde_json::from_value(v).map_err(MessageDecodeError::Json)?;
+            let req: Request = serde_json::from_value(v).map_err(MessageDecodeError::Json)?;
             Ok(Message::Request(req))
         } else if has_method {
-            let n: Notification =
-                serde_json::from_value(v).map_err(MessageDecodeError::Json)?;
+            let n: Notification = serde_json::from_value(v).map_err(MessageDecodeError::Json)?;
             Ok(Message::Notification(n))
         } else if has_id && (has_result || has_error) {
-            let r: Response =
-                serde_json::from_value(v).map_err(MessageDecodeError::Json)?;
+            let r: Response = serde_json::from_value(v).map_err(MessageDecodeError::Json)?;
             Ok(Message::Response(r))
         } else {
             Err(MessageDecodeError::Malformed(
@@ -264,7 +261,9 @@ mod tests {
         let req = Request::new(
             RequestId::from_u64(1),
             "textDocument/hover",
-            Some(json!({"textDocument": {"uri": "file:///x"}, "position": {"line": 0, "character": 0}})),
+            Some(
+                json!({"textDocument": {"uri": "file:///x"}, "position": {"line": 0, "character": 0}}),
+            ),
         );
         let bytes = serde_json::to_vec(&req).unwrap();
         let parsed = Message::from_json(&bytes).unwrap();
@@ -327,7 +326,8 @@ mod tests {
     fn string_request_id_round_trips() {
         // LSP servers MAY use string ids; we MUST preserve them
         // verbatim on the response we send back.
-        let raw = br#"{"jsonrpc":"2.0","id":"abc-123","method":"workspace/configuration","params":{}}"#;
+        let raw =
+            br#"{"jsonrpc":"2.0","id":"abc-123","method":"workspace/configuration","params":{}}"#;
         let parsed = Message::from_json(raw).unwrap();
         match parsed {
             Message::Request(r) => assert_eq!(r.id, RequestId::String("abc-123".into())),

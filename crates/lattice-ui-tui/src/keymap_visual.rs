@@ -62,9 +62,7 @@ use crate::app::Action;
 use crate::chord::{KeyChord, SpecialKey};
 use crate::keymap::BindingMode;
 use crate::keymap_registry::KeymapHandle;
-use crate::keymap_trie::{
-    BoundCommand, ChordPattern, KeymapLayer, LookupResult,
-};
+use crate::keymap_trie::{BoundCommand, ChordPattern, KeymapLayer, LookupResult};
 
 /// Register every chord the legacy `input::translate_visual`
 /// recognised into the supplied handle's `Builtin` layer under
@@ -75,11 +73,7 @@ use crate::keymap_trie::{
 /// Sources are tagged at this file + line so `:describe-key`
 /// shows e.g.
 /// `h -> motion:char-left  (builtin, keymap_visual.rs:NN)`.
-pub fn register_visual_bindings(
-    handle: &KeymapHandle,
-    builtins: &Builtins,
-    actions: &ActionIds,
-) {
+pub fn register_visual_bindings(handle: &KeymapHandle, builtins: &Builtins, actions: &ActionIds) {
     let layer = KeymapLayer::Builtin;
     let mode = BindingMode::Visual;
 
@@ -112,17 +106,32 @@ pub fn register_visual_bindings(
     // identical to the legacy `invoke(builtins.char_left)`.
     let motion_table: &[(ChordPattern, lattice_grammar::registry::MotionId)] = &[
         (literal(KeyChord::char('h')), builtins.char_left),
-        (literal(KeyChord::special(SpecialKey::Left)), builtins.char_left),
+        (
+            literal(KeyChord::special(SpecialKey::Left)),
+            builtins.char_left,
+        ),
         (literal(KeyChord::char('j')), builtins.line_down),
-        (literal(KeyChord::special(SpecialKey::Down)), builtins.line_down),
+        (
+            literal(KeyChord::special(SpecialKey::Down)),
+            builtins.line_down,
+        ),
         (literal(KeyChord::char('k')), builtins.line_up),
         (literal(KeyChord::special(SpecialKey::Up)), builtins.line_up),
         (literal(KeyChord::char('l')), builtins.char_right),
-        (literal(KeyChord::special(SpecialKey::Right)), builtins.char_right),
+        (
+            literal(KeyChord::special(SpecialKey::Right)),
+            builtins.char_right,
+        ),
         (literal(KeyChord::char('0')), builtins.line_start),
-        (literal(KeyChord::special(SpecialKey::Home)), builtins.line_start),
+        (
+            literal(KeyChord::special(SpecialKey::Home)),
+            builtins.line_start,
+        ),
         (literal(KeyChord::char('$')), builtins.line_end),
-        (literal(KeyChord::special(SpecialKey::End)), builtins.line_end),
+        (
+            literal(KeyChord::special(SpecialKey::End)),
+            builtins.line_end,
+        ),
         (literal(KeyChord::char('^')), builtins.first_non_blank),
         (literal(KeyChord::char('w')), builtins.word_forward),
         (literal(KeyChord::char('b')), builtins.word_backward),
@@ -204,11 +213,7 @@ fn source() -> SourceLocation {
 /// 5. `Unbound` / `Partial` -> `Action::None`. Visual mode has
 ///    no multi-key chords today; `Partial` is reserved for a
 ///    user-config / plugin layer that registers one.
-pub fn dispatch_visual(
-    handle: &KeymapHandle,
-    event: &KeyEvent,
-    kind: VisualKind,
-) -> Action {
+pub fn dispatch_visual(handle: &KeymapHandle, event: &KeyEvent, kind: VisualKind) -> Action {
     if event.modifiers.contains(KeyModifiers::CONTROL) {
         return Action::None;
     }
@@ -220,7 +225,9 @@ pub fn dispatch_visual(
         }
     }
     let mut event = *event;
-    event.modifiers.remove(KeyModifiers::SHIFT | KeyModifiers::ALT | KeyModifiers::SUPER);
+    event
+        .modifiers
+        .remove(KeyModifiers::SHIFT | KeyModifiers::ALT | KeyModifiers::SUPER);
     let Some(chord) = KeyChord::from_event(&event) else {
         return Action::None;
     };
@@ -352,10 +359,7 @@ mod tests {
         match r {
             Action::Invoke(inv) => {
                 assert_eq!(inv.command, b.delete.0);
-                assert!(matches!(
-                    inv.range,
-                    Some(lattice_grammar::Range::Selection)
-                ));
+                assert!(matches!(inv.range, Some(lattice_grammar::Range::Selection)));
             }
             other => panic!("expected Invoke(delete, Selection), got {other:?}"),
         }
@@ -415,7 +419,10 @@ mod tests {
             &ev(KeyCode::Char('I'), KeyModifiers::NONE),
             VisualKind::Blockwise,
         );
-        assert!(matches!(r, Action::EnterBlockVisualInsert), "block I: {r:?}");
+        assert!(
+            matches!(r, Action::EnterBlockVisualInsert),
+            "block I: {r:?}"
+        );
     }
 
     #[test]
@@ -466,5 +473,4 @@ mod tests {
             other => panic!("expected Invoke(char_left), got {other:?}"),
         }
     }
-
 }

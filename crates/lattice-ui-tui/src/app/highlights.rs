@@ -188,11 +188,7 @@ impl App {
     ///    contracts) by `byte_delta` to keep the span covering
     ///    its now-resized content. If the span collapses to
     ///    empty (delete consumed all of it), drop it.
-    fn shift_spans_within_line(
-        &mut self,
-        viewport_idx: usize,
-        delta: &EditDelta,
-    ) {
+    fn shift_spans_within_line(&mut self, viewport_idx: usize, delta: &EditDelta) {
         let edit_byte = delta.start_position.byte as usize;
         let old_end_byte = delta.old_end_position.byte as usize;
         let new_end_byte = delta.new_end_position.byte as usize;
@@ -325,9 +321,7 @@ impl App {
         let end = self
             .visible_buffer_line_extent(start, self.viewport_height)
             .saturating_add(1);
-        self.visible_highlights = snap
-            .highlight_lines(start, end)
-            .unwrap_or_default();
+        self.visible_highlights = snap.highlight_lines(start, end).unwrap_or_default();
         self.visible_highlights_key = Some(key);
     }
 
@@ -439,12 +433,7 @@ impl App {
                 // reparse. The inactive-pane path is rare
                 // (only fires when pane shows a different
                 // document) so the perf cost stays bounded.
-                syntax.request_reparse(
-                    last_synced,
-                    tv,
-                    snap.buffer.clone(),
-                    Vec::new(),
-                );
+                syntax.request_reparse(last_synced, tv, snap.buffer.clone(), Vec::new());
                 // M.3.2.c.5: write the new baseline back into
                 // buffer_locals so subsequent reads see it.
                 let locals = self.buffer_locals.entry(doc_id).or_default();
@@ -561,7 +550,6 @@ mod tests {
         let key2 = a.visible_highlights_key;
         assert_ne!(key1, key2, "viewport resize must invalidate cache");
     }
-
 
     // ---- Regression tests for the three production bugs -------
     //
@@ -706,20 +694,14 @@ mod tests {
         // line's spans, so visible_highlights[N] is now what was
         // at index N+1 -- correctly aligned with the new
         // content at line N.
-        let mut a = app_with(
-            "fn a() {}\nfn b() {}\nfn c() {}\nfn d() {}",
-            10,
-        );
+        let mut a = app_with("fn a() {}\nfn b() {}\nfn c() {}\nfn d() {}", 10);
         attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
         a.refresh_highlights();
         let line0_spans = a.visible_highlights[0].clone();
         let line2_spans_before_delete = a.visible_highlights[2].clone();
         // Delete the entire line 1 (`fn b() {}\n` at bytes
         // [10..20]).
-        let range = lattice_protocol::Range::new(
-            Position::new(1, 0),
-            Position::new(2, 0),
-        );
+        let range = lattice_protocol::Range::new(Position::new(1, 0), Position::new(2, 0));
         a.apply_edit_blocking(Edit::delete(range)).unwrap();
         // visible_highlights should have one fewer entry.
         // Line 0's spans unchanged. Line 1 (post-delete) now
@@ -884,10 +866,7 @@ mod tests {
         a.refresh_highlights();
         let line0_before = a.visible_highlights[0].clone();
         // Delete byte 17 ("x" -- one of the two chars in "xx").
-        let range = lattice_protocol::Range::new(
-            Position::new(0, 17),
-            Position::new(0, 18),
-        );
+        let range = lattice_protocol::Range::new(Position::new(0, 17), Position::new(0, 18));
         a.apply_edit_blocking(Edit::delete(range)).unwrap();
         let line0_after = &a.visible_highlights[0];
         for (before, after) in line0_before.iter().zip(line0_after.iter()) {
@@ -904,6 +883,4 @@ mod tests {
             }
         }
     }
-
-
 }

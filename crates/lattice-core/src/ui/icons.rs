@@ -70,64 +70,96 @@ fn ascii_glyph(name: &str, ext: &str) -> &'static str {
     // explicit-name branch in `nerd_glyph_and_color` so the two
     // palettes stay in lockstep.
     match name {
-        "Cargo.toml" | "Cargo.lock"
-        | "package.json" | "package-lock.json"
-        | "tsconfig.json" | "tsconfig.base.json" | "tsconfig.build.json"
+        "Cargo.toml"
+        | "Cargo.lock"
+        | "package.json"
+        | "package-lock.json"
+        | "tsconfig.json"
+        | "tsconfig.base.json"
+        | "tsconfig.build.json"
         | "jsconfig.json"
-        | "pyproject.toml" | "Pipfile" | "Pipfile.lock" | "setup.py" | "setup.cfg"
-        | "requirements.txt" | "requirements-dev.txt" | "requirements-test.txt"
-        | "Gemfile" | "Gemfile.lock" | "Rakefile"
-        | "go.mod" | "go.sum" | "go.work"
-        | "Brewfile" | "Brewfile.lock.json"
-        | "Justfile" | "justfile"
-        | "Makefile" | "makefile" | "GNUmakefile" | "BSDmakefile" | "Makefile.am"
+        | "pyproject.toml"
+        | "Pipfile"
+        | "Pipfile.lock"
+        | "setup.py"
+        | "setup.cfg"
+        | "requirements.txt"
+        | "requirements-dev.txt"
+        | "requirements-test.txt"
+        | "Gemfile"
+        | "Gemfile.lock"
+        | "Rakefile"
+        | "go.mod"
+        | "go.sum"
+        | "go.work"
+        | "Brewfile"
+        | "Brewfile.lock.json"
+        | "Justfile"
+        | "justfile"
+        | "Makefile"
+        | "makefile"
+        | "GNUmakefile"
+        | "BSDmakefile"
+        | "Makefile.am"
         | "CMakeLists.txt"
-        | "Dockerfile" | "dockerfile" | "Containerfile" | "containerfile"
-        | "docker-compose.yml" | "docker-compose.yaml"
-        | "compose.yml" | "compose.yaml"
-        | ".dockerignore" | ".gitignore" | ".gitattributes" | ".gitmodules"
-        | ".gitconfig" | ".gitmessage"
-        | ".editorconfig" | ".env" | ".envrc"
-        | ".npmrc" | ".nvmrc" | ".node-version"
-        | ".eslintrc" | ".eslintrc.json" | ".eslintrc.js" | ".eslintrc.yml" | ".eslintrc.cjs"
-        | ".prettierrc" | ".prettierrc.json" | ".prettierrc.js" | ".prettierrc.yml"
-        | "Procfile" | "MANIFEST.in" | "uv.lock" => return "◆ ",
-        "LICENSE" | "LICENCE" | "LICENSE.txt" | "LICENCE.txt"
-        | "LICENSE.md" | "LICENCE.md" => return "≡ ",
+        | "Dockerfile"
+        | "dockerfile"
+        | "Containerfile"
+        | "containerfile"
+        | "docker-compose.yml"
+        | "docker-compose.yaml"
+        | "compose.yml"
+        | "compose.yaml"
+        | ".dockerignore"
+        | ".gitignore"
+        | ".gitattributes"
+        | ".gitmodules"
+        | ".gitconfig"
+        | ".gitmessage"
+        | ".editorconfig"
+        | ".env"
+        | ".envrc"
+        | ".npmrc"
+        | ".nvmrc"
+        | ".node-version"
+        | ".eslintrc"
+        | ".eslintrc.json"
+        | ".eslintrc.js"
+        | ".eslintrc.yml"
+        | ".eslintrc.cjs"
+        | ".prettierrc"
+        | ".prettierrc.json"
+        | ".prettierrc.js"
+        | ".prettierrc.yml"
+        | "Procfile"
+        | "MANIFEST.in"
+        | "uv.lock" => return "◆ ",
+        "LICENSE" | "LICENCE" | "LICENSE.txt" | "LICENCE.txt" | "LICENSE.md" | "LICENCE.md" => {
+            return "≡ ";
+        }
         _ => {}
     }
     match ext {
         // Config / manifest
-        "toml" | "yaml" | "yml" | "json" | "jsonc" | "json5"
-        | "ini" | "cfg" | "conf" | "config" | "properties" | "prop" | "rc"
-        | "env" | "envrc" | "dotenv"
-        | "tf" | "tfvars" | "hcl" | "nix"
-        | "lock" => "◆ ",
+        "toml" | "yaml" | "yml" | "json" | "jsonc" | "json5" | "ini" | "cfg" | "conf"
+        | "config" | "properties" | "prop" | "rc" | "env" | "envrc" | "dotenv" | "tf"
+        | "tfvars" | "hcl" | "nix" | "lock" => "◆ ",
         // Document / prose
-        "md" | "mdx" | "markdown"
-        | "rst" | "txt" | "text"
-        | "adoc" | "asciidoc" | "org"
-        | "man" | "roff" | "groff"
-        | "pdf" | "doc" | "docx" | "odt" | "rtf"
-        | "xls" | "xlsx" | "ods" | "numbers"
-        | "ppt" | "pptx" | "odp" | "keynote"
-        | "tex" | "ltx" | "sty" | "bib" | "cls"
-        | "ipynb" | "csv" | "tsv" => "≡ ",
+        "md" | "mdx" | "markdown" | "rst" | "txt" | "text" | "adoc" | "asciidoc" | "org"
+        | "man" | "roff" | "groff" | "pdf" | "doc" | "docx" | "odt" | "rtf" | "xls" | "xlsx"
+        | "ods" | "numbers" | "ppt" | "pptx" | "odp" | "keynote" | "tex" | "ltx" | "sty"
+        | "bib" | "cls" | "ipynb" | "csv" | "tsv" => "≡ ",
         // Image / vector
-        "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp"
-        | "tiff" | "tif" | "ico" | "svg" | "svgz"
-        | "heic" | "heif" | "avif" | "psd" | "xcf"
-        | "ai" | "eps" | "sketch" | "fig" | "figma" => "◇ ",
+        "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp" | "tiff" | "tif" | "ico" | "svg"
+        | "svgz" | "heic" | "heif" | "avif" | "psd" | "xcf" | "ai" | "eps" | "sketch" | "fig"
+        | "figma" => "◇ ",
         // Archive / packaged binary
-        "zip" | "tar" | "gz" | "tgz" | "bz2" | "xz" | "zst"
-        | "lz4" | "7z" | "rar" | "iso" | "cab"
-        | "deb" | "rpm" | "pkg" | "apk" | "snap" => "■ ",
+        "zip" | "tar" | "gz" | "tgz" | "bz2" | "xz" | "zst" | "lz4" | "7z" | "rar" | "iso"
+        | "cab" | "deb" | "rpm" | "pkg" | "apk" | "snap" => "■ ",
         // Audio + video share the music-note marker -- they read
         // as "media" in this fallback palette.
-        "mp3" | "ogg" | "flac" | "wav" | "m4a" | "aac"
-        | "wma" | "opus" | "aiff"
-        | "mp4" | "mkv" | "avi" | "mov" | "wmv" | "flv"
-        | "webm" | "m4v" | "ogv" => "♪ ",
+        "mp3" | "ogg" | "flac" | "wav" | "m4a" | "aac" | "wma" | "opus" | "aiff" | "mp4"
+        | "mkv" | "avi" | "mov" | "wmv" | "flv" | "webm" | "m4v" | "ogv" => "♪ ",
         // Executable / installable
         "exe" | "msi" | "app" => "▶ ",
         // Source code, dotfiles, and anything not categorised
@@ -287,9 +319,7 @@ fn nerd_glyph_and_color(name: &str, ext: &str) -> (&'static str, IconColor) {
         "env" | "envrc" | "dotenv" => (" ", IconColor::Rgb(0xFAF743)),
         "csv" | "tsv" => (" ", IconColor::Rgb(0x89E051)),
 
-        "sql" | "mysql" | "pgsql" | "psql" | "plsql" | "hql" => {
-            (" ", IconColor::Rgb(0xDAD8D8))
-        }
+        "sql" | "mysql" | "pgsql" | "psql" | "plsql" | "hql" => (" ", IconColor::Rgb(0xDAD8D8)),
         "sqlite" | "sqlite3" | "db" => (" ", IconColor::Rgb(0x003B57)),
         "prisma" => (" ", IconColor::Rgb(0x5A67D8)),
         "graphql" | "gql" => (" ", IconColor::Rgb(0xE535AB)),
@@ -415,9 +445,7 @@ fn ext_color(name: &str, ext: &str) -> IconColor {
         "prisma" => IconColor::Rgb(0x5A67D8),
         "lock" => IconColor::DarkGray,
         "log" => IconColor::DarkGray,
-        "png" | "jpg" | "jpeg" | "gif" | "svg" | "bmp" | "webp" | "ico" => {
-            IconColor::Rgb(0xA074C4)
-        }
+        "png" | "jpg" | "jpeg" | "gif" | "svg" | "bmp" | "webp" | "ico" => IconColor::Rgb(0xA074C4),
         "mp4" | "mkv" | "avi" | "mov" => IconColor::Rgb(0xFD971F),
         "mp3" | "flac" | "wav" | "ogg" => IconColor::Cyan,
         "zip" | "tar" | "gz" | "bz2" | "7z" | "rar" => IconColor::Rgb(0xECA517),
@@ -447,22 +475,55 @@ mod tests {
     #[test]
     fn nerd_fonts_false_picks_glyph_by_file_family() {
         // Config family
-        assert_eq!(entry_visual(&PathBuf::from("Cargo.toml"), false, false).0, "◆ ");
-        assert_eq!(entry_visual(&PathBuf::from("config.yaml"), false, false).0, "◆ ");
+        assert_eq!(
+            entry_visual(&PathBuf::from("Cargo.toml"), false, false).0,
+            "◆ "
+        );
+        assert_eq!(
+            entry_visual(&PathBuf::from("config.yaml"), false, false).0,
+            "◆ "
+        );
         // Document family
-        assert_eq!(entry_visual(&PathBuf::from("README.md"), false, false).0, "≡ ");
-        assert_eq!(entry_visual(&PathBuf::from("LICENSE"), false, false).0, "≡ ");
+        assert_eq!(
+            entry_visual(&PathBuf::from("README.md"), false, false).0,
+            "≡ "
+        );
+        assert_eq!(
+            entry_visual(&PathBuf::from("LICENSE"), false, false).0,
+            "≡ "
+        );
         // Image family
-        assert_eq!(entry_visual(&PathBuf::from("logo.png"), false, false).0, "◇ ");
+        assert_eq!(
+            entry_visual(&PathBuf::from("logo.png"), false, false).0,
+            "◇ "
+        );
         // Archive family
-        assert_eq!(entry_visual(&PathBuf::from("dist.zip"), false, false).0, "■ ");
+        assert_eq!(
+            entry_visual(&PathBuf::from("dist.zip"), false, false).0,
+            "■ "
+        );
         // Media family
-        assert_eq!(entry_visual(&PathBuf::from("song.mp3"), false, false).0, "♪ ");
-        assert_eq!(entry_visual(&PathBuf::from("clip.mp4"), false, false).0, "♪ ");
+        assert_eq!(
+            entry_visual(&PathBuf::from("song.mp3"), false, false).0,
+            "♪ "
+        );
+        assert_eq!(
+            entry_visual(&PathBuf::from("clip.mp4"), false, false).0,
+            "♪ "
+        );
         // Source code + everything else → middle dot
-        assert_eq!(entry_visual(&PathBuf::from("main.rs"), false, false).0, "· ");
-        assert_eq!(entry_visual(&PathBuf::from("script.py"), false, false).0, "· ");
-        assert_eq!(entry_visual(&PathBuf::from(".gitignore"), false, false).0, "◆ ");
+        assert_eq!(
+            entry_visual(&PathBuf::from("main.rs"), false, false).0,
+            "· "
+        );
+        assert_eq!(
+            entry_visual(&PathBuf::from("script.py"), false, false).0,
+            "· "
+        );
+        assert_eq!(
+            entry_visual(&PathBuf::from(".gitignore"), false, false).0,
+            "◆ "
+        );
     }
 
     #[test]

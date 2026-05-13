@@ -20,7 +20,7 @@
 use std::path::PathBuf;
 
 use crate::candidate::{CandidateData, CandidateKind, RawCandidate};
-use crate::insert::{InsertContext, SourceId, PATH_SOURCE_ID};
+use crate::insert::{InsertContext, PATH_SOURCE_ID, SourceId};
 use crate::source::SyncCompletionSource;
 
 /// Hardcoded ignore set for v1 path completion. `.gitignore`
@@ -88,10 +88,7 @@ impl SyncCompletionSource for PathCompletionSource {
             .flatten()
             .filter_map(|entry| {
                 entry.file_name().to_str().map(|name| {
-                    let is_dir = entry
-                        .file_type()
-                        .map(|t| t.is_dir())
-                        .unwrap_or(false);
+                    let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
                     (name.to_string(), is_dir)
                 })
             })

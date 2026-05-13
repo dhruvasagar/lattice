@@ -153,9 +153,9 @@ impl<W: AsyncWrite + Unpin> LspWriter<W> {
     /// `didChange` etc.
     pub async fn write_message(&mut self, msg: &Message) -> Result<(), CodecError> {
         self.encode_buf.clear();
-        let body = msg.to_json().map_err(|e| {
-            CodecError::Decode(MessageDecodeError::Json(e))
-        })?;
+        let body = msg
+            .to_json()
+            .map_err(|e| CodecError::Decode(MessageDecodeError::Json(e)))?;
         let header = framing::encode_header(body.len());
         // Issue header + body as separate write_all calls; tokio
         // coalesces small writes via the underlying buffered
@@ -166,10 +166,7 @@ impl<W: AsyncWrite + Unpin> LspWriter<W> {
             .write_all(header.as_bytes())
             .await
             .map_err(CodecError::Io)?;
-        self.inner
-            .write_all(&body)
-            .await
-            .map_err(CodecError::Io)?;
+        self.inner.write_all(&body).await.map_err(CodecError::Io)?;
         self.inner.flush().await.map_err(CodecError::Io)?;
         Ok(())
     }

@@ -78,8 +78,7 @@ pub struct FileTreeRoot(pub PathBuf);
 
 impl BufferLocal for FileTreeRoot {
     const NAME: &'static str = "file-tree-mode.root";
-    const DOC: &'static str =
-        "Directory the file-tree buffer is rooted at -- the path \
+    const DOC: &'static str = "Directory the file-tree buffer is rooted at -- the path \
          the user passed to `:Tree` (or the workspace root for \
          the default tree).";
     const OWNER_MODE: &'static str = "file-tree-mode";
@@ -99,8 +98,7 @@ pub struct FileTreeEntries(pub Vec<FileTreeEntry>);
 
 impl BufferLocal for FileTreeEntries {
     const NAME: &'static str = "file-tree-mode.entries";
-    const DOC: &'static str =
-        "Flat list of tree entries (directories + files), each \
+    const DOC: &'static str = "Flat list of tree entries (directories + files), each \
          carrying its depth + expansion state. The file-tree \
          renderer iterates this in order; the rope content is \
          derived from it.";
@@ -116,8 +114,7 @@ pub struct FileTreeNerdFonts(pub bool);
 
 impl BufferLocal for FileTreeNerdFonts {
     const NAME: &'static str = "file-tree-mode.nerd-fonts";
-    const DOC: &'static str =
-        "Whether the file-tree buffer's rendered rope embeds \
+    const DOC: &'static str = "Whether the file-tree buffer's rendered rope embeds \
          nerd-font icon glyphs alongside file names.";
     const OWNER_MODE: &'static str = "file-tree-mode";
     fn describe(&self) -> String {
@@ -151,8 +148,14 @@ mod tests {
     #[test]
     fn buffer_local_metadata_owner_mode() {
         assert_eq!(<FileTreeRoot as BufferLocal>::OWNER_MODE, "file-tree-mode");
-        assert_eq!(<FileTreeEntries as BufferLocal>::OWNER_MODE, "file-tree-mode");
-        assert_eq!(<FileTreeNerdFonts as BufferLocal>::OWNER_MODE, "file-tree-mode");
+        assert_eq!(
+            <FileTreeEntries as BufferLocal>::OWNER_MODE,
+            "file-tree-mode"
+        );
+        assert_eq!(
+            <FileTreeNerdFonts as BufferLocal>::OWNER_MODE,
+            "file-tree-mode"
+        );
         assert_eq!(FileTreeRoot(PathBuf::from("/x")).describe(), "/x");
         assert_eq!(FileTreeNerdFonts(true).describe(), "enabled");
         assert_eq!(FileTreeNerdFonts(false).describe(), "disabled");

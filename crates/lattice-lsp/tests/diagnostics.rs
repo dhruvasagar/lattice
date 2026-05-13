@@ -28,14 +28,8 @@ use common::MockServer;
 fn make_diag(line: u32, msg: &str) -> Diagnostic {
     Diagnostic {
         range: Range {
-            start: Position {
-                line,
-                character: 0,
-            },
-            end: Position {
-                line,
-                character: 5,
-            },
+            start: Position { line, character: 0 },
+            end: Position { line, character: 5 },
         },
         severity: Some(DiagnosticSeverity::ERROR),
         code: None,
@@ -147,10 +141,9 @@ async fn malformed_publish_diagnostics_does_not_break_subscriber() {
     let server = MockServer::start().await;
     let mut rx = server.handle.subscribe_diagnostics();
     // Garbage params: missing the required `uri` field.
-    server.mock.push_notification(
-        "textDocument/publishDiagnostics",
-        json!({"oops": true}),
-    );
+    server
+        .mock
+        .push_notification("textDocument/publishDiagnostics", json!({"oops": true}));
     // No event should arrive for the malformed publish.
     tokio::time::sleep(Duration::from_millis(50)).await;
     // Now send a well-formed one and ensure it still arrives.

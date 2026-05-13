@@ -77,28 +77,28 @@ pub mod transport;
 
 pub use actor::{ServerHandle, spawn, spawn_with_io};
 pub use apply_edit::{ApplyEditBus, ApplyEditOutcome, InboundApplyEdit};
+pub use capabilities::{Capabilities, FileOpKind, client_capabilities};
+pub use codec::{LspReader, LspWriter};
+pub use config::{ServerConfig, builtin_servers, resolve_workspace_root};
 pub use configuration::{ConfigurationBus, InboundConfigurationRequest};
+pub use diagnostics::{DIAGNOSTICS_CHANNEL_CAPACITY, DiagnosticEvent, DiagnosticsBus};
+pub use diagnostics_layer::{DiagnosticsLayer, SeverityCounts, pump_diagnostics};
+pub use dynamic_registration::{DynamicRegistration, DynamicRegistry};
+pub use error::{LspError, LspResult};
+pub use events::{
+    LspActorExitReason, LspActorExited, LspBufferAttached, LspBufferDetached, LspCodeLensRefresh,
+    LspDiagnosticRefresh, LspDocumentChanged, LspInlayHintRefresh, LspLogPushed, LspProgressKind,
+    LspProgressUpdate, LspSemanticTokensRefresh,
+};
+pub use file_watcher::{WatcherSubscriptions, compile_with_workspace_root};
+pub use framing::{FrameError, FrameHeader};
+pub use jsonrpc::{Message, Notification, Request, RequestId, Response, ResponseError};
+pub use logging::{LogLevel, LogRecord, LogRing, LogSource, LspLogger};
+pub use pending::{InvocationId, Pending};
 pub use show_document::{InboundShowDocument, ShowDocumentBus, ShowDocumentOutcome};
 pub use show_message_request::{
     InboundShowMessageRequest, ShowMessageRequestBus, ShowMessageRequestOutcome,
 };
-pub use capabilities::{Capabilities, FileOpKind, client_capabilities};
-pub use dynamic_registration::{DynamicRegistration, DynamicRegistry};
-pub use file_watcher::{WatcherSubscriptions, compile_with_workspace_root};
-pub use codec::{LspReader, LspWriter};
-pub use config::{ServerConfig, builtin_servers, resolve_workspace_root};
-pub use diagnostics::{DIAGNOSTICS_CHANNEL_CAPACITY, DiagnosticEvent, DiagnosticsBus};
-pub use diagnostics_layer::{DiagnosticsLayer, SeverityCounts, pump_diagnostics};
-pub use error::{LspError, LspResult};
-pub use events::{
-    LspActorExitReason, LspActorExited, LspBufferAttached, LspBufferDetached,
-    LspCodeLensRefresh, LspDiagnosticRefresh, LspDocumentChanged, LspInlayHintRefresh,
-    LspLogPushed, LspProgressKind, LspProgressUpdate, LspSemanticTokensRefresh,
-};
-pub use logging::{LogLevel, LogRecord, LogRing, LogSource, LspLogger};
-pub use framing::{FrameError, FrameHeader};
-pub use jsonrpc::{Message, Notification, Request, RequestId, Response, ResponseError};
-pub use pending::{InvocationId, Pending};
 pub use supervisor::{
     ActorKey, LspSupervisor, LspSupervisorHandle, RestartReport, SupervisorSnapshot,
 };

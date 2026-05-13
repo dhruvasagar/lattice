@@ -286,8 +286,7 @@ pub struct ActionContext {
 /// `Effect::AppAction(AppEffect::Foo)` for a chord-bound action,
 /// occasionally a richer `Effect::Many([...])` if the action also
 /// emits an edit / mode transition / yank.
-type ActionFn =
-    Box<dyn Fn(&ActionContext) -> GrammarResult<crate::effect::Effect> + Send + Sync>;
+type ActionFn = Box<dyn Fn(&ActionContext) -> GrammarResult<crate::effect::Effect> + Send + Sync>;
 
 pub struct ActionSpec {
     pub apply: ActionFn,
@@ -505,12 +504,7 @@ impl CommandRegistry {
     /// [`crate::effect::Effect`] -- typically
     /// `Effect::AppAction(AppEffect::...)`.
     #[track_caller]
-    pub fn register_action(
-        &mut self,
-        name: &str,
-        doc: &str,
-        spec: ActionSpec,
-    ) -> CommandId {
+    pub fn register_action(&mut self, name: &str, doc: &str, spec: ActionSpec) -> CommandId {
         let source = capture_builtin_source();
         self.insert_action(name, doc, spec, source)
     }

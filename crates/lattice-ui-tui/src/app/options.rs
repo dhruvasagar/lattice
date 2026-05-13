@@ -224,11 +224,7 @@ impl App {
         // `self.active_modes[buffer]`; absent ⇒ empty (no major,
         // no minors). M.3 lands the per-kind majors that
         // populate this map at buffer creation.
-        let modes_snapshot = self
-            .active_modes
-            .get(&buffer)
-            .cloned()
-            .unwrap_or_default();
+        let modes_snapshot = self.active_modes.get(&buffer).cloned().unwrap_or_default();
 
         let mut mode_contributions: Vec<lattice_config::OptionOverrideSet> =
             Vec::with_capacity(modes_snapshot.minors().len() + 1);
@@ -297,10 +293,7 @@ impl App {
     /// finds it empty, and falls through to the v1 hardcoded
     /// calls -- proving the read path works without changing
     /// behaviour.
-    pub fn recompute_active_completion_sources_for(
-        &mut self,
-        buffer: crate::buffers::BufferId,
-    ) {
+    pub fn recompute_active_completion_sources_for(&mut self, buffer: crate::buffers::BufferId) {
         let mut merged: Vec<lattice_completion::CompletionSourceContribution> = Vec::new();
         if let Some(modes_snapshot) = self.active_modes.get(&buffer).cloned() {
             if let Some(major_id) = modes_snapshot.major()
@@ -348,9 +341,7 @@ impl App {
         {
             return v;
         }
-        self.config
-            .get_typed::<D>()
-            .expect("option not registered")
+        self.config.get_typed::<D>().expect("option not registered")
     }
 
     pub(super) fn do_set(&mut self, option: &str) {
@@ -643,7 +634,10 @@ impl App {
                     .map(|s| s.get_formatted())
                     .unwrap_or_else(|| "?".into());
                 let header = if current == default {
-                    format!("- **{}**{} : {} = {}", meta.name, aliases, type_label, current)
+                    format!(
+                        "- **{}**{} : {} = {}",
+                        meta.name, aliases, type_label, current
+                    )
                 } else {
                     format!(
                         "- **{}**{} : {} = {} (default: {})",
@@ -691,10 +685,7 @@ impl App {
     /// Returned as owned `String`s to keep the borrow short --
     /// callers typically follow up with
     /// `take_pending_structural_section(full)` mutating the map.
-    pub(super) fn pending_structural_section_paths(
-        &self,
-        namespace: &str,
-    ) -> Vec<String> {
+    pub(super) fn pending_structural_section_paths(&self, namespace: &str) -> Vec<String> {
         let prefix = format!("{namespace}.");
         self.pending_config_structural_sections
             .keys()
@@ -736,7 +727,10 @@ impl App {
             let body = if count == 1 {
                 format!("config: {}", warnings[0])
             } else {
-                format!("config: {count} per-language warnings (first: {})", warnings[0])
+                format!(
+                    "config: {count} per-language warnings (first: {})",
+                    warnings[0]
+                )
             };
             self.set_message(EchoLevel::Warn, body);
         }
@@ -780,27 +774,21 @@ fn parse_per_language_overrides_table(
                 Some(arr) => {
                     let sources: Vec<lattice_completion::SourceId> = arr
                         .iter()
-                        .filter_map(|v| {
-                            v.as_str().map(lattice_completion::canonical_source_id)
-                        })
+                        .filter_map(|v| v.as_str().map(lattice_completion::canonical_source_id))
                         .collect();
                     out.sources = Some(sources);
                 }
-                None => warnings.push(format!(
-                    "{section_path}.sources: expected array of strings",
-                )),
+                None => {
+                    warnings.push(format!("{section_path}.sources: expected array of strings",))
+                }
             },
             "auto_trigger" => match value.as_bool() {
                 Some(b) => out.auto_trigger = Some(b),
-                None => warnings.push(format!(
-                    "{section_path}.auto_trigger: expected bool",
-                )),
+                None => warnings.push(format!("{section_path}.auto_trigger: expected bool",)),
             },
             "auto_insert_single" => match value.as_bool() {
                 Some(b) => out.auto_insert_single = Some(b),
-                None => warnings.push(format!(
-                    "{section_path}.auto_insert_single: expected bool",
-                )),
+                None => warnings.push(format!("{section_path}.auto_insert_single: expected bool",)),
             },
             "suppress_in" => match value.as_array() {
                 Some(arr) => {
@@ -827,8 +815,10 @@ fn parse_per_language_overrides_table(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
 
+    use crate::app::test_helpers::{
+        app_in_command_mode, app_with, submit_ex, subscribe_all_events,
+    };
     use crate::app::*;
-    use crate::app::test_helpers::{app_in_command_mode, app_with, subscribe_all_events, submit_ex};
     use lattice_grammar::ModalState;
     use lattice_protocol::Event;
 
@@ -1124,7 +1114,10 @@ mod tests {
             body.contains("## completion"),
             "missing completion section\n{body}"
         );
-        assert!(body.contains("## display"), "missing display section\n{body}");
+        assert!(
+            body.contains("## display"),
+            "missing display section\n{body}"
+        );
         // Each option's doc string is included alongside the row.
         // `tabstop`'s doc starts with "Number of spaces a hard tab".
         assert!(
@@ -1292,10 +1285,7 @@ mod tests {
         a.buffers.insert(BufferEntry {
             id: other,
             flags: BufferFlags::default(),
-            data: BufferData::Document(DocumentEntry {
-                id: other,
-                handle,
-            }),
+            data: BufferData::Document(DocumentEntry { id: other, handle }),
         });
         // Buffer-local: Number = false on `other`.
         let mut local = lattice_config::OptionOverrideSet::new();
@@ -1324,10 +1314,7 @@ mod tests {
     #[test]
     fn help_buffer_resolves_read_only_true() {
         let mut a = app_with("hi", 5);
-        let help = crate::help::HelpContent::from_lines(
-            "test",
-            vec!["line one".to_string()],
-        );
+        let help = crate::help::HelpContent::from_lines("test", vec!["line one".to_string()]);
         let help_id = a.open_help_in_pane(help);
         let read_only: bool = *a.resolved_option::<lattice_config::ReadOnly>(help_id);
         assert!(
@@ -1344,8 +1331,6 @@ mod tests {
             "ReadOnly should be non-customizable (mode-driven)"
         );
     }
-
-
 
     #[test]
     fn set_number_and_nonumber_toggle_show_line_numbers() {
@@ -1466,13 +1451,10 @@ mod tests {
         // TOML being loaded.
         let a = app_with("", 5);
         let eff = a.effective_completion_for("markdown");
-        let lsp_id = lattice_completion::SourceId::new(
-            lattice_completion::LSP_COMPLETION_SOURCE_ID,
-        );
+        let lsp_id =
+            lattice_completion::SourceId::new(lattice_completion::LSP_COMPLETION_SOURCE_ID);
         assert!(!eff.source_enabled(&lsp_id), "markdown default drops LSP");
-        let snippet_id = lattice_completion::SourceId::new(
-            lattice_completion::SNIPPET_SOURCE_ID,
-        );
+        let snippet_id = lattice_completion::SourceId::new(lattice_completion::SNIPPET_SOURCE_ID);
         assert!(eff.source_enabled(&snippet_id), "markdown keeps snippet");
         assert!(!eff.auto_trigger);
     }
@@ -1489,7 +1471,6 @@ mod tests {
         assert!(eff.sources.is_none());
     }
 
-
     #[test]
     fn reload_snippets_with_no_dirs_reports_empty() {
         let mut a = app_with("", 10);
@@ -1503,10 +1484,7 @@ mod tests {
         // Build a tempdir with `_global.json` (any-language)
         // and `rust.json` (language-specific). Reload should
         // route them into the right per-language slots.
-        let dir = std::env::temp_dir().join(format!(
-            "lattice-snippet-test-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("lattice-snippet-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
@@ -1534,5 +1512,4 @@ mod tests {
         assert!(a.snippet_registry.load().lookup("python", "for").is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
-
 }

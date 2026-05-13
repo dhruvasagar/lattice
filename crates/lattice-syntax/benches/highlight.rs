@@ -17,8 +17,8 @@
 
 use criterion::{BatchSize, BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 
-use lattice_protocol::edit::EditDelta;
 use lattice_protocol::Position;
+use lattice_protocol::edit::EditDelta;
 use lattice_syntax::{Lang, Syntax};
 
 fn rust_corpus(n_fns: usize) -> String {
@@ -114,12 +114,16 @@ fn highlight_rust_viewport(c: &mut Criterion) {
     let mut s = Syntax::for_language(Lang::Rust).unwrap().unwrap();
     s.parse(&corpus);
     for &(label, height) in &[("24_lines", 24u32), ("60_lines", 60), ("120_lines", 120)] {
-        g.bench_with_input(BenchmarkId::from_parameter(label), &height, |bencher, &h| {
-            bencher.iter(|| {
-                let lines = s.highlight_lines_native(0, black_box(h)).unwrap();
-                black_box(lines);
-            });
-        });
+        g.bench_with_input(
+            BenchmarkId::from_parameter(label),
+            &height,
+            |bencher, &h| {
+                bencher.iter(|| {
+                    let lines = s.highlight_lines_native(0, black_box(h)).unwrap();
+                    black_box(lines);
+                });
+            },
+        );
     }
     g.finish();
 }

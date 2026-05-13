@@ -63,9 +63,7 @@ pub enum ModeActivationError {
     /// [`crate::ModeContext::remove_local`] paths check
     /// `T::OWNER_MODE` against the currently activating
     /// mode's id; mismatch produces this error.
-    #[error(
-        "mode `{current}` cannot write buffer-local `{local}` (owner is `{owner}`)"
-    )]
+    #[error("mode `{current}` cannot write buffer-local `{local}` (owner is `{owner}`)")]
     WrongOwnerMode {
         /// The currently-activating mode that attempted the
         /// write.

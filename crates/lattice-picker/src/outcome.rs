@@ -86,7 +86,9 @@ mod tests {
 
     #[test]
     fn open_file_clone_preserves_path() {
-        let o = PickerAcceptOutcome::OpenFile { path: "/tmp/x.rs".into() };
+        let o = PickerAcceptOutcome::OpenFile {
+            path: "/tmp/x.rs".into(),
+        };
         let clone = o.clone();
         match clone {
             PickerAcceptOutcome::OpenFile { path } => assert_eq!(path, PathBuf::from("/tmp/x.rs")),
@@ -96,9 +98,17 @@ mod tests {
 
     #[test]
     fn jump_in_buffer_carries_coordinates() {
-        let o = PickerAcceptOutcome::JumpInBuffer { buffer_id: 7, line: 41, col: 3 };
+        let o = PickerAcceptOutcome::JumpInBuffer {
+            buffer_id: 7,
+            line: 41,
+            col: 3,
+        };
         match o {
-            PickerAcceptOutcome::JumpInBuffer { buffer_id, line, col } => {
+            PickerAcceptOutcome::JumpInBuffer {
+                buffer_id,
+                line,
+                col,
+            } => {
                 assert_eq!(buffer_id, 7);
                 assert_eq!(line, 41);
                 assert_eq!(col, 3);

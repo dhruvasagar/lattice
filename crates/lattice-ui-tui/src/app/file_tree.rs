@@ -37,9 +37,7 @@ use std::path::{Path, PathBuf};
 
 use lattice_protocol::position::Position;
 
-use super::{
-    App, BufferData, BufferEntry, BufferFlags, BufferKind, EchoLevel, PositionSource,
-};
+use super::{App, BufferData, BufferEntry, BufferFlags, BufferKind, EchoLevel, PositionSource};
 use crate::file_tree::{FileTreeBuffer, FileTreeEntry, FileTreeEntryKind};
 
 impl App {
@@ -130,7 +128,10 @@ impl App {
     /// matches `root`. Mirrors `App::oil_with_dir` -- registry
     /// can't answer on its own (root lives in buffer-locals).
     pub(super) fn file_tree_with_root(&self, root: &Path) -> Option<crate::buffers::BufferId> {
-        self.buffers.file_tree_ids().into_iter().find(|&id| self.file_tree_root_for(id).as_deref() == Some(root))
+        self.buffers
+            .file_tree_ids()
+            .into_iter()
+            .find(|&id| self.file_tree_root_for(id).as_deref() == Some(root))
     }
 
     /// `:Tree [path]` (DESIGN.md §5.9 buffer-as-content). Opens a
@@ -140,7 +141,11 @@ impl App {
     pub(super) fn do_open_file_tree(&mut self, root: Option<PathBuf>) {
         let root = match root {
             Some(p) => p,
-            None => match self.document.path().and_then(|p| p.parent().map(Into::into)) {
+            None => match self
+                .document
+                .path()
+                .and_then(|p| p.parent().map(Into::into))
+            {
                 Some(parent) => parent,
                 None => match std::env::current_dir() {
                     Ok(p) => p,

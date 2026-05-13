@@ -266,10 +266,7 @@ impl ServerHandle {
             method: method.to_string(),
             params: Some(params_json),
         };
-        self.inner
-            .cmd_tx
-            .send(cmd)
-            .map_err(|_| LspError::ActorGone)
+        self.inner.cmd_tx.send(cmd).map_err(|_| LspError::ActorGone)
     }
 
     /// 4.4.b: send `$/setTrace { value }` to the server (LSP
@@ -279,10 +276,7 @@ impl ServerHandle {
     /// notifications which the host routes into the
     /// `*lsp:<server>:trace*` ring.
     pub fn set_trace(&self, value: lsp_types::TraceValue) -> LspResult<()> {
-        self.notify(
-            "$/setTrace",
-            lsp_types::SetTraceParams { value },
-        )
+        self.notify("$/setTrace", lsp_types::SetTraceParams { value })
     }
 
     /// Cancel an in-flight server-side `$/progress` operation
@@ -314,10 +308,7 @@ impl ServerHandle {
     /// (added in 4.2 alongside the navigation features).
     pub fn cancel(&self, jsonrpc_id: i64) -> LspResult<()> {
         let cmd = ActorCmd::Cancel { id: jsonrpc_id };
-        self.inner
-            .cmd_tx
-            .send(cmd)
-            .map_err(|_| LspError::ActorGone)
+        self.inner.cmd_tx.send(cmd).map_err(|_| LspError::ActorGone)
     }
 
     /// Open a document in the actor's own DocSync mirror and emit
@@ -514,8 +505,7 @@ where
     // `client/(un)registerCapability` modifies the dynamic
     // registry; readers (`ServerHandle::capabilities()`) load
     // through the same cell.
-    let (handshake_tx, handshake_rx) =
-        oneshot::channel::<LspResult<Arc<ArcSwap<Capabilities>>>>();
+    let (handshake_tx, handshake_rx) = oneshot::channel::<LspResult<Arc<ArcSwap<Capabilities>>>>();
 
     let server_id = config.id.clone();
     let init_options = config.initialization_options.clone();
@@ -711,7 +701,11 @@ async fn actor_main<R, W>(
     // `*lsp:<server>*` ring at Warn (server stderr is the
     // canonical "something's up" signal).
     if let Some(stderr) = stderr {
-        tokio::spawn(stderr_drain(stderr, Arc::clone(&server_id_arc), logger.clone()));
+        tokio::spawn(stderr_drain(
+            stderr,
+            Arc::clone(&server_id_arc),
+            logger.clone(),
+        ));
     }
 
     // Spawn write_loop. Mutex around the writer because
@@ -1466,12 +1460,7 @@ fn handle_server_notification(
             // -- that's intentional, the user opted in by
             // running `:lsp-trace`.
             let (message, verbose) = parse_log_trace(n.params.as_ref());
-            logger.log(
-                Some(server_id),
-                LogLevel::Trace,
-                LogSource::Trace,
-                message,
-            );
+            logger.log(Some(server_id), LogLevel::Trace, LogSource::Trace, message);
             if let Some(verbose) = verbose {
                 logger.log(
                     Some(server_id),
@@ -1594,10 +1583,7 @@ fn parse_log_trace(params: Option<&Value>) -> (String, Option<String>) {
         .and_then(Value::as_str)
         .map(str::to_owned)
         .unwrap_or_else(|| compact_params(&Some(p.clone())));
-    let verbose = p
-        .get("verbose")
-        .and_then(Value::as_str)
-        .map(str::to_owned);
+    let verbose = p.get("verbose").and_then(Value::as_str).map(str::to_owned);
     (message, verbose)
 }
 

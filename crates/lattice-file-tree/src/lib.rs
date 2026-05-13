@@ -86,10 +86,7 @@ impl FileTreeBuffer {
     /// responsible for seeding the [`modes::FileTreeRoot`] /
     /// [`modes::FileTreeEntries`] / [`modes::FileTreeNerdFonts`]
     /// buffer-locals from these values.
-    pub fn open(
-        root: &Path,
-        nerd_fonts: bool,
-    ) -> std::io::Result<(Self, Vec<FileTreeEntry>)> {
+    pub fn open(root: &Path, nerd_fonts: bool) -> std::io::Result<(Self, Vec<FileTreeEntry>)> {
         let entries = initial_entries(root)?;
         let content = render_to_buffer(&entries, nerd_fonts);
         let buf = Self {
@@ -182,10 +179,7 @@ pub fn initial_entries(root: &Path) -> std::io::Result<Vec<FileTreeEntry>> {
 /// [`render_to_buffer`] and a `FileTreeEntries` buffer-local
 /// write to atomically refresh both halves of the file-tree
 /// representation.
-pub fn toggle_entries_at(
-    entries: &mut Vec<FileTreeEntry>,
-    index: usize,
-) -> std::io::Result<()> {
+pub fn toggle_entries_at(entries: &mut Vec<FileTreeEntry>, index: usize) -> std::io::Result<()> {
     let Some(entry) = entries.get(index) else {
         return Ok(());
     };
@@ -332,7 +326,10 @@ mod tests {
         let (_buf, entries) = FileTreeBuffer::open(&dir, false).unwrap();
         // Root + 2 children = 3 entries.
         assert_eq!(entries.len(), 3);
-        assert!(matches!(entries[1].kind, FileTreeEntryKind::Directory { .. }));
+        assert!(matches!(
+            entries[1].kind,
+            FileTreeEntryKind::Directory { .. }
+        ));
         assert!(matches!(entries[2].kind, FileTreeEntryKind::File));
         std::fs::remove_dir_all(dir).ok();
     }
@@ -392,7 +389,10 @@ mod tests {
         std::fs::write(dir.join("main.rs"), "x").unwrap();
         let (buf, _) = FileTreeBuffer::open(&dir, true).unwrap();
         let body = buf.content.as_string();
-        assert!(body.contains("󱘗 "), "expected rust glyph in rope, got: {body}");
+        assert!(
+            body.contains("󱘗 "),
+            "expected rust glyph in rope, got: {body}"
+        );
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -402,9 +402,15 @@ mod tests {
         std::fs::write(dir.join("main.rs"), "x").unwrap();
         let (buf, _) = FileTreeBuffer::open(&dir, false).unwrap();
         let body = buf.content.as_string();
-        assert!(!body.contains("󱘗 "), "nerd-font glyph leaked into nerd_fonts=false body: {body}");
+        assert!(
+            !body.contains("󱘗 "),
+            "nerd-font glyph leaked into nerd_fonts=false body: {body}"
+        );
         // Source-code default bucket = middle-dot.
-        assert!(body.contains("· main.rs"), "expected BMP fallback for main.rs, got: {body}");
+        assert!(
+            body.contains("· main.rs"),
+            "expected BMP fallback for main.rs, got: {body}"
+        );
         std::fs::remove_dir_all(dir).ok();
     }
 }

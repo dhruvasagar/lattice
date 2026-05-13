@@ -75,7 +75,10 @@ impl App {
     /// dir lives in buffer-locals; we walk the registry's
     /// oil-id list and probe each buffer-local entry.
     pub(super) fn oil_with_dir(&self, dir: &Path) -> Option<crate::buffers::BufferId> {
-        self.buffers.oil_ids().into_iter().find(|&id| self.oil_dir_for(id).as_deref() == Some(dir))
+        self.buffers
+            .oil_ids()
+            .into_iter()
+            .find(|&id| self.oil_dir_for(id).as_deref() == Some(dir))
     }
 
     /// `:Oil [dir]` -- open an oil buffer rooted at `dir` (or the
@@ -84,7 +87,11 @@ impl App {
     pub(super) fn do_open_oil(&mut self, dir: Option<PathBuf>) {
         let dir = match dir {
             Some(p) => p,
-            None => match self.document.path().and_then(|p| p.parent().map(Into::into)) {
+            None => match self
+                .document
+                .path()
+                .and_then(|p| p.parent().map(Into::into))
+            {
                 Some(parent) => parent,
                 None => match std::env::current_dir() {
                     Ok(p) => p,
@@ -97,13 +104,19 @@ impl App {
         };
         if let Some(existing_id) = self.oil_with_dir(&dir) {
             self.activate_oil(existing_id);
-            self.set_message(EchoLevel::Info, format!("oil: {} (already open)", dir.display()));
+            self.set_message(
+                EchoLevel::Info,
+                format!("oil: {} (already open)", dir.display()),
+            );
             return;
         }
         let oil = match crate::oil::OilBuffer::open(&dir) {
             Ok(o) => o,
             Err(e) => {
-                self.set_message(EchoLevel::Error, format!("oil open error: {}: {e}", dir.display()));
+                self.set_message(
+                    EchoLevel::Error,
+                    format!("oil open error: {}: {e}", dir.display()),
+                );
                 return;
             }
         };
@@ -142,7 +155,9 @@ impl App {
 
     pub(super) fn do_oil_follow(&mut self) {
         let active_id = self.active_pane_buffer_id();
-        let Some(oil) = self.buffers.oil(active_id) else { return; };
+        let Some(oil) = self.buffers.oil(active_id) else {
+            return;
+        };
         // Read the entry by the App's hot-path cursor line
         // (the cursor the user actually moves with `j` / `k`).
         let idx = self.cursor.line as usize;
@@ -196,10 +211,7 @@ impl App {
                     // Already at the filesystem root; no-op.
                     return;
                 };
-                let reload_result = self
-                    .buffers
-                    .oil_mut(id)
-                    .map(|oil| oil.reload(&parent));
+                let reload_result = self.buffers.oil_mut(id).map(|oil| oil.reload(&parent));
                 match reload_result {
                     Some(Err(e)) => {
                         self.set_message(EchoLevel::Error, format!("oil navigate up: {e}"));
@@ -218,20 +230,18 @@ impl App {
                 // buffer-local; index by the App's cursor line
                 // (same pattern as oil's `do_oil_follow`).
                 let line = self.cursor.line;
-                let dir = self
-                    .file_tree_entries_for(id)
-                    .and_then(|entries| {
-                        crate::file_tree::entry_at_line(&entries, line).map(|e| {
-                            if matches!(
-                                e.kind,
-                                crate::file_tree::FileTreeEntryKind::Directory { .. }
-                            ) {
-                                e.path.clone()
-                            } else {
-                                e.path.parent().unwrap_or(&e.path).to_path_buf()
-                            }
-                        })
-                    });
+                let dir = self.file_tree_entries_for(id).and_then(|entries| {
+                    crate::file_tree::entry_at_line(&entries, line).map(|e| {
+                        if matches!(
+                            e.kind,
+                            crate::file_tree::FileTreeEntryKind::Directory { .. }
+                        ) {
+                            e.path.clone()
+                        } else {
+                            e.path.parent().unwrap_or(&e.path).to_path_buf()
+                        }
+                    })
+                });
                 self.do_open_oil(dir);
             }
             _ => {

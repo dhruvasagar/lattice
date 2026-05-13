@@ -21,7 +21,9 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
 
-use lsp_types::{DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams, Uri};
+use lsp_types::{
+    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams, Uri,
+};
 use serde_json::json;
 
 use lattice_lsp::{LspLogger, LspSupervisor};
@@ -86,7 +88,8 @@ async fn record_edit_then_flush_emits_did_change() {
     )
     .unwrap();
 
-    sup.record_edit(&uri, &Edit::insert(Position::new(0, 0), "x")).unwrap();
+    sup.record_edit(&uri, &Edit::insert(Position::new(0, 0), "x"))
+        .unwrap();
     sup.flush(&uri).unwrap();
     tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -299,7 +302,8 @@ async fn multi_buffer_isolation_edits_dont_cross() {
     assert_eq!(sup.attached_buffer_count(), 2);
 
     // Edit only A.
-    sup.record_edit(&uri_a, &Edit::insert(Position::new(0, 4), "1")).unwrap();
+    sup.record_edit(&uri_a, &Edit::insert(Position::new(0, 4), "1"))
+        .unwrap();
     sup.flush(&uri_a).unwrap();
     tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -359,7 +363,10 @@ async fn re_attach_to_same_uri_is_noop() {
 
     // open_buffer returns existing attachments without
     // re-issuing didOpen.
-    let attached = sup.open_buffer(PathBuf::from("/tmp/once.rs"), "x".into()).await.unwrap();
+    let attached = sup
+        .open_buffer(PathBuf::from("/tmp/once.rs"), "x".into())
+        .await
+        .unwrap();
     // open_buffer with no matching config returns empty even
     // though the URI is already attached. attach_handle is the
     // canonical re-entry; this test simply checks no crash.

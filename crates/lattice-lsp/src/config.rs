@@ -203,10 +203,7 @@ pub fn builtin_servers() -> Vec<ServerConfig> {
 /// (and for standalone-crate Rust projects with no enclosing
 /// workspace) the *nearest* match still wins -- the historical
 /// behaviour and what every other language wants.
-pub fn resolve_workspace_root(
-    start_dir: &std::path::Path,
-    markers: &[String],
-) -> PathBuf {
+pub fn resolve_workspace_root(start_dir: &std::path::Path, markers: &[String]) -> PathBuf {
     let mut nearest_marker_dir: Option<PathBuf> = None;
     let mut outermost_workspace_dir: Option<PathBuf> = None;
     let cargo_marker_present = markers.iter().any(|m| m == "Cargo.toml");
@@ -320,8 +317,11 @@ mod tests {
         // beyond `.git`; otherwise we'd anchor every workspace at
         // the user's home dir.
         for cfg in builtin_servers() {
-            let non_git: Vec<&String> =
-                cfg.root_markers.iter().filter(|m| m.as_str() != ".git").collect();
+            let non_git: Vec<&String> = cfg
+                .root_markers
+                .iter()
+                .filter(|m| m.as_str() != ".git")
+                .collect();
             assert!(
                 !non_git.is_empty(),
                 "{} only has .git as a root marker -- needs a language-specific anchor",

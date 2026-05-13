@@ -104,8 +104,14 @@ mod tests {
         r.init_from_linkme();
         assert!(*r.get_typed::<UiDimInactive>().unwrap());
         assert_eq!(r.get_typed::<UiSeparator>().unwrap().as_str(), "│");
-        assert_eq!(r.get_typed::<UiSeparatorColor>().unwrap().as_str(), "darkgray");
-        assert_eq!(r.get_typed::<UiStatuslineActiveFg>().unwrap().as_str(), "default");
+        assert_eq!(
+            r.get_typed::<UiSeparatorColor>().unwrap().as_str(),
+            "darkgray"
+        );
+        assert_eq!(
+            r.get_typed::<UiStatuslineActiveFg>().unwrap().as_str(),
+            "default"
+        );
         assert_eq!(
             r.get_typed::<UiStatuslineInactiveFg>().unwrap().as_str(),
             "darkgray"

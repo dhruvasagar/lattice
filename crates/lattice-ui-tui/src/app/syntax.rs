@@ -38,9 +38,7 @@ impl App {
         // Clone the handle (cheap Arc bump) to release the
         // immutable `self` borrow before we mutably borrow
         // `self.pending_syntax_edits` below.
-        let syntax = self
-            .document_syntax_for(self.document_buffer_id)
-            .cloned();
+        let syntax = self.document_syntax_for(self.document_buffer_id).cloned();
         if let Some(syntax) = syntax {
             // Slice B.2 part 2: ship the accumulated EditDeltas
             // to the worker. Worker applies them via tree.edit()
@@ -56,12 +54,7 @@ impl App {
             // the input thread.
             let edits = std::mem::take(&mut self.pending_syntax_edits);
             let buffer = self.document.snapshot().buffer.clone();
-            syntax.request_reparse(
-                self.last_synced_syntax_version,
-                tv,
-                buffer,
-                edits,
-            );
+            syntax.request_reparse(self.last_synced_syntax_version, tv, buffer, edits);
         }
         self.last_parsed_text_version = tv;
         // Worker WILL be at this version after the request

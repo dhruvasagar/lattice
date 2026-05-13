@@ -92,9 +92,7 @@ impl<'a> FrameView<'a> {
         Self {
             app,
             folds: Arc::from(app.folds.clone().into_boxed_slice()),
-            visible_highlights: Arc::from(
-                app.visible_highlights.clone().into_boxed_slice(),
-            ),
+            visible_highlights: Arc::from(app.visible_highlights.clone().into_boxed_slice()),
             show_line_numbers: app.show_line_numbers(),
             relative_line_numbers: app.relative_line_numbers(),
         }
@@ -110,9 +108,7 @@ impl<'a> FrameView<'a> {
         Self {
             app,
             folds: Arc::from(app.folds.clone().into_boxed_slice()),
-            visible_highlights: Arc::from(
-                app.visible_highlights.clone().into_boxed_slice(),
-            ),
+            visible_highlights: Arc::from(app.visible_highlights.clone().into_boxed_slice()),
             show_line_numbers: app.show_line_numbers_for(buffer_id),
             relative_line_numbers: app.relative_line_numbers_for(buffer_id),
         }
@@ -312,13 +308,7 @@ fn draw_insert_completion_popup(
     // the helper from the hover popup path.
     let pane_rect = active_pane_content_rect(app, buffer_area).unwrap_or(buffer_area);
     let view = FrameView::from_app(app);
-    let anchor_screen = cursor_screen_position_at(
-        &view,
-        snap,
-        pane_rect,
-        app.cursor,
-        app.scroll,
-    );
+    let anchor_screen = cursor_screen_position_at(&view, snap, pane_rect, app.cursor, app.scroll);
     let (anchor_x, anchor_y) = anchor_screen.unwrap_or((buffer_area.x, buffer_area.y));
     // Below if there's room, else above.
     let area_bottom = buffer_area.y + buffer_area.height;
@@ -490,13 +480,7 @@ fn draw_insert_completion_docs_popup(
     // active pane rect for placement math.
     let pane_rect = active_pane_content_rect(app, buffer_area).unwrap_or(buffer_area);
     let view = FrameView::from_app(app);
-    let anchor_screen = cursor_screen_position_at(
-        &view,
-        snap,
-        pane_rect,
-        app.cursor,
-        app.scroll,
-    );
+    let anchor_screen = cursor_screen_position_at(&view, snap, pane_rect, app.cursor, app.scroll);
     let (anchor_x, anchor_y) = anchor_screen.unwrap_or((buffer_area.x, buffer_area.y));
     // Candidate popup geometry (mirrors `draw_insert_completion_popup`).
     let cand_width: u16 = 60u16.min(buffer_area.width.saturating_sub(2)).max(30);
@@ -514,18 +498,12 @@ fn draw_insert_completion_docs_popup(
     // If there's not enough room, place below the candidate
     // popup instead.
     let cand_right = cand_x + cand_width;
-    let space_right =
-        (buffer_area.x + buffer_area.width).saturating_sub(cand_right + 1);
+    let space_right = (buffer_area.x + buffer_area.width).saturating_sub(cand_right + 1);
     let docs_width: u16 = 60u16.min(space_right);
     let (x, y, width, height) = if docs_width >= 30 {
         // Right side, same vertical extent as the candidate
         // popup.
-        (
-            cand_right + 1,
-            cand_y,
-            docs_width,
-            cand_height,
-        )
+        (cand_right + 1, cand_y, docs_width, cand_height)
     } else {
         // Below the candidate popup, full popup width, capped
         // at remaining vertical space.
@@ -593,10 +571,7 @@ fn insert_candidate_line<'a>(
         .add_modifier(Modifier::BOLD);
     let glyph = candidate_kind_glyph(c.raw.kind);
     // 3-cell kind column (selected/unselected) + leading space.
-    let mut spans: Vec<Span<'a>> = vec![Span::styled(
-        format!(" {glyph}  "),
-        row_style,
-    )];
+    let mut spans: Vec<Span<'a>> = vec![Span::styled(format!(" {glyph}  "), row_style)];
     // Label with match-face spans on `c.match_ranges`.
     let label = &c.raw.display;
     let mut cursor = 0usize;
@@ -615,9 +590,7 @@ fn insert_candidate_line<'a>(
         spans.push(Span::styled(
             label[range.start..range.end].to_string(),
             if selected {
-                match_style
-                    .bg(Color::DarkGray)
-                    .add_modifier(Modifier::BOLD)
+                match_style.bg(Color::DarkGray).add_modifier(Modifier::BOLD)
             } else {
                 match_style
             },
@@ -625,10 +598,7 @@ fn insert_candidate_line<'a>(
         cursor = range.end;
     }
     if cursor < label.len() {
-        spans.push(Span::styled(
-            label[cursor..].to_string(),
-            row_style,
-        ));
+        spans.push(Span::styled(label[cursor..].to_string(), row_style));
     }
     // Source tag, right-aligned. Inferred from kind for v1 --
     // CandidateData::Plain doesn't carry a source id today.
@@ -638,10 +608,8 @@ fn insert_candidate_line<'a>(
     // Pad to push the tag right-aligned. Computing the
     // visible width of the spans we just emitted is cheap
     // for v1 (labels are short).
-    let label_len: usize =
-        spans.iter().map(|s| s.content.chars().count()).sum();
-    let target_pad = (width as usize)
-        .saturating_sub(label_len + source_tag.len() + 1);
+    let label_len: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+    let target_pad = (width as usize).saturating_sub(label_len + source_tag.len() + 1);
     if target_pad > 0 {
         spans.push(Span::styled(" ".repeat(target_pad), row_style));
     }
@@ -924,12 +892,7 @@ fn help_render_data<'a>(
     (highlights, links)
 }
 
-fn draw_help_overlay(
-    frame: &mut Frame,
-    buffer_area: Rect,
-    app: &App,
-    snap: &DocumentSnapshot,
-) {
+fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App, snap: &DocumentSnapshot) {
     let Some(help) = app.popup_help() else {
         return;
     };
@@ -1025,24 +988,15 @@ fn draw_help_overlay(
                     if let Some((overlay_start, overlay_end)) =
                         match_overlay_range(range, line_idx as u32, line_len)
                     {
-                        body = apply_match_overlay(
-                            body,
-                            overlay_start,
-                            overlay_end,
-                            hlsearch_style(),
-                        );
+                        body =
+                            apply_match_overlay(body, overlay_start, overlay_end, hlsearch_style());
                     }
                 }
                 if let Some(range) = app.current_match
                     && let Some((overlay_start, overlay_end)) =
                         match_overlay_range(range, line_idx as u32, line_len)
                 {
-                    body = apply_match_overlay(
-                        body,
-                        overlay_start,
-                        overlay_end,
-                        match_style(),
-                    );
+                    body = apply_match_overlay(body, overlay_start, overlay_end, match_style());
                 }
             }
             Line::from(body)
@@ -2000,8 +1954,10 @@ fn draw_file_tree_pane(
         .map(|((i, raw_line), entry)| {
             let line_idx = scroll + i;
             let is_cursor = is_active && line_idx == cursor_line;
-            let is_dir =
-                matches!(entry.kind, crate::file_tree::FileTreeEntryKind::Directory { .. });
+            let is_dir = matches!(
+                entry.kind,
+                crate::file_tree::FileTreeEntryKind::Directory { .. }
+            );
             let (_glyph, entry_style) =
                 crate::icons::icon_for_entry(&entry.path, is_dir, nerd_fonts, theme);
             let cursor_mod = if is_cursor {
@@ -2062,10 +2018,16 @@ fn draw_oil_pane(
             let is_dir = entry.map(|e| e.is_dir).unwrap_or(false);
             let entry_name = entry.map(|e| e.name.as_str()).unwrap_or("");
             let path = dir.join(entry_name);
-            let (icon, entry_style) = crate::icons::icon_for_entry(&path, is_dir, nerd_fonts, theme);
-            let cursor_mod = if is_cursor { Modifier::REVERSED } else { Modifier::empty() };
+            let (icon, entry_style) =
+                crate::icons::icon_for_entry(&path, is_dir, nerd_fonts, theme);
+            let cursor_mod = if is_cursor {
+                Modifier::REVERSED
+            } else {
+                Modifier::empty()
+            };
             let icon_span = Span::styled(icon.to_string(), entry_style.add_modifier(cursor_mod));
-            let name_span = Span::styled(name_str.to_string(), entry_style.add_modifier(cursor_mod));
+            let name_span =
+                Span::styled(name_str.to_string(), entry_style.add_modifier(cursor_mod));
             Line::from(vec![icon_span, name_span])
         })
         .collect();
@@ -2075,7 +2037,8 @@ fn draw_oil_pane(
         let row_off = row_off.min(area.height.saturating_sub(1) as usize);
         // Both nerd-font and BMP fallback glyphs occupy 2 cells.
         let icon_width = 2;
-        let col_off = (app.cursor.byte as usize + icon_width).min(area.width.saturating_sub(1) as usize);
+        let col_off =
+            (app.cursor.byte as usize + icon_width).min(area.width.saturating_sub(1) as usize);
         frame.set_cursor_position((area.x + col_off as u16, area.y + row_off as u16));
     }
 }
@@ -2422,22 +2385,19 @@ fn compose_visible_lines_inner(
         // ` ┄ N lines folded` suffix AFTER overlay processing, so
         // visual selection / hlsearch / current_match still paint
         // the heading correctly.
-        let closed_fold_at_start = app
-            .fold_start_at(line_idx)
-            .filter(|f| f.closed)
-            .map(|f| {
-                // The "N lines folded" suffix should reflect the
-                // user's perception of how much content collapsed
-                // onto this single visible row -- including any
-                // sibling / nested closed folds whose headings are
-                // themselves hidden by this fold and whose ranges
-                // chain past `f.end_line`. Without this walk, two
-                // touching folds (1..=3 then 3..=5, both closed)
-                // visually hide 5 lines but report only the first
-                // fold's own 3 lines, which doesn't match what the
-                // user just collapsed.
-                closed_fold_display_span(view, snap, f)
-            });
+        let closed_fold_at_start = app.fold_start_at(line_idx).filter(|f| f.closed).map(|f| {
+            // The "N lines folded" suffix should reflect the
+            // user's perception of how much content collapsed
+            // onto this single visible row -- including any
+            // sibling / nested closed folds whose headings are
+            // themselves hidden by this fold and whose ranges
+            // chain past `f.end_line`. Without this walk, two
+            // touching folds (1..=3 then 3..=5, both closed)
+            // visually hide 5 lines but report only the first
+            // fold's own 3 lines, which doesn't match what the
+            // user just collapsed.
+            closed_fold_display_span(view, snap, f)
+        });
         // 4.4.h: LSP semantic-tokens overlay. Replaces the
         // foreground color (folding in modifier bits) for
         // each token's byte range. Painted BEFORE visual /
@@ -2445,16 +2405,13 @@ fn compose_visible_lines_inner(
         // their bg / underline on top of the LSP-driven fg
         // -- the user's selection and search highlight stay
         // visible over semantic-colored text.
-        if let Some(cache) = app
-            .lsp_semantic_tokens_cache
-            .get(&app.document_buffer_id)
+        if let Some(cache) = app.lsp_semantic_tokens_cache.get(&app.document_buffer_id)
             && app.lsp_semantic_tokens_mode_enabled_for(app.document_buffer_id)
         {
             for tok in cache.tokens.iter().filter(|t| t.line == line_idx) {
-                let start = lattice_lsp::position::utf16_column_to_utf8_byte(
-                    &line_text,
-                    tok.start_char,
-                ) as usize;
+                let start =
+                    lattice_lsp::position::utf16_column_to_utf8_byte(&line_text, tok.start_char)
+                        as usize;
                 let end = lattice_lsp::position::utf16_column_to_utf8_byte(
                     &line_text,
                     tok.start_char + tok.length,
@@ -2465,10 +2422,8 @@ fn compose_visible_lines_inner(
                     continue;
                 }
                 let mut mods = Modifier::empty();
-                let style_with_mods = apply_semantic_token_modifiers(
-                    TuiStyle::default(),
-                    &tok.modifiers,
-                );
+                let style_with_mods =
+                    apply_semantic_token_modifiers(TuiStyle::default(), &tok.modifiers);
                 mods.insert(style_with_mods.add_modifier);
                 body = apply_semantic_token_overlay(
                     body,
@@ -2571,12 +2526,7 @@ fn compose_visible_lines_inner(
                 if start >= end {
                     continue;
                 }
-                body = apply_match_overlay(
-                    body,
-                    start,
-                    end,
-                    document_highlight_style(h.kind),
-                );
+                body = apply_match_overlay(body, start, end, document_highlight_style(h.kind));
             }
         }
         // 4.4.g: `inlayHint` virtual-text overlay. Walks the
@@ -3217,7 +3167,6 @@ pub(crate) fn diagnostics_on_line(
     app.lsp_diagnostics.diagnostics_on_line(uri, line_idx)
 }
 
-
 /// M.7.3.b parameter bundle for the whitespace-decoration
 /// pre-pass. Per-glyph `Option<char>` -- `None` ⇒ category
 /// disabled. `style_normal` covers tab / leading / mid-text
@@ -3278,10 +3227,12 @@ fn classify_whitespace(
 ) -> Option<(char, TuiStyle)> {
     // Trailing wins: every whitespace byte in `[trailing_start,
     // line.len())` becomes trailing-marked.
-    if pos >= trailing_start && (ch == ' ' || ch == '\t')
-        && let Some(g) = d.trailing {
-            return Some((g, d.style_trailing));
-        }
+    if pos >= trailing_start
+        && (ch == ' ' || ch == '\t')
+        && let Some(g) = d.trailing
+    {
+        return Some((g, d.style_trailing));
+    }
     if ch == '\t' {
         // Tabs anywhere except in the trailing zone (handled
         // above) get the tab glyph.
@@ -3532,9 +3483,7 @@ fn closed_fold_display_span(
         // probe -- start_line is its heading, which would be
         // hidden by *us* extending across it.)
         let next_closed = view.folds.iter().find(|f| {
-            f.closed
-                && (probe == f.start_line
-                    || (probe > f.start_line && probe <= f.end_line))
+            f.closed && (probe == f.start_line || (probe > f.start_line && probe <= f.end_line))
         });
         match next_closed {
             Some(f) => {
@@ -3887,7 +3836,7 @@ mod tests {
     #[test]
     fn whitespace_decoration_marks_trailing_in_red() {
         let d = ws_decoration_default();
-        let line = "hello   ";  // three trailing spaces
+        let line = "hello   "; // three trailing spaces
         let input = vec![Span::raw(line.to_string())];
         let out = apply_whitespace_decoration(input, line, &d);
         // Trailing dots present.
@@ -3895,10 +3844,7 @@ mod tests {
         let dot_count = rendered.chars().filter(|c| *c == '·').count();
         assert_eq!(dot_count, 3, "expected 3 trailing dots, got {rendered:?}");
         // Each trailing-glyph span carries the trailing style.
-        let trailing_spans: Vec<_> = out
-            .iter()
-            .filter(|s| s.content.as_ref() == "·")
-            .collect();
+        let trailing_spans: Vec<_> = out.iter().filter(|s| s.content.as_ref() == "·").collect();
         assert_eq!(trailing_spans.len(), 3);
         for s in trailing_spans {
             assert_eq!(s.style.fg, Some(Color::Red), "trailing should be red");
@@ -3912,10 +3858,7 @@ mod tests {
         let input = vec![Span::raw(line.to_string())];
         let out = apply_whitespace_decoration(input, line, &d);
         // Two leading dots.
-        let dot_spans: Vec<_> = out
-            .iter()
-            .filter(|s| s.content.as_ref() == "·")
-            .collect();
+        let dot_spans: Vec<_> = out.iter().filter(|s| s.content.as_ref() == "·").collect();
         assert_eq!(dot_spans.len(), 2);
         // Leading uses style_normal (DarkGray), not trailing's red.
         for s in dot_spans {
@@ -3932,10 +3875,7 @@ mod tests {
         let line = "   ";
         let input = vec![Span::raw(line.to_string())];
         let out = apply_whitespace_decoration(input, line, &d);
-        let dots: Vec<_> = out
-            .iter()
-            .filter(|s| s.content.as_ref() == "·")
-            .collect();
+        let dots: Vec<_> = out.iter().filter(|s| s.content.as_ref() == "·").collect();
         assert_eq!(dots.len(), 3);
         for s in dots {
             assert_eq!(
@@ -4028,10 +3968,7 @@ mod tests {
                 && s.content.chars().all(|c| c == ' ')
                 && s.content.len() > 1
         });
-        assert!(
-            pad.is_some(),
-            "expected a pad span: {cursor_row:?}",
-        );
+        assert!(pad.is_some(), "expected a pad span: {cursor_row:?}",);
     }
 
     #[test]
@@ -4088,7 +4025,8 @@ mod tests {
         let out = apply_whitespace_decoration(input, line, &d);
         // Keyword span survives unchanged.
         assert!(
-            out.iter().any(|s| s.content.as_ref() == "fn" && s.style.fg == Some(Color::Yellow)),
+            out.iter()
+                .any(|s| s.content.as_ref() == "fn" && s.style.fg == Some(Color::Yellow)),
             "keyword span lost: {out:?}",
         );
         // Two trailing dots present + red.
@@ -4138,7 +4076,7 @@ mod tests {
     #[test]
     fn compose_visible_lines_returns_height_lines_padded_with_marker() {
         let app = app_with("a\nb", 5);
-        let lines = compose_visible_lines(&app, &app.document.snapshot(),5, 80);
+        let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);
         assert_eq!(lines.len(), 5);
         // Past EOF lines start with the `~` marker.
         let past_eof = format!("{:?}", lines[3]);
@@ -4149,7 +4087,7 @@ mod tests {
     fn compose_visible_lines_starts_at_scroll_offset() {
         let mut app = app_with("0\n1\n2\n3\n4", 2);
         app.scroll = 2;
-        let lines = compose_visible_lines(&app, &app.document.snapshot(),2, 80);
+        let lines = compose_visible_lines(&app, &app.document.snapshot(), 2, 80);
         // Line index 2 is "2"; expect that text in the rendered first line.
         let l0 = format!("{:?}", lines[0]);
         assert!(
@@ -4163,7 +4101,9 @@ mod tests {
         let mut app = app_with("hello", 5);
         app.cursor.byte = 3;
         let area = Rect::new(0, 0, 80, 5);
-        let pos = cursor_screen_position(&FrameView::from_app(&app), &app.document.snapshot(), area).unwrap();
+        let pos =
+            cursor_screen_position(&FrameView::from_app(&app), &app.document.snapshot(), area)
+                .unwrap();
         // severity_cell (1) + gutter_width(1)=4 + 3 = 8.
         assert_eq!(pos.0, 8);
         assert_eq!(pos.1, 0);
@@ -4179,7 +4119,9 @@ mod tests {
         let mut app = app_with("- §8 Performance commitments", 5);
         app.cursor.byte = 6;
         let area = Rect::new(0, 0, 80, 5);
-        let pos = cursor_screen_position(&FrameView::from_app(&app), &app.document.snapshot(), area).unwrap();
+        let pos =
+            cursor_screen_position(&FrameView::from_app(&app), &app.document.snapshot(), area)
+                .unwrap();
         // severity_cell (1) + gutter_w (4) + 5 display cells = 10.
         assert_eq!(pos.0, 10);
     }
@@ -4192,7 +4134,9 @@ mod tests {
         let mut app = app_with("abc中 def", 5);
         app.cursor.byte = 6; // past the 3-byte CJK char
         let area = Rect::new(0, 0, 80, 5);
-        let pos = cursor_screen_position(&FrameView::from_app(&app), &app.document.snapshot(), area).unwrap();
+        let pos =
+            cursor_screen_position(&FrameView::from_app(&app), &app.document.snapshot(), area)
+                .unwrap();
         // severity_cell (1) + gutter_w (4) + 5 display cells = 10.
         assert_eq!(pos.0, 10);
     }
@@ -4203,7 +4147,10 @@ mod tests {
         app.scroll = 0;
         app.cursor.line = 4; // not in viewport [0,1]
         let area = Rect::new(0, 0, 80, 2);
-        assert!(cursor_screen_position(&FrameView::from_app(&app), &app.document.snapshot(), area).is_none());
+        assert!(
+            cursor_screen_position(&FrameView::from_app(&app), &app.document.snapshot(), area)
+                .is_none()
+        );
     }
 
     #[test]
@@ -4225,7 +4172,9 @@ mod tests {
             identity: None,
         });
         let area = Rect::new(0, 0, 80, 7);
-        let pos = cursor_screen_position(&FrameView::from_app(&app), &app.document.snapshot(), area).expect("cursor visible");
+        let pos =
+            cursor_screen_position(&FrameView::from_app(&app), &app.document.snapshot(), area)
+                .expect("cursor visible");
         // Visible rows: 0=line0, 1=line1, 2=line2 (heading + summary),
         // 3=line5, 4=line6. Cursor at hidden line 3 → screen row 2
         // (area.y + 2 since area.y is 0).
@@ -4561,7 +4510,7 @@ mod tests {
     fn compose_visible_lines_applies_match_overlay() {
         let mut app = app_with("hello world", 1);
         app.current_match = Some(ProtoRange::new(pos(0, 6), pos(0, 11)));
-        let lines = compose_visible_lines(&app, &app.document.snapshot(),1, 80);
+        let lines = compose_visible_lines(&app, &app.document.snapshot(), 1, 80);
         let dump = format!("{:?}", lines[0]);
         // Spans should be split so "world" is its own span; we look for the
         // match style's signature in the debug dump.
@@ -4661,7 +4610,7 @@ mod tests {
             visual: Some(VisualMode::Charwise),
         };
         app.set_selections_blocking(SelectionSet::single(sel));
-        let lines = compose_visible_lines(&app, &app.document.snapshot(),1, 80);
+        let lines = compose_visible_lines(&app, &app.document.snapshot(), 1, 80);
         let dump = format!("{:?}", lines[0]);
         // The selected "hello" should appear as its own span(s); we just
         // verify the line still contains the original text after overlay.
@@ -4683,7 +4632,7 @@ mod tests {
             .position(|f| f.start_line == 0)
             .expect("heading fold");
         app.folds[idx].closed = true;
-        let lines = compose_visible_lines(&app, &app.document.snapshot(),5, 80);
+        let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);
         let row0 = line_text(&lines[0]);
         // Heading text is preserved.
         assert!(row0.contains("# Heading"), "row0 = {row0:?}");
@@ -4702,7 +4651,7 @@ mod tests {
             .position(|f| f.start_line == 0)
             .expect("heading fold");
         app.folds[idx].closed = true;
-        let lines = compose_visible_lines(&app, &app.document.snapshot(),5, 80);
+        let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);
         let blob: String = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
         assert!(!blob.contains("hidden1"), "interior leaked: {blob}");
         assert!(!blob.contains("hidden2"), "interior leaked: {blob}");
@@ -4729,7 +4678,7 @@ mod tests {
             closed: true,
             identity: None,
         });
-        let lines = compose_visible_lines(&app, &app.document.snapshot(),7, 80);
+        let lines = compose_visible_lines(&app, &app.document.snapshot(), 7, 80);
         // Find the row that summarises the chained folds (line 1's
         // heading row).
         let row1_text = line_text(&lines[1]);
@@ -4745,7 +4694,7 @@ mod tests {
         app.set_foldmethod_for_test(crate::app::FoldMethod::Markdown);
         app.recompute_folds();
         // Leave the fold open (default).
-        let lines = compose_visible_lines(&app, &app.document.snapshot(),5, 80);
+        let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);
         let row0 = line_text(&lines[0]);
         assert!(row0.contains("# H"), "row0 = {row0:?}");
         assert!(
@@ -4761,9 +4710,12 @@ mod tests {
         let mut app = app_with("# H\nbody\n", 5);
         app.set_foldmethod_for_test(crate::app::FoldMethod::Markdown);
         app.recompute_folds();
-        let lines = compose_visible_lines(&app, &app.document.snapshot(),5, 80);
+        let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);
         let row0 = line_text(&lines[0]);
-        assert!(row0.contains('▾'), "expected ▾ glyph on open fold: {row0:?}");
+        assert!(
+            row0.contains('▾'),
+            "expected ▾ glyph on open fold: {row0:?}"
+        );
         assert!(!row0.contains('▸'), "did not expect ▸ glyph: {row0:?}");
     }
 
@@ -4778,9 +4730,12 @@ mod tests {
             .position(|f| f.start_line == 0)
             .expect("heading fold");
         app.folds[idx].closed = true;
-        let lines = compose_visible_lines(&app, &app.document.snapshot(),5, 80);
+        let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);
         let row0 = line_text(&lines[0]);
-        assert!(row0.contains('▸'), "expected ▸ glyph on closed fold: {row0:?}");
+        assert!(
+            row0.contains('▸'),
+            "expected ▸ glyph on closed fold: {row0:?}"
+        );
         assert!(!row0.contains('▾'), "did not expect ▾ glyph: {row0:?}");
     }
 
@@ -4806,7 +4761,7 @@ mod tests {
             .position(|f| f.start_line == 0)
             .expect("struct fold");
         app.folds[idx].closed = true;
-        let lines = compose_visible_lines(&app, &app.document.snapshot(),4, 80);
+        let lines = compose_visible_lines(&app, &app.document.snapshot(), 4, 80);
         // Row 0: heading + " ┄ N lines folded".
         // Row 1: the post-fold statement -- correct content, not
         //        leaking interior spans.
@@ -4816,7 +4771,10 @@ mod tests {
             "row1 should be the post-fold statement: {row1:?}"
         );
         assert!(!row1.contains("rope"), "interior leaked: {row1:?}");
-        assert!(!row1.contains('}'), "closer should be inside the fold: {row1:?}");
+        assert!(
+            !row1.contains('}'),
+            "closer should be inside the fold: {row1:?}"
+        );
     }
 
     #[test]
@@ -4859,7 +4817,7 @@ mod tests {
             visual: Some(VisualMode::Linewise),
         };
         app.set_selections_blocking(SelectionSet::single(sel));
-        let lines = compose_visible_lines(&app, &app.document.snapshot(),5, 80);
+        let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);
         let visual_bg = visual_style().bg;
         let row0 = &lines[0];
         let has_visual_span = row0.spans.iter().any(|s| s.style.bg == visual_bg);
@@ -4889,7 +4847,7 @@ mod tests {
             visual: Some(VisualMode::Linewise),
         };
         app.set_selections_blocking(SelectionSet::single(sel));
-        let lines = compose_visible_lines(&app, &app.document.snapshot(),5, 80);
+        let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);
         // Verify the second visible line ("beta") has at least one
         // span styled with the visual color.
         let visual_bg = visual_style().bg;
@@ -4906,7 +4864,7 @@ mod tests {
         let mut app = app_with("# H\nbody one\nbody two\nafter\n", 5);
         app.set_foldmethod_for_test(crate::app::FoldMethod::Markdown);
         app.recompute_folds();
-        let lines = compose_visible_lines(&app, &app.document.snapshot(),5, 80);
+        let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);
         // Row 1 (body one) is inside the fold, not a fold start.
         let row1 = line_text(&lines[1]);
         assert!(!row1.contains('▸'), "row1: {row1:?}");
@@ -5060,15 +5018,27 @@ mod tests {
             highlights: vec![
                 lsp_types::DocumentHighlight {
                     range: lsp_types::Range {
-                        start: lsp_types::Position { line: 0, character: 4 },
-                        end: lsp_types::Position { line: 0, character: 5 },
+                        start: lsp_types::Position {
+                            line: 0,
+                            character: 4,
+                        },
+                        end: lsp_types::Position {
+                            line: 0,
+                            character: 5,
+                        },
                     },
                     kind: Some(lsp_types::DocumentHighlightKind::WRITE),
                 },
                 lsp_types::DocumentHighlight {
                     range: lsp_types::Range {
-                        start: lsp_types::Position { line: 0, character: 8 },
-                        end: lsp_types::Position { line: 0, character: 9 },
+                        start: lsp_types::Position {
+                            line: 0,
+                            character: 8,
+                        },
+                        end: lsp_types::Position {
+                            line: 0,
+                            character: 9,
+                        },
                     },
                     kind: Some(lsp_types::DocumentHighlightKind::READ),
                 },
@@ -5115,7 +5085,10 @@ mod tests {
             crate::app::LspInlayHintCache {
                 document_version: app.document.snapshot().version,
                 hints: vec![lsp_types::InlayHint {
-                    position: lsp_types::Position { line: 0, character: 5 },
+                    position: lsp_types::Position {
+                        line: 0,
+                        character: 5,
+                    },
                     label: lsp_types::InlayHintLabel::String(": i32".into()),
                     kind: Some(lsp_types::InlayHintKind::TYPE),
                     text_edits: None,
@@ -5263,7 +5236,10 @@ mod tests {
             crate::app::LspInlayHintCache {
                 document_version: app.document.snapshot().version,
                 hints: vec![lsp_types::InlayHint {
-                    position: lsp_types::Position { line: 0, character: 5 },
+                    position: lsp_types::Position {
+                        line: 0,
+                        character: 5,
+                    },
                     label: lsp_types::InlayHintLabel::String(": i32".into()),
                     kind: None,
                     text_edits: None,
@@ -5308,8 +5284,14 @@ mod tests {
             cursor: lattice_protocol::Position::new(0, 4),
             highlights: vec![lsp_types::DocumentHighlight {
                 range: lsp_types::Range {
-                    start: lsp_types::Position { line: 0, character: 4 },
-                    end: lsp_types::Position { line: 0, character: 5 },
+                    start: lsp_types::Position {
+                        line: 0,
+                        character: 4,
+                    },
+                    end: lsp_types::Position {
+                        line: 0,
+                        character: 5,
+                    },
                 },
                 kind: None,
             }],
@@ -5458,10 +5440,7 @@ mod tests {
         for span in &lines[0].spans {
             if span.style.add_modifier.contains(Modifier::UNDERLINED)
                 || span.style.sub_modifier.is_empty()
-                    && span
-                        .style
-                        .add_modifier
-                        .contains(Modifier::UNDERLINED)
+                    && span.style.add_modifier.contains(Modifier::UNDERLINED)
             {
                 found_underline = true;
                 break;

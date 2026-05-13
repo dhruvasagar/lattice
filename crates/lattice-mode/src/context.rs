@@ -163,9 +163,7 @@ impl<'a> ModeContext<'a> {
     /// Returns `Ok(None)` if no local of type `T` is currently
     /// stored (the caller can decide whether that's an error
     /// or just initial state).
-    pub fn get_local_mut<T: BufferLocal>(
-        &mut self,
-    ) -> Result<Option<&mut T>, ModeActivationError> {
+    pub fn get_local_mut<T: BufferLocal>(&mut self) -> Result<Option<&mut T>, ModeActivationError> {
         if T::OWNER_MODE != self.current_mode.as_str() {
             return Err(ModeActivationError::WrongOwnerMode {
                 current: self.current_mode,
@@ -179,9 +177,7 @@ impl<'a> ModeContext<'a> {
     /// Remove the buffer-local of type `T`, returning its
     /// owned value. Same `OWNER_MODE` enforcement; useful in
     /// `on_deactivate` to clean up.
-    pub fn remove_local<T: BufferLocal>(
-        &mut self,
-    ) -> Result<Option<T>, ModeActivationError> {
+    pub fn remove_local<T: BufferLocal>(&mut self) -> Result<Option<T>, ModeActivationError> {
         if T::OWNER_MODE != self.current_mode.as_str() {
             return Err(ModeActivationError::WrongOwnerMode {
                 current: self.current_mode,
@@ -342,10 +338,7 @@ mod tests {
         // Right owner: in-place mutation.
         {
             let mut c = ctx("a-mode", &mut locals, &cfg, &evt, &svc);
-            c.get_local_mut::<OwnedByA>()
-                .unwrap()
-                .unwrap()
-                .0 = 99;
+            c.get_local_mut::<OwnedByA>().unwrap().unwrap().0 = 99;
         }
         let c = ctx("a-mode", &mut locals, &cfg, &evt, &svc);
         assert_eq!(c.get_local::<OwnedByA>().unwrap().0, 99);

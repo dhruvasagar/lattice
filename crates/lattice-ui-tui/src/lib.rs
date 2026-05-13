@@ -38,6 +38,7 @@ pub mod folds;
 pub mod help;
 pub mod help_topics;
 pub mod host_generators;
+pub mod icons;
 pub mod input;
 pub mod keymap;
 pub mod keymap_insert;
@@ -47,25 +48,24 @@ pub mod keymap_replace;
 pub mod keymap_trie;
 pub mod keymap_visual;
 pub mod modes;
+pub mod oil;
 pub mod pane;
 pub mod pane_render;
 pub mod picker_sources;
 pub mod popup;
 pub mod render;
 pub mod runtime;
-pub mod icons;
-pub mod oil;
 pub mod theme;
 pub mod tui_options;
 
 pub use app::{Action, App, EchoLevel, EchoMessage};
 pub use buffer_registry::{BufferData, BufferEntry, BufferRegistry, DocumentEntry};
 pub use buffers::{BufferFlags, BufferId, BufferKind};
-pub use modes::{
-    FileTreeMode, HelpMode, OilMode, major_mode_id_for_buffer_kind, register_buffer_kind_modes,
-};
 pub use excommand::ExCommandError;
 pub use input::{TranslateContext, translate};
 pub use lattice_syntax::{Lang, Style, StyledSpan, Syntax};
+pub use modes::{
+    FileTreeMode, HelpMode, OilMode, major_mode_id_for_buffer_kind, register_buffer_kind_modes,
+};
 pub use pane::{PaneDirection, PaneId, PaneNode, PaneRect, PaneState, PaneTree, SplitOrientation};
 pub use runtime::run;

@@ -38,7 +38,9 @@ fn markdown_corpus(n: usize) -> String {
     let mut s = String::with_capacity(n * 200);
     s.push_str("# Top\n\n");
     for i in 0..n {
-        s.push_str(&format!("## Section {i}\n\nbody line one for section {i}.\nbody line two for section {i}.\n\n"));
+        s.push_str(&format!(
+            "## Section {i}\n\nbody line one for section {i}.\nbody line two for section {i}.\n\n"
+        ));
     }
     s
 }

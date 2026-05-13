@@ -54,15 +54,13 @@ use smallvec::SmallVec;
 /// `writable=false`).
 ///
 /// See `mode-architecture.md` §6.2 for the conflict policy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum OverridePriority {
     Low,
     #[default]
     Normal,
     High,
 }
-
 
 /// One option-value override from a single layer producer (a
 /// mode, a buffer-local set, a modal-state hook).
@@ -248,11 +246,8 @@ mod tests {
 
     #[test]
     fn with_priority_preserves_priority() {
-        let ov = OptionOverride::with_priority(
-            TypeId::of::<OptionA>(),
-            true,
-            OverridePriority::High,
-        );
+        let ov =
+            OptionOverride::with_priority(TypeId::of::<OptionA>(), true, OverridePriority::High);
         assert_eq!(ov.priority, OverridePriority::High);
         assert_eq!(ov.downcast_value::<bool>().copied(), Some(true));
     }

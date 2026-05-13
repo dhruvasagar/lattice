@@ -66,8 +66,7 @@ impl ResolvedOptions {
     where
         T::Value: Send + Sync + 'static,
     {
-        self.by_type
-            .insert(TypeId::of::<T>(), Arc::new(value));
+        self.by_type.insert(TypeId::of::<T>(), Arc::new(value));
     }
 
     /// Erased insert used by [`crate::Resolver`]. The caller

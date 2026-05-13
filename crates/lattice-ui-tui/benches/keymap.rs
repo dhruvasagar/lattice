@@ -331,7 +331,9 @@ fn populated_handle() -> KeymapHandle {
     // some Normal, some Visual, some Insert. ~16 entries per
     // mode is below the eventual ~70 in real Normal but enough
     // to exercise HashMap lookup + ArcSwap load realistically.
-    for c in ['j', 'k', 'h', 'l', 'w', 'b', 'e', 'g', 'd', 'y', 'c', 'p', 'P', 'u', 'r'] {
+    for c in [
+        'j', 'k', 'h', 'l', 'w', 'b', 'e', 'g', 'd', 'y', 'c', 'p', 'P', 'u', 'r',
+    ] {
         h.bind(
             KeymapLayer::Builtin,
             BindingMode::Normal,
@@ -497,10 +499,7 @@ fn dispatch_translate_full_two_chord(c: &mut Criterion) {
     let event = ev(KeyCode::Char('d'), KeyModifiers::NONE);
     c.bench_function("dispatch_translate_full_two_chord", |bench| {
         bench.iter(|| {
-            let action = translate(
-                translate_ctx(&h, &b, black_box(&partial)),
-                black_box(event),
-            );
+            let action = translate(translate_ctx(&h, &b, black_box(&partial)), black_box(event));
             black_box(action);
         });
     });
@@ -518,10 +517,7 @@ fn dispatch_translate_full_operator_motion(c: &mut Criterion) {
     let event = ev(KeyCode::Char('w'), KeyModifiers::NONE);
     c.bench_function("dispatch_translate_full_operator_motion", |bench| {
         bench.iter(|| {
-            let action = translate(
-                translate_ctx(&h, &b, black_box(&partial)),
-                black_box(event),
-            );
+            let action = translate(translate_ctx(&h, &b, black_box(&partial)), black_box(event));
             black_box(action);
         });
     });

@@ -55,7 +55,10 @@ async fn pump_drains_bus_into_layer() {
     let diags = layer.diagnostics_for(&uri);
     assert_eq!(diags.len(), 1);
     assert_eq!(diags[0].message, "type mismatch");
-    assert_eq!(layer.line_severity(&uri, 4), Some(DiagnosticSeverity::ERROR));
+    assert_eq!(
+        layer.line_severity(&uri, 4),
+        Some(DiagnosticSeverity::ERROR)
+    );
     assert_eq!(layer.count(), 1);
 }
 
@@ -119,14 +122,8 @@ async fn multi_server_diagnostics_merge_in_layer() {
     fn d(line: u32, sev: DiagnosticSeverity, msg: &str) -> Diagnostic {
         Diagnostic {
             range: Range {
-                start: Position {
-                    line,
-                    character: 0,
-                },
-                end: Position {
-                    line,
-                    character: 5,
-                },
+                start: Position { line, character: 0 },
+                end: Position { line, character: 5 },
             },
             severity: Some(sev),
             code: None,
@@ -161,7 +158,10 @@ async fn multi_server_diagnostics_merge_in_layer() {
     assert_eq!(merged.len(), 2);
 
     // Most-severe per-line lookups respect the merged view.
-    assert_eq!(layer.line_severity(&uri, 0), Some(DiagnosticSeverity::ERROR));
+    assert_eq!(
+        layer.line_severity(&uri, 0),
+        Some(DiagnosticSeverity::ERROR)
+    );
     assert_eq!(
         layer.line_severity(&uri, 2),
         Some(DiagnosticSeverity::WARNING)

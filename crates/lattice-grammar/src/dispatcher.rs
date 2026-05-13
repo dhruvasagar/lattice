@@ -22,9 +22,9 @@ use crate::error::{CommandError, GrammarResult};
 use crate::modal::ModalState;
 use crate::range::Range;
 use crate::registry::{
-    ActionContext, CommandEntry, CommandRegistry, ExCommandContext, MotionContext,
-    OperatorContext, TextObjectContext, require_action, require_ex_command, require_motion,
-    require_operator, require_text_object,
+    ActionContext, CommandEntry, CommandRegistry, ExCommandContext, MotionContext, OperatorContext,
+    TextObjectContext, require_action, require_ex_command, require_motion, require_operator,
+    require_text_object,
 };
 use crate::target::Target;
 use lattice_core::{Buffer, Document};
@@ -691,8 +691,7 @@ mod tests {
         // gate behaves.
         let motion_id = registry.id_by_name("motion:word-forward").unwrap();
         let entry = registry.entry(motion_id).unwrap();
-        let err =
-            crate::registry::require_action(entry).expect_err("motion entry must reject");
+        let err = crate::registry::require_action(entry).expect_err("motion entry must reject");
         assert!(
             matches!(
                 err,

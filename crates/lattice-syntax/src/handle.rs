@@ -123,10 +123,7 @@ impl SyntaxHandle {
     /// Returns `Ok(None)` for `Lang::Plain` or any language not
     /// registered in the supplied registry -- the App treats
     /// `None` as "no syntax highlighting for this buffer".
-    pub fn spawn(
-        lang: Lang,
-        registry: Arc<LangRegistry>,
-    ) -> Result<Option<Self>, SyntaxError> {
+    pub fn spawn(lang: Lang, registry: Arc<LangRegistry>) -> Result<Option<Self>, SyntaxError> {
         let Some(syntax) = Syntax::for_language_with_registry(lang, registry)? else {
             return Ok(None);
         };

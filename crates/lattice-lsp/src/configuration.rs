@@ -66,10 +66,7 @@ impl ConfigurationBus {
     /// Build a fresh bus + receiver pair. The App owns the
     /// receiver; the supervisor stores the bus and clones it
     /// into each actor it spawns.
-    pub fn new() -> (
-        Self,
-        mpsc::UnboundedReceiver<InboundConfigurationRequest>,
-    ) {
+    pub fn new() -> (Self, mpsc::UnboundedReceiver<InboundConfigurationRequest>) {
         let (tx, rx) = mpsc::unbounded_channel();
         (Self { tx }, rx)
     }

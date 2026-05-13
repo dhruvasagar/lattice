@@ -84,7 +84,10 @@ mod tests {
     #[test]
     fn foldmethod_enumerate_lists_every_variant() {
         let values = FoldMethod::enumerate().expect("enumeration available");
-        assert_eq!(values, vec!["manual", "indent", "markdown", "syntax", "lsp"]);
+        assert_eq!(
+            values,
+            vec!["manual", "indent", "markdown", "syntax", "lsp"]
+        );
     }
 
     #[test]

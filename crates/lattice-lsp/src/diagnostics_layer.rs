@@ -301,7 +301,8 @@ impl DiagnosticsLayer {
     /// Drop everything. Used by `:diag-clear` and tests.
     pub fn clear(&self) {
         let _g = self.write.lock().expect("DiagnosticsLayer write lock");
-        self.snapshot.store(Arc::new(DiagnosticsSnapshot::default()));
+        self.snapshot
+            .store(Arc::new(DiagnosticsSnapshot::default()));
     }
 
     /// Drop every entry for a URI (across all servers). Used
@@ -442,14 +443,8 @@ mod tests {
     fn diag(line: u32, severity: DiagnosticSeverity, msg: &str) -> Diagnostic {
         Diagnostic {
             range: Range {
-                start: Position {
-                    line,
-                    character: 0,
-                },
-                end: Position {
-                    line,
-                    character: 5,
-                },
+                start: Position { line, character: 0 },
+                end: Position { line, character: 5 },
             },
             severity: Some(severity),
             code: None,
@@ -462,7 +457,12 @@ mod tests {
         }
     }
 
-    fn ev(server: &str, uri: &str, version: Option<i32>, diags: Vec<Diagnostic>) -> DiagnosticEvent {
+    fn ev(
+        server: &str,
+        uri: &str,
+        version: Option<i32>,
+        diags: Vec<Diagnostic>,
+    ) -> DiagnosticEvent {
         DiagnosticEvent {
             server_id: Arc::from(server),
             uri: Uri::from_str(uri).unwrap(),
@@ -629,10 +629,7 @@ mod tests {
             ],
         ));
         let uri = Uri::from_str("file:///x.rs").unwrap();
-        assert_eq!(
-            l.line_severity(&uri, 2),
-            Some(DiagnosticSeverity::ERROR)
-        );
+        assert_eq!(l.line_severity(&uri, 2), Some(DiagnosticSeverity::ERROR));
     }
 
     #[test]

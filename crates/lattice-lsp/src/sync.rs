@@ -66,14 +66,14 @@
 use std::collections::HashMap;
 use std::str::FromStr;
 
-use lsp_types::{
-    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    PositionEncodingKind, TextDocumentContentChangeEvent, TextDocumentIdentifier,
-    TextDocumentItem, TextDocumentSyncKind, Uri, VersionedTextDocumentIdentifier,
-};
-use lsp_types::Range as LspRange;
 use lattice_protocol::edit::{Edit, EditKind};
 use lattice_protocol::position::{Position, Range};
+use lsp_types::Range as LspRange;
+use lsp_types::{
+    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
+    PositionEncodingKind, TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem,
+    TextDocumentSyncKind, Uri, VersionedTextDocumentIdentifier,
+};
 
 use crate::capabilities::Capabilities;
 use crate::error::{LspError, LspResult};
@@ -215,9 +215,7 @@ impl DocSync {
                 state.text.len()
             )));
         }
-        state
-            .text
-            .replace_range(start_byte..end_byte, new_text);
+        state.text.replace_range(start_byte..end_byte, new_text);
         state.version = state.version.saturating_add(1);
 
         // Queue the change event.
@@ -303,11 +301,7 @@ impl DocSync {
     /// open. The actor sends the optional `final_changes`
     /// followed by the `close` notification so the server's
     /// last view of the doc matches the editor's.
-    pub fn close(
-        &mut self,
-        capabilities: &Capabilities,
-        uri: &Uri,
-    ) -> Option<ClosePayloads> {
+    pub fn close(&mut self, capabilities: &Capabilities, uri: &Uri) -> Option<ClosePayloads> {
         let final_changes = self.take_flush_payload(capabilities, uri);
         if self.docs.remove(uri).is_some() {
             Some(ClosePayloads {
@@ -447,9 +441,7 @@ fn line_byte_to_text_byte(text: &str, pos: Position) -> usize {
 /// Re-exported here so consumers don't need to import the
 /// internal `actor::uri_from_path` helper.
 pub fn uri_from_str(s: &str) -> LspResult<Uri> {
-    Uri::from_str(s).map_err(|e| {
-        LspError::HandshakeFailed(format!("invalid URI {s:?}: {e:?}"))
-    })
+    Uri::from_str(s).map_err(|e| LspError::HandshakeFailed(format!("invalid URI {s:?}: {e:?}")))
 }
 
 #[cfg(test)]

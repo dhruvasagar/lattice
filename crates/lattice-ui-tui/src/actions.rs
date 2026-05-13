@@ -638,9 +638,7 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             registry,
             "action:select-register",
             "Vim's `\"<X>`: select named register `<X>` for the next yank / paste / delete.",
-            captured_char_action(|c| {
-                Register::from_input_char(c).map(AppEffect::SelectRegister)
-            }),
+            captured_char_action(|c| Register::from_input_char(c).map(AppEffect::SelectRegister)),
         ),
         start_macro_record: register_action(
             registry,
@@ -887,9 +885,7 @@ fn register_operator_prefix(
         name,
         doc,
         ActionSpec {
-            apply: Box::new(move |_| {
-                Ok(Effect::AppAction(AppEffect::AbsorbOperatorPrefix(op)))
-            }),
+            apply: Box::new(move |_| Ok(Effect::AppAction(AppEffect::AbsorbOperatorPrefix(op)))),
             args_schema: vec![],
         },
     )
@@ -976,9 +972,7 @@ fn register_simple(
         name,
         doc,
         ActionSpec {
-            apply: Box::new(move |_ctx| {
-                Ok(lattice_grammar::Effect::AppAction(effect.clone()))
-            }),
+            apply: Box::new(move |_ctx| Ok(lattice_grammar::Effect::AppAction(effect.clone()))),
             args_schema: vec![],
         },
     )
@@ -1011,7 +1005,10 @@ mod tests {
             (ids.jump_history_back, "action:jump-history-back"),
             (ids.jump_history_forward, "action:jump-history-forward"),
             (ids.walk_mark_history_back, "action:walk-mark-history-back"),
-            (ids.walk_mark_history_forward, "action:walk-mark-history-forward"),
+            (
+                ids.walk_mark_history_forward,
+                "action:walk-mark-history-forward",
+            ),
             (ids.tag_stack_pop, "action:tag-stack-pop"),
             (ids.open_fold_at_cursor, "action:open-fold-at-cursor"),
             (ids.close_fold_at_cursor, "action:close-fold-at-cursor"),
@@ -1037,12 +1034,18 @@ mod tests {
             (ids.paste_before, "action:paste-before"),
             (ids.lsp_definition_request, "action:lsp-definition"),
             (ids.lsp_declaration_request, "action:lsp-declaration"),
-            (ids.lsp_type_definition_request, "action:lsp-type-definition"),
+            (
+                ids.lsp_type_definition_request,
+                "action:lsp-type-definition",
+            ),
             (ids.lsp_implementation_request, "action:lsp-implementation"),
             (ids.lsp_references_request, "action:lsp-references"),
             (ids.lsp_follow_link_at_cursor, "action:lsp-follow-link"),
             (ids.enter_append, "action:enter-append"),
-            (ids.create_fold_from_visual, "action:create-fold-from-visual"),
+            (
+                ids.create_fold_from_visual,
+                "action:create-fold-from-visual",
+            ),
             (ids.delete_char_backward, "action:delete-char-backward"),
             (ids.completion_trigger, "action:completion-trigger"),
             (ids.snippet_expand, "action:snippet-expand"),
@@ -1056,14 +1059,26 @@ mod tests {
             (ids.enter_visual_blockwise, "action:enter-visual-blockwise"),
             (ids.enter_search_forward, "action:enter-search-forward"),
             (ids.enter_search_backward, "action:enter-search-backward"),
-            (ids.search_word_under_cursor_forward, "action:search-word-under-cursor-forward"),
-            (ids.search_word_under_cursor_backward, "action:search-word-under-cursor-backward"),
+            (
+                ids.search_word_under_cursor_forward,
+                "action:search-word-under-cursor-forward",
+            ),
+            (
+                ids.search_word_under_cursor_backward,
+                "action:search-word-under-cursor-backward",
+            ),
             (ids.jump_viewport_top, "action:jump-viewport-top"),
             (ids.jump_viewport_middle, "action:jump-viewport-middle"),
             (ids.jump_viewport_bottom, "action:jump-viewport-bottom"),
             (ids.scroll_cursor_to_top, "action:scroll-cursor-to-top"),
-            (ids.scroll_cursor_to_center, "action:scroll-cursor-to-center"),
-            (ids.scroll_cursor_to_bottom, "action:scroll-cursor-to-bottom"),
+            (
+                ids.scroll_cursor_to_center,
+                "action:scroll-cursor-to-center",
+            ),
+            (
+                ids.scroll_cursor_to_bottom,
+                "action:scroll-cursor-to-bottom",
+            ),
             (ids.join_lines_with_space, "action:join-lines-with-space"),
             (ids.join_lines_bare, "action:join-lines-bare"),
             (ids.find_repeat_forward, "action:find-repeat-forward"),
@@ -1080,11 +1095,20 @@ mod tests {
             (ids.absorb_operator_delete, "action:absorb-operator-delete"),
             (ids.absorb_operator_change, "action:absorb-operator-change"),
             (ids.absorb_operator_yank, "action:absorb-operator-yank"),
-            (ids.absorb_operator_indent_right, "action:absorb-operator-indent-right"),
-            (ids.absorb_operator_indent_left, "action:absorb-operator-indent-left"),
+            (
+                ids.absorb_operator_indent_right,
+                "action:absorb-operator-indent-right",
+            ),
+            (
+                ids.absorb_operator_indent_left,
+                "action:absorb-operator-indent-left",
+            ),
             (ids.absorb_operator_upper, "action:absorb-operator-upper"),
             (ids.absorb_operator_lower, "action:absorb-operator-lower"),
-            (ids.absorb_operator_toggle_case, "action:absorb-operator-toggle-case"),
+            (
+                ids.absorb_operator_toggle_case,
+                "action:absorb-operator-toggle-case",
+            ),
             (ids.split_pane_horizontal, "action:split-pane-horizontal"),
             (ids.split_pane_vertical, "action:split-pane-vertical"),
             (ids.close_pane, "action:close-pane"),
@@ -1098,20 +1122,44 @@ mod tests {
             (ids.completion_prev, "action:completion-prev"),
             (ids.completion_accept, "action:completion-accept"),
             (ids.completion_cancel, "action:completion-cancel"),
-            (ids.completion_cancel_and_exit_insert, "action:completion-cancel-and-exit-insert"),
+            (
+                ids.completion_cancel_and_exit_insert,
+                "action:completion-cancel-and-exit-insert",
+            ),
             (ids.completion_toggle_docs, "action:completion-toggle-docs"),
-            (ids.completion_docs_scroll_down, "action:completion-docs-scroll-down"),
-            (ids.completion_docs_scroll_up, "action:completion-docs-scroll-up"),
-            (ids.completion_accept_then_insert, "action:completion-accept-then-insert"),
-            (ids.completion_filter_to_source, "action:completion-filter-to-source"),
-            (ids.completion_filter_clear, "action:completion-filter-clear"),
-            (ids.snippet_next_placeholder, "action:snippet-next-placeholder"),
-            (ids.snippet_prev_placeholder, "action:snippet-prev-placeholder"),
+            (
+                ids.completion_docs_scroll_down,
+                "action:completion-docs-scroll-down",
+            ),
+            (
+                ids.completion_docs_scroll_up,
+                "action:completion-docs-scroll-up",
+            ),
+            (
+                ids.completion_accept_then_insert,
+                "action:completion-accept-then-insert",
+            ),
+            (
+                ids.completion_filter_to_source,
+                "action:completion-filter-to-source",
+            ),
+            (
+                ids.completion_filter_clear,
+                "action:completion-filter-clear",
+            ),
+            (
+                ids.snippet_next_placeholder,
+                "action:snippet-next-placeholder",
+            ),
+            (
+                ids.snippet_prev_placeholder,
+                "action:snippet-prev-placeholder",
+            ),
             (ids.snippet_leave, "action:snippet-leave"),
         ] {
-            let spec = registry.lookup(id).unwrap_or_else(|| {
-                panic!("missing registry entry for `{expected_name}`")
-            });
+            let spec = registry
+                .lookup(id)
+                .unwrap_or_else(|| panic!("missing registry entry for `{expected_name}`"));
             assert_eq!(spec.name, expected_name);
         }
     }

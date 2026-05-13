@@ -46,8 +46,8 @@ use lattice_protocol::selection::{Selection, SelectionSet};
 use lattice_runtime::{CancellationToken, RuntimeError, block_on};
 
 use super::{
-    Action, App, BufferKind, EchoLevel, FindKind, LastFind, LspNavKind, PositionSource,
-    SearchLine, is_valid_mark_name, visual,
+    Action, App, BufferKind, EchoLevel, FindKind, LastFind, LspNavKind, PositionSource, SearchLine,
+    is_valid_mark_name, visual,
 };
 use crate::excommand;
 use crate::pane::SplitOrientation;
@@ -435,12 +435,8 @@ impl App {
             Action::LspHoverRequest => self.do_lsp_hover_request(),
             Action::LspDefinitionRequest => self.do_lsp_nav_request(LspNavKind::Definition),
             Action::LspDeclarationRequest => self.do_lsp_nav_request(LspNavKind::Declaration),
-            Action::LspTypeDefinitionRequest => {
-                self.do_lsp_nav_request(LspNavKind::TypeDefinition)
-            }
-            Action::LspImplementationRequest => {
-                self.do_lsp_nav_request(LspNavKind::Implementation)
-            }
+            Action::LspTypeDefinitionRequest => self.do_lsp_nav_request(LspNavKind::TypeDefinition),
+            Action::LspImplementationRequest => self.do_lsp_nav_request(LspNavKind::Implementation),
             Action::LspReferencesRequest => self.do_lsp_references_request(),
             Action::LspFollowLinkAtCursor => self.do_lsp_follow_link_at_cursor(),
             Action::LspSignatureHelpRequest => self.do_lsp_signature_help_request(),
@@ -473,9 +469,7 @@ impl App {
                 self.modal = ModalState::Normal;
             }
             Action::LspDocumentSymbolRequest => self.do_lsp_document_symbol_request(),
-            Action::LspWorkspaceSymbolRequest(q) => {
-                self.do_lsp_workspace_symbol_request(&q)
-            }
+            Action::LspWorkspaceSymbolRequest(q) => self.do_lsp_workspace_symbol_request(&q),
             Action::SelectRegister(reg) => {
                 self.pending_register = Some(reg);
             }
@@ -738,19 +732,10 @@ impl App {
             // still wants a `&mut Document`, so we feed it a
             // throwaway empty one.
             let mut scratch = lattice_core::Document::empty();
-            match lattice_grammar::execute(
-                &self.registry,
-                &mut scratch,
-                pos,
-                inv,
-                &cancel,
-            ) {
+            match lattice_grammar::execute(&self.registry, &mut scratch, pos, inv, &cancel) {
                 Ok(effect) => self.apply_effect(effect),
                 Err(e) => {
-                    self.set_message(
-                        EchoLevel::Error,
-                        format!("action dispatch failed: {e:?}"),
-                    );
+                    self.set_message(EchoLevel::Error, format!("action dispatch failed: {e:?}"));
                 }
             }
             return;
@@ -793,11 +778,7 @@ impl App {
     /// `BufferKind::Oil` and routes to `OilBuffer::apply`).
     fn run_oil_invocation(&mut self, inv: CommandInvocation) {
         let oil_id = self.active_pane_buffer_id();
-        let Some(oil_text) = self
-            .buffers
-            .oil(oil_id)
-            .map(|o| o.content.as_string())
-        else {
+        let Some(oil_text) = self.buffers.oil(oil_id).map(|o| o.content.as_string()) else {
             return;
         };
         // Mirror the document-side dispatcher's count + register
@@ -855,7 +836,11 @@ impl App {
                 let primary = set.primary();
                 self.cursor = primary.head;
             }
-            Effect::Yank { register, content, kind } => {
+            Effect::Yank {
+                register,
+                content,
+                kind,
+            } => {
                 self.store_yank(*register, content.clone(), *kind);
                 should_exit_visual = true;
             }
@@ -875,8 +860,6 @@ impl App {
         }
         self.clamp_cursor_to_buffer();
     }
-
-
 
     /// Resolve a motion against the active file tree's content.
     /// Same shape as [`Self::run_help_invocation`] but mutates
@@ -1190,9 +1173,7 @@ impl App {
             }
             Effect::LspLogClear { server_id } => self.do_lsp_log_clear(server_id.as_deref()),
             Effect::LspDocumentSymbol => self.do_lsp_document_symbol_request(),
-            Effect::LspWorkspaceSymbol { query } => {
-                self.do_lsp_workspace_symbol_request(&query)
-            }
+            Effect::LspWorkspaceSymbol { query } => self.do_lsp_workspace_symbol_request(&query),
             Effect::LspIncomingCalls => self.do_lsp_call_hierarchy_request(false),
             Effect::LspOutgoingCalls => self.do_lsp_call_hierarchy_request(true),
             Effect::LspSupertypes => self.do_lsp_type_hierarchy_request(false),
@@ -1213,9 +1194,7 @@ impl App {
             Effect::DescribeEvent { name } => self.do_describe_event(&name),
             Effect::ListModes => self.do_list_modes(),
             Effect::DescribeMode { name } => self.do_describe_mode(&name),
-            Effect::DescribeOptionResolution { name } => {
-                self.do_describe_option_resolution(&name)
-            }
+            Effect::DescribeOptionResolution { name } => self.do_describe_option_resolution(&name),
             Effect::Customize { name } => self.do_customize(name.as_deref()),
             Effect::Tutor { lesson } => self.do_tutor(lesson),
             Effect::AppAction(app) => self.apply_app_effect(app),
@@ -1284,9 +1263,7 @@ impl App {
             AppEffect::SearchWordUnderCursor(dir) => self.apply(Action::SearchWordUnderCursor(dir)),
             AppEffect::JumpViewport(pos) => self.apply(Action::JumpViewport(pos)),
             AppEffect::ScrollCursorTo(pos) => self.apply(Action::ScrollCursorTo(pos)),
-            AppEffect::JoinLines { with_space } => {
-                self.apply(Action::JoinLines { with_space })
-            }
+            AppEffect::JoinLines { with_space } => self.apply(Action::JoinLines { with_space }),
             AppEffect::FindRepeat { reverse } => self.apply(Action::FindRepeat { reverse }),
             AppEffect::InsertNewline => self.apply(Action::Insert("\n".to_string())),
             AppEffect::InsertTab => self.apply(Action::Insert("\t".to_string())),
@@ -1385,7 +1362,6 @@ impl App {
             self.publish_document_changed(edits);
         }
     }
-
 }
 
 /// True if the Effect indicates an operator-class action (the buffer
@@ -1558,15 +1534,15 @@ fn effect_mutates(effect: &Effect) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::*;
     use crate::app::test_helpers::{
-        app_in_command_mode, app_with, attach_test_syntax, invoke_motion,
-        press, press_chars, subscribe_all_events, write_temp_file,
+        app_in_command_mode, app_with, attach_test_syntax, invoke_motion, press, press_chars,
+        subscribe_all_events, write_temp_file,
     };
+    use crate::app::test_helpers::{fresh_workspace, write_workspace_config};
+    use crate::app::word_under_cursor;
+    use crate::app::*;
     use crate::help::HelpContent;
     use lattice_protocol::edit::Edit;
-    use crate::app::word_under_cursor;
-    use crate::app::test_helpers::{fresh_workspace, write_workspace_config};
 
     /// Test fixture: a buffer-local owned by a fictional
     /// `test-locals-mode`. Used by ModeContext / buffer-locals
@@ -1852,7 +1828,9 @@ mod tests {
         // Slice 8.i.4: AbsorbPartialChord pushes onto
         // partial_chord; any other action clears it.
         let mut a = app_with("abc", 10);
-        a.apply(Action::AbsorbPartialChord(crate::chord::KeyChord::char('g')));
+        a.apply(Action::AbsorbPartialChord(crate::chord::KeyChord::char(
+            'g',
+        )));
         assert_eq!(a.partial_chord.len(), 1);
         let id = a.builtins.char_right;
         a.apply(invoke_motion(id));
@@ -2101,7 +2079,11 @@ mod tests {
         a.apply(Action::Invoke(inv));
         let reg = a.unnamed_register.as_ref().unwrap();
         assert_eq!(reg.kind, YankKind::Linewise);
-        assert!(reg.content.contains("# H1"), "register content: {:?}", reg.content);
+        assert!(
+            reg.content.contains("# H1"),
+            "register content: {:?}",
+            reg.content
+        );
         assert!(
             reg.content.contains("body one"),
             "register content: {:?}",
@@ -2135,7 +2117,10 @@ mod tests {
         a.apply(Action::Invoke(inv));
         let text = a.document.text();
         assert!(!text.contains("# H1"), "heading should be gone: {text:?}");
-        assert!(text.contains("body one"), "body one should remain: {text:?}");
+        assert!(
+            text.contains("body one"),
+            "body one should remain: {text:?}"
+        );
     }
 
     #[test]
@@ -2483,9 +2468,8 @@ mod tests {
         a.apply_per_language_toml_overrides();
         let eff = a.effective_completion_for("markdown");
         assert!(eff.auto_trigger, "TOML wins for auto_trigger");
-        let lsp_id = lattice_completion::SourceId::new(
-            lattice_completion::LSP_COMPLETION_SOURCE_ID,
-        );
+        let lsp_id =
+            lattice_completion::SourceId::new(lattice_completion::LSP_COMPLETION_SOURCE_ID);
         assert!(
             !eff.source_enabled(&lsp_id),
             "default `sources` (no LSP) preserved when TOML didn't set it",
@@ -2507,13 +2491,11 @@ mod tests {
         a.load_persistent_config(Some(&ws));
         a.apply_per_language_toml_overrides();
         let eff = a.effective_completion_for("python");
-        let lsp_id = lattice_completion::SourceId::new(
-            lattice_completion::LSP_COMPLETION_SOURCE_ID,
-        );
+        let lsp_id =
+            lattice_completion::SourceId::new(lattice_completion::LSP_COMPLETION_SOURCE_ID);
         assert!(eff.source_enabled(&lsp_id));
-        let buffer_words_id = lattice_completion::SourceId::new(
-            lattice_completion::BufferWordsSource::ID,
-        );
+        let buffer_words_id =
+            lattice_completion::SourceId::new(lattice_completion::BufferWordsSource::ID);
         assert!(
             !eff.source_enabled(&buffer_words_id),
             "`sources = [\"lsp\"]` excludes buffer-words",
@@ -2552,9 +2534,7 @@ mod tests {
         // generators). Cheap because every entry is an
         // `Arc<dyn Mode>` — the clone is shallow.
         let registry = std::sync::Arc::make_mut(&mut a.mode_registry);
-        let mode_id = registry
-            .register(TestLocalsMode::new())
-            .expect("register");
+        let mode_id = registry.register(TestLocalsMode::new()).expect("register");
 
         let mut active = lattice_mode::ActiveModes::new();
         let mut locs = lattice_mode::BufferLocals::new();
@@ -2589,9 +2569,7 @@ mod tests {
         // generators). Cheap because every entry is an
         // `Arc<dyn Mode>` — the clone is shallow.
         let registry = std::sync::Arc::make_mut(&mut a.mode_registry);
-        let mode_id = registry
-            .register(TestLocalsMode::new())
-            .expect("register");
+        let mode_id = registry.register(TestLocalsMode::new()).expect("register");
 
         let mut active = lattice_mode::ActiveModes::new();
         let mut locs = lattice_mode::BufferLocals::new();
@@ -2626,7 +2604,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn buffer_locals_iter_descriptors_for_describe_buffer() {
         // The descriptor surface backs `:describe-buffer` --
@@ -2644,9 +2621,7 @@ mod tests {
         // generators). Cheap because every entry is an
         // `Arc<dyn Mode>` — the clone is shallow.
         let registry = std::sync::Arc::make_mut(&mut a.mode_registry);
-        let mode_id = registry
-            .register(TestLocalsMode::new())
-            .expect("register");
+        let mode_id = registry.register(TestLocalsMode::new()).expect("register");
         a.mode_registry
             .activate_minor(
                 &mut active,
@@ -2667,5 +2642,4 @@ mod tests {
         assert_eq!(d.owner_mode, "test-locals-mode");
         assert_eq!(d.describe, "counter=42");
     }
-
 }

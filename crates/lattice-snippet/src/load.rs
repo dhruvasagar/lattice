@@ -57,8 +57,7 @@ pub enum LoadError {
 /// per-keystroke `gen:snippet` source doesn't pay re-parse
 /// cost.
 pub fn load_pack(json: &serde_json::Value) -> Result<Vec<Snippet>, LoadError> {
-    let raw: std::collections::BTreeMap<String, RawSnippet> =
-        serde_json::from_value(json.clone())?;
+    let raw: std::collections::BTreeMap<String, RawSnippet> = serde_json::from_value(json.clone())?;
     let mut out: Vec<Snippet> = Vec::new();
     for (name, r) in raw {
         let prefixes = match r.prefix {
@@ -181,10 +180,7 @@ mod tests {
             }
         }"#;
         let snips = load_pack_from_str(json).unwrap();
-        assert_eq!(
-            snips[0].scope,
-            "source.rust,source.markdown.injection.rust"
-        );
+        assert_eq!(snips[0].scope, "source.rust,source.markdown.injection.rust");
     }
 
     #[test]
@@ -211,10 +207,7 @@ mod tests {
         let s = &snips[0];
         assert_eq!(s.prefixes.len(), 2);
         // Render to verify parser + render round-trip.
-        let r = crate::render::render(
-            &s.body,
-            &crate::variables::VariableContext::default(),
-        );
+        let r = crate::render::render(&s.body, &crate::variables::VariableContext::default());
         assert_eq!(r.text, "for i in iter {\n\t\n}");
         assert_eq!(r.tabstops.len(), 3);
     }

@@ -299,7 +299,10 @@ impl Syntax {
     /// next parse round will retry.
     pub fn parse_at(&mut self, source: &str, text_version: u64) {
         let bytes = source.as_bytes();
-        let new_tree = self.parser.parse(bytes, None).or_else(|| self.inner.tree.take());
+        let new_tree = self
+            .parser
+            .parse(bytes, None)
+            .or_else(|| self.inner.tree.take());
         self.inner.source = Arc::from(bytes.to_vec());
         self.inner.tree = new_tree;
         self.inner.text_version = text_version;
@@ -797,9 +800,10 @@ impl SyntaxSnapshot {
         }
         let mut result: Vec<Vec<StyledSpan>> =
             (0..(end_line - start_line)).map(|_| Vec::new()).collect();
-        let query = self.registry.highlights_query(self.lang.name()).ok_or_else(|| {
-            SyntaxError::UnregisteredLang(self.lang.name().to_string())
-        })?;
+        let query = self
+            .registry
+            .highlights_query(self.lang.name())
+            .ok_or_else(|| SyntaxError::UnregisteredLang(self.lang.name().to_string()))?;
         let styles = self
             .registry
             .highlight_styles(self.lang.name())
@@ -862,8 +866,8 @@ impl SyntaxSnapshot {
                 .then_with(|| a.0.cmp(&b.0)) // start byte ASC
         });
         let _ = priorities; // priority table unused for now; kept
-                            // on the registry for the eventual
-                            // tie-break refinement / locals work.
+        // on the registry for the eventual
+        // tie-break refinement / locals work.
 
         // Per-byte style array for the window, then convert to
         // line-relative spans. The array is at most O(window_bytes)
@@ -1310,8 +1314,16 @@ const MAX: i32 = 10;\n\
 
     #[test]
     fn native_rust_simple_function_produces_keyword_and_function_spans() {
-        assert_has_style(Lang::Rust, "fn main() {\n    let x = 1;\n}\n", Style::Keyword);
-        assert_has_style(Lang::Rust, "fn main() {\n    let x = 1;\n}\n", Style::Function);
+        assert_has_style(
+            Lang::Rust,
+            "fn main() {\n    let x = 1;\n}\n",
+            Style::Keyword,
+        );
+        assert_has_style(
+            Lang::Rust,
+            "fn main() {\n    let x = 1;\n}\n",
+            Style::Function,
+        );
     }
 
     #[test]
@@ -1656,9 +1668,8 @@ const MAX: i32 = 10;\n\
             let col = (byte - prefix.rfind('\n').map(|i| i + 1).unwrap_or(0)) as u32;
             lattice_protocol::Position::new(line, col)
         };
-        let mut source_b = String::with_capacity(
-            source_a.len() - (old_end_byte - start_byte) + new_text.len(),
-        );
+        let mut source_b =
+            String::with_capacity(source_a.len() - (old_end_byte - start_byte) + new_text.len());
         source_b.push_str(&source_a[..start_byte]);
         source_b.push_str(new_text);
         source_b.push_str(&source_a[old_end_byte..]);
@@ -1697,13 +1708,7 @@ const MAX: i32 = 10;\n\
     /// Run incremental + full reparse on `source_a` -> `source_b`
     /// via `edits`, asserting tree-shape equality. Failure
     /// message names the language + the source pair.
-    fn assert_parity(
-        lang: Lang,
-        source_a: &str,
-        edits: &[EditDelta],
-        source_b: &str,
-        case: &str,
-    ) {
+    fn assert_parity(lang: Lang, source_a: &str, edits: &[EditDelta], source_b: &str, case: &str) {
         let mut s_inc = Syntax::for_language(lang).unwrap().unwrap();
         s_inc.parse_at(source_a, 1);
         s_inc.parse_at_with_edits(source_b, 2, 1, edits);
@@ -1750,7 +1755,14 @@ const MAX: i32 = 10;\n\
     #[test]
     fn parity_insert_at_end_of_buffer_rust() {
         let src = "fn main() {}";
-        assert_single_edit_parity(Lang::Rust, src, src.len(), src.len(), "\nfn b() {}", "insert at end");
+        assert_single_edit_parity(
+            Lang::Rust,
+            src,
+            src.len(),
+            src.len(),
+            "\nfn b() {}",
+            "insert at end",
+        );
     }
 
     #[test]
@@ -1761,7 +1773,14 @@ const MAX: i32 = 10;\n\
     #[test]
     fn parity_delete_last_char_rust() {
         let src = "fn main() {};";
-        assert_single_edit_parity(Lang::Rust, src, src.len() - 1, src.len(), "", "delete last byte");
+        assert_single_edit_parity(
+            Lang::Rust,
+            src,
+            src.len() - 1,
+            src.len(),
+            "",
+            "delete last byte",
+        );
     }
 
     #[test]
@@ -1848,11 +1867,15 @@ const MAX: i32 = 10;\n\
     fn parity_three_keystroke_burst_rust() {
         // Simulate typing "abc" one char at a time inside an
         // identifier slot.
-        let (source_b, deltas) = apply_sequential_edits(
+        let (source_b, deltas) =
+            apply_sequential_edits("fn  () {}", &[(3, 3, "a"), (4, 4, "b"), (5, 5, "c")]);
+        assert_parity(
+            Lang::Rust,
             "fn  () {}",
-            &[(3, 3, "a"), (4, 4, "b"), (5, 5, "c")],
+            &deltas,
+            &source_b,
+            "3-keystroke burst",
         );
-        assert_parity(Lang::Rust, "fn  () {}", &deltas, &source_b, "3-keystroke burst");
     }
 
     #[test]
@@ -1873,10 +1896,7 @@ const MAX: i32 = 10;\n\
         // Simulate pressing backspace 3 times -- delete one byte
         // at a time from a known position.
         let src = "fn aaaa() {}";
-        let (source_b, deltas) = apply_sequential_edits(
-            src,
-            &[(6, 7, ""), (5, 6, ""), (4, 5, "")],
-        );
+        let (source_b, deltas) = apply_sequential_edits(src, &[(6, 7, ""), (5, 6, ""), (4, 5, "")]);
         assert_parity(Lang::Rust, src, &deltas, &source_b, "backspace burst");
     }
 
@@ -1911,20 +1931,20 @@ const MAX: i32 = 10;\n\
     #[test]
     fn parity_javascript_insert_in_function() {
         let src = "function f(x) { return x; }";
-        assert_single_edit_parity(Lang::JavaScript, src, 24, 24, " + 1", "insert in JS function");
+        assert_single_edit_parity(
+            Lang::JavaScript,
+            src,
+            24,
+            24,
+            " + 1",
+            "insert in JS function",
+        );
     }
 
     #[test]
     fn parity_javascript_replace_arrow_body() {
         let src = "const f = (x) => x;";
-        assert_single_edit_parity(
-            Lang::JavaScript,
-            src,
-            17,
-            18,
-            "x * 2",
-            "replace arrow body",
-        );
+        assert_single_edit_parity(Lang::JavaScript, src, 17, 18, "x * 2", "replace arrow body");
     }
 
     #[test]
@@ -1945,7 +1965,14 @@ const MAX: i32 = 10;\n\
     #[test]
     fn parity_insert_into_minimal_buffer_rust() {
         // Empty / near-empty buffer; insert valid syntax.
-        assert_single_edit_parity(Lang::Rust, "fn", 2, 2, " a() {}", "insert into minimal buffer");
+        assert_single_edit_parity(
+            Lang::Rust,
+            "fn",
+            2,
+            2,
+            " a() {}",
+            "insert into minimal buffer",
+        );
     }
 
     #[test]
@@ -1968,14 +1995,7 @@ const MAX: i32 = 10;\n\
     #[test]
     fn parity_markdown_insert_heading() {
         let src = "body paragraph\n";
-        assert_single_edit_parity(
-            Lang::Markdown,
-            src,
-            0,
-            0,
-            "# Title\n\n",
-            "insert heading",
-        );
+        assert_single_edit_parity(Lang::Markdown, src, 0, 0, "# Title\n\n", "insert heading");
     }
 
     #[test]
@@ -2102,13 +2122,6 @@ const MAX: i32 = 10;\n\
     fn parity_markdown_delete_fenced_block() {
         let src = "intro\n\n```rust\nfn x() {}\n```\n\noutro\n";
         // Delete the fenced block (bytes 7..29 == "```rust\nfn x() {}\n```\n").
-        assert_single_edit_parity(
-            Lang::Markdown,
-            src,
-            7,
-            29,
-            "",
-            "delete fenced code block",
-        );
+        assert_single_edit_parity(Lang::Markdown, src, 7, 29, "", "delete fenced code block");
     }
 }

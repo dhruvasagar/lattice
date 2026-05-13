@@ -54,18 +54,14 @@ impl SnippetRegistry {
     /// are matched verbatim against the host's scope -> language
     /// mapping; future scope-expression support extends this.
     pub fn insert(&mut self, language: &str, snippet: Snippet) {
-        let by_prefix = self
-            .by_language
-            .entry(language.to_string())
-            .or_default();
+        let by_prefix = self.by_language.entry(language.to_string()).or_default();
         for prefix in &snippet.prefixes {
             by_prefix
                 .entry(prefix.clone())
                 .or_default()
                 .push(snippet.clone());
         }
-        self.all_by_name
-            .insert(snippet.name.clone(), snippet);
+        self.all_by_name.insert(snippet.name.clone(), snippet);
     }
 
     /// Snippets matching `prefix` for `language`. Walks the
@@ -94,15 +90,10 @@ impl SnippetRegistry {
     /// Used by the `gen:snippet` source to populate the
     /// completion popup -- the host's matcher takes over
     /// from there.
-    pub fn matching_prefix<'a>(
-        &'a self,
-        language: &str,
-        query: &str,
-    ) -> Vec<&'a Snippet> {
+    pub fn matching_prefix<'a>(&'a self, language: &str, query: &str) -> Vec<&'a Snippet> {
         let q = query.to_lowercase();
         let mut out: Vec<&'a Snippet> = Vec::new();
-        let mut seen: std::collections::HashSet<&'a str> =
-            std::collections::HashSet::new();
+        let mut seen: std::collections::HashSet<&'a str> = std::collections::HashSet::new();
         for source_lang in [language, "*"] {
             let Some(by_prefix) = self.by_language.get(source_lang) else {
                 continue;
@@ -176,7 +167,10 @@ mod tests {
     #[test]
     fn lookup_returns_matching_snippet() {
         let mut r = SnippetRegistry::new();
-        r.insert("rust", snip("for-loop", "for", "for ${1:i} in ${2:iter} {}"));
+        r.insert(
+            "rust",
+            snip("for-loop", "for", "for ${1:i} in ${2:iter} {}"),
+        );
         let hits = r.lookup("rust", "for");
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].name, "for-loop");

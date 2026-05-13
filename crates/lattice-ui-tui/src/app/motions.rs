@@ -223,8 +223,7 @@ impl App {
             match e.buffer {
                 BufferKind::Document | BufferKind::FileTree => self.buffers.contains(e.buffer_id),
                 BufferKind::Help => {
-                    self.buffers.help(e.buffer_id).is_some()
-                        || popup_help_id == Some(e.buffer_id)
+                    self.buffers.help(e.buffer_id).is_some() || popup_help_id == Some(e.buffer_id)
                 }
                 BufferKind::Oil => self.buffers.contains(e.buffer_id),
             }
@@ -642,10 +641,7 @@ impl App {
     pub fn active_cursor(&self) -> Position {
         match self.active_buffer {
             BufferKind::Document => self.cursor,
-            BufferKind::Help => self
-                .popup_help()
-                .map(|h| h.cursor)
-                .unwrap_or(self.cursor),
+            BufferKind::Help => self.popup_help().map(|h| h.cursor).unwrap_or(self.cursor),
             BufferKind::FileTree => self
                 .buffers
                 .file_tree(self.active_pane_buffer_id())
@@ -690,9 +686,9 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
 
     use super::*;
-    use crate::app::*;
-    use crate::app::test_helpers::{app_with, invoke_motion};
     use crate::app::TagStackEntry;
+    use crate::app::test_helpers::{app_with, invoke_motion};
+    use crate::app::*;
 
     #[test]
     fn invoke_char_right_advances_cursor() {
@@ -769,7 +765,9 @@ mod tests {
     #[test]
     fn set_mark_clears_partial_chord() {
         let mut a = app_with("hello", 10);
-        a.apply(Action::AbsorbPartialChord(crate::chord::KeyChord::char('m')));
+        a.apply(Action::AbsorbPartialChord(crate::chord::KeyChord::char(
+            'm',
+        )));
         a.apply(Action::SetMark('a'));
         assert!(a.partial_chord.is_empty());
     }
@@ -778,7 +776,9 @@ mod tests {
     fn jump_to_mark_clears_partial_chord() {
         let mut a = app_with("hello\nworld", 10);
         a.apply(Action::SetMark('a'));
-        a.apply(Action::AbsorbPartialChord(crate::chord::KeyChord::char('`')));
+        a.apply(Action::AbsorbPartialChord(crate::chord::KeyChord::char(
+            '`',
+        )));
         a.apply(Action::JumpToMarkExact('a'));
         assert!(a.partial_chord.is_empty());
     }
@@ -1286,5 +1286,4 @@ mod tests {
         assert!(matches!(last.source, PositionSource::PluginPush));
         assert_eq!(last.position, Position::new(3, 1));
     }
-
 }

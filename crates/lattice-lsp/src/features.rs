@@ -46,11 +46,7 @@ impl ServerHandle {
     /// renderer feeds into the [`crate::HoverPopup`] markdown
     /// pipeline; the optional `range` highlights the symbol
     /// hovered (renderer integration is Phase 4.2.b polish).
-    pub fn hover(
-        &self,
-        params: HoverParams,
-        token: CancellationToken,
-    ) -> Pending<Option<Hover>> {
+    pub fn hover(&self, params: HoverParams, token: CancellationToken) -> Pending<Option<Hover>> {
         self.request_with_cancel("textDocument/hover", params, token)
     }
 
@@ -546,11 +542,7 @@ impl ServerHandle {
         params: lsp_types::CreateFilesParams,
         cancel: lattice_protocol::CancellationToken,
     ) -> crate::pending::Pending<Option<lsp_types::WorkspaceEdit>> {
-        self.request_with_cancel(
-            "workspace/willCreateFiles",
-            params,
-            cancel,
-        )
+        self.request_with_cancel("workspace/willCreateFiles", params, cancel)
     }
 
     /// 4.4.m: `workspace/didCreateFiles` (notification).
@@ -574,11 +566,7 @@ impl ServerHandle {
         params: lsp_types::RenameFilesParams,
         cancel: lattice_protocol::CancellationToken,
     ) -> crate::pending::Pending<Option<lsp_types::WorkspaceEdit>> {
-        self.request_with_cancel(
-            "workspace/willRenameFiles",
-            params,
-            cancel,
-        )
+        self.request_with_cancel("workspace/willRenameFiles", params, cancel)
     }
 
     /// 4.4.m: `workspace/didRenameFiles` (notification).
@@ -596,11 +584,7 @@ impl ServerHandle {
         params: lsp_types::DeleteFilesParams,
         cancel: lattice_protocol::CancellationToken,
     ) -> crate::pending::Pending<Option<lsp_types::WorkspaceEdit>> {
-        self.request_with_cancel(
-            "workspace/willDeleteFiles",
-            params,
-            cancel,
-        )
+        self.request_with_cancel("workspace/willDeleteFiles", params, cancel)
     }
 
     /// 4.4.m: `workspace/didDeleteFiles` (notification).

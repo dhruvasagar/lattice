@@ -130,11 +130,7 @@ mod tests {
             });
         }
         assert_eq!(ring.len(), 3);
-        let texts: Vec<&str> = ring
-            .records()
-            .iter()
-            .map(|r| r.text.as_str())
-            .collect();
+        let texts: Vec<&str> = ring.records().iter().map(|r| r.text.as_str()).collect();
         assert_eq!(texts, vec!["m2", "m3", "m4"]);
     }
 

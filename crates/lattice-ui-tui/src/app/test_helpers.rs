@@ -7,8 +7,8 @@
 //! these in via `use crate::app::test_helpers::*;`.
 
 use lattice_core::Document;
-use lattice_grammar::{CommandInvocation, ModalState};
 use lattice_grammar::registry::MotionId;
+use lattice_grammar::{CommandInvocation, ModalState};
 use lattice_protocol::Event;
 
 use crate::buffers::BufferKind;
@@ -84,9 +84,7 @@ pub(super) fn attach_test_syntax(a: &mut App, lang: lattice_syntax::Lang) {
 /// option-cascade tests that need to assert specific events
 /// fired (e.g. `Event::DocumentChanged`,
 /// `Event::OptionChanged`, `Event::ModalModeChanged`).
-pub(super) fn subscribe_all_events(
-    a: &App,
-) -> tokio::sync::mpsc::UnboundedReceiver<Event> {
+pub(super) fn subscribe_all_events(a: &App) -> tokio::sync::mpsc::UnboundedReceiver<Event> {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     a.event_bus.subscribe(
         lattice_runtime::EventFilter::any(),
@@ -147,11 +145,7 @@ pub(super) fn press_chars(app: &mut App, keys: &str) {
 /// Build an `App` over a path-bearing document. Used by
 /// path-completion + LSP-attach tests that need a real
 /// path to drive the language detection / attach flow.
-pub(super) fn app_with_path(
-    text: &str,
-    viewport: u32,
-    path: std::path::PathBuf,
-) -> App {
+pub(super) fn app_with_path(text: &str, viewport: u32, path: std::path::PathBuf) -> App {
     let doc = lattice_core::DocumentBuilder::default()
         .with_text(text)
         .with_path(path)
@@ -283,10 +277,8 @@ pub(super) fn open_popup_with_top_text(a: &mut App, query: &str, top_text: &str)
         a.cursor,
         query.to_string(),
     );
-    let raw = lattice_completion::RawCandidate::plain(
-        top_text,
-        lattice_completion::CandidateKind::Plain,
-    );
+    let raw =
+        lattice_completion::RawCandidate::plain(top_text, lattice_completion::CandidateKind::Plain);
     state.raw.push(raw.clone());
     state
         .rendered
@@ -302,13 +294,7 @@ pub(super) fn open_popup_with_top_text(a: &mut App, query: &str, top_text: &str)
 
 /// Insert a snippet into the App's per-language snippet
 /// registry. Used by snippet-popup / snippet-expand tests.
-pub(super) fn install_snippet(
-    a: &mut App,
-    language: &str,
-    name: &str,
-    prefix: &str,
-    body: &str,
-) {
+pub(super) fn install_snippet(a: &mut App, language: &str, name: &str, prefix: &str, body: &str) {
     let parsed = lattice_snippet::parse::parse(body).unwrap();
     // CSM.5: snippet_registry is `Arc<ArcSwap<...>>`. Clone the
     // current snapshot, mutate the copy, store. Cheap for test
@@ -324,8 +310,7 @@ pub(super) fn install_snippet(
             scope: String::new(),
         },
     );
-    a.snippet_registry
-        .store(std::sync::Arc::new(next));
+    a.snippet_registry.store(std::sync::Arc::new(next));
 }
 
 /// Build a unique temp directory for tests that touch the
@@ -351,12 +336,7 @@ pub(super) fn fresh_path_workspace(name: &str) -> std::path::PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let path = std::env::temp_dir().join(format!(
-        "lattice-{}-{}-{}",
-        name,
-        std::process::id(),
-        n,
-    ));
+    let path = std::env::temp_dir().join(format!("lattice-{}-{}-{}", name, std::process::id(), n,));
     std::fs::create_dir_all(&path).unwrap();
     path
 }

@@ -124,12 +124,13 @@ impl DynamicRegistry {
         // place its id appears.
         if let Some(prev) = self.by_id.get(&reg.id)
             && prev.method != reg.method
-                && let Some(bucket) = self.by_method.get_mut(&prev.method) {
-                    bucket.retain(|id| id != &reg.id);
-                    if bucket.is_empty() {
-                        self.by_method.remove(&prev.method);
-                    }
-                }
+            && let Some(bucket) = self.by_method.get_mut(&prev.method)
+        {
+            bucket.retain(|id| id != &reg.id);
+            if bucket.is_empty() {
+                self.by_method.remove(&prev.method);
+            }
+        }
         let bucket = self.by_method.entry(reg.method.clone()).or_default();
         if !bucket.contains(&reg.id) {
             bucket.push(reg.id.clone());
@@ -156,9 +157,7 @@ impl DynamicRegistry {
     /// given LSP method. The probe `supports_*` family calls
     /// here to OR into their static `ServerCapabilities` check.
     pub fn has(&self, method: &str) -> bool {
-        self.by_method
-            .get(method)
-            .is_some_and(|v| !v.is_empty())
+        self.by_method.get(method).is_some_and(|v| !v.is_empty())
     }
 
     /// Borrow every registration for the given method in

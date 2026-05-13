@@ -51,8 +51,8 @@ use std::sync::Arc;
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use lsp_types::{
-    DidChangeWatchedFilesRegistrationOptions, FileChangeType, FileSystemWatcher,
-    GlobPattern, WatchKind,
+    DidChangeWatchedFilesRegistrationOptions, FileChangeType, FileSystemWatcher, GlobPattern,
+    WatchKind,
 };
 
 use crate::Capabilities;
@@ -133,11 +133,7 @@ impl WatcherSubscriptions {
     /// Per LSP spec the event uses the server's URI shape; the
     /// caller converts `path` to a `file://` URI before emitting
     /// the notification.
-    pub fn matches(
-        &self,
-        absolute_path: &Path,
-        change: FileChangeType,
-    ) -> Vec<usize> {
+    pub fn matches(&self, absolute_path: &Path, change: FileChangeType) -> Vec<usize> {
         if self.empty {
             return Vec::new();
         }
@@ -241,7 +237,10 @@ pub fn compile_for_server(
 ) -> WatcherSubscriptions {
     let mut watchers: Vec<CompiledWatcher> = Vec::new();
     let mut builder = GlobSetBuilder::new();
-    for reg in caps.dynamic.registrations_for("workspace/didChangeWatchedFiles") {
+    for reg in caps
+        .dynamic
+        .registrations_for("workspace/didChangeWatchedFiles")
+    {
         let parsed = parse_registration(reg);
         match parsed {
             Ok(items) => {
@@ -332,8 +331,7 @@ fn decompose_glob_pattern(w: &FileSystemWatcher) -> (String, std::path::PathBuf)
                 lsp_types::OneOf::Left(folder) => folder.uri.clone(),
                 lsp_types::OneOf::Right(uri) => uri.clone(),
             };
-            let base = crate::actor::uri_to_path(&base_uri)
-                .unwrap_or_default();
+            let base = crate::actor::uri_to_path(&base_uri).unwrap_or_default();
             (rel.pattern.clone(), base)
         }
     }
@@ -399,11 +397,7 @@ mod tests {
     #[test]
     fn empty_registry_compiles_to_empty_subscriptions() {
         let caps = caps_with(Vec::new());
-        let subs = compile_with_workspace_root(
-            &caps,
-            Arc::from("rust"),
-            Path::new("/ws"),
-        );
+        let subs = compile_with_workspace_root(&caps, Arc::from("rust"), Path::new("/ws"));
         assert!(subs.is_empty());
         assert_eq!(subs.len(), 0);
         assert!(
@@ -414,15 +408,8 @@ mod tests {
 
     #[test]
     fn workspace_anchored_glob_matches_change_event() {
-        let caps = caps_with(vec![rust_watcher_registration(
-            "rs-source",
-            "**/*.rs",
-        )]);
-        let subs = compile_with_workspace_root(
-            &caps,
-            Arc::from("rust"),
-            Path::new("/ws"),
-        );
+        let caps = caps_with(vec![rust_watcher_registration("rs-source", "**/*.rs")]);
+        let subs = compile_with_workspace_root(&caps, Arc::from("rust"), Path::new("/ws"));
         assert!(!subs.is_empty());
         assert_eq!(
             subs.matches(Path::new("/ws/src/main.rs"), FileChangeType::CHANGED),
@@ -444,15 +431,8 @@ mod tests {
     /// registration omits it. Every change kind matches.
     #[test]
     fn watcher_without_kind_matches_all_change_types() {
-        let caps = caps_with(vec![rust_watcher_registration(
-            "all",
-            "**/*.rs",
-        )]);
-        let subs = compile_with_workspace_root(
-            &caps,
-            Arc::from("rust"),
-            Path::new("/ws"),
-        );
+        let caps = caps_with(vec![rust_watcher_registration("all", "**/*.rs")]);
+        let subs = compile_with_workspace_root(&caps, Arc::from("rust"), Path::new("/ws"));
         for kind in [
             FileChangeType::CREATED,
             FileChangeType::CHANGED,
@@ -481,11 +461,7 @@ mod tests {
             })),
         };
         let caps = caps_with(vec![reg]);
-        let subs = compile_with_workspace_root(
-            &caps,
-            Arc::from("rust"),
-            Path::new("/ws"),
-        );
+        let subs = compile_with_workspace_root(&caps, Arc::from("rust"), Path::new("/ws"));
         assert_eq!(
             subs.matches(Path::new("/ws/lib.rs"), FileChangeType::CHANGED),
             vec![0]
@@ -509,11 +485,7 @@ mod tests {
             rust_watcher_registration("rs", "**/*.rs"),
             rust_watcher_registration("toml", "**/*.toml"),
         ]);
-        let subs = compile_with_workspace_root(
-            &caps,
-            Arc::from("rust"),
-            Path::new("/ws"),
-        );
+        let subs = compile_with_workspace_root(&caps, Arc::from("rust"), Path::new("/ws"));
         assert_eq!(subs.len(), 2);
         assert_eq!(
             subs.matches(Path::new("/ws/lib.rs"), FileChangeType::CHANGED),
@@ -542,14 +514,11 @@ mod tests {
             position_encoding: PositionEncodingKind::UTF8,
             dynamic,
         });
-        let subs = compile_with_workspace_root(
-            &caps,
-            Arc::from("rust"),
-            Path::new("/ws"),
-        );
+        let subs = compile_with_workspace_root(&caps, Arc::from("rust"), Path::new("/ws"));
         assert_eq!(subs.len(), 1, "bad registration skipped, good one kept");
         assert!(
-            !subs.matches(Path::new("/ws/lib.rs"), FileChangeType::CHANGED)
+            !subs
+                .matches(Path::new("/ws/lib.rs"), FileChangeType::CHANGED)
                 .is_empty()
         );
     }
@@ -571,11 +540,7 @@ mod tests {
             })),
         };
         let caps = caps_with(vec![reg]);
-        let subs = compile_with_workspace_root(
-            &caps,
-            Arc::from("rust"),
-            Path::new("/ws"),
-        );
+        let subs = compile_with_workspace_root(&caps, Arc::from("rust"), Path::new("/ws"));
         assert_eq!(subs.len(), 2, "two valid globs survive");
     }
 

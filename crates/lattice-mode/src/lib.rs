@@ -66,7 +66,6 @@ pub mod services;
 pub use crate::active::ActiveModes;
 pub use crate::capability::CapabilitySet;
 pub use crate::context::ModeContext;
-pub use crate::services::ServiceRegistry;
 pub use crate::contributions::{DecorationProvider, Keymap, Subscription};
 pub use crate::error::ModeActivationError;
 pub use crate::event::ModeEvent;
@@ -76,8 +75,9 @@ pub use crate::modes::{
     ActiveCompletionSources, BufferWordsMode, CompletionMode, CompletionPopupMode, HelpMode,
     HoverMode, PathCompletionMode, TextMode, register_foundation_modes,
 };
+pub use crate::services::ServiceRegistry;
 // M.4 dep-inversion: layer-input types live in `lattice-config`
 // now. Re-exported here for compatibility -- callers that
 // imported from `lattice_mode` keep working.
-pub use lattice_config::{OptionOverride, OptionOverrideSet, OverridePriority};
 pub use crate::registry::{ModeRegistry, RegistrationError};
+pub use lattice_config::{OptionOverride, OptionOverrideSet, OverridePriority};

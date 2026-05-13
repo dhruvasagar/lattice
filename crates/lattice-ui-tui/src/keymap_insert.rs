@@ -112,9 +112,7 @@ use crate::app::Action;
 use crate::chord::{KeyChord, KeyKind, KeyMods, SpecialKey};
 use crate::keymap::BindingMode;
 use crate::keymap_registry::KeymapHandle;
-use crate::keymap_trie::{
-    BoundCommand, ChordPattern, KeymapLayer, KeymapTrie, LookupResult,
-};
+use crate::keymap_trie::{BoundCommand, ChordPattern, KeymapLayer, KeymapTrie, LookupResult};
 
 /// Register every chord the legacy `input::translate_insert`
 /// recognised into the supplied handle's `Builtin` layer under
@@ -185,9 +183,7 @@ pub fn register_insert_bindings(handle: &KeymapHandle, actions: &ActionIds) {
 /// Returns one trie keyed under `BindingMode::Insert` -- the only
 /// mode the popup is active in. The registry's merge picks up
 /// every entry under that mode whenever the layer is pushed.
-pub fn completion_popup_layer_bindings(
-    actions: &ActionIds,
-) -> HashMap<BindingMode, KeymapTrie> {
+pub fn completion_popup_layer_bindings(actions: &ActionIds) -> HashMap<BindingMode, KeymapTrie> {
     let mut trie = KeymapTrie::new();
     let layer = KeymapLayer::MinorMode(0); // tag overridden by registry on push
 
@@ -283,8 +279,8 @@ pub fn completion_popup_layer_bindings(
     // `Args::String(SourceId)` payload is folded into the bound
     // invocation, so a single action covers every source.
     use lattice_completion::insert::{
-        BufferWordsSource, LSP_COMPLETION_SOURCE_ID, PATH_SOURCE_ID,
-        SNIPPET_SOURCE_ID, TREE_SITTER_SYMBOL_SOURCE_ID,
+        BufferWordsSource, LSP_COMPLETION_SOURCE_ID, PATH_SOURCE_ID, SNIPPET_SOURCE_ID,
+        TREE_SITTER_SYMBOL_SOURCE_ID,
     };
     bind_invocation_with_string(
         &mut trie,
@@ -340,9 +336,7 @@ pub fn completion_popup_layer_bindings(
 /// Build the active-snippet minor-mode layer's binding set.
 /// Pushed by `App::push_snippet_layer` when an `ActiveSnippet`
 /// activates; popped on snippet exit.
-pub fn active_snippet_layer_bindings(
-    actions: &ActionIds,
-) -> HashMap<BindingMode, KeymapTrie> {
+pub fn active_snippet_layer_bindings(actions: &ActionIds) -> HashMap<BindingMode, KeymapTrie> {
     let mut trie = KeymapTrie::new();
     let layer = KeymapLayer::MinorMode(0); // tag overridden by registry
 
@@ -415,9 +409,7 @@ pub fn dispatch_insert(
         let mut path: Vec<KeyChord> = partial_chord.to_vec();
         path.push(chord);
         return match handle.lookup(BindingMode::Insert, &path) {
-            LookupResult::Bound { command, captured } => {
-                action_from_bound(&command, &captured)
-            }
+            LookupResult::Bound { command, captured } => action_from_bound(&command, &captured),
             _ => Action::None,
         };
     }
@@ -427,9 +419,7 @@ pub fn dispatch_insert(
     };
     let chord = normalize_for_insert_lookup(raw_chord);
     match handle.lookup(BindingMode::Insert, &[chord]) {
-        LookupResult::Bound { command, captured } => {
-            action_from_bound(&command, &captured)
-        }
+        LookupResult::Bound { command, captured } => action_from_bound(&command, &captured),
         LookupResult::Partial => {
             // Slice 8.i.4.b: every trie `Partial` in Insert mode
             // (currently only `<C-x>`) absorbs into
@@ -632,11 +622,7 @@ mod tests {
     fn backspace_in_base_insert_deletes_char_backward() {
         let h = populated_handle();
         let a = shared_actions();
-        let r = dispatch_insert(
-            &h,
-            &ev(KeyCode::Backspace, KeyModifiers::NONE),
-            &[],
-        );
+        let r = dispatch_insert(&h, &ev(KeyCode::Backspace, KeyModifiers::NONE), &[]);
         match r {
             Action::Invoke(inv) => assert_eq!(inv.command, a.delete_char_backward),
             other => panic!("expected Invoke(delete_char_backward), got {other:?}"),
@@ -647,11 +633,7 @@ mod tests {
     fn enter_in_base_insert_inserts_newline() {
         let h = populated_handle();
         let a = shared_actions();
-        match dispatch_insert(
-            &h,
-            &ev(KeyCode::Enter, KeyModifiers::NONE),
-            &[],
-        ) {
+        match dispatch_insert(&h, &ev(KeyCode::Enter, KeyModifiers::NONE), &[]) {
             Action::Invoke(inv) => assert_eq!(inv.command, a.insert_newline),
             other => panic!("expected Invoke(insert_newline), got {other:?}"),
         }
@@ -671,11 +653,7 @@ mod tests {
     fn printable_char_in_base_insert_falls_through_to_insert() {
         let h = populated_handle();
         for c in ['a', 'A', '1', '$', ' '] {
-            match dispatch_insert(
-                &h,
-                &ev(KeyCode::Char(c), KeyModifiers::NONE),
-                &[],
-            ) {
+            match dispatch_insert(&h, &ev(KeyCode::Char(c), KeyModifiers::NONE), &[]) {
                 Action::Insert(s) => assert_eq!(s, c.to_string()),
                 other => panic!("char {c:?}: expected Insert, got {other:?}"),
             }
@@ -686,11 +664,7 @@ mod tests {
     fn ctrl_letter_unbound_in_base_insert_yields_none() {
         let h = populated_handle();
         // <C-y> isn't bound at base; legacy returned None.
-        let r = dispatch_insert(
-            &h,
-            &ev(KeyCode::Char('y'), KeyModifiers::CONTROL),
-            &[],
-        );
+        let r = dispatch_insert(&h, &ev(KeyCode::Char('y'), KeyModifiers::CONTROL), &[]);
         assert!(matches!(r, Action::None));
     }
 
@@ -698,11 +672,7 @@ mod tests {
     fn ctrl_space_in_base_insert_triggers_completion() {
         let h = populated_handle();
         let a = shared_actions();
-        let r = dispatch_insert(
-            &h,
-            &ev(KeyCode::Char(' '), KeyModifiers::CONTROL),
-            &[],
-        );
+        let r = dispatch_insert(&h, &ev(KeyCode::Char(' '), KeyModifiers::CONTROL), &[]);
         match r {
             Action::Invoke(inv) => assert_eq!(inv.command, a.completion_trigger),
             other => panic!("expected Invoke(completion_trigger), got {other:?}"),
@@ -719,11 +689,7 @@ mod tests {
         // with that prefix and resolves `<C-x><C-o>` /
         // `<C-x><C-s>`.
         let h = populated_handle();
-        let r = dispatch_insert(
-            &h,
-            &ev(KeyCode::Char('x'), KeyModifiers::CONTROL),
-            &[],
-        );
+        let r = dispatch_insert(&h, &ev(KeyCode::Char('x'), KeyModifiers::CONTROL), &[]);
         match r {
             Action::AbsorbPartialChord(c) => assert_eq!(c, KeyChord::ctrl('x')),
             other => panic!("expected AbsorbPartialChord(<C-x>), got {other:?}"),
@@ -784,11 +750,7 @@ mod tests {
     fn popup_ctrl_n_navigates_next() {
         let h = populated_handle_with_popup();
         let a = shared_actions();
-        let r = dispatch_insert(
-            &h,
-            &ev(KeyCode::Char('n'), KeyModifiers::CONTROL),
-            &[],
-        );
+        let r = dispatch_insert(&h, &ev(KeyCode::Char('n'), KeyModifiers::CONTROL), &[]);
         match r {
             Action::Invoke(inv) => assert_eq!(inv.command, a.completion_next),
             other => panic!("expected Invoke(completion_next), got {other:?}"),
@@ -799,11 +761,7 @@ mod tests {
     fn popup_down_arrow_navigates_next() {
         let h = populated_handle_with_popup();
         let a = shared_actions();
-        let r = dispatch_insert(
-            &h,
-            &ev(KeyCode::Down, KeyModifiers::NONE),
-            &[],
-        );
+        let r = dispatch_insert(&h, &ev(KeyCode::Down, KeyModifiers::NONE), &[]);
         match r {
             Action::Invoke(inv) => assert_eq!(inv.command, a.completion_next),
             other => panic!("expected Invoke(completion_next), got {other:?}"),
@@ -825,11 +783,7 @@ mod tests {
     fn popup_enter_accepts() {
         let h = populated_handle_with_popup();
         let a = shared_actions();
-        let r = dispatch_insert(
-            &h,
-            &ev(KeyCode::Enter, KeyModifiers::NONE),
-            &[],
-        );
+        let r = dispatch_insert(&h, &ev(KeyCode::Enter, KeyModifiers::NONE), &[]);
         match r {
             Action::Invoke(inv) => assert_eq!(inv.command, a.completion_accept),
             other => panic!("expected Invoke(completion_accept), got {other:?}"),
@@ -853,11 +807,7 @@ mod tests {
     fn popup_ctrl_e_cancels_only() {
         let h = populated_handle_with_popup();
         let a = shared_actions();
-        let r = dispatch_insert(
-            &h,
-            &ev(KeyCode::Char('e'), KeyModifiers::CONTROL),
-            &[],
-        );
+        let r = dispatch_insert(&h, &ev(KeyCode::Char('e'), KeyModifiers::CONTROL), &[]);
         match r {
             Action::Invoke(inv) => assert_eq!(inv.command, a.completion_cancel),
             other => panic!("expected Invoke(completion_cancel), got {other:?}"),
@@ -869,17 +819,15 @@ mod tests {
         use lattice_grammar::args::Args;
         let h = populated_handle_with_popup();
         let a = shared_actions();
-        let r = dispatch_insert(
-            &h,
-            &ev(KeyCode::Char('a'), KeyModifiers::NONE),
-            &[],
-        );
+        let r = dispatch_insert(&h, &ev(KeyCode::Char('a'), KeyModifiers::NONE), &[]);
         match r {
             Action::Invoke(inv) => {
                 assert_eq!(inv.command, a.completion_accept_then_insert);
                 assert!(matches!(inv.args, Args::Char('a')));
             }
-            other => panic!("expected Invoke(completion_accept_then_insert, Char('a')), got {other:?}"),
+            other => {
+                panic!("expected Invoke(completion_accept_then_insert, Char('a')), got {other:?}")
+            }
         }
     }
 
@@ -891,19 +839,14 @@ mod tests {
         use lattice_grammar::args::Args;
         let h = populated_handle_with_popup();
         let a = shared_actions();
-        let r = dispatch_insert(
-            &h,
-            &ev(KeyCode::Char('b'), KeyModifiers::CONTROL),
-            &[],
-        );
+        let r = dispatch_insert(&h, &ev(KeyCode::Char('b'), KeyModifiers::CONTROL), &[]);
         match r {
             Action::Invoke(inv) => {
                 assert_eq!(inv.command, a.completion_filter_to_source);
                 match inv.args {
-                    Args::String(s) => assert_eq!(
-                        s,
-                        lattice_completion::insert::BufferWordsSource::ID
-                    ),
+                    Args::String(s) => {
+                        assert_eq!(s, lattice_completion::insert::BufferWordsSource::ID)
+                    }
                     other => panic!("expected Args::String, got {other:?}"),
                 }
             }
@@ -919,11 +862,7 @@ mod tests {
         use lattice_grammar::args::Args;
         let h = populated_handle_with_popup();
         let a = shared_actions();
-        let r = dispatch_insert(
-            &h,
-            &ev(KeyCode::Char('o'), KeyModifiers::CONTROL),
-            &[],
-        );
+        let r = dispatch_insert(&h, &ev(KeyCode::Char('o'), KeyModifiers::CONTROL), &[]);
         match r {
             Action::Invoke(inv) => {
                 assert_eq!(inv.command, a.completion_filter_to_source);
@@ -945,11 +884,7 @@ mod tests {
     fn popup_ctrl_space_clears_filter() {
         let h = populated_handle_with_popup();
         let a = shared_actions();
-        let r = dispatch_insert(
-            &h,
-            &ev(KeyCode::Char(' '), KeyModifiers::CONTROL),
-            &[],
-        );
+        let r = dispatch_insert(&h, &ev(KeyCode::Char(' '), KeyModifiers::CONTROL), &[]);
         match r {
             Action::Invoke(inv) => {
                 assert_eq!(inv.command, a.completion_filter_clear);
@@ -979,11 +914,7 @@ mod tests {
         // lookup falls through to base Insert which has it as a
         // partial node, returning `AbsorbPartialChord(<C-x>)`.
         let h = populated_handle_with_popup();
-        let r = dispatch_insert(
-            &h,
-            &ev(KeyCode::Char('x'), KeyModifiers::CONTROL),
-            &[],
-        );
+        let r = dispatch_insert(&h, &ev(KeyCode::Char('x'), KeyModifiers::CONTROL), &[]);
         match r {
             Action::AbsorbPartialChord(c) => assert_eq!(c, KeyChord::ctrl('x')),
             other => panic!("expected AbsorbPartialChord(<C-x>), got {other:?}"),
@@ -1009,11 +940,7 @@ mod tests {
     fn snippet_back_tab_jumps_to_prev_placeholder() {
         let h = populated_handle_with_snippet();
         let a = shared_actions();
-        let r = dispatch_insert(
-            &h,
-            &ev(KeyCode::BackTab, KeyModifiers::NONE),
-            &[],
-        );
+        let r = dispatch_insert(&h, &ev(KeyCode::BackTab, KeyModifiers::NONE), &[]);
         match r {
             Action::Invoke(inv) => {
                 assert_eq!(inv.command, a.snippet_prev_placeholder)
@@ -1026,11 +953,7 @@ mod tests {
     fn snippet_shift_tab_jumps_to_prev_placeholder() {
         let h = populated_handle_with_snippet();
         let a = shared_actions();
-        let r = dispatch_insert(
-            &h,
-            &ev(KeyCode::Tab, KeyModifiers::SHIFT),
-            &[],
-        );
+        let r = dispatch_insert(&h, &ev(KeyCode::Tab, KeyModifiers::SHIFT), &[]);
         match r {
             Action::Invoke(inv) => {
                 assert_eq!(inv.command, a.snippet_prev_placeholder)
@@ -1053,11 +976,7 @@ mod tests {
     #[test]
     fn snippet_unrelated_key_falls_through_to_base_insert() {
         let h = populated_handle_with_snippet();
-        let r = dispatch_insert(
-            &h,
-            &ev(KeyCode::Char('z'), KeyModifiers::NONE),
-            &[],
-        );
+        let r = dispatch_insert(&h, &ev(KeyCode::Char('z'), KeyModifiers::NONE), &[]);
         match r {
             Action::Insert(s) => assert_eq!(s, "z"),
             other => panic!("expected Insert(z), got {other:?}"),
@@ -1099,11 +1018,7 @@ mod tests {
         // bind it. Falls through to snippet -> SnippetPrevPlaceholder.
         let h = populated_handle_with_both();
         let a = shared_actions();
-        let r = dispatch_insert(
-            &h,
-            &ev(KeyCode::BackTab, KeyModifiers::NONE),
-            &[],
-        );
+        let r = dispatch_insert(&h, &ev(KeyCode::BackTab, KeyModifiers::NONE), &[]);
         match r {
             Action::Invoke(inv) => {
                 assert_eq!(inv.command, a.snippet_prev_placeholder)

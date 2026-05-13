@@ -33,7 +33,6 @@ pub mod ids;
 pub mod position;
 pub mod selection;
 
-
 pub use crate::cancel::CancellationToken;
 pub use crate::edit::{Edit, EditDelta, EditKind};
 pub use crate::error::{ProtocolError, Result};

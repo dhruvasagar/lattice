@@ -108,10 +108,7 @@ impl<'a> Parser<'a> {
     /// stop bytes appears at the current position. The stop
     /// list is `Some` for nested bodies (e.g. inside a
     /// `${1:default}` block, `}` closes the block).
-    fn parse_body(
-        &mut self,
-        stop: Option<&[u8]>,
-    ) -> Result<Vec<SnippetToken>, ParseError> {
+    fn parse_body(&mut self, stop: Option<&[u8]>) -> Result<Vec<SnippetToken>, ParseError> {
         let mut tokens = Vec::new();
         while let Some(b) = self.peek() {
             if let Some(stop) = stop
@@ -126,9 +123,7 @@ impl<'a> Parser<'a> {
                         match next {
                             b'$' | b'\\' | b'}' => {
                                 self.bump();
-                                tokens.push(SnippetToken::Literal(
-                                    char::from(next).to_string(),
-                                ));
+                                tokens.push(SnippetToken::Literal(char::from(next).to_string()));
                             }
                             // Unknown escape: keep the backslash
                             // verbatim. VS Code lenient mode.
@@ -484,9 +479,7 @@ mod tests {
                         SnippetToken::Literal("outer ".into()),
                         SnippetToken::Placeholder {
                             idx: 2,
-                            default: SnippetBody::new(vec![SnippetToken::Literal(
-                                "inner".into()
-                            )]),
+                            default: SnippetBody::new(vec![SnippetToken::Literal("inner".into())]),
                         },
                         SnippetToken::Literal(" more".into()),
                     ]
@@ -502,8 +495,7 @@ mod tests {
         match &b.tokens[0] {
             SnippetToken::Choice { idx, options } => {
                 assert_eq!(*idx, 1);
-                let texts: Vec<&str> =
-                    options.iter().map(|c| c.text.as_str()).collect();
+                let texts: Vec<&str> = options.iter().map(|c| c.text.as_str()).collect();
                 assert_eq!(texts, vec!["alpha", "beta", "gamma"]);
             }
             other => panic!("expected Choice, got {other:?}"),
@@ -541,10 +533,7 @@ mod tests {
             SnippetToken::Variable { name, default } => {
                 assert_eq!(name, "TM_FILENAME");
                 let d = default.as_ref().expect("has default");
-                assert_eq!(
-                    d.tokens,
-                    vec![SnippetToken::Literal("default.txt".into())]
-                );
+                assert_eq!(d.tokens, vec![SnippetToken::Literal("default.txt".into())]);
             }
             other => panic!("expected Variable, got {other:?}"),
         }
@@ -554,10 +543,7 @@ mod tests {
     fn escapes_dollar_brace_backslash() {
         let b = parse_ok("\\$1 \\\\ \\}");
         // Expected: literal "$1 \ }" (the escapes consumed).
-        assert_eq!(
-            b.tokens,
-            vec![SnippetToken::Literal("$1 \\ }".into())]
-        );
+        assert_eq!(b.tokens, vec![SnippetToken::Literal("$1 \\ }".into())]);
     }
 
     #[test]
@@ -566,10 +552,7 @@ mod tests {
         // a literal, the rest re-parses (the `{` becomes a
         // literal too).
         let b = parse_ok("$ no-block");
-        assert_eq!(
-            b.tokens,
-            vec![SnippetToken::Literal("$ no-block".into())]
-        );
+        assert_eq!(b.tokens, vec![SnippetToken::Literal("$ no-block".into())]);
     }
 
     #[test]
@@ -617,9 +600,6 @@ mod tests {
     #[test]
     fn unicode_literals_round_trip() {
         let b = parse_ok("héllo wörld");
-        assert_eq!(
-            b.tokens,
-            vec![SnippetToken::Literal("héllo wörld".into())]
-        );
+        assert_eq!(b.tokens, vec![SnippetToken::Literal("héllo wörld".into())]);
     }
 }

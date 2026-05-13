@@ -596,8 +596,8 @@ fn step_byte(buf: &Buffer, p: Position, dir: SearchDirection) -> Position {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
 
-    use crate::app::*;
     use crate::app::test_helpers::{app_with, install_help, submit_ex};
+    use crate::app::*;
     use crate::help::HelpContent;
     use lattice_grammar::{ModalState, SearchDirection};
     use lattice_protocol::position::Position;
@@ -1132,5 +1132,4 @@ mod tests {
         a.apply(Action::Invoke(inv));
         assert_eq!(a.cursor, Position::new(0, 1));
     }
-
 }

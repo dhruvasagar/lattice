@@ -135,13 +135,9 @@ impl App {
             // a hard error -- the dispatcher just no-ops.
             // Should never happen in practice (the Oil kind +
             // missing registry entry is a state-machine bug).
-            return Err(RuntimeError::Core(
-                lattice_core::CoreError::Cancelled,
-            ));
+            return Err(RuntimeError::Core(lattice_core::CoreError::Cancelled));
         };
-        oil.content
-            .apply_edit(&edit)
-            .map_err(RuntimeError::Core)
+        oil.content.apply_edit(&edit).map_err(RuntimeError::Core)
     }
 
     pub(super) fn undo_blocking(&mut self) -> Result<Vec<AppliedEdit>, RuntimeError> {
@@ -719,10 +715,7 @@ impl App {
 
     /// Read the register slot for paste / inspection. Falls back to
     /// `unnamed_register`.
-    pub(super) fn read_register(
-        &self,
-        register: Option<Register>,
-    ) -> Option<UnnamedRegister> {
+    pub(super) fn read_register(&self, register: Option<Register>) -> Option<UnnamedRegister> {
         match register {
             None | Some(Register::Unnamed) => self.unnamed_register.clone(),
             Some(Register::BlackHole) => None,
@@ -793,10 +786,10 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
 
     use super::*;
-    use crate::app::*;
     use crate::app::test_helpers::{
         app_in_command_mode, app_with, attach_test_syntax, invoke_motion,
     };
+    use crate::app::*;
     use lattice_protocol::edit::Edit;
     use lattice_protocol::selection::VisualMode;
 
@@ -1682,10 +1675,7 @@ mod tests {
         // positioning (the buffer already has "hel" as part of
         // hello). For the test, just place cursor on a different
         // line.
-        let _ = a.apply_edit_blocking(Edit::insert(
-            Position::new(0, 28),
-            "\nhel",
-        ));
+        let _ = a.apply_edit_blocking(Edit::insert(Position::new(0, 28), "\nhel"));
         a.cursor = Position::new(1, 3);
         a.do_completion_trigger();
         let state = a.insert_completion.as_ref().expect("popup opened");
@@ -1693,11 +1683,7 @@ mod tests {
         // hello / helper / helmet all start with "hel" -- prefix
         // tier (score 800) matches. Order may vary by stable
         // sort over insertion order.
-        let labels: Vec<String> = state
-            .rendered
-            .iter()
-            .map(|c| c.raw.text.clone())
-            .collect();
+        let labels: Vec<String> = state.rendered.iter().map(|c| c.raw.text.clone()).collect();
         assert!(labels.contains(&"hello".to_string()));
         assert!(labels.contains(&"helper".to_string()));
         assert!(labels.contains(&"helmet".to_string()));
@@ -1710,18 +1696,10 @@ mod tests {
     fn insert_completion_next_prev_navigates_with_wrap() {
         let mut a = app_with("alpha alphabet alligator", 10);
         a.modal = ModalState::Insert;
-        let _ = a.apply_edit_blocking(Edit::insert(
-            Position::new(0, 24),
-            "\nal",
-        ));
+        let _ = a.apply_edit_blocking(Edit::insert(Position::new(0, 24), "\nal"));
         a.cursor = Position::new(1, 2);
         a.do_completion_trigger();
-        let total = a
-            .insert_completion
-            .as_ref()
-            .expect("popup")
-            .rendered
-            .len();
+        let total = a.insert_completion.as_ref().expect("popup").rendered.len();
         assert!(total >= 2, "need ≥ 2 candidates for wrap test");
         assert_eq!(a.insert_completion.as_ref().unwrap().selected, 0);
         a.do_completion_next();
@@ -1729,10 +1707,7 @@ mod tests {
         // Wrap to last via prev from 1 -> 0 -> total-1.
         a.do_completion_prev();
         a.do_completion_prev();
-        assert_eq!(
-            a.insert_completion.as_ref().unwrap().selected,
-            total - 1
-        );
+        assert_eq!(a.insert_completion.as_ref().unwrap().selected, total - 1);
     }
 
     #[test]
@@ -1805,22 +1780,13 @@ mod tests {
         a.modal = ModalState::Insert;
         a.cursor = Position::new(1, 2);
         a.do_completion_trigger();
-        let pre_count = a
-            .insert_completion
-            .as_ref()
-            .expect("popup")
-            .rendered
-            .len();
+        let pre_count = a.insert_completion.as_ref().expect("popup").rendered.len();
         // Type 'p' -- query becomes "alp"; only "alpha" /
         // "alphabet" survive (alligator drops out).
         a.apply(Action::Insert("p".into()));
         let state = a.insert_completion.as_ref().expect("popup still open");
         assert_eq!(state.query, "alp");
-        let labels: Vec<String> = state
-            .rendered
-            .iter()
-            .map(|c| c.raw.text.clone())
-            .collect();
+        let labels: Vec<String> = state.rendered.iter().map(|c| c.raw.text.clone()).collect();
         assert!(labels.contains(&"alpha".to_string()));
         assert!(labels.contains(&"alphabet".to_string()));
         assert!(!labels.contains(&"alligator".to_string()));
@@ -1870,5 +1836,4 @@ mod tests {
         a.apply(Action::PasteAfter);
         assert_eq!(a.document.text(), "bac");
     }
-
 }

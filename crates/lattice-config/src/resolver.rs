@@ -116,17 +116,13 @@ impl Resolver {
     /// wins; within a layer, later position wins.
     fn candidate_better(a: &Candidate<'_>, b: &Candidate<'_>) -> bool {
         // Explicit-priority wins absolute.
-        if a.ov.priority == OverridePriority::High
-            && b.ov.priority != OverridePriority::High
-        {
+        if a.ov.priority == OverridePriority::High && b.ov.priority != OverridePriority::High {
             return true;
         }
         if b.ov.priority == OverridePriority::High {
             return false;
         }
-        if a.ov.priority == OverridePriority::Low
-            && b.ov.priority != OverridePriority::Low
-        {
+        if a.ov.priority == OverridePriority::Low && b.ov.priority != OverridePriority::Low {
             return false;
         }
         if b.ov.priority == OverridePriority::Low {

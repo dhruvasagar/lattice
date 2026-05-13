@@ -86,9 +86,7 @@ impl OptionType for bool {
         match s {
             "true" | "on" | "1" | "yes" => Ok(true),
             "false" | "off" | "0" | "no" => Ok(false),
-            other => Err(format!(
-                "expected boolean (`true`/`false`), got `{other}`"
-            )),
+            other => Err(format!("expected boolean (`true`/`false`), got `{other}`")),
         }
     }
 

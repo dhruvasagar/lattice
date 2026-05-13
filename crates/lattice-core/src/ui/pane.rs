@@ -184,9 +184,7 @@ pub enum SplitOrientation {
 /// renderer + the grammar's `AppEffect::NavigatePane` payload can
 /// reference one canonical type. lattice-grammar re-exports it
 /// for ergonomic access from `AppEffect`.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PaneDirection {
     Left,
     Down,

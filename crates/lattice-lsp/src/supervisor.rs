@@ -287,10 +287,7 @@ impl LspSupervisor {
     /// every actor spawned after the call so server-initiated
     /// `workspace/configuration` requests reach the App's
     /// drain. `None` falls back to per-item `null` replies.
-    pub fn set_configuration_bus(
-        &mut self,
-        bus: crate::configuration::ConfigurationBus,
-    ) {
+    pub fn set_configuration_bus(&mut self, bus: crate::configuration::ConfigurationBus) {
         self.configuration_bus = Some(bus);
     }
 
@@ -298,10 +295,7 @@ impl LspSupervisor {
     /// actor spawned (or restarted) after this call. The App
     /// calls this once at startup with the sender side of the
     /// channel whose receiver it holds.
-    pub fn set_show_document_bus(
-        &mut self,
-        bus: crate::show_document::ShowDocumentBus,
-    ) {
+    pub fn set_show_document_bus(&mut self, bus: crate::show_document::ShowDocumentBus) {
         self.show_document_bus = Some(bus);
     }
 
@@ -419,10 +413,8 @@ impl LspSupervisor {
         let mut keys: Vec<ActorKey> = Vec::new();
 
         for config in matches {
-            let workspace = resolve_workspace_root(
-                path.parent().unwrap_or(&path),
-                &config.root_markers,
-            );
+            let workspace =
+                resolve_workspace_root(path.parent().unwrap_or(&path), &config.root_markers);
             let key: ActorKey = (workspace.clone(), config.id.clone());
             let handle = match self.actors.get(&key) {
                 Some(existing) => existing.clone(),
@@ -488,11 +480,7 @@ impl LspSupervisor {
 
             // Drive the DocSync inside the actor: single writer
             // means no contention with the edit / flush path.
-            handle.open_doc(
-                uri.clone(),
-                config.language_id.clone(),
-                text.clone(),
-            )?;
+            handle.open_doc(uri.clone(), config.language_id.clone(), text.clone())?;
 
             handles.push(handle);
             keys.push(key);
@@ -706,10 +694,7 @@ impl LspSupervisor {
     ///
     /// Returns the list of `(workspace, server_id)` keys that
     /// were re-spawned and the URIs that need re-opening.
-    pub async fn restart_server(
-        &mut self,
-        server_id: &str,
-    ) -> LspResult<RestartReport> {
+    pub async fn restart_server(&mut self, server_id: &str) -> LspResult<RestartReport> {
         // Step 1: prune the window.
         let now = Instant::now();
         let history = self
@@ -834,11 +819,9 @@ impl LspSupervisor {
                 })
                 .collect();
             for uri in &uris_for_key {
-                if let Err(e) = new_handle.open_doc(
-                    uri.clone(),
-                    config.language_id.clone(),
-                    String::new(),
-                ) {
+                if let Err(e) =
+                    new_handle.open_doc(uri.clone(), config.language_id.clone(), String::new())
+                {
                     self.logger.log(
                         None,
                         LogLevel::Warn,
@@ -976,12 +959,7 @@ impl LspSupervisor {
             bus.subscribe_typed(tx);
             rx
         });
-        runtime_handle.spawn(supervisor_main(
-            self,
-            cmd_rx,
-            exit_rx,
-            snapshot_for_task,
-        ));
+        runtime_handle.spawn(supervisor_main(self, cmd_rx, exit_rx, snapshot_for_task));
         LspSupervisorHandle {
             snapshot: snapshot_cell,
             cmd_tx,
@@ -1179,9 +1157,7 @@ impl LspSupervisorHandle {
         };
         snap.attachments
             .values()
-            .filter(|handles| {
-                handles.iter().any(|h| h.server_id() == handle.server_id())
-            })
+            .filter(|handles| handles.iter().any(|h| h.server_id() == handle.server_id()))
             .count()
     }
 
@@ -1232,11 +1208,7 @@ impl LspSupervisorHandle {
     /// handshake cost). The supervisor task runs the open;
     /// awaiting here parks the caller while it does, but does
     /// NOT block any *other* read of the supervisor.
-    pub async fn open_buffer(
-        &self,
-        path: PathBuf,
-        text: String,
-    ) -> LspResult<Vec<ServerHandle>> {
+    pub async fn open_buffer(&self, path: PathBuf, text: String) -> LspResult<Vec<ServerHandle>> {
         let (reply, rx) = oneshot::channel();
         self.cmd_tx
             .send(SupervisorCmd::OpenBuffer { path, text, reply })
@@ -1318,10 +1290,7 @@ impl LspSupervisorHandle {
     /// more than [`MAX_RESTARTS`] inside [`RESTART_WINDOW`]
     /// returns an error; the caller surfaces the cooldown
     /// message via `set_message`.
-    pub async fn restart_server(
-        &self,
-        server_id: String,
-    ) -> LspResult<RestartReport> {
+    pub async fn restart_server(&self, server_id: String) -> LspResult<RestartReport> {
         let (reply, rx) = oneshot::channel();
         self.cmd_tx
             .send(SupervisorCmd::Restart { server_id, reply })
@@ -1400,14 +1369,8 @@ async fn supervisor_main(
                 handle,
                 reply,
             } => {
-                let result = state.attach_handle(
-                    uri,
-                    workspace_root,
-                    server_id,
-                    language_id,
-                    text,
-                    handle,
-                );
+                let result =
+                    state.attach_handle(uri, workspace_root, server_id, language_id, text, handle);
                 snapshot.store(Arc::new(state.build_snapshot()));
                 let _ = reply.send(result);
             }
@@ -1601,11 +1564,9 @@ async fn handle_actor_exit(
             })
             .collect();
         for uri in uris_for_key {
-            if let Err(e) = new_handle.open_doc(
-                uri.clone(),
-                config.language_id.clone(),
-                String::new(),
-            ) {
+            if let Err(e) =
+                new_handle.open_doc(uri.clone(), config.language_id.clone(), String::new())
+            {
                 state.logger.log(
                     None,
                     LogLevel::Warn,
@@ -1695,10 +1656,7 @@ mod tests {
         sup.add_config(ServerConfig::new("rust", "rust-analyzer", "rust"));
         let err = sup.restart_server("rust").await.unwrap_err();
         let msg = format!("{err}");
-        assert!(
-            msg.contains("no running actor"),
-            "got: {msg}",
-        );
+        assert!(msg.contains("no running actor"), "got: {msg}",);
     }
 
     #[tokio::test]

@@ -51,11 +51,10 @@ use super::{
     LSP_COMPLETION_KIND_ID, LspCompletionMeta, LspNavKind, ReferencesOutcome, RenameOutcome,
     SignatureHelpOutcome, SymbolRow, SymbolsOutcome, TagStackEntry, app_to_lsp_position,
     call_hierarchy_to_row, code_action_kind_glyph, completion_kind_glyph, dedup_rendered_by_text,
-    range_covers, type_hierarchy_to_row,
     definition_response_to_locations, flatten_document_symbol_response, flatten_workspace_edit,
     hover_contents_to_markdown, is_word_char_byte, last_addressable_line, line_byte_len,
-    lsp_position_to_app_byte, prepare_rename_placeholder, signature_help_to_markdown,
-    symbol_information_to_row, word_under_cursor, workspace_symbol_to_row,
+    lsp_position_to_app_byte, prepare_rename_placeholder, range_covers, signature_help_to_markdown,
+    symbol_information_to_row, type_hierarchy_to_row, word_under_cursor, workspace_symbol_to_row,
 };
 use crate::buffers::BufferId;
 use lattice_protocol::edit::Edit;
@@ -129,11 +128,7 @@ impl App {
     /// mode accessor used by every M.6 sub-mode reader. Always
     /// returns `false` when no entry exists for `buffer_id` --
     /// matches the umbrella accessor's shape.
-    fn minor_mode_enabled_for(
-        &self,
-        buffer_id: BufferId,
-        mode_id: lattice_mode::ModeId,
-    ) -> bool {
+    fn minor_mode_enabled_for(&self, buffer_id: BufferId, mode_id: lattice_mode::ModeId) -> bool {
         self.active_modes
             .get(&buffer_id)
             .map(|modes| modes.has_minor(mode_id))
@@ -146,10 +141,7 @@ impl App {
     /// opening the popup so read-only buffers (Help, FileTree,
     /// Oil) silently no-op on `<C-Space>`.
     pub fn completion_mode_active_for(&self, buffer_id: BufferId) -> bool {
-        self.minor_mode_enabled_for(
-            buffer_id,
-            lattice_mode::CompletionMode::mode_id(),
-        )
+        self.minor_mode_enabled_for(buffer_id, lattice_mode::CompletionMode::mode_id())
     }
 
     /// CSM.K1: is `completion-popup-mode` (the transient
@@ -160,10 +152,7 @@ impl App {
     /// `App.insert_completion.is_some()` directly -- the field
     /// is the popup's *content*; the mode is the *gate*.
     pub fn completion_popup_mode_active_for(&self, buffer_id: BufferId) -> bool {
-        self.minor_mode_enabled_for(
-            buffer_id,
-            lattice_mode::CompletionPopupMode::mode_id(),
-        )
+        self.minor_mode_enabled_for(buffer_id, lattice_mode::CompletionPopupMode::mode_id())
     }
 
     /// Shorthand: is the insert-completion popup live on the
@@ -179,80 +168,53 @@ impl App {
     /// `do_lsp_insert_completion_request` and the LSP completion
     /// source filter once M.6.2 / M.6.3 wire the gates.
     pub fn lsp_completion_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        self.minor_mode_enabled_for(
-            buffer_id,
-            lattice_lsp::modes::LspCompletionMode::mode_id(),
-        )
+        self.minor_mode_enabled_for(buffer_id, lattice_lsp::modes::LspCompletionMode::mode_id())
     }
 
     /// M.6.0: is `lsp-diagnostics-mode` active on `buffer_id`?
     /// Read by the publish-diagnostics paint pipeline and
     /// `:diag-next` / `:diag-prev` once M.6.3 wires the gate.
     pub fn lsp_diagnostics_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        self.minor_mode_enabled_for(
-            buffer_id,
-            lattice_lsp::modes::LspDiagnosticsMode::mode_id(),
-        )
+        self.minor_mode_enabled_for(buffer_id, lattice_lsp::modes::LspDiagnosticsMode::mode_id())
     }
 
     /// M.6.0: is `lsp-hover-mode` active on `buffer_id`? Read by
     /// `do_lsp_hover_request` once M.6.2 wires the gate.
     pub fn lsp_hover_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        self.minor_mode_enabled_for(
-            buffer_id,
-            lattice_lsp::modes::LspHoverMode::mode_id(),
-        )
+        self.minor_mode_enabled_for(buffer_id, lattice_lsp::modes::LspHoverMode::mode_id())
     }
 
     /// M.6.0: is `lsp-signature-mode` active on `buffer_id`?
     pub fn lsp_signature_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        self.minor_mode_enabled_for(
-            buffer_id,
-            lattice_lsp::modes::LspSignatureMode::mode_id(),
-        )
+        self.minor_mode_enabled_for(buffer_id, lattice_lsp::modes::LspSignatureMode::mode_id())
     }
 
     /// M.6.0: is `lsp-format-mode` active on `buffer_id`? Gates
     /// `:lsp-format` / `:lsp-format-range` and `onTypeFormatting`.
     pub fn lsp_format_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        self.minor_mode_enabled_for(
-            buffer_id,
-            lattice_lsp::modes::LspFormatMode::mode_id(),
-        )
+        self.minor_mode_enabled_for(buffer_id, lattice_lsp::modes::LspFormatMode::mode_id())
     }
 
     /// M.6.0: is `lsp-rename-mode` active on `buffer_id`?
     pub fn lsp_rename_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        self.minor_mode_enabled_for(
-            buffer_id,
-            lattice_lsp::modes::LspRenameMode::mode_id(),
-        )
+        self.minor_mode_enabled_for(buffer_id, lattice_lsp::modes::LspRenameMode::mode_id())
     }
 
     /// M.6.0: is `lsp-symbols-mode` active on `buffer_id`? Gates
     /// `:lsp-symbols` and `:lsp-workspace-symbol`.
     pub fn lsp_symbols_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        self.minor_mode_enabled_for(
-            buffer_id,
-            lattice_lsp::modes::LspSymbolsMode::mode_id(),
-        )
+        self.minor_mode_enabled_for(buffer_id, lattice_lsp::modes::LspSymbolsMode::mode_id())
     }
 
     /// M.6.0: is `lsp-code-action-mode` active on `buffer_id`?
     pub fn lsp_code_action_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        self.minor_mode_enabled_for(
-            buffer_id,
-            lattice_lsp::modes::LspCodeActionMode::mode_id(),
-        )
+        self.minor_mode_enabled_for(buffer_id, lattice_lsp::modes::LspCodeActionMode::mode_id())
     }
 
     /// M.6.0: is `lsp-nav-mode` active on `buffer_id`? Gates
     /// definition / declaration / type-def / impl + references.
     pub fn lsp_nav_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        self.minor_mode_enabled_for(
-            buffer_id,
-            lattice_lsp::modes::LspNavMode::mode_id(),
-        )
+        self.minor_mode_enabled_for(buffer_id, lattice_lsp::modes::LspNavMode::mode_id())
     }
 
     /// 4.4.c: is `lsp-progress-mode` active on `buffer_id`?
@@ -262,10 +224,7 @@ impl App {
     /// the bus (plugins can subscribe) but the modeline stays
     /// quiet for that buffer.
     pub fn lsp_progress_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        self.minor_mode_enabled_for(
-            buffer_id,
-            lattice_lsp::modes::LspProgressMode::mode_id(),
-        )
+        self.minor_mode_enabled_for(buffer_id, lattice_lsp::modes::LspProgressMode::mode_id())
     }
 
     /// 4.4.e: is `lsp-document-highlight-mode` active on
@@ -295,20 +254,14 @@ impl App {
     /// cache stays empty and `:set foldmethod=lsp` cascades to
     /// `Syntax`.
     pub fn lsp_folding_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        self.minor_mode_enabled_for(
-            buffer_id,
-            lattice_lsp::modes::LspFoldingMode::mode_id(),
-        )
+        self.minor_mode_enabled_for(buffer_id, lattice_lsp::modes::LspFoldingMode::mode_id())
     }
 
     /// 4.4.g: is `lsp-inlay-hint-mode` active on `buffer_id`?
     /// Gates `textDocument/inlayHint` issuance and the
     /// renderer overlay paint.
     pub fn lsp_inlay_hint_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        self.minor_mode_enabled_for(
-            buffer_id,
-            lattice_lsp::modes::LspInlayHintMode::mode_id(),
-        )
+        self.minor_mode_enabled_for(buffer_id, lattice_lsp::modes::LspInlayHintMode::mode_id())
     }
 
     /// 4.4.h: is `lsp-semantic-tokens-mode` active on
@@ -416,11 +369,7 @@ impl App {
 
         // Resolve the active buffer's URI. No URI = no LSP for
         // this buffer (e.g. unsaved scratch); echo + bail.
-        let Some(uri) = self
-            .buffer_uris
-            .get(&self.document_buffer_id)
-            .cloned()
-        else {
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
             self.set_message(
                 EchoLevel::Info,
                 "no LSP server attached to current buffer".to_string(),
@@ -453,8 +402,7 @@ impl App {
             // Snapshot the attached handles under the supervisor
             // lock, then drop it before awaiting any per-server
             // response.
-            let handles: Vec<lattice_lsp::ServerHandle> =
-                { lsp.servers_for(&uri) };
+            let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
             if handles.is_empty() {
                 let _ = tx.send(HoverOutcome::NoServers);
                 return;
@@ -472,8 +420,7 @@ impl App {
                     },
                     work_done_progress_params: Default::default(),
                 };
-                let server_id_arc: std::sync::Arc<str> =
-                    std::sync::Arc::from(handle.server_id());
+                let server_id_arc: std::sync::Arc<str> = std::sync::Arc::from(handle.server_id());
                 logger.log(
                     Some(&server_id_arc),
                     lattice_lsp::LogLevel::Debug,
@@ -626,18 +573,13 @@ impl App {
         // Apply additionalTextEdits + main as one batch via the
         // existing path. Sort + reverse-apply is handled there;
         // pass everything together so undo is atomic.
-        let mut edits: Vec<lsp_types::TextEdit> = meta
-            .additional_text_edits
-            .clone();
+        let mut edits: Vec<lsp_types::TextEdit> = meta.additional_text_edits.clone();
         edits.push(lsp_types::TextEdit {
             range: main_range,
             new_text: meta.insert_text.clone(),
         });
         if let Err(e) = self.apply_lsp_text_edits(edits) {
-            self.set_message(
-                EchoLevel::Error,
-                format!("completion: apply failed: {e}"),
-            );
+            self.set_message(EchoLevel::Error, format!("completion: apply failed: {e}"));
             return;
         }
         // Position the cursor at the end of the just-inserted
@@ -659,8 +601,7 @@ impl App {
         } else {
             // Multi-line insert (rare for plain completions;
             // common for snippets once 4.2.g.4 lands).
-            let last_line_idx =
-                main_range.start.line + (inserted_lines.len() as u32 - 1);
+            let last_line_idx = main_range.start.line + (inserted_lines.len() as u32 - 1);
             let last_line_text = inserted_lines.last().unwrap_or(&"");
             self.cursor = lattice_protocol::position::Position::new(
                 last_line_idx,
@@ -670,10 +611,7 @@ impl App {
         // Optional: fire the LSP `command` payload (e.g. server-
         // side post-accept hooks).
         if let Some(cmd) = meta.command.clone() {
-            let uri = self
-                .buffer_uris
-                .get(&self.document_buffer_id)
-                .cloned();
+            let uri = self.buffer_uris.get(&self.document_buffer_id).cloned();
             if let Some(uri) = uri {
                 let handle = self
                     .lsp
@@ -718,9 +656,7 @@ impl App {
         // distinct items will always serialise differently (the
         // produce_async dedup happens up-stream).
         let candidate_payload = match &cand.raw.data {
-            lattice_completion::CandidateData::Extension { payload, .. } => {
-                payload.clone()
-            }
+            lattice_completion::CandidateData::Extension { payload, .. } => payload.clone(),
             _ => return,
         };
         let Some(state_ref) = self.insert_completion.as_ref() else {
@@ -748,15 +684,10 @@ impl App {
             return;
         };
         // Resolve URI to find the originating server handle.
-        let Some(uri) = self
-            .buffer_uris
-            .get(&self.document_buffer_id)
-            .cloned()
-        else {
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
             return;
         };
-        let (tx, rx) =
-            tokio::sync::mpsc::unbounded_channel::<CompletionResolveOutcome>();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<CompletionResolveOutcome>();
         let token = lattice_protocol::CancellationToken::new();
         self.pending_completion_resolve_rx = Some(rx);
         self.pending_completion_resolve_token = Some(token.clone());
@@ -778,14 +709,12 @@ impl App {
             // `request_with_cancel` takes `&str` method name and
             // a serializable param; the resolved item comes back
             // as `CompletionItem`.
-            let pending = handle.request_with_cancel::<
-                lsp_types::CompletionItem,
-                lsp_types::CompletionItem,
-            >(
-                "completionItem/resolve",
-                original,
-                token.clone(),
-            );
+            let pending = handle
+                .request_with_cancel::<lsp_types::CompletionItem, lsp_types::CompletionItem>(
+                    "completionItem/resolve",
+                    original,
+                    token.clone(),
+                );
             let Ok(resolved) = pending.await else {
                 return;
             };
@@ -825,17 +754,12 @@ impl App {
         // Per-language sources filter (Phase 4.2.g.5 (3b/3)).
         let language = self.active_language_id();
         let effective = self.effective_completion_for(&language);
-        let lsp_id = lattice_completion::SourceId::new(
-            lattice_completion::LSP_COMPLETION_SOURCE_ID,
-        );
+        let lsp_id =
+            lattice_completion::SourceId::new(lattice_completion::LSP_COMPLETION_SOURCE_ID);
         if !effective.source_enabled(&lsp_id) {
             return;
         }
-        let Some(uri) = self
-            .buffer_uris
-            .get(&self.document_buffer_id)
-            .cloned()
-        else {
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
             // No URI -- no LSP. Sync sources still populate the
             // popup; just skip the LSP request silently.
             return;
@@ -900,8 +824,7 @@ impl App {
             uri: Some(uri.as_str().to_string()),
             lsp_position: Some((lsp_position.line, lsp_position.character)),
         };
-        let (tx, rx) =
-            tokio::sync::mpsc::unbounded_channel::<InsertCompletionLspOutcome>();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<InsertCompletionLspOutcome>();
         let token = lattice_protocol::CancellationToken::new();
         self.pending_insert_completion_lsp_rx = Some(rx);
         self.pending_insert_completion_lsp_token = Some(token.clone());
@@ -1013,9 +936,7 @@ impl App {
         // by the encoded original_item (which doesn't change
         // through resolve -- servers preserve it).
         let cand_payload = match &cand.raw.data {
-            lattice_completion::CandidateData::Extension { payload, .. } => {
-                payload.clone()
-            }
+            lattice_completion::CandidateData::Extension { payload, .. } => payload.clone(),
             _ => return,
         };
         let cand_original = lattice_lsp::completion::decode_meta(&cand_payload)
@@ -1109,16 +1030,13 @@ impl App {
             .raw
             .iter()
             .filter_map(|raw| {
-                lattice_completion::CandidateMatcher::matches(
-                    &matcher,
-                    &state.query,
-                    raw,
+                lattice_completion::CandidateMatcher::matches(&matcher, &state.query, raw).map(
+                    |(score, ranges)| lattice_completion::ScoredCandidate {
+                        raw: raw.clone(),
+                        score,
+                        match_ranges: ranges,
+                    },
                 )
-                .map(|(score, ranges)| lattice_completion::ScoredCandidate {
-                    raw: raw.clone(),
-                    score,
-                    match_ranges: ranges,
-                })
             })
             .collect();
         let ranker = lattice_completion::InsertRanker::new();
@@ -1177,10 +1095,8 @@ impl App {
         // Coalesce: collect every drained event's scope, then
         // refresh each unique scope at most once.
         let mut subsystem = false;
-        let mut server_logs: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
-        let mut server_traces: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
+        let mut server_logs: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut server_traces: std::collections::HashSet<String> = std::collections::HashSet::new();
         // 4.4.a: stash the most recent `window/showMessage` we
         // see. Server-emitted user notifications go to the
         // minibuffer (vim's `:echom`-style transient surface)
@@ -1448,15 +1364,12 @@ impl App {
                 continue;
             }
             if let Err(e) = handle.did_change_configuration(params.clone()) {
-                let server_id_arc: std::sync::Arc<str> =
-                    std::sync::Arc::from(handle.server_id());
+                let server_id_arc: std::sync::Arc<str> = std::sync::Arc::from(handle.server_id());
                 self.lsp_logger.log(
                     Some(&server_id_arc),
                     lattice_lsp::LogLevel::Warn,
                     lattice_lsp::LogSource::Client,
-                    format!(
-                        "workspace/didChangeConfiguration fan-out failed: {e}"
-                    ),
+                    format!("workspace/didChangeConfiguration fan-out failed: {e}"),
                 );
             }
         }
@@ -1473,11 +1386,10 @@ impl App {
         } else {
             format!("lsp.{section}")
         };
-        let toml_value =
-            match lattice_config::lookup_dotted_path(&self.lsp_config_tree, &path) {
-                Some(v) => v,
-                None => return serde_json::Value::Null,
-            };
+        let toml_value = match lattice_config::lookup_dotted_path(&self.lsp_config_tree, &path) {
+            Some(v) => v,
+            None => return serde_json::Value::Null,
+        };
         // toml::Value -> serde_json::Value via the round-trip
         // serialiser. Both crates speak serde, so this is the
         // direct path -- no manual variant matching.
@@ -1543,9 +1455,7 @@ impl App {
                 Some(server_id),
                 lattice_lsp::LogLevel::Warn,
                 lattice_lsp::LogSource::Client,
-                format!(
-                    "showDocument: refusing non-file URI {uri_str:?} without `external`"
-                ),
+                format!("showDocument: refusing non-file URI {uri_str:?} without `external`"),
             );
             return false;
         }
@@ -1572,11 +1482,7 @@ impl App {
         true
     }
 
-    fn open_external_uri(
-        &mut self,
-        server_id: &std::sync::Arc<str>,
-        uri: &str,
-    ) -> bool {
+    fn open_external_uri(&mut self, server_id: &std::sync::Arc<str>, uri: &str) -> bool {
         // Pick the platform's open command. We don't take an
         // optional `App.external_open_command` config knob
         // yet -- the OS defaults cover the supported
@@ -1655,11 +1561,7 @@ impl App {
         self.pending_show_message_request_rx = Some(rx);
         let mut last_minibuffer: Option<(EchoLevel, String)> = None;
         for req in requests {
-            let labels: Vec<&str> = req
-                .actions
-                .iter()
-                .map(|a| a.title.as_str())
-                .collect();
+            let labels: Vec<&str> = req.actions.iter().map(|a| a.title.as_str()).collect();
             let labels_joined = labels.join(" / ");
             let echo_level = match req.level {
                 lsp_types::MessageType::ERROR => EchoLevel::Error,
@@ -1681,10 +1583,8 @@ impl App {
                     lattice_lsp::LogSource::LspShowMessage,
                     format!("showMessageRequest: {}", req.message),
                 );
-                last_minibuffer = Some((
-                    echo_level,
-                    format!("[{}] {}", req.server_id, req.message),
-                ));
+                last_minibuffer =
+                    Some((echo_level, format!("[{}] {}", req.server_id, req.message)));
                 let _ = req
                     .response
                     .send(lattice_lsp::ShowMessageRequestOutcome { selected: None });
@@ -1746,8 +1646,7 @@ impl App {
     /// the server-prefixed prompt so the user always sees what
     /// they're answering.
     pub(super) fn open_show_message_request_picker(&mut self, request_id: u32) {
-        let Some(req) = self.lsp_pending_show_message_requests.get(&request_id)
-        else {
+        let Some(req) = self.lsp_pending_show_message_requests.get(&request_id) else {
             return;
         };
         let server_id = req.server_id.to_string();
@@ -1797,17 +1696,10 @@ impl App {
         request_id: u32,
         selected_index: Option<u32>,
     ) {
-        let Some(req) = self
-            .lsp_pending_show_message_requests
-            .remove(&request_id)
-        else {
+        let Some(req) = self.lsp_pending_show_message_requests.remove(&request_id) else {
             return;
         };
-        let selected = selected_index.and_then(|i| {
-            req.actions
-                .get(i as usize)
-                .cloned()
-        });
+        let selected = selected_index.and_then(|i| req.actions.get(i as usize).cloned());
         let _ = req
             .response
             .send(lattice_lsp::ShowMessageRequestOutcome { selected });
@@ -1853,7 +1745,8 @@ impl App {
         }
         self.pending_apply_edit_rx = Some(rx);
         for req in requests {
-            let outcome = self.apply_inbound_workspace_edit(&req.server_id, req.label.as_deref(), req.edit);
+            let outcome =
+                self.apply_inbound_workspace_edit(&req.server_id, req.label.as_deref(), req.edit);
             let _ = req.response.send(outcome);
         }
     }
@@ -1907,8 +1800,7 @@ impl App {
                     self.last_message.as_ref().map(|m| m.level),
                     Some(EchoLevel::Error)
                 ) {
-                    failed_files
-                        .push(format!("{}: open failed", target_path.display()));
+                    failed_files.push(format!("{}: open failed", target_path.display()));
                     continue;
                 }
                 if let Err(e) = self.apply_lsp_text_edits(edits) {
@@ -2003,10 +1895,7 @@ impl App {
         &self,
         candidate: &lattice_completion::RenderedCandidate,
     ) -> Option<LspCompletionMeta> {
-        let lattice_completion::CandidateData::Extension {
-            kind_id,
-            payload,
-        } = &candidate.raw.data
+        let lattice_completion::CandidateData::Extension { kind_id, payload } = &candidate.raw.data
         else {
             return None;
         };
@@ -2071,18 +1960,13 @@ impl App {
         // back to the legacy `lsp.log-level` with a deprecation
         // echo so existing TOMLs keep working for one minor
         // version.
-        let canonical = lattice_config::lookup_dotted_path(
-            &self.lsp_config_tree,
-            "lsp-mode.log-level",
-        )
-        .and_then(|v| v.as_str())
-        .map(String::from);
-        let legacy = lattice_config::lookup_dotted_path(
-            &self.lsp_config_tree,
-            "lsp.log-level",
-        )
-        .and_then(|v| v.as_str())
-        .map(String::from);
+        let canonical =
+            lattice_config::lookup_dotted_path(&self.lsp_config_tree, "lsp-mode.log-level")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+        let legacy = lattice_config::lookup_dotted_path(&self.lsp_config_tree, "lsp.log-level")
+            .and_then(|v| v.as_str())
+            .map(String::from);
         let (key, level) = match (canonical, legacy) {
             (Some(v), _) => ("lsp-mode.log-level", v),
             (None, Some(v)) => {
@@ -2129,13 +2013,9 @@ impl App {
         for te in edits {
             let start_line = te.range.start.line;
             let end_line = te.range.end.line;
-            let start_byte = lsp_position_to_app_byte(
-                &snap.buffer,
-                start_line,
-                te.range.start.character,
-            );
-            let end_byte =
-                lsp_position_to_app_byte(&snap.buffer, end_line, te.range.end.character);
+            let start_byte =
+                lsp_position_to_app_byte(&snap.buffer, start_line, te.range.start.character);
+            let end_byte = lsp_position_to_app_byte(&snap.buffer, end_line, te.range.end.character);
             let range = lattice_protocol::position::Range::new(
                 lattice_protocol::position::Position::new(start_line, start_byte),
                 lattice_protocol::position::Position::new(end_line, end_byte),
@@ -2194,11 +2074,7 @@ impl App {
         if !self.lsp_format_mode_enabled_for(self.document_buffer_id) {
             return;
         }
-        let Some(uri) = self
-            .buffer_uris
-            .get(&self.document_buffer_id)
-            .cloned()
-        else {
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
             return;
         };
         let snapshot = self.document.snapshot();
@@ -2228,8 +2104,7 @@ impl App {
         self.pending_format_rx = Some(rx);
         self.pending_format_token = Some(token.clone());
         crate::runtime::spawn_on_lsp_runtime(async move {
-            let handles: Vec<lattice_lsp::ServerHandle> =
-                { lsp.servers_for(&uri) };
+            let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
             let chosen = handles
                 .into_iter()
                 .find(|h| h.capabilities().supports_on_type_formatting());
@@ -2277,11 +2152,7 @@ impl App {
         ) {
             return;
         }
-        let Some(uri) = self
-            .buffer_uris
-            .get(&self.document_buffer_id)
-            .cloned()
-        else {
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
             self.set_message(
                 EchoLevel::Info,
                 "no LSP server attached to current buffer".to_string(),
@@ -2303,8 +2174,7 @@ impl App {
         self.pending_rename_token = Some(token.clone());
         let lsp = self.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
-            let handles: Vec<lattice_lsp::ServerHandle> =
-                { lsp.servers_for(&uri) };
+            let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
             let chosen = handles
                 .into_iter()
                 .find(|h| h.capabilities().supports_rename());
@@ -2328,8 +2198,7 @@ impl App {
                 match handle.prepare_rename(pos, token.clone()).await {
                     Ok(Some(prep)) => {
                         if effective_name.is_empty() {
-                            effective_name = prepare_rename_placeholder(&prep)
-                                .unwrap_or_default();
+                            effective_name = prepare_rename_placeholder(&prep).unwrap_or_default();
                         }
                     }
                     Ok(None) => {
@@ -2394,17 +2263,13 @@ impl App {
         };
         self.pending_rename_token = None;
         match outcome {
-            RenameOutcome::NoProvider => self.set_message(
-                EchoLevel::Info,
-                "no server with renameProvider",
-            ),
+            RenameOutcome::NoProvider => {
+                self.set_message(EchoLevel::Info, "no server with renameProvider")
+            }
             RenameOutcome::NotRenameable { reason } => {
                 self.set_message(EchoLevel::Error, format!("rename: {reason}"))
             }
-            RenameOutcome::Empty => self.set_message(
-                EchoLevel::Info,
-                "rename: no changes",
-            ),
+            RenameOutcome::Empty => self.set_message(EchoLevel::Info, "rename: no changes"),
             RenameOutcome::Edits { per_file, new_name } => {
                 self.apply_rename_workspace_edit(per_file, new_name);
             }
@@ -2456,10 +2321,7 @@ impl App {
                 if let Err(e) = self.apply_lsp_text_edits(edits) {
                     self.set_message(
                         EchoLevel::Error,
-                        format!(
-                            "rename: apply failed for {}: {e}",
-                            target_path.display()
-                        ),
+                        format!("rename: apply failed for {}: {e}", target_path.display()),
                     );
                     return;
                 }
@@ -2620,10 +2482,7 @@ impl App {
                 self.cursor = applied.inserted_range.end;
             }
             Err(e) => {
-                self.set_message(
-                    EchoLevel::Error,
-                    format!("complete: apply failed: {e:?}"),
-                );
+                self.set_message(EchoLevel::Error, format!("complete: apply failed: {e:?}"));
             }
         }
     }
@@ -2645,11 +2504,7 @@ impl App {
         ) {
             return;
         }
-        let Some(uri) = self
-            .buffer_uris
-            .get(&self.document_buffer_id)
-            .cloned()
-        else {
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
             self.set_message(
                 EchoLevel::Info,
                 "no LSP server attached to current buffer".to_string(),
@@ -2668,13 +2523,10 @@ impl App {
         self.pending_code_action_rx = Some(rx);
         self.pending_code_action_token = Some(token.clone());
         let lsp = self.lsp.clone();
-        let stash = std::sync::Arc::new(std::sync::Mutex::new(
-            None::<lattice_lsp::ServerHandle>,
-        ));
+        let stash = std::sync::Arc::new(std::sync::Mutex::new(None::<lattice_lsp::ServerHandle>));
         let stash_for_task = stash.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
-            let handles: Vec<lattice_lsp::ServerHandle> =
-                { lsp.servers_for(&uri) };
+            let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
             let chosen = handles
                 .into_iter()
                 .find(|h| h.capabilities().supports_code_action());
@@ -2698,10 +2550,9 @@ impl App {
                             lsp_types::CodeActionOrCommand::Command(c) => {
                                 (c.title.clone(), code_action_kind_glyph(None))
                             }
-                            lsp_types::CodeActionOrCommand::CodeAction(ca) => (
-                                ca.title.clone(),
-                                code_action_kind_glyph(ca.kind.as_ref()),
-                            ),
+                            lsp_types::CodeActionOrCommand::CodeAction(ca) => {
+                                (ca.title.clone(), code_action_kind_glyph(ca.kind.as_ref()))
+                            }
                         };
                         CodeActionRow {
                             title,
@@ -2720,33 +2571,26 @@ impl App {
 
     /// LSP-shape range for the current code-action request.
     /// Visual selection when active; point range at cursor otherwise.
-    fn code_action_range(
-        &self,
-        buffer: &lattice_core::Buffer,
-    ) -> lsp_types::Range {
+    fn code_action_range(&self, buffer: &lattice_core::Buffer) -> lsp_types::Range {
         if let lattice_grammar::ModalState::Visual(_) = self.modal {
             let anchor = self.visual_anchor.unwrap_or(self.cursor);
             let head = self.cursor;
-            let (start_pos, end_pos) =
-                if (anchor.line, anchor.byte) <= (head.line, head.byte) {
-                    (anchor, head)
-                } else {
-                    (head, anchor)
-                };
-            let start = app_to_lsp_position(buffer, start_pos)
-                .unwrap_or(lsp_types::Position {
-                    line: 0,
-                    character: 0,
-                });
+            let (start_pos, end_pos) = if (anchor.line, anchor.byte) <= (head.line, head.byte) {
+                (anchor, head)
+            } else {
+                (head, anchor)
+            };
+            let start = app_to_lsp_position(buffer, start_pos).unwrap_or(lsp_types::Position {
+                line: 0,
+                character: 0,
+            });
             let end = app_to_lsp_position(buffer, end_pos).unwrap_or(start);
             lsp_types::Range { start, end }
         } else {
-            let p = app_to_lsp_position(buffer, self.cursor).unwrap_or(
-                lsp_types::Position {
-                    line: 0,
-                    character: 0,
-                },
-            );
+            let p = app_to_lsp_position(buffer, self.cursor).unwrap_or(lsp_types::Position {
+                line: 0,
+                character: 0,
+            });
             lsp_types::Range { start: p, end: p }
         }
     }
@@ -2825,9 +2669,7 @@ impl App {
                         c.display = format!("{} {}", item.kind_glyph, item.title);
                         (
                             c,
-                            lattice_picker::RoutingPayload::LspCodeAction {
-                                index: i as u32,
-                            },
+                            lattice_picker::RoutingPayload::LspCodeAction { index: i as u32 },
                         )
                     })
                     .collect();
@@ -2873,11 +2715,7 @@ impl App {
         ) {
             return;
         }
-        let Some(uri) = self
-            .buffer_uris
-            .get(&self.document_buffer_id)
-            .cloned()
-        else {
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
             self.set_message(
                 EchoLevel::Info,
                 "no LSP server attached to current buffer".to_string(),
@@ -2908,8 +2746,7 @@ impl App {
         self.pending_completion_token = Some(token.clone());
         let lsp = self.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
-            let handles: Vec<lattice_lsp::ServerHandle> =
-                { lsp.servers_for(&uri) };
+            let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
             if handles.is_empty() {
                 let _ = tx.send(CompletionOutcome::NoServers);
                 return;
@@ -2940,10 +2777,7 @@ impl App {
                         let label = ci.label;
                         let kind_glyph = completion_kind_glyph(ci.kind);
                         let detail = ci.detail.clone();
-                        let insert_text = ci
-                            .insert_text
-                            .clone()
-                            .unwrap_or_else(|| label.clone());
+                        let insert_text = ci.insert_text.clone().unwrap_or_else(|| label.clone());
                         all.push(CompletionItemRow {
                             label,
                             kind_glyph,
@@ -2957,7 +2791,11 @@ impl App {
             }
             // Dedup by (label, kind glyph) -- avoid two servers
             // emitting the same name twice.
-            all.sort_by(|a, b| a.label.cmp(&b.label).then_with(|| a.kind_glyph.cmp(b.kind_glyph)));
+            all.sort_by(|a, b| {
+                a.label
+                    .cmp(&b.label)
+                    .then_with(|| a.kind_glyph.cmp(b.kind_glyph))
+            });
             all.dedup_by(|a, b| a.label == b.label && a.kind_glyph == b.kind_glyph);
             let _ = tx.send(CompletionOutcome::Items(all));
         });
@@ -2981,10 +2819,7 @@ impl App {
         self.pending_completion_token = None;
         match outcome {
             CompletionOutcome::NoServers => {
-                self.set_message(
-                    EchoLevel::Info,
-                    "no LSP server attached".to_string(),
-                );
+                self.set_message(EchoLevel::Info, "no LSP server attached".to_string());
             }
             CompletionOutcome::Items(items) => {
                 if items.is_empty() {
@@ -3009,9 +2844,7 @@ impl App {
                         };
                         (
                             c,
-                            lattice_picker::RoutingPayload::LspCompletion {
-                                index: i as u32,
-                            },
+                            lattice_picker::RoutingPayload::LspCompletion { index: i as u32 },
                         )
                     })
                     .collect();
@@ -3050,11 +2883,7 @@ impl App {
         ) {
             return;
         }
-        let Some(uri) = self
-            .buffer_uris
-            .get(&self.document_buffer_id)
-            .cloned()
-        else {
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
             self.set_message(
                 EchoLevel::Info,
                 "no LSP server attached to current buffer".to_string(),
@@ -3113,19 +2942,16 @@ impl App {
             trim_final_newlines: Some(true),
         };
         crate::runtime::spawn_on_lsp_runtime(async move {
-            let handles: Vec<lattice_lsp::ServerHandle> =
-                { lsp.servers_for(&uri) };
+            let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
             // Pick the first server advertising the right provider.
-            let chosen: Option<lattice_lsp::ServerHandle> = handles
-                .into_iter()
-                .find(|h| {
-                    let caps = h.capabilities();
-                    if lsp_range.is_some() {
-                        caps.supports_range_formatting()
-                    } else {
-                        caps.supports_formatting()
-                    }
-                });
+            let chosen: Option<lattice_lsp::ServerHandle> = handles.into_iter().find(|h| {
+                let caps = h.capabilities();
+                if lsp_range.is_some() {
+                    caps.supports_range_formatting()
+                } else {
+                    caps.supports_formatting()
+                }
+            });
             let Some(handle) = chosen else {
                 let _ = tx.send(FormatOutcome::NoProvider {
                     is_range: lsp_range.is_some(),
@@ -3200,10 +3026,9 @@ impl App {
                         EchoLevel::Info,
                         format!("format: applied {n} edit{}", if n == 1 { "" } else { "s" }),
                     ),
-                    Err(e) => self.set_message(
-                        EchoLevel::Error,
-                        format!("format: apply failed: {e}"),
-                    ),
+                    Err(e) => {
+                        self.set_message(EchoLevel::Error, format!("format: apply failed: {e}"))
+                    }
                 }
             }
         }
@@ -3226,11 +3051,7 @@ impl App {
         ) {
             return;
         }
-        let Some(uri) = self
-            .buffer_uris
-            .get(&self.document_buffer_id)
-            .cloned()
-        else {
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
             self.set_message(
                 EchoLevel::Info,
                 "no LSP server attached to current buffer".to_string(),
@@ -3253,8 +3074,7 @@ impl App {
         self.pending_symbols_token = Some(token.clone());
         let lsp = self.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
-            let handles: Vec<lattice_lsp::ServerHandle> =
-                { lsp.servers_for(&uri) };
+            let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
             if handles.is_empty() {
                 let _ = tx.send(SymbolsOutcome::NoServers);
                 return;
@@ -3328,8 +3148,7 @@ impl App {
                     work_done_progress_params: Default::default(),
                     partial_result_params: Default::default(),
                 };
-                let Ok(Some(resp)) = handle.workspace_symbol(params, token.clone()).await
-                else {
+                let Ok(Some(resp)) = handle.workspace_symbol(params, token.clone()).await else {
                     continue;
                 };
                 match resp {
@@ -3344,9 +3163,7 @@ impl App {
                     // Modern `Vec<WorkspaceSymbol>` shape (LSP 3.17+).
                     lsp_types::WorkspaceSymbolResponse::Nested(syms) => {
                         for sym in syms {
-                            if let Some(row) =
-                                workspace_symbol_to_row(&handle, sym, &token).await
-                            {
+                            if let Some(row) = workspace_symbol_to_row(&handle, sym, &token).await {
                                 all.push(row);
                             }
                         }
@@ -3390,10 +3207,7 @@ impl App {
         self.pending_symbols_token = None;
         match outcome {
             SymbolsOutcome::NoServers => {
-                self.set_message(
-                    EchoLevel::Info,
-                    "no LSP server attached".to_string(),
-                );
+                self.set_message(EchoLevel::Info, "no LSP server attached".to_string());
             }
             SymbolsOutcome::Found { title, rows } => {
                 if rows.is_empty() {
@@ -3452,19 +3266,14 @@ impl App {
         // navigation intent; push the pre-jump cursor so
         // `<C-t>` pops it cleanly.
         let snapshot_for_label = self.document.snapshot();
-        let label =
-            word_under_cursor(&snapshot_for_label.buffer, self.cursor).unwrap_or_default();
+        let label = word_under_cursor(&snapshot_for_label.buffer, self.cursor).unwrap_or_default();
         self.pending_tag_origin = Some(TagStackEntry {
             buffer: self.active_buffer,
             buffer_id: self.active_pane_buffer_id(),
             position: self.cursor,
             label,
         });
-        let Some(uri) = self
-            .buffer_uris
-            .get(&self.document_buffer_id)
-            .cloned()
-        else {
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
             self.set_message(
                 EchoLevel::Info,
                 "no buffer URI -- save the file first".to_string(),
@@ -3475,10 +3284,7 @@ impl App {
         let lsp_position = match app_to_lsp_position(&snapshot.buffer, self.cursor) {
             Some(p) => p,
             None => {
-                self.set_message(
-                    EchoLevel::Warn,
-                    "cursor outside the document".to_string(),
-                );
+                self.set_message(EchoLevel::Warn, "cursor outside the document".to_string());
                 return;
             }
         };
@@ -3542,10 +3348,7 @@ impl App {
                         if token.is_cancelled() {
                             return;
                         }
-                        rows.push(call_hierarchy_to_row(
-                            &call.to,
-                            &item_name,
-                        ));
+                        rows.push(call_hierarchy_to_row(&call.to, &item_name));
                     }
                 }
             } else {
@@ -3561,10 +3364,7 @@ impl App {
                         if token.is_cancelled() {
                             return;
                         }
-                        rows.push(call_hierarchy_to_row(
-                            &call.from,
-                            &item_name,
-                        ));
+                        rows.push(call_hierarchy_to_row(&call.from, &item_name));
                     }
                 }
             }
@@ -3575,10 +3375,7 @@ impl App {
                     .then_with(|| a.col.cmp(&b.col))
                     .then_with(|| a.name.cmp(&b.name))
             });
-            let title = format!(
-                "{direction_label}-calls of {item_name} ({})",
-                rows.len()
-            );
+            let title = format!("{direction_label}-calls of {item_name} ({})", rows.len());
             let _ = tx.send(SymbolsOutcome::Found { title, rows });
         });
     }
@@ -3603,19 +3400,14 @@ impl App {
             token.cancel();
         }
         let snapshot_for_label = self.document.snapshot();
-        let label =
-            word_under_cursor(&snapshot_for_label.buffer, self.cursor).unwrap_or_default();
+        let label = word_under_cursor(&snapshot_for_label.buffer, self.cursor).unwrap_or_default();
         self.pending_tag_origin = Some(TagStackEntry {
             buffer: self.active_buffer,
             buffer_id: self.active_pane_buffer_id(),
             position: self.cursor,
             label,
         });
-        let Some(uri) = self
-            .buffer_uris
-            .get(&self.document_buffer_id)
-            .cloned()
-        else {
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
             self.set_message(
                 EchoLevel::Info,
                 "no buffer URI -- save the file first".to_string(),
@@ -3626,10 +3418,7 @@ impl App {
         let lsp_position = match app_to_lsp_position(&snapshot.buffer, self.cursor) {
             Some(p) => p,
             None => {
-                self.set_message(
-                    EchoLevel::Warn,
-                    "cursor outside the document".to_string(),
-                );
+                self.set_message(EchoLevel::Warn, "cursor outside the document".to_string());
                 return;
             }
         };
@@ -3679,9 +3468,7 @@ impl App {
                     work_done_progress_params: Default::default(),
                     partial_result_params: Default::default(),
                 };
-                if let Ok(Some(types)) =
-                    handle.type_hierarchy_subtypes(p, token.clone()).await
-                {
+                if let Ok(Some(types)) = handle.type_hierarchy_subtypes(p, token.clone()).await {
                     for t in types {
                         if token.is_cancelled() {
                             return;
@@ -3695,9 +3482,7 @@ impl App {
                     work_done_progress_params: Default::default(),
                     partial_result_params: Default::default(),
                 };
-                if let Ok(Some(types)) =
-                    handle.type_hierarchy_supertypes(p, token.clone()).await
-                {
+                if let Ok(Some(types)) = handle.type_hierarchy_supertypes(p, token.clone()).await {
                     for t in types {
                         if token.is_cancelled() {
                             return;
@@ -3713,10 +3498,7 @@ impl App {
                     .then_with(|| a.col.cmp(&b.col))
                     .then_with(|| a.name.cmp(&b.name))
             });
-            let title = format!(
-                "{direction_label} of {item_name} ({})",
-                rows.len()
-            );
+            let title = format!("{direction_label} of {item_name} ({})", rows.len());
             let _ = tx.send(SymbolsOutcome::Found { title, rows });
         });
     }
@@ -3729,11 +3511,7 @@ impl App {
     /// moniker is metadata about the symbol identity rather
     /// than a navigation target.
     pub(super) fn do_lsp_moniker_request(&mut self) {
-        let Some(uri) = self
-            .buffer_uris
-            .get(&self.document_buffer_id)
-            .cloned()
-        else {
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
             self.set_message(
                 EchoLevel::Info,
                 "no buffer URI -- save the file first".to_string(),
@@ -3744,10 +3522,7 @@ impl App {
         let lsp_position = match app_to_lsp_position(&snapshot.buffer, self.cursor) {
             Some(p) => p,
             None => {
-                self.set_message(
-                    EchoLevel::Warn,
-                    "cursor outside the document".to_string(),
-                );
+                self.set_message(EchoLevel::Warn, "cursor outside the document".to_string());
                 return;
             }
         };
@@ -3832,11 +3607,7 @@ impl App {
         if !self.lsp_signature_mode_enabled_for(self.document_buffer_id) {
             return;
         }
-        let Some(uri) = self
-            .buffer_uris
-            .get(&self.document_buffer_id)
-            .cloned()
-        else {
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
             self.set_message(
                 EchoLevel::Info,
                 "no LSP server attached to current buffer".to_string(),
@@ -3854,8 +3625,7 @@ impl App {
         self.pending_signature_help_token = Some(token.clone());
         let lsp = self.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
-            let handles: Vec<lattice_lsp::ServerHandle> =
-                { lsp.servers_for(&uri) };
+            let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
             if handles.is_empty() {
                 let _ = tx.send(SignatureHelpOutcome::NoServers);
                 return;
@@ -3938,17 +3708,11 @@ impl App {
         // M.6.2: lsp-nav-mode gate (after cancel-stale-work).
         // Keymap-driven (`gd` / `gD` / `gy` / `gI`); echo so
         // users find out why nothing happened when nav is gated.
-        if !self.check_lsp_sub_mode_gate(
-            lattice_lsp::modes::LspNavMode::mode_id(),
-            "lsp-nav-mode",
-        ) {
+        if !self.check_lsp_sub_mode_gate(lattice_lsp::modes::LspNavMode::mode_id(), "lsp-nav-mode")
+        {
             return;
         }
-        let Some(uri) = self
-            .buffer_uris
-            .get(&self.document_buffer_id)
-            .cloned()
-        else {
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
             self.set_message(
                 EchoLevel::Info,
                 "no LSP server attached to current buffer".to_string(),
@@ -3977,16 +3741,14 @@ impl App {
             position: self.cursor,
             label,
         });
-        let (tx, rx) =
-            tokio::sync::mpsc::unbounded_channel::<Vec<lsp_types::Location>>();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Vec<lsp_types::Location>>();
         let token = lattice_protocol::CancellationToken::new();
         self.pending_definition_rx = Some(rx);
         self.pending_definition_token = Some(token.clone());
         self.pending_nav_kind = Some(kind);
         let lsp = self.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
-            let handles: Vec<lattice_lsp::ServerHandle> =
-                { lsp.servers_for(&uri) };
+            let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
             let mut all: Vec<lsp_types::Location> = Vec::new();
             for handle in handles {
                 if token.is_cancelled() {
@@ -4064,9 +3826,7 @@ impl App {
                     .then_with(|| a.range.start.line.cmp(&b.range.start.line))
                     .then_with(|| a.range.start.character.cmp(&b.range.start.character))
             });
-            all.dedup_by(|a, b| {
-                a.uri.as_str() == b.uri.as_str() && a.range.start == b.range.start
-            });
+            all.dedup_by(|a, b| a.uri.as_str() == b.uri.as_str() && a.range.start == b.range.start);
             let _ = tx.send(all);
         });
     }
@@ -4100,7 +3860,10 @@ impl App {
         };
         // Result delivered; clear the in-flight token.
         self.pending_definition_token = None;
-        let kind = self.pending_nav_kind.take().unwrap_or(LspNavKind::Definition);
+        let kind = self
+            .pending_nav_kind
+            .take()
+            .unwrap_or(LspNavKind::Definition);
         let noun = kind.noun_plural();
 
         match locs.len() {
@@ -4142,17 +3905,11 @@ impl App {
         self.pending_tag_origin = None;
         // M.6.2: lsp-nav-mode gate (after cancel-stale-work).
         // `gr` is part of the nav family.
-        if !self.check_lsp_sub_mode_gate(
-            lattice_lsp::modes::LspNavMode::mode_id(),
-            "lsp-nav-mode",
-        ) {
+        if !self.check_lsp_sub_mode_gate(lattice_lsp::modes::LspNavMode::mode_id(), "lsp-nav-mode")
+        {
             return;
         }
-        let Some(uri) = self
-            .buffer_uris
-            .get(&self.document_buffer_id)
-            .cloned()
-        else {
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
             self.set_message(
                 EchoLevel::Info,
                 "no LSP server attached to current buffer".to_string(),
@@ -4171,15 +3928,13 @@ impl App {
             }
         };
         let symbol = word_under_cursor(&snapshot.buffer, self.cursor).unwrap_or_default();
-        let (tx, rx) =
-            tokio::sync::mpsc::unbounded_channel::<ReferencesOutcome>();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<ReferencesOutcome>();
         let token = lattice_protocol::CancellationToken::new();
         self.pending_references_rx = Some(rx);
         self.pending_references_token = Some(token.clone());
         let lsp = self.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
-            let handles: Vec<lattice_lsp::ServerHandle> =
-                { lsp.servers_for(&uri) };
+            let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
             if handles.is_empty() {
                 let _ = tx.send(ReferencesOutcome::NoServers);
                 return;
@@ -4212,9 +3967,7 @@ impl App {
                     .then_with(|| a.range.start.line.cmp(&b.range.start.line))
                     .then_with(|| a.range.start.character.cmp(&b.range.start.character))
             });
-            all.dedup_by(|a, b| {
-                a.uri.as_str() == b.uri.as_str() && a.range.start == b.range.start
-            });
+            all.dedup_by(|a, b| a.uri.as_str() == b.uri.as_str() && a.range.start == b.range.start);
             let _ = tx.send(ReferencesOutcome::Found {
                 symbol,
                 locations: all,
@@ -4258,10 +4011,7 @@ impl App {
                     } else {
                         format!("\"{symbol}\"")
                     };
-                    self.set_message(
-                        EchoLevel::Info,
-                        format!("no references for {label}"),
-                    );
+                    self.set_message(EchoLevel::Info, format!("no references for {label}"));
                     return;
                 }
                 let title = if symbol.is_empty() {
@@ -4314,10 +4064,8 @@ impl App {
         let snap = self.document.snapshot();
         let line_text = snap.buffer.line(loc.range.start.line).unwrap_or_default();
         // utf-16 -> utf-8 byte.
-        let byte = lattice_lsp::position::utf16_column_to_utf8_byte(
-            &line_text,
-            loc.range.start.character,
-        );
+        let byte =
+            lattice_lsp::position::utf16_column_to_utf8_byte(&line_text, loc.range.start.character);
         self.cursor = lattice_protocol::position::Position::new(loc.range.start.line, byte);
     }
 
@@ -4400,8 +4148,7 @@ impl App {
             .iter()
             .find(|d| {
                 d.range.start.line > cursor.line
-                    || (d.range.start.line == cursor.line
-                        && d.range.start.character > cursor.byte)
+                    || (d.range.start.line == cursor.line && d.range.start.character > cursor.byte)
             })
             .or_else(|| diags.first())
             .map(|d| d.range.start)
@@ -4438,8 +4185,7 @@ impl App {
             .rev()
             .find(|d| {
                 d.range.start.line < cursor.line
-                    || (d.range.start.line == cursor.line
-                        && d.range.start.character < cursor.byte)
+                    || (d.range.start.line == cursor.line && d.range.start.character < cursor.byte)
             })
             .or_else(|| diags.last())
             .map(|d| d.range.start)
@@ -4597,10 +4343,7 @@ impl App {
                 }
             }
         });
-        self.set_message(
-            EchoLevel::Info,
-            format!("lsp-restart {server_id}: queued"),
-        );
+        self.set_message(EchoLevel::Info, format!("lsp-restart {server_id}: queued"));
     }
 
     /// `:lsp-progress-cancel [server]` -- send
@@ -4631,26 +4374,20 @@ impl App {
         {
             return;
         }
-        let Some(uri) = self
-            .buffer_uris
-            .get(&self.document_buffer_id)
-            .cloned()
-        else {
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
             return;
         };
         if let Some(token) = self.pending_folding_range_token.take() {
             token.cancel();
         }
         let buffer_id = self.document_buffer_id;
-        let (tx, rx) =
-            tokio::sync::mpsc::unbounded_channel::<super::FoldingRangeOutcome>();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::FoldingRangeOutcome>();
         let token = lattice_protocol::CancellationToken::new();
         self.pending_folding_range_rx = Some(rx);
         self.pending_folding_range_token = Some(token.clone());
         let lsp = self.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
-            let handles: Vec<lattice_lsp::ServerHandle> =
-                { lsp.servers_for(&uri) };
+            let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
             let Some(handle) = handles
                 .into_iter()
                 .find(|h| h.capabilities().supports_folding_range())
@@ -4761,35 +4498,27 @@ impl App {
         // version-equal early-return. The delta path uses the
         // previous result_id; if we already cached this version
         // we have nothing to do.
-        let prior = self
-            .lsp_semantic_tokens_cache
-            .get(&self.document_buffer_id);
+        let prior = self.lsp_semantic_tokens_cache.get(&self.document_buffer_id);
         if let Some(cache) = prior
             && cache.document_version == version
         {
             return;
         }
         let prior_result_id = prior.and_then(|c| c.result_id.clone());
-        let Some(uri) = self
-            .buffer_uris
-            .get(&self.document_buffer_id)
-            .cloned()
-        else {
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
             return;
         };
         if let Some(token) = self.pending_semantic_tokens_token.take() {
             token.cancel();
         }
         let buffer_id = self.document_buffer_id;
-        let (tx, rx) =
-            tokio::sync::mpsc::unbounded_channel::<super::SemanticTokensOutcome>();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::SemanticTokensOutcome>();
         let token = lattice_protocol::CancellationToken::new();
         self.pending_semantic_tokens_rx = Some(rx);
         self.pending_semantic_tokens_token = Some(token.clone());
         let lsp = self.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
-            let handles: Vec<lattice_lsp::ServerHandle> =
-                { lsp.servers_for(&uri) };
+            let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
             let Some(handle) = handles
                 .into_iter()
                 .find(|h| h.capabilities().supports_semantic_tokens())
@@ -4812,13 +4541,10 @@ impl App {
             // exists AND the server advertises delta support.
             // Falls back to a plain `full` request when either
             // side hasn't supplied the prerequisites.
-            if let (Some(prev_id), true) =
-                (prior_result_id, caps.supports_semantic_tokens_delta())
+            if let (Some(prev_id), true) = (prior_result_id, caps.supports_semantic_tokens_delta())
             {
                 let params = lsp_types::SemanticTokensDeltaParams {
-                    text_document: lsp_types::TextDocumentIdentifier {
-                        uri: uri.clone(),
-                    },
+                    text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
                     previous_result_id: prev_id.clone(),
                     work_done_progress_params: Default::default(),
                     partial_result_params: Default::default(),
@@ -4827,9 +4553,7 @@ impl App {
                     .semantic_tokens_full_delta(params, token.clone())
                     .await
                 {
-                    Ok(Some(
-                        lsp_types::SemanticTokensFullDeltaResult::Tokens(t),
-                    )) => {
+                    Ok(Some(lsp_types::SemanticTokensFullDeltaResult::Tokens(t))) => {
                         let decoded = crate::app::decode_semantic_tokens(
                             &t.data,
                             &token_types,
@@ -4843,9 +4567,7 @@ impl App {
                             tokens: decoded,
                         });
                     }
-                    Ok(Some(
-                        lsp_types::SemanticTokensFullDeltaResult::TokensDelta(d),
-                    )) => {
+                    Ok(Some(lsp_types::SemanticTokensFullDeltaResult::TokensDelta(d))) => {
                         let _ = tx.send(super::SemanticTokensOutcome::Delta {
                             buffer_id,
                             document_version: version,
@@ -4872,11 +4594,8 @@ impl App {
             };
             match handle.semantic_tokens_full(params, token.clone()).await {
                 Ok(Some(lsp_types::SemanticTokensResult::Tokens(t))) => {
-                    let decoded = crate::app::decode_semantic_tokens(
-                        &t.data,
-                        &token_types,
-                        &token_modifiers,
-                    );
+                    let decoded =
+                        crate::app::decode_semantic_tokens(&t.data, &token_types, &token_modifiers);
                     let _ = tx.send(super::SemanticTokensOutcome::Items {
                         buffer_id,
                         document_version: version,
@@ -4962,32 +4681,20 @@ impl App {
                 if buffer_id != self.document_buffer_id {
                     return;
                 }
-                let Some(cache) =
-                    self.lsp_semantic_tokens_cache.get(&buffer_id)
-                else {
+                let Some(cache) = self.lsp_semantic_tokens_cache.get(&buffer_id) else {
                     return;
                 };
-                if cache.result_id.as_deref()
-                    != Some(previous_result_id.as_str())
-                {
+                if cache.result_id.as_deref() != Some(previous_result_id.as_str()) {
                     self.lsp_semantic_tokens_cache.remove(&buffer_id);
                     return;
                 }
                 let mut raw_data = cache.raw_data.clone();
-                if crate::app::apply_semantic_token_edits(
-                    &mut raw_data,
-                    &edits,
-                )
-                .is_err()
-                {
+                if crate::app::apply_semantic_token_edits(&mut raw_data, &edits).is_err() {
                     self.lsp_semantic_tokens_cache.remove(&buffer_id);
                     return;
                 }
-                let decoded = crate::app::decode_semantic_tokens(
-                    &raw_data,
-                    &token_types,
-                    &token_modifiers,
-                );
+                let decoded =
+                    crate::app::decode_semantic_tokens(&raw_data, &token_types, &token_modifiers);
                 self.lsp_semantic_tokens_cache.insert(
                     buffer_id,
                     super::LspSemanticTokensCache {
@@ -5049,20 +4756,14 @@ impl App {
             return;
         }
         let prior_result_id = prior.and_then(|c| c.result_id.clone());
-        let Some(uri) = self
-            .buffer_uris
-            .get(&self.document_buffer_id)
-            .cloned()
-        else {
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
             return;
         };
         if let Some(token) = self.pending_pull_diagnostics_token.take() {
             token.cancel();
         }
         let buffer_id = self.document_buffer_id;
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<
-            super::PullDiagnosticsOutcome,
-        >();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::PullDiagnosticsOutcome>();
         let token = lattice_protocol::CancellationToken::new();
         self.pending_pull_diagnostics_rx = Some(rx);
         self.pending_pull_diagnostics_token = Some(token.clone());
@@ -5080,44 +4781,35 @@ impl App {
                 return;
             };
             let identifier = handle.capabilities().diagnostic_identifier();
-            let server_id_arc: std::sync::Arc<str> =
-                std::sync::Arc::from(handle.server_id());
+            let server_id_arc: std::sync::Arc<str> = std::sync::Arc::from(handle.server_id());
             let params = lsp_types::DocumentDiagnosticParams {
-                text_document: lsp_types::TextDocumentIdentifier {
-                    uri: uri.clone(),
-                },
+                text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
                 identifier,
                 previous_result_id: prior_result_id,
                 work_done_progress_params: Default::default(),
                 partial_result_params: Default::default(),
             };
             match handle.document_diagnostic(params, token.clone()).await {
-                Ok(lsp_types::DocumentDiagnosticReportResult::Report(report)) => {
-                    match report {
-                        lsp_types::DocumentDiagnosticReport::Full(full) => {
-                            let inner = full.full_document_diagnostic_report;
-                            let _ = tx.send(super::PullDiagnosticsOutcome::Full {
-                                buffer_id,
-                                server_id: server_id_arc,
-                                uri,
-                                document_version: version,
-                                result_id: inner.result_id,
-                                diagnostics: inner.items,
-                            });
-                        }
-                        lsp_types::DocumentDiagnosticReport::Unchanged(unchanged) => {
-                            let _ = tx.send(
-                                super::PullDiagnosticsOutcome::Unchanged {
-                                    buffer_id,
-                                    document_version: version,
-                                    result_id: unchanged
-                                        .unchanged_document_diagnostic_report
-                                        .result_id,
-                                },
-                            );
-                        }
+                Ok(lsp_types::DocumentDiagnosticReportResult::Report(report)) => match report {
+                    lsp_types::DocumentDiagnosticReport::Full(full) => {
+                        let inner = full.full_document_diagnostic_report;
+                        let _ = tx.send(super::PullDiagnosticsOutcome::Full {
+                            buffer_id,
+                            server_id: server_id_arc,
+                            uri,
+                            document_version: version,
+                            result_id: inner.result_id,
+                            diagnostics: inner.items,
+                        });
                     }
-                }
+                    lsp_types::DocumentDiagnosticReport::Unchanged(unchanged) => {
+                        let _ = tx.send(super::PullDiagnosticsOutcome::Unchanged {
+                            buffer_id,
+                            document_version: version,
+                            result_id: unchanged.unchanged_document_diagnostic_report.result_id,
+                        });
+                    }
+                },
                 // Partial streaming: treat as Empty for v1 (a
                 // follow-up could splice partial-result chunks
                 // the same way semantic-tokens partials would).
@@ -5177,9 +4869,7 @@ impl App {
                     server_id,
                     uri,
                     version: version_i32,
-                    diagnostics: std::sync::Arc::from(
-                        diagnostics.into_boxed_slice(),
-                    ),
+                    diagnostics: std::sync::Arc::from(diagnostics.into_boxed_slice()),
                 });
             }
             super::PullDiagnosticsOutcome::Unchanged {
@@ -5288,11 +4978,7 @@ impl App {
         {
             return;
         }
-        let Some(uri) = self
-            .buffer_uris
-            .get(&self.document_buffer_id)
-            .cloned()
-        else {
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
             return;
         };
         if let Some(token) = self.pending_inlay_hint_token.take() {
@@ -5313,15 +4999,13 @@ impl App {
                 character: 0,
             },
         };
-        let (tx, rx) =
-            tokio::sync::mpsc::unbounded_channel::<super::InlayHintOutcome>();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::InlayHintOutcome>();
         let token = lattice_protocol::CancellationToken::new();
         self.pending_inlay_hint_rx = Some(rx);
         self.pending_inlay_hint_token = Some(token.clone());
         let lsp = self.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
-            let handles: Vec<lattice_lsp::ServerHandle> =
-                { lsp.servers_for(&uri) };
+            let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
             let Some(handle) = handles
                 .into_iter()
                 .find(|h| h.capabilities().supports_inlay_hint())
@@ -5388,13 +5072,11 @@ impl App {
             .iter()
             .filter_map(|(id, uri)| {
                 let handles = self.lsp.servers_for(uri);
-                let attached = handles
-                    .iter()
-                    .any(|h| {
-                        refreshes
-                            .iter()
-                            .any(|r| r.server_id.as_ref() == h.server_id())
-                    });
+                let attached = handles.iter().any(|h| {
+                    refreshes
+                        .iter()
+                        .any(|r| r.server_id.as_ref() == h.server_id())
+                });
                 if attached { Some(*id) } else { None }
             })
             .collect();
@@ -5507,18 +5189,12 @@ impl App {
     /// to a viewport. Single-flight per buffer; each new
     /// request cancels its predecessor.
     pub fn maybe_request_document_link(&mut self) {
-        let Some(uri) = self
-            .buffer_uris
-            .get(&self.document_buffer_id)
-            .cloned()
-        else {
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
             return;
         };
         let snapshot = self.document.snapshot();
         let version = snapshot.version;
-        if let Some(cache) = self
-            .lsp_document_links_cache
-            .get(&self.document_buffer_id)
+        if let Some(cache) = self.lsp_document_links_cache.get(&self.document_buffer_id)
             && cache.document_version == version
         {
             return;
@@ -5527,8 +5203,7 @@ impl App {
             token.cancel();
         }
         let buffer_id = self.document_buffer_id;
-        let (tx, rx) =
-            tokio::sync::mpsc::unbounded_channel::<super::DocumentLinksOutcome>();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::DocumentLinksOutcome>();
         let token = lattice_protocol::CancellationToken::new();
         self.pending_document_links_rx = Some(rx);
         self.pending_document_links_token = Some(token.clone());
@@ -5639,12 +5314,7 @@ impl App {
         let link = self
             .lsp_document_links_cache
             .get(&buffer_id)
-            .and_then(|c| {
-                c.links
-                    .iter()
-                    .find(|l| range_covers(l.range, pos))
-                    .cloned()
-            });
+            .and_then(|c| c.links.iter().find(|l| range_covers(l.range, pos)).cloned());
         let Some(link) = link else {
             self.set_message(EchoLevel::Info, "no link at cursor".to_string());
             return;
@@ -5658,11 +5328,7 @@ impl App {
         // gate: silently skip when the server doesn't advertise
         // resolveProvider (the link wouldn't get a target on a
         // round-trip anyway).
-        let Some(uri) = self
-            .buffer_uris
-            .get(&self.document_buffer_id)
-            .cloned()
-        else {
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
             return;
         };
         let handles = self.lsp.servers_for(&uri);
@@ -5681,9 +5347,10 @@ impl App {
         // UI thread waiting on a network round-trip. The user
         // typed `gx`; a few-ms wait is acceptable; long resolves
         // are bounded by the protocol's cancellation token.
-        let resolved = lattice_runtime::block_on(async move {
-            handle.document_link_resolve(link, token).await
-        });
+        let resolved =
+            lattice_runtime::block_on(
+                async move { handle.document_link_resolve(link, token).await },
+            );
         match resolved {
             Ok(resolved) => {
                 if let Some(target) = resolved.target {
@@ -5696,10 +5363,7 @@ impl App {
                 }
             }
             Err(_) => {
-                self.set_message(
-                    EchoLevel::Warn,
-                    "documentLink/resolve failed".to_string(),
-                );
+                self.set_message(EchoLevel::Warn, "documentLink/resolve failed".to_string());
             }
         }
     }
@@ -5730,10 +5394,7 @@ impl App {
         let server_id: std::sync::Arc<str> = std::sync::Arc::from("<editor>");
         let opened = self.open_external_uri(&server_id, target_str);
         if !opened {
-            self.set_message(
-                EchoLevel::Warn,
-                format!("could not open {target_str}"),
-            );
+            self.set_message(EchoLevel::Warn, format!("could not open {target_str}"));
         }
     }
 
@@ -5741,11 +5402,7 @@ impl App {
     /// version change OR cache miss (`workspace/codeLens/refresh`
     /// evicts the entry). Single-flight per buffer.
     pub fn maybe_request_code_lens(&mut self) {
-        let Some(uri) = self
-            .buffer_uris
-            .get(&self.document_buffer_id)
-            .cloned()
-        else {
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
             return;
         };
         let snapshot = self.document.snapshot();
@@ -5759,8 +5416,7 @@ impl App {
             token.cancel();
         }
         let buffer_id = self.document_buffer_id;
-        let (tx, rx) =
-            tokio::sync::mpsc::unbounded_channel::<super::CodeLensOutcome>();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::CodeLensOutcome>();
         let token = lattice_protocol::CancellationToken::new();
         self.pending_code_lens_rx = Some(rx);
         self.pending_code_lens_token = Some(token.clone());
@@ -5777,8 +5433,7 @@ impl App {
                 });
                 return;
             };
-            let server_id_arc: std::sync::Arc<str> =
-                std::sync::Arc::from(handle.server_id());
+            let server_id_arc: std::sync::Arc<str> = std::sync::Arc::from(handle.server_id());
             let params = lsp_types::CodeLensParams {
                 text_document: lsp_types::TextDocumentIdentifier { uri },
                 work_done_progress_params: Default::default(),
@@ -5867,10 +5522,7 @@ impl App {
     pub(super) fn do_lsp_code_lens_picker(&mut self) {
         let buffer_id = self.document_buffer_id;
         let Some(cache) = self.lsp_code_lens_cache.get(&buffer_id).cloned() else {
-            self.set_message(
-                EchoLevel::Info,
-                "no code lenses (cache empty)".to_string(),
-            );
+            self.set_message(EchoLevel::Info, "no code lenses (cache empty)".to_string());
             return;
         };
         if cache.lenses.is_empty() {
@@ -5889,7 +5541,9 @@ impl App {
                     .command
                     .as_ref()
                     .map(|c| c.title.clone())
-                    .unwrap_or_else(|| format!("(unresolved lens at line {})", lens.range.start.line));
+                    .unwrap_or_else(|| {
+                        format!("(unresolved lens at line {})", lens.range.start.line)
+                    });
                 let line = lens.range.start.line;
                 let display = format!("{line:>4}  {title}");
                 let mut c = lattice_completion::RawCandidate::plain(
@@ -5969,10 +5623,7 @@ impl App {
             match resolved {
                 Ok(r) => r.command,
                 Err(_) => {
-                    self.set_message(
-                        EchoLevel::Warn,
-                        "codeLens/resolve failed".to_string(),
-                    );
+                    self.set_message(EchoLevel::Warn, "codeLens/resolve failed".to_string());
                     return;
                 }
             }
@@ -5997,18 +5648,12 @@ impl App {
     /// the documentLink pump: fires on doc-version change,
     /// single-flight per buffer.
     pub fn maybe_request_document_color(&mut self) {
-        let Some(uri) = self
-            .buffer_uris
-            .get(&self.document_buffer_id)
-            .cloned()
-        else {
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
             return;
         };
         let snapshot = self.document.snapshot();
         let version = snapshot.version;
-        if let Some(cache) = self
-            .lsp_document_color_cache
-            .get(&self.document_buffer_id)
+        if let Some(cache) = self.lsp_document_color_cache.get(&self.document_buffer_id)
             && cache.document_version == version
         {
             return;
@@ -6017,8 +5662,7 @@ impl App {
             token.cancel();
         }
         let buffer_id = self.document_buffer_id;
-        let (tx, rx) =
-            tokio::sync::mpsc::unbounded_channel::<super::DocumentColorOutcome>();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::DocumentColorOutcome>();
         let token = lattice_protocol::CancellationToken::new();
         self.pending_document_color_rx = Some(rx);
         self.pending_document_color_token = Some(token.clone());
@@ -6035,8 +5679,7 @@ impl App {
                 });
                 return;
             };
-            let server_id_arc: std::sync::Arc<str> =
-                std::sync::Arc::from(handle.server_id());
+            let server_id_arc: std::sync::Arc<str> = std::sync::Arc::from(handle.server_id());
             let params = lsp_types::DocumentColorParams {
                 text_document: lsp_types::TextDocumentIdentifier { uri },
                 work_done_progress_params: Default::default(),
@@ -6142,10 +5785,7 @@ impl App {
             .find(|c| range_covers(c.range, pos))
             .cloned();
         let Some(entry) = entry else {
-            self.set_message(
-                EchoLevel::Info,
-                "no color literal at cursor".to_string(),
-            );
+            self.set_message(EchoLevel::Info, "no color literal at cursor".to_string());
             return;
         };
         let Some(uri) = self.buffer_uris.get(&buffer_id).cloned() else {
@@ -6174,24 +5814,19 @@ impl App {
             partial_result_params: Default::default(),
         };
         let token = lattice_protocol::CancellationToken::new();
-        let presentations = lattice_runtime::block_on(async move {
-            handle.color_presentation(params, token).await
-        });
+        let presentations =
+            lattice_runtime::block_on(
+                async move { handle.color_presentation(params, token).await },
+            );
         let presentations = match presentations {
             Ok(p) => p,
             Err(_) => {
-                self.set_message(
-                    EchoLevel::Warn,
-                    "colorPresentation failed".to_string(),
-                );
+                self.set_message(EchoLevel::Warn, "colorPresentation failed".to_string());
                 return;
             }
         };
         if presentations.is_empty() {
-            self.set_message(
-                EchoLevel::Info,
-                "no color alternatives".to_string(),
-            );
+            self.set_message(EchoLevel::Info, "no color alternatives".to_string());
             return;
         }
         let pairs: Vec<(
@@ -6208,9 +5843,7 @@ impl App {
                 c.display = p.label.clone();
                 (
                     c,
-                    lattice_picker::RoutingPayload::ColorPresentation {
-                        index: i as u32,
-                    },
+                    lattice_picker::RoutingPayload::ColorPresentation { index: i as u32 },
                 )
             })
             .collect();
@@ -6272,7 +5905,9 @@ impl App {
             return;
         }
         self.lsp_code_lens_cache.retain(|_buf, cache| {
-            !servers.iter().any(|s| s.as_ref() == cache.server_id.as_ref())
+            !servers
+                .iter()
+                .any(|s| s.as_ref() == cache.server_id.as_ref())
         });
     }
 
@@ -6306,20 +5941,15 @@ impl App {
         // Invalidate stale cache if it belonged to a different
         // buffer.
         if let Some(cache) = self.lsp_document_highlights.as_ref()
-            && cache.buffer_id != self.document_buffer_id {
-                self.lsp_document_highlights = None;
-            }
-        let Some(uri) = self
-            .buffer_uris
-            .get(&self.document_buffer_id)
-            .cloned()
-        else {
+            && cache.buffer_id != self.document_buffer_id
+        {
+            self.lsp_document_highlights = None;
+        }
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
             return;
         };
         let snapshot = self.document.snapshot();
-        let Some(position) =
-            crate::app::app_to_lsp_position(&snapshot.buffer, self.cursor)
-        else {
+        let Some(position) = crate::app::app_to_lsp_position(&snapshot.buffer, self.cursor) else {
             return;
         };
         // Cancel any in-flight request so its response is
@@ -6330,16 +5960,13 @@ impl App {
         let buffer_id = self.document_buffer_id;
         let anchor_cursor = self.cursor;
         self.last_document_highlight_issue_cursor = Some(anchor_cursor);
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<
-            super::DocumentHighlightOutcome,
-        >();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::DocumentHighlightOutcome>();
         let token = lattice_protocol::CancellationToken::new();
         self.pending_document_highlight_rx = Some(rx);
         self.pending_document_highlight_token = Some(token.clone());
         let lsp = self.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
-            let handles: Vec<lattice_lsp::ServerHandle> =
-                { lsp.servers_for(&uri) };
+            let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
             let Some(handle) = handles
                 .into_iter()
                 .find(|h| h.capabilities().supports_document_highlight())
@@ -6473,10 +6100,7 @@ impl App {
             super::SelectionRangeStep::Expand => {
                 let next = self.lsp_selection_chain_index + 1;
                 if next >= chain.ranges.len() {
-                    self.set_message(
-                        EchoLevel::Info,
-                        "lsp-expand-region: outermost".to_string(),
-                    );
+                    self.set_message(EchoLevel::Info, "lsp-expand-region: outermost".to_string());
                     return true;
                 }
                 self.lsp_selection_chain_index = next;
@@ -6498,8 +6122,7 @@ impl App {
         let Some(chain) = self.lsp_selection_chain.as_ref() else {
             return;
         };
-        let Some(range) = chain.ranges.get(self.lsp_selection_chain_index).cloned()
-        else {
+        let Some(range) = chain.ranges.get(self.lsp_selection_chain_index).cloned() else {
             return;
         };
         let snapshot = self.document.snapshot();
@@ -6549,11 +6172,7 @@ impl App {
         if let Some(token) = self.pending_selection_range_token.take() {
             token.cancel();
         }
-        let Some(uri) = self
-            .buffer_uris
-            .get(&self.document_buffer_id)
-            .cloned()
-        else {
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
             self.set_message(
                 EchoLevel::Info,
                 "no LSP server attached to current buffer".to_string(),
@@ -6573,15 +6192,13 @@ impl App {
         };
         let anchor_cursor = self.cursor;
         let anchor_buffer = self.document_buffer_id;
-        let (tx, rx) =
-            tokio::sync::mpsc::unbounded_channel::<super::SelectionRangeOutcome>();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::SelectionRangeOutcome>();
         let token = lattice_protocol::CancellationToken::new();
         self.pending_selection_range_rx = Some(rx);
         self.pending_selection_range_token = Some(token.clone());
         let lsp = self.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
-            let handles: Vec<lattice_lsp::ServerHandle> =
-                { lsp.servers_for(&uri) };
+            let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
             let Some(handle) = handles
                 .into_iter()
                 .find(|h| h.capabilities().supports_selection_range())
@@ -6656,11 +6273,7 @@ impl App {
                 self.lsp_selection_chain_index = match pending_step {
                     super::SelectionRangeStep::Expand => {
                         let chain = self.lsp_selection_chain.as_ref().unwrap();
-                        if chain.ranges.len() > 1 {
-                            1
-                        } else {
-                            0
-                        }
+                        if chain.ranges.len() > 1 { 1 } else { 0 }
                     }
                     super::SelectionRangeStep::Shrink => 0,
                 };
@@ -6696,8 +6309,7 @@ impl App {
         let allowed: std::collections::HashSet<String> = match server_id {
             Some(id) => std::iter::once(id.to_string()).collect(),
             None => {
-                let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned()
-                else {
+                let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
                     self.set_message(
                         EchoLevel::Info,
                         "lsp-progress-cancel: buffer has no URI".to_string(),
@@ -6772,27 +6384,19 @@ impl App {
         let Some(parsed) = lattice_lsp::LogLevel::parse(level) else {
             self.set_message(
                 EchoLevel::Error,
-                format!(
-                    "unknown log level {level:?}; expected error/warn/info/debug/trace"
-                ),
+                format!("unknown log level {level:?}; expected error/warn/info/debug/trace"),
             );
             return;
         };
         match server_id {
             None => {
                 self.lsp_logger.set_default_level(parsed);
-                self.set_message(
-                    EchoLevel::Info,
-                    format!("lsp default log level: {level}"),
-                );
+                self.set_message(EchoLevel::Info, format!("lsp default log level: {level}"));
             }
             Some(id) => {
                 let arc: std::sync::Arc<str> = std::sync::Arc::from(id);
                 self.lsp_logger.set_server_level(arc, Some(parsed));
-                self.set_message(
-                    EchoLevel::Info,
-                    format!("lsp log level for {id}: {level}"),
-                );
+                self.set_message(EchoLevel::Info, format!("lsp log level for {id}: {level}"));
             }
         }
     }
@@ -6807,10 +6411,7 @@ impl App {
             Some(id) => {
                 let arc: std::sync::Arc<str> = std::sync::Arc::from(id);
                 self.lsp_logger.clear_server(&arc);
-                self.set_message(
-                    EchoLevel::Info,
-                    format!("*lsp:{id}* cleared"),
-                );
+                self.set_message(EchoLevel::Info, format!("*lsp:{id}* cleared"));
             }
         }
     }
@@ -6909,15 +6510,17 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
 
     use super::*;
-    use crate::app::*;
     use crate::app::test_helpers::{app_with, seed_diags_at_lines};
+    use crate::app::*;
 
     /// CSM.8b.3 test helper: pack a `LspCompletionMeta` into the
     /// `RawCandidate` shape `produce_async` emits -- display +
     /// match-text derived from label/detail/filter_text, payload
     /// is the serde-encoded meta. Mirrors the construction the
     /// production source does in `lattice-lsp::completion`.
-    fn lsp_meta_candidate(meta: lattice_lsp::completion::LspCompletionMeta) -> lattice_completion::RawCandidate {
+    fn lsp_meta_candidate(
+        meta: lattice_lsp::completion::LspCompletionMeta,
+    ) -> lattice_completion::RawCandidate {
         let display = match meta.detail.as_ref() {
             Some(d) => format!("{}  {}", meta.label, d),
             None => meta.label.clone(),
@@ -7131,8 +6734,7 @@ mod tests {
         let msg = a.last_message.as_ref().expect("umbrella echo");
         // Umbrella echo, not sub-mode echo.
         assert!(
-            msg.text.contains("lsp-mode disabled") &&
-            !msg.text.contains("lsp-hover-mode"),
+            msg.text.contains("lsp-mode disabled") && !msg.text.contains("lsp-hover-mode"),
             "expected umbrella echo (not sub-mode echo), got: {}",
             msg.text
         );
@@ -7425,22 +7027,40 @@ mod tests {
     fn flatten_selection_range_chain_walks_parent_links() {
         let outer = lsp_types::SelectionRange {
             range: lsp_types::Range {
-                start: lsp_types::Position { line: 0, character: 0 },
-                end: lsp_types::Position { line: 5, character: 0 },
+                start: lsp_types::Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: lsp_types::Position {
+                    line: 5,
+                    character: 0,
+                },
             },
             parent: None,
         };
         let middle = lsp_types::SelectionRange {
             range: lsp_types::Range {
-                start: lsp_types::Position { line: 1, character: 0 },
-                end: lsp_types::Position { line: 3, character: 0 },
+                start: lsp_types::Position {
+                    line: 1,
+                    character: 0,
+                },
+                end: lsp_types::Position {
+                    line: 3,
+                    character: 0,
+                },
             },
             parent: Some(Box::new(outer)),
         };
         let inner = lsp_types::SelectionRange {
             range: lsp_types::Range {
-                start: lsp_types::Position { line: 2, character: 0 },
-                end: lsp_types::Position { line: 2, character: 8 },
+                start: lsp_types::Position {
+                    line: 2,
+                    character: 0,
+                },
+                end: lsp_types::Position {
+                    line: 2,
+                    character: 8,
+                },
             },
             parent: Some(Box::new(middle)),
         };
@@ -7622,8 +7242,7 @@ mod tests {
                 token_modifiers_bitset: 0,
             }]),
         };
-        crate::app::apply_semantic_token_edits(&mut raw, &[edit])
-            .expect("insert at end succeeds");
+        crate::app::apply_semantic_token_edits(&mut raw, &[edit]).expect("insert at end succeeds");
         assert_eq!(raw.len(), 2);
         assert_eq!(raw[1].token_type, 1);
     }
@@ -7725,9 +7344,7 @@ mod tests {
             lsp_types::SemanticTokenType::FUNCTION,
         ];
         let token_modifiers: Vec<lsp_types::SemanticTokenModifier> = Vec::new();
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<
-            crate::app::SemanticTokensOutcome,
-        >();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<crate::app::SemanticTokensOutcome>();
         tx.send(crate::app::SemanticTokensOutcome::Delta {
             buffer_id,
             document_version: 2,
@@ -7779,9 +7396,7 @@ mod tests {
                 tokens: Vec::new(),
             },
         );
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<
-            crate::app::SemanticTokensOutcome,
-        >();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<crate::app::SemanticTokensOutcome>();
         tx.send(crate::app::SemanticTokensOutcome::Delta {
             buffer_id,
             document_version: 2,
@@ -7842,8 +7457,7 @@ mod tests {
                 }]),
             },
         ];
-        crate::app::apply_semantic_token_edits(&mut raw, &edits)
-            .expect("sequential edits succeed");
+        crate::app::apply_semantic_token_edits(&mut raw, &edits).expect("sequential edits succeed");
         assert_eq!(raw.len(), 2);
         assert_eq!(raw[0].token_type, 2);
         assert_eq!(raw[1].token_type, 1);
@@ -7863,8 +7477,14 @@ mod tests {
         let server_id: std::sync::Arc<str> = std::sync::Arc::from("rust");
         let diag = lsp_types::Diagnostic {
             range: lsp_types::Range {
-                start: lsp_types::Position { line: 0, character: 0 },
-                end: lsp_types::Position { line: 0, character: 2 },
+                start: lsp_types::Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: lsp_types::Position {
+                    line: 0,
+                    character: 2,
+                },
             },
             severity: Some(lsp_types::DiagnosticSeverity::ERROR),
             code: None,
@@ -7875,9 +7495,7 @@ mod tests {
             tags: None,
             data: None,
         };
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<
-            crate::app::PullDiagnosticsOutcome,
-        >();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<crate::app::PullDiagnosticsOutcome>();
         tx.send(crate::app::PullDiagnosticsOutcome::Full {
             buffer_id,
             server_id: server_id.clone(),
@@ -7903,11 +7521,7 @@ mod tests {
             .iter()
             .find(|(u, _)| u.as_str() == uri.as_str())
             .expect("uri in layer");
-        let msgs: Vec<_> = entry
-            .1
-            .iter()
-            .map(|d| d.message.as_str())
-            .collect();
+        let msgs: Vec<_> = entry.1.iter().map(|d| d.message.as_str()).collect();
         assert!(msgs.contains(&"boom"));
     }
 
@@ -7927,9 +7541,7 @@ mod tests {
                 result_id: Some("r1".into()),
             },
         );
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<
-            crate::app::PullDiagnosticsOutcome,
-        >();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<crate::app::PullDiagnosticsOutcome>();
         tx.send(crate::app::PullDiagnosticsOutcome::Unchanged {
             buffer_id,
             document_version: 2,
@@ -7966,9 +7578,7 @@ mod tests {
                 result_id: Some("r1".into()),
             },
         );
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<
-            lattice_lsp::LspDiagnosticRefresh,
-        >();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<lattice_lsp::LspDiagnosticRefresh>();
         tx.send(lattice_lsp::LspDiagnosticRefresh {
             server_id: std::sync::Arc::from("rust"),
         })
@@ -8013,8 +7623,7 @@ mod tests {
             app.toggle_mode_by_name("lsp-inlay-hint-mode");
         }
         let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
-        app.buffer_uris
-            .insert(app.document_buffer_id, uri);
+        app.buffer_uris.insert(app.document_buffer_id, uri);
         // Seed cache with a wide range covering 0..=1000.
         app.lsp_inlay_hints_cache.insert(
             app.document_buffer_id,
@@ -8051,8 +7660,7 @@ mod tests {
             app.toggle_mode_by_name("lsp-inlay-hint-mode");
         }
         let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
-        app.buffer_uris
-            .insert(app.document_buffer_id, uri);
+        app.buffer_uris.insert(app.document_buffer_id, uri);
         // Cached range: lines 0..=200.
         app.lsp_inlay_hints_cache.insert(
             app.document_buffer_id,
@@ -8089,8 +7697,7 @@ mod tests {
             app.toggle_mode_by_name("lsp-inlay-hint-mode");
         }
         let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
-        app.buffer_uris
-            .insert(app.document_buffer_id, uri);
+        app.buffer_uris.insert(app.document_buffer_id, uri);
         // Cache covers lines 100..=400 (the overscan-padded
         // window the pump would have fetched at scroll=200).
         app.lsp_inlay_hints_cache.insert(
@@ -8218,7 +7825,9 @@ mod tests {
         }
         app.recompute_folds();
         assert!(
-            app.folds.iter().any(|f| f.start_line == 0 && f.end_line == 1),
+            app.folds
+                .iter()
+                .any(|f| f.start_line == 0 && f.end_line == 1),
             "expected LSP fold from cache; got {:?}",
             app.folds,
         );
@@ -8229,8 +7838,14 @@ mod tests {
     #[test]
     fn cursor_inside_range_is_half_open() {
         let r = lsp_types::Range {
-            start: lsp_types::Position { line: 1, character: 4 },
-            end: lsp_types::Position { line: 1, character: 8 },
+            start: lsp_types::Position {
+                line: 1,
+                character: 4,
+            },
+            end: lsp_types::Position {
+                line: 1,
+                character: 8,
+            },
         };
         assert!(crate::app::cursor_inside_range(Position::new(1, 4), &r));
         assert!(crate::app::cursor_inside_range(Position::new(1, 6), &r));
@@ -8270,10 +7885,8 @@ mod tests {
 
     #[test]
     fn definition_response_array_flattens_verbatim() {
-        let resp = lsp_types::GotoDefinitionResponse::Array(vec![
-            loc("/a.rs", 0, 0),
-            loc("/b.rs", 5, 5),
-        ]);
+        let resp =
+            lsp_types::GotoDefinitionResponse::Array(vec![loc("/a.rs", 0, 0), loc("/b.rs", 5, 5)]);
         let v = super::definition_response_to_locations(resp);
         assert_eq!(v.len(), 2);
     }
@@ -8419,8 +8032,7 @@ mod tests {
     #[test]
     fn drain_pending_references_no_servers_outcome_echoes() {
         let mut a = app_with("xx", 10);
-        let (tx, rx) =
-            tokio::sync::mpsc::unbounded_channel::<super::ReferencesOutcome>();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::ReferencesOutcome>();
         a.pending_references_rx = Some(rx);
         a.pending_references_token = Some(lattice_protocol::CancellationToken::new());
         tx.send(super::ReferencesOutcome::NoServers).unwrap();
@@ -8433,8 +8045,7 @@ mod tests {
     #[test]
     fn drain_pending_references_found_opens_lsp_locations_picker() {
         let mut a = app_with("xx", 10);
-        let (tx, rx) =
-            tokio::sync::mpsc::unbounded_channel::<super::ReferencesOutcome>();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::ReferencesOutcome>();
         a.pending_references_rx = Some(rx);
         a.pending_references_token = Some(lattice_protocol::CancellationToken::new());
         tx.send(super::ReferencesOutcome::Found {
@@ -8480,8 +8091,7 @@ mod tests {
         // from" -- showing an empty picker would be worse UX
         // than the echo.
         let mut a = app_with("xx", 10);
-        let (tx, rx) =
-            tokio::sync::mpsc::unbounded_channel::<super::ReferencesOutcome>();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::ReferencesOutcome>();
         a.pending_references_rx = Some(rx);
         a.pending_references_token = Some(lattice_protocol::CancellationToken::new());
         tx.send(super::ReferencesOutcome::Found {
@@ -8498,7 +8108,7 @@ mod tests {
 
     #[test]
     fn flatten_document_symbol_response_flat_preserves_order() {
-        use lsp_types::{Range as LRange, Position as LPos, Location as LLoc};
+        use lsp_types::{Location as LLoc, Position as LPos, Range as LRange};
         let path = std::path::PathBuf::from("/tmp/x.rs");
         #[allow(deprecated)]
         let syms = vec![
@@ -8510,8 +8120,14 @@ mod tests {
                 location: LLoc {
                     uri: super::tests::fake_uri("/tmp/x.rs"),
                     range: LRange {
-                        start: LPos { line: 5, character: 0 },
-                        end: LPos { line: 5, character: 3 },
+                        start: LPos {
+                            line: 5,
+                            character: 0,
+                        },
+                        end: LPos {
+                            line: 5,
+                            character: 3,
+                        },
                     },
                 },
                 container_name: None,
@@ -8524,8 +8140,14 @@ mod tests {
                 location: LLoc {
                     uri: super::tests::fake_uri("/tmp/x.rs"),
                     range: LRange {
-                        start: LPos { line: 10, character: 4 },
-                        end: LPos { line: 10, character: 7 },
+                        start: LPos {
+                            line: 10,
+                            character: 4,
+                        },
+                        end: LPos {
+                            line: 10,
+                            character: 7,
+                        },
                     },
                 },
                 container_name: Some("Bag".into()),
@@ -8543,16 +8165,28 @@ mod tests {
 
     #[test]
     fn flatten_document_symbol_response_nested_assigns_depth_via_dfs() {
-        use lsp_types::{Range as LRange, Position as LPos, DocumentSymbol};
+        use lsp_types::{DocumentSymbol, Position as LPos, Range as LRange};
         let path = std::path::PathBuf::from("/tmp/x.rs");
         // mod foo { fn bar() {} } -> outer at depth 0, bar at depth 1.
         let inner_range = LRange {
-            start: LPos { line: 1, character: 4 },
-            end: LPos { line: 3, character: 5 },
+            start: LPos {
+                line: 1,
+                character: 4,
+            },
+            end: LPos {
+                line: 3,
+                character: 5,
+            },
         };
         let outer_range = LRange {
-            start: LPos { line: 0, character: 0 },
-            end: LPos { line: 4, character: 0 },
+            start: LPos {
+                line: 0,
+                character: 0,
+            },
+            end: LPos {
+                line: 4,
+                character: 0,
+            },
         };
         #[allow(deprecated)]
         let inner = DocumentSymbol {
@@ -8589,8 +8223,7 @@ mod tests {
     #[test]
     fn drain_pending_symbols_no_servers_outcome_echoes() {
         let mut a = app_with("xx", 10);
-        let (tx, rx) =
-            tokio::sync::mpsc::unbounded_channel::<super::SymbolsOutcome>();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::SymbolsOutcome>();
         a.pending_symbols_rx = Some(rx);
         a.pending_symbols_token = Some(lattice_protocol::CancellationToken::new());
         tx.send(super::SymbolsOutcome::NoServers).unwrap();
@@ -8603,8 +8236,7 @@ mod tests {
     #[test]
     fn drain_pending_symbols_found_opens_picker() {
         let mut a = app_with("xx", 10);
-        let (tx, rx) =
-            tokio::sync::mpsc::unbounded_channel::<super::SymbolsOutcome>();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::SymbolsOutcome>();
         a.pending_symbols_rx = Some(rx);
         a.pending_symbols_token = Some(lattice_protocol::CancellationToken::new());
         tx.send(super::SymbolsOutcome::Found {
@@ -8643,8 +8275,7 @@ mod tests {
     #[test]
     fn drain_pending_symbols_empty_echoes() {
         let mut a = app_with("xx", 10);
-        let (tx, rx) =
-            tokio::sync::mpsc::unbounded_channel::<super::SymbolsOutcome>();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::SymbolsOutcome>();
         a.pending_symbols_rx = Some(rx);
         a.pending_symbols_token = Some(lattice_protocol::CancellationToken::new());
         tx.send(super::SymbolsOutcome::Found {
@@ -8672,11 +8303,9 @@ mod tests {
     #[test]
     fn drain_pending_code_actions_no_provider_echoes() {
         let mut a = app_with("xx", 10);
-        let (tx, rx) =
-            tokio::sync::mpsc::unbounded_channel::<super::CodeActionOutcome>();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::CodeActionOutcome>();
         a.pending_code_action_rx = Some(rx);
-        a.pending_code_action_token =
-            Some(lattice_protocol::CancellationToken::new());
+        a.pending_code_action_token = Some(lattice_protocol::CancellationToken::new());
         tx.send(super::CodeActionOutcome::NoProvider).unwrap();
         a.drain_pending_code_actions();
         let msg = a.last_message.as_ref().expect("echo");
@@ -8686,12 +8315,11 @@ mod tests {
     #[test]
     fn drain_pending_code_actions_empty_echoes_no_actions() {
         let mut a = app_with("xx", 10);
-        let (tx, rx) =
-            tokio::sync::mpsc::unbounded_channel::<super::CodeActionOutcome>();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::CodeActionOutcome>();
         a.pending_code_action_rx = Some(rx);
-        a.pending_code_action_token =
-            Some(lattice_protocol::CancellationToken::new());
-        tx.send(super::CodeActionOutcome::Items(Vec::new())).unwrap();
+        a.pending_code_action_token = Some(lattice_protocol::CancellationToken::new());
+        tx.send(super::CodeActionOutcome::Items(Vec::new()))
+            .unwrap();
         a.drain_pending_code_actions();
         assert!(a.picker.is_none());
         let msg = a.last_message.as_ref().expect("echo");
@@ -8701,11 +8329,9 @@ mod tests {
     #[test]
     fn drain_pending_code_actions_items_open_picker() {
         let mut a = app_with("foo\n", 10);
-        let (tx, rx) =
-            tokio::sync::mpsc::unbounded_channel::<super::CodeActionOutcome>();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::CodeActionOutcome>();
         a.pending_code_action_rx = Some(rx);
-        a.pending_code_action_token =
-            Some(lattice_protocol::CancellationToken::new());
+        a.pending_code_action_token = Some(lattice_protocol::CancellationToken::new());
         let act = lsp_types::CodeAction {
             title: "Add `mut` modifier".into(),
             kind: Some(lsp_types::CodeActionKind::QUICKFIX),
@@ -8716,11 +8342,13 @@ mod tests {
             disabled: None,
             data: None,
         };
-        tx.send(super::CodeActionOutcome::Items(vec![super::CodeActionRow {
-            title: act.title.clone(),
-            kind_glyph: "🛠",
-            action: lsp_types::CodeActionOrCommand::CodeAction(act),
-        }]))
+        tx.send(super::CodeActionOutcome::Items(vec![
+            super::CodeActionRow {
+                title: act.title.clone(),
+                kind_glyph: "🛠",
+                action: lsp_types::CodeActionOrCommand::CodeAction(act),
+            },
+        ]))
         .unwrap();
         a.drain_pending_code_actions();
         let picker = a.picker.as_ref().expect("picker");
@@ -8771,8 +8399,7 @@ mod tests {
     #[test]
     fn drain_pending_rename_no_provider_echoes() {
         let mut a = app_with("xx", 10);
-        let (tx, rx) =
-            tokio::sync::mpsc::unbounded_channel::<super::RenameOutcome>();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::RenameOutcome>();
         a.pending_rename_rx = Some(rx);
         a.pending_rename_token = Some(lattice_protocol::CancellationToken::new());
         tx.send(super::RenameOutcome::NoProvider).unwrap();
@@ -8784,8 +8411,7 @@ mod tests {
     #[test]
     fn drain_pending_rename_not_renameable_echoes_reason() {
         let mut a = app_with("xx", 10);
-        let (tx, rx) =
-            tokio::sync::mpsc::unbounded_channel::<super::RenameOutcome>();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::RenameOutcome>();
         a.pending_rename_rx = Some(rx);
         a.pending_rename_token = Some(lattice_protocol::CancellationToken::new());
         tx.send(super::RenameOutcome::NotRenameable {
@@ -8801,8 +8427,7 @@ mod tests {
     #[test]
     fn drain_pending_rename_empty_echoes_no_changes() {
         let mut a = app_with("xx", 10);
-        let (tx, rx) =
-            tokio::sync::mpsc::unbounded_channel::<super::RenameOutcome>();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::RenameOutcome>();
         a.pending_rename_rx = Some(rx);
         a.pending_rename_token = Some(lattice_protocol::CancellationToken::new());
         tx.send(super::RenameOutcome::Empty).unwrap();
@@ -8816,8 +8441,7 @@ mod tests {
         // End-to-end-ish: load a real document, send a rename
         // outcome targeting it, verify the buffer text changed
         // and a single undo restores.
-        let path = std::env::temp_dir()
-            .join(format!("lattice-rename-{}.rs", std::process::id()));
+        let path = std::env::temp_dir().join(format!("lattice-rename-{}.rs", std::process::id()));
         std::fs::write(&path, "let foo = 1;\nlet x = foo + 2;\n").unwrap();
         let doc = Document::open(&path).unwrap();
         let mut a = App::new(doc);
@@ -8853,8 +8477,7 @@ mod tests {
                 new_text: "bar".into(),
             },
         ];
-        let (tx, rx) =
-            tokio::sync::mpsc::unbounded_channel::<super::RenameOutcome>();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::RenameOutcome>();
         a.pending_rename_rx = Some(rx);
         a.pending_rename_token = Some(lattice_protocol::CancellationToken::new());
         tx.send(super::RenameOutcome::Edits {
@@ -8886,13 +8509,11 @@ mod tests {
         // is open from the sync sources alone. Manually push
         // a NoServers outcome to verify the drain handles it
         // without exploding.
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<
-            super::InsertCompletionLspOutcome,
-        >();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::InsertCompletionLspOutcome>();
         a.pending_insert_completion_lsp_rx = Some(rx);
-        a.pending_insert_completion_lsp_token =
-            Some(lattice_protocol::CancellationToken::new());
-        tx.send(super::InsertCompletionLspOutcome::NoServers).unwrap();
+        a.pending_insert_completion_lsp_token = Some(lattice_protocol::CancellationToken::new());
+        tx.send(super::InsertCompletionLspOutcome::NoServers)
+            .unwrap();
         a.drain_pending_insert_completion_lsp();
         // Popup still open from sync sources.
         assert!(a.insert_completion.is_some());
@@ -8907,20 +8528,15 @@ mod tests {
         // so the test doesn't depend on sync sources producing
         // matches first. The drain merges LSP items into
         // whatever raw set is present.
-        a.insert_completion = Some(
-            lattice_completion::InsertCompletionState::open(
-                lattice_completion::CompletionTrigger::Manual,
-                Position::new(1, 0),
-                Position::new(1, 2),
-                "fo".to_string(),
-            ),
-        );
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<
-            super::InsertCompletionLspOutcome,
-        >();
+        a.insert_completion = Some(lattice_completion::InsertCompletionState::open(
+            lattice_completion::CompletionTrigger::Manual,
+            Position::new(1, 0),
+            Position::new(1, 2),
+            "fo".to_string(),
+        ));
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::InsertCompletionLspOutcome>();
         a.pending_insert_completion_lsp_rx = Some(rx);
-        a.pending_insert_completion_lsp_token =
-            Some(lattice_protocol::CancellationToken::new());
+        a.pending_insert_completion_lsp_token = Some(lattice_protocol::CancellationToken::new());
         tx.send(super::InsertCompletionLspOutcome::Items {
             candidates: vec![
                 lsp_meta_candidate(super::LspCompletionMeta {
@@ -9002,14 +8618,12 @@ mod tests {
         let mut a = app_with("xx", 10);
         a.modal = ModalState::Insert;
         a.cursor = Position::ZERO;
-        a.insert_completion = Some(
-            lattice_completion::InsertCompletionState::open(
-                lattice_completion::CompletionTrigger::Manual,
-                Position::ZERO,
-                Position::ZERO,
-                String::new(),
-            ),
-        );
+        a.insert_completion = Some(lattice_completion::InsertCompletionState::open(
+            lattice_completion::CompletionTrigger::Manual,
+            Position::ZERO,
+            Position::ZERO,
+            String::new(),
+        ));
         let mk_item = |label: &str| super::LspCompletionMeta {
             label: label.into(),
             insert_text: label.into(),
@@ -9030,12 +8644,10 @@ mod tests {
             resolved: false,
         };
         // First batch.
-        let (tx1, rx1) = tokio::sync::mpsc::unbounded_channel::<
-            super::InsertCompletionLspOutcome,
-        >();
+        let (tx1, rx1) =
+            tokio::sync::mpsc::unbounded_channel::<super::InsertCompletionLspOutcome>();
         a.pending_insert_completion_lsp_rx = Some(rx1);
-        a.pending_insert_completion_lsp_token =
-            Some(lattice_protocol::CancellationToken::new());
+        a.pending_insert_completion_lsp_token = Some(lattice_protocol::CancellationToken::new());
         tx1.send(super::InsertCompletionLspOutcome::Items {
             candidates: vec![
                 lsp_meta_candidate(mk_item("alpha")),
@@ -9053,12 +8665,10 @@ mod tests {
         assert_eq!(pre, 2);
         // Second batch -- only one item, "beta". Prior LSP
         // rows should be pruned.
-        let (tx2, rx2) = tokio::sync::mpsc::unbounded_channel::<
-            super::InsertCompletionLspOutcome,
-        >();
+        let (tx2, rx2) =
+            tokio::sync::mpsc::unbounded_channel::<super::InsertCompletionLspOutcome>();
         a.pending_insert_completion_lsp_rx = Some(rx2);
-        a.pending_insert_completion_lsp_token =
-            Some(lattice_protocol::CancellationToken::new());
+        a.pending_insert_completion_lsp_token = Some(lattice_protocol::CancellationToken::new());
         tx2.send(super::InsertCompletionLspOutcome::Items {
             candidates: vec![lsp_meta_candidate(mk_item("beta"))],
             is_incomplete: false,
@@ -9093,8 +8703,7 @@ mod tests {
             score: lattice_completion::MatchScore(100),
             match_ranges: Vec::new(),
         };
-        let rendered =
-            lattice_completion::RenderedCandidate::from_scored(scored);
+        let rendered = lattice_completion::RenderedCandidate::from_scored(scored);
         assert!(a.lsp_completion_meta_for(&rendered).is_none());
     }
 
@@ -9158,18 +8767,13 @@ mod tests {
         let _ = meta;
         a.insert_completion = Some(state);
         // Push a resolve outcome that fills documentation.
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<
-            super::CompletionResolveOutcome,
-        >();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::CompletionResolveOutcome>();
         a.pending_completion_resolve_rx = Some(rx);
-        a.pending_completion_resolve_token =
-            Some(lattice_protocol::CancellationToken::new());
+        a.pending_completion_resolve_token = Some(lattice_protocol::CancellationToken::new());
         let mut resolved = lsp_types::CompletionItem::default();
         resolved.label = "foo".into();
         resolved.detail = Some("fn foo() -> i32".into());
-        resolved.documentation = Some(lsp_types::Documentation::String(
-            "Returns 42.".into(),
-        ));
+        resolved.documentation = Some(lsp_types::Documentation::String("Returns 42.".into()));
         tx.send(super::CompletionResolveOutcome {
             meta_index: 0,
             resolved,
@@ -9183,8 +8787,7 @@ mod tests {
             lattice_completion::CandidateData::Extension { payload, .. } => payload.clone(),
             _ => panic!("expected Extension payload"),
         };
-        let updated =
-            lattice_lsp::completion::decode_meta(&payload).expect("decode");
+        let updated = lattice_lsp::completion::decode_meta(&payload).expect("decode");
         assert!(updated.resolved);
         assert_eq!(updated.detail.as_deref(), Some("fn foo() -> i32"));
         assert_eq!(updated.documentation.as_deref(), Some("Returns 42."));
@@ -9243,15 +8846,15 @@ mod tests {
                 payload: lattice_lsp::completion::encode_meta(&meta),
             };
             state.raw.push(raw.clone());
-            state.rendered.push(
-                lattice_completion::RenderedCandidate::from_scored(
+            state
+                .rendered
+                .push(lattice_completion::RenderedCandidate::from_scored(
                     lattice_completion::ScoredCandidate {
                         raw,
                         score: lattice_completion::MatchScore(100),
                         match_ranges: Vec::new(),
                     },
-                ),
-            );
+                ));
         }
         state.selected = 1; // user moved past c0
         state.doc_popup = Some(lattice_completion::DocPopupState {
@@ -9260,17 +8863,12 @@ mod tests {
             scroll: 0,
         });
         a.insert_completion = Some(state);
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<
-            super::CompletionResolveOutcome,
-        >();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::CompletionResolveOutcome>();
         a.pending_completion_resolve_rx = Some(rx);
-        a.pending_completion_resolve_token =
-            Some(lattice_protocol::CancellationToken::new());
+        a.pending_completion_resolve_token = Some(lattice_protocol::CancellationToken::new());
         let mut resolved = lsp_types::CompletionItem::default();
         resolved.label = "c0".into();
-        resolved.documentation = Some(lsp_types::Documentation::String(
-            "stale".into(),
-        ));
+        resolved.documentation = Some(lsp_types::Documentation::String("stale".into()));
         tx.send(super::CompletionResolveOutcome {
             meta_index: 0,
             resolved,
@@ -9283,8 +8881,7 @@ mod tests {
             lattice_completion::CandidateData::Extension { payload, .. } => payload.clone(),
             _ => panic!("expected Extension"),
         };
-        let c0_meta =
-            lattice_lsp::completion::decode_meta(&c0_payload).expect("decode");
+        let c0_meta = lattice_lsp::completion::decode_meta(&c0_payload).expect("decode");
         assert!(c0_meta.resolved);
         assert_eq!(c0_meta.documentation.as_deref(), Some("stale"));
         // Doc popup body unchanged (still pointing at c1).
@@ -9330,19 +8927,15 @@ mod tests {
             score: lattice_completion::MatchScore(100),
             match_ranges: Vec::new(),
         };
-        let rendered =
-            lattice_completion::RenderedCandidate::from_scored(scored);
-        let decoded = a
-            .lsp_completion_meta_for(&rendered)
-            .expect("meta resolves");
+        let rendered = lattice_completion::RenderedCandidate::from_scored(scored);
+        let decoded = a.lsp_completion_meta_for(&rendered).expect("meta resolves");
         assert_eq!(decoded.label, "second");
     }
 
     #[test]
     fn drain_pending_completion_no_servers_echoes() {
         let mut a = app_with("xx", 10);
-        let (tx, rx) =
-            tokio::sync::mpsc::unbounded_channel::<super::CompletionOutcome>();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::CompletionOutcome>();
         a.pending_completion_rx = Some(rx);
         a.pending_completion_token = Some(lattice_protocol::CancellationToken::new());
         tx.send(super::CompletionOutcome::NoServers).unwrap();
@@ -9354,8 +8947,7 @@ mod tests {
     #[test]
     fn drain_pending_completion_items_open_picker_with_indexed_text() {
         let mut a = app_with("foo\n", 10);
-        let (tx, rx) =
-            tokio::sync::mpsc::unbounded_channel::<super::CompletionOutcome>();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::CompletionOutcome>();
         a.pending_completion_rx = Some(rx);
         a.pending_completion_token = Some(lattice_protocol::CancellationToken::new());
         tx.send(super::CompletionOutcome::Items(vec![
@@ -9400,11 +8992,11 @@ mod tests {
     #[test]
     fn drain_pending_completion_empty_echoes_no_completions() {
         let mut a = app_with("xx", 10);
-        let (tx, rx) =
-            tokio::sync::mpsc::unbounded_channel::<super::CompletionOutcome>();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::CompletionOutcome>();
         a.pending_completion_rx = Some(rx);
         a.pending_completion_token = Some(lattice_protocol::CancellationToken::new());
-        tx.send(super::CompletionOutcome::Items(Vec::new())).unwrap();
+        tx.send(super::CompletionOutcome::Items(Vec::new()))
+            .unwrap();
         a.drain_pending_completion();
         assert!(a.picker.is_none());
         let msg = a.last_message.as_ref().expect("echo");
@@ -9414,27 +9006,21 @@ mod tests {
     #[test]
     fn signature_help_to_markdown_renders_active_signature() {
         let sh = lsp_types::SignatureHelp {
-            signatures: vec![
-                lsp_types::SignatureInformation {
-                    label: "fn foo(a: i32, b: &str) -> i32".into(),
-                    documentation: Some(lsp_types::Documentation::String(
-                        "Adds.".into(),
-                    )),
-                    parameters: Some(vec![
-                        lsp_types::ParameterInformation {
-                            label: lsp_types::ParameterLabel::Simple("a: i32".into()),
-                            documentation: Some(lsp_types::Documentation::String(
-                                "the first.".into(),
-                            )),
-                        },
-                        lsp_types::ParameterInformation {
-                            label: lsp_types::ParameterLabel::Simple("b: &str".into()),
-                            documentation: None,
-                        },
-                    ]),
-                    active_parameter: Some(0),
-                },
-            ],
+            signatures: vec![lsp_types::SignatureInformation {
+                label: "fn foo(a: i32, b: &str) -> i32".into(),
+                documentation: Some(lsp_types::Documentation::String("Adds.".into())),
+                parameters: Some(vec![
+                    lsp_types::ParameterInformation {
+                        label: lsp_types::ParameterLabel::Simple("a: i32".into()),
+                        documentation: Some(lsp_types::Documentation::String("the first.".into())),
+                    },
+                    lsp_types::ParameterInformation {
+                        label: lsp_types::ParameterLabel::Simple("b: &str".into()),
+                        documentation: None,
+                    },
+                ]),
+                active_parameter: Some(0),
+            }],
             active_signature: Some(0),
             active_parameter: None,
         };
@@ -9458,11 +9044,9 @@ mod tests {
     #[test]
     fn drain_pending_signature_help_body_opens_popup() {
         let mut a = app_with("xx", 10);
-        let (tx, rx) =
-            tokio::sync::mpsc::unbounded_channel::<super::SignatureHelpOutcome>();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::SignatureHelpOutcome>();
         a.pending_signature_help_rx = Some(rx);
-        a.pending_signature_help_token =
-            Some(lattice_protocol::CancellationToken::new());
+        a.pending_signature_help_token = Some(lattice_protocol::CancellationToken::new());
         tx.send(super::SignatureHelpOutcome::Body(
             "```text\nfn x()\n```\n".into(),
         ))
@@ -9476,12 +9060,11 @@ mod tests {
     #[test]
     fn drain_pending_signature_help_empty_body_echoes_no_signature_info() {
         let mut a = app_with("xx", 10);
-        let (tx, rx) =
-            tokio::sync::mpsc::unbounded_channel::<super::SignatureHelpOutcome>();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::SignatureHelpOutcome>();
         a.pending_signature_help_rx = Some(rx);
-        a.pending_signature_help_token =
-            Some(lattice_protocol::CancellationToken::new());
-        tx.send(super::SignatureHelpOutcome::Body(String::new())).unwrap();
+        a.pending_signature_help_token = Some(lattice_protocol::CancellationToken::new());
+        tx.send(super::SignatureHelpOutcome::Body(String::new()))
+            .unwrap();
         a.drain_pending_signature_help();
         let msg = a.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("no signature info"));
@@ -9548,8 +9131,7 @@ mod tests {
     fn drain_pending_definitions_with_single_same_buffer_jumps_in_place() {
         // Set up an App whose document path matches the location's
         // uri, so the jump stays in-buffer (no `:e` round-trip).
-        let path = std::env::temp_dir()
-            .join(format!("lattice-defjump-{}.rs", std::process::id()));
+        let path = std::env::temp_dir().join(format!("lattice-defjump-{}.rs", std::process::id()));
         std::fs::write(&path, "first line\nsecond line\nthird line\n").unwrap();
         let doc = Document::open(&path).unwrap();
         let mut a = App::new(doc);
@@ -9593,8 +9175,7 @@ mod tests {
         // vertico picker rather than auto-jumping to the first
         // result. Single-result jump path is still tested by
         // `drain_pending_definitions_with_single_same_buffer_jumps_in_place`.
-        let path = std::env::temp_dir()
-            .join(format!("lattice-defmulti-{}.rs", std::process::id()));
+        let path = std::env::temp_dir().join(format!("lattice-defmulti-{}.rs", std::process::id()));
         std::fs::write(&path, "alpha\nbeta\ngamma\n").unwrap();
         let doc = Document::open(&path).unwrap();
         let mut a = App::new(doc);
@@ -9728,11 +9309,7 @@ mod tests {
         app.drain_lsp_log_events();
         let msg = app.last_message.as_ref().expect("set_message fired");
         assert_eq!(msg.level, EchoLevel::Warn);
-        assert!(
-            msg.text.contains("indexing complete"),
-            "got `{}`",
-            msg.text
-        );
+        assert!(msg.text.contains("indexing complete"), "got `{}`", msg.text);
         // Prefix carries the server id so multi-server users
         // know which attached server emitted the notification.
         assert!(msg.text.contains("[rust]"), "got `{}`", msg.text);
@@ -9789,7 +9366,8 @@ mod tests {
             .parse_and_set_command("lsp.log_level=debug")
             .unwrap();
         // The runtime path:
-        app.lsp_logger.set_default_level(lattice_lsp::LogLevel::Debug);
+        app.lsp_logger
+            .set_default_level(lattice_lsp::LogLevel::Debug);
         app.lsp_logger.log(
             Some(&id),
             lattice_lsp::LogLevel::Debug,
@@ -9798,7 +9376,9 @@ mod tests {
         );
         let records = app.lsp_logger.snapshot_server(&id);
         assert!(
-            records.iter().any(|r| r.message.contains("should-pass-now")),
+            records
+                .iter()
+                .any(|r| r.message.contains("should-pass-now")),
             "Debug record should land after raising the level"
         );
     }
@@ -9934,16 +9514,15 @@ mod tests {
     fn lsp_progress_drain_accumulates_lifecycle() {
         let mut app = app_with("hi\n", 5);
         let server: std::sync::Arc<str> = std::sync::Arc::from("rust");
-        app.event_bus
-            .publish_typed(lattice_lsp::LspProgressUpdate {
-                server_id: server.clone(),
-                token: "build-1".into(),
-                kind: lattice_lsp::LspProgressKind::Begin,
-                title: Some("Building".into()),
-                message: None,
-                percentage: Some(0),
-                cancellable: true,
-            });
+        app.event_bus.publish_typed(lattice_lsp::LspProgressUpdate {
+            server_id: server.clone(),
+            token: "build-1".into(),
+            kind: lattice_lsp::LspProgressKind::Begin,
+            title: Some("Building".into()),
+            message: None,
+            percentage: Some(0),
+            cancellable: true,
+        });
         app.drain_lsp_progress_events();
         let key = (server.clone(), "build-1".to_string());
         let entry = app.lsp_progress.get(&key).expect("begin landed");
@@ -9952,32 +9531,30 @@ mod tests {
 
         // Report without restating the title -- the drain merges
         // with the existing entry's title.
-        app.event_bus
-            .publish_typed(lattice_lsp::LspProgressUpdate {
-                server_id: server.clone(),
-                token: "build-1".into(),
-                kind: lattice_lsp::LspProgressKind::Report,
-                title: None,
-                message: Some("linking".into()),
-                percentage: Some(73),
-                cancellable: true,
-            });
+        app.event_bus.publish_typed(lattice_lsp::LspProgressUpdate {
+            server_id: server.clone(),
+            token: "build-1".into(),
+            kind: lattice_lsp::LspProgressKind::Report,
+            title: None,
+            message: Some("linking".into()),
+            percentage: Some(73),
+            cancellable: true,
+        });
         app.drain_lsp_progress_events();
         let entry = app.lsp_progress.get(&key).expect("report landed");
         assert_eq!(entry.title.as_deref(), Some("Building"));
         assert_eq!(entry.message.as_deref(), Some("linking"));
         assert_eq!(entry.percentage, Some(73));
 
-        app.event_bus
-            .publish_typed(lattice_lsp::LspProgressUpdate {
-                server_id: server.clone(),
-                token: "build-1".into(),
-                kind: lattice_lsp::LspProgressKind::End,
-                title: None,
-                message: None,
-                percentage: None,
-                cancellable: false,
-            });
+        app.event_bus.publish_typed(lattice_lsp::LspProgressUpdate {
+            server_id: server.clone(),
+            token: "build-1".into(),
+            kind: lattice_lsp::LspProgressKind::End,
+            title: None,
+            message: None,
+            percentage: None,
+            cancellable: false,
+        });
         app.drain_lsp_progress_events();
         assert!(
             app.lsp_progress.get(&key).is_none(),
@@ -10072,16 +9649,11 @@ mod tests {
         let tmp_dir = std::env::temp_dir();
         let file_path = tmp_dir.join("lattice-4-4-b-show-document.rs");
         std::fs::write(&file_path, "fn main() {}\n").unwrap();
-        let uri = lattice_lsp::Uri::from_str(&format!(
-            "file://{}",
-            file_path.display()
-        ))
-        .unwrap();
+        let uri = lattice_lsp::Uri::from_str(&format!("file://{}", file_path.display())).unwrap();
 
         let mut app = app_with("hi\n", 5);
         let (response_tx, mut response_rx) = tokio::sync::oneshot::channel();
-        let bus_sender =
-            app.pending_show_document_rx.take().unwrap();
+        let bus_sender = app.pending_show_document_rx.take().unwrap();
         // Re-push back so the App drain can consume it.
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         tx.send(lattice_lsp::InboundShowDocument {
@@ -10133,10 +9705,7 @@ mod tests {
     /// Helper: inject a single inbound showMessageRequest into
     /// the App's drain receiver and run the drain. Returns the
     /// response receiver so the test can assert on the reply.
-    fn inject_show_message_request(
-        app: &mut App,
-        req: lattice_lsp::InboundShowMessageRequest,
-    ) {
+    fn inject_show_message_request(app: &mut App, req: lattice_lsp::InboundShowMessageRequest) {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         tx.send(req).unwrap();
         app.pending_show_message_request_rx = Some(rx);
@@ -10175,8 +9744,7 @@ mod tests {
     fn show_message_request_actionless_auto_dismisses() {
         let mut app = app_with("hi\n", 5);
         let server_id: std::sync::Arc<str> = std::sync::Arc::from("rust");
-        let (req, mut response_rx) =
-            make_smr(&server_id, "Heads up!", Vec::new());
+        let (req, mut response_rx) = make_smr(&server_id, "Heads up!", Vec::new());
         inject_show_message_request(&mut app, req);
         let outcome = response_rx.try_recv().expect("reply landed");
         assert!(
@@ -10200,11 +9768,13 @@ mod tests {
     fn show_message_request_accept_replies_with_selected_action() {
         let mut app = app_with("hi\n", 5);
         let server_id: std::sync::Arc<str> = std::sync::Arc::from("rust");
-        let (req, mut response_rx) =
-            make_smr(&server_id, "Reload workspace?", vec!["Yes", "No"]);
+        let (req, mut response_rx) = make_smr(&server_id, "Reload workspace?", vec!["Yes", "No"]);
         inject_show_message_request(&mut app, req);
         // Picker opened; pending slot registered.
-        assert!(app.picker.is_some(), "picker should open for actionful prompt");
+        assert!(
+            app.picker.is_some(),
+            "picker should open for actionful prompt"
+        );
         assert_eq!(app.lsp_pending_show_message_requests.len(), 1);
         // Move the cursor to the second action ("No") and
         // accept. PickerNext is the canonical down-arrow
@@ -10224,16 +9794,12 @@ mod tests {
     fn show_message_request_dismiss_replies_null() {
         let mut app = app_with("hi\n", 5);
         let server_id: std::sync::Arc<str> = std::sync::Arc::from("rust");
-        let (req, mut response_rx) =
-            make_smr(&server_id, "Reload workspace?", vec!["Yes", "No"]);
+        let (req, mut response_rx) = make_smr(&server_id, "Reload workspace?", vec!["Yes", "No"]);
         inject_show_message_request(&mut app, req);
         assert!(app.picker.is_some());
         app.apply(crate::Action::PickerDismiss);
         let outcome = response_rx.try_recv().expect("reply landed");
-        assert!(
-            outcome.selected.is_none(),
-            "dismiss should reply null",
-        );
+        assert!(outcome.selected.is_none(), "dismiss should reply null",);
         assert!(app.picker.is_none());
         assert!(app.lsp_pending_show_message_requests.is_empty());
     }
@@ -10297,11 +9863,7 @@ mod tests {
         assert!(matches!(msg.level, EchoLevel::Info));
     }
 
-    fn app_with_path(
-        text: &str,
-        viewport: u32,
-        path: std::path::PathBuf,
-    ) -> App {
+    fn app_with_path(text: &str, viewport: u32, path: std::path::PathBuf) -> App {
         let doc = lattice_core::DocumentBuilder::default()
             .with_text(text)
             .with_path(path)
@@ -10311,10 +9873,7 @@ mod tests {
         a
     }
 
-    fn inject_inbound_apply_edit(
-        a: &mut App,
-        inbound: lattice_lsp::InboundApplyEdit,
-    ) {
+    fn inject_inbound_apply_edit(a: &mut App, inbound: lattice_lsp::InboundApplyEdit) {
         let (bus, new_rx) = lattice_lsp::ApplyEditBus::new();
         bus.dispatch(inbound).expect("dispatch");
         a.pending_apply_edit_rx = Some(new_rx);
@@ -10325,10 +9884,8 @@ mod tests {
         // Synthesise an inbound `workspace/applyEdit` against
         // the active buffer. Drain should apply the edit and
         // signal `applied: true` on the oneshot.
-        let dir = std::env::temp_dir().join(format!(
-            "lattice-applyedit-test-{}",
-            std::process::id(),
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("lattice-applyedit-test-{}", std::process::id(),));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("buffer.rs");
@@ -10338,8 +9895,14 @@ mod tests {
         // Edit replaces `main` (line 0, char 3..7) with `xyz`.
         let edit = lsp_types::TextEdit {
             range: lsp_types::Range {
-                start: lsp_types::Position { line: 0, character: 3 },
-                end: lsp_types::Position { line: 0, character: 7 },
+                start: lsp_types::Position {
+                    line: 0,
+                    character: 3,
+                },
+                end: lsp_types::Position {
+                    line: 0,
+                    character: 7,
+                },
             },
             new_text: "xyz".into(),
         };
@@ -10363,9 +9926,7 @@ mod tests {
         a.drain_inbound_apply_edits();
         // Drain ran synchronously; the oneshot is already
         // populated -- `try_recv` returns Ok.
-        let outcome = resp_rx
-            .try_recv()
-            .expect("drain replied via oneshot");
+        let outcome = resp_rx.try_recv().expect("drain replied via oneshot");
         assert!(
             outcome.applied,
             "edit applied: {:?}",
@@ -10534,8 +10095,14 @@ mod tests {
             commit_characters: Vec::new(),
             additional_text_edits: vec![lsp_types::TextEdit {
                 range: lsp_types::Range {
-                    start: lsp_types::Position { line: 0, character: 0 },
-                    end: lsp_types::Position { line: 0, character: 0 },
+                    start: lsp_types::Position {
+                        line: 0,
+                        character: 0,
+                    },
+                    end: lsp_types::Position {
+                        line: 0,
+                        character: 0,
+                    },
                 },
                 new_text: "use std::iter;\n".into(),
             }],
@@ -10558,13 +10125,15 @@ mod tests {
             payload: lattice_lsp::completion::encode_meta(&meta),
         };
         state.raw.push(raw.clone());
-        state.rendered.push(lattice_completion::RenderedCandidate::from_scored(
-            lattice_completion::ScoredCandidate {
-                raw,
-                score: lattice_completion::MatchScore(100),
-                match_ranges: Vec::new(),
-            },
-        ));
+        state
+            .rendered
+            .push(lattice_completion::RenderedCandidate::from_scored(
+                lattice_completion::ScoredCandidate {
+                    raw,
+                    score: lattice_completion::MatchScore(100),
+                    match_ranges: Vec::new(),
+                },
+            ));
         // CSM.8b.5: meta lives in candidate payload already.
         let _ = meta;
         a.insert_completion = Some(state);
@@ -10576,8 +10145,14 @@ mod tests {
         // buffer is now: line 0 = "use std::iter;", line 1 = "",
         // line 2 = "", line 3 = "for i in iter {}").
         let after_accept = a.document.snapshot().buffer.as_string();
-        assert!(after_accept.contains("use std::iter;"), "auto-import applied: `{after_accept}`");
-        assert!(after_accept.contains("for i in iter {}"), "snippet expanded: `{after_accept}`");
+        assert!(
+            after_accept.contains("use std::iter;"),
+            "auto-import applied: `{after_accept}`"
+        );
+        assert!(
+            after_accept.contains("for i in iter {}"),
+            "snippet expanded: `{after_accept}`"
+        );
         // Active snippet focused on $1 ("i").
         assert!(a.active_snippet.is_some(), "active snippet started");
         // Undo ONCE -> both the auto-import AND the snippet
@@ -10589,7 +10164,6 @@ mod tests {
             "single undo reverted both auto-import and snippet (`{after_undo}`)",
         );
     }
-
 
     #[test]
     fn next_diagnostic_advances_cursor() {
@@ -10749,5 +10323,4 @@ mod tests {
         let msg = app.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("no diagnostics"));
     }
-
 }

@@ -143,11 +143,26 @@ mod tests {
 
     #[test]
     fn nerd_fonts_false_picks_per_family_glyph() {
-        assert_eq!(icon_for_entry(&PathBuf::from("Cargo.toml"), false, false, &theme()).0, "◆ ");
-        assert_eq!(icon_for_entry(&PathBuf::from("README.md"), false, false, &theme()).0, "≡ ");
-        assert_eq!(icon_for_entry(&PathBuf::from("logo.png"), false, false, &theme()).0, "◇ ");
-        assert_eq!(icon_for_entry(&PathBuf::from("dist.zip"), false, false, &theme()).0, "■ ");
-        assert_eq!(icon_for_entry(&PathBuf::from("song.mp3"), false, false, &theme()).0, "♪ ");
+        assert_eq!(
+            icon_for_entry(&PathBuf::from("Cargo.toml"), false, false, &theme()).0,
+            "◆ "
+        );
+        assert_eq!(
+            icon_for_entry(&PathBuf::from("README.md"), false, false, &theme()).0,
+            "≡ "
+        );
+        assert_eq!(
+            icon_for_entry(&PathBuf::from("logo.png"), false, false, &theme()).0,
+            "◇ "
+        );
+        assert_eq!(
+            icon_for_entry(&PathBuf::from("dist.zip"), false, false, &theme()).0,
+            "■ "
+        );
+        assert_eq!(
+            icon_for_entry(&PathBuf::from("song.mp3"), false, false, &theme()).0,
+            "♪ "
+        );
     }
 
     #[test]

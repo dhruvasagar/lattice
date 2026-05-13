@@ -126,10 +126,7 @@ pub enum LoadMessageLevel {
 /// a non-table. Used by `workspace/configuration` to look up
 /// server-namespaced keys (e.g. `"rust-analyzer.cargo.features"`
 /// walks `tree["rust-analyzer"]["cargo"]["features"]`).
-pub fn lookup_dotted_path<'a>(
-    tree: &'a toml::Table,
-    path: &str,
-) -> Option<&'a toml::Value> {
+pub fn lookup_dotted_path<'a>(tree: &'a toml::Table, path: &str) -> Option<&'a toml::Value> {
     let mut node: &toml::Table = tree;
     let segments: Vec<&str> = path.split('.').collect();
     let last_idx = segments.len().checked_sub(1)?;
@@ -371,25 +368,17 @@ mod tests {
             true,
             "Show absolute line numbers.",
         ));
-        r.register(ConfigOption::<i64>::new(
-            "tabstop",
-            8,
-            "Tab width.",
-        ));
+        r.register(ConfigOption::<i64>::new("tabstop", 8, "Tab width."));
         r.register(
-            ConfigOption::<i64>::builder(
-                "scrolloff",
-                0,
-                "Scroll-off margin.",
-            )
-            .validate(|i| {
-                if (0..=64).contains(i) {
-                    Ok(())
-                } else {
-                    Err(format!("scrolloff out of range [0, 64]: {i}"))
-                }
-            })
-            .build(),
+            ConfigOption::<i64>::builder("scrolloff", 0, "Scroll-off margin.")
+                .validate(|i| {
+                    if (0..=64).contains(i) {
+                        Ok(())
+                    } else {
+                        Err(format!("scrolloff out of range [0, 64]: {i}"))
+                    }
+                })
+                .build(),
         );
         r.register(ConfigOption::<String>::new(
             "ui.separator",
@@ -456,10 +445,7 @@ mod tests {
     #[test]
     fn unknown_key_emits_warning_other_keys_still_apply() {
         let r = registry_with_options();
-        let p = write_temp(
-            "unknown",
-            "number = false\nbogus.key = 42\ntabstop = 2\n",
-        );
+        let p = write_temp("unknown", "number = false\nbogus.key = 42\ntabstop = 2\n");
         let out = load_file(&r, &p, &[]);
         assert_eq!(out.messages.len(), 1);
         assert_eq!(out.messages[0].level, LoadMessageLevel::Warning);
@@ -519,10 +505,7 @@ mod tests {
         // namespace level (e.g. `completion.per-language.foo = 1`)
         // is a warning, not silent acceptance.
         let r = registry_with_options();
-        let p = write_temp(
-            "ns-scalar",
-            "[completion.per-language]\nbroken = 1\n",
-        );
+        let p = write_temp("ns-scalar", "[completion.per-language]\nbroken = 1\n");
         let out = load_file(&r, &p, &["completion.per-language"]);
         assert_eq!(out.messages.len(), 1);
         assert_eq!(out.messages[0].level, LoadMessageLevel::Warning);
@@ -544,7 +527,10 @@ mod tests {
         let out = load_file(&r, &p, &["completion.per-language"]);
         assert!(out.messages.is_empty(), "messages: {:?}", out.messages);
         assert_eq!(out.structural.len(), 2);
-        assert!(out.structural.contains_key("completion.per-language.markdown"));
+        assert!(
+            out.structural
+                .contains_key("completion.per-language.markdown")
+        );
         assert!(out.structural.contains_key("completion.per-language.rust"));
     }
 
@@ -570,10 +556,15 @@ mod tests {
         let out = load_file(&r, &p, &["completion.per-language"]);
         assert!(out.messages.is_empty(), "messages: {:?}", out.messages);
         assert_eq!(
-            r.lookup("completion.auto_insert_single").unwrap().get_formatted(),
+            r.lookup("completion.auto_insert_single")
+                .unwrap()
+                .get_formatted(),
             "false",
         );
-        assert!(out.structural.contains_key("completion.per-language.markdown"));
+        assert!(
+            out.structural
+                .contains_key("completion.per-language.markdown")
+        );
     }
 
     #[test]
@@ -613,20 +604,14 @@ mod tests {
         // Tree carries the full structure even though `lsp` was
         // also handled as a structural namespace (the two
         // surfaces coexist without conflict).
-        let features = lookup_dotted_path(
-            &out.raw_tree,
-            "lsp.rust-analyzer.cargo.features",
-        )
-        .expect("features path");
+        let features = lookup_dotted_path(&out.raw_tree, "lsp.rust-analyzer.cargo.features")
+            .expect("features path");
         let arr = features.as_array().expect("array");
         assert_eq!(arr.len(), 2);
         assert_eq!(arr[0].as_str(), Some("foo"));
         assert_eq!(arr[1].as_str(), Some("bar"));
-        let enable = lookup_dotted_path(
-            &out.raw_tree,
-            "lsp.rust-analyzer.checkOnSave.enable",
-        )
-        .expect("enable path");
+        let enable = lookup_dotted_path(&out.raw_tree, "lsp.rust-analyzer.checkOnSave.enable")
+            .expect("enable path");
         assert_eq!(enable.as_bool(), Some(true));
     }
 
@@ -638,26 +623,19 @@ mod tests {
         // doesn't clobber user's sibling key inside the same
         // `[lsp.rust-analyzer]` table.
         let r = registry_with_options();
-        let user = write_temp(
-            "deep-user",
-            "[lsp.rust-analyzer]\ncheckOnSave = true\n",
-        );
+        let user = write_temp("deep-user", "[lsp.rust-analyzer]\ncheckOnSave = true\n");
         let proj = write_temp(
             "deep-proj",
             "[lsp.rust-analyzer.cargo]\nfeatures = [\"proj\"]\n",
         );
         let mut out = load_file(&r, &user, &["lsp"]);
         out.extend(load_file(&r, &proj, &["lsp"]));
-        let check =
-            lookup_dotted_path(&out.raw_tree, "lsp.rust-analyzer.checkOnSave")
-                .and_then(|v| v.as_bool());
+        let check = lookup_dotted_path(&out.raw_tree, "lsp.rust-analyzer.checkOnSave")
+            .and_then(|v| v.as_bool());
         assert_eq!(check, Some(true), "user's checkOnSave preserved");
-        let features = lookup_dotted_path(
-            &out.raw_tree,
-            "lsp.rust-analyzer.cargo.features",
-        )
-        .and_then(|v| v.as_array())
-        .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>());
+        let features = lookup_dotted_path(&out.raw_tree, "lsp.rust-analyzer.cargo.features")
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>());
         assert_eq!(features, Some(vec!["proj"]), "project's features applied");
     }
 

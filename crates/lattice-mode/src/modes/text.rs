@@ -16,7 +16,7 @@
 //! those modes can `implies` text-mode if they want the
 //! default keymap, or specify their own from scratch.
 
-use crate::{CapabilitySet, Mode, ModeContext, ModeId, ModeKind, ModeActivationError};
+use crate::{CapabilitySet, Mode, ModeActivationError, ModeContext, ModeId, ModeKind};
 
 /// Catch-all major mode for plain-text content.
 pub struct TextMode;

@@ -114,9 +114,7 @@ fn bench_resolver_recompute(c: &mut Criterion) {
     // current registry values, then resolve a layered chain
     // representing 10 active minor modes' worth of overrides.
     // Per §6.3.2 the perf gate is p99 < 10us at 10 minors.
-    use lattice_config::{
-        OptionOverride, OptionOverrideSet, ResolvedOptions, Resolver, Tabstop,
-    };
+    use lattice_config::{OptionOverride, OptionOverrideSet, ResolvedOptions, Resolver, Tabstop};
     use std::any::TypeId;
 
     let registry = ConfigRegistry::new();
@@ -128,10 +126,7 @@ fn bench_resolver_recompute(c: &mut Criterion) {
     let layers: Vec<OptionOverrideSet> = (0..10)
         .map(|i| {
             let mut set = OptionOverrideSet::new();
-            set.push(OptionOverride::new(
-                TypeId::of::<Tabstop>(),
-                (i + 1) as i64,
-            ));
+            set.push(OptionOverride::new(TypeId::of::<Tabstop>(), (i + 1) as i64));
             set
         })
         .collect();

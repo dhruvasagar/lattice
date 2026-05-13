@@ -62,8 +62,7 @@ pub struct OilDir(pub PathBuf);
 
 impl BufferLocal for OilDir {
     const NAME: &'static str = "oil-mode.dir";
-    const DOC: &'static str =
-        "Directory the oil buffer's editable listing represents. \
+    const DOC: &'static str = "Directory the oil buffer's editable listing represents. \
          Diff-on-:write applies filesystem ops relative to this \
          path; status line shows it.";
     const OWNER_MODE: &'static str = "oil-mode";
@@ -79,9 +78,7 @@ impl BufferLocal for OilDir {
 /// `lattice_lsp::register_lsp_log_modes`. Mirrors the same
 /// per-feature-crate registration pattern.
 pub fn register_oil_modes(registry: &mut ModeRegistry) {
-    registry
-        .register(OilMode)
-        .expect("oil-mode register");
+    registry.register(OilMode).expect("oil-mode register");
 }
 
 #[cfg(test)]

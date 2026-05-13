@@ -35,7 +35,9 @@ fn build_pairs(n: usize) -> Vec<(RawCandidate, RoutingPayload)> {
             cand.display = path.clone();
             (
                 cand,
-                RoutingPayload::OpenFile { path: PathBuf::from(path) },
+                RoutingPayload::OpenFile {
+                    path: PathBuf::from(path),
+                },
             )
         })
         .collect()
@@ -104,11 +106,8 @@ fn open_inline(c: &mut Criterion) {
                 |(pairs, mru)| {
                     let now = SystemTime::now();
                     let bonuses = compute_bonuses(&mru, &pairs, now);
-                    let mut picker = Picker::new(
-                        "files",
-                        PickerSource::Files,
-                        PickerAction::OpenFile,
-                    );
+                    let mut picker =
+                        Picker::new("files", PickerSource::Files, PickerAction::OpenFile);
                     // Single-pass seat (one refilter); matches
                     // the host's trait-driven open path.
                     picker.set_raw_candidates_with_routing_and_bonuses(pairs, bonuses);
@@ -185,11 +184,7 @@ fn mru_record(c: &mut Criterion) {
                     // pre-populated set) so we measure the
                     // insert + cap-check path, not the
                     // touch-existing fast path.
-                    mru.record_at(
-                        "files",
-                        "file:src/module/99999/new.rs",
-                        SystemTime::now(),
-                    );
+                    mru.record_at("files", "file:src/module/99999/new.rs", SystemTime::now());
                     black_box(mru);
                 },
             );

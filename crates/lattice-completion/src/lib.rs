@@ -45,13 +45,13 @@ pub use crate::insert::{
     PerLanguageOverrides, SNIPPET_SOURCE_ID, SourceId, TREE_SITTER_SYMBOL_SOURCE_ID,
     canonical_source_id, fuzzy_match, per_language_defaults,
 };
+pub use crate::path::PathCompletionSource;
 pub use crate::pipeline::CompletionPipeline;
 pub use crate::registry::{
     AnnotatorId, CompletionRegistry, GeneratorId, MatcherId, RankerId, RegisteredAnnotator,
     RegisteredGenerator, RegisteredMatcher, RegisteredRanker,
 };
 pub use crate::slot::{CommandLineSlot, current_slot};
-pub use crate::path::PathCompletionSource;
 pub use crate::source::{
     AsyncCompletionSource, CandidateSink, CompletionSourceContribution, CompletionSourceKind,
     InsertContextSnapshot, SyncCompletionSource,

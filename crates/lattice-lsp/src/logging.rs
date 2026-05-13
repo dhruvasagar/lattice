@@ -628,12 +628,7 @@ mod tests {
             LogSource::LspMessage,
             "rust evt",
         );
-        logger.log(
-            Some(&py),
-            LogLevel::Warn,
-            LogSource::Stderr,
-            "python evt",
-        );
+        logger.log(Some(&py), LogLevel::Warn, LogSource::Stderr, "python evt");
 
         let g = logger.snapshot_global();
         assert_eq!(g.len(), 1);
@@ -746,7 +741,12 @@ mod tests {
         let logger = LspLogger::new(LogLevel::Info, 100);
         let id = make_id("rust");
         for i in 0..50 {
-            logger.log(Some(&id), LogLevel::Info, LogSource::Client, format!("r{i}"));
+            logger.log(
+                Some(&id),
+                LogLevel::Info,
+                LogSource::Client,
+                format!("r{i}"),
+            );
         }
         assert_eq!(logger.snapshot_server(&id).len(), 50);
         // Shrink to 10 -- the most recent 10 survive.

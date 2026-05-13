@@ -398,10 +398,7 @@ pub fn fuzzy_match(
 
     // Tier 1: exact (case-insensitive).
     if q_lower == t_lower {
-        return Some((
-            crate::candidate::MatchScore(1000),
-            vec![0..target.len()],
-        ));
+        return Some((crate::candidate::MatchScore(1000), vec![0..target.len()]));
     }
 
     // Tier 2: prefix (case-insensitive).
@@ -432,10 +429,7 @@ pub fn fuzzy_match(
     if matched {
         let skipped = target.len().saturating_sub(query.len());
         let score = 200u32.saturating_sub(skipped as u32 * 5);
-        return Some((
-            crate::candidate::MatchScore(score.max(1)),
-            ranges,
-        ));
+        return Some((crate::candidate::MatchScore(score.max(1)), ranges));
     }
 
     None
@@ -484,15 +478,15 @@ fn match_word_boundary(text: &str, query: &str) -> Option<Vec<Range<usize>>> {
         let lower = c.to_ascii_lowercase();
         let is_alpha = c.is_alphanumeric() || c == '_';
         let is_sep = !is_alpha;
-        let at_boundary = prev_was_sep
-            || prev_was_underscore
-            || (c.is_ascii_uppercase() && prev_was_lower);
+        let at_boundary =
+            prev_was_sep || prev_was_underscore || (c.is_ascii_uppercase() && prev_was_lower);
         if at_boundary
             && let Some(&&want) = q_iter.peek()
-                && want == lower {
-                    ranges.push(byte_idx..byte_idx + len);
-                    q_iter.next();
-                }
+            && want == lower
+        {
+            ranges.push(byte_idx..byte_idx + len);
+            q_iter.next();
+        }
         prev_was_sep = is_sep;
         prev_was_lower = c.is_ascii_lowercase();
         prev_was_underscore = c == '_';
@@ -575,9 +569,7 @@ impl InsertRanker {
         scored: &mut [ScoredCandidate],
         bonus: impl Fn(&RawCandidate) -> u32,
     ) {
-        scored.sort_by_cached_key(|s| {
-            std::cmp::Reverse(s.score.0.saturating_add(bonus(&s.raw)))
-        });
+        scored.sort_by_cached_key(|s| std::cmp::Reverse(s.score.0.saturating_add(bonus(&s.raw))));
     }
 }
 
@@ -691,9 +683,7 @@ pub fn canonical_source_id(label: &str) -> SourceId {
     match label {
         "lsp" => SourceId::new(LSP_COMPLETION_SOURCE_ID),
         "snippet" | "snippets" => SourceId::new(SNIPPET_SOURCE_ID),
-        "buffer-words" | "buffer_words" | "words" => {
-            SourceId::new(BufferWordsSource::ID)
-        }
+        "buffer-words" | "buffer_words" | "words" => SourceId::new(BufferWordsSource::ID),
         // `path` (4.2.g.6) and `tree-sitter` (4.2.g.6) are
         // recognised here so users can list them in TOML
         // ahead of the source landing -- the producer skips
@@ -799,11 +789,8 @@ impl InsertSource for BufferWordsSource {
                 continue;
             }
             out.push(
-                RawCandidate::plain(
-                    word.to_string(),
-                    crate::candidate::CandidateKind::Plain,
-                )
-                .with_source(self.id().clone()),
+                RawCandidate::plain(word.to_string(), crate::candidate::CandidateKind::Plain)
+                    .with_source(self.id().clone()),
             );
             if out.len() >= self.max_words {
                 break;
@@ -1041,12 +1028,10 @@ mod tests {
             Position::ZERO,
             String::new(),
         );
-        let cand = |t: &str| {
-            crate::candidate::ScoredCandidate {
-                raw: RawCandidate::plain(t, CandidateKind::Plain),
-                score: crate::candidate::MatchScore(0),
-                match_ranges: Vec::new(),
-            }
+        let cand = |t: &str| crate::candidate::ScoredCandidate {
+            raw: RawCandidate::plain(t, CandidateKind::Plain),
+            score: crate::candidate::MatchScore(0),
+            match_ranges: Vec::new(),
         };
         s.rendered = vec![
             crate::candidate::RenderedCandidate::from_scored(cand("a")),
@@ -1071,12 +1056,10 @@ mod tests {
             Position::ZERO,
             String::new(),
         );
-        let cand = |t: &str| {
-            crate::candidate::ScoredCandidate {
-                raw: RawCandidate::plain(t, CandidateKind::Plain),
-                score: crate::candidate::MatchScore(0),
-                match_ranges: Vec::new(),
-            }
+        let cand = |t: &str| crate::candidate::ScoredCandidate {
+            raw: RawCandidate::plain(t, CandidateKind::Plain),
+            score: crate::candidate::MatchScore(0),
+            match_ranges: Vec::new(),
         };
         s.rendered = vec![
             crate::candidate::RenderedCandidate::from_scored(cand("a")),
@@ -1241,18 +1224,12 @@ mod tests {
             LSP_COMPLETION_SOURCE_ID,
         );
         assert_eq!(canonical_source_id("snippet").as_str(), SNIPPET_SOURCE_ID);
-        assert_eq!(
-            canonical_source_id("snippets").as_str(),
-            SNIPPET_SOURCE_ID,
-        );
+        assert_eq!(canonical_source_id("snippets").as_str(), SNIPPET_SOURCE_ID,);
         assert_eq!(
             canonical_source_id("buffer-words").as_str(),
             BufferWordsSource::ID,
         );
-        assert_eq!(
-            canonical_source_id("words").as_str(),
-            BufferWordsSource::ID,
-        );
+        assert_eq!(canonical_source_id("words").as_str(), BufferWordsSource::ID,);
         // Unknown label passes through verbatim so plugin
         // sources work by full id.
         assert_eq!(

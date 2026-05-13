@@ -169,9 +169,11 @@ fn leading_indent(line: &str) -> usize {
 /// Returns the index, or `None` if every line from `from` onward is
 /// blank.
 fn next_non_blank_line(indents: &[Option<usize>], from: usize) -> Option<usize> {
-    indents.iter().enumerate().skip(from).find_map(|(i, ind)| {
-        if ind.is_some() { Some(i) } else { None }
-    })
+    indents.iter().enumerate().skip(from).find_map(
+        |(i, ind)| {
+            if ind.is_some() { Some(i) } else { None }
+        },
+    )
 }
 
 /// True when `line` is a pure closing-bracket line (matched by the
@@ -482,7 +484,8 @@ mod tests {
         // `=syntax` cascading to indent) for `zc` to have something
         // to operate on. Closer-line inclusion swallows the trailing
         // `}` so the fold extends to the closing brace line.
-        let src = "fn outer() {\n    let x = 1;\n    if x > 0 {\n        println!(\"yes\");\n    }\n}\n";
+        let src =
+            "fn outer() {\n    let x = 1;\n    if x > 0 {\n        println!(\"yes\");\n    }\n}\n";
         let b = buf(src);
         let folds = compute_indent_folds(&b);
         let outer = folds
@@ -745,9 +748,7 @@ impl Buffer {
         // starts on line 1 and runs through line 5 (the closing `}`
         // of the else branch).
         assert!(
-            folds
-                .iter()
-                .any(|f| f.start_line == 1 && f.end_line == 5),
+            folds.iter().any(|f| f.start_line == 1 && f.end_line == 5),
             "expected if_expression fold at 1..=5: {folds:?}"
         );
     }

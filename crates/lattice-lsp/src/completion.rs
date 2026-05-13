@@ -157,9 +157,8 @@ impl AsyncCompletionSource for LspCompletionSource {
             let mut any_incomplete = false;
             let mut seen_keys: std::collections::HashSet<(String, String)> =
                 std::collections::HashSet::new();
-            let lsp_source_id = lattice_completion::SourceId::new(
-                lattice_completion::LSP_COMPLETION_SOURCE_ID,
-            );
+            let lsp_source_id =
+                lattice_completion::SourceId::new(lattice_completion::LSP_COMPLETION_SOURCE_ID);
             for handle in handles {
                 if token.is_cancelled() {
                     return;
@@ -169,9 +168,7 @@ impl AsyncCompletionSource for LspCompletionSource {
                 }
                 let params = lsp_types::CompletionParams {
                     text_document_position: lsp_types::TextDocumentPositionParams {
-                        text_document: lsp_types::TextDocumentIdentifier {
-                            uri: uri.clone(),
-                        },
+                        text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
                         position: lsp_position,
                     },
                     work_done_progress_params: Default::default(),
@@ -186,9 +183,7 @@ impl AsyncCompletionSource for LspCompletionSource {
                 };
                 let (items, is_incomplete) = match resp {
                     lsp_types::CompletionResponse::Array(items) => (items, false),
-                    lsp_types::CompletionResponse::List(list) => {
-                        (list.items, list.is_incomplete)
-                    }
+                    lsp_types::CompletionResponse::List(list) => (list.items, list.is_incomplete),
                 };
                 if is_incomplete {
                     any_incomplete = true;
@@ -241,10 +236,7 @@ impl AsyncCompletionSource for LspCompletionSource {
                         deprecated,
                         preselect: ci.preselect.unwrap_or(false),
                         commit_characters,
-                        additional_text_edits: ci
-                            .additional_text_edits
-                            .clone()
-                            .unwrap_or_default(),
+                        additional_text_edits: ci.additional_text_edits.clone().unwrap_or_default(),
                         command: ci.command.clone(),
                         insert_text_format: ci
                             .insert_text_format
@@ -356,10 +348,7 @@ impl Mode for LspCompletionMode {
 /// [`crate::modes::register_lsp_log_modes`]; the supervisor
 /// handle is shared so source produce + host accept-path read
 /// the same data.
-pub fn register_lsp_completion_mode(
-    registry: &mut ModeRegistry,
-    lsp: LspSupervisorHandle,
-) {
+pub fn register_lsp_completion_mode(registry: &mut ModeRegistry, lsp: LspSupervisorHandle) {
     registry
         .register(LspCompletionMode { lsp })
         .expect("lsp-completion-mode must register without conflict");
@@ -384,16 +373,28 @@ mod tests {
             commit_characters: vec!['(', '!'],
             additional_text_edits: vec![lsp_types::TextEdit {
                 range: lsp_types::Range {
-                    start: lsp_types::Position { line: 0, character: 0 },
-                    end: lsp_types::Position { line: 0, character: 0 },
+                    start: lsp_types::Position {
+                        line: 0,
+                        character: 0,
+                    },
+                    end: lsp_types::Position {
+                        line: 0,
+                        character: 0,
+                    },
                 },
                 new_text: "use std::println;\n".into(),
             }],
             command: None,
             insert_text_format: lsp_types::InsertTextFormat::SNIPPET,
             replace_range: Some(lsp_types::Range {
-                start: lsp_types::Position { line: 1, character: 4 },
-                end: lsp_types::Position { line: 1, character: 11 },
+                start: lsp_types::Position {
+                    line: 1,
+                    character: 4,
+                },
+                end: lsp_types::Position {
+                    line: 1,
+                    character: 11,
+                },
             }),
             server_id: "rust-analyzer".to_string(),
             original_item: lsp_types::CompletionItem::default(),
@@ -436,5 +437,4 @@ mod tests {
         assert!(decode_meta(b"not json").is_none());
         assert!(decode_meta(b"").is_none());
     }
-
 }

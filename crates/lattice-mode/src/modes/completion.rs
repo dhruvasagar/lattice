@@ -40,9 +40,7 @@ use lattice_completion::{
 };
 use lattice_config::OptionOverrideSet;
 
-use crate::{
-    BufferLocal, CapabilitySet, Mode, ModeActivationError, ModeContext, ModeId, ModeKind,
-};
+use crate::{BufferLocal, CapabilitySet, Mode, ModeActivationError, ModeContext, ModeId, ModeKind};
 
 /// The "buffer participates in insert-mode completion" marker.
 /// Auto-activates on writable kinds at buffer creation. See
@@ -248,8 +246,7 @@ pub struct ActiveCompletionSources(pub Vec<CompletionSourceContribution>);
 
 impl BufferLocal for ActiveCompletionSources {
     const NAME: &'static str = "completion-mode.active-sources";
-    const DOC: &'static str =
-        "Cached active insert-completion source set for this \
+    const DOC: &'static str = "Cached active insert-completion source set for this \
          buffer. Recomputed on every mode-activation / \
          -deactivation transition; read by the aggregator on \
          the popup-open / refilter path.";

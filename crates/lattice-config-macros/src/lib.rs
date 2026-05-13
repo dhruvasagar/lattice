@@ -202,7 +202,10 @@ fn expand_one_option(
     // declaring crate's identifier space; collisions can't
     // happen because the source identifier is itself unique
     // in the local scope.
-    let link_name = format_ident!("__LATTICE_OPTION_DECL_{}", uppercase(&name_ident.to_string()));
+    let link_name = format_ident!(
+        "__LATTICE_OPTION_DECL_{}",
+        uppercase(&name_ident.to_string())
+    );
 
     Ok(quote! {
         // ---- Type identity ----
@@ -407,7 +410,10 @@ fn expand_one_group(decl: &GroupDecl) -> syn::Result<TokenStream2> {
 
     let display_name_lit = LitStr::new(&display_name, name_ident.span());
     let doc_lit = LitStr::new(&doc, name_ident.span());
-    let link_name = format_ident!("__LATTICE_GROUP_DECL_{}", uppercase(&name_ident.to_string()));
+    let link_name = format_ident!(
+        "__LATTICE_GROUP_DECL_{}",
+        uppercase(&name_ident.to_string())
+    );
 
     Ok(quote! {
         #[doc = #doc_lit]
@@ -628,7 +634,10 @@ mod tests {
     fn kebab_basic() {
         assert_eq!(camel_to_kebab("Tabstop"), "tabstop");
         assert_eq!(camel_to_kebab("RelativeNumber"), "relative-number");
-        assert_eq!(camel_to_kebab("CompletionGhostText"), "completion-ghost-text");
+        assert_eq!(
+            camel_to_kebab("CompletionGhostText"),
+            "completion-ghost-text"
+        );
         assert_eq!(camel_to_kebab("Number"), "number");
     }
 

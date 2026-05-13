@@ -139,9 +139,10 @@ impl App {
     fn recompute_lsp_folds(&self, buffer: &lattice_core::Buffer) -> Vec<Fold> {
         if self.lsp_folding_mode_enabled_for(self.document_buffer_id)
             && let Some(cache) = self.lsp_folds_cache.get(&self.document_buffer_id)
-                && !cache.folds.is_empty() {
-                    return cache.folds.clone();
-                }
+            && !cache.folds.is_empty()
+        {
+            return cache.folds.clone();
+        }
         // Cascade: identical to `Syntax`'s fall-through so users
         // don't see an empty fold list when the server is slow
         // or doesn't advertise the capability.
@@ -308,10 +309,7 @@ impl App {
                 exited_a_fold = true;
                 continue;
             }
-            if exited_a_fold
-                && going_down
-                && snapped < last
-                && is_blank_line(&snap.buffer, snapped)
+            if exited_a_fold && going_down && snapped < last && is_blank_line(&snap.buffer, snapped)
             {
                 snapped += 1;
                 continue;
@@ -363,11 +361,7 @@ pub(super) fn compute_fold_hash(folds: &[Fold]) -> u64 {
 /// Index of the *innermost* fold containing `line` that satisfies
 /// `pred`. Innermost = max start_line, then min end_line on ties.
 /// Used by `zc` (close innermost open) and `za`'s close branch.
-fn innermost_fold_idx<F: Fn(&Fold) -> bool>(
-    folds: &[Fold],
-    line: u32,
-    pred: F,
-) -> Option<usize> {
+fn innermost_fold_idx<F: Fn(&Fold) -> bool>(folds: &[Fold], line: u32, pred: F) -> Option<usize> {
     folds
         .iter()
         .enumerate()
@@ -409,11 +403,7 @@ fn fold_to_close_at(folds: &[Fold], line: u32) -> Option<usize> {
 /// Index of the *outermost* fold containing `line` that satisfies
 /// `pred`. Outermost = min start_line, then max end_line on ties.
 /// Used by `zo` (open outermost closed) and `za`'s open branch.
-fn outermost_fold_idx<F: Fn(&Fold) -> bool>(
-    folds: &[Fold],
-    line: u32,
-    pred: F,
-) -> Option<usize> {
+fn outermost_fold_idx<F: Fn(&Fold) -> bool>(folds: &[Fold], line: u32, pred: F) -> Option<usize> {
     folds
         .iter()
         .enumerate()
@@ -426,15 +416,14 @@ fn outermost_fold_idx<F: Fn(&Fold) -> bool>(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
 
-    use crate::app::*;
+    use super::compute_fold_hash;
     use crate::app::test_helpers::{app_with, attach_test_syntax, invoke_motion};
+    use crate::app::*;
     use lattice_grammar::ModalState;
     use lattice_protocol::edit::Edit;
     use lattice_protocol::position::Position;
-    use super::compute_fold_hash;
 
     // ---- refresh_highlights cache invalidation on fold change ----
-
 
     #[test]
     fn refresh_highlights_cache_invalidates_on_fold_change() {
@@ -509,7 +498,6 @@ mod tests {
         assert_ne!(key1, key2, "edit must invalidate cache");
     }
 
-
     // ---- compute_fold_hash ----
 
     #[test]
@@ -562,7 +550,6 @@ mod tests {
         };
         assert_eq!(compute_fold_hash(&[f1]), compute_fold_hash(&[f2]));
     }
-
 
     // ---- z* fold operations ----
 
@@ -1079,7 +1066,8 @@ mod tests {
         //   line 7:   fn c() {
         //   line 8:   }
         //   line 9: }
-        let src = "impl B {\n    fn a() {\n    }\n\n    fn b() {\n    }\n\n    fn c() {\n    }\n}\n";
+        let src =
+            "impl B {\n    fn a() {\n    }\n\n    fn b() {\n    }\n\n    fn c() {\n    }\n}\n";
         let mut a = app_with(src, 20);
         // Outer impl + three function folds (skip blank-line 3 / 6).
         a.folds.push(Fold {
@@ -1128,7 +1116,10 @@ mod tests {
         let fnc = a.folds.iter().find(|f| f.start_line == 7).unwrap();
         let outer = a.folds.iter().find(|f| f.start_line == 0).unwrap();
         assert!(fnc.closed, "zc on fn c heading closes fn c, not outer");
-        assert!(!outer.closed, "outer impl must remain open through the sequence");
+        assert!(
+            !outer.closed,
+            "outer impl must remain open through the sequence"
+        );
     }
 
     #[test]
@@ -1159,7 +1150,10 @@ mod tests {
         a.cursor = Position::new(1, 0);
         // Move to the sibling's heading.
         a.apply(invoke_motion(a.builtins.line_down));
-        assert_eq!(a.cursor.line, 5, "cursor should land on sibling, not interior");
+        assert_eq!(
+            a.cursor.line, 5,
+            "cursor should land on sibling, not interior"
+        );
         // Close the sibling.
         a.apply(Action::CloseFoldAtCursor);
         let sibling = a.folds.iter().find(|f| f.start_line == 5).unwrap();
@@ -1225,7 +1219,6 @@ mod tests {
         assert!(a.line_inside_closed_fold(2));
         assert!(a.line_inside_closed_fold(3));
     }
-
 
     // ---- foldmethod ----
 
@@ -1361,5 +1354,4 @@ mod tests {
         assert_eq!(a.foldmethod(), FoldMethod::Manual);
         assert!(a.last_message.is_some());
     }
-
 }

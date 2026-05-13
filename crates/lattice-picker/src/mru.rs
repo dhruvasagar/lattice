@@ -142,11 +142,7 @@ impl PickerMruIndex {
         // Cap check: count only entries in the same source
         // namespace so high-traffic sources (files) don't
         // crowd out low-traffic ones (commands).
-        let namespace_size = self
-            .entries
-            .keys()
-            .filter(|(s, _)| s == source_id)
-            .count();
+        let namespace_size = self.entries.keys().filter(|(s, _)| s == source_id).count();
         if namespace_size >= self.cap_per_namespace
             && let Some(victim) = self.lowest_frecency_in_namespace(source_id, now)
         {
@@ -159,7 +155,8 @@ impl PickerMruIndex {
     /// `None` means "never accepted" -- the candidate gets a
     /// 0.0 bonus on score combine.
     pub fn lookup(&self, source_id: &str, identity: &str) -> Option<&MruEntry> {
-        self.entries.get(&(source_id.to_string(), identity.to_string()))
+        self.entries
+            .get(&(source_id.to_string(), identity.to_string()))
     }
 
     /// Compute the frecency bonus a candidate identified by
@@ -199,11 +196,7 @@ impl PickerMruIndex {
         self.entries.iter()
     }
 
-    fn lowest_frecency_in_namespace(
-        &self,
-        source_id: &str,
-        now: SystemTime,
-    ) -> Option<MruKey> {
+    fn lowest_frecency_in_namespace(&self, source_id: &str, now: SystemTime) -> Option<MruKey> {
         self.entries
             .iter()
             .filter(|(k, _)| k.0 == source_id)
@@ -389,9 +382,7 @@ pub fn bonus_of(entry: &MruEntry, now: SystemTime, half_life: Duration) -> f64 {
 /// `docs/dev/architecture/picker.md` § 8.
 pub fn routing_identity(payload: &RoutingPayload) -> Option<String> {
     match payload {
-        RoutingPayload::OpenFile { path } => {
-            Some(format!("file:{}", path.display()))
-        }
+        RoutingPayload::OpenFile { path } => Some(format!("file:{}", path.display())),
         RoutingPayload::Buffer { id } => Some(format!("buf:{id}")),
         RoutingPayload::InvokeCommand { id, .. } => Some(format!("cmd:{id}")),
         RoutingPayload::PasteRegister { name } => Some(format!("reg:{name}")),
@@ -422,7 +413,9 @@ mod tests {
     fn routing_identity_returns_some_for_stable_variants() {
         let cases = [
             (
-                RoutingPayload::OpenFile { path: PathBuf::from("/tmp/foo.rs") },
+                RoutingPayload::OpenFile {
+                    path: PathBuf::from("/tmp/foo.rs"),
+                },
                 Some("file:/tmp/foo.rs".to_string()),
             ),
             (RoutingPayload::Buffer { id: 7 }, Some("buf:7".to_string())),
@@ -450,7 +443,11 @@ mod tests {
     #[test]
     fn routing_identity_returns_none_for_drift_variants() {
         let cases = [
-            RoutingPayload::JumpInBuffer { buffer_id: 1, line: 0, col: 0 },
+            RoutingPayload::JumpInBuffer {
+                buffer_id: 1,
+                line: 0,
+                col: 0,
+            },
             RoutingPayload::LspLocation {
                 path: PathBuf::from("/tmp/x"),
                 line: 0,
@@ -489,11 +486,7 @@ mod tests {
         };
         let fresh = bonus_of(&entry, now, DEFAULT_HALF_LIFE);
         let week_later = bonus_of(&entry, now + DEFAULT_HALF_LIFE, DEFAULT_HALF_LIFE);
-        let two_weeks_later = bonus_of(
-            &entry,
-            now + 2 * DEFAULT_HALF_LIFE,
-            DEFAULT_HALF_LIFE,
-        );
+        let two_weeks_later = bonus_of(&entry, now + 2 * DEFAULT_HALF_LIFE, DEFAULT_HALF_LIFE);
         // Recency component halves each half-life; frequency
         // (ln(2) * 10 ≈ 6.93) stays constant.
         assert!(fresh > week_later);
@@ -575,8 +568,8 @@ mod tests {
     /// shape is second-granularity.
     #[test]
     fn persist_round_trip_preserves_entries() {
-        let tmp = std::env::temp_dir()
-            .join(format!("lattice-mru-rt-{}.bincode", std::process::id()));
+        let tmp =
+            std::env::temp_dir().join(format!("lattice-mru-rt-{}.bincode", std::process::id()));
         let _ = std::fs::remove_file(&tmp);
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(6_000_000);
         let mut original = PickerMruIndex::new();
@@ -584,8 +577,9 @@ mod tests {
         original.record_at("files", "file:/tmp/a", now + Duration::from_secs(30));
         original.record_at("commands", "cmd:ex:write", now);
         original.save_to(&tmp).expect("save");
-        let loaded =
-            PickerMruIndex::load_from(&tmp).expect("load").expect("file exists");
+        let loaded = PickerMruIndex::load_from(&tmp)
+            .expect("load")
+            .expect("file exists");
         assert_eq!(loaded.len(), 2);
         let a = loaded.lookup("files", "file:/tmp/a").expect("a");
         assert_eq!(a.use_count, 2);
@@ -599,8 +593,8 @@ mod tests {
     /// "start with an empty index" without special-casing.
     #[test]
     fn load_missing_file_returns_none() {
-        let tmp = std::env::temp_dir()
-            .join(format!("lattice-mru-nope-{}.bincode", std::process::id()));
+        let tmp =
+            std::env::temp_dir().join(format!("lattice-mru-nope-{}.bincode", std::process::id()));
         let _ = std::fs::remove_file(&tmp);
         let result = PickerMruIndex::load_from(&tmp).expect("ok");
         assert!(result.is_none());
@@ -610,8 +604,8 @@ mod tests {
     /// boot policy can discard + start fresh.
     #[test]
     fn load_corrupt_file_returns_err() {
-        let tmp = std::env::temp_dir()
-            .join(format!("lattice-mru-bad-{}.bincode", std::process::id()));
+        let tmp =
+            std::env::temp_dir().join(format!("lattice-mru-bad-{}.bincode", std::process::id()));
         std::fs::write(&tmp, b"definitely not bincode").expect("write");
         let err = PickerMruIndex::load_from(&tmp).unwrap_err();
         assert!(matches!(err, MruPersistError::Decode(_)));
@@ -623,8 +617,8 @@ mod tests {
     /// `.tmp` sidecar should be gone.
     #[test]
     fn save_atomicity_leaves_no_tmp_sidecar() {
-        let tmp = std::env::temp_dir()
-            .join(format!("lattice-mru-atom-{}.bincode", std::process::id()));
+        let tmp =
+            std::env::temp_dir().join(format!("lattice-mru-atom-{}.bincode", std::process::id()));
         let _ = std::fs::remove_file(&tmp);
         let _ = std::fs::remove_file(tmp.with_extension("tmp"));
         let mut mru = PickerMruIndex::new();

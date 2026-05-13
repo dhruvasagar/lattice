@@ -267,15 +267,13 @@ fn build_config(
 ) -> Result<LangConfig, SyntaxError> {
     let folds = match folds {
         Some(src) => Some(
-            Query::new(&language, src).map_err(|e| {
-                SyntaxError::Language(format!("compile {name} folds.scm: {e}"))
-            })?,
+            Query::new(&language, src)
+                .map_err(|e| SyntaxError::Language(format!("compile {name} folds.scm: {e}")))?,
         ),
         None => None,
     };
-    let highlights_query = Query::new(&language, highlights).map_err(|e| {
-        SyntaxError::Language(format!("compile {name} highlights.scm: {e}"))
-    })?;
+    let highlights_query = Query::new(&language, highlights)
+        .map_err(|e| SyntaxError::Language(format!("compile {name} highlights.scm: {e}")))?;
     let highlight_styles: Vec<crate::style::Style> = highlights_query
         .capture_names()
         .iter()
@@ -286,18 +284,18 @@ fn build_config(
         .iter()
         .map(|n| crate::style::capture_priority(n))
         .collect();
-    let injections = if injections.is_empty() {
-        None
-    } else {
-        Some(Query::new(&language, injections).map_err(|e| {
-            SyntaxError::Language(format!("compile {name} injections.scm: {e}"))
-        })?)
-    };
+    let injections =
+        if injections.is_empty() {
+            None
+        } else {
+            Some(Query::new(&language, injections).map_err(|e| {
+                SyntaxError::Language(format!("compile {name} injections.scm: {e}"))
+            })?)
+        };
     let symbols = match symbols {
         Some(src) => Some(
-            Query::new(&language, src).map_err(|e| {
-                SyntaxError::Language(format!("compile {name} symbols.scm: {e}"))
-            })?,
+            Query::new(&language, src)
+                .map_err(|e| SyntaxError::Language(format!("compile {name} symbols.scm: {e}")))?,
         ),
         None => None,
     };
@@ -342,7 +340,10 @@ mod tests {
         let r = LangRegistry::standard().unwrap();
         assert!(r.folds_query("rust").is_some(), "rust folds.scm");
         assert!(r.folds_query("python").is_some(), "python folds.scm");
-        assert!(r.folds_query("javascript").is_some(), "javascript folds.scm");
+        assert!(
+            r.folds_query("javascript").is_some(),
+            "javascript folds.scm"
+        );
         assert!(r.folds_query("markdown").is_some(), "markdown folds.scm");
         // Inline grammar is purely inline content; no folds.scm is
         // appropriate. The block grammar handles markdown folding.

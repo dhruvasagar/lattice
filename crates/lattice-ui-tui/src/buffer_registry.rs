@@ -26,8 +26,8 @@ use lattice_runtime::DocumentHandle;
 
 use crate::buffers::{BufferFlags, BufferId, BufferKind};
 use crate::file_tree::FileTreeBuffer;
-use crate::oil::OilBuffer;
 use crate::help::HelpBuffer;
+use crate::oil::OilBuffer;
 
 /// Per-document registry payload. Each entry carries the actor
 /// handle plus per-document tree-sitter [`Syntax`] state, fold

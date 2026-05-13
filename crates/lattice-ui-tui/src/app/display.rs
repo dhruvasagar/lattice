@@ -198,8 +198,7 @@ mod tests {
     #[test]
     fn lsp_status_category_routes_to_centered_popup() {
         let mut a = app_with("hi", 5);
-        let content =
-            HelpContent::from_lines("status", vec!["server: rust-analyzer".into()]);
+        let content = HelpContent::from_lines("status", vec!["server: rust-analyzer".into()]);
         a.display_buffer(content, BufferDisplayCategory::LspStatus);
         assert_eq!(a.popup_placement(), Some(PopupPlacement::Centered));
         assert!(a.popup_buffer.is_some());

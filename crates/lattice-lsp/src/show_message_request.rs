@@ -56,25 +56,20 @@ pub struct ShowMessageRequestBus {
 }
 
 impl ShowMessageRequestBus {
-    pub fn new() -> (
-        Self,
-        mpsc::UnboundedReceiver<InboundShowMessageRequest>,
-    ) {
+    pub fn new() -> (Self, mpsc::UnboundedReceiver<InboundShowMessageRequest>) {
         let (tx, rx) = mpsc::unbounded_channel();
         (Self { tx }, rx)
     }
 
-    pub fn dispatch(
-        &self,
-        ev: InboundShowMessageRequest,
-    ) -> Result<(), InboundShowMessageRequest> {
+    pub fn dispatch(&self, ev: InboundShowMessageRequest) -> Result<(), InboundShowMessageRequest> {
         self.tx.send(ev).map_err(|e| e.0)
     }
 }
 
 impl std::fmt::Debug for ShowMessageRequestBus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ShowMessageRequestBus").finish_non_exhaustive()
+        f.debug_struct("ShowMessageRequestBus")
+            .finish_non_exhaustive()
     }
 }
 

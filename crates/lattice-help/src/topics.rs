@@ -250,11 +250,7 @@ pub fn builtin_topics() -> Arc<HelpTopicRegistry> {
         // `set` covers `:set NAME=VALUE`; the typed-options
         // surface picks up `:options` / `:describe-option` /
         // `:customize` automatically once those bind here.
-        related_command_patterns: vec![
-            "set".into(),
-            "option".into(),
-            "customize".into(),
-        ],
+        related_command_patterns: vec!["set".into(), "option".into(), "customize".into()],
     });
     r.register(HelpTopic {
         name: "modal-editing".into(),

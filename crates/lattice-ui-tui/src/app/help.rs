@@ -185,9 +185,7 @@ impl App {
         lines.push("## Active modes".to_string());
         let active = self.active_modes.get(&self.document_buffer_id);
         let major = active.and_then(|a| a.major());
-        let minors: Vec<_> = active
-            .map(|a| a.minors().to_vec())
-            .unwrap_or_default();
+        let minors: Vec<_> = active.map(|a| a.minors().to_vec()).unwrap_or_default();
         if let Some(major) = major {
             lines.push(format!("- major: {}", mode_link(major.as_str())));
         } else {
@@ -428,8 +426,10 @@ impl App {
         // Group + sort: by source crate, then by name within
         // each group. Stable presentation across runs (linkme
         // iteration order is link-determined).
-        let mut by_crate: std::collections::BTreeMap<&'static str, Vec<&'static lattice_protocol::event_registry::EventDescriptor>> =
-            std::collections::BTreeMap::new();
+        let mut by_crate: std::collections::BTreeMap<
+            &'static str,
+            Vec<&'static lattice_protocol::event_registry::EventDescriptor>,
+        > = std::collections::BTreeMap::new();
         for d in registered_events() {
             by_crate.entry(d.source_crate).or_default().push(d);
         }
@@ -446,17 +446,17 @@ impl App {
             lines.push(format!("## {source_crate} ({})", entries.len()));
             lines.push(String::new());
             for d in entries {
-                lines.push(format!(
-                    "- [{}](event:{})  {}",
-                    d.name, d.name, d.doc
-                ));
+                lines.push(format!("- [{}](event:{})  {}", d.name, d.name, d.doc));
             }
             lines.push(String::new());
         }
         if total > 0 {
             lines.insert(
                 1,
-                format!("({total} registered event(s) across {} crate(s))", lines.iter().filter(|l| l.starts_with("## ")).count()),
+                format!(
+                    "({total} registered event(s) across {} crate(s))",
+                    lines.iter().filter(|l| l.starts_with("## ")).count()
+                ),
             );
         }
         self.display_buffer(
@@ -472,10 +472,7 @@ impl App {
     pub(super) fn do_describe_event(&mut self, name: &str) {
         use lattice_protocol::event_registry::descriptor_by_name;
         let Some(d) = descriptor_by_name(name) else {
-            self.set_message(
-                EchoLevel::Error,
-                format!("no event named `{name}`"),
-            );
+            self.set_message(EchoLevel::Error, format!("no event named `{name}`"));
             return;
         };
         let mut lines: Vec<String> = Vec::new();
@@ -517,9 +514,8 @@ impl App {
         let buffer_id = self.document_buffer_id;
         let active = self.active_modes.get(&buffer_id);
         let active_major = active.and_then(|a| a.major());
-        let is_minor_active = |id: lattice_mode::ModeId| -> bool {
-            active.map(|a| a.has_minor(id)).unwrap_or(false)
-        };
+        let is_minor_active =
+            |id: lattice_mode::ModeId| -> bool { active.map(|a| a.has_minor(id)).unwrap_or(false) };
 
         let mut lines: Vec<String> = Vec::new();
         lines.push(format!(
@@ -567,10 +563,7 @@ impl App {
     pub(super) fn do_describe_mode(&mut self, name: &str) {
         let mode_id = lattice_mode::ModeId::new(name);
         let Some(mode) = self.mode_registry.get(mode_id) else {
-            self.set_message(
-                EchoLevel::Error,
-                format!("no mode named `{name}`"),
-            );
+            self.set_message(EchoLevel::Error, format!("no mode named `{name}`"));
             return;
         };
 
@@ -587,12 +580,8 @@ impl App {
         let buffer_id = self.document_buffer_id;
         let active = self.active_modes.get(&buffer_id);
         let is_active = match mode.kind() {
-            lattice_mode::ModeKind::Major => {
-                active.and_then(|a| a.major()) == Some(mode_id)
-            }
-            lattice_mode::ModeKind::Minor => {
-                active.map(|a| a.has_minor(mode_id)).unwrap_or(false)
-            }
+            lattice_mode::ModeKind::Major => active.and_then(|a| a.major()) == Some(mode_id),
+            lattice_mode::ModeKind::Minor => active.map(|a| a.has_minor(mode_id)).unwrap_or(false),
         };
         let kind_label = match mode.kind() {
             lattice_mode::ModeKind::Major => "major",
@@ -613,10 +602,7 @@ impl App {
         if opts.is_empty() {
             lines.push("- contributed options: (none)".into());
         } else {
-            lines.push(format!(
-                "- contributed options ({}):",
-                opts.iter().count(),
-            ));
+            lines.push(format!("- contributed options ({}):", opts.iter().count(),));
             for ovr in opts.iter() {
                 let name = type_id_to_name
                     .get(&ovr.option_type_id)
@@ -656,10 +642,7 @@ impl App {
     /// translated to a per-option introspection view.
     pub(super) fn do_describe_option_resolution(&mut self, name: &str) {
         let Some(spec) = self.config.lookup(name) else {
-            self.set_message(
-                EchoLevel::Error,
-                format!("E518: Unknown option: {name}"),
-            );
+            self.set_message(EchoLevel::Error, format!("E518: Unknown option: {name}"));
             return;
         };
         // Derive TypeId from the canonical name by walking
@@ -687,14 +670,20 @@ impl App {
         lines.push(format!("# option resolution :: {}", name));
         lines.push(String::new());
         lines.push(format!("- type:                 `{}`", spec.type_label()));
-        lines.push(format!("- resolved value:       `{}`", spec.get_formatted()));
-        lines.push(format!("- typed-option (`:set`): `{}`", spec.get_formatted()));
-        lines.push(format!("- default:              `{}`", spec.default_formatted()));
+        lines.push(format!(
+            "- resolved value:       `{}`",
+            spec.get_formatted()
+        ));
+        lines.push(format!(
+            "- typed-option (`:set`): `{}`",
+            spec.get_formatted()
+        ));
+        lines.push(format!(
+            "- default:              `{}`",
+            spec.default_formatted()
+        ));
         lines.push(String::new());
-        lines.push(
-            "Layered contributions for this buffer (highest → lowest):"
-                .into(),
-        );
+        lines.push("Layered contributions for this buffer (highest → lowest):".into());
         lines.push(String::new());
 
         // Layer 1: modal-state (always empty in v1).
@@ -712,12 +701,8 @@ impl App {
 
         // Layer 3: minors (in reverse activation order — last
         // activated has highest priority among modes).
-        let minors: Vec<lattice_mode::ModeId> = modes_snapshot
-            .minors()
-            .iter()
-            .copied()
-            .rev()
-            .collect();
+        let minors: Vec<lattice_mode::ModeId> =
+            modes_snapshot.minors().iter().copied().rev().collect();
         if minors.is_empty() {
             lines.push("- minors: (none active)".into());
         } else {
@@ -727,9 +712,7 @@ impl App {
                     continue;
                 };
                 let opts = minor.options();
-                let contributes = opts
-                    .iter()
-                    .any(|o| o.option_type_id == target_type_id);
+                let contributes = opts.iter().any(|o| o.option_type_id == target_type_id);
                 if contributes {
                     if !any_contributes {
                         lines.push("- minors:".into());
@@ -751,15 +734,11 @@ impl App {
             Some(major_id) => match self.mode_registry.get(major_id) {
                 Some(major) => {
                     let opts = major.options();
-                    let contributes = opts
-                        .iter()
-                        .any(|o| o.option_type_id == target_type_id);
+                    let contributes = opts.iter().any(|o| o.option_type_id == target_type_id);
                     if contributes {
                         lines.push(format!("- major: `{major_id}` contributes ⭐"));
                     } else {
-                        lines.push(format!(
-                            "- major: `{major_id}` (no contribution)",
-                        ));
+                        lines.push(format!("- major: `{major_id}` (no contribution)",));
                     }
                 }
                 None => {
@@ -772,10 +751,7 @@ impl App {
         }
 
         // Layers 5/6: typed-option + built-in default.
-        lines.push(format!(
-            "- typed-option layer: `{}`",
-            spec.get_formatted(),
-        ));
+        lines.push(format!("- typed-option layer: `{}`", spec.get_formatted(),));
         lines.push(format!(
             "- built-in default:   `{}`",
             spec.default_formatted(),
@@ -820,9 +796,7 @@ impl App {
     pub(super) fn do_customize(&mut self, name: Option<&str>) {
         match name {
             None => self.do_customize_picker(),
-            Some(n) if lattice_config::ends_with_mode_suffix(n) => {
-                self.do_customize_mode(n)
-            }
+            Some(n) if lattice_config::ends_with_mode_suffix(n) => self.do_customize_mode(n),
             Some(n) => self.do_customize_group(n),
         }
     }
@@ -886,16 +860,11 @@ impl App {
         lines.push(format!("## groups ({})", group_counts.len()));
         lines.push(String::new());
         for (name, (count, doc)) in &group_counts {
-            lines.push(format!(
-                "- [{name}](customize:{name}) ({count}) -- {doc}"
-            ));
+            lines.push(format!("- [{name}](customize:{name}) ({count}) -- {doc}"));
         }
         lines.push(String::new());
 
-        lines.push(format!(
-            "## modes ({})",
-            customisable_modes.len(),
-        ));
+        lines.push(format!("## modes ({})", customisable_modes.len(),));
         lines.push(String::new());
         for id in &customisable_modes {
             lines.push(format!("- [{id}](customize:{id})"));
@@ -918,10 +887,7 @@ impl App {
             .find(|g| g.name == group_name)
             .map(|g| g.doc);
         let Some(doc) = group_doc else {
-            self.set_message(
-                EchoLevel::Error,
-                format!("no group named `{group_name}`"),
-            );
+            self.set_message(EchoLevel::Error, format!("no group named `{group_name}`"));
             return;
         };
 
@@ -969,38 +935,34 @@ impl App {
     fn do_customize_mode(&mut self, mode_name: &str) {
         let mode_id = lattice_mode::ModeId::new(mode_name);
         let Some(mode) = self.mode_registry.get(mode_id) else {
-            self.set_message(
-                EchoLevel::Error,
-                format!("no mode named `{mode_name}`"),
-            );
+            self.set_message(EchoLevel::Error, format!("no mode named `{mode_name}`"));
             return;
         };
 
         // Build TypeId → metadata lookup so we can render the
         // mode's contributed TypeIds with full option detail.
-        let by_type_id: std::collections::HashMap<std::any::TypeId, &'static lattice_config::OptionDeclMetadata> =
-            lattice_config::OPTION_DECLS
-                .iter()
-                .map(|d| ((d.type_id)(), *d))
-                .collect();
+        let by_type_id: std::collections::HashMap<
+            std::any::TypeId,
+            &'static lattice_config::OptionDeclMetadata,
+        > = lattice_config::OPTION_DECLS
+            .iter()
+            .map(|d| ((d.type_id)(), *d))
+            .collect();
 
         let buffer_id = self.document_buffer_id;
         let active = self.active_modes.get(&buffer_id);
         let mode_active_here = match mode.kind() {
-            lattice_mode::ModeKind::Major => {
-                active.and_then(|a| a.major()) == Some(mode_id)
-            }
-            lattice_mode::ModeKind::Minor => {
-                active.map(|a| a.has_minor(mode_id)).unwrap_or(false)
-            }
+            lattice_mode::ModeKind::Major => active.and_then(|a| a.major()) == Some(mode_id),
+            lattice_mode::ModeKind::Minor => active.map(|a| a.has_minor(mode_id)).unwrap_or(false),
         };
 
         let mut entries: Vec<&'static lattice_config::OptionDeclMetadata> = Vec::new();
         for ovr in mode.options().iter() {
             if let Some(meta) = by_type_id.get(&ovr.option_type_id)
-                && meta.customizable {
-                    entries.push(meta);
-                }
+                && meta.customizable
+            {
+                entries.push(meta);
+            }
         }
         entries.sort_by_key(|d| d.name);
         entries.dedup_by_key(|d| d.name);
@@ -1014,13 +976,15 @@ impl App {
                 lattice_mode::ModeKind::Major => "major",
                 lattice_mode::ModeKind::Minor => "minor",
             },
-            if mode_active_here { "Active" } else { "Inactive" },
+            if mode_active_here {
+                "Active"
+            } else {
+                "Inactive"
+            },
         ));
         lines.push(String::new());
         if entries.is_empty() {
-            lines.push(
-                "(this mode contributes no customizable options)".into(),
-            );
+            lines.push("(this mode contributes no customizable options)".into());
         } else {
             lines.push(format!("Contributes {} option(s):", entries.len()));
             lines.push(String::new());
@@ -1081,7 +1045,10 @@ impl App {
         // is unchanged from M.9.0.
         let name_link = format!("[{0}](customize-edit:{0})", meta.name);
         let header = if current == default {
-            format!("- **{}**{} : {} = {}", name_link, aliases, type_label, current)
+            format!(
+                "- **{}**{} : {} = {}",
+                name_link, aliases, type_label, current
+            )
         } else {
             format!(
                 "- **{}**{} : {} = {} (default: {})",
@@ -1113,10 +1080,7 @@ impl App {
     /// shouldn't crash. Echoes an info message.
     fn do_customize_edit(&mut self, name: &str) {
         let Some(spec) = self.config.lookup(name) else {
-            self.set_message(
-                EchoLevel::Error,
-                format!("E518: Unknown option: {name}"),
-            );
+            self.set_message(EchoLevel::Error, format!("E518: Unknown option: {name}"));
             return;
         };
         let current = spec.get_formatted();
@@ -1331,9 +1295,7 @@ impl App {
                 let target_line = popup_id
                     .and_then(|id| self.buffer_locals.get(&id))
                     .and_then(|locals| locals.get::<crate::modes::HelpAnchors>())
-                    .and_then(|anchors| {
-                        anchors.0.iter().find(|a| a.name == slug).map(|a| a.line)
-                    })
+                    .and_then(|anchors| anchors.0.iter().find(|a| a.name == slug).map(|a| a.line))
                     .or_else(|| {
                         self.buffer_locals
                             .get(&pane_id)
@@ -1348,10 +1310,7 @@ impl App {
                     self.cursor = Position::new(line, self.cursor.byte.min(len));
                     self.scroll = line;
                 } else {
-                    self.set_message(
-                        EchoLevel::Warn,
-                        format!("anchor not found: #{slug}"),
-                    );
+                    self.set_message(EchoLevel::Warn, format!("anchor not found: #{slug}"));
                 }
             }
             crate::help::HelpLinkTarget::Source { path, line } => {
@@ -1392,8 +1351,8 @@ impl App {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
 
-    use crate::app::*;
     use crate::app::test_helpers::{app_in_command_mode, app_with, install_help};
+    use crate::app::*;
     use crate::help::HelpContent;
 
     #[test]
@@ -1747,10 +1706,12 @@ mod tests {
         assert!(body.contains("Active modes"), "section missing: {body}");
         // Default plain-text buffer activates `text-mode` as major.
         let links = a.popup_help_links().expect("help links seeded");
-        let has_major_mode_link = links.iter().any(|l| matches!(
-            &l.target,
-            crate::help::HelpLinkTarget::Mode(name) if name == "text-mode"
-        ));
+        let has_major_mode_link = links.iter().any(|l| {
+            matches!(
+                &l.target,
+                crate::help::HelpLinkTarget::Mode(name) if name == "text-mode"
+            )
+        });
         assert!(
             has_major_mode_link,
             "expected a `mode:text-mode` link in describe-buffer; got {links:?}"
@@ -1774,10 +1735,12 @@ mod tests {
             .popup_help_links()
             .expect("help links seeded")
             .iter()
-            .find(|l| matches!(
-                &l.target,
-                crate::help::HelpLinkTarget::Mode(name) if name == "text-mode"
-            ))
+            .find(|l| {
+                matches!(
+                    &l.target,
+                    crate::help::HelpLinkTarget::Mode(name) if name == "text-mode"
+                )
+            })
             .expect("text-mode link present")
             .clone();
         a.cursor = link.range.start;
@@ -1810,10 +1773,12 @@ mod tests {
             .popup_help_links()
             .expect("help links seeded")
             .iter()
-            .find(|l| matches!(
-                &l.target,
-                crate::help::HelpLinkTarget::Mode(name) if name == "text-mode"
-            ))
+            .find(|l| {
+                matches!(
+                    &l.target,
+                    crate::help::HelpLinkTarget::Mode(name) if name == "text-mode"
+                )
+            })
             .expect("text-mode link present")
             .clone();
         a.cursor = link.range.start;
@@ -1824,7 +1789,9 @@ mod tests {
             "follow-link should have opened describe-mode",
         );
         a.apply(Action::JumpHistoryBack);
-        let h = a.popup_help().expect("popup should still be open after <C-o>");
+        let h = a
+            .popup_help()
+            .expect("popup should still be open after <C-o>");
         assert_eq!(
             h.title, "describe-buffer",
             "<C-o> should restore the originating describe-buffer popup",
@@ -2082,10 +2049,7 @@ mod tests {
         // inner = 4. Cursor can never go off-popup-viewport
         // because the popup shows every line of the help buffer.
         let mut a = app_with("xx", 60);
-        install_help(
-            &mut a,
-            HelpContent::from_lines("tiny", vec!["a".into(); 4]),
-        );
+        install_help(&mut a, HelpContent::from_lines("tiny", vec!["a".into(); 4]));
         assert_eq!(a.help_popup_inner_height(60), Some(4));
     }
 
@@ -2238,10 +2202,7 @@ mod tests {
         // help-only commands. Decouples help-as-content from
         // popup-as-display.
         let mut a = app_with("hi", 5);
-        let help = crate::help::HelpContent::from_lines(
-            "test",
-            vec!["line one".to_string()],
-        );
+        let help = crate::help::HelpContent::from_lines("test", vec!["line one".to_string()]);
         let help_id = a.open_help_in_pane(help);
         let active = a
             .active_modes
@@ -2252,9 +2213,7 @@ mod tests {
             Some(lattice_syntax::MarkdownMode::mode_id())
         );
         assert!(
-            active
-                .minors()
-                .contains(&crate::modes::HelpMode::mode_id()),
+            active.minors().contains(&crate::modes::HelpMode::mode_id()),
             "help-mode should be active as a minor; got {:?}",
             active.minors()
         );
@@ -2391,8 +2350,7 @@ mod tests {
         assert!(body.contains("# option resolution :: wrap"));
         // wrap-mode isn't auto-active by default.
         assert!(
-            body.contains("none contribute this option")
-                || body.contains("(none active)"),
+            body.contains("none contribute this option") || body.contains("(none active)"),
             "expected no-contribution message\n{body}",
         );
     }
@@ -2500,10 +2458,12 @@ mod tests {
             .and_then(|locals| locals.get::<crate::modes::HelpLinks>())
             .and_then(|hl| {
                 hl.0.iter()
-                    .find(|l| matches!(
-                        &l.target,
-                        lattice_help::HelpLinkTarget::Customize(s) if s == "editor"
-                    ))
+                    .find(|l| {
+                        matches!(
+                            &l.target,
+                            lattice_help::HelpLinkTarget::Customize(s) if s == "editor"
+                        )
+                    })
                     .cloned()
             });
         let link = editor_link.expect("no editor link in picker");
@@ -2539,10 +2499,12 @@ mod tests {
             .and_then(|locals| locals.get::<crate::modes::HelpLinks>())
             .and_then(|hl| {
                 hl.0.iter()
-                    .find(|l| matches!(
-                        &l.target,
-                        lattice_help::HelpLinkTarget::CustomizeEdit(s) if s == "tabstop"
-                    ))
+                    .find(|l| {
+                        matches!(
+                            &l.target,
+                            lattice_help::HelpLinkTarget::CustomizeEdit(s) if s == "tabstop"
+                        )
+                    })
                     .cloned()
             });
         let link = edit_link.expect("no customize-edit link for tabstop");
@@ -2572,10 +2534,12 @@ mod tests {
             .and_then(|locals| locals.get::<crate::modes::HelpLinks>())
             .and_then(|hl| {
                 hl.0.iter()
-                    .find(|l| matches!(
-                        &l.target,
-                        lattice_help::HelpLinkTarget::CustomizeEdit(s) if s == "tabstop"
-                    ))
+                    .find(|l| {
+                        matches!(
+                            &l.target,
+                            lattice_help::HelpLinkTarget::CustomizeEdit(s) if s == "tabstop"
+                        )
+                    })
                     .cloned()
             })
             .expect("no edit link");

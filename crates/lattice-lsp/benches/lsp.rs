@@ -32,12 +32,12 @@ use lattice_lsp::position::{
 };
 use lattice_lsp::sync::DocSync;
 use lattice_lsp::{LogLevel, LogSource, LspLogger};
+use lattice_protocol::EventKind;
 use lattice_protocol::edit::{Edit, EditKind};
 use lattice_protocol::event::{AppliedEdit as ProtocolAppliedEdit, Event};
 use lattice_protocol::ids::DocumentId;
 use lattice_protocol::position::{Position, Range};
 use lattice_runtime::{EventBus, EventFilter, SubscriptionTarget};
-use lattice_protocol::EventKind;
 
 /// Header parse: ASCII-only, ≤200 byte block. Should be deep
 /// in nanoseconds.
@@ -147,11 +147,8 @@ fn position_utf8_passthrough(c: &mut Criterion) {
     let line = "fn handler(req: &Request<Output, Error>) -> Result<()>";
     c.bench_function("lsp::position::utf8_passthrough", |b| {
         b.iter(|| {
-            let col = byte_to_lsp_character(
-                black_box(line),
-                black_box(50),
-                &PositionEncodingKind::UTF8,
-            );
+            let col =
+                byte_to_lsp_character(black_box(line), black_box(50), &PositionEncodingKind::UTF8);
             black_box(col);
         });
     });
@@ -257,10 +254,7 @@ fn make_document_changed_event(n_edits: usize) -> Event {
     let edits: Vec<ProtocolAppliedEdit> = (0..n_edits)
         .map(|i| ProtocolAppliedEdit {
             original_range: Range::empty(Position::new(0, i as u32)),
-            inserted_range: Range::new(
-                Position::new(0, i as u32),
-                Position::new(0, i as u32 + 1),
-            ),
+            inserted_range: Range::new(Position::new(0, i as u32), Position::new(0, i as u32 + 1)),
             replaced_text: String::new(),
             inserted_text: "x".to_string(),
         })
@@ -336,11 +330,9 @@ fn lsp_edit_propagation_publish_to_recv(c: &mut Criterion) {
 fn lsp_didchange_flush_16_edits(c: &mut Criterion) {
     let mut server_caps = lsp_types::ServerCapabilities::default();
     server_caps.position_encoding = Some(PositionEncodingKind::UTF8);
-    server_caps.text_document_sync = Some(
-        lsp_types::TextDocumentSyncCapability::Kind(
-            lsp_types::TextDocumentSyncKind::INCREMENTAL,
-        ),
-    );
+    server_caps.text_document_sync = Some(lsp_types::TextDocumentSyncCapability::Kind(
+        lsp_types::TextDocumentSyncKind::INCREMENTAL,
+    ));
     let caps = Capabilities::from_initialize(client_capabilities(), server_caps);
     let uri = lsp_types::Uri::from_str("file:///workspace/lib.rs").unwrap();
     c.bench_function("lsp_didchange_flush_16_edits", |b| {
@@ -348,8 +340,7 @@ fn lsp_didchange_flush_16_edits(c: &mut Criterion) {
             let mut sync = DocSync::new();
             // Seed with a representative line of source text;
             // long enough that line splices are non-trivial.
-            let text = "fn handler(req: &Request<Output, Error>) -> Result<()>\n"
-                .repeat(8);
+            let text = "fn handler(req: &Request<Output, Error>) -> Result<()>\n".repeat(8);
             let _open = sync.open(uri.clone(), "rust", text);
             for i in 0..16 {
                 let edit = Edit {

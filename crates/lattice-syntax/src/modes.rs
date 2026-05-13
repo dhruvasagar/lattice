@@ -113,8 +113,7 @@ pub fn register_language_modes(registry: &mut ModeRegistry) {
 /// Must match `lattice_completion::TREE_SITTER_SYMBOL_SOURCE_ID`
 /// -- the host's per-language allowlist and `:set
 /// completion.source.<id>.priority` key off this string.
-pub const TREE_SITTER_COMPLETION_SOURCE_ID: &str =
-    lattice_completion::TREE_SITTER_SYMBOL_SOURCE_ID;
+pub const TREE_SITTER_COMPLETION_SOURCE_ID: &str = lattice_completion::TREE_SITTER_SYMBOL_SOURCE_ID;
 
 /// The `SyncCompletionSource` impl that emits tree-sitter
 /// local-symbol candidates. Stateless -- reads the pre-computed

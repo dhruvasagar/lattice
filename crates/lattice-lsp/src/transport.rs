@@ -162,10 +162,7 @@ impl ChildTransport {
     /// server hangs.
     pub async fn kill(mut self) -> Result<(), TransportError> {
         self.child.start_kill().map_err(TransportError::Lifecycle)?;
-        self.child
-            .wait()
-            .await
-            .map_err(TransportError::Lifecycle)?;
+        self.child.wait().await.map_err(TransportError::Lifecycle)?;
         Ok(())
     }
 }

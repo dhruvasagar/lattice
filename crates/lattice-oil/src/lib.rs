@@ -144,7 +144,9 @@ impl OilBuffer {
     }
 
     pub fn adjust_scroll_to_cursor(&mut self, viewport: usize) {
-        if viewport == 0 { return; }
+        if viewport == 0 {
+            return;
+        }
         let line = self.cursor.line as usize;
         if line < self.scroll {
             self.scroll = line;
@@ -275,8 +277,11 @@ mod tests {
     fn temp_dir() -> PathBuf {
         use std::sync::atomic::{AtomicU64, Ordering};
         static N: AtomicU64 = AtomicU64::new(0);
-        let dir = std::env::temp_dir()
-            .join(format!("lattice-oil-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+        let dir = std::env::temp_dir().join(format!(
+            "lattice-oil-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -351,10 +356,18 @@ mod tests {
         let mut oil = OilBuffer::open(&dir).unwrap();
         // Edit rope: replace "old.txt" with "new.txt"
         oil.content = Buffer::empty();
-        oil.content.apply_edit(&Edit::insert(Position::ZERO, "new.txt".to_string())).unwrap();
+        oil.content
+            .apply_edit(&Edit::insert(Position::ZERO, "new.txt".to_string()))
+            .unwrap();
         oil.apply(&dir).unwrap();
-        assert!(dir.join("new.txt").exists(), "new.txt should exist after rename");
-        assert!(!dir.join("old.txt").exists(), "old.txt should not exist after rename");
+        assert!(
+            dir.join("new.txt").exists(),
+            "new.txt should exist after rename"
+        );
+        assert!(
+            !dir.join("old.txt").exists(),
+            "old.txt should not exist after rename"
+        );
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -365,13 +378,16 @@ mod tests {
         std::fs::write(dir.join("gone.txt"), "").unwrap();
         let mut oil = OilBuffer::open(&dir).unwrap();
         let text = oil.content.as_string();
-        let new_text = text.lines()
+        let new_text = text
+            .lines()
             .filter(|l| *l != "gone.txt")
             .collect::<Vec<_>>()
             .join("\n");
         oil.content = Buffer::empty();
         if !new_text.is_empty() {
-            oil.content.apply_edit(&Edit::insert(Position::ZERO, new_text)).unwrap();
+            oil.content
+                .apply_edit(&Edit::insert(Position::ZERO, new_text))
+                .unwrap();
         }
         oil.apply(&dir).unwrap();
         assert!(!dir.join("gone.txt").exists());
@@ -387,7 +403,9 @@ mod tests {
         let mut text = oil.content.as_string();
         text.push_str("\nnewfile.txt");
         oil.content = Buffer::empty();
-        oil.content.apply_edit(&Edit::insert(Position::ZERO, text)).unwrap();
+        oil.content
+            .apply_edit(&Edit::insert(Position::ZERO, text))
+            .unwrap();
         oil.apply(&dir).unwrap();
         assert!(dir.join("newfile.txt").exists());
         std::fs::remove_dir_all(dir).ok();
@@ -400,7 +418,9 @@ mod tests {
         std::fs::write(dir.join("b.txt"), "").unwrap();
         let mut oil = OilBuffer::open(&dir).unwrap();
         oil.content = Buffer::empty();
-        oil.content.apply_edit(&Edit::insert(Position::ZERO, "c.txt\nd.txt".to_string())).unwrap();
+        oil.content
+            .apply_edit(&Edit::insert(Position::ZERO, "c.txt\nd.txt".to_string()))
+            .unwrap();
         oil.apply(&dir).unwrap();
         assert!(!dir.join("a.txt").exists());
         assert!(!dir.join("b.txt").exists());
@@ -415,7 +435,9 @@ mod tests {
         std::fs::write(dir.join("a.txt"), "").unwrap();
         let mut oil = OilBuffer::open(&dir).unwrap();
         oil.content = Buffer::empty();
-        oil.content.apply_edit(&Edit::insert(Position::ZERO, "b.txt".to_string())).unwrap();
+        oil.content
+            .apply_edit(&Edit::insert(Position::ZERO, "b.txt".to_string()))
+            .unwrap();
         oil.apply(&dir).unwrap();
         assert_eq!(oil.snapshot_names(), vec!["b.txt"]);
         assert!(!oil.is_dirty());

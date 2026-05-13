@@ -21,19 +21,23 @@ mod common;
 use std::str::FromStr;
 use std::time::Duration;
 
-use lsp_types::{
-    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    PositionEncodingKind, ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
-};
 use lattice_protocol::edit::Edit;
 use lattice_protocol::position::{Position, Range};
+use lsp_types::{
+    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
+    PositionEncodingKind, ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind,
+    Uri,
+};
 
 use lattice_lsp::DocSync;
 use lattice_lsp::error::LspResult;
 
 use common::{MockServer, default_server_capabilities};
 
-fn caps_with_sync(kind: TextDocumentSyncKind, encoding: PositionEncodingKind) -> ServerCapabilities {
+fn caps_with_sync(
+    kind: TextDocumentSyncKind,
+    encoding: PositionEncodingKind,
+) -> ServerCapabilities {
     let mut c = default_server_capabilities();
     c.text_document_sync = Some(TextDocumentSyncCapability::Kind(kind));
     c.position_encoding = Some(encoding);
@@ -142,11 +146,21 @@ async fn record_then_flush_emits_one_did_change_with_queued_events() {
     t_open(&mut sync, &server, uri.clone(), "rust", "abc\n");
 
     // Insert "x" at start.
-    t_record(&mut sync, &server, &uri, &Edit::insert(Position::new(0, 0), "x"))
-        .unwrap();
+    t_record(
+        &mut sync,
+        &server,
+        &uri,
+        &Edit::insert(Position::new(0, 0), "x"),
+    )
+    .unwrap();
     // Append "y" at end of line 0 ("xabc" now).
-    t_record(&mut sync, &server, &uri, &Edit::insert(Position::new(0, 4), "y"))
-        .unwrap();
+    t_record(
+        &mut sync,
+        &server,
+        &uri,
+        &Edit::insert(Position::new(0, 4), "y"),
+    )
+    .unwrap();
 
     assert!(sync.has_pending(&uri));
     t_flush(&mut sync, &server, &uri);
@@ -177,8 +191,13 @@ async fn full_sync_mode_sends_entire_text_no_range() {
     let uri = Uri::from_str("file:///tmp/full.rs").unwrap();
     t_open(&mut sync, &server, uri.clone(), "rust", "fn a() {}\n");
 
-    t_record(&mut sync, &server, &uri, &Edit::insert(Position::new(0, 5), "_b"))
-        .unwrap();
+    t_record(
+        &mut sync,
+        &server,
+        &uri,
+        &Edit::insert(Position::new(0, 5), "_b"),
+    )
+    .unwrap();
     t_flush(&mut sync, &server, &uri);
     tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -209,8 +228,13 @@ async fn close_flushes_pending_then_sends_did_close() {
     let mut sync = DocSync::new();
     let uri = Uri::from_str("file:///tmp/c.rs").unwrap();
     t_open(&mut sync, &server, uri.clone(), "rust", "fn x() {}\n");
-    t_record(&mut sync, &server, &uri, &Edit::insert(Position::new(0, 0), "// "))
-        .unwrap();
+    t_record(
+        &mut sync,
+        &server,
+        &uri,
+        &Edit::insert(Position::new(0, 0), "// "),
+    )
+    .unwrap();
     t_close(&mut sync, &server, &uri);
     tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -219,7 +243,10 @@ async fn close_flushes_pending_then_sends_did_close() {
         .iter()
         .map(|n| n.method.as_str())
         .filter(|m| {
-            matches!(*m, "textDocument/didOpen" | "textDocument/didChange" | "textDocument/didClose")
+            matches!(
+                *m,
+                "textDocument/didOpen" | "textDocument/didChange" | "textDocument/didClose"
+            )
         })
         .collect();
     // Expected order: didOpen, didChange (flushed by close), didClose.
@@ -255,7 +282,12 @@ async fn record_after_close_is_error() {
     let uri = Uri::from_str("file:///tmp/r.rs").unwrap();
     t_open(&mut sync, &server, uri.clone(), "rust", "x");
     t_close(&mut sync, &server, &uri);
-    let r = t_record(&mut sync, &server, &uri, &Edit::insert(Position::new(0, 0), "a"));
+    let r = t_record(
+        &mut sync,
+        &server,
+        &uri,
+        &Edit::insert(Position::new(0, 0), "a"),
+    );
     assert!(r.is_err());
 }
 
@@ -271,8 +303,13 @@ async fn utf16_negotiated_encodes_columns_in_code_units() {
     // 😀 = 4 utf-8 bytes, 2 utf-16 units.
     t_open(&mut sync, &server, uri.clone(), "rust", "x😀y");
     // Insert "z" between '😀' and 'y' (lattice byte offset 5).
-    t_record(&mut sync, &server, &uri, &Edit::insert(Position::new(0, 5), "z"))
-        .unwrap();
+    t_record(
+        &mut sync,
+        &server,
+        &uri,
+        &Edit::insert(Position::new(0, 5), "z"),
+    )
+    .unwrap();
     t_flush(&mut sync, &server, &uri);
     tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -299,8 +336,13 @@ async fn utf8_negotiated_keeps_byte_offsets_unchanged() {
     let mut sync = DocSync::new();
     let uri = Uri::from_str("file:///tmp/u8.rs").unwrap();
     t_open(&mut sync, &server, uri.clone(), "rust", "x😀y");
-    t_record(&mut sync, &server, &uri, &Edit::insert(Position::new(0, 5), "z"))
-        .unwrap();
+    t_record(
+        &mut sync,
+        &server,
+        &uri,
+        &Edit::insert(Position::new(0, 5), "z"),
+    )
+    .unwrap();
     t_flush(&mut sync, &server, &uri);
     tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -327,11 +369,21 @@ async fn version_increments_per_edit() {
     let uri = Uri::from_str("file:///tmp/v.rs").unwrap();
     t_open(&mut sync, &server, uri.clone(), "rust", "");
     assert_eq!(sync.version(&uri), Some(1));
-    t_record(&mut sync, &server, &uri, &Edit::insert(Position::new(0, 0), "a"))
-        .unwrap();
+    t_record(
+        &mut sync,
+        &server,
+        &uri,
+        &Edit::insert(Position::new(0, 0), "a"),
+    )
+    .unwrap();
     assert_eq!(sync.version(&uri), Some(2));
-    t_record(&mut sync, &server, &uri, &Edit::insert(Position::new(0, 1), "b"))
-        .unwrap();
+    t_record(
+        &mut sync,
+        &server,
+        &uri,
+        &Edit::insert(Position::new(0, 1), "b"),
+    )
+    .unwrap();
     assert_eq!(sync.version(&uri), Some(3));
 }
 
@@ -385,10 +437,20 @@ async fn flush_all_emits_per_open_doc() {
     let b = Uri::from_str("file:///tmp/b.rs").unwrap();
     t_open(&mut sync, &server, a.clone(), "rust", "// a");
     t_open(&mut sync, &server, b.clone(), "rust", "// b");
-    t_record(&mut sync, &server, &a, &Edit::insert(Position::new(0, 4), "1"))
-        .unwrap();
-    t_record(&mut sync, &server, &b, &Edit::insert(Position::new(0, 4), "2"))
-        .unwrap();
+    t_record(
+        &mut sync,
+        &server,
+        &a,
+        &Edit::insert(Position::new(0, 4), "1"),
+    )
+    .unwrap();
+    t_record(
+        &mut sync,
+        &server,
+        &b,
+        &Edit::insert(Position::new(0, 4), "2"),
+    )
+    .unwrap();
     t_flush_all(&mut sync, &server);
     tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -429,6 +491,11 @@ async fn record_edit_on_unopened_uri_is_error() {
     .await;
     let mut sync = DocSync::new();
     let uri = Uri::from_str("file:///never-opened.rs").unwrap();
-    let r = t_record(&mut sync, &server, &uri, &Edit::insert(Position::new(0, 0), "x"));
+    let r = t_record(
+        &mut sync,
+        &server,
+        &uri,
+        &Edit::insert(Position::new(0, 0), "x"),
+    );
     assert!(r.is_err());
 }

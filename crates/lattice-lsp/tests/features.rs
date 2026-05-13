@@ -279,10 +279,7 @@ async fn workspace_symbol_returns_nested_workspace_symbol_with_workspace_locatio
         lsp_types::WorkspaceSymbolResponse::Nested(syms) => {
             assert_eq!(syms.len(), 1);
             assert_eq!(syms[0].name, "Bar");
-            assert!(matches!(
-                syms[0].location,
-                lsp_types::OneOf::Right(_),
-            ));
+            assert!(matches!(syms[0].location, lsp_types::OneOf::Right(_),));
         }
         lsp_types::WorkspaceSymbolResponse::Flat(_) => {
             panic!("expected Nested shape -- payload had no `range`")
@@ -592,7 +589,10 @@ async fn prepare_call_hierarchy_returns_item_at_cursor() {
                     text_document: TextDocumentIdentifier {
                         uri: Uri::from_str("file:///tmp/lib.rs").unwrap(),
                     },
-                    position: LspPosition { line: 10, character: 4 },
+                    position: LspPosition {
+                        line: 10,
+                        character: 4,
+                    },
                 },
                 work_done_progress_params: Default::default(),
             },
@@ -642,12 +642,24 @@ async fn call_hierarchy_incoming_calls_returns_callers() {
         detail: None,
         uri: Uri::from_str("file:///tmp/lib.rs").unwrap(),
         range: LspRange {
-            start: LspPosition { line: 10, character: 0 },
-            end: LspPosition { line: 10, character: 8 },
+            start: LspPosition {
+                line: 10,
+                character: 0,
+            },
+            end: LspPosition {
+                line: 10,
+                character: 8,
+            },
         },
         selection_range: LspRange {
-            start: LspPosition { line: 10, character: 4 },
-            end: LspPosition { line: 10, character: 7 },
+            start: LspPosition {
+                line: 10,
+                character: 4,
+            },
+            end: LspPosition {
+                line: 10,
+                character: 7,
+            },
         },
         data: None,
     };
@@ -717,7 +729,10 @@ async fn type_hierarchy_supertypes_returns_parent_types() {
                     text_document: TextDocumentIdentifier {
                         uri: Uri::from_str("file:///tmp/lib.rs").unwrap(),
                     },
-                    position: LspPosition { line: 5, character: 6 },
+                    position: LspPosition {
+                        line: 5,
+                        character: 6,
+                    },
                 },
                 work_done_progress_params: Default::default(),
             },
@@ -770,7 +785,10 @@ async fn moniker_round_trips_scheme_identifier_kind() {
                     text_document: TextDocumentIdentifier {
                         uri: Uri::from_str("file:///tmp/lib.rs").unwrap(),
                     },
-                    position: LspPosition { line: 0, character: 0 },
+                    position: LspPosition {
+                        line: 0,
+                        character: 0,
+                    },
                 },
                 work_done_progress_params: Default::default(),
                 partial_result_params: Default::default(),
@@ -853,8 +871,14 @@ async fn document_link_resolve_fills_in_target() {
         .await;
     let stub = lsp_types::DocumentLink {
         range: LspRange {
-            start: LspPosition { line: 5, character: 0 },
-            end: LspPosition { line: 5, character: 10 },
+            start: LspPosition {
+                line: 5,
+                character: 0,
+            },
+            end: LspPosition {
+                line: 5,
+                character: 10,
+            },
         },
         target: None,
         tooltip: None,
@@ -866,10 +890,7 @@ async fn document_link_resolve_fills_in_target() {
         .await
         .expect("response decodes");
     assert!(resolved.target.is_some());
-    assert_eq!(
-        resolved.target.unwrap().as_str(),
-        "file:///tmp/resolved.rs",
-    );
+    assert_eq!(resolved.target.unwrap().as_str(), "file:///tmp/resolved.rs",);
 }
 
 /// 4.5.d: `code_lens` round-trips a list of lenses from the
@@ -1040,7 +1061,10 @@ async fn linked_editing_range_returns_paired_ranges() {
                     text_document: TextDocumentIdentifier {
                         uri: Uri::from_str("file:///tmp/index.html").unwrap(),
                     },
-                    position: LspPosition { line: 2, character: 6 },
+                    position: LspPosition {
+                        line: 2,
+                        character: 6,
+                    },
                 },
                 work_done_progress_params: Default::default(),
             },
@@ -1076,14 +1100,26 @@ async fn inline_value_returns_text_variants() {
                     uri: Uri::from_str("file:///tmp/lib.rs").unwrap(),
                 },
                 range: LspRange {
-                    start: LspPosition { line: 0, character: 0 },
-                    end: LspPosition { line: 10, character: 0 },
+                    start: LspPosition {
+                        line: 0,
+                        character: 0,
+                    },
+                    end: LspPosition {
+                        line: 10,
+                        character: 0,
+                    },
                 },
                 context: lsp_types::InlineValueContext {
                     frame_id: 0,
                     stopped_location: LspRange {
-                        start: LspPosition { line: 5, character: 8 },
-                        end: LspPosition { line: 5, character: 16 },
+                        start: LspPosition {
+                            line: 5,
+                            character: 8,
+                        },
+                        end: LspPosition {
+                            line: 5,
+                            character: 16,
+                        },
                     },
                 },
                 work_done_progress_params: Default::default(),

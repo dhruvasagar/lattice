@@ -187,22 +187,20 @@ impl Mode for LspMode {
         // cascades sub-mode activation (Phase 3 will move the
         // cascade in here too once `ModeContext` exposes a
         // cascade primitive).
-        ctx.events().publish_typed(crate::events::LspBufferAttached {
-            id: lattice_protocol::ids::DocumentId::new(
-                ctx.buffer_id().0,
-            ),
-        });
+        ctx.events()
+            .publish_typed(crate::events::LspBufferAttached {
+                id: lattice_protocol::ids::DocumentId::new(ctx.buffer_id().0),
+            });
         Ok(())
     }
     fn on_deactivate(&self, ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
         // Phase 2: symmetric to `on_activate`. Wire-level
         // `didClose` still runs from the App (Phase 3 needs
         // `ctx.service::<LspSupervisorHandle>()`).
-        ctx.events().publish_typed(crate::events::LspBufferDetached {
-            id: lattice_protocol::ids::DocumentId::new(
-                ctx.buffer_id().0,
-            ),
-        });
+        ctx.events()
+            .publish_typed(crate::events::LspBufferDetached {
+                id: lattice_protocol::ids::DocumentId::new(ctx.buffer_id().0),
+            });
         Ok(())
     }
 }
@@ -323,10 +321,7 @@ impl Mode for LspFoldingMode {
     fn required_capabilities(&self) -> CapabilitySet {
         CapabilitySet::empty()
     }
-    fn on_activate(
-        &self,
-        ctx: &mut ModeContext<'_>,
-    ) -> Result<(), ModeActivationError> {
+    fn on_activate(&self, ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
         if let Some(prior) = crate::folding_sync::on_activate(ctx.config()) {
             // Stash the prior `foldmethod` so deactivate can
             // restore it. `set_local` enforces the
@@ -344,16 +339,12 @@ impl Mode for LspFoldingMode {
         }
         Ok(())
     }
-    fn on_deactivate(
-        &self,
-        ctx: &mut ModeContext<'_>,
-    ) -> Result<(), ModeActivationError> {
+    fn on_deactivate(&self, ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
         // Take the stash; restore via the helper. No-op when
         // the stash is missing (mode was never activated, or
         // activate skipped the stash because the option was
         // already `Lsp`).
-        let prior = ctx
-            .remove_local::<crate::folding_sync::PriorFoldmethod>()?;
+        let prior = ctx.remove_local::<crate::folding_sync::PriorFoldmethod>()?;
         if let Some(p) = prior {
             crate::folding_sync::on_deactivate(ctx.config(), p.0);
         }
@@ -377,7 +368,9 @@ pub fn register_lsp_log_modes(registry: &mut ModeRegistry) {
     registry
         .register(LspServerLogMode)
         .expect("lsp-server-log-mode register");
-    registry.register(LspMode::new()).expect("lsp-mode register");
+    registry
+        .register(LspMode::new())
+        .expect("lsp-mode register");
     // M.6.0: LSP sub-mode minors. `LspCompletionMode` is
     // source-contributing (CSM.8a) and registered via
     // `register_lsp_completion_mode(registry, lsp_handle)` from

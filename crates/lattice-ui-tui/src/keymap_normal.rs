@@ -73,20 +73,18 @@ use std::sync::Arc;
 
 use crossterm::event::{KeyEvent, KeyModifiers};
 use lattice_grammar::SourceLocation;
+use lattice_grammar::Target;
 use lattice_grammar::args::Args;
 use lattice_grammar::builtins::Builtins;
 use lattice_grammar::command::CommandInvocation;
 use lattice_protocol::ids::CommandId;
-use lattice_grammar::Target;
 
 use crate::actions::ActionIds;
 use crate::app::{Action, FindKind};
 use crate::chord::{KeyChord, KeyKind, KeyMods, SpecialKey};
 use crate::keymap::BindingMode;
 use crate::keymap_registry::KeymapHandle;
-use crate::keymap_trie::{
-    BoundCommand, ChordPattern, KeymapLayer, LookupResult,
-};
+use crate::keymap_trie::{BoundCommand, ChordPattern, KeymapLayer, LookupResult};
 
 /// Register the slice 8.g.i Normal-mode catalog into the
 /// supplied handle's `Builtin` layer. The legacy
@@ -99,11 +97,7 @@ use crate::keymap_trie::{
 /// `bind(... CommandInvocation::of(actions.foo) ...)` as the
 /// per-batch slices land; the rest stay on the bridge until
 /// their batch's turn.
-pub fn register_normal_bindings(
-    handle: &KeymapHandle,
-    builtins: &Builtins,
-    actions: &ActionIds,
-) {
+pub fn register_normal_bindings(handle: &KeymapHandle, builtins: &Builtins, actions: &ActionIds) {
     let layer = KeymapLayer::Builtin;
     let mode = BindingMode::Normal;
 
@@ -151,8 +145,7 @@ pub fn register_normal_bindings(
         layer,
         mode,
         &[lit_char('Y')],
-        CommandInvocation::of(builtins.yank.0)
-            .with_range(lattice_grammar::Range::CurrentLine),
+        CommandInvocation::of(builtins.yank.0).with_range(lattice_grammar::Range::CurrentLine),
         source(),
     );
     // `x` -> delete one char to the right.
@@ -187,8 +180,7 @@ pub fn register_normal_bindings(
         layer,
         mode,
         &[lit_char('S')],
-        CommandInvocation::of(builtins.change.0)
-            .with_range(lattice_grammar::Range::CurrentLine),
+        CommandInvocation::of(builtins.change.0).with_range(lattice_grammar::Range::CurrentLine),
         source(),
     );
 
@@ -414,16 +406,14 @@ pub fn register_normal_bindings(
         layer,
         mode,
         &[lit_special(SpecialKey::PageDown)],
-        CommandInvocation::of(builtins.line_down.0)
-            .with_count(lattice_grammar::command::Count(10)),
+        CommandInvocation::of(builtins.line_down.0).with_count(lattice_grammar::command::Count(10)),
         source(),
     );
     handle.bind(
         layer,
         mode,
         &[lit_special(SpecialKey::PageUp)],
-        CommandInvocation::of(builtins.line_up.0)
-            .with_count(lattice_grammar::command::Count(10)),
+        CommandInvocation::of(builtins.line_up.0).with_count(lattice_grammar::command::Count(10)),
         source(),
     );
 
@@ -878,16 +868,14 @@ pub fn register_normal_bindings(
         layer,
         mode,
         &[lit(KeyChord::ctrl('d'))],
-        CommandInvocation::of(builtins.line_down.0)
-            .with_count(lattice_grammar::command::Count(10)),
+        CommandInvocation::of(builtins.line_down.0).with_count(lattice_grammar::command::Count(10)),
         source(),
     );
     handle.bind(
         layer,
         mode,
         &[lit(KeyChord::ctrl('u'))],
-        CommandInvocation::of(builtins.line_up.0)
-            .with_count(lattice_grammar::command::Count(10)),
+        CommandInvocation::of(builtins.line_up.0).with_count(lattice_grammar::command::Count(10)),
         source(),
     );
 
@@ -1142,8 +1130,7 @@ fn register_operator_pending(
             layer,
             mode,
             &path,
-            CommandInvocation::of(op.0)
-                .with_target(Target::Motion(*motion, Args::None)),
+            CommandInvocation::of(op.0).with_target(Target::Motion(*motion, Args::None)),
             source(),
         );
     }
@@ -1157,8 +1144,7 @@ fn register_operator_pending(
             layer,
             mode,
             &path,
-            CommandInvocation::of(op.0)
-                .with_range(lattice_grammar::Range::CurrentLine),
+            CommandInvocation::of(op.0).with_range(lattice_grammar::Range::CurrentLine),
             source(),
         );
     }
@@ -1172,20 +1158,10 @@ fn register_operator_pending(
     // ---- has accumulated `[op, i / a]` and the user types the
     // ---- text-object char.
     for around in [false, true] {
-        let around_chord: ChordPattern = if around {
-            lit_char('a')
-        } else {
-            lit_char('i')
-        };
+        let around_chord: ChordPattern = if around { lit_char('a') } else { lit_char('i') };
         let mut pending_path: Vec<ChordPattern> = op_prefix.to_vec();
         pending_path.push(around_chord.clone());
-        register_text_object_resolutions(
-            handle,
-            &pending_path,
-            op,
-            around,
-            builtins,
-        );
+        register_text_object_resolutions(handle, &pending_path, op, around, builtins);
     }
 
     // ---- Slice 8.g.v: find-char chained -- the depth-2
@@ -1250,8 +1226,9 @@ fn register_find_char_paths(
         wild_path.push(ChordPattern::CharLiteral);
         let invocation = match operator {
             None => CommandInvocation::of(motion_id.0),
-            Some(op) => CommandInvocation::of(op.0)
-                .with_target(Target::Motion(*motion_id, Args::None)),
+            Some(op) => {
+                CommandInvocation::of(op.0).with_target(Target::Motion(*motion_id, Args::None))
+            }
         };
         handle.bind(layer, mode, &wild_path, invocation, source());
     }
@@ -1271,12 +1248,12 @@ fn register_text_object_resolutions(
     let layer = KeymapLayer::Builtin;
     let mode = BindingMode::Normal;
 
-    let textobj_table: &[(&[ChordPattern], lattice_grammar::registry::TextObjectId, lattice_grammar::registry::TextObjectId)] = &[
-        (
-            &[lit_char('w')],
-            builtins.inner_word,
-            builtins.around_word,
-        ),
+    let textobj_table: &[(
+        &[ChordPattern],
+        lattice_grammar::registry::TextObjectId,
+        lattice_grammar::registry::TextObjectId,
+    )] = &[
+        (&[lit_char('w')], builtins.inner_word, builtins.around_word),
         (
             &[lit_char('W')],
             builtins.inner_big_word,
@@ -1292,11 +1269,7 @@ fn register_text_object_resolutions(
             builtins.inner_sentence,
             builtins.around_sentence,
         ),
-        (
-            &[lit_char('t')],
-            builtins.inner_tag,
-            builtins.around_tag,
-        ),
+        (&[lit_char('t')], builtins.inner_tag, builtins.around_tag),
         (
             &[lit_char('"')],
             builtins.inner_quote_double,
@@ -1346,8 +1319,7 @@ fn register_text_object_resolutions(
                 layer,
                 mode,
                 &path,
-                CommandInvocation::of(op.0)
-                    .with_target(Target::TextObject(tobj, Args::None)),
+                CommandInvocation::of(op.0).with_target(Target::TextObject(tobj, Args::None)),
                 source(),
             );
         }
@@ -1551,10 +1523,7 @@ fn normalize_for_normal_lookup(chord: KeyChord) -> KeyChord {
 /// `@X`, plus the operator-prefixed `dfX` etc.) capture the
 /// matched char; this helper applies it to the placeholder
 /// stashed in the bound action.
-fn action_from_bound_with_capture(
-    bound: &Arc<BoundCommand>,
-    captured: &[char],
-) -> Action {
+fn action_from_bound_with_capture(bound: &Arc<BoundCommand>, captured: &[char]) -> Action {
     // Fold any captured wildcard char into `Args::Char(c)` so the
     // bound `ActionSpec`'s apply closure can see it. Validation
     // lives in the spec (e.g. `m<X>` requires `[a-zA-Z0-9]`);
@@ -1790,9 +1759,7 @@ mod tests {
             Some(Action::Invoke(inv)) => {
                 assert_eq!(inv.command, a.absorb_operator_delete);
             }
-            other => panic!(
-                "expected Invoke(absorb_operator_delete), got {other:?}"
-            ),
+            other => panic!("expected Invoke(absorb_operator_delete), got {other:?}"),
         }
     }
 
@@ -2413,10 +2380,7 @@ mod tests {
         match r {
             Action::Invoke(inv) => {
                 assert_eq!(inv.command, b.find_char_forward.0);
-                assert!(matches!(
-                    inv.args,
-                    lattice_grammar::args::Args::Char('X')
-                ));
+                assert!(matches!(inv.args, lattice_grammar::args::Args::Char('X')));
             }
             other => panic!("expected Invoke(find_char_forward, Char('X')), got {other:?}"),
         }
@@ -2589,11 +2553,7 @@ mod tests {
         assert!(matches!(r, Action::None));
         // Slice 8.i.4.d: AbsorbPartialChord is the new "non-Invoke
         // pass-through" attach_count case (was SetPending(_)).
-        let r = attach_count(
-            Action::AbsorbPartialChord(KeyChord::char('g')),
-            5,
-            0,
-        );
+        let r = attach_count(Action::AbsorbPartialChord(KeyChord::char('g')), 5, 0);
         assert!(matches!(r, Action::AbsorbPartialChord(_)));
     }
 
@@ -2623,10 +2583,7 @@ mod tests {
     #[test]
     fn ctrl_d_resolves_to_line_down_count_ten() {
         let (h, b, _) = populated_handle();
-        let r = lookup_normal(
-            &h,
-            &ev(KeyCode::Char('d'), KeyModifiers::CONTROL),
-        );
+        let r = lookup_normal(&h, &ev(KeyCode::Char('d'), KeyModifiers::CONTROL));
         match r {
             Some(Action::Invoke(inv)) => {
                 assert_eq!(inv.command, b.line_down.0);
@@ -2639,10 +2596,7 @@ mod tests {
     #[test]
     fn ctrl_o_resolves_to_jump_history_back() {
         let (h, _, a) = populated_handle();
-        let r = lookup_normal(
-            &h,
-            &ev(KeyCode::Char('o'), KeyModifiers::CONTROL),
-        );
+        let r = lookup_normal(&h, &ev(KeyCode::Char('o'), KeyModifiers::CONTROL));
         match r {
             Some(Action::Invoke(inv)) => assert_eq!(inv.command, a.jump_history_back),
             other => panic!("expected Invoke(jump_history_back), got {other:?}"),
@@ -2652,10 +2606,7 @@ mod tests {
     #[test]
     fn ctrl_v_enters_blockwise_visual() {
         let (h, _, a) = populated_handle();
-        let r = lookup_normal(
-            &h,
-            &ev(KeyCode::Char('v'), KeyModifiers::CONTROL),
-        );
+        let r = lookup_normal(&h, &ev(KeyCode::Char('v'), KeyModifiers::CONTROL));
         match r {
             Some(Action::Invoke(inv)) => assert_eq!(inv.command, a.enter_visual_blockwise),
             other => panic!("expected Invoke(enter_visual_blockwise), got {other:?}"),
@@ -2666,10 +2617,7 @@ mod tests {
     fn ctrl_w_absorbs_partial_chord() {
         // Slice 8.i.4.a: trie's `Partial` -> `AbsorbPartialChord(<C-w>)`.
         let (h, _, _a) = populated_handle();
-        let r = lookup_normal(
-            &h,
-            &ev(KeyCode::Char('w'), KeyModifiers::CONTROL),
-        );
+        let r = lookup_normal(&h, &ev(KeyCode::Char('w'), KeyModifiers::CONTROL));
         assert!(matches!(
             r,
             Some(Action::AbsorbPartialChord(c)) if c == KeyChord::ctrl('w')

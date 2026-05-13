@@ -33,8 +33,7 @@ use crate::pane::PaneState;
 /// content rect, app state, the active document snapshot (used by
 /// the document fallback path), the pane state, an `is_active`
 /// flag, and the pane index (for inactive-pane stash lookups).
-pub type PaneRenderFn =
-    fn(&mut Frame, Rect, &App, &DocumentSnapshot, &PaneState, bool, usize);
+pub type PaneRenderFn = fn(&mut Frame, Rect, &App, &DocumentSnapshot, &PaneState, bool, usize);
 
 /// Status-line label for one pane. Returned to the renderer's
 /// `draw_pane_status_line` so it can paint the bottom row.
@@ -119,10 +118,7 @@ mod tests {
         // buffer renders as help, not as a plain markdown
         // document.
         let mut a = app_with("hi", 5);
-        let help = crate::help::HelpContent::from_lines(
-            "test",
-            vec!["line one".to_string()],
-        );
+        let help = crate::help::HelpContent::from_lines("test", vec!["line one".to_string()]);
         let help_id = a.open_help_in_pane(help);
         let modes = a
             .active_modes

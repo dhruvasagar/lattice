@@ -357,12 +357,13 @@ impl fmt::Display for KeyChord {
         // except `<` which escapes as `<lt>` so the parser can
         // round-trip without ambiguity.
         if self.mods.is_empty()
-            && let KeyKind::Char(c) = self.key {
-                if c == '<' {
-                    return f.write_str("<lt>");
-                }
-                return write!(f, "{c}");
+            && let KeyKind::Char(c) = self.key
+        {
+            if c == '<' {
+                return f.write_str("<lt>");
             }
+            return write!(f, "{c}");
+        }
 
         f.write_str("<")?;
         if self.mods.ctrl() {
@@ -846,10 +847,10 @@ mod tests {
 
     #[test]
     fn keychord_from_event_normalises_ctrl_letter_lowercase() {
-        let lower = KeyChord::from_event(&ev(KeyCode::Char('c'), KeyModifiers::CONTROL))
-            .expect("ctrl-c");
-        let upper = KeyChord::from_event(&ev(KeyCode::Char('C'), KeyModifiers::CONTROL))
-            .expect("ctrl-C");
+        let lower =
+            KeyChord::from_event(&ev(KeyCode::Char('c'), KeyModifiers::CONTROL)).expect("ctrl-c");
+        let upper =
+            KeyChord::from_event(&ev(KeyCode::Char('C'), KeyModifiers::CONTROL)).expect("ctrl-C");
         assert_eq!(lower, upper);
         assert_eq!(lower, KeyChord::ctrl('c'));
     }
@@ -858,8 +859,8 @@ mod tests {
     fn keychord_from_event_strips_redundant_shift_on_bare_letter() {
         // Terminal reports `Char('A') + SHIFT`; canonical form
         // is just `Char('A')` (case encodes shift).
-        let chord = KeyChord::from_event(&ev(KeyCode::Char('A'), KeyModifiers::SHIFT))
-            .expect("shift-A");
+        let chord =
+            KeyChord::from_event(&ev(KeyCode::Char('A'), KeyModifiers::SHIFT)).expect("shift-A");
         assert_eq!(chord, KeyChord::char('A'));
         assert!(!chord.mods.shift());
     }
@@ -868,12 +869,10 @@ mod tests {
     fn keychord_from_event_keeps_shift_on_special_keys() {
         // `<S-Tab>`, `<S-F1>`, `<S-Up>` are all distinct from
         // their unmodified counterparts.
-        let stab = KeyChord::from_event(&ev(KeyCode::Tab, KeyModifiers::SHIFT))
-            .expect("shift-tab");
+        let stab = KeyChord::from_event(&ev(KeyCode::Tab, KeyModifiers::SHIFT)).expect("shift-tab");
         assert_eq!(stab.key, KeyKind::Special(SpecialKey::Tab));
         assert!(stab.mods.shift());
-        let sf1 = KeyChord::from_event(&ev(KeyCode::F(1), KeyModifiers::SHIFT))
-            .expect("shift-F1");
+        let sf1 = KeyChord::from_event(&ev(KeyCode::F(1), KeyModifiers::SHIFT)).expect("shift-F1");
         assert!(sf1.mods.shift());
     }
 
@@ -881,8 +880,8 @@ mod tests {
     fn keychord_from_event_canonicalises_back_tab_to_tab_plus_shift() {
         // `KeyCode::BackTab` IS shift-tab; canonical form is
         // `Tab + SHIFT` so the keymap trie has one entry.
-        let chord = KeyChord::from_event(&ev(KeyCode::BackTab, KeyModifiers::NONE))
-            .expect("back-tab");
+        let chord =
+            KeyChord::from_event(&ev(KeyCode::BackTab, KeyModifiers::NONE)).expect("back-tab");
         assert_eq!(chord.key, KeyKind::Special(SpecialKey::Tab));
         assert!(chord.mods.shift());
     }
@@ -919,8 +918,9 @@ mod tests {
         ];
         for c in cases {
             let s = c.to_string();
-            let parsed: KeyChord =
-                s.parse().unwrap_or_else(|e| panic!("re-parse {s:?}: {e:?}"));
+            let parsed: KeyChord = s
+                .parse()
+                .unwrap_or_else(|e| panic!("re-parse {s:?}: {e:?}"));
             assert_eq!(parsed, *c, "round-trip differs for {s:?}");
         }
     }
@@ -928,10 +928,7 @@ mod tests {
     #[test]
     fn parse_chord_sequence_walks_mixed_tokens() {
         let seq = parse_chord_sequence("<C-w>j").unwrap();
-        assert_eq!(
-            seq,
-            vec![KeyChord::ctrl('w'), KeyChord::char('j')]
-        );
+        assert_eq!(seq, vec![KeyChord::ctrl('w'), KeyChord::char('j')]);
     }
 
     #[test]
@@ -1031,7 +1028,10 @@ mod tests {
             ev(KeyCode::Char('a'), KeyModifiers::NONE),
             ev(KeyCode::Char('A'), KeyModifiers::NONE),
             ev(KeyCode::Char('c'), KeyModifiers::CONTROL),
-            ev(KeyCode::Char('c'), KeyModifiers::CONTROL | KeyModifiers::SHIFT),
+            ev(
+                KeyCode::Char('c'),
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            ),
             ev(KeyCode::Char('x'), KeyModifiers::ALT),
             ev(KeyCode::Esc, KeyModifiers::NONE),
             ev(KeyCode::Tab, KeyModifiers::NONE),

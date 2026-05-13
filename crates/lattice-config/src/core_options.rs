@@ -491,7 +491,10 @@ mod tests {
         assert!(!*r.get_typed::<RelativeNumber>().unwrap());
         assert!(!*r.get_typed::<Wrap>().unwrap());
         assert!(!*r.get_typed::<ReadOnly>().unwrap());
-        assert_eq!(*r.get_typed::<FoldMethodOption>().unwrap(), FoldMethod::Manual);
+        assert_eq!(
+            *r.get_typed::<FoldMethodOption>().unwrap(),
+            FoldMethod::Manual
+        );
         assert_eq!(*r.get_typed::<Scrolloff>().unwrap(), 0);
         assert!(*r.get_typed::<CompletionAutoInsertSingle>().unwrap());
         assert_eq!(*r.get_typed::<CompletionSourceLspPriority>().unwrap(), 200);

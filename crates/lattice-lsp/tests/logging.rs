@@ -167,7 +167,10 @@ async fn trace_on_records_inbound_and_outbound_messages() {
         .await;
     tokio::time::sleep(Duration::from_millis(100)).await;
     let recs = logger.snapshot_server(&server_id);
-    let traces: Vec<_> = recs.iter().filter(|r| r.source == LogSource::Trace).collect();
+    let traces: Vec<_> = recs
+        .iter()
+        .filter(|r| r.source == LogSource::Trace)
+        .collect();
     assert!(
         traces.iter().any(|r| r.message.starts_with("→")),
         "expected outbound trace marker (→); got {:?}",
@@ -183,7 +186,9 @@ async fn trace_on_records_inbound_and_outbound_messages() {
 async fn server_initiated_unhandled_request_routes_through_logger() {
     let (server, logger) = mock_with_logger().await;
     let server_id: Arc<str> = Arc::from("mock");
-    server.mock.push_request(9999, "client/totallyMadeUp", json!({}));
+    server
+        .mock
+        .push_request(9999, "client/totallyMadeUp", json!({}));
     tokio::time::sleep(Duration::from_millis(100)).await;
     let recs = logger.snapshot_server(&server_id);
     assert!(

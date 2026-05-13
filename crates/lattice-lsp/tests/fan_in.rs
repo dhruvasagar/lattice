@@ -33,10 +33,7 @@ use lattice_protocol::ids::DocumentId;
 use lattice_protocol::position::{Position, Range};
 use lattice_runtime::{EventBus, EventFilter, SubscriptionTarget};
 
-fn caps_with(
-    kind: TextDocumentSyncKind,
-    encoding: PositionEncodingKind,
-) -> ServerCapabilities {
+fn caps_with(kind: TextDocumentSyncKind, encoding: PositionEncodingKind) -> ServerCapabilities {
     let mut c = ServerCapabilities::default();
     c.text_document_sync = Some(TextDocumentSyncCapability::Kind(kind));
     c.position_encoding = Some(encoding);

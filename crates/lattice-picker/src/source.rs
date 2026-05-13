@@ -131,18 +131,20 @@ impl PickerRegistry {
     /// `PickerSourceGenerator` impl lands.
     pub fn register(&mut self, spec: PickerSourceSpec) {
         let id = spec.id;
-        self.sources
-            .insert(id, RegistryEntry { spec, generator: None });
+        self.sources.insert(
+            id,
+            RegistryEntry {
+                spec,
+                generator: None,
+            },
+        );
     }
 
     /// Register a source with both metadata and a generator
     /// trait object. The spec is read from `generator.spec()`
     /// so callers don't repeat themselves. Canonical path for
     /// fully trait-driven sources.
-    pub fn register_generator(
-        &mut self,
-        generator: std::sync::Arc<dyn PickerSourceGenerator>,
-    ) {
+    pub fn register_generator(&mut self, generator: std::sync::Arc<dyn PickerSourceGenerator>) {
         let spec = generator.spec().clone();
         let id = spec.id;
         self.sources.insert(
@@ -168,10 +170,7 @@ impl PickerRegistry {
     /// Look up the registered generator for a source id.
     /// `None` if the id isn't registered, or if it's a
     /// metadata-only entry (slice 12 / pre-migration source).
-    pub fn generator(
-        &self,
-        id: &str,
-    ) -> Option<&std::sync::Arc<dyn PickerSourceGenerator>> {
+    pub fn generator(&self, id: &str) -> Option<&std::sync::Arc<dyn PickerSourceGenerator>> {
         self.sources.get(id).and_then(|e| e.generator.as_ref())
     }
 
@@ -217,8 +216,7 @@ pub type CandidateBatch = Vec<(RawCandidate, RoutingPayload)>;
 /// the source extracted everything it needs from the
 /// context during the synchronous `init` call and moved it
 /// into the closure.
-pub type CandidateFuture =
-    Pin<Box<dyn Future<Output = SourceResult<CandidateBatch>> + Send>>;
+pub type CandidateFuture = Pin<Box<dyn Future<Output = SourceResult<CandidateBatch>> + Send>>;
 
 /// Streaming source channel. Sources spawn a producer task
 /// during `init` and return the receiver; the host pumps
@@ -247,10 +245,9 @@ pub enum PickerInitResult {
 impl std::fmt::Debug for PickerInitResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PickerInitResult::Inline(batch) => f
-                .debug_struct("Inline")
-                .field("len", &batch.len())
-                .finish(),
+            PickerInitResult::Inline(batch) => {
+                f.debug_struct("Inline").field("len", &batch.len()).finish()
+            }
             PickerInitResult::Future(_) => f.debug_struct("Future").finish_non_exhaustive(),
             PickerInitResult::Stream(_) => f.debug_struct("Stream").finish_non_exhaustive(),
         }
@@ -294,11 +291,7 @@ pub trait PickerSourceGenerator: Send + Sync {
     /// [`PickerSourceSpec::args_schema`]; the grammar layer
     /// doesn't pre-validate because per-source arg shapes
     /// vary too much.
-    fn init(
-        &self,
-        ctx: &PickerContext<'_>,
-        args: &[String],
-    ) -> SourceResult<PickerInitResult>;
+    fn init(&self, ctx: &PickerContext<'_>, args: &[String]) -> SourceResult<PickerInitResult>;
 
     /// Translate the user's chosen routing payload into a
     /// typed `PickerAcceptOutcome` the host applies. The
@@ -432,9 +425,8 @@ mod tests {
         let s = PickerInitResult::Stream(rx);
         assert!(format!("{s:?}").contains("Stream"));
 
-        let f: PickerInitResult = PickerInitResult::Future(Box::pin(async {
-            Ok::<CandidateBatch, String>(Vec::new())
-        }));
+        let f: PickerInitResult =
+            PickerInitResult::Future(Box::pin(async { Ok::<CandidateBatch, String>(Vec::new()) }));
         assert!(format!("{f:?}").contains("Future"));
     }
 }

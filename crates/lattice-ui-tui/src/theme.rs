@@ -61,7 +61,6 @@ pub struct Theme {
     pub nerd_fonts: bool,
 
     // ---- Diagnostics (Phase 4.1.d.iii) ---------------------
-
     /// Glyph + color for an Error-severity diagnostic. Rendered
     /// in the gutter's severity column; also drives the inline
     /// underline color when an error range overlaps text.
@@ -78,7 +77,6 @@ pub struct Theme {
     pub diagnostic_hint_style: Style,
 
     // ---- M.7.3 whitespace decoration ---------------------
-
     /// Style applied to "neutral" whitespace glyphs (tab,
     /// leading, mid-text space, EOL). Default: dim dark-gray --
     /// visible enough to read structure, quiet enough to not
@@ -93,7 +91,6 @@ pub struct Theme {
     pub whitespace_trailing_style: Style,
 
     // ---- M.7.3 current-line highlight --------------------
-
     /// Background applied to the cursor's row when
     /// `current-line-highlight-mode` is active (M.7.2 minor /
     /// `:set cursorline`). Default: a subtle dark gray
@@ -121,15 +118,11 @@ impl Default for Theme {
             diagnostic_error_glyph: '■',
             diagnostic_error_style: Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
             diagnostic_warning_glyph: '▲',
-            diagnostic_warning_style: Style::new()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
+            diagnostic_warning_style: Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
             diagnostic_info_glyph: '●',
             diagnostic_info_style: Style::new().fg(Color::Blue),
             diagnostic_hint_glyph: '·',
-            diagnostic_hint_style: Style::new()
-                .fg(Color::DarkGray)
-                .add_modifier(Modifier::DIM),
+            diagnostic_hint_style: Style::new().fg(Color::DarkGray).add_modifier(Modifier::DIM),
             file_tree_dir_style: Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD),
             file_tree_hidden_style: Style::new().fg(Color::DarkGray).add_modifier(Modifier::DIM),
             file_tree_file_style: Style::new(),
@@ -138,9 +131,7 @@ impl Default for Theme {
             // terminal opt in via `:set ui.nerd_fonts on`.
             nerd_fonts: false,
             // M.7.3: whitespace + current-line defaults.
-            whitespace_style: Style::new()
-                .fg(Color::DarkGray)
-                .add_modifier(Modifier::DIM),
+            whitespace_style: Style::new().fg(Color::DarkGray).add_modifier(Modifier::DIM),
             whitespace_trailing_style: Style::new().fg(Color::Red),
             cursor_line_bg: Color::Indexed(236),
         }

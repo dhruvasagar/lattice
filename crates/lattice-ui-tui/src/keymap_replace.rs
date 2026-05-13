@@ -55,9 +55,7 @@ use crate::app::Action;
 use crate::chord::{KeyChord, SpecialKey};
 use crate::keymap::BindingMode;
 use crate::keymap_registry::KeymapHandle;
-use crate::keymap_trie::{
-    ChordPattern, KeymapLayer, LookupResult,
-};
+use crate::keymap_trie::{ChordPattern, KeymapLayer, LookupResult};
 
 /// Register the four Replace-mode bindings into the supplied
 /// handle's `Builtin` layer. Called by the App at startup
@@ -84,7 +82,9 @@ pub fn register_replace_bindings(handle: &KeymapHandle, actions: &ActionIds) {
     handle.bind(
         layer,
         mode,
-        &[ChordPattern::Literal(KeyChord::special(SpecialKey::Backspace))],
+        &[ChordPattern::Literal(KeyChord::special(
+            SpecialKey::Backspace,
+        ))],
         CommandInvocation::of(actions.replace_undo_last),
         replace_source(bs_line()),
     );
@@ -168,7 +168,9 @@ pub fn dispatch_replace(handle: &KeymapHandle, event: &KeyEvent) -> Action {
         return Action::None;
     }
     let mut event = *event;
-    event.modifiers.remove(KeyModifiers::SHIFT | KeyModifiers::ALT | KeyModifiers::SUPER);
+    event
+        .modifiers
+        .remove(KeyModifiers::SHIFT | KeyModifiers::ALT | KeyModifiers::SUPER);
     let Some(chord) = KeyChord::from_event(&event) else {
         return Action::None;
     };
@@ -262,16 +264,15 @@ mod tests {
         let h = populated_handle();
         let a = shared_actions();
         for c in ['a', 'A', '$', '0', ' '] {
-            let r = dispatch_replace(
-                &h,
-                &ev(KeyCode::Char(c), KeyModifiers::NONE),
-            );
+            let r = dispatch_replace(&h, &ev(KeyCode::Char(c), KeyModifiers::NONE));
             match r {
                 Action::Invoke(inv) => {
                     assert_eq!(inv.command, a.overwrite_char);
                     assert!(matches!(inv.args, lattice_grammar::args::Args::Char(got) if got == c));
                 }
-                other => panic!("char {c}: expected Invoke(overwrite_char, args=Char({c:?})), got {other:?}"),
+                other => panic!(
+                    "char {c}: expected Invoke(overwrite_char, args=Char({c:?})), got {other:?}"
+                ),
             }
         }
     }
@@ -279,10 +280,7 @@ mod tests {
     #[test]
     fn ctrl_modifier_yields_none() {
         let h = populated_handle();
-        let r = dispatch_replace(
-            &h,
-            &ev(KeyCode::Char('c'), KeyModifiers::CONTROL),
-        );
+        let r = dispatch_replace(&h, &ev(KeyCode::Char('c'), KeyModifiers::CONTROL));
         assert!(matches!(r, Action::None));
     }
 
@@ -309,10 +307,7 @@ mod tests {
     fn alt_modifier_falls_through_to_overwrite() {
         let h = populated_handle();
         let a = shared_actions();
-        let r = dispatch_replace(
-            &h,
-            &ev(KeyCode::Char('x'), KeyModifiers::ALT),
-        );
+        let r = dispatch_replace(&h, &ev(KeyCode::Char('x'), KeyModifiers::ALT));
         match r {
             Action::Invoke(inv) => {
                 assert_eq!(inv.command, a.overwrite_char);
@@ -329,10 +324,7 @@ mod tests {
     fn shift_only_printable_overwrites() {
         let h = populated_handle();
         let a = shared_actions();
-        let r = dispatch_replace(
-            &h,
-            &ev(KeyCode::Char('A'), KeyModifiers::SHIFT),
-        );
+        let r = dispatch_replace(&h, &ev(KeyCode::Char('A'), KeyModifiers::SHIFT));
         match r {
             Action::Invoke(inv) => {
                 assert_eq!(inv.command, a.overwrite_char);

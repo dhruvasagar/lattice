@@ -300,10 +300,7 @@ impl ConfigRegistry {
     /// chaining a "default" layer. After this returns, the
     /// caller layers any mode / buffer-local / modal overrides
     /// on top via the resolver.
-    pub fn bootstrap_resolved_with_current_values(
-        &self,
-        out: &mut crate::ResolvedOptions,
-    ) {
+    pub fn bootstrap_resolved_with_current_values(&self, out: &mut crate::ResolvedOptions) {
         let inner = self.inner.lock().expect("ConfigRegistry poisoned");
         for (type_id, &idx) in inner.by_typeid.iter() {
             let arc = std::sync::Arc::clone(&inner.by_id[idx]);

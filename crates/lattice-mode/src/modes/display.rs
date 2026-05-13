@@ -213,11 +213,7 @@ mod tests {
         // `relative-line-numbers-mode` active without needing
         // `line-numbers-mode` separately.
         let opts = RelativeLineNumbersMode.options();
-        assert_eq!(
-            opts.iter().count(),
-            2,
-            "expected RelativeNumber + Number",
-        );
+        assert_eq!(opts.iter().count(), 2, "expected RelativeNumber + Number",);
     }
 
     #[test]

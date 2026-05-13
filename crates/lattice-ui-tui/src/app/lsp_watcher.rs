@@ -50,8 +50,7 @@ use std::sync::Arc;
 
 use lsp_types::{FileChangeType, FileEvent};
 use notify::{
-    Event as NotifyEvent, EventKind as NotifyEventKind, RecommendedWatcher, RecursiveMode,
-    Watcher,
+    Event as NotifyEvent, EventKind as NotifyEventKind, RecommendedWatcher, RecursiveMode, Watcher,
     event::{CreateKind, ModifyKind, RemoveKind},
 };
 
@@ -124,11 +123,7 @@ impl LspFileWatcher {
     /// and unwatches paths no longer in `target`. Failures on
     /// either side log + skip; the rest of the diff still
     /// applies.
-    fn sync_watched_roots(
-        &mut self,
-        target: &HashSet<PathBuf>,
-        logger: &lattice_lsp::LspLogger,
-    ) {
+    fn sync_watched_roots(&mut self, target: &HashSet<PathBuf>, logger: &lattice_lsp::LspLogger) {
         // Unwatch paths that fell out of scope.
         let stale: Vec<PathBuf> = self
             .watched_roots
@@ -163,10 +158,7 @@ impl LspFileWatcher {
                         None,
                         LogLevel::Warn,
                         LogSource::Client,
-                        format!(
-                            "file-watcher watch {} failed: {e}",
-                            p.display()
-                        ),
+                        format!("file-watcher watch {} failed: {e}", p.display()),
                     );
                 }
             }
@@ -300,11 +292,7 @@ impl App {
             live_ids.insert(server_id.clone());
             let caps = handle.capabilities();
             let server_id_arc: Arc<str> = Arc::from(server_id.as_str());
-            let subs = lattice_lsp::compile_with_workspace_root(
-                &caps,
-                server_id_arc,
-                root,
-            );
+            let subs = lattice_lsp::compile_with_workspace_root(&caps, server_id_arc, root);
             let fp = subs.fingerprint();
             let entry = watcher.by_server.entry(server_id);
             match entry {
@@ -397,9 +385,7 @@ impl App {
                     Some(&server_id_arc),
                     LogLevel::Warn,
                     LogSource::Client,
-                    format!(
-                        "workspace/didChangeWatchedFiles fan-out failed: {e}"
-                    ),
+                    format!("workspace/didChangeWatchedFiles fan-out failed: {e}"),
                 );
             }
         }

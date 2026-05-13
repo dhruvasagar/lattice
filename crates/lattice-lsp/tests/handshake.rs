@@ -182,9 +182,9 @@ async fn unknown_server_request_yields_method_not_found() {
     // Wait for the actor to respond.
     tokio::time::sleep(Duration::from_millis(100)).await;
     let resps = server.mock.responses().await;
-    let our = resps.iter().find(|r| {
-        matches!(&r.id, lattice_lsp::jsonrpc::RequestId::Number(7777))
-    });
+    let our = resps
+        .iter()
+        .find(|r| matches!(&r.id, lattice_lsp::jsonrpc::RequestId::Number(7777)));
     let our = our.expect("actor should have responded to unknown request");
     let err = our.error.as_ref().expect("expected error response");
     assert_eq!(err.code, error_codes::METHOD_NOT_FOUND);
@@ -212,7 +212,11 @@ async fn register_capability_is_accepted() {
         .iter()
         .find(|r| matches!(&r.id, lattice_lsp::jsonrpc::RequestId::Number(9001)))
         .expect("expected response to registerCapability");
-    assert!(our.error.is_none(), "expected ok response, got {:?}", our.error);
+    assert!(
+        our.error.is_none(),
+        "expected ok response, got {:?}",
+        our.error
+    );
 }
 
 /// 4.4.n: registerCapability mutates the published
@@ -353,7 +357,10 @@ async fn register_capability_with_malformed_params_replies_ok() {
         .iter()
         .find(|r| matches!(&r.id, lattice_lsp::jsonrpc::RequestId::Number(9104)))
         .expect("expected response to malformed registerCapability");
-    assert!(our.error.is_none(), "even malformed input must not error the wire");
+    assert!(
+        our.error.is_none(),
+        "even malformed input must not error the wire"
+    );
 }
 
 /// `workspace/configuration` returns one entry per requested
@@ -409,10 +416,18 @@ async fn notifications_arrive_at_mock_in_order() {
         .unwrap();
     tokio::time::sleep(Duration::from_millis(100)).await;
     let after = server.mock.notifications().await;
-    let methods: Vec<&str> = after.iter().skip(baseline).map(|n| n.method.as_str()).collect();
+    let methods: Vec<&str> = after
+        .iter()
+        .skip(baseline)
+        .map(|n| n.method.as_str())
+        .collect();
     assert_eq!(
         methods,
-        ["textDocument/didOpen", "textDocument/didChange", "textDocument/didClose"]
+        [
+            "textDocument/didOpen",
+            "textDocument/didChange",
+            "textDocument/didClose"
+        ]
     );
 }
 
@@ -466,10 +481,10 @@ async fn cancel_resolves_pending_with_cancelled_and_emits_notification() {
 
     // The first request we send after handshake gets id 2 (id 1
     // is initialize). Issue it and immediately cancel.
-    let pending =
-        server
-            .handle
-            .request::<_, Value>("textDocument/hover", json!({"textDocument": {"uri": "file:///x"}, "position": {"line":0,"character":0}}));
+    let pending = server.handle.request::<_, Value>(
+        "textDocument/hover",
+        json!({"textDocument": {"uri": "file:///x"}, "position": {"line":0,"character":0}}),
+    );
     server.handle.cancel(2).expect("cancel send");
     let r = pending.await;
     assert!(matches!(r, Err(LspError::Cancelled)), "got {r:?}");
@@ -504,10 +519,7 @@ async fn server_pipe_close_resolves_pending_with_actor_gone() {
                 capabilities: caps,
                 server_info: None,
             };
-            let resp = lattice_lsp::Response::ok(
-                req.id,
-                serde_json::to_value(result).unwrap(),
-            );
+            let resp = lattice_lsp::Response::ok(req.id, serde_json::to_value(result).unwrap());
             let _ = w.write_message(&Message::Response(resp)).await;
         }
         // Drop both halves -> actor sees pipe close.
@@ -533,8 +545,13 @@ async fn server_pipe_close_resolves_pending_with_actor_gone() {
 
     // Wait briefly for the read_loop to observe the EOF.
     tokio::time::sleep(Duration::from_millis(50)).await;
-    let r = handle.request::<_, Value>("textDocument/hover", json!({})).await;
-    assert!(matches!(r, Err(LspError::ActorGone) | Err(LspError::ResponseDropped)));
+    let r = handle
+        .request::<_, Value>("textDocument/hover", json!({}))
+        .await;
+    assert!(matches!(
+        r,
+        Err(LspError::ActorGone) | Err(LspError::ResponseDropped)
+    ));
 }
 
 /// Server returns an error response → caller sees LspError::Server
@@ -572,7 +589,9 @@ async fn response_with_wrong_shape_is_decode_error() {
     // Handler returns a string where the caller expects a struct.
     server
         .mock
-        .on("textDocument/hover", |_| MockResult::Ok(json!("not-a-hover-shape")))
+        .on("textDocument/hover", |_| {
+            MockResult::Ok(json!("not-a-hover-shape"))
+        })
         .await;
 
     #[derive(serde::Deserialize)]
@@ -581,6 +600,9 @@ async fn response_with_wrong_shape_is_decode_error() {
         contents: Value,
     }
 
-    let r = server.handle.request::<_, Hover>("textDocument/hover", json!({})).await;
+    let r = server
+        .handle
+        .request::<_, Hover>("textDocument/hover", json!({}))
+        .await;
     assert!(matches!(r, Err(LspError::ResponseDecode(_))));
 }

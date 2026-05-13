@@ -393,11 +393,7 @@ fn compute_normal_action(
     // `Action::None` (which `App::apply` turns into a
     // partial_chord clear).
     if !partial_chord.is_empty() {
-        return crate::keymap_normal::lookup_normal_with_prefix(
-            keymap,
-            partial_chord,
-            &event,
-        );
+        return crate::keymap_normal::lookup_normal_with_prefix(keymap, partial_chord, &event);
     }
 
     // `q` while a macro is recording stops the recording. The
@@ -655,10 +651,7 @@ mod tests {
         }
     }
 
-    fn ctx_recording<'a>(
-        modal: ModalState,
-        b: &'a Builtins,
-    ) -> TranslateContext<'a> {
+    fn ctx_recording<'a>(modal: ModalState, b: &'a Builtins) -> TranslateContext<'a> {
         TranslateContext {
             modal,
             builtins: b,
@@ -798,10 +791,7 @@ mod tests {
     #[test]
     fn capital_g_invokes_goto_last_line() {
         let (_, b) = fixture();
-        let action = translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('G')),
-        );
+        let action = translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('G')));
         assert_eq!(invocation_command(&action), Some(b.goto_last_line.0));
     }
 
@@ -813,10 +803,7 @@ mod tests {
         // `Partial` result drives the App's `partial_chord`
         // stack directly.
         let (_, b) = fixture();
-        let action = translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('g')),
-        );
+        let action = translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('g')));
         assert!(matches!(
             action,
             Action::AbsorbPartialChord(c) if c == crate::chord::KeyChord::char('g')
@@ -851,10 +838,7 @@ mod tests {
     fn i_enters_insert_mode() {
         let (_, b) = fixture();
         let a = shared_actions();
-        match translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('i')),
-        ) {
+        match translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('i'))) {
             Action::Invoke(inv) => assert_eq!(inv.command, a.enter_mode_insert),
             other => panic!("expected Invoke(enter_mode_insert), got {other:?}"),
         }
@@ -864,10 +848,7 @@ mod tests {
     fn a_enters_append_mode() {
         let (_, b) = fixture();
         let a = shared_actions();
-        match translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('a')),
-        ) {
+        match translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('a'))) {
             Action::Invoke(inv) => assert_eq!(inv.command, a.enter_append),
             other => panic!("expected Invoke(enter_append), got {other:?}"),
         }
@@ -881,17 +862,11 @@ mod tests {
         // dispatch (`Effect::AppAction(AppEffect::OpenLine{Below,Above})`)
         // routed through `run_invocation`, surfaced at the
         // input layer as `Action::Invoke`.
-        match translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('o')),
-        ) {
+        match translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('o'))) {
             Action::Invoke(inv) => assert_eq!(inv.command, a.open_line_below),
             other => panic!("expected Invoke(open_line_below), got {other:?}"),
         }
-        match translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('O')),
-        ) {
+        match translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('O'))) {
             Action::Invoke(inv) => assert_eq!(inv.command, a.open_line_above),
             other => panic!("expected Invoke(open_line_above), got {other:?}"),
         }
@@ -911,10 +886,7 @@ mod tests {
         let (_, b) = fixture();
         let a = shared_actions();
         let _ = b;
-        let action = translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('d')),
-        );
+        let action = translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('d')));
         match action {
             Action::Invoke(inv) => assert_eq!(inv.command, a.absorb_operator_delete),
             _ => panic!("expected Invoke(absorb_operator_delete)"),
@@ -971,10 +943,7 @@ mod tests {
     #[test]
     fn x_resolves_directly_to_delete_char_right() {
         let (_, b) = fixture();
-        let action = translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('x')),
-        );
+        let action = translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('x')));
         match action {
             Action::Invoke(inv) => {
                 assert_eq!(inv.command, b.delete.0);
@@ -993,10 +962,7 @@ mod tests {
     fn esc_in_insert_returns_to_normal() {
         let (_, b) = fixture();
         let a = shared_actions();
-        match translate(
-            ctx(ModalState::Insert, &b),
-            key(KeyCode::Esc),
-        ) {
+        match translate(ctx(ModalState::Insert, &b), key(KeyCode::Esc)) {
             Action::Invoke(inv) => assert_eq!(inv.command, a.enter_mode_normal),
             other => panic!("expected Invoke(enter_mode_normal), got {other:?}"),
         }
@@ -1005,10 +971,7 @@ mod tests {
     #[test]
     fn printable_char_in_insert_inserts_text() {
         let (_, b) = fixture();
-        match translate(
-            ctx(ModalState::Insert, &b),
-            key(KeyCode::Char('h')),
-        ) {
+        match translate(ctx(ModalState::Insert, &b), key(KeyCode::Char('h'))) {
             Action::Insert(s) => assert_eq!(s, "h"),
             _ => panic!("expected Insert"),
         }
@@ -1018,10 +981,7 @@ mod tests {
     fn enter_in_insert_inserts_newline() {
         let (_, b) = fixture();
         let a = shared_actions();
-        match translate(
-            ctx(ModalState::Insert, &b),
-            key(KeyCode::Enter),
-        ) {
+        match translate(ctx(ModalState::Insert, &b), key(KeyCode::Enter)) {
             Action::Invoke(inv) => assert_eq!(inv.command, a.insert_newline),
             other => panic!("expected Invoke(insert_newline), got {other:?}"),
         }
@@ -1031,10 +991,7 @@ mod tests {
     fn backspace_in_insert_deletes_char_backward() {
         let (_, b) = fixture();
         let a = shared_actions();
-        match translate(
-            ctx(ModalState::Insert, &b),
-            key(KeyCode::Backspace),
-        ) {
+        match translate(ctx(ModalState::Insert, &b), key(KeyCode::Backspace)) {
             Action::Invoke(inv) => assert_eq!(inv.command, a.delete_char_backward),
             other => panic!("expected Invoke(delete_char_backward), got {other:?}"),
         }
@@ -1046,10 +1003,7 @@ mod tests {
     fn u_in_normal_undoes() {
         let (_, b) = fixture();
         let a = shared_actions();
-        match translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('u')),
-        ) {
+        match translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('u'))) {
             Action::Invoke(inv) => assert_eq!(inv.command, a.undo),
             other => panic!("expected Invoke(undo), got {other:?}"),
         }
@@ -1059,10 +1013,7 @@ mod tests {
     fn ctrl_r_in_normal_redoes() {
         let (_, b) = fixture();
         let a = shared_actions();
-        match translate(
-            ctx(ModalState::Normal, &b),
-            ctrl(KeyCode::Char('r')),
-        ) {
+        match translate(ctx(ModalState::Normal, &b), ctrl(KeyCode::Char('r'))) {
             Action::Invoke(inv) => assert_eq!(inv.command, a.redo),
             other => panic!("expected Invoke(redo), got {other:?}"),
         }
@@ -1074,10 +1025,7 @@ mod tests {
     fn colon_in_normal_enters_command_line() {
         let (_, b) = fixture();
         let a = shared_actions();
-        match translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char(':')),
-        ) {
+        match translate(ctx(ModalState::Normal, &b), key(KeyCode::Char(':'))) {
             Action::Invoke(inv) => assert_eq!(inv.command, a.enter_command_line),
             other => panic!("expected Invoke(enter_command_line), got {other:?}"),
         }
@@ -1086,10 +1034,7 @@ mod tests {
     #[test]
     fn printable_char_in_command_appends() {
         let (_, b) = fixture();
-        match translate(
-            ctx(ModalState::Command, &b),
-            key(KeyCode::Char('w')),
-        ) {
+        match translate(ctx(ModalState::Command, &b), key(KeyCode::Char('w'))) {
             Action::CommandLineAppend(c) => assert_eq!(c, 'w'),
             other => panic!("expected CommandLineAppend, got {other:?}"),
         }
@@ -1099,10 +1044,7 @@ mod tests {
     fn enter_in_command_submits() {
         let (_, b) = fixture();
         assert!(matches!(
-            translate(
-                ctx(ModalState::Command, &b),
-                key(KeyCode::Enter)
-            ),
+            translate(ctx(ModalState::Command, &b), key(KeyCode::Enter)),
             Action::CommandLineSubmit
         ));
     }
@@ -1111,10 +1053,7 @@ mod tests {
     fn esc_in_command_cancels() {
         let (_, b) = fixture();
         assert!(matches!(
-            translate(
-                ctx(ModalState::Command, &b),
-                key(KeyCode::Esc)
-            ),
+            translate(ctx(ModalState::Command, &b), key(KeyCode::Esc)),
             Action::CommandLineCancel
         ));
     }
@@ -1123,10 +1062,7 @@ mod tests {
     fn backspace_in_command_pops() {
         let (_, b) = fixture();
         assert!(matches!(
-            translate(
-                ctx(ModalState::Command, &b),
-                key(KeyCode::Backspace)
-            ),
+            translate(ctx(ModalState::Command, &b), key(KeyCode::Backspace)),
             Action::CommandLineBackspace
         ));
     }
@@ -1135,10 +1071,7 @@ mod tests {
     fn up_in_command_emits_history_prev() {
         let (_, b) = fixture();
         assert!(matches!(
-            translate(
-                ctx(ModalState::Command, &b),
-                key(KeyCode::Up)
-            ),
+            translate(ctx(ModalState::Command, &b), key(KeyCode::Up)),
             Action::CommandLineHistoryPrev
         ));
     }
@@ -1147,10 +1080,7 @@ mod tests {
     fn down_in_command_emits_history_next() {
         let (_, b) = fixture();
         assert!(matches!(
-            translate(
-                ctx(ModalState::Command, &b),
-                key(KeyCode::Down)
-            ),
+            translate(ctx(ModalState::Command, &b), key(KeyCode::Down)),
             Action::CommandLineHistoryNext
         ));
     }
@@ -1161,10 +1091,7 @@ mod tests {
         // need to cancel the command line first.
         let (_, b) = fixture();
         assert!(matches!(
-            translate(
-                ctx(ModalState::Command, &b),
-                ctrl(KeyCode::Char('c'))
-            ),
+            translate(ctx(ModalState::Command, &b), ctrl(KeyCode::Char('c'))),
             Action::Quit
         ));
     }
@@ -1175,10 +1102,7 @@ mod tests {
     fn slash_in_normal_enters_forward_search() {
         let (_, b) = fixture();
         let a = shared_actions();
-        match translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('/')),
-        ) {
+        match translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('/'))) {
             Action::Invoke(inv) => assert_eq!(inv.command, a.enter_search_forward),
             other => panic!("expected Invoke(enter_search_forward), got {other:?}"),
         }
@@ -1188,10 +1112,7 @@ mod tests {
     fn question_in_normal_enters_backward_search() {
         let (_, b) = fixture();
         let a = shared_actions();
-        match translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('?')),
-        ) {
+        match translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('?'))) {
             Action::Invoke(inv) => assert_eq!(inv.command, a.enter_search_backward),
             other => panic!("expected Invoke(enter_search_backward), got {other:?}"),
         }
@@ -1201,10 +1122,7 @@ mod tests {
     fn n_in_normal_repeats_search_forward() {
         let (_, b) = fixture();
         let a = shared_actions();
-        match translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('n')),
-        ) {
+        match translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('n'))) {
             Action::Invoke(inv) => assert_eq!(inv.command, a.search_next),
             other => panic!("expected Invoke(search_next), got {other:?}"),
         }
@@ -1214,10 +1132,7 @@ mod tests {
     fn capital_n_in_normal_repeats_search_reverse() {
         let (_, b) = fixture();
         let a = shared_actions();
-        match translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('N')),
-        ) {
+        match translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('N'))) {
             Action::Invoke(inv) => assert_eq!(inv.command, a.search_previous),
             other => panic!("expected Invoke(search_previous), got {other:?}"),
         }
@@ -1278,40 +1193,28 @@ mod tests {
     #[test]
     fn capital_w_invokes_big_word_forward() {
         let (_, b) = fixture();
-        let action = translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('W')),
-        );
+        let action = translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('W')));
         assert_eq!(invocation_command(&action), Some(b.big_word_forward.0));
     }
 
     #[test]
     fn capital_b_invokes_big_word_backward() {
         let (_, b) = fixture();
-        let action = translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('B')),
-        );
+        let action = translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('B')));
         assert_eq!(invocation_command(&action), Some(b.big_word_backward.0));
     }
 
     #[test]
     fn capital_e_invokes_big_word_end() {
         let (_, b) = fixture();
-        let action = translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('E')),
-        );
+        let action = translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('E')));
         assert_eq!(invocation_command(&action), Some(b.big_word_end.0));
     }
 
     #[test]
     fn capital_d_invokes_delete_to_line_end() {
         let (_, b) = fixture();
-        let action = translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('D')),
-        );
+        let action = translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('D')));
         match action {
             Action::Invoke(inv) => {
                 assert_eq!(inv.command, b.delete.0);
@@ -1327,10 +1230,7 @@ mod tests {
     #[test]
     fn capital_c_invokes_change_to_line_end() {
         let (_, b) = fixture();
-        let action = translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('C')),
-        );
+        let action = translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('C')));
         match action {
             Action::Invoke(inv) => {
                 assert_eq!(inv.command, b.change.0);
@@ -1346,10 +1246,7 @@ mod tests {
     #[test]
     fn capital_s_invokes_change_current_line() {
         let (_, b) = fixture();
-        let action = translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('S')),
-        );
+        let action = translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('S')));
         match action {
             Action::Invoke(inv) => {
                 assert_eq!(inv.command, b.change.0);
@@ -1363,10 +1260,7 @@ mod tests {
     fn capital_j_emits_join_with_space() {
         let (_, b) = fixture();
         let a = shared_actions();
-        match translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('J')),
-        ) {
+        match translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('J'))) {
             Action::Invoke(inv) => assert_eq!(inv.command, a.join_lines_with_space),
             other => panic!("expected Invoke(join_lines_with_space), got {other:?}"),
         }
@@ -1389,10 +1283,7 @@ mod tests {
     fn semicolon_emits_find_repeat_no_reverse() {
         let (_, b) = fixture();
         let a = shared_actions();
-        match translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char(';')),
-        ) {
+        match translate(ctx(ModalState::Normal, &b), key(KeyCode::Char(';'))) {
             Action::Invoke(inv) => assert_eq!(inv.command, a.find_repeat_forward),
             other => panic!("expected Invoke(find_repeat_forward), got {other:?}"),
         }
@@ -1402,10 +1293,7 @@ mod tests {
     fn comma_emits_find_repeat_reverse() {
         let (_, b) = fixture();
         let a = shared_actions();
-        match translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char(',')),
-        ) {
+        match translate(ctx(ModalState::Normal, &b), key(KeyCode::Char(','))) {
             Action::Invoke(inv) => assert_eq!(inv.command, a.find_repeat_reverse),
             other => panic!("expected Invoke(find_repeat_reverse), got {other:?}"),
         }
@@ -1433,10 +1321,7 @@ mod tests {
     fn q_in_normal_when_not_recording_absorbs_partial_chord() {
         // Slice 8.i.4.a: `q` migrated to partial_chord.
         let (_, b) = fixture();
-        let action = translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('q')),
-        );
+        let action = translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('q')));
         assert!(matches!(
             action,
             Action::AbsorbPartialChord(c) if c == crate::chord::KeyChord::char('q')
@@ -1459,10 +1344,7 @@ mod tests {
     fn at_in_normal_absorbs_partial_chord() {
         // Slice 8.i.4.a: `@` migrated to partial_chord.
         let (_, b) = fixture();
-        let action = translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('@')),
-        );
+        let action = translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('@')));
         assert!(matches!(
             action,
             Action::AbsorbPartialChord(c) if c == crate::chord::KeyChord::char('@')
@@ -1637,10 +1519,7 @@ mod tests {
     fn ctrl_v_enters_blockwise_visual() {
         let (_, b) = fixture();
         let a = shared_actions();
-        match translate(
-            ctx(ModalState::Normal, &b),
-            ctrl(KeyCode::Char('v')),
-        ) {
+        match translate(ctx(ModalState::Normal, &b), ctrl(KeyCode::Char('v'))) {
             Action::Invoke(inv) => assert_eq!(inv.command, a.enter_visual_blockwise),
             other => panic!("expected Invoke(enter_visual_blockwise), got {other:?}"),
         }
@@ -1654,10 +1533,7 @@ mod tests {
         // exactly this reason.
         let (_, b) = fixture();
         let a = shared_actions();
-        match translate(
-            ctx(ModalState::Normal, &b),
-            ctrl(KeyCode::Char('q')),
-        ) {
+        match translate(ctx(ModalState::Normal, &b), ctrl(KeyCode::Char('q'))) {
             Action::Invoke(inv) => assert_eq!(inv.command, a.enter_visual_blockwise),
             other => panic!("expected Invoke(enter_visual_blockwise), got {other:?}"),
         }
@@ -1669,10 +1545,7 @@ mod tests {
         // against the Ctrl+Q binding accidentally swallowing
         // the bare `q` that starts macro recording.
         let (_, b) = fixture();
-        match translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('q')),
-        ) {
+        match translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('q'))) {
             Action::AbsorbPartialChord(c) if c == crate::chord::KeyChord::char('q') => {}
             other => panic!("expected AbsorbPartialChord(q), got {other:?}"),
         }
@@ -1687,10 +1560,7 @@ mod tests {
     // motions, `<C-o>` / `<C-i>`, `gg` / `G`) flows through the same
     // chord grammar -- the apply layer decides which cursor moves.
 
-    fn ctx_help_active<'a>(
-        modal: ModalState,
-        b: &'a Builtins,
-    ) -> TranslateContext<'a> {
+    fn ctx_help_active<'a>(modal: ModalState, b: &'a Builtins) -> TranslateContext<'a> {
         TranslateContext {
             modal,
             builtins: b,
@@ -1755,10 +1625,7 @@ mod tests {
     fn help_active_intercepts_esc_to_dismiss() {
         let (_, b) = fixture();
         assert!(matches!(
-            translate(
-                ctx_help_active(ModalState::Normal, &b),
-                key(KeyCode::Esc)
-            ),
+            translate(ctx_help_active(ModalState::Normal, &b), key(KeyCode::Esc)),
             Action::HelpDismiss
         ));
     }
@@ -1767,10 +1634,7 @@ mod tests {
     fn help_active_routes_enter_to_follow_link() {
         let (_, b) = fixture();
         assert!(matches!(
-            translate(
-                ctx_help_active(ModalState::Normal, &b),
-                key(KeyCode::Enter)
-            ),
+            translate(ctx_help_active(ModalState::Normal, &b), key(KeyCode::Enter)),
             Action::FollowLink
         ));
     }
@@ -1806,11 +1670,7 @@ mod tests {
             Action::AbsorbPartialChord(c) if c == crate::chord::KeyChord::char('g')
         ));
         let second = translate(
-            ctx_help_active_partial(
-                ModalState::Normal,
-                &[crate::chord::KeyChord::char('g')],
-                &b,
-            ),
+            ctx_help_active_partial(ModalState::Normal, &[crate::chord::KeyChord::char('g')], &b),
             key(KeyCode::Char('g')),
         );
         assert_eq!(invocation_command(&second), Some(b.goto_first_line.0));
@@ -1848,10 +1708,7 @@ mod tests {
     fn ctrl_w_absorbs_partial_chord() {
         // Slice 8.i.4.a: `<C-w>` migrated to partial_chord.
         let (_, b) = fixture();
-        let action = translate(
-            ctx(ModalState::Normal, &b),
-            ctrl(KeyCode::Char('w')),
-        );
+        let action = translate(ctx(ModalState::Normal, &b), ctrl(KeyCode::Char('w')));
         assert!(matches!(
             action,
             Action::AbsorbPartialChord(c) if c == crate::chord::KeyChord::ctrl('w')
@@ -1991,10 +1848,7 @@ mod tests {
                         let evt = match rest {
                             "Tab" => KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE),
                             _ => match rest.chars().next() {
-                                Some(c) => KeyEvent::new(
-                                    KeyCode::Char(c),
-                                    KeyModifiers::SHIFT,
-                                ),
+                                Some(c) => KeyEvent::new(KeyCode::Char(c), KeyModifiers::SHIFT),
                                 None => continue,
                             },
                         };
@@ -2006,17 +1860,11 @@ mod tests {
                         // back to the single-char path so `<C-Space>`
                         // parses to `Char(' ') + CONTROL`. Same shape
                         // crossterm reports.
-                        
+
                         match rest {
-                            "Space" => KeyEvent::new(
-                                KeyCode::Char(' '),
-                                KeyModifiers::CONTROL,
-                            ),
+                            "Space" => KeyEvent::new(KeyCode::Char(' '), KeyModifiers::CONTROL),
                             _ => match rest.chars().next() {
-                                Some(c) => KeyEvent::new(
-                                    KeyCode::Char(c),
-                                    KeyModifiers::CONTROL,
-                                ),
+                                Some(c) => KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL),
                                 None => continue,
                             },
                         }
@@ -2309,10 +2157,7 @@ mod tests {
     fn ctrl_space_in_insert_triggers_completion() {
         let (_, b) = fixture();
         let a = shared_actions();
-        match translate(
-            ctx(ModalState::Insert, &b),
-            ctrl(KeyCode::Char(' ')),
-        ) {
+        match translate(ctx(ModalState::Insert, &b), ctrl(KeyCode::Char(' '))) {
             Action::Invoke(inv) => assert_eq!(inv.command, a.completion_trigger),
             other => panic!("expected Invoke(completion_trigger), got {other:?}"),
         }
@@ -2322,10 +2167,7 @@ mod tests {
     fn ctrl_x_in_insert_absorbs_partial_chord() {
         // Slice 8.i.4.b: `<C-x>` migrated to partial_chord.
         let (_, b) = fixture();
-        let action = translate(
-            ctx(ModalState::Insert, &b),
-            ctrl(KeyCode::Char('x')),
-        );
+        let action = translate(ctx(ModalState::Insert, &b), ctrl(KeyCode::Char('x')));
         assert!(matches!(
             action,
             Action::AbsorbPartialChord(c) if c == crate::chord::KeyChord::ctrl('x')
@@ -2340,11 +2182,7 @@ mod tests {
         // something other than `Invoke`).
         let (_, b) = fixture();
         let r = translate(
-            ctx_partial(
-                ModalState::Insert,
-                &[crate::chord::KeyChord::ctrl('x')],
-                &b,
-            ),
+            ctx_partial(ModalState::Insert, &[crate::chord::KeyChord::ctrl('x')], &b),
             ctrl(KeyCode::Char('o')),
         );
         assert!(
@@ -2362,11 +2200,7 @@ mod tests {
         let (_, b) = fixture();
         assert!(matches!(
             translate(
-                ctx_partial(
-                    ModalState::Insert,
-                    &[crate::chord::KeyChord::ctrl('x')],
-                    &b,
-                ),
+                ctx_partial(ModalState::Insert, &[crate::chord::KeyChord::ctrl('x')], &b,),
                 ctrl(KeyCode::Char('z'))
             ),
             Action::None
@@ -2468,10 +2302,7 @@ mod tests {
         // layer doesn't fire; falls through to Normal-mode
         // half-page-down. This verifies the layer's
         // confinement.
-        let half_down = translate(
-            ctx(ModalState::Normal, &b),
-            ctrl(KeyCode::Char('d')),
-        );
+        let half_down = translate(ctx(ModalState::Normal, &b), ctrl(KeyCode::Char('d')));
         if let Action::Invoke(inv) = half_down {
             assert_ne!(inv.command, a.completion_toggle_docs);
         }
@@ -2496,9 +2327,9 @@ mod tests {
                     other => panic!("expected Args::String, got {other:?}"),
                 }
             }
-            other => panic!(
-                "expected Invoke(completion_filter_to_source, \"gen:path\"), got {other:?}"
-            ),
+            other => {
+                panic!("expected Invoke(completion_filter_to_source, \"gen:path\"), got {other:?}")
+            }
         }
     }
 
@@ -2514,10 +2345,9 @@ mod tests {
             Action::Invoke(inv) => {
                 assert_eq!(inv.command, a.completion_filter_to_source);
                 match inv.args {
-                    Args::String(s) => assert_eq!(
-                        s,
-                        lattice_completion::insert::BufferWordsSource::ID
-                    ),
+                    Args::String(s) => {
+                        assert_eq!(s, lattice_completion::insert::BufferWordsSource::ID)
+                    }
                     other => panic!("expected Args::String, got {other:?}"),
                 }
             }
@@ -2657,11 +2487,7 @@ mod tests {
         let (_, b) = fixture();
         let a = shared_actions();
         match translate(
-            ctx_partial(
-                ModalState::Insert,
-                &[crate::chord::KeyChord::ctrl('x')],
-                &b,
-            ),
+            ctx_partial(ModalState::Insert, &[crate::chord::KeyChord::ctrl('x')], &b),
             ctrl(KeyCode::Char('s')),
         ) {
             Action::Invoke(inv) => assert_eq!(inv.command, a.snippet_expand),
@@ -2675,10 +2501,7 @@ mod tests {
     fn ctrl_o_emits_jump_history_back() {
         let (_, b) = fixture();
         let a = shared_actions();
-        match translate(
-            ctx(ModalState::Normal, &b),
-            ctrl(KeyCode::Char('o')),
-        ) {
+        match translate(ctx(ModalState::Normal, &b), ctrl(KeyCode::Char('o'))) {
             Action::Invoke(inv) => assert_eq!(inv.command, a.jump_history_back),
             other => panic!("expected Invoke(jump_history_back), got {other:?}"),
         }
@@ -2688,10 +2511,7 @@ mod tests {
     fn ctrl_i_emits_jump_history_forward() {
         let (_, b) = fixture();
         let a = shared_actions();
-        match translate(
-            ctx(ModalState::Normal, &b),
-            ctrl(KeyCode::Char('i')),
-        ) {
+        match translate(ctx(ModalState::Normal, &b), ctrl(KeyCode::Char('i'))) {
             Action::Invoke(inv) => assert_eq!(inv.command, a.jump_history_forward),
             other => panic!("expected Invoke(jump_history_forward), got {other:?}"),
         }
@@ -2701,10 +2521,7 @@ mod tests {
     fn ctrl_l_emits_redraw_screen() {
         let (_, b) = fixture();
         let a = shared_actions();
-        match translate(
-            ctx(ModalState::Normal, &b),
-            ctrl(KeyCode::Char('l')),
-        ) {
+        match translate(ctx(ModalState::Normal, &b), ctrl(KeyCode::Char('l'))) {
             Action::Invoke(inv) => assert_eq!(inv.command, a.redraw_screen),
             other => panic!("expected Invoke(redraw_screen), got {other:?}"),
         }
@@ -2714,10 +2531,7 @@ mod tests {
     fn tab_in_normal_emits_jump_history_forward() {
         let (_, b) = fixture();
         let a = shared_actions();
-        match translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Tab),
-        ) {
+        match translate(ctx(ModalState::Normal, &b), key(KeyCode::Tab)) {
             Action::Invoke(inv) => assert_eq!(inv.command, a.jump_history_forward),
             other => panic!("expected Invoke(jump_history_forward), got {other:?}"),
         }
@@ -2729,10 +2543,7 @@ mod tests {
     fn quote_in_normal_absorbs_partial_chord() {
         // Slice 8.i.4.a: `"` migrated to partial_chord.
         let (_, b) = fixture();
-        let action = translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('"')),
-        );
+        let action = translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('"')));
         assert!(matches!(
             action,
             Action::AbsorbPartialChord(c) if c == crate::chord::KeyChord::char('"')
@@ -2834,10 +2645,7 @@ mod tests {
     fn tilde_emits_toggle_case_at_cursor() {
         let (_, b) = fixture();
         let a = shared_actions();
-        match translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('~')),
-        ) {
+        match translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('~'))) {
             Action::Invoke(inv) => assert_eq!(inv.command, a.toggle_case_at_cursor),
             other => panic!("expected Invoke(toggle_case_at_cursor), got {other:?}"),
         }
@@ -2849,10 +2657,7 @@ mod tests {
     fn star_emits_search_word_forward() {
         let (_, b) = fixture();
         let a = shared_actions();
-        match translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('*')),
-        ) {
+        match translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('*'))) {
             Action::Invoke(inv) => {
                 assert_eq!(inv.command, a.search_word_under_cursor_forward)
             }
@@ -2864,10 +2669,7 @@ mod tests {
     fn hash_emits_search_word_backward() {
         let (_, b) = fixture();
         let a = shared_actions();
-        match translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('#')),
-        ) {
+        match translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('#'))) {
             Action::Invoke(inv) => {
                 assert_eq!(inv.command, a.search_word_under_cursor_backward)
             }
@@ -2879,10 +2681,7 @@ mod tests {
     fn percent_emits_match_bracket() {
         let (_, b) = fixture();
         let a = shared_actions();
-        match translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('%')),
-        ) {
+        match translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('%'))) {
             Action::Invoke(inv) => assert_eq!(inv.command, a.match_bracket),
             other => panic!("expected Invoke(match_bracket), got {other:?}"),
         }
@@ -2894,10 +2693,7 @@ mod tests {
     fn capital_h_emits_jump_viewport_top() {
         let (_, b) = fixture();
         let a = shared_actions();
-        let action = translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('H')),
-        );
+        let action = translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('H')));
         match action {
             Action::Invoke(inv) => assert_eq!(inv.command, a.jump_viewport_top),
             other => panic!("expected Invoke(jump_viewport_top), got {other:?}"),
@@ -2908,10 +2704,7 @@ mod tests {
     fn capital_m_emits_jump_viewport_middle() {
         let (_, b) = fixture();
         let a = shared_actions();
-        let action = translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('M')),
-        );
+        let action = translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('M')));
         match action {
             Action::Invoke(inv) => assert_eq!(inv.command, a.jump_viewport_middle),
             other => panic!("expected Invoke(jump_viewport_middle), got {other:?}"),
@@ -2922,10 +2715,7 @@ mod tests {
     fn capital_l_emits_jump_viewport_bottom() {
         let (_, b) = fixture();
         let a = shared_actions();
-        let action = translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('L')),
-        );
+        let action = translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('L')));
         match action {
             Action::Invoke(inv) => assert_eq!(inv.command, a.jump_viewport_bottom),
             other => panic!("expected Invoke(jump_viewport_bottom), got {other:?}"),
@@ -2936,10 +2726,7 @@ mod tests {
     fn z_absorbs_partial_chord() {
         // Slice 8.i.4.a: `z` migrated to partial_chord.
         let (_, b) = fixture();
-        let action = translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('z')),
-        );
+        let action = translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('z')));
         assert!(matches!(
             action,
             Action::AbsorbPartialChord(c) if c == crate::chord::KeyChord::char('z')
@@ -2992,10 +2779,7 @@ mod tests {
     fn ctrl_f_emits_page_down() {
         let (_, b) = fixture();
         let a = shared_actions();
-        match translate(
-            ctx(ModalState::Normal, &b),
-            ctrl(KeyCode::Char('f')),
-        ) {
+        match translate(ctx(ModalState::Normal, &b), ctrl(KeyCode::Char('f'))) {
             Action::Invoke(inv) => assert_eq!(inv.command, a.page_down),
             other => panic!("expected Invoke(page_down), got {other:?}"),
         }
@@ -3005,10 +2789,7 @@ mod tests {
     fn ctrl_b_emits_page_up() {
         let (_, b) = fixture();
         let a = shared_actions();
-        match translate(
-            ctx(ModalState::Normal, &b),
-            ctrl(KeyCode::Char('b')),
-        ) {
+        match translate(ctx(ModalState::Normal, &b), ctrl(KeyCode::Char('b'))) {
             Action::Invoke(inv) => assert_eq!(inv.command, a.page_up),
             other => panic!("expected Invoke(page_up), got {other:?}"),
         }
@@ -3018,10 +2799,7 @@ mod tests {
     fn ctrl_e_emits_scroll_line_down() {
         let (_, b) = fixture();
         let a = shared_actions();
-        match translate(
-            ctx(ModalState::Normal, &b),
-            ctrl(KeyCode::Char('e')),
-        ) {
+        match translate(ctx(ModalState::Normal, &b), ctrl(KeyCode::Char('e'))) {
             Action::Invoke(inv) => assert_eq!(inv.command, a.scroll_line_down),
             other => panic!("expected Invoke(scroll_line_down), got {other:?}"),
         }
@@ -3031,10 +2809,7 @@ mod tests {
     fn ctrl_y_emits_scroll_line_up() {
         let (_, b) = fixture();
         let a = shared_actions();
-        match translate(
-            ctx(ModalState::Normal, &b),
-            ctrl(KeyCode::Char('y')),
-        ) {
+        match translate(ctx(ModalState::Normal, &b), ctrl(KeyCode::Char('y'))) {
             Action::Invoke(inv) => assert_eq!(inv.command, a.scroll_line_up),
             other => panic!("expected Invoke(scroll_line_up), got {other:?}"),
         }
@@ -3058,10 +2833,7 @@ mod tests {
     fn capital_r_enters_replace_mode() {
         let (_, b) = fixture();
         let a = shared_actions();
-        match translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('R')),
-        ) {
+        match translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('R'))) {
             Action::Invoke(inv) => assert_eq!(inv.command, a.enter_mode_replace),
             other => panic!("expected Invoke(enter_mode_replace), got {other:?}"),
         }
@@ -3071,10 +2843,7 @@ mod tests {
     fn char_in_replace_emits_overwrite() {
         let (_, b) = fixture();
         let a = shared_actions();
-        match translate(
-            ctx(ModalState::Replace, &b),
-            key(KeyCode::Char('z')),
-        ) {
+        match translate(ctx(ModalState::Replace, &b), key(KeyCode::Char('z'))) {
             Action::Invoke(inv) => {
                 assert_eq!(inv.command, a.overwrite_char);
                 assert!(matches!(inv.args, lattice_grammar::args::Args::Char('z')));
@@ -3087,10 +2856,7 @@ mod tests {
     fn esc_in_replace_returns_to_normal() {
         let (_, b) = fixture();
         let a = shared_actions();
-        match translate(
-            ctx(ModalState::Replace, &b),
-            key(KeyCode::Esc),
-        ) {
+        match translate(ctx(ModalState::Replace, &b), key(KeyCode::Esc)) {
             Action::Invoke(inv) => assert_eq!(inv.command, a.enter_mode_normal),
             other => panic!("expected Invoke(enter_mode_normal), got {other:?}"),
         }
@@ -3100,10 +2866,7 @@ mod tests {
     fn backspace_in_replace_emits_replace_undo_last() {
         let (_, b) = fixture();
         let a = shared_actions();
-        match translate(
-            ctx(ModalState::Replace, &b),
-            key(KeyCode::Backspace),
-        ) {
+        match translate(ctx(ModalState::Replace, &b), key(KeyCode::Backspace)) {
             Action::Invoke(inv) => assert_eq!(inv.command, a.replace_undo_last),
             other => panic!("expected Invoke(replace_undo_last), got {other:?}"),
         }
@@ -3113,10 +2876,7 @@ mod tests {
     fn enter_in_replace_inserts_newline() {
         let (_, b) = fixture();
         let a = shared_actions();
-        match translate(
-            ctx(ModalState::Replace, &b),
-            key(KeyCode::Enter),
-        ) {
+        match translate(ctx(ModalState::Replace, &b), key(KeyCode::Enter)) {
             Action::Invoke(inv) => assert_eq!(inv.command, a.insert_newline),
             other => panic!("expected Invoke(insert_newline), got {other:?}"),
         }
@@ -3135,9 +2895,7 @@ mod tests {
         c.keymap = &empty;
         match translate(c, key(KeyCode::Char('z'))) {
             Action::None => {}
-            other => panic!(
-                "empty handle must yield None for Replace dispatch, got {other:?}"
-            ),
+            other => panic!("empty handle must yield None for Replace dispatch, got {other:?}"),
         }
     }
 
@@ -3168,10 +2926,7 @@ mod tests {
     fn m_in_normal_absorbs_partial_chord() {
         // Slice 8.i.4.a: `m` migrated to partial_chord.
         let (_, b) = fixture();
-        let action = translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('m')),
-        );
+        let action = translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('m')));
         assert!(matches!(
             action,
             Action::AbsorbPartialChord(c) if c == crate::chord::KeyChord::char('m')
@@ -3182,10 +2937,7 @@ mod tests {
     fn apostrophe_in_normal_absorbs_partial_chord() {
         // Slice 8.i.4.a: `'` migrated to partial_chord.
         let (_, b) = fixture();
-        let action = translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('\'')),
-        );
+        let action = translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('\'')));
         assert!(matches!(
             action,
             Action::AbsorbPartialChord(c) if c == crate::chord::KeyChord::char('\'')
@@ -3196,10 +2948,7 @@ mod tests {
     fn backtick_in_normal_absorbs_partial_chord() {
         // Slice 8.i.4.a: `` ` `` migrated to partial_chord.
         let (_, b) = fixture();
-        let action = translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('`')),
-        );
+        let action = translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('`')));
         assert!(matches!(
             action,
             Action::AbsorbPartialChord(c) if c == crate::chord::KeyChord::char('`')
@@ -3228,7 +2977,11 @@ mod tests {
         let (_, b) = fixture();
         let a = shared_actions();
         let action = translate(
-            ctx_partial(ModalState::Normal, &[crate::chord::KeyChord::char('\'')], &b),
+            ctx_partial(
+                ModalState::Normal,
+                &[crate::chord::KeyChord::char('\'')],
+                &b,
+            ),
             key(KeyCode::Char('z')),
         );
         match action {
@@ -3313,10 +3066,7 @@ mod tests {
         // Slice 8.i.4.c: `>` -> Invoke(absorb_operator_indent_right).
         let (_, b) = fixture();
         let a = shared_actions();
-        let action = translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('>')),
-        );
+        let action = translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('>')));
         match action {
             Action::Invoke(inv) => assert_eq!(inv.command, a.absorb_operator_indent_right),
             other => panic!("expected Invoke(absorb_operator_indent_right), got {other:?}"),
@@ -3327,10 +3077,7 @@ mod tests {
     fn lt_invokes_absorb_operator_indent_left() {
         let (_, b) = fixture();
         let a = shared_actions();
-        let action = translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('<')),
-        );
+        let action = translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('<')));
         match action {
             Action::Invoke(inv) => assert_eq!(inv.command, a.absorb_operator_indent_left),
             other => panic!("expected Invoke(absorb_operator_indent_left), got {other:?}"),
@@ -3341,11 +3088,7 @@ mod tests {
     fn double_gt_resolves_to_indent_right_current_line() {
         let (_, b) = fixture();
         let action = translate(
-            ctx_partial(
-                ModalState::Normal,
-                &[crate::chord::KeyChord::char('>')],
-                &b,
-            ),
+            ctx_partial(ModalState::Normal, &[crate::chord::KeyChord::char('>')], &b),
             key(KeyCode::Char('>')),
         );
         match action {
@@ -3404,7 +3147,14 @@ mod tests {
         let (_, b) = fixture();
         // After `gu`, pending = AfterOperator(lower). Pressing `u` doubles.
         let action = translate(
-            ctx_partial(ModalState::Normal, &[crate::chord::KeyChord::char('g'), crate::chord::KeyChord::char('u')], &b),
+            ctx_partial(
+                ModalState::Normal,
+                &[
+                    crate::chord::KeyChord::char('g'),
+                    crate::chord::KeyChord::char('u'),
+                ],
+                &b,
+            ),
             key(KeyCode::Char('u')),
         );
         match action {
@@ -3421,7 +3171,14 @@ mod tests {
         let (_, b) = fixture();
         // After `gU`, pending = AfterOperator(upper). Pressing `w` is the motion.
         let action = translate(
-            ctx_partial(ModalState::Normal, &[crate::chord::KeyChord::char('g'), crate::chord::KeyChord::char('U')], &b),
+            ctx_partial(
+                ModalState::Normal,
+                &[
+                    crate::chord::KeyChord::char('g'),
+                    crate::chord::KeyChord::char('U'),
+                ],
+                &b,
+            ),
             key(KeyCode::Char('w')),
         );
         match action {
@@ -3672,10 +3429,7 @@ mod tests {
     fn dot_in_normal_emits_repeat_last_change() {
         let (_, b) = fixture();
         let a = shared_actions();
-        match translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('.')),
-        ) {
+        match translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('.'))) {
             Action::Invoke(inv) => assert_eq!(inv.command, a.repeat_last_change),
             other => panic!("expected Invoke(repeat_last_change), got {other:?}"),
         }
@@ -3687,10 +3441,7 @@ mod tests {
     fn v_in_normal_enters_charwise_visual() {
         let (_, b) = fixture();
         let a = shared_actions();
-        let action = translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('v')),
-        );
+        let action = translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('v')));
         match action {
             Action::Invoke(inv) => assert_eq!(inv.command, a.enter_visual_charwise),
             other => panic!("expected Invoke(enter_visual_charwise), got {other:?}"),
@@ -3701,10 +3452,7 @@ mod tests {
     fn capital_v_in_normal_enters_linewise_visual() {
         let (_, b) = fixture();
         let a = shared_actions();
-        let action = translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('V')),
-        );
+        let action = translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('V')));
         match action {
             Action::Invoke(inv) => assert_eq!(inv.command, a.enter_visual_linewise),
             other => panic!("expected Invoke(enter_visual_linewise), got {other:?}"),
@@ -3805,10 +3553,7 @@ mod tests {
             VisualKind::Linewise,
             VisualKind::Blockwise,
         ] {
-            let action = translate(
-                ctx(ModalState::Visual(kind), &b),
-                key(KeyCode::Char('>')),
-            );
+            let action = translate(ctx(ModalState::Visual(kind), &b), key(KeyCode::Char('>')));
             match action {
                 Action::Invoke(inv) => {
                     assert_eq!(inv.command, b.indent_right.0, "kind = {kind:?}");
@@ -3829,10 +3574,7 @@ mod tests {
             VisualKind::Linewise,
             VisualKind::Blockwise,
         ] {
-            let action = translate(
-                ctx(ModalState::Visual(kind), &b),
-                key(KeyCode::Char('<')),
-            );
+            let action = translate(ctx(ModalState::Visual(kind), &b), key(KeyCode::Char('<')));
             match action {
                 Action::Invoke(inv) => {
                     assert_eq!(inv.command, b.indent_left.0, "kind = {kind:?}");
@@ -3852,10 +3594,7 @@ mod tests {
         let (_, b) = fixture();
         for digit in 1u8..=9 {
             let c = char::from_digit(digit as u32, 10).unwrap();
-            let action = translate(
-                ctx(ModalState::Normal, &b),
-                key(KeyCode::Char(c)),
-            );
+            let action = translate(ctx(ModalState::Normal, &b), key(KeyCode::Char(c)));
             assert!(matches!(action, Action::PushDigit(d) if d == digit));
         }
     }
@@ -3863,10 +3602,7 @@ mod tests {
     #[test]
     fn zero_with_no_count_invokes_line_start() {
         let (_, b) = fixture();
-        let action = translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('0')),
-        );
+        let action = translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('0')));
         assert_eq!(invocation_command(&action), Some(b.line_start.0));
     }
 
@@ -3875,7 +3611,7 @@ mod tests {
         let (_, b) = fixture();
         // pending_count == 1 -> '0' becomes a digit, not line_start.
         let action = translate(
-            ctx_with_count(ModalState::Normal, &b,1),
+            ctx_with_count(ModalState::Normal, &b, 1),
             key(KeyCode::Char('0')),
         );
         assert!(matches!(action, Action::PushDigit(0)));
@@ -3885,7 +3621,7 @@ mod tests {
     fn digit_after_count_extends_count() {
         let (_, b) = fixture();
         let action = translate(
-            ctx_with_count(ModalState::Normal, &b,12),
+            ctx_with_count(ModalState::Normal, &b, 12),
             key(KeyCode::Char('3')),
         );
         // Translate just emits the digit; App accumulates 12 -> 123.
@@ -3896,7 +3632,7 @@ mod tests {
     fn motion_after_count_dispatches_motion() {
         let (_, b) = fixture();
         let action = translate(
-            ctx_with_count(ModalState::Normal, &b,3),
+            ctx_with_count(ModalState::Normal, &b, 3),
             key(KeyCode::Char('w')),
         );
         // Slice 8.g.iv: translate attaches the in-progress count
@@ -3941,9 +3677,7 @@ mod tests {
                 ));
                 assert_eq!(inv.count, Some(lattice_grammar::command::Count(6)));
             }
-            other => panic!(
-                "expected Invoke(delete, word_forward, count=6), got {other:?}"
-            ),
+            other => panic!("expected Invoke(delete, word_forward, count=6), got {other:?}"),
         }
     }
 
@@ -3956,10 +3690,7 @@ mod tests {
         // Pressing `f` returns `AbsorbPartialChord(f)` instead
         // of `SetPending(AfterFindChar { kind: Forward, ... })`.
         let (_, b) = fixture();
-        let action = translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('f')),
-        );
+        let action = translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('f')));
         assert!(matches!(
             action,
             Action::AbsorbPartialChord(c) if c == crate::chord::KeyChord::char('f')
@@ -3969,10 +3700,7 @@ mod tests {
     #[test]
     fn capital_f_absorbs_partial_chord() {
         let (_, b) = fixture();
-        let action = translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('F')),
-        );
+        let action = translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('F')));
         assert!(matches!(
             action,
             Action::AbsorbPartialChord(c) if c == crate::chord::KeyChord::char('F')
@@ -3982,10 +3710,7 @@ mod tests {
     #[test]
     fn t_absorbs_partial_chord() {
         let (_, b) = fixture();
-        let action = translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('t')),
-        );
+        let action = translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('t')));
         assert!(matches!(
             action,
             Action::AbsorbPartialChord(c) if c == crate::chord::KeyChord::char('t')
@@ -3995,10 +3720,7 @@ mod tests {
     #[test]
     fn capital_t_absorbs_partial_chord() {
         let (_, b) = fixture();
-        let action = translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('T')),
-        );
+        let action = translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('T')));
         assert!(matches!(
             action,
             Action::AbsorbPartialChord(c) if c == crate::chord::KeyChord::char('T')
@@ -4012,11 +3734,7 @@ mod tests {
         // args=Char('z')).
         let (_, b) = fixture();
         let action = translate(
-            ctx_partial(
-                ModalState::Normal,
-                &[crate::chord::KeyChord::char('f')],
-                &b,
-            ),
+            ctx_partial(ModalState::Normal, &[crate::chord::KeyChord::char('f')], &b),
             key(KeyCode::Char('z')),
         );
         match action {
@@ -4038,21 +3756,14 @@ mod tests {
         // First press: `d` -> Invoke(absorb_operator_delete);
         // App's apply_app_effect pushes [d] to partial_chord
         // and latches op_count.
-        let after_d = translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('d')),
-        );
+        let after_d = translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('d')));
         match after_d {
             Action::Invoke(_) => {}
             other => panic!("expected Invoke(absorb_operator_delete), got {other:?}"),
         };
         // Second press: `f` in partial_chord = [d] -> AbsorbPartialChord(f).
         let after_df = translate(
-            ctx_partial(
-                ModalState::Normal,
-                &[crate::chord::KeyChord::char('d')],
-                &b,
-            ),
+            ctx_partial(ModalState::Normal, &[crate::chord::KeyChord::char('d')], &b),
             key(KeyCode::Char('f')),
         );
         assert!(matches!(
@@ -4106,30 +3817,21 @@ mod tests {
     #[test]
     fn b_invokes_word_backward() {
         let (_, b) = fixture();
-        let action = translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('b')),
-        );
+        let action = translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('b')));
         assert_eq!(invocation_command(&action), Some(b.word_backward.0));
     }
 
     #[test]
     fn e_invokes_word_end() {
         let (_, b) = fixture();
-        let action = translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('e')),
-        );
+        let action = translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('e')));
         assert_eq!(invocation_command(&action), Some(b.word_end.0));
     }
 
     #[test]
     fn caret_invokes_first_non_blank() {
         let (_, b) = fixture();
-        let action = translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('^')),
-        );
+        let action = translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('^')));
         assert_eq!(invocation_command(&action), Some(b.first_non_blank.0));
     }
 
@@ -4174,10 +3876,7 @@ mod tests {
     fn c_invokes_absorb_operator_change() {
         let (_, b) = fixture();
         let a = shared_actions();
-        let action = translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('c')),
-        );
+        let action = translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('c')));
         match action {
             Action::Invoke(inv) => assert_eq!(inv.command, a.absorb_operator_change),
             other => panic!("expected Invoke(absorb_operator_change), got {other:?}"),
@@ -4225,10 +3924,7 @@ mod tests {
     fn y_invokes_absorb_operator_yank() {
         let (_, b) = fixture();
         let a = shared_actions();
-        let action = translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('y')),
-        );
+        let action = translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('y')));
         match action {
             Action::Invoke(inv) => assert_eq!(inv.command, a.absorb_operator_yank),
             other => panic!("expected Invoke(absorb_operator_yank), got {other:?}"),
@@ -4273,10 +3969,7 @@ mod tests {
     #[test]
     fn capital_y_aliases_to_yank_current_line() {
         let (_, b) = fixture();
-        let action = translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('Y')),
-        );
+        let action = translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('Y')));
         match action {
             Action::Invoke(inv) => {
                 assert_eq!(inv.command, b.yank.0);
@@ -4290,10 +3983,7 @@ mod tests {
     fn p_lowercase_is_paste_after() {
         let (_, b) = fixture();
         let a = shared_actions();
-        let action = translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('p')),
-        );
+        let action = translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('p')));
         match action {
             Action::Invoke(inv) => assert_eq!(inv.command, a.paste_after),
             other => panic!("expected Invoke(paste_after), got {other:?}"),
@@ -4304,10 +3994,7 @@ mod tests {
     fn p_uppercase_is_paste_before() {
         let (_, b) = fixture();
         let a = shared_actions();
-        let action = translate(
-            ctx(ModalState::Normal, &b),
-            key(KeyCode::Char('P')),
-        );
+        let action = translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('P')));
         match action {
             Action::Invoke(inv) => assert_eq!(inv.command, a.paste_before),
             other => panic!("expected Invoke(paste_before), got {other:?}"),

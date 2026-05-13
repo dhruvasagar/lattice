@@ -135,9 +135,7 @@ impl std::fmt::Debug for DiagnosticsBus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lsp_types::{
-        Diagnostic, DiagnosticSeverity, Position as LspPosition, Range as LspRange,
-    };
+    use lsp_types::{Diagnostic, DiagnosticSeverity, Position as LspPosition, Range as LspRange};
     use std::str::FromStr;
 
     fn sample_diagnostic() -> Diagnostic {

@@ -729,12 +729,8 @@ mod tests {
         // module scope). Manual impl is enough since we only
         // need the trait, not the descriptor entry.
         impl lattice_protocol::event_registry::Event for OtherEvent {
-            fn event_type_id(
-                &self,
-            ) -> lattice_protocol::event_registry::EventTypeId {
-                lattice_protocol::event_registry::EventTypeId::of::<Self>(
-                    "test.other",
-                )
+            fn event_type_id(&self) -> lattice_protocol::event_registry::EventTypeId {
+                lattice_protocol::event_registry::EventTypeId::of::<Self>("test.other")
             }
         }
         let bus = EventBus::new();

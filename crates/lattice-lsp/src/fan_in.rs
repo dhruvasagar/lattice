@@ -63,8 +63,7 @@ use crate::logging::{LogLevel, LogSource};
 /// [`EventBus::unsubscribe`] when the actor is dropped to keep
 /// the bus's bucket from accumulating dead entries.
 pub fn spawn(handle: ServerHandle, bus: Arc<EventBus>) -> SubscriptionId {
-    let (tx, mut rx) =
-        tokio::sync::mpsc::unbounded_channel::<LspDocumentChanged>();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<LspDocumentChanged>();
     let sub_id = bus.subscribe_typed(tx);
 
     let server_id_arc: Arc<str> = Arc::from(handle.server_id());
@@ -84,9 +83,7 @@ pub fn spawn(handle: ServerHandle, bus: Arc<EventBus>) -> SubscriptionId {
                         text: ae.inserted_text,
                     },
                 };
-                if let Err(LspError::ActorGone) =
-                    handle.record_edit(uri.clone(), edit)
-                {
+                if let Err(LspError::ActorGone) = handle.record_edit(uri.clone(), edit) {
                     // The actor has shut down. Stop the fan-in;
                     // the supervisor will unsubscribe when it
                     // notices, but exiting promptly stops us

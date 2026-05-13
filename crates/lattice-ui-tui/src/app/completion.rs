@@ -93,10 +93,7 @@ impl App {
         let bytes = line_text.as_bytes();
         let cursor_byte = self.cursor.byte as usize;
         let mut start = cursor_byte;
-        while start > 0
-            && start <= bytes.len()
-            && is_word_char_byte(bytes[start - 1])
-        {
+        while start > 0 && start <= bytes.len() && is_word_char_byte(bytes[start - 1]) {
             start -= 1;
         }
         let anchor = Position::new(self.cursor.line, start as u32);
@@ -119,10 +116,7 @@ impl App {
                 .cloned()
         };
         let Some(snippet) = snippet else {
-            self.set_message(
-                EchoLevel::Info,
-                format!("no snippet for prefix `{prefix}`"),
-            );
+            self.set_message(EchoLevel::Info, format!("no snippet for prefix `{prefix}`"));
             return;
         };
         self.expand_snippet(&snippet.body, anchor);
@@ -219,10 +213,7 @@ impl App {
         }
         self.snippet_registry.store(std::sync::Arc::new(next));
         if errors.is_empty() {
-            self.set_message(
-                EchoLevel::Info,
-                format!("reloaded {total} snippets"),
-            );
+            self.set_message(EchoLevel::Info, format!("reloaded {total} snippets"));
         } else {
             self.set_message(
                 EchoLevel::Warn,
@@ -237,10 +228,7 @@ impl App {
 
     /// Helper: move the cursor to the start of the first range in
     /// a tabstop group.
-    fn move_cursor_to_snippet_group(
-        &mut self,
-        group: &lattice_snippet::TabstopGroup,
-    ) {
+    fn move_cursor_to_snippet_group(&mut self, group: &lattice_snippet::TabstopGroup) {
         let Some(first) = group.ranges.first() else {
             return;
         };
@@ -271,18 +259,20 @@ impl App {
     /// per press; clamps at the body's last visible line.
     pub fn do_completion_docs_scroll_down(&mut self) {
         if let Some(state) = self.insert_completion.as_mut()
-            && let Some(doc) = state.doc_popup.as_mut() {
-                doc.scroll = doc.scroll.saturating_add(8);
-            }
+            && let Some(doc) = state.doc_popup.as_mut()
+        {
+            doc.scroll = doc.scroll.saturating_add(8);
+        }
     }
 
     /// Page the docs popup body backward (`<C-b>` inside the
     /// completion-popup minor mode).
     pub fn do_completion_docs_scroll_up(&mut self) {
         if let Some(state) = self.insert_completion.as_mut()
-            && let Some(doc) = state.doc_popup.as_mut() {
-                doc.scroll = doc.scroll.saturating_sub(8);
-            }
+            && let Some(doc) = state.doc_popup.as_mut()
+        {
+            doc.scroll = doc.scroll.saturating_sub(8);
+        }
     }
 
     /// Run sync sources against the supplied state, populating
@@ -380,9 +370,7 @@ impl App {
                 {
                     continue;
                 }
-                if let lattice_completion::CompletionSourceKind::Sync(src) =
-                    &contribution.kind
-                {
+                if let lattice_completion::CompletionSourceKind::Sync(src) = &contribution.kind {
                     raw.extend(src.produce(&ctx));
                 }
                 // Async sources are spawned at popup-open time
@@ -411,7 +399,6 @@ impl App {
         self.refilter_insert_completion(state);
     }
 
-
     /// Re-run matcher + ranker over `state.raw` against the
     /// current `state.query`. Called every time the query
     /// mutates (each Insert-mode keystroke while the popup is
@@ -433,16 +420,13 @@ impl App {
                 None => true,
             })
             .filter_map(|raw| {
-                lattice_completion::CandidateMatcher::matches(
-                    &matcher,
-                    &state.query,
-                    raw,
+                lattice_completion::CandidateMatcher::matches(&matcher, &state.query, raw).map(
+                    |(score, ranges)| lattice_completion::ScoredCandidate {
+                        raw: raw.clone(),
+                        score,
+                        match_ranges: ranges,
+                    },
                 )
-                .map(|(score, ranges)| lattice_completion::ScoredCandidate {
-                    raw: raw.clone(),
-                    score,
-                    match_ranges: ranges,
-                })
             })
             .collect();
         let ranker = lattice_completion::InsertRanker::new();
@@ -462,10 +446,7 @@ impl App {
     /// frequency lift. Future bonus terms (preselect,
     /// deprecated penalty) compose into this same closure as
     /// 4.2.g.5 / 4.2.g.6 land them.
-    fn completion_total_bonus(
-        &self,
-        raw: &lattice_completion::RawCandidate,
-    ) -> u32 {
+    fn completion_total_bonus(&self, raw: &lattice_completion::RawCandidate) -> u32 {
         let priority = raw
             .source
             .as_ref()
@@ -487,10 +468,7 @@ impl App {
     /// future built-ins not yet wired into config -- get 0;
     /// the ranker still sorts them by their matcher score so
     /// they're not discarded, just not boosted.
-    fn priority_for_source(
-        &self,
-        source: &lattice_completion::SourceId,
-    ) -> u32 {
+    fn priority_for_source(&self, source: &lattice_completion::SourceId) -> u32 {
         use lattice_config::{
             CompletionSourceBufferWordsPriority, CompletionSourceLspPriority,
             CompletionSourcePathPriority, CompletionSourceSnippetPriority,
@@ -562,9 +540,7 @@ impl App {
         // the popup-supplied filename replaces just the current
         // path segment; non-path sources skip emit so the popup
         // doesn't show buffer words intermixed with filenames.
-        let path_id = lattice_completion::SourceId::new(
-            lattice_completion::PATH_SOURCE_ID,
-        );
+        let path_id = lattice_completion::SourceId::new(lattice_completion::PATH_SOURCE_ID);
         let language = self.active_language_id();
         let path_source_enabled = self
             .effective_completion_for(&language)
@@ -636,11 +612,11 @@ impl App {
         let lsp_pending = self.pending_insert_completion_lsp_token.is_some();
         if !lsp_pending
             && let Some(state) = self.insert_completion.as_ref()
-                && state.rendered.is_empty()
-            {
-                self.set_message(EchoLevel::Info, "no completions");
-                self.insert_completion = None;
-            }
+            && state.rendered.is_empty()
+        {
+            self.set_message(EchoLevel::Info, "no completions");
+            self.insert_completion = None;
+        }
     }
 
     /// Insert-mode character key while the popup is open
@@ -653,9 +629,7 @@ impl App {
             .insert_completion
             .as_ref()
             .and_then(|s| s.selected_candidate())
-            .map(|cand| {
-                self.effective_commit_chars_for(cand).contains(&ch)
-            })
+            .map(|cand| self.effective_commit_chars_for(cand).contains(&ch))
             .unwrap_or(false);
         if is_commit {
             self.do_completion_accept();
@@ -815,7 +789,7 @@ impl App {
                         self.apply_lsp_completion_accept(meta, state.anchor);
                     }
                 }
-                    return;
+                return;
             }
             self.apply_lsp_completion_accept(meta, state.anchor);
             return;
@@ -829,10 +803,7 @@ impl App {
                 self.cursor = applied.inserted_range.end;
             }
             Err(e) => {
-                self.set_message(
-                    EchoLevel::Error,
-                    format!("completion: apply failed: {e:?}"),
-                );
+                self.set_message(EchoLevel::Error, format!("completion: apply failed: {e:?}"));
             }
         }
     }
@@ -883,16 +854,12 @@ impl App {
         // Header: signature / detail when present. The body
         // joins detail + documentation so the popup feels like
         // a hover panel for the candidate.
-        let detail = meta
-            .detail
-            .as_ref()
-            .filter(|s| !s.is_empty())
-            .map(|s| {
-                // Render detail as a fenced code block so the
-                // popup's markdown highlighter (4.2.g.5+) picks
-                // up syntax highlighting once wired.
-                format!("```\n{s}\n```")
-            });
+        let detail = meta.detail.as_ref().filter(|s| !s.is_empty()).map(|s| {
+            // Render detail as a fenced code block so the
+            // popup's markdown highlighter (4.2.g.5+) picks
+            // up syntax highlighting once wired.
+            format!("```\n{s}\n```")
+        });
         let docs = meta
             .documentation
             .as_ref()
@@ -966,11 +933,7 @@ impl App {
         let query = line_text.get(start..end).unwrap_or("").to_string();
         // If the user typed past the word (e.g. inserted a
         // space), close the popup.
-        if query
-            .as_bytes()
-            .iter()
-            .any(|b| !is_word_char_byte(*b))
-        {
+        if query.as_bytes().iter().any(|b| !is_word_char_byte(*b)) {
             self.insert_completion = None;
             return;
         }
@@ -999,16 +962,13 @@ impl App {
                 None => true,
             })
             .filter_map(|raw| {
-                lattice_completion::CandidateMatcher::matches(
-                    &matcher,
-                    &state.query,
-                    raw,
+                lattice_completion::CandidateMatcher::matches(&matcher, &state.query, raw).map(
+                    |(score, ranges)| lattice_completion::ScoredCandidate {
+                        raw: raw.clone(),
+                        score,
+                        match_ranges: ranges,
+                    },
                 )
-                .map(|(score, ranges)| lattice_completion::ScoredCandidate {
-                    raw: raw.clone(),
-                    score,
-                    match_ranges: ranges,
-                })
             })
             .collect();
         // Disjoint-field borrows: `state` aliases
@@ -1063,8 +1023,7 @@ impl App {
             // Mark the trigger as IncompleteRefresh so the
             // LSP request reports the right `triggerKind`.
             if let Some(state) = self.insert_completion.as_mut() {
-                state.trigger =
-                    lattice_completion::CompletionTrigger::IncompleteRefresh;
+                state.trigger = lattice_completion::CompletionTrigger::IncompleteRefresh;
             }
             self.do_lsp_insert_completion_request();
         }
@@ -1126,11 +1085,12 @@ impl App {
         let body = self.docs_body_for_selected();
         let needs_resolve = body.is_none() && self.selected_needs_resolve();
         if let Some(state) = self.insert_completion.as_mut()
-            && let Some(doc) = state.doc_popup.as_mut() {
-                doc.for_index = new_index;
-                doc.scroll = 0;
-                doc.body = body;
-            }
+            && let Some(doc) = state.doc_popup.as_mut()
+        {
+            doc.for_index = new_index;
+            doc.scroll = 0;
+            doc.body = body;
+        }
         if needs_resolve {
             self.do_completion_resolve_focused();
         }
@@ -1148,9 +1108,7 @@ impl App {
                 .file_name()
                 .and_then(|s| s.to_str())
                 .map(|s| s.to_string());
-            ctx.directory = path
-                .parent()
-                .map(|p| p.display().to_string());
+            ctx.directory = path.parent().map(|p| p.display().to_string());
         }
         ctx.line_index = Some(self.cursor.line);
         if let Some(line) = snap.buffer.line(self.cursor.line) {
@@ -1175,8 +1133,7 @@ impl App {
         &self,
         candidate: &lattice_completion::RenderedCandidate,
     ) -> Option<SnippetCandidateMeta> {
-        let lattice_completion::CandidateData::Extension { kind_id, payload } =
-            &candidate.raw.data
+        let lattice_completion::CandidateData::Extension { kind_id, payload } = &candidate.raw.data
         else {
             return None;
         };
@@ -1242,11 +1199,8 @@ impl App {
                 te.range.start.line,
                 te.range.start.character,
             );
-            let end_byte = lsp_position_to_app_byte(
-                &snap.buffer,
-                te.range.end.line,
-                te.range.end.character,
-            );
+            let end_byte =
+                lsp_position_to_app_byte(&snap.buffer, te.range.end.line, te.range.end.character);
             let r = lattice_protocol::position::Range::new(
                 Position::new(te.range.start.line, start_byte),
                 Position::new(te.range.end.line, end_byte),
@@ -1287,8 +1241,11 @@ impl App {
             let mut active = lattice_snippet::ActiveSnippet::from_render(&rendered, origin);
             if let Some(group) = active.focus_first()
                 && let Some(first) = group.ranges.first()
-                && let Ok(pos) =
-                    self.document.snapshot().buffer.byte_to_position(first.start)
+                && let Ok(pos) = self
+                    .document
+                    .snapshot()
+                    .buffer
+                    .byte_to_position(first.start)
             {
                 self.cursor = pos;
             }
@@ -1300,11 +1257,7 @@ impl App {
         Ok(())
     }
 
-    pub(super) fn expand_snippet(
-        &mut self,
-        body: &lattice_snippet::SnippetBody,
-        anchor: Position,
-    ) {
+    pub(super) fn expand_snippet(&mut self, body: &lattice_snippet::SnippetBody, anchor: Position) {
         let vars = self.snippet_variable_context();
         let rendered = lattice_snippet::render::render(body, &vars);
         // Splice the rendered text over `[anchor, cursor]`.
@@ -1313,10 +1266,7 @@ impl App {
         let applied = match self.apply_edit_blocking(edit) {
             Ok(a) => a,
             Err(e) => {
-                self.set_message(
-                    EchoLevel::Error,
-                    format!("snippet: apply failed: {e:?}"),
-                );
+                self.set_message(EchoLevel::Error, format!("snippet: apply failed: {e:?}"));
                 return;
             }
         };
@@ -1329,15 +1279,18 @@ impl App {
             .document
             .snapshot()
             .buffer
-            .position_to_byte(applied.inserted_range.start).unwrap_or_default();
+            .position_to_byte(applied.inserted_range.start)
+            .unwrap_or_default();
         if !rendered.tabstops.is_empty() {
-            let mut active =
-                lattice_snippet::ActiveSnippet::from_render(&rendered, origin);
+            let mut active = lattice_snippet::ActiveSnippet::from_render(&rendered, origin);
             // Focus the first tabstop and move the cursor.
             if let Some(group) = active.focus_first()
                 && let Some(first) = group.ranges.first()
-                && let Ok(pos) =
-                    self.document.snapshot().buffer.byte_to_position(first.start)
+                && let Ok(pos) = self
+                    .document
+                    .snapshot()
+                    .buffer
+                    .byte_to_position(first.start)
             {
                 self.cursor = pos;
             }
@@ -1362,14 +1315,10 @@ impl App {
             Some("rs") => "rust".into(),
             Some("py") => "python".into(),
             Some("go") => "go".into(),
-            Some("js") | Some("jsx") | Some("mjs") | Some("cjs") => {
-                "javascript".into()
-            }
+            Some("js") | Some("jsx") | Some("mjs") | Some("cjs") => "javascript".into(),
             Some("ts") | Some("tsx") => "typescript".into(),
             Some("c") | Some("h") => "c".into(),
-            Some("cc") | Some("cpp") | Some("cxx") | Some("hpp") | Some("hxx") => {
-                "cpp".into()
-            }
+            Some("cc") | Some("cpp") | Some("cxx") | Some("hpp") | Some("hxx") => "cpp".into(),
             Some("md") => "markdown".into(),
             Some("toml") => "toml".into(),
             Some("yaml") | Some("yml") => "yaml".into(),
@@ -1386,10 +1335,7 @@ impl App {
     /// over the spec fallback. Used at every producer-side
     /// enforcement seam (sync source filter, LSP fan-out, the
     /// `auto_insert_single` check at popup-open).
-    pub(crate) fn effective_completion_for(
-        &self,
-        language: &str,
-    ) -> EffectiveCompletionConfig {
+    pub(crate) fn effective_completion_for(&self, language: &str) -> EffectiveCompletionConfig {
         let overrides = self.per_language_completion.get(language);
         EffectiveCompletionConfig {
             sources: overrides.and_then(|o| o.sources.clone()),
@@ -1412,12 +1358,12 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
 
     use super::*;
-    use crate::app::*;
     use crate::app::completion_kind_glyph;
     use crate::app::test_helpers::{
-        app_in_command_mode, app_with, app_with_path, fresh_path_workspace,
-        install_snippet, open_popup_with_top_text, set_rust_syntax,
+        app_in_command_mode, app_with, app_with_path, fresh_path_workspace, install_snippet,
+        open_popup_with_top_text, set_rust_syntax,
     };
+    use crate::app::*;
 
     #[test]
     fn auto_insert_single_default_is_on() {
@@ -1540,7 +1486,13 @@ mod tests {
         let mut a = app_with("for", 10);
         a.modal = ModalState::Insert;
         a.cursor = Position::new(0, 3);
-        install_snippet(&mut a, "*", "for-loop", "for", "for ${1:i} in ${2:iter} { $0 }");
+        install_snippet(
+            &mut a,
+            "*",
+            "for-loop",
+            "for",
+            "for ${1:i} in ${2:iter} { $0 }",
+        );
         a.do_snippet_expand_at_cursor();
         // Buffer text should be the rendered snippet.
         let text = a.document.snapshot().buffer.as_string();
@@ -1557,24 +1509,21 @@ mod tests {
         let mut a = app_with("for", 10);
         a.modal = ModalState::Insert;
         a.cursor = Position::new(0, 3);
-        install_snippet(&mut a, "*", "for-loop", "for", "for ${1:i} in ${2:iter} { $0 }");
+        install_snippet(
+            &mut a,
+            "*",
+            "for-loop",
+            "for",
+            "for ${1:i} in ${2:iter} { $0 }",
+        );
         a.do_snippet_expand_at_cursor();
         // Now at $1.
-        assert_eq!(
-            a.active_snippet.as_ref().unwrap().current_index(),
-            Some(1)
-        );
+        assert_eq!(a.active_snippet.as_ref().unwrap().current_index(), Some(1));
         a.do_snippet_next_placeholder();
-        assert_eq!(
-            a.active_snippet.as_ref().unwrap().current_index(),
-            Some(2)
-        );
+        assert_eq!(a.active_snippet.as_ref().unwrap().current_index(), Some(2));
         a.do_snippet_next_placeholder();
         // $0 is the exit; at this point we're focused on it.
-        assert_eq!(
-            a.active_snippet.as_ref().unwrap().current_index(),
-            Some(0)
-        );
+        assert_eq!(a.active_snippet.as_ref().unwrap().current_index(), Some(0));
         a.do_snippet_next_placeholder();
         // Past $0 -> snippet dropped.
         assert!(a.active_snippet.is_none());
@@ -1588,15 +1537,9 @@ mod tests {
         install_snippet(&mut a, "*", "for-loop", "for", "for ${1:i} in ${2:iter} {}");
         a.do_snippet_expand_at_cursor();
         a.do_snippet_next_placeholder();
-        assert_eq!(
-            a.active_snippet.as_ref().unwrap().current_index(),
-            Some(2)
-        );
+        assert_eq!(a.active_snippet.as_ref().unwrap().current_index(), Some(2));
         a.do_snippet_prev_placeholder();
-        assert_eq!(
-            a.active_snippet.as_ref().unwrap().current_index(),
-            Some(1)
-        );
+        assert_eq!(a.active_snippet.as_ref().unwrap().current_index(), Some(1));
     }
 
     #[test]
@@ -1725,7 +1668,10 @@ mod tests {
         let state = a.insert_completion.as_ref().expect("popup");
         // First rendered candidate is the previously-accepted
         // one, ahead of its tied peers.
-        assert_eq!(state.rendered.first().expect("at least one").raw.text, "bravo");
+        assert_eq!(
+            state.rendered.first().expect("at least one").raw.text,
+            "bravo"
+        );
     }
 
     #[test]
@@ -1766,8 +1712,7 @@ mod tests {
         for cand in &state.raw {
             let src = cand.source.as_ref().map(|s| s.as_str()).unwrap_or("");
             assert_eq!(
-                src,
-                path_id,
+                src, path_id,
                 "non-path source `{src}` slipped into path-context popup",
             );
         }
@@ -1787,18 +1732,11 @@ mod tests {
         a.cursor = Position::new(0, source.find("\"\"").unwrap() as u32 + 1);
         a.do_completion_trigger();
         let state = a.insert_completion.as_ref().expect("popup");
-        let texts: Vec<&str> = state
-            .raw
-            .iter()
-            .map(|c| c.text.as_str())
-            .collect();
+        let texts: Vec<&str> = state.raw.iter().map(|c| c.text.as_str()).collect();
         assert!(texts.contains(&"visible.txt"));
         assert!(!texts.contains(&".hidden"), "dotfile filtered");
         assert!(!texts.contains(&".git/"), ".git filtered");
-        assert!(
-            !texts.contains(&"node_modules/"),
-            "node_modules filtered",
-        );
+        assert!(!texts.contains(&"node_modules/"), "node_modules filtered",);
     }
 
     #[test]
@@ -1866,12 +1804,11 @@ mod tests {
         a.do_completion_trigger();
         assert!(a.completion_in_path_context);
         let state = a.insert_completion.as_ref().expect("popup");
-        let texts: Vec<&str> = state
-            .raw
-            .iter()
-            .map(|c| c.text.as_str())
-            .collect();
-        assert!(texts.contains(&"foo.rs"), "src/foo.rs surfaced -- got {texts:?}");
+        let texts: Vec<&str> = state.raw.iter().map(|c| c.text.as_str()).collect();
+        assert!(
+            texts.contains(&"foo.rs"),
+            "src/foo.rs surfaced -- got {texts:?}"
+        );
         assert!(texts.contains(&"bar.rs"), "src/bar.rs surfaced");
     }
 
@@ -1906,10 +1843,7 @@ mod tests {
         a.cursor = Position::new(0, 3);
         a.do_set("completion.ghost_text=true");
         open_popup_with_top_text(&mut a, "Foo", "foobar");
-        assert_eq!(
-            a.completion_ghost_text_suffix(),
-            Some("bar".to_string()),
-        );
+        assert_eq!(a.completion_ghost_text_suffix(), Some("bar".to_string()),);
     }
 
     #[test]
@@ -2341,8 +2275,7 @@ mod tests {
         a.cursor = Position::new(0, 20);
         a.do_completion_trigger();
         let state = a.insert_completion.as_ref().expect("popup open");
-        let labels: Vec<String> =
-            state.rendered.iter().map(|c| c.raw.text.clone()).collect();
+        let labels: Vec<String> = state.rendered.iter().map(|c| c.raw.text.clone()).collect();
         assert!(
             labels.contains(&"alpha".to_string()),
             "buffer-words should populate via the mode-contributed path; \
@@ -2357,18 +2290,14 @@ mod tests {
     #[test]
     fn active_completion_sources_recomputes_after_activation() {
         use lattice_completion::{
-            CompletionSourceContribution, CompletionSourceKind, RawCandidate,
-            SyncCompletionSource,
+            CompletionSourceContribution, CompletionSourceKind, RawCandidate, SyncCompletionSource,
         };
         use std::sync::Arc;
 
         #[derive(Debug)]
         struct StubSource;
         impl SyncCompletionSource for StubSource {
-            fn produce(
-                &self,
-                _ctx: &lattice_completion::InsertContext<'_>,
-            ) -> Vec<RawCandidate> {
+            fn produce(&self, _ctx: &lattice_completion::InsertContext<'_>) -> Vec<RawCandidate> {
                 vec![RawCandidate::plain(
                     "stub".to_string(),
                     lattice_completion::CandidateKind::Plain,
@@ -2497,9 +2426,7 @@ mod tests {
         a.refilter_insert_completion(&mut state);
         assert_eq!(state.rendered.len(), 2);
         a.insert_completion = Some(state);
-        a.do_completion_filter_to_source(
-            lattice_completion::LSP_COMPLETION_SOURCE_ID.to_string(),
-        );
+        a.do_completion_filter_to_source(lattice_completion::LSP_COMPLETION_SOURCE_ID.to_string());
         let s = a.insert_completion.as_ref().unwrap();
         assert_eq!(s.rendered.len(), 1);
         assert_eq!(s.rendered[0].raw.text, "from_lsp");

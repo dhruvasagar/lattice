@@ -63,12 +63,16 @@ fn frame_render_24(c: &mut Criterion) {
         let corpus = rust_corpus(n);
         let app = build_app(&corpus, 24);
         let snap = pinned_snapshot(&app);
-        g.bench_with_input(BenchmarkId::from_parameter(n), &(app, snap), |bencher, (a, s)| {
-            bencher.iter(|| {
-                let lines = compose_visible_lines(black_box(a), black_box(s), 24, 80);
-                black_box(lines);
-            });
-        });
+        g.bench_with_input(
+            BenchmarkId::from_parameter(n),
+            &(app, snap),
+            |bencher, (a, s)| {
+                bencher.iter(|| {
+                    let lines = compose_visible_lines(black_box(a), black_box(s), 24, 80);
+                    black_box(lines);
+                });
+            },
+        );
     }
     g.finish();
 }
@@ -79,12 +83,16 @@ fn frame_render_60(c: &mut Criterion) {
         let corpus = rust_corpus(n);
         let app = build_app(&corpus, 60);
         let snap = pinned_snapshot(&app);
-        g.bench_with_input(BenchmarkId::from_parameter(n), &(app, snap), |bencher, (a, s)| {
-            bencher.iter(|| {
-                let lines = compose_visible_lines(black_box(a), black_box(s), 60, 200);
-                black_box(lines);
-            });
-        });
+        g.bench_with_input(
+            BenchmarkId::from_parameter(n),
+            &(app, snap),
+            |bencher, (a, s)| {
+                bencher.iter(|| {
+                    let lines = compose_visible_lines(black_box(a), black_box(s), 60, 200);
+                    black_box(lines);
+                });
+            },
+        );
     }
     g.finish();
 }
@@ -95,12 +103,16 @@ fn frame_render_120(c: &mut Criterion) {
         let corpus = rust_corpus(n);
         let app = build_app(&corpus, 120);
         let snap = pinned_snapshot(&app);
-        g.bench_with_input(BenchmarkId::from_parameter(n), &(app, snap), |bencher, (a, s)| {
-            bencher.iter(|| {
-                let lines = compose_visible_lines(black_box(a), black_box(s), 120, 200);
-                black_box(lines);
-            });
-        });
+        g.bench_with_input(
+            BenchmarkId::from_parameter(n),
+            &(app, snap),
+            |bencher, (a, s)| {
+                bencher.iter(|| {
+                    let lines = compose_visible_lines(black_box(a), black_box(s), 120, 200);
+                    black_box(lines);
+                });
+            },
+        );
     }
     g.finish();
 }

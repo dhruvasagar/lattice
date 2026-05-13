@@ -17,8 +17,8 @@ use lattice_grammar::CommandRegistry;
 use lattice_grammar::args::{ArgDefault, ArgSpec, Args};
 use lattice_grammar::command::CommandKind;
 use lattice_picker::{
-    PickerAcceptOutcome, PickerContext, PickerInitResult, PickerSourceGenerator,
-    PickerSourceSpec, RoutingPayload, SourceResult,
+    PickerAcceptOutcome, PickerContext, PickerInitResult, PickerSourceGenerator, PickerSourceSpec,
+    RoutingPayload, SourceResult,
 };
 
 /// Format an ex-command's `args_schema` as the marginalia
@@ -224,11 +224,7 @@ impl PickerSourceGenerator for FilesSource {
         &self.spec
     }
 
-    fn init(
-        &self,
-        _ctx: &PickerContext<'_>,
-        args: &[String],
-    ) -> SourceResult<PickerInitResult> {
+    fn init(&self, _ctx: &PickerContext<'_>, args: &[String]) -> SourceResult<PickerInitResult> {
         // Default to the process's current working directory
         // (recursive). This matches what users typically
         // expect from `:files` -- the same root `:e` paths
@@ -239,9 +235,8 @@ impl PickerSourceGenerator for FilesSource {
         // pass it explicitly: `:picker files <path>`.
         let root: std::path::PathBuf = match args.first() {
             Some(p) if !p.is_empty() => std::path::PathBuf::from(p),
-            _ => std::env::current_dir().map_err(|e| {
-                format!("files: failed to read current directory: {e}")
-            })?,
+            _ => std::env::current_dir()
+                .map_err(|e| format!("files: failed to read current directory: {e}"))?,
         };
         let canonical_root = std::fs::canonicalize(&root).unwrap_or(root.clone());
         let entries = crate::app::picker::walk_files_for_picker(&canonical_root);
@@ -276,9 +271,7 @@ impl PickerSourceGenerator for FilesSource {
                     Ok(m) => (
                         format_perms(&m),
                         format_size(m.len()),
-                        m.modified()
-                            .map(format_mtime_relative)
-                            .unwrap_or_default(),
+                        m.modified().map(format_mtime_relative).unwrap_or_default(),
                     ),
                     Err(_) => (String::new(), String::new(), String::new()),
                 };
@@ -369,11 +362,7 @@ impl PickerSourceGenerator for RecentFilesSource {
         &self.spec
     }
 
-    fn init(
-        &self,
-        ctx: &PickerContext<'_>,
-        _args: &[String],
-    ) -> SourceResult<PickerInitResult> {
+    fn init(&self, ctx: &PickerContext<'_>, _args: &[String]) -> SourceResult<PickerInitResult> {
         if ctx.recent_files.is_empty() {
             return Err("no recent files".into());
         }
@@ -435,11 +424,7 @@ impl PickerSourceGenerator for BuffersSource {
         &self.spec
     }
 
-    fn init(
-        &self,
-        ctx: &PickerContext<'_>,
-        _args: &[String],
-    ) -> SourceResult<PickerInitResult> {
+    fn init(&self, ctx: &PickerContext<'_>, _args: &[String]) -> SourceResult<PickerInitResult> {
         let active = ctx.active_buffer.buffer_id;
         // Float the active buffer to the bottom of the list
         // so the initial selection lands on the alternate.
@@ -459,10 +444,7 @@ impl PickerSourceGenerator for BuffersSource {
                     "#{:<3} {path_display}{dirty}  {}{active_marker}",
                     e.id, e.kind_label,
                 );
-                let mut cand = RawCandidate::plain(
-                    format!("#{}", e.id),
-                    CandidateKind::Buffer,
-                );
+                let mut cand = RawCandidate::plain(format!("#{}", e.id), CandidateKind::Buffer);
                 cand.display = display;
                 (cand, RoutingPayload::Buffer { id: e.id })
             })
@@ -516,11 +498,7 @@ impl PickerSourceGenerator for LinesSource {
         &self.spec
     }
 
-    fn init(
-        &self,
-        ctx: &PickerContext<'_>,
-        _args: &[String],
-    ) -> SourceResult<PickerInitResult> {
+    fn init(&self, ctx: &PickerContext<'_>, _args: &[String]) -> SourceResult<PickerInitResult> {
         let buffer = ctx.active_buffer.buffer;
         let buffer_id = ctx.active_buffer.buffer_id;
         let line_count = buffer.line_count();
@@ -563,13 +541,15 @@ impl PickerSourceGenerator for LinesSource {
         routing: &RoutingPayload,
     ) -> SourceResult<PickerAcceptOutcome> {
         match routing {
-            RoutingPayload::JumpInBuffer { buffer_id, line, col } => {
-                Ok(PickerAcceptOutcome::JumpInBuffer {
-                    buffer_id: *buffer_id,
-                    line: *line,
-                    col: *col,
-                })
-            }
+            RoutingPayload::JumpInBuffer {
+                buffer_id,
+                line,
+                col,
+            } => Ok(PickerAcceptOutcome::JumpInBuffer {
+                buffer_id: *buffer_id,
+                line: *line,
+                col: *col,
+            }),
             other => Err(format!("lines: unexpected routing payload {other:?}")),
         }
     }
@@ -608,11 +588,7 @@ impl PickerSourceGenerator for JumpsSource {
         &self.spec
     }
 
-    fn init(
-        &self,
-        ctx: &PickerContext<'_>,
-        _args: &[String],
-    ) -> SourceResult<PickerInitResult> {
+    fn init(&self, ctx: &PickerContext<'_>, _args: &[String]) -> SourceResult<PickerInitResult> {
         if ctx.position_history.is_empty() {
             return Err("jumps: position history is empty".into());
         }
@@ -669,13 +645,15 @@ impl PickerSourceGenerator for JumpsSource {
         routing: &RoutingPayload,
     ) -> SourceResult<PickerAcceptOutcome> {
         match routing {
-            RoutingPayload::JumpInBuffer { buffer_id, line, col } => {
-                Ok(PickerAcceptOutcome::JumpInBuffer {
-                    buffer_id: *buffer_id,
-                    line: *line,
-                    col: *col,
-                })
-            }
+            RoutingPayload::JumpInBuffer {
+                buffer_id,
+                line,
+                col,
+            } => Ok(PickerAcceptOutcome::JumpInBuffer {
+                buffer_id: *buffer_id,
+                line: *line,
+                col: *col,
+            }),
             other => Err(format!("jumps: unexpected routing payload {other:?}")),
         }
     }
@@ -710,11 +688,7 @@ impl PickerSourceGenerator for CommandsSource {
         &self.spec
     }
 
-    fn init(
-        &self,
-        _ctx: &PickerContext<'_>,
-        _args: &[String],
-    ) -> SourceResult<PickerInitResult> {
+    fn init(&self, _ctx: &PickerContext<'_>, _args: &[String]) -> SourceResult<PickerInitResult> {
         // Walk registry names, keep ex-commands, project to a
         // row carrying every marginalia column. Emacs
         // `marginalia.el`-style: name | args-hint | doc |
@@ -795,8 +769,7 @@ impl PickerSourceGenerator for CommandsSource {
                     doc_max = 60,
                     tag_w = LATENCY_TAG_WIDTH,
                 );
-                let mut cand =
-                    RawCandidate::plain(row.user_facing.clone(), CandidateKind::Plain);
+                let mut cand = RawCandidate::plain(row.user_facing.clone(), CandidateKind::Plain);
                 cand.display = display;
                 (
                     cand,
@@ -816,12 +789,10 @@ impl PickerSourceGenerator for CommandsSource {
         routing: &RoutingPayload,
     ) -> SourceResult<PickerAcceptOutcome> {
         match routing {
-            RoutingPayload::InvokeCommand { id, args } => {
-                Ok(PickerAcceptOutcome::InvokeCommand {
-                    id: id.clone(),
-                    args: args.clone(),
-                })
-            }
+            RoutingPayload::InvokeCommand { id, args } => Ok(PickerAcceptOutcome::InvokeCommand {
+                id: id.clone(),
+                args: args.clone(),
+            }),
             other => Err(format!("commands: unexpected routing payload {other:?}")),
         }
     }
@@ -858,11 +829,7 @@ impl PickerSourceGenerator for RegistersSource {
         &self.spec
     }
 
-    fn init(
-        &self,
-        ctx: &PickerContext<'_>,
-        _args: &[String],
-    ) -> SourceResult<PickerInitResult> {
+    fn init(&self, ctx: &PickerContext<'_>, _args: &[String]) -> SourceResult<PickerInitResult> {
         if ctx.registers.is_empty() {
             return Err("registers: no registers set".into());
         }
@@ -930,11 +897,7 @@ impl PickerSourceGenerator for MarksSource {
         &self.spec
     }
 
-    fn init(
-        &self,
-        ctx: &PickerContext<'_>,
-        _args: &[String],
-    ) -> SourceResult<PickerInitResult> {
+    fn init(&self, ctx: &PickerContext<'_>, _args: &[String]) -> SourceResult<PickerInitResult> {
         if ctx.marks.is_empty() {
             return Err("marks: no marks set".into());
         }
@@ -1011,14 +974,11 @@ impl PickerSourceGenerator for GrepSource {
         &self.spec
     }
 
-    fn init(
-        &self,
-        ctx: &PickerContext<'_>,
-        args: &[String],
-    ) -> SourceResult<PickerInitResult> {
-        let pattern = args.first().filter(|s| !s.is_empty()).ok_or_else(|| {
-            "grep: pattern required (e.g. `:picker grep TODO`)".to_string()
-        })?;
+    fn init(&self, ctx: &PickerContext<'_>, args: &[String]) -> SourceResult<PickerInitResult> {
+        let pattern = args
+            .first()
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| "grep: pattern required (e.g. `:picker grep TODO`)".to_string())?;
         let backend_choice = self
             .config
             .get_typed::<lattice_config::core_options::PickerGrepBackend>()
@@ -1108,11 +1068,9 @@ fn resolve_grep_backend(choice: &str) -> SourceResult<String> {
                 return Ok(candidate.to_string());
             }
         }
-        return Err(
-            "grep: no backend on PATH (tried rg, ag, grep). \
+        return Err("grep: no backend on PATH (tried rg, ag, grep). \
              Set `picker.grep.backend` to a binary name."
-                .into(),
-        );
+            .into());
     }
     if on_path(choice) {
         Ok(choice.to_string())
@@ -1152,9 +1110,9 @@ fn run_grep(
         }
     }
     cmd.arg(pattern).arg(root);
-    let output = cmd.output().map_err(|e| {
-        format!("grep: spawning `{binary}` failed: {e}")
-    })?;
+    let output = cmd
+        .output()
+        .map_err(|e| format!("grep: spawning `{binary}` failed: {e}"))?;
     if !output.status.success() && output.stdout.is_empty() {
         // Some backends (`grep`, `rg`) return non-zero on
         // "no hits". Only treat as error when stderr has a
@@ -1205,8 +1163,7 @@ fn parse_grep_line(binary: &str, raw: &str) -> Option<GrepHit> {
                 let after_line = window[1];
                 let next_colon = colon_idxs.iter().find(|&&i| i > after_line)?;
                 let col_chunk = &raw[after_line + 1..*next_colon];
-                if col_chunk.bytes().all(|b| b.is_ascii_digit()) && !col_chunk.is_empty()
-                {
+                if col_chunk.bytes().all(|b| b.is_ascii_digit()) && !col_chunk.is_empty() {
                     let col: u32 = col_chunk.parse().ok()?;
                     let preview = raw[*next_colon + 1..].to_string();
                     return Some(GrepHit {
@@ -1271,11 +1228,7 @@ impl PickerSourceGenerator for OutlineSource {
         &self.spec
     }
 
-    fn init(
-        &self,
-        ctx: &PickerContext<'_>,
-        _args: &[String],
-    ) -> SourceResult<PickerInitResult> {
+    fn init(&self, ctx: &PickerContext<'_>, _args: &[String]) -> SourceResult<PickerInitResult> {
         if ctx.active_buffer.syntax_symbols.is_empty() {
             let lang = ctx.active_buffer.language.unwrap_or("plain");
             return Err(format!(
@@ -1299,11 +1252,7 @@ impl PickerSourceGenerator for OutlineSource {
             .syntax_symbols
             .iter()
             .map(|(name, line, col)| {
-                let display = format!(
-                    "{:>width$}: {name}",
-                    line + 1,
-                    width = line_width,
-                );
+                let display = format!("{:>width$}: {name}", line + 1, width = line_width,);
                 let cand = RawCandidate::plain(display, CandidateKind::Plain);
                 (
                     cand,
@@ -1324,13 +1273,15 @@ impl PickerSourceGenerator for OutlineSource {
         routing: &RoutingPayload,
     ) -> SourceResult<PickerAcceptOutcome> {
         match routing {
-            RoutingPayload::JumpInBuffer { buffer_id, line, col } => {
-                Ok(PickerAcceptOutcome::JumpInBuffer {
-                    buffer_id: *buffer_id,
-                    line: *line,
-                    col: *col,
-                })
-            }
+            RoutingPayload::JumpInBuffer {
+                buffer_id,
+                line,
+                col,
+            } => Ok(PickerAcceptOutcome::JumpInBuffer {
+                buffer_id: *buffer_id,
+                line: *line,
+                col: *col,
+            }),
             other => Err(format!("outline: unexpected routing payload {other:?}")),
         }
     }
@@ -1372,8 +1323,7 @@ mod tests {
     /// payloads pointing under the supplied root.
     #[test]
     fn files_source_inline_init_emits_open_file_routing() {
-        let tmp = std::env::temp_dir()
-            .join(format!("lattice-files-src-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("lattice-files-src-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
         std::fs::write(tmp.join("a.rs"), "").unwrap();
@@ -1415,7 +1365,10 @@ mod tests {
         assert_eq!(format_size(1024 * 70), "70K");
         assert_eq!(format_size(1024 * 1024), "1.0M");
         assert_eq!(format_size(1024 * 1024 * 12), "12M");
-        assert_eq!(format_size(1024_u64.pow(3) * 4 + 1024_u64.pow(3) / 5), "4.2G");
+        assert_eq!(
+            format_size(1024_u64.pow(3) * 4 + 1024_u64.pow(3) / 5),
+            "4.2G"
+        );
     }
 
     /// `format_mtime_relative` produces stable English-y
@@ -1451,13 +1404,15 @@ mod tests {
         // We can't easily construct a Metadata with arbitrary
         // bits; instead stat a real fixture file and confirm
         // the format shape.
-        let tmp = std::env::temp_dir()
-            .join(format!("lattice-perms-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("lattice-perms-{}", std::process::id()));
         std::fs::write(&tmp, b"x").unwrap();
         let meta = std::fs::metadata(&tmp).unwrap();
         let s = format_perms(&meta);
         assert_eq!(s.len(), 10, "expected 10-char permission string, got `{s}`");
-        assert!(s.starts_with('-'), "file should render with `-` leader, got `{s}`");
+        assert!(
+            s.starts_with('-'),
+            "file should render with `-` leader, got `{s}`"
+        );
         let _ = std::fs::remove_file(&tmp);
     }
 
@@ -1467,8 +1422,7 @@ mod tests {
     /// the display contains size + a relative-time phrase.
     #[test]
     fn files_source_display_carries_marginalia_columns() {
-        let tmp = std::env::temp_dir()
-            .join(format!("lattice-files-margin-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("lattice-files-margin-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
         std::fs::write(tmp.join("readme.md"), b"# hello").unwrap();
@@ -1487,7 +1441,10 @@ mod tests {
         // Path shows up.
         assert!(display.contains("readme.md"), "got `{display}`");
         // Size is 7 bytes -- shown as `7`.
-        assert!(display.contains(" 7 "), "expected size col, got `{display}`");
+        assert!(
+            display.contains(" 7 "),
+            "expected size col, got `{display}`"
+        );
         // mtime is a relative-time phrase. The file was just
         // written so "just now" / "1 minute ago" depending
         // on slow CI clocks.
@@ -1503,8 +1460,8 @@ mod tests {
     /// echoes verbatim.
     #[test]
     fn files_source_empty_root_errors() {
-        let tmp = std::env::temp_dir()
-            .join(format!("lattice-files-src-empty-{}", std::process::id()));
+        let tmp =
+            std::env::temp_dir().join(format!("lattice-files-src-empty-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
         let app = app_with("hi\n", 5);
@@ -1559,14 +1516,21 @@ mod tests {
     #[test]
     fn first_party_generators_returns_all_built_in_sources() {
         let app = app_with("hi\n", 5);
-        let generators =
-            first_party_generators(app.registry.clone(), app.config.clone());
+        let generators = first_party_generators(app.registry.clone(), app.config.clone());
         let ids: Vec<&'static str> = generators.iter().map(|g| g.spec().id).collect();
         assert_eq!(
             ids,
             vec![
-                "files", "recent", "buffers", "lines", "jumps",
-                "commands", "registers", "marks", "grep", "outline",
+                "files",
+                "recent",
+                "buffers",
+                "lines",
+                "jumps",
+                "commands",
+                "registers",
+                "marks",
+                "grep",
+                "outline",
             ]
         );
     }
@@ -1682,10 +1646,7 @@ mod tests {
         };
         assert_eq!(format_args_hint(&[required.clone()]), "<path>");
         assert_eq!(format_args_hint(&[optional.clone()]), "[<path>]");
-        assert_eq!(
-            format_args_hint(&[required, optional]),
-            "<path> [<path>]"
-        );
+        assert_eq!(format_args_hint(&[required, optional]), "<path> [<path>]");
         assert_eq!(format_args_hint(&[]), "");
     }
 
@@ -1710,7 +1671,9 @@ mod tests {
             }
             other => panic!("expected InvokeCommand, got {other:?}"),
         }
-        let bad = RoutingPayload::OpenFile { path: "/tmp/x".into() };
+        let bad = RoutingPayload::OpenFile {
+            path: "/tmp/x".into(),
+        };
         assert!(source.accept(&ctx, &bad).is_err());
     }
 
@@ -1734,10 +1697,7 @@ mod tests {
         let app = app_with("hi\n", 5);
         let snap = app.document.snapshot();
         let mut ctx = app.build_picker_context(&snap);
-        ctx.registers = vec![
-            ("\"".into(), "hello".into()),
-            ("a".into(), "world".into()),
-        ];
+        ctx.registers = vec![("\"".into(), "hello".into()), ("a".into(), "world".into())];
         let source = RegistersSource::new();
         let result = source.init(&ctx, &[]).expect("inline");
         let PickerInitResult::Inline(pairs) = result else {
@@ -1767,7 +1727,9 @@ mod tests {
             PickerAcceptOutcome::PasteRegister { name } => assert_eq!(name, 'a'),
             other => panic!("expected PasteRegister outcome, got {other:?}"),
         }
-        let bad = RoutingPayload::OpenFile { path: "/tmp/x".into() };
+        let bad = RoutingPayload::OpenFile {
+            path: "/tmp/x".into(),
+        };
         assert!(source.accept(&ctx, &bad).is_err());
     }
 
@@ -1822,14 +1784,8 @@ mod tests {
         let ctx = app.build_picker_context(&snap);
         let source = GrepSource::new(app.config.clone());
         let err = source.init(&ctx, &["TODO".to_string()]).unwrap_err();
-        assert!(
-            err.contains("definitely-not-a-binary"),
-            "got {err}"
-        );
-        assert!(
-            err.contains("not found on PATH"),
-            "got {err}"
-        );
+        assert!(err.contains("definitely-not-a-binary"), "got {err}");
+        assert!(err.contains("not found on PATH"), "got {err}");
     }
 
     /// Slice 14d: a test-only source that returns
@@ -1868,10 +1824,7 @@ mod tests {
                 // -- mirrors a real LSP request that resolves
                 // after a network round-trip.
                 tokio::task::yield_now().await;
-                let cand = RawCandidate::plain(
-                    String::from("test-result"),
-                    CandidateKind::Plain,
-                );
+                let cand = RawCandidate::plain(String::from("test-result"), CandidateKind::Plain);
                 Ok(vec![(
                     cand,
                     RoutingPayload::OpenFile {
@@ -1905,8 +1858,7 @@ mod tests {
         // can't mutate the App's shared registry (other Arcs
         // exist), so replace it wholesale.
         let mut reg = lattice_picker::PickerRegistry::new();
-        let source: Arc<dyn PickerSourceGenerator> =
-            Arc::new(DelayedFutureSource::new());
+        let source: Arc<dyn PickerSourceGenerator> = Arc::new(DelayedFutureSource::new());
         reg.register_generator(source);
         app.picker_registry = Arc::new(reg);
         // Fire the picker. Init returns Future; the picker
@@ -1952,10 +1904,8 @@ mod tests {
         let snap = app.document.snapshot();
         let mut ctx = app.build_picker_context(&snap);
         let active_id = ctx.active_buffer.buffer_id;
-        ctx.active_buffer.syntax_symbols = vec![
-            ("foo".to_string(), 2, 4),
-            ("bar".to_string(), 10, 0),
-        ];
+        ctx.active_buffer.syntax_symbols =
+            vec![("foo".to_string(), 2, 4), ("bar".to_string(), 10, 0)];
         let source = OutlineSource::new();
         let result = source.init(&ctx, &[]).expect("inline");
         let PickerInitResult::Inline(pairs) = result else {
@@ -1963,7 +1913,11 @@ mod tests {
         };
         assert_eq!(pairs.len(), 2);
         match &pairs[0].1 {
-            RoutingPayload::JumpInBuffer { buffer_id, line, col } => {
+            RoutingPayload::JumpInBuffer {
+                buffer_id,
+                line,
+                col,
+            } => {
                 assert_eq!(*buffer_id, active_id);
                 assert_eq!(*line, 2);
                 assert_eq!(*col, 4);
@@ -1971,8 +1925,16 @@ mod tests {
             other => panic!("expected JumpInBuffer, got {other:?}"),
         }
         // Display contains 1-based line + the name.
-        assert!(pairs[0].0.display.contains("foo"), "got {}", pairs[0].0.display);
-        assert!(pairs[0].0.display.contains("3"), "got {}", pairs[0].0.display);
+        assert!(
+            pairs[0].0.display.contains("foo"),
+            "got {}",
+            pairs[0].0.display
+        );
+        assert!(
+            pairs[0].0.display.contains("3"),
+            "got {}",
+            pairs[0].0.display
+        );
     }
 
     /// P.5: marks source returns `Err` when no marks set.
@@ -1995,10 +1957,7 @@ mod tests {
         let app = app_with("hi\n", 5);
         let snap = app.document.snapshot();
         let mut ctx = app.build_picker_context(&snap);
-        ctx.marks = vec![
-            ('a', Position::new(2, 0)),
-            ('b', Position::new(5, 3)),
-        ];
+        ctx.marks = vec![('a', Position::new(2, 0)), ('b', Position::new(5, 3))];
         let source = MarksSource::new();
         let result = source.init(&ctx, &[]).expect("inline");
         let PickerInitResult::Inline(pairs) = result else {
@@ -2010,8 +1969,16 @@ mod tests {
             other => panic!("expected JumpToMark, got {other:?}"),
         }
         // Display carries 1-based line:col.
-        assert!(pairs[0].0.display.contains("3:1"), "got {}", pairs[0].0.display);
-        assert!(pairs[1].0.display.contains("6:4"), "got {}", pairs[1].0.display);
+        assert!(
+            pairs[0].0.display.contains("3:1"),
+            "got {}",
+            pairs[0].0.display
+        );
+        assert!(
+            pairs[1].0.display.contains("6:4"),
+            "got {}",
+            pairs[1].0.display
+        );
     }
 
     /// P.5: accept on a `JumpToMark` routing returns the
@@ -2027,7 +1994,9 @@ mod tests {
             PickerAcceptOutcome::JumpToMark { name } => assert_eq!(name, 'm'),
             other => panic!("expected JumpToMark outcome, got {other:?}"),
         }
-        let bad = RoutingPayload::OpenFile { path: "/tmp/x".into() };
+        let bad = RoutingPayload::OpenFile {
+            path: "/tmp/x".into(),
+        };
         assert!(source.accept(&ctx, &bad).is_err());
     }
 
@@ -2045,9 +2014,24 @@ mod tests {
         let snap = app.document.snapshot();
         let mut ctx = app.build_picker_context(&snap);
         ctx.position_history = vec![
-            PositionEntry { buffer_id: 1, line: 0, col: 0, source: PositionSource::AutoJump },
-            PositionEntry { buffer_id: 1, line: 5, col: 2, source: PositionSource::NamedMark('a') },
-            PositionEntry { buffer_id: 2, line: 10, col: 0, source: PositionSource::PluginPush },
+            PositionEntry {
+                buffer_id: 1,
+                line: 0,
+                col: 0,
+                source: PositionSource::AutoJump,
+            },
+            PositionEntry {
+                buffer_id: 1,
+                line: 5,
+                col: 2,
+                source: PositionSource::NamedMark('a'),
+            },
+            PositionEntry {
+                buffer_id: 2,
+                line: 10,
+                col: 0,
+                source: PositionSource::PluginPush,
+            },
         ];
         let source = JumpsSource::new();
         let result = source.init(&ctx, &[]).expect("inline");
@@ -2057,7 +2041,11 @@ mod tests {
         assert_eq!(pairs.len(), 3);
         // Newest first: plugin (line 10) leads.
         match &pairs[0].1 {
-            RoutingPayload::JumpInBuffer { buffer_id, line, col } => {
+            RoutingPayload::JumpInBuffer {
+                buffer_id,
+                line,
+                col,
+            } => {
                 assert_eq!(*buffer_id, 2);
                 assert_eq!(*line, 10);
                 assert_eq!(*col, 0);
@@ -2067,7 +2055,11 @@ mod tests {
         // The named-mark row carries `'a` in its source tag.
         assert!(pairs[1].0.display.contains("'a"), "{}", pairs[1].0.display);
         // The auto row carries `auto`.
-        assert!(pairs[2].0.display.contains("auto"), "{}", pairs[2].0.display);
+        assert!(
+            pairs[2].0.display.contains("auto"),
+            "{}",
+            pairs[2].0.display
+        );
     }
 
     /// P.3: lines source emits one row per addressable line
@@ -2088,7 +2080,11 @@ mod tests {
         assert_eq!(pairs.len(), 3);
         for (i, (cand, routing)) in pairs.iter().enumerate() {
             match routing {
-                RoutingPayload::JumpInBuffer { buffer_id, line, col } => {
+                RoutingPayload::JumpInBuffer {
+                    buffer_id,
+                    line,
+                    col,
+                } => {
                     assert_eq!(*buffer_id, active_id);
                     assert_eq!(*line, i as u32);
                     assert_eq!(*col, 0);
@@ -2096,7 +2092,11 @@ mod tests {
                 other => panic!("expected JumpInBuffer, got {other:?}"),
             }
             // Display starts with right-aligned line number then `:`.
-            assert!(cand.display.contains(':'), "missing `:` in {}", cand.display);
+            assert!(
+                cand.display.contains(':'),
+                "missing `:` in {}",
+                cand.display
+            );
         }
     }
 
@@ -2134,17 +2134,27 @@ mod tests {
         let snap = app.document.snapshot();
         let ctx = app.build_picker_context(&snap);
         let source = LinesSource::new();
-        let routing = RoutingPayload::JumpInBuffer { buffer_id: 7, line: 12, col: 3 };
+        let routing = RoutingPayload::JumpInBuffer {
+            buffer_id: 7,
+            line: 12,
+            col: 3,
+        };
         let outcome = source.accept(&ctx, &routing).expect("ok");
         match outcome {
-            PickerAcceptOutcome::JumpInBuffer { buffer_id, line, col } => {
+            PickerAcceptOutcome::JumpInBuffer {
+                buffer_id,
+                line,
+                col,
+            } => {
                 assert_eq!(buffer_id, 7);
                 assert_eq!(line, 12);
                 assert_eq!(col, 3);
             }
             other => panic!("expected JumpInBuffer, got {other:?}"),
         }
-        let bad = RoutingPayload::OpenFile { path: "/tmp/x".into() };
+        let bad = RoutingPayload::OpenFile {
+            path: "/tmp/x".into(),
+        };
         assert!(source.accept(&ctx, &bad).is_err());
     }
 }

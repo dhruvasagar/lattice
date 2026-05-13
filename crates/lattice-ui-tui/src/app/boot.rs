@@ -29,7 +29,10 @@ use lattice_syntax::{Lang, LangRegistry};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use super::{App, BufferData, BufferEntry, BufferFlags, BufferId, BufferKind, DocumentEntry, EchoLevel, OptionCache};
+use super::{
+    App, BufferData, BufferEntry, BufferFlags, BufferId, BufferKind, DocumentEntry, EchoLevel,
+    OptionCache,
+};
 use crate::pane::{PaneState, PaneTree};
 
 /// Build a fresh LSP subsystem. Returns the supervisor wrapped
@@ -219,16 +222,10 @@ impl App {
             // free; the completion mode rides on a separate
             // helper called here with the freshly-built `lsp`
             // handle from above.
-            lattice_lsp::completion::register_lsp_completion_mode(
-                &mut mr,
-                lsp.clone(),
-            );
+            lattice_lsp::completion::register_lsp_completion_mode(&mut mr, lsp.clone());
             lattice_oil::register_oil_modes(&mut mr);
             lattice_file_tree::register_file_tree_modes(&mut mr);
-            lattice_snippet::register_snippet_modes(
-                &mut mr,
-                snippet_registry_handle.clone(),
-            );
+            lattice_snippet::register_snippet_modes(&mut mr, snippet_registry_handle.clone());
             crate::modes::register_buffer_kind_modes(&mut mr);
             mr
         };
@@ -292,9 +289,8 @@ impl App {
         // The App accumulates by (server_id, token) and surfaces
         // the most recent active entry in the modeline's LSP
         // segment.
-        let (lsp_progress_tx, lsp_progress_event_rx) = tokio::sync::mpsc::unbounded_channel::<
-            lattice_lsp::LspProgressUpdate,
-        >();
+        let (lsp_progress_tx, lsp_progress_event_rx) =
+            tokio::sync::mpsc::unbounded_channel::<lattice_lsp::LspProgressUpdate>();
         event_bus.subscribe_typed(lsp_progress_tx);
         // `LspBufferDetached` subscriber: `LspMode::on_deactivate`
         // publishes this event (Phase 2 of the mode-architecture
@@ -304,9 +300,8 @@ impl App {
         // mode lifecycle, not from a hardcoded branch in
         // `deactivate_mode_by_id`. Same shape any future
         // renderer would use -- no special-casing per host.
-        let (lsp_detach_tx, lsp_detach_rx) = tokio::sync::mpsc::unbounded_channel::<
-            lattice_lsp::LspBufferDetached,
-        >();
+        let (lsp_detach_tx, lsp_detach_rx) =
+            tokio::sync::mpsc::unbounded_channel::<lattice_lsp::LspBufferDetached>();
         event_bus.subscribe_typed(lsp_detach_tx);
         // 4.4.g: `workspace/inlayHint/refresh` subscriber.
         // Server-initiated cache invalidation -- the actor
@@ -328,9 +323,7 @@ impl App {
         // `maybe_request_semantic_tokens` (forced full path,
         // since the cached `result_id` is gone).
         let (lsp_semantic_tokens_refresh_tx, lsp_semantic_tokens_refresh_rx) =
-            tokio::sync::mpsc::unbounded_channel::<
-                lattice_lsp::LspSemanticTokensRefresh,
-            >();
+            tokio::sync::mpsc::unbounded_channel::<lattice_lsp::LspSemanticTokensRefresh>();
         event_bus.subscribe_typed(lsp_semantic_tokens_refresh_tx);
         // 4.4.j: `workspace/diagnostic/refresh` subscriber. The
         // actor publishes `LspDiagnosticRefresh` on inbound;
@@ -340,18 +333,14 @@ impl App {
         // `textDocument/diagnostic` (no `previous_result_id`)
         // and the server emits a `Full` report.
         let (lsp_diagnostic_refresh_tx, lsp_diagnostic_refresh_rx) =
-            tokio::sync::mpsc::unbounded_channel::<
-                lattice_lsp::LspDiagnosticRefresh,
-            >();
+            tokio::sync::mpsc::unbounded_channel::<lattice_lsp::LspDiagnosticRefresh>();
         event_bus.subscribe_typed(lsp_diagnostic_refresh_tx);
         // 4.5.d: `workspace/codeLens/refresh` subscriber. Same
         // pattern as the other refresh events; the drain
         // evicts per-buffer code-lens caches for the
         // requesting server so the next pump tick refetches.
         let (lsp_code_lens_refresh_tx, lsp_code_lens_refresh_rx) =
-            tokio::sync::mpsc::unbounded_channel::<
-                lattice_lsp::LspCodeLensRefresh,
-            >();
+            tokio::sync::mpsc::unbounded_channel::<lattice_lsp::LspCodeLensRefresh>();
         event_bus.subscribe_typed(lsp_code_lens_refresh_tx);
         // `*messages*` buffer live-tail subscriber. Every
         // `set_message` publishes a `MessagePushed` event; the
@@ -359,9 +348,8 @@ impl App {
         // buffer view if `*messages*` is open. Other consumers
         // (plugins, telemetry) can subscribe to the same event
         // via `event_bus.subscribe_typed::<MessagePushed>(...)`.
-        let (message_event_tx, message_event_rx) = tokio::sync::mpsc::unbounded_channel::<
-            lattice_runtime::MessagePushed,
-        >();
+        let (message_event_tx, message_event_rx) =
+            tokio::sync::mpsc::unbounded_channel::<lattice_runtime::MessagePushed>();
         event_bus.subscribe_typed(message_event_tx);
         // Wire the logger's publisher to the same bus. The
         // logger lives in `lattice-lsp`; the closure captures an
@@ -403,15 +391,12 @@ impl App {
         // before they hit the registry; we treat any miss
         // here as "use the built-in default the logger
         // already has."
-        if let Some(level_str) =
-            config.get_typed::<lattice_config::core_options::LspLogLevel>()
+        if let Some(level_str) = config.get_typed::<lattice_config::core_options::LspLogLevel>()
             && let Some(level) = lattice_lsp::LogLevel::parse(&level_str)
         {
             lsp_logger.set_default_level(level);
         }
-        if let Some(cap) =
-            config.get_typed::<lattice_config::core_options::LspLogCapacity>()
-        {
+        if let Some(cap) = config.get_typed::<lattice_config::core_options::LspLogCapacity>() {
             lsp_logger.set_default_capacity((*cap).max(0) as usize);
         }
         // `gen:options` -- completion source for `:set <Tab>` and
@@ -975,17 +960,18 @@ impl App {
     /// canonical primitives in config.
     pub fn sync_theme_from_config(&mut self) {
         use crate::tui_options::{
-            UiDimInactive, UiNerdFonts, UiSeparator, UiSeparatorColor,
-            UiStatuslineActiveFg, UiStatuslineInactiveFg,
+            UiDimInactive, UiNerdFonts, UiSeparator, UiSeparatorColor, UiStatuslineActiveFg,
+            UiStatuslineInactiveFg,
         };
         use ratatui::style::Style;
         // ui.dim_inactive -- bool flag projected directly.
-        self.theme.dim_inactive_panes =
-            *self.config.get_typed::<UiDimInactive>().expect("UiDimInactive");
+        self.theme.dim_inactive_panes = *self
+            .config
+            .get_typed::<UiDimInactive>()
+            .expect("UiDimInactive");
         // ui.nerd_fonts -- selects the icon glyph palette
         // (nerd-font Private Use codepoints vs. BMP fallback).
-        self.theme.nerd_fonts =
-            *self.config.get_typed::<UiNerdFonts>().expect("UiNerdFonts");
+        self.theme.nerd_fonts = *self.config.get_typed::<UiNerdFonts>().expect("UiNerdFonts");
         // ui.separator -- one-character glyph for the vertical
         // pane divider. Validated to len==1 at parse; fall back to
         // the default if a forged value sneaks through.
@@ -1049,11 +1035,7 @@ impl App {
         // server-namespaced keys (the cached raw_tree carries
         // the values; `workspace/configuration` walks it).
         let prefixes = ["completion.per-language", "plugin", "lsp"];
-        let outcome = lattice_config::load_default_paths(
-            &self.config,
-            workspace_root,
-            &prefixes,
-        );
+        let outcome = lattice_config::load_default_paths(&self.config, workspace_root, &prefixes);
         // Re-derive theme + hot-path option cache after the
         // loader's writes. ui.* and the cached options may have
         // changed; missing this would leave the first frame
@@ -1103,11 +1085,7 @@ impl App {
         let count = outcome.messages.len();
         let first = &outcome.messages[0];
         let body = if count == 1 {
-            format!(
-                "config: {}: {}",
-                first.source.display(),
-                first.body,
-            )
+            format!("config: {}: {}", first.source.display(), first.body,)
         } else {
             format!(
                 "config: {count} issues (first: {}: {})",
@@ -1164,9 +1142,11 @@ fn register_mode_toggle_commands(
                         ))
                     }
                 }),
-                apply: Box::new(move |_ctx| Ok(Effect::ToggleMode {
-                    mode_name: mode_name.clone(),
-                })),
+                apply: Box::new(move |_ctx| {
+                    Ok(Effect::ToggleMode {
+                        mode_name: mode_name.clone(),
+                    })
+                }),
                 args_schema: Vec::<ArgSpec>::new(),
                 surface_form: SurfaceForm::Keyword,
             },

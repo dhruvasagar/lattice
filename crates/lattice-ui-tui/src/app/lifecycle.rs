@@ -807,7 +807,17 @@ impl App {
                         .map(|p| p.display().to_string())
                         .or_else(|| entry.name.clone())
                         .unwrap_or_else(|| "(no file)".to_string());
-                    let dirty = if d.handle.dirty() { "[+]" } else { "   " };
+                    // Suppress the modified marker for synthetic
+                    // buffers (`entry.name.is_some()`) -- their
+                    // content is owner-streamed, not user-edited,
+                    // so dirty has no actionable meaning. Three
+                    // spaces keep column alignment with path-backed
+                    // entries.
+                    let dirty = if entry.name.is_none() && d.handle.dirty() {
+                        "[+]"
+                    } else {
+                        "   "
+                    };
                     lines.push(format!(
                         "  {active_marker}{listed_marker} #{:<3} doc  {dirty} {label}",
                         id.0
@@ -1181,7 +1191,20 @@ impl App {
             .map(|p| p.display().to_string())
             .or_else(|| entry.name.clone())
             .unwrap_or_else(|| "[no name]".to_string());
-        let dirty = if doc.handle.dirty() { " [+]" } else { "" };
+        // Synthetic buffers (`*lsp*`, `*messages*`, ...) carry a
+        // name but no path; their content is streamed by the
+        // subsystem that owns them, never user-edited. The
+        // underlying Document's dirty flag flips on every owner
+        // append, which is meaningful for path-backed Documents
+        // (signals "save before close") but misleading for
+        // synthetic ones -- the user can't "save" a streaming
+        // buffer's current state because new records keep
+        // arriving. Suppress the marker for synthetics.
+        let dirty = if entry.name.is_none() && doc.handle.dirty() {
+            " [+]"
+        } else {
+            ""
+        };
         format!("{label}{dirty}")
     }
 
@@ -3116,6 +3139,51 @@ mod tests {
         assert!(
             label.contains("*lsp*"),
             "expected modeline to surface synthetic name, got `{label}`"
+        );
+    }
+
+    #[test]
+    fn pane_status_label_suppresses_dirty_marker_for_synthetic_documents() {
+        // Synthetic buffers (`*lsp*`, `*messages*`, ...) are
+        // owner-streamed; their content arrives via subsystem
+        // appends, not user edits. The Document's underlying dirty
+        // flag fires on every append, which is meaningful for
+        // path-backed Documents but misleading for synthetic ones
+        // -- the user can't "save" the streaming state. The
+        // modeline must suppress the `[+]` marker for these.
+        let mut a = app_with("hi", 5);
+        let active = a.active_pane_buffer_id();
+        let handle = a.document.clone();
+        a.buffers.remove(active);
+        a.buffers.insert(BufferEntry {
+            id: active,
+            flags: BufferFlags::default(),
+            data: BufferData::Document(DocumentEntry {
+                id: active,
+                handle: handle.clone(),
+            }),
+            name: Some("*lsp*".to_string()),
+        });
+        // Force the underlying document dirty: an apply_edit
+        // advances undo depth past the clean position. The fresh
+        // test fixture starts clean; an append makes it dirty.
+        let snap = handle.snapshot();
+        let last_line = crate::app::last_addressable_line(&snap.buffer);
+        let line_len = crate::app::line_byte_len(&snap.buffer, last_line);
+        let pos = Position::new(last_line, line_len);
+        let _ = lattice_runtime::block_on(
+            handle.apply_edit_batch(vec![lattice_protocol::edit::Edit::insert(pos, "x")]),
+        );
+        assert!(handle.dirty(), "fixture must produce a dirty Document");
+        let pane = a.pane_tree.active().clone();
+        let label = a.pane_status_label(&pane);
+        assert!(
+            label.contains("*lsp*"),
+            "modeline must surface synthetic name; got `{label}`"
+        );
+        assert!(
+            !label.contains("[+]"),
+            "modeline must NOT surface [+] for synthetic buffers; got `{label}`"
         );
     }
 }

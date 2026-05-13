@@ -78,12 +78,7 @@ pub trait BufferStore: Send + Sync {
     ///    `on_activate` via the mode registry; recomputes the
     ///    buffer's resolved-options cache).
     /// 4. Return the id.
-    fn ensure_named_document(
-        &self,
-        name: &str,
-        major: ModeId,
-        flags: BufferFlags,
-    ) -> BufferId;
+    fn ensure_named_document(&self, name: &str, major: ModeId, flags: BufferFlags) -> BufferId;
 
     /// Get a clone of the `DocumentHandle` for `id`, suitable for
     /// holding across thread boundaries. The handle is the only
@@ -115,12 +110,7 @@ impl BufferStoreHandle {
         self.inner.find_by_name(name)
     }
 
-    pub fn ensure_named_document(
-        &self,
-        name: &str,
-        major: ModeId,
-        flags: BufferFlags,
-    ) -> BufferId {
+    pub fn ensure_named_document(&self, name: &str, major: ModeId, flags: BufferFlags) -> BufferId {
         self.inner.ensure_named_document(name, major, flags)
     }
 

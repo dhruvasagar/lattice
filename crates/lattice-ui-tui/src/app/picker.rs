@@ -1253,7 +1253,14 @@ pub(super) fn raw_buffer_candidates(
                     .map(|p| p.display().to_string())
                     .or_else(|| entry.name.clone())
                     .unwrap_or_else(|| "[no name]".to_string());
-                let dirty = if d.handle.dirty() { " [+]" } else { "" };
+                // Suppress the modified marker for synthetic
+                // buffers -- their content is owner-streamed, not
+                // user-edited, so dirty has no actionable meaning.
+                let dirty = if entry.name.is_none() && d.handle.dirty() {
+                    " [+]"
+                } else {
+                    ""
+                };
                 (
                     format!("#{:<3} {label}{dirty}", id.0),
                     format!("doc{active_marker}"),

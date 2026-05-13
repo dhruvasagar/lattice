@@ -1080,23 +1080,34 @@ impl App {
     /// Drain queued `lattice_lsp::LspLogPushed` events (Phase 4;
     /// M.5.3.b: the event type moved from
     /// `lattice-protocol::Event::LspLogPushed` into
-    /// `lattice-lsp::events`). Refreshes any open log / trace
-    /// help buffers from the logger snapshot. Called once per
+    /// `lattice-lsp::events`). Appends each drained record to the
+    /// subsystem-owned `*lsp*` / `*lsp:<server>*` /
+    /// `*lsp:<server>:trace*` Document buffers (slice B; see
+    /// `feedback-synthetic-buffers` memory). Called once per
     /// main-loop tick + at the end of any path that pushes a
     /// log record synchronously.
     ///
-    /// Cheap when no log buffers are open: the refresh path
-    /// short-circuits on `BufferRegistry::help_with_title`
-    /// missing the title.
+    /// Per-buffer routing:
+    /// - Every record (whether subsystem-wide or per-server) lands
+    ///   in `*lsp*` so the global view is a single transcript.
+    ///   Records carrying a `server_id` are prefixed with `[id]`.
+    /// - Records with `server_id == Some(id)` and source/level
+    ///   != trace also land in `*lsp:<id>*`.
+    /// - Trace records (level=="trace" or source=="trace") land in
+    ///   `*lsp:<id>:trace*` instead.
+    ///
+    /// Per-buffer text is accumulated in this drain pass and
+    /// appended once per buffer at the end -- a burst of N records
+    /// becomes O(buffers) edit dispatches, not O(records).
     pub fn drain_lsp_log_events(&mut self) {
         let Some(mut rx) = self.lsp_log_event_rx.take() else {
             return;
         };
-        // Coalesce: collect every drained event's scope, then
-        // refresh each unique scope at most once.
-        let mut subsystem = false;
-        let mut server_logs: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut server_traces: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut subsystem_text = String::new();
+        let mut server_text: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        let mut trace_text: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
         // 4.4.a: stash the most recent `window/showMessage` we
         // see. Server-emitted user notifications go to the
         // minibuffer (vim's `:echom`-style transient surface)
@@ -1124,32 +1135,40 @@ impl App {
                     .unwrap_or_default();
                 last_show = Some((echo_level, format!("{prefix}{message}")));
             }
-            match server_id {
-                None => subsystem = true,
-                Some(id) => {
-                    let id_owned = id.to_string();
-                    if level == "trace" || source == "trace" {
-                        server_traces.insert(id_owned);
-                    } else {
-                        server_logs.insert(id_owned);
-                    }
-                }
+            let line = crate::app::lsp_log_buffers::format_log_event_line(
+                server_id.as_deref(),
+                &level,
+                &source,
+                &message,
+            );
+            subsystem_text.push_str(&line);
+            subsystem_text.push('\n');
+            if let Some(id) = server_id {
+                let is_trace = level == "trace" || source == "trace";
+                let dest = if is_trace {
+                    &mut trace_text
+                } else {
+                    &mut server_text
+                };
+                let buf = dest.entry(id.to_string()).or_default();
+                buf.push_str(&line);
+                buf.push('\n');
             }
         }
-        // Surface the showMessage AFTER the log buffer refreshes
-        // so a subsequent set_message that the refresh path
-        // doesn't fire can't overwrite us.
         if let Some((level, msg)) = last_show {
             self.set_message(level, msg);
         }
-        if subsystem {
-            self.refresh_lsp_log_buffer_subsystem();
+        if !subsystem_text.is_empty() {
+            let id = self.ensure_lsp_subsystem_log_buffer();
+            self.append_to_owned_buffer(id, &subsystem_text);
         }
-        for id in server_logs {
-            self.refresh_lsp_log_buffer_per_server(&id);
+        for (server_id, text) in server_text {
+            let id = self.ensure_lsp_server_log_buffer(&server_id);
+            self.append_to_owned_buffer(id, &text);
         }
-        for id in server_traces {
-            self.refresh_lsp_trace_buffer(&id);
+        for (server_id, text) in trace_text {
+            let id = self.ensure_lsp_server_trace_buffer(&server_id);
+            self.append_to_owned_buffer(id, &text);
         }
         self.lsp_log_event_rx = Some(rx);
     }
@@ -1232,42 +1251,6 @@ impl App {
             }
         }
         self.lsp_progress_event_rx = Some(rx);
-    }
-
-    /// Rebuild the `*lsp*` (subsystem-wide) help buffer from the
-    /// logger snapshot, preserving cursor + scroll. No-op when
-    /// the buffer isn't currently open.
-    fn refresh_lsp_log_buffer_subsystem(&mut self) {
-        let Some(id) = self.buffers.help_with_title("lsp") else {
-            return;
-        };
-        let new_buf = lattice_lsp::help_views::lsp_global_log_help(&self.lsp_logger)
-            .with_markdown_syntax(self.lang_registry.clone());
-        self.replace_help_buffer_preserving_cursor(id, new_buf);
-    }
-
-    /// Rebuild `*lsp:<server_id>*` from the logger snapshot.
-    fn refresh_lsp_log_buffer_per_server(&mut self, server_id: &str) {
-        let title = format!("lsp:{server_id}");
-        let Some(id) = self.buffers.help_with_title(&title) else {
-            return;
-        };
-        let arc: std::sync::Arc<str> = std::sync::Arc::from(server_id);
-        let new_buf = lattice_lsp::help_views::lsp_server_log_help(&self.lsp_logger, &arc)
-            .with_markdown_syntax(self.lang_registry.clone());
-        self.replace_help_buffer_preserving_cursor(id, new_buf);
-    }
-
-    /// Rebuild `*lsp:<server_id>:trace*` from the logger snapshot.
-    fn refresh_lsp_trace_buffer(&mut self, server_id: &str) {
-        let title = format!("lsp:{server_id}:trace");
-        let Some(id) = self.buffers.help_with_title(&title) else {
-            return;
-        };
-        let arc: std::sync::Arc<str> = std::sync::Arc::from(server_id);
-        let new_buf = lattice_lsp::help_views::lsp_server_trace_help(&self.lsp_logger, &arc)
-            .with_markdown_syntax(self.lang_registry.clone());
-        self.replace_help_buffer_preserving_cursor(id, new_buf);
     }
 
     /// Atomically replace a registry-tracked help buffer's body
@@ -4244,6 +4227,14 @@ impl App {
         };
         let id: std::sync::Arc<str> = std::sync::Arc::from(server_id.as_str());
         let now_on = self.lsp_logger.toggle_trace(id.clone());
+        // Slice B: trace buffer lifecycle is bound to the toggle.
+        // Creating it eagerly on toggle-on means `:ls` shows it
+        // immediately and `:b *lsp:<id>:trace*` works before any
+        // record flows. The buffer survives toggle-off so captured
+        // history stays browsable; the user can `:bd` to discard.
+        if now_on {
+            self.ensure_lsp_server_trace_buffer(&server_id);
+        }
         let label = if now_on { "on" } else { "off" };
         let alias_note = if server_id != name {
             format!(" (resolved {name:?} -> {server_id:?})")
@@ -6416,31 +6407,30 @@ impl App {
         }
     }
 
-    /// Open `*lsp:<server_id>*` in the active pane via the
-    /// in-pane help registry path. Used by both the picker
-    /// accept dispatcher and the direct ex-command short path
-    /// when only one instance matches.
+    /// Activate the subsystem-owned `*lsp:<server_id>*` Document
+    /// buffer in the active pane. Idempotent: the buffer is
+    /// created lazily on first event (or via this entry point if
+    /// the user opens it before any record flowed).
     pub(super) fn open_lsp_log_in_pane(&mut self, server_id: &str) {
-        let arc: std::sync::Arc<str> = std::sync::Arc::from(server_id);
-        let buffer = lattice_lsp::help_views::lsp_server_log_help(&self.lsp_logger, &arc)
-            .with_markdown_syntax(self.lang_registry.clone());
-        self.display_buffer(
-            buffer,
-            lattice_core::ui::display::BufferDisplayCategory::LspLog,
-        );
+        // Drain any queued events first so the buffer reflects
+        // every record up to "now" -- otherwise a user running
+        // `:lsp-log <server>` immediately after attach could land
+        // on an empty buffer with records still buffered in the
+        // channel.
+        self.drain_lsp_log_events();
+        let id = self.ensure_lsp_server_log_buffer(server_id);
+        self.activate_buffer(id);
     }
 
-    /// Open `*lsp:<server_id>:trace*` in the active pane. Pure
-    /// view -- the trace toggle is `:lsp-trace <server>` and is
-    /// independent of opening / closing this buffer.
+    /// Activate the subsystem-owned `*lsp:<server_id>:trace*`
+    /// Document buffer in the active pane. The trace buffer is
+    /// created eagerly by `:lsp-trace <server>` toggle-on and
+    /// streams records via the event-bus drain. This entry point
+    /// just switches focus to it.
     pub(super) fn open_lsp_trace_log_in_pane(&mut self, server_id: &str) {
-        let arc: std::sync::Arc<str> = std::sync::Arc::from(server_id);
-        let buffer = lattice_lsp::help_views::lsp_server_trace_help(&self.lsp_logger, &arc)
-            .with_markdown_syntax(self.lang_registry.clone());
-        self.display_buffer(
-            buffer,
-            lattice_core::ui::display::BufferDisplayCategory::LspLog,
-        );
+        self.drain_lsp_log_events();
+        let id = self.ensure_lsp_server_trace_buffer(server_id);
+        self.activate_buffer(id);
     }
 
     /// Helper: publish a position-only change event. Cheap
@@ -9271,8 +9261,11 @@ mod tests {
         let id: std::sync::Arc<str> = std::sync::Arc::from("rust");
         // Open the per-server log buffer in pane.
         app.open_lsp_log_in_pane("rust");
-        let help_id = app.buffers.help_with_title("lsp:rust").unwrap();
-        let body_before = app.buffers.help(help_id).unwrap().content.as_string();
+        let log_id = app
+            .buffers
+            .by_name("*lsp:rust*")
+            .expect("per-server log buffer registered");
+        let body_before = app.buffers.document(log_id).unwrap().handle.text();
         assert!(!body_before.contains("fresh-after-open"));
         // Push a new record AFTER the buffer was opened.
         app.lsp_logger.log(
@@ -9281,10 +9274,10 @@ mod tests {
             lattice_lsp::LogSource::Client,
             "fresh-after-open",
         );
-        // The publisher fired Event::LspLogPushed; drain hook
-        // should refresh the open log buffer.
+        // The publisher fired LspLogPushed; the drain appends the
+        // record to the buffer (the subsystem-owned write path).
         app.drain_lsp_log_events();
-        let body_after = app.buffers.help(help_id).unwrap().content.as_string();
+        let body_after = app.buffers.document(log_id).unwrap().handle.text();
         assert!(
             body_after.contains("fresh-after-open"),
             "expected new record visible after drain, got body:\n{body_after}"
@@ -9423,8 +9416,11 @@ mod tests {
         // to land in the ring (and fire the publisher).
         app.lsp_logger.enable_trace(std::sync::Arc::clone(&id));
         app.open_lsp_trace_log_in_pane("rust");
-        let help_id = app.buffers.help_with_title("lsp:rust:trace").unwrap();
-        let before = app.buffers.help(help_id).unwrap().content.as_string();
+        let trace_id = app
+            .buffers
+            .by_name("*lsp:rust:trace*")
+            .expect("trace buffer registered");
+        let before = app.buffers.document(trace_id).unwrap().handle.text();
         assert!(!before.contains("→ NEW"));
         app.lsp_logger.log(
             Some(&id),
@@ -9433,17 +9429,16 @@ mod tests {
             "→ NEW request id=42",
         );
         app.drain_lsp_log_events();
-        let after = app.buffers.help(help_id).unwrap().content.as_string();
+        let after = app.buffers.document(trace_id).unwrap().handle.text();
         assert!(after.contains("→ NEW"));
     }
 
     #[test]
     fn lsp_log_burst_coalesces_into_one_refresh() {
-        // Many records pushed in quick succession should result
-        // in at most one buffer rebuild per scope per drain.
-        // (We can't observe the rebuild count directly without
-        // instrumentation; instead we assert the final body
-        // contains every pushed record AND that drain is fast.)
+        // Slice B: a burst of records arrives as N typed events.
+        // The drain accumulates per-buffer text and applies one
+        // `apply_edit_batch` per buffer at the end -- coalesces
+        // 50 events into 1 edit per affected buffer.
         let mut app = app_with("hi\n", 5);
         let id: std::sync::Arc<str> = std::sync::Arc::from("rust");
         app.open_lsp_log_in_pane("rust");
@@ -9456,8 +9451,11 @@ mod tests {
             );
         }
         app.drain_lsp_log_events();
-        let help_id = app.buffers.help_with_title("lsp:rust").unwrap();
-        let body = app.buffers.help(help_id).unwrap().content.as_string();
+        let log_id = app
+            .buffers
+            .by_name("*lsp:rust*")
+            .expect("per-server log buffer registered");
+        let body = app.buffers.document(log_id).unwrap().handle.text();
         // First and last pushed records both visible.
         assert!(body.contains("msg-0"));
         assert!(body.contains("msg-49"));

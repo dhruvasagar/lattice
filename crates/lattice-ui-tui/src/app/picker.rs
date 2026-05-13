@@ -1226,7 +1226,15 @@ pub(super) fn raw_buffer_candidates(
     lattice_picker::RoutingPayload,
 )> {
     let mut ids = registry.sorted_ids();
-    ids.sort_by_key(|id| (*id == active, *id));
+    // Picker order: active LAST, listed BEFORE unlisted, otherwise
+    // by id. Unlisted synthetic buffers (`*lsp*`, ...) stay
+    // reachable via the picker (the user can filter to them by
+    // name) but the initial preview lands on a listed alternate
+    // first, matching vim's "skip nobuflisted in cycling" intent.
+    ids.sort_by_key(|id| {
+        let listed = registry.get(*id).map(|e| e.flags.listed).unwrap_or(false);
+        (*id == active, !listed, *id)
+    });
     let mut out = Vec::with_capacity(ids.len());
     for id in ids {
         let Some(entry) = registry.get(id) else {

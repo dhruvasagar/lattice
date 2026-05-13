@@ -109,6 +109,7 @@ mod help;
 mod highlights;
 mod lifecycle;
 mod lsp;
+mod lsp_log_buffers;
 mod lsp_watcher;
 mod macros;
 mod messages;
@@ -4201,7 +4202,9 @@ mod tests {
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.document_buffer_id, new_id);
-        assert_eq!(a.buffers.document_ids_sorted().len(), 2);
+        // Listed-count gates the "did we accidentally spawn a third?"
+        // assertion; synthetic `*lsp*` doesn't count.
+        assert_eq!(a.buffers.listed_ids_sorted().len(), 2);
         let _ = std::fs::remove_file(path);
     }
 
@@ -5132,7 +5135,9 @@ mod tests {
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.document_buffer_id, initial_id);
-        assert_eq!(a.buffers.document_ids_sorted().len(), 1);
+        // Listed-count: only the original document remains in the
+        // user-facing cycle; the synthetic `*lsp*` is unlisted.
+        assert_eq!(a.buffers.listed_ids_sorted().len(), 1);
         let _ = std::fs::remove_file(path);
     }
 
@@ -5142,7 +5147,11 @@ mod tests {
         a.command_line = "bd".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        assert_eq!(a.buffers.document_ids_sorted().len(), 1);
+        // The listed count gates the "only buffer" check.
+        // Synthetic unlisted buffers (`*lsp*`, ...) don't count as
+        // switch destinations, so the rejection still fires when
+        // only one user-listed buffer remains.
+        assert_eq!(a.buffers.listed_ids_sorted().len(), 1);
         let msg = a.last_message.as_ref().expect("error echo");
         assert!(msg.text.contains("only buffer"));
     }
@@ -5452,8 +5461,9 @@ mod tests {
 
     #[test]
     fn open_lsp_log_in_pane_renders_per_server_records() {
-        // Direct unit test of the in-pane helper (picker accept
-        // path bypasses the picker for single-instance cases too).
+        // Slice B: per-server log lives as a Document in the
+        // registry; records arrive through the event-bus drain
+        // (`drain_lsp_log_events`) rather than a snapshot rebuild.
         let mut app = app_with("hi\n", 5);
         let id: std::sync::Arc<str> = std::sync::Arc::from("rust");
         app.lsp_logger.log(
@@ -5462,15 +5472,21 @@ mod tests {
             lattice_lsp::LogSource::Stderr,
             "compile error",
         );
+        // `open_lsp_log_in_pane` drains queued events first so the
+        // buffer reflects pre-existing records.
         app.open_lsp_log_in_pane("rust");
-        // Lives in the registry as a Help variant + active pane.
-        let help_id = app
+        let log_id = app
             .buffers
-            .help_with_title("lsp:rust")
-            .expect("buffer registered");
-        assert_eq!(app.active_pane_buffer_id(), help_id);
-        let body = app.buffers.help(help_id).unwrap().content.as_string();
-        assert!(body.contains("compile error"));
+            .by_name("*lsp:rust*")
+            .expect("per-server log buffer registered");
+        assert_eq!(app.active_pane_buffer_id(), log_id);
+        let body = app
+            .buffers
+            .document(log_id)
+            .expect("log buffer is a Document")
+            .handle
+            .text();
+        assert!(body.contains("compile error"), "got `{body}`");
     }
 
     #[test]
@@ -5491,11 +5507,15 @@ mod tests {
             "lifecycle",
         );
         app.open_lsp_log_in_pane("rust");
-        let help_id = app.buffers.help_with_title("lsp:rust").unwrap();
-        let body = app.buffers.help(help_id).unwrap().content.as_string();
-        // Trace records go to the trace buffer; lifecycle here.
-        assert!(!body.contains("→ Request"));
-        assert!(body.contains("lifecycle"));
+        let log_id = app
+            .buffers
+            .by_name("*lsp:rust*")
+            .expect("per-server log buffer registered");
+        let body = app.buffers.document(log_id).unwrap().handle.text();
+        // Trace records route to the trace buffer; non-trace
+        // records (including lifecycle) land here.
+        assert!(!body.contains("→ Request"), "got `{body}`");
+        assert!(body.contains("lifecycle"), "got `{body}`");
     }
 
     #[test]
@@ -5516,11 +5536,15 @@ mod tests {
             "lifecycle",
         );
         app.open_lsp_trace_log_in_pane("rust");
-        let help_id = app.buffers.help_with_title("lsp:rust:trace").unwrap();
-        let body = app.buffers.help(help_id).unwrap().content.as_string();
-        // Trace yes, lifecycle no.
-        assert!(body.contains("→ Request"));
-        assert!(!body.contains("lifecycle"));
+        let trace_id = app
+            .buffers
+            .by_name("*lsp:rust:trace*")
+            .expect("per-server trace buffer registered");
+        let body = app.buffers.document(trace_id).unwrap().handle.text();
+        // Trace records here; non-trace records routed to the
+        // matching `*lsp:rust*` buffer instead.
+        assert!(body.contains("→ Request"), "got `{body}`");
+        assert!(!body.contains("lifecycle"), "got `{body}`");
     }
 
     #[test]

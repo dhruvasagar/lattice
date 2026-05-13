@@ -1423,7 +1423,9 @@ mod tests {
     #[test]
     fn fresh_app_registers_initial_document() {
         let a = app_with("xx", 10);
-        assert_eq!(a.buffers.document_ids_sorted().len(), 1);
+        // Listed-buffer view filters out synthetic LSP / messages
+        // buffers, leaving just the user's document.
+        assert_eq!(a.buffers.listed_ids_sorted().len(), 1);
         assert!(a.buffers.document(a.document_buffer_id).is_some());
     }
 

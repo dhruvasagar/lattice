@@ -840,6 +840,15 @@ impl App {
         // nothing (no LSP work to drive) and the `buffer_uris`
         // entry stays absent.
         app.publish_document_opened_for_active();
+        // Slice B: LSP subsystem creates its global `*lsp*`
+        // Document buffer eagerly at boot so `:b *lsp*` works
+        // before any record has flowed. Per-server buffers
+        // (`*lsp:<id>*`, `*lsp:<id>:trace*`) are created lazily on
+        // first event (or on `:lsp-trace` toggle-on) instead --
+        // creating one per registered server config at boot would
+        // pre-allocate slots for servers the user never opens a
+        // matching file type for.
+        app.ensure_lsp_subsystem_log_buffer();
         app
     }
 

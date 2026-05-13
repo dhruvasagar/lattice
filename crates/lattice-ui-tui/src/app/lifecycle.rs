@@ -333,14 +333,26 @@ impl App {
     /// buffers `!` bypasses the dirty check; tree buffers are
     /// always read-only and skip the dirty guard.
     pub(super) fn do_buffer_delete(&mut self, force: bool) {
-        if self.buffers.len() <= 1 {
+        let to_remove = self.active_pane_buffer_id();
+        // "Only buffer" check uses the *listed* count -- unlisted
+        // synthetic buffers (`*lsp*`, `*lsp:<server>*`, ...) don't
+        // count as switch destinations. Without this, `:bd` would
+        // happily activate `*lsp*` as the successor and leave the
+        // user staring at a read-only log buffer with no document
+        // to return to.
+        let listed = self.buffers.listed_ids_sorted();
+        let to_remove_is_listed = self
+            .buffers
+            .get(to_remove)
+            .map(|e| e.flags.listed)
+            .unwrap_or(false);
+        if to_remove_is_listed && listed.len() <= 1 {
             self.set_message(
                 EchoLevel::Error,
                 "Cannot delete the only buffer".to_string(),
             );
             return;
         }
-        let to_remove = self.active_pane_buffer_id();
         // Dirty check applies to documents only.
         if let Some(d) = self.buffers.document(to_remove)
             && !force
@@ -352,8 +364,17 @@ impl App {
             );
             return;
         }
-        let ids = self.buffers.sorted_ids();
-        let Some(successor) = ids.iter().copied().find(|id| *id != to_remove) else {
+        // Successor preference: another *listed* buffer if any,
+        // else any other buffer (including unlisted synthetics).
+        let mut successor = listed.iter().copied().find(|id| *id != to_remove);
+        if successor.is_none() {
+            successor = self
+                .buffers
+                .sorted_ids()
+                .into_iter()
+                .find(|id| *id != to_remove);
+        }
+        let Some(successor) = successor else {
             return;
         };
         self.activate_buffer(successor);
@@ -1898,8 +1919,9 @@ mod tests {
         a.command_line = format!("e {}", path.display());
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        // Both buffers exist; active switched to the new one.
-        assert_eq!(a.buffers.document_ids_sorted().len(), 2);
+        // Two listed buffers (initial + opened); the synthetic
+        // `*lsp*` buffer is unlisted and filtered out here.
+        assert_eq!(a.buffers.listed_ids_sorted().len(), 2);
         assert_ne!(a.document_buffer_id, initial_id);
         assert_eq!(a.document.text(), "alpha\n");
         let _ = std::fs::remove_file(path);
@@ -1917,9 +1939,14 @@ mod tests {
         a.apply(Action::CommandLineSubmit);
         let h = a.popup_help().expect("buffers help");
         let body = h.content.as_string();
-        // Two buffers listed.
-        assert!(body.contains("2 open buffer"));
-        assert!(body.contains("2 document"));
+        // Three buffers total: the initial document, the file we
+        // opened, and the synthetic `*lsp*` log. `:ls` lists every
+        // entry regardless of `listed`; the unlisted marker `u`
+        // signals the user-toggleable cycle filter without
+        // suppressing the row.
+        assert!(body.contains("3 open buffer"));
+        assert!(body.contains("3 document"));
+        assert!(body.contains("*lsp*"));
         let _ = std::fs::remove_file(path);
     }
 

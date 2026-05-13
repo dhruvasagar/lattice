@@ -295,6 +295,77 @@ mod tests {
     }
 
     #[test]
+    fn lsp_log_no_arg_activates_subsystem_buffer() {
+        // Bug #3 fix: `:lsp-log` (no arg) activates the
+        // subsystem-wide `*lsp*` buffer directly. Previously the
+        // no-arg form opened a picker over running servers; with
+        // no servers it errored out and left the user on the
+        // initial unnamed Document, where the modeline correctly
+        // showed `[no name]` -- but the user expected to land on
+        // `*lsp*`. The bug was UX: `:b` showed `*lsp*` in the
+        // registry, but the active pane never switched to it.
+        //
+        // The picker behaviour moves to `:lsp-server-log`; the
+        // no-arg `:lsp-log` is the direct subsystem-view entry.
+        let mut a = app_with("hi", 5);
+        let initial = a.active_pane_buffer_id();
+        let lsp_buf = a.buffers.by_name("*lsp*").expect("*lsp* at boot");
+        assert_ne!(initial, lsp_buf);
+        a.do_open_lsp_log(None);
+        assert_eq!(
+            a.active_pane_buffer_id(),
+            lsp_buf,
+            "no-arg :lsp-log must activate *lsp*"
+        );
+        let pane = a.pane_tree.active().clone();
+        let label = a.pane_status_label(&pane);
+        assert!(
+            label.contains("*lsp*"),
+            "modeline must surface *lsp* after :lsp-log no-arg; got `{label}`"
+        );
+    }
+
+    #[test]
+    fn open_lsp_log_in_pane_modeline_shows_synthetic_name() {
+        // Bug #3 repro candidate: navigate to a per-server log
+        // via the `open_lsp_log_in_pane` path (same code the
+        // `:lsp-log <server>` ex-command runs through after the
+        // picker short-circuit). The modeline must surface
+        // `*lsp:<server>*`, not `[no name]`.
+        let mut a = app_with("hi", 5);
+        a.open_lsp_log_in_pane("rust");
+        let log_id = a
+            .buffers
+            .by_name("*lsp:rust*")
+            .expect("per-server log buffer registered");
+        assert_eq!(a.active_pane_buffer_id(), log_id);
+        let pane = a.pane_tree.active().clone();
+        let label = a.pane_status_label(&pane);
+        assert!(
+            label.contains("*lsp:rust*"),
+            "modeline must surface synthetic name after :lsp-log; got `{label}`"
+        );
+    }
+
+    #[test]
+    fn open_lsp_trace_log_in_pane_modeline_shows_synthetic_name() {
+        // Symmetric to above: `:lsp-trace-log <server>` path.
+        let mut a = app_with("hi", 5);
+        a.open_lsp_trace_log_in_pane("rust");
+        let trace_id = a
+            .buffers
+            .by_name("*lsp:rust:trace*")
+            .expect("per-server trace buffer registered");
+        assert_eq!(a.active_pane_buffer_id(), trace_id);
+        let pane = a.pane_tree.active().clone();
+        let label = a.pane_status_label(&pane);
+        assert!(
+            label.contains("*lsp:rust:trace*"),
+            "modeline must surface trace buffer name; got `{label}`"
+        );
+    }
+
+    #[test]
     fn lsp_trace_toggle_creates_trace_buffer() {
         let mut a = app_with("hi", 5);
         assert!(a.buffers.by_name("*lsp:rust:trace*").is_none());

@@ -4179,17 +4179,39 @@ impl App {
         self.publish_position_change();
     }
 
-    /// `:lsp-log [server]` -- open the per-server log buffer
-    /// for `server` (or the picker if no arg / multi-match).
-    /// Buffer goes through `open_help_in_pane` -- it lives
-    /// in `BufferRegistry` and is reachable via `:bn` / `:b N`
-    /// / the buffer picker (Phase 1 / Phase 2 wiring).
+    /// `:lsp-log [server]` -- activate the subsystem-wide `*lsp*`
+    /// buffer (no arg) or a specific server's `*lsp:<server>*`
+    /// buffer (with arg).
+    ///
+    /// Behaviour:
+    /// - No arg: switch to `*lsp*`. Captures everything the LSP
+    ///   subsystem logs (lifecycle, attach driver, supervisor,
+    ///   plus every per-server record prefixed with the server
+    ///   id). Always works, even when no servers are running --
+    ///   `*lsp*` is created at boot.
+    /// - With arg: switch to `*lsp:<server>*` after resolving the
+    ///   name through the alias table. Errors if no running
+    ///   instance matches.
+    ///
+    /// Use `:lsp-server-log` for the picker over running
+    /// instances.
     pub fn do_open_lsp_log(&mut self, server_id: Option<&str>) {
-        self.open_lsp_picker(
-            "lsp-log",
-            server_id.map(|s| s.to_string()),
-            lattice_picker::PickerAction::OpenLspLog,
-        );
+        match server_id {
+            None => {
+                // Drain queued log events so the buffer is up to
+                // date before we switch focus to it.
+                self.drain_lsp_log_events();
+                let id = self.ensure_lsp_subsystem_log_buffer();
+                self.activate_buffer(id);
+            }
+            Some(name) => {
+                self.open_lsp_picker(
+                    "lsp-log",
+                    Some(name.to_string()),
+                    lattice_picker::PickerAction::OpenLspLog,
+                );
+            }
+        }
     }
 
     /// `:lsp-trace-log [server]` -- open the JSON-RPC trace ring
@@ -9231,20 +9253,28 @@ mod tests {
     }
 
     #[test]
-    fn lsp_log_with_no_running_servers_echoes_message() {
-        // Phase 3: `:lsp-log` (with or without arg) routes through
-        // the LSP picker. With zero running actors there's nothing
-        // to pick; the user gets a clear echo instead of an empty
-        // popup.
+    fn lsp_log_no_arg_activates_subsystem_buffer_even_with_no_running_servers() {
+        // Bug #3 fix: `:lsp-log` (no arg) activates `*lsp*`
+        // directly. Previously the no-arg form routed through the
+        // running-server picker and errored out when no servers
+        // were running -- leaving the user on the initial unnamed
+        // buffer with `[no name]` in the modeline despite `*lsp*`
+        // existing in the registry. The fix makes the no-arg form
+        // a direct subsystem-buffer activation.
+        //
+        // Picker behaviour moved to `:lsp-server-log` for the
+        // per-instance pick.
         let mut app = app_with("hi\n", 5);
+        let lsp_buf = app.buffers.by_name("*lsp*").expect("*lsp* at boot");
+        let initial = app.active_pane_buffer_id();
+        assert_ne!(initial, lsp_buf);
         app.do_open_lsp_log(None);
-        let msg = app.last_message.as_ref().expect("echoes a message");
-        assert!(
-            msg.text.contains("no LSP servers running"),
-            "expected 'no LSP servers running' in echo, got {:?}",
-            msg.text
+        assert!(app.picker.is_none(), "no picker on no-arg :lsp-log");
+        assert_eq!(
+            app.active_pane_buffer_id(),
+            lsp_buf,
+            "active pane must switch to *lsp*"
         );
-        assert!(app.picker.is_none(), "picker should not have opened");
     }
 
     #[test]

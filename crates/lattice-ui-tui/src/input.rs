@@ -626,6 +626,12 @@ mod tests {
         }
     }
 
+    /// Test-fixture: a `TranslateContext` with explicit
+    /// pending + op counts. Currently unused (the migrated
+    /// operator-flow tests build the context inline) but kept
+    /// alongside the other fixture builders for symmetry; the
+    /// next op-count regression test will reach for it.
+    #[allow(dead_code)]
     fn ctx_with_op_count<'a>(
         modal: ModalState,
         b: &'a Builtins,

@@ -173,7 +173,13 @@ impl ChildTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // `Message`, `Notification`, and `serde_json::json!` are only
+    // used by the `#[cfg(unix)]`-gated round-trip test below
+    // (spawns `cat`); gate the imports the same way so Windows
+    // builds (which skip the test) don't flag them as unused.
+    #[cfg(unix)]
     use crate::jsonrpc::{Message, Notification};
+    #[cfg(unix)]
     use serde_json::json;
 
     /// Spawning a non-existent binary surfaces `TransportError::Spawn`.

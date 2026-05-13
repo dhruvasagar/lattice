@@ -15,6 +15,12 @@
 #    shouldn't fail the build on a toolchain bump -- so we don't
 #    pass `-D warnings`. The workspace's own `[workspace.lints]`
 #    catches the hard rules.
+#
+#    NOTE: `actions-rust-lang/setup-rust-toolchain@v1` defaults
+#    `rustflags: "-D warnings"`, which would override our
+#    intentionally-relaxed gate by injecting `RUSTFLAGS=-D warnings`
+#    workspace-wide. Every `setup-rust-toolchain` step below sets
+#    `rustflags: ""` to disable that injection.
 # 3. **Format.** `cargo fmt --check`. Runs informationally only --
 #    the workspace was written with manual line breaks for
 #    readability that rustfmt's heuristics would collapse, and a
@@ -76,6 +82,9 @@ jobs:
         with:
           toolchain: stable
           components: clippy
+          # Disable the action's default `RUSTFLAGS=-D warnings`
+          # injection -- see the top-of-file note.
+          rustflags: ""
       - uses: Swatinem/rust-cache@v2
       - name: cargo test --workspace
         run: cargo test --workspace --locked
@@ -100,6 +109,7 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt
+          rustflags: ""
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
 
@@ -111,6 +121,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
+          rustflags: ""
       - uses: Swatinem/rust-cache@v2
       - name: cargo doc --no-deps --workspace
         # Build the rustdoc output (catches obvious breakage --
@@ -133,6 +144,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
+          rustflags: ""
       - uses: Swatinem/rust-cache@v2
       - name: cargo bench --workspace --no-run
         # Compile every bench target to catch bench-code rot. Does
@@ -155,6 +167,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
+          rustflags: ""
       - uses: Swatinem/rust-cache@v2
       - name: cargo bench --workspace
         # Quick mode: small sample sizes, ~10x faster than full

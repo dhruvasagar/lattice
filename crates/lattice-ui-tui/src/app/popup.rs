@@ -337,6 +337,14 @@ impl App {
     /// is currently open. Used by callers that want to flip
     /// between cursor-anchored and centred mid-popup (e.g. hover
     /// promoted to a focused reference view).
+    ///
+    /// `#[allow(dead_code)]`: the method is a designed-in API
+    /// surface (referenced from the module-level docs above) but
+    /// no production call site lives at HEAD; current call sites
+    /// pass the placement at popup open. Removing it now would
+    /// re-add the test surface when the first promote-popup flow
+    /// lands. Tests below exercise it.
+    #[allow(dead_code)]
     pub(crate) fn set_popup_placement(&mut self, placement: PopupPlacement) {
         if self.popup_buffer.is_some() {
             self.popup_placement = placement;

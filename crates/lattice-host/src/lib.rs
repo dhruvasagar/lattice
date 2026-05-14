@@ -36,5 +36,6 @@ pub mod excommand;
 pub mod file_tree;
 pub mod help;
 pub mod help_topics;
+pub mod host_generators;
 pub mod oil;
 pub mod popup;

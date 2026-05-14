@@ -945,11 +945,16 @@ dependencies = [
 name = "lattice-host"
 version = "0.1.0"
 dependencies = [
+ "lattice-completion",
+ "lattice-config",
  "lattice-core",
  "lattice-file-tree",
  "lattice-grammar",
  "lattice-help",
+ "lattice-lsp",
+ "lattice-mode",
  "lattice-oil",
+ "lattice-picker",
  "lattice-protocol",
  "thiserror 2.0.18",
 ]

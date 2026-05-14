@@ -34,11 +34,10 @@ pub mod buffer_registry;
 // `lattice_ui_tui::<module>::*` import in downstream crates +
 // this crate's tests + benches; no call-site changes needed.
 pub use lattice_host::{
-    actions, buffers, excommand, file_tree, help, help_topics, oil, popup,
+    actions, buffers, excommand, file_tree, help, help_topics, host_generators, oil, popup,
 };
 pub mod chord;
 pub mod folds;
-pub mod host_generators;
 pub mod icons;
 pub mod input;
 pub mod keymap;

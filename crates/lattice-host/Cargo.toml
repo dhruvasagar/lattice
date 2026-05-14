@@ -37,6 +37,15 @@ lattice-oil = { path = "../lattice-oil" }
 lattice-grammar = { path = "../lattice-grammar" }
 lattice-protocol = { path = "../lattice-protocol" }
 thiserror = { workspace = true }
+# Phase 5.2 third wave: host_generators (picker-source completion
+# generators). Reaches into mode, picker, lsp, config for the
+# generators that enumerate registered modes, pickers, LSP
+# servers, and customizable option names.
+lattice-completion = { path = "../lattice-completion" }
+lattice-mode = { path = "../lattice-mode" }
+lattice-picker = { path = "../lattice-picker" }
+lattice-lsp = { path = "../lattice-lsp" }
+lattice-config = { path = "../lattice-config" }
 
 [dev-dependencies]
 

@@ -957,6 +957,7 @@ dependencies = [
  "lattice-oil",
  "lattice-picker",
  "lattice-protocol",
+ "lattice-runtime",
  "lattice-snippet",
  "lattice-syntax",
  "streaming-iterator",

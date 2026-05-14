@@ -28,14 +28,13 @@
 //! hardcoded `Action` enum used here.
 
 pub mod app;
-pub mod buffer_registry;
 // Phase 5.2: HOST modules migrated to `lattice-host`. The
 // `pub use` here preserves every existing
 // `lattice_ui_tui::<module>::*` import in downstream crates +
 // this crate's tests + benches; no call-site changes needed.
 pub use lattice_host::{
-    actions, buffers, excommand, file_tree, folds, help, help_topics, host_generators, keymap,
-    keymap_registry, keymap_trie, modes, oil, popup,
+    actions, buffer_registry, buffers, excommand, file_tree, folds, help, help_topics,
+    host_generators, keymap, keymap_registry, keymap_trie, modes, oil, popup,
 };
 // Re-export the `keymap_entry!` macro (defined with `#[macro_export]`
 // in lattice-host) at this crate's root so the catalog files

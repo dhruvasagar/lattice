@@ -57,6 +57,8 @@ tree-sitter = { workspace = true }
 streaming-iterator = { workspace = true }
 # modes.rs references the snippet major-mode id.
 lattice-snippet = { path = "../lattice-snippet" }
+# buffer_registry.rs uses `lattice_runtime::DocumentHandle`.
+lattice-runtime = { path = "../lattice-runtime" }
 
 [dev-dependencies]
 

@@ -257,6 +257,46 @@ GPUI does the analogous caching with its own native style shape.
 
 This pattern -- "host owns the canonical neutral state; each renderer owns a cached adapted view" -- generalises beyond theme. Iconography fits it (`lattice-core::ui::icons` is the neutral source; `lattice-ui-tui::icons` and a future `lattice-ui-gpui::icons` are renderer-specific atlases). Pane render dispatch (Hard Case §2) fits it too.
 
+## Session log
+
+| Slice | Commit | What landed |
+|---|---|---|
+| 5.0 | `2d46bf2` | Extraction audit doc |
+| 5.1 | `8f12c6a` | Empty `lattice-host` crate |
+| 5.2 wave 1 | `8a5b256` | Trivial re-export shims (buffers, file_tree, oil, popup, help, help_topics) |
+| 5.2 wave 2 | `7286312` | actions + excommand (~2.6k LoC) |
+| 5.2 wave 3 | `2454530` | host_generators (~200 LoC) |
+| 5.3 | `d024635` | Renderer-neutral theme types + `App.host_theme` |
+| 5.4 | `6657cbb` | chord.rs split (neutral types to host, crossterm adapter stays) |
+| 5.2 wave 4 | `f78c64d` | keymap leaves (keymap.rs + keymap_trie.rs + keymap_registry.rs) |
+| 5.2 | `d3ec49c` | Action enum + EchoLevel + EchoMessage + FindKind extracted |
+| 5.2 | `f32c677` | Catalogs reclassified MIXED; reverted move |
+| 5.2 | `950a728` | `Fold` moved to `lattice-core::folding` |
+| 5.2 | `a0cda39` | folds.rs + modes.rs migrated |
+| 5.2 | `00e5f8a` | buffer_registry.rs migrated |
+| 5.2 | `5753e38` | pane shim migrated |
+
+**Total moved from `lattice-ui-tui`:** ~17k LoC. **Test count:** 1599 throughout (1424 ui-tui + 175 host at session end).
+
+## Remaining work
+
+The slices that haven't landed gate on **the App keystone migration**. App lives in `lattice-ui-tui/src/app.rs` (~5500 LoC after extractions) and is referenced by:
+
+- Every `app/*.rs` submodule (~35k LoC of method impls)
+- `picker_sources.rs` (tests use `app_with`)
+- `render.rs`, `runtime.rs` (TUI-coupled but read App fields)
+- The keymap catalog files (import `crate::app::Action` -- still resolves via lattice-host re-export)
+- The pane render registry (Hard Case §2 -- references `&App`)
+
+Moving App needs its own focused session. Sketch of approach:
+
+1. Define `lattice_host::app::App` as a new struct with the full field set
+2. All `impl App` blocks in `app/*.rs` either: move to lattice-host (renderer-agnostic methods) OR stay in lattice-ui-tui (renderer-coupled methods that touch ratatui/crossterm directly via `app.theme`, etc.)
+3. `lattice-ui-tui::app` becomes a re-export hub: `pub use lattice_host::app::*;`
+4. Test infrastructure (`app_with`, etc.) moves with the helpers it tests
+
+This is several days of work and want to be done with the user in the loop on architectural calls (e.g., where to draw the line between renderer-agnostic and renderer-coupled methods on App).
+
 ## Slice ordering
 
 Each slice ships green; lattice-ui-tui keeps working at every commit.

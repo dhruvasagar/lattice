@@ -34,7 +34,7 @@ pub mod app;
 // this crate's tests + benches; no call-site changes needed.
 pub use lattice_host::{
     actions, buffer_registry, buffers, excommand, file_tree, folds, help, help_topics,
-    host_generators, keymap, keymap_registry, keymap_trie, modes, oil, popup,
+    host_generators, keymap, keymap_registry, keymap_trie, modes, oil, pane, popup,
 };
 // Re-export the `keymap_entry!` macro (defined with `#[macro_export]`
 // in lattice-host) at this crate's root so the catalog files
@@ -49,7 +49,6 @@ pub mod keymap_insert;
 pub mod keymap_normal;
 pub mod keymap_replace;
 pub mod keymap_visual;
-pub mod pane;
 pub mod pane_render;
 pub mod picker_sources;
 pub mod render;

@@ -21,6 +21,16 @@ license.workspace = true
 # consumers don't break across the move.
 
 [dependencies]
+# Phase 5.2 first wave: trivial re-export shims for the buffer +
+# popup + help + file-tree + oil domain types. The real
+# definitions already live in their domain crates; this crate
+# hosts the canonical "host-side" path (`lattice_host::buffers`,
+# `lattice_host::help`, ...) and `lattice-ui-tui` re-exports
+# from here for backward compat.
+lattice-core = { path = "../lattice-core" }
+lattice-help = { path = "../lattice-help" }
+lattice-file-tree = { path = "../lattice-file-tree" }
+lattice-oil = { path = "../lattice-oil" }
 
 [dev-dependencies]
 

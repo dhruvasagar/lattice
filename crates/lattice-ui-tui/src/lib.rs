@@ -30,13 +30,14 @@
 pub mod actions;
 pub mod app;
 pub mod buffer_registry;
-pub mod buffers;
+// Phase 5.2: trivial re-export shims migrated to `lattice-host`.
+// The `pub use` here preserves every existing
+// `lattice_ui_tui::<module>::*` import in downstream crates +
+// this crate's tests; no call-site changes needed for this slice.
+pub use lattice_host::{buffers, file_tree, help, help_topics, oil, popup};
 pub mod chord;
 pub mod excommand;
-pub mod file_tree;
 pub mod folds;
-pub mod help;
-pub mod help_topics;
 pub mod host_generators;
 pub mod icons;
 pub mod input;
@@ -48,11 +49,9 @@ pub mod keymap_replace;
 pub mod keymap_trie;
 pub mod keymap_visual;
 pub mod modes;
-pub mod oil;
 pub mod pane;
 pub mod pane_render;
 pub mod picker_sources;
-pub mod popup;
 pub mod render;
 pub mod runtime;
 pub mod theme;

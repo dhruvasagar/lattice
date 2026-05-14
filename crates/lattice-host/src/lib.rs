@@ -29,3 +29,10 @@
 //!
 //! See `docs/dev/architecture/phase-5-extraction.md` for the
 //! slice plan and module classification.
+
+pub mod buffers;
+pub mod file_tree;
+pub mod help;
+pub mod help_topics;
+pub mod oil;
+pub mod popup;

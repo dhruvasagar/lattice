@@ -6655,25 +6655,24 @@ mod tests {
         );
     }
 
-    #[test]
-    fn lsp_mode_round_trip_end_to_end() {
-        // M.5.7: end-to-end gate exercise across one buffer's
-        // lifetime. Open a *.rs file (auto-activates lsp-mode
-        // per M.5.2) -> verify the gate is open. Toggle off ->
-        // every observable LSP signal silences (request gate
-        // echoes, document-sync typed event suppressed, render
-        // gate suppresses diagnostics + modeline segment).
-        // Toggle on again -> gate opens, signals resume.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn lsp_mode_round_trip_end_to_end() {
+        // M.5.7 + M-async.5: end-to-end gate exercise across
+        // one buffer's lifetime. Open a *.rs file -- under
+        // M-async.5 `LspMode::on_activate` `.await`s the
+        // supervisor's `open_buffer` mailbox, so the spawn
+        // path is in flight after App::new returns. Toggle
+        // off -> the deactivate bumps the epoch, the spawn
+        // eventually completes + drops its stale Guard ->
+        // LspBufferDetached publishes. Toggle on -> same
+        // shape, new spawn. The gate flags (`lsp_mode_
+        // enabled_for`) move synchronously via the sync
+        // prefix.
         use crate::app::test_helpers::app_with_path;
         let mut a = app_with_path("fn main() {}", 5, std::path::PathBuf::from("foo.rs"));
         let id = a.pane_tree.active().buffer_id;
-
-        // Auto-activated on file open via M.5.2.
         assert!(a.lsp_mode_enabled_for(id), "M.5.2 auto-activation");
 
-        // Subscribe to LspBufferDetached + LspDocumentChanged so
-        // the toggle-off path (M.5.3 detach) and the gated
-        // edit path (M.5.5) are observable end-to-end.
         let (detach_tx, mut detach_rx) =
             tokio::sync::mpsc::unbounded_channel::<lattice_lsp::LspBufferDetached>();
         a.event_bus.subscribe_typed(detach_tx);
@@ -6681,14 +6680,19 @@ mod tests {
             tokio::sync::mpsc::unbounded_channel::<lattice_lsp::LspDocumentChanged>();
         a.event_bus.subscribe_typed(changed_tx);
 
-        // ---- toggle off: every gate closes. ----
+        // ---- toggle off: gate closes. ----
         a.toggle_mode_by_name("lsp-mode");
         assert!(!a.lsp_mode_enabled_for(id));
-        // M.5.3 detach event fires.
-        assert!(
-            detach_rx.try_recv().is_ok(),
-            "expected LspBufferDetached on toggle off"
-        );
+        // M.5.3 detach event fires (synchronously if Guard
+        // landed pre-toggle, else when the spawn-side Drop
+        // runs).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while detach_rx.try_recv().is_err() {
+            if std::time::Instant::now() >= deadline {
+                panic!("LspBufferDetached did not arrive within 2s");
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
         // M.5.4 request gate: hover echoes the gate message.
         a.apply(Action::LspHoverRequest);
         let msg = a.last_message.as_ref().expect("gate echo");

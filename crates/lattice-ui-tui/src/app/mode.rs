@@ -915,51 +915,89 @@ mod tests {
         assert!(!a.lsp_mode_enabled_for(id));
     }
 
-    #[test]
-    fn deactivating_lsp_mode_emits_lsp_buffer_detached_event() {
-        // M.5.3: deactivating `lsp-mode` publishes
-        // `LspBufferDetached` on the editor bus. M.5.3.b moved
-        // the event from the central enum to `lattice-lsp`,
-        // delivered via the typed-bus path
-        // (`subscribe_typed::<LspBufferDetached>`).
-        // Subscribers (statusline, future telemetry) see the
-        // gate flip without polling.
+    /// Wait up to `budget` for `predicate` to return true.
+    /// Polls every 5ms; uses `tokio::time::sleep` so the
+    /// current task yields to the runtime (letting the
+    /// shared-runtime spawn from `LspMode::on_activate`
+    /// complete). Returns whether the predicate held by the
+    /// deadline.
+    async fn wait_for(mut predicate: impl FnMut() -> bool, budget: std::time::Duration) -> bool {
+        let deadline = std::time::Instant::now() + budget;
+        while !predicate() {
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        true
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn deactivating_lsp_mode_emits_lsp_buffer_detached_event() {
+        // M.5.3 + M-async.5: deactivating `lsp-mode` publishes
+        // `LspBufferDetached` on the editor bus. Under
+        // M-async.5 `LspMode::on_activate` `.await`s the
+        // supervisor's `open_buffer` mailbox, so the Guard
+        // lands asynchronously after App::new returns. Wait
+        // for the activation to settle before toggling off
+        // (otherwise the deactivate hits an empty store and
+        // no Drop fires synchronously).
         use crate::app::test_helpers::app_with_path;
         let mut a = app_with_path("fn main() {}", 5, std::path::PathBuf::from("foo.rs"));
         let id = a.pane_tree.active().buffer_id;
-        // Subscribe AFTER auto-activation so the channel only
-        // captures the deactivate path.
+        // Sync prefix mutated active_modes for lsp-mode; the
+        // spawn task is still in flight (open_buffer.await
+        // round-trips the supervisor mailbox).
+        assert!(a.lsp_mode_enabled_for(id));
+        // Subscribe BEFORE the activation settles so we don't
+        // miss any events. The detach we care about fires
+        // either synchronously (if Guard stashed by toggle-off
+        // time) or on the spawn side (if activation's spawn
+        // hasn't completed -- the stale Guard drops via
+        // try_insert mismatch and still publishes
+        // LspBufferDetached).
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<lattice_lsp::LspBufferDetached>();
         a.event_bus.subscribe_typed(tx);
-        assert!(a.lsp_mode_enabled_for(id));
         a.toggle_mode_by_name("lsp-mode");
         assert!(!a.lsp_mode_enabled_for(id));
-        let received = rx.try_recv();
+        let got_detach = wait_for(
+            || rx.try_recv().is_ok(),
+            std::time::Duration::from_secs(2),
+        )
+        .await;
         assert!(
-            received.is_ok(),
-            "expected LspBufferDetached on bus after `:lsp-mode` toggle off"
+            got_detach,
+            "expected LspBufferDetached on bus after `:lsp-mode` toggle off",
         );
     }
 
-    #[test]
-    fn deactivating_lsp_mode_clears_buffer_uri_mapping() {
-        // Follow-up to Phase 3: the wire-level `didClose` +
+    #[tokio::test(flavor = "multi_thread")]
+    async fn deactivating_lsp_mode_clears_buffer_uri_mapping() {
+        // M.5.3 + M-async.5: the wire-level `didClose` +
         // `buffer_uris` cleanup runs from the
         // `LspBufferDetached` drain, not from the mode-
         // activation path itself. Test mirrors the runtime
-        // tick: toggle the mode (publishes the event), then
-        // call the drain (consumes the event + calls
-        // `lsp_close_buffer`).
+        // tick: toggle the mode, wait for the detach event to
+        // hit the channel, then call the drain (consumes the
+        // event + clears `buffer_uris`).
         use crate::app::test_helpers::app_with_path;
         let mut a = app_with_path("fn main() {}", 5, std::path::PathBuf::from("foo.rs"));
         let id = a.pane_tree.active().buffer_id;
-        // The publish_document_opened path inserts the URI
-        // mapping at App::new time.
         assert!(a.buffer_uri(id).is_some());
         a.toggle_mode_by_name("lsp-mode");
-        a.drain_lsp_detach_events();
+        // Wait for the detach event to land on the bus.
+        // `drain_lsp_detach_events` is non-blocking; without
+        // the wait the spawn-side Drop hasn't fired yet.
+        let ready = wait_for(
+            || {
+                a.drain_lsp_detach_events();
+                a.buffer_uri(id).is_none()
+            },
+            std::time::Duration::from_secs(2),
+        )
+        .await;
         assert!(
-            a.buffer_uri(id).is_none(),
+            ready,
             "lsp-mode deactivate should clear buffer_uris[id] after detach drain"
         );
     }

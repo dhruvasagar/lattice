@@ -47,7 +47,10 @@
 
 pub mod actor;
 pub mod apply_edit;
-pub mod attach_driver;
+// M-async.5: `attach_driver` retired. `LspMode::on_activate`
+// now drives the supervisor's `open_buffer` directly; the
+// bus's `DocumentOpened` event still fires for other
+// subscribers but LSP no longer keys off it.
 pub mod buffer_names;
 pub mod capabilities;
 pub mod codec;

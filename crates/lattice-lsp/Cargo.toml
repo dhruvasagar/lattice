@@ -41,5 +41,13 @@ criterion = { workspace = true }
 name = "lsp"
 harness = false
 
+# M-async.5: dispatch latency for `LspMode` activation under the
+# spawn-based cascade driver. Two cases (no-server-config and
+# unregistered-supervisor); pinned in CI to catch regressions
+# in the registry / cascade / epoch counter path.
+[[bench]]
+name = "mode_activate"
+harness = false
+
 [lints]
 workspace = true

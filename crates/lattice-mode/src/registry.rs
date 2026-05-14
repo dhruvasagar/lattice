@@ -1410,15 +1410,17 @@ mod tests {
         // dropped on the spawn side → DropTrackingGuard::drop
         // fires.
         gate_tx.send(()).unwrap();
-        // Yield until the spawn task observes the wake +
-        // completes its drop. Tokio multi-threaded runtime is
-        // running; yield_now lets it schedule the parked
-        // spawn.
-        for _ in 0..20 {
-            if drop_counter.load(Ordering::SeqCst) > 0 {
+        // Wait for the spawn task to observe the wake + run
+        // its drop. Tokio multi-thread runtime is shared
+        // across tests so contention can stretch wall-time;
+        // poll-and-sleep with a generous budget rather than
+        // a tight yield loop.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while drop_counter.load(Ordering::SeqCst) == 0 {
+            if std::time::Instant::now() >= deadline {
                 break;
             }
-            tokio::task::yield_now().await;
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
         assert_eq!(
             drop_counter.load(Ordering::SeqCst),

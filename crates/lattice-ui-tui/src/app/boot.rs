@@ -105,19 +105,15 @@ fn build_lsp_subsystem(
     // fail and the supervisor task would never start. The
     // explicit handle removes that footgun.
     let handle = sup.spawn(runtime_handle);
-    // Attach driver: subscribes to `Event::DocumentOpened` and
-    // funnels each path-bearing event into the supervisor's
-    // mailbox on the LSP runtime. The publisher (`App::new` /
-    // `App::do_edit`) returns immediately after publishing; the
-    // LSP `initialize` round-trip happens off the UI thread,
-    // honouring paramount goal #4 (asynchronicity). See
-    // `lattice_lsp::attach_driver` for the recv loop.
-    let _attach_sub = lattice_lsp::attach_driver::spawn(
-        event_bus,
-        runtime_handle,
-        handle.clone(),
-        logger.clone(),
-    );
+    // M-async.5: the attach driver is gone. `LspMode::on_activate`
+    // now drives the supervisor's `open_buffer` directly (via the
+    // `LspSupervisorHandle` it pulls from `ctx.service::<...>()`).
+    // The mode owns its work; the App is no longer a coordinator
+    // between `Event::DocumentOpened` and the LSP attach path.
+    // The bus's `DocumentOpened` event still fires for other
+    // subscribers (project watcher, completion warmer, ...);
+    // LSP just doesn't key off it anymore.
+    let _ = &event_bus;
     (
         handle,
         diagnostics,

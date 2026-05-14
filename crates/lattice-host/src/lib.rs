@@ -48,4 +48,5 @@ pub mod modes;
 pub mod oil;
 pub mod pane;
 pub mod popup;
+pub mod state;
 pub mod ui;

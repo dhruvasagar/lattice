@@ -68,8 +68,14 @@ use lattice_core::Buffer;
 use lattice_core::Document;
 use lattice_grammar::CommandRegistry;
 use lattice_grammar::ModalState;
+// SearchDirection + YankKind: only referenced from `mod tests`
+// after the state-types extraction. Gate to test-only so the
+// `#![deny(unused_imports)]` lint stays clean for production
+// builds.
+#[cfg(test)]
 use lattice_grammar::SearchDirection;
 use lattice_grammar::VisualKind;
+#[cfg(test)]
 use lattice_grammar::YankKind;
 use lattice_grammar::builtins::Builtins;
 use lattice_grammar::command::CommandInvocation;
@@ -230,21 +236,10 @@ pub(super) fn resolve_command_name_or_alias(
 }
 
 
-/// In-progress `/` or `?` state. The cursor at entry is preserved so
-/// Esc can restore it.
-#[derive(Debug, Clone)]
-pub struct SearchLine {
-    pub direction: SearchDirection,
-    pub pattern: String,
-    pub origin: Position,
-}
-
-/// Last completed search -- consulted by `n` and `N`.
-#[derive(Debug, Clone)]
-pub struct LastSearch {
-    pub pattern: String,
-    pub direction: SearchDirection,
-}
+// Phase 5.2: `SearchLine`, `LastSearch`, `UnnamedRegister`,
+// `PrevPaneState` moved to `lattice_host::state`. Re-exported
+// below.
+pub use lattice_host::state::{LastSearch, PrevPaneState, SearchLine, UnnamedRegister};
 
 /// In-flight async picker init. The future from
 /// `PickerSourceGenerator::init` is spawned on the LSP
@@ -314,28 +309,8 @@ pub struct InFlightLiveQuery {
 pub const LIVE_PICKER_DEBOUNCE: std::time::Duration =
     std::time::Duration::from_millis(150);
 
-/// The unnamed register's payload. v1 uses a single global slot; the
-/// full vim register zoo (`"a-z`, `"+`, `"*`, etc.) lands later.
-#[derive(Debug, Clone)]
-pub struct UnnamedRegister {
-    pub content: String,
-    pub kind: YankKind,
-}
-
-/// Snapshot of the active pane's state captured just before help
-/// took it over. Used by `dismiss_popup` to restore the user to the
-/// buffer + cursor + scroll they came from. The same struct serves
-/// both display modes (in-pane and popup-overlay) -- popup mode
-/// doesn't actually mutate `pane.buffer` so the restore there is
-/// effectively a no-op for the pane fields, but keeping one stash
-/// for both paths means dismiss has a single code path.
-#[derive(Debug, Clone, Copy)]
-pub struct PrevPaneState {
-    pub buffer: BufferKind,
-    pub buffer_id: BufferId,
-    pub cursor: Position,
-    pub scroll: u32,
-}
+// `UnnamedRegister` and `PrevPaneState` moved to
+// `lattice_host::state` (re-export above).
 
 /// 4.4.e: cached `textDocument/selectionRange` chain anchored
 /// at a specific buffer + cursor position. Flat `Vec<Range>`

@@ -32,7 +32,7 @@
 //! `crate::modes`.
 
 use lattice_grammar::ModalState;
-use lattice_mode::{CapabilitySet, ModeId, ModeKind};
+use lattice_mode::{CapabilitySet, ModeEvent, ModeId, ModeKind};
 use lattice_protocol::Event;
 
 use super::{App, BufferId, BufferKind, EchoLevel};
@@ -411,6 +411,45 @@ impl App {
             // re-activating the current major reloads (registry
             // contract). Either way the call is the same.
             (ModeKind::Major, _) => self.activate_mode_by_id(buffer_id, mode_id),
+        }
+    }
+
+    /// M-async.3 rollback drain. The mode dispatcher's spawned
+    /// lifecycle task publishes `ModeEvent` variants through the
+    /// typed event bus; this drain reads them off `pending_mode_
+    /// lifecycle_rx` and acts on `ModeActivationFailed` only.
+    ///
+    /// On a failed activation: walk the registry, look up the
+    /// mode's kind, then call `deactivate_mode_by_id`. That
+    /// idempotently clears `active_modes` (handling the implies
+    /// cascade on the way), drops any Guard that managed to
+    /// land, and publishes `MinorDeactivated` / `MajorExiting`
+    /// for the cleanup.
+    ///
+    /// Cheap when no events arrived (single `try_recv` →
+    /// `Empty`). Called once per main-loop tick by
+    /// `runtime.rs`.
+    pub fn drain_mode_lifecycle_events(&mut self) {
+        let Some(mut rx) = self.pending_mode_lifecycle_rx.take() else {
+            return;
+        };
+        // Collect first so the subsequent `deactivate_mode_by_id`
+        // / state-mutation calls don't conflict with the
+        // receiver borrow.
+        let mut to_rollback: Vec<(BufferId, ModeId)> = Vec::new();
+        while let Ok(evt) = rx.try_recv() {
+            if let ModeEvent::ModeActivationFailed { buffer, mode, .. } = evt {
+                to_rollback.push((BufferId(buffer.raw() as u32), mode));
+            }
+        }
+        self.pending_mode_lifecycle_rx = Some(rx);
+        for (buffer_id, mode_id) in to_rollback {
+            // Idempotent: if the mode wasn't in `active_modes`,
+            // `deactivate_mode_by_id` no-ops. Surfacing the
+            // failure as an echo is a follow-up; today we
+            // silently roll back so the buffer doesn't get
+            // stuck in a half-active state.
+            self.deactivate_mode_by_id(buffer_id, mode_id);
         }
     }
 

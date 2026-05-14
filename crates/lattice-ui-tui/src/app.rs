@@ -1947,6 +1947,18 @@ pub struct App {
     /// same behaviour for free.
     pub pending_lsp_detach_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspBufferDetached>>,
+    /// M-async.3: receiver for [`lattice_mode::ModeEvent`].
+    /// The dispatcher publishes lifecycle events through the
+    /// typed bus; the App's per-tick drain processes
+    /// `ModeActivationFailed` for rollback (clearing
+    /// `active_modes` + dropping any leaked Guards for failed
+    /// modes). Other variants (`MajorEntered` etc.) are
+    /// observable here too -- subscribers that need them
+    /// (modeline refresh, telemetry) hook in by sharing this
+    /// receiver via a fan-out later; for now the drain only
+    /// acts on the failure variant.
+    pub pending_mode_lifecycle_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_mode::ModeEvent>>,
     /// 4.4.g: receiver for `LspInlayHintRefresh` events. The
     /// actor publishes these when a server sends
     /// `workspace/inlayHint/refresh`; the App's per-tick drain

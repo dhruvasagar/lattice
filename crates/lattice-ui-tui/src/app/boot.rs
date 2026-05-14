@@ -303,6 +303,15 @@ impl App {
         let (lsp_detach_tx, lsp_detach_rx) =
             tokio::sync::mpsc::unbounded_channel::<lattice_lsp::LspBufferDetached>();
         event_bus.subscribe_typed(lsp_detach_tx);
+        // M-async.3: mode lifecycle events. The dispatcher
+        // publishes `ModeEvent::ModeActivationFailed` for every
+        // mode that failed its `on_activate` (or got aborted by
+        // a cascade parent's failure); the App's per-tick drain
+        // calls `deactivate_mode_by_id` on each so `active_modes`
+        // / `mode_guards` reflect the failed activation.
+        let (mode_lifecycle_tx, mode_lifecycle_rx) =
+            tokio::sync::mpsc::unbounded_channel::<lattice_mode::ModeEvent>();
+        event_bus.subscribe_typed(mode_lifecycle_tx);
         // 4.4.g: `workspace/inlayHint/refresh` subscriber.
         // Server-initiated cache invalidation -- the actor
         // replies `null` inline and publishes
@@ -765,6 +774,7 @@ impl App {
             lsp_log_event_rx: Some(lsp_log_event_rx),
             lsp_progress_event_rx: Some(lsp_progress_event_rx),
             pending_lsp_detach_rx: Some(lsp_detach_rx),
+            pending_mode_lifecycle_rx: Some(mode_lifecycle_rx),
             pending_inlay_hint_refresh_rx: Some(lsp_inlay_refresh_rx),
             pending_semantic_tokens_refresh_rx: Some(lsp_semantic_tokens_refresh_rx),
             lsp_progress: std::collections::HashMap::new(),

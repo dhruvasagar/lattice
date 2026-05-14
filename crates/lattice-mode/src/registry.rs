@@ -2,14 +2,22 @@
 //! activation / deactivation against a per-buffer `ActiveModes`
 //! and an App-owned [`GuardStoreHandle`].
 //!
-//! M-async.2: activation is **spawn-based**. The sync prefix
-//! validates the request and mutates `active_modes`; the
-//! lifecycle future (`on_activate_dyn`) is spawned on the shared
-//! runtime via [`lattice_runtime::spawn_task`]. The spawned task
-//! awaits the future, stashes the Guard in the
-//! [`GuardStoreHandle`], and publishes a typed [`ModeEvent`]
-//! (`MajorEntered` / `MinorActivated` on success,
-//! `ModeActivationFailed` on lifecycle error).
+//! M-async.3: activation is **spawn-based with sequential
+//! cascade**. The sync prefix walks the requested mode + its
+//! `implies()` tree, validates each, mutates `active_modes` for
+//! each, and builds an ordered cascade plan
+//! (`Vec<CascadeStep>`). One task is spawned that walks the
+//! plan in DFS order, awaiting each step's `on_activate.await`
+//! before moving to the next. This guarantees a parent's
+//! lifecycle resolves before its implied children's begin --
+//! no sub-mode reads parent's not-yet-written state.
+//!
+//! On lifecycle error the spawned task publishes
+//! `ModeActivationFailed` for the failing step, then publishes
+//! `ModeActivationFailed { reason: "cascade aborted by X" }`
+//! for every remaining (unrun) step. An App-side subscriber
+//! (`drain_mode_lifecycle_events`) rolls back `active_modes` /
+//! `mode_guards` on each.
 //!
 //! Deactivation stays synchronous (Drop is sync): the
 //! dispatcher locks the store, removes the Guard, drops it. The
@@ -29,11 +37,6 @@
 //! `ModeActivationFailed` events on the bus; the spawned task
 //! never returns them to the caller (the caller already
 //! returned `Ok(())`).
-//!
-//! M-async.3 follow-up: an App-side subscriber rolls back
-//! `active_modes` on `ModeActivationFailed`. M-async.2 leaves
-//! the mutation in place even on lifecycle error (the previous
-//! `Vec<ModeEvent>` return type leaked the same way).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -118,22 +121,16 @@ impl ModeRegistry {
     }
 
     /// Activate a major mode on `buffer`. Synchronous prefix:
-    /// validate + mutate `active_modes`. The lifecycle future
-    /// runs on a tokio worker via
-    /// [`lattice_runtime::spawn_task`]; on resolve the spawned
-    /// task stashes the Guard in `guards` and publishes
-    /// `MajorEntered` (or `ModeActivationFailed` if `on_activate`
-    /// returned `Err`).
+    /// validate the major + its `implies()` tree, mutate
+    /// `active_modes` for the whole tree, build a cascade plan.
+    /// Then one task is spawned that walks the plan in DFS
+    /// order, awaiting each step's `on_activate.await` before
+    /// the next.
     ///
     /// If a different major is currently active, it is
     /// deactivated synchronously first (Drop runs, `MajorExiting`
     /// publishes). Idempotent: reactivating the current major
     /// triggers a *reload* (deactivate then re-activate).
-    ///
-    /// Implied minors are spawned recursively after the major's
-    /// sync prefix (M-async.3 makes the cascade await the
-    /// parent's future before scheduling children; M-async.2
-    /// schedules them in parallel).
     #[allow(clippy::too_many_arguments)]
     pub fn activate_major(
         &self,
@@ -165,45 +162,36 @@ impl ModeRegistry {
                 buffer,
                 mode: prev_id,
             });
-            // Drop the previous Guard. Box<dyn Any + Send> goes
-            // out of scope here; original Guard's Drop fires.
             let _ = guards.remove(buffer, prev_id);
             active.set_major(None);
         }
 
-        // Sync prefix: mutate active_modes BEFORE spawning so
-        // `App::active_modes.has_major(mode)` is `true` the
-        // moment this call returns. The Guard isn't yet
-        // stashed; lifecycle errors leave `active_modes`
-        // mutated (M-async.3 rolls back via subscriber).
+        // Sync prefix: mutate active_modes BEFORE building the
+        // cascade plan so `App::active_modes.has_major(mode)`
+        // is `true` the moment this call returns.
         active.set_major(Some(mode));
 
-        // Spawn the lifecycle future. Note: cascade through
-        // `implies()` is initiated synchronously here. M-async.2
-        // schedules implied children in parallel with the
-        // parent's future; M-async.3 sequences them after the
-        // parent resolves.
-        self.spawn_lifecycle(
-            entry.clone(),
-            guards.clone(),
-            events.clone(),
-            ctx_for(buffer, mode, config, events, services),
-            buffer,
+        // Build the cascade plan: root major + implied minors
+        // in DFS order. Validation errors short-circuit the
+        // build; partial active_modes mutation rolls back on
+        // error before returning.
+        let mut plan: Vec<CascadeStep> = vec![CascadeStep {
+            entry: entry.clone(),
             mode,
-            ModeKind::Major,
-        );
-
-        // Implied minors spawn alongside.
-        for &dep in entry.implies() {
-            if !self.is_registered(dep) {
-                return Err(ModeActivationError::UnregisteredDependency { mode, dep });
+            kind: ModeKind::Major,
+        }];
+        if let Err(e) = self.record_implies_cascade(active, &mut plan, &entry, mode, caps) {
+            // Validation of an implied child failed: roll back
+            // the major's active_modes mutation + any minors we
+            // already pushed.
+            active.set_major(None);
+            for step in plan.iter().skip(1) {
+                active.remove_minor(step.mode);
             }
-            if active.has_minor(dep) {
-                continue;
-            }
-            self.activate_minor_inner(active, guards, config, events, services, buffer, dep, caps)?;
+            return Err(e);
         }
 
+        self.spawn_cascade(plan, guards.clone(), events.clone(), config, events, services, buffer);
         Ok(())
     }
 
@@ -221,21 +209,39 @@ impl ModeRegistry {
         mode: ModeId,
         caps: CapabilitySet,
     ) -> Result<(), ModeActivationError> {
-        self.activate_minor_inner(active, guards, config, events, services, buffer, mode, caps)
+        let mut plan: Vec<CascadeStep> = Vec::new();
+        self.validate_and_record_minor(active, &mut plan, buffer, mode, caps)?;
+        // `plan` is empty when the minor was already active (no
+        // -op): skip the spawn entirely.
+        if !plan.is_empty() {
+            self.spawn_cascade(
+                plan,
+                guards.clone(),
+                events.clone(),
+                config,
+                events,
+                services,
+                buffer,
+            );
+        }
+        Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn activate_minor_inner(
+    /// Validate `mode` (a minor) against the active set, mutate
+    /// `active` to include it, and push its (`entry`, kind) onto
+    /// `plan`. Recursively records implied minors. On error,
+    /// rolls back the `active` mutations performed for THIS
+    /// call (callers responsible for unwinding their own
+    /// pushes).
+    fn validate_and_record_minor(
         &self,
         active: &mut ActiveModes,
-        guards: &GuardStoreHandle,
-        config: &Arc<lattice_config::ConfigRegistry>,
-        events: &Arc<lattice_runtime::EventBus>,
-        services: &Arc<crate::services::ServiceRegistry>,
+        plan: &mut Vec<CascadeStep>,
         buffer: BufferId,
         mode: ModeId,
         caps: CapabilitySet,
     ) -> Result<(), ModeActivationError> {
+        let _ = buffer;
         let entry = self
             .modes
             .get(&mode)
@@ -276,20 +282,47 @@ impl ModeRegistry {
             }
         }
 
-        // Sync prefix: append to active_modes BEFORE spawning.
         active.push_minor(mode);
-
-        self.spawn_lifecycle(
-            entry.clone(),
-            guards.clone(),
-            events.clone(),
-            ctx_for(buffer, mode, config, events, services),
-            buffer,
+        plan.push(CascadeStep {
+            entry: entry.clone(),
             mode,
-            ModeKind::Minor,
-        );
+            kind: ModeKind::Minor,
+        });
 
-        // Recurse into implied minors.
+        if let Err(e) = self.record_implies_cascade(active, plan, &entry, mode, caps) {
+            // Rollback this mode's mutation + any pushed implies.
+            active.remove_minor(mode);
+            // Plan unwinding: pop entries we pushed (this mode
+            // is the last element pushed before recursing).
+            // Find our index and truncate from there. Linear
+            // scan; the plan is short (mode-architecture caps
+            // implies depth in practice).
+            if let Some(pos) = plan.iter().position(|s| s.mode == mode) {
+                for step in plan.drain(pos..) {
+                    // Children we pushed get rolled back from
+                    // active too.
+                    if step.mode != mode {
+                        active.remove_minor(step.mode);
+                    }
+                }
+            }
+            return Err(e);
+        }
+
+        Ok(())
+    }
+
+    /// Walk `entry.implies()`, validating + recording each as
+    /// a cascade step. Shared between `activate_major` and the
+    /// minor recursion.
+    fn record_implies_cascade(
+        &self,
+        active: &mut ActiveModes,
+        plan: &mut Vec<CascadeStep>,
+        entry: &Arc<dyn DynMode>,
+        mode: ModeId,
+        caps: CapabilitySet,
+    ) -> Result<(), ModeActivationError> {
         for &dep in entry.implies() {
             if !self.is_registered(dep) {
                 return Err(ModeActivationError::UnregisteredDependency { mode, dep });
@@ -297,9 +330,10 @@ impl ModeRegistry {
             if active.has_minor(dep) {
                 continue;
             }
-            self.activate_minor_inner(active, guards, config, events, services, buffer, dep, caps)?;
+            // Use a dummy buffer-id (unused inside; we pass it
+            // through for symmetry).
+            self.validate_and_record_minor(active, plan, BufferId::new(0), dep, caps)?;
         }
-
         Ok(())
     }
 
@@ -363,55 +397,115 @@ impl ModeRegistry {
         Ok(())
     }
 
-    /// Spawn the lifecycle future for `entry` on the shared
-    /// runtime. The spawned task awaits the future, stashes the
-    /// Guard on success, and publishes a typed `ModeEvent`.
-    fn spawn_lifecycle(
+    /// Drive `plan` DFS. Builds the cascade future, polls it
+    /// once synchronously with a no-op waker, and only
+    /// `spawn_task`s the remaining work if the future is still
+    /// Pending.
+    ///
+    /// **Why try-sync-then-spawn:** today's modes (markers with
+    /// `Guard = ()`, plus the hand-written LSP modes) finish
+    /// `on_activate` without any `.await` -- the future returns
+    /// `Ready` on first poll. Letting the App thread drive the
+    /// cascade synchronously when nothing yields keeps
+    /// `App::activate_mode_by_id` ⇒ `App::deactivate_mode_by_id`
+    /// (rapid toggle, e.g. tests + future plugin scripting)
+    /// race-free: the Guard is in the store before deactivate
+    /// runs. When a mode is rewritten to `.await` real I/O
+    /// (e.g. the LSP initialize handshake), the first
+    /// `Pending` yield trips the spawn path and the
+    /// remainder runs on the runtime -- the App thread stops
+    /// blocking, paramount goal #4 still honoured.
+    ///
+    /// On success, stashes the Guard + publishes the
+    /// lifecycle event. On failure, publishes
+    /// `ModeActivationFailed` for the failing step plus a
+    /// synthetic "cascade aborted" failure for every
+    /// remaining unrun step, so the App's rollback subscriber
+    /// can clean up `active_modes` for the whole subtree.
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_cascade(
         &self,
-        entry: Arc<dyn DynMode>,
+        plan: Vec<CascadeStep>,
         guards: GuardStoreHandle,
-        events: Arc<lattice_runtime::EventBus>,
-        ctx: ModeContext,
+        events_for_task: Arc<lattice_runtime::EventBus>,
+        config: &Arc<lattice_config::ConfigRegistry>,
+        events: &Arc<lattice_runtime::EventBus>,
+        services: &Arc<crate::services::ServiceRegistry>,
         buffer: BufferId,
-        mode: ModeId,
-        kind: ModeKind,
     ) {
-        lattice_runtime::spawn_task(async move {
-            match entry.on_activate_dyn(ctx).await {
-                Ok(guard) => {
-                    guards.insert(buffer, mode, guard);
-                    let evt = match kind {
-                        ModeKind::Major => ModeEvent::MajorEntered { buffer, mode },
-                        ModeKind::Minor => ModeEvent::MinorActivated { buffer, mode },
-                    };
-                    events.publish_typed(evt);
-                }
-                Err(err) => {
-                    events.publish_typed(ModeEvent::activation_failed(buffer, mode, &err));
+        let config = config.clone();
+        let events_ctx = events.clone();
+        let services = services.clone();
+        let cascade_fut = async move {
+            for (i, step) in plan.iter().enumerate() {
+                let ctx = ModeContext::new(
+                    buffer,
+                    step.mode,
+                    config.clone(),
+                    events_ctx.clone(),
+                    services.clone(),
+                );
+                match step.entry.on_activate_dyn(ctx).await {
+                    Ok(guard) => {
+                        guards.insert(buffer, step.mode, guard);
+                        let evt = match step.kind {
+                            ModeKind::Major => ModeEvent::MajorEntered {
+                                buffer,
+                                mode: step.mode,
+                            },
+                            ModeKind::Minor => ModeEvent::MinorActivated {
+                                buffer,
+                                mode: step.mode,
+                            },
+                        };
+                        events_for_task.publish_typed(evt);
+                    }
+                    Err(err) => {
+                        events_for_task
+                            .publish_typed(ModeEvent::activation_failed(buffer, step.mode, &err));
+                        let trigger = step.mode;
+                        for remaining in &plan[i + 1..] {
+                            events_for_task.publish_typed(ModeEvent::ModeActivationFailed {
+                                buffer,
+                                mode: remaining.mode,
+                                reason: format!("cascade aborted by {trigger}"),
+                            });
+                        }
+                        return;
+                    }
                 }
             }
-        });
+        };
+
+        // Try-sync-then-spawn. Poll once with a no-op waker
+        // (the future may register interest with it; standard
+        // Rust futures re-register on every poll, so handing
+        // the same `fut` to tokio when Pending is sound).
+        let mut fut: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> =
+            Box::pin(cascade_fut);
+        let waker = std::task::Waker::noop();
+        let mut cx = std::task::Context::from_waker(waker);
+        match fut.as_mut().poll(&mut cx) {
+            std::task::Poll::Ready(()) => {
+                // Cascade finished entirely on this thread; no
+                // spawn needed. Guards are in the store, events
+                // are on the bus. Rapid `deactivate` is now
+                // race-free.
+            }
+            std::task::Poll::Pending => {
+                lattice_runtime::spawn_task(fut);
+            }
+        }
     }
 }
 
-/// Build a `ModeContext` for a `(buffer, mode)` activation.
-/// Inline because the dispatcher constructs one per spawned
-/// task; the registry-method body would otherwise repeat the
-/// same 5-arg constructor call.
-fn ctx_for(
-    buffer: BufferId,
+/// One step in a cascade plan. Built synchronously by the sync
+/// prefix; consumed by the spawned task that awaits each step's
+/// `on_activate.await` in order.
+struct CascadeStep {
+    entry: Arc<dyn DynMode>,
     mode: ModeId,
-    config: &Arc<lattice_config::ConfigRegistry>,
-    events: &Arc<lattice_runtime::EventBus>,
-    services: &Arc<crate::services::ServiceRegistry>,
-) -> ModeContext {
-    ModeContext::new(
-        buffer,
-        mode,
-        config.clone(),
-        events.clone(),
-        services.clone(),
-    )
+    kind: ModeKind,
 }
 
 #[cfg(test)]
@@ -843,21 +937,20 @@ mod tests {
             CapabilitySet::empty(),
         )
         .unwrap();
-        // Two MinorActivated events arrive (parent + implied
-        // dep). M-async.2 spawns them in parallel; order is
-        // schedule-dependent. Drain both and assert the set.
-        let mut got: Vec<ModeId> = Vec::new();
-        for _ in 0..2 {
-            let evt = await_event(&mut rx).await;
-            match evt {
-                ModeEvent::MinorActivated { mode, .. } => got.push(mode),
-                other => panic!("expected MinorActivated, got {other:?}"),
-            }
-        }
-        got.sort_by_key(|id| id.as_str().to_string());
-        let mut want = vec![rlnum, lnum];
-        want.sort_by_key(|id| id.as_str().to_string());
-        assert_eq!(got, want);
+        // M-async.3: sequential cascade. Parent's
+        // `on_activate.await` resolves BEFORE the implied
+        // child's begins, so events arrive in DFS order:
+        // parent first, then child.
+        let evt = await_event(&mut rx).await;
+        assert!(
+            matches!(evt, ModeEvent::MinorActivated { mode, .. } if mode == rlnum),
+            "parent (rlnum) should activate first; got {evt:?}",
+        );
+        let evt = await_event(&mut rx).await;
+        assert!(
+            matches!(evt, ModeEvent::MinorActivated { mode, .. } if mode == lnum),
+            "implied child (lnum) should activate second; got {evt:?}",
+        );
         assert!(a.has_minor(rlnum));
         assert!(a.has_minor(lnum));
     }
@@ -1082,5 +1175,91 @@ mod tests {
             !g.contains(buf(), id),
             "no Guard stashed on lifecycle error"
         );
+    }
+
+    /// M-async.3 cascade abort: parent's `on_activate` returns
+    /// `Err` → publishes `ModeActivationFailed` for the parent
+    /// *and* a synthetic "cascade aborted by parent"
+    /// `ModeActivationFailed` for each unrun implied child.
+    /// Children never spawn; their Guards never stash; the
+    /// App's rollback subscriber sees one event per unrun mode
+    /// and clears `active_modes` for the whole subtree.
+    #[tokio::test]
+    async fn cascade_abort_publishes_synthetic_failures_for_unrun_steps() {
+        struct FailingParent {
+            id: ModeId,
+            implies: Vec<ModeId>,
+        }
+        impl Mode for FailingParent {
+            type Guard = ();
+            fn id(&self) -> ModeId {
+                self.id
+            }
+            fn kind(&self) -> ModeKind {
+                ModeKind::Minor
+            }
+            fn implies(&self) -> &[ModeId] {
+                &self.implies
+            }
+            fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
+                let id = self.id;
+                Box::pin(async move { Err(ModeActivationError::NotRegistered(id)) })
+            }
+        }
+        let mut r = ModeRegistry::new();
+        let child_id = r.register(MockMode::minor("child-mode")).unwrap();
+        let parent_id = ModeId::new("parent-mode");
+        r.register(FailingParent {
+            id: parent_id,
+            implies: vec![child_id],
+        })
+        .unwrap();
+        let mut a = ActiveModes::new();
+        let g = GuardStoreHandle::new();
+        let bus = evts();
+        let mut rx = subscribe_mode_events(&bus);
+        r.activate_minor(
+            &mut a,
+            &g,
+            &cfg(),
+            &bus,
+            &svcs(),
+            buf(),
+            parent_id,
+            CapabilitySet::empty(),
+        )
+        .unwrap();
+        // Sync prefix mutated active_modes for parent + child.
+        assert!(a.has_minor(parent_id));
+        assert!(a.has_minor(child_id));
+        // First event: parent's real failure.
+        let evt = await_event(&mut rx).await;
+        match evt {
+            ModeEvent::ModeActivationFailed { mode, reason, .. } => {
+                assert_eq!(mode, parent_id);
+                assert!(
+                    !reason.starts_with("cascade aborted"),
+                    "parent's reason should be the real error, not the synthetic prefix; got {reason:?}",
+                );
+            }
+            other => panic!("expected parent's ModeActivationFailed first, got {other:?}"),
+        }
+        // Second event: child's synthetic "cascade aborted".
+        let evt = await_event(&mut rx).await;
+        match evt {
+            ModeEvent::ModeActivationFailed { mode, reason, .. } => {
+                assert_eq!(mode, child_id);
+                assert!(
+                    reason.contains("cascade aborted"),
+                    "child's reason should announce cascade abort; got {reason:?}",
+                );
+                assert!(reason.contains(parent_id.as_str()));
+            }
+            other => panic!("expected child's synthetic ModeActivationFailed, got {other:?}"),
+        }
+        // No Guards stashed -- neither parent nor child ran to
+        // completion.
+        assert!(!g.contains(buf(), parent_id));
+        assert!(!g.contains(buf(), child_id));
     }
 }

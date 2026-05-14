@@ -69,9 +69,14 @@ mod tests {
     }
 
     #[test]
-    fn nerd_fonts_false_returns_bmp_glyph_for_dir() {
+    fn nerd_fonts_false_returns_padding_not_glyph_for_dir() {
+        // BMP fallback has no folder glyph that doesn't collide
+        // with the file-tree's `▸` expansion marker -- the marker
+        // already says "directory". The adapter still applies the
+        // dir style so any future per-dir background / underline
+        // overrides flow through uniformly.
         let (glyph, style) = icon_for_entry(&PathBuf::from("src"), true, false, &theme());
-        assert_eq!(glyph, "▸ ");
+        assert_eq!(glyph, "  ");
         assert_eq!(style, theme().file_tree_dir_style);
     }
 

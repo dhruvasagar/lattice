@@ -45,10 +45,32 @@ pub enum IconColor {
 /// default. `nerd_fonts == false` returns a BMP-block fallback
 /// glyph (◆ ≡ ◇ ■ ♪ ▶ · -- one per file family) with the colour
 /// still resolved per type.
+///
+/// **Directories in BMP-fallback mode return two spaces, not a
+/// glyph.** The file-tree renderer already emits `▾ ` / `▸ ` as
+/// the expansion-state marker; the only BMP-block glyph that
+/// reads as "folder" is the same right-pointing triangle `▸`, so
+/// a collapsed directory row would render as `▸ ▸ name` -- two
+/// identical arrows back-to-back. The marker already signals
+/// "directory + state"; in BMP mode there's nothing useful to
+/// add. We return `"  "` instead of `""` so column geometry
+/// matches files (which always emit a 2-cell file-type icon),
+/// keeping the file/dir name column aligned.
+///
+/// Nerd-fonts mode keeps the distinct folder glyph (`󰉋 ` is a
+/// private-use codepoint that doesn't collide with the
+/// geometric-shape marker), so directories there read as
+/// `▸ 󰉋 name` -- marker + folder picto + name -- which is the
+/// convention nvim-tree and VS Code follow.
 pub fn entry_visual(path: &Path, is_dir: bool, nerd_fonts: bool) -> (&'static str, IconColor) {
     if is_dir {
-        let glyph = if nerd_fonts { "󰉋 " } else { "▸ " };
-        return (glyph, IconColor::Blue);
+        if nerd_fonts {
+            return ("󰉋 ", IconColor::Blue);
+        }
+        // BMP fallback: no glyph (collides with the `▸` marker).
+        // 2-cell padding keeps the name column aligned with file
+        // rows. `Reset` colour because there's nothing to colour.
+        return ("  ", IconColor::Reset);
     }
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
@@ -466,10 +488,14 @@ mod tests {
     }
 
     #[test]
-    fn nerd_fonts_false_returns_bmp_glyph_for_dir() {
+    fn nerd_fonts_false_returns_padding_not_glyph_for_dir() {
+        // BMP fallback has no folder glyph that doesn't collide
+        // with the file-tree's `▸` expansion marker -- the marker
+        // already says "directory". Two-cell padding keeps name-
+        // column alignment with file rows.
         let (glyph, color) = entry_visual(&PathBuf::from("src"), true, false);
-        assert_eq!(glyph, "▸ ");
-        assert_eq!(color, IconColor::Blue);
+        assert_eq!(glyph, "  ");
+        assert_eq!(color, IconColor::Reset);
     }
 
     #[test]

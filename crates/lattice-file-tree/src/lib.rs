@@ -364,6 +364,45 @@ mod tests {
     }
 
     #[test]
+    fn render_bmp_mode_does_not_double_arrow_on_directories() {
+        // Regression: the BMP fallback used to return `▸ ` as the
+        // dir glyph -- identical to the collapsed-marker, so a
+        // row would render as `▸ ▸ name`. Post-fix the glyph is
+        // 2-space padding, eliminating the visual collision while
+        // keeping the name column aligned with files.
+        let dir = temp_dir();
+        std::fs::create_dir(dir.join("sub")).unwrap();
+        let entries = vec![
+            FileTreeEntry {
+                path: dir.clone(),
+                depth: 0,
+                kind: FileTreeEntryKind::Directory { expanded: true },
+            },
+            FileTreeEntry {
+                path: dir.join("sub"),
+                depth: 1,
+                kind: FileTreeEntryKind::Directory { expanded: false },
+            },
+        ];
+        let buf = render_to_buffer(&entries, false);
+        let body = buf.as_string();
+        assert!(
+            !body.contains("▸ ▸"),
+            "BMP-mode collapsed dir row should not have double arrow; got:\n{body}",
+        );
+        assert!(
+            !body.contains("▾ ▸"),
+            "BMP-mode expanded dir + collapsed child should not pair the two markers as a double glyph; got:\n{body}",
+        );
+        // Sanity: the row still contains the marker and the dir
+        // name, just not a redundant glyph between them.
+        let row = body.lines().nth(1).unwrap();
+        assert!(row.contains("▸ "), "collapsed marker should be present: {row:?}");
+        assert!(row.contains("sub"), "dir name should be present: {row:?}");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn move_cursor_clamps_to_last_line() {
         let dir = temp_dir();
         std::fs::write(dir.join("a.txt"), "x").unwrap();

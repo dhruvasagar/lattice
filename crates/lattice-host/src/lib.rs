@@ -30,6 +30,7 @@
 //! See `docs/dev/architecture/phase-5-extraction.md` for the
 //! slice plan and module classification.
 
+pub mod action;
 pub mod actions;
 pub mod buffers;
 pub mod chord;

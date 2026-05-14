@@ -171,7 +171,7 @@ pub fn dispatch_replace(handle: &KeymapHandle, event: &KeyEvent) -> Action {
     event
         .modifiers
         .remove(KeyModifiers::SHIFT | KeyModifiers::ALT | KeyModifiers::SUPER);
-    let Some(chord) = KeyChord::from_event(&event) else {
+    let Some(chord) = crate::chord::from_event(&event) else {
         return Action::None;
     };
     match handle.lookup(BindingMode::Replace, &[chord]) {

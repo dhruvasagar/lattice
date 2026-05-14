@@ -228,7 +228,7 @@ pub fn dispatch_visual(handle: &KeymapHandle, event: &KeyEvent, kind: VisualKind
     event
         .modifiers
         .remove(KeyModifiers::SHIFT | KeyModifiers::ALT | KeyModifiers::SUPER);
-    let Some(chord) = KeyChord::from_event(&event) else {
+    let Some(chord) = crate::chord::from_event(&event) else {
         return Action::None;
     };
     match handle.lookup(BindingMode::Visual, &[chord]) {

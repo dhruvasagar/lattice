@@ -32,6 +32,7 @@
 
 pub mod actions;
 pub mod buffers;
+pub mod chord;
 pub mod excommand;
 pub mod file_tree;
 pub mod help;

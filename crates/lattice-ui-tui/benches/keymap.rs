@@ -53,7 +53,7 @@ fn keychord_from_event_plain_letter(c: &mut Criterion) {
     let event = ev(KeyCode::Char('j'), KeyModifiers::NONE);
     c.bench_function("keychord_from_event_plain_letter", |b| {
         b.iter(|| {
-            let chord = KeyChord::from_event(black_box(&event));
+            let chord = lattice_ui_tui::chord::from_event(black_box(&event));
             black_box(chord);
         });
     });
@@ -67,7 +67,7 @@ fn keychord_from_event_ctrl_letter(c: &mut Criterion) {
     let event = ev(KeyCode::Char('c'), KeyModifiers::CONTROL);
     c.bench_function("keychord_from_event_ctrl_letter", |b| {
         b.iter(|| {
-            let chord = KeyChord::from_event(black_box(&event));
+            let chord = lattice_ui_tui::chord::from_event(black_box(&event));
             black_box(chord);
         });
     });
@@ -80,7 +80,7 @@ fn keychord_from_event_back_tab(c: &mut Criterion) {
     let event = ev(KeyCode::BackTab, KeyModifiers::NONE);
     c.bench_function("keychord_from_event_back_tab", |b| {
         b.iter(|| {
-            let chord = KeyChord::from_event(black_box(&event));
+            let chord = lattice_ui_tui::chord::from_event(black_box(&event));
             black_box(chord);
         });
     });
@@ -101,7 +101,7 @@ fn keychord_to_string_plain_letter(c: &mut Criterion) {
 /// the `<C-S-c>`-shaped path that needs to allocate a small
 /// String and write modifier prefixes.
 fn keychord_to_string_ctrl_shift_letter(c: &mut Criterion) {
-    let chord = KeyChord::from_event(&ev(
+    let chord = lattice_ui_tui::chord::from_event(&ev(
         KeyCode::Char('c'),
         KeyModifiers::CONTROL | KeyModifiers::SHIFT,
     ))

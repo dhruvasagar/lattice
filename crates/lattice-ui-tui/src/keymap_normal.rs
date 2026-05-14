@@ -1345,7 +1345,7 @@ fn register_text_object_resolutions(
 /// Other partial paths still return `None` (no caller produces
 /// them today; future sub-slices can extend this match arm).
 pub fn lookup_normal(handle: &KeymapHandle, event: &KeyEvent) -> Option<Action> {
-    let Some(raw_chord) = KeyChord::from_event(event) else {
+    let Some(raw_chord) = crate::chord::from_event(event) else {
         return None;
     };
     let chord = normalize_for_normal_lookup(raw_chord);
@@ -1397,7 +1397,7 @@ pub fn lookup_normal_with_prefix(
     prefix: &[KeyChord],
     event: &KeyEvent,
 ) -> Action {
-    let Some(raw_chord) = KeyChord::from_event(event) else {
+    let Some(raw_chord) = crate::chord::from_event(event) else {
         return Action::None;
     };
     let chord = normalize_for_normal_lookup(raw_chord);

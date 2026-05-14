@@ -402,7 +402,7 @@ pub fn dispatch_insert(
     // This drives the `<C-x>` family (`<C-x><C-o>` /
     // `<C-x><C-s>`) and any future Insert-mode multi-key chord.
     if !partial_chord.is_empty() {
-        let Some(chord) = KeyChord::from_event(event) else {
+        let Some(chord) = crate::chord::from_event(event) else {
             return Action::None;
         };
         let chord = normalize_for_insert_lookup(chord);
@@ -414,7 +414,7 @@ pub fn dispatch_insert(
         };
     }
 
-    let Some(raw_chord) = KeyChord::from_event(event) else {
+    let Some(raw_chord) = crate::chord::from_event(event) else {
         return literal_text_fallback(event);
     };
     let chord = normalize_for_insert_lookup(raw_chord);

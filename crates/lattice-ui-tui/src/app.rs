@@ -730,6 +730,60 @@ pub struct PendingPickerInit {
     pub cancel: lattice_protocol::CancellationToken,
 }
 
+/// Live-picker query state. Installed when [`App::open_picker`]
+/// resolves a source whose `spec().live` is true; survives until
+/// the picker is dismissed.
+///
+/// Two phases:
+///
+/// 1. **Debouncing.** `debounce_until = Some(deadline)` while a
+///    keystroke is pending. Every fresh keystroke reschedules
+///    the deadline forward. Once `Instant::now() >= deadline`,
+///    the main-loop drain fires
+///    [`PickerSourceGenerator::on_query_changed`] and clears
+///    `debounce_until` to None.
+/// 2. **In-flight.** When `on_query_changed` returns a `Future`
+///    or a `Stream`, the spawned task lands its result on
+///    `inflight.rx`. The drain seats new raw candidates (if the
+///    result is still relevant) or drops the result (if the
+///    user has typed past the launched query).
+pub struct LivePickerQueryState {
+    pub source_id: String,
+    pub generator: std::sync::Arc<dyn lattice_picker::PickerSourceGenerator>,
+    pub debounce_until: Option<std::time::Instant>,
+    pub inflight: Option<InFlightLiveQuery>,
+    /// Set by `open_picker` from the first positional arg
+    /// when the source is live; consumed (taken) by
+    /// `seat_picker_from_pairs` on the first seat so the
+    /// picker prompt opens pre-populated with the user's
+    /// `:picker grep <pattern>` argument. None for live
+    /// pickers opened without an initial pattern.
+    pub initial_query: Option<String>,
+}
+
+/// Spawned `on_query_changed` future / stream paired with the
+/// query it was launched against. The drain compares
+/// `launched_for_query` against the picker's live query; if
+/// they differ, the user has kept typing and a newer fire is
+/// already in flight (or coming via debounce) -- discard the
+/// stale result.
+pub struct InFlightLiveQuery {
+    pub cancel: lattice_protocol::CancellationToken,
+    pub rx: tokio::sync::mpsc::UnboundedReceiver<
+        lattice_picker::SourceResult<lattice_picker::PickerInitResult>,
+    >,
+    pub launched_for_query: String,
+}
+
+/// Debounce window before a live picker's query change fires
+/// `on_query_changed`. Telescope uses ~150ms; chosen so that
+/// burst keystrokes coalesce into one source call without
+/// feeling laggy. Constant lives here (not in `lattice-picker`)
+/// because debounce is host policy -- the picker primitive is
+/// renderer- and timer-agnostic.
+pub const LIVE_PICKER_DEBOUNCE: std::time::Duration =
+    std::time::Duration::from_millis(150);
+
 /// The unnamed register's payload. v1 uses a single global slot; the
 /// full vim register zoo (`"a-z`, `"+`, `"*`, etc.) lands later.
 #[derive(Debug, Clone)]
@@ -1929,6 +1983,14 @@ pub struct App {
     /// pending cancels the predecessor (`cancel.cancel()`) and
     /// replaces this slot -- vim-style "do what I last said."
     pub pending_picker_init: Option<crate::app::PendingPickerInit>,
+    /// `Some` while a live picker is open
+    /// ([`PickerSourceSpec::live`] == true). Holds the
+    /// generator + debounce deadline + any in-flight
+    /// `on_query_changed` task. The main loop's
+    /// `drain_pending_live_picker_query` fires the source's
+    /// re-fetch when the debounce expires and seats the new
+    /// batch when the future resolves.
+    pub live_picker_query: Option<crate::app::LivePickerQueryState>,
     /// True while a buffer activation is in *preview* mode --
     /// driven by the picker's `select_next` / `select_prev`
     /// hooks. Activate paths gate position-history pushes on

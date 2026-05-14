@@ -65,6 +65,14 @@ pub struct PickerSourceSpec {
     /// after the source id. Empty string = no hint (the
     /// cmdline falls back to per-arg `ArgSpec::doc`).
     pub args_hint: &'static str,
+    /// True if this source re-executes its data fetch on every
+    /// (debounced) query change instead of returning a fixed
+    /// candidate set the picker fuzzy-filters. Live sources
+    /// own their own filtering -- the grep binary IS the
+    /// filter -- so the picker bypasses its built-in fuzzy
+    /// refilter for them. Sources opting in must also
+    /// implement [`PickerSourceGenerator::on_query_changed`].
+    pub live: bool,
 }
 
 impl PickerSourceSpec {
@@ -76,7 +84,19 @@ impl PickerSourceSpec {
             doc,
             args_schema: Vec::new(),
             args_hint: "",
+            live: false,
         }
+    }
+
+    /// Builder-style: mark this source as live (`:picker grep`
+    /// today; future live LSP workspace-symbols, etc.). The
+    /// picker will bypass its fuzzy refilter for live sources
+    /// and the host will call
+    /// [`PickerSourceGenerator::on_query_changed`] on each
+    /// debounced keystroke.
+    pub fn with_live(mut self, live: bool) -> Self {
+        self.live = live;
+        self
     }
 }
 
@@ -303,6 +323,30 @@ pub trait PickerSourceGenerator: Send + Sync {
         ctx: &PickerContext<'_>,
         routing: &RoutingPayload,
     ) -> SourceResult<PickerAcceptOutcome>;
+
+    /// Live-source hook: re-fetch candidates when the user's
+    /// query changes. Default `None` means "static source --
+    /// host uses fuzzy refilter over the candidate set
+    /// returned by `init`". Returning `Some(result)` from a
+    /// source whose `spec().live == true` replaces the
+    /// picker's candidate set wholesale; the host wires up
+    /// debouncing and cancels any in-flight invocation when a
+    /// fresh query arrives.
+    ///
+    /// The host calls this only after the picker has been
+    /// seated by `init`. Sources that opt in MUST set
+    /// `spec().live = true`; the two declarations stay
+    /// paired because the picker decides whether to bypass
+    /// fuzzy-refilter purely from `spec().live`, while the
+    /// host decides whether to invoke this hook from the same
+    /// flag.
+    fn on_query_changed(
+        &self,
+        _ctx: &PickerContext<'_>,
+        _query: &str,
+    ) -> Option<SourceResult<PickerInitResult>> {
+        None
+    }
 }
 
 #[cfg(test)]

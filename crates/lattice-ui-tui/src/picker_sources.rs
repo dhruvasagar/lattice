@@ -208,6 +208,7 @@ impl FilesSource {
                     default: ArgDefault::None,
                     completion: Some("gen:files"),
                 }],
+                live: false,
             },
         }
     }
@@ -953,32 +954,30 @@ impl GrepSource {
         Self {
             spec: PickerSourceSpec {
                 id: "grep",
-                doc: "Recursive text search via the configured backend (`rg`/`ag`/`grep`). `<CR>` jumps to the chosen hit.",
-                args_hint: "<pattern>",
+                doc: "Live recursive text search via the configured backend (`rg`/`ag`/`grep`). Re-runs as you type; `<CR>` jumps to the chosen hit.",
+                args_hint: "[pattern]",
                 args_schema: vec![ArgSpec {
                     name: "pattern",
                     kind: ArgKind::String,
-                    doc: "Pattern to search for. Backend determines regex syntax.",
+                    doc: "Optional initial pattern. When given, seeds the picker prompt; without it, picker opens empty and runs the first grep on the first keystroke.",
                     prompt: "pattern:",
-                    default: ArgDefault::Required,
+                    default: ArgDefault::None,
                     completion: None,
                 }],
+                // Slice 3: live source. Picker bypasses fuzzy
+                // refilter (`run_grep` IS the filter); host
+                // calls `on_query_changed` on each debounced
+                // keystroke.
+                live: true,
             },
             config,
         }
     }
-}
 
-impl PickerSourceGenerator for GrepSource {
-    fn spec(&self) -> &PickerSourceSpec {
-        &self.spec
-    }
-
-    fn init(&self, ctx: &PickerContext<'_>, args: &[String]) -> SourceResult<PickerInitResult> {
-        let pattern = args
-            .first()
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| "grep: pattern required (e.g. `:picker grep TODO`)".to_string())?;
+    /// Resolve backend choice + max-hits from the config. Shared
+    /// by `init` and `on_query_changed` so both routes honour
+    /// the same `:set picker.grep.*` options.
+    fn resolve_settings(&self) -> SourceResult<(String, usize)> {
         let backend_choice = self
             .config
             .get_typed::<lattice_config::core_options::PickerGrepBackend>()
@@ -990,34 +989,88 @@ impl PickerSourceGenerator for GrepSource {
             .map(|n| *n as usize)
             .unwrap_or(2000)
             .max(1);
-        let root = ctx.workspace_root.to_path_buf();
         let resolved = resolve_grep_backend(&backend_choice)?;
-        let hits = run_grep(&resolved, pattern, &root, max_hits)?;
-        if hits.is_empty() {
-            return Err(format!("grep: no hits for `{pattern}`"));
-        }
-        let pairs = hits
-            .into_iter()
-            .map(|hit| {
-                let display = format!(
-                    "{}:{}:{}  {}",
-                    hit.path.display(),
-                    hit.line + 1,
-                    hit.col + 1,
-                    hit.preview.trim_start(),
-                );
-                let cand = RawCandidate::plain(display, CandidateKind::Plain);
-                (
-                    cand,
-                    RoutingPayload::LspLocation {
-                        path: hit.path,
-                        line: hit.line,
-                        col: hit.col,
-                    },
-                )
+        Ok((resolved, max_hits))
+    }
+
+    /// Build a `CandidateFuture` that runs `run_grep` on
+    /// tokio's blocking pool. Uses `spawn_blocking` because
+    /// `run_grep` shells out via the std-sync `Command::output`
+    /// API; running it on the async runtime's worker pool would
+    /// pin a worker for the duration of the grep. The blocking
+    /// pool is the right fit -- it's sized for exactly this
+    /// kind of task.
+    fn spawn_grep(
+        binary: String,
+        pattern: String,
+        root: std::path::PathBuf,
+        max_hits: usize,
+    ) -> lattice_picker::CandidateFuture {
+        Box::pin(async move {
+            let join = tokio::task::spawn_blocking(move || {
+                run_grep(&binary, &pattern, &root, max_hits)
             })
-            .collect();
-        Ok(PickerInitResult::Inline(pairs))
+            .await;
+            match join {
+                Ok(Ok(hits)) => Ok(hits_to_pairs(hits)),
+                Ok(Err(e)) => Err(e),
+                Err(e) => Err(format!("grep: task panicked: {e}")),
+            }
+        })
+    }
+}
+
+/// Convert raw grep hits into the picker's `(RawCandidate,
+/// RoutingPayload)` pairs. Shared by the sync init() fast
+/// path (no initial pattern → empty pairs) and the async
+/// future path that the live grep flow drives. Empty input
+/// → empty output; callers don't special-case.
+fn hits_to_pairs(hits: Vec<GrepHit>) -> lattice_picker::CandidateBatch {
+    hits.into_iter()
+        .map(|hit| {
+            let display = format!(
+                "{}:{}:{}  {}",
+                hit.path.display(),
+                hit.line + 1,
+                hit.col + 1,
+                hit.preview.trim_start(),
+            );
+            let cand = RawCandidate::plain(display, CandidateKind::Plain);
+            (
+                cand,
+                RoutingPayload::LspLocation {
+                    path: hit.path,
+                    line: hit.line,
+                    col: hit.col,
+                },
+            )
+        })
+        .collect()
+}
+
+impl PickerSourceGenerator for GrepSource {
+    fn spec(&self) -> &PickerSourceSpec {
+        &self.spec
+    }
+
+    /// Slice 3: optional initial pattern. With no pattern the
+    /// picker opens empty (no grep runs); the first keystroke
+    /// triggers the live flow through `on_query_changed`.
+    /// With an initial pattern the grep runs immediately --
+    /// async via the Future variant so the UI thread doesn't
+    /// park on the first invocation either. The host seeds
+    /// `picker.query` with the initial pattern (live-source
+    /// convention in `App::open_picker`), so subsequent
+    /// keystrokes extend the same query.
+    fn init(&self, ctx: &PickerContext<'_>, args: &[String]) -> SourceResult<PickerInitResult> {
+        let pattern = args.first().map(|s| s.trim()).filter(|s| !s.is_empty());
+        let Some(pattern) = pattern else {
+            return Ok(PickerInitResult::Inline(Vec::new()));
+        };
+        let (binary, max_hits) = self.resolve_settings()?;
+        let root = ctx.workspace_root.to_path_buf();
+        let fut = GrepSource::spawn_grep(binary, pattern.to_string(), root, max_hits);
+        Ok(PickerInitResult::Future(fut))
     }
 
     fn accept(
@@ -1035,6 +1088,32 @@ impl PickerSourceGenerator for GrepSource {
             }
             other => Err(format!("grep: unexpected routing payload {other:?}")),
         }
+    }
+
+    /// Slice 3: live re-execution. The host's
+    /// `drain_pending_live_picker_query` calls this every time
+    /// the debounce expires; we trim, special-case the empty
+    /// query (no grep, empty result -- clears the candidate
+    /// list), and otherwise spawn the grep on the blocking
+    /// pool. The Future variant lets the host cancel us if a
+    /// newer keystroke fires before we finish.
+    fn on_query_changed(
+        &self,
+        ctx: &PickerContext<'_>,
+        query: &str,
+    ) -> Option<SourceResult<PickerInitResult>> {
+        let trimmed = query.trim();
+        if trimmed.is_empty() {
+            return Some(Ok(PickerInitResult::Inline(Vec::new())));
+        }
+        let settings = match self.resolve_settings() {
+            Ok(s) => s,
+            Err(e) => return Some(Err(e)),
+        };
+        let (binary, max_hits) = settings;
+        let root = ctx.workspace_root.to_path_buf();
+        let fut = GrepSource::spawn_grep(binary, trimmed.to_string(), root, max_hits);
+        Some(Ok(PickerInitResult::Future(fut)))
     }
 }
 
@@ -1758,17 +1837,69 @@ mod tests {
 
     /// P.8: pattern arg is required; bare `:picker grep`
     /// surfaces an error rather than running with no
-    /// filter (which would dump every file in the workspace).
+    /// Slice 3: `:picker grep` with no pattern (or an empty
+    /// arg) opens an empty picker -- the user types into the
+    /// prompt and the live flow fires `on_query_changed` on
+    /// each debounced keystroke. The pre-slice-3 "pattern
+    /// required" error is gone; no-arg is the canonical entry
+    /// point for live grep.
     #[test]
-    fn grep_source_requires_pattern() {
+    fn grep_source_empty_args_returns_empty_inline() {
         let app = app_with("hi\n", 5);
         let snap = app.document.snapshot();
         let ctx = app.build_picker_context(&snap);
         let source = GrepSource::new(app.config.clone());
-        let err = source.init(&ctx, &[]).unwrap_err();
-        assert!(err.contains("pattern required"), "got {err}");
-        let err = source.init(&ctx, &[String::new()]).unwrap_err();
-        assert!(err.contains("pattern required"), "got {err}");
+        let result = source.init(&ctx, &[]).expect("init must not error on no args");
+        match result {
+            lattice_picker::PickerInitResult::Inline(pairs) => assert!(pairs.is_empty()),
+            other => panic!("expected Inline(empty), got {other:?}"),
+        }
+        let result = source
+            .init(&ctx, &[String::new()])
+            .expect("init must not error on empty arg");
+        match result {
+            lattice_picker::PickerInitResult::Inline(pairs) => assert!(pairs.is_empty()),
+            other => panic!("expected Inline(empty) for empty arg, got {other:?}"),
+        }
+    }
+
+    /// Slice 3: empty query through `on_query_changed`
+    /// short-circuits to `Inline(empty)` -- no grep spawn, no
+    /// UI block on the spawn-blocking pool.
+    #[test]
+    fn grep_source_on_query_changed_empty_short_circuits() {
+        let app = app_with("hi\n", 5);
+        let snap = app.document.snapshot();
+        let ctx = app.build_picker_context(&snap);
+        let source = GrepSource::new(app.config.clone());
+        let result = source
+            .on_query_changed(&ctx, "")
+            .expect("live source returns Some")
+            .expect("no error");
+        match result {
+            lattice_picker::PickerInitResult::Inline(pairs) => assert!(pairs.is_empty()),
+            other => panic!("expected Inline(empty), got {other:?}"),
+        }
+        // Whitespace-only is treated the same.
+        let result = source
+            .on_query_changed(&ctx, "   ")
+            .expect("live source returns Some")
+            .expect("no error");
+        match result {
+            lattice_picker::PickerInitResult::Inline(pairs) => assert!(pairs.is_empty()),
+            other => panic!("expected Inline(empty) for whitespace query, got {other:?}"),
+        }
+    }
+
+    /// Slice 3: GrepSource is declared live; the picker must
+    /// see `spec.live == true` so it bypasses fuzzy refilter
+    /// and the host routes keystrokes through
+    /// `on_query_changed`.
+    #[test]
+    fn grep_source_spec_is_live() {
+        let app = app_with("hi\n", 5);
+        let source = GrepSource::new(app.config.clone());
+        assert!(source.spec().live, "GrepSource must declare live = true");
     }
 
     /// P.8: explicit `picker.grep.backend = "definitely-not-a-binary"`

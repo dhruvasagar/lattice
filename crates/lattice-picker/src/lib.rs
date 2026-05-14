@@ -353,6 +353,15 @@ pub struct Picker {
     /// "no MRU contribution"; the combine path treats it as 0.0
     /// for every candidate.
     mru_bonuses: Vec<f64>,
+    /// True when the seating source's `spec().live` is true
+    /// (`:picker grep` today). Live sources own their own
+    /// filtering -- the external program (grep, future LSP
+    /// workspace-symbols) IS the filter -- so [`Self::refilter`]
+    /// bypasses fuzzy matching and renders `raw` 1:1 in
+    /// insertion order. The host sets this via
+    /// [`Self::set_live_source_mode`] right after opening the
+    /// picker, before the first batch lands.
+    live_source_mode: bool,
 }
 
 impl Picker {
@@ -370,7 +379,23 @@ impl Picker {
             preview_origin: None,
             source_id: None,
             mru_bonuses: Vec::new(),
+            live_source_mode: false,
         }
+    }
+
+    /// Toggle live-source mode (`spec().live == true`). When
+    /// on, [`Self::refilter`] renders `raw` verbatim instead
+    /// of running fuzzy matching. The host calls this once
+    /// at picker-open time after consulting the source's
+    /// spec; the flag stays on for the picker's lifetime.
+    pub fn set_live_source_mode(&mut self, live: bool) {
+        self.live_source_mode = live;
+    }
+
+    /// Query accessor for the host (and tests) -- mirrors the
+    /// other state predicates.
+    pub fn is_live_source_mode(&self) -> bool {
+        self.live_source_mode
     }
 
     /// Stamp the parallel `mru_bonuses` vec the matcher reads
@@ -556,6 +581,31 @@ impl Picker {
     /// the buffer switcher depend on this -- alternate-buffer
     /// floats to the top via insertion order).
     pub fn refilter(&mut self) {
+        // Live-source bypass: the seating source's external
+        // engine (grep, future LSP workspace-symbols) IS the
+        // filter -- it returned exactly the rows that match
+        // the user's query, in the order it wants them. Fuzzy-
+        // matching on top would re-rank or drop rows, defeating
+        // the point. Render `raw` 1:1, score = 0, no match
+        // ranges (the renderer can highlight via a future
+        // source-supplied annotation channel; not in v1).
+        if self.live_source_mode {
+            self.candidates = self
+                .raw
+                .iter()
+                .cloned()
+                .map(|raw| RenderedCandidate {
+                    raw,
+                    score: MatchScore(0),
+                    match_ranges: Vec::new(),
+                    annotations: Vec::new(),
+                })
+                .collect();
+            if self.selected >= self.candidates.len() {
+                self.selected = self.candidates.len().saturating_sub(1);
+            }
+            return;
+        }
         // Score = match (0..1000) + mru_bonus (0..~110 typical).
         // Bonus sits below the tier delta between match tiers
         // (200 between FUZZY_LOW and SUBSTRING) so it functions
@@ -811,6 +861,51 @@ mod tests {
             buffer_candidate(1, "lsp:rust", "help", false),
             buffer_candidate(2, "describe-command write", "help", false),
         ]
+    }
+
+    #[test]
+    fn live_source_mode_bypasses_fuzzy_refilter() {
+        // Slice 1: when the seating source's spec sets
+        // `live = true`, the host calls `set_live_source_mode`
+        // and the picker renders `raw` verbatim regardless of
+        // the query. The source (grep, future live LSP) IS
+        // the filter -- fuzzy-matching on top would re-rank or
+        // drop rows the source said matched.
+        let mut p = Picker::new(
+            "grep",
+            PickerSource::Files,
+            PickerAction::OpenFile,
+        );
+        p.set_live_source_mode(true);
+        p.set_raw_candidates(buffer_fixture());
+        // Two candidates, neither matches the query, but both
+        // render anyway (bypass).
+        p.append_query('z');
+        p.append_query('z');
+        assert_eq!(p.candidates.len(), 2, "live mode must not drop rows");
+        assert_eq!(
+            p.candidates[0].raw.display, buffer_fixture()[0].display,
+            "live mode must preserve source order"
+        );
+    }
+
+    #[test]
+    fn live_source_mode_off_keeps_existing_fuzzy_behaviour() {
+        // Regression for non-live sources: same setup minus the
+        // live flag must still filter by query (the existing
+        // path through `typing_query_filters_to_substring_matches`,
+        // pinned again here as a paired counter-example to the
+        // live-mode test above).
+        let mut p = Picker::new(
+            "buffers",
+            PickerSource::Buffers,
+            PickerAction::SwitchToBuffer,
+        );
+        assert!(!p.is_live_source_mode());
+        p.set_raw_candidates(buffer_fixture());
+        p.append_query('z');
+        p.append_query('z');
+        assert_eq!(p.candidates.len(), 0, "non-live mode must filter");
     }
 
     #[test]

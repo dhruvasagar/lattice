@@ -360,6 +360,26 @@ dictates.
 
 ---
 
+## live-picker (debounced re-run on query change)
+
+**`:picker grep` and any future "engine produces the candidate set"
+source** -- the source's external program (grep, future LSP
+workspace-symbols, future shell-driven enumeration) re-runs on each
+debounced keystroke instead of the picker fuzzy-filtering a single
+inline batch. Anchor: ../architecture/design.md §5.9.7 ("Live
+sources" subsection).
+
+| Slice         | Status | What lands |
+|---------------|--------|------------|
+| live-pkr.1    | ✅     | **Trait + picker primitive seam.** `PickerSourceSpec.live: bool` (default false), `PickerSourceGenerator::on_query_changed(&ctx, &query) -> Option<SourceResult<PickerInitResult>>` (default `None`). `Picker.live_source_mode` + `set_live_source_mode(bool)`; `Picker::refilter` short-circuits when `live_source_mode == true` (renders `raw` 1:1, no fuzzy scoring, no MRU). `App::seat_picker_from_pairs` reads `entry.spec.live` and flips the picker into live mode. No production source opts in yet; all existing pickers bit-identical. Tests: `live_source_mode_bypasses_fuzzy_refilter`, `live_source_mode_off_keeps_existing_fuzzy_behaviour`. |
+| live-pkr.2    | ✅     | **App-side debounce + cancellation.** `LivePickerQueryState` + `InFlightLiveQuery` on `App`, installed by `open_picker` when `entry.spec.live` is true. `LIVE_PICKER_DEBOUNCE = 150ms` constant. New methods: `bump_live_picker_debounce` (called from `PickerAppend` / `PickerBackspace` dispatch), `drain_pending_live_picker_query` (main-loop tick — fires `on_query_changed` on deadline expiry, pumps in-flight rx, stale-result detection via `launched_for_query` vs current `picker.query`). `do_picker_dismiss` cancels any in-flight task. Tested with synthetic `LiveStubSource` (registry sidestep — Arc-shared, so hand-installed `live_picker_query` state). Tests: keystroke→debounce→fire, burst-coalesce, dismiss-clears-state. |
+| live-pkr.3    | ✅     | **`GrepSource` flips to live + optional initial pattern.** `spec.live = true`. `pattern` arg now `ArgDefault::None` — no-arg opens empty, arg seeds the prompt. `init()` returns `Inline(empty)` on no-arg, `Future(spawn_blocking(run_grep))` on initial-pattern (first grep no longer blocks UI). `on_query_changed()` returns `Inline(empty)` for empty/whitespace, `Future` for real queries. `spawn_blocking` because `run_grep` shells out via std-sync `Command::output` — running it on the async-runtime workers would pin a worker. Initial-query seed plumbing: `LivePickerQueryState.initial_query: Option<String>` set by `open_picker`, consumed (taken) by `seat_picker_from_pairs` so `:picker grep TODO` opens with `query = "TODO"` ready to extend. Tests: `grep_source_empty_args_returns_empty_inline`, `grep_source_on_query_changed_empty_short_circuits`, `grep_source_spec_is_live`, `open_picker_grep_no_args_installs_live_state`, `open_picker_grep_with_initial_pattern_stashes_query_until_seat`, `picker_grep_seeds_query_on_seat_when_initial_query_stashed`. |
+| live-pkr.4    | ✅     | **Docs.** ../architecture/design.md §5.9.7 gains a "Live sources" subsection contrasting the v1 debounced-future shape against the future fully-streaming model; reasons why grep specifically fits Future-per-query rather than incremental Stream. Test-counts row updated. |
+
+**Deferred (post-1.0):** result-cap echo when grep hits `max_hits` and truncates; in-row match-range highlights (the grep backends emit column info — `messages_line_spans`-style span-builder would work); per-source `is_live()` overrides for future sources that want live behaviour conditionally (e.g. workspace-symbols falls back to static when the server has no `workspace/symbol`).
+
+---
+
 ## Vim grammar coverage (Phase 1 catalog)
 
 This section enumerates every named primitive in vim's grammar against its

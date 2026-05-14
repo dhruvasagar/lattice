@@ -238,6 +238,12 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
         // results, same code path as inline. Cheap on an idle
         // channel (try_recv -> Empty).
         app.drain_pending_picker_init();
+        // Drain live-picker debounce + in-flight (slice 2).
+        // Fires `on_query_changed` when the debounce elapses
+        // and seats new candidates when the source's future
+        // resolves. Cheap on an idle live picker (single
+        // `Instant::now()` compare, no allocations).
+        app.drain_pending_live_picker_query();
         // Drain queued Event::LspLogPushed events (Phase 4) and
         // refresh any open log / trace buffers from the logger
         // snapshot. Cheap on an idle channel; cheap when no log

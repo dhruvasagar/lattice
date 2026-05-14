@@ -374,12 +374,14 @@ impl App {
                 if let Some(p) = self.picker.as_mut() {
                     p.append_query(c);
                 }
+                self.bump_live_picker_debounce();
                 self.preview_picker_selection();
             }
             Action::PickerBackspace => {
                 if let Some(p) = self.picker.as_mut() {
                     p.backspace_query();
                 }
+                self.bump_live_picker_debounce();
                 self.preview_picker_selection();
             }
             Action::PickerSelectNext => {

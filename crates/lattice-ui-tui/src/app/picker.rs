@@ -553,6 +553,38 @@ impl App {
                 ts: std::time::SystemTime::now(),
             });
 
+        // Slice 2: if the source's spec opts into live mode,
+        // install the per-picker live-query state up-front --
+        // BEFORE seating the first batch -- so any concurrent
+        // keystrokes during the seat already have somewhere
+        // to land. The state survives until dismiss.
+        let entry_is_live = self
+            .picker_registry
+            .entry(&source)
+            .map(|e| e.spec.live)
+            .unwrap_or(false);
+        if entry_is_live {
+            // Cancel any prior live picker's in-flight task
+            // (vim "do what I last said") and replace the slot.
+            if let Some(prev) = self.live_picker_query.take()
+                && let Some(inflight) = prev.inflight
+            {
+                inflight.cancel.cancel();
+            }
+            // Slice 3: stash the first positional arg as the
+            // initial query so the prompt opens pre-populated
+            // (`:picker grep TODO` → query starts as "TODO";
+            // user keystrokes extend it). `seat_picker_from_pairs`
+            // consumes this on the first seat.
+            let initial_query = args.first().map(|s| s.trim()).filter(|s| !s.is_empty()).map(String::from);
+            self.live_picker_query = Some(crate::app::LivePickerQueryState {
+                source_id: source.clone(),
+                generator: generator.clone(),
+                debounce_until: None,
+                inflight: None,
+                initial_query,
+            });
+        }
         match init_result {
             lattice_picker::PickerInitResult::Inline(pairs) => {
                 self.seat_picker_from_pairs(source, pairs);
@@ -631,6 +663,184 @@ impl App {
         }
     }
 
+    /// Slice 2: bump the live-picker debounce deadline forward.
+    /// Called from the keystroke dispatch (`PickerAppend`,
+    /// `PickerBackspace`, and the cmdline-driven clear path).
+    /// No-op when no live picker is active. Each keystroke
+    /// pushes the deadline to `now + LIVE_PICKER_DEBOUNCE`; the
+    /// drain fires when `now >= deadline`.
+    pub(crate) fn bump_live_picker_debounce(&mut self) {
+        let Some(state) = self.live_picker_query.as_mut() else {
+            return;
+        };
+        state.debounce_until =
+            Some(std::time::Instant::now() + crate::app::LIVE_PICKER_DEBOUNCE);
+    }
+
+    /// Slice 2: main-loop drain for the live picker.
+    ///
+    /// Two responsibilities, both cheap on an idle picker:
+    ///
+    /// 1. **Fire the source's re-fetch.** If the debounce
+    ///    deadline has elapsed, take the deadline out, snapshot
+    ///    the picker's current query, cancel any prior
+    ///    in-flight task, call `on_query_changed`, and route
+    ///    the result by `PickerInitResult` variant -- `Inline`
+    ///    seats immediately, `Future` spawns + parks the rx in
+    ///    `inflight`, `Stream` is rejected with an echo (slice
+    ///    > 3 territory).
+    /// 2. **Pump in-flight results.** Whatever's on `inflight.rx`
+    ///    either seats new raw (if the future's query still
+    ///    matches the picker's current query) or gets dropped
+    ///    on the floor (if the user has moved on -- a fresher
+    ///    fire will land).
+    pub(crate) fn drain_pending_live_picker_query(&mut self) {
+        // Step 1: fire on_query_changed if debounce elapsed.
+        let now = std::time::Instant::now();
+        let should_fire = self
+            .live_picker_query
+            .as_ref()
+            .and_then(|s| s.debounce_until)
+            .map(|d| now >= d)
+            .unwrap_or(false);
+        if should_fire {
+            self.fire_live_picker_query_changed();
+        }
+        // Step 2: pump in-flight results.
+        self.drain_inflight_live_picker_query();
+    }
+
+    /// Internal: take the snapshot, cancel any in-flight, call
+    /// `on_query_changed`, route the result.
+    fn fire_live_picker_query_changed(&mut self) {
+        let Some(state) = self.live_picker_query.as_mut() else {
+            return;
+        };
+        state.debounce_until = None;
+        let generator = state.generator.clone();
+        let source_id = state.source_id.clone();
+        // Cancel and drop any prior in-flight task -- the user
+        // has typed something newer.
+        if let Some(prev) = state.inflight.take() {
+            prev.cancel.cancel();
+        }
+        // Snapshot the current query (cloned so the borrow on
+        // `self.picker` is released before we re-borrow `self`
+        // mutably for the dispatch). Empty picker (closed
+        // before the timer fired) is a race we just no-op.
+        let query = match self.picker.as_ref() {
+            Some(p) => p.query.clone(),
+            None => return,
+        };
+        let snap = self.document.snapshot();
+        let ctx = self.build_picker_context(&snap);
+        let res = generator.on_query_changed(&ctx, &query);
+        drop(ctx);
+        drop(snap);
+        let Some(res) = res else {
+            // Source declined -- live source contract violated
+            // (live sources MUST implement `on_query_changed`),
+            // but defend rather than panic. Echo + skip.
+            self.set_message(
+                EchoLevel::Warn,
+                format!("picker: live source `{source_id}` returned None from on_query_changed"),
+            );
+            return;
+        };
+        let init_result = match res {
+            Ok(r) => r,
+            Err(e) => {
+                self.set_message(EchoLevel::Error, format!("picker: {e}"));
+                return;
+            }
+        };
+        match init_result {
+            lattice_picker::PickerInitResult::Inline(pairs) => {
+                self.seat_picker_from_pairs(source_id, pairs);
+            }
+            lattice_picker::PickerInitResult::Future(fut) => {
+                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                let cancel = lattice_protocol::CancellationToken::new();
+                let cancel_clone = cancel.clone();
+                crate::runtime::spawn_on_lsp_runtime(async move {
+                    let result = fut.await;
+                    if !cancel_clone.is_cancelled() {
+                        let _ = tx.send(result.map(lattice_picker::PickerInitResult::Inline));
+                    }
+                });
+                if let Some(state) = self.live_picker_query.as_mut() {
+                    state.inflight = Some(crate::app::InFlightLiveQuery {
+                        cancel,
+                        rx,
+                        launched_for_query: query,
+                    });
+                }
+            }
+            lattice_picker::PickerInitResult::Stream(_) => {
+                self.set_message(
+                    EchoLevel::Error,
+                    format!(
+                        "picker: streaming live results not yet wired (source `{source_id}` returned a Stream)"
+                    ),
+                );
+            }
+        }
+    }
+
+    /// Internal: pump the in-flight live-query channel. If the
+    /// completion's launched query no longer matches the
+    /// picker's current query, drop it (stale).
+    fn drain_inflight_live_picker_query(&mut self) {
+        let Some(state) = self.live_picker_query.as_mut() else {
+            return;
+        };
+        let Some(inflight) = state.inflight.as_mut() else {
+            return;
+        };
+        let result = match inflight.rx.try_recv() {
+            Ok(r) => r,
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => return,
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                state.inflight = None;
+                return;
+            }
+        };
+        let launched_for = inflight.launched_for_query.clone();
+        state.inflight = None;
+        // Stale-check: if the user kept typing while the future
+        // was in flight, the picker.query has moved on. Drop
+        // the stale result; the newer fire is either in flight
+        // already or queued behind the debounce.
+        let current_query = self
+            .picker
+            .as_ref()
+            .map(|p| p.query.clone())
+            .unwrap_or_default();
+        if launched_for != current_query {
+            return;
+        }
+        // Extract source id (must still be present -- the
+        // dismiss path clears `live_picker_query`).
+        let source_id = match self.live_picker_query.as_ref() {
+            Some(s) => s.source_id.clone(),
+            None => return,
+        };
+        match result {
+            Ok(lattice_picker::PickerInitResult::Inline(pairs)) => {
+                self.seat_picker_from_pairs(source_id, pairs);
+            }
+            Ok(_) => {
+                self.set_message(
+                    EchoLevel::Error,
+                    "picker: live source future resolved to non-Inline (unsupported)".to_string(),
+                );
+            }
+            Err(e) => {
+                self.set_message(EchoLevel::Error, format!("picker: {e}"));
+            }
+        }
+    }
+
     /// Seat `pairs` into a freshly-constructed picker for
     /// `source`. Shared by sync (Inline) and async (Future)
     /// init paths so MRU bonus snapshot + source-id stamping
@@ -672,6 +882,35 @@ impl App {
             Self::picker_source_for(&source),
             Self::picker_action_for(&source),
         );
+        // Live-source bypass: when the source's spec opts in
+        // (`PickerSourceSpec::live = true`), tell the picker
+        // to skip its fuzzy refilter -- the source's external
+        // engine already produced the rows in the order it
+        // wants. Must be set BEFORE seating raw, because
+        // `set_raw_candidates_*` calls refilter internally.
+        // Sources not in the registry (legacy imperative
+        // pickers) default to non-live.
+        let live = self
+            .picker_registry
+            .entry(&source)
+            .map(|e| e.spec.live)
+            .unwrap_or(false);
+        picker.set_live_source_mode(live);
+        // Slice 3: consume the live-state's stashed initial
+        // query (set by `open_picker` from the user's first
+        // positional arg) so `:picker grep TODO` opens with
+        // "TODO" already typed. Take() ensures subsequent
+        // seats (e.g. when on_query_changed reseats with new
+        // hits) don't reset the prompt back to the original
+        // pattern.
+        let initial_query = self
+            .live_picker_query
+            .as_mut()
+            .and_then(|s| s.initial_query.take());
+        if let Some(initial) = initial_query {
+            picker.query_cursor = initial.len();
+            picker.query = initial;
+        }
         // Single-pass seat: one refilter instead of two.
         picker.set_raw_candidates_with_routing_and_bonuses(pairs, bonuses);
         picker.source_id = Some(source.clone());
@@ -782,6 +1021,15 @@ impl App {
     /// pane to whatever buffer it was on at picker-open. Tested
     /// by `picker_dismiss_restores_origin_when_previewing`.
     pub(super) fn do_picker_dismiss(&mut self) {
+        // Slice 2: tear down live-picker state on dismiss --
+        // cancel any in-flight `on_query_changed` future so the
+        // spawned task drops its result instead of seating into
+        // a closed picker.
+        if let Some(state) = self.live_picker_query.take()
+            && let Some(inflight) = state.inflight
+        {
+            inflight.cancel.cancel();
+        }
         // Drop any pending tag origin -- the user dismissed the
         // picker, so no drill-down happened. Without this clear
         // a subsequent `:lsp-symbols` (or any picker open) would
@@ -1841,6 +2089,264 @@ mod tests {
             "accept with MRU off must not change the index"
         );
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // ---- Slice 2: live-picker debounce + drain tests --------
+    //
+    // These pin the App-side wiring (state install, debounce
+    // bump, drain firing on_query_changed, dismiss-cancels-
+    // inflight) without needing to register a generator into
+    // the Arc<PickerRegistry> -- tests construct the live state
+    // by hand and exercise the drain methods directly.
+
+    use lattice_completion::CandidateKind;
+    use lattice_completion::candidate::RawCandidate;
+    use lattice_picker::context::PickerContext;
+    use lattice_picker::outcome::PickerAcceptOutcome;
+    use lattice_picker::{
+        PickerInitResult, PickerSourceGenerator, PickerSourceSpec, RoutingPayload, SourceResult,
+    };
+    use std::sync::{Arc, Mutex};
+
+    /// Test-only live source. Records every `on_query_changed`
+    /// invocation into a shared `Vec<String>` so tests can
+    /// assert call count + ordering, and returns one Inline
+    /// candidate carrying the query so the picker's `raw` is
+    /// observably refreshed.
+    struct LiveStubSource {
+        spec: PickerSourceSpec,
+        calls: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl LiveStubSource {
+        fn new(id: &'static str) -> Self {
+            Self {
+                spec: PickerSourceSpec::no_args(id, "live stub").with_live(true),
+                calls: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+    }
+
+    impl PickerSourceGenerator for LiveStubSource {
+        fn spec(&self) -> &PickerSourceSpec {
+            &self.spec
+        }
+
+        fn init(
+            &self,
+            _ctx: &PickerContext<'_>,
+            _args: &[String],
+        ) -> SourceResult<PickerInitResult> {
+            Ok(PickerInitResult::Inline(Vec::new()))
+        }
+
+        fn accept(
+            &self,
+            _ctx: &PickerContext<'_>,
+            _routing: &RoutingPayload,
+        ) -> SourceResult<PickerAcceptOutcome> {
+            Err("stub does not accept".into())
+        }
+
+        fn on_query_changed(
+            &self,
+            _ctx: &PickerContext<'_>,
+            query: &str,
+        ) -> Option<SourceResult<PickerInitResult>> {
+            self.calls.lock().unwrap().push(query.to_string());
+            let raw = RawCandidate::plain(format!("hit:{query}"), CandidateKind::Plain);
+            let pairs = vec![(raw, RoutingPayload::OpenFile { path: "/dev/null".into() })];
+            Some(Ok(PickerInitResult::Inline(pairs)))
+        }
+    }
+
+    /// Build an App, hand-install a live picker for `stub`, and
+    /// return the calls handle so the test can assert. Mirrors
+    /// the state `open_picker` would set up if the test source
+    /// were registered.
+    fn app_with_live_stub(stub: Arc<LiveStubSource>) -> super::App {
+        let mut app = app_with("hi\n", 5);
+        let mut picker = lattice_picker::Picker::new(
+            "live-stub",
+            lattice_picker::PickerSource::Files,
+            lattice_picker::PickerAction::OpenFile,
+        );
+        picker.set_live_source_mode(true);
+        picker.source_id = Some("live-stub".to_string());
+        app.picker = Some(picker);
+        app.live_picker_query = Some(crate::app::LivePickerQueryState {
+            source_id: "live-stub".to_string(),
+            generator: stub as Arc<dyn PickerSourceGenerator>,
+            debounce_until: None,
+            inflight: None,
+            initial_query: None,
+        });
+        app
+    }
+
+    #[test]
+    fn live_picker_keystroke_bumps_debounce_then_drain_fires_on_query_changed() {
+        let stub = Arc::new(LiveStubSource::new("live-stub"));
+        let calls = stub.calls.clone();
+        let mut app = app_with_live_stub(stub);
+        // Type a single character. The dispatch handler in
+        // dispatch.rs calls `bump_live_picker_debounce` after
+        // the picker mutation, so we mirror both here.
+        app.picker.as_mut().unwrap().append_query('h');
+        app.bump_live_picker_debounce();
+        // Verify the debounce deadline got installed.
+        assert!(
+            app.live_picker_query
+                .as_ref()
+                .and_then(|s| s.debounce_until)
+                .is_some(),
+            "debounce deadline should be set after a keystroke",
+        );
+        // Force the deadline into the past so the drain fires
+        // without sleeping.
+        if let Some(state) = app.live_picker_query.as_mut() {
+            state.debounce_until =
+                Some(std::time::Instant::now() - std::time::Duration::from_millis(1));
+        }
+        app.drain_pending_live_picker_query();
+        // Stub got exactly one call with the current query.
+        let recorded = calls.lock().unwrap().clone();
+        assert_eq!(recorded, vec!["h".to_string()]);
+        // Picker raw was refreshed from the stub's Inline result.
+        let picker = app.picker.as_ref().expect("picker still open");
+        assert_eq!(picker.candidates.len(), 1, "stub seated one candidate");
+        assert!(picker.candidates[0].raw.display.contains("hit:h"));
+        // Debounce slot cleared after fire.
+        assert!(
+            app.live_picker_query
+                .as_ref()
+                .and_then(|s| s.debounce_until)
+                .is_none(),
+            "debounce deadline should be cleared after fire",
+        );
+    }
+
+    #[test]
+    fn live_picker_multiple_keystrokes_within_debounce_coalesce_to_one_fire() {
+        // Three keystrokes, all bumping the deadline; only the
+        // final query (after the third bump) is what the source
+        // sees -- the source isn't called between bumps because
+        // the deadline keeps getting pushed forward.
+        let stub = Arc::new(LiveStubSource::new("live-stub"));
+        let calls = stub.calls.clone();
+        let mut app = app_with_live_stub(stub);
+        for c in "foo".chars() {
+            app.picker.as_mut().unwrap().append_query(c);
+            app.bump_live_picker_debounce();
+            // Drain BETWEEN bumps -- deadline is still in the
+            // future so the drain is a no-op. Mirrors what the
+            // main loop tick does between fast keystrokes.
+            app.drain_pending_live_picker_query();
+        }
+        assert!(calls.lock().unwrap().is_empty(), "no fire while bouncing the deadline forward");
+        // Now collapse: force deadline to past, drain once.
+        if let Some(state) = app.live_picker_query.as_mut() {
+            state.debounce_until =
+                Some(std::time::Instant::now() - std::time::Duration::from_millis(1));
+        }
+        app.drain_pending_live_picker_query();
+        let recorded = calls.lock().unwrap().clone();
+        assert_eq!(
+            recorded,
+            vec!["foo".to_string()],
+            "burst keystrokes coalesce into one source call carrying the final query",
+        );
+    }
+
+    #[test]
+    fn live_picker_dismiss_clears_state() {
+        let stub = Arc::new(LiveStubSource::new("live-stub"));
+        let mut app = app_with_live_stub(stub);
+        assert!(app.live_picker_query.is_some());
+        app.do_picker_dismiss();
+        assert!(app.picker.is_none(), "picker closed");
+        assert!(
+            app.live_picker_query.is_none(),
+            "live-picker state torn down on dismiss",
+        );
+    }
+
+    // ---- Slice 4: end-to-end live-grep integration --------
+    //
+    // These go through the real registered `grep` source (boot
+    // wires it in `register_first_party_picker_sources`), not
+    // the synthetic `LiveStubSource`. They pin the public
+    // surface: `:picker grep` opens an empty live picker;
+    // `:picker grep <pattern>` stashes the pattern as the
+    // initial query and schedules the first grep as a Future.
+    // We deliberately don't wait for the real `rg` to land
+    // here -- the spawn is on the lsp-runtime + blocking pool,
+    // and adding a `wait_for(...)` would make the test depend
+    // on `rg` being on PATH + the workspace contents. The unit
+    // tests in `picker_sources::tests` cover the grep-specific
+    // logic; these cover the App-side wiring.
+
+    #[test]
+    fn open_picker_grep_no_args_installs_live_state() {
+        let mut app = app_with("hi\n", 5);
+        app.open_picker("grep".into(), Vec::new());
+        // Picker open, empty candidates (init returned Inline(empty)).
+        let picker = app.picker.as_ref().expect("picker open");
+        assert_eq!(picker.title, "grep");
+        assert!(picker.is_live_source_mode(), "grep must be live");
+        assert!(picker.candidates.is_empty(), "no candidates without a pattern");
+        assert!(picker.query.is_empty(), "prompt empty when no initial pattern");
+        // Live-picker state installed; no initial query stashed.
+        let live = app.live_picker_query.as_ref().expect("live state installed");
+        assert_eq!(live.source_id, "grep");
+        assert!(live.initial_query.is_none());
+        assert!(live.debounce_until.is_none(), "no keystroke yet -> no deadline");
+    }
+
+    #[test]
+    fn open_picker_grep_with_initial_pattern_stashes_query_until_seat() {
+        let mut app = app_with("hi\n", 5);
+        // We pass an initial pattern. init() schedules a Future
+        // (real grep on the blocking pool) -- the picker isn't
+        // seated yet, so the stashed `initial_query` survives
+        // on `live_picker_query`. Once the future resolves and
+        // `seat_picker_from_pairs` runs, it'll consume the
+        // stash and seed `picker.query`. We assert the stash
+        // shape; the seat-consumes path is exercised by the
+        // synthetic-source tests above + by integration runs
+        // against a real workspace.
+        app.open_picker("grep".into(), vec!["needle".to_string()]);
+        let live = app
+            .live_picker_query
+            .as_ref()
+            .expect("live state must be installed");
+        assert_eq!(live.initial_query.as_deref(), Some("needle"));
+        // pending_picker_init carries the in-flight future.
+        assert!(
+            app.pending_picker_init.is_some(),
+            "init returned Future -> drain rx parked",
+        );
+    }
+
+    #[test]
+    fn picker_grep_seeds_query_on_seat_when_initial_query_stashed() {
+        // Drive the seat path directly without spawning real
+        // grep. After `open_picker("grep", ["TODO"])` stashes
+        // the initial query, calling `seat_picker_from_pairs`
+        // by hand (as `drain_pending_picker_init` would) should
+        // seed `picker.query = "TODO"` and clear the stash.
+        let mut app = app_with("hi\n", 5);
+        app.open_picker("grep".into(), vec!["TODO".to_string()]);
+        // Synthesise the future's would-be result: empty pairs.
+        // The seed-on-seat behaviour fires regardless of the
+        // batch contents.
+        app.seat_picker_from_pairs("grep".to_string(), Vec::new());
+        let picker = app.picker.as_ref().expect("picker open");
+        assert_eq!(picker.query, "TODO", "initial pattern seeded into prompt");
+        assert_eq!(picker.query_cursor, "TODO".len());
+        // Stash consumed.
+        let live = app.live_picker_query.as_ref().expect("live state present");
+        assert!(live.initial_query.is_none(), "initial_query taken on seat");
     }
 
     /// Slice 12: an unknown source id surfaces an error echo

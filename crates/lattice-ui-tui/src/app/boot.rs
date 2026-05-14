@@ -795,6 +795,7 @@ impl App {
             picker_mru,
             picker_mru_path,
             pending_picker_init: None,
+            live_picker_query: None,
             previewing: false,
             lsp_log_event_rx: Some(lsp_log_event_rx),
             lsp_progress_event_rx: Some(lsp_progress_event_rx),

@@ -426,6 +426,8 @@ costs ~100 ns / record (the lock + push + format dominate).
 
 ### Editor consumption
 
+> **Note (B' refactor, in flight).** Buffer ownership for `*lsp*` / `*lsp:<server>:<workspace>*` / `*lsp:<server>:<workspace>:trace*` is migrating to dedicated modes (`LspLogMode` / `LspServerLogMode` / `LspTraceLogMode`) per design.md §5.10.5. Per-instance keying lands in B'.2; mode ownership in B'.3–B'.5; the App-side `drain_lsp_log_events` deletes in B'.6. The text below describes the *shipped* (pre-B') architecture; sections will rewrite slice-by-slice as B' lands. The contract (one publisher, three filtering subscribers; mode owns subscription + append) is fixed.
+
 The buffer-backed views (`*lsp*` /
 `*lsp:<server>*` / `*lsp:<server>:trace*`) snapshot the rings
 on demand:

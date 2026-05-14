@@ -777,9 +777,11 @@ The `:diagnostics` buffer is a help-style synthesised view: one row per diagnost
 
 Layered to mirror emacs's `*lsp-log*` / `*<server> stderr*` convention on lattice's everything-is-a-buffer surface:
 
-- **`*lsp*`** -- subsystem-wide events (supervisor: spawn / handshake / crash / restart) plus cross-server messages.
-- **`*lsp:<server-id>*`** -- per-server: stderr lines (Warn/Stderr), `window/logMessage` and `window/showMessage` notifications mapped by the server's `type` field, `publishDiagnostics` summaries (Debug), lifecycle events, decode failures.
-- **`*lsp:<server-id>:trace*`** -- full JSON-RPC wire trace. Off by default; toggle per-server. `←` (inbound) / `→` (outbound) markers + 240-char body excerpt.
+- **`*lsp*`** -- subsystem-wide events (supervisor: spawn / handshake / crash / restart) plus cross-server messages. Owned by `LspLogMode`.
+- **`*lsp:<server-id>:<workspace-path>*`** -- per-instance: stderr lines (Warn/Stderr), `window/logMessage` and `window/showMessage` notifications mapped by the server's `type` field, `publishDiagnostics` summaries (Debug), lifecycle events, decode failures. The full workspace path is the canonical store key (multiple instances of the same `server-id` against different workspaces stay distinct); the display label may shorten with `~/`. Owned by `LspServerLogMode`.
+- **`*lsp:<server-id>:<workspace-path>:trace*`** -- full JSON-RPC wire trace. Off by default; toggle per-instance. `←` (inbound) / `→` (outbound) markers + 240-char body excerpt. Owned by `LspTraceLogMode`.
+
+These three modes own their buffers end-to-end per the B' contract (§5.10.5). The App holds no LSP-specific buffer-handling code; ex-commands (`:lsp-log`, `:lsp-server-log`, `:lsp-trace-log`) are thin wrappers that call `BufferStore::ensure_named_document` with the relevant mode id and activate the resulting buffer. On server detach the mode's `on_deactivate` drops its event subscription; the buffer survives (frozen — no further appends) for post-mortem inspection. `:bd` removes it.
 
 Producer: `LspLogger.log(server_id, level, source, message)` runs:
 
@@ -1761,7 +1763,7 @@ Every meaningful editor state transition publishes a typed event. The catalog gr
 - **Modal state:** `ModalModeChanged { from, to }`, `OperatorPendingEntered`, `OperatorPendingResolved`.
 - **Mode lifecycle:** `MajorEntered { buffer, mode }`, `MajorExiting { buffer, mode }`, `MinorActivated { buffer, mode }`, `MinorDeactivated { buffer, mode }`, `OptionConflict { buffer, option, modes }`. `MajorEntered` runs *after* the trait's `on_activate` hook (subscribers see a consistent state); `MajorExiting` runs *before* the trait's `on_deactivate` (subscribers can inspect what's about to be torn down). Deactivation is synchronous from the user's perspective; resource teardown can continue async post-event. See [`docs/mode-architecture.md`](mode-architecture.md) §7.
 - **Selection / cursor:** `SelectionsChanged`, `CursorMoved`, `JumpPushed { source }`.
-- **LSP:** `LspServerStarted`, `LspResponseReceived`, `DiagnosticsUpdated`, `CompletionAvailable`, `LspLogPushed { server_id, level, source, message }` (every `LspLogger::log` append; powers live-tail of `*lsp:<server>*` / `*lsp:<server>:trace*` buffers).
+- **LSP:** `LspServerStarted`, `LspResponseReceived`, `DiagnosticsUpdated`, `CompletionAvailable`, `LspLogPushed { server_id, workspace, level, source, message }` (every `LspLogger::log` append; powers live-tail of `*lsp*` (aggregator) / `*lsp:<server>:<workspace>*` / `*lsp:<server>:<workspace>:trace*` buffers per §5.4.7 + §5.10.5).
 - **UI:** `PaneFocused`, `PaneClosed`, `WindowFocused`, `BufferViewOpened`.
 - **Plugin:** `PluginActivated`, `PluginCrashed`, `PluginDeactivated`.
 - **System:** `Idle { duration }`, `FocusGained`, `FocusLost`, `BeforeQuit`.
@@ -1805,6 +1807,66 @@ The `:autocmd` and `:add-hook` ex-commands are parser front-ends for this call.
 Subscriptions live in indexed maps keyed by `(EventKind, document_pattern_bucket, major_mode)`. Publishing an event evaluates the filter for matching buckets only, never iterating the global subscription list. WASM-hosted subscription handlers run on the publisher's tokio task via the async ABI; a slow handler does not delay other subscribers because each `Invocation` target is dispatched as a separate task.
 
 Subscriptions for `Before`-class events are bounded in count per event; if a user installs 100 `BeforeSave` hooks, the save runs them in registration order and each gets a fuel budget. A handler that exhausts fuel logs and is skipped; the save proceeds.
+
+#### 5.10.5 Mode-owned synthetic buffers (the B' contract)
+
+`*lsp*`, `*messages*`, future `*scratch*`, `*compilation*`, REPL buffers, plugin-emitted log streams: synthetic buffers whose content originates from a subsystem rather than user keystrokes. The contract for v1:
+
+**A mode owns the synthetic buffer it produces, end-to-end.** No subsystem-specific code lives on the `App`. Two host primitives carry the contract:
+
+```rust
+// lattice-mode
+pub trait BufferStore: Send + Sync {
+	fn find_by_name(&self, name: &str) -> Option<BufferId>;
+	fn ensure_named_document(
+		&self,
+		name: &str,
+		major: ModeId,
+		flags: BufferFlags,
+	) -> BufferId;
+	fn handle_for(&self, id: BufferId) -> Option<DocumentHandle>;
+}
+
+pub struct ServiceRegistry { /* typed Arc<dyn T> map */ }
+```
+
+`BufferStore` is `Send + Sync` so a mode's tokio task can call it from any thread; the implementation (in `lattice-ui-tui`) wraps the buffer registry in `Arc<Mutex<...>>` for cross-thread safety. `ServiceRegistry` is the typed lookup the App registers at boot — modes pull `Arc<BufferStoreHandle>` from their `ModeContext`.
+
+**Lifecycle:**
+
+1. `Mode::on_activate(ctx)` calls `ctx.service::<BufferStoreHandle>()?.ensure_named_document(name, major, flags)`. Idempotent — a second activation returns the existing id.
+2. The mode subscribes to its typed source event (`LspLogPushed`, `MessageEmitted`, `ReplOutput`, ...) and spawns a tokio task that drains the subscription, coalesces records into batches, and applies one `DocumentHandle::apply_edit_batch` per drain cycle.
+3. `Mode::on_deactivate(ctx)` drops the subscription handle; the task exits. The buffer survives in the registry (frozen — no further appends) until `:bd` removes it.
+
+**Why this matters:**
+
+- *Extensibility (#2).* Adding a new subsystem-owned buffer (DAP debug log, terminal output, plugin telemetry) is a new mode + a new typed event — zero App churn. Same recipe for built-in subsystems and plugin-installed ones (WIT-hosted modes pull the same `BufferStoreHandle` capability).
+- *Asynchronicity (#4).* The UI thread sees one batched edit per drain cycle per buffer — actor mailbox, no contention. Bursty subsystems (LSP trace traffic, REPL output) run on their own tokio tasks and never compete with rendering.
+- *Vim modal (#3).* Synthetic buffers live in the same registry as path-backed Documents. `:b *lsp*`, `:ls`, `:bd`, `:bn` operate uniformly; no kind-specific branches. The mode's `ReadOnly` option contribution gates user writes.
+
+**Sharp edges to honor:**
+
+- *No lock-across-`.await`.* The `BufferStore` impl uses `std::sync::Mutex`; the guard must not cross `.await`. Pull data out, drop the guard, then `.await`. Conventional in the codebase; not statically enforced.
+- *Lazy creation.* `ensure_named_document` runs on the App thread (ex-command dispatch) until M-async-activate lands. Publishers that fire records *before* the user opens the buffer route through the event bus — the records buffer in the in-memory ring; first `ensure` seeds the buffer from the ring.
+
+#### 5.10.6 `messages-mode` v1 (tracing-bridged echo log)
+
+`*messages*` is the editor's audit log: every record `App::set_message` produces, plus every `tracing::*` event from the editor + plugins, flows through a single subscriber into one buffer.
+
+**Architecture:**
+
+- `messages-mode` owns `*messages*` per §5.10.5.
+- The mode registers a `tracing::Subscriber` at activate time. The subscriber receives every `tracing::info!` / `warn!` / etc. invocation in the codebase, formats `HH:MM:SS [LEVEL] target: message`, and appends to `*messages*` via `DocumentHandle`.
+- `EchoLevel` is a thin alias for `tracing::Level`; legacy `App::set_message(level, text)` routes through a single `tracing::event!` call. One code path, one subscriber.
+- Typed option `messages.filter: String` accepts standard `tracing-subscriber` filter syntax (`editor=info,lsp=debug,grammar=trace`). Live-editable via `:set messages.filter=...`. Per-subsystem verbosity for free; `RUST_LOG`-style filtering for power users.
+- Syntax highlighting: `messages-mode` contributes a line-local highlight provider keyed by the bracketed level. `TRACE` dim, `DEBUG` cyan, `INFO` default, `WARN` yellow, `ERROR` red. Computed at append-time per new line; no rope re-parse.
+- Plugins (post-1.0 WIT host functions) get `host.log(level, target, msg)` — flows through the same subscriber. Plugin telemetry shows up in `*messages*` without any plumbing.
+
+**Why this shape:**
+
+- *Performance.* `tracing`'s filter check is a const-time atomic load; dropped records cost ~10ns. The append is a batched edit via `DocumentHandle` from the subscriber's task — never on the UI thread.
+- *Extensibility.* `tracing` is the standard Rust observability primitive; subsystems already use it. Bridging into `*messages*` is one subscriber registration, not per-call-site changes.
+- *Debugging.* Cranking verbosity for a single subsystem (`:set messages.filter=lsp=trace`) gives the same observation surface a Rust developer expects from `RUST_LOG`. No new vocabulary.
 
 ### 5.11 Introspection and Help
 

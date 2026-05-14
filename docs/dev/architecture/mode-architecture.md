@@ -292,15 +292,20 @@ two surfaces on the same underlying state.
 
 ```rust
 pub trait Mode: Send + Sync + 'static {
+	/// RAII cleanup token returned by `on_activate`. The
+	/// dispatcher stores one Guard per `(BufferId, ModeId)`
+	/// pair; deactivation drops the Guard, firing its `Drop`
+	/// impl. Marker modes with no cleanup write `type Guard = ();`.
+	/// See §7.1 for the cleanup contract.
+	type Guard: Send + 'static;
+
 	fn id(&self) -> ModeId;                  // canonical name (interned)
 	fn kind(&self) -> ModeKind;              // Major | Minor
 
 	/// Option overrides this mode contributes. Type-keyed (see
 	/// §6.4): each override is paired with the option's type at
-	/// compile time, so a typo or wrong-type contribution is a
-	/// compile error, not a runtime registration failure.
-	/// Pure declarative -- the registry, not the mode, applies
-	/// these to the layer stack.
+	/// compile time. Pure declarative -- the registry, not the
+	/// mode, applies these to the layer stack.
 	fn options(&self) -> OptionOverrideSet;
 
 	/// Keymap chord -> command additions / overrides. Layered
@@ -309,42 +314,36 @@ pub trait Mode: Send + Sync + 'static {
 	/// slot.
 	fn keymap(&self) -> &Keymap;
 
-	/// Typed event subscriptions. Filters + handlers. Activated
-	/// alongside the mode; deactivated on exit.
+	/// Typed event subscriptions. Filters + handlers.
 	fn subscriptions(&self) -> &[Subscription];
 
 	/// Decoration providers (gutter / inline / overlay /
 	/// statusline). Polled by the renderer.
 	fn decorations(&self) -> &[DecorationProvider];
 
-	/// Capabilities the mode requires from the host. Validated
-	/// at activation: a mode that needs `BufferUri` cannot
-	/// activate on a buffer without one. Missing capability ⇒
-	/// typed error, never silent skip.
+	/// Capabilities the mode requires from the host.
 	fn required_capabilities(&self) -> CapabilitySet;
 
-	/// Conflicts. Activating this mode auto-deactivates
-	/// conflicting minor modes; activation fails if a
-	/// conflicting major is already active.
+	/// Conflicts.
 	fn conflicts_with(&self) -> &[ModeId];
 
-	/// Implies. Activating this mode auto-activates these
-	/// (used by `relative-line-numbers-mode` ⇒
-	/// `line-numbers-mode`).
+	/// Implies.
 	fn implies(&self) -> &[ModeId];
 
-	/// Lifecycle. Called once per (buffer, activation) cycle.
-	/// `ModeContext` exposes event publishing + buffer reads,
-	/// NOT mutable config writes -- modes contribute via
-	/// declarative `options()`, never by side-effecting the
-	/// registry. Errors propagated as typed
-	/// `ModeActivationError` -- do not panic.
-	fn on_activate(&self, ctx: &ModeContext) -> Result<(), ModeActivationError> {
-		Ok(())
-	}
-	fn on_deactivate(&self, ctx: &ModeContext) -> Result<(), ModeActivationError> {
-		Ok(())
-	}
+	/// Lifecycle hook. Called when the mode activates on a
+	/// buffer. Returns a typed `Self::Guard` that the
+	/// dispatcher stores; dropping it on deactivation runs the
+	/// mode's cleanup via the Guard's `Drop` impl. Modes with
+	/// no cleanup return `()`.
+	///
+	/// `ctx` is consumed by value. `ModeContext` is owned and
+	/// `Send + 'static`, which lets the dispatcher (post
+	/// M-async.2c) spawn this future on the shared runtime.
+	///
+	/// **There is no `on_deactivate`.** Cleanup is via the
+	/// Guard's `Drop` impl, not an explicit teardown method.
+	/// See §7.1 for the design rationale.
+	fn on_activate(&self, ctx: ModeContext) -> LifecycleFuture<'_, Self::Guard>;
 }
 
 pub enum ModeKind { Major, Minor }
@@ -353,17 +352,32 @@ pub struct ModeId(InternedStr);  // fast == and HashMap-keyed lookups
 
 pub struct CapabilitySet { /* bitfield: BufferUri | Lsp | TreeSitter | Fold | ... */ }
 
-/// Read-only by design (see §5.2). Modes contribute via
-/// declarative trait methods; the lifecycle hook is for side
-/// effects (spawn server, open watcher), not for direct config
-/// or keymap mutation.
-pub struct ModeContext<'a> {
-	pub buffer: &'a Buffer,
-	pub events: &'a EventBus,
-	// no &mut Config -- options come from `options()`.
-	// no &mut Keymap -- keymap comes from `keymap()`.
-	// no direct LSP / actor access -- modes go through events.
+/// Owned, `Send + 'static`. Carries Arc handles to shared
+/// registries the mode may need during activation. **Notably
+/// absent: `BufferLocals`.** Mode-private state lives in the
+/// typed `Guard` (carried by the dispatcher between activate
+/// and deactivate). App-managed rich locals stay App-only and
+/// are never exposed to lifecycle hooks. See §7.1.2.
+pub struct ModeContext {
+	buffer_id: BufferId,
+	current_mode: ModeId,
+	config: Arc<ConfigRegistry>,
+	events: Arc<EventBus>,
+	services: Arc<ServiceRegistry>,
 }
+
+/// Object-safe view of `Mode` used internally by the registry
+/// (the typed `Guard` is box-erased to `Box<dyn Any + Send>`).
+/// Users implement `Mode`; the blanket `impl<M: Mode> DynMode
+/// for M` handles erasure. `pub` only so external callers can
+/// invoke declarative methods on the `Arc<dyn DynMode>` they
+/// get back from `ModeRegistry::get`.
+pub trait DynMode: Send + Sync + 'static { /* ... */ }
+
+/// `LifecycleFuture<'a, T = ()>` = `Pin<Box<dyn Future<Output =
+/// Result<T, ModeActivationError>> + Send + 'a>>`. `T` is the
+/// mode's `Guard` (defaults to `()` for marker modes).
+pub type LifecycleFuture<'a, T = ()> = /* see crate */;
 ```
 
 ### 5.2 Modes own their lifecycle work
@@ -376,28 +390,28 @@ The trait splits cleanly into two halves:
   mode, applies these to the layer stack on activation and
   removes them on deactivation. A mode can never "leak"
   contributions past its lifetime by construction.
-- **Lifecycle hooks** (`on_activate`, `on_deactivate`) are
-  where modes do their imperative work — swapping coupled
-  options, spawning a server connection, opening a file
-  watcher, allocating a buffer-side cache. They receive a
-  `ModeContext` carrying the buffer id, the active mode id,
-  the buffer's typed-local map, and **the shared
-  `ConfigRegistry`** (Phase 1 / 4.4.f extension). The mode
-  can mutate options through `ctx.config()`; option changes
-  publish on the typed-options channel and the App's drain
-  picks up the side-effect cascade (option cache recompute,
-  `recompute_folds` for `foldmethod`, theme refresh for
-  `ui.*`, ...) when the activation returns.
+- **Lifecycle hook** (`on_activate`) is where modes do their
+  imperative work — swapping coupled options, spawning a server
+  connection, opening a file watcher, subscribing to events.
+  The hook receives an owned `ModeContext` (buffer id, current
+  mode id, Arc handles to the shared `ConfigRegistry`,
+  `EventBus`, `ServiceRegistry`) and returns a typed
+  `Self::Guard` that the dispatcher stores until deactivation.
+  Cleanup is via the Guard's `Drop` impl — no `on_deactivate`
+  method exists. See §7.1 for the design rationale.
 
-  Constraint that still holds: the hook may NOT mutate
-  *another* mode's state. Cross-mode writes through
-  `ctx.set_local` are rejected by the `OWNER_MODE` rule.
-  Cross-mode option clobbering is uncoupled by the
-  layer-stack mechanism — each mode contributes options
-  through its `options()` declarative output, and the
-  registry merges; hooks should only mutate options when
-  the mode and the option are inherently coupled (e.g.
-  `lsp-folding-mode` ⇔ `foldmethod=lsp`).
+  Constraint: the hook may NOT mutate *another* mode's state.
+  Each mode's runtime state lives in its own typed `Guard`,
+  not in a shared buffer-locals map — cross-mode mutation is
+  impossible by construction (the Guard is private to the
+  dispatcher between activate and deactivate). Cross-mode
+  option clobbering is uncoupled by the layer-stack mechanism
+  — each mode contributes options through its `options()`
+  declarative output, and the registry merges; hooks should
+  only mutate options when the mode and the option are
+  inherently coupled (e.g. `lsp-folding-mode` ⇔ `foldmethod=lsp`),
+  and the prior value is captured in the Guard for `Drop` to
+  restore.
 
 **Why this matters: renderer-agnostic activation.** A TUI
 host (`lattice-ui-tui::App`) and a future GPUI host should
@@ -413,8 +427,11 @@ free because everything funnels through `Mode::on_activate`.
 **Reload semantics** (§9.6) stay clean by the same
 construction: `:lsp-diagnostics-mode` (toggle off) deactivates
 the mode, which removes every override the mode contributed
-*and* runs `on_deactivate` to undo any option swaps the
-mode performed in its `on_activate`.
+*and* drops the mode's `Guard` — `Drop` runs whatever cleanup
+the Guard implements (unsubscribe from events, restore prior
+option values, abort a tokio task, etc.). The cleanup is
+compile-time enforced; modes cannot forget to undo their
+setup.
 
 #### Migration phases
 
@@ -1151,41 +1168,272 @@ pub enum ModeEvent {
 
 `MajorEntered` is the load-bearing one for setup work --
 parser attach, server lookup, default minor activation. The
-trait's `on_activate` runs first; *then* the event publishes,
-so subscribers see a buffer in a consistent state.
+trait's `on_activate` runs first (awaited to completion);
+*then* the event publishes, so subscribers see a buffer in a
+consistent state.
 
 `MajorExiting` runs *before* state teardown -- subscribers can
 inspect what's about to be torn down. The trait's
 `on_deactivate` runs after the event drains.
 
-### 7.1 Deactivation is synchronous; teardown can be async
+### 7.1 Async lifecycle — Drop-based cleanup via typed Guard
 
-`on_deactivate` is a synchronous call: it returns to the user
-immediately so toggle commands don't block. But torn-down state
-may include resources whose actual release is async -- closing
-an LSP server connection, draining a watch channel, etc.
+**Trait shape (revised 2026-05-14).** The `Mode` trait has a
+single lifecycle hook (`on_activate`) that returns a typed
+`Self::Guard` RAII cleanup token. There is **no
+`on_deactivate`** method. The dispatcher stores the Guard for
+the duration of the mode's activation on the buffer; on
+deactivation, the dispatcher drops the Guard, firing its
+`Drop` impl which runs the mode's cleanup. This is Rust-idiomatic
+RAII applied to the mode lifecycle, validated by zed's
+`Subscription` / `Task` patterns.
 
-The contract:
+```rust
+pub trait Mode: Send + Sync + 'static {
+    /// RAII cleanup token returned by `on_activate`. The
+    /// dispatcher stores one Guard per `(BufferId, ModeId)`
+    /// pair; deactivation drops the Guard, firing its `Drop`
+    /// impl. Marker modes with no cleanup write `type Guard = ();`.
+    type Guard: Send + 'static;
 
-1. **Logical deactivation** (synchronous, immediate): the
-   registry pops the mode's overrides, deregisters its
-   subscriptions, runs `on_deactivate`. Hot paths see the
-   mode as gone instantly.
-2. **Physical teardown** (asynchronous, background): if
-   `on_deactivate` started cleanup work (e.g. spawned a future
-   to close a server), that work continues post-event. The
-   mode's `MinorDeactivated` / `MajorExiting` event has
-   already fired; subscribers are responsible for handling
-   "the resource the mode managed may still be in mid-shutdown".
+    fn id(&self) -> ModeId;
+    fn kind(&self) -> ModeKind;
+    // ... declarative methods (options, keymap, subscriptions,
+    //     decorations, capabilities, conflicts_with, implies,
+    //     mirrors_option, completion_sources) ...
 
-Concrete consequence for LSP: deactivating `lsp-mode` returns
-to the user immediately (`:disable lsp-mode` echoes "off"
-straight away). A `publishDiagnostics` already in flight from
-the server may land *after* deactivation; the diagnostics
-subscriber must check whether the mode is still active and
-drop the message if not. The check is cheap (one ResolvedOptions
-read) and the failure mode is a stale diagnostic, not a crash
-or a corrupted view.
+    fn on_activate(&self, ctx: ModeContext) -> LifecycleFuture<'_, Self::Guard>;
+}
+```
+
+**Object safety: the `DynMode` adapter.** `Mode` is not directly
+object-safe because `Self::Guard` makes method signatures
+generic. The registry stores `Arc<dyn DynMode>` (a public,
+object-safe view); a blanket `impl<M: Mode> DynMode for M`
+handles type erasure — the typed `Guard` returned by
+`Mode::on_activate` is boxed as `Box<dyn Any + Send>` and
+stashed in the dispatcher's `GuardStore`. Users implement
+`Mode`; `DynMode` is implementation detail exposed only for
+declarative-method access via `ModeRegistry::get`.
+
+**Cleanup contract for `Guard::drop`:**
+- Must not panic. Drop runs during deactivation paths and
+  during buffer/registry teardown; a panic there is a
+  corruption hazard (double-panic aborts the process).
+- Must not block. Drop runs on whatever thread is calling
+  `deactivate_*` (usually the App thread). Heavy work or
+  `block_on` belongs in a spawned task (`lattice_runtime::
+  spawn_task`), not in `Drop`.
+- Async cleanup (e.g. awaiting `textDocument/didClose`) is
+  spawn-and-detach: the `Drop` body spawns a task that runs
+  the cleanup. The dispatcher cannot observe completion —
+  that's the trade-off for compiler-enforced cleanup. If
+  cleanup-await observability ever becomes a real requirement,
+  a separate `AsyncDeactivate` trait can layer alongside
+  `Mode` for the few modes that need it.
+
+**Why Drop and not `on_deactivate`:**
+
+| Property | Drop-based | Explicit `on_deactivate` |
+|---|---|---|
+| Cleanup forgotten? | Impossible — `Drop` is automatic. | Possible if author misses it. |
+| Error-during-`on_activate` cleanup | Automatic via `?` (Guard dropped on early return). | Manual — every mode must handle partial-setup-then-error. |
+| Buffer destruction without explicit deactivate | Automatic via `GuardStore::drop_buffer`. | Manual cleanup walk required. |
+| Compiler-enforced? | Yes (Rust's drop checker). | No (convention). |
+| Async cleanup observability | No (spawn-and-detach). | Yes (`Result` from `.await`). |
+| Field on the trait | One method. | Two methods. |
+
+The compile-time enforcement wins for lattice's actual cleanup
+patterns (all sync nanosecond ops: `events.unsubscribe(...)`,
+`config.set(...)`, `handle.abort()`). The async-observability
+loss is theoretical — no in-tree mode needs it today.
+
+**Reference: editors with similar patterns.** Zed uses the
+same RAII model throughout — `Subscription` returned by
+`cx.subscribe(...)`, `Task<T>` returned by
+`background_executor().spawn(...)`. Helix uses Rust ownership
+directly (no `Mode` trait, but `Document` owns its `Syntax`,
+`Client` cleans up on drop, etc.). VSCode uses an explicit
+disposables list (manual; not compiler-enforced; supports
+async cleanup). Lattice's Drop-based design lands in zed's
+cluster.
+
+### 7.1.1 Concrete Guard examples
+
+**Sync cleanup — unsubscribe an event handler:**
+
+```rust
+pub struct LspServerLogGuard {
+    inner: Option<LspServerLogState>,
+}
+struct LspServerLogState {
+    events: Arc<EventBus>,
+    sub_id: SubscriptionId,
+}
+impl Drop for LspServerLogGuard {
+    fn drop(&mut self) {
+        if let Some(state) = self.inner.take() {
+            state.events.unsubscribe(state.sub_id);
+        }
+    }
+}
+
+impl Mode for LspServerLogMode {
+    type Guard = LspServerLogGuard;
+    fn on_activate(&self, ctx: ModeContext)
+        -> LifecycleFuture<'_, LspServerLogGuard>
+    {
+        Box::pin(async move {
+            // ... setup, may early-return Ok(LspServerLogGuard { inner: None }) ...
+            let sub_id = ctx.events().subscribe_typed(tx);
+            Ok(LspServerLogGuard {
+                inner: Some(LspServerLogState {
+                    events: ctx.events_handle(),
+                    sub_id,
+                }),
+            })
+        })
+    }
+}
+```
+
+**Sync cleanup — restore a prior option value:**
+
+```rust
+pub struct FoldmethodRestoreGuard {
+    config: Arc<ConfigRegistry>,
+    prior: FoldMethod,
+}
+impl Drop for FoldmethodRestoreGuard {
+    fn drop(&mut self) {
+        folding_sync::on_deactivate(&self.config, self.prior);
+    }
+}
+
+impl Mode for LspFoldingMode {
+    type Guard = Option<FoldmethodRestoreGuard>;
+    fn on_activate(&self, ctx: ModeContext)
+        -> LifecycleFuture<'_, Option<FoldmethodRestoreGuard>>
+    {
+        Box::pin(async move {
+            let prior = folding_sync::on_activate(ctx.config());
+            Ok(prior.map(|p| FoldmethodRestoreGuard {
+                config: ctx.config_handle(),
+                prior: p,
+            }))
+        })
+    }
+}
+```
+
+**Composed cleanup — multiple resources:**
+
+```rust
+pub struct MyModeGuard {
+    _sub_guard: SubscriptionGuard,   // drops → unsubscribe
+    _task_abort: TaskAbortGuard,     // drops → JoinHandle::abort
+}
+// No Drop impl needed; fields drop in declaration order,
+// each running its own Drop.
+```
+
+**No cleanup — marker mode:**
+
+```rust
+impl Mode for TextMode {
+    type Guard = ();
+    fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_> {
+        Box::pin(async move { Ok(()) })
+    }
+}
+```
+
+### 7.1.2 `ModeContext` shape
+
+`ModeContext` is owned, `Send + 'static`, cheap to construct
+(clones a handful of `Arc`s):
+
+```rust
+pub struct ModeContext {
+    buffer_id: BufferId,
+    current_mode: ModeId,
+    config: Arc<ConfigRegistry>,
+    events: Arc<EventBus>,
+    services: Arc<ServiceRegistry>,
+}
+```
+
+**Notably absent: `BufferLocals`.** Modes don't read or write
+buffer-locals through ctx. Mode-private state lives in the
+typed `Guard` (carried between activate and deactivate by the
+dispatcher); App-managed rich locals (`FileTreeEntries`,
+`HelpLinks`, `OilDir`, etc.) stay in the App's own
+`HashMap<BufferId, BufferLocals>` and are never exposed to
+mode lifecycle hooks. This is the cleaner architecture — the
+shared map was always single-writer-per-key in practice; the
+typed Guard makes that explicit and compiler-enforced.
+
+The `service::<T>()` lookup is read-only access to subsystem
+handles (BufferStoreHandle, LspSupervisorHandle, LspLogger).
+`events_handle()` and `config_handle()` are cheap `Arc::clone`
+helpers used when a Guard needs to hold one of these across
+its Drop call.
+
+### 7.2 Activation / deactivation flow
+
+**Activation (synchronous prefix):**
+
+1. Validate the mode (registered, kind matches, capabilities
+   satisfied, no conflicts, all implied modes registered).
+2. Construct `ModeContext` (cheap — Arc clones).
+3. Drive `mode.on_activate(ctx)` to completion via `poll_now`
+   (M-async.2b.foundation) or spawn on runtime
+   (M-async.2c, future).
+4. Stash the returned typed Guard in `GuardStore` keyed by
+   `(BufferId, ModeId)`. The Guard is box-erased to
+   `Box<dyn Any + Send>` for uniform storage.
+5. Mutate `active_modes`, emit `MajorEntered` /
+   `MinorActivated` events.
+6. Cascade implied modes.
+
+**Deactivation:**
+
+1. Look up the active mode; emit `MajorExiting` /
+   `MinorDeactivated` synchronously so subscribers see a
+   clean active-mode set.
+2. Remove from `active_modes`.
+3. `GuardStore::guards.remove((BufferId, ModeId))` — the
+   returned `Box<dyn Any>` is dropped, firing the typed
+   Guard's `Drop` impl which performs cleanup (sync, brief).
+4. Cascade-deactivate implied modes (each drops its own
+   Guard).
+
+**Buffer destruction without explicit deactivate:** the App
+calls `GuardStore::drop_buffer(buffer_id)`, which retains
+only entries for other buffers; the removed entries drop,
+firing every active mode's `Drop`. No "did we forget to
+deactivate?" surface — Rust's drop checker guarantees the
+cleanup runs.
+
+### 7.3 Re-entrancy and ordering invariants
+
+The dispatcher guarantees:
+
+- A mode's `on_activate` future for buffer `B` runs to
+  completion before the next `on_activate` for the same
+  `(buffer, mode)` pair starts. Per-pair activation is
+  serialized; cross-pair activations run in parallel
+  (once M-async.2c lands spawn-based dispatch).
+- Deactivation of `(B, mode)` is not scheduled until the
+  matching `on_activate` resolves. A rapid `:enable foo` /
+  `:disable foo` pair always pairs correctly.
+- Cross-mode activation (e.g. `LspMode` implies
+  `LspDiagnosticsMode`) awaits the parent before scheduling
+  implied children, preserving cascade ordering.
+
+These guarantees are enforced by per-`(buffer, mode)` mutexes
+in the dispatcher (planned for M-async.3), not by hook
+discipline. Modes don't need to defensively check ordering.
 
 ## 8. Crate placement
 

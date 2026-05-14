@@ -244,6 +244,118 @@ Three follow-ups deliberately deferred (open):
 
 ---
 
+## B': mode-owned synthetic buffers
+
+**The "modes own their buffers" contract** specified in
+../architecture/design.md §5.10.5: every synthetic buffer
+(`*lsp*`, per-instance `*lsp:<server>:<workspace>*`, per-instance
+`*...:trace*`, `*messages*`, future `*scratch*` / `*compilation*`
+/ REPL / plugin-emitted streams) is owned by a dedicated mode
+end-to-end. The App holds no subsystem-specific buffer-handling
+code; two host primitives -- `BufferStore` + `ServiceRegistry` --
+carry the contract. Anchors: design.md §5.10.5 + §5.4.7 +
+mode-architecture.md §7.
+
+Originally motivated by user-visible bugs (modeline `[no name]`
+on `:lsp-log`, `<C-o>` "no jumps" from synthetic buffers, missing
+per-instance separation for multiple `rust-analyzer` processes
+against different workspaces) plus the architectural observation
+that `App::ensure_lsp_subsystem_buffer` / `App::drain_lsp_log_events`
+/ `App::append_to_owned_buffer` were anti-extensible: every new
+subsystem would copy-paste into the App. The recipe needs to be
+mode-shaped instead.
+
+| Slice | Status | What landed / what lands                                                                                                                                                                                                                                                                                                                                                       |
+|-------|--------|-------------|
+| B'.1a | ✅     | `BufferStore` trait + `BufferStoreHandle` defined in `lattice-mode`. `Send + Sync` so a mode's tokio task can call from any thread. Three methods: `find_by_name`, `ensure_named_document(name, major, flags)`, `handle_for(id)`. No implementation yet -- the trait is the contract surface for B'.3 onward.                                                                  |
+| B'.1b | ✅     | `BufferRegistry` switched to interior mutability (`Arc<Mutex<BufferRegistryInner>>`). Methods take `&self` and lock internally; the type is `Clone` (Arc bump) so it threads naturally into `BufferStoreHandle`. Callback-based read/write API (`with_entry`, `with_help`, `with_oil`, `with_file_tree`, `for_each`) replaces reference returns -- guards never escape the lock. 30+ App-side call sites migrated; 1574 lattice-ui-tui tests stay green. Sharp edges to honour: no lock-across-`.await`, no re-entrant `with_X(\|_\| with_Y(...))` (`std::sync::Mutex` is not reentrant). |
+| B'.2  | ✅     | Per-instance LSP logger keying. `InstanceKey { server_id: Arc<str>, workspace: Arc<Path> }` is the new canonical key; `LspLogger`'s per-server map becomes per-instance. `LogRecord` and `LspLogPushed` carry workspace alongside server_id. All four `Inbound*` bus payloads (applyEdit / configuration / showDocument / showMessageRequest) carry workspace so the App-side drain can route logs and side-effects to the correct instance. `ServerHandle::instance()` / `::workspace_root()` expose the canonical pair. App ex-commands (`:lsp-log-level` / `:lsp-log-clear` / `:lsp-trace`) walk running actors + the logger's `known_instances`, with a cwd-synth fallback so pre-spawn toggling still works. 1574 lattice-ui-tui tests pass. |
+| B'.3  | ✅     | `LspLogMode` owns `*lsp*`. Hand-written `Mode` impl: `on_activate` pulls the buffer's `DocumentHandle` via the `BufferStoreHandle` service, subscribes to `LspLogPushed` events, spawns a tokio task that drains the subscription, coalesces, and applies one batched edit per drain cycle. `on_deactivate` removes the buffer-local subscription stash + unsubscribes. The App's `drain_lsp_log_events` skips the subsystem write when `LspLogMode` is the active major on `*lsp*`. `BufferStore` impl for `BufferRegistry`; `BufferStoreHandle` registered in `ServiceRegistry` at boot. `format_log_event_line` hoisted to `lattice-lsp::logging` so the mode can reuse it. Mode degrades gracefully when no service or runtime is wired (test paths). |
+| B'.4  | ✅     | `LspServerLogMode` owns per-instance `*lsp:<server>:<workspace>*`. Hand-written `Mode` impl reads its `InstanceKey` from the `LspServerLogInstance` buffer-local (seeded by App before activation), subscribes to `LspLogPushed`, filters by `(server_id, workspace)`, skips trace records, batches appends. Buffer name + ensure helpers take `&InstanceKey`; App drain accumulates by `(server_id, workspace)` and skips per-server write when the mode is the active major. Both B'.3 and B'.4 modes also seed their buffer from the in-memory ring on activate so pre-existing records show up immediately; `LspLogger` registered as a service for the seed path. `open_lsp_log_in_pane` / `open_lsp_trace_log_in_pane` use a `resolve_lsp_instance_for` helper (running actor → known-by-logger → cwd-synth fallback). |
+| B'.5  | ✅     | `LspTraceLogMode` owns per-instance `*lsp:<server>:<workspace>:trace*`. Hand-written mirror of B'.4 with inverted filter (`level == "trace" \|\| source == "trace"`). Reuses the `LspServerLogInstance` buffer-local for instance identity; tracks its own subscription via `LspTraceLogSubscription` so a single instance can have both buffers open simultaneously. Seeds from the in-memory ring on activate. App drain skips per-trace write when the mode is the active major. Retired the `lsp_log_mode!` macro since all three log majors are now hand-written. |
+| B'.6  | ✅     | App LSP cleanup. `App::drain_lsp_log_events` slimmed to only fan `window/showMessage`-sourced records to the minibuffer -- every buffer append is mode-owned now (B'.3 / B'.4 / B'.5). `format_log_event_line` alias retired from `lattice-ui-tui` (canonical is in `lattice-lsp`). `App::ensure_lsp_*` buffer creators and `append_to_owned_buffer` stay -- still used at boot (subsystem buffer) and by ex-commands (per-instance lazy create); the modes activate on top. Added `log_append_pipeline_100_records` Criterion bench in `lattice-lsp/benches/lsp.rs`: publish 100 records through `LspLogger → EventBus → mpsc → coalescing drain → format`, measure wall time. Baseline ~87µs / 100 records (≈870ns / record) on dev hardware. Excludes the `apply_edit_batch` tail (depends on `lattice-grammar`, out of scope for this crate's deps); the document-actor benches already measure that side. |
+| B'.7  | ✅     | `:lsp-log` / `:lsp-server-log` / `:lsp-trace-log` reshaped as thin wrappers. Canonical name builders + inverse parsers moved into `lattice-lsp::buffer_names` (`LSP_SUBSYSTEM_LOG_NAME`, `lsp_server_log_name(&InstanceKey)`, `lsp_server_trace_log_name(&InstanceKey)`, `parse_lsp_server_log_name(&str) -> Option<InstanceKey>`, `parse_lsp_trace_log_name`). `BufferStore::name_for(id) -> Option<String>` added so modes can read their buffer's synthetic name. `LspServerLogMode::on_activate` / `LspTraceLogMode::on_activate` now derive their `InstanceKey` straight from the name — the `LspServerLogInstance` buffer-local + the App-side seeding before activation are gone. App side collapsed `ensure_lsp_subsystem_log_buffer` / `ensure_lsp_server_log_buffer` / `ensure_lsp_server_trace_buffer` / `ensure_lsp_log_buffer_with_instance` / `ensure_lsp_log_owned_buffer` into a single generic `ensure_named_synthetic_document(name, mode_id, flags) -> BufferId` host helper. Ex-command handlers (`do_open_lsp_log`, `open_lsp_log_in_pane`, `open_lsp_trace_log_in_pane`) + the `:lsp-trace` toggle path + the boot path + the `*messages*` creator all route through that one helper; the handler computes `name` via `lattice-lsp` and picks the major-mode id, and that's all the subsystem-shaped knowledge it has. Drains of `drain_lsp_log_events` removed from the open paths (modes drive buffer content from the event bus, independent of that minibuffer-only drain). 1574 lattice-ui-tui tests + 183 lattice-lsp tests stay green. |
+
+**Design-call answers baked in (per architect's confirmations):**
+
+- *Buffer name canonicalization* — full workspace path as the
+  canonical registry key; display label may shorten with `~/`.
+- *Server-detach lifecycle* — the mode's `on_deactivate` runs
+  when the supervisor signals server-exit; the subscription
+  drops; the buffer survives (frozen — no further appends).
+  `:bd` is the explicit removal path.
+- *Memory cap* — unbounded transcript by default; `:lsp-log clear`
+  drops the rope. Matches user mental model ("the buffer is the
+  full log").
+- *Subscription strategy* — one publisher (`LspLogPushed`), three
+  filtering subscribers (one per mode). Simpler than three
+  sub-publishers; tokio `broadcast` is the fan-out channel.
+- *Bench coverage* — single cross-task append-throughput bench in
+  B'.6 alongside the App-side delete, so regressions show up in
+  the same slice that removes the old fallback path.
+
+---
+
+## M-async-activate + M-async-deactivate (v1 commitment)
+
+**Async mode lifecycle** specified in mode-architecture.md §7.1:
+both `Mode::on_activate` and `Mode::on_deactivate` are `async fn`.
+The dispatcher schedules them on the runtime; the UI thread never
+blocks on mode activation or deactivation. Hooks that need to
+spawn a supervisor, await a handshake, drain a watcher, or close
+a server connection do so naturally with `.await`.
+
+**Why v1, not post-v1.** Paramount goal #1 (sub-frame input
+latency) and paramount goal #4 (asynchronicity) both demand
+that no synchronous path on the App thread does I/O. Today's
+`LspMode::on_activate` is the empirical counter-example: first
+`cargo run` blocks measurably while the rust-analyzer supervisor
+spawns + initialises. Subsequent runs don't block because the
+work is cached. The architectural fix is async lifecycle, not
+caching.
+
+**Sequence:** M-async-activate lands *after* B' completes and
+*before* messages-mode v1. B' establishes the buffer-ownership
+contract with sync activation (all activation sites are
+ex-command handlers on the App thread — sync is correct for
+those). M-async-activate generalises the lifecycle so the next
+slice (messages-mode v1) gets the async foundation for free.
+
+| Slice    | Status | What lands                                                                                                                                                                                                                                                                                                            |
+|----------|--------|-------------|
+| M-async.1 | ✅   | Trait surface migrated. `Mode::on_activate` / `Mode::on_deactivate` now return `LifecycleFuture<'_>` (alias for `Pin<Box<dyn Future<Output = Result<(), ModeActivationError>> + Send + 'a>>`) — the explicit AFIT desugaring required for `dyn Mode` object-safety on stable. Every in-tree Mode impl (text, hover, help, completion family, display family, file-tree, oil, snippet, syntax langs + TS completion, all LSP log majors, LspMode + 14 sub-modes, LspFoldingMode, LspCompletionMode, TestLocalsMode) migrated; bodies wrapped in `Box::pin(async move { ... })`. Registry dispatcher drives futures synchronously via a `poll_now` helper (panics on `Pending` — the M-async.1 immediate-ready contract; M-async.2 swaps this for runtime-spawned `.await`). New positive test `async_move_activation_body_runs_to_completion` documents the surface. Workspace green: 1574 lattice-ui-tui + 183 lattice-lsp + others. |
+| M-async.2a | ✅   | Foundation: `BufferLocalsHandle` (Arc<Mutex<BufferLocals>>) added to `lattice-mode`; `ModeActivationFailed { buffer, mode, reason }` variant added to `ModeEvent`; `ModeEvent` registered as `TypedEvent` (`mode.lifecycle`) so the bus can carry it; `lattice_runtime::spawn_task` helper for fire-and-forget runtime spawn; `linkme` direct dep on `lattice-mode` for the typed-event registration. No behavior change yet. |
+| M-async.2b-redesign | ⛔ | **Drop-based `Mode::Guard` replaces `on_deactivate`** (see mode-architecture.md §7.1, revised 2026-05-14). The `Mode` trait gets a `type Guard: Send + 'static` associated type; `on_activate` returns the Guard; the dispatcher stores it; deactivation drops the Guard, firing its `Drop` impl for cleanup. `BufferLocals` removed from `ModeContext` entirely — mode-private state lives in the typed Guard, App-managed rich locals stay App-only (no `BufferLocalsHandle` in ctx). `DynMode` (public, object-safe) added as adapter for `dyn` storage; `GuardStore` (per-(buffer, mode) erased box) in registry. Sliced for landing: **.2b.fc** (foundation crate: trait + ctx + DynMode + GuardStore in `lattice-mode`, plus marker-mode mechanical migration; lattice-mode lib + tests green, App-side intentionally broken until .2b.lsp / .2b.app). **.2b.lsp** (hand-rewrite LspServerLogMode, LspLogMode, LspTraceLogMode, LspMode umbrella, LspFoldingMode with typed Drop-based Guards). **.2b.app** (App-side: `services` field → `Arc<ServiceRegistry>`, dispatcher caller sites updated to pass `&Arc<...>` + `&mut GuardStore`, registry tests rewritten, dispatch.rs test mode). Each sub-slice ships workspace-green. |
+| M-async.2c | ⛔   | Spawn-based dispatcher. Swap `poll_now` (sync drive) for `lattice_runtime::spawn_task` so the App thread doesn't block on activation. Activation: record intent synchronously (active_modes), spawn the lifecycle future on the runtime, publish `MajorEntered` / `MinorActivated` from the spawned task on success, `ModeActivationFailed` on failure. Tiny slice after .2b-redesign — just the drive primitive change. |
+| M-async.3 | ⛔   | Re-entrancy / ordering invariants enforced by the dispatcher (§7.3). Cascade ordering (implies / conflicts_with) preserved: parent `on_activate` awaits before implied children schedule. Per-`(buffer, mode)` `tokio::Mutex` serializes same-pair activations across the async boundary. Rollback wiring no longer needs `ModeActivationFailed` — Drop on the Guard handles cleanup automatically; the event variant stays for telemetry but rollback semantics fall out of the type system. |
+| M-async.4 | ⛔   | Migrate `LspMode::on_activate` to await the supervisor's initialize round-trip. The first-launch hang stops being user-visible. Adds a bench (`benches/mode_activate.rs`): activate `LspMode` 100×, p99 < N ms (target gated when the bench lands).                                                                                                                       |
+| M-async.5 | ⛔   | Migrate all remaining modes that do non-trivial activation work (`LspLogMode`, `LspServerLogMode`, `LspTraceLogMode` from B'; minor-mode toggles that touch the LSP supervisor). Sync-only modes (text-mode, line-numbers-mode, etc.) keep their `Ok(())` bodies — `async fn` is zero-cost for them.                                                                          |
+
+---
+
+## messages-mode v1 (tracing-bridged echo log)
+
+**The `*messages*` buffer** specified in
+../architecture/design.md §5.10.6: every record `App::set_message`
+produces, plus every `tracing::*` event from the editor + plugins,
+flows through a single subscriber into one mode-owned buffer.
+Anchor: design.md §5.10.6 + §5.10.5 (the B' contract it builds on).
+
+May land in parallel with B' (no dependency); the async pieces
+(tracing subscriber's append task) benefit from M-async-activate
+once that lands but can ship with sync activation if scheduling
+dictates.
+
+| Slice        | Status | What lands                                                                                                                                                                                                                                                                                                                                |
+|--------------|--------|-------------|
+| msg-mode.1   | ⛔     | `EchoLevel` aliased to `tracing::Level` (add `Trace` + `Debug`). `App::set_message(level, text)` routes through `tracing::event!`. Single code path.                                                                                                                                                                                       |
+| msg-mode.2   | ⛔     | `messages-mode` major mode definition. `on_activate` registers a `tracing::Subscriber` that fans every event into a `mpsc::Sender<MessageRecord>`; spawns a tokio task that drains the channel, coalesces, and appends to `*messages*` via `DocumentHandle`. `on_deactivate` drops the subscriber + sender. Follows the §5.10.5 recipe.   |
+| msg-mode.3   | ⛔     | Typed option `messages.filter: String`. Defaults to `info`. Live-editable via `:set messages.filter=...`; the change reconfigures the subscriber's filter. Accepts standard `tracing-subscriber` filter syntax (`editor=info,lsp=debug,grammar=trace`).                                                                                  |
+| msg-mode.4   | ⛔     | Syntax highlighting. `messages-mode` contributes a line-local highlight provider keyed by the bracketed level. Computed at append-time per new line; theme entries: `messages.trace`, `messages.debug`, `messages.info`, `messages.warn`, `messages.error`.                                                                                |
+| msg-mode.5   | ⛔     | Plugin host bridge (post-1.0 WIT): `host.log(level, target, msg)` flows through the same subscriber. Plugin telemetry shows up in `*messages*` with no plumbing on the plugin side. Gated by Phase 7.                                                                                                                                       |
+
+---
+
 ## Vim grammar coverage (Phase 1 catalog)
 
 This section enumerates every named primitive in vim's grammar against its

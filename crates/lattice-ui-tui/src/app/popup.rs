@@ -214,10 +214,9 @@ impl App {
         // are typically external URLs we don't follow internally.
         let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
         let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
-        let mut locals = self.buffer_locals.remove(&buffer_id).unwrap_or_default();
         let _ = self.mode_registry.activate_major(
             &mut active,
-            &mut locals,
+            &mut self.mode_guards,
             &self.config,
             &self.event_bus,
             &self.services,
@@ -227,7 +226,7 @@ impl App {
         );
         let _ = self.mode_registry.activate_minor(
             &mut active,
-            &mut locals,
+            &mut self.mode_guards,
             &self.config,
             &self.event_bus,
             &self.services,
@@ -236,7 +235,6 @@ impl App {
             lattice_mode::CapabilitySet::empty(),
         );
         self.active_modes.insert(buffer_id, active);
-        self.buffer_locals.insert(buffer_id, locals);
         self.recompute_options_for_buffer(buffer_id);
         // Crucially, NO active_buffer flip, NO prev_pane_for_help
         // capture, NO position-history push, NO cursor/scroll

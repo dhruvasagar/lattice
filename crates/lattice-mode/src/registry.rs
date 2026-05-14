@@ -1,31 +1,39 @@
 //! `ModeRegistry`: register modes, look them up, drive
-//! activation / deactivation against a per-buffer `ActiveModes`.
+//! activation / deactivation against a per-buffer `ActiveModes`
+//! and a per-App [`GuardStore`].
 //!
-//! M.1 keeps the registry **bus-agnostic**: activation and
+//! M-async.1 keeps the registry **bus-agnostic**: activation and
 //! deactivation methods return the events they would have
 //! published as a `Vec<ModeEvent>`, instead of dispatching to
-//! the typed event bus directly. This lets `lattice-mode` be
-//! tested without spinning up the bus, and lets the bus
-//! integration land cleanly in M.4 by having callers forward
-//! the returned events.
+//! the typed event bus directly. The caller forwards events on
+//! to the bus. M-async.2 swaps this for spawn-based dispatch,
+//! at which point the registry publishes events from the
+//! spawned task and the return type becomes `Result<(), _>`.
 //!
 //! Validation order before activation:
 //! 1. Mode is registered (`ModeActivationError::NotRegistered`).
 //! 2. Mode kind matches the call (`WrongKind`).
 //! 3. Buffer satisfies required capabilities
 //!    (`MissingCapability`).
-//! 4. No conflict with already-active modes (`Conflict`) --
-//!    unless the policy auto-deactivates conflicting minors.
+//! 4. No conflict with already-active modes (`Conflict`).
 //! 5. All `implies` dependencies are registered
 //!    (`UnregisteredDependency`).
 //! 6. `on_activate` runs; lifecycle errors surface as
-//!    `LifecycleFailed`.
-//! 7. Declarative contributions are conceptually applied (M.1
-//!    is a no-op here -- M.2+ slices wire in the option /
-//!    keymap / decoration / subscription registries).
+//!    `LifecycleFailed`. On success the returned Guard is
+//!    stashed in the [`GuardStore`] keyed by `(buffer, mode)`.
+//! 7. Declarative contributions are applied (option overrides,
+//!    keymap layer, subscriptions, decorations).
+//!
+//! Deactivation removes the Guard from the store; dropping the
+//! `Box<dyn Any + Send>` invokes the original Guard's `Drop`
+//! impl, which performs every cleanup action. There is no
+//! `on_deactivate` -- Drop is the cleanup contract.
 
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
 use lattice_protocol::ids::BufferId;
 
@@ -34,38 +42,27 @@ use crate::capability::CapabilitySet;
 use crate::context::ModeContext;
 use crate::error::ModeActivationError;
 use crate::event::ModeEvent;
-use crate::locals::BufferLocals;
-use crate::mode::{Mode, ModeId, ModeKind};
+use crate::guards::GuardStore;
+use crate::mode::{DynMode, Mode, ModeId, ModeKind};
 
-/// Why a registration failed. Distinct from
-/// [`ModeActivationError`] because registration happens once
-/// per mode, before any buffer ever activates it; activation
-/// errors are per-buffer and per-attempt.
+/// Why a registration failed.
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum RegistrationError {
-    /// A mode with this id is already registered. Names are
-    /// canonical; double-registration is a build-config bug.
     #[error("mode `{0}` is already registered")]
     Duplicate(ModeId),
 }
 
-/// Mode registry. Owns the catalogue of registered modes and
-/// drives activation / deactivation. Bus-agnostic: callers get
-/// events as a return value and forward them as needed.
+/// Mode registry. Owns the catalogue of registered modes
+/// (`Arc<dyn DynMode>`) and drives activation / deactivation.
 ///
-/// The registry does not own per-buffer `ActiveModes` -- each
-/// buffer carries its own (M.3 lands the field on `Document`).
-/// Activation methods take `&mut ActiveModes` so the registry
-/// can mutate the caller's set after validation succeeds.
-///
-/// `Clone` is cheap: each entry is an `Arc<dyn Mode>` so the
+/// `Clone` is cheap: each entry is an `Arc<dyn DynMode>` so the
 /// HashMap clone is shallow over the values. Used by tests that
-/// need to register a test-only mode post-boot via
+/// register a test-only mode post-boot via
 /// `Arc::make_mut(&mut app.mode_registry)`; production code
 /// constructs the registry once at boot and never clones.
 #[derive(Clone)]
 pub struct ModeRegistry {
-    modes: HashMap<ModeId, Arc<dyn Mode>>,
+    modes: HashMap<ModeId, Arc<dyn DynMode>>,
 }
 
 impl Default for ModeRegistry {
@@ -93,11 +90,15 @@ impl ModeRegistry {
     /// the registry is single-writer at startup so the typical
     /// caller registers all modes before any buffer activates.
     pub fn register<M: Mode>(&mut self, mode: M) -> Result<ModeId, RegistrationError> {
-        let id = mode.id();
+        let id = <M as Mode>::id(&mode);
         if self.modes.contains_key(&id) {
             return Err(RegistrationError::Duplicate(id));
         }
-        self.modes.insert(id, Arc::new(mode));
+        // `Arc::new(mode)` constructs `Arc<M>`; the coercion to
+        // `Arc<dyn DynMode>` uses the blanket `impl<M: Mode>
+        // DynMode for M`.
+        let arc: Arc<dyn DynMode> = Arc::new(mode);
+        self.modes.insert(id, arc);
         Ok(id)
     }
 
@@ -107,19 +108,17 @@ impl ModeRegistry {
     }
 
     /// Look up a registered mode by id.
-    pub fn get(&self, id: ModeId) -> Option<Arc<dyn Mode>> {
+    pub fn get(&self, id: ModeId) -> Option<Arc<dyn DynMode>> {
         self.modes.get(&id).cloned()
     }
 
     /// Iterate every registered mode's `(id, kind)`. Used at boot
     /// by the App to auto-generate toggle ex-commands per mode-
-    /// architecture §9.6.1, and by `:list-modes` (M.8) to render
-    /// the catalogue.
+    /// architecture §9.6.1.
     pub fn iter_meta(&self) -> impl Iterator<Item = (ModeId, ModeKind)> + '_ {
         self.modes.iter().map(|(id, mode)| (*id, mode.kind()))
     }
 
-    /// Number of registered modes (any kind).
     pub fn len(&self) -> usize {
         self.modes.len()
     }
@@ -130,26 +129,25 @@ impl ModeRegistry {
 
     /// Activate a major mode on `buffer`. If a different major
     /// is currently active, it is deactivated first (the
-    /// previous major's `on_deactivate` runs, `MajorExiting`
-    /// fires, then the new major's `on_activate` runs and
-    /// `MajorEntered` fires). Idempotent: activating the
-    /// already-active major triggers a *reload* (deactivate
-    /// then re-activate, per `mode-architecture.md` §9.6).
+    /// previous major's Guard is dropped, `MajorExiting` fires,
+    /// then the new major's `on_activate` runs and `MajorEntered`
+    /// fires). Idempotent: activating the already-active major
+    /// triggers a *reload* (deactivate then re-activate, per
+    /// `mode-architecture.md` §9.6).
     ///
     /// `caps` is the buffer's current capability set. The new
     /// mode's `required_capabilities` must be a subset.
     ///
     /// Implied modes (`Mode::implies`) are auto-activated as
-    /// minors after the major lands; failure on an implied
-    /// activation rolls back the major activation.
+    /// minors after the major lands.
     #[allow(clippy::too_many_arguments)]
     pub fn activate_major(
         &self,
         active: &mut ActiveModes,
-        locals: &mut BufferLocals,
-        config: &lattice_config::ConfigRegistry,
-        events: &std::sync::Arc<lattice_runtime::EventBus>,
-        services: &crate::services::ServiceRegistry,
+        guards: &mut GuardStore,
+        config: &Arc<lattice_config::ConfigRegistry>,
+        events: &Arc<lattice_runtime::EventBus>,
+        services: &Arc<crate::services::ServiceRegistry>,
         buffer: BufferId,
         mode: ModeId,
         caps: CapabilitySet,
@@ -168,28 +166,33 @@ impl ModeRegistry {
 
         let mut emitted = Vec::new();
 
-        // Tear down current major (if any). For self-reload this
-        // is intentional -- we want `on_deactivate` then
-        // `on_activate` to run, idempotent setup contract.
+        // Tear down current major (if any). `MajorExiting`
+        // fires BEFORE the Guard drops (per §7).
         if let Some(prev_id) = active.major() {
-            // MajorExiting fires BEFORE on_deactivate (per §7).
             emitted.push(ModeEvent::MajorExiting {
                 buffer,
                 mode: prev_id,
             });
-            if let Some(prev) = self.modes.get(&prev_id) {
-                let mut prev_ctx =
-                    ModeContext::new(buffer, prev_id, locals, config, events, services);
-                prev.on_deactivate(&mut prev_ctx)?
-            }
+            // Drop the previous major's Guard. The Box<dyn Any>
+            // goes out of scope here; its Drop fires the
+            // original Guard's Drop impl.
+            let _ = guards.remove(buffer, prev_id);
             active.set_major(None);
         }
 
-        // Run the new major's on_activate.
-        {
-            let mut ctx = ModeContext::new(buffer, mode, locals, config, events, services);
-            entry.on_activate(&mut ctx)?
-        }
+        // Run the new major's on_activate, build ctx and drive
+        // the lifecycle future synchronously (M-async.1
+        // contract: futures complete on first poll; M-async.2
+        // swaps for runtime-spawned `.await`).
+        let ctx = ModeContext::new(
+            buffer,
+            mode,
+            config.clone(),
+            events.clone(),
+            services.clone(),
+        );
+        let guard = poll_now(entry.on_activate_dyn(ctx))?;
+        guards.insert(buffer, mode, guard);
         active.set_major(Some(mode));
         emitted.push(ModeEvent::MajorEntered { buffer, mode });
 
@@ -198,12 +201,11 @@ impl ModeRegistry {
             if !self.is_registered(dep) {
                 return Err(ModeActivationError::UnregisteredDependency { mode, dep });
             }
-            // Skip if already active (idempotent implies).
             if active.has_minor(dep) {
                 continue;
             }
             let dep_events = self.activate_minor_inner(
-                active, locals, config, events, services, buffer, dep, caps,
+                active, guards, config, events, services, buffer, dep, caps,
             )?;
             emitted.extend(dep_events);
         }
@@ -212,32 +214,30 @@ impl ModeRegistry {
     }
 
     /// Activate a minor mode on `buffer`. Validates capabilities,
-    /// conflicts (rejects on conflict; auto-deactivation policy
-    /// is M.6+ when LSP sub-modes have real conflict cases),
-    /// and dependency presence.
+    /// conflicts, and dependency presence.
     #[allow(clippy::too_many_arguments)]
     pub fn activate_minor(
         &self,
         active: &mut ActiveModes,
-        locals: &mut BufferLocals,
-        config: &lattice_config::ConfigRegistry,
-        events: &std::sync::Arc<lattice_runtime::EventBus>,
-        services: &crate::services::ServiceRegistry,
+        guards: &mut GuardStore,
+        config: &Arc<lattice_config::ConfigRegistry>,
+        events: &Arc<lattice_runtime::EventBus>,
+        services: &Arc<crate::services::ServiceRegistry>,
         buffer: BufferId,
         mode: ModeId,
         caps: CapabilitySet,
     ) -> Result<Vec<ModeEvent>, ModeActivationError> {
-        self.activate_minor_inner(active, locals, config, events, services, buffer, mode, caps)
+        self.activate_minor_inner(active, guards, config, events, services, buffer, mode, caps)
     }
 
     #[allow(clippy::too_many_arguments)]
     fn activate_minor_inner(
         &self,
         active: &mut ActiveModes,
-        locals: &mut BufferLocals,
-        config: &lattice_config::ConfigRegistry,
-        events: &std::sync::Arc<lattice_runtime::EventBus>,
-        services: &crate::services::ServiceRegistry,
+        guards: &mut GuardStore,
+        config: &Arc<lattice_config::ConfigRegistry>,
+        events: &Arc<lattice_runtime::EventBus>,
+        services: &Arc<crate::services::ServiceRegistry>,
         buffer: BufferId,
         mode: ModeId,
         caps: CapabilitySet,
@@ -251,8 +251,7 @@ impl ModeRegistry {
         }
         // Idempotent: re-activating a live minor is a no-op
         // (does NOT trigger reload for minors -- that's a
-        // major-mode-specific contract). M.9 may add an
-        // explicit `reload` API if needed.
+        // major-mode-specific contract).
         if active.has_minor(mode) {
             return Ok(Vec::new());
         }
@@ -261,9 +260,7 @@ impl ModeRegistry {
             return Err(ModeActivationError::MissingCapability { mode, missing });
         }
         // Conflict check: if any active mode (major or minor)
-        // is in this mode's conflicts list, reject. Symmetric
-        // check: if this mode is in any active mode's conflicts
-        // list, also reject.
+        // is in this mode's conflicts list, reject. Symmetric.
         for &c in entry.conflicts_with() {
             if active.is_active(c) {
                 return Err(ModeActivationError::Conflict { mode, active: c });
@@ -289,10 +286,15 @@ impl ModeRegistry {
             }
         }
 
-        {
-            let mut ctx = ModeContext::new(buffer, mode, locals, config, events, services);
-            entry.on_activate(&mut ctx)?
-        }
+        let ctx = ModeContext::new(
+            buffer,
+            mode,
+            config.clone(),
+            events.clone(),
+            services.clone(),
+        );
+        let guard = poll_now(entry.on_activate_dyn(ctx))?;
+        guards.insert(buffer, mode, guard);
         active.push_minor(mode);
         let mut emitted = vec![ModeEvent::MinorActivated { buffer, mode }];
 
@@ -305,7 +307,7 @@ impl ModeRegistry {
                 continue;
             }
             let dep_events = self.activate_minor_inner(
-                active, locals, config, events, services, buffer, dep, caps,
+                active, guards, config, events, services, buffer, dep, caps,
             )?;
             emitted.extend(dep_events);
         }
@@ -315,17 +317,16 @@ impl ModeRegistry {
 
     /// Deactivate a minor mode. Idempotent: deactivating an
     /// already-inactive mode is a no-op (returns empty events).
-    /// Per `mode-architecture.md` §7.1, this is synchronous --
-    /// `on_deactivate` runs before this returns; subscribers
-    /// then receive `MinorDeactivated`.
+    /// Drops the Guard from the store; the Guard's `Drop` impl
+    /// performs cleanup synchronously (async cleanup uses
+    /// `lattice_runtime::spawn_task` fire-and-forget inside
+    /// the Guard's `Drop` -- the dispatcher returns
+    /// immediately).
     #[allow(clippy::too_many_arguments)]
     pub fn deactivate_minor(
         &self,
         active: &mut ActiveModes,
-        locals: &mut BufferLocals,
-        config: &lattice_config::ConfigRegistry,
-        events: &std::sync::Arc<lattice_runtime::EventBus>,
-        services: &crate::services::ServiceRegistry,
+        guards: &mut GuardStore,
         buffer: BufferId,
         mode: ModeId,
     ) -> Result<Vec<ModeEvent>, ModeActivationError> {
@@ -336,27 +337,22 @@ impl ModeRegistry {
             .modes
             .get(&mode)
             .ok_or(ModeActivationError::NotRegistered(mode))?;
-        // Phase 3: collect the implies list *before* running
-        // the mode's own on_deactivate so a deactivate hook
-        // that touches its own implies (uncommon) can't see
-        // a half-cleaned set. The implies cascade fires
-        // *after* the mode's own teardown, mirroring activate
-        // (mode's own setup before implied minors land).
+        // Collect the implies list before dropping the Guard so
+        // a Guard's Drop impl (which may touch its own implies)
+        // can't see a half-cleaned set.
         let implies: Vec<ModeId> = entry.implies().to_vec();
-        let mut ctx = ModeContext::new(buffer, mode, locals, config, events, services);
-        entry.on_deactivate(&mut ctx)?;
+        // Drop the Guard. Box<dyn Any + Send> goes out of scope
+        // here; the original Guard type's Drop runs.
+        let _ = guards.remove(buffer, mode);
         active.remove_minor(mode);
         let mut emitted = vec![ModeEvent::MinorDeactivated { buffer, mode }];
         // Cascade-deactivate every implied minor that's still
-        // active. Symmetric to the activate cascade in
-        // `activate_minor_inner` (which uses `Mode::implies()`
-        // to know what to activate).
+        // active.
         for &dep in &implies {
             if !active.has_minor(dep) {
                 continue;
             }
-            let dep_events =
-                self.deactivate_minor(active, locals, config, events, services, buffer, dep)?;
+            let dep_events = self.deactivate_minor(active, guards, buffer, dep)?;
             emitted.extend(dep_events);
         }
         Ok(emitted)
@@ -367,24 +363,54 @@ impl ModeRegistry {
     pub fn deactivate_major(
         &self,
         active: &mut ActiveModes,
-        locals: &mut BufferLocals,
-        config: &lattice_config::ConfigRegistry,
-        events: &std::sync::Arc<lattice_runtime::EventBus>,
-        services: &crate::services::ServiceRegistry,
+        guards: &mut GuardStore,
         buffer: BufferId,
     ) -> Result<Vec<ModeEvent>, ModeActivationError> {
         let Some(mode) = active.major() else {
             return Ok(Vec::new());
         };
-        let entry = self
+        let _ = self
             .modes
             .get(&mode)
             .ok_or(ModeActivationError::NotRegistered(mode))?;
-        let mut ctx = ModeContext::new(buffer, mode, locals, config, events, services);
         let result_events = vec![ModeEvent::MajorExiting { buffer, mode }];
-        entry.on_deactivate(&mut ctx)?;
+        let _ = guards.remove(buffer, mode);
         active.set_major(None);
         Ok(result_events)
+    }
+}
+
+/// Drive an immediately-ready future to completion. M-async.1
+/// contract: lifecycle futures complete on first poll
+/// (`Box::pin(async { Ok(()) })` for marker modes; sync work
+/// wrapped in an async block for stateful modes). M-async.2
+/// swaps this for `lattice_runtime::spawn_task`.
+///
+/// Panics on `Poll::Pending` -- the M-async.1 immediate-ready
+/// contract is violated. A mode that needs to `.await` real
+/// async work (LSP supervisor handshake, watcher init) lands
+/// in M-async.2.
+fn poll_now<F: Future>(fut: F) -> F::Output {
+    static VTABLE: RawWakerVTable = RawWakerVTable::new(
+        |_| RawWaker::new(std::ptr::null(), &VTABLE),
+        |_| {},
+        |_| {},
+        |_| {},
+    );
+    let raw_waker = RawWaker::new(std::ptr::null(), &VTABLE);
+    // SAFETY: the vtable is fully static and the functions are
+    // valid (no-op clone returns the same waker; wake/wake_by_ref/
+    // drop are no-ops on a null context).
+    #[allow(unsafe_code)]
+    let waker = unsafe { Waker::from_raw(raw_waker) };
+    let mut cx = Context::from_waker(&waker);
+    let mut fut: Pin<Box<F>> = Box::pin(fut);
+    match fut.as_mut().poll(&mut cx) {
+        Poll::Ready(out) => out,
+        Poll::Pending => panic!(
+            "poll_now: lifecycle future is Pending -- M-async.1 contract requires immediate readiness; \
+             M-async.2 swaps for runtime-spawned drive"
+        ),
     }
 }
 
@@ -392,12 +418,12 @@ impl ModeRegistry {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
+    use crate::mode::LifecycleFuture;
     use std::sync::Arc as StdArc;
     use std::sync::atomic::{AtomicU32, Ordering};
 
-    /// Tracking mock mode for tests. Counts on_activate /
-    /// on_deactivate calls and exposes hooks for asserting
-    /// lifecycle ordering.
+    /// Test mode with a typed Guard that records drop count.
+    /// Counts both activate (Guard::new) and deactivate (Drop).
     struct MockMode {
         id: ModeId,
         kind: ModeKind,
@@ -406,6 +432,16 @@ mod tests {
         implies: Vec<ModeId>,
         activate_calls: StdArc<AtomicU32>,
         deactivate_calls: StdArc<AtomicU32>,
+    }
+
+    struct MockGuard {
+        deactivate_calls: StdArc<AtomicU32>,
+    }
+
+    impl Drop for MockGuard {
+        fn drop(&mut self) {
+            self.deactivate_calls.fetch_add(1, Ordering::SeqCst);
+        }
     }
 
     impl MockMode {
@@ -446,6 +482,7 @@ mod tests {
     }
 
     impl Mode for MockMode {
+        type Guard = MockGuard;
         fn id(&self) -> ModeId {
             self.id
         }
@@ -461,13 +498,14 @@ mod tests {
         fn implies(&self) -> &[ModeId] {
             &self.implies
         }
-        fn on_activate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
+        fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, Self::Guard> {
             self.activate_calls.fetch_add(1, Ordering::SeqCst);
-            Ok(())
-        }
-        fn on_deactivate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-            self.deactivate_calls.fetch_add(1, Ordering::SeqCst);
-            Ok(())
+            let deact = self.deactivate_calls.clone();
+            Box::pin(async move {
+                Ok(MockGuard {
+                    deactivate_calls: deact,
+                })
+            })
         }
     }
 
@@ -475,35 +513,16 @@ mod tests {
         BufferId::new(1)
     }
 
-    /// Test fixture: fresh empty BufferLocals. M.3.2.a wires
-    /// every activation method to take `&mut BufferLocals`;
-    /// tests that don't care about locals just construct an
-    /// empty one and pass `&mut l`.
-    fn locals() -> BufferLocals {
-        BufferLocals::new()
+    fn cfg() -> Arc<lattice_config::ConfigRegistry> {
+        Arc::new(lattice_config::ConfigRegistry::new())
     }
 
-    /// Test fixture: a fresh empty typed-options registry, the
-    /// minimum needed by [`ModeContext::new`]. Tests that don't
-    /// exercise option mutation can just pass `&cfg()` once at
-    /// the start.
-    fn cfg() -> lattice_config::ConfigRegistry {
-        lattice_config::ConfigRegistry::new()
+    fn evts() -> Arc<lattice_runtime::EventBus> {
+        Arc::new(lattice_runtime::EventBus::new())
     }
 
-    /// Test fixture: a fresh `EventBus` wrapped in `Arc`, the
-    /// minimum needed by [`ModeContext::new`]. Tests that don't
-    /// exercise typed-event publication just pass `&events()`.
-    fn events() -> std::sync::Arc<lattice_runtime::EventBus> {
-        std::sync::Arc::new(lattice_runtime::EventBus::new())
-    }
-
-    /// Test fixture: empty service registry. Modes that don't
-    /// pull from `ctx.service::<T>()` ignore it; tests that do
-    /// (Phase 3 LspMode tests in `lattice-lsp`) build their
-    /// own pre-populated registry.
-    fn svc() -> crate::services::ServiceRegistry {
-        crate::services::ServiceRegistry::new()
+    fn svcs() -> Arc<crate::services::ServiceRegistry> {
+        Arc::new(crate::services::ServiceRegistry::new())
     }
 
     #[test]
@@ -527,14 +546,14 @@ mod tests {
     fn activate_unregistered_major_fails() {
         let r = ModeRegistry::new();
         let mut a = ActiveModes::new();
-        let mut l = locals();
+        let mut g = GuardStore::new();
         let err = r
             .activate_major(
                 &mut a,
-                &mut l,
+                &mut g,
                 &cfg(),
-                &events(),
-                &svc(),
+                &evts(),
+                &svcs(),
                 buf(),
                 ModeId::new("ghost-mode"),
                 CapabilitySet::empty(),
@@ -548,14 +567,14 @@ mod tests {
         let mut r = ModeRegistry::new();
         let id = r.register(MockMode::minor("read-only-mode")).unwrap();
         let mut a = ActiveModes::new();
-        let mut l = locals();
+        let mut g = GuardStore::new();
         let err = r
             .activate_major(
                 &mut a,
-                &mut l,
+                &mut g,
                 &cfg(),
-                &events(),
-                &svc(),
+                &evts(),
+                &svcs(),
                 buf(),
                 id,
                 CapabilitySet::empty(),
@@ -571,14 +590,14 @@ mod tests {
             .register(MockMode::minor("lsp-mode").requires(CapabilitySet::LSP))
             .unwrap();
         let mut a = ActiveModes::new();
-        let mut l = locals();
+        let mut g = GuardStore::new();
         let err = r
             .activate_minor(
                 &mut a,
-                &mut l,
+                &mut g,
                 &cfg(),
-                &events(),
-                &svc(),
+                &evts(),
+                &svcs(),
                 buf(),
                 id,
                 CapabilitySet::empty(),
@@ -594,20 +613,20 @@ mod tests {
     }
 
     #[test]
-    fn major_activation_emits_entered_event_and_calls_lifecycle() {
+    fn major_activation_emits_entered_and_stashes_guard() {
         let mock = MockMode::major("rust-mode");
-        let activate_counter = mock.activate_calls.clone();
+        let act = mock.activate_calls.clone();
         let mut r = ModeRegistry::new();
         let id = r.register(mock).unwrap();
         let mut a = ActiveModes::new();
-        let mut l = locals();
+        let mut g = GuardStore::new();
         let events = r
             .activate_major(
                 &mut a,
-                &mut l,
+                &mut g,
                 &cfg(),
-                &events(),
-                &svc(),
+                &evts(),
+                &svcs(),
                 buf(),
                 id,
                 CapabilitySet::empty(),
@@ -615,12 +634,13 @@ mod tests {
             .unwrap();
         assert_eq!(events.len(), 1);
         assert!(matches!(events[0], ModeEvent::MajorEntered { mode, .. } if mode == id));
-        assert_eq!(activate_counter.load(Ordering::SeqCst), 1);
+        assert_eq!(act.load(Ordering::SeqCst), 1);
         assert_eq!(a.major(), Some(id));
+        assert!(g.contains(buf(), id), "guard must be stashed");
     }
 
     #[test]
-    fn major_swap_runs_deactivate_then_activate_in_order() {
+    fn major_swap_drops_prev_guard_then_activates_new() {
         let prev = MockMode::major("text-mode");
         let new = MockMode::major("rust-mode");
         let prev_deact = prev.deactivate_calls.clone();
@@ -629,13 +649,13 @@ mod tests {
         let prev_id = r.register(prev).unwrap();
         let new_id = r.register(new).unwrap();
         let mut a = ActiveModes::new();
-        let mut l = locals();
+        let mut g = GuardStore::new();
         r.activate_major(
             &mut a,
-            &mut l,
+            &mut g,
             &cfg(),
-            &events(),
-            &svc(),
+            &evts(),
+            &svcs(),
             buf(),
             prev_id,
             CapabilitySet::empty(),
@@ -644,51 +664,52 @@ mod tests {
         let events = r
             .activate_major(
                 &mut a,
-                &mut l,
+                &mut g,
                 &cfg(),
-                &events(),
-                &svc(),
+                &evts(),
+                &svcs(),
                 buf(),
                 new_id,
                 CapabilitySet::empty(),
             )
             .unwrap();
-        // Expected event order: MajorExiting(prev), MajorEntered(new).
         assert_eq!(events.len(), 2);
         assert!(matches!(events[0], ModeEvent::MajorExiting { mode, .. } if mode == prev_id));
         assert!(matches!(events[1], ModeEvent::MajorEntered { mode, .. } if mode == new_id));
+        // Previous Guard's Drop ran (= cleanup contract).
         assert_eq!(prev_deact.load(Ordering::SeqCst), 1);
         assert_eq!(new_act.load(Ordering::SeqCst), 1);
         assert_eq!(a.major(), Some(new_id));
+        assert!(g.contains(buf(), new_id));
+        assert!(!g.contains(buf(), prev_id));
     }
 
     #[test]
-    fn major_reload_runs_deactivate_then_reactivate() {
+    fn major_reload_drops_then_reactivates() {
         let mock = MockMode::major("rust-mode");
         let act = mock.activate_calls.clone();
         let deact = mock.deactivate_calls.clone();
         let mut r = ModeRegistry::new();
         let id = r.register(mock).unwrap();
         let mut a = ActiveModes::new();
-        let mut l = locals();
+        let mut g = GuardStore::new();
         r.activate_major(
             &mut a,
-            &mut l,
+            &mut g,
             &cfg(),
-            &events(),
-            &svc(),
+            &evts(),
+            &svcs(),
             buf(),
             id,
             CapabilitySet::empty(),
         )
         .unwrap();
-        // Reload: activate the same major again.
         r.activate_major(
             &mut a,
-            &mut l,
+            &mut g,
             &cfg(),
-            &events(),
-            &svc(),
+            &evts(),
+            &svcs(),
             buf(),
             id,
             CapabilitySet::empty(),
@@ -705,40 +726,20 @@ mod tests {
         let two = r.register(MockMode::minor("b-mode")).unwrap();
         let three = r.register(MockMode::minor("c-mode")).unwrap();
         let mut a = ActiveModes::new();
-        let mut l = locals();
-        r.activate_minor(
-            &mut a,
-            &mut l,
-            &cfg(),
-            &events(),
-            &svc(),
-            buf(),
-            one,
-            CapabilitySet::empty(),
-        )
-        .unwrap();
-        r.activate_minor(
-            &mut a,
-            &mut l,
-            &cfg(),
-            &events(),
-            &svc(),
-            buf(),
-            two,
-            CapabilitySet::empty(),
-        )
-        .unwrap();
-        r.activate_minor(
-            &mut a,
-            &mut l,
-            &cfg(),
-            &events(),
-            &svc(),
-            buf(),
-            three,
-            CapabilitySet::empty(),
-        )
-        .unwrap();
+        let mut g = GuardStore::new();
+        for id in [one, two, three] {
+            r.activate_minor(
+                &mut a,
+                &mut g,
+                &cfg(),
+                &evts(),
+                &svcs(),
+                buf(),
+                id,
+                CapabilitySet::empty(),
+            )
+            .unwrap();
+        }
         assert_eq!(a.minors(), &[one, two, three]);
     }
 
@@ -749,13 +750,13 @@ mod tests {
         let mut r = ModeRegistry::new();
         let id = r.register(mock).unwrap();
         let mut a = ActiveModes::new();
-        let mut l = locals();
+        let mut g = GuardStore::new();
         r.activate_minor(
             &mut a,
-            &mut l,
+            &mut g,
             &cfg(),
-            &events(),
-            &svc(),
+            &evts(),
+            &svcs(),
             buf(),
             id,
             CapabilitySet::empty(),
@@ -764,10 +765,10 @@ mod tests {
         let events = r
             .activate_minor(
                 &mut a,
-                &mut l,
+                &mut g,
                 &cfg(),
-                &events(),
-                &svc(),
+                &evts(),
+                &svcs(),
                 buf(),
                 id,
                 CapabilitySet::empty(),
@@ -779,27 +780,25 @@ mod tests {
 
     #[test]
     fn implies_auto_activates_dependency() {
-        // relative-line-numbers-mode implies line-numbers-mode.
         let mut r = ModeRegistry::new();
         let lnum = r.register(MockMode::minor("line-numbers-mode")).unwrap();
         let rlnum = r
             .register(MockMode::minor("relative-line-numbers-mode").implying(lnum))
             .unwrap();
         let mut a = ActiveModes::new();
-        let mut l = locals();
+        let mut g = GuardStore::new();
         let events = r
             .activate_minor(
                 &mut a,
-                &mut l,
+                &mut g,
                 &cfg(),
-                &events(),
-                &svc(),
+                &evts(),
+                &svcs(),
                 buf(),
                 rlnum,
                 CapabilitySet::empty(),
             )
             .unwrap();
-        // Two events: parent first, then implied dep.
         assert_eq!(events.len(), 2);
         assert!(matches!(events[0], ModeEvent::MinorActivated { mode, .. } if mode == rlnum));
         assert!(matches!(events[1], ModeEvent::MinorActivated { mode, .. } if mode == lnum));
@@ -815,14 +814,14 @@ mod tests {
             .register(MockMode::minor("thing-mode").implying(phantom))
             .unwrap();
         let mut a = ActiveModes::new();
-        let mut l = locals();
+        let mut g = GuardStore::new();
         let err = r
             .activate_minor(
                 &mut a,
-                &mut l,
+                &mut g,
                 &cfg(),
-                &events(),
-                &svc(),
+                &evts(),
+                &svcs(),
                 buf(),
                 id,
                 CapabilitySet::empty(),
@@ -846,13 +845,13 @@ mod tests {
         assert_eq!(one, one_id);
         assert_eq!(two, two_id);
         let mut a = ActiveModes::new();
-        let mut l = locals();
+        let mut g = GuardStore::new();
         r.activate_minor(
             &mut a,
-            &mut l,
+            &mut g,
             &cfg(),
-            &events(),
-            &svc(),
+            &evts(),
+            &svcs(),
             buf(),
             two,
             CapabilitySet::empty(),
@@ -861,10 +860,10 @@ mod tests {
         let err = r
             .activate_minor(
                 &mut a,
-                &mut l,
+                &mut g,
                 &cfg(),
-                &events(),
-                &svc(),
+                &evts(),
+                &svcs(),
                 buf(),
                 one,
                 CapabilitySet::empty(),
@@ -881,8 +880,6 @@ mod tests {
 
     #[test]
     fn conflict_is_symmetric() {
-        // Even if A doesn't list B as conflict, B listing A
-        // should still reject A's later activation.
         let mut r = ModeRegistry::new();
         let one_id = ModeId::new("a-mode");
         let _two = r
@@ -892,27 +889,25 @@ mod tests {
         let two = ModeId::new("b-mode");
         assert_eq!(one, one_id);
         let mut a = ActiveModes::new();
-        let mut l = locals();
+        let mut g = GuardStore::new();
         r.activate_minor(
             &mut a,
-            &mut l,
+            &mut g,
             &cfg(),
-            &events(),
-            &svc(),
+            &evts(),
+            &svcs(),
             buf(),
             two,
             CapabilitySet::empty(),
         )
         .unwrap();
-        // Now activating `one` should fail because `two`
-        // declared `one` as a conflict.
         let err = r
             .activate_minor(
                 &mut a,
-                &mut l,
+                &mut g,
                 &cfg(),
-                &events(),
-                &svc(),
+                &evts(),
+                &svcs(),
                 buf(),
                 one,
                 CapabilitySet::empty(),
@@ -922,31 +917,30 @@ mod tests {
     }
 
     #[test]
-    fn deactivate_minor_emits_event_and_calls_lifecycle() {
+    fn deactivate_minor_drops_guard_and_emits_event() {
         let mock = MockMode::minor("a-mode");
         let deact = mock.deactivate_calls.clone();
         let mut r = ModeRegistry::new();
         let id = r.register(mock).unwrap();
         let mut a = ActiveModes::new();
-        let mut l = locals();
+        let mut g = GuardStore::new();
         r.activate_minor(
             &mut a,
-            &mut l,
+            &mut g,
             &cfg(),
-            &events(),
-            &svc(),
+            &evts(),
+            &svcs(),
             buf(),
             id,
             CapabilitySet::empty(),
         )
         .unwrap();
-        let events = r
-            .deactivate_minor(&mut a, &mut l, &cfg(), &events(), &svc(), buf(), id)
-            .unwrap();
+        let events = r.deactivate_minor(&mut a, &mut g, buf(), id).unwrap();
         assert_eq!(events.len(), 1);
         assert!(matches!(events[0], ModeEvent::MinorDeactivated { mode, .. } if mode == id));
-        assert_eq!(deact.load(Ordering::SeqCst), 1);
+        assert_eq!(deact.load(Ordering::SeqCst), 1, "Guard::Drop ran");
         assert!(!a.has_minor(id));
+        assert!(!g.contains(buf(), id));
     }
 
     #[test]
@@ -954,49 +948,44 @@ mod tests {
         let mut r = ModeRegistry::new();
         let id = r.register(MockMode::minor("a-mode")).unwrap();
         let mut a = ActiveModes::new();
-        let mut l = locals();
-        let events = r
-            .deactivate_minor(&mut a, &mut l, &cfg(), &events(), &svc(), buf(), id)
-            .unwrap();
+        let mut g = GuardStore::new();
+        let events = r.deactivate_minor(&mut a, &mut g, buf(), id).unwrap();
         assert!(events.is_empty());
     }
 
     #[test]
-    fn deactivate_major_runs_lifecycle_and_clears() {
+    fn deactivate_major_drops_guard_and_clears() {
         let mock = MockMode::major("rust-mode");
         let deact = mock.deactivate_calls.clone();
         let mut r = ModeRegistry::new();
         let id = r.register(mock).unwrap();
         let mut a = ActiveModes::new();
-        let mut l = locals();
+        let mut g = GuardStore::new();
         r.activate_major(
             &mut a,
-            &mut l,
+            &mut g,
             &cfg(),
-            &events(),
-            &svc(),
+            &evts(),
+            &svcs(),
             buf(),
             id,
             CapabilitySet::empty(),
         )
         .unwrap();
-        let events = r
-            .deactivate_major(&mut a, &mut l, &cfg(), &events(), &svc(), buf())
-            .unwrap();
+        let events = r.deactivate_major(&mut a, &mut g, buf()).unwrap();
         assert_eq!(events.len(), 1);
         assert!(matches!(events[0], ModeEvent::MajorExiting { mode, .. } if mode == id));
         assert_eq!(deact.load(Ordering::SeqCst), 1);
         assert_eq!(a.major(), None);
+        assert!(!g.contains(buf(), id));
     }
 
     #[test]
     fn deactivate_major_when_none_active_is_noop() {
         let r = ModeRegistry::new();
         let mut a = ActiveModes::new();
-        let mut l = locals();
-        let events = r
-            .deactivate_major(&mut a, &mut l, &cfg(), &events(), &svc(), buf())
-            .unwrap();
+        let mut g = GuardStore::new();
+        let events = r.deactivate_major(&mut a, &mut g, buf()).unwrap();
         assert!(events.is_empty());
     }
 }

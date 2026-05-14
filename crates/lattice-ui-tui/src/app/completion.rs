@@ -2306,6 +2306,7 @@ mod tests {
         }
         struct StubMode;
         impl lattice_mode::Mode for StubMode {
+            type Guard = ();
             fn id(&self) -> lattice_mode::ModeId {
                 lattice_mode::ModeId::new("stub-csm3-mode")
             }
@@ -2321,6 +2322,12 @@ mod tests {
                     popup_filter_chord: None,
                     kind: CompletionSourceKind::Sync(Arc::new(StubSource)),
                 }]
+            }
+            fn on_activate(
+                &self,
+                _ctx: lattice_mode::ModeContext,
+            ) -> lattice_mode::LifecycleFuture<'_, ()> {
+                Box::pin(async { Ok(()) })
             }
         }
 

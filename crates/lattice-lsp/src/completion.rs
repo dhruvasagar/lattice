@@ -23,7 +23,7 @@ use lattice_completion::{
 };
 use lattice_config::OptionOverrideSet;
 use lattice_mode::{
-    CapabilitySet, Mode, ModeActivationError, ModeContext, ModeId, ModeKind, ModeRegistry,
+    CapabilitySet, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, ModeRegistry,
 };
 use lattice_protocol::CancellationToken;
 
@@ -301,6 +301,7 @@ impl LspCompletionMode {
 }
 
 impl Mode for LspCompletionMode {
+    type Guard = ();
     fn id(&self) -> ModeId {
         Self::mode_id()
     }
@@ -317,17 +318,12 @@ impl Mode for LspCompletionMode {
         vec![CompletionSourceContribution {
             id: SourceId::new(lattice_completion::LSP_COMPLETION_SOURCE_ID),
             // 200 per insert-completion.md §3.4 -- LSP outranks
-            // every sync source (snippets 150, buffer-words 100,
-            // path 90, tree-sitter 80) because language-server
-            // candidates are the most contextually accurate.
+            // every sync source.
             default_priority: 200,
             auto_trigger: true,
-            // Server-advertised triggers (`.`, `::`, ...) are
-            // populated dynamically post-CSM.8b when the source
-            // reads the attached server's
-            // `completionProvider.triggerCharacters`. CSM.8a
-            // ships an empty list; sync triggers and manual
-            // `<C-Space>` fire the source regardless.
+            // Server-advertised triggers populated dynamically
+            // when the source reads the attached server's
+            // `completionProvider.triggerCharacters`.
             trigger_chars: Vec::new(),
             popup_filter_chord: Some('o'),
             kind: CompletionSourceKind::Async(Arc::new(LspCompletionSource {
@@ -335,11 +331,8 @@ impl Mode for LspCompletionMode {
             })),
         }]
     }
-    fn on_activate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-        Ok(())
-    }
-    fn on_deactivate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-        Ok(())
+    fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
+        Box::pin(async { Ok(()) })
     }
 }
 

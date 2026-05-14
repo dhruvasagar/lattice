@@ -1618,11 +1618,24 @@ pub struct App {
     /// same mode definitions.
     pub mode_registry: std::sync::Arc<lattice_mode::ModeRegistry>,
     /// Phase 3: typed service map subsystems hand off to modes
-    /// so the mode's `Mode::on_activate` / `on_deactivate` can
-    /// pull subsystem handles via `ctx.service::<T>()`.
-    /// Populated at boot (LSP supervisor handle, buffer-uri
-    /// resolver). Read-only after init.
-    pub services: lattice_mode::ServiceRegistry,
+    /// so the mode's `Mode::on_activate` can pull subsystem
+    /// handles via `ctx.service::<T>()`. Populated at boot (LSP
+    /// supervisor handle, buffer-uri resolver). Read-only after
+    /// init.
+    ///
+    /// M-async.1: `Arc<ServiceRegistry>` (not bare
+    /// `ServiceRegistry`) because `ModeContext` owns its handles
+    /// by Arc clone -- the dispatcher does `services.clone()`
+    /// per activation to build the owned ctx.
+    pub services: std::sync::Arc<lattice_mode::ServiceRegistry>,
+    /// M-async.1: per-`(buffer, mode)` Guard storage. Modes
+    /// return an owned [`Mode::Guard`](lattice_mode::Mode::Guard)
+    /// from `on_activate`; the dispatcher stashes it here keyed
+    /// by `(BufferId, ModeId)`. On deactivation the dispatcher
+    /// drops the Guard, firing its `Drop` impl for synchronous
+    /// cleanup (unsubscribe, restore prior option, drop
+    /// supervisor handle).
+    pub mode_guards: lattice_mode::GuardStore,
     /// Mode-keyed pane render dispatch (M.4 follow-up). Populated
     /// at boot; lookup walks active minors then the major to find
     /// the per-buffer renderer + status formatter, with the

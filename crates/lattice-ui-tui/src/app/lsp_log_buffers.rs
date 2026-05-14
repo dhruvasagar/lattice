@@ -104,10 +104,9 @@ impl App {
     ) {
         let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
         let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
-        let mut locals = self.buffer_locals.remove(&buffer_id).unwrap_or_default();
         if let Err(e) = self.mode_registry.activate_major(
             &mut active,
-            &mut locals,
+            &mut self.mode_guards,
             &self.config,
             &self.event_bus,
             &self.services,
@@ -124,7 +123,6 @@ impl App {
             );
         }
         self.active_modes.insert(buffer_id, active);
-        self.buffer_locals.insert(buffer_id, locals);
         // Recompute the resolved-options cache so the mode's
         // contributions (e.g. `ReadOnly = true` from
         // `lsp-log-mode`) are visible at the next `resolved_option`

@@ -18,8 +18,7 @@
 use std::path::PathBuf;
 
 use lattice_mode::{
-    BufferLocal, CapabilitySet, Mode, ModeActivationError, ModeContext, ModeId, ModeKind,
-    ModeRegistry,
+    BufferLocal, CapabilitySet, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, ModeRegistry,
 };
 
 /// Major mode for oil-style directory-listing buffers. Any
@@ -34,6 +33,7 @@ impl OilMode {
 }
 
 impl Mode for OilMode {
+    type Guard = ();
     fn id(&self) -> ModeId {
         Self::mode_id()
     }
@@ -43,11 +43,8 @@ impl Mode for OilMode {
     fn required_capabilities(&self) -> CapabilitySet {
         CapabilitySet::empty()
     }
-    fn on_activate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-        Ok(())
-    }
-    fn on_deactivate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-        Ok(())
+    fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
+        Box::pin(async { Ok(()) })
     }
 }
 

@@ -71,37 +71,20 @@ impl App {
             _ => lattice_syntax::Lang::Plain,
         };
         let major_id = crate::modes::resolve_major_mode(kind, lang);
-        // Convert App-level BufferId to lattice_protocol::BufferId for
-        // the registry's expectation. The registry only uses the
-        // value for event emission; for M.3.1 we synthesise a
-        // dummy value because mode-event subscribers don't use
-        // it yet.
         let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
         let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
-        let mut locals = self.buffer_locals.remove(&buffer_id).unwrap_or_default();
         match self.mode_registry.activate_major(
             &mut active,
-            &mut locals,
+            &mut self.mode_guards,
             &self.config,
             &self.event_bus,
             &self.services,
             proto_id,
             major_id,
-            // Capability set: M.3.1 doesn't yet plumb per-buffer
-            // capabilities, so pass empty. Modes that require
-            // BUFFER_URI / LSP / etc. (M.5+) will get this from
-            // a real capability lookup.
             lattice_mode::CapabilitySet::empty(),
         ) {
-            Ok(_events) => {
-                // Events go to the typed event bus when M.4
-                // wires it; ignore for now.
-            }
+            Ok(_events) => {}
             Err(e) => {
-                // Don't fail startup; surface as an echo and
-                // continue with defaults. The buffer just has
-                // no active major; resolved options reflect
-                // registry defaults.
                 self.set_message(
                     EchoLevel::Warn,
                     format!(
@@ -111,13 +94,10 @@ impl App {
                 );
             }
         }
-        // M.4 (Option B): per-kind default minor (help-mode for
-        // Help kinds today). Activated AFTER the major so it
-        // layers correctly in the resolver's priority stack.
         if let Some(minor_id) = crate::modes::default_minor_mode_id_for_buffer_kind(kind)
             && let Err(e) = self.mode_registry.activate_minor(
                 &mut active,
-                &mut locals,
+                &mut self.mode_guards,
                 &self.config,
                 &self.event_bus,
                 &self.services,
@@ -134,15 +114,10 @@ impl App {
                 ),
             );
         }
-        // CSM.K1: auto-activate `completion-mode` on writable
-        // kinds so `<C-Space>` opens the popup. Read-only kinds
-        // return an empty Vec from
-        // `auto_activated_minors_for_buffer_kind`; trigger is a
-        // silent no-op there.
         for minor_id in crate::modes::auto_activated_minors_for_buffer_kind(kind) {
             if let Err(e) = self.mode_registry.activate_minor(
                 &mut active,
-                &mut locals,
+                &mut self.mode_guards,
                 &self.config,
                 &self.event_bus,
                 &self.services,
@@ -160,7 +135,6 @@ impl App {
             }
         }
         self.active_modes.insert(buffer_id, active);
-        self.buffer_locals.insert(buffer_id, locals);
         self.recompute_options_for_buffer(buffer_id);
         // CSM.3: keep `ActiveCompletionSources` in lockstep with
         // the active-modes set. Empty in practice until CSM.4
@@ -239,11 +213,10 @@ impl App {
         let kind = mode.kind();
         let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
         let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
-        let mut locals = self.buffer_locals.remove(&buffer_id).unwrap_or_default();
         let result = match kind {
             ModeKind::Major => self.mode_registry.activate_major(
                 &mut active,
-                &mut locals,
+                &mut self.mode_guards,
                 &self.config,
                 &self.event_bus,
                 &self.services,
@@ -253,7 +226,7 @@ impl App {
             ),
             ModeKind::Minor => self.mode_registry.activate_minor(
                 &mut active,
-                &mut locals,
+                &mut self.mode_guards,
                 &self.config,
                 &self.event_bus,
                 &self.services,
@@ -272,7 +245,6 @@ impl App {
             );
         }
         self.active_modes.insert(buffer_id, active);
-        self.buffer_locals.insert(buffer_id, locals);
         self.recompute_options_for_buffer(buffer_id);
         self.recompute_active_completion_sources_for(buffer_id);
         // M.5.2: when a major activates (whether by direct call,
@@ -316,22 +288,13 @@ impl App {
         };
         let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
         let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
-        let mut locals = self.buffer_locals.remove(&buffer_id).unwrap_or_default();
         let result = match mode.kind() {
-            ModeKind::Major => self.mode_registry.deactivate_major(
-                &mut active,
-                &mut locals,
-                &self.config,
-                &self.event_bus,
-                &self.services,
-                proto_id,
-            ),
+            ModeKind::Major => self
+                .mode_registry
+                .deactivate_major(&mut active, &mut self.mode_guards, proto_id),
             ModeKind::Minor => self.mode_registry.deactivate_minor(
                 &mut active,
-                &mut locals,
-                &self.config,
-                &self.event_bus,
-                &self.services,
+                &mut self.mode_guards,
                 proto_id,
                 mode_id,
             ),
@@ -346,7 +309,6 @@ impl App {
             );
         }
         self.active_modes.insert(buffer_id, active);
-        self.buffer_locals.insert(buffer_id, locals);
         self.recompute_options_for_buffer(buffer_id);
         self.recompute_active_completion_sources_for(buffer_id);
         // Phase 3 + follow-up: `lsp-mode` deactivate side-

@@ -2,71 +2,67 @@
 //!
 //! - `lsp-mode` (minor; M.5.0) -- the umbrella gate. When active
 //!   on a buffer, LSP traffic flows: requests are issued,
-//!   diagnostics are applied, document sync runs. When inactive,
-//!   every LSP entry point is a silent no-op for that buffer.
-//!   Activation lifecycle (didOpen / didClose) wired in M.5.3.
+//!   diagnostics are applied, document sync runs. The activate
+//!   hook publishes `LspBufferAttached`; the typed Guard publishes
+//!   `LspBufferDetached` on drop.
 //!
 //! - LSP **sub-modes** (minors; M.6.0) -- one per LSP feature
 //!   surface. Each is independently toggleable on top of
-//!   `lsp-mode`; the umbrella is the gate, the sub-modes are
-//!   per-feature switches. M.6.0 ships pure declarations +
-//!   registration; M.6.1 wires capability-driven auto-activation
-//!   (when the umbrella turns on, sub-modes whose capability the
-//!   attached server advertises auto-activate); M.6.2/M.6.3 wire
-//!   per-feature gates at the request entry points and the
-//!   diagnostic / completion-source pipelines.
-//!
-//!   The nine sub-modes:
-//!   - `lsp-completion-mode` -- LSP-driven insert-mode completion +
-//!     palette `:complete` issuing.
-//!   - `lsp-diagnostics-mode` -- inline + gutter diagnostic paint;
-//!     `:diag-next` / `:diag-prev` navigation.
-//!   - `lsp-hover-mode` -- `K` hover popup.
-//!   - `lsp-signature-mode` -- auto signature help on `(` / `,`.
-//!   - `lsp-format-mode` -- `:lsp-format` / `:lsp-format-range` +
-//!     `textDocument/onTypeFormatting` + format-on-save.
-//!   - `lsp-rename-mode` -- `:lsp-rename` + workspaceEdit apply.
-//!   - `lsp-symbols-mode` -- `:lsp-symbols`,
-//!     `:lsp-workspace-symbol`.
-//!   - `lsp-code-action-mode` -- `:lsp-code-action`.
-//!   - `lsp-nav-mode` -- go-to definition / declaration / type-def
-//!     / implementation; references.
+//!   `lsp-mode`. Marker modes with `type Guard = ()`.
 //!
 //! - `lsp-log-mode` / `lsp-trace-log-mode` / `lsp-server-log-mode`
-//!   (majors; M.3.0) -- the read-only buffers backing the LSP
-//!   observability surfaces:
-//!   - `lsp-log-mode` -- the per-server `*lsp:<server>*` log
-//!     (records produced by `LspLogger::log`).
-//!   - `lsp-trace-log-mode` -- per-server JSON-RPC wire trace
-//!     (`*lsp:<server>:trace*`); only populated when
-//!     `:lsp-trace <server>` is on.
-//!   - `lsp-server-log-mode` -- per-server stderr feed
-//!     (`*lsp:<server>:server*`).
+//!   (majors; M.3.0 / B'.3 / B'.4 / B'.5) -- the read-only buffers
+//!   backing the LSP observability surfaces. Each owns a typed
+//!   Guard holding its event-bus subscription handle; Drop
+//!   unsubscribes (M-async.1 Drop-based cleanup contract per
+//!   mode-architecture.md §7.1).
 //!
-//! Each log major's `decorations()` impl will become non-empty
-//! when M.4's renderer pipeline consumes them; today they're
-//! pure declarations.
+//! - `lsp-folding-mode` (minor; 4.4.f) -- couples `foldmethod` to
+//!   the LSP `foldingRange` feature. Owns a typed Guard holding
+//!   `(prior_foldmethod, config_handle)`; Drop restores the prior
+//!   value.
+
+use std::sync::Arc;
 
 use lattice_mode::{
-    BufferLocal, BufferStoreHandle, CapabilitySet, Mode, ModeActivationError, ModeContext, ModeId,
-    ModeKind, ModeRegistry, OptionOverrideSet,
+    BufferStoreHandle, CapabilitySet, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind,
+    ModeRegistry, OptionOverrideSet,
 };
+use lattice_runtime::{EventBus, SubscriptionId};
 
-// All three log majors (`LspLogMode`, `LspServerLogMode`,
-// `LspTraceLogMode`) are hand-written; their `on_activate`
-// pulls the buffer's `DocumentHandle`, optionally seeds from
-// the in-memory ring, subscribes to `LspLogPushed`, and spawns
-// a drain task that batches append edits.
+/// Common Guard for the three log majors. Holds the event-bus
+/// handle + subscription id; on Drop, unsubscribes. The drain
+/// tokio task observes the channel close (sender dropped on
+/// unsubscribe) and exits naturally.
+pub struct LogSubscriptionGuard {
+    handle: Option<(Arc<EventBus>, SubscriptionId)>,
+}
+
+impl Drop for LogSubscriptionGuard {
+    fn drop(&mut self) {
+        if let Some((bus, id)) = self.handle.take() {
+            bus.unsubscribe(id);
+        }
+    }
+}
+
+impl LogSubscriptionGuard {
+    fn none() -> Self {
+        Self { handle: None }
+    }
+    fn with(bus: Arc<EventBus>, id: SubscriptionId) -> Self {
+        Self {
+            handle: Some((bus, id)),
+        }
+    }
+}
 
 /// `lsp-server-log-mode` -- major mode for the per-instance
 /// `*lsp:<server>:<workspace>*` buffer (B'.4 / B'.7).
-/// Hand-written: `on_activate` derives its [`InstanceKey`]
-/// identity by parsing the buffer's name via
-/// [`crate::parse_lsp_server_log_name`] (the synthetic name is
-/// the single source of truth — no buffer-local seed required),
-/// subscribes to `LspLogPushed`, and spawns a drain task that
-/// appends matching records (same instance, non-trace) to the
-/// buffer.
+/// `on_activate` derives its [`InstanceKey`] identity by parsing
+/// the buffer's synthetic name, subscribes to `LspLogPushed`, and
+/// spawns a drain task that appends matching records. The
+/// returned [`LogSubscriptionGuard`] unsubscribes on drop.
 pub struct LspServerLogMode;
 
 impl LspServerLogMode {
@@ -75,23 +71,8 @@ impl LspServerLogMode {
     }
 }
 
-/// Buffer-local stash for the `LspServerLogMode` subscription
-/// id. `on_deactivate` reads + unsubscribes.
-#[derive(Debug, Clone, Copy)]
-pub struct LspServerLogSubscription(pub lattice_runtime::SubscriptionId);
-
-impl BufferLocal for LspServerLogSubscription {
-    const NAME: &'static str = "lsp-server-log-mode.subscription";
-    const DOC: &'static str = "Event-bus subscription id the \
-                               LspServerLogMode drain task is listening on.";
-    const OWNER_MODE: &'static str = "lsp-server-log-mode";
-
-    fn describe(&self) -> String {
-        format!("{:?}", self.0)
-    }
-}
-
 impl Mode for LspServerLogMode {
+    type Guard = LogSubscriptionGuard;
     fn id(&self) -> ModeId {
         Self::mode_id()
     }
@@ -107,32 +88,23 @@ impl Mode for LspServerLogMode {
         CapabilitySet::empty()
     }
 
-    fn on_activate(
-        &self,
-        ctx: &mut ModeContext<'_>,
-    ) -> Result<(), ModeActivationError> {
-        let buffer_id = lattice_core::BufferId(ctx.buffer_id().0 as u32);
-        let Some(store) = ctx.service::<BufferStoreHandle>() else {
-            return Ok(());
-        };
-            // B'.7: the mode's instance identity is parsed straight
-            // out of the buffer's synthetic name. The buffer was
-            // created with `*lsp:<server>:<workspace>*` so the name
-            // is the canonical encoding -- no buffer-local seeding
-            // needed. Test paths that build the buffer by hand
-            // without the canonical name degrade to "active but
-            // unsubscribed".
+    fn on_activate(&self, ctx: ModeContext) -> LifecycleFuture<'_, Self::Guard> {
+        Box::pin(async move {
+            let buffer_id = lattice_core::BufferId(ctx.buffer_id().0 as u32);
+            let Some(store) = ctx.service::<BufferStoreHandle>() else {
+                return Ok(LogSubscriptionGuard::none());
+            };
             let Some(name) = store.name_for(buffer_id) else {
-                return Ok(());
+                return Ok(LogSubscriptionGuard::none());
             };
             let Some(instance) = crate::parse_lsp_server_log_name(&name) else {
-                return Ok(());
+                return Ok(LogSubscriptionGuard::none());
             };
             let Some(handle) = store.handle_for(buffer_id) else {
-                return Ok(());
+                return Ok(LogSubscriptionGuard::none());
             };
             let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-                return Ok(());
+                return Ok(LogSubscriptionGuard::none());
             };
 
             // B'.4: seed the buffer from the per-instance ring so
@@ -172,9 +144,10 @@ impl Mode for LspServerLogMode {
             let sub_id = ctx
                 .events()
                 .subscribe_typed::<crate::events::LspLogPushed>(tx);
+            let bus_handle = ctx.events_handle();
 
-            let filter_server = std::sync::Arc::clone(&instance.server_id);
-            let filter_workspace = std::sync::Arc::clone(&instance.workspace);
+            let filter_server = Arc::clone(&instance.server_id);
+            let filter_workspace = Arc::clone(&instance.workspace);
             runtime.spawn(async move {
                 while let Some(first) = rx.recv().await {
                     let mut batch: Vec<crate::events::LspLogPushed> = vec![first];
@@ -183,23 +156,16 @@ impl Mode for LspServerLogMode {
                     }
                     let mut text = String::new();
                     for event in batch.iter().filter(|e| {
-                        // Per-instance filter: same (server_id, workspace).
                         let id_match = e
                             .server_id
                             .as_ref()
-                            .map(|s| {
-                                std::sync::Arc::ptr_eq(s, &filter_server) || s == &filter_server
-                            })
+                            .map(|s| Arc::ptr_eq(s, &filter_server) || s == &filter_server)
                             .unwrap_or(false);
                         let ws_match = e
                             .workspace
                             .as_ref()
-                            .map(|w| {
-                                std::sync::Arc::ptr_eq(w, &filter_workspace)
-                                    || w == &filter_workspace
-                            })
+                            .map(|w| Arc::ptr_eq(w, &filter_workspace) || w == &filter_workspace)
                             .unwrap_or(false);
-                        // Skip trace records (those go to LspTraceLogMode in B'.5).
                         let is_trace = e.level == "trace" || e.source == "trace";
                         id_match && ws_match && !is_trace
                     }) {
@@ -227,39 +193,14 @@ impl Mode for LspServerLogMode {
                 }
             });
 
-        ctx.set_local(LspServerLogSubscription(sub_id))?;
-        Ok(())
-    }
-
-    fn on_deactivate(
-        &self,
-        ctx: &mut ModeContext<'_>,
-    ) -> Result<(), ModeActivationError> {
-        if let Some(sub) = ctx.remove_local::<LspServerLogSubscription>()? {
-            ctx.events().unsubscribe(sub.0);
-        }
-        Ok(())
+            Ok(LogSubscriptionGuard::with(bus_handle, sub_id))
+        })
     }
 }
 
 /// `lsp-log-mode` -- major mode for the subsystem-wide `*lsp*`
-/// buffer (B'.3). The mode owns the subscription that drains
-/// `LspLogPushed` events into the buffer.
-///
-/// Lifecycle:
-/// - `on_activate` resolves the mode's `BufferStoreHandle`,
-///   subscribes to `LspLogPushed` with an mpsc sender, and
-///   spawns a tokio task that drains the receiver. Each
-///   batch of records is formatted and applied as one
-///   `apply_edit_batch` so a burst of N events becomes one
-///   edit dispatch.
-/// - `on_deactivate` removes the buffer-local `LspLogSubscription`
-///   stash; dropping the stored `SubscriptionId`'s sender (via
-///   `unsubscribe`) lets the drain task exit naturally.
-///
-/// The drain only writes subsystem-wide records (those with
-/// `server_id.is_none()`). Per-instance records flow through
-/// `LspServerLogMode` (B'.4) / `LspTraceLogMode` (B'.5).
+/// buffer (B'.3). Same Drop-based subscription cleanup as
+/// `LspServerLogMode`.
 pub struct LspLogMode;
 
 impl LspLogMode {
@@ -268,24 +209,8 @@ impl LspLogMode {
     }
 }
 
-/// Buffer-local stash for the subscription id `LspLogMode`
-/// registered on activation. `on_deactivate` reads + unsubscribes.
-#[derive(Debug, Clone, Copy)]
-pub struct LspLogSubscription(pub lattice_runtime::SubscriptionId);
-
-impl BufferLocal for LspLogSubscription {
-    const NAME: &'static str = "lsp-log-mode.subscription";
-    const DOC: &'static str = "Event-bus subscription id the LspLogMode \
-                               drain task is listening on. Removed by \
-                               on_deactivate to stop the task.";
-    const OWNER_MODE: &'static str = "lsp-log-mode";
-
-    fn describe(&self) -> String {
-        format!("{:?}", self.0)
-    }
-}
-
 impl Mode for LspLogMode {
+    type Guard = LogSubscriptionGuard;
     fn id(&self) -> ModeId {
         Self::mode_id()
     }
@@ -301,33 +226,22 @@ impl Mode for LspLogMode {
         CapabilitySet::empty()
     }
 
-    fn on_activate(&self, ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
+    fn on_activate(&self, ctx: ModeContext) -> LifecycleFuture<'_, Self::Guard> {
+        Box::pin(async move {
             let buffer_id = lattice_core::BufferId(ctx.buffer_id().0 as u32);
-            // Pull the buffer's actor handle from the App's
-            // BufferStore. Without it we can't append from a
-            // background task; degrade gracefully (the mode is still
-            // active but unsubscribed) -- tests that don't wire the
-            // store can still activate the mode.
             let Some(store) = ctx.service::<BufferStoreHandle>() else {
-                return Ok(());
+                return Ok(LogSubscriptionGuard::none());
             };
             let Some(handle) = store.handle_for(buffer_id) else {
-                return Ok(());
+                return Ok(LogSubscriptionGuard::none());
             };
-            // Skip the subscription when no tokio runtime is around
-            // (test paths that boot the App without a `#[tokio::test]`
-            // wrapper). The mode is still active (its ReadOnly
-            // contribution applies) but the drain task can't run.
             let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-                return Ok(());
+                return Ok(LogSubscriptionGuard::none());
             };
 
             // B'.4: seed the buffer from the in-memory ring so
             // pre-existing subsystem records are visible the moment
-            // the user opens `*lsp*`. The synchronous seed runs
-            // *before* the subscription is installed; any new event
-            // arriving in the meantime lands in the channel and
-            // the task picks it up on its first drain pass.
+            // the user opens `*lsp*`.
             if let Some(logger) = ctx.service::<crate::LspLogger>() {
                 let snap = logger.snapshot_global();
                 let mut text = String::new();
@@ -357,20 +271,14 @@ impl Mode for LspLogMode {
                 }
             }
 
-            // Subscribe to LspLogPushed. The tokio task below drains
-            // the receiver; dropping the sender (on unsubscribe in
-            // on_deactivate) closes the channel and ends the task.
             let (tx, mut rx) =
                 tokio::sync::mpsc::unbounded_channel::<crate::events::LspLogPushed>();
             let sub_id = ctx
                 .events()
                 .subscribe_typed::<crate::events::LspLogPushed>(tx);
+            let bus_handle = ctx.events_handle();
 
             runtime.spawn(async move {
-                // Coalesce policy: each `recv().await` wakeup tries
-                // to drain everything currently in the channel before
-                // applying one batched edit. A burst of N records
-                // becomes one `apply_edit_batch` call.
                 while let Some(first) = rx.recv().await {
                     let mut batch: Vec<crate::events::LspLogPushed> = vec![first];
                     while let Ok(more) = rx.try_recv() {
@@ -402,25 +310,13 @@ impl Mode for LspLogMode {
                 }
             });
 
-            ctx.set_local(LspLogSubscription(sub_id))?;
-            Ok(())
-    }
-
-    fn on_deactivate(&self, ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-            if let Some(sub) = ctx.remove_local::<LspLogSubscription>()? {
-                ctx.events().unsubscribe(sub.0);
-            }
-            Ok(())
+            Ok(LogSubscriptionGuard::with(bus_handle, sub_id))
+        })
     }
 }
 
-/// `lsp-trace-log-mode` -- major mode for the per-instance
-/// `*lsp:<server>:<workspace>:trace*` buffer (B'.5 / B'.7).
-/// Hand-written twin of `LspServerLogMode`: derives its
-/// `InstanceKey` from the buffer's synthetic name via
-/// [`crate::parse_lsp_trace_log_name`], subscribes to
-/// `LspLogPushed`, and accepts only trace records (`level ==
-/// "trace"` or `source == "trace"`) for the matching instance.
+/// `lsp-trace-log-mode` -- per-instance trace buffer (B'.5 /
+/// B'.7). Twin of `LspServerLogMode` for trace-only records.
 pub struct LspTraceLogMode;
 
 impl LspTraceLogMode {
@@ -429,25 +325,8 @@ impl LspTraceLogMode {
     }
 }
 
-/// Buffer-local stash for the `LspTraceLogMode` subscription
-/// id. Separate type from `LspServerLogSubscription` so each
-/// mode tracks its own subscription independently (a single
-/// instance can have both buffers open simultaneously).
-#[derive(Debug, Clone, Copy)]
-pub struct LspTraceLogSubscription(pub lattice_runtime::SubscriptionId);
-
-impl BufferLocal for LspTraceLogSubscription {
-    const NAME: &'static str = "lsp-trace-log-mode.subscription";
-    const DOC: &'static str = "Event-bus subscription id the \
-                               LspTraceLogMode drain task is listening on.";
-    const OWNER_MODE: &'static str = "lsp-trace-log-mode";
-
-    fn describe(&self) -> String {
-        format!("{:?}", self.0)
-    }
-}
-
 impl Mode for LspTraceLogMode {
+    type Guard = LogSubscriptionGuard;
     fn id(&self) -> ModeId {
         Self::mode_id()
     }
@@ -463,27 +342,25 @@ impl Mode for LspTraceLogMode {
         CapabilitySet::empty()
     }
 
-    fn on_activate(&self, ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
+    fn on_activate(&self, ctx: ModeContext) -> LifecycleFuture<'_, Self::Guard> {
+        Box::pin(async move {
             let buffer_id = lattice_core::BufferId(ctx.buffer_id().0 as u32);
             let Some(store) = ctx.service::<BufferStoreHandle>() else {
-                return Ok(());
+                return Ok(LogSubscriptionGuard::none());
             };
-            // B'.7: identity parsed from the buffer's synthetic name
-            // (`*lsp:<server>:<workspace>:trace*`).
             let Some(name) = store.name_for(buffer_id) else {
-                return Ok(());
+                return Ok(LogSubscriptionGuard::none());
             };
             let Some(instance) = crate::parse_lsp_trace_log_name(&name) else {
-                return Ok(());
+                return Ok(LogSubscriptionGuard::none());
             };
             let Some(handle) = store.handle_for(buffer_id) else {
-                return Ok(());
+                return Ok(LogSubscriptionGuard::none());
             };
             let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-                return Ok(());
+                return Ok(LogSubscriptionGuard::none());
             };
 
-            // Seed from the per-instance ring's trace-only records.
             if let Some(logger) = ctx.service::<crate::LspLogger>() {
                 let snap = logger.snapshot_instance(&instance);
                 let mut text = String::new();
@@ -520,9 +397,10 @@ impl Mode for LspTraceLogMode {
             let sub_id = ctx
                 .events()
                 .subscribe_typed::<crate::events::LspLogPushed>(tx);
+            let bus_handle = ctx.events_handle();
 
-            let filter_server = std::sync::Arc::clone(&instance.server_id);
-            let filter_workspace = std::sync::Arc::clone(&instance.workspace);
+            let filter_server = Arc::clone(&instance.server_id);
+            let filter_workspace = Arc::clone(&instance.workspace);
             runtime.spawn(async move {
                 while let Some(first) = rx.recv().await {
                     let mut batch: Vec<crate::events::LspLogPushed> = vec![first];
@@ -534,20 +412,13 @@ impl Mode for LspTraceLogMode {
                         let id_match = e
                             .server_id
                             .as_ref()
-                            .map(|s| {
-                                std::sync::Arc::ptr_eq(s, &filter_server) || s == &filter_server
-                            })
+                            .map(|s| Arc::ptr_eq(s, &filter_server) || s == &filter_server)
                             .unwrap_or(false);
                         let ws_match = e
                             .workspace
                             .as_ref()
-                            .map(|w| {
-                                std::sync::Arc::ptr_eq(w, &filter_workspace)
-                                    || w == &filter_workspace
-                            })
+                            .map(|w| Arc::ptr_eq(w, &filter_workspace) || w == &filter_workspace)
                             .unwrap_or(false);
-                        // Trace-only: include records whose level is
-                        // "trace" or whose source is "trace".
                         let is_trace = e.level == "trace" || e.source == "trace";
                         id_match && ws_match && is_trace
                     }) {
@@ -575,39 +446,31 @@ impl Mode for LspTraceLogMode {
                 }
             });
 
-            ctx.set_local(LspTraceLogSubscription(sub_id))?;
-            Ok(())
+            Ok(LogSubscriptionGuard::with(bus_handle, sub_id))
+        })
     }
+}
 
-    fn on_deactivate(&self, ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-            if let Some(sub) = ctx.remove_local::<LspTraceLogSubscription>()? {
-                ctx.events().unsubscribe(sub.0);
-            }
-            Ok(())
+/// Guard for `lsp-mode`. Holds the event-bus handle + buffer id;
+/// Drop publishes `LspBufferDetached` so subscribers (the LSP
+/// supervisor, the diagnostic clearer) tear down per-buffer
+/// state symmetrically with the `LspBufferAttached` published
+/// from `on_activate`.
+pub struct LspModeGuard {
+    bus: Arc<EventBus>,
+    buffer_id: lattice_protocol::ids::DocumentId,
+}
+
+impl Drop for LspModeGuard {
+    fn drop(&mut self) {
+        self.bus
+            .publish_typed(crate::events::LspBufferDetached { id: self.buffer_id });
     }
 }
 
 /// `lsp-mode` -- the umbrella minor that gates LSP traffic on a
-/// buffer. M.5.0 ships the pure declaration; M.5.3 wires the
-/// activation / deactivation lifecycle (attach / didOpen on
-/// activate; detach / didClose on deactivate). Subsequent M.5
-/// slices route every LSP entry point (request issuing, document
-/// sync, diagnostic rendering, completion source) through the
-/// gate.
-///
-/// Capabilities are intentionally empty: standalone-server use
-/// cases (snippets, scratch buffers without a backing file) want
-/// to activate `lsp-mode` on un-named buffers. The capability
-/// lattice can tighten in a later slice once we have a clearer
-/// per-server minimum-requirement story.
-/// `lsp-mode` -- the umbrella minor. Stores the sub-mode id
-/// list so `Mode::implies()` can return a slice that lives
-/// for `&self`'s lifetime (Phase 3: cascade activation lives
-/// in the registry now, driven by `implies()`).
+/// buffer. Cascades to the 15 sub-modes via `Mode::implies()`.
 pub struct LspMode {
-    /// The 13 LSP sub-modes the umbrella cascades to. Built
-    /// once at `LspMode::new()`; `implies()` returns a slice
-    /// against this Vec.
     sub_modes: Vec<ModeId>,
 }
 
@@ -646,6 +509,7 @@ impl Default for LspMode {
 }
 
 impl Mode for LspMode {
+    type Guard = LspModeGuard;
     fn id(&self) -> ModeId {
         Self::mode_id()
     }
@@ -653,59 +517,32 @@ impl Mode for LspMode {
         ModeKind::Minor
     }
     fn implies(&self) -> &[ModeId] {
-        // Phase 3: the umbrella cascade lives in
-        // `Mode::implies()` -- the registry walks this on
-        // `activate_minor` and (with the matching extension)
-        // on `deactivate_minor`. Eliminates the App-side
-        // `activate_lsp_sub_modes_for` / `deactivate_lsp_sub_modes_for`.
         &self.sub_modes
     }
     fn options(&self) -> OptionOverrideSet {
-        // `lsp-mode` doesn't contribute any typed options today.
-        // The gate is checked via direct mode-state lookup
-        // (`App::lsp_mode_enabled_for`) rather than through a
-        // resolved option, since the "is this mode active?"
-        // question is the gate itself, not a knob the mode
-        // happens to flip.
         OptionOverrideSet::default()
     }
     fn required_capabilities(&self) -> CapabilitySet {
         CapabilitySet::empty()
     }
-    fn on_activate(&self, ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-            // Phase 2: publish `LspBufferAttached` from the mode's
-            // own lifecycle hook via `ctx.events()`. The App's
-            // `on_lsp_mode_activated` used to do this; now it just
-            // cascades sub-mode activation (Phase 3 will move the
-            // cascade in here too once `ModeContext` exposes a
-            // cascade primitive).
+    fn on_activate(&self, ctx: ModeContext) -> LifecycleFuture<'_, Self::Guard> {
+        Box::pin(async move {
+            let buffer_id = lattice_protocol::ids::DocumentId::new(ctx.buffer_id().0);
             ctx.events()
-                .publish_typed(crate::events::LspBufferAttached {
-                    id: lattice_protocol::ids::DocumentId::new(ctx.buffer_id().0),
-                });
-            Ok(())
-    }
-    fn on_deactivate(&self, ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-            // Phase 2: symmetric to `on_activate`. Wire-level
-            // `didClose` still runs from the App (Phase 3 needs
-            // `ctx.service::<LspSupervisorHandle>()`).
-            ctx.events()
-                .publish_typed(crate::events::LspBufferDetached {
-                    id: lattice_protocol::ids::DocumentId::new(ctx.buffer_id().0),
-                });
-            Ok(())
+                .publish_typed(crate::events::LspBufferAttached { id: buffer_id });
+            Ok(LspModeGuard {
+                bus: ctx.events_handle(),
+                buffer_id,
+            })
+        })
     }
 }
 
-/// M.6.0: declare an LSP sub-mode. Each sub-mode is a minor with
-/// no contributed options, no capability requirements, and no-op
-/// lifecycle hooks. The hooks stay no-op even after M.6.1 lands
-/// auto-activation -- the *cascade* (umbrella → sub-modes) lives
-/// on the App, not in `Mode::on_activate` (which only sees a
-/// `ModeContext`, not the LSP servers + capabilities). Sub-modes
-/// are pure markers; the gating logic lives at the request
-/// entry points and the publish-diagnostics / completion-source
-/// sites that consult `App::<feature>_mode_enabled_for`.
+/// M.6.0: declare an LSP sub-mode. Each is a marker minor with
+/// `Guard = ()` and a trivial `on_activate`. Gating logic lives
+/// at the request entry points and the
+/// publish-diagnostics / completion-source sites that consult
+/// `App::<feature>_mode_enabled_for`.
 macro_rules! lsp_sub_mode {
     ($struct_name:ident, $mode_name:literal) => {
         pub struct $struct_name;
@@ -717,6 +554,7 @@ macro_rules! lsp_sub_mode {
         }
 
         impl Mode for $struct_name {
+            type Guard = ();
             fn id(&self) -> ModeId {
                 Self::mode_id()
             }
@@ -729,21 +567,15 @@ macro_rules! lsp_sub_mode {
             fn required_capabilities(&self) -> CapabilitySet {
                 CapabilitySet::empty()
             }
-            fn on_activate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-                Ok(())
-            }
-            fn on_deactivate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-                Ok(())
+            fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
+                Box::pin(async { Ok(()) })
             }
         }
     };
 }
 
-// `LspCompletionMode` lives in `crate::completion` (CSM.8a) --
-// it's source-contributing rather than a pure marker, so the
-// macro-generated unit struct + Mode impl don't suffice. The
-// hand-written impl + `register_lsp_completion_mode` helper
-// take its place.
+// `LspCompletionMode` lives in `crate::completion` -- it's
+// source-contributing rather than a pure marker.
 pub use crate::completion::LspCompletionMode;
 lsp_sub_mode!(LspDiagnosticsMode, "lsp-diagnostics-mode");
 lsp_sub_mode!(LspHoverMode, "lsp-hover-mode");
@@ -753,45 +585,35 @@ lsp_sub_mode!(LspRenameMode, "lsp-rename-mode");
 lsp_sub_mode!(LspSymbolsMode, "lsp-symbols-mode");
 lsp_sub_mode!(LspCodeActionMode, "lsp-code-action-mode");
 lsp_sub_mode!(LspNavMode, "lsp-nav-mode");
-// 4.4.c: progress is a workspace-wide concern (one bar per
-// server token, surfaced in the modeline). It's still a per-
-// buffer sub-mode because the activation cascade matches the
-// rest of the LSP family — turning `lsp-mode` off on a buffer
-// quiets every channel, progress included; `:lsp-progress-mode`
-// (toggle) keeps everything else but stops accumulating
-// progress for that buffer.
 lsp_sub_mode!(LspProgressMode, "lsp-progress-mode");
-// 4.4.e: `documentHighlight` references at the cursor +
-// `selectionRange` smart-expansion. Both are
-// position-driven and on by default; toggle off when their
-// overlays / expansion clobber other plugins.
 lsp_sub_mode!(LspDocumentHighlightMode, "lsp-document-highlight-mode");
 lsp_sub_mode!(LspSelectionRangeMode, "lsp-selection-range-mode");
-// 4.4.g: `textDocument/inlayHint` virtual-text overlay --
-// type / parameter annotations rendered inline with the
-// buffer's actual characters. Per-buffer cache lives on
-// the App keyed by (BufferId, doc_version); renderer
-// splices each hint label as a virtual span.
 lsp_sub_mode!(LspInlayHintMode, "lsp-inlay-hint-mode");
-// 4.4.h: `textDocument/semanticTokens/full` highlight overlay.
-// Per-buffer cache keyed by `(BufferId, doc_version)` keeps
-// decoded tokens (absolute positions + kind + modifiers);
-// renderer paints each token with a kind-driven foreground
-// style overriding tree-sitter for the same byte range.
 lsp_sub_mode!(LspSemanticTokensMode, "lsp-semantic-tokens-mode");
-// 4.4.f: `textDocument/foldingRange` feeding `FoldMethod::Lsp`.
-// Coupled to the `foldmethod` option: activating the mode
-// stashes the prior value and swaps `foldmethod` to `lsp`;
-// deactivating restores. The toggle command is the bare mode
-// name (`:lsp-folding-mode`); there's no separate `:disable`.
-//
-// Hand-written (not macro-generated) because the lifecycle
-// hooks do real work -- they read the config registry and
-// the buffer-local stash via [`ModeContext`]. Anyone who
-// activates `lsp-folding-mode` -- direct toggle, the
-// `lsp-mode` cascade, a plugin via the registry API -- gets
-// the foldmethod sync for free; the mode is responsible for
-// its own work, not the App.
+
+/// Guard for `lsp-folding-mode`. Holds the prior `foldmethod`
+/// value + a config handle; Drop restores the prior value via
+/// `folding_sync::on_deactivate`. `None` prior means activation
+/// was a no-op (foldmethod was already `Lsp`), so Drop also
+/// does nothing.
+pub struct LspFoldingGuard {
+    prior: Option<lattice_core::FoldMethod>,
+    config: Arc<lattice_config::ConfigRegistry>,
+}
+
+impl Drop for LspFoldingGuard {
+    fn drop(&mut self) {
+        if let Some(p) = self.prior {
+            crate::folding_sync::on_deactivate(&self.config, p);
+        }
+    }
+}
+
+/// 4.4.f: `textDocument/foldingRange` feeding `FoldMethod::Lsp`.
+/// Coupled to the `foldmethod` option: activating the mode stashes
+/// the prior value (inside the Guard) and swaps `foldmethod` to
+/// `lsp`; dropping the Guard restores. Hand-written because the
+/// lifecycle does real work.
 pub struct LspFoldingMode;
 
 impl LspFoldingMode {
@@ -801,6 +623,7 @@ impl LspFoldingMode {
 }
 
 impl Mode for LspFoldingMode {
+    type Guard = LspFoldingGuard;
     fn id(&self) -> ModeId {
         Self::mode_id()
     }
@@ -813,43 +636,22 @@ impl Mode for LspFoldingMode {
     fn required_capabilities(&self) -> CapabilitySet {
         CapabilitySet::empty()
     }
-    fn on_activate(&self, ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-            if let Some(prior) = crate::folding_sync::on_activate(ctx.config()) {
-                // Stash the prior `foldmethod` so deactivate can
-                // restore it. `set_local` enforces the
-                // `OWNER_MODE = "lsp-folding-mode"` rule.
-                //
-                // Idempotent: when this mode is already active and
-                // someone re-activates (the registry's
-                // `activate_minor` short-circuits, so we wouldn't
-                // be here, but be defensive anyway), we DO NOT
-                // overwrite the stash -- the `on_activate` helper
-                // already returned `None` if the option was already
-                // `Lsp`, so reaching this branch means we just did
-                // the swap.
-                ctx.set_local(crate::folding_sync::PriorFoldmethod(prior))?;
-            }
-            Ok(())
-    }
-    fn on_deactivate(&self, ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-            // Take the stash; restore via the helper. No-op when
-            // the stash is missing (mode was never activated, or
-            // activate skipped the stash because the option was
-            // already `Lsp`).
-            let prior = ctx.remove_local::<crate::folding_sync::PriorFoldmethod>()?;
-            if let Some(p) = prior {
-                crate::folding_sync::on_deactivate(ctx.config(), p.0);
-            }
-            Ok(())
+    fn on_activate(&self, ctx: ModeContext) -> LifecycleFuture<'_, Self::Guard> {
+        Box::pin(async move {
+            let prior = crate::folding_sync::on_activate(ctx.config());
+            Ok(LspFoldingGuard {
+                prior,
+                config: ctx.config_handle(),
+            })
+        })
     }
 }
 
 /// Register every LSP mode (the three log majors, the umbrella
-/// `lsp-mode` minor, and the nine M.6 sub-mode minors) against
-/// `registry`. The name is kept for backwards compatibility --
-/// any existing call sites continue to compile, and the function
-/// is the single boot-time registration entry point for
-/// everything LSP-related.
+/// `lsp-mode` minor, and the marker sub-modes) against
+/// `registry`. `LspCompletionMode` is registered separately via
+/// [`crate::completion::register_lsp_completion_mode`] because it
+/// needs a supervisor handle.
 pub fn register_lsp_log_modes(registry: &mut ModeRegistry) {
     registry
         .register(LspLogMode)
@@ -863,11 +665,6 @@ pub fn register_lsp_log_modes(registry: &mut ModeRegistry) {
     registry
         .register(LspMode::new())
         .expect("lsp-mode register");
-    // M.6.0: LSP sub-mode minors. `LspCompletionMode` is
-    // source-contributing (CSM.8a) and registered via
-    // `register_lsp_completion_mode(registry, lsp_handle)` from
-    // the boot path; the rest stay marker minors registered
-    // here.
     registry
         .register(LspDiagnosticsMode)
         .expect("lsp-diagnostics-mode register");
@@ -923,7 +720,6 @@ mod tests {
             LspTraceLogMode::mode_id(),
             LspServerLogMode::mode_id(),
             LspMode::mode_id(),
-            // M.6.0 sub-modes.
             LspCompletionMode::mode_id(),
             LspDiagnosticsMode::mode_id(),
             LspHoverMode::mode_id(),
@@ -955,10 +751,6 @@ mod tests {
         assert!(registry.is_registered(LspTraceLogMode::mode_id()));
         assert!(registry.is_registered(LspServerLogMode::mode_id()));
         assert!(registry.is_registered(LspMode::mode_id()));
-        // M.6.0 sub-modes are picked up by the same registration
-        // entry point. `LspCompletionMode` ships via
-        // `register_lsp_completion_mode` (CSM.8a) which needs a
-        // supervisor handle, so it's *not* asserted here.
         assert!(registry.is_registered(LspDiagnosticsMode::mode_id()));
         assert!(registry.is_registered(LspHoverMode::mode_id()));
         assert!(registry.is_registered(LspSignatureMode::mode_id()));
@@ -976,51 +768,7 @@ mod tests {
     }
 
     #[test]
-    fn each_lsp_sub_mode_is_minor_no_caps_no_options() {
-        // M.6.0 invariant: every sub-mode is a pure marker.
-        // Capabilities and option contributions are empty; the
-        // gating logic lives on the App side at the request
-        // entry points + diagnostic / completion-source sites.
-        // `LspCompletionMode` is now source-contributing
-        // (CSM.8a) -- it's tested separately in
-        // `crate::completion`'s own test module.
-        let modes: Vec<&dyn Mode> = vec![
-            &LspDiagnosticsMode,
-            &LspHoverMode,
-            &LspSignatureMode,
-            &LspFormatMode,
-            &LspRenameMode,
-            &LspSymbolsMode,
-            &LspCodeActionMode,
-            &LspNavMode,
-            &LspProgressMode,
-            &LspDocumentHighlightMode,
-            &LspSelectionRangeMode,
-            &LspFoldingMode,
-            &LspInlayHintMode,
-            &LspSemanticTokensMode,
-        ];
-        for m in modes {
-            assert_eq!(m.kind(), ModeKind::Minor, "{} not minor", m.id());
-            assert_eq!(
-                m.required_capabilities(),
-                CapabilitySet::empty(),
-                "{} declared caps",
-                m.id(),
-            );
-            assert!(
-                m.options().iter().count() == 0,
-                "{} contributed options",
-                m.id(),
-            );
-        }
-    }
-
-    #[test]
     fn lsp_mode_is_minor_with_no_capability_requirements() {
-        // M.5.0: `lsp-mode` is a minor (it overlays the buffer's
-        // language major); standalone-server use cases want to
-        // activate without a `BUFFER_URI` capability requirement.
         let m = LspMode::new();
         assert_eq!(m.kind(), ModeKind::Minor);
         assert_eq!(m.required_capabilities(), CapabilitySet::empty());
@@ -1028,15 +776,9 @@ mod tests {
 
     #[tokio::test]
     async fn lsp_mode_activates_through_registry_as_minor() {
-        // Phase 3: activating `lsp-mode` cascades through
-        // `implies()` to all 13 sub-modes. The completion
-        // sub-mode is hand-written and registered separately
-        // via `register_lsp_completion_mode(...)` with a real
-        // supervisor handle, so the test needs a tokio
-        // runtime to build one.
         use crate::completion::register_lsp_completion_mode;
         use crate::supervisor::LspSupervisor;
-        use lattice_mode::{ActiveModes, BufferLocals};
+        use lattice_mode::{ActiveModes, GuardStore};
         use lattice_protocol::ids::BufferId;
         let mut registry = ModeRegistry::new();
         register_lsp_log_modes(&mut registry);
@@ -1044,14 +786,14 @@ mod tests {
         let lsp_handle = sup.spawn(&tokio::runtime::Handle::current());
         register_lsp_completion_mode(&mut registry, lsp_handle);
         let mut active = ActiveModes::new();
-        let mut locals = BufferLocals::new();
-        let cfg = lattice_config::ConfigRegistry::new();
-        let evt = std::sync::Arc::new(lattice_runtime::EventBus::new());
-        let svc = lattice_mode::ServiceRegistry::new();
+        let mut guards = GuardStore::new();
+        let cfg = Arc::new(lattice_config::ConfigRegistry::new());
+        let evt = Arc::new(lattice_runtime::EventBus::new());
+        let svc = Arc::new(lattice_mode::ServiceRegistry::new());
         registry
             .activate_minor(
                 &mut active,
-                &mut locals,
+                &mut guards,
                 &cfg,
                 &evt,
                 &svc,
@@ -1061,8 +803,6 @@ mod tests {
             )
             .expect("activate lsp-mode + sub-mode cascade");
         assert!(active.has_minor(LspMode::mode_id()));
-        // Phase 3: every sub-mode in `implies()` activated
-        // via the registry's cascade. Sample a few.
         assert!(active.has_minor(LspCompletionMode::mode_id()));
         assert!(active.has_minor(LspDiagnosticsMode::mode_id()));
         assert!(active.has_minor(LspFoldingMode::mode_id()));

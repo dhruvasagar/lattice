@@ -20,7 +20,7 @@
 
 use lattice_config::OptionOverrideSet;
 
-use crate::{CapabilitySet, Mode, ModeActivationError, ModeContext, ModeId, ModeKind};
+use crate::{CapabilitySet, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind};
 
 pub struct HelpMode;
 
@@ -31,6 +31,7 @@ impl HelpMode {
 }
 
 impl Mode for HelpMode {
+    type Guard = ();
     fn id(&self) -> ModeId {
         Self::mode_id()
     }
@@ -41,10 +42,6 @@ impl Mode for HelpMode {
         // Bug 4: long help bodies (markdown paragraphs, doc
         // comments rendered into popups) should wrap at the
         // pane / popup width rather than overflow horizontally.
-        // Help-mode contributes `Wrap = true` so any buffer
-        // wearing it -- in-pane help, popup-help, hover --
-        // wraps automatically. The default `Wrap = false`
-        // stays correct for code documents.
         lattice_config::overrides! {
             lattice_config::ReadOnly = true,
             lattice_config::Wrap = true,
@@ -53,11 +50,8 @@ impl Mode for HelpMode {
     fn required_capabilities(&self) -> CapabilitySet {
         CapabilitySet::empty()
     }
-    fn on_activate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-        Ok(())
-    }
-    fn on_deactivate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-        Ok(())
+    fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
+        Box::pin(async { Ok(()) })
     }
 }
 

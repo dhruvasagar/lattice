@@ -16,7 +16,7 @@
 //! those modes can `implies` text-mode if they want the
 //! default keymap, or specify their own from scratch.
 
-use crate::{CapabilitySet, Mode, ModeActivationError, ModeContext, ModeId, ModeKind};
+use crate::{CapabilitySet, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind};
 
 /// Catch-all major mode for plain-text content.
 pub struct TextMode;
@@ -30,6 +30,8 @@ impl TextMode {
 }
 
 impl Mode for TextMode {
+    type Guard = ();
+
     fn id(&self) -> ModeId {
         Self::mode_id()
     }
@@ -44,13 +46,9 @@ impl Mode for TextMode {
         CapabilitySet::empty()
     }
 
-    fn on_activate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
+    fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
         // No setup work; text-mode is content-free.
-        Ok(())
-    }
-
-    fn on_deactivate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-        Ok(())
+        Box::pin(async { Ok(()) })
     }
 }
 

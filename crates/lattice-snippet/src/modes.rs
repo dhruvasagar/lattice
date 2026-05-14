@@ -25,7 +25,7 @@ use lattice_completion::{
 };
 use lattice_config::OptionOverrideSet;
 use lattice_mode::{
-    CapabilitySet, Mode, ModeActivationError, ModeContext, ModeId, ModeKind, ModeRegistry,
+    CapabilitySet, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, ModeRegistry,
 };
 
 use crate::registry::SnippetRegistry;
@@ -109,6 +109,7 @@ impl SnippetCompletionMode {
 }
 
 impl Mode for SnippetCompletionMode {
+    type Guard = ();
     fn id(&self) -> ModeId {
         Self::mode_id()
     }
@@ -127,21 +128,14 @@ impl Mode for SnippetCompletionMode {
             default_priority: 150,
             auto_trigger: true,
             trigger_chars: Vec::new(),
-            // Snippets are prefix-matched and read best alongside
-            // their prose context -- no dedicated filter chord
-            // (per insert-completion.md §12 chord palette
-            // decision).
             popup_filter_chord: None,
             kind: CompletionSourceKind::Sync(Arc::new(SnippetCompletionSource {
                 registry: Arc::clone(&self.registry),
             })),
         }]
     }
-    fn on_activate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-        Ok(())
-    }
-    fn on_deactivate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-        Ok(())
+    fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
+        Box::pin(async { Ok(()) })
     }
 }
 

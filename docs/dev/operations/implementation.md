@@ -296,12 +296,14 @@ mode-shaped instead.
 
 ---
 
-## M-async-activate + M-async-deactivate (v1 commitment)
+## M-async — async mode lifecycle (v1 commitment)
 
-**Async mode lifecycle** specified in mode-architecture.md §7.1:
-both `Mode::on_activate` and `Mode::on_deactivate` are `async fn`.
-The dispatcher schedules them on the runtime; the UI thread never
-blocks on mode activation or deactivation. Hooks that need to
+**Async mode lifecycle** specified in mode-architecture.md §7.1.
+`Mode::on_activate` returns a `LifecycleFuture<'_, Self::Guard>`
+that the dispatcher schedules on the runtime; deactivation drops
+the typed Guard, firing its `Drop` impl for synchronous cleanup
+(async cleanup uses `spawn_task` fire-and-forget — Zed's pattern).
+The UI thread never blocks on mode activation. Hooks that need to
 spawn a supervisor, await a handshake, drain a watcher, or close
 a server connection do so naturally with `.await`.
 
@@ -311,25 +313,26 @@ that no synchronous path on the App thread does I/O. Today's
 `LspMode::on_activate` is the empirical counter-example: first
 `cargo run` blocks measurably while the rust-analyzer supervisor
 spawns + initialises. Subsequent runs don't block because the
-work is cached. The architectural fix is async lifecycle, not
-caching.
+work is cached. The architectural fix is async lifecycle with
+typed Guards, not caching.
 
-**Sequence:** M-async-activate lands *after* B' completes and
-*before* messages-mode v1. B' establishes the buffer-ownership
-contract with sync activation (all activation sites are
-ex-command handlers on the App thread — sync is correct for
-those). M-async-activate generalises the lifecycle so the next
-slice (messages-mode v1) gets the async foundation for free.
+**Sequence:** M-async lands *after* B' (committed at `7aca41d`)
+and *before* messages-mode v1. B' establishes buffer-ownership
+with sync activation (all activation sites are ex-command
+handlers — sync is correct for those). M-async generalises the
+lifecycle so messages-mode v1 gets async + Drop-based cleanup
+for free.
+
+**Design ref:** `docs/dev/architecture/mode-architecture.md` §7.1
+(Drop-based Guard rationale, ctx shape, activation/deactivation
+flow, re-entrancy invariants). Settled 2026-05-14; do not
+re-litigate.
 
 | Slice    | Status | What lands                                                                                                                                                                                                                                                                                                            |
 |----------|--------|-------------|
-| M-async.1 | ✅   | Trait surface migrated. `Mode::on_activate` / `Mode::on_deactivate` now return `LifecycleFuture<'_>` (alias for `Pin<Box<dyn Future<Output = Result<(), ModeActivationError>> + Send + 'a>>`) — the explicit AFIT desugaring required for `dyn Mode` object-safety on stable. Every in-tree Mode impl (text, hover, help, completion family, display family, file-tree, oil, snippet, syntax langs + TS completion, all LSP log majors, LspMode + 14 sub-modes, LspFoldingMode, LspCompletionMode, TestLocalsMode) migrated; bodies wrapped in `Box::pin(async move { ... })`. Registry dispatcher drives futures synchronously via a `poll_now` helper (panics on `Pending` — the M-async.1 immediate-ready contract; M-async.2 swaps this for runtime-spawned `.await`). New positive test `async_move_activation_body_runs_to_completion` documents the surface. Workspace green: 1574 lattice-ui-tui + 183 lattice-lsp + others. |
-| M-async.2a | ✅   | Foundation: `BufferLocalsHandle` (Arc<Mutex<BufferLocals>>) added to `lattice-mode`; `ModeActivationFailed { buffer, mode, reason }` variant added to `ModeEvent`; `ModeEvent` registered as `TypedEvent` (`mode.lifecycle`) so the bus can carry it; `lattice_runtime::spawn_task` helper for fire-and-forget runtime spawn; `linkme` direct dep on `lattice-mode` for the typed-event registration. No behavior change yet. |
-| M-async.2b-redesign | ⛔ | **Drop-based `Mode::Guard` replaces `on_deactivate`** (see mode-architecture.md §7.1, revised 2026-05-14). The `Mode` trait gets a `type Guard: Send + 'static` associated type; `on_activate` returns the Guard; the dispatcher stores it; deactivation drops the Guard, firing its `Drop` impl for cleanup. `BufferLocals` removed from `ModeContext` entirely — mode-private state lives in the typed Guard, App-managed rich locals stay App-only (no `BufferLocalsHandle` in ctx). `DynMode` (public, object-safe) added as adapter for `dyn` storage; `GuardStore` (per-(buffer, mode) erased box) in registry. Sliced for landing: **.2b.fc** (foundation crate: trait + ctx + DynMode + GuardStore in `lattice-mode`, plus marker-mode mechanical migration; lattice-mode lib + tests green, App-side intentionally broken until .2b.lsp / .2b.app). **.2b.lsp** (hand-rewrite LspServerLogMode, LspLogMode, LspTraceLogMode, LspMode umbrella, LspFoldingMode with typed Drop-based Guards). **.2b.app** (App-side: `services` field → `Arc<ServiceRegistry>`, dispatcher caller sites updated to pass `&Arc<...>` + `&mut GuardStore`, registry tests rewritten, dispatch.rs test mode). Each sub-slice ships workspace-green. |
-| M-async.2c | ⛔   | Spawn-based dispatcher. Swap `poll_now` (sync drive) for `lattice_runtime::spawn_task` so the App thread doesn't block on activation. Activation: record intent synchronously (active_modes), spawn the lifecycle future on the runtime, publish `MajorEntered` / `MinorActivated` from the spawned task on success, `ModeActivationFailed` on failure. Tiny slice after .2b-redesign — just the drive primitive change. |
-| M-async.3 | ⛔   | Re-entrancy / ordering invariants enforced by the dispatcher (§7.3). Cascade ordering (implies / conflicts_with) preserved: parent `on_activate` awaits before implied children schedule. Per-`(buffer, mode)` `tokio::Mutex` serializes same-pair activations across the async boundary. Rollback wiring no longer needs `ModeActivationFailed` — Drop on the Guard handles cleanup automatically; the event variant stays for telemetry but rollback semantics fall out of the type system. |
-| M-async.4 | ⛔   | Migrate `LspMode::on_activate` to await the supervisor's initialize round-trip. The first-launch hang stops being user-visible. Adds a bench (`benches/mode_activate.rs`): activate `LspMode` 100×, p99 < N ms (target gated when the bench lands).                                                                                                                       |
-| M-async.5 | ⛔   | Migrate all remaining modes that do non-trivial activation work (`LspLogMode`, `LspServerLogMode`, `LspTraceLogMode` from B'; minor-mode toggles that touch the LSP supervisor). Sync-only modes (text-mode, line-numbers-mode, etc.) keep their `Ok(())` bodies — `async fn` is zero-cost for them.                                                                          |
+| M-async.1 | ✅ | **Drop-based Mode trait redesign (sync drive).** Workspace-green. `Mode` trait gained `type Guard: Send + 'static`; `on_activate` returns `LifecycleFuture<'_, Self::Guard>`; `on_deactivate` removed (Drop = cleanup contract). `DynMode` (pub adapter trait) + blanket `impl<M: Mode> DynMode for M` does `Box<dyn Any + Send>` erasure. `ModeContext` redesigned: `Send + 'static`, no `BufferLocals` field, owned Arc handles (`config`, `events`, `services`). `GuardStore` (`HashMap<(BufferId, ModeId), Box<dyn Any + Send>>`) passed `&mut` to registry methods. Registry drives lifecycle futures synchronously via `poll_now`; deactivation drops the Guard. All Mode impls migrated atomically — marker modes (lattice-mode / -syntax / -snippet / -file-tree / -oil) get `type Guard = ();`; the five hand-written LSP modes (LspServerLogMode, LspLogMode, LspTraceLogMode, LspMode, LspFoldingMode) get typed Drop-based Guards; `lsp_sub_mode!` macro emits markers. App: `services: ServiceRegistry → Arc<ServiceRegistry>`, new `mode_guards: GuardStore` field, dispatcher caller sites updated, registry tests rewritten with `MockMode`/`MockGuard` drop-counter, `TestLocalsMode` Guard test in dispatch.rs. Workspace green: 1573 lattice-ui-tui + 191 + 17 + 9 + 12 + 4 lattice-lsp + 113 lattice-mode + remainder. End state: same user-visible behavior as before (App still blocks during lifecycle); new API shape in place for M-async.2 and M-async.3. |
+| M-async.2 | ⛔ | **Spawn-based lifecycle dispatch.** Workspace-green commit. Registry's lifecycle drive: `poll_now(...)` → `lattice_runtime::spawn_task(async move { ... })`. Sync prefix synchronously mutates `active_modes` + applies declarative contributions; spawned task publishes `MajorEntered` / `MinorActivated` on resolve (replaces today's `Vec<ModeEvent>` return). Add `ModeActivationFailed { buffer, mode, reason }` variant + `register_event!`. Registry method return type: `Result<Vec<ModeEvent>, _>` → `Result<(), _>`. App caller sites drop the `Vec<ModeEvent>` iteration (events arrive via bus subscription). Tests updated for async semantics (`#[tokio::test]`; subscribe + yield + `try_recv`). **User-visible win:** `:lsp-mode` activation no longer blocks App thread on LSP initialize handshake. |
+| M-async.3 | ⛔ | **Cascade ordering + rollback.** Workspace-green commit. Cascade refactor: implied children scheduled *after* parent's `on_activate` future resolves (not in parallel) — eliminates races where sub-mode reads parent's not-yet-written state. Per-`(BufferId, ModeId)` `tokio::Mutex` in registry-internal map serializes same-pair activate/deactivate so rapid `:enable foo` / `:disable foo` always pairs correctly. App subscriber for `ModeActivationFailed`: rolls back `active_modes.remove_minor(mode)` / `set_major(None)` + cleans declarative contributions (Drop on Guard already handles mode-private cleanup; this rolls back App-side state). Cascade rollback: parent activation failure means no implied children scheduled. Tests for ordering invariants + rollback paths. Closes the v1 contract. |
 
 ---
 

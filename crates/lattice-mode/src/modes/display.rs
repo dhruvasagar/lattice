@@ -37,7 +37,7 @@
 
 use lattice_config::OptionOverrideSet;
 
-use crate::{CapabilitySet, Mode, ModeActivationError, ModeContext, ModeId, ModeKind};
+use crate::{CapabilitySet, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind};
 
 /// Macro: declare a display minor mode that contributes a
 /// single typed-option override when active.
@@ -62,6 +62,7 @@ macro_rules! display_minor_mode {
         }
 
         impl Mode for $struct_name {
+            type Guard = ();
             fn id(&self) -> ModeId {
                 Self::mode_id()
             }
@@ -82,11 +83,8 @@ macro_rules! display_minor_mode {
                     Some($mirrors_name)
                 }
             )?
-            fn on_activate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-                Ok(())
-            }
-            fn on_deactivate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-                Ok(())
+            fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
+                Box::pin(async { Ok(()) })
             }
         }
     };
@@ -180,7 +178,8 @@ mod tests {
 
     #[test]
     fn each_display_mode_is_minor_with_no_caps() {
-        let modes: Vec<&dyn Mode> = vec![
+        use crate::DynMode;
+        let modes: Vec<&dyn DynMode> = vec![
             &LineNumbersMode,
             &RelativeLineNumbersMode,
             &WrapMode,
@@ -201,7 +200,7 @@ mod tests {
 
     #[test]
     fn line_numbers_mode_contributes_number_true() {
-        let opts = LineNumbersMode.options();
+        let opts = <LineNumbersMode as Mode>::options(&LineNumbersMode);
         // Single contribution.
         assert_eq!(opts.iter().count(), 1);
     }
@@ -212,31 +211,31 @@ mod tests {
         // contributing both directly. Lets a user have
         // `relative-line-numbers-mode` active without needing
         // `line-numbers-mode` separately.
-        let opts = RelativeLineNumbersMode.options();
+        let opts = <RelativeLineNumbersMode as Mode>::options(&RelativeLineNumbersMode);
         assert_eq!(opts.iter().count(), 2, "expected RelativeNumber + Number",);
     }
 
     #[test]
     fn wrap_mode_contributes_wrap_true() {
-        let opts = WrapMode.options();
+        let opts = <WrapMode as Mode>::options(&WrapMode);
         assert_eq!(opts.iter().count(), 1);
     }
 
     #[test]
     fn read_only_mode_contributes_read_only_true() {
-        let opts = ReadOnlyMode.options();
+        let opts = <ReadOnlyMode as Mode>::options(&ReadOnlyMode);
         assert_eq!(opts.iter().count(), 1);
     }
 
     #[test]
     fn whitespace_show_mode_contributes_whitespace_true() {
-        let opts = WhitespaceShowMode.options();
+        let opts = <WhitespaceShowMode as Mode>::options(&WhitespaceShowMode);
         assert_eq!(opts.iter().count(), 1);
     }
 
     #[test]
     fn current_line_highlight_mode_contributes_cursorline_true() {
-        let opts = CurrentLineHighlightMode.options();
+        let opts = <CurrentLineHighlightMode as Mode>::options(&CurrentLineHighlightMode);
         assert_eq!(opts.iter().count(), 1);
     }
 }

@@ -714,28 +714,18 @@ impl App {
             services: {
                 // Phase 3: typed service map for subsystem
                 // handles modes need from their lifecycle
-                // hooks. `LspMode::on_deactivate` pulls the
-                // supervisor handle here to send `didClose`.
+                // hooks. M-async.1: `Arc<ServiceRegistry>` so
+                // `ModeContext` can clone the handle when
+                // building the owned ctx per activation.
                 let mut s = lattice_mode::ServiceRegistry::new();
                 s.register(lsp.clone());
-                // B'.3: register the buffer store so log modes
-                // (`LspLogMode` and friends) can pull
-                // `DocumentHandle`s for their buffers from any
-                // tokio task. `BufferRegistry` is `Clone`
-                // (Arc<Mutex<>> internally), so the cloned
-                // store shares state with `App.buffers`.
                 let store: std::sync::Arc<dyn lattice_mode::BufferStore> =
                     std::sync::Arc::new(buffers_for_services);
                 s.register(lattice_mode::BufferStoreHandle::new(store));
-                // B'.4: the LSP log modes seed their buffer from
-                // the existing in-memory ring on activate so the
-                // user sees pre-existing records when they first
-                // open the buffer. Registering the logger as a
-                // service lets the mode pull a snapshot without
-                // routing through the App.
                 s.register(lsp_logger.clone());
-                s
+                std::sync::Arc::new(s)
             },
+            mode_guards: lattice_mode::GuardStore::new(),
             pane_render_registry: crate::render::build_pane_render_registry(),
             active_modes: std::collections::HashMap::new(),
             buffer_locals,
@@ -957,12 +947,11 @@ impl App {
         let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
         let mode_id = lattice_mode::CompletionPopupMode::mode_id();
         let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
-        let mut locals = self.buffer_locals.remove(&buffer_id).unwrap_or_default();
         let currently = active.has_minor(mode_id);
         if want_popup && !currently {
             let _ = self.mode_registry.activate_minor(
                 &mut active,
-                &mut locals,
+                &mut self.mode_guards,
                 &self.config,
                 &self.event_bus,
                 &self.services,
@@ -973,16 +962,12 @@ impl App {
         } else if !want_popup && currently {
             let _ = self.mode_registry.deactivate_minor(
                 &mut active,
-                &mut locals,
-                &self.config,
-                &self.event_bus,
-                &self.services,
+                &mut self.mode_guards,
                 proto_id,
                 mode_id,
             );
         }
         self.active_modes.insert(buffer_id, active);
-        self.buffer_locals.insert(buffer_id, locals);
         // CSM.3: a transition into / out of completion-popup-mode
         // is a mode-set change for the buffer -- recompute the
         // active-sources cache so the engine reads a coherent

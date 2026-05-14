@@ -31,8 +31,7 @@ use std::path::PathBuf;
 
 use lattice_config::OptionOverrideSet;
 use lattice_mode::{
-    BufferLocal, CapabilitySet, Mode, ModeActivationError, ModeContext, ModeId, ModeKind,
-    ModeRegistry,
+    BufferLocal, CapabilitySet, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, ModeRegistry,
 };
 
 use crate::FileTreeEntry;
@@ -49,6 +48,7 @@ impl FileTreeMode {
 }
 
 impl Mode for FileTreeMode {
+    type Guard = ();
     fn id(&self) -> ModeId {
         Self::mode_id()
     }
@@ -63,11 +63,8 @@ impl Mode for FileTreeMode {
     fn required_capabilities(&self) -> CapabilitySet {
         CapabilitySet::empty()
     }
-    fn on_activate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-        Ok(())
-    }
-    fn on_deactivate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-        Ok(())
+    fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
+        Box::pin(async { Ok(()) })
     }
 }
 

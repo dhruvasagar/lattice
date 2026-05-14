@@ -6840,11 +6840,10 @@ mod tests {
         let id = a.pane_tree.active().buffer_id;
         let proto_id = lattice_protocol::ids::BufferId::new(id.0 as u64);
         let mut active = a.active_modes.remove(&id).unwrap_or_default();
-        let mut locals = a.buffer_locals.remove(&id).unwrap_or_default();
         a.mode_registry
             .activate_minor(
                 &mut active,
-                &mut locals,
+                &mut a.mode_guards,
                 &a.config,
                 &a.event_bus,
                 &a.services,
@@ -6854,7 +6853,6 @@ mod tests {
             )
             .expect("activate lsp-mode");
         a.active_modes.insert(id, active);
-        a.buffer_locals.insert(id, locals);
         assert!(a.lsp_mode_enabled_for(id));
     }
 
@@ -7834,44 +7832,29 @@ mod tests {
     }
 
     /// 4.4.f: activating `lsp-folding-mode` swaps `foldmethod`
-    /// to `lsp` and stashes the prior value (via the mode's
-    /// `BufferLocal<PriorFoldmethod>`); deactivating restores
-    /// the stash. The mode owns this work via its hand-written
-    /// `Mode::on_activate` / `on_deactivate` impls -- the App
-    /// is purely an orchestrator that calls
-    /// `toggle_mode_by_name` and drains the resulting option
-    /// cascade.
+    /// to `lsp` and stashes the prior value (inside the mode's
+    /// typed `LspFoldingGuard`); deactivating drops the Guard,
+    /// firing Drop which restores. M-async.1: the stash is no
+    /// longer observable from outside the Guard -- the test
+    /// asserts the public contract (foldmethod swap + restore)
+    /// rather than the implementation detail.
     #[test]
     fn lsp_folding_mode_toggle_syncs_foldmethod() {
         use lattice_core::FoldMethod;
         let mut app = app_with("fn a() {}\n", 5);
         app.set_foldmethod_for_test(FoldMethod::Syntax);
         assert_eq!(app.foldmethod(), FoldMethod::Syntax);
-        // Make sure the mode is currently off (test-app starts
-        // without LSP attached, so the cascade hasn't fired).
         if app.lsp_folding_mode_enabled_for(app.document_buffer_id) {
             app.toggle_mode_by_name("lsp-folding-mode");
         }
-        // Activate -> mode swaps foldmethod to Lsp and stashes
-        // Syntax in its buffer-local.
+        // Activate -> mode swaps foldmethod to Lsp.
         app.toggle_mode_by_name("lsp-folding-mode");
         assert!(app.lsp_folding_mode_enabled_for(app.document_buffer_id));
         assert_eq!(app.foldmethod(), FoldMethod::Lsp);
-        let stash = app
-            .buffer_locals
-            .get(&app.document_buffer_id)
-            .and_then(|l| l.get::<lattice_lsp::folding_sync::PriorFoldmethod>())
-            .map(|p| p.0);
-        assert_eq!(stash, Some(FoldMethod::Syntax));
-        // Deactivate -> foldmethod restores; stash cleared.
+        // Deactivate -> Guard Drop restores foldmethod.
         app.toggle_mode_by_name("lsp-folding-mode");
         assert!(!app.lsp_folding_mode_enabled_for(app.document_buffer_id));
         assert_eq!(app.foldmethod(), FoldMethod::Syntax);
-        let stash_after = app
-            .buffer_locals
-            .get(&app.document_buffer_id)
-            .and_then(|l| l.get::<lattice_lsp::folding_sync::PriorFoldmethod>());
-        assert!(stash_after.is_none(), "stash should clear on deactivate");
     }
 
     /// 4.4.f: a seeded `lsp_folds_cache` makes `recompute_folds`

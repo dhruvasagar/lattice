@@ -1544,34 +1544,35 @@ mod tests {
     use crate::help::HelpContent;
     use lattice_protocol::edit::Edit;
 
-    /// Test fixture: a buffer-local owned by a fictional
-    /// `test-locals-mode`. Used by ModeContext / buffer-locals
-    /// pipeline tests.
-    #[derive(Debug)]
-    struct TestLocalCounter(i64);
+    /// Test Guard: drop-counter so tests can verify the
+    /// Drop-based cleanup contract.
+    pub struct TestLocalsGuard {
+        counter: std::sync::Arc<std::sync::atomic::AtomicI64>,
+    }
 
-    impl lattice_mode::BufferLocal for TestLocalCounter {
-        const NAME: &'static str = "test-locals.counter";
-        const DOC: &'static str = "Counter local for the test-locals fixture mode.";
-        const OWNER_MODE: &'static str = "test-locals-mode";
-        fn describe(&self) -> String {
-            format!("counter={}", self.0)
+    impl Drop for TestLocalsGuard {
+        fn drop(&mut self) {
+            self.counter
+                .store(0, std::sync::atomic::Ordering::SeqCst);
         }
     }
 
     struct TestLocalsMode {
         id: lattice_mode::ModeId,
+        counter: std::sync::Arc<std::sync::atomic::AtomicI64>,
     }
 
     impl TestLocalsMode {
         fn new() -> Self {
             Self {
                 id: lattice_mode::ModeId::new("test-locals-mode"),
+                counter: std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0)),
             }
         }
     }
 
     impl lattice_mode::Mode for TestLocalsMode {
+        type Guard = TestLocalsGuard;
         fn id(&self) -> lattice_mode::ModeId {
             self.id
         }
@@ -1580,16 +1581,11 @@ mod tests {
         }
         fn on_activate(
             &self,
-            ctx: &mut lattice_mode::ModeContext<'_>,
-        ) -> Result<(), lattice_mode::ModeActivationError> {
-            ctx.set_local(TestLocalCounter(42))
-        }
-        fn on_deactivate(
-            &self,
-            ctx: &mut lattice_mode::ModeContext<'_>,
-        ) -> Result<(), lattice_mode::ModeActivationError> {
-            let _ = ctx.remove_local::<TestLocalCounter>()?;
-            Ok(())
+            _ctx: lattice_mode::ModeContext,
+        ) -> lattice_mode::LifecycleFuture<'_, TestLocalsGuard> {
+            self.counter.store(42, std::sync::atomic::Ordering::SeqCst);
+            let counter = self.counter.clone();
+            Box::pin(async move { Ok(TestLocalsGuard { counter }) })
         }
     }
 
@@ -2525,24 +2521,22 @@ mod tests {
     }
 
     #[test]
-    fn mode_on_activate_can_write_buffer_local() {
+    fn mode_on_activate_runs_and_returns_guard() {
+        // M-async.1: `on_activate` runs side effects + returns
+        // a typed Guard. The dispatcher stashes the Guard in
+        // the App-owned GuardStore.
         let mut a = app_with("hi", 5);
-        let _buf = a.document_buffer_id;
-
-        // `make_mut` clones the registry if any `Weak` /
-        // shared `Arc` is outstanding (the boot path hands
-        // `Weak<ModeRegistry>` to the host-state completion
-        // generators). Cheap because every entry is an
-        // `Arc<dyn Mode>` — the clone is shallow.
         let registry = std::sync::Arc::make_mut(&mut a.mode_registry);
-        let mode_id = registry.register(TestLocalsMode::new()).expect("register");
+        let test_mode = TestLocalsMode::new();
+        let counter = test_mode.counter.clone();
+        let mode_id = registry.register(test_mode).expect("register");
 
         let mut active = lattice_mode::ActiveModes::new();
-        let mut locs = lattice_mode::BufferLocals::new();
+        let mut guards = lattice_mode::GuardStore::new();
         a.mode_registry
             .activate_minor(
                 &mut active,
-                &mut locs,
+                &mut guards,
                 &a.config,
                 &a.event_bus,
                 &a.services,
@@ -2552,81 +2546,33 @@ mod tests {
             )
             .expect("activate");
 
-        // After activation the local should be present in the
-        // map with the value the mode set.
-        let counter = locs
-            .get::<TestLocalCounter>()
-            .expect("local should be present after activation");
-        assert_eq!(counter.0, 42);
-    }
-
-    #[test]
-    fn mode_on_deactivate_removes_buffer_local() {
-        let mut a = app_with("hi", 5);
-
-        // `make_mut` clones the registry if any `Weak` /
-        // shared `Arc` is outstanding (the boot path hands
-        // `Weak<ModeRegistry>` to the host-state completion
-        // generators). Cheap because every entry is an
-        // `Arc<dyn Mode>` — the clone is shallow.
-        let registry = std::sync::Arc::make_mut(&mut a.mode_registry);
-        let mode_id = registry.register(TestLocalsMode::new()).expect("register");
-
-        let mut active = lattice_mode::ActiveModes::new();
-        let mut locs = lattice_mode::BufferLocals::new();
-        a.mode_registry
-            .activate_minor(
-                &mut active,
-                &mut locs,
-                &a.config,
-                &a.event_bus,
-                &a.services,
-                lattice_protocol::ids::BufferId::new(0),
-                mode_id,
-                lattice_mode::CapabilitySet::empty(),
-            )
-            .expect("activate");
-        assert!(locs.contains::<TestLocalCounter>());
-
-        a.mode_registry
-            .deactivate_minor(
-                &mut active,
-                &mut locs,
-                &a.config,
-                &a.event_bus,
-                &a.services,
-                lattice_protocol::ids::BufferId::new(0),
-                mode_id,
-            )
-            .expect("deactivate");
+        assert_eq!(
+            counter.load(std::sync::atomic::Ordering::SeqCst),
+            42,
+            "on_activate side effect should have fired"
+        );
         assert!(
-            !locs.contains::<TestLocalCounter>(),
-            "deactivate should remove the mode's local"
+            guards.contains(lattice_protocol::ids::BufferId::new(0), mode_id),
+            "Guard should be stashed in GuardStore"
         );
     }
 
     #[test]
-    fn buffer_locals_iter_descriptors_for_describe_buffer() {
-        // The descriptor surface backs `:describe-buffer` --
-        // every local exposes name / doc / owner_mode / a
-        // single-line `describe` string for inspection.
-        let mut locs = lattice_mode::BufferLocals::new();
-        // Direct insert via the test mode's lifecycle is the
-        // production path; we exercise the descriptor view
-        // here independently.
-        let mut active = lattice_mode::ActiveModes::new();
+    fn mode_deactivate_drops_guard_and_fires_cleanup() {
+        // M-async.1: dropping the Guard via deactivate runs
+        // its Drop impl -- the user-visible cleanup contract.
         let mut a = app_with("hi", 5);
-        // `make_mut` clones the registry if any `Weak` /
-        // shared `Arc` is outstanding (the boot path hands
-        // `Weak<ModeRegistry>` to the host-state completion
-        // generators). Cheap because every entry is an
-        // `Arc<dyn Mode>` — the clone is shallow.
         let registry = std::sync::Arc::make_mut(&mut a.mode_registry);
-        let mode_id = registry.register(TestLocalsMode::new()).expect("register");
+        let test_mode = TestLocalsMode::new();
+        let counter = test_mode.counter.clone();
+        let mode_id = registry.register(test_mode).expect("register");
+
+        let mut active = lattice_mode::ActiveModes::new();
+        let mut guards = lattice_mode::GuardStore::new();
         a.mode_registry
             .activate_minor(
                 &mut active,
-                &mut locs,
+                &mut guards,
                 &a.config,
                 &a.event_bus,
                 &a.services,
@@ -2635,12 +2581,24 @@ mod tests {
                 lattice_mode::CapabilitySet::empty(),
             )
             .expect("activate");
+        assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 42);
 
-        let descriptors: Vec<_> = locs.iter_descriptors().collect();
-        assert_eq!(descriptors.len(), 1);
-        let d = &descriptors[0];
-        assert_eq!(d.name, "test-locals.counter");
-        assert_eq!(d.owner_mode, "test-locals-mode");
-        assert_eq!(d.describe, "counter=42");
+        a.mode_registry
+            .deactivate_minor(
+                &mut active,
+                &mut guards,
+                lattice_protocol::ids::BufferId::new(0),
+                mode_id,
+            )
+            .expect("deactivate");
+        assert_eq!(
+            counter.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "Guard's Drop impl should have reset the counter"
+        );
+        assert!(
+            !guards.contains(lattice_protocol::ids::BufferId::new(0), mode_id),
+            "Guard should be removed from GuardStore"
+        );
     }
 }

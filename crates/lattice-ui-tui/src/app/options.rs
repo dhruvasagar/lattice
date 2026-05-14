@@ -1163,6 +1163,7 @@ mod tests {
     }
 
     impl lattice_mode::Mode for OptionContributingMode {
+        type Guard = ();
         fn id(&self) -> lattice_mode::ModeId {
             self.id
         }
@@ -1174,6 +1175,12 @@ mod tests {
                 lattice_config::Tabstop = 4i64,
                 lattice_config::Number = false,
             }
+        }
+        fn on_activate(
+            &self,
+            _ctx: lattice_mode::ModeContext,
+        ) -> lattice_mode::LifecycleFuture<'_, ()> {
+            Box::pin(async { Ok(()) })
         }
     }
 
@@ -1198,11 +1205,11 @@ mod tests {
             .register(OptionContributingMode::new())
             .expect("register");
         let mut active = lattice_mode::ActiveModes::new();
-        let mut locs = lattice_mode::BufferLocals::new();
+        let mut guards = lattice_mode::GuardStore::new();
         a.mode_registry
             .activate_minor(
                 &mut active,
-                &mut locs,
+                &mut guards,
                 &a.config,
                 &a.event_bus,
                 &a.services,
@@ -1231,11 +1238,11 @@ mod tests {
             .register(OptionContributingMode::new())
             .expect("register");
         let mut active = lattice_mode::ActiveModes::new();
-        let mut locs = lattice_mode::BufferLocals::new();
+        let mut guards = lattice_mode::GuardStore::new();
         a.mode_registry
             .activate_minor(
                 &mut active,
-                &mut locs,
+                &mut guards,
                 &a.config,
                 &a.event_bus,
                 &a.services,

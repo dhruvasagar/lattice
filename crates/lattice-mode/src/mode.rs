@@ -1,4 +1,9 @@
-//! The `Mode` trait, plus `ModeId` and `ModeKind`.
+//! The `Mode` trait, plus `ModeId`, `ModeKind`, and the
+//! [`LifecycleFuture`] type alias.
+
+use std::any::Any;
+use std::future::Future;
+use std::pin::Pin;
 
 use internment::Intern;
 
@@ -17,12 +22,9 @@ use lattice_config::OptionOverrideSet;
 /// not a Rust type -- this is intentional, since lifecycle events
 /// and registry lookups are uniform across built-in and plugin
 /// modes (mode-architecture.md §1, "modes are an interface, not
-/// a distribution unit"). Compile-time uniqueness for *option*
-/// types (the §6.4 types-as-keys model) is a separate concern
-/// landed in M.2.
+/// a distribution unit").
 ///
-/// Naming convention (enforced at registration in M.3+, not in
-/// the type itself): mode names always end in `-mode`. Group
+/// Naming convention: mode names always end in `-mode`. Group
 /// names (M.2) never end in `-mode`. The disambiguation rule
 /// in mode-architecture.md §6.7.1 depends on this convention.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -36,8 +38,7 @@ impl ModeId {
     }
 
     /// Borrow the canonical name. Stable for the program's
-    /// lifetime (interned strings live forever per the leak
-    /// semantics of `internment::Intern`).
+    /// lifetime.
     pub fn as_str(&self) -> &str {
         self.0.as_ref()
     }
@@ -58,30 +59,77 @@ pub enum ModeKind {
     Minor,
 }
 
+/// Pinned, boxed, send-able future for `Mode::on_activate`.
+///
+/// The explicit `Pin<Box<dyn Future + Send>>` desugaring (rather
+/// than `async fn` in trait) is needed because:
+///
+/// 1. **Object safety.** [`Mode`] has an associated type
+///    ([`Mode::Guard`]) and is not directly object-safe. The
+///    dispatcher stores modes as `Arc<dyn DynMode>` via the
+///    [`DynMode`](crate::DynMode) adapter; the adapter's
+///    `on_activate_dyn` returns a future whose output is
+///    type-erased to `Box<dyn Any + Send>`.
+/// 2. **`Send` bound.** Lifecycle futures may be scheduled across
+///    threads (M-async.2 swaps `poll_now` for runtime-spawned
+///    `.await`); the future itself must be `Send` so the executor
+///    can move it between worker threads.
+/// 3. **Explicit lifetime.** Modes capture their `&self` and the
+///    [`ModeContext`] (owned, `Send + 'static`); the future's
+///    lifetime is tied to `&self` via `'a`.
+///
+/// The default type parameter `T = ()` lets marker modes write
+/// `LifecycleFuture<'_>` without naming the unit type.
+pub type LifecycleFuture<'a, T = ()> =
+    Pin<Box<dyn Future<Output = Result<T, ModeActivationError>> + Send + 'a>>;
+
 /// Declarative mode contract.
 ///
-/// Per mode-architecture.md §5.2, this trait splits into two
-/// halves:
+/// Per mode-architecture.md §5.2 + §7.1, this trait splits into
+/// three concerns:
 ///
 /// 1. **Declarative methods** (`options`, `keymap`,
 ///    `subscriptions`, `decorations`, `required_capabilities`,
-///    `conflicts_with`, `implies`) return read-only data. The
-///    registry, not the mode, applies these to the layer stack on
-///    activation and removes them on deactivation. The mode can
-///    never leak contributions past its lifetime by construction.
-/// 2. **Lifecycle hooks** (`on_activate`, `on_deactivate`) are
-///    for side effects only -- spawning a server connection,
-///    opening a watcher, allocating a buffer-side cache. They
-///    receive a *read-only* [`ModeContext`]: no `&mut Config`,
-///    no `&mut Keymap`, no direct LSP / actor access.
+///    `conflicts_with`, `implies`, `completion_sources`,
+///    `mirrors_option`) return read-only data. The registry
+///    applies these to the layer stack on activation and removes
+///    them on deactivation. The mode can never leak contributions
+///    past its lifetime by construction.
+/// 2. **Lifecycle hook** ([`Mode::on_activate`]) returns an
+///    owned [`Guard`](Mode::Guard) value carrying every resource
+///    the mode allocated (subscription IDs, prior option values
+///    to restore, supervisor handles, etc.). The dispatcher
+///    stashes the Guard in a [`GuardStore`](crate::GuardStore)
+///    keyed by `(BufferId, ModeId)`.
+/// 3. **Deactivation cleanup.** There is **no `on_deactivate`**.
+///    On deactivation the dispatcher drops the stashed Guard;
+///    the Guard's `Drop` impl performs every cleanup action.
+///    This makes cleanup mandatory (compiler-enforced via
+///    Rust ownership), bug-resistant (a forgotten cleanup step
+///    becomes a compile-time leak rather than a runtime resource
+///    leak), and uniform (marker modes use `()` as Guard).
 ///
-/// All declarative methods have default impls returning empty;
-/// real modes in M.3+ override the ones they care about.
+/// Validated against Zed's `Subscription` / `Task<T>` cancel-on-
+/// drop pattern and helix's Rust-ownership-based cleanup; see
+/// mode-architecture.md §7.1.
 ///
 /// `Send + Sync + 'static` so a single trait object can be shared
 /// across threads (the registry runs on whatever task drives
 /// activation; subscribers can be on any task).
 pub trait Mode: Send + Sync + 'static {
+    /// Owned cleanup token returned by [`Self::on_activate`].
+    ///
+    /// The mode allocates whatever resources it needs (event
+    /// subscriptions, supervisor handles, prior option values
+    /// to restore) and packages them in a Guard struct with a
+    /// `Drop` impl that performs cleanup. Marker modes that
+    /// have no cleanup work use `()`.
+    ///
+    /// `Send + 'static` so the dispatcher can stash the Guard
+    /// in a typed-erased `Box<dyn Any + Send>` and move it
+    /// across threads if needed.
+    type Guard: Send + 'static;
+
     /// Canonical identity. Same value every call.
     fn id(&self) -> ModeId;
 
@@ -90,28 +138,26 @@ pub trait Mode: Send + Sync + 'static {
 
     /// Option overrides this mode contributes. Pure declarative
     /// (same return value every call); the registry merges these
-    /// into the resolution layer stack on activation. Stub type
-    /// in M.1; real type lands with M.2 option resolution.
+    /// into the resolution layer stack on activation.
     fn options(&self) -> OptionOverrideSet {
         OptionOverrideSet::default()
     }
 
     /// Keymap chord -> command additions / overrides. Layered
-    /// into the existing keymap registry
-    /// (`keymap-architecture.md` §5-6) at this mode's priority
-    /// slot. Stub type in M.1.
+    /// into the existing keymap registry at this mode's priority
+    /// slot.
     fn keymap(&self) -> Keymap {
         Keymap::default()
     }
 
     /// Typed event subscriptions registered alongside the mode;
-    /// deregistered on deactivation. Stub type in M.1.
+    /// deregistered on deactivation.
     fn subscriptions(&self) -> Vec<Subscription> {
         Vec::new()
     }
 
     /// Decoration providers (gutter / inline / overlay /
-    /// statusline). Stub type in M.1.
+    /// statusline).
     fn decorations(&self) -> Vec<DecorationProvider> {
         Vec::new()
     }
@@ -122,18 +168,6 @@ pub trait Mode: Send + Sync + 'static {
     /// `snippet-completion-mode`, `buffer-words-mode`,
     /// `tree-sitter-completion-mode`, `path-completion-mode`,
     /// plugin sources) override.
-    ///
-    /// The host resolves and caches the active source set per
-    /// buffer at mode-activation / -deactivation transitions (see
-    /// `insert-completion.md` §12.4); the keystroke-frequency
-    /// refilter pays an O(1) buffer-local lookup, never a walk
-    /// over every active mode. Implementations are therefore
-    /// allowed to allocate inside this method -- it runs at mode-
-    /// transition rate, not keystroke rate.
-    ///
-    /// CSM.1 lands the trait method (default empty); CSM.4 --
-    /// CSM.8 migrate the existing hardcoded sources into mode
-    /// contributions, one source at a time.
     fn completion_sources(&self) -> Vec<lattice_completion::CompletionSourceContribution> {
         Vec::new()
     }
@@ -162,57 +196,120 @@ pub trait Mode: Send + Sync + 'static {
     /// Declarative mirror hint for "this mode is the on/off
     /// switch for a typed option of the same observable state".
     /// `Some(canonical_name)` ⇒ a host-driven cascade keeps the
-    /// mode's active state and the option's value in sync:
-    ///
-    /// - User runs `:set <name>=true` ⇒ host auto-activates the
-    ///   mode (so the mode's `options()` overrides apply, and
-    ///   anything reading the mode-active gate sees `true`).
-    /// - User runs `:set <name>=false` ⇒ host auto-deactivates.
-    /// - User runs `:<mode-name>` toggle ⇒ the mode's
-    ///   `options()` contribution writes the option as part of
-    ///   its declarative overrides; no separate mirror needed.
-    ///
-    /// The default `None` means the mode does *not* participate
-    /// in the option-mirror cascade. Used today by the M.7.1
-    /// display modes (`line-numbers-mode`, `wrap-mode`, etc.).
-    ///
-    /// Constraint: the mirrored option must be `bool`-typed.
-    /// The host's mirror cascade reads via the type-erased
-    /// `ErasedOption::current_value_erased()` and downcasts to
-    /// `bool`; non-bool options return `None` from the cascade
-    /// and the mirror silently no-ops (defense in depth).
+    /// mode's active state and the option's value in sync.
     fn mirrors_option(&self) -> Option<&'static str> {
         None
     }
 
     /// Lifecycle. Called once per (buffer, activation) cycle
-    /// after the registry has applied the declarative contributions.
-    /// May start side effects (spawn a server connection, register
-    /// a watcher), may mutate its own coupled options via
-    /// [`ModeContext::config`] (`mode-architecture.md` §5.2), and
-    /// may write its own buffer-locals via
-    /// [`ModeContext::set_local`]; may NOT mutate another mode's
-    /// locals (the `OWNER_MODE` rule guards this).
-    /// Errors propagated as [`ModeActivationError`]; do not panic.
+    /// after the registry has applied the declarative
+    /// contributions. Returns an owned [`Guard`](Self::Guard)
+    /// carrying every resource the mode allocated. The
+    /// dispatcher stashes the Guard until deactivation, at which
+    /// point dropping it performs cleanup via the Guard's `Drop`
+    /// impl.
+    ///
+    /// Marker modes whose `Guard = ()` typically write:
+    ///
+    /// ```ignore
+    /// type Guard = ();
+    /// fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
+    ///     Box::pin(async { Ok(()) })
+    /// }
+    /// ```
+    ///
+    /// Stateful modes return a Guard struct whose `Drop` impl
+    /// performs cleanup (unsubscribe, restore prior option,
+    /// drop supervisor handle, etc.).
+    ///
+    /// Errors propagate as [`ModeActivationError`]; do not panic.
     ///
     /// Idempotent setup contract: `on_activate` may run more
-    /// than once in a buffer's lifetime (each preceded by
-    /// `on_deactivate` if previously active). Implementations
-    /// must check existing state before allocating.
-    fn on_activate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-        Ok(())
+    /// than once in a buffer's lifetime (each preceded by a
+    /// Guard-drop if previously active). Implementations must
+    /// produce a fresh Guard every time.
+    fn on_activate(&self, ctx: ModeContext) -> LifecycleFuture<'_, Self::Guard>;
+}
+
+/// Object-safe adapter for `Mode`. The registry stores modes
+/// as `Arc<dyn DynMode>`; the blanket impl below box-erases
+/// each `Mode`'s typed `Guard` into `Box<dyn Any + Send>` so
+/// the dispatcher can stash heterogeneous Guards in a single
+/// [`GuardStore`](crate::GuardStore) and drop them on
+/// deactivation.
+///
+/// Public (not sealed): the trait is implemented automatically
+/// for every `Mode`; consumers never implement `DynMode`
+/// directly. Exposed in `pub` form because the registry's
+/// public API (`Arc<dyn DynMode>`) leaks it.
+pub trait DynMode: Send + Sync + 'static {
+    fn id(&self) -> ModeId;
+    fn kind(&self) -> ModeKind;
+    fn options(&self) -> OptionOverrideSet;
+    fn keymap(&self) -> Keymap;
+    fn subscriptions(&self) -> Vec<Subscription>;
+    fn decorations(&self) -> Vec<DecorationProvider>;
+    fn completion_sources(&self) -> Vec<lattice_completion::CompletionSourceContribution>;
+    fn required_capabilities(&self) -> CapabilitySet;
+    fn conflicts_with(&self) -> &[ModeId];
+    fn implies(&self) -> &[ModeId];
+    fn mirrors_option(&self) -> Option<&'static str>;
+
+    /// Type-erased lifecycle entry. Returns a future whose
+    /// output is the typed Guard erased to `Box<dyn Any + Send>`.
+    /// The dispatcher stashes this box keyed by
+    /// `(BufferId, ModeId)`; deactivation drops it.
+    fn on_activate_dyn<'a>(
+        &'a self,
+        ctx: ModeContext,
+    ) -> Pin<Box<dyn Future<Output = Result<Box<dyn Any + Send>, ModeActivationError>> + Send + 'a>>;
+}
+
+impl<M: Mode> DynMode for M {
+    fn id(&self) -> ModeId {
+        <M as Mode>::id(self)
+    }
+    fn kind(&self) -> ModeKind {
+        <M as Mode>::kind(self)
+    }
+    fn options(&self) -> OptionOverrideSet {
+        <M as Mode>::options(self)
+    }
+    fn keymap(&self) -> Keymap {
+        <M as Mode>::keymap(self)
+    }
+    fn subscriptions(&self) -> Vec<Subscription> {
+        <M as Mode>::subscriptions(self)
+    }
+    fn decorations(&self) -> Vec<DecorationProvider> {
+        <M as Mode>::decorations(self)
+    }
+    fn completion_sources(&self) -> Vec<lattice_completion::CompletionSourceContribution> {
+        <M as Mode>::completion_sources(self)
+    }
+    fn required_capabilities(&self) -> CapabilitySet {
+        <M as Mode>::required_capabilities(self)
+    }
+    fn conflicts_with(&self) -> &[ModeId] {
+        <M as Mode>::conflicts_with(self)
+    }
+    fn implies(&self) -> &[ModeId] {
+        <M as Mode>::implies(self)
+    }
+    fn mirrors_option(&self) -> Option<&'static str> {
+        <M as Mode>::mirrors_option(self)
     }
 
-    /// Inverse of `on_activate`. Synchronous from the user's
-    /// perspective; resource teardown can continue async
-    /// post-event (`mode-architecture.md` §7.1). Subscribers to
-    /// `MinorDeactivated` / `MajorExiting` must handle "the
-    /// resource the mode managed may still be in mid-shutdown".
-    /// Implementations should remove any buffer-locals they
-    /// installed during `on_activate` via
-    /// [`ModeContext::remove_local`].
-    fn on_deactivate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-        Ok(())
+    fn on_activate_dyn<'a>(
+        &'a self,
+        ctx: ModeContext,
+    ) -> Pin<Box<dyn Future<Output = Result<Box<dyn Any + Send>, ModeActivationError>> + Send + 'a>>
+    {
+        let fut = <M as Mode>::on_activate(self, ctx);
+        Box::pin(async move {
+            let guard = fut.await?;
+            Ok(Box::new(guard) as Box<dyn Any + Send>)
+        })
     }
 }
 
@@ -242,29 +339,29 @@ mod tests {
         assert_eq!(format!("{}", ModeId::new("lsp-mode")), "lsp-mode");
     }
 
-    /// A bare `Mode` impl that doesn't override
-    /// `completion_sources()` gets the default empty list. Mode
-    /// crates that don't own a completion source (the majority --
-    /// `text-mode`, `rust-mode`, `file-tree-mode`, etc.) rely on
-    /// this default and never see the completion machinery.
+    /// A bare `Mode` impl with `Guard = ()` and a trivial
+    /// `on_activate`. Confirms `completion_sources()` defaults
+    /// to empty.
     #[test]
     fn completion_sources_defaults_to_empty() {
         struct BareMode;
         impl Mode for BareMode {
+            type Guard = ();
             fn id(&self) -> ModeId {
                 ModeId::new("bare-mode")
             }
             fn kind(&self) -> ModeKind {
                 ModeKind::Minor
             }
+            fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
+                Box::pin(async { Ok(()) })
+            }
         }
-        assert!(BareMode.completion_sources().is_empty());
+        assert!(<BareMode as Mode>::completion_sources(&BareMode).is_empty());
     }
 
     /// A mode that DOES contribute a source returns it through
-    /// the new trait method. CSM.4 -- CSM.8 will replace the
-    /// stub source with the real `Sync`/`AsyncCompletionSource`
-    /// impls from each owning crate.
+    /// the new trait method.
     #[test]
     fn mode_can_contribute_a_completion_source() {
         use lattice_completion::{
@@ -282,6 +379,7 @@ mod tests {
         }
         struct StubMode;
         impl Mode for StubMode {
+            type Guard = ();
             fn id(&self) -> ModeId {
                 ModeId::new("stub-mode")
             }
@@ -298,8 +396,11 @@ mod tests {
                     kind: CompletionSourceKind::Sync(Arc::new(StubSource)),
                 }]
             }
+            fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
+                Box::pin(async { Ok(()) })
+            }
         }
-        let sources = StubMode.completion_sources();
+        let sources = <StubMode as Mode>::completion_sources(&StubMode);
         assert_eq!(sources.len(), 1);
         assert_eq!(sources[0].id.as_str(), "gen:stub");
         assert_eq!(sources[0].kind.kind_label(), "sync");

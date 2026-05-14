@@ -1,39 +1,30 @@
 //! `ModeContext`: the handle passed to
-//! [`crate::Mode::on_activate`] / [`crate::Mode::on_deactivate`].
+//! [`crate::Mode::on_activate`].
 //!
-//! Hooks own their own work. Modes that need to mutate options
-//! (e.g. `lsp-folding-mode` swapping `foldmethod=lsp` on
-//! activate) reach the typed-options registry through
-//! [`ModeContext::config`]. Hooks must still leave OTHER modes' state
-//! alone; `BufferLocals` writes go through [`ModeContext::set_local`]
-//! which enforces the [`crate::BufferLocal::OWNER_MODE`] rule.
+//! Owned (`Send + 'static`) so the dispatcher can hand it to a
+//! `tokio::spawn`ed future without lifetime gymnastics. Hooks
+//! that need to mutate options (e.g. `lsp-folding-mode` swapping
+//! `foldmethod=lsp` on activate) reach the typed-options
+//! registry through [`ModeContext::config`]. Hooks that need to
+//! publish typed events use [`ModeContext::events`]. Hooks that
+//! need a subsystem handle (LSP supervisor, BufferStore) call
+//! [`ModeContext::service`].
 //!
-//! Why the context owns these handles (rather than the App):
-//! a mode's activation behaviour shouldn't depend on which
-//! renderer hosts it. A TUI App and a future GPUI App should
-//! both call `registry.activate_minor(...)` and get identical
-//! side effects. So everything a mode needs to do its own work
-//! lives on `ModeContext`.
+//! Why no `BufferLocals` access:
 //!
-//! Today the context exposes:
+//! Mode-private state is owned by the [`Mode::Guard`](crate::Mode::Guard)
+//! returned from `on_activate`. The Guard's `Drop` impl performs
+//! cleanup. App-managed buffer-locals (icons, syntax handles,
+//! folds, ...) live in an App-owned map and are written through
+//! App-side code paths, not through `ctx`.
 //!
-//! - The [`BufferId`] the activation is operating on.
-//! - The [`ModeId`] of the current mode.
-//! - A typed-map ([`crate::BufferLocals`]) of buffer-local
-//!   mode-internal data (M.3.2.a, Shape A from
-//!   `mode-architecture.md` §9.4).
-//! - The shared typed-options registry
-//!   ([`lattice_config::ConfigRegistry`]) -- modes use this to
-//!   set/get options whose values are coupled to the mode's
-//!   active state (Phase 1).
-//! - The shared typed event bus ([`lattice_runtime::EventBus`])
-//!   -- modes publish typed events on activate / deactivate
-//!   (e.g. `LspMode` publishes `LspBufferAttached` /
-//!   `LspBufferDetached`). Phase 2.
+//! Why owned handles (not `&Arc<T>`):
 //!
-//! The borrow lifetime `'a` ties the context to the underlying
-//! borrows so the borrow checker prevents the mode from
-//! holding the context past the lifecycle hook's return.
+//! The context is constructed once per activation and moved into
+//! the lifecycle future. The future captures it across `await`
+//! points, so every field must be owned and `Send + 'static`.
+//! `Arc<T>` is cheap to clone -- the dispatcher does one
+//! `Arc::clone` per activation when building the context.
 
 use std::any::Any;
 use std::sync::Arc;
@@ -42,58 +33,52 @@ use lattice_config::ConfigRegistry;
 use lattice_protocol::ids::BufferId;
 use lattice_runtime::EventBus;
 
-use crate::error::ModeActivationError;
-use crate::locals::{BufferLocal, BufferLocals};
 use crate::mode::ModeId;
 use crate::services::ServiceRegistry;
 
 /// Lifecycle context. Carries the current activation's
-/// metadata + a borrow of the buffer's locals map +
-/// references to system-wide registries the mode may need to
-/// mutate.
+/// metadata + cheap-clone handles to the system registries the
+/// mode may need.
 ///
-/// Borrowed lifetime: a context cannot outlive the
-/// references it carries. Lifecycle hooks receive this by
-/// `&mut` reference and must not stash it.
-pub struct ModeContext<'a> {
+/// **Owned, `Send + 'static`**: the dispatcher constructs one
+/// per activation, moves it into the lifecycle future, and
+/// drops it when the future resolves.
+pub struct ModeContext {
     buffer_id: BufferId,
     current_mode: ModeId,
-    locals: &'a mut BufferLocals,
-    config: &'a ConfigRegistry,
-    events: &'a Arc<EventBus>,
-    services: &'a ServiceRegistry,
+    config: Arc<ConfigRegistry>,
+    events: Arc<EventBus>,
+    services: Arc<ServiceRegistry>,
 }
 
-impl<'a> ModeContext<'a> {
-    /// Construct a new context. Crate-private because only the
-    /// registry should build one (during activation /
-    /// deactivation); external code reads through the trait
-    /// methods on `Mode`.
-    pub(crate) fn new(
+impl ModeContext {
+    /// Construct a new context. Public for tests that drive
+    /// mode lifecycle directly; production callers go through
+    /// the registry's activation methods which build the
+    /// context internally.
+    pub fn new(
         buffer_id: BufferId,
         current_mode: ModeId,
-        locals: &'a mut BufferLocals,
-        config: &'a ConfigRegistry,
-        events: &'a Arc<EventBus>,
-        services: &'a ServiceRegistry,
+        config: Arc<ConfigRegistry>,
+        events: Arc<EventBus>,
+        services: Arc<ServiceRegistry>,
     ) -> Self {
         Self {
             buffer_id,
             current_mode,
-            locals,
             config,
             events,
             services,
         }
     }
 
-    /// Typed service lookup (Phase 3). Used by modes that need
-    /// access to subsystem handles (e.g. `LspMode` retrieves
-    /// `LspSupervisorHandle` in its `on_deactivate` to send
-    /// `textDocument/didClose`). Returns `None` when no service
-    /// of type `T` was registered -- a mode that depends on a
-    /// service should fail gracefully (echo or log) rather
-    /// than panic; tests may run the mode without wiring the
+    /// Typed service lookup. Used by modes that need access to
+    /// subsystem handles (e.g. `LspMode` retrieves
+    /// `LspSupervisorHandle`; `LspLogMode` retrieves
+    /// `BufferStoreHandle` to synthesize its `*lsp*` buffer).
+    /// Returns `None` when no service of type `T` is registered
+    /// -- modes should fail gracefully (log / echo) rather than
+    /// panic, since tests may run a mode without wiring the
     /// service.
     pub fn service<T: Any + Send + Sync>(&self) -> Option<Arc<T>> {
         self.services.get::<T>()
@@ -101,22 +86,29 @@ impl<'a> ModeContext<'a> {
 
     /// Shared typed-options registry. Mutations propagate
     /// through the registry's `OptionChanged` event stream the
-    /// same way `:set` does, so subscribers (option cache
-    /// recompute, side-effect cascades like `foldmethod ⇒
-    /// recompute_folds`) fire automatically.
+    /// same way `:set` does, so subscribers fire automatically.
     pub fn config(&self) -> &ConfigRegistry {
-        self.config
+        &self.config
     }
 
-    /// Shared typed event bus. Modes publish lifecycle events
-    /// (e.g. `LspBufferAttached` / `LspBufferDetached` on
-    /// `LspMode::on_activate` / `on_deactivate`) via
-    /// `ctx.events().publish_typed(...)`. Subscribers are
-    /// wired through the App at boot; modes don't subscribe
-    /// from `on_activate` (lifetime semantics don't survive
-    /// the hook return).
-    pub fn events(&self) -> &Arc<EventBus> {
-        self.events
+    /// Cheap-clone handle to the config registry. Use when the
+    /// mode needs to stash the registry inside its Guard for
+    /// later mutation (e.g. restoring an option in `Drop`).
+    pub fn config_handle(&self) -> Arc<ConfigRegistry> {
+        self.config.clone()
+    }
+
+    /// Shared typed event bus.
+    pub fn events(&self) -> &EventBus {
+        &self.events
+    }
+
+    /// Cheap-clone handle to the event bus. Use when the mode
+    /// needs to stash the bus inside its Guard for later
+    /// publish / unsubscribe (e.g. unsubscribing a subscription
+    /// ID in `Drop`).
+    pub fn events_handle(&self) -> Arc<EventBus> {
+        self.events.clone()
     }
 
     /// Buffer the activation is operating on.
@@ -125,222 +117,47 @@ impl<'a> ModeContext<'a> {
     }
 
     /// The mode whose lifecycle hook is currently running.
-    /// Used internally for the `OWNER_MODE` check on local
-    /// writes; lifecycle hooks can also call this for logging
-    /// / introspection.
     pub fn current_mode(&self) -> ModeId {
         self.current_mode
-    }
-
-    /// Read a buffer-local, regardless of which mode owns it.
-    /// Reads are unrestricted -- a mode can read any local
-    /// any other mode populated, which lets, e.g.,
-    /// `lsp-completion-mode` read `file-tree-mode`'s entries
-    /// for path completion without a special handshake.
-    pub fn get_local<T: BufferLocal>(&self) -> Option<&T> {
-        self.locals.get::<T>()
-    }
-
-    /// Write the buffer-local of type `T`. Enforces the
-    /// `OWNER_MODE` rule: the current mode's id must match
-    /// `T::OWNER_MODE`, otherwise returns
-    /// [`ModeActivationError::WrongOwnerMode`] without
-    /// touching the map.
-    pub fn set_local<T: BufferLocal>(&mut self, value: T) -> Result<(), ModeActivationError> {
-        if T::OWNER_MODE != self.current_mode.as_str() {
-            return Err(ModeActivationError::WrongOwnerMode {
-                current: self.current_mode,
-                local: T::NAME,
-                owner: T::OWNER_MODE,
-            });
-        }
-        self.locals.insert(value);
-        Ok(())
-    }
-
-    /// Mutably borrow a buffer-local owned by the current
-    /// mode. Same `OWNER_MODE` enforcement as [`Self::set_local`].
-    /// Returns `Ok(None)` if no local of type `T` is currently
-    /// stored (the caller can decide whether that's an error
-    /// or just initial state).
-    pub fn get_local_mut<T: BufferLocal>(&mut self) -> Result<Option<&mut T>, ModeActivationError> {
-        if T::OWNER_MODE != self.current_mode.as_str() {
-            return Err(ModeActivationError::WrongOwnerMode {
-                current: self.current_mode,
-                local: T::NAME,
-                owner: T::OWNER_MODE,
-            });
-        }
-        Ok(self.locals.get_mut::<T>())
-    }
-
-    /// Remove the buffer-local of type `T`, returning its
-    /// owned value. Same `OWNER_MODE` enforcement; useful in
-    /// `on_deactivate` to clean up.
-    pub fn remove_local<T: BufferLocal>(&mut self) -> Result<Option<T>, ModeActivationError> {
-        if T::OWNER_MODE != self.current_mode.as_str() {
-            return Err(ModeActivationError::WrongOwnerMode {
-                current: self.current_mode,
-                local: T::NAME,
-                owner: T::OWNER_MODE,
-            });
-        }
-        Ok(self.locals.remove::<T>())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::panic)]
+    #![allow(clippy::unwrap_used)]
     use super::*;
 
-    #[derive(Debug)]
-    struct OwnedByA(i64);
-    impl BufferLocal for OwnedByA {
-        const NAME: &'static str = "a.value";
-        const DOC: &'static str = "Owned by mode-a";
-        const OWNER_MODE: &'static str = "a-mode";
-        fn describe(&self) -> String {
-            format!("{}", self.0)
-        }
-    }
-
-    #[derive(Debug)]
-    struct OwnedByB(String);
-    impl BufferLocal for OwnedByB {
-        const NAME: &'static str = "b.text";
-        const DOC: &'static str = "Owned by mode-b";
-        const OWNER_MODE: &'static str = "b-mode";
-        fn describe(&self) -> String {
-            self.0.clone()
-        }
-    }
-
-    fn ctx<'a>(
-        mode_name: &str,
-        locals: &'a mut BufferLocals,
-        config: &'a ConfigRegistry,
-        events: &'a Arc<EventBus>,
-        services: &'a ServiceRegistry,
-    ) -> ModeContext<'a> {
+    fn ctx() -> ModeContext {
         ModeContext::new(
             BufferId::new(1),
-            ModeId::new(mode_name),
-            locals,
-            config,
-            events,
-            services,
+            ModeId::new("a-mode"),
+            Arc::new(ConfigRegistry::new()),
+            Arc::new(EventBus::new()),
+            Arc::new(ServiceRegistry::new()),
         )
     }
 
     #[test]
     fn buffer_id_and_current_mode_round_trip() {
-        let mut locals = BufferLocals::new();
-        let cfg = ConfigRegistry::new();
-        let evt = Arc::new(EventBus::new());
-        let svc = ServiceRegistry::new();
-        let c = ctx("a-mode", &mut locals, &cfg, &evt, &svc);
+        let c = ctx();
         assert_eq!(c.buffer_id(), BufferId::new(1));
         assert_eq!(c.current_mode().as_str(), "a-mode");
     }
 
     #[test]
-    fn set_local_succeeds_when_owner_matches() {
-        let mut locals = BufferLocals::new();
-        let cfg = ConfigRegistry::new();
-        let evt = Arc::new(EventBus::new());
-        let svc = ServiceRegistry::new();
-        let mut c = ctx("a-mode", &mut locals, &cfg, &evt, &svc);
-        assert!(c.set_local(OwnedByA(42)).is_ok());
-        assert_eq!(c.get_local::<OwnedByA>().unwrap().0, 42);
+    fn handles_are_cheap_to_clone() {
+        let c = ctx();
+        let h1 = c.events_handle();
+        let h2 = c.events_handle();
+        // Both Arc clones point at the same bus.
+        assert!(Arc::ptr_eq(&h1, &h2));
     }
 
+    /// The context is `Send + 'static` so a spawned future can
+    /// hold it across `.await` points.
     #[test]
-    fn set_local_fails_when_owner_mismatch() {
-        let mut locals = BufferLocals::new();
-        let cfg = ConfigRegistry::new();
-        let evt = Arc::new(EventBus::new());
-        let svc = ServiceRegistry::new();
-        let mut c = ctx("a-mode", &mut locals, &cfg, &evt, &svc);
-        let err = c.set_local(OwnedByB("hi".into())).unwrap_err();
-        match err {
-            ModeActivationError::WrongOwnerMode {
-                current,
-                local,
-                owner,
-            } => {
-                assert_eq!(current.as_str(), "a-mode");
-                assert_eq!(local, "b.text");
-                assert_eq!(owner, "b-mode");
-            }
-            other => panic!("expected WrongOwnerMode, got {other:?}"),
-        }
-        assert!(c.get_local::<OwnedByB>().is_none());
-    }
-
-    #[test]
-    fn get_local_is_unrestricted() {
-        let mut locals = BufferLocals::new();
-        let cfg = ConfigRegistry::new();
-        let evt = Arc::new(EventBus::new());
-        let svc = ServiceRegistry::new();
-        // Write as a-mode...
-        {
-            let mut c = ctx("a-mode", &mut locals, &cfg, &evt, &svc);
-            c.set_local(OwnedByA(7)).unwrap();
-        }
-        // ...read as b-mode (cross-mode read OK).
-        let c = ctx("b-mode", &mut locals, &cfg, &evt, &svc);
-        assert_eq!(c.get_local::<OwnedByA>().unwrap().0, 7);
-    }
-
-    #[test]
-    fn remove_local_owner_check() {
-        let mut locals = BufferLocals::new();
-        let cfg = ConfigRegistry::new();
-        let evt = Arc::new(EventBus::new());
-        let svc = ServiceRegistry::new();
-        {
-            let mut c = ctx("a-mode", &mut locals, &cfg, &evt, &svc);
-            c.set_local(OwnedByA(1)).unwrap();
-        }
-        // Wrong owner: remove fails without removing.
-        {
-            let mut c = ctx("b-mode", &mut locals, &cfg, &evt, &svc);
-            let err = c.remove_local::<OwnedByA>().unwrap_err();
-            assert!(matches!(err, ModeActivationError::WrongOwnerMode { .. }));
-        }
-        assert!(locals.contains::<OwnedByA>());
-        // Correct owner: remove succeeds.
-        {
-            let mut c = ctx("a-mode", &mut locals, &cfg, &evt, &svc);
-            let removed = c.remove_local::<OwnedByA>().unwrap();
-            assert_eq!(removed.unwrap().0, 1);
-        }
-        assert!(!locals.contains::<OwnedByA>());
-    }
-
-    #[test]
-    fn get_local_mut_owner_check() {
-        let mut locals = BufferLocals::new();
-        let cfg = ConfigRegistry::new();
-        let evt = Arc::new(EventBus::new());
-        let svc = ServiceRegistry::new();
-        {
-            let mut c = ctx("a-mode", &mut locals, &cfg, &evt, &svc);
-            c.set_local(OwnedByA(0)).unwrap();
-        }
-        // Wrong owner: error.
-        {
-            let mut c = ctx("b-mode", &mut locals, &cfg, &evt, &svc);
-            assert!(c.get_local_mut::<OwnedByA>().is_err());
-        }
-        // Right owner: in-place mutation.
-        {
-            let mut c = ctx("a-mode", &mut locals, &cfg, &evt, &svc);
-            c.get_local_mut::<OwnedByA>().unwrap().unwrap().0 = 99;
-        }
-        let c = ctx("a-mode", &mut locals, &cfg, &evt, &svc);
-        assert_eq!(c.get_local::<OwnedByA>().unwrap().0, 99);
+    fn ctx_is_send_static() {
+        fn assert_send_static<T: Send + 'static>() {}
+        assert_send_static::<ModeContext>();
     }
 }

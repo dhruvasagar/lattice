@@ -15,7 +15,7 @@
 
 use lattice_config::OptionOverrideSet;
 
-use crate::{CapabilitySet, Mode, ModeActivationError, ModeContext, ModeId, ModeKind};
+use crate::{CapabilitySet, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind};
 
 pub struct HoverMode;
 
@@ -26,6 +26,7 @@ impl HoverMode {
 }
 
 impl Mode for HoverMode {
+    type Guard = ();
     fn id(&self) -> ModeId {
         Self::mode_id()
     }
@@ -36,11 +37,7 @@ impl Mode for HoverMode {
         // Bug 4: hover popups are width-constrained (cursor-
         // anchored, capped at ~80 cells); long markdown bodies
         // need to wrap or they overflow horizontally with
-        // no horizontal scroll path. ReadOnly is implied by the
-        // popup not having user-typed-into semantics, but we
-        // don't contribute it here -- markdown-mode (the major)
-        // doesn't either, and the popup display path doesn't
-        // route edits in. Future polish if needed.
+        // no horizontal scroll path.
         lattice_config::overrides! {
             lattice_config::Wrap = true,
         }
@@ -48,11 +45,8 @@ impl Mode for HoverMode {
     fn required_capabilities(&self) -> CapabilitySet {
         CapabilitySet::empty()
     }
-    fn on_activate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-        Ok(())
-    }
-    fn on_deactivate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-        Ok(())
+    fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
+        Box::pin(async { Ok(()) })
     }
 }
 

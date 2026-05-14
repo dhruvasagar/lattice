@@ -58,6 +58,7 @@ pub mod context;
 pub mod contributions;
 pub mod error;
 pub mod event;
+pub mod guards;
 pub mod locals;
 pub mod mode;
 pub mod modes;
@@ -71,8 +72,9 @@ pub use crate::context::ModeContext;
 pub use crate::contributions::{DecorationProvider, Keymap, Subscription};
 pub use crate::error::ModeActivationError;
 pub use crate::event::ModeEvent;
+pub use crate::guards::GuardStore;
 pub use crate::locals::{BufferLocal, BufferLocals, LocalDescriptor};
-pub use crate::mode::{Mode, ModeId, ModeKind};
+pub use crate::mode::{DynMode, LifecycleFuture, Mode, ModeId, ModeKind};
 pub use crate::modes::{
     ActiveCompletionSources, BufferWordsMode, CompletionMode, CompletionPopupMode, HelpMode,
     HoverMode, PathCompletionMode, TextMode, register_foundation_modes,

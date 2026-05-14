@@ -40,7 +40,7 @@ use lattice_completion::{
 };
 use lattice_config::OptionOverrideSet;
 
-use crate::{BufferLocal, CapabilitySet, Mode, ModeActivationError, ModeContext, ModeId, ModeKind};
+use crate::{BufferLocal, CapabilitySet, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind};
 
 /// The "buffer participates in insert-mode completion" marker.
 /// Auto-activates on writable kinds at buffer creation. See
@@ -54,6 +54,7 @@ impl CompletionMode {
 }
 
 impl Mode for CompletionMode {
+    type Guard = ();
     fn id(&self) -> ModeId {
         Self::mode_id()
     }
@@ -66,11 +67,8 @@ impl Mode for CompletionMode {
     fn required_capabilities(&self) -> CapabilitySet {
         CapabilitySet::empty()
     }
-    fn on_activate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-        Ok(())
-    }
-    fn on_deactivate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-        Ok(())
+    fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
+        Box::pin(async { Ok(()) })
     }
 }
 
@@ -100,6 +98,7 @@ impl BufferWordsMode {
 }
 
 impl Mode for BufferWordsMode {
+    type Guard = ();
     fn id(&self) -> ModeId {
         Self::mode_id()
     }
@@ -122,11 +121,8 @@ impl Mode for BufferWordsMode {
             kind: CompletionSourceKind::Sync(Arc::new(BufferWordsSource::new())),
         }]
     }
-    fn on_activate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-        Ok(())
-    }
-    fn on_deactivate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-        Ok(())
+    fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
+        Box::pin(async { Ok(()) })
     }
 }
 
@@ -155,6 +151,7 @@ impl PathCompletionMode {
 }
 
 impl Mode for PathCompletionMode {
+    type Guard = ();
     fn id(&self) -> ModeId {
         Self::mode_id()
     }
@@ -171,29 +168,18 @@ impl Mode for PathCompletionMode {
         vec![CompletionSourceContribution {
             id: SourceId::new(lattice_completion::PATH_SOURCE_ID),
             // 90 per insert-completion.md §3.4. The source self-
-            // suppresses outside string scopes via
-            // `ctx.path_context`; when active, paths sort below
-            // buffer-words (100) and snippet (150) but above
-            // tree-sitter symbols (80) because they're the
-            // user's typed-context-correct candidates.
+            // suppresses outside string scopes; when active,
+            // paths sort below buffer-words (100) and snippet
+            // (150) but above tree-sitter symbols (80).
             default_priority: 90,
-            // The historic behaviour treats `<C-x><C-f>` (vim
-            // file-name completion) as the explicit trigger;
-            // CSM.K2 makes `<C-f>` the in-popup filter chord.
-            // No trigger char in the host-fired flow today --
-            // the source fires via the context's
-            // `path_context` flag, not by trigger char.
             auto_trigger: true,
             trigger_chars: vec!['/'],
             popup_filter_chord: Some('f'),
             kind: CompletionSourceKind::Sync(Arc::new(PathCompletionSource)),
         }]
     }
-    fn on_activate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-        Ok(())
-    }
-    fn on_deactivate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-        Ok(())
+    fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
+        Box::pin(async { Ok(()) })
     }
 }
 
@@ -207,6 +193,7 @@ impl CompletionPopupMode {
 }
 
 impl Mode for CompletionPopupMode {
+    type Guard = ();
     fn id(&self) -> ModeId {
         Self::mode_id()
     }
@@ -219,11 +206,8 @@ impl Mode for CompletionPopupMode {
     fn required_capabilities(&self) -> CapabilitySet {
         CapabilitySet::empty()
     }
-    fn on_activate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-        Ok(())
-    }
-    fn on_deactivate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-        Ok(())
+    fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
+        Box::pin(async { Ok(()) })
     }
 }
 
@@ -259,7 +243,7 @@ impl BufferLocal for ActiveCompletionSources {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ActiveModes, BufferLocals, ModeRegistry};
+    use crate::{ActiveModes, BufferLocals, GuardStore, ModeRegistry};
     use lattice_protocol::ids::BufferId;
 
     #[test]
@@ -289,14 +273,14 @@ mod tests {
             .register(CompletionPopupMode)
             .expect("register completion-popup-mode");
         let mut active = ActiveModes::new();
-        let mut locals = BufferLocals::new();
-        let cfg = lattice_config::ConfigRegistry::new();
-        let evt = std::sync::Arc::new(lattice_runtime::EventBus::new());
-        let svc = crate::services::ServiceRegistry::new();
+        let mut guards = GuardStore::new();
+        let cfg = Arc::new(lattice_config::ConfigRegistry::new());
+        let evt = Arc::new(lattice_runtime::EventBus::new());
+        let svc = Arc::new(crate::services::ServiceRegistry::new());
         registry
             .activate_minor(
                 &mut active,
-                &mut locals,
+                &mut guards,
                 &cfg,
                 &evt,
                 &svc,
@@ -308,7 +292,7 @@ mod tests {
         registry
             .activate_minor(
                 &mut active,
-                &mut locals,
+                &mut guards,
                 &cfg,
                 &evt,
                 &svc,
@@ -323,11 +307,11 @@ mod tests {
 
     #[test]
     fn both_modes_default_completion_sources_is_empty() {
-        // Neither mode is a source-contributor. Sources come
-        // from feature-owned minors (`lsp-completion-mode`,
-        // `buffer-words-mode`, ...).
-        assert!(CompletionMode.completion_sources().is_empty());
-        assert!(CompletionPopupMode.completion_sources().is_empty());
+        // Neither mode is a source-contributor.
+        assert!(<CompletionMode as Mode>::completion_sources(&CompletionMode).is_empty());
+        assert!(
+            <CompletionPopupMode as Mode>::completion_sources(&CompletionPopupMode).is_empty()
+        );
     }
 
     #[test]

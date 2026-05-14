@@ -13,36 +13,14 @@
 //! plugin, future API path -- because everything funnels
 //! through the mode trait's lifecycle hooks.
 //!
-//! The prior `foldmethod` is stashed in `BufferLocals` via
-//! the typed local [`PriorFoldmethod`]; the mode owns this
-//! local (`OWNER_MODE = "lsp-folding-mode"`) per
-//! `mode-architecture.md` §9.4.
+//! M-async.1: the prior `foldmethod` lives inside the mode's
+//! typed [`crate::modes::LspFoldingGuard`] (returned from
+//! `Mode::on_activate`); dropping the Guard fires the helper
+//! below. No `BufferLocal` indirection -- cleanup is
+//! compiler-enforced via Rust ownership.
 
 use lattice_config::{ConfigRegistry, FoldMethodOption};
 use lattice_core::FoldMethod;
-use lattice_mode::BufferLocal;
-
-/// Buffer-local stash holding the `foldmethod` value that
-/// was active immediately before `lsp-folding-mode` activated
-/// the buffer. The mode's `on_deactivate` reads this back to
-/// restore the user's prior setting; if the local is missing
-/// (mode was never activated on this buffer, or was already
-/// `Lsp` at activate time so the stash wasn't written),
-/// restore is a no-op.
-#[derive(Debug, Clone, Copy)]
-pub struct PriorFoldmethod(pub FoldMethod);
-
-impl BufferLocal for PriorFoldmethod {
-    const NAME: &'static str = "lsp-folding-mode.prior_foldmethod";
-    const DOC: &'static str = "foldmethod value at the moment \
-                               `lsp-folding-mode` activated. Restored \
-                               on deactivate.";
-    const OWNER_MODE: &'static str = "lsp-folding-mode";
-
-    fn describe(&self) -> String {
-        self.0.label().to_string()
-    }
-}
 
 /// Swap `foldmethod` to `FoldMethod::Lsp`. Returns the value
 /// that was active immediately before the swap so the caller

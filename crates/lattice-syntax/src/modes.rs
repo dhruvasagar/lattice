@@ -22,7 +22,7 @@ use lattice_completion::{
     SourceId, SyncCompletionSource,
 };
 use lattice_mode::{
-    CapabilitySet, Mode, ModeActivationError, ModeContext, ModeId, ModeKind, ModeRegistry,
+    CapabilitySet, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, ModeRegistry,
 };
 
 use crate::lang::Lang;
@@ -42,6 +42,7 @@ macro_rules! lang_mode {
         }
 
         impl Mode for $struct_name {
+            type Guard = ();
             fn id(&self) -> ModeId {
                 Self::mode_id()
             }
@@ -51,11 +52,8 @@ macro_rules! lang_mode {
             fn required_capabilities(&self) -> CapabilitySet {
                 CapabilitySet::empty()
             }
-            fn on_activate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-                Ok(())
-            }
-            fn on_deactivate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-                Ok(())
+            fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
+                Box::pin(async { Ok(()) })
             }
         }
     };
@@ -152,6 +150,7 @@ impl TreeSitterCompletionMode {
 }
 
 impl Mode for TreeSitterCompletionMode {
+    type Guard = ();
     fn id(&self) -> ModeId {
         Self::mode_id()
     }
@@ -174,11 +173,8 @@ impl Mode for TreeSitterCompletionMode {
             kind: CompletionSourceKind::Sync(Arc::new(TreeSitterSymbolSource)),
         }]
     }
-    fn on_activate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-        Ok(())
-    }
-    fn on_deactivate(&self, _ctx: &mut ModeContext<'_>) -> Result<(), ModeActivationError> {
-        Ok(())
+    fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
+        Box::pin(async { Ok(()) })
     }
 }
 

@@ -947,8 +947,11 @@ version = "0.1.0"
 dependencies = [
  "lattice-core",
  "lattice-file-tree",
+ "lattice-grammar",
  "lattice-help",
  "lattice-oil",
+ "lattice-protocol",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

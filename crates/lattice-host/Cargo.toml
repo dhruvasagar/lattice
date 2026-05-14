@@ -31,6 +31,12 @@ lattice-core = { path = "../lattice-core" }
 lattice-help = { path = "../lattice-help" }
 lattice-file-tree = { path = "../lattice-file-tree" }
 lattice-oil = { path = "../lattice-oil" }
+# Phase 5.2 second wave: actions + excommand. Pure renderer-
+# agnostic logic that depends only on the grammar + protocol
+# substrate.
+lattice-grammar = { path = "../lattice-grammar" }
+lattice-protocol = { path = "../lattice-protocol" }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 

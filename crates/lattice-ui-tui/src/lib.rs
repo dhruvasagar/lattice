@@ -27,16 +27,16 @@
 //! engine drives input through `CommandInvocation`s instead of the
 //! hardcoded `Action` enum used here.
 
-pub mod actions;
 pub mod app;
 pub mod buffer_registry;
-// Phase 5.2: trivial re-export shims migrated to `lattice-host`.
-// The `pub use` here preserves every existing
+// Phase 5.2: HOST modules migrated to `lattice-host`. The
+// `pub use` here preserves every existing
 // `lattice_ui_tui::<module>::*` import in downstream crates +
-// this crate's tests; no call-site changes needed for this slice.
-pub use lattice_host::{buffers, file_tree, help, help_topics, oil, popup};
+// this crate's tests + benches; no call-site changes needed.
+pub use lattice_host::{
+    actions, buffers, excommand, file_tree, help, help_topics, oil, popup,
+};
 pub mod chord;
-pub mod excommand;
 pub mod folds;
 pub mod host_generators;
 pub mod icons;

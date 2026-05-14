@@ -77,7 +77,7 @@ pub use crate::locals::{BufferLocal, BufferLocals, LocalDescriptor};
 pub use crate::mode::{DynMode, LifecycleFuture, Mode, ModeId, ModeKind};
 pub use crate::modes::{
     ActiveCompletionSources, BufferWordsMode, CompletionMode, CompletionPopupMode, HelpMode,
-    HoverMode, PathCompletionMode, TextMode, register_foundation_modes,
+    HoverMode, MessagesMode, PathCompletionMode, TextMode, register_foundation_modes,
 };
 pub use crate::services::ServiceRegistry;
 // M.4 dep-inversion: layer-input types live in `lattice-config`

@@ -36,6 +36,7 @@ pub mod completion;
 pub mod display;
 pub mod help;
 pub mod hover;
+pub mod messages;
 pub mod text;
 
 pub use completion::{
@@ -48,6 +49,7 @@ pub use display::{
 };
 pub use help::HelpMode;
 pub use hover::HoverMode;
+pub use messages::MessagesMode;
 pub use text::TextMode;
 
 use crate::registry::ModeRegistry;
@@ -68,6 +70,13 @@ pub fn register_foundation_modes(registry: &mut ModeRegistry) {
     registry
         .register(HelpMode)
         .expect("help-mode must register without conflict");
+    // msg-mode.1: `messages-mode` is the major mode for the
+    // editor's `*messages*` audit-log buffer. Replaces the
+    // pre-msg-mode `text-mode + read-only-mode` combo so the
+    // buffer's identity matches `lsp-log-mode`'s pattern.
+    registry
+        .register(MessagesMode)
+        .expect("messages-mode must register without conflict");
     registry
         .register(HoverMode)
         .expect("hover-mode must register without conflict");
@@ -133,6 +142,7 @@ mod tests {
         // FileTreeMode + OilMode register from their feature
         // crates' helpers; not asserted here.
         assert!(registry.is_registered(HelpMode::mode_id()));
+        assert!(registry.is_registered(MessagesMode::mode_id()));
         assert!(registry.is_registered(HoverMode::mode_id()));
         assert!(registry.is_registered(CompletionMode::mode_id()));
         assert!(registry.is_registered(CompletionPopupMode::mode_id()));

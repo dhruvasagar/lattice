@@ -136,6 +136,8 @@ fn action_is_document_mutation(action: &Action) -> bool {
 
 fn echo_level_from_grammar(level: lattice_grammar::EchoLevel) -> EchoLevel {
     match level {
+        lattice_grammar::EchoLevel::Trace => EchoLevel::Trace,
+        lattice_grammar::EchoLevel::Debug => EchoLevel::Debug,
         lattice_grammar::EchoLevel::Info => EchoLevel::Info,
         lattice_grammar::EchoLevel::Warn => EchoLevel::Warn,
         lattice_grammar::EchoLevel::Error => EchoLevel::Error,

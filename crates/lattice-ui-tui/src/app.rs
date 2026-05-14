@@ -172,6 +172,8 @@ pub struct EchoMessage {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EchoLevel {
+    Trace,
+    Debug,
     Info,
     Warn,
     Error,
@@ -195,8 +197,13 @@ pub use lattice_runtime::{MessagePushed, MessageRecord, MessagesRing};
 /// wire-typed (grammar / runtime / plugin host) is the
 /// existing convention that kept the renderer surface from
 /// leaking into the grammar layer.
+/// Convert the renderer's display-typed `EchoLevel` to the
+/// wire-typed `lattice_grammar::EchoLevel`. Used by
+/// `set_message` for direct-path record construction.
 pub(crate) fn echo_level_to_wire(level: EchoLevel) -> lattice_grammar::EchoLevel {
     match level {
+        EchoLevel::Trace => lattice_grammar::EchoLevel::Trace,
+        EchoLevel::Debug => lattice_grammar::EchoLevel::Debug,
         EchoLevel::Info => lattice_grammar::EchoLevel::Info,
         EchoLevel::Warn => lattice_grammar::EchoLevel::Warn,
         EchoLevel::Error => lattice_grammar::EchoLevel::Error,
@@ -212,6 +219,8 @@ pub(crate) fn echo_level_to_wire(level: EchoLevel) -> lattice_grammar::EchoLevel
 #[allow(dead_code)]
 pub(crate) fn echo_level_from_wire(level: lattice_grammar::EchoLevel) -> EchoLevel {
     match level {
+        lattice_grammar::EchoLevel::Trace => EchoLevel::Trace,
+        lattice_grammar::EchoLevel::Debug => EchoLevel::Debug,
         lattice_grammar::EchoLevel::Info => EchoLevel::Info,
         lattice_grammar::EchoLevel::Warn => EchoLevel::Warn,
         lattice_grammar::EchoLevel::Error => EchoLevel::Error,
@@ -1393,7 +1402,13 @@ pub struct App {
     /// emacs `*Messages*` analogue. Updated on every call to
     /// `set_message`; bounded by [`MessagesRing::capacity`]
     /// so the editor never grows unboundedly.
-    pub messages: MessagesRing,
+    ///
+    /// **msg-mode.1:** wrapped in `Arc<Mutex<>>` so the
+    /// boot-installed `MessagesLayer` (a `tracing::Layer`
+    /// running on whatever thread emitted the event) can
+    /// push into the same ring the App reads on the main
+    /// thread for backlog seeding.
+    pub messages: std::sync::Arc<std::sync::Mutex<MessagesRing>>,
     /// Receiver for [`lattice_runtime::MessagePushed`] events
     /// published by `set_message`. The runtime's per-tick
     /// drain ([`Self::drain_message_events`]) coalesces
@@ -2826,21 +2841,39 @@ impl std::fmt::Debug for App {
 }
 
 impl App {
-    /// Set the echo / status-line message. The renderer reads the
-    /// most recent value into the bottom row each frame.
+    /// Set the echo / status-line message. The renderer reads
+    /// the most recent value into the bottom row each frame.
     ///
     /// Side effects:
-    /// 1. Appends a [`MessageRecord`] to the bounded
-    ///    [`MessagesRing`] (`self.messages`) so the
-    ///    `:messages` buffer can replay history.
-    /// 2. Publishes a [`lattice_runtime::MessagePushed`]
-    ///    typed event on the editor's event bus. The
-    ///    `*messages*` buffer's live tail
-    ///    ([`Self::drain_message_events`]) subscribes via a
-    ///    bounded channel and rebuilds the buffer once per
-    ///    tick when events landed; future plugin / telemetry
-    ///    subscribers can attach to the same event without
-    ///    coupling to `set_message` internals.
+    /// 1. Updates [`Self::last_message`] for the echo-area
+    ///    paint (renderer reads this each frame).
+    /// 2. Emits a `tracing::event!` at the matching level.
+    ///    The boot-installed `MessagesLayer`
+    ///    (`lattice_runtime::install_messages_subscriber`)
+    ///    captures the event, pushes a [`MessageRecord`] to
+    ///    [`MessagesRing`] (`self.messages`), and publishes
+    ///    [`lattice_runtime::MessagePushed`] on the editor
+    ///    event bus. The `*messages*` buffer's per-tick drain
+    ///    ([`Self::drain_message_events`]) appends each record.
+    ///
+    /// **msg-mode.1 contract:** `set_message` writes directly
+    /// to the ring + bus (the legacy path). The
+    /// [`lattice_runtime::MessagesLayer`] installed at boot
+    /// captures every *other* `tracing::*` event in the editor
+    /// (LSP layer logs, plugin host, future telemetry) into
+    /// the same ring + bus. Two paths, one destination: every
+    /// record the user sees in `*messages*` comes from one of
+    /// these sources, and both produce identical
+    /// `MessageRecord` shapes.
+    ///
+    /// **Why not route `set_message` through `tracing::event!`
+    /// directly:** `tracing::subscriber::set_global_default` is
+    /// process-wide. The first App installed captures the
+    /// global subscriber; subsequent Apps (in tests, or
+    /// multi-window setups) can't replace it. Keeping
+    /// `set_message` independent of the global subscriber
+    /// preserves per-App isolation — each App's bus + ring are
+    /// the only consumers of its own `set_message` calls.
     pub fn set_message(&mut self, level: EchoLevel, text: impl Into<String>) {
         let text: String = text.into();
         self.last_message = Some(EchoMessage {
@@ -2852,7 +2885,9 @@ impl App {
             level: echo_level_to_wire(level),
             text,
         };
-        self.messages.push(record.clone());
+        if let Ok(mut ring) = self.messages.lock() {
+            ring.push(record.clone());
+        }
         self.event_bus.publish_typed(MessagePushed { record });
     }
 }

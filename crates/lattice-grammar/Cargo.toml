@@ -10,6 +10,11 @@ lattice-protocol = { path = "../lattice-protocol" }
 lattice-core = { path = "../lattice-core" }
 thiserror = { workspace = true }
 serde = { workspace = true }
+# msg-mode.1: EchoLevel ↔ tracing::Level conversion lives next
+# to EchoLevel so the wire-typed grammar enum stays the single
+# source of truth for severity. Pulling `tracing` here is cheap
+# (one-trait crate, no runtime cost without a subscriber).
+tracing = { workspace = true }
 
 [dev-dependencies]
 serde_json = "1.0"

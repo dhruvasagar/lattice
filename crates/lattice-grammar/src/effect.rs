@@ -38,11 +38,47 @@ pub enum YankKind {
 
 /// Severity tier for `Effect::Echo`. The host's echo-area renderer maps
 /// these to its own colour scheme.
+///
+/// **msg-mode.1 (tracing bridge):** the five variants mirror
+/// `tracing::Level` exactly so `App::set_message` can route through
+/// a single `tracing::event!` call without lossy conversion. `Trace`
+/// + `Debug` are below the default `Info` filter so they don't show
+/// in the echo area today — they exist for subsystems that want
+/// verbose records in `*messages*` (e.g. `editor=trace`, `lsp=debug`)
+/// to surface without inventing a parallel severity scale.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum EchoLevel {
+    Trace,
+    Debug,
     Info,
     Warn,
     Error,
+}
+
+impl From<EchoLevel> for tracing::Level {
+    fn from(level: EchoLevel) -> Self {
+        match level {
+            EchoLevel::Trace => tracing::Level::TRACE,
+            EchoLevel::Debug => tracing::Level::DEBUG,
+            EchoLevel::Info => tracing::Level::INFO,
+            EchoLevel::Warn => tracing::Level::WARN,
+            EchoLevel::Error => tracing::Level::ERROR,
+        }
+    }
+}
+
+impl From<tracing::Level> for EchoLevel {
+    fn from(level: tracing::Level) -> Self {
+        // `tracing::Level` is a unit-struct wrapper; match via
+        // associated consts because the inner repr is not pub.
+        match level {
+            tracing::Level::TRACE => EchoLevel::Trace,
+            tracing::Level::DEBUG => EchoLevel::Debug,
+            tracing::Level::INFO => EchoLevel::Info,
+            tracing::Level::WARN => EchoLevel::Warn,
+            tracing::Level::ERROR => EchoLevel::Error,
+        }
+    }
 }
 
 /// Scope for `Effect::Substitute`. Mirrors vim's `:s/.../.../` (current

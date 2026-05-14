@@ -16,6 +16,10 @@ lattice-config = { path = "../lattice-config" }
 lattice-snippet = { path = "../lattice-snippet" }
 lattice-syntax = { path = "../lattice-syntax" }
 lattice-runtime = { path = "../lattice-runtime" }
+# msg-mode.1: `set_message` routes through `tracing::event!`.
+# The `MessagesLayer` subscriber lives in `lattice-runtime`;
+# this crate just emits.
+tracing = { workspace = true }
 lattice-lsp = { path = "../lattice-lsp" }
 lattice-help = { path = "../lattice-help" }
 lattice-oil = { path = "../lattice-oil" }

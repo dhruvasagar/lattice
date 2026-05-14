@@ -18,6 +18,15 @@ thiserror = { workspace = true }
 # re-exports the attribute macro but the path lookup still
 # resolves through the caller's manifest.
 linkme = { workspace = true }
+# msg-mode.1: `MessagesLayer` (tracing::Layer impl) bridges
+# every `tracing::*` event into `MessagesRing` + the typed
+# event bus so `*messages*` is the unified observability
+# surface (design.md §5.10.6). `tracing` itself is already a
+# transitive dep via `lattice-grammar`'s EchoLevel ↔
+# tracing::Level impls; `tracing-subscriber` is the heavier
+# add for the Layer trait + Registry.
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "time"] }

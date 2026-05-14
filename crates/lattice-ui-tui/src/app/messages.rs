@@ -51,24 +51,35 @@ impl App {
     /// Activates `text-mode` major + `read-only-mode` minor.
     pub(crate) fn ensure_messages_buffer(&mut self) -> BufferId {
         let already_present = self.buffers.by_name(MESSAGES_BUFFER_NAME).is_some();
+        // msg-mode.1: the buffer's major mode IS `messages-mode`
+        // (symmetric with `lsp-log-mode` for `*lsp*`). The
+        // mode contributes `ReadOnly = true` directly --
+        // no separate `read-only-mode` minor needed.
         let id = self.ensure_named_synthetic_document(
             MESSAGES_BUFFER_NAME,
-            lattice_mode::TextMode::mode_id(),
+            lattice_mode::MessagesMode::mode_id(),
             Self::SYNTHETIC_BUFFER_FLAGS,
         );
         if already_present {
             return id;
         }
-        // First-time creation: layer read-only-mode minor on top
-        // of text-mode and seed the buffer with the ring backlog.
-        // The minor's ReadOnly = true contribution gates user-
-        // driven Insert / operator paths; subsystem writes go
-        // through `apply_edit_batch_blocking` which bypasses the
-        // modal dispatcher's read-only check.
-        self.activate_mode_by_id(id, lattice_mode::modes::ReadOnlyMode::mode_id());
-        let backlog: String = self
-            .messages
-            .records()
+        // First-time creation: seed the buffer with any ring
+        // backlog records that arrived before the buffer
+        // existed. Backlog seeding matters when the buffer is
+        // created lazily (e.g. tests); the production boot
+        // creates it eagerly so the ring is usually empty at
+        // creation time.
+        // msg-mode.1: ring is Arc<Mutex<>> so the
+        // boot-installed MessagesLayer can push from any
+        // thread. Lock briefly to snapshot the backlog into a
+        // local Vec, then release before formatting +
+        // appending (Drop semantics: keep the critical section
+        // short).
+        let backlog_records: Vec<lattice_runtime::MessageRecord> = match self.messages.lock() {
+            Ok(ring) => ring.records().iter().cloned().collect(),
+            Err(_) => Vec::new(),
+        };
+        let backlog: String = backlog_records
             .iter()
             .map(format_message_record)
             .map(|line| {
@@ -123,6 +134,8 @@ fn format_message_record(r: &lattice_runtime::MessageRecord) -> String {
     let mm = (secs / 60) % 60;
     let ss = secs % 60;
     let level = match r.level {
+        lattice_grammar::EchoLevel::Trace => "TRACE",
+        lattice_grammar::EchoLevel::Debug => "DEBUG",
         lattice_grammar::EchoLevel::Info => " INFO",
         lattice_grammar::EchoLevel::Warn => " WARN",
         lattice_grammar::EchoLevel::Error => "ERROR",

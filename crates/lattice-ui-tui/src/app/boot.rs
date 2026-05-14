@@ -356,6 +356,29 @@ impl App {
         let (message_event_tx, message_event_rx) =
             tokio::sync::mpsc::unbounded_channel::<lattice_runtime::MessagePushed>();
         event_bus.subscribe_typed(message_event_tx);
+        // msg-mode.1: install the global `tracing::Subscriber`
+        // bridge. The `MessagesLayer` captures every
+        // `tracing::*` event into this shared `MessagesRing` +
+        // publishes `MessagePushed` on the event bus. From
+        // here on, `App::set_message` and any
+        // `tracing::info!()` / `warn!()` / etc. call anywhere
+        // in the editor (or plugins via the WIT bridge in v1+)
+        // flows into `*messages*` through one bridge.
+        //
+        // `install_messages_subscriber` is idempotent: only the
+        // first call succeeds (`set_global_default` is
+        // process-wide); test setups with multiple App
+        // instances share the first-installed layer (the
+        // ring/bus from the first App), which is fine because
+        // tests use the per-test layer constructor for unit
+        // coverage rather than relying on the global install.
+        let messages_ring = std::sync::Arc::new(std::sync::Mutex::new(
+            crate::app::MessagesRing::default(),
+        ));
+        let _ = lattice_runtime::install_messages_subscriber(
+            messages_ring.clone(),
+            event_bus.clone(),
+        );
         // Wire the logger's publisher to the same bus. The
         // logger lives in `lattice-lsp`; the closure captures an
         // Arc<EventBus> clone so the logger's lifetime is
@@ -809,7 +832,7 @@ impl App {
             pending_pull_diagnostics_token: None,
             pending_pull_diagnostics_rx: None,
             pending_diagnostic_refresh_rx: Some(lsp_diagnostic_refresh_rx),
-            messages: crate::app::MessagesRing::default(),
+            messages: messages_ring.clone(),
             pending_message_event_rx: Some(message_event_rx),
             auto_submit_after_chord: false,
             lsp,

@@ -2138,6 +2138,13 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
         return;
     };
     let style = match msg.level {
+        // Trace + Debug are below the default messages.filter
+        // threshold and don't normally surface to the echo
+        // area; if a record at one of these levels does reach
+        // the echo, render dim to match `*messages*` convention.
+        EchoLevel::Trace | EchoLevel::Debug => {
+            TuiStyle::default().add_modifier(Modifier::DIM)
+        }
         EchoLevel::Info => TuiStyle::default(),
         EchoLevel::Warn => TuiStyle::default().fg(Color::Yellow),
         EchoLevel::Error => TuiStyle::default()

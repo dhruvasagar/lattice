@@ -38,7 +38,7 @@ use lattice_syntax::SyntaxSnapshot;
 use streaming_iterator::StreamingIterator;
 use tree_sitter::QueryCursor;
 
-use crate::app::Fold;
+use lattice_core::Fold;
 
 /// Compute the stable identity hash for a computed fold.
 ///

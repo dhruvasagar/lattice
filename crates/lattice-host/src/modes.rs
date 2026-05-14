@@ -195,7 +195,7 @@ impl BufferLocal for DocumentLastSyncedSyntaxVersion {
 /// text-mode owns the data shape; per-language fold queries are
 /// a presentation-layer concern read through the syntax local.
 #[derive(Debug, Clone, Default)]
-pub struct DocumentFolds(pub Vec<crate::app::Fold>);
+pub struct DocumentFolds(pub Vec<lattice_core::Fold>);
 
 impl BufferLocal for DocumentFolds {
     const NAME: &'static str = "text-mode.folds";

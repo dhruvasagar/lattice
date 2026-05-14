@@ -957,7 +957,11 @@ dependencies = [
  "lattice-oil",
  "lattice-picker",
  "lattice-protocol",
+ "lattice-snippet",
+ "lattice-syntax",
+ "streaming-iterator",
  "thiserror 2.0.18",
+ "tree-sitter",
 ]
 
 [[package]]

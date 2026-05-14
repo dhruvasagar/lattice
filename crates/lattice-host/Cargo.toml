@@ -50,6 +50,13 @@ lattice-config = { path = "../lattice-config" }
 # lock-free keymap snapshot the input dispatcher reads each
 # keystroke.
 arc-swap = { workspace = true }
+# Phase 5.2: folds.rs uses `tree_sitter::QueryCursor` for the
+# syntax-fold provider; modes.rs touches `lattice_syntax::Lang`.
+lattice-syntax = { path = "../lattice-syntax" }
+tree-sitter = { workspace = true }
+streaming-iterator = { workspace = true }
+# modes.rs references the snippet major-mode id.
+lattice-snippet = { path = "../lattice-snippet" }
 
 [dev-dependencies]
 

@@ -34,8 +34,8 @@ pub mod buffer_registry;
 // `lattice_ui_tui::<module>::*` import in downstream crates +
 // this crate's tests + benches; no call-site changes needed.
 pub use lattice_host::{
-    actions, buffers, excommand, file_tree, help, help_topics, host_generators, keymap,
-    keymap_registry, keymap_trie, oil, popup,
+    actions, buffers, excommand, file_tree, folds, help, help_topics, host_generators, keymap,
+    keymap_registry, keymap_trie, modes, oil, popup,
 };
 // Re-export the `keymap_entry!` macro (defined with `#[macro_export]`
 // in lattice-host) at this crate's root so the catalog files
@@ -44,14 +44,12 @@ pub use lattice_host::{
 // keep invoking it as `keymap_entry!` without a path prefix.
 pub use lattice_host::keymap_entry;
 pub mod chord;
-pub mod folds;
 pub mod icons;
 pub mod input;
 pub mod keymap_insert;
 pub mod keymap_normal;
 pub mod keymap_replace;
 pub mod keymap_visual;
-pub mod modes;
 pub mod pane;
 pub mod pane_render;
 pub mod picker_sources;

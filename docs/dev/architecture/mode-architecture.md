@@ -1420,20 +1420,84 @@ cleanup runs.
 The dispatcher guarantees:
 
 - A mode's `on_activate` future for buffer `B` runs to
-  completion before the next `on_activate` for the same
-  `(buffer, mode)` pair starts. Per-pair activation is
-  serialized; cross-pair activations run in parallel
-  (once M-async.2c lands spawn-based dispatch).
-- Deactivation of `(B, mode)` is not scheduled until the
-  matching `on_activate` resolves. A rapid `:enable foo` /
-  `:disable foo` pair always pairs correctly.
+  completion before its Guard lands in the `GuardStore`. If
+  the future is immediately ready (today's marker modes + sync
+  LSP modes), it completes on the App thread inside the
+  try-sync-then-spawn driver -- no spawn boundary, so rapid
+  `activate → deactivate` is race-free by construction.
+- A mode whose `on_activate` truly `.await`s (yields Pending
+  on first poll) trips the driver into spawning the
+  remainder. A deactivate arriving while the spawn is in
+  flight is reconciled via the **epoch counter** (§7.3.1).
 - Cross-mode activation (e.g. `LspMode` implies
-  `LspDiagnosticsMode`) awaits the parent before scheduling
-  implied children, preserving cascade ordering.
+  `LspDiagnosticsMode`) sequences via the cascade plan: the
+  driver walks the plan DFS, awaiting each step's future
+  before the next. Implied children always see the parent's
+  post-`on_activate` state.
+- Cascade abort: when a step's `on_activate` returns `Err`,
+  the driver publishes `ModeActivationFailed` for the failing
+  step plus a synthetic `cascade aborted by <trigger>`
+  failure for every remaining unrun step. The App's per-tick
+  drain (`drain_mode_lifecycle_events`) calls
+  `deactivate_mode_by_id` for each, cleaning `active_modes`
+  + `mode_guards` for the whole subtree.
 
-These guarantees are enforced by per-`(buffer, mode)` mutexes
-in the dispatcher (planned for M-async.3), not by hook
-discipline. Modes don't need to defensively check ordering.
+These guarantees are enforced inside the dispatcher, not by
+hook discipline. Modes don't need to defensively check
+ordering.
+
+#### 7.3.1 Epoch counter for activate / deactivate
+serialization
+
+When a mode's `on_activate` future yields `Pending` on first
+poll, the driver spawns the remainder onto the runtime. The
+spawn's eventual `try_insert` of the Guard back into the
+`GuardStore` would race a synchronous deactivate that
+arrived in the meantime, leaving a leaked Guard in a
+logically-inactive store slot.
+
+The `GuardStore` carries an `epochs: HashMap<(BufferId,
+ModeId), u64>` map. The protocol:
+
+1. **Sync prefix (`activate_*`)** calls
+   `guards.bump_epoch(buffer, mode)` when queueing each
+   `CascadeStep`; the new epoch is stored on the step.
+2. **Spawn task**, after `step.entry.on_activate_dyn(ctx)
+   .await` resolves with `Ok(guard)`, calls
+   `guards.try_insert(buffer, mode, step.epoch, guard)`.
+   - If current epoch == `step.epoch`: insert succeeds; the
+     driver publishes `MajorEntered` / `MinorActivated`.
+   - If mismatch: `try_insert` returns `Err(stale_guard)`.
+     The driver drops the Box in place; the original
+     Guard's `Drop` fires for out-of-band cleanup
+     (publishes `LspBufferDetached`, restores prior
+     `foldmethod`, etc.). No success event is published.
+3. **Sync deactivate (`deactivate_*`)** calls
+   `guards.remove(buffer, mode)`, which **internally bumps
+   the epoch first** (invalidating any in-flight spawn) then
+   removes the (possibly-present) Guard. Either way, the
+   deactivate publishes `MinorDeactivated` /
+   `MajorExiting` synchronously.
+
+The protocol's correctness relies on:
+
+- **Drop-based cleanup contract** (§7.1): the Guard's `Drop`
+  must be sufficient for cleanup regardless of when it
+  fires (synchronously from deactivate, or out-of-band from
+  the spawn detecting a stale epoch).
+- **Standard-future re-registration**: a future polled with
+  one waker then re-polled with another (tokio's) must
+  re-register with the new waker; standard Rust futures
+  honour this.
+- **u64 wrap tolerance**: 2^64 activate / deactivate cycles
+  per `(buffer, mode)` between a spawn's queue and its
+  completion would be needed to alias an epoch. Not a
+  realistic concern.
+
+The protocol does **not** require a `tokio::sync::Mutex` per
+pair. The epoch counter resolves the race lock-free; the
+spawned task's `try_insert` is a single `std::sync::Mutex`
+acquisition (already needed for the store map).
 
 ## 8. Crate placement
 

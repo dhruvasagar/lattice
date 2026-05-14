@@ -122,10 +122,10 @@ impl ModeRegistry {
 
     /// Activate a major mode on `buffer`. Synchronous prefix:
     /// validate the major + its `implies()` tree, mutate
-    /// `active_modes` for the whole tree, build a cascade plan.
-    /// Then one task is spawned that walks the plan in DFS
-    /// order, awaiting each step's `on_activate.await` before
-    /// the next.
+    /// `active_modes` for the whole tree, bump epochs + build a
+    /// cascade plan. Then one task is spawned that walks the
+    /// plan in DFS order, awaiting each step's
+    /// `on_activate.await` before the next.
     ///
     /// If a different major is currently active, it is
     /// deactivated synchronously first (Drop runs, `MajorExiting`
@@ -172,18 +172,17 @@ impl ModeRegistry {
         active.set_major(Some(mode));
 
         // Build the cascade plan: root major + implied minors
-        // in DFS order. Validation errors short-circuit the
-        // build; partial active_modes mutation rolls back on
-        // error before returning.
+        // in DFS order. Each step bumps the epoch + records
+        // the new value so the spawn task can validate before
+        // stashing. Validation errors short-circuit the build;
+        // partial active_modes mutation rolls back on error.
         let mut plan: Vec<CascadeStep> = vec![CascadeStep {
             entry: entry.clone(),
             mode,
             kind: ModeKind::Major,
+            epoch: guards.bump_epoch(buffer, mode),
         }];
-        if let Err(e) = self.record_implies_cascade(active, &mut plan, &entry, mode, caps) {
-            // Validation of an implied child failed: roll back
-            // the major's active_modes mutation + any minors we
-            // already pushed.
+        if let Err(e) = self.record_implies_cascade(active, &mut plan, &entry, mode, caps, buffer, guards) {
             active.set_major(None);
             for step in plan.iter().skip(1) {
                 active.remove_minor(step.mode);
@@ -210,7 +209,7 @@ impl ModeRegistry {
         caps: CapabilitySet,
     ) -> Result<(), ModeActivationError> {
         let mut plan: Vec<CascadeStep> = Vec::new();
-        self.validate_and_record_minor(active, &mut plan, buffer, mode, caps)?;
+        self.validate_and_record_minor(active, &mut plan, buffer, mode, caps, guards)?;
         // `plan` is empty when the minor was already active (no
         // -op): skip the spawn entirely.
         if !plan.is_empty() {
@@ -228,11 +227,13 @@ impl ModeRegistry {
     }
 
     /// Validate `mode` (a minor) against the active set, mutate
-    /// `active` to include it, and push its (`entry`, kind) onto
-    /// `plan`. Recursively records implied minors. On error,
-    /// rolls back the `active` mutations performed for THIS
+    /// `active` to include it, bump its epoch, and push the
+    /// resulting [`CascadeStep`] onto `plan`. Recursively
+    /// records implied minors. On error, rolls back the
+    /// `active` mutations + plan pushes performed for THIS
     /// call (callers responsible for unwinding their own
     /// pushes).
+    #[allow(clippy::too_many_arguments)]
     fn validate_and_record_minor(
         &self,
         active: &mut ActiveModes,
@@ -240,8 +241,8 @@ impl ModeRegistry {
         buffer: BufferId,
         mode: ModeId,
         caps: CapabilitySet,
+        guards: &GuardStoreHandle,
     ) -> Result<(), ModeActivationError> {
-        let _ = buffer;
         let entry = self
             .modes
             .get(&mode)
@@ -287,20 +288,13 @@ impl ModeRegistry {
             entry: entry.clone(),
             mode,
             kind: ModeKind::Minor,
+            epoch: guards.bump_epoch(buffer, mode),
         });
 
-        if let Err(e) = self.record_implies_cascade(active, plan, &entry, mode, caps) {
-            // Rollback this mode's mutation + any pushed implies.
+        if let Err(e) = self.record_implies_cascade(active, plan, &entry, mode, caps, buffer, guards) {
             active.remove_minor(mode);
-            // Plan unwinding: pop entries we pushed (this mode
-            // is the last element pushed before recursing).
-            // Find our index and truncate from there. Linear
-            // scan; the plan is short (mode-architecture caps
-            // implies depth in practice).
             if let Some(pos) = plan.iter().position(|s| s.mode == mode) {
                 for step in plan.drain(pos..) {
-                    // Children we pushed get rolled back from
-                    // active too.
                     if step.mode != mode {
                         active.remove_minor(step.mode);
                     }
@@ -315,6 +309,7 @@ impl ModeRegistry {
     /// Walk `entry.implies()`, validating + recording each as
     /// a cascade step. Shared between `activate_major` and the
     /// minor recursion.
+    #[allow(clippy::too_many_arguments)]
     fn record_implies_cascade(
         &self,
         active: &mut ActiveModes,
@@ -322,6 +317,8 @@ impl ModeRegistry {
         entry: &Arc<dyn DynMode>,
         mode: ModeId,
         caps: CapabilitySet,
+        buffer: BufferId,
+        guards: &GuardStoreHandle,
     ) -> Result<(), ModeActivationError> {
         for &dep in entry.implies() {
             if !self.is_registered(dep) {
@@ -330,9 +327,7 @@ impl ModeRegistry {
             if active.has_minor(dep) {
                 continue;
             }
-            // Use a dummy buffer-id (unused inside; we pass it
-            // through for symmetry).
-            self.validate_and_record_minor(active, plan, BufferId::new(0), dep, caps)?;
+            self.validate_and_record_minor(active, plan, buffer, dep, caps, guards)?;
         }
         Ok(())
     }
@@ -447,18 +442,43 @@ impl ModeRegistry {
                 );
                 match step.entry.on_activate_dyn(ctx).await {
                     Ok(guard) => {
-                        guards.insert(buffer, step.mode, guard);
-                        let evt = match step.kind {
-                            ModeKind::Major => ModeEvent::MajorEntered {
-                                buffer,
-                                mode: step.mode,
-                            },
-                            ModeKind::Minor => ModeEvent::MinorActivated {
-                                buffer,
-                                mode: step.mode,
-                            },
-                        };
-                        events_for_task.publish_typed(evt);
+                        // try_insert validates that no
+                        // deactivate (or later activate)
+                        // arrived during the await. On stale,
+                        // returns Err(guard) -- we drop the
+                        // Box here (which fires the original
+                        // Guard type's Drop for out-of-band
+                        // cleanup) and skip the success event.
+                        match guards.try_insert(buffer, step.mode, step.epoch, guard) {
+                            Ok(()) => {
+                                let evt = match step.kind {
+                                    ModeKind::Major => ModeEvent::MajorEntered {
+                                        buffer,
+                                        mode: step.mode,
+                                    },
+                                    ModeKind::Minor => ModeEvent::MinorActivated {
+                                        buffer,
+                                        mode: step.mode,
+                                    },
+                                };
+                                events_for_task.publish_typed(evt);
+                            }
+                            Err(stale_guard) => {
+                                // Drop here. The Box goes out
+                                // of scope on the next line;
+                                // the original Guard's Drop
+                                // fires (publishes
+                                // LspBufferDetached, restores
+                                // foldmethod, etc.).
+                                drop(stale_guard);
+                                // No event published: the
+                                // deactivate/re-activate that
+                                // bumped the epoch already
+                                // published its own
+                                // MinorDeactivated /
+                                // MajorExiting.
+                            }
+                        }
                     }
                     Err(err) => {
                         events_for_task
@@ -502,10 +522,18 @@ impl ModeRegistry {
 /// One step in a cascade plan. Built synchronously by the sync
 /// prefix; consumed by the spawned task that awaits each step's
 /// `on_activate.await` in order.
+///
+/// `epoch` is the value [`GuardStoreHandle::bump_epoch`]
+/// returned when the sync prefix queued this step. The spawn
+/// task passes it back to [`GuardStoreHandle::try_insert`] on
+/// completion; mismatch means a deactivate (or a later
+/// re-activate) bumped the epoch meanwhile, so the Guard is
+/// stale and gets dropped instead of stashed.
 struct CascadeStep {
     entry: Arc<dyn DynMode>,
     mode: ModeId,
     kind: ModeKind,
+    epoch: u64,
 }
 
 #[cfg(test)]
@@ -1261,5 +1289,151 @@ mod tests {
         // completion.
         assert!(!g.contains(buf(), parent_id));
         assert!(!g.contains(buf(), child_id));
+    }
+
+    /// M-async.4: a mode whose `on_activate` truly `.await`s
+    /// (yields Pending on first poll) trips the
+    /// try-sync-then-spawn driver into the spawn path. If a
+    /// deactivate arrives before the spawn completes, the
+    /// epoch bump in `remove` invalidates the in-flight spawn's
+    /// captured epoch; its later `try_insert` fails the match
+    /// and the Guard drops on the spawn side instead of
+    /// stashing into a logically-inactive store slot.
+    ///
+    /// This test pins that contract: rapid `activate →
+    /// deactivate` against an `.await`ing mode produces no
+    /// leaked Guard, and the stale Guard's `Drop` still fires
+    /// (out-of-band; the dispatcher relies on Drop for
+    /// cleanup correctness).
+    #[tokio::test]
+    async fn rapid_deactivate_during_pending_activate_drops_guard_on_spawn_side() {
+        use tokio::sync::oneshot;
+
+        /// Guard whose Drop bumps an atomic counter. The test
+        /// asserts the counter increments even when the spawn
+        /// detects a stale epoch.
+        struct DropTrackingGuard {
+            counter: StdArc<AtomicU32>,
+        }
+        impl Drop for DropTrackingGuard {
+            fn drop(&mut self) {
+                self.counter.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        /// Mode whose `on_activate` `.await`s a oneshot before
+        /// returning the Guard. Lets the test interleave: spawn
+        /// task is parked, deactivate runs, then we release
+        /// the oneshot and watch the spawn task try to insert.
+        struct GatedMode {
+            id: ModeId,
+            gate_rx: std::sync::Mutex<Option<oneshot::Receiver<()>>>,
+            drop_counter: StdArc<AtomicU32>,
+        }
+        impl Mode for GatedMode {
+            type Guard = DropTrackingGuard;
+            fn id(&self) -> ModeId {
+                self.id
+            }
+            fn kind(&self) -> ModeKind {
+                ModeKind::Minor
+            }
+            fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, Self::Guard> {
+                let rx = self
+                    .gate_rx
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .expect("oneshot consumed twice");
+                let counter = self.drop_counter.clone();
+                Box::pin(async move {
+                    // Yield Pending until the test releases the gate.
+                    let _ = rx.await;
+                    Ok(DropTrackingGuard { counter })
+                })
+            }
+        }
+
+        let drop_counter = StdArc::new(AtomicU32::new(0));
+        let (gate_tx, gate_rx) = oneshot::channel::<()>();
+        let mode = GatedMode {
+            id: ModeId::new("gated-mode"),
+            gate_rx: std::sync::Mutex::new(Some(gate_rx)),
+            drop_counter: drop_counter.clone(),
+        };
+        let mut r = ModeRegistry::new();
+        let id = r.register(mode).unwrap();
+        let mut a = ActiveModes::new();
+        let g = GuardStoreHandle::new();
+        let bus = evts();
+        let mut rx = subscribe_mode_events(&bus);
+
+        // Activate -- sync prefix mutates active_modes + bumps
+        // epoch; first poll yields Pending (oneshot not
+        // released) so the driver spawns the rest.
+        r.activate_minor(
+            &mut a,
+            &g,
+            &cfg(),
+            &bus,
+            &svcs(),
+            buf(),
+            id,
+            CapabilitySet::empty(),
+        )
+        .unwrap();
+        assert!(a.has_minor(id));
+        assert!(!g.contains(buf(), id), "Guard not stashed yet (spawn pending)");
+
+        // Deactivate immediately. Synchronous: bumps epoch
+        // (invalidating in-flight spawn), removes from
+        // active_modes, publishes MinorDeactivated.
+        // guards.remove returns None (Guard wasn't in store
+        // yet) so no Drop fires here.
+        r.deactivate_minor(&mut a, &g, &bus, buf(), id).unwrap();
+        assert!(!a.has_minor(id));
+        // MinorDeactivated published from the sync deactivate.
+        let evt = await_event(&mut rx).await;
+        assert!(
+            matches!(evt, ModeEvent::MinorDeactivated { mode, .. } if mode == id),
+            "deactivate should publish MinorDeactivated synchronously",
+        );
+        assert_eq!(
+            drop_counter.load(Ordering::SeqCst),
+            0,
+            "Guard hasn't been constructed yet -- spawn is parked on oneshot",
+        );
+
+        // Release the spawn's `.await`. It now resolves +
+        // tries to try_insert. Epoch mismatch (we bumped via
+        // deactivate's remove) → returns Err(guard) → Guard
+        // dropped on the spawn side → DropTrackingGuard::drop
+        // fires.
+        gate_tx.send(()).unwrap();
+        // Yield until the spawn task observes the wake +
+        // completes its drop. Tokio multi-threaded runtime is
+        // running; yield_now lets it schedule the parked
+        // spawn.
+        for _ in 0..20 {
+            if drop_counter.load(Ordering::SeqCst) > 0 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            drop_counter.load(Ordering::SeqCst),
+            1,
+            "stale Guard's Drop should have fired on the spawn side",
+        );
+        assert!(
+            !g.contains(buf(), id),
+            "Guard must NOT be stashed in the store -- the deactivate already happened",
+        );
+        // No spurious MinorActivated event for the activation
+        // that ended up stale.
+        assert!(
+            rx.try_recv().is_err(),
+            "stale activation should not publish MinorActivated",
+        );
     }
 }

@@ -36,9 +36,21 @@ use crate::mode::ModeId;
 ///
 /// Not `Clone` -- `Box<dyn Any>` is not `Clone`. The App owns
 /// exactly one, passes it `&mut` to the dispatcher.
+///
+/// **M-async.4 epoch counter:** each `(buffer, mode)` key
+/// carries a `u64` epoch that monotonically increments on every
+/// activate begin + every deactivate. The dispatcher's spawn
+/// task captures the epoch when it queues, then validates
+/// against the current epoch via [`Self::try_insert`] before
+/// stashing its Guard. A mismatch means a deactivate (or a
+/// later activate) arrived while the spawn was in flight; the
+/// returned `Err(stale_guard)` lets the spawn drop the Guard
+/// (firing its Drop for out-of-band cleanup) instead of
+/// stashing it in a logically-inactive store slot.
 #[derive(Default)]
 pub struct GuardStore {
     map: HashMap<(BufferId, ModeId), Box<dyn Any + Send>>,
+    epochs: HashMap<(BufferId, ModeId), u64>,
 }
 
 impl std::fmt::Debug for GuardStore {
@@ -57,26 +69,90 @@ impl GuardStore {
 
     /// Stash a Guard for the given `(buffer, mode)`. Replaces
     /// any existing entry (the old Guard is dropped, firing its
-    /// `Drop` impl); the dispatcher prevents this in practice
-    /// by checking `active_modes` before activating.
+    /// `Drop` impl). Used in tests + the rare reload path; the
+    /// production dispatcher routes through [`Self::try_insert`]
+    /// to respect the epoch invariant.
     pub fn insert(&mut self, buffer: BufferId, mode: ModeId, guard: Box<dyn Any + Send>) {
         self.map.insert((buffer, mode), guard);
     }
 
-    /// Take ownership of the Guard for `(buffer, mode)` and
-    /// return it; the caller drops it (firing `Drop`). Returns
-    /// `None` if no Guard was stashed -- legitimate when the
-    /// mode wasn't active.
+    /// Bump the epoch for `(buffer, mode)` and return the new
+    /// value. The dispatcher's sync prefix calls this when
+    /// queueing a step; the spawn task captures the returned
+    /// value and passes it to [`Self::try_insert`] on
+    /// completion. Wraps on overflow (`u64::MAX → 0`); the
+    /// dispatcher tolerates this because consecutive bumps
+    /// always advance by 1, so a wrap that happens to land on
+    /// a stale spawn's captured epoch would require 2^64
+    /// activate / deactivate cycles in flight -- not a
+    /// realistic concern.
+    pub fn bump_epoch(&mut self, buffer: BufferId, mode: ModeId) -> u64 {
+        let entry = self.epochs.entry((buffer, mode)).or_insert(0);
+        *entry = entry.wrapping_add(1);
+        *entry
+    }
+
+    /// Current epoch for `(buffer, mode)`. `0` if the pair has
+    /// never had an activation queued. Used by tests + the
+    /// dispatcher's spawn task to validate before stashing.
+    pub fn current_epoch(&self, buffer: BufferId, mode: ModeId) -> u64 {
+        self.epochs.get(&(buffer, mode)).copied().unwrap_or(0)
+    }
+
+    /// Insert `guard` only if `my_epoch` still matches the
+    /// store's current epoch for `(buffer, mode)`. Returns
+    /// `Ok(())` on success; on epoch mismatch returns
+    /// `Err(guard)` so the caller can drop the Guard outside
+    /// the lock (the Box's `Drop` then fires the original
+    /// type's cleanup).
+    ///
+    /// Used by the M-async.4 spawn-task path: a deactivate
+    /// (or a subsequent activate) arriving while a spawn was
+    /// in flight bumps the epoch via [`Self::remove`] /
+    /// [`Self::bump_epoch`]; the spawn's late `try_insert`
+    /// then fails the match and drops the Guard instead of
+    /// stashing it in a logically-inactive store slot.
+    pub fn try_insert(
+        &mut self,
+        buffer: BufferId,
+        mode: ModeId,
+        my_epoch: u64,
+        guard: Box<dyn Any + Send>,
+    ) -> Result<(), Box<dyn Any + Send>> {
+        if self.current_epoch(buffer, mode) == my_epoch {
+            self.map.insert((buffer, mode), guard);
+            Ok(())
+        } else {
+            Err(guard)
+        }
+    }
+
+    /// Take ownership of the Guard for `(buffer, mode)`,
+    /// bumping the epoch so any in-flight spawn that hasn't
+    /// inserted yet fails its [`Self::try_insert`] check.
+    /// Returns `None` if no Guard was stashed.
     pub fn remove(&mut self, buffer: BufferId, mode: ModeId) -> Option<Box<dyn Any + Send>> {
+        // Bump first so a spawn task's later try_insert (after
+        // its on_activate.await resolves) sees the mismatch
+        // regardless of whether a Guard was already present.
+        self.bump_epoch(buffer, mode);
         self.map.remove(&(buffer, mode))
     }
 
     /// Drop every Guard belonging to `buffer`. Call when a
     /// buffer is deleted -- the dispatcher's normal
     /// deactivation path may not run if the buffer vanishes
-    /// before the App can deactivate its modes.
+    /// before the App can deactivate its modes. Bumps the
+    /// epoch for every `(buffer, *)` entry so any in-flight
+    /// spawn for the purged buffer fails its later
+    /// [`Self::try_insert`].
     pub fn purge_buffer(&mut self, buffer: BufferId) {
         self.map.retain(|(b, _), _| *b != buffer);
+        for ((b, _), epoch) in self.epochs.iter_mut() {
+            if *b == buffer {
+                *epoch = epoch.wrapping_add(1);
+            }
+        }
     }
 
     /// Number of stashed Guards.
@@ -124,16 +200,49 @@ impl GuardStoreHandle {
         Self::default()
     }
 
-    /// Stash a Guard. Locks the store, inserts, unlocks.
+    /// Stash a Guard unconditionally (skipping the epoch
+    /// check). Used in tests + the rare reload path; the
+    /// production dispatcher routes through
+    /// [`Self::try_insert`].
     pub fn insert(&self, buffer: BufferId, mode: ModeId, guard: Box<dyn Any + Send>) {
         if let Ok(mut store) = self.inner.lock() {
             store.insert(buffer, mode, guard);
         }
     }
 
-    /// Take ownership of the Guard. Locks, removes, unlocks; the
-    /// caller drops the returned `Box`, firing the Guard's `Drop`
-    /// impl *outside* the lock.
+    /// Bump + return the new epoch for `(buffer, mode)`. The
+    /// dispatcher's sync prefix calls this when queueing each
+    /// cascade step; the spawn task captures it and passes
+    /// back to [`Self::try_insert`].
+    pub fn bump_epoch(&self, buffer: BufferId, mode: ModeId) -> u64 {
+        self.inner
+            .lock()
+            .map(|mut store| store.bump_epoch(buffer, mode))
+            .unwrap_or(0)
+    }
+
+    /// Insert iff `my_epoch` still matches the current
+    /// epoch. Returns `Err(guard)` on stale; the caller drops
+    /// the Guard outside the lock so the original type's
+    /// `Drop` fires.
+    pub fn try_insert(
+        &self,
+        buffer: BufferId,
+        mode: ModeId,
+        my_epoch: u64,
+        guard: Box<dyn Any + Send>,
+    ) -> Result<(), Box<dyn Any + Send>> {
+        match self.inner.lock() {
+            Ok(mut store) => store.try_insert(buffer, mode, my_epoch, guard),
+            // Poisoned mutex: treat as "stale" so caller drops.
+            Err(_) => Err(guard),
+        }
+    }
+
+    /// Take ownership of the Guard. Bumps the epoch
+    /// (invalidating any in-flight spawn) then removes; the
+    /// caller drops the returned `Box`, firing the Guard's
+    /// `Drop` impl *outside* the lock.
     pub fn remove(&self, buffer: BufferId, mode: ModeId) -> Option<Box<dyn Any + Send>> {
         self.inner.lock().ok()?.remove(buffer, mode)
     }

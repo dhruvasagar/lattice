@@ -2965,6 +2965,62 @@ pub(super) fn is_path_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b'~' | b'+' | b'@')
 }
 
+/// Expand `~/...` against `$HOME` and absolutise a relative
+/// path against the process's current working directory.
+///
+/// Two failure modes this closes:
+///
+/// 1. `:e ~/foo.rs` -- without expansion, `Document::open`
+///    forwards the literal `~` to `read_to_string` and fails
+///    ENOENT. Cmdline completion (`gen:files`) already does
+///    its own tilde expansion for `read_dir`, which is why
+///    completion appears to work but submit fails.
+///
+/// 2. Oil opened at a single-component relative path (`src`,
+///    `foo.rs`, `.`) navigating up. `Path::parent()` returns
+///    `Some("")` for those, and `read_dir("")` is ENOENT.
+///    Normalising before storing keeps `OilDir` absolute, so
+///    `parent()` walks the filesystem correctly.
+///
+/// We deliberately do not call `canonicalize` -- it requires
+/// the target to exist (`:e new.rs` against an unsaved path
+/// has to work) and would surprise users by resolving symlinks
+/// vim treats as opaque. Cwd-failure or HOME-missing falls
+/// through to the input verbatim; the caller's open then
+/// produces the same error it would have produced without
+/// the normalise step.
+pub(super) fn normalize_user_path(path: &std::path::Path) -> std::path::PathBuf {
+    let expanded = expand_tilde(path);
+    if expanded.is_absolute() {
+        return expanded;
+    }
+    match std::env::current_dir() {
+        Ok(cwd) => cwd.join(expanded),
+        Err(_) => expanded,
+    }
+}
+
+/// `~/rest` → `$HOME/rest`, `~` alone → `$HOME`. Anything else
+/// passes through unchanged. Mirrors the helper in
+/// `lattice-completion::builtins::generators` -- they stay
+/// in lockstep because the cmdline-completion source and the
+/// `:e` submit path both flow through user-typed strings.
+fn expand_tilde(path: &std::path::Path) -> std::path::PathBuf {
+    let Some(s) = path.to_str() else {
+        return path.to_path_buf();
+    };
+    let Some(home) = std::env::var_os("HOME") else {
+        return path.to_path_buf();
+    };
+    if s == "~" {
+        return std::path::PathBuf::from(home);
+    }
+    if let Some(rest) = s.strip_prefix("~/") {
+        return std::path::PathBuf::from(home).join(rest);
+    }
+    path.to_path_buf()
+}
+
 /// True if `line_idx` is empty or whitespace-only. Used by the
 /// fold-aware j/k snap to swallow trailing blanks between sibling
 /// folds (so `j` from a closed fold's heading lands on the next
@@ -3553,6 +3609,62 @@ mod tests {
     };
     use super::*;
     use crate::help::HelpContent;
+
+    #[test]
+    fn normalize_user_path_expands_tilde_slash_against_home() {
+        // `~/foo.rs` → `$HOME/foo.rs`. Mutating env vars
+        // requires `unsafe` post-edition-2024 and the workspace
+        // bans `unsafe_code`, so anchor the assertion against
+        // the runner's actual HOME instead. Skip silently if
+        // HOME isn't set -- not a meaningful environment.
+        let Some(home) = std::env::var_os("HOME") else {
+            return;
+        };
+        let got = normalize_user_path(std::path::Path::new("~/projects/foo.rs"));
+        let expected = std::path::PathBuf::from(&home).join("projects/foo.rs");
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn normalize_user_path_expands_bare_tilde_to_home() {
+        let Some(home) = std::env::var_os("HOME") else {
+            return;
+        };
+        let got = normalize_user_path(std::path::Path::new("~"));
+        assert_eq!(got, std::path::PathBuf::from(home));
+    }
+
+    #[test]
+    fn normalize_user_path_leaves_absolute_paths_unchanged() {
+        // Absolute paths are pass-through -- the cwd-join branch
+        // is skipped. Critical for the oil dedupe path
+        // (`oil_with_dir`) where two callers compare against the
+        // same stored absolute key.
+        let got = normalize_user_path(std::path::Path::new("/tmp/abs/path.rs"));
+        assert_eq!(got, std::path::PathBuf::from("/tmp/abs/path.rs"));
+    }
+
+    #[test]
+    fn normalize_user_path_absolutises_relative_against_cwd() {
+        // Single-component relative paths are the case that
+        // broke oil's `-` (parent of `"foo.rs"` is `""`, and
+        // `read_dir("")` is ENOENT). Post-fix the input is
+        // already absolute by the time it reaches `read_dir`.
+        let got = normalize_user_path(std::path::Path::new("foo.rs"));
+        let expected = std::env::current_dir().unwrap().join("foo.rs");
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn normalize_user_path_preserves_dotdot_relative_against_cwd() {
+        // `..` segments stay -- we deliberately don't
+        // canonicalise (would require the path to exist). The
+        // filesystem resolves `../foo.rs` correctly through
+        // `read_to_string`.
+        let got = normalize_user_path(std::path::Path::new("../foo.rs"));
+        let expected = std::env::current_dir().unwrap().join("../foo.rs");
+        assert_eq!(got, expected);
+    }
 
     /// Sanity check: a bare motion drives the cursor through
     /// the full translate + apply path. If this fails, the

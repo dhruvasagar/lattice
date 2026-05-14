@@ -91,6 +91,12 @@ impl App {
                 .document
                 .path()
                 .and_then(|p| p.parent().map(Into::into))
+                // `Path::parent()` returns `Some("")` for a
+                // single-component relative path like `foo.rs`;
+                // an empty path is useless for `read_dir`, so
+                // treat it as "no parent" and fall through to
+                // cwd.
+                .filter(|p: &PathBuf| !p.as_os_str().is_empty())
             {
                 Some(parent) => parent,
                 None => match std::env::current_dir() {
@@ -102,6 +108,14 @@ impl App {
                 },
             },
         };
+        // Absolutise (+ tilde-expand) the dir before storing.
+        // Oil's navigate-up depends on `OilDir.parent()`
+        // walking the filesystem; a relative dir without
+        // enough components hits `Some("")` and `read_dir`
+        // ENOENT. Doing it here keeps the invariant local to
+        // the buffer's creation -- every later reload /
+        // navigate-up trusts `OilDir` is absolute.
+        let dir = crate::app::normalize_user_path(&dir);
         if let Some(existing_id) = self.oil_with_dir(&dir) {
             self.activate_oil(existing_id);
             self.set_message(

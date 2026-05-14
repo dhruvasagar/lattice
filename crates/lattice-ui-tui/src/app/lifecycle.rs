@@ -438,6 +438,12 @@ impl App {
                 }
             },
         };
+        // Tilde-expand + absolutise so `Document::open` doesn't
+        // see literal `~` (`read_to_string` would ENOENT) and so
+        // `find_document_by_path` matches against a stable form
+        // (otherwise `:e foo.rs` and `:e ./foo.rs` would create
+        // two separate buffers for the same file).
+        let target = crate::app::normalize_user_path(&target);
         // Directories defer to `:Tree path` so `:e folder` opens
         // the file-tree buffer.
         if let Ok(meta) = std::fs::metadata(&target)
@@ -2957,6 +2963,75 @@ mod tests {
         let opened = a.document.path().map(|p| p.to_path_buf());
         assert_eq!(opened, Some(tmp.join("a.txt")));
 
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn oil_open_with_relative_dir_stores_absolute_oil_dir() {
+        // Regression for the navigate-up ENOENT: opening oil with
+        // a relative dir used to store the relative path
+        // verbatim. `Path::parent()` then returned `Some("")` for
+        // single-component cases, and `read_dir("")` failed.
+        // Post-fix `do_open_oil` normalises to absolute before
+        // storing.
+        let tmp = std::env::temp_dir().join(format!(
+            "lattice-oil-relative-dir-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("sub")).expect("sub");
+        std::fs::write(tmp.join("sub/inside.txt"), "i").expect("inside");
+
+        // Construct a path that's relative to cwd but points
+        // inside tmp. `tmp` itself is absolute (`/tmp/...`); we
+        // simulate the "user typed a relative path" case by
+        // building one explicitly. Skip the test if cwd lookup
+        // fails (no realistic test environment).
+        let Ok(cwd) = std::env::current_dir() else {
+            return;
+        };
+        let Ok(rel) = tmp.join("sub").strip_prefix(&cwd).map(|p| p.to_path_buf()) else {
+            // tmp isn't a descendant of cwd (likely the common
+            // case: `/tmp/...` vs `/home/.../lattice`); craft
+            // the relative path via `..` walks. We only need
+            // the assertion to exercise the relative→absolute
+            // pipeline; the underlying directory just has to
+            // exist.
+            let mut a = app_with("hi", 5);
+            a.do_open_oil(Some(tmp.join("sub")));
+            let oil_id = a.active_pane_buffer_id();
+            let stored = a.oil_dir_for(oil_id).unwrap_or_default();
+            assert!(
+                stored.is_absolute(),
+                "OilDir should always be absolute; got {stored:?}",
+            );
+            // Hit `-` once. Pre-fix this hit ENOENT for any
+            // relative dir; post-fix it lands on the absolute
+            // parent.
+            a.do_oil_navigate_up();
+            let after = a.oil_dir_for(oil_id).unwrap_or_default();
+            assert_eq!(after, tmp, "navigate-up should land on tmp's absolute path");
+            let _ = std::fs::remove_dir_all(&tmp);
+            return;
+        };
+
+        let mut a = app_with("hi", 5);
+        // Pass the truly-relative form. `do_open_oil` should
+        // resolve it against cwd before storing.
+        a.do_open_oil(Some(rel.clone()));
+        let oil_id = a.active_pane_buffer_id();
+        let stored = a.oil_dir_for(oil_id).unwrap_or_default();
+        assert!(
+            stored.is_absolute(),
+            "OilDir should always be absolute, even when opened relative; got {stored:?}",
+        );
+        // `-` walks up to tmp.
+        a.do_oil_navigate_up();
+        let after = a.oil_dir_for(oil_id).unwrap_or_default();
+        assert_eq!(
+            after, tmp,
+            "navigate-up from relative-opened oil should reach the absolute parent",
+        );
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

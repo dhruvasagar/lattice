@@ -40,8 +40,8 @@ pub use lattice_host::{
 // Re-export the `keymap_entry!` macro (defined with `#[macro_export]`
 // in lattice-host) at this crate's root so the catalog files
 // (keymap_normal/insert/visual/replace -- still in this crate
-// until the Action extraction lands) keep invoking it as
-// `keymap_entry!` without a path prefix.
+// because their `dispatch_*` functions are crossterm-coupled)
+// keep invoking it as `keymap_entry!` without a path prefix.
 pub use lattice_host::keymap_entry;
 pub mod chord;
 pub mod folds;

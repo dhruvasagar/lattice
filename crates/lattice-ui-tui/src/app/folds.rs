@@ -419,7 +419,7 @@ mod tests {
     use super::compute_fold_hash;
     use crate::app::test_helpers::{app_with, attach_test_syntax, invoke_motion};
     use crate::app::*;
-    use lattice_grammar::ModalState;
+    use lattice_grammar::{ModalState, VisualKind};
     use lattice_protocol::edit::Edit;
     use lattice_protocol::position::Position;
 

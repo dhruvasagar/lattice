@@ -47,6 +47,21 @@ pub fn shared_runtime() -> &'static Handle {
         .handle()
 }
 
+/// Fire-and-forget spawn onto the shared runtime. The future
+/// runs on a tokio worker thread; the returned `JoinHandle` is
+/// detached (the caller doesn't await). Used by the mode
+/// dispatcher (M-async.2): activation validation runs
+/// synchronously on the App thread, then the lifecycle future
+/// is `spawn_task`'d so the App thread doesn't block on the
+/// future's `.await` points.
+pub fn spawn_task<F>(fut: F) -> tokio::task::JoinHandle<F::Output>
+where
+    F: std::future::Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    shared_runtime().spawn(fut)
+}
+
 /// Sync-to-async bridge. Forwards to the shared runtime's
 /// `block_on`. Used by the TUI input loop and by App methods that
 /// need to wait on a [`crate::Pending`] from outside an async

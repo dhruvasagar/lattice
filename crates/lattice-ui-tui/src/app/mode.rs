@@ -75,7 +75,7 @@ impl App {
         let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
         match self.mode_registry.activate_major(
             &mut active,
-            &mut self.mode_guards,
+            &self.mode_guards,
             &self.config,
             &self.event_bus,
             &self.services,
@@ -97,7 +97,7 @@ impl App {
         if let Some(minor_id) = crate::modes::default_minor_mode_id_for_buffer_kind(kind)
             && let Err(e) = self.mode_registry.activate_minor(
                 &mut active,
-                &mut self.mode_guards,
+                &self.mode_guards,
                 &self.config,
                 &self.event_bus,
                 &self.services,
@@ -117,7 +117,7 @@ impl App {
         for minor_id in crate::modes::auto_activated_minors_for_buffer_kind(kind) {
             if let Err(e) = self.mode_registry.activate_minor(
                 &mut active,
-                &mut self.mode_guards,
+                &self.mode_guards,
                 &self.config,
                 &self.event_bus,
                 &self.services,
@@ -216,7 +216,7 @@ impl App {
         let result = match kind {
             ModeKind::Major => self.mode_registry.activate_major(
                 &mut active,
-                &mut self.mode_guards,
+                &self.mode_guards,
                 &self.config,
                 &self.event_bus,
                 &self.services,
@@ -226,7 +226,7 @@ impl App {
             ),
             ModeKind::Minor => self.mode_registry.activate_minor(
                 &mut active,
-                &mut self.mode_guards,
+                &self.mode_guards,
                 &self.config,
                 &self.event_bus,
                 &self.services,
@@ -289,12 +289,16 @@ impl App {
         let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
         let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
         let result = match mode.kind() {
-            ModeKind::Major => self
-                .mode_registry
-                .deactivate_major(&mut active, &mut self.mode_guards, proto_id),
+            ModeKind::Major => self.mode_registry.deactivate_major(
+                &mut active,
+                &self.mode_guards,
+                &self.event_bus,
+                proto_id,
+            ),
             ModeKind::Minor => self.mode_registry.deactivate_minor(
                 &mut active,
-                &mut self.mode_guards,
+                &self.mode_guards,
+                &self.event_bus,
                 proto_id,
                 mode_id,
             ),

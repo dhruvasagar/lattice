@@ -12,15 +12,18 @@
 //! through the `dyn Any` trait object correctly invokes the
 //! original type's `Drop` via the vtable.
 //!
-//! The store lives in the App, not in the registry, because:
-//! - the registry is `Clone` (cheap, shallow over `Arc<dyn DynMode>`)
-//!   and shared across buffers; per-buffer Guard storage cannot
-//!   be cloned (`Box<dyn Any>` is not `Clone`);
-//! - the App is the single owner of buffer-keyed state and can
-//!   purge a buffer's Guards on buffer deletion in one place.
+//! M-async.2: the store is accessed from two threads -- the App
+//! thread (synchronous deactivate path; activation's sync
+//! prefix) and the tokio worker that runs the spawned lifecycle
+//! future (inserts the Guard when `on_activate` resolves). The
+//! [`GuardStoreHandle`] wraps the store in `Arc<Mutex<...>>` so
+//! both threads can lock briefly without `&mut` lifetime
+//! gymnastics. The App owns one handle; the dispatcher clones
+//! it into each spawned task.
 
 use std::any::Any;
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use lattice_protocol::ids::BufferId;
 
@@ -88,6 +91,76 @@ impl GuardStore {
     /// True iff a Guard is stashed for `(buffer, mode)`.
     pub fn contains(&self, buffer: BufferId, mode: ModeId) -> bool {
         self.map.contains_key(&(buffer, mode))
+    }
+}
+
+/// Cheap-clone, thread-safe handle to a [`GuardStore`]. The App
+/// owns one; the dispatcher clones it into each spawned
+/// lifecycle task so the task can lock + insert the Guard on
+/// completion. Locks are held briefly (single map mutation per
+/// activation / deactivation); `std::sync::Mutex` is correct
+/// because no `.await` happens inside the lock.
+#[derive(Clone, Default)]
+pub struct GuardStoreHandle {
+    inner: Arc<Mutex<GuardStore>>,
+}
+
+impl std::fmt::Debug for GuardStoreHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let guard = self.inner.lock();
+        match guard {
+            Ok(g) => f
+                .debug_struct("GuardStoreHandle")
+                .field("count", &g.len())
+                .finish_non_exhaustive(),
+            Err(_) => f.debug_struct("GuardStoreHandle").finish_non_exhaustive(),
+        }
+    }
+}
+
+impl GuardStoreHandle {
+    /// Fresh empty handle.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Stash a Guard. Locks the store, inserts, unlocks.
+    pub fn insert(&self, buffer: BufferId, mode: ModeId, guard: Box<dyn Any + Send>) {
+        if let Ok(mut store) = self.inner.lock() {
+            store.insert(buffer, mode, guard);
+        }
+    }
+
+    /// Take ownership of the Guard. Locks, removes, unlocks; the
+    /// caller drops the returned `Box`, firing the Guard's `Drop`
+    /// impl *outside* the lock.
+    pub fn remove(&self, buffer: BufferId, mode: ModeId) -> Option<Box<dyn Any + Send>> {
+        self.inner.lock().ok()?.remove(buffer, mode)
+    }
+
+    /// Drop every Guard for `buffer`. Used when a buffer is
+    /// deleted.
+    pub fn purge_buffer(&self, buffer: BufferId) {
+        if let Ok(mut store) = self.inner.lock() {
+            store.purge_buffer(buffer);
+        }
+    }
+
+    /// True iff a Guard is stashed for `(buffer, mode)`.
+    pub fn contains(&self, buffer: BufferId, mode: ModeId) -> bool {
+        self.inner
+            .lock()
+            .map(|s| s.contains(buffer, mode))
+            .unwrap_or(false)
+    }
+
+    /// Number of stashed Guards.
+    pub fn len(&self) -> usize {
+        self.inner.lock().map(|s| s.len()).unwrap_or(0)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 

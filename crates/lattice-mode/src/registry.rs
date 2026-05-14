@@ -1,16 +1,22 @@
 //! `ModeRegistry`: register modes, look them up, drive
 //! activation / deactivation against a per-buffer `ActiveModes`
-//! and a per-App [`GuardStore`].
+//! and an App-owned [`GuardStoreHandle`].
 //!
-//! M-async.1 keeps the registry **bus-agnostic**: activation and
-//! deactivation methods return the events they would have
-//! published as a `Vec<ModeEvent>`, instead of dispatching to
-//! the typed event bus directly. The caller forwards events on
-//! to the bus. M-async.2 swaps this for spawn-based dispatch,
-//! at which point the registry publishes events from the
-//! spawned task and the return type becomes `Result<(), _>`.
+//! M-async.2: activation is **spawn-based**. The sync prefix
+//! validates the request and mutates `active_modes`; the
+//! lifecycle future (`on_activate_dyn`) is spawned on the shared
+//! runtime via [`lattice_runtime::spawn_task`]. The spawned task
+//! awaits the future, stashes the Guard in the
+//! [`GuardStoreHandle`], and publishes a typed [`ModeEvent`]
+//! (`MajorEntered` / `MinorActivated` on success,
+//! `ModeActivationFailed` on lifecycle error).
 //!
-//! Validation order before activation:
+//! Deactivation stays synchronous (Drop is sync): the
+//! dispatcher locks the store, removes the Guard, drops it. The
+//! `MajorExiting` / `MinorDeactivated` event publishes before
+//! the drop fires.
+//!
+//! Validation order before spawning:
 //! 1. Mode is registered (`ModeActivationError::NotRegistered`).
 //! 2. Mode kind matches the call (`WrongKind`).
 //! 3. Buffer satisfies required capabilities
@@ -18,22 +24,19 @@
 //! 4. No conflict with already-active modes (`Conflict`).
 //! 5. All `implies` dependencies are registered
 //!    (`UnregisteredDependency`).
-//! 6. `on_activate` runs; lifecycle errors surface as
-//!    `LifecycleFailed`. On success the returned Guard is
-//!    stashed in the [`GuardStore`] keyed by `(buffer, mode)`.
-//! 7. Declarative contributions are applied (option overrides,
-//!    keymap layer, subscriptions, decorations).
 //!
-//! Deactivation removes the Guard from the store; dropping the
-//! `Box<dyn Any + Send>` invokes the original Guard's `Drop`
-//! impl, which performs every cleanup action. There is no
-//! `on_deactivate` -- Drop is the cleanup contract.
+//! Lifecycle errors (from `on_activate.await`) become
+//! `ModeActivationFailed` events on the bus; the spawned task
+//! never returns them to the caller (the caller already
+//! returned `Ok(())`).
+//!
+//! M-async.3 follow-up: an App-side subscriber rolls back
+//! `active_modes` on `ModeActivationFailed`. M-async.2 leaves
+//! the mutation in place even on lifecycle error (the previous
+//! `Vec<ModeEvent>` return type leaked the same way).
 
 use std::collections::HashMap;
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
 use lattice_protocol::ids::BufferId;
 
@@ -42,7 +45,7 @@ use crate::capability::CapabilitySet;
 use crate::context::ModeContext;
 use crate::error::ModeActivationError;
 use crate::event::ModeEvent;
-use crate::guards::GuardStore;
+use crate::guards::GuardStoreHandle;
 use crate::mode::{DynMode, Mode, ModeId, ModeKind};
 
 /// Why a registration failed.
@@ -54,12 +57,6 @@ pub enum RegistrationError {
 
 /// Mode registry. Owns the catalogue of registered modes
 /// (`Arc<dyn DynMode>`) and drives activation / deactivation.
-///
-/// `Clone` is cheap: each entry is an `Arc<dyn DynMode>` so the
-/// HashMap clone is shallow over the values. Used by tests that
-/// register a test-only mode post-boot via
-/// `Arc::make_mut(&mut app.mode_registry)`; production code
-/// constructs the registry once at boot and never clones.
 #[derive(Clone)]
 pub struct ModeRegistry {
     modes: HashMap<ModeId, Arc<dyn DynMode>>,
@@ -86,17 +83,12 @@ impl ModeRegistry {
         }
     }
 
-    /// Register a mode. Same id twice is a `Duplicate` error;
-    /// the registry is single-writer at startup so the typical
-    /// caller registers all modes before any buffer activates.
+    /// Register a mode. Same id twice is a `Duplicate` error.
     pub fn register<M: Mode>(&mut self, mode: M) -> Result<ModeId, RegistrationError> {
         let id = <M as Mode>::id(&mode);
         if self.modes.contains_key(&id) {
             return Err(RegistrationError::Duplicate(id));
         }
-        // `Arc::new(mode)` constructs `Arc<M>`; the coercion to
-        // `Arc<dyn DynMode>` uses the blanket `impl<M: Mode>
-        // DynMode for M`.
         let arc: Arc<dyn DynMode> = Arc::new(mode);
         self.modes.insert(id, arc);
         Ok(id)
@@ -112,9 +104,7 @@ impl ModeRegistry {
         self.modes.get(&id).cloned()
     }
 
-    /// Iterate every registered mode's `(id, kind)`. Used at boot
-    /// by the App to auto-generate toggle ex-commands per mode-
-    /// architecture §9.6.1.
+    /// Iterate every registered mode's `(id, kind)`.
     pub fn iter_meta(&self) -> impl Iterator<Item = (ModeId, ModeKind)> + '_ {
         self.modes.iter().map(|(id, mode)| (*id, mode.kind()))
     }
@@ -127,31 +117,35 @@ impl ModeRegistry {
         self.modes.is_empty()
     }
 
-    /// Activate a major mode on `buffer`. If a different major
-    /// is currently active, it is deactivated first (the
-    /// previous major's Guard is dropped, `MajorExiting` fires,
-    /// then the new major's `on_activate` runs and `MajorEntered`
-    /// fires). Idempotent: activating the already-active major
-    /// triggers a *reload* (deactivate then re-activate, per
-    /// `mode-architecture.md` §9.6).
+    /// Activate a major mode on `buffer`. Synchronous prefix:
+    /// validate + mutate `active_modes`. The lifecycle future
+    /// runs on a tokio worker via
+    /// [`lattice_runtime::spawn_task`]; on resolve the spawned
+    /// task stashes the Guard in `guards` and publishes
+    /// `MajorEntered` (or `ModeActivationFailed` if `on_activate`
+    /// returned `Err`).
     ///
-    /// `caps` is the buffer's current capability set. The new
-    /// mode's `required_capabilities` must be a subset.
+    /// If a different major is currently active, it is
+    /// deactivated synchronously first (Drop runs, `MajorExiting`
+    /// publishes). Idempotent: reactivating the current major
+    /// triggers a *reload* (deactivate then re-activate).
     ///
-    /// Implied modes (`Mode::implies`) are auto-activated as
-    /// minors after the major lands.
+    /// Implied minors are spawned recursively after the major's
+    /// sync prefix (M-async.3 makes the cascade await the
+    /// parent's future before scheduling children; M-async.2
+    /// schedules them in parallel).
     #[allow(clippy::too_many_arguments)]
     pub fn activate_major(
         &self,
         active: &mut ActiveModes,
-        guards: &mut GuardStore,
+        guards: &GuardStoreHandle,
         config: &Arc<lattice_config::ConfigRegistry>,
         events: &Arc<lattice_runtime::EventBus>,
         services: &Arc<crate::services::ServiceRegistry>,
         buffer: BufferId,
         mode: ModeId,
         caps: CapabilitySet,
-    ) -> Result<Vec<ModeEvent>, ModeActivationError> {
+    ) -> Result<(), ModeActivationError> {
         let entry = self
             .modes
             .get(&mode)
@@ -164,39 +158,42 @@ impl ModeRegistry {
             return Err(ModeActivationError::MissingCapability { mode, missing });
         }
 
-        let mut emitted = Vec::new();
-
         // Tear down current major (if any). `MajorExiting`
-        // fires BEFORE the Guard drops (per §7).
+        // publishes BEFORE the Guard drops.
         if let Some(prev_id) = active.major() {
-            emitted.push(ModeEvent::MajorExiting {
+            events.publish_typed(ModeEvent::MajorExiting {
                 buffer,
                 mode: prev_id,
             });
-            // Drop the previous major's Guard. The Box<dyn Any>
-            // goes out of scope here; its Drop fires the
-            // original Guard's Drop impl.
+            // Drop the previous Guard. Box<dyn Any + Send> goes
+            // out of scope here; original Guard's Drop fires.
             let _ = guards.remove(buffer, prev_id);
             active.set_major(None);
         }
 
-        // Run the new major's on_activate, build ctx and drive
-        // the lifecycle future synchronously (M-async.1
-        // contract: futures complete on first poll; M-async.2
-        // swaps for runtime-spawned `.await`).
-        let ctx = ModeContext::new(
+        // Sync prefix: mutate active_modes BEFORE spawning so
+        // `App::active_modes.has_major(mode)` is `true` the
+        // moment this call returns. The Guard isn't yet
+        // stashed; lifecycle errors leave `active_modes`
+        // mutated (M-async.3 rolls back via subscriber).
+        active.set_major(Some(mode));
+
+        // Spawn the lifecycle future. Note: cascade through
+        // `implies()` is initiated synchronously here. M-async.2
+        // schedules implied children in parallel with the
+        // parent's future; M-async.3 sequences them after the
+        // parent resolves.
+        self.spawn_lifecycle(
+            entry.clone(),
+            guards.clone(),
+            events.clone(),
+            ctx_for(buffer, mode, config, events, services),
             buffer,
             mode,
-            config.clone(),
-            events.clone(),
-            services.clone(),
+            ModeKind::Major,
         );
-        let guard = poll_now(entry.on_activate_dyn(ctx))?;
-        guards.insert(buffer, mode, guard);
-        active.set_major(Some(mode));
-        emitted.push(ModeEvent::MajorEntered { buffer, mode });
 
-        // Auto-activate implied minors (recursive).
+        // Implied minors spawn alongside.
         for &dep in entry.implies() {
             if !self.is_registered(dep) {
                 return Err(ModeActivationError::UnregisteredDependency { mode, dep });
@@ -204,29 +201,26 @@ impl ModeRegistry {
             if active.has_minor(dep) {
                 continue;
             }
-            let dep_events = self.activate_minor_inner(
-                active, guards, config, events, services, buffer, dep, caps,
-            )?;
-            emitted.extend(dep_events);
+            self.activate_minor_inner(active, guards, config, events, services, buffer, dep, caps)?;
         }
 
-        Ok(emitted)
+        Ok(())
     }
 
-    /// Activate a minor mode on `buffer`. Validates capabilities,
-    /// conflicts, and dependency presence.
+    /// Activate a minor mode on `buffer`. Same sync-prefix-then-
+    /// spawn shape as `activate_major`.
     #[allow(clippy::too_many_arguments)]
     pub fn activate_minor(
         &self,
         active: &mut ActiveModes,
-        guards: &mut GuardStore,
+        guards: &GuardStoreHandle,
         config: &Arc<lattice_config::ConfigRegistry>,
         events: &Arc<lattice_runtime::EventBus>,
         services: &Arc<crate::services::ServiceRegistry>,
         buffer: BufferId,
         mode: ModeId,
         caps: CapabilitySet,
-    ) -> Result<Vec<ModeEvent>, ModeActivationError> {
+    ) -> Result<(), ModeActivationError> {
         self.activate_minor_inner(active, guards, config, events, services, buffer, mode, caps)
     }
 
@@ -234,14 +228,14 @@ impl ModeRegistry {
     fn activate_minor_inner(
         &self,
         active: &mut ActiveModes,
-        guards: &mut GuardStore,
+        guards: &GuardStoreHandle,
         config: &Arc<lattice_config::ConfigRegistry>,
         events: &Arc<lattice_runtime::EventBus>,
         services: &Arc<crate::services::ServiceRegistry>,
         buffer: BufferId,
         mode: ModeId,
         caps: CapabilitySet,
-    ) -> Result<Vec<ModeEvent>, ModeActivationError> {
+    ) -> Result<(), ModeActivationError> {
         let entry = self
             .modes
             .get(&mode)
@@ -249,18 +243,14 @@ impl ModeRegistry {
         if entry.kind() != ModeKind::Minor {
             return Err(ModeActivationError::WrongKind { mode });
         }
-        // Idempotent: re-activating a live minor is a no-op
-        // (does NOT trigger reload for minors -- that's a
-        // major-mode-specific contract).
         if active.has_minor(mode) {
-            return Ok(Vec::new());
+            return Ok(());
         }
         let missing = entry.required_capabilities() - caps;
         if !missing.is_empty() {
             return Err(ModeActivationError::MissingCapability { mode, missing });
         }
-        // Conflict check: if any active mode (major or minor)
-        // is in this mode's conflicts list, reject. Symmetric.
+        // Conflict checks.
         for &c in entry.conflicts_with() {
             if active.is_active(c) {
                 return Err(ModeActivationError::Conflict { mode, active: c });
@@ -286,17 +276,18 @@ impl ModeRegistry {
             }
         }
 
-        let ctx = ModeContext::new(
+        // Sync prefix: append to active_modes BEFORE spawning.
+        active.push_minor(mode);
+
+        self.spawn_lifecycle(
+            entry.clone(),
+            guards.clone(),
+            events.clone(),
+            ctx_for(buffer, mode, config, events, services),
             buffer,
             mode,
-            config.clone(),
-            events.clone(),
-            services.clone(),
+            ModeKind::Minor,
         );
-        let guard = poll_now(entry.on_activate_dyn(ctx))?;
-        guards.insert(buffer, mode, guard);
-        active.push_minor(mode);
-        let mut emitted = vec![ModeEvent::MinorActivated { buffer, mode }];
 
         // Recurse into implied minors.
         for &dep in entry.implies() {
@@ -306,112 +297,121 @@ impl ModeRegistry {
             if active.has_minor(dep) {
                 continue;
             }
-            let dep_events = self.activate_minor_inner(
-                active, guards, config, events, services, buffer, dep, caps,
-            )?;
-            emitted.extend(dep_events);
+            self.activate_minor_inner(active, guards, config, events, services, buffer, dep, caps)?;
         }
 
-        Ok(emitted)
+        Ok(())
     }
 
-    /// Deactivate a minor mode. Idempotent: deactivating an
-    /// already-inactive mode is a no-op (returns empty events).
-    /// Drops the Guard from the store; the Guard's `Drop` impl
-    /// performs cleanup synchronously (async cleanup uses
-    /// `lattice_runtime::spawn_task` fire-and-forget inside
-    /// the Guard's `Drop` -- the dispatcher returns
-    /// immediately).
-    #[allow(clippy::too_many_arguments)]
+    /// Deactivate a minor mode. Synchronous: locks `guards`,
+    /// removes + drops the Guard, publishes
+    /// `MinorDeactivated`. Idempotent.
+    ///
+    /// `MinorDeactivated` publishes BEFORE the Guard drops so
+    /// subscribers can inspect the state about to be torn down.
     pub fn deactivate_minor(
         &self,
         active: &mut ActiveModes,
-        guards: &mut GuardStore,
+        guards: &GuardStoreHandle,
+        events: &Arc<lattice_runtime::EventBus>,
         buffer: BufferId,
         mode: ModeId,
-    ) -> Result<Vec<ModeEvent>, ModeActivationError> {
+    ) -> Result<(), ModeActivationError> {
         if !active.has_minor(mode) {
-            return Ok(Vec::new());
+            return Ok(());
         }
         let entry = self
             .modes
             .get(&mode)
             .ok_or(ModeActivationError::NotRegistered(mode))?;
-        // Collect the implies list before dropping the Guard so
-        // a Guard's Drop impl (which may touch its own implies)
-        // can't see a half-cleaned set.
         let implies: Vec<ModeId> = entry.implies().to_vec();
+        events.publish_typed(ModeEvent::MinorDeactivated { buffer, mode });
         // Drop the Guard. Box<dyn Any + Send> goes out of scope
-        // here; the original Guard type's Drop runs.
+        // *after* the lock releases (the `let _ = ...` binding
+        // owns it briefly).
         let _ = guards.remove(buffer, mode);
         active.remove_minor(mode);
-        let mut emitted = vec![ModeEvent::MinorDeactivated { buffer, mode }];
         // Cascade-deactivate every implied minor that's still
         // active.
         for &dep in &implies {
             if !active.has_minor(dep) {
                 continue;
             }
-            let dep_events = self.deactivate_minor(active, guards, buffer, dep)?;
-            emitted.extend(dep_events);
+            self.deactivate_minor(active, guards, events, buffer, dep)?;
         }
-        Ok(emitted)
+        Ok(())
     }
 
-    /// Deactivate the active major mode (if any). Returns
-    /// empty events if no major is active.
+    /// Deactivate the active major mode (if any). Synchronous.
     pub fn deactivate_major(
         &self,
         active: &mut ActiveModes,
-        guards: &mut GuardStore,
+        guards: &GuardStoreHandle,
+        events: &Arc<lattice_runtime::EventBus>,
         buffer: BufferId,
-    ) -> Result<Vec<ModeEvent>, ModeActivationError> {
+    ) -> Result<(), ModeActivationError> {
         let Some(mode) = active.major() else {
-            return Ok(Vec::new());
+            return Ok(());
         };
         let _ = self
             .modes
             .get(&mode)
             .ok_or(ModeActivationError::NotRegistered(mode))?;
-        let result_events = vec![ModeEvent::MajorExiting { buffer, mode }];
+        events.publish_typed(ModeEvent::MajorExiting { buffer, mode });
         let _ = guards.remove(buffer, mode);
         active.set_major(None);
-        Ok(result_events)
+        Ok(())
+    }
+
+    /// Spawn the lifecycle future for `entry` on the shared
+    /// runtime. The spawned task awaits the future, stashes the
+    /// Guard on success, and publishes a typed `ModeEvent`.
+    fn spawn_lifecycle(
+        &self,
+        entry: Arc<dyn DynMode>,
+        guards: GuardStoreHandle,
+        events: Arc<lattice_runtime::EventBus>,
+        ctx: ModeContext,
+        buffer: BufferId,
+        mode: ModeId,
+        kind: ModeKind,
+    ) {
+        lattice_runtime::spawn_task(async move {
+            match entry.on_activate_dyn(ctx).await {
+                Ok(guard) => {
+                    guards.insert(buffer, mode, guard);
+                    let evt = match kind {
+                        ModeKind::Major => ModeEvent::MajorEntered { buffer, mode },
+                        ModeKind::Minor => ModeEvent::MinorActivated { buffer, mode },
+                    };
+                    events.publish_typed(evt);
+                }
+                Err(err) => {
+                    events.publish_typed(ModeEvent::activation_failed(buffer, mode, &err));
+                }
+            }
+        });
     }
 }
 
-/// Drive an immediately-ready future to completion. M-async.1
-/// contract: lifecycle futures complete on first poll
-/// (`Box::pin(async { Ok(()) })` for marker modes; sync work
-/// wrapped in an async block for stateful modes). M-async.2
-/// swaps this for `lattice_runtime::spawn_task`.
-///
-/// Panics on `Poll::Pending` -- the M-async.1 immediate-ready
-/// contract is violated. A mode that needs to `.await` real
-/// async work (LSP supervisor handshake, watcher init) lands
-/// in M-async.2.
-fn poll_now<F: Future>(fut: F) -> F::Output {
-    static VTABLE: RawWakerVTable = RawWakerVTable::new(
-        |_| RawWaker::new(std::ptr::null(), &VTABLE),
-        |_| {},
-        |_| {},
-        |_| {},
-    );
-    let raw_waker = RawWaker::new(std::ptr::null(), &VTABLE);
-    // SAFETY: the vtable is fully static and the functions are
-    // valid (no-op clone returns the same waker; wake/wake_by_ref/
-    // drop are no-ops on a null context).
-    #[allow(unsafe_code)]
-    let waker = unsafe { Waker::from_raw(raw_waker) };
-    let mut cx = Context::from_waker(&waker);
-    let mut fut: Pin<Box<F>> = Box::pin(fut);
-    match fut.as_mut().poll(&mut cx) {
-        Poll::Ready(out) => out,
-        Poll::Pending => panic!(
-            "poll_now: lifecycle future is Pending -- M-async.1 contract requires immediate readiness; \
-             M-async.2 swaps for runtime-spawned drive"
-        ),
-    }
+/// Build a `ModeContext` for a `(buffer, mode)` activation.
+/// Inline because the dispatcher constructs one per spawned
+/// task; the registry-method body would otherwise repeat the
+/// same 5-arg constructor call.
+fn ctx_for(
+    buffer: BufferId,
+    mode: ModeId,
+    config: &Arc<lattice_config::ConfigRegistry>,
+    events: &Arc<lattice_runtime::EventBus>,
+    services: &Arc<crate::services::ServiceRegistry>,
+) -> ModeContext {
+    ModeContext::new(
+        buffer,
+        mode,
+        config.clone(),
+        events.clone(),
+        services.clone(),
+    )
 }
 
 #[cfg(test)]
@@ -421,9 +421,9 @@ mod tests {
     use crate::mode::LifecycleFuture;
     use std::sync::Arc as StdArc;
     use std::sync::atomic::{AtomicU32, Ordering};
+    use tokio::sync::mpsc::UnboundedReceiver;
 
     /// Test mode with a typed Guard that records drop count.
-    /// Counts both activate (Guard::new) and deactivate (Drop).
     struct MockMode {
         id: ModeId,
         kind: ModeKind,
@@ -525,8 +525,23 @@ mod tests {
         Arc::new(crate::services::ServiceRegistry::new())
     }
 
-    #[test]
-    fn register_and_lookup() {
+    /// Subscribe to `ModeEvent` on `bus`; return the receiver.
+    fn subscribe_mode_events(bus: &lattice_runtime::EventBus) -> UnboundedReceiver<ModeEvent> {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        bus.subscribe_typed::<ModeEvent>(tx);
+        rx
+    }
+
+    /// Drain the spawned lifecycle task: yield to the runtime
+    /// until the task completes (recv() on the bus channel returns).
+    async fn await_event(rx: &mut UnboundedReceiver<ModeEvent>) -> ModeEvent {
+        rx.recv()
+            .await
+            .expect("bus channel should deliver the event")
+    }
+
+    #[tokio::test]
+    async fn register_and_lookup() {
         let mut r = ModeRegistry::new();
         let id = r.register(MockMode::major("rust-mode")).unwrap();
         assert!(r.is_registered(id));
@@ -534,23 +549,23 @@ mod tests {
         assert_eq!(r.len(), 1);
     }
 
-    #[test]
-    fn duplicate_registration_fails() {
+    #[tokio::test]
+    async fn duplicate_registration_fails() {
         let mut r = ModeRegistry::new();
         r.register(MockMode::major("rust-mode")).unwrap();
         let err = r.register(MockMode::major("rust-mode")).unwrap_err();
         assert!(matches!(err, RegistrationError::Duplicate(_)));
     }
 
-    #[test]
-    fn activate_unregistered_major_fails() {
+    #[tokio::test]
+    async fn activate_unregistered_major_fails() {
         let r = ModeRegistry::new();
         let mut a = ActiveModes::new();
-        let mut g = GuardStore::new();
+        let g = GuardStoreHandle::new();
         let err = r
             .activate_major(
                 &mut a,
-                &mut g,
+                &g,
                 &cfg(),
                 &evts(),
                 &svcs(),
@@ -562,16 +577,16 @@ mod tests {
         assert!(matches!(err, ModeActivationError::NotRegistered(_)));
     }
 
-    #[test]
-    fn activate_wrong_kind_fails() {
+    #[tokio::test]
+    async fn activate_wrong_kind_fails() {
         let mut r = ModeRegistry::new();
         let id = r.register(MockMode::minor("read-only-mode")).unwrap();
         let mut a = ActiveModes::new();
-        let mut g = GuardStore::new();
+        let g = GuardStoreHandle::new();
         let err = r
             .activate_major(
                 &mut a,
-                &mut g,
+                &g,
                 &cfg(),
                 &evts(),
                 &svcs(),
@@ -583,18 +598,18 @@ mod tests {
         assert!(matches!(err, ModeActivationError::WrongKind { .. }));
     }
 
-    #[test]
-    fn missing_capability_blocks_activation() {
+    #[tokio::test]
+    async fn missing_capability_blocks_activation() {
         let mut r = ModeRegistry::new();
         let id = r
             .register(MockMode::minor("lsp-mode").requires(CapabilitySet::LSP))
             .unwrap();
         let mut a = ActiveModes::new();
-        let mut g = GuardStore::new();
+        let g = GuardStoreHandle::new();
         let err = r
             .activate_minor(
                 &mut a,
-                &mut g,
+                &g,
                 &cfg(),
                 &evts(),
                 &svcs(),
@@ -612,35 +627,39 @@ mod tests {
         }
     }
 
-    #[test]
-    fn major_activation_emits_entered_and_stashes_guard() {
+    #[tokio::test]
+    async fn major_activation_publishes_entered_and_stashes_guard() {
         let mock = MockMode::major("rust-mode");
         let act = mock.activate_calls.clone();
         let mut r = ModeRegistry::new();
         let id = r.register(mock).unwrap();
         let mut a = ActiveModes::new();
-        let mut g = GuardStore::new();
-        let events = r
-            .activate_major(
-                &mut a,
-                &mut g,
-                &cfg(),
-                &evts(),
-                &svcs(),
-                buf(),
-                id,
-                CapabilitySet::empty(),
-            )
-            .unwrap();
-        assert_eq!(events.len(), 1);
-        assert!(matches!(events[0], ModeEvent::MajorEntered { mode, .. } if mode == id));
-        assert_eq!(act.load(Ordering::SeqCst), 1);
+        let g = GuardStoreHandle::new();
+        let bus = evts();
+        let mut rx = subscribe_mode_events(&bus);
+        r.activate_major(
+            &mut a,
+            &g,
+            &cfg(),
+            &bus,
+            &svcs(),
+            buf(),
+            id,
+            CapabilitySet::empty(),
+        )
+        .unwrap();
+        // Sync prefix mutated `active_modes` immediately.
         assert_eq!(a.major(), Some(id));
-        assert!(g.contains(buf(), id), "guard must be stashed");
+        // Lifecycle task publishes MajorEntered when on_activate
+        // resolves.
+        let evt = await_event(&mut rx).await;
+        assert!(matches!(evt, ModeEvent::MajorEntered { mode, .. } if mode == id));
+        assert_eq!(act.load(Ordering::SeqCst), 1);
+        assert!(g.contains(buf(), id), "Guard stashed by spawned task");
     }
 
-    #[test]
-    fn major_swap_drops_prev_guard_then_activates_new() {
+    #[tokio::test]
+    async fn major_swap_publishes_exiting_then_entered() {
         let prev = MockMode::major("text-mode");
         let new = MockMode::major("rust-mode");
         let prev_deact = prev.deactivate_calls.clone();
@@ -649,34 +668,42 @@ mod tests {
         let prev_id = r.register(prev).unwrap();
         let new_id = r.register(new).unwrap();
         let mut a = ActiveModes::new();
-        let mut g = GuardStore::new();
+        let g = GuardStoreHandle::new();
+        let bus = evts();
+        let mut rx = subscribe_mode_events(&bus);
+        // First major: drain the MajorEntered.
         r.activate_major(
             &mut a,
-            &mut g,
+            &g,
             &cfg(),
-            &evts(),
+            &bus,
             &svcs(),
             buf(),
             prev_id,
             CapabilitySet::empty(),
         )
         .unwrap();
-        let events = r
-            .activate_major(
-                &mut a,
-                &mut g,
-                &cfg(),
-                &evts(),
-                &svcs(),
-                buf(),
-                new_id,
-                CapabilitySet::empty(),
-            )
-            .unwrap();
-        assert_eq!(events.len(), 2);
-        assert!(matches!(events[0], ModeEvent::MajorExiting { mode, .. } if mode == prev_id));
-        assert!(matches!(events[1], ModeEvent::MajorEntered { mode, .. } if mode == new_id));
-        // Previous Guard's Drop ran (= cleanup contract).
+        let evt = await_event(&mut rx).await;
+        assert!(matches!(evt, ModeEvent::MajorEntered { mode, .. } if mode == prev_id));
+        // Swap.
+        r.activate_major(
+            &mut a,
+            &g,
+            &cfg(),
+            &bus,
+            &svcs(),
+            buf(),
+            new_id,
+            CapabilitySet::empty(),
+        )
+        .unwrap();
+        // MajorExiting fires synchronously; MajorEntered after
+        // the spawned task resolves.
+        let exiting = await_event(&mut rx).await;
+        assert!(matches!(exiting, ModeEvent::MajorExiting { mode, .. } if mode == prev_id));
+        let entered = await_event(&mut rx).await;
+        assert!(matches!(entered, ModeEvent::MajorEntered { mode, .. } if mode == new_id));
+        // Previous Guard's Drop ran (Drop = cleanup contract).
         assert_eq!(prev_deact.load(Ordering::SeqCst), 1);
         assert_eq!(new_act.load(Ordering::SeqCst), 1);
         assert_eq!(a.major(), Some(new_id));
@@ -684,141 +711,170 @@ mod tests {
         assert!(!g.contains(buf(), prev_id));
     }
 
-    #[test]
-    fn major_reload_drops_then_reactivates() {
+    #[tokio::test]
+    async fn major_reload_drops_then_reactivates() {
         let mock = MockMode::major("rust-mode");
         let act = mock.activate_calls.clone();
         let deact = mock.deactivate_calls.clone();
         let mut r = ModeRegistry::new();
         let id = r.register(mock).unwrap();
         let mut a = ActiveModes::new();
-        let mut g = GuardStore::new();
+        let g = GuardStoreHandle::new();
+        let bus = evts();
+        let mut rx = subscribe_mode_events(&bus);
         r.activate_major(
             &mut a,
-            &mut g,
+            &g,
             &cfg(),
-            &evts(),
+            &bus,
             &svcs(),
             buf(),
             id,
             CapabilitySet::empty(),
         )
         .unwrap();
+        let _entered = await_event(&mut rx).await;
         r.activate_major(
             &mut a,
-            &mut g,
+            &g,
             &cfg(),
-            &evts(),
+            &bus,
             &svcs(),
             buf(),
             id,
             CapabilitySet::empty(),
         )
         .unwrap();
+        let _exiting = await_event(&mut rx).await;
+        let _re_entered = await_event(&mut rx).await;
         assert_eq!(act.load(Ordering::SeqCst), 2);
         assert_eq!(deact.load(Ordering::SeqCst), 1);
     }
 
-    #[test]
-    fn minor_activation_appends_in_order() {
+    #[tokio::test]
+    async fn minor_activation_appends_in_order() {
         let mut r = ModeRegistry::new();
         let one = r.register(MockMode::minor("a-mode")).unwrap();
         let two = r.register(MockMode::minor("b-mode")).unwrap();
         let three = r.register(MockMode::minor("c-mode")).unwrap();
         let mut a = ActiveModes::new();
-        let mut g = GuardStore::new();
+        let g = GuardStoreHandle::new();
+        let bus = evts();
+        let mut rx = subscribe_mode_events(&bus);
         for id in [one, two, three] {
             r.activate_minor(
                 &mut a,
-                &mut g,
+                &g,
                 &cfg(),
-                &evts(),
+                &bus,
                 &svcs(),
                 buf(),
                 id,
                 CapabilitySet::empty(),
             )
             .unwrap();
+            let _activated = await_event(&mut rx).await;
         }
         assert_eq!(a.minors(), &[one, two, three]);
     }
 
-    #[test]
-    fn minor_re_activation_is_noop() {
+    #[tokio::test]
+    async fn minor_re_activation_is_noop() {
         let mock = MockMode::minor("a-mode");
         let act = mock.activate_calls.clone();
         let mut r = ModeRegistry::new();
         let id = r.register(mock).unwrap();
         let mut a = ActiveModes::new();
-        let mut g = GuardStore::new();
+        let g = GuardStoreHandle::new();
+        let bus = evts();
+        let mut rx = subscribe_mode_events(&bus);
         r.activate_minor(
             &mut a,
-            &mut g,
+            &g,
             &cfg(),
-            &evts(),
+            &bus,
             &svcs(),
             buf(),
             id,
             CapabilitySet::empty(),
         )
         .unwrap();
-        let events = r
-            .activate_minor(
-                &mut a,
-                &mut g,
-                &cfg(),
-                &evts(),
-                &svcs(),
-                buf(),
-                id,
-                CapabilitySet::empty(),
-            )
-            .unwrap();
-        assert!(events.is_empty(), "double-activation should be no-op");
+        let _first = await_event(&mut rx).await;
+        // Second call: idempotent no-op; on_activate not called again.
+        r.activate_minor(
+            &mut a,
+            &g,
+            &cfg(),
+            &bus,
+            &svcs(),
+            buf(),
+            id,
+            CapabilitySet::empty(),
+        )
+        .unwrap();
+        // Give the runtime a tick to confirm no second event fires.
+        tokio::task::yield_now().await;
+        assert!(
+            rx.try_recv().is_err(),
+            "double-activation should not publish a second event"
+        );
         assert_eq!(act.load(Ordering::SeqCst), 1);
     }
 
-    #[test]
-    fn implies_auto_activates_dependency() {
+    #[tokio::test]
+    async fn implies_auto_activates_dependency() {
         let mut r = ModeRegistry::new();
         let lnum = r.register(MockMode::minor("line-numbers-mode")).unwrap();
         let rlnum = r
             .register(MockMode::minor("relative-line-numbers-mode").implying(lnum))
             .unwrap();
         let mut a = ActiveModes::new();
-        let mut g = GuardStore::new();
-        let events = r
-            .activate_minor(
-                &mut a,
-                &mut g,
-                &cfg(),
-                &evts(),
-                &svcs(),
-                buf(),
-                rlnum,
-                CapabilitySet::empty(),
-            )
-            .unwrap();
-        assert_eq!(events.len(), 2);
-        assert!(matches!(events[0], ModeEvent::MinorActivated { mode, .. } if mode == rlnum));
-        assert!(matches!(events[1], ModeEvent::MinorActivated { mode, .. } if mode == lnum));
+        let g = GuardStoreHandle::new();
+        let bus = evts();
+        let mut rx = subscribe_mode_events(&bus);
+        r.activate_minor(
+            &mut a,
+            &g,
+            &cfg(),
+            &bus,
+            &svcs(),
+            buf(),
+            rlnum,
+            CapabilitySet::empty(),
+        )
+        .unwrap();
+        // Two MinorActivated events arrive (parent + implied
+        // dep). M-async.2 spawns them in parallel; order is
+        // schedule-dependent. Drain both and assert the set.
+        let mut got: Vec<ModeId> = Vec::new();
+        for _ in 0..2 {
+            let evt = await_event(&mut rx).await;
+            match evt {
+                ModeEvent::MinorActivated { mode, .. } => got.push(mode),
+                other => panic!("expected MinorActivated, got {other:?}"),
+            }
+        }
+        got.sort_by_key(|id| id.as_str().to_string());
+        let mut want = vec![rlnum, lnum];
+        want.sort_by_key(|id| id.as_str().to_string());
+        assert_eq!(got, want);
         assert!(a.has_minor(rlnum));
         assert!(a.has_minor(lnum));
     }
 
-    #[test]
-    fn implies_unregistered_dependency_fails() {
+    #[tokio::test]
+    async fn implies_unregistered_dependency_fails() {
         let mut r = ModeRegistry::new();
         let phantom = ModeId::new("ghost-mode");
         let id = r
             .register(MockMode::minor("thing-mode").implying(phantom))
             .unwrap();
         let mut a = ActiveModes::new();
-        let mut g = GuardStore::new();
+        let g = GuardStoreHandle::new();
         let err = r
             .activate_minor(
                 &mut a,
-                &mut g,
+                &g,
                 &cfg(),
                 &evts(),
                 &svcs(),
@@ -833,8 +889,8 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn conflict_blocks_activation() {
+    #[tokio::test]
+    async fn conflict_blocks_activation() {
         let mut r = ModeRegistry::new();
         let one_id = ModeId::new("vim-paste-mode");
         let two_id = ModeId::new("auto-pair-mode");
@@ -845,24 +901,27 @@ mod tests {
         assert_eq!(one, one_id);
         assert_eq!(two, two_id);
         let mut a = ActiveModes::new();
-        let mut g = GuardStore::new();
+        let g = GuardStoreHandle::new();
+        let bus = evts();
+        let mut rx = subscribe_mode_events(&bus);
         r.activate_minor(
             &mut a,
-            &mut g,
+            &g,
             &cfg(),
-            &evts(),
+            &bus,
             &svcs(),
             buf(),
             two,
             CapabilitySet::empty(),
         )
         .unwrap();
+        let _two_activated = await_event(&mut rx).await;
         let err = r
             .activate_minor(
                 &mut a,
-                &mut g,
+                &g,
                 &cfg(),
-                &evts(),
+                &bus,
                 &svcs(),
                 buf(),
                 one,
@@ -878,114 +937,150 @@ mod tests {
         }
     }
 
-    #[test]
-    fn conflict_is_symmetric() {
-        let mut r = ModeRegistry::new();
-        let one_id = ModeId::new("a-mode");
-        let _two = r
-            .register(MockMode::minor("b-mode").conflicting_with(one_id))
-            .unwrap();
-        let one = r.register(MockMode::minor("a-mode")).unwrap();
-        let two = ModeId::new("b-mode");
-        assert_eq!(one, one_id);
-        let mut a = ActiveModes::new();
-        let mut g = GuardStore::new();
-        r.activate_minor(
-            &mut a,
-            &mut g,
-            &cfg(),
-            &evts(),
-            &svcs(),
-            buf(),
-            two,
-            CapabilitySet::empty(),
-        )
-        .unwrap();
-        let err = r
-            .activate_minor(
-                &mut a,
-                &mut g,
-                &cfg(),
-                &evts(),
-                &svcs(),
-                buf(),
-                one,
-                CapabilitySet::empty(),
-            )
-            .unwrap_err();
-        assert!(matches!(err, ModeActivationError::Conflict { .. }));
-    }
-
-    #[test]
-    fn deactivate_minor_drops_guard_and_emits_event() {
+    #[tokio::test]
+    async fn deactivate_minor_drops_guard_and_publishes_event() {
         let mock = MockMode::minor("a-mode");
         let deact = mock.deactivate_calls.clone();
         let mut r = ModeRegistry::new();
         let id = r.register(mock).unwrap();
         let mut a = ActiveModes::new();
-        let mut g = GuardStore::new();
+        let g = GuardStoreHandle::new();
+        let bus = evts();
+        let mut rx = subscribe_mode_events(&bus);
         r.activate_minor(
             &mut a,
-            &mut g,
+            &g,
             &cfg(),
-            &evts(),
+            &bus,
             &svcs(),
             buf(),
             id,
             CapabilitySet::empty(),
         )
         .unwrap();
-        let events = r.deactivate_minor(&mut a, &mut g, buf(), id).unwrap();
-        assert_eq!(events.len(), 1);
-        assert!(matches!(events[0], ModeEvent::MinorDeactivated { mode, .. } if mode == id));
+        let _activated = await_event(&mut rx).await;
+        r.deactivate_minor(&mut a, &g, &bus, buf(), id).unwrap();
+        let evt = await_event(&mut rx).await;
+        assert!(matches!(evt, ModeEvent::MinorDeactivated { mode, .. } if mode == id));
         assert_eq!(deact.load(Ordering::SeqCst), 1, "Guard::Drop ran");
         assert!(!a.has_minor(id));
         assert!(!g.contains(buf(), id));
     }
 
-    #[test]
-    fn deactivate_inactive_minor_is_noop() {
+    #[tokio::test]
+    async fn deactivate_inactive_minor_is_noop() {
         let mut r = ModeRegistry::new();
         let id = r.register(MockMode::minor("a-mode")).unwrap();
         let mut a = ActiveModes::new();
-        let mut g = GuardStore::new();
-        let events = r.deactivate_minor(&mut a, &mut g, buf(), id).unwrap();
-        assert!(events.is_empty());
+        let g = GuardStoreHandle::new();
+        let bus = evts();
+        let mut rx = subscribe_mode_events(&bus);
+        r.deactivate_minor(&mut a, &g, &bus, buf(), id).unwrap();
+        tokio::task::yield_now().await;
+        assert!(
+            rx.try_recv().is_err(),
+            "no-op deactivate should not publish"
+        );
     }
 
-    #[test]
-    fn deactivate_major_drops_guard_and_clears() {
+    #[tokio::test]
+    async fn deactivate_major_drops_guard_and_clears() {
         let mock = MockMode::major("rust-mode");
         let deact = mock.deactivate_calls.clone();
         let mut r = ModeRegistry::new();
         let id = r.register(mock).unwrap();
         let mut a = ActiveModes::new();
-        let mut g = GuardStore::new();
+        let g = GuardStoreHandle::new();
+        let bus = evts();
+        let mut rx = subscribe_mode_events(&bus);
         r.activate_major(
             &mut a,
-            &mut g,
+            &g,
             &cfg(),
-            &evts(),
+            &bus,
             &svcs(),
             buf(),
             id,
             CapabilitySet::empty(),
         )
         .unwrap();
-        let events = r.deactivate_major(&mut a, &mut g, buf()).unwrap();
-        assert_eq!(events.len(), 1);
-        assert!(matches!(events[0], ModeEvent::MajorExiting { mode, .. } if mode == id));
+        let _entered = await_event(&mut rx).await;
+        r.deactivate_major(&mut a, &g, &bus, buf()).unwrap();
+        let evt = await_event(&mut rx).await;
+        assert!(matches!(evt, ModeEvent::MajorExiting { mode, .. } if mode == id));
         assert_eq!(deact.load(Ordering::SeqCst), 1);
         assert_eq!(a.major(), None);
         assert!(!g.contains(buf(), id));
     }
 
-    #[test]
-    fn deactivate_major_when_none_active_is_noop() {
+    #[tokio::test]
+    async fn deactivate_major_when_none_active_is_noop() {
         let r = ModeRegistry::new();
         let mut a = ActiveModes::new();
-        let mut g = GuardStore::new();
-        let events = r.deactivate_major(&mut a, &mut g, buf()).unwrap();
-        assert!(events.is_empty());
+        let g = GuardStoreHandle::new();
+        let bus = evts();
+        let mut rx = subscribe_mode_events(&bus);
+        r.deactivate_major(&mut a, &g, &bus, buf()).unwrap();
+        tokio::task::yield_now().await;
+        assert!(rx.try_recv().is_err());
+    }
+
+    /// Lifecycle that returns `Err`: dispatcher publishes
+    /// `ModeActivationFailed` instead of `MinorActivated`.
+    /// `active_modes` was already mutated by the sync prefix --
+    /// M-async.3 rolls it back via subscriber.
+    #[tokio::test]
+    async fn lifecycle_err_publishes_activation_failed() {
+        struct FailingMode {
+            id: ModeId,
+        }
+        impl Mode for FailingMode {
+            type Guard = ();
+            fn id(&self) -> ModeId {
+                self.id
+            }
+            fn kind(&self) -> ModeKind {
+                ModeKind::Minor
+            }
+            fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
+                let id = self.id;
+                Box::pin(async move { Err(ModeActivationError::NotRegistered(id)) })
+            }
+        }
+        let mut r = ModeRegistry::new();
+        let id = r
+            .register(FailingMode {
+                id: ModeId::new("fail-mode"),
+            })
+            .unwrap();
+        let mut a = ActiveModes::new();
+        let g = GuardStoreHandle::new();
+        let bus = evts();
+        let mut rx = subscribe_mode_events(&bus);
+        r.activate_minor(
+            &mut a,
+            &g,
+            &cfg(),
+            &bus,
+            &svcs(),
+            buf(),
+            id,
+            CapabilitySet::empty(),
+        )
+        .unwrap();
+        let evt = await_event(&mut rx).await;
+        match evt {
+            ModeEvent::ModeActivationFailed {
+                mode, reason, ..
+            } => {
+                assert_eq!(mode, id);
+                assert!(reason.contains("not registered"));
+            }
+            other => panic!("expected ModeActivationFailed, got {other:?}"),
+        }
+        assert!(
+            !g.contains(buf(), id),
+            "no Guard stashed on lifecycle error"
+        );
     }
 }

@@ -6843,7 +6843,7 @@ mod tests {
         a.mode_registry
             .activate_minor(
                 &mut active,
-                &mut a.mode_guards,
+                &a.mode_guards,
                 &a.config,
                 &a.event_bus,
                 &a.services,

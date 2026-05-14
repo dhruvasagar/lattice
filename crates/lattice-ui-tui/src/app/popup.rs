@@ -216,7 +216,7 @@ impl App {
         let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
         let _ = self.mode_registry.activate_major(
             &mut active,
-            &mut self.mode_guards,
+            &self.mode_guards,
             &self.config,
             &self.event_bus,
             &self.services,
@@ -226,7 +226,7 @@ impl App {
         );
         let _ = self.mode_registry.activate_minor(
             &mut active,
-            &mut self.mode_guards,
+            &self.mode_guards,
             &self.config,
             &self.event_bus,
             &self.services,

@@ -35,6 +35,20 @@ lattice-runtime = { path = "../lattice-runtime" }
 # (lattice-ui-tui) and registered into `ServiceRegistry` at boot.
 # Direct dep on lattice-core for BufferId / BufferFlags.
 lattice-core = { path = "../lattice-core" }
+# M-async.2: `ModeEvent` registered as a typed event via
+# `register_event!` so the dispatcher publishes lifecycle
+# transitions through the typed event bus. `register_event!`
+# expands to a `#[linkme::distributed_slice(...)]` static, so
+# every caller crate needs `linkme` as a direct dep -- proc-macro
+# attribute paths can't route through re-exports.
+linkme = { workspace = true }
+
+[dev-dependencies]
+# M-async.2: registry tests are `#[tokio::test]` so they can
+# `.await` on the bus channel that the spawned lifecycle task
+# publishes to. `tokio::sync::mpsc` for the channel; the
+# `macros` feature for `#[tokio::test]`.
+tokio = { workspace = true }
 
 [lints]
 workspace = true

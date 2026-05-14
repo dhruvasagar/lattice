@@ -974,8 +974,10 @@ dependencies = [
  "lattice-core",
  "lattice-protocol",
  "lattice-runtime",
+ "linkme",
  "smallvec",
  "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]

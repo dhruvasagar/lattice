@@ -1628,14 +1628,19 @@ pub struct App {
     /// by Arc clone -- the dispatcher does `services.clone()`
     /// per activation to build the owned ctx.
     pub services: std::sync::Arc<lattice_mode::ServiceRegistry>,
-    /// M-async.1: per-`(buffer, mode)` Guard storage. Modes
+    /// M-async.1/2: per-`(buffer, mode)` Guard storage. Modes
     /// return an owned [`Mode::Guard`](lattice_mode::Mode::Guard)
     /// from `on_activate`; the dispatcher stashes it here keyed
     /// by `(BufferId, ModeId)`. On deactivation the dispatcher
     /// drops the Guard, firing its `Drop` impl for synchronous
     /// cleanup (unsubscribe, restore prior option, drop
     /// supervisor handle).
-    pub mode_guards: lattice_mode::GuardStore,
+    ///
+    /// M-async.2: wrapped in [`GuardStoreHandle`] (Arc<Mutex<>>)
+    /// because the spawned lifecycle task locks + inserts on
+    /// `on_activate` resolve from a tokio worker thread; the App
+    /// thread locks + removes on deactivate.
+    pub mode_guards: lattice_mode::GuardStoreHandle,
     /// Mode-keyed pane render dispatch (M.4 follow-up). Populated
     /// at boot; lookup walks active minors then the major to find
     /// the per-buffer renderer + status formatter, with the

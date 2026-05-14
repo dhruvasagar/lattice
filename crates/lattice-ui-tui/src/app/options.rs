@@ -1205,11 +1205,11 @@ mod tests {
             .register(OptionContributingMode::new())
             .expect("register");
         let mut active = lattice_mode::ActiveModes::new();
-        let mut guards = lattice_mode::GuardStore::new();
+        let guards = lattice_mode::GuardStoreHandle::new();
         a.mode_registry
             .activate_minor(
                 &mut active,
-                &mut guards,
+                &guards,
                 &a.config,
                 &a.event_bus,
                 &a.services,
@@ -1238,11 +1238,11 @@ mod tests {
             .register(OptionContributingMode::new())
             .expect("register");
         let mut active = lattice_mode::ActiveModes::new();
-        let mut guards = lattice_mode::GuardStore::new();
+        let guards = lattice_mode::GuardStoreHandle::new();
         a.mode_registry
             .activate_minor(
                 &mut active,
-                &mut guards,
+                &guards,
                 &a.config,
                 &a.event_bus,
                 &a.services,

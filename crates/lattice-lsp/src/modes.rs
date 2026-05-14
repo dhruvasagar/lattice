@@ -778,7 +778,7 @@ mod tests {
     async fn lsp_mode_activates_through_registry_as_minor() {
         use crate::completion::register_lsp_completion_mode;
         use crate::supervisor::LspSupervisor;
-        use lattice_mode::{ActiveModes, GuardStore};
+        use lattice_mode::{ActiveModes, GuardStoreHandle};
         use lattice_protocol::ids::BufferId;
         let mut registry = ModeRegistry::new();
         register_lsp_log_modes(&mut registry);
@@ -786,14 +786,14 @@ mod tests {
         let lsp_handle = sup.spawn(&tokio::runtime::Handle::current());
         register_lsp_completion_mode(&mut registry, lsp_handle);
         let mut active = ActiveModes::new();
-        let mut guards = GuardStore::new();
+        let guards = GuardStoreHandle::new();
         let cfg = Arc::new(lattice_config::ConfigRegistry::new());
         let evt = Arc::new(lattice_runtime::EventBus::new());
         let svc = Arc::new(lattice_mode::ServiceRegistry::new());
         registry
             .activate_minor(
                 &mut active,
-                &mut guards,
+                &guards,
                 &cfg,
                 &evt,
                 &svc,
@@ -802,6 +802,8 @@ mod tests {
                 CapabilitySet::empty(),
             )
             .expect("activate lsp-mode + sub-mode cascade");
+        // Sync prefix mutated active_modes for the umbrella +
+        // implied children.
         assert!(active.has_minor(LspMode::mode_id()));
         assert!(active.has_minor(LspCompletionMode::mode_id()));
         assert!(active.has_minor(LspDiagnosticsMode::mode_id()));

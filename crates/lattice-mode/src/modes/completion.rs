@@ -243,7 +243,7 @@ impl BufferLocal for ActiveCompletionSources {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ActiveModes, BufferLocals, GuardStore, ModeRegistry};
+    use crate::{ActiveModes, BufferLocals, GuardStoreHandle, ModeRegistry};
     use lattice_protocol::ids::BufferId;
 
     #[test]
@@ -273,14 +273,14 @@ mod tests {
             .register(CompletionPopupMode)
             .expect("register completion-popup-mode");
         let mut active = ActiveModes::new();
-        let mut guards = GuardStore::new();
+        let guards = GuardStoreHandle::new();
         let cfg = Arc::new(lattice_config::ConfigRegistry::new());
         let evt = Arc::new(lattice_runtime::EventBus::new());
         let svc = Arc::new(crate::services::ServiceRegistry::new());
         registry
             .activate_minor(
                 &mut active,
-                &mut guards,
+                &guards,
                 &cfg,
                 &evt,
                 &svc,
@@ -292,7 +292,7 @@ mod tests {
         registry
             .activate_minor(
                 &mut active,
-                &mut guards,
+                &guards,
                 &cfg,
                 &evt,
                 &svc,

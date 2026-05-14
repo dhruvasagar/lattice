@@ -72,7 +72,7 @@ pub use crate::context::ModeContext;
 pub use crate::contributions::{DecorationProvider, Keymap, Subscription};
 pub use crate::error::ModeActivationError;
 pub use crate::event::ModeEvent;
-pub use crate::guards::GuardStore;
+pub use crate::guards::{GuardStore, GuardStoreHandle};
 pub use crate::locals::{BufferLocal, BufferLocals, LocalDescriptor};
 pub use crate::mode::{DynMode, LifecycleFuture, Mode, ModeId, ModeKind};
 pub use crate::modes::{

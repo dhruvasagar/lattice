@@ -725,7 +725,7 @@ impl App {
                 s.register(lsp_logger.clone());
                 std::sync::Arc::new(s)
             },
-            mode_guards: lattice_mode::GuardStore::new(),
+            mode_guards: lattice_mode::GuardStoreHandle::new(),
             pane_render_registry: crate::render::build_pane_render_registry(),
             active_modes: std::collections::HashMap::new(),
             buffer_locals,
@@ -951,7 +951,7 @@ impl App {
         if want_popup && !currently {
             let _ = self.mode_registry.activate_minor(
                 &mut active,
-                &mut self.mode_guards,
+                &self.mode_guards,
                 &self.config,
                 &self.event_bus,
                 &self.services,
@@ -962,7 +962,8 @@ impl App {
         } else if !want_popup && currently {
             let _ = self.mode_registry.deactivate_minor(
                 &mut active,
-                &mut self.mode_guards,
+                &self.mode_guards,
+                &self.event_bus,
                 proto_id,
                 mode_id,
             );

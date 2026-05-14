@@ -2520,11 +2520,11 @@ mod tests {
         assert!(msg.text.contains("bogus_field"), "got `{}`", msg.text);
     }
 
-    #[test]
-    fn mode_on_activate_runs_and_returns_guard() {
-        // M-async.1: `on_activate` runs side effects + returns
-        // a typed Guard. The dispatcher stashes the Guard in
-        // the App-owned GuardStore.
+    #[tokio::test]
+    async fn mode_on_activate_runs_and_returns_guard() {
+        // M-async.2: validation succeeds synchronously; the
+        // lifecycle future is spawned. Yield to the runtime so
+        // the spawned task runs and stashes the Guard.
         let mut a = app_with("hi", 5);
         let registry = std::sync::Arc::make_mut(&mut a.mode_registry);
         let test_mode = TestLocalsMode::new();
@@ -2532,11 +2532,11 @@ mod tests {
         let mode_id = registry.register(test_mode).expect("register");
 
         let mut active = lattice_mode::ActiveModes::new();
-        let mut guards = lattice_mode::GuardStore::new();
+        let guards = lattice_mode::GuardStoreHandle::new();
         a.mode_registry
             .activate_minor(
                 &mut active,
-                &mut guards,
+                &guards,
                 &a.config,
                 &a.event_bus,
                 &a.services,
@@ -2546,6 +2546,16 @@ mod tests {
             )
             .expect("activate");
 
+        // The lifecycle task's `on_activate` body fires the side
+        // effect synchronously (no `.await`) before constructing
+        // the Guard; tokio still needs a yield to pick up the
+        // spawned task.
+        for _ in 0..10 {
+            if guards.contains(lattice_protocol::ids::BufferId::new(0), mode_id) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
         assert_eq!(
             counter.load(std::sync::atomic::Ordering::SeqCst),
             42,
@@ -2557,10 +2567,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn mode_deactivate_drops_guard_and_fires_cleanup() {
-        // M-async.1: dropping the Guard via deactivate runs
-        // its Drop impl -- the user-visible cleanup contract.
+    #[tokio::test]
+    async fn mode_deactivate_drops_guard_and_fires_cleanup() {
+        // M-async.2: activate spawns; yield to let the Guard land,
+        // then deactivate synchronously and observe Drop fired.
         let mut a = app_with("hi", 5);
         let registry = std::sync::Arc::make_mut(&mut a.mode_registry);
         let test_mode = TestLocalsMode::new();
@@ -2568,11 +2578,11 @@ mod tests {
         let mode_id = registry.register(test_mode).expect("register");
 
         let mut active = lattice_mode::ActiveModes::new();
-        let mut guards = lattice_mode::GuardStore::new();
+        let guards = lattice_mode::GuardStoreHandle::new();
         a.mode_registry
             .activate_minor(
                 &mut active,
-                &mut guards,
+                &guards,
                 &a.config,
                 &a.event_bus,
                 &a.services,
@@ -2581,12 +2591,19 @@ mod tests {
                 lattice_mode::CapabilitySet::empty(),
             )
             .expect("activate");
+        for _ in 0..10 {
+            if guards.contains(lattice_protocol::ids::BufferId::new(0), mode_id) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
         assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 42);
 
         a.mode_registry
             .deactivate_minor(
                 &mut active,
-                &mut guards,
+                &guards,
+                &a.event_bus,
                 lattice_protocol::ids::BufferId::new(0),
                 mode_id,
             )

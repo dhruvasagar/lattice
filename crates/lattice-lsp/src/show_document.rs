@@ -37,6 +37,12 @@ pub struct InboundShowDocument {
     /// log so the user can tell which language server is
     /// asking. Cheap to clone (`Arc<str>`).
     pub server_id: Arc<str>,
+    /// Workspace root the originating actor was spawned against
+    /// (B'.2). Pairs with `server_id` to form the canonical
+    /// `(server_id, workspace)` instance key so the App's log
+    /// routes the show-document trail to the correct
+    /// `*lsp:<server>:<workspace>*` ring.
+    pub workspace: Arc<std::path::Path>,
     /// URI to open. The App inspects the scheme to decide
     /// between in-editor open vs. external-handler delegation.
     pub uri: lsp_types::Uri,
@@ -106,6 +112,7 @@ mod tests {
         let uri = lsp_types::Uri::from_str("file:///tmp/x.rs").unwrap();
         bus.dispatch(InboundShowDocument {
             server_id: Arc::from("test"),
+            workspace: Arc::<std::path::Path>::from(std::path::Path::new("/tmp")),
             uri,
             external: false,
             take_focus: true,

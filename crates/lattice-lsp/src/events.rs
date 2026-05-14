@@ -21,7 +21,7 @@
 //! owner's authority -- same model `lattice-mode` uses for the
 //! `Mode` trait.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use lattice_protocol::event::AppliedEdit;
@@ -84,8 +84,15 @@ lattice_protocol::register_event!(
 /// the logger when they need the typed value.
 #[derive(Debug, Clone)]
 pub struct LspLogPushed {
-    /// `None` for subsystem-wide records; `Some(id)` per-server.
+    /// `None` for subsystem-wide records; `Some(id)` per-instance.
+    /// Pairs with `workspace` -- both are `Some` for per-instance
+    /// records (post-B'.2), both `None` for subsystem-wide.
     pub server_id: Option<Arc<str>>,
+    /// `None` for subsystem-wide records; `Some(path)` per-instance.
+    /// The workspace root the `(server_id, workspace)` actor was
+    /// spawned against. Two `rust-analyzer` instances on different
+    /// workspaces stay distinct via this field.
+    pub workspace: Option<Arc<Path>>,
     /// Severity tag (`"trace"`, `"debug"`, `"info"`, `"warn"`,
     /// `"error"`).
     pub level: String,

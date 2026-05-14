@@ -1426,7 +1426,7 @@ mod tests {
         // Listed-buffer view filters out synthetic LSP / messages
         // buffers, leaving just the user's document.
         assert_eq!(a.buffers.listed_ids_sorted().len(), 1);
-        assert!(a.buffers.document(a.document_buffer_id).is_some());
+        assert!(a.buffers.contains_document(a.document_buffer_id));
     }
 
     #[test]

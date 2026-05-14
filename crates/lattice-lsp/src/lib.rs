@@ -48,6 +48,7 @@
 pub mod actor;
 pub mod apply_edit;
 pub mod attach_driver;
+pub mod buffer_names;
 pub mod capabilities;
 pub mod codec;
 pub mod completion;
@@ -77,6 +78,10 @@ pub mod transport;
 
 pub use actor::{ServerHandle, spawn, spawn_with_io};
 pub use apply_edit::{ApplyEditBus, ApplyEditOutcome, InboundApplyEdit};
+pub use buffer_names::{
+    LSP_SUBSYSTEM_LOG_NAME, lsp_server_log_name, lsp_server_trace_log_name,
+    parse_lsp_server_log_name, parse_lsp_trace_log_name,
+};
 pub use capabilities::{Capabilities, FileOpKind, client_capabilities};
 pub use codec::{LspReader, LspWriter};
 pub use config::{ServerConfig, builtin_servers, resolve_workspace_root};
@@ -93,7 +98,10 @@ pub use events::{
 pub use file_watcher::{WatcherSubscriptions, compile_with_workspace_root};
 pub use framing::{FrameError, FrameHeader};
 pub use jsonrpc::{Message, Notification, Request, RequestId, Response, ResponseError};
-pub use logging::{LogLevel, LogRecord, LogRing, LogSource, LspLogger};
+pub use logging::{
+    InstanceKey, LogLevel, LogRecord, LogRing, LogSource, LspLogger, format_log_event_line,
+    level_tag as log_level_tag,
+};
 pub use pending::{InvocationId, Pending};
 pub use show_document::{InboundShowDocument, ShowDocumentBus, ShowDocumentOutcome};
 pub use show_message_request::{

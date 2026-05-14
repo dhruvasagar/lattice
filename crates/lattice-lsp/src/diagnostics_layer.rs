@@ -150,13 +150,20 @@ impl DiagnosticsLayer {
             // Drop the lock guard before logging (logger may
             // re-enter via Event::LspLogPushed on the bus).
             drop(_g);
+            // B'.2: diagnostics layer doesn't carry workspace
+            // today; the stale-version trace is subsystem-level
+            // so route to the global ring rather than guessing
+            // the instance. Future slice can plumb workspace
+            // into `DiagnosticEvent` if per-instance routing is
+            // wanted.
             self.logger.log(
-                Some(&event.server_id),
+                None,
                 LogLevel::Debug,
                 LogSource::Client,
                 format!(
-                    "dropping stale diagnostics for {} version {} (have {})",
+                    "dropping stale diagnostics for {} from {} version {} (have {})",
                     event.uri.as_str(),
+                    event.server_id,
                     e,
                     p
                 ),

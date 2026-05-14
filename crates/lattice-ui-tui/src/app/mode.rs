@@ -215,9 +215,7 @@ impl App {
         if buffer_id == self.document_buffer_id {
             return self.document.path().map(|p| p.to_path_buf());
         }
-        self.buffers
-            .document(buffer_id)
-            .and_then(|entry| entry.handle.path().map(|p| p.to_path_buf()))
+        self.buffers.document_path(buffer_id)
     }
 
     /// M.5.1: programmatic activation of `mode_id` on `buffer_id`.

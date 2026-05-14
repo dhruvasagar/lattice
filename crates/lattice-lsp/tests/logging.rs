@@ -53,8 +53,8 @@ async fn handshake_emits_global_and_per_server_records() {
         "expected global spawn record; got {:?}",
         g.iter().map(|r| &r.message).collect::<Vec<_>>()
     );
-    let server_id: Arc<str> = Arc::from("mock");
-    let s = logger.snapshot_server(&server_id);
+    let instance = _server.handle.instance();
+    let s = logger.snapshot_instance(&instance);
     assert!(
         s.iter().any(|r| r.message.contains("handshake complete")),
         "expected per-server handshake-complete record"
@@ -64,7 +64,7 @@ async fn handshake_emits_global_and_per_server_records() {
 #[tokio::test]
 async fn window_log_message_routes_to_per_server_ring_at_requested_level() {
     let (server, logger) = mock_with_logger().await;
-    let server_id: Arc<str> = Arc::from("mock");
+    let instance = server.handle.instance();
     server.mock.push_notification(
         "window/logMessage",
         // MessageType::ERROR == 1 in the LSP wire encoding.
@@ -74,7 +74,7 @@ async fn window_log_message_routes_to_per_server_ring_at_requested_level() {
         }),
     );
     tokio::time::sleep(Duration::from_millis(100)).await;
-    let recs = logger.snapshot_server(&server_id);
+    let recs = logger.snapshot_instance(&instance);
     let log_msg = recs
         .iter()
         .find(|r| r.source == LogSource::LspMessage)
@@ -86,7 +86,7 @@ async fn window_log_message_routes_to_per_server_ring_at_requested_level() {
 #[tokio::test]
 async fn window_show_message_uses_distinct_log_source() {
     let (server, logger) = mock_with_logger().await;
-    let server_id: Arc<str> = Arc::from("mock");
+    let instance = server.handle.instance();
     server.mock.push_notification(
         "window/showMessage",
         // MessageType::WARNING == 2.
@@ -96,7 +96,7 @@ async fn window_show_message_uses_distinct_log_source() {
         }),
     );
     tokio::time::sleep(Duration::from_millis(100)).await;
-    let recs = logger.snapshot_server(&server_id);
+    let recs = logger.snapshot_instance(&instance);
     let show = recs
         .iter()
         .find(|r| r.source == LogSource::LspShowMessage)
@@ -108,7 +108,7 @@ async fn window_show_message_uses_distinct_log_source() {
 #[tokio::test]
 async fn publish_diagnostics_emits_debug_summary_alongside_bus() {
     let (server, logger) = mock_with_logger().await;
-    let server_id: Arc<str> = Arc::from("mock");
+    let instance = server.handle.instance();
     server.mock.push_notification(
         "textDocument/publishDiagnostics",
         json!({
@@ -122,7 +122,7 @@ async fn publish_diagnostics_emits_debug_summary_alongside_bus() {
         }),
     );
     tokio::time::sleep(Duration::from_millis(100)).await;
-    let recs = logger.snapshot_server(&server_id);
+    let recs = logger.snapshot_instance(&instance);
     assert!(
         recs.iter().any(|r| r.message.contains("publishDiagnostics") && r.message.contains("file:///x.rs")),
         "expected publishDiagnostics summary; got {:?}",
@@ -133,7 +133,7 @@ async fn publish_diagnostics_emits_debug_summary_alongside_bus() {
 #[tokio::test]
 async fn trace_off_means_no_trace_records() {
     let (server, logger) = mock_with_logger().await;
-    let server_id: Arc<str> = Arc::from("mock");
+    let instance = server.handle.instance();
     server
         .mock
         .on("textDocument/hover", |_p| {
@@ -145,7 +145,7 @@ async fn trace_off_means_no_trace_records() {
         .request::<_, Value>("textDocument/hover", json!({"x": 1}))
         .await;
     tokio::time::sleep(Duration::from_millis(50)).await;
-    let recs = logger.snapshot_server(&server_id);
+    let recs = logger.snapshot_instance(&instance);
     let trace_count = recs.iter().filter(|r| r.source == LogSource::Trace).count();
     assert_eq!(trace_count, 0, "trace off, no trace records");
 }
@@ -153,8 +153,8 @@ async fn trace_off_means_no_trace_records() {
 #[tokio::test]
 async fn trace_on_records_inbound_and_outbound_messages() {
     let (server, logger) = mock_with_logger().await;
-    let server_id: Arc<str> = Arc::from("mock");
-    logger.enable_trace(Arc::clone(&server_id));
+    let instance = server.handle.instance();
+    logger.enable_trace(instance.clone());
     server
         .mock
         .on("textDocument/hover", |_p| {
@@ -166,7 +166,7 @@ async fn trace_on_records_inbound_and_outbound_messages() {
         .request::<_, Value>("textDocument/hover", json!({"x": 1}))
         .await;
     tokio::time::sleep(Duration::from_millis(100)).await;
-    let recs = logger.snapshot_server(&server_id);
+    let recs = logger.snapshot_instance(&instance);
     let traces: Vec<_> = recs
         .iter()
         .filter(|r| r.source == LogSource::Trace)
@@ -185,12 +185,12 @@ async fn trace_on_records_inbound_and_outbound_messages() {
 #[tokio::test]
 async fn server_initiated_unhandled_request_routes_through_logger() {
     let (server, logger) = mock_with_logger().await;
-    let server_id: Arc<str> = Arc::from("mock");
+    let instance = server.handle.instance();
     server
         .mock
         .push_request(9999, "client/totallyMadeUp", json!({}));
     tokio::time::sleep(Duration::from_millis(100)).await;
-    let recs = logger.snapshot_server(&server_id);
+    let recs = logger.snapshot_instance(&instance);
     assert!(
         recs.iter().any(|r| r.message.contains("totallyMadeUp")),
         "expected unhandled-method log record; got {:?}",
@@ -212,9 +212,9 @@ async fn known_servers_lists_the_attached_mock() {
     let (_server, logger) = mock_with_logger().await;
     tokio::time::sleep(Duration::from_millis(50)).await;
     let servers: Vec<String> = logger
-        .known_servers()
+        .known_instances()
         .into_iter()
-        .map(|s| s.to_string())
+        .map(|k| k.server_id.to_string())
         .collect();
     assert!(servers.contains(&"mock".to_string()));
 }

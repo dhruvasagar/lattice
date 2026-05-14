@@ -66,7 +66,7 @@ pub fn spawn(handle: ServerHandle, bus: Arc<EventBus>) -> SubscriptionId {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<LspDocumentChanged>();
     let sub_id = bus.subscribe_typed(tx);
 
-    let server_id_arc: Arc<str> = Arc::from(handle.server_id());
+    let instance = handle.instance();
     let logger = handle.logger().clone();
 
     tokio::spawn(async move {
@@ -89,7 +89,7 @@ pub fn spawn(handle: ServerHandle, bus: Arc<EventBus>) -> SubscriptionId {
                     // notices, but exiting promptly stops us
                     // accumulating events for a dead actor.
                     logger.log(
-                        Some(&server_id_arc),
+                        Some(&instance),
                         LogLevel::Debug,
                         LogSource::Client,
                         "fan_in: actor gone; exiting",

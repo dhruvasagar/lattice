@@ -27,6 +27,10 @@ use tokio::sync::{mpsc, oneshot};
 pub struct InboundShowMessageRequest {
     /// Server that sent the request.
     pub server_id: Arc<str>,
+    /// Workspace root the originating actor was spawned against
+    /// (B'.2). Pairs with `server_id` to form the canonical
+    /// `(server_id, workspace)` instance key.
+    pub workspace: Arc<std::path::Path>,
     /// Severity. Used to colour the picker prompt + bias placement.
     pub level: lsp_types::MessageType,
     /// The message text -- displayed as the picker prompt.
@@ -83,6 +87,7 @@ mod tests {
         let (tx, _resp_rx) = oneshot::channel();
         bus.dispatch(InboundShowMessageRequest {
             server_id: Arc::from("test"),
+            workspace: Arc::<std::path::Path>::from(std::path::Path::new("/tmp")),
             level: lsp_types::MessageType::INFO,
             message: "Reload?".into(),
             actions: vec![lsp_types::MessageActionItem {

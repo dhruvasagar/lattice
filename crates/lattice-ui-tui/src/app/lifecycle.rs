@@ -52,7 +52,7 @@ impl App {
         if id == self.document_buffer_id && matches!(self.active_buffer, BufferKind::Document) {
             return;
         }
-        if self.buffers.document(id).is_none() {
+        if !self.buffers.contains_document(id) {
             self.set_message(EchoLevel::Error, format!("buffer #{} not a document", id.0));
             return;
         }
@@ -105,12 +105,13 @@ impl App {
             return;
         }
         self.snapshot_active_document();
-        // Load destination.
-        let entry = self
+        // Load destination -- clone the handle out under the
+        // registry lock so we don't hold the lock past the
+        // borrow.
+        self.document = self
             .buffers
-            .document_mut(id)
-            .expect("document() lookup above succeeded");
-        self.document = entry.handle.clone();
+            .document_handle(id)
+            .expect("contains_document lookup above succeeded");
         // Rebuild the cache against the activated document's
         // published-cell; the previous cache pointed at the old
         // document.
@@ -175,12 +176,9 @@ impl App {
     /// load the tree's stash; help buffers go through
     /// `activate_help_in_pane`.
     pub fn activate_buffer(&mut self, id: BufferId) {
-        let kind = match self.buffers.get(id) {
-            Some(entry) => entry.kind(),
-            None => {
-                self.set_message(EchoLevel::Error, format!("buffer #{} not found", id.0));
-                return;
-            }
+        let Some(kind) = self.buffers.kind_of(id) else {
+            self.set_message(EchoLevel::Error, format!("buffer #{} not found", id.0));
+            return;
         };
         // Push the pre-jump cursor onto position history when
         // switching to a *different* buffer, so `<C-o>` walks back
@@ -205,7 +203,7 @@ impl App {
     /// stashed cursor / scroll load into the tree's hot fields
     /// via `load_active_pane`.
     pub fn activate_file_tree(&mut self, id: BufferId) {
-        if self.buffers.file_tree(id).is_none() {
+        if !self.buffers.contains_file_tree(id) {
             self.set_message(EchoLevel::Error, format!("buffer #{} not a tree", id.0));
             return;
         }
@@ -217,8 +215,7 @@ impl App {
         self.snapshot_active_document();
         let (stash_cursor, stash_scroll) = self
             .buffers
-            .file_tree(id)
-            .map(|t| (t.cursor, t.scroll as u32))
+            .with_file_tree(id, |t| (t.cursor, t.scroll as u32))
             .unwrap_or((Position::ZERO, 0));
         self.cursor = stash_cursor;
         self.scroll = stash_scroll;
@@ -232,15 +229,10 @@ impl App {
 
     /// Switch the active pane to the oil buffer with `id`.
     pub fn activate_oil(&mut self, id: BufferId) {
-        if self.buffers.oil(id).is_none() {
+        let Some((oil_cursor, oil_scroll)) = self.buffers.with_oil(id, |o| (o.cursor, o.scroll))
+        else {
             return;
-        }
-        let oil_cursor = self
-            .buffers
-            .oil(id)
-            .map(|o| o.cursor)
-            .unwrap_or(Position::ZERO);
-        let oil_scroll = self.buffers.oil(id).map(|o| o.scroll).unwrap_or(0);
+        };
         self.active_buffer = BufferKind::Oil;
         let pane = self.pane_tree.active_mut();
         pane.buffer = BufferKind::Oil;
@@ -257,7 +249,7 @@ impl App {
     /// HelpBuffer is mirrored into `self.popup_buffer` so the
     /// existing keymap + render paths transparently target it.
     pub(super) fn activate_help_in_pane(&mut self, id: BufferId) {
-        if self.buffers.help(id).is_none() {
+        if !self.buffers.contains_help(id) {
             self.set_message(
                 EchoLevel::Error,
                 format!("buffer #{} not a help buffer", id.0),
@@ -300,7 +292,7 @@ impl App {
         // round-trip back to the same document via
         // activate_document early-returns on matching
         // document_buffer_id.
-        if self.popup_buffer != Some(id) && self.buffers.help(id).is_some() {
+        if self.popup_buffer != Some(id) && self.buffers.contains_help(id) {
             self.popup_buffer = Some(id);
         }
         let (stash_cursor, stash_scroll) = self
@@ -353,8 +345,8 @@ impl App {
         let listed = self.buffers.listed_ids_sorted();
         let to_remove_is_listed = self
             .buffers
-            .get(to_remove)
-            .map(|e| e.flags.listed)
+            .flags_of(to_remove)
+            .map(|f| f.listed)
             .unwrap_or(false);
         if to_remove_is_listed && listed.len() <= 1 {
             self.set_message(
@@ -364,10 +356,7 @@ impl App {
             return;
         }
         // Dirty check applies to documents only.
-        if let Some(d) = self.buffers.document(to_remove)
-            && !force
-            && d.handle.dirty()
-        {
+        if !force && self.buffers.document_dirty(to_remove) {
             self.set_message(
                 EchoLevel::Error,
                 "no write since last change (add ! to override)".to_string(),
@@ -630,8 +619,9 @@ impl App {
                 return;
             };
             let dir_display = dir.display().to_string();
-            if let Some(oil) = self.buffers.oil_mut(oil_id) {
-                match oil.apply(&dir) {
+            let result = self.buffers.with_oil_mut(oil_id, |oil| oil.apply(&dir));
+            if let Some(r) = result {
+                match r {
                     Ok(()) => self.set_message(
                         EchoLevel::Info,
                         format!("oil: applied changes in {dir_display}"),
@@ -673,7 +663,7 @@ impl App {
                 .buffers
                 .document_ids_sorted()
                 .into_iter()
-                .find(|id| self.buffers.document(*id).is_some_and(|d| d.handle.dirty()));
+                .find(|id| self.buffers.document_dirty(*id));
             if let Some(id) = dirty_id {
                 self.set_message(
                     EchoLevel::Error,
@@ -775,7 +765,7 @@ impl App {
         // than the one currently mirrored.
         if matches!(pane.buffer, BufferKind::Help)
             && self.popup_buffer != Some(pane.buffer_id)
-            && self.buffers.help(pane.buffer_id).is_some()
+            && self.buffers.contains_help(pane.buffer_id)
         {
             self.popup_buffer = Some(pane.buffer_id);
         }
@@ -799,31 +789,53 @@ impl App {
             help_count,
         ));
         lines.push(String::new());
-        for id in ids {
-            let Some(entry) = self.buffers.get(id) else {
-                continue;
+        // Snapshot every entry under one lock acquire. Per-line
+        // rendering reads `buffer_locals` (App-side, not the
+        // registry) so we can do it outside the closure.
+        struct EntryRow {
+            id: BufferId,
+            kind: BufferKind,
+            listed: bool,
+            name: Option<String>,
+            // Kind-specific fields snapshotted out of the entry.
+            doc_path: Option<std::path::PathBuf>,
+            doc_dirty: bool,
+            help_title: Option<String>,
+        }
+        let mut rows: Vec<EntryRow> = Vec::with_capacity(ids.len());
+        self.buffers.for_each(|entry| {
+            let (doc_path, doc_dirty) = match &entry.data {
+                BufferData::Document(d) => (d.handle.path(), d.handle.dirty()),
+                _ => (None, false),
             };
+            let help_title = match &entry.data {
+                BufferData::Help(h) => Some(h.title.clone()),
+                _ => None,
+            };
+            rows.push(EntryRow {
+                id: entry.id,
+                kind: entry.kind(),
+                listed: entry.flags.listed,
+                name: entry.name.clone(),
+                doc_path,
+                doc_dirty,
+                help_title,
+            });
+        });
+        rows.sort_by_key(|r| r.id);
+        for row in rows {
+            let id = row.id;
             let active_marker = if id == active_id { "%" } else { " " };
-            let listed_marker = if entry.flags.listed { " " } else { "u" };
-            match &entry.data {
-                BufferData::Document(d) => {
-                    // Path -> registry name -> "(no file)". Synthetic
-                    // Document buffers (`*lsp*`, `*messages*`, ...)
-                    // surface their name; path-backed ones surface
-                    // the path.
-                    let label = d
-                        .handle
-                        .path()
+            let listed_marker = if row.listed { " " } else { "u" };
+            match row.kind {
+                BufferKind::Document => {
+                    let label = row
+                        .doc_path
+                        .as_ref()
                         .map(|p| p.display().to_string())
-                        .or_else(|| entry.name.clone())
+                        .or_else(|| row.name.clone())
                         .unwrap_or_else(|| "(no file)".to_string());
-                    // Suppress the modified marker for synthetic
-                    // buffers (`entry.name.is_some()`) -- their
-                    // content is owner-streamed, not user-edited,
-                    // so dirty has no actionable meaning. Three
-                    // spaces keep column alignment with path-backed
-                    // entries.
-                    let dirty = if entry.name.is_none() && d.handle.dirty() {
+                    let dirty = if row.name.is_none() && row.doc_dirty {
                         "[+]"
                     } else {
                         "   "
@@ -833,9 +845,7 @@ impl App {
                         id.0
                     ));
                 }
-                BufferData::FileTree(_) => {
-                    // M.3.2.c.5: root lives in the FileTreeRoot
-                    // buffer-local (canonical; no struct mirror).
+                BufferKind::FileTree => {
                     let root = self
                         .buffer_locals
                         .get(&id)
@@ -848,16 +858,14 @@ impl App {
                         root.display()
                     ));
                 }
-                BufferData::Help(h) => {
+                BufferKind::Help => {
+                    let title = row.help_title.unwrap_or_default();
                     lines.push(format!(
-                        "  {active_marker}{listed_marker} #{:<3} help     {}",
-                        id.0, h.title,
+                        "  {active_marker}{listed_marker} #{:<3} help     {title}",
+                        id.0,
                     ));
                 }
-                BufferData::Oil(_) => {
-                    // M.3.2.c.5: read dir through buffer_locals
-                    // exclusively. The struct field stays as
-                    // vestigial for tests.
+                BufferKind::Oil => {
                     let dir = self
                         .buffer_locals
                         .get(&id)
@@ -1044,23 +1052,24 @@ impl App {
                 // just an id, so there's nothing to mirror back.
                 if let Some(id) = self.popup_buffer
                     && id == pane_id
-                    && let Some(reg) = self.buffers.help_mut(pane_id)
                 {
-                    reg.cursor = cursor;
-                    reg.scroll = scroll as usize;
+                    self.buffers.with_help_mut(pane_id, |reg| {
+                        reg.cursor = cursor;
+                        reg.scroll = scroll as usize;
+                    });
                 }
             }
             BufferKind::FileTree => {
-                if let Some(t) = self.buffers.file_tree_mut(pane_id) {
+                self.buffers.with_file_tree_mut(pane_id, |t| {
                     t.cursor = cursor;
                     t.scroll = scroll as usize;
-                }
+                });
             }
             BufferKind::Oil => {
-                if let Some(o) = self.buffers.oil_mut(pane_id) {
+                self.buffers.with_oil_mut(pane_id, |o| {
                     o.cursor = cursor;
                     o.scroll = scroll as usize;
-                }
+                });
             }
             BufferKind::Document => {}
         }
@@ -1188,18 +1197,14 @@ impl App {
         // `name` slot carries synthetic labels for buffers without
         // a physical file (`*lsp*`, `*messages*`, ...); for
         // path-backed Documents it stays None and the path wins.
-        let entry = self.buffers.get(pane.buffer_id);
-        let Some(entry) = entry else {
+        if !self.buffers.contains_document(pane.buffer_id) {
             return "[no buffer]".to_string();
-        };
-        let Some(doc) = entry.document() else {
-            return "[no buffer]".to_string();
-        };
-        let label = doc
-            .handle
-            .path()
+        }
+        let label = self
+            .buffers
+            .document_path(pane.buffer_id)
             .map(|p| p.display().to_string())
-            .or_else(|| entry.name.clone())
+            .or_else(|| self.buffers.name_of(pane.buffer_id))
             .unwrap_or_else(|| "[no name]".to_string());
         // Synthetic buffers (`*lsp*`, `*messages*`, ...) carry a
         // name but no path; their content is streamed by the
@@ -1210,7 +1215,8 @@ impl App {
         // synthetic ones -- the user can't "save" a streaming
         // buffer's current state because new records keep
         // arriving. Suppress the marker for synthetics.
-        let dirty = if entry.name.is_none() && doc.handle.dirty() {
+        let synthetic = self.buffers.name_of(pane.buffer_id).is_some();
+        let dirty = if !synthetic && self.buffers.document_dirty(pane.buffer_id) {
             " [+]"
         } else {
             ""
@@ -1285,9 +1291,8 @@ impl App {
             // to it. Re-seed buffer_locals with the fresh metadata
             // so live-tail readers (link / anchor / highlights)
             // see the updated parse.
-            if let Some(slot) = self.buffers.help_mut(existing_id) {
-                *slot = buffer;
-            }
+            self.buffers
+                .with_help_mut(existing_id, |slot| *slot = buffer);
             self.seed_help_metadata_locals(existing_id, metadata);
             self.activate_help_in_pane(existing_id);
             return existing_id;
@@ -2059,7 +2064,7 @@ mod tests {
         let buf = HelpContent::from_lines("test-help", vec!["# heading".into(), "body".into()]);
         let id = app.open_help_in_pane(buf);
         // Lives in the registry as a Help variant.
-        assert!(app.buffers.help(id).is_some());
+        assert!(app.buffers.contains_help(id));
         // Active pane points at it.
         assert_eq!(app.active_pane_buffer_id(), id);
         assert!(matches!(app.active_buffer, BufferKind::Help));
@@ -2110,14 +2115,17 @@ mod tests {
         // in the ring. Default min-level is Info; without the TOML
         // override the record would be filtered before it reached
         // the ring.
-        let id: std::sync::Arc<str> = std::sync::Arc::from("rust");
+        let instance = lattice_lsp::InstanceKey::new(
+            std::sync::Arc::<str>::from("rust"),
+            std::sync::Arc::<std::path::Path>::from(std::path::Path::new("/tmp/test-ws")),
+        );
         app.lsp_logger.log(
-            Some(&id),
+            Some(&instance),
             lattice_lsp::LogLevel::Debug,
             lattice_lsp::LogSource::Client,
             "after-toml",
         );
-        let recs = app.lsp_logger.snapshot_server(&id);
+        let recs = app.lsp_logger.snapshot_instance(&instance);
         assert!(
             recs.iter().any(|r| r.message == "after-toml"),
             "Debug record should pass through after TOML log-level=debug",
@@ -2141,14 +2149,17 @@ mod tests {
             msg.text,
         );
         // And the value still applied (one-version compatibility).
-        let id: std::sync::Arc<str> = std::sync::Arc::from("rust");
+        let instance = lattice_lsp::InstanceKey::new(
+            std::sync::Arc::<str>::from("rust"),
+            std::sync::Arc::<std::path::Path>::from(std::path::Path::new("/tmp/test-ws")),
+        );
         app.lsp_logger.log(
-            Some(&id),
+            Some(&instance),
             lattice_lsp::LogLevel::Debug,
             lattice_lsp::LogSource::Client,
             "after-legacy-toml",
         );
-        let recs = app.lsp_logger.snapshot_server(&id);
+        let recs = app.lsp_logger.snapshot_instance(&instance);
         assert!(
             recs.iter().any(|r| r.message == "after-legacy-toml"),
             "legacy key should still apply for one minor version",
@@ -2699,13 +2710,16 @@ mod tests {
         assert_eq!(a.active_buffer, BufferKind::Oil);
 
         let oil_id = a.active_pane_buffer_id();
-        let oil = a.buffers.oil_mut(oil_id).expect("oil");
-        oil.content
-            .apply_edit(&lattice_protocol::edit::Edit::insert(
-                lattice_protocol::position::Position::ZERO,
-                "newfile.txt\n".to_string(),
-            ))
-            .expect("insert edit");
+        a.buffers
+            .with_oil_mut(oil_id, |oil| {
+                oil.content
+                    .apply_edit(&lattice_protocol::edit::Edit::insert(
+                        lattice_protocol::position::Position::ZERO,
+                        "newfile.txt\n".to_string(),
+                    ))
+                    .expect("insert edit");
+            })
+            .expect("oil");
 
         // Save. Should run OilBuffer::apply and create the file.
         a.do_write(None);
@@ -2821,7 +2835,7 @@ mod tests {
         a.do_open_oil(Some(tmp.clone()));
         let oil_id = a.active_pane_buffer_id();
         // Initial rope has one row: `existing.txt`.
-        let initial = a.buffers.oil(oil_id).map(|o| o.content.as_string());
+        let initial = a.buffers.with_oil(oil_id, |o| o.content.as_string());
         assert!(
             initial
                 .as_ref()
@@ -2834,7 +2848,7 @@ mod tests {
         // this should land in the oil rope, not the document.
         a.modal = lattice_grammar::ModalState::Insert;
         a.apply(crate::app::Action::Insert("foo".into()));
-        let after = a.buffers.oil(oil_id).map(|o| o.content.as_string());
+        let after = a.buffers.with_oil(oil_id, |o| o.content.as_string());
         assert!(
             after.as_ref().map(|s| s.contains("foo")).unwrap_or(false),
             "expected `foo` to land in oil rope: {:?}",
@@ -2895,12 +2909,11 @@ mod tests {
         // Find a.txt's row (dirs come first; "sub" is dir, then "a.txt").
         let names: Vec<String> = a
             .buffers
-            .oil(oil_id)
-            .map(|o| {
+            .with_oil(oil_id, |o| {
                 o.snapshot_entries()
                     .iter()
                     .map(|e| e.name.clone())
-                    .collect()
+                    .collect::<Vec<String>>()
             })
             .unwrap_or_default();
         let a_txt_row = names
@@ -2935,12 +2948,11 @@ mod tests {
         // Find `sub` (dirs first; should be row 0).
         let names: Vec<String> = a
             .buffers
-            .oil(oil_id)
-            .map(|o| {
+            .with_oil(oil_id, |o| {
                 o.snapshot_entries()
                     .iter()
                     .map(|e| e.name.clone())
-                    .collect()
+                    .collect::<Vec<String>>()
             })
             .unwrap_or_default();
         let sub_row = names
@@ -2957,8 +2969,7 @@ mod tests {
         // Listing should show `inside.txt` at row 0.
         let names_after: Vec<String> = a
             .buffers
-            .oil(oil_id)
-            .map(|o| {
+            .with_oil(oil_id, |o| {
                 o.snapshot_entries()
                     .iter()
                     .map(|e| e.name.clone())
@@ -3005,12 +3016,11 @@ mod tests {
         // Snapshot order: alpha, beta, gamma.
         let names: Vec<String> = a
             .buffers
-            .oil(oil_id)
-            .map(|o| {
+            .with_oil(oil_id, |o| {
                 o.snapshot_entries()
                     .iter()
                     .map(|e| e.name.clone())
-                    .collect()
+                    .collect::<Vec<String>>()
             })
             .unwrap_or_default();
         assert_eq!(
@@ -3054,7 +3064,7 @@ mod tests {
         let oil_id = a.active_pane_buffer_id();
 
         // The rope content lists `subdir` (and `..`).
-        let listing_before = a.buffers.oil(oil_id).map(|o| o.content.as_string());
+        let listing_before = a.buffers.with_oil(oil_id, |o| o.content.as_string());
         assert!(
             listing_before
                 .as_ref()
@@ -3067,17 +3077,25 @@ mod tests {
         // Move cursor to the subdir entry. The exact line index
         // depends on sort: dirs first, so subdir is at 0 (or 1
         // if `..` is included). Let's find it.
-        let snap = a.buffers.oil(oil_id).expect("oil").snapshot_entries();
+        let snap: Vec<String> = a
+            .buffers
+            .with_oil(oil_id, |o| {
+                o.snapshot_entries()
+                    .iter()
+                    .map(|e| e.name.clone())
+                    .collect()
+            })
+            .expect("oil");
         let subdir_line = snap
             .iter()
-            .position(|e| e.name == "subdir")
+            .position(|n| n == "subdir")
             .expect("subdir in snapshot");
         a.cursor.line = subdir_line as u32;
         a.cursor.byte = 0;
         a.do_oil_follow();
 
         // Listing now shows subdir's contents (`inner.txt`).
-        let listing_after = a.buffers.oil(oil_id).map(|o| o.content.as_string());
+        let listing_after = a.buffers.with_oil(oil_id, |o| o.content.as_string());
         assert!(
             listing_after
                 .as_ref()
@@ -3131,7 +3149,7 @@ mod tests {
         // Slice A: a Document with no path but a synthetic name
         // (the shape `*lsp*`/`*messages*` will use once they migrate
         // out of HelpContent) shows the name in the modeline.
-        let mut a = app_with("hi", 5);
+        let a = app_with("hi", 5);
         let active = a.active_pane_buffer_id();
         // Drop the existing entry; replace it with a no-path Document
         // carrying a synthetic name. Reuse the same DocumentHandle
@@ -3215,7 +3233,7 @@ mod tests {
         // path-backed Documents but misleading for synthetic ones
         // -- the user can't "save" the streaming state. The
         // modeline must suppress the `[+]` marker for these.
-        let mut a = app_with("hi", 5);
+        let a = app_with("hi", 5);
         let active = a.active_pane_buffer_id();
         let handle = a.document.clone();
         a.buffers.remove(active);

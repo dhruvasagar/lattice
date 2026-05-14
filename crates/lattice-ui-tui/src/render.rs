@@ -947,7 +947,7 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App, snap: &Doc
     // (Contrast `draw_help_in_pane` below: in-pane mode swaps the
     // pane to the registered help buffer, where pane.buffer_id is
     // the right key.)
-    let (highlights, links) = help_render_data(app, popup_id, help);
+    let (highlights, links) = help_render_data(app, popup_id, &help);
     let visible: Vec<Line> = lines
         .iter()
         .skip(scroll)
@@ -1379,7 +1379,7 @@ fn draw_help_in_pane(frame: &mut Frame, area: Rect, app: &App) {
     // locals are keyed by the registered id. See the comment in
     // `App::open_help_in_pane`.
     let render_id = app.pane_tree.active().buffer_id;
-    let (highlights, links) = help_render_data(app, render_id, help);
+    let (highlights, links) = help_render_data(app, render_id, &help);
     let visible: Vec<Line> = lines
         .iter()
         .skip(scroll)
@@ -1450,7 +1450,7 @@ fn draw_inactive_help(frame: &mut Frame, area: Rect, app: &App, pane: &crate::pa
     // tracks; fall back to the popup slot for the legacy path.
     let Some(help) = app
         .buffers
-        .help(pane.buffer_id)
+        .with_help(pane.buffer_id, |h| h.clone())
         .or_else(|| app.popup_help())
     else {
         return;
@@ -1458,7 +1458,7 @@ fn draw_inactive_help(frame: &mut Frame, area: Rect, app: &App, pane: &crate::pa
     let lines = help.lines();
     // M.3.2.b.2: read help highlights via buffer-locals.
     // `pane.buffer_id` is the registered id (the locals key).
-    let (highlights, _links) = help_render_data(app, pane.buffer_id, help);
+    let (highlights, _links) = help_render_data(app, pane.buffer_id, &help);
     let visible: Vec<Line> = lines
         .iter()
         .skip(scroll)
@@ -1649,19 +1649,18 @@ fn file_tree_pane_status(app: &App, pane: &crate::pane::PaneState) -> String {
 }
 
 fn oil_pane_status(app: &App, pane: &crate::pane::PaneState) -> String {
-    app.buffers
-        .oil(pane.buffer_id)
-        .map(|o| {
-            let dirty = if o.is_dirty() { " [+]" } else { "" };
-            let dir = app
-                .buffer_locals
-                .get(&pane.buffer_id)
-                .and_then(|locals| locals.get::<crate::modes::OilDir>())
-                .map(|d| d.0.display().to_string())
-                .unwrap_or_default();
-            format!("[oil] {dir}{dirty}")
-        })
-        .unwrap_or_else(|| "[oil]".to_string())
+    let dirty_opt = app.buffers.with_oil(pane.buffer_id, |o| o.is_dirty());
+    let Some(is_dirty) = dirty_opt else {
+        return "[oil]".to_string();
+    };
+    let dirty = if is_dirty { " [+]" } else { "" };
+    let dir = app
+        .buffer_locals
+        .get(&pane.buffer_id)
+        .and_then(|locals| locals.get::<crate::modes::OilDir>())
+        .map(|d| d.0.display().to_string())
+        .unwrap_or_default();
+    format!("[oil] {dir}{dirty}")
 }
 
 /// Boot-time registration of the renderer-side providers for the
@@ -1790,10 +1789,10 @@ fn draw_inactive_document(
     // active one. Two visible doc panes with different mode
     // stacks now render their gutters independently.
     let view = FrameView::for_buffer(app, pane.buffer_id);
-    let Some(entry) = app.buffers.document(pane.buffer_id) else {
+    let Some(handle) = app.buffers.document_handle(pane.buffer_id) else {
         return;
     };
-    let snap = entry.handle.snapshot();
+    let snap = handle.snapshot();
     let total_lines = snap.buffer.line_count();
     let gutter_w = if view.show_line_numbers {
         gutter_width(total_lines)
@@ -1921,7 +1920,10 @@ fn draw_file_tree_pane(
     pane: &crate::pane::PaneState,
     is_active: bool,
 ) {
-    let Some(tree) = app.buffers.file_tree(pane.buffer_id) else {
+    let Some(raw_text) = app
+        .buffers
+        .with_file_tree(pane.buffer_id, |t| t.content.as_string())
+    else {
         return;
     };
     // Active pane's live cursor / scroll live on `app.cursor` /
@@ -1936,7 +1938,6 @@ fn draw_file_tree_pane(
     let viewport = area.height as usize;
     let nerd_fonts = app.theme.nerd_fonts;
     let theme = &app.theme;
-    let raw_text = tree.content.as_string();
     // M.3.2.c.5: entries live exclusively in the
     // FileTreeEntries buffer-local. Nothing to drift.
     let entries: &[crate::file_tree::FileTreeEntry] = app
@@ -1985,7 +1986,9 @@ fn draw_oil_pane(
     pane: &crate::pane::PaneState,
     is_active: bool,
 ) {
-    let Some(oil) = app.buffers.oil(pane.buffer_id) else {
+    let Some((raw_text, snapshot)) = app.buffers.with_oil(pane.buffer_id, |o| {
+        (o.content.as_string(), o.snapshot_entries().to_vec())
+    }) else {
         return;
     };
     let (cursor_line, scroll) = if is_active {
@@ -1996,8 +1999,6 @@ fn draw_oil_pane(
     let viewport = area.height as usize;
     let nerd_fonts = app.theme.nerd_fonts;
     let theme = &app.theme;
-    let raw_text = oil.content.as_string();
-    let snapshot = oil.snapshot_entries();
     // M.3.2.c.5: dir lives exclusively in the OilDir
     // buffer-local. No struct fallback; nothing to drift.
     let dir = app
@@ -2245,11 +2246,7 @@ fn active_lsp_segment(app: &App) -> String {
 pub(crate) fn modeline_label(app: &App, snap: &DocumentSnapshot) -> String {
     snap.path()
         .map(|p| p.display().to_string())
-        .or_else(|| {
-            app.buffers
-                .get(app.document_buffer_id)
-                .and_then(|e| e.name.clone())
-        })
+        .or_else(|| app.buffers.name_of(app.document_buffer_id))
         .unwrap_or_else(|| "[no name]".to_string())
 }
 
@@ -2258,10 +2255,7 @@ pub(crate) fn modeline_label(app: &App, snap: &DocumentSnapshot) -> String {
 /// the modified marker because the user can't "save" their
 /// streaming state.
 pub(crate) fn modeline_is_synthetic(app: &App) -> bool {
-    app.buffers
-        .get(app.document_buffer_id)
-        .map(|e| e.name.is_some())
-        .unwrap_or(false)
+    app.buffers.name_of(app.document_buffer_id).is_some()
 }
 
 fn draw_mode_line(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot) {

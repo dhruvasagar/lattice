@@ -97,13 +97,23 @@ use crate::actor::{self, ServerHandle};
 use crate::config::{ServerConfig, resolve_workspace_root};
 use crate::diagnostics_layer::{DiagnosticsLayer, pump_diagnostics};
 use crate::error::{LspError, LspResult};
-use crate::logging::{LogLevel, LogSource, LspLogger};
+use crate::logging::{InstanceKey, LogLevel, LogSource, LspLogger};
 use lattice_protocol::edit::Edit;
 
 /// Stable key for an actor: workspace root + server id. Public
 /// so [`SupervisorSnapshot`] consumers can pattern-match on the
 /// actor map without re-typing the tuple.
 pub type ActorKey = (PathBuf, String);
+
+/// Build an `InstanceKey` from an `ActorKey` for use with
+/// [`LspLogger::log`] (B'.2). Cheap: two `Arc::from` calls
+/// over the existing `String` / `PathBuf` references.
+fn instance_for(key: &ActorKey) -> InstanceKey {
+    InstanceKey::new(
+        Arc::<str>::from(key.1.as_str()),
+        Arc::<std::path::Path>::from(key.0.as_path()),
+    )
+}
 
 /// 4.4.d: result of a successful [`LspSupervisor::restart_server`]
 /// (or the handle-side equivalent). The App surfaces these to
@@ -591,7 +601,7 @@ impl LspSupervisor {
             };
             if let Err(e) = handle.record_edit(uri.clone(), edit.clone()) {
                 self.logger.log(
-                    Some(&Arc::from(key.1.as_str())),
+                    Some(&instance_for(key)),
                     LogLevel::Warn,
                     LogSource::Client,
                     format!("record_edit on {}: {}", uri.as_str(), e),
@@ -617,7 +627,7 @@ impl LspSupervisor {
             };
             if let Err(e) = handle.flush(uri.clone()) {
                 self.logger.log(
-                    Some(&Arc::from(key.1.as_str())),
+                    Some(&instance_for(key)),
                     LogLevel::Warn,
                     LogSource::Client,
                     format!("flush on {}: {}", uri.as_str(), e),
@@ -636,7 +646,7 @@ impl LspSupervisor {
         for (key, handle) in &self.actors {
             if let Err(e) = handle.flush_all() {
                 self.logger.log(
-                    Some(&Arc::from(key.1.as_str())),
+                    Some(&instance_for(key)),
                     LogLevel::Warn,
                     LogSource::Client,
                     format!("flush_all: {}", e),

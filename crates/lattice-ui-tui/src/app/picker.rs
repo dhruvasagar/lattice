@@ -85,11 +85,10 @@ impl App {
         let workspace_root = self.picker_workspace_root_path(snap);
 
         // Buffer registry -> picker BufferEntry view.
-        let buffers: Vec<BufferEntry> = self
-            .buffers
-            .iter()
-            .map(|entry| picker_buffer_entry(entry, &self.buffer_locals))
-            .collect();
+        let mut buffers: Vec<BufferEntry> = Vec::new();
+        self.buffers.for_each(|entry| {
+            buffers.push(picker_buffer_entry(entry, &self.buffer_locals));
+        });
 
         // Marks: HashMap<char, Position> -> Vec<(char, Position)>.
         let mut marks: Vec<(char, lattice_protocol::Position)> =
@@ -1237,21 +1236,14 @@ pub(super) fn raw_buffer_candidates(
     lattice_completion::RawCandidate,
     lattice_picker::RoutingPayload,
 )> {
-    let mut ids = registry.sorted_ids();
-    // Picker order: active LAST, listed BEFORE unlisted, otherwise
-    // by id. Unlisted synthetic buffers (`*lsp*`, ...) stay
-    // reachable via the picker (the user can filter to them by
-    // name) but the initial preview lands on a listed alternate
-    // first, matching vim's "skip nobuflisted in cycling" intent.
-    ids.sort_by_key(|id| {
-        let listed = registry.get(*id).map(|e| e.flags.listed).unwrap_or(false);
-        (*id == active, !listed, *id)
-    });
-    let mut out = Vec::with_capacity(ids.len());
-    for id in ids {
-        let Some(entry) = registry.get(id) else {
-            continue;
-        };
+    // Collect everything we need from the registry under one lock
+    // visit: id, listed flag, body, kind_label. The picker module
+    // is renderer-agnostic; we shape rows here and sort outside the
+    // lock.
+    let mut rows: Vec<(BufferId, bool, String, String)> = Vec::new();
+    registry.for_each(|entry| {
+        let id = entry.id;
+        let listed = entry.flags.listed;
         let active_marker = if id == active { " (current)" } else { "" };
         let (body, kind_label) = match &entry.data {
             BufferData::Document(d) => {
@@ -1313,6 +1305,16 @@ pub(super) fn raw_buffer_candidates(
                 )
             }
         };
+        rows.push((id, listed, body, kind_label));
+    });
+    // Picker order: active LAST, listed BEFORE unlisted, otherwise
+    // by id. Unlisted synthetic buffers (`*lsp*`, ...) stay
+    // reachable via the picker (the user can filter to them by
+    // name) but the initial preview lands on a listed alternate
+    // first, matching vim's "skip nobuflisted in cycling" intent.
+    rows.sort_by_key(|(id, listed, _, _)| (*id == active, !*listed, *id));
+    let mut out = Vec::with_capacity(rows.len());
+    for (id, _listed, body, kind_label) in rows {
         // `text` is the user-facing buffer id; matcher matches
         // against `display`. The typed routing payload carries
         // the buffer id the accept dispatch consumes.

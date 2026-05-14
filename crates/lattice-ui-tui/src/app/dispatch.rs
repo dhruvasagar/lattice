@@ -778,7 +778,7 @@ impl App {
     /// `BufferKind::Oil` and routes to `OilBuffer::apply`).
     fn run_oil_invocation(&mut self, inv: CommandInvocation) {
         let oil_id = self.active_pane_buffer_id();
-        let Some(oil_text) = self.buffers.oil(oil_id).map(|o| o.content.as_string()) else {
+        let Some(oil_text) = self.buffers.with_oil(oil_id, |o| o.content.as_string()) else {
             return;
         };
         // Mirror the document-side dispatcher's count + register
@@ -815,9 +815,9 @@ impl App {
         // buffer. For motion-only effects this is a no-op (the
         // grammar's motion path doesn't mutate the document);
         // for operator effects it carries the change.
-        if let Some(oil) = self.buffers.oil_mut(oil_id) {
+        self.buffers.with_oil_mut(oil_id, |oil| {
             oil.content = temp_doc.buffer().clone();
-        }
+        });
         // Apply the effect's cursor / mode / register / yank
         // implications. We re-implement a narrow `apply_effect`
         // here -- the document-side `handle_edits` would re-

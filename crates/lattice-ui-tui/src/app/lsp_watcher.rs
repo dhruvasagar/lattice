@@ -380,9 +380,9 @@ impl App {
             };
             let params = lsp_types::DidChangeWatchedFilesParams { changes: batch };
             if let Err(e) = handle.did_change_watched_files(params) {
-                let server_id_arc: Arc<str> = Arc::from(handle.server_id());
+                let instance = handle.instance();
                 self.lsp_logger.log(
-                    Some(&server_id_arc),
+                    Some(&instance),
                     LogLevel::Warn,
                     LogSource::Client,
                     format!("workspace/didChangeWatchedFiles fan-out failed: {e}"),

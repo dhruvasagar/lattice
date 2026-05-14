@@ -571,7 +571,7 @@ impl App {
         // `self.last_parsed_text_version` mirror what's stored
         // here for the active buffer; switching buffers swaps
         // them.
-        let mut buffers = super::BufferRegistry::new();
+        let buffers = super::BufferRegistry::new();
         buffers.insert(BufferEntry {
             id: document_buffer_id,
             flags: BufferFlags::default(),
@@ -596,6 +596,10 @@ impl App {
         initial_locals.insert(crate::modes::DocumentLastSyncedSyntaxVersion(0));
         initial_locals.insert(crate::modes::DocumentFolds(Vec::new()));
         buffer_locals.insert(document_buffer_id, initial_locals);
+        // B'.3: keep a clone of `buffers` outside the Self
+        // initialiser so the service-registry block below can
+        // also hold one (BufferRegistry is `Clone` via Arc).
+        let buffers_for_services = buffers.clone();
         let mut app = Self {
             document,
             snapshot_cache,
@@ -714,6 +718,22 @@ impl App {
                 // supervisor handle here to send `didClose`.
                 let mut s = lattice_mode::ServiceRegistry::new();
                 s.register(lsp.clone());
+                // B'.3: register the buffer store so log modes
+                // (`LspLogMode` and friends) can pull
+                // `DocumentHandle`s for their buffers from any
+                // tokio task. `BufferRegistry` is `Clone`
+                // (Arc<Mutex<>> internally), so the cloned
+                // store shares state with `App.buffers`.
+                let store: std::sync::Arc<dyn lattice_mode::BufferStore> =
+                    std::sync::Arc::new(buffers_for_services);
+                s.register(lattice_mode::BufferStoreHandle::new(store));
+                // B'.4: the LSP log modes seed their buffer from
+                // the existing in-memory ring on activate so the
+                // user sees pre-existing records when they first
+                // open the buffer. Registering the logger as a
+                // service lets the mode pull a snapshot without
+                // routing through the App.
+                s.register(lsp_logger.clone());
                 s
             },
             pane_render_registry: crate::render::build_pane_render_registry(),
@@ -840,15 +860,20 @@ impl App {
         // nothing (no LSP work to drive) and the `buffer_uris`
         // entry stays absent.
         app.publish_document_opened_for_active();
-        // Slice B: LSP subsystem creates its global `*lsp*`
+        // Slice B / B'.7: LSP subsystem creates its global `*lsp*`
         // Document buffer eagerly at boot so `:b *lsp*` works
-        // before any record has flowed. Per-server buffers
-        // (`*lsp:<id>*`, `*lsp:<id>:trace*`) are created lazily on
-        // first event (or on `:lsp-trace` toggle-on) instead --
-        // creating one per registered server config at boot would
-        // pre-allocate slots for servers the user never opens a
-        // matching file type for.
-        app.ensure_lsp_subsystem_log_buffer();
+        // before any record has flowed. Per-instance buffers
+        // (`*lsp:<server>:<workspace>*`,
+        // `*lsp:<server>:<workspace>:trace*`) are created lazily
+        // by the ex-command handlers (or by `:lsp-trace` toggle-on)
+        // through the same generic `ensure_named_synthetic_document`
+        // entry point. The name + mode-id come from `lattice-lsp`;
+        // the host adds no subsystem-specific create logic.
+        app.ensure_named_synthetic_document(
+            lattice_lsp::LSP_SUBSYSTEM_LOG_NAME,
+            lattice_lsp::modes::LspLogMode::mode_id(),
+            crate::app::App::SYNTHETIC_BUFFER_FLAGS,
+        );
         // Slice E: `*messages*` follows the same pattern -- a
         // Document buffer in the registry, read-only, owner-
         // streamed via the MessagePushed event drain. Eager at

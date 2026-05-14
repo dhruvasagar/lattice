@@ -258,23 +258,26 @@ impl App {
         self.resolved_options.remove(&prev);
     }
 
-    /// M.4 (b): resolve the popup's `HelpBuffer` handle through
-    /// the unified registry. The field stores only the
-    /// `BufferId`; the actual buffer lives in `app.buffers` with
-    /// `BufferFlags { listed: false, hidden: true }`. Returns
-    /// `None` when no popup is open or the registry entry has been
-    /// torn down.
-    pub fn popup_help(&self) -> Option<&crate::help::HelpBuffer> {
-        self.popup_buffer.and_then(|id| self.buffers.help(id))
+    /// M.4 (b): resolve the popup's `HelpBuffer` through the
+    /// unified registry. The field stores only the `BufferId`; the
+    /// actual buffer lives in `app.buffers` with
+    /// `BufferFlags { listed: false, hidden: true }`. Returns a
+    /// cloned snapshot (the rope is cheap-to-clone); `None` when no
+    /// popup is open or the registry entry has been torn down.
+    pub fn popup_help(&self) -> Option<crate::help::HelpBuffer> {
+        let id = self.popup_buffer?;
+        self.buffers.with_help(id, |h| h.clone())
     }
 
-    /// Mutable counterpart to [`Self::popup_help`]. Used by the
-    /// few writers that need to update cursor / scroll on the
-    /// active popup buffer in place (rebuild paths route through
-    /// the registry directly).
-    pub fn popup_help_mut(&mut self) -> Option<&mut crate::help::HelpBuffer> {
+    /// Mutable counterpart to [`Self::popup_help`]. The closure
+    /// runs under the registry lock; callers can mutate cursor /
+    /// scroll on the active popup buffer in place.
+    pub fn with_popup_help_mut<R>(
+        &mut self,
+        f: impl FnOnce(&mut crate::help::HelpBuffer) -> R,
+    ) -> Option<R> {
         let id = self.popup_buffer?;
-        self.buffers.help_mut(id)
+        self.buffers.with_help_mut(id, f)
     }
 
     /// M.3.2.c.5: mirror parsed help metadata into the buffer-locals
@@ -357,7 +360,9 @@ impl App {
     /// popup is open or the registry entry has been torn down.
     pub(super) fn snapshot_current_popup(&self) -> Option<PopupSnapshot> {
         let id = self.popup_buffer?;
-        let buf = self.buffers.help(id)?;
+        let (title, content) = self
+            .buffers
+            .with_help(id, |buf| (buf.title.clone(), buf.content.clone()))?;
         let locals = self.buffer_locals.get(&id)?;
         let metadata = HelpMetadata {
             links: locals
@@ -374,8 +379,8 @@ impl App {
                 .unwrap_or_default(),
         };
         Some(PopupSnapshot {
-            title: buf.title.clone(),
-            content: buf.content.clone(),
+            title,
+            content,
             cursor: self.cursor,
             scroll: self.scroll,
             metadata,
@@ -400,12 +405,12 @@ impl App {
         // Update the registered HelpBuffer in place. We retain `id`
         // (the existing popup's id) -- not `new_buf.id` -- so every
         // outer-state slot keyed on the popup id stays coherent.
-        if let Some(existing) = self.buffers.help_mut(id) {
+        self.buffers.with_help_mut(id, |existing| {
             existing.title = new_buf.title;
             existing.content = new_buf.content;
             existing.scroll = 0;
             existing.cursor = lattice_protocol::position::Position::ZERO;
-        }
+        });
         self.cursor = lattice_protocol::position::Position::ZERO;
         self.scroll = 0;
         self.popup_placement = placement;
@@ -423,12 +428,12 @@ impl App {
         let Some(id) = self.popup_buffer else {
             return false;
         };
-        if let Some(existing) = self.buffers.help_mut(id) {
+        self.buffers.with_help_mut(id, |existing| {
             existing.title = snap.title;
             existing.content = snap.content;
             existing.scroll = snap.scroll as usize;
             existing.cursor = snap.cursor;
-        }
+        });
         self.cursor = snap.cursor;
         self.scroll = snap.scroll;
         self.popup_placement = snap.placement;
@@ -539,10 +544,13 @@ mod tests {
         let mut a = app_with("hello", 10);
         a.do_lsp_status();
         let id = a.popup_buffer.expect("popup open");
-        let entry = a.buffers.get(id).expect("popup registered");
-        assert!(!entry.flags.listed);
-        assert!(entry.flags.hidden);
-        assert!(entry.help().is_some());
+        let (flags, is_help) = a
+            .buffers
+            .with_entry(id, |entry| (entry.flags, entry.help().is_some()))
+            .expect("popup registered");
+        assert!(!flags.listed);
+        assert!(flags.hidden);
+        assert!(is_help);
         // `:ls` / `:bn` cycling skips it.
         assert!(!a.buffers.listed_ids_sorted().contains(&id));
     }
@@ -555,9 +563,9 @@ mod tests {
         let mut a = app_with("hello", 10);
         a.do_lsp_status();
         let id = a.popup_buffer.expect("popup open");
-        assert!(a.buffers.get(id).is_some());
+        assert!(a.buffers.contains(id));
         a.dismiss_popup();
-        assert!(a.buffers.get(id).is_none());
+        assert!(!a.buffers.contains(id));
         assert!(a.active_modes.get(&id).is_none());
         assert!(a.buffer_locals.get(&id).is_none());
     }
@@ -579,7 +587,7 @@ mod tests {
             "popup id should be reused on in-Help reopen"
         );
         assert!(
-            a.buffers.get(first_id).is_some(),
+            a.buffers.contains(first_id),
             "popup buffer survives the swap"
         );
         // The prior frame is recorded on the back-stack so `<C-o>`

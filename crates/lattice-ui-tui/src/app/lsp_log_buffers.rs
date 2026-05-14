@@ -1,35 +1,30 @@
-//! LSP subsystem-owned log buffers (slice B of the synthetic-buffer
-//! migration; see `feedback-synthetic-buffers` memory).
+//! Host-side helper for spawning the synthetic Document buffers
+//! that mode-owned subsystems (LSP log family, `*messages*`,
+//! future `*scratch*`) attach to.
 //!
-//! The LSP subsystem owns three flavours of synthetic Document
-//! buffer:
+//! B'.7 retires the per-flavour `ensure_lsp_*_buffer` helpers in
+//! favour of one subsystem-agnostic
+//! [`App::ensure_named_synthetic_document`] entry point. The
+//! ex-command handlers and boot path now compute the canonical
+//! buffer name (via `lattice_lsp::lsp_server_log_name` and
+//! friends) and the major mode id themselves, then call this
+//! helper. No subsystem-specific knowledge lives in the host
+//! anymore: name format + mode id are inputs; the helper just
+//! find-or-creates the Document, activates the named major mode,
+//! and returns the id.
 //!
-//! - `*lsp*` — subsystem-wide log; mirrors every record published
-//!   to [`lattice_lsp::LspLogger`]. Created eagerly at App boot so
-//!   `:b *lsp*` works the moment the editor starts.
-//! - `*lsp:<server>*` — per-server log. Lazy-created when the
-//!   first record for that server arrives, OR when the user runs
-//!   `:lsp-log <server>`. Records prefixed with the server id are
-//!   filtered to the matching per-server buffer (subsystem-wide
-//!   chatter without a server tag does not appear here).
-//! - `*lsp:<server>:trace*` — per-server JSON-RPC trace buffer.
-//!   Created eagerly when `:lsp-trace <server>` toggles ON so the
-//!   buffer is visible in `:ls` from the moment the user enables
-//!   tracing.
+//! The major mode is responsible for everything downstream --
+//! deriving its identity from the buffer's name, subscribing to
+//! the event bus, seeding from the in-memory ring, formatting
+//! incoming records, and tearing it all down on
+//! `on_deactivate`. The host's only contribution after creation
+//! is the `ReadOnly = true` contribution the major mode itself
+//! emits via `options()`.
 //!
-//! All three live in the unified [`crate::buffer_registry`] as
-//! `BufferKind::Document` entries with the `name` slot set to
-//! their synthetic label. The major mode contributes
-//! `ReadOnly = true` so user-driven Insert / operator paths echo
-//! `"buffer is read-only"`; subsystem writes go through
-//! [`App::append_to_owned_buffer`] which bypasses the modal
-//! dispatcher naturally (direct `DocumentHandle::apply_edit_batch`
-//! call, not a user action).
-//!
-//! `:w <path>` works through the existing Document save path — the
-//! buffer behaves like any unsaved Document; saving produces a
-//! regular editable file while the streaming buffer keeps its
-//! read-only-by-subsystem identity.
+//! `:w <path>` still works through the existing Document save
+//! path — the buffer behaves like any unsaved Document; saving
+//! produces a regular editable file while the streaming buffer
+//! keeps its read-only-by-subsystem identity.
 
 use lattice_protocol::edit::Edit;
 use lattice_protocol::position::Position;
@@ -38,52 +33,32 @@ use crate::app::App;
 use crate::buffer_registry::{BufferData, BufferEntry, DocumentEntry};
 use crate::buffers::{BufferFlags, BufferId};
 
-/// Synthetic name for the subsystem-wide LSP log buffer.
-pub const LSP_SUBSYSTEM_LOG_NAME: &str = "*lsp*";
-
-/// Build the synthetic name for a per-server LSP log buffer.
-pub fn lsp_server_log_name(server_id: &str) -> String {
-    format!("*lsp:{server_id}*")
-}
-
-/// Build the synthetic name for a per-server LSP trace buffer.
-pub fn lsp_server_trace_log_name(server_id: &str) -> String {
-    format!("*lsp:{server_id}:trace*")
-}
-
 impl App {
-    /// Find-or-create the subsystem-wide `*lsp*` Document buffer.
-    /// Idempotent: subsequent calls return the existing id.
-    pub(crate) fn ensure_lsp_subsystem_log_buffer(&mut self) -> BufferId {
-        self.ensure_lsp_log_owned_buffer(
-            LSP_SUBSYSTEM_LOG_NAME,
-            lattice_lsp::modes::LspLogMode::mode_id(),
-        )
-    }
-
-    /// Find-or-create the per-server `*lsp:<server>*` Document
-    /// buffer. The major mode is `lsp-log-mode` (read-only).
-    pub(crate) fn ensure_lsp_server_log_buffer(&mut self, server_id: &str) -> BufferId {
-        let name = lsp_server_log_name(server_id);
-        self.ensure_lsp_log_owned_buffer(&name, lattice_lsp::modes::LspLogMode::mode_id())
-    }
-
-    /// Find-or-create the per-server `*lsp:<server>:trace*`
-    /// Document buffer. The major mode is `lsp-trace-log-mode`
-    /// (read-only).
-    pub(crate) fn ensure_lsp_server_trace_buffer(&mut self, server_id: &str) -> BufferId {
-        let name = lsp_server_trace_log_name(server_id);
-        self.ensure_lsp_log_owned_buffer(&name, lattice_lsp::modes::LspTraceLogMode::mode_id())
-    }
-
-    /// Shared create-or-find path. Look the buffer up by its
-    /// synthetic `name`; if absent, spawn a fresh empty Document,
-    /// register it with `name = Some(name)`, and activate
-    /// `major_id` on it.
-    fn ensure_lsp_log_owned_buffer(
+    /// Find-or-create a synthetic Document buffer with `name`,
+    /// the given `major_id` activated on it, and the supplied
+    /// `flags`. Idempotent: a second call with the same `name`
+    /// returns the existing id (major mode is not re-activated,
+    /// flags are not overwritten).
+    ///
+    /// Used by every mode-owned synthetic buffer:
+    /// - `*lsp*` (boot) via `LspLogMode::mode_id()`.
+    /// - `*lsp:<server>:<workspace>*` (ex-command + picker open)
+    ///   via `LspServerLogMode::mode_id()`.
+    /// - `*lsp:<server>:<workspace>:trace*` (`:lsp-trace` toggle +
+    ///   `:lsp-trace-log` open) via `LspTraceLogMode::mode_id()`.
+    /// - `*messages*` (boot) via `MessagesMode::mode_id()`.
+    ///
+    /// Activation runs the major's `on_activate` synchronously,
+    /// so any subscription / spawn the mode does is in place by
+    /// the time this function returns. The major mode is what
+    /// derives the buffer's identity (instance key for LSP log
+    /// variants); the host does not stash any subsystem-shaped
+    /// buffer-local before activation.
+    pub(crate) fn ensure_named_synthetic_document(
         &mut self,
         name: &str,
         major_id: lattice_mode::ModeId,
+        flags: BufferFlags,
     ) -> BufferId {
         if let Some(id) = self.buffers.by_name(name) {
             return id;
@@ -93,16 +68,7 @@ impl App {
         let handle = lattice_runtime::spawn_document(document, self.registry.clone());
         self.buffers.insert(BufferEntry {
             id,
-            // Synthetic LSP log buffers are unlisted (vim's
-            // `nobuflisted` semantic): `:bn`/`:bp` skip them, `:ls`
-            // shows them with a `u` marker, but `:b <name>` and the
-            // `:b` picker still reach them. Keeps the cycle order
-            // focused on user-opened files while preserving direct
-            // access to the synthetic surface.
-            flags: BufferFlags {
-                listed: false,
-                hidden: false,
-            },
+            flags,
             data: BufferData::Document(DocumentEntry { id, handle }),
             name: Some(name.to_string()),
         });
@@ -113,10 +79,20 @@ impl App {
         // Activate `major_id` directly. We can't use
         // `activate_major_for_buffer_kind` because it auto-detects
         // the language from the buffer's path (which is None here)
-        // and would pick `text-mode` instead of `lsp-log-mode`.
+        // and would pick `text-mode` instead of the caller's
+        // intended major.
         self.activate_major_by_id(id, major_id);
         id
     }
+
+    /// Unlisted, non-hidden flags — the canonical shape every
+    /// mode-owned synthetic buffer wants (`:bn` / `:bp` cycles
+    /// skip, `:ls` shows with a `u` marker, `:b <name>` still
+    /// reaches).
+    pub(crate) const SYNTHETIC_BUFFER_FLAGS: BufferFlags = BufferFlags {
+        listed: false,
+        hidden: false,
+    };
 
     /// Activate `major_id` on `buffer_id` directly, bypassing the
     /// language-detection path. Used by synthetic-buffer creators
@@ -175,10 +151,9 @@ impl App {
         if text.is_empty() {
             return;
         }
-        let Some(entry) = self.buffers.document(buffer_id) else {
+        let Some(handle) = self.buffers.document_handle(buffer_id) else {
             return;
         };
-        let handle = entry.handle.clone();
         let snap = handle.snapshot();
         let last_line = crate::app::last_addressable_line(&snap.buffer);
         let line_len = crate::app::line_byte_len(&snap.buffer, last_line);
@@ -188,47 +163,20 @@ impl App {
     }
 }
 
-/// Format one log record line for append to a synthetic LSP log
-/// buffer. Mirrors the shape `lattice_lsp::help_views` uses for
-/// snapshot rendering: `HH:MM:SS.mmm <level> <source>: <message>`,
-/// with the server id prefixed in brackets when known. Trailing
-/// newline is the caller's responsibility (the drain batches many
-/// records into one buffer-append).
-pub(crate) fn format_log_event_line(
-    server_id: Option<&str>,
-    level: &str,
-    source: &str,
-    message: &str,
-) -> String {
-    use std::time::SystemTime;
-    let elapsed = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .ok();
-    let secs = elapsed.map(|d| d.as_secs()).unwrap_or(0);
-    let ms = elapsed.map(|d| d.subsec_millis()).unwrap_or(0);
-    let hh = (secs / 3600) % 24;
-    let mm = (secs / 60) % 60;
-    let ss = secs % 60;
-    let prefix = server_id.map(|id| format!("[{id}] ")).unwrap_or_default();
-    let msg = one_line(message);
-    format!("{hh:02}:{mm:02}:{ss:02}.{ms:03} {prefix}{level} {source:>6}: {msg}")
-}
-
-/// Collapse newlines / carriage returns / tabs into spaces so the
-/// formatted record fits on one buffer line. Mirrors
-/// `lattice_lsp::help_views::one_line`.
-fn one_line(s: &str) -> String {
-    s.replace(['\n', '\r', '\t'], " ")
-}
+// B'.6: `format_log_event_line` lived here in B'.3 as a thin
+// alias around `lattice_lsp::format_log_event_line`. After the
+// App-side drain stopped formatting log records (the three log
+// majors do it now), the alias has no remaining users in this
+// crate. The canonical helper stays in `lattice-lsp`.
 
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
 
-    use super::*;
     use crate::app::test_helpers::app_with;
     use crate::buffer_registry::BufferData;
     use lattice_config::ReadOnly;
+    use lattice_lsp::{LSP_SUBSYSTEM_LOG_NAME, lsp_server_log_name, lsp_server_trace_log_name};
 
     #[test]
     fn boot_creates_subsystem_lsp_buffer() {
@@ -239,11 +187,20 @@ mod tests {
             .expect("`*lsp*` buffer present at boot");
         // Must be a Document (slice B requirement) with the
         // synthetic name set.
-        let entry = a.buffers.get(id).expect("entry registered");
-        assert!(matches!(entry.data, BufferData::Document(_)));
-        assert_eq!(entry.name.as_deref(), Some(LSP_SUBSYSTEM_LOG_NAME));
+        let (is_doc, name, listed) = a
+            .buffers
+            .with_entry(id, |entry| {
+                (
+                    matches!(entry.data, BufferData::Document(_)),
+                    entry.name.clone(),
+                    entry.flags.listed,
+                )
+            })
+            .expect("entry registered");
+        assert!(is_doc);
+        assert_eq!(name.as_deref(), Some(LSP_SUBSYSTEM_LOG_NAME));
         // And unlisted -- `:bn` cycles skip it.
-        assert!(!entry.flags.listed);
+        assert!(!listed);
     }
 
     #[test]
@@ -274,19 +231,25 @@ mod tests {
         );
     }
 
-    #[test]
-    fn lsp_log_drain_appends_to_subsystem_buffer() {
-        let mut a = app_with("hi", 5);
+    #[tokio::test(flavor = "multi_thread")]
+    async fn lsp_log_drain_appends_to_subsystem_buffer() {
+        // B'.3: the subsystem-wide `*lsp*` buffer is owned by
+        // `LspLogMode`'s subscription. The mode's drain task is
+        // spawned via tokio; the test sleeps a few millis so the
+        // task gets scheduled before we inspect the buffer.
+        let a = app_with("hi", 5);
         let id = a.buffers.by_name(LSP_SUBSYSTEM_LOG_NAME).unwrap();
-        let before = a.buffers.document(id).unwrap().handle.text();
+        let before = a.buffers.document_handle(id).unwrap().text();
         a.lsp_logger.log(
             None,
             lattice_lsp::LogLevel::Info,
             lattice_lsp::LogSource::Client,
             "boot-time chatter",
         );
-        a.drain_lsp_log_events();
-        let after = a.buffers.document(id).unwrap().handle.text();
+        // Let the LspLogMode tokio task drain + apply its edit.
+        // 50ms is generous; production drain coalesces in <1ms.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let after = a.buffers.document_handle(id).unwrap().text();
         assert!(after.len() > before.len());
         assert!(
             after.contains("boot-time chatter"),
@@ -325,25 +288,44 @@ mod tests {
         );
     }
 
+    /// Build the per-instance synthetic key the App's
+    /// `resolve_lsp_instance_for` produces in the no-actor case
+    /// (cwd-backed fallback). Tests that drive
+    /// `open_lsp_log_in_pane("rust")` without spawning an actor
+    /// land on this instance; the helper keeps them tied to the
+    /// same naming the App uses.
+    fn synth_instance(server_id: &str) -> lattice_lsp::InstanceKey {
+        lattice_lsp::InstanceKey::new(
+            std::sync::Arc::<str>::from(server_id),
+            std::sync::Arc::<std::path::Path>::from(
+                std::env::current_dir()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("/"))
+                    .as_path(),
+            ),
+        )
+    }
+
     #[test]
     fn open_lsp_log_in_pane_modeline_shows_synthetic_name() {
         // Bug #3 repro candidate: navigate to a per-server log
         // via the `open_lsp_log_in_pane` path (same code the
         // `:lsp-log <server>` ex-command runs through after the
         // picker short-circuit). The modeline must surface
-        // `*lsp:<server>*`, not `[no name]`.
+        // `*lsp:<server>:<workspace>*` (B'.4), not `[no name]`.
         let mut a = app_with("hi", 5);
+        let instance = synth_instance("rust");
+        let expected = lsp_server_log_name(&instance);
         a.open_lsp_log_in_pane("rust");
         let log_id = a
             .buffers
-            .by_name("*lsp:rust*")
-            .expect("per-server log buffer registered");
+            .by_name(&expected)
+            .expect("per-instance log buffer registered");
         assert_eq!(a.active_pane_buffer_id(), log_id);
         let pane = a.pane_tree.active().clone();
         let label = a.pane_status_label(&pane);
         assert!(
-            label.contains("*lsp:rust*"),
-            "modeline must surface synthetic name after :lsp-log; got `{label}`"
+            label.contains(&expected),
+            "modeline must surface synthetic name after :lsp-log; got `{label}`, expected to contain `{expected}`"
         );
     }
 
@@ -351,29 +333,45 @@ mod tests {
     fn open_lsp_trace_log_in_pane_modeline_shows_synthetic_name() {
         // Symmetric to above: `:lsp-trace-log <server>` path.
         let mut a = app_with("hi", 5);
+        let instance = synth_instance("rust");
+        let expected = lsp_server_trace_log_name(&instance);
         a.open_lsp_trace_log_in_pane("rust");
         let trace_id = a
             .buffers
-            .by_name("*lsp:rust:trace*")
-            .expect("per-server trace buffer registered");
+            .by_name(&expected)
+            .expect("per-instance trace buffer registered");
         assert_eq!(a.active_pane_buffer_id(), trace_id);
         let pane = a.pane_tree.active().clone();
         let label = a.pane_status_label(&pane);
         assert!(
-            label.contains("*lsp:rust:trace*"),
+            label.contains(&expected),
             "modeline must surface trace buffer name; got `{label}`"
         );
     }
 
     #[test]
     fn lsp_trace_toggle_creates_trace_buffer() {
+        // B'.7: the generic `ensure_named_synthetic_document`
+        // path is the canonical create surface. The trace
+        // toggle (`:lsp-trace`) drives it with the
+        // `lsp_server_trace_log_name`-derived name + the
+        // `LspTraceLogMode::mode_id()` major; this test goes
+        // straight to that helper because spinning up a real
+        // running actor would require LSP config plumbing the
+        // test isn't built for.
         let mut a = app_with("hi", 5);
-        assert!(a.buffers.by_name("*lsp:rust:trace*").is_none());
-        // We can't drive `:lsp-trace rust` end-to-end without a
-        // matching config; call the ensure helper directly to
-        // exercise the slice's create path.
-        let id = a.ensure_lsp_server_trace_buffer("rust");
-        assert_eq!(a.buffers.by_name("*lsp:rust:trace*"), Some(id));
+        let instance = lattice_lsp::InstanceKey::new(
+            std::sync::Arc::<str>::from("rust"),
+            std::sync::Arc::<std::path::Path>::from(std::path::Path::new("/tmp/test-ws")),
+        );
+        let expected_name = lsp_server_trace_log_name(&instance);
+        assert!(a.buffers.by_name(&expected_name).is_none());
+        let id = a.ensure_named_synthetic_document(
+            &expected_name,
+            lattice_lsp::modes::LspTraceLogMode::mode_id(),
+            crate::app::App::SYNTHETIC_BUFFER_FLAGS,
+        );
+        assert_eq!(a.buffers.by_name(&expected_name), Some(id));
         // Trace buffer also read-only via lsp-trace-log-mode.
         let ro = *a.resolved_option::<ReadOnly>(id);
         assert!(

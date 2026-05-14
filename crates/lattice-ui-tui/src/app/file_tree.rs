@@ -70,9 +70,8 @@ impl App {
             .entry(buffer_id)
             .or_default()
             .insert(crate::modes::FileTreeEntries(entries));
-        if let Some(tree) = self.buffers.file_tree_mut(buffer_id) {
-            tree.content = content;
-        }
+        self.buffers
+            .with_file_tree_mut(buffer_id, |tree| tree.content = content);
     }
 
     /// Write the `FileTreeNerdFonts` buffer-local. Re-renders
@@ -88,9 +87,8 @@ impl App {
             .insert(crate::modes::FileTreeNerdFonts(nerd_fonts));
         if let Some(entries) = self.file_tree_entries_for(buffer_id) {
             let content = crate::file_tree::render_to_buffer(&entries, nerd_fonts);
-            if let Some(tree) = self.buffers.file_tree_mut(buffer_id) {
-                tree.content = content;
-            }
+            self.buffers
+                .with_file_tree_mut(buffer_id, |tree| tree.content = content);
         }
     }
 

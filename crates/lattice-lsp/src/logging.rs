@@ -44,12 +44,65 @@
 //! or not the buffer views are open.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::SystemTime;
 
 use std::sync::Mutex;
 
 use crate::events::LspLogPushed;
+
+/// Composite key for the per-instance log ring -- the
+/// `(server_id, workspace_root)` pair that the supervisor uses
+/// to key actors. Two `rust-analyzer` processes against
+/// different workspaces stay distinct in the logger and in
+/// the buffer name. Cheap to clone (two `Arc`s).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct InstanceKey {
+    pub server_id: Arc<str>,
+    pub workspace: Arc<Path>,
+}
+
+impl InstanceKey {
+    /// Construct an instance key from owned server id + workspace
+    /// path. Accepts anything that converts into `Arc<str>` /
+    /// `Arc<Path>` so callers don't need to pre-Arc.
+    pub fn new(server_id: impl Into<Arc<str>>, workspace: impl Into<Arc<Path>>) -> Self {
+        Self {
+            server_id: server_id.into(),
+            workspace: workspace.into(),
+        }
+    }
+}
+
+/// Format one log record line for append to a synthetic LSP log
+/// buffer (B'.3: hoisted out of `lattice_ui_tui::app::lsp_log_buffers`
+/// so log modes in this crate can reuse it from a tokio task).
+/// Shape: `HH:MM:SS.mmm [<server>] <level> <source>: <message>`.
+/// Trailing newline is the caller's responsibility (the drain
+/// batches many records into one buffer-append).
+pub fn format_log_event_line(
+    server_id: Option<&str>,
+    level: &str,
+    source: &str,
+    message: &str,
+) -> String {
+    let elapsed = SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok();
+    let secs = elapsed.map(|d| d.as_secs()).unwrap_or(0);
+    let ms = elapsed.map(|d| d.subsec_millis()).unwrap_or(0);
+    let hh = (secs / 3600) % 24;
+    let mm = (secs / 60) % 60;
+    let ss = secs % 60;
+    let prefix = server_id.map(|id| format!("[{id}] ")).unwrap_or_default();
+    let msg = one_line(message);
+    format!("{hh:02}:{mm:02}:{ss:02}.{ms:03} {prefix}{level} {source:>6}: {msg}")
+}
+
+/// Collapse newlines / carriage returns / tabs into spaces so the
+/// formatted record fits on one buffer line.
+fn one_line(s: &str) -> String {
+    s.replace(['\n', '\r', '\t'], " ")
+}
 
 /// Closure invoked on every successful append. Wired by the App
 /// (or test harness) to publish [`LspLogPushed`] onto the runtime
@@ -61,7 +114,7 @@ pub type LogEventPublisher = Arc<dyn Fn(LspLogPushed) + Send + Sync>;
 
 /// Compact severity tag for [`LspLogPushed`]. Mirrors
 /// [`LogSource::tag`]'s shape for the level discriminator.
-fn level_tag(l: LogLevel) -> &'static str {
+pub fn level_tag(l: LogLevel) -> &'static str {
     match l {
         LogLevel::Trace => "trace",
         LogLevel::Debug => "debug",
@@ -175,8 +228,8 @@ impl LogSource {
     }
 }
 
-/// One log entry. Cheap to clone (`Arc<str>` for server id;
-/// the message is a plain `String`).
+/// One log entry. Cheap to clone (`Arc<str>` for server id,
+/// `Arc<Path>` for workspace; the message is a plain `String`).
 #[derive(Debug, Clone)]
 pub struct LogRecord {
     /// Wall-clock time of emission. Used for buffer rendering;
@@ -184,7 +237,15 @@ pub struct LogRecord {
     /// order in their ring).
     pub timestamp: SystemTime,
     /// `None` for subsystem-wide records (supervisor events).
+    /// Pre-B'.2 records may have `server_id` without `workspace`;
+    /// post-B'.2 the two travel together (both `Some` => per-instance,
+    /// both `None` => subsystem-wide). Mixed states route to global.
     pub server_id: Option<Arc<str>>,
+    /// `None` for subsystem-wide records. The workspace root the
+    /// `(server_id, workspace)` actor was spawned against. Two
+    /// `rust-analyzer` instances on different workspaces stay
+    /// distinct via this field.
+    pub workspace: Option<Arc<Path>>,
     pub level: LogLevel,
     pub source: LogSource,
     pub message: String,
@@ -263,24 +324,28 @@ pub struct LspLogger {
 }
 
 struct LoggerState {
-    /// Subsystem-wide ring (server_id = None records).
+    /// Subsystem-wide ring (records where both server_id and
+    /// workspace are None).
     global: Mutex<LogRing>,
-    /// Per-server rings (server_id = Some(_) records).
-    per_server: Mutex<HashMap<Arc<str>, LogRing>>,
+    /// Per-instance rings, keyed by `(server_id, workspace)`.
+    /// One `rust-analyzer` against `/path/A` is a different ring
+    /// than `rust-analyzer` against `/path/B`.
+    per_instance: Mutex<HashMap<InstanceKey, LogRing>>,
     /// Optional publisher fired on every successful append.
     /// Wired by the App at boot to feed the runtime event bus.
     /// `None` -> no events emitted (test paths, or pre-wire).
     event_publisher: Mutex<Option<LogEventPublisher>>,
-    /// Default capacity for new per-server rings.
+    /// Default capacity for new per-instance rings.
     default_capacity: Mutex<usize>,
     /// Default min level (records below are dropped).
     default_min_level: Mutex<LogLevel>,
-    /// Per-server overrides for min level. Falls back to the
+    /// Per-instance overrides for min level. Falls back to the
     /// default when absent.
-    server_levels: Mutex<HashMap<Arc<str>, LogLevel>>,
-    /// Per-server trace toggle. When absent / false, Trace-level
-    /// records are dropped before the ring lookup.
-    server_trace: Mutex<HashSet<Arc<str>>>,
+    instance_levels: Mutex<HashMap<InstanceKey, LogLevel>>,
+    /// Per-instance trace toggle. When absent / false, Trace-level
+    /// records for that instance are dropped before the ring
+    /// lookup.
+    instance_trace: Mutex<HashSet<InstanceKey>>,
 }
 
 impl LspLogger {
@@ -292,11 +357,11 @@ impl LspLogger {
         Self {
             state: Arc::new(LoggerState {
                 global: Mutex::new(LogRing::new(default_capacity)),
-                per_server: Mutex::new(HashMap::new()),
+                per_instance: Mutex::new(HashMap::new()),
                 default_capacity: Mutex::new(default_capacity),
                 default_min_level: Mutex::new(default_min_level),
-                server_levels: Mutex::new(HashMap::new()),
-                server_trace: Mutex::new(HashSet::new()),
+                instance_levels: Mutex::new(HashMap::new()),
+                instance_trace: Mutex::new(HashSet::new()),
                 event_publisher: Mutex::new(None),
             }),
         }
@@ -316,27 +381,28 @@ impl LspLogger {
         Self::new(LogLevel::Info, 10_000)
     }
 
-    /// Append a record. Gated by per-server min level (or the
-    /// default). Subsystem-wide records (server_id = None) use
-    /// the default min level. Trace-level records are
-    /// additionally gated by the per-server trace toggle.
+    /// Append a record. Gated by per-instance min level (or the
+    /// default). Records with `instance = None` route to the
+    /// subsystem-wide ring (`*lsp*`) and use the default min level.
+    /// Trace-level records are additionally gated by the
+    /// per-instance trace toggle.
     pub fn log(
         &self,
-        server_id: Option<&Arc<str>>,
+        instance: Option<&InstanceKey>,
         level: LogLevel,
         source: LogSource,
         message: impl Into<String>,
     ) {
-        // Trace gating: per-server trace toggle decides whether
+        // Trace gating: per-instance trace toggle decides whether
         // Trace records reach a ring at all. When the toggle is
-        // ON, Trace records bypass the per-server min-level
+        // ON, Trace records bypass the per-instance min-level
         // filter (the user opted in deliberately; the default
         // Info filter would otherwise drop them on the floor).
-        // When the toggle is OFF, Trace records are dropped here
-        // and the level filter never sees them.
+        // When the toggle is OFF, Trace records for that instance
+        // are dropped here and the level filter never sees them.
         let trace_bypass = if level == LogLevel::Trace {
-            match server_id {
-                Some(id) if self.is_tracing(id) => true,
+            match instance {
+                Some(key) if self.is_tracing(key) => true,
                 Some(_) => return, // Trace, toggle off -> drop.
                 None => false,     // Subsystem-wide trace honours level filter.
             }
@@ -345,7 +411,7 @@ impl LspLogger {
         };
 
         if !trace_bypass {
-            let min = self.effective_min_level(server_id);
+            let min = self.effective_min_level(instance);
             if level < min {
                 return;
             }
@@ -355,34 +421,40 @@ impl LspLogger {
 
         // tracing fan-out -- always fires, regardless of buffer
         // views being open. RUST_LOG users see the same events.
-        let id_disp = server_id.map(|id| id.to_string());
+        let id_disp = instance.map(|key| key.server_id.to_string());
+        let ws_disp = instance.map(|key| key.workspace.display().to_string());
         match level {
             LogLevel::Error => tracing::error!(
                 server_id = id_disp.as_deref(),
+                workspace = ws_disp.as_deref(),
                 source = source.tag(),
                 "{}",
                 message
             ),
             LogLevel::Warn => tracing::warn!(
                 server_id = id_disp.as_deref(),
+                workspace = ws_disp.as_deref(),
                 source = source.tag(),
                 "{}",
                 message
             ),
             LogLevel::Info => tracing::info!(
                 server_id = id_disp.as_deref(),
+                workspace = ws_disp.as_deref(),
                 source = source.tag(),
                 "{}",
                 message
             ),
             LogLevel::Debug => tracing::debug!(
                 server_id = id_disp.as_deref(),
+                workspace = ws_disp.as_deref(),
                 source = source.tag(),
                 "{}",
                 message
             ),
             LogLevel::Trace => tracing::trace!(
                 server_id = id_disp.as_deref(),
+                workspace = ws_disp.as_deref(),
                 source = source.tag(),
                 "{}",
                 message
@@ -391,34 +463,34 @@ impl LspLogger {
 
         let record = LogRecord {
             timestamp: SystemTime::now(),
-            server_id: server_id.cloned(),
+            server_id: instance.map(|k| Arc::clone(&k.server_id)),
+            workspace: instance.map(|k| Arc::clone(&k.workspace)),
             level,
             source,
             message,
         };
 
         // Fan out to the runtime event bus before / after the
-        // ring push. We snapshot primitive fields so the publisher
-        // closure (which lives in the App via `lattice-protocol`)
-        // M.5.3.b: payload is now a typed `LspLogPushed` struct.
-        // `server_id` is `Arc<str>` (cheap clone, matches the
-        // record's own type) rather than the prior `String`
-        // round-trip.
+        // ring push. M.5.3.b: payload is a typed `LspLogPushed`;
+        // post-B'.2 it carries the workspace alongside the
+        // server_id so subscribers can route to the correct
+        // per-instance buffer.
         let publish_payload = LspLogPushed {
             server_id: record.server_id.clone(),
+            workspace: record.workspace.clone(),
             level: level_tag(record.level).to_string(),
             source: record.source.tag().to_string(),
             message: record.message.clone(),
         };
 
-        match server_id {
+        match instance {
             None => {
                 lock(&self.state.global).push(record);
             }
-            Some(id) => {
+            Some(key) => {
                 let cap = *lock(&self.state.default_capacity);
-                let mut per = lock(&self.state.per_server);
-                per.entry(Arc::clone(id))
+                let mut per = lock(&self.state.per_instance);
+                per.entry(key.clone())
                     .or_insert_with(|| LogRing::new(cap))
                     .push(record);
             }
@@ -433,72 +505,73 @@ impl LspLogger {
         }
     }
 
-    /// Resolve the min level for a server (or subsystem-wide).
-    fn effective_min_level(&self, server_id: Option<&Arc<str>>) -> LogLevel {
-        if let Some(id) = server_id
-            && let Some(level) = lock(&self.state.server_levels).get(id).copied()
+    /// Resolve the min level for an instance (or subsystem-wide).
+    fn effective_min_level(&self, instance: Option<&InstanceKey>) -> LogLevel {
+        if let Some(key) = instance
+            && let Some(level) = lock(&self.state.instance_levels).get(key).copied()
         {
             return level;
         }
         *lock(&self.state.default_min_level)
     }
 
-    /// True iff trace mode is enabled for `server_id`. Cheap;
+    /// True iff trace mode is enabled for the instance. Cheap;
     /// the trace interceptors call this once per message and
     /// short-circuit the record build when false.
-    pub fn is_tracing(&self, server_id: &Arc<str>) -> bool {
-        lock(&self.state.server_trace).contains(server_id)
+    pub fn is_tracing(&self, instance: &InstanceKey) -> bool {
+        lock(&self.state.instance_trace).contains(instance)
     }
 
-    /// Enable JSON-RPC trace for a server. Trace records start
-    /// landing in the per-server ring on the next emission.
-    pub fn enable_trace(&self, server_id: Arc<str>) {
-        lock(&self.state.server_trace).insert(server_id);
+    /// Enable JSON-RPC trace for an instance. Trace records start
+    /// landing in the per-instance ring on the next emission.
+    pub fn enable_trace(&self, instance: InstanceKey) {
+        lock(&self.state.instance_trace).insert(instance);
     }
 
-    /// Disable JSON-RPC trace for a server.
-    pub fn disable_trace(&self, server_id: &Arc<str>) {
-        lock(&self.state.server_trace).remove(server_id);
+    /// Disable JSON-RPC trace for an instance.
+    pub fn disable_trace(&self, instance: &InstanceKey) {
+        lock(&self.state.instance_trace).remove(instance);
     }
 
-    /// Toggle JSON-RPC trace; returns the new state (true = on).
-    pub fn toggle_trace(&self, server_id: Arc<str>) -> bool {
-        let mut guard = lock(&self.state.server_trace);
-        if guard.contains(&server_id) {
-            guard.remove(&server_id);
+    /// Toggle JSON-RPC trace for an instance; returns the new
+    /// state (true = on).
+    pub fn toggle_trace(&self, instance: InstanceKey) -> bool {
+        let mut guard = lock(&self.state.instance_trace);
+        if guard.contains(&instance) {
+            guard.remove(&instance);
             false
         } else {
-            guard.insert(server_id);
+            guard.insert(instance);
             true
         }
     }
 
-    /// Set per-server min level. `None` removes the override and
-    /// reverts to the default.
-    pub fn set_server_level(&self, server_id: Arc<str>, level: Option<LogLevel>) {
-        let mut guard = lock(&self.state.server_levels);
+    /// Set per-instance min level. `None` removes the override
+    /// and reverts to the default.
+    pub fn set_instance_level(&self, instance: InstanceKey, level: Option<LogLevel>) {
+        let mut guard = lock(&self.state.instance_levels);
         match level {
             Some(l) => {
-                guard.insert(server_id, l);
+                guard.insert(instance, l);
             }
             None => {
-                guard.remove(&server_id);
+                guard.remove(&instance);
             }
         }
     }
 
     /// Set the default min level (applies to subsystem-wide
-    /// records and to servers without an override).
+    /// records and to instances without an override).
     pub fn set_default_level(&self, level: LogLevel) {
         *lock(&self.state.default_min_level) = level;
     }
 
     /// Set the default ring capacity. Existing rings are
-    /// resized; future per-server rings inherit the new value.
+    /// resized; future per-instance rings inherit the new value.
     pub fn set_default_capacity(&self, capacity: usize) {
         *lock(&self.state.default_capacity) = capacity;
         lock(&self.state.global).set_capacity(capacity);
-        for (_, ring) in lock(&self.state.per_server).iter_mut() {
+        for (_, ring) in lock(&self.state.per_instance).iter_mut() {
             ring.set_capacity(capacity);
         }
     }
@@ -509,19 +582,19 @@ impl LspLogger {
         lock(&self.state.global).snapshot()
     }
 
-    /// Snapshot a server's ring (empty if the server has never
-    /// logged anything).
-    pub fn snapshot_server(&self, server_id: &Arc<str>) -> Vec<LogRecord> {
-        lock(&self.state.per_server)
-            .get(server_id)
+    /// Snapshot an instance's ring (empty if the instance has
+    /// never logged anything).
+    pub fn snapshot_instance(&self, instance: &InstanceKey) -> Vec<LogRecord> {
+        lock(&self.state.per_instance)
+            .get(instance)
             .map(LogRing::snapshot)
             .unwrap_or_default()
     }
 
-    /// List every server with a per-server ring. Useful for
+    /// List every instance with a per-instance ring. Useful for
     /// `:lsp-status` and the `*lsp*` buffer's "servers" header.
-    pub fn known_servers(&self) -> Vec<Arc<str>> {
-        lock(&self.state.per_server).keys().cloned().collect()
+    pub fn known_instances(&self) -> Vec<InstanceKey> {
+        lock(&self.state.per_instance).keys().cloned().collect()
     }
 
     /// Drop the subsystem-wide ring's contents.
@@ -529,9 +602,9 @@ impl LspLogger {
         lock(&self.state.global).clear();
     }
 
-    /// Drop a server's ring contents.
-    pub fn clear_server(&self, server_id: &Arc<str>) {
-        if let Some(ring) = lock(&self.state.per_server).get_mut(server_id) {
+    /// Drop an instance's ring contents.
+    pub fn clear_instance(&self, instance: &InstanceKey) {
+        if let Some(ring) = lock(&self.state.per_instance).get_mut(instance) {
             ring.clear();
         }
     }
@@ -546,10 +619,10 @@ impl Default for LspLogger {
 impl std::fmt::Debug for LspLogger {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let global_len = lock(&self.state.global).len();
-        let n_servers = lock(&self.state.per_server).len();
+        let n_instances = lock(&self.state.per_instance).len();
         f.debug_struct("LspLogger")
             .field("global_records", &global_len)
-            .field("server_count", &n_servers)
+            .field("instance_count", &n_instances)
             .finish_non_exhaustive()
     }
 }
@@ -557,9 +630,13 @@ impl std::fmt::Debug for LspLogger {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
-    fn make_id(s: &str) -> Arc<str> {
-        Arc::from(s)
+    fn key(server: &str, workspace: &str) -> InstanceKey {
+        InstanceKey::new(
+            Arc::<str>::from(server),
+            Arc::<Path>::from(PathBuf::from(workspace).as_path()),
+        )
     }
 
     #[test]
@@ -590,6 +667,7 @@ mod tests {
             ring.push(LogRecord {
                 timestamp: SystemTime::now(),
                 server_id: None,
+                workspace: None,
                 level: LogLevel::Info,
                 source: LogSource::Client,
                 message: format!("msg {i}"),
@@ -608,6 +686,7 @@ mod tests {
         ring.push(LogRecord {
             timestamp: SystemTime::now(),
             server_id: None,
+            workspace: None,
             level: LogLevel::Info,
             source: LogSource::Client,
             message: "lost".into(),
@@ -618,8 +697,8 @@ mod tests {
     #[test]
     fn log_routes_to_correct_ring() {
         let logger = LspLogger::with_defaults();
-        let rust = make_id("rust");
-        let py = make_id("python");
+        let rust = key("rust", "/work/A");
+        let py = key("python", "/work/A");
 
         logger.log(None, LogLevel::Info, LogSource::Client, "subsys event");
         logger.log(
@@ -634,89 +713,123 @@ mod tests {
         assert_eq!(g.len(), 1);
         assert_eq!(g[0].message, "subsys event");
 
-        let r = logger.snapshot_server(&rust);
+        let r = logger.snapshot_instance(&rust);
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].message, "rust evt");
 
-        let p = logger.snapshot_server(&py);
+        let p = logger.snapshot_instance(&py);
         assert_eq!(p.len(), 1);
         assert_eq!(p[0].message, "python evt");
 
-        // Snapshotting an unknown server returns empty, not a
+        // Snapshotting an unknown instance returns empty, not a
         // panic.
-        let unknown = make_id("zzz");
-        assert!(logger.snapshot_server(&unknown).is_empty());
+        let unknown = key("zzz", "/work/A");
+        assert!(logger.snapshot_instance(&unknown).is_empty());
+    }
+
+    #[test]
+    fn same_server_id_different_workspaces_stay_distinct() {
+        // B'.2: two `rust-analyzer` instances against different
+        // workspaces must NOT share a ring -- otherwise
+        // `*lsp:rust-analyzer:/path/A*` and
+        // `*lsp:rust-analyzer:/path/B*` would surface each other's
+        // records.
+        let logger = LspLogger::with_defaults();
+        let rust_a = key("rust", "/work/A");
+        let rust_b = key("rust", "/work/B");
+        logger.log(
+            Some(&rust_a),
+            LogLevel::Info,
+            LogSource::Client,
+            "msg from A",
+        );
+        logger.log(
+            Some(&rust_b),
+            LogLevel::Info,
+            LogSource::Client,
+            "msg from B",
+        );
+        let a = logger.snapshot_instance(&rust_a);
+        let b = logger.snapshot_instance(&rust_b);
+        assert_eq!(a.len(), 1, "instance A has its own record");
+        assert_eq!(a[0].message, "msg from A");
+        assert_eq!(b.len(), 1, "instance B has its own record");
+        assert_eq!(b[0].message, "msg from B");
+        // The record carries the workspace so renderers can verify
+        // which instance produced it.
+        assert_eq!(a[0].workspace.as_deref(), Some(Path::new("/work/A")));
+        assert_eq!(b[0].workspace.as_deref(), Some(Path::new("/work/B")));
     }
 
     #[test]
     fn log_below_min_level_is_dropped() {
         let logger = LspLogger::new(LogLevel::Warn, 100);
-        let id = make_id("rust");
+        let id = key("rust", "/work/A");
         logger.log(Some(&id), LogLevel::Info, LogSource::Client, "below");
         logger.log(Some(&id), LogLevel::Warn, LogSource::Client, "at");
         logger.log(Some(&id), LogLevel::Error, LogSource::Client, "above");
-        let snap = logger.snapshot_server(&id);
+        let snap = logger.snapshot_instance(&id);
         assert_eq!(snap.len(), 2);
         assert_eq!(snap[0].message, "at");
         assert_eq!(snap[1].message, "above");
     }
 
     #[test]
-    fn per_server_level_overrides_default() {
+    fn per_instance_level_overrides_default() {
         let logger = LspLogger::new(LogLevel::Info, 100);
-        let rust = make_id("rust");
-        let py = make_id("python");
-        logger.set_server_level(Arc::clone(&rust), Some(LogLevel::Debug));
+        let rust = key("rust", "/work/A");
+        let py = key("python", "/work/A");
+        logger.set_instance_level(rust.clone(), Some(LogLevel::Debug));
 
         logger.log(Some(&rust), LogLevel::Debug, LogSource::Client, "rust dbg");
         logger.log(Some(&py), LogLevel::Debug, LogSource::Client, "py dbg");
 
         // rust override: Debug accepted.
-        assert_eq!(logger.snapshot_server(&rust).len(), 1);
+        assert_eq!(logger.snapshot_instance(&rust).len(), 1);
         // python default: Debug below Info, dropped.
-        assert_eq!(logger.snapshot_server(&py).len(), 0);
+        assert_eq!(logger.snapshot_instance(&py).len(), 0);
     }
 
     #[test]
-    fn trace_records_gated_by_per_server_toggle() {
+    fn trace_records_gated_by_per_instance_toggle() {
         let logger = LspLogger::new(LogLevel::Trace, 100); // Trace-permissive default
-        let id = make_id("rust");
+        let id = key("rust", "/work/A");
         // Trace toggle off by default -- record dropped.
         logger.log(Some(&id), LogLevel::Trace, LogSource::Trace, "t1");
-        assert_eq!(logger.snapshot_server(&id).len(), 0);
+        assert_eq!(logger.snapshot_instance(&id).len(), 0);
         // Enable trace, emit, observe.
-        logger.enable_trace(Arc::clone(&id));
+        logger.enable_trace(id.clone());
         assert!(logger.is_tracing(&id));
         logger.log(Some(&id), LogLevel::Trace, LogSource::Trace, "t2");
-        let snap = logger.snapshot_server(&id);
+        let snap = logger.snapshot_instance(&id);
         assert_eq!(snap.len(), 1);
         assert_eq!(snap[0].message, "t2");
         // Disable.
         logger.disable_trace(&id);
         assert!(!logger.is_tracing(&id));
         logger.log(Some(&id), LogLevel::Trace, LogSource::Trace, "t3");
-        assert_eq!(logger.snapshot_server(&id).len(), 1, "no new records");
+        assert_eq!(logger.snapshot_instance(&id).len(), 1, "no new records");
     }
 
     #[test]
     fn toggle_trace_returns_new_state() {
         let logger = LspLogger::with_defaults();
-        let id = make_id("rust");
-        assert!(logger.toggle_trace(Arc::clone(&id)));
-        assert!(!logger.toggle_trace(Arc::clone(&id)));
+        let id = key("rust", "/work/A");
+        assert!(logger.toggle_trace(id.clone()));
+        assert!(!logger.toggle_trace(id.clone()));
     }
 
     #[test]
-    fn known_servers_lists_only_seen_servers() {
+    fn known_instances_lists_only_seen_instances() {
         let logger = LspLogger::with_defaults();
-        let rust = make_id("rust");
-        let py = make_id("python");
+        let rust = key("rust", "/work/A");
+        let py = key("python", "/work/A");
         logger.log(Some(&rust), LogLevel::Info, LogSource::Client, "x");
         logger.log(Some(&py), LogLevel::Info, LogSource::Client, "y");
         let mut known: Vec<String> = logger
-            .known_servers()
+            .known_instances()
             .into_iter()
-            .map(|s| s.to_string())
+            .map(|k| k.server_id.to_string())
             .collect();
         known.sort();
         assert_eq!(known, vec!["python".to_string(), "rust".to_string()]);
@@ -725,21 +838,21 @@ mod tests {
     #[test]
     fn clearing_drops_records() {
         let logger = LspLogger::with_defaults();
-        let id = make_id("rust");
+        let id = key("rust", "/work/A");
         logger.log(None, LogLevel::Info, LogSource::Client, "a");
         logger.log(Some(&id), LogLevel::Info, LogSource::Client, "b");
         logger.clear_global();
         assert!(logger.snapshot_global().is_empty());
-        // Per-server ring still has the entry until we clear it.
-        assert_eq!(logger.snapshot_server(&id).len(), 1);
-        logger.clear_server(&id);
-        assert!(logger.snapshot_server(&id).is_empty());
+        // Per-instance ring still has the entry until we clear it.
+        assert_eq!(logger.snapshot_instance(&id).len(), 1);
+        logger.clear_instance(&id);
+        assert!(logger.snapshot_instance(&id).is_empty());
     }
 
     #[test]
     fn set_default_capacity_resizes_existing_rings() {
         let logger = LspLogger::new(LogLevel::Info, 100);
-        let id = make_id("rust");
+        let id = key("rust", "/work/A");
         for i in 0..50 {
             logger.log(
                 Some(&id),
@@ -748,10 +861,10 @@ mod tests {
                 format!("r{i}"),
             );
         }
-        assert_eq!(logger.snapshot_server(&id).len(), 50);
+        assert_eq!(logger.snapshot_instance(&id).len(), 50);
         // Shrink to 10 -- the most recent 10 survive.
         logger.set_default_capacity(10);
-        let snap = logger.snapshot_server(&id);
+        let snap = logger.snapshot_instance(&id);
         assert_eq!(snap.len(), 10);
         assert_eq!(snap[0].message, "r40");
         assert_eq!(snap[9].message, "r49");

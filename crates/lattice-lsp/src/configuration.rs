@@ -41,6 +41,10 @@ pub struct InboundConfigurationRequest {
     /// Server that sent the request -- recorded for the App's
     /// log entry. Cheap to clone (`Arc<str>`).
     pub server_id: Arc<str>,
+    /// Workspace root the originating actor was spawned against
+    /// (B'.2). Pairs with `server_id` to form the canonical
+    /// `(server_id, workspace)` instance key.
+    pub workspace: Arc<std::path::Path>,
     /// One section path per requested item. Spec lets `section`
     /// be `null`/missing (server wants all config); we coerce
     /// those to an empty string upstream so the app always sees
@@ -99,6 +103,7 @@ mod tests {
         let (tx, _resp_rx) = oneshot::channel();
         bus.dispatch(InboundConfigurationRequest {
             server_id: Arc::from("test"),
+            workspace: Arc::<std::path::Path>::from(std::path::Path::new("/tmp")),
             sections: vec!["rust-analyzer.cargo.features".into()],
             response: tx,
         })
@@ -116,6 +121,7 @@ mod tests {
         let (tx, _resp_rx) = oneshot::channel();
         let result = bus.dispatch(InboundConfigurationRequest {
             server_id: Arc::from("test"),
+            workspace: Arc::<std::path::Path>::from(std::path::Path::new("/tmp")),
             sections: Vec::new(),
             response: tx,
         });

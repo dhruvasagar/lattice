@@ -419,10 +419,10 @@ impl App {
             };
             let last_parsed = self.document_last_parsed_text_version_for(doc_id);
             let last_synced = self.document_last_synced_syntax_version_for(doc_id);
-            let Some(entry) = self.buffers.document(doc_id) else {
+            let Some(handle) = self.buffers.document_handle(doc_id) else {
                 continue;
             };
-            let snap = entry.handle.snapshot();
+            let snap = handle.snapshot();
             let tv = snap.version;
             if tv != last_parsed {
                 // Slice B.2 part 2: inactive-pane path doesn't

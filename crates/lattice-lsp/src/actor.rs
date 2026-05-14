@@ -83,13 +83,18 @@ struct HandleInner {
     capabilities: Arc<ArcSwap<Capabilities>>,
     /// Server id, for logs / telemetry.
     server_id: String,
+    /// Workspace root this actor was spawned against (B'.2).
+    /// Pairs with `server_id` as the canonical
+    /// `(server_id, workspace)` instance key so multi-instance
+    /// setups stay distinct in the per-instance log rings.
+    workspace_root: Arc<std::path::Path>,
     /// Diagnostics broadcast bus -- subscribers (App, plugins,
     /// future picker) receive every `publishDiagnostics` from
     /// this server.
     diagnostics: DiagnosticsBus,
     /// LSP-subsystem logger. Cloned from the App's shared
-    /// logger; per-server records carry this server's id and
-    /// land in the `*lsp:<server>*` ring.
+    /// logger; per-instance records land in the
+    /// `*lsp:<server>:<workspace>*` ring.
     logger: LspLogger,
 }
 
@@ -118,6 +123,22 @@ impl ServerHandle {
     /// for the supervisor to look up `ServerConfig`.
     pub fn server_id(&self) -> &str {
         &self.inner.server_id
+    }
+
+    /// Workspace root this actor was spawned against. Pairs with
+    /// `server_id()` as the canonical instance identity (B'.2);
+    /// cheap clone (Arc bump).
+    pub fn workspace_root(&self) -> Arc<std::path::Path> {
+        Arc::clone(&self.inner.workspace_root)
+    }
+
+    /// Build the `(server_id, workspace)` instance key for use
+    /// with [`LspLogger::log`] and the per-instance log ring.
+    pub fn instance(&self) -> crate::logging::InstanceKey {
+        crate::logging::InstanceKey::new(
+            Arc::<str>::from(self.inner.server_id.as_str()),
+            Arc::clone(&self.inner.workspace_root),
+        )
     }
 
     /// Subscribe to this server's diagnostics broadcast. Each
@@ -514,6 +535,14 @@ where
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "workspace".to_string());
+    // B'.2: the actor's logger calls carry the canonical
+    // `(server_id, workspace)` pair so multi-instance setups
+    // (two `rust-analyzer`s on different workspaces) stay
+    // distinct in the per-instance log rings.
+    let instance = crate::logging::InstanceKey::new(
+        Arc::<str>::from(server_id.as_str()),
+        Arc::<std::path::Path>::from(workspace_root.as_path()),
+    );
     // One bus per actor, shared with the read_loop's notification
     // dispatcher.
     let diagnostics = DiagnosticsBus::new();
@@ -538,6 +567,7 @@ where
         cmd_rx,
         handshake_tx,
         server_id.clone(),
+        instance.clone(),
         workspace_folder_uri,
         workspace_name,
         init_options,
@@ -554,13 +584,14 @@ where
         .await
         .map_err(|_| LspError::HandshakeFailed("actor died before handshake".into()))??;
 
-    let server_id_arc: Arc<str> = Arc::from(server_id.as_str());
     logger.log(
-        Some(&server_id_arc),
+        Some(&instance),
         LogLevel::Info,
         LogSource::Client,
         "handshake complete; server attached",
     );
+    let _server_id_arc: Arc<str> = Arc::clone(&instance.server_id);
+    let workspace_root_arc: Arc<std::path::Path> = Arc::clone(&instance.workspace);
 
     Ok(ServerHandle {
         inner: Arc::new(HandleInner {
@@ -570,6 +601,7 @@ where
             // from readers without restarting the actor.
             capabilities,
             server_id,
+            workspace_root: workspace_root_arc,
             diagnostics,
             logger,
         }),
@@ -682,6 +714,7 @@ async fn actor_main<R, W>(
     mut cmd_rx: mpsc::UnboundedReceiver<ActorCmd>,
     handshake_tx: oneshot::Sender<LspResult<Arc<ArcSwap<Capabilities>>>>,
     server_id: String,
+    instance: crate::logging::InstanceKey,
     workspace_folder_uri: Uri,
     workspace_name: String,
     init_options: Option<Value>,
@@ -696,16 +729,12 @@ async fn actor_main<R, W>(
     R: AsyncBufRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
 {
-    let server_id_arc: Arc<str> = Arc::from(server_id.as_str());
+    let server_id_arc: Arc<str> = Arc::clone(&instance.server_id);
     // Drain stderr through the logger -- each line lands in the
-    // `*lsp:<server>*` ring at Warn (server stderr is the
-    // canonical "something's up" signal).
+    // per-instance `*lsp:<server>:<workspace>*` ring at Warn
+    // (server stderr is the canonical "something's up" signal).
     if let Some(stderr) = stderr {
-        tokio::spawn(stderr_drain(
-            stderr,
-            Arc::clone(&server_id_arc),
-            logger.clone(),
-        ));
+        tokio::spawn(stderr_drain(stderr, instance.clone(), logger.clone()));
     }
 
     // Spawn write_loop. Mutex around the writer because
@@ -718,18 +747,13 @@ async fn actor_main<R, W>(
     tokio::spawn(write_loop(
         Arc::clone(&writer),
         out_rx,
-        Arc::clone(&server_id_arc),
+        instance.clone(),
         logger.clone(),
     ));
 
     // Spawn read_loop.
     let (in_tx, mut in_rx) = mpsc::unbounded_channel::<Message>();
-    tokio::spawn(read_loop(
-        reader,
-        in_tx,
-        Arc::clone(&server_id_arc),
-        logger.clone(),
-    ));
+    tokio::spawn(read_loop(reader, in_tx, instance.clone(), logger.clone()));
 
     // Handshake.
     let mut next_id: u64 = 1;
@@ -761,7 +785,7 @@ async fn actor_main<R, W>(
             Some(Message::Response(r)) if r.id == init_id => break r,
             Some(other) => {
                 handle_pre_handshake_message(
-                    &server_id_arc,
+                    &instance,
                     other,
                     &diagnostics,
                     &logger,
@@ -915,7 +939,7 @@ async fn actor_main<R, W>(
                         // because the actor owns the only mutator).
                         if let Err(e) = docsync.record_edit(&caps, &uri, &edit) {
                             logger.log(
-                                Some(&server_id_arc),
+                                Some(&instance),
                                 LogLevel::Warn,
                                 LogSource::Client,
                                 format!(
@@ -1044,7 +1068,7 @@ async fn actor_main<R, W>(
                     }
                     Some(Message::Notification(n)) => {
                         handle_server_notification(
-                            &server_id_arc,
+                            &instance,
                             &n,
                             &diagnostics,
                             &logger,
@@ -1064,14 +1088,14 @@ async fn actor_main<R, W>(
                             && let Some(bus) = apply_edit_bus.as_ref()
                         {
                             let bus = bus.clone();
-                            let server_id_clone = Arc::clone(&server_id_arc);
+                            let instance_clone = instance.clone();
                             let logger_clone = logger.clone();
                             let out_tx_clone = out_tx.clone();
                             let req_id = req.id.clone();
                             let params = req.params.clone();
                             tokio::spawn(async move {
                                 let resp = handle_apply_edit_request(
-                                    server_id_clone,
+                                    instance_clone,
                                     req_id,
                                     params,
                                     &bus,
@@ -1090,14 +1114,14 @@ async fn actor_main<R, W>(
                             // applyEdit -- dispatch via the bus,
                             // await response, ferry back.
                             let bus = bus.clone();
-                            let server_id_clone = Arc::clone(&server_id_arc);
+                            let instance_clone = instance.clone();
                             let logger_clone = logger.clone();
                             let out_tx_clone = out_tx.clone();
                             let req_id = req.id.clone();
                             let params = req.params.clone();
                             tokio::spawn(async move {
                                 let resp = handle_configuration_request(
-                                    server_id_clone,
+                                    instance_clone,
                                     req_id,
                                     params,
                                     &bus,
@@ -1115,14 +1139,14 @@ async fn actor_main<R, W>(
                             // performs the open + writes back via
                             // the embedded oneshot.
                             let bus = bus.clone();
-                            let server_id_clone = Arc::clone(&server_id_arc);
+                            let instance_clone = instance.clone();
                             let logger_clone = logger.clone();
                             let out_tx_clone = out_tx.clone();
                             let req_id = req.id.clone();
                             let params = req.params.clone();
                             tokio::spawn(async move {
                                 let resp = handle_show_document_request(
-                                    server_id_clone,
+                                    instance_clone,
                                     req_id,
                                     params,
                                     &bus,
@@ -1139,14 +1163,14 @@ async fn actor_main<R, W>(
                             // picker; the user's selection
                             // (or `null` on dismiss) ferries back.
                             let bus = bus.clone();
-                            let server_id_clone = Arc::clone(&server_id_arc);
+                            let instance_clone = instance.clone();
                             let logger_clone = logger.clone();
                             let out_tx_clone = out_tx.clone();
                             let req_id = req.id.clone();
                             let params = req.params.clone();
                             tokio::spawn(async move {
                                 let resp = handle_show_message_request(
-                                    server_id_clone,
+                                    instance_clone,
                                     req_id,
                                     params,
                                     &bus,
@@ -1209,7 +1233,7 @@ async fn actor_main<R, W>(
                                 Value::Null,
                             )));
                             logger.log(
-                                Some(&server_id_arc),
+                                Some(&instance),
                                 LogLevel::Info,
                                 LogSource::Client,
                                 "workspace/inlineValue/refresh accepted (renderer trigger deferred)",
@@ -1288,7 +1312,7 @@ async fn actor_main<R, W>(
                                 }
                                 Some(Err(e)) => {
                                     logger.log(
-                                        Some(&server_id_arc),
+                                        Some(&instance),
                                         LogLevel::Warn,
                                         LogSource::Client,
                                         format!(
@@ -1298,7 +1322,7 @@ async fn actor_main<R, W>(
                                 }
                                 None => {
                                     logger.log(
-                                        Some(&server_id_arc),
+                                        Some(&instance),
                                         LogLevel::Warn,
                                         LogSource::Client,
                                         "client/registerCapability: missing params",
@@ -1332,7 +1356,7 @@ async fn actor_main<R, W>(
                                 }
                                 Some(Err(e)) => {
                                     logger.log(
-                                        Some(&server_id_arc),
+                                        Some(&instance),
                                         LogLevel::Warn,
                                         LogSource::Client,
                                         format!(
@@ -1342,7 +1366,7 @@ async fn actor_main<R, W>(
                                 }
                                 None => {
                                     logger.log(
-                                        Some(&server_id_arc),
+                                        Some(&instance),
                                         LogLevel::Warn,
                                         LogSource::Client,
                                         "client/unregisterCapability: missing params",
@@ -1354,7 +1378,7 @@ async fn actor_main<R, W>(
                                 Value::Null,
                             )));
                         } else {
-                            let resp = handle_server_request(&server_id_arc, &req, &logger);
+                            let resp = handle_server_request(&instance, &req, &logger);
                             let _ = out_tx.send(Message::Response(resp));
                         }
                     }
@@ -1399,21 +1423,22 @@ async fn actor_main<R, W>(
 /// fans out to the [`DiagnosticsBus`]; log / show / progress
 /// notifications land in the per-server log ring.
 fn handle_server_notification(
-    server_id: &Arc<str>,
+    instance: &crate::logging::InstanceKey,
     n: &Notification,
     diagnostics: &DiagnosticsBus,
     logger: &LspLogger,
     event_bus: Option<&Arc<lattice_runtime::EventBus>>,
 ) {
+    let server_id = &instance.server_id;
     match n.method.as_str() {
         "window/logMessage" => {
             // LSP severity: 1=Error, 2=Warning, 3=Info, 4=Log/Debug.
             let (level, msg) = parse_window_message(&n.params);
-            logger.log(Some(server_id), level, LogSource::LspMessage, msg);
+            logger.log(Some(instance), level, LogSource::LspMessage, msg);
         }
         "window/showMessage" => {
             let (level, msg) = parse_window_message(&n.params);
-            logger.log(Some(server_id), level, LogSource::LspShowMessage, msg);
+            logger.log(Some(instance), level, LogSource::LspShowMessage, msg);
         }
         "$/progress" => {
             // Server-side work-done progress (LSP §3.16). Parse
@@ -1425,7 +1450,7 @@ fn handle_server_notification(
             // Logger still gets a Debug breadcrumb so the
             // `*lsp:<server>:trace*` ring keeps the raw record.
             logger.log(
-                Some(server_id),
+                Some(instance),
                 LogLevel::Debug,
                 LogSource::Client,
                 format!("$/progress: {}", compact_params(&n.params)),
@@ -1444,7 +1469,7 @@ fn handle_server_notification(
             // compacted-JSON message tail; subscribers that
             // need structured access parse the suffix.
             logger.log(
-                Some(server_id),
+                Some(instance),
                 LogLevel::Debug,
                 LogSource::Telemetry,
                 compact_params(&n.params),
@@ -1460,10 +1485,10 @@ fn handle_server_notification(
             // -- that's intentional, the user opted in by
             // running `:lsp-trace`.
             let (message, verbose) = parse_log_trace(n.params.as_ref());
-            logger.log(Some(server_id), LogLevel::Trace, LogSource::Trace, message);
+            logger.log(Some(instance), LogLevel::Trace, LogSource::Trace, message);
             if let Some(verbose) = verbose {
                 logger.log(
-                    Some(server_id),
+                    Some(instance),
                     LogLevel::Trace,
                     LogSource::Trace,
                     format!("    {verbose}"),
@@ -1475,7 +1500,7 @@ fn handle_server_notification(
                 Some(v) => v,
                 None => {
                     logger.log(
-                        Some(server_id),
+                        Some(instance),
                         LogLevel::Warn,
                         LogSource::Client,
                         "publishDiagnostics with empty params",
@@ -1490,7 +1515,7 @@ fn handle_server_notification(
                     let event = DiagnosticEvent::from_lsp(Arc::clone(server_id), p);
                     diagnostics.publish(event);
                     logger.log(
-                        Some(server_id),
+                        Some(instance),
                         LogLevel::Debug,
                         LogSource::Client,
                         format!("publishDiagnostics: {n_diags} diag(s) for {uri}"),
@@ -1498,7 +1523,7 @@ fn handle_server_notification(
                 }
                 Err(e) => {
                     logger.log(
-                        Some(server_id),
+                        Some(instance),
                         LogLevel::Warn,
                         LogSource::Client,
                         format!("publishDiagnostics deserialise failed: {e}"),
@@ -1508,7 +1533,7 @@ fn handle_server_notification(
         }
         other => {
             logger.log(
-                Some(server_id),
+                Some(instance),
                 LogLevel::Debug,
                 LogSource::Client,
                 format!("unhandled server notification: {other}"),
@@ -1638,18 +1663,19 @@ fn compact_params(params: &Option<Value>) -> String {
 /// - The App reports `applied: false` with its own
 ///   `failure_reason`.
 async fn handle_apply_edit_request(
-    server_id: Arc<str>,
+    instance: crate::logging::InstanceKey,
     req_id: RequestId,
     params: Option<Value>,
     bus: &crate::apply_edit::ApplyEditBus,
     logger: &LspLogger,
 ) -> Response {
+    let server_id = Arc::clone(&instance.server_id);
     let parsed: lsp_types::ApplyWorkspaceEditParams = match params {
         Some(v) => match serde_json::from_value(v) {
             Ok(p) => p,
             Err(e) => {
                 logger.log(
-                    Some(&server_id),
+                    Some(&instance),
                     LogLevel::Warn,
                     LogSource::Client,
                     format!("workspace/applyEdit: malformed params: {e}"),
@@ -1668,6 +1694,7 @@ async fn handle_apply_edit_request(
     let (response_tx, response_rx) = oneshot::channel();
     let inbound = crate::apply_edit::InboundApplyEdit {
         server_id: Arc::clone(&server_id),
+        workspace: Arc::clone(&instance.workspace),
         label: parsed.label,
         edit: parsed.edit,
         response: response_tx,
@@ -1729,18 +1756,19 @@ fn apply_edit_response(
 /// - Malformed params (logged as Warn).
 /// - Receiver dropped before the App could respond.
 async fn handle_configuration_request(
-    server_id: Arc<str>,
+    instance: crate::logging::InstanceKey,
     req_id: RequestId,
     params: Option<Value>,
     bus: &crate::configuration::ConfigurationBus,
     logger: &LspLogger,
 ) -> Response {
+    let server_id = Arc::clone(&instance.server_id);
     let parsed: lsp_types::ConfigurationParams = match params {
         Some(v) => match serde_json::from_value(v) {
             Ok(p) => p,
             Err(e) => {
                 logger.log(
-                    Some(&server_id),
+                    Some(&instance),
                     LogLevel::Warn,
                     LogSource::Client,
                     format!("workspace/configuration: malformed params: {e}"),
@@ -1761,6 +1789,7 @@ async fn handle_configuration_request(
     let (response_tx, response_rx) = oneshot::channel();
     let inbound = crate::configuration::InboundConfigurationRequest {
         server_id: Arc::clone(&server_id),
+        workspace: Arc::clone(&instance.workspace),
         sections,
         response: response_tx,
     };
@@ -1782,18 +1811,19 @@ async fn handle_configuration_request(
 /// receiver-dropped — the spec lets clients refuse and we
 /// prefer that over hanging the server.
 async fn handle_show_document_request(
-    server_id: Arc<str>,
+    instance: crate::logging::InstanceKey,
     req_id: RequestId,
     params: Option<Value>,
     bus: &crate::show_document::ShowDocumentBus,
     logger: &LspLogger,
 ) -> Response {
+    let server_id = Arc::clone(&instance.server_id);
     let parsed: lsp_types::ShowDocumentParams = match params {
         Some(v) => match serde_json::from_value(v) {
             Ok(p) => p,
             Err(e) => {
                 logger.log(
-                    Some(&server_id),
+                    Some(&instance),
                     LogLevel::Warn,
                     LogSource::Client,
                     format!("window/showDocument: malformed params: {e}"),
@@ -1806,6 +1836,7 @@ async fn handle_show_document_request(
     let (response_tx, response_rx) = oneshot::channel();
     let inbound = crate::show_document::InboundShowDocument {
         server_id: Arc::clone(&server_id),
+        workspace: Arc::clone(&instance.workspace),
         uri: parsed.uri,
         external: parsed.external.unwrap_or(false),
         take_focus: parsed.take_focus.unwrap_or(false),
@@ -1842,18 +1873,19 @@ fn show_document_response(req_id: RequestId, success: bool) -> Response {
 /// (verbatim) or JSON `null` when the user dismissed without
 /// picking.
 async fn handle_show_message_request(
-    server_id: Arc<str>,
+    instance: crate::logging::InstanceKey,
     req_id: RequestId,
     params: Option<Value>,
     bus: &crate::show_message_request::ShowMessageRequestBus,
     logger: &LspLogger,
 ) -> Response {
+    let server_id = Arc::clone(&instance.server_id);
     let parsed: lsp_types::ShowMessageRequestParams = match params {
         Some(v) => match serde_json::from_value(v) {
             Ok(p) => p,
             Err(e) => {
                 logger.log(
-                    Some(&server_id),
+                    Some(&instance),
                     LogLevel::Warn,
                     LogSource::Client,
                     format!("window/showMessageRequest: malformed params: {e}"),
@@ -1866,6 +1898,7 @@ async fn handle_show_message_request(
     let (response_tx, response_rx) = oneshot::channel();
     let inbound = crate::show_message_request::InboundShowMessageRequest {
         server_id: Arc::clone(&server_id),
+        workspace: Arc::clone(&instance.workspace),
         level: parsed.typ,
         message: parsed.message,
         actions: parsed.actions.unwrap_or_default(),
@@ -1897,7 +1930,11 @@ async fn handle_show_message_request(
 /// Handle a server-initiated request. Default behaviour is "we
 /// don't implement that yet" (METHOD_NOT_FOUND); per-method
 /// handlers replace this as features land.
-fn handle_server_request(server_id: &Arc<str>, req: &Request, logger: &LspLogger) -> Response {
+fn handle_server_request(
+    instance: &crate::logging::InstanceKey,
+    req: &Request,
+    logger: &LspLogger,
+) -> Response {
     match req.method.as_str() {
         // `client/registerCapability` / `client/unregisterCapability`
         // are handled inline in `actor_main` (4.4.n) so they can
@@ -1906,7 +1943,7 @@ fn handle_server_request(server_id: &Arc<str>, req: &Request, logger: &LspLogger
         // log it so we notice in CI.
         "client/registerCapability" | "client/unregisterCapability" => {
             logger.log(
-                Some(server_id),
+                Some(instance),
                 LogLevel::Warn,
                 LogSource::Client,
                 format!(
@@ -1934,7 +1971,7 @@ fn handle_server_request(server_id: &Arc<str>, req: &Request, logger: &LspLogger
         "window/workDoneProgress/create" => Response::ok(req.id.clone(), Value::Null),
         other => {
             logger.log(
-                Some(server_id),
+                Some(instance),
                 LogLevel::Warn,
                 LogSource::Client,
                 format!("server request unhandled: {other}"),
@@ -1955,7 +1992,7 @@ fn handle_server_request(server_id: &Arc<str>, req: &Request, logger: &LspLogger
 /// emit `window/logMessage` or `$/progress` before responding to
 /// `initialize`; spec lets it.
 fn handle_pre_handshake_message(
-    server_id: &Arc<str>,
+    instance: &crate::logging::InstanceKey,
     msg: Message,
     diagnostics: &DiagnosticsBus,
     logger: &LspLogger,
@@ -1963,11 +2000,11 @@ fn handle_pre_handshake_message(
 ) {
     match msg {
         Message::Notification(n) => {
-            handle_server_notification(server_id, &n, diagnostics, logger, event_bus)
+            handle_server_notification(instance, &n, diagnostics, logger, event_bus)
         }
         Message::Request(r) => {
             logger.log(
-                Some(server_id),
+                Some(instance),
                 LogLevel::Warn,
                 LogSource::Client,
                 format!(
@@ -1978,7 +2015,7 @@ fn handle_pre_handshake_message(
         }
         Message::Response(r) => {
             logger.log(
-                Some(server_id),
+                Some(instance),
                 LogLevel::Warn,
                 LogSource::Client,
                 format!("stray response before handshake (id {:?})", r.id),
@@ -2041,7 +2078,7 @@ async fn perform_shutdown(
 async fn write_loop<W>(
     writer: Arc<Mutex<LspWriter<W>>>,
     mut out_rx: mpsc::UnboundedReceiver<Message>,
-    server_id: Arc<str>,
+    instance: crate::logging::InstanceKey,
     logger: LspLogger,
 ) where
     W: AsyncWrite + Unpin + Send,
@@ -2049,11 +2086,11 @@ async fn write_loop<W>(
     while let Some(msg) = out_rx.recv().await {
         // Trace interceptor: emit a Trace record before the
         // wire write iff trace mode is enabled for this
-        // server. `is_tracing` is a single HashSet lookup --
+        // instance. `is_tracing` is a single HashSet lookup --
         // off path costs almost nothing.
-        if logger.is_tracing(&server_id) {
+        if logger.is_tracing(&instance) {
             logger.log(
-                Some(&server_id),
+                Some(&instance),
                 LogLevel::Trace,
                 LogSource::Trace,
                 format!("→ {}", trace_render(&msg)),
@@ -2062,7 +2099,7 @@ async fn write_loop<W>(
         let mut w = writer.lock().await;
         if let Err(e) = w.write_message(&msg).await {
             logger.log(
-                Some(&server_id),
+                Some(&instance),
                 LogLevel::Error,
                 LogSource::Client,
                 format!("write_loop terminating: {e}"),
@@ -2075,7 +2112,7 @@ async fn write_loop<W>(
 async fn read_loop<R>(
     mut reader: LspReader<R>,
     in_tx: mpsc::UnboundedSender<Message>,
-    server_id: Arc<str>,
+    instance: crate::logging::InstanceKey,
     logger: LspLogger,
 ) where
     R: AsyncBufRead + Unpin + Send,
@@ -2083,9 +2120,9 @@ async fn read_loop<R>(
     loop {
         match reader.read_message().await {
             Ok(Some(msg)) => {
-                if logger.is_tracing(&server_id) {
+                if logger.is_tracing(&instance) {
                     logger.log(
-                        Some(&server_id),
+                        Some(&instance),
                         LogLevel::Trace,
                         LogSource::Trace,
                         format!("← {}", trace_render(&msg)),
@@ -2098,7 +2135,7 @@ async fn read_loop<R>(
             }
             Ok(None) => {
                 logger.log(
-                    Some(&server_id),
+                    Some(&instance),
                     LogLevel::Info,
                     LogSource::Client,
                     "server closed stdout cleanly",
@@ -2107,7 +2144,7 @@ async fn read_loop<R>(
             }
             Err(e) => {
                 logger.log(
-                    Some(&server_id),
+                    Some(&instance),
                     LogLevel::Error,
                     LogSource::Client,
                     format!("read_loop terminating: {e}"),
@@ -2118,11 +2155,15 @@ async fn read_loop<R>(
     }
 }
 
-async fn stderr_drain(stderr: ChildStderr, server_id: Arc<str>, logger: LspLogger) {
+async fn stderr_drain(
+    stderr: ChildStderr,
+    instance: crate::logging::InstanceKey,
+    logger: LspLogger,
+) {
     use tokio::io::{AsyncBufReadExt, BufReader};
     let mut lines = BufReader::new(stderr).lines();
     while let Ok(Some(line)) = lines.next_line().await {
-        logger.log(Some(&server_id), LogLevel::Warn, LogSource::Stderr, line);
+        logger.log(Some(&instance), LogLevel::Warn, LogSource::Stderr, line);
     }
 }
 

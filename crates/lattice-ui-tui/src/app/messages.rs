@@ -30,8 +30,7 @@
 //!   continues to receive records.
 
 use crate::app::App;
-use crate::buffer_registry::{BufferData, BufferEntry, DocumentEntry};
-use crate::buffers::{BufferFlags, BufferId};
+use crate::buffers::BufferId;
 
 /// Synthetic name for the messages buffer in the registry.
 pub const MESSAGES_BUFFER_NAME: &str = "*messages*";
@@ -51,31 +50,22 @@ impl App {
     /// records have already accumulated shows the backlog).
     /// Activates `text-mode` major + `read-only-mode` minor.
     pub(crate) fn ensure_messages_buffer(&mut self) -> BufferId {
-        if let Some(id) = self.buffers.by_name(MESSAGES_BUFFER_NAME) {
+        let already_present = self.buffers.by_name(MESSAGES_BUFFER_NAME).is_some();
+        let id = self.ensure_named_synthetic_document(
+            MESSAGES_BUFFER_NAME,
+            lattice_mode::TextMode::mode_id(),
+            Self::SYNTHETIC_BUFFER_FLAGS,
+        );
+        if already_present {
             return id;
         }
-        let id = BufferId::next();
-        let document = lattice_core::Document::empty();
-        let handle = lattice_runtime::spawn_document(document, self.registry.clone());
-        self.buffers.insert(BufferEntry {
-            id,
-            // Synthetic buffer: same shape as `*lsp*` family
-            // (unlisted; reachable by name).
-            flags: BufferFlags {
-                listed: false,
-                hidden: false,
-            },
-            data: BufferData::Document(DocumentEntry { id, handle }),
-            name: Some(MESSAGES_BUFFER_NAME.to_string()),
-        });
-        self.seed_empty_document_locals(id);
-        // text-mode is the catch-all major; read-only-mode minor
-        // contributes ReadOnly = true so user-driven Insert /
-        // operator paths echo "buffer is read-only".
-        self.activate_major_by_id(id, lattice_mode::TextMode::mode_id());
+        // First-time creation: layer read-only-mode minor on top
+        // of text-mode and seed the buffer with the ring backlog.
+        // The minor's ReadOnly = true contribution gates user-
+        // driven Insert / operator paths; subsystem writes go
+        // through `apply_edit_batch_blocking` which bypasses the
+        // modal dispatcher's read-only check.
         self.activate_mode_by_id(id, lattice_mode::modes::ReadOnlyMode::mode_id());
-        // Seed with current ring contents so `:messages` after
-        // boot-time accumulation shows the backlog.
         let backlog: String = self
             .messages
             .records()
@@ -214,9 +204,8 @@ mod tests {
         app.drain_message_events();
         let body = app
             .buffers
-            .document(buffer_id)
+            .document_handle(buffer_id)
             .expect("*messages* is a Document")
-            .handle
             .text();
         assert!(body.contains("alpha"), "got `{body}`");
         assert!(body.contains("bravo"), "got `{body}`");
@@ -230,11 +219,20 @@ mod tests {
         let mut app = app_with("hi\n", 5);
         let id = app.ensure_messages_buffer();
         assert_eq!(app.buffers.by_name(MESSAGES_BUFFER_NAME), Some(id));
-        let entry = app.buffers.get(id).expect("*messages* entry");
-        assert!(matches!(entry.data, BufferData::Document(_)));
-        assert_eq!(entry.name.as_deref(), Some(MESSAGES_BUFFER_NAME));
+        let (is_doc, name, listed) = app
+            .buffers
+            .with_entry(id, |entry| {
+                (
+                    matches!(entry.data, crate::buffer_registry::BufferData::Document(_)),
+                    entry.name.clone(),
+                    entry.flags.listed,
+                )
+            })
+            .expect("*messages* entry");
+        assert!(is_doc);
+        assert_eq!(name.as_deref(), Some(MESSAGES_BUFFER_NAME));
         // Unlisted: `:bn`/`:bp` skip it.
-        assert!(!entry.flags.listed);
+        assert!(!listed);
     }
 
     #[test]

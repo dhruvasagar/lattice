@@ -156,13 +156,14 @@ impl App {
 
     pub(super) fn do_oil_follow(&mut self) {
         let active_id = self.active_pane_buffer_id();
-        let Some(oil) = self.buffers.oil(active_id) else {
-            return;
-        };
         // Read the entry by the App's hot-path cursor line
         // (the cursor the user actually moves with `j` / `k`).
         let idx = self.cursor.line as usize;
-        let Some(entry) = oil.snapshot_entries().get(idx).cloned() else {
+        let Some(entry) = self
+            .buffers
+            .with_oil(active_id, |o| o.snapshot_entries().get(idx).cloned())
+            .flatten()
+        else {
             return;
         };
         // The dir lives in the OilDir buffer-local (canonical).
@@ -173,8 +174,7 @@ impl App {
             let new_dir = dir.join(&entry.name);
             let reload_result = self
                 .buffers
-                .oil_mut(active_id)
-                .map(|oil| oil.reload(&new_dir));
+                .with_oil_mut(active_id, |oil| oil.reload(&new_dir));
             match reload_result {
                 Some(Err(e)) => {
                     self.set_message(EchoLevel::Error, format!("oil navigate: {e}"));
@@ -212,7 +212,7 @@ impl App {
                     // Already at the filesystem root; no-op.
                     return;
                 };
-                let reload_result = self.buffers.oil_mut(id).map(|oil| oil.reload(&parent));
+                let reload_result = self.buffers.with_oil_mut(id, |oil| oil.reload(&parent));
                 match reload_result {
                     Some(Err(e)) => {
                         self.set_message(EchoLevel::Error, format!("oil navigate up: {e}"));

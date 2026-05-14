@@ -7,6 +7,28 @@
 //! buffer kinds; multiple file trees coexist with multiple
 //! documents under the same shape.
 //!
+//! ## Threading model (B'.1b)
+//!
+//! `BufferRegistry` uses interior mutability via
+//! `Arc<Mutex<BufferRegistryInner>>`. Every method takes `&self`
+//! and locks briefly. The registry is `Clone` (cheap atomic
+//! bump) so the App's `BufferStore` service impl can hold the
+//! same state as the App's `buffers` field — modes call into
+//! the shared store from any thread; the App accesses the same
+//! data through its direct field.
+//!
+//! Methods that previously returned `Option<&BufferEntry>` (and
+//! kind-specific equivalents like `document(id)`) are replaced
+//! with two flavours:
+//!
+//! - **Owned-return convenience methods** for common patterns
+//!   (`document_handle`, `name_of`, `kind_of`, `flags_of`,
+//!   `document_dirty`, `document_path`, `entry_summary`).
+//! - **Callback methods** (`with_entry`, `with_document`, etc.)
+//!   for one-off access. The callback runs while the lock is
+//!   held; callers MUST NOT re-enter the registry from inside
+//!   (it would deadlock on the same `Mutex`).
+//!
 //! Help buffers stay overlay-rendered for v1 (transient popup),
 //! so they're not in the registry yet -- moving them in is a
 //! follow-up that doesn't require structural change.
@@ -21,6 +43,7 @@
 //! [`FileTreeBuffer`]: crate::file_tree::FileTreeBuffer
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use lattice_runtime::DocumentHandle;
 
@@ -166,13 +189,22 @@ pub enum BufferData {
     Oil(OilBuffer),
 }
 
-/// The App's buffer registry. Wraps a `HashMap<BufferId,
-/// BufferEntry>` with helpers for the common access patterns
-/// (look up by id, iterate by kind, sorted ids for `:bn`-style
-/// cycling).
 #[derive(Debug, Default)]
-pub struct BufferRegistry {
+struct BufferRegistryInner {
     by_id: HashMap<BufferId, BufferEntry>,
+}
+
+/// The App's buffer registry. Methods take `&self` and lock
+/// internally; the registry is `Clone` so the App's
+/// `BufferStore` service impl can hold a clone for cross-thread
+/// access.
+#[derive(Clone, Debug, Default)]
+pub struct BufferRegistry {
+    inner: Arc<Mutex<BufferRegistryInner>>,
+}
+
+fn lock_inner(inner: &Arc<Mutex<BufferRegistryInner>>) -> MutexGuard<'_, BufferRegistryInner> {
+    inner.lock().expect("BufferRegistry mutex poisoned")
 }
 
 impl BufferRegistry {
@@ -180,47 +212,158 @@ impl BufferRegistry {
         Self::default()
     }
 
-    pub fn insert(&mut self, entry: BufferEntry) {
-        self.by_id.insert(entry.id, entry);
+    // ---- Mutation ----------------------------------------
+
+    pub fn insert(&self, entry: BufferEntry) {
+        lock_inner(&self.inner).by_id.insert(entry.id, entry);
     }
 
-    pub fn remove(&mut self, id: BufferId) -> Option<BufferEntry> {
-        self.by_id.remove(&id)
+    pub fn remove(&self, id: BufferId) -> Option<BufferEntry> {
+        lock_inner(&self.inner).by_id.remove(&id)
     }
 
-    pub fn get(&self, id: BufferId) -> Option<&BufferEntry> {
-        self.by_id.get(&id)
-    }
-
-    pub fn get_mut(&mut self, id: BufferId) -> Option<&mut BufferEntry> {
-        self.by_id.get_mut(&id)
-    }
+    // ---- Owned-return reads ------------------------------
 
     pub fn contains(&self, id: BufferId) -> bool {
-        self.by_id.contains_key(&id)
+        lock_inner(&self.inner).by_id.contains_key(&id)
     }
 
     pub fn len(&self) -> usize {
-        self.by_id.len()
+        lock_inner(&self.inner).by_id.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.by_id.is_empty()
+        lock_inner(&self.inner).by_id.is_empty()
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &BufferEntry> {
-        self.by_id.values()
+    /// Kind of the entry at `id`, or `None` if absent.
+    pub fn kind_of(&self, id: BufferId) -> Option<BufferKind> {
+        lock_inner(&self.inner).by_id.get(&id).map(|e| e.kind())
     }
 
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut BufferEntry> {
-        self.by_id.values_mut()
+    /// Synthetic name of the entry at `id`, or `None` if absent
+    /// or if the entry has no name set.
+    pub fn name_of(&self, id: BufferId) -> Option<String> {
+        lock_inner(&self.inner)
+            .by_id
+            .get(&id)
+            .and_then(|e| e.name.clone())
+    }
+
+    /// Per-buffer flags. `BufferFlags` is `Copy` so this returns
+    /// owned without locking issues.
+    pub fn flags_of(&self, id: BufferId) -> Option<BufferFlags> {
+        lock_inner(&self.inner).by_id.get(&id).map(|e| e.flags)
+    }
+
+    /// Mutate the per-buffer flags via callback (e.g. flip
+    /// `listed` on `:setlocal nobuflisted` once that lands).
+    pub fn set_flags(&self, id: BufferId, flags: BufferFlags) -> bool {
+        let mut inner = lock_inner(&self.inner);
+        match inner.by_id.get_mut(&id) {
+            Some(e) => {
+                e.flags = flags;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Rename the entry's synthetic `name` slot. Used by the
+    /// supervisor when an actor exits and the per-instance buffer
+    /// gets renamed `*lsp:rust:/path*` → `*lsp:rust:/path (exited)*`.
+    pub fn set_name(&self, id: BufferId, name: Option<String>) -> bool {
+        let mut inner = lock_inner(&self.inner);
+        match inner.by_id.get_mut(&id) {
+            Some(e) => {
+                e.name = name;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Kind-specific convenience: clone the `DocumentHandle` for
+    /// `id`. The handle is `Send + Sync` and can be held across
+    /// thread boundaries.
+    pub fn document_handle(&self, id: BufferId) -> Option<DocumentHandle> {
+        lock_inner(&self.inner)
+            .by_id
+            .get(&id)
+            .and_then(|e| e.document().map(|d| d.handle.clone()))
+    }
+
+    /// Kind-specific convenience: path of the document at `id`.
+    pub fn document_path(&self, id: BufferId) -> Option<std::path::PathBuf> {
+        lock_inner(&self.inner)
+            .by_id
+            .get(&id)
+            .and_then(|e| e.document().and_then(|d| d.handle.path()))
+    }
+
+    /// Kind-specific convenience: dirty flag for the document
+    /// at `id`. Returns `false` for absent / non-document.
+    pub fn document_dirty(&self, id: BufferId) -> bool {
+        lock_inner(&self.inner)
+            .by_id
+            .get(&id)
+            .and_then(|e| e.document().map(|d| d.handle.dirty()))
+            .unwrap_or(false)
+    }
+
+    pub fn contains_document(&self, id: BufferId) -> bool {
+        lock_inner(&self.inner)
+            .by_id
+            .get(&id)
+            .map(|e| matches!(e.data, BufferData::Document(_)))
+            .unwrap_or(false)
+    }
+
+    pub fn contains_file_tree(&self, id: BufferId) -> bool {
+        lock_inner(&self.inner)
+            .by_id
+            .get(&id)
+            .map(|e| matches!(e.data, BufferData::FileTree(_)))
+            .unwrap_or(false)
+    }
+
+    pub fn contains_help(&self, id: BufferId) -> bool {
+        lock_inner(&self.inner)
+            .by_id
+            .get(&id)
+            .map(|e| matches!(e.data, BufferData::Help(_)))
+            .unwrap_or(false)
+    }
+
+    pub fn contains_oil(&self, id: BufferId) -> bool {
+        lock_inner(&self.inner)
+            .by_id
+            .get(&id)
+            .map(|e| matches!(e.data, BufferData::Oil(_)))
+            .unwrap_or(false)
+    }
+
+    /// Compact snapshot of an entry: `(id, kind, flags, name,
+    /// is_document_path_set)`. Used by `:ls` and the buffer picker
+    /// to render rows without holding the lock through complex
+    /// display logic. Returns `None` if the entry is absent.
+    pub fn entry_summary(
+        &self,
+        id: BufferId,
+    ) -> Option<(BufferId, BufferKind, BufferFlags, Option<String>)> {
+        let inner = lock_inner(&self.inner);
+        inner
+            .by_id
+            .get(&id)
+            .map(|e| (e.id, e.kind(), e.flags, e.name.clone()))
     }
 
     /// All ids in ascending order. Used by `:bn` / `:bp` for
     /// deterministic cycling order independent of HashMap
     /// hash-randomization.
     pub fn sorted_ids(&self) -> Vec<BufferId> {
-        let mut ids: Vec<BufferId> = self.by_id.keys().copied().collect();
+        let inner = lock_inner(&self.inner);
+        let mut ids: Vec<BufferId> = inner.by_id.keys().copied().collect();
         ids.sort();
         ids
     }
@@ -229,7 +372,8 @@ impl BufferRegistry {
     /// unlisted buffers (vim semantics); `:ls` shows them under a
     /// separate header (post-v1 polish).
     pub fn listed_ids_sorted(&self) -> Vec<BufferId> {
-        let mut ids: Vec<BufferId> = self
+        let inner = lock_inner(&self.inner);
+        let mut ids: Vec<BufferId> = inner
             .by_id
             .iter()
             .filter(|(_, e)| e.flags.listed)
@@ -241,7 +385,8 @@ impl BufferRegistry {
 
     /// Document buffers only, sorted by id.
     pub fn document_ids_sorted(&self) -> Vec<BufferId> {
-        let mut ids: Vec<BufferId> = self
+        let inner = lock_inner(&self.inner);
+        let mut ids: Vec<BufferId> = inner
             .by_id
             .iter()
             .filter(|(_, e)| matches!(e.data, BufferData::Document(_)))
@@ -253,7 +398,8 @@ impl BufferRegistry {
 
     /// File-tree buffers only, sorted by id.
     pub fn file_tree_ids_sorted(&self) -> Vec<BufferId> {
-        let mut ids: Vec<BufferId> = self
+        let inner = lock_inner(&self.inner);
+        let mut ids: Vec<BufferId> = inner
             .by_id
             .iter()
             .filter(|(_, e)| matches!(e.data, BufferData::FileTree(_)))
@@ -265,7 +411,8 @@ impl BufferRegistry {
 
     /// Help buffers only, sorted by id.
     pub fn help_ids_sorted(&self) -> Vec<BufferId> {
-        let mut ids: Vec<BufferId> = self
+        let inner = lock_inner(&self.inner);
+        let mut ids: Vec<BufferId> = inner
             .by_id
             .iter()
             .filter(|(_, e)| matches!(e.data, BufferData::Help(_)))
@@ -275,13 +422,54 @@ impl BufferRegistry {
         ids
     }
 
+    pub fn oil_ids_sorted(&self) -> Vec<BufferId> {
+        let inner = lock_inner(&self.inner);
+        let mut ids: Vec<BufferId> = inner
+            .by_id
+            .iter()
+            .filter(|(_, e)| matches!(e.data, BufferData::Oil(_)))
+            .map(|(id, _)| *id)
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    /// IDs of every registered file-tree buffer, in arbitrary
+    /// order. The App-side `file_tree_with_root` walks these +
+    /// probes each one's `FileTreeRoot` buffer-local for the
+    /// dedup lookup; the registry can't do that walk because it
+    /// doesn't own buffer-locals.
+    pub fn file_tree_ids(&self) -> Vec<BufferId> {
+        lock_inner(&self.inner)
+            .by_id
+            .values()
+            .filter_map(|entry| match &entry.data {
+                BufferData::FileTree(_) => Some(entry.id),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// IDs of every registered oil buffer, in arbitrary order.
+    pub fn oil_ids(&self) -> Vec<BufferId> {
+        lock_inner(&self.inner)
+            .by_id
+            .values()
+            .filter_map(|entry| match &entry.data {
+                BufferData::Oil(_) => Some(entry.id),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// First buffer whose `name` matches exactly. Used by
     /// subsystem-owned synthetic buffers (`*lsp*`, `*messages*`,
     /// per-instance LSP log buffers) so re-running the
     /// owner's create-or-activate path surfaces the existing
     /// entry rather than allocating a duplicate.
     pub fn by_name(&self, name: &str) -> Option<BufferId> {
-        for entry in self.by_id.values() {
+        let inner = lock_inner(&self.inner);
+        for entry in inner.by_id.values() {
             if entry.name.as_deref() == Some(name) {
                 return Some(entry.id);
             }
@@ -294,7 +482,8 @@ impl BufferRegistry {
     /// command surfaces the existing buffer rather than allocating
     /// a duplicate.
     pub fn help_with_title(&self, title: &str) -> Option<BufferId> {
-        for entry in self.by_id.values() {
+        let inner = lock_inner(&self.inner);
+        for entry in inner.by_id.values() {
             if let BufferData::Help(h) = &entry.data
                 && h.title == title
             {
@@ -307,7 +496,8 @@ impl BufferRegistry {
     /// First document buffer with the given path, if any. Used by
     /// `:e FILE` to detect "already open".
     pub fn document_with_path(&self, path: &std::path::Path) -> Option<BufferId> {
-        for entry in self.by_id.values() {
+        let inner = lock_inner(&self.inner);
+        for entry in inner.by_id.values() {
             if let BufferData::Document(d) = &entry.data
                 && d.handle.path() == Some(path.to_path_buf())
             {
@@ -317,86 +507,177 @@ impl BufferRegistry {
         None
     }
 
-    /// IDs of every registered file-tree buffer, in arbitrary
-    /// order. The App-side `file_tree_with_root` walks these +
-    /// probes each one's `FileTreeRoot` buffer-local for the
-    /// dedup lookup; the registry can't do that walk because it
-    /// doesn't own buffer-locals.
-    pub fn file_tree_ids(&self) -> Vec<BufferId> {
-        self.by_id
-            .values()
-            .filter_map(|entry| match &entry.data {
-                BufferData::FileTree(_) => Some(entry.id),
-                _ => None,
-            })
-            .collect()
+    // ---- Callback access ---------------------------------
+    //
+    // Each `with_*` method locks, looks up the entry, runs the
+    // callback while the lock is held, releases. Callers MUST
+    // NOT re-enter the registry from inside the callback (it
+    // would deadlock on the same `Mutex`). Use the owned-return
+    // helpers above to extract data when re-entry would
+    // otherwise be needed.
+
+    /// Run `f` against the `BufferEntry` at `id` while holding
+    /// the registry lock. Returns `None` if the entry is absent.
+    pub fn with_entry<R>(&self, id: BufferId, f: impl FnOnce(&BufferEntry) -> R) -> Option<R> {
+        let inner = lock_inner(&self.inner);
+        inner.by_id.get(&id).map(f)
     }
 
-    /// Convenience: borrow a document entry by id (returns `None`
-    /// if absent OR if the entry is a different kind).
-    pub fn document(&self, id: BufferId) -> Option<&DocumentEntry> {
-        self.by_id.get(&id).and_then(BufferEntry::document)
+    /// Mutable variant of [`Self::with_entry`].
+    pub fn with_entry_mut<R>(
+        &self,
+        id: BufferId,
+        f: impl FnOnce(&mut BufferEntry) -> R,
+    ) -> Option<R> {
+        let mut inner = lock_inner(&self.inner);
+        inner.by_id.get_mut(&id).map(f)
     }
 
-    pub fn document_mut(&mut self, id: BufferId) -> Option<&mut DocumentEntry> {
-        self.by_id.get_mut(&id).and_then(BufferEntry::document_mut)
+    pub fn with_document<R>(&self, id: BufferId, f: impl FnOnce(&DocumentEntry) -> R) -> Option<R> {
+        let inner = lock_inner(&self.inner);
+        inner.by_id.get(&id).and_then(|e| e.document()).map(f)
     }
 
-    pub fn file_tree(&self, id: BufferId) -> Option<&FileTreeBuffer> {
-        self.by_id.get(&id).and_then(BufferEntry::file_tree)
-    }
-
-    pub fn file_tree_mut(&mut self, id: BufferId) -> Option<&mut FileTreeBuffer> {
-        self.by_id.get_mut(&id).and_then(BufferEntry::file_tree_mut)
-    }
-
-    pub fn help(&self, id: BufferId) -> Option<&HelpBuffer> {
-        self.by_id.get(&id).and_then(BufferEntry::help)
-    }
-
-    pub fn help_mut(&mut self, id: BufferId) -> Option<&mut HelpBuffer> {
-        self.by_id.get_mut(&id).and_then(BufferEntry::help_mut)
-    }
-
-    pub fn oil_ids_sorted(&self) -> Vec<BufferId> {
-        let mut ids: Vec<BufferId> = self
+    pub fn with_document_mut<R>(
+        &self,
+        id: BufferId,
+        f: impl FnOnce(&mut DocumentEntry) -> R,
+    ) -> Option<R> {
+        let mut inner = lock_inner(&self.inner);
+        inner
             .by_id
-            .iter()
-            .filter(|(_, e)| matches!(e.data, BufferData::Oil(_)))
-            .map(|(id, _)| *id)
-            .collect();
-        ids.sort();
-        ids
+            .get_mut(&id)
+            .and_then(|e| e.document_mut())
+            .map(f)
     }
 
-    /// IDs of every registered oil buffer, in arbitrary order.
-    /// Use the App's `oil_with_dir` helper for the dir-keyed
-    /// lookup -- it walks these ids and checks each one's
-    /// `OilDir` buffer-local (the canonical "where does this
-    /// oil buffer live"). The registry can't do that walk on
-    /// its own because it doesn't own buffer-locals.
-    pub fn oil_ids(&self) -> Vec<BufferId> {
-        self.by_id
-            .values()
-            .filter_map(|entry| match &entry.data {
-                BufferData::Oil(_) => Some(entry.id),
-                _ => None,
-            })
-            .collect()
+    pub fn with_help<R>(&self, id: BufferId, f: impl FnOnce(&HelpBuffer) -> R) -> Option<R> {
+        let inner = lock_inner(&self.inner);
+        inner.by_id.get(&id).and_then(|e| e.help()).map(f)
     }
 
-    pub fn oil(&self, id: BufferId) -> Option<&OilBuffer> {
-        self.by_id.get(&id).and_then(BufferEntry::oil)
+    pub fn with_help_mut<R>(
+        &self,
+        id: BufferId,
+        f: impl FnOnce(&mut HelpBuffer) -> R,
+    ) -> Option<R> {
+        let mut inner = lock_inner(&self.inner);
+        inner.by_id.get_mut(&id).and_then(|e| e.help_mut()).map(f)
     }
 
-    pub fn oil_mut(&mut self, id: BufferId) -> Option<&mut OilBuffer> {
-        self.by_id.get_mut(&id).and_then(BufferEntry::oil_mut)
+    pub fn with_file_tree<R>(
+        &self,
+        id: BufferId,
+        f: impl FnOnce(&FileTreeBuffer) -> R,
+    ) -> Option<R> {
+        let inner = lock_inner(&self.inner);
+        inner.by_id.get(&id).and_then(|e| e.file_tree()).map(f)
+    }
+
+    pub fn with_file_tree_mut<R>(
+        &self,
+        id: BufferId,
+        f: impl FnOnce(&mut FileTreeBuffer) -> R,
+    ) -> Option<R> {
+        let mut inner = lock_inner(&self.inner);
+        inner
+            .by_id
+            .get_mut(&id)
+            .and_then(|e| e.file_tree_mut())
+            .map(f)
+    }
+
+    pub fn with_oil<R>(&self, id: BufferId, f: impl FnOnce(&OilBuffer) -> R) -> Option<R> {
+        let inner = lock_inner(&self.inner);
+        inner.by_id.get(&id).and_then(|e| e.oil()).map(f)
+    }
+
+    pub fn with_oil_mut<R>(&self, id: BufferId, f: impl FnOnce(&mut OilBuffer) -> R) -> Option<R> {
+        let mut inner = lock_inner(&self.inner);
+        inner.by_id.get_mut(&id).and_then(|e| e.oil_mut()).map(f)
+    }
+
+    /// Run `f` against every entry under the registry lock.
+    /// Callers must not re-enter the registry from inside.
+    pub fn for_each<F: FnMut(&BufferEntry)>(&self, mut f: F) {
+        let inner = lock_inner(&self.inner);
+        for entry in inner.by_id.values() {
+            f(entry);
+        }
+    }
+}
+
+// ---------------------------------------------------------------
+// BufferStore impl (B'.3)
+// ---------------------------------------------------------------
+//
+// Wraps a clone of `BufferRegistry` so modes can find synthetic
+// buffers by name and pull `DocumentHandle`s from any tokio task.
+// Registered into the App's `ServiceRegistry` at boot; modes pull
+// it via `ctx.service::<lattice_mode::BufferStoreHandle>()`.
+//
+// `ensure_named_document` is partially implemented: it returns
+// the existing id when the name is registered. Creation +
+// major-mode activation is App-driven (B'.3 keeps that path on
+// the App side); a future slice can wire the create path back
+// through here when modes need to provision their own buffers.
+
+impl lattice_mode::BufferStore for BufferRegistry {
+    fn find_by_name(&self, name: &str) -> Option<lattice_core::BufferId> {
+        self.by_name(name)
+    }
+
+    fn ensure_named_document(
+        &self,
+        name: &str,
+        _major: lattice_mode::ModeId,
+        _flags: lattice_core::BufferFlags,
+    ) -> lattice_core::BufferId {
+        // Return the existing id when registered (B'.3: every
+        // synthetic LSP / messages buffer is created App-side
+        // before its mode activates, so callers only need the
+        // find half of "find-or-create" today). When `name` is
+        // unknown the panic surfaces a programmer error in CI
+        // rather than silently routing writes to a fresh-but-
+        // un-activated buffer.
+        match self.by_name(name) {
+            Some(id) => id,
+            None => panic!(
+                "BufferStore::ensure_named_document: no buffer named {name:?}; \
+                 App-side creation path not yet routed through BufferStore"
+            ),
+        }
+    }
+
+    fn handle_for(&self, id: lattice_core::BufferId) -> Option<lattice_runtime::DocumentHandle> {
+        self.document_handle(id)
+    }
+
+    fn name_for(&self, id: lattice_core::BufferId) -> Option<String> {
+        self.name_of(id)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ft_entry(id: BufferId, listed: bool, name: Option<String>) -> BufferEntry {
+        BufferEntry {
+            id,
+            flags: BufferFlags {
+                listed,
+                hidden: false,
+            },
+            data: BufferData::FileTree(FileTreeBuffer {
+                id,
+                content: lattice_core::Buffer::empty(),
+                cursor: lattice_protocol::position::Position::ZERO,
+                scroll: 0,
+            }),
+            name,
+        }
+    }
 
     #[test]
     fn fresh_registry_is_empty() {
@@ -407,137 +688,73 @@ mod tests {
 
     #[test]
     fn sorted_ids_returns_ascending_order() {
-        let mut r = BufferRegistry::new();
+        let r = BufferRegistry::new();
         let id_a = BufferId::next();
         let id_b = BufferId::next();
         let id_c = BufferId::next();
-        // Insert out of order.
-        r.insert(BufferEntry {
-            id: id_c,
-            flags: BufferFlags::default(),
-            data: BufferData::FileTree(FileTreeBuffer {
-                id: id_c,
-                content: lattice_core::Buffer::empty(),
-                cursor: lattice_protocol::position::Position::ZERO,
-                scroll: 0,
-            }),
-            name: None,
-        });
-        r.insert(BufferEntry {
-            id: id_a,
-            flags: BufferFlags::default(),
-            data: BufferData::FileTree(FileTreeBuffer {
-                id: id_a,
-                content: lattice_core::Buffer::empty(),
-                cursor: lattice_protocol::position::Position::ZERO,
-                scroll: 0,
-            }),
-            name: None,
-        });
-        r.insert(BufferEntry {
-            id: id_b,
-            flags: BufferFlags::default(),
-            data: BufferData::FileTree(FileTreeBuffer {
-                id: id_b,
-                content: lattice_core::Buffer::empty(),
-                cursor: lattice_protocol::position::Position::ZERO,
-                scroll: 0,
-            }),
-            name: None,
-        });
-        let sorted = r.sorted_ids();
-        assert_eq!(sorted, vec![id_a, id_b, id_c]);
+        r.insert(ft_entry(id_c, true, None));
+        r.insert(ft_entry(id_a, true, None));
+        r.insert(ft_entry(id_b, true, None));
+        assert_eq!(r.sorted_ids(), vec![id_a, id_b, id_c]);
     }
 
     #[test]
     fn unlisted_buffers_skip_listed_ids() {
-        let mut r = BufferRegistry::new();
+        let r = BufferRegistry::new();
         let id_a = BufferId::next();
         let id_b = BufferId::next();
-        r.insert(BufferEntry {
-            id: id_a,
-            flags: BufferFlags {
-                listed: true,
-                hidden: false,
-            },
-            data: BufferData::FileTree(FileTreeBuffer {
-                id: id_a,
-                content: lattice_core::Buffer::empty(),
-                cursor: lattice_protocol::position::Position::ZERO,
-                scroll: 0,
-            }),
-            name: None,
-        });
-        r.insert(BufferEntry {
-            id: id_b,
-            flags: BufferFlags {
-                listed: false,
-                hidden: false,
-            },
-            data: BufferData::FileTree(FileTreeBuffer {
-                id: id_b,
-                content: lattice_core::Buffer::empty(),
-                cursor: lattice_protocol::position::Position::ZERO,
-                scroll: 0,
-            }),
-            name: None,
-        });
-        let listed = r.listed_ids_sorted();
-        assert_eq!(listed, vec![id_a]);
-        let all = r.sorted_ids();
-        assert_eq!(all, vec![id_a, id_b]);
+        r.insert(ft_entry(id_a, true, None));
+        r.insert(ft_entry(id_b, false, None));
+        assert_eq!(r.listed_ids_sorted(), vec![id_a]);
+        assert_eq!(r.sorted_ids(), vec![id_a, id_b]);
     }
 
     #[test]
     fn by_name_finds_entry_with_matching_synthetic_name() {
-        let mut r = BufferRegistry::new();
+        let r = BufferRegistry::new();
         let id_lsp = BufferId::next();
         let id_other = BufferId::next();
-        r.insert(BufferEntry {
-            id: id_lsp,
-            flags: BufferFlags::default(),
-            data: BufferData::FileTree(FileTreeBuffer {
-                id: id_lsp,
-                content: lattice_core::Buffer::empty(),
-                cursor: lattice_protocol::position::Position::ZERO,
-                scroll: 0,
-            }),
-            name: Some("*lsp*".to_string()),
-        });
-        r.insert(BufferEntry {
-            id: id_other,
-            flags: BufferFlags::default(),
-            data: BufferData::FileTree(FileTreeBuffer {
-                id: id_other,
-                content: lattice_core::Buffer::empty(),
-                cursor: lattice_protocol::position::Position::ZERO,
-                scroll: 0,
-            }),
-            name: None,
-        });
+        r.insert(ft_entry(id_lsp, true, Some("*lsp*".to_string())));
+        r.insert(ft_entry(id_other, true, None));
         assert_eq!(r.by_name("*lsp*"), Some(id_lsp));
         assert_eq!(r.by_name("nope"), None);
     }
 
     #[test]
     fn file_tree_ids_lists_registered_trees() {
-        // Was `file_tree_with_root_finds_match` -- the dedup
-        // lookup moved to the App side (`App::file_tree_with_root`),
-        // which probes each id's `FileTreeRoot` buffer-local.
-        // Here we exercise the registry's plain id enumeration.
-        let mut r = BufferRegistry::new();
+        let r = BufferRegistry::new();
         let id = BufferId::next();
-        r.insert(BufferEntry {
-            id,
-            flags: BufferFlags::default(),
-            data: BufferData::FileTree(FileTreeBuffer {
-                id,
-                content: lattice_core::Buffer::empty(),
-                cursor: lattice_protocol::position::Position::ZERO,
-                scroll: 0,
-            }),
-            name: None,
-        });
+        r.insert(ft_entry(id, true, None));
         assert_eq!(r.file_tree_ids(), vec![id]);
+    }
+
+    #[test]
+    fn clone_shares_state() {
+        let r1 = BufferRegistry::new();
+        let r2 = r1.clone();
+        let id = BufferId::next();
+        r1.insert(ft_entry(id, true, None));
+        assert!(r2.contains(id));
+        assert_eq!(r2.len(), 1);
+    }
+
+    #[test]
+    fn with_entry_runs_callback_under_lock() {
+        let r = BufferRegistry::new();
+        let id = BufferId::next();
+        r.insert(ft_entry(id, true, Some("name".to_string())));
+        let kind = r.with_entry(id, |e| e.kind());
+        assert_eq!(kind, Some(BufferKind::FileTree));
+    }
+
+    #[test]
+    fn set_name_updates_entry() {
+        let r = BufferRegistry::new();
+        let id = BufferId::next();
+        r.insert(ft_entry(id, true, Some("old".to_string())));
+        assert!(r.set_name(id, Some("new".to_string())));
+        assert_eq!(r.name_of(id), Some("new".to_string()));
+        assert_eq!(r.by_name("new"), Some(id));
+        assert_eq!(r.by_name("old"), None);
     }
 }

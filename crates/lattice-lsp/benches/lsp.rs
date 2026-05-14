@@ -186,11 +186,14 @@ fn position_utf16_to_byte_cjk(c: &mut Criterion) {
 /// filter). Models per-event cost at the actor boundary.
 fn logging_log_info(c: &mut Criterion) {
     let logger = LspLogger::with_defaults();
-    let server_id: Arc<str> = Arc::from("rust");
+    let instance = lattice_lsp::InstanceKey::new(
+        Arc::<str>::from("rust"),
+        Arc::<std::path::Path>::from(std::path::Path::new("/tmp/bench-ws")),
+    );
     c.bench_function("lsp::logging::log_info", |b| {
         b.iter(|| {
             logger.log(
-                Some(black_box(&server_id)),
+                Some(black_box(&instance)),
                 LogLevel::Info,
                 LogSource::Client,
                 black_box("server attached"),
@@ -203,11 +206,14 @@ fn logging_log_info(c: &mut Criterion) {
 /// short-circuit path. Should be a HashSet lookup + return.
 fn logging_log_trace_off(c: &mut Criterion) {
     let logger = LspLogger::with_defaults();
-    let server_id: Arc<str> = Arc::from("rust");
+    let instance = lattice_lsp::InstanceKey::new(
+        Arc::<str>::from("rust"),
+        Arc::<std::path::Path>::from(std::path::Path::new("/tmp/bench-ws")),
+    );
     c.bench_function("lsp::logging::log_trace_off", |b| {
         b.iter(|| {
             logger.log(
-                Some(black_box(&server_id)),
+                Some(black_box(&instance)),
                 LogLevel::Trace,
                 LogSource::Trace,
                 black_box("trace text"),
@@ -219,12 +225,15 @@ fn logging_log_trace_off(c: &mut Criterion) {
 /// Same shape with the toggle ON -- includes the ring push.
 fn logging_log_trace_on(c: &mut Criterion) {
     let logger = LspLogger::new(LogLevel::Trace, 100_000);
-    let server_id: Arc<str> = Arc::from("rust");
-    logger.enable_trace(Arc::clone(&server_id));
+    let instance = lattice_lsp::InstanceKey::new(
+        Arc::<str>::from("rust"),
+        Arc::<std::path::Path>::from(std::path::Path::new("/tmp/bench-ws")),
+    );
+    logger.enable_trace(instance.clone());
     c.bench_function("lsp::logging::log_trace_on", |b| {
         b.iter(|| {
             logger.log(
-                Some(black_box(&server_id)),
+                Some(black_box(&instance)),
                 LogLevel::Trace,
                 LogSource::Trace,
                 black_box("trace text"),
@@ -405,6 +414,96 @@ fn diagnostics_layer_line_severity_wait_free(c: &mut Criterion) {
     });
 }
 
+/// B'.6 cross-task append-throughput bench. Measures the
+/// "publish → bus fan-out → mpsc → coalescing drain → format"
+/// half of the pipeline a log mode (LspLogMode /
+/// LspServerLogMode / LspTraceLogMode) walks per drain cycle.
+/// The `apply_edit_batch` tail is excluded because it depends
+/// on `lattice-grammar` (out of scope for this crate's deps);
+/// it's a stable per-call cost measured separately in the
+/// document-actor benches.
+///
+/// Why measure this: paramount goal #4 (asynchronicity) says
+/// log streaming must never compete with the UI thread; this
+/// bench is the regression guard for the coalescing inner
+/// loop that turns a burst of N records into O(1) drain
+/// passes. The shape is the same across all three log modes;
+/// we benchmark the canonical subsystem variant.
+fn log_append_pipeline_100_records(c: &mut Criterion) {
+    use lattice_lsp::events::LspLogPushed;
+    use lattice_runtime::EventBus;
+    use std::sync::Arc;
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+
+    c.bench_function("lsp::log_append_pipeline::100_records", |b| {
+        b.iter_custom(|iters| {
+            runtime.block_on(async move {
+                let mut total = std::time::Duration::ZERO;
+                for _ in 0..iters {
+                    let bus = Arc::new(EventBus::new());
+                    let logger = lattice_lsp::LspLogger::with_defaults();
+                    let bus_pub = bus.clone();
+                    logger.set_event_publisher(Arc::new(move |event| {
+                        bus_pub.publish_typed(event);
+                    }));
+
+                    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<LspLogPushed>();
+                    let _sub = bus.subscribe_typed::<LspLogPushed>(tx);
+                    let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
+
+                    tokio::spawn(async move {
+                        let mut applied = 0usize;
+                        let mut accum = String::new();
+                        while let Some(first) = rx.recv().await {
+                            let mut batch = vec![first];
+                            while let Ok(more) = rx.try_recv() {
+                                batch.push(more);
+                            }
+                            for event in &batch {
+                                let line = lattice_lsp::format_log_event_line(
+                                    None,
+                                    &event.level,
+                                    &event.source,
+                                    &event.message,
+                                );
+                                accum.push_str(&line);
+                                accum.push('\n');
+                            }
+                            applied += batch.len();
+                            if applied >= 100 {
+                                // Use `accum` so the optimiser
+                                // can't dead-strip the format
+                                // work.
+                                criterion::black_box(&accum);
+                                let _ = done_tx.send(());
+                                return;
+                            }
+                        }
+                    });
+
+                    let start = std::time::Instant::now();
+                    for i in 0..100 {
+                        logger.log(
+                            None,
+                            lattice_lsp::LogLevel::Info,
+                            lattice_lsp::LogSource::Client,
+                            format!("msg-{i}"),
+                        );
+                    }
+                    let _ = done_rx.await;
+                    total += start.elapsed();
+                }
+                total
+            })
+        });
+    });
+}
+
 criterion_group!(
     benches,
     framing_parse_header,
@@ -422,5 +521,6 @@ criterion_group!(
     lsp_edit_propagation_publish_to_recv,
     lsp_didchange_flush_16_edits,
     diagnostics_layer_line_severity_wait_free,
+    log_append_pipeline_100_records,
 );
 criterion_main!(benches);

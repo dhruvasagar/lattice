@@ -223,7 +223,7 @@ impl App {
             match e.buffer {
                 BufferKind::Document | BufferKind::FileTree => self.buffers.contains(e.buffer_id),
                 BufferKind::Help => {
-                    self.buffers.help(e.buffer_id).is_some() || popup_help_id == Some(e.buffer_id)
+                    self.buffers.contains_help(e.buffer_id) || popup_help_id == Some(e.buffer_id)
                 }
                 BufferKind::Oil => self.buffers.contains(e.buffer_id),
             }
@@ -261,7 +261,7 @@ impl App {
                 // `activate_document` so motion / search / save target the
                 // recorded buffer. The reachable check above already verified
                 // the registry entry; activate_document re-checks for safety.
-                if self.buffers.document(entry.buffer_id).is_some() {
+                if self.buffers.contains_document(entry.buffer_id) {
                     self.activate_document(entry.buffer_id);
                     self.cursor = entry.position;
                     self.clamp_cursor_to_buffer();
@@ -273,7 +273,7 @@ impl App {
                 // Prefer an in-pane help buffer with the recorded id;
                 // fall back to the transient popup. Either way the
                 // live cursor lands on `self.cursor` (unified).
-                let buffer_present = self.buffers.help(entry.buffer_id).is_some()
+                let buffer_present = self.buffers.contains_help(entry.buffer_id)
                     || self.popup_buffer == Some(entry.buffer_id);
                 if buffer_present {
                     self.cursor = entry.position;
@@ -283,7 +283,7 @@ impl App {
                 }
             }
             BufferKind::FileTree => {
-                if self.buffers.file_tree(entry.buffer_id).is_some() {
+                if self.buffers.contains_file_tree(entry.buffer_id) {
                     self.active_buffer = BufferKind::FileTree;
                     self.cursor = entry.position;
                     self.pane_tree.active_mut().buffer = BufferKind::FileTree;
@@ -292,7 +292,7 @@ impl App {
                 }
             }
             BufferKind::Oil => {
-                if self.buffers.oil(entry.buffer_id).is_some() {
+                if self.buffers.contains_oil(entry.buffer_id) {
                     self.active_buffer = BufferKind::Oil;
                     self.cursor = entry.position;
                     self.pane_tree.active_mut().buffer = BufferKind::Oil;
@@ -535,7 +535,7 @@ impl App {
             // buffer is active. Acceptable v1 behaviour --
             // future passes can echo "tag origin buffer gone"
             // or hop to the alternate of the same kind.
-            if self.buffers.get(entry.buffer_id).is_some() {
+            if self.buffers.contains(entry.buffer_id) {
                 self.activate_buffer(entry.buffer_id);
             }
         }
@@ -653,13 +653,11 @@ impl App {
             BufferKind::Help => self.popup_help().map(|h| h.cursor).unwrap_or(self.cursor),
             BufferKind::FileTree => self
                 .buffers
-                .file_tree(self.active_pane_buffer_id())
-                .map(|t| t.cursor)
+                .with_file_tree(self.active_pane_buffer_id(), |t| t.cursor)
                 .unwrap_or(self.cursor),
             BufferKind::Oil => self
                 .buffers
-                .oil(self.active_pane_buffer_id())
-                .map(|o| o.cursor)
+                .with_oil(self.active_pane_buffer_id(), |o| o.cursor)
                 .unwrap_or(self.cursor),
         }
     }
@@ -677,14 +675,12 @@ impl App {
                 .unwrap_or_else(|| self.document.snapshot().buffer.clone()),
             BufferKind::FileTree => self
                 .buffers
-                .file_tree(self.active_pane_buffer_id())
-                .map(|t| t.content.clone())
+                .with_file_tree(self.active_pane_buffer_id(), |t| t.content.clone())
                 .unwrap_or_else(|| self.document.snapshot().buffer.clone()),
             BufferKind::Document => self.document.snapshot().buffer.clone(),
             BufferKind::Oil => self
                 .buffers
-                .oil(self.active_pane_buffer_id())
-                .map(|o| o.content.clone())
+                .with_oil(self.active_pane_buffer_id(), |o| o.content.clone())
                 .unwrap_or_else(|| self.document.snapshot().buffer.clone()),
         }
     }

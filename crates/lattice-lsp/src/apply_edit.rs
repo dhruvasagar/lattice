@@ -43,6 +43,10 @@ pub struct InboundApplyEdit {
     /// log so the user can tell which language server is
     /// asking. Cheap to clone (`Arc<str>`).
     pub server_id: Arc<str>,
+    /// Workspace root the originating actor was spawned against
+    /// (B'.2). Pairs with `server_id` to form the canonical
+    /// `(server_id, workspace)` instance key.
+    pub workspace: Arc<std::path::Path>,
     /// Optional descriptive label the server attached to the
     /// edit (e.g. `"organize imports"`). Spec field; we surface
     /// it in the App's echo and the log entry.
@@ -121,6 +125,7 @@ mod tests {
         let edit = lsp_types::WorkspaceEdit::default();
         bus.dispatch(InboundApplyEdit {
             server_id: Arc::from("test"),
+            workspace: Arc::<std::path::Path>::from(std::path::Path::new("/tmp")),
             label: Some("organize imports".into()),
             edit,
             response: tx,
@@ -138,6 +143,7 @@ mod tests {
         let (tx, _resp_rx) = oneshot::channel();
         let result = bus.dispatch(InboundApplyEdit {
             server_id: Arc::from("test"),
+            workspace: Arc::<std::path::Path>::from(std::path::Path::new("/tmp")),
             label: None,
             edit: lsp_types::WorkspaceEdit::default(),
             response: tx,

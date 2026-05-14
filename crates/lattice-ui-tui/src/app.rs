@@ -5364,9 +5364,9 @@ mod tests {
         // is the popup buffer's construction id (centred-popup
         // resolution rule).
         let buf_id = a.popup_buffer.unwrap();
-        if let Some(h) = a.popup_help_mut() {
+        a.with_popup_help_mut(|h| {
             h.cursor = lattice_protocol::Position::ZERO;
-        }
+        });
         let mut existing_links = a
             .buffer_locals
             .get(&buf_id)
@@ -5423,9 +5423,9 @@ mod tests {
         // is the popup buffer's construction id (centred-popup
         // resolution rule).
         let buf_id = a.popup_buffer.unwrap();
-        if let Some(h) = a.popup_help_mut() {
+        a.with_popup_help_mut(|h| {
             h.cursor = lattice_protocol::Position::ZERO;
-        }
+        });
         let mut existing_links = a
             .buffer_locals
             .get(&buf_id)
@@ -5459,15 +5459,24 @@ mod tests {
         assert_eq!(a.document.text(), "hello worldhello ");
     }
 
-    #[test]
-    fn open_lsp_log_in_pane_renders_per_server_records() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn open_lsp_log_in_pane_renders_per_server_records() {
         // Slice B: per-server log lives as a Document in the
         // registry; records arrive through the event-bus drain
         // (`drain_lsp_log_events`) rather than a snapshot rebuild.
+        // B'.4: use cwd-backed instance so it matches
+        // `resolve_lsp_instance_for("rust")`'s no-actor fallback.
         let mut app = app_with("hi\n", 5);
-        let id: std::sync::Arc<str> = std::sync::Arc::from("rust");
+        let instance = lattice_lsp::InstanceKey::new(
+            std::sync::Arc::<str>::from("rust"),
+            std::sync::Arc::<std::path::Path>::from(
+                std::env::current_dir()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("/"))
+                    .as_path(),
+            ),
+        );
         app.lsp_logger.log(
-            Some(&id),
+            Some(&instance),
             lattice_lsp::LogLevel::Warn,
             lattice_lsp::LogSource::Stderr,
             "compile error",
@@ -5475,74 +5484,92 @@ mod tests {
         // `open_lsp_log_in_pane` drains queued events first so the
         // buffer reflects pre-existing records.
         app.open_lsp_log_in_pane("rust");
+        // Wait for LspServerLogMode's tokio task to drain the
+        // pre-open record.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let log_id = app
             .buffers
-            .by_name("*lsp:rust*")
-            .expect("per-server log buffer registered");
+            .by_name(&lattice_lsp::lsp_server_log_name(&instance))
+            .expect("per-instance log buffer registered");
         assert_eq!(app.active_pane_buffer_id(), log_id);
         let body = app
             .buffers
-            .document(log_id)
+            .document_handle(log_id)
             .expect("log buffer is a Document")
-            .handle
             .text();
         assert!(body.contains("compile error"), "got `{body}`");
     }
 
-    #[test]
-    fn open_lsp_log_in_pane_excludes_trace_records() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn open_lsp_log_in_pane_excludes_trace_records() {
         let mut app = app_with("hi\n", 5);
-        let id: std::sync::Arc<str> = std::sync::Arc::from("rust");
-        app.lsp_logger.enable_trace(std::sync::Arc::clone(&id));
+        let instance = lattice_lsp::InstanceKey::new(
+            std::sync::Arc::<str>::from("rust"),
+            std::sync::Arc::<std::path::Path>::from(
+                std::env::current_dir()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("/"))
+                    .as_path(),
+            ),
+        );
+        app.lsp_logger.enable_trace(instance.clone());
         app.lsp_logger.log(
-            Some(&id),
+            Some(&instance),
             lattice_lsp::LogLevel::Trace,
             lattice_lsp::LogSource::Trace,
             "→ Request id=1",
         );
         app.lsp_logger.log(
-            Some(&id),
+            Some(&instance),
             lattice_lsp::LogLevel::Info,
             lattice_lsp::LogSource::Client,
             "lifecycle",
         );
         app.open_lsp_log_in_pane("rust");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let log_id = app
             .buffers
-            .by_name("*lsp:rust*")
-            .expect("per-server log buffer registered");
-        let body = app.buffers.document(log_id).unwrap().handle.text();
+            .by_name(&lattice_lsp::lsp_server_log_name(&instance))
+            .expect("per-instance log buffer registered");
+        let body = app.buffers.document_handle(log_id).unwrap().text();
         // Trace records route to the trace buffer; non-trace
         // records (including lifecycle) land here.
         assert!(!body.contains("→ Request"), "got `{body}`");
         assert!(body.contains("lifecycle"), "got `{body}`");
     }
 
-    #[test]
-    fn open_lsp_trace_log_in_pane_shows_only_trace_records() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn open_lsp_trace_log_in_pane_shows_only_trace_records() {
         let mut app = app_with("hi\n", 5);
-        let id: std::sync::Arc<str> = std::sync::Arc::from("rust");
-        app.lsp_logger.enable_trace(std::sync::Arc::clone(&id));
+        let instance = lattice_lsp::InstanceKey::new(
+            std::sync::Arc::<str>::from("rust"),
+            std::sync::Arc::<std::path::Path>::from(
+                std::env::current_dir()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("/"))
+                    .as_path(),
+            ),
+        );
+        app.lsp_logger.enable_trace(instance.clone());
         app.lsp_logger.log(
-            Some(&id),
+            Some(&instance),
             lattice_lsp::LogLevel::Trace,
             lattice_lsp::LogSource::Trace,
             "→ Request id=1",
         );
         app.lsp_logger.log(
-            Some(&id),
+            Some(&instance),
             lattice_lsp::LogLevel::Info,
             lattice_lsp::LogSource::Client,
             "lifecycle",
         );
         app.open_lsp_trace_log_in_pane("rust");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let trace_id = app
             .buffers
-            .by_name("*lsp:rust:trace*")
-            .expect("per-server trace buffer registered");
-        let body = app.buffers.document(trace_id).unwrap().handle.text();
+            .by_name(&lattice_lsp::lsp_server_trace_log_name(&instance))
+            .expect("per-instance trace buffer registered");
+        let body = app.buffers.document_handle(trace_id).unwrap().text();
         // Trace records here; non-trace records routed to the
-        // matching `*lsp:rust*` buffer instead.
+        // matching `*lsp:rust:<ws>*` buffer instead.
         assert!(body.contains("→ Request"), "got `{body}`");
         assert!(!body.contains("lifecycle"), "got `{body}`");
     }
@@ -5659,7 +5686,10 @@ mod tests {
         // Default is BMP fallback -- the rope should contain
         // the source-code middle-dot, not the nerd-font rust
         // glyph.
-        let body = a.buffers.file_tree(tree_id).unwrap().content.as_string();
+        let body = a
+            .buffers
+            .with_file_tree(tree_id, |t| t.content.as_string())
+            .unwrap();
         assert!(
             body.contains("· main.rs"),
             "expected BMP fallback in rope, got: {body}"
@@ -5674,7 +5704,10 @@ mod tests {
         // against the new palette.
         submit_ex(&mut a, "set ui.nerd_fonts=on");
 
-        let body = a.buffers.file_tree(tree_id).unwrap().content.as_string();
+        let body = a
+            .buffers
+            .with_file_tree(tree_id, |t| t.content.as_string())
+            .unwrap();
         assert!(
             body.contains("󱘗 main.rs"),
             "expected nerd-font glyph post-toggle, got: {body}"

@@ -129,15 +129,14 @@ impl App {
     /// oil routing.
     fn apply_edit_to_oil(&mut self, edit: Edit) -> Result<AppliedEdit, RuntimeError> {
         let oil_id = self.active_pane_buffer_id();
-        let Some(oil) = self.buffers.oil_mut(oil_id) else {
-            // Treating "active buffer is oil but no oil
-            // entry in the registry" as Cancelled rather than
-            // a hard error -- the dispatcher just no-ops.
-            // Should never happen in practice (the Oil kind +
-            // missing registry entry is a state-machine bug).
-            return Err(RuntimeError::Core(lattice_core::CoreError::Cancelled));
-        };
-        oil.content.apply_edit(&edit).map_err(RuntimeError::Core)
+        // Use the callback variant so the registry lock is held
+        // only for the apply_edit call. The closure runs the
+        // mutation; the outer Option unwraps to either the
+        // inner Result or the "no oil entry" Cancelled error.
+        self.buffers
+            .with_oil_mut(oil_id, |oil| oil.content.apply_edit(&edit))
+            .ok_or(RuntimeError::Core(lattice_core::CoreError::Cancelled))?
+            .map_err(RuntimeError::Core)
     }
 
     pub(super) fn undo_blocking(&mut self) -> Result<Vec<AppliedEdit>, RuntimeError> {

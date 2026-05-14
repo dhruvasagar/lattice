@@ -87,6 +87,13 @@ pub trait BufferStore: Send + Sync {
     ///
     /// `None` when `id` is not a Document in the registry.
     fn handle_for(&self, id: BufferId) -> Option<DocumentHandle>;
+
+    /// Read the buffer's synthetic name. `None` when the buffer is
+    /// unnamed (the default for path-less scratch documents) or
+    /// when `id` is not registered. B'.7: lets a mode derive its
+    /// own identity from the buffer it's attached to without the
+    /// host having to seed a buffer-local first.
+    fn name_for(&self, id: BufferId) -> Option<String>;
 }
 
 /// Concrete service-registry-friendly wrapper around
@@ -116,6 +123,10 @@ impl BufferStoreHandle {
 
     pub fn handle_for(&self, id: BufferId) -> Option<DocumentHandle> {
         self.inner.handle_for(id)
+    }
+
+    pub fn name_for(&self, id: BufferId) -> Option<String> {
+        self.inner.name_for(id)
     }
 }
 

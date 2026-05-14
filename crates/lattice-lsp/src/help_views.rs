@@ -157,18 +157,22 @@ pub fn lsp_global_log_help(logger: &LspLogger) -> HelpContent {
     HelpContent::from_lines("lsp", lines)
 }
 
-/// Build a per-server log view (`*lsp:<server>*`). Filters out
-/// trace records (those land in `lsp_server_trace_help`).
-pub fn lsp_server_log_help(logger: &LspLogger, server_id: &std::sync::Arc<str>) -> HelpContent {
-    let records = logger.snapshot_server(server_id);
+/// Build a per-instance log view (`*lsp:<server>:<workspace>*`).
+/// Filters out trace records (those land in `lsp_server_trace_help`).
+pub fn lsp_server_log_help(
+    logger: &LspLogger,
+    instance: &crate::logging::InstanceKey,
+) -> HelpContent {
+    let records = logger.snapshot_instance(instance);
     let body: Vec<&LogRecord> = records
         .iter()
         .filter(|r| r.source != LogSource::Trace)
         .collect();
     let mut lines: Vec<String> = Vec::new();
     lines.push(format!(
-        "# *lsp:{}* ({} records, trace excluded)",
-        server_id,
+        "# *lsp:{}:{}* ({} records, trace excluded)",
+        instance.server_id,
+        instance.workspace.display(),
         body.len()
     ));
     lines.push(String::new());
@@ -179,23 +183,35 @@ pub fn lsp_server_log_help(logger: &LspLogger, server_id: &std::sync::Arc<str>) 
             lines.push(format_log_record(r));
         }
     }
-    HelpContent::from_lines(format!("lsp:{server_id}"), lines)
+    HelpContent::from_lines(
+        format!(
+            "lsp:{}:{}",
+            instance.server_id,
+            instance.workspace.display()
+        ),
+        lines,
+    )
 }
 
-/// Build the JSON-RPC trace view (`*lsp:<server>:trace*`). Filters
-/// to `LogSource::Trace` records only. Empty when trace mode hasn't
+/// Build the JSON-RPC trace view
+/// (`*lsp:<server>:<workspace>:trace*`). Filters to
+/// `LogSource::Trace` records only. Empty when trace mode hasn't
 /// been on.
-pub fn lsp_server_trace_help(logger: &LspLogger, server_id: &std::sync::Arc<str>) -> HelpContent {
-    let records = logger.snapshot_server(server_id);
+pub fn lsp_server_trace_help(
+    logger: &LspLogger,
+    instance: &crate::logging::InstanceKey,
+) -> HelpContent {
+    let records = logger.snapshot_instance(instance);
     let body: Vec<&LogRecord> = records
         .iter()
         .filter(|r| r.source == LogSource::Trace)
         .collect();
     let mut lines: Vec<String> = Vec::new();
-    let trace_on = logger.is_tracing(server_id);
+    let trace_on = logger.is_tracing(instance);
     lines.push(format!(
-        "# *lsp:{}:trace* ({} records, trace currently {})",
-        server_id,
+        "# *lsp:{}:{}:trace* ({} records, trace currently {})",
+        instance.server_id,
+        instance.workspace.display(),
         body.len(),
         if trace_on { "ON" } else { "OFF" }
     ));
@@ -207,7 +223,14 @@ pub fn lsp_server_trace_help(logger: &LspLogger, server_id: &std::sync::Arc<str>
             lines.push(format_log_record(r));
         }
     }
-    HelpContent::from_lines(format!("lsp:{server_id}:trace"), lines)
+    HelpContent::from_lines(
+        format!(
+            "lsp:{}:{}:trace",
+            instance.server_id,
+            instance.workspace.display()
+        ),
+        lines,
+    )
 }
 
 /// Build the `:lsp-server-log` picker -- one row per running actor

@@ -275,6 +275,7 @@ This pattern -- "host owns the canonical neutral state; each renderer owns a cac
 | 5.2 | `a0cda39` | folds.rs + modes.rs migrated |
 | 5.2 | `00e5f8a` | buffer_registry.rs migrated |
 | 5.2 | `5753e38` | pane shim migrated |
+| 5.2 | `93fc8d8` | App helper state types extracted (SearchLine, LastSearch, UnnamedRegister, PrevPaneState) |
 
 **Total moved from `lattice-ui-tui`:** ~17k LoC. **Test count:** 1599 throughout (1424 ui-tui + 175 host at session end).
 

@@ -1,11 +1,10 @@
 //! Buffer-level folding semantics.
 //!
 //! [`FoldMethod`] decides which provider feeds the per-buffer fold
-//! list. The actual fold list itself lives renderer-side today
-//! (`lattice-ui-tui::app::Fold`), because the gutter glyph + summary
-//! line are rendering concerns; only the *method* discriminator
-//! lives here so any renderer (or LSP integration that wants to
-//! announce fold ranges) reads from the same enum.
+//! list. [`Fold`] is the per-range entry the list holds. Both are
+//! renderer-agnostic: a fold is just `(start_line, end_line,
+//! closed, identity)`; the gutter glyph + summary-line text are
+//! rendering concerns layered on top.
 
 /// `:set foldmethod=...` (DESIGN.md §15:18, C.2;
 /// `docs/user/folding.md`). Decides which provider feeds the
@@ -66,6 +65,27 @@ impl FoldMethod {
             )),
         }
     }
+}
+
+/// One contiguous fold range in a document buffer.
+///
+/// `identity` is the stable handle used to carry closed-state
+/// across recomputes. Computed providers (indent / markdown) hash
+/// the trimmed start-line text together with the leading-indent
+/// depth so that adding or removing lines elsewhere in the buffer
+/// doesn't reopen this fold. Manual folds (`zf`) leave it `None`
+/// -- their stable identity is the line range itself.
+///
+/// Phase 5.2: moved from `lattice-ui-tui::app::Fold` to this
+/// renderer-agnostic home. Existing `crate::app::Fold` call sites
+/// continue to resolve via a `pub use lattice_core::Fold;`
+/// re-export in `lattice-ui-tui::app`.
+#[derive(Debug, Clone, Copy)]
+pub struct Fold {
+    pub start_line: u32,
+    pub end_line: u32,
+    pub closed: bool,
+    pub identity: Option<u64>,
 }
 
 #[cfg(test)]

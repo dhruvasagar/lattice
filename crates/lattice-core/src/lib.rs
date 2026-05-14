@@ -16,7 +16,7 @@ pub use crate::buffer::Buffer;
 pub use crate::buffers::{BufferFlags, BufferId, BufferKind};
 pub use crate::document::{Document, DocumentBuilder};
 pub use crate::error::{CoreError, CoreResult};
-pub use crate::folding::FoldMethod;
+pub use crate::folding::{Fold, FoldMethod};
 pub use crate::search::{Direction as SearchDir, SearchHit, find as search_find};
 pub use crate::undo::{UndoEntry, UndoStack};
 

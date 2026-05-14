@@ -1879,28 +1879,12 @@ pub struct CompletionState {
     pub original_line: String,
 }
 
-/// One contiguous fold range in a document buffer.
-///
-/// `identity` is the stable handle used to carry closed-state across
-/// recomputes. Computed providers (indent / markdown) hash the
-/// trimmed start-line text together with the leading-indent depth
-/// so that adding or removing lines elsewhere in the buffer doesn't
-/// reopen this fold. Manual folds (`zf`) leave it `None` -- their
-/// stable identity is the line range itself.
-#[derive(Debug, Clone, Copy)]
-pub struct Fold {
-    pub start_line: u32,
-    pub end_line: u32,
-    pub closed: bool,
-    pub identity: Option<u64>,
-}
-
-// `FoldMethod` moved to `lattice_core::folding::FoldMethod` for
-// renderer-agnostic ownership. Re-exported through `lattice_core`'s
-// crate root + this re-export so existing call sites
-// (`crate::app::FoldMethod` / `FoldMethod`) keep resolving without
-// edits.
-pub use lattice_core::FoldMethod;
+// `Fold` + `FoldMethod` moved to `lattice_core::folding` for
+// renderer-agnostic ownership. Both re-exported through
+// `lattice_core`'s crate root + this re-export so existing
+// `crate::app::Fold` / `crate::app::FoldMethod` call sites
+// keep resolving unchanged.
+pub use lattice_core::{Fold, FoldMethod};
 
 /// Result of a `K` (LSP hover) request, sent from the spawned
 /// task to the App's main thread via [`App::pending_hover_rx`].

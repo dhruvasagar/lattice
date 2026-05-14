@@ -43,8 +43,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tracing::field::{Field, Visit};
 use tracing::{Event, Subscriber};
 use tracing_subscriber::Layer;
+use tracing_subscriber::filter::EnvFilter;
 use tracing_subscriber::layer::{Context, SubscriberExt};
 use tracing_subscriber::registry::LookupSpan;
+use tracing_subscriber::reload;
 
 use crate::events::EventBus;
 use crate::messages::{MessagePushed, MessageRecord, MessagesRing};
@@ -136,10 +138,30 @@ impl Visit for MessageVisitor {
 /// no-op after the first install instead of panicking.
 static GLOBAL_INSTALLED: OnceLock<()> = OnceLock::new();
 
-/// Install `MessagesLayer` as the global tracing subscriber.
+/// Reload-handle for the `EnvFilter` that gates which events
+/// the `MessagesLayer` captures. Stored at install time so
+/// `:set messages.filter=...` can swap the filter live via
+/// [`reload_messages_filter`] without restarting the editor.
+/// `OnceLock<Option<...>>` so the "no filter wired" case (test
+/// paths that construct the layer directly) is observable.
+type FilterReloadHandle = reload::Handle<EnvFilter, tracing_subscriber::Registry>;
+static FILTER_HANDLE: OnceLock<FilterReloadHandle> = OnceLock::new();
+
+/// Install `MessagesLayer` as the global tracing subscriber,
+/// gated by an `EnvFilter` whose initial directive is
+/// `initial_filter`. The filter is reloadable -- live edits
+/// via [`reload_messages_filter`] swap the directive without
+/// re-installing the subscriber.
+///
 /// Idempotent: only the first call wins; subsequent calls
 /// return `false`. The first call's `ring` + `bus` are the
-/// ones every later event flows into.
+/// ones every later event flows into; the first call's
+/// `initial_filter` seeds the filter handle.
+///
+/// `initial_filter` accepts the standard
+/// `tracing_subscriber::EnvFilter` directive syntax (`info`,
+/// `editor=info,lsp=debug`, ...). On parse failure the
+/// install falls back to `info`.
 ///
 /// **Why a global subscriber:** `tracing` can only have one
 /// global default per process. Test isolation is handled by
@@ -147,15 +169,25 @@ static GLOBAL_INSTALLED: OnceLock<()> = OnceLock::new();
 /// own messages stream constructs its own `MessagesLayer`
 /// (without installing globally) and exercises `on_event` /
 /// `emit` directly.
-pub fn install_messages_subscriber(ring: Arc<Mutex<MessagesRing>>, bus: Arc<EventBus>) -> bool {
+pub fn install_messages_subscriber(
+    ring: Arc<Mutex<MessagesRing>>,
+    bus: Arc<EventBus>,
+    initial_filter: &str,
+) -> bool {
     if GLOBAL_INSTALLED.get().is_some() {
         return false;
     }
+    let env_filter = EnvFilter::try_new(initial_filter)
+        .unwrap_or_else(|_| EnvFilter::try_new("info").expect("`info` is a valid EnvFilter spec"));
+    let (filter_layer, handle) = reload::Layer::new(env_filter);
     let layer = MessagesLayer::new(ring, bus);
-    let subscriber = tracing_subscriber::registry().with(layer);
+    let subscriber = tracing_subscriber::registry()
+        .with(filter_layer)
+        .with(layer);
     match tracing::subscriber::set_global_default(subscriber) {
         Ok(()) => {
             let _ = GLOBAL_INSTALLED.set(());
+            let _ = FILTER_HANDLE.set(handle);
             true
         }
         Err(_) => {
@@ -167,6 +199,47 @@ pub fn install_messages_subscriber(ring: Arc<Mutex<MessagesRing>>, bus: Arc<Even
             false
         }
     }
+}
+
+/// Live-swap the messages-layer filter directive. Returns
+/// `Err` when the directive fails to parse, when the global
+/// subscriber wasn't installed (test paths), or when the
+/// reload handle has been dropped. The App's option-change
+/// cascade calls this on `:set messages.filter=<spec>`.
+pub fn reload_messages_filter(spec: &str) -> Result<(), MessagesFilterReloadError> {
+    let new_filter = EnvFilter::try_new(spec).map_err(|e| MessagesFilterReloadError::Parse {
+        spec: spec.to_string(),
+        reason: e.to_string(),
+    })?;
+    let handle = FILTER_HANDLE
+        .get()
+        .ok_or(MessagesFilterReloadError::SubscriberNotInstalled)?;
+    handle
+        .modify(|f| *f = new_filter)
+        .map_err(|e| MessagesFilterReloadError::Reload(e.to_string()))
+}
+
+/// Why a [`reload_messages_filter`] call failed.
+#[derive(Debug, thiserror::Error)]
+pub enum MessagesFilterReloadError {
+    /// The directive didn't parse as `EnvFilter` syntax. The
+    /// typed-option validator already rejects bad strings at
+    /// `:set` time; reaching this variant means the validator
+    /// missed something.
+    #[error("messages.filter `{spec}` is not a valid filter directive: {reason}")]
+    Parse { spec: String, reason: String },
+    /// `install_messages_subscriber` was never called for this
+    /// process. Production boot always installs; test paths
+    /// that exercise the App without going through `App::new`
+    /// can observe this.
+    #[error("messages-mode tracing subscriber not installed; cannot reload filter")]
+    SubscriberNotInstalled,
+    /// `tracing_subscriber::reload::Handle::modify` returned
+    /// an error (typically because the underlying layer was
+    /// dropped). Should not happen in production but the
+    /// error type carries the message for diagnostics.
+    #[error("messages.filter reload failed: {0}")]
+    Reload(String),
 }
 
 #[cfg(test)]

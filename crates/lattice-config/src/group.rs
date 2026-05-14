@@ -202,6 +202,13 @@ impl OptionGroup for Appearance {
         "Appearance / theming options (colors, sprite icons, font rendering).";
 }
 
+/// `*messages*` audit-log buffer + tracing-bridge options.
+pub struct Messages;
+impl OptionGroup for Messages {
+    const NAME: &'static str = "messages";
+    const DOC: &'static str = "Echo-area + `*messages*` buffer + tracing bridge.";
+}
+
 // linkme submissions for the built-in groups.
 // Each submission registers one group's metadata; the registry's
 // startup loader walks GROUP_DECLS and panics on duplicate names.
@@ -241,6 +248,9 @@ static HELP_GROUP_LINK: &OptionGroupMetadata = &OptionGroupMetadata::for_group::
 #[linkme::distributed_slice(GROUP_DECLS)]
 static APPEARANCE_GROUP_LINK: &OptionGroupMetadata =
     &OptionGroupMetadata::for_group::<Appearance>();
+
+#[linkme::distributed_slice(GROUP_DECLS)]
+static MESSAGES_GROUP_LINK: &OptionGroupMetadata = &OptionGroupMetadata::for_group::<Messages>();
 
 // Compile-time naming-rule assertions for the built-in groups.
 // Verifies the `groups!` macro convention even though these

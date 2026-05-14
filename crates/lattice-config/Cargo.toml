@@ -17,6 +17,11 @@ toml = { workspace = true }
 dirs = { workspace = true }
 linkme = { workspace = true }
 smallvec = { workspace = true }
+# msg-mode.2: `messages.filter` validator parses the value via
+# `tracing_subscriber::EnvFilter::try_new`. Same EnvFilter
+# syntax the runtime's reload-handle accepts -- one parse
+# rule, both at set-time validation and at runtime reload.
+tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }

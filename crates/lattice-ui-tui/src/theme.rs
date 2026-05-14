@@ -98,6 +98,27 @@ pub struct Theme {
     /// background row tint in 256-color palettes). Active pane
     /// only; selection bg wins per-cell when the two overlap.
     pub cursor_line_bg: Color,
+
+    // ---- msg-mode.3: `*messages*` level highlights -------
+    /// Style for the timestamp prefix (`HH:MM:SS.mmm`) at the
+    /// start of every `*messages*` row. Dim by default so the
+    /// time doesn't compete with the level + body for
+    /// attention.
+    pub messages_timestamp_style: Style,
+    /// Style for the `TRACE` level token. Dim — `trace`-class
+    /// records are firehose-y; the user opts in via
+    /// `messages.filter` and shouldn't have them shout.
+    pub messages_trace_style: Style,
+    /// Style for the `DEBUG` level token. Cyan: distinct from
+    /// info but not alarming.
+    pub messages_debug_style: Style,
+    /// Style for the `INFO` level token. Default: terminal-
+    /// default fg, no modifier — neutral.
+    pub messages_info_style: Style,
+    /// Style for the `WARN` level token. Yellow + bold.
+    pub messages_warn_style: Style,
+    /// Style for the `ERROR` level token. Red + bold.
+    pub messages_error_style: Style,
 }
 
 impl Default for Theme {
@@ -134,6 +155,16 @@ impl Default for Theme {
             whitespace_style: Style::new().fg(Color::DarkGray).add_modifier(Modifier::DIM),
             whitespace_trailing_style: Style::new().fg(Color::Red),
             cursor_line_bg: Color::Indexed(236),
+            // msg-mode.3: matches the format produced by
+            // `crate::app::messages::format_message_record`.
+            messages_timestamp_style: Style::new()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::DIM),
+            messages_trace_style: Style::new().add_modifier(Modifier::DIM),
+            messages_debug_style: Style::new().fg(Color::Cyan),
+            messages_info_style: Style::new(),
+            messages_warn_style: Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            messages_error_style: Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
         }
     }
 }

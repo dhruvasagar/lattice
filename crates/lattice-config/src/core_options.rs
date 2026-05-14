@@ -52,6 +52,20 @@ fn validate_log_capacity(i: &i64) -> Result<(), String> {
     }
 }
 
+/// Validate a `tracing-subscriber::EnvFilter` directive. Accepts
+/// the standard syntax: a level name (`info`), per-target
+/// directives (`lsp=debug`), or a comma-separated list
+/// (`editor=info,lsp=debug,grammar=trace`).
+#[allow(clippy::ptr_arg)]
+fn validate_messages_filter(s: &String) -> Result<(), String> {
+    // The parse itself is the validation -- tracing-subscriber
+    // returns a typed error on bad syntax (unknown level,
+    // unparseable target, etc.).
+    tracing_subscriber::EnvFilter::try_new(s.as_str())
+        .map(|_| ())
+        .map_err(|e| format!("messages.filter: {e}"))
+}
+
 fn validate_tabstop(i: &i64) -> Result<(), String> {
     if (1..=32).contains(i) {
         Ok(())
@@ -462,6 +476,32 @@ crate::options! {
     #[name("lsp.log_capacity")]
     #[validate(validate_log_capacity)]
     pub LspLogCapacity: i64 = 10_000;
+}
+
+// msg-mode.2: messages group — `messages.filter` directives
+// the `*messages*` buffer's tracing bridge layer.
+crate::options! {
+    group = crate::Messages;
+
+    /// `tracing-subscriber::EnvFilter` directive controlling
+    /// which `tracing::*` events the boot-installed
+    /// `MessagesLayer` captures into `*messages*`. Accepts:
+    ///
+    /// - A single level (`info` / `warn` / `error` / `debug` /
+    ///   `trace`).
+    /// - Per-target directives (`lsp=debug`).
+    /// - Comma-separated combinations
+    ///   (`editor=info,lsp=debug,grammar=trace`).
+    ///
+    /// Live-editable via `:set messages.filter=...`; the
+    /// runtime's reload-handle (installed at boot alongside
+    /// the layer) swaps the filter without restarting the
+    /// editor. Default `info`: every `info!` / `warn!` /
+    /// `error!` event in the editor flows into `*messages*`,
+    /// `debug!` and `trace!` are dropped at the filter.
+    #[name("messages.filter")]
+    #[validate(validate_messages_filter)]
+    pub MessagesFilter: String = String::from("info");
 }
 
 // M.2.0c: `CoreOptions` struct and `register_core_options`

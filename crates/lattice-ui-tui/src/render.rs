@@ -2337,6 +2337,20 @@ fn compose_visible_lines_inner(
     width: u32,
 ) -> Vec<Line<'static>> {
     let app = view.app;
+    // msg-mode.3: when the active pane's major mode is
+    // `messages-mode`, every visible line is rendered through
+    // a level-aware path instead of the normal
+    // syntax-highlight pipeline. The legacy spans path is
+    // bypassed because the level styles aren't expressible as
+    // `lattice_syntax::Style` enum variants (which is the
+    // unit the spans pipeline carries).
+    let active_buffer = app.pane_tree.active().buffer_id;
+    let is_messages_buffer = app
+        .active_modes
+        .get(&active_buffer)
+        .and_then(|m| m.major())
+        .map(|m| m == lattice_mode::MessagesMode::mode_id())
+        .unwrap_or(false);
     // §5.6.8 contract: one snapshot per frame, used for everything.
     // The snapshot was loaded by the runtime via
     // `app.snapshot_cache.load_arc()` and threaded through.
@@ -2401,8 +2415,20 @@ fn compose_visible_lines_inner(
         // to buffer line `scroll + i`, and using the row index
         // would paint a post-fold line with stale spans for the
         // hidden interior.
-        let spans = app.highlights_for_buffer_line(line_idx);
-        let mut body = render_styled_line(&line_text, spans, buffer_w);
+        // msg-mode.3: messages-mode buffers bypass the
+        // syntax-spans pipeline entirely -- the level token
+        // styling isn't expressible as a `lattice_syntax::Style`
+        // variant. `messages_line_spans` scans the fixed
+        // `HH:MM:SS.mmm LEVEL text` format and returns a
+        // ratatui `Vec<Span<'static>>` directly. Lines that
+        // don't match the format render plain (e.g. blank
+        // lines at the end of the rope).
+        let mut body = if is_messages_buffer {
+            messages_line_spans(&line_text, &app.theme, buffer_w)
+        } else {
+            let spans = app.highlights_for_buffer_line(line_idx);
+            render_styled_line(&line_text, spans, buffer_w)
+        };
         // M.7.3.b: whitespace decoration pre-pass. Cheap when
         // `show_whitespace` is off (single bool check); when
         // on, walks each rendered span and substitutes glyphs
@@ -3350,6 +3376,67 @@ pub(crate) fn apply_whitespace_decoration(
     out
 }
 
+/// msg-mode.3: build a styled line for a single record in the
+/// `*messages*` buffer. The format is fixed
+/// (`HH:MM:SS.mmm LEVEL text...` produced by
+/// `crate::app::messages::format_message_record`) so the
+/// scanner is byte-offset based:
+///
+/// - bytes `0..12`: `HH:MM:SS.mmm` timestamp
+/// - byte `12`: separator space
+/// - bytes `13..18`: 5-char level token (`TRACE` / `DEBUG` /
+///   ` INFO` / ` WARN` / `ERROR`; the two short names are
+///   space-padded so the token width is constant)
+/// - byte `18`: separator space
+/// - bytes `19..`: message body
+///
+/// Lines that don't fit the shape (empty rope-tail lines, or
+/// future records produced by a different formatter) fall
+/// through to plain rendering — no panic, no wrong color.
+fn messages_line_spans(line: &str, theme: &crate::theme::Theme, max_width: u32) -> Vec<Span<'static>> {
+    // Strip a single trailing newline so the level scan + the
+    // span pushes don't see it. `snap.buffer.line(...)` returns
+    // text *with* the trailing `\n` for non-final lines.
+    let trimmed = line.strip_suffix('\n').unwrap_or(line);
+    let bytes = trimmed.as_bytes();
+    if bytes.len() < 19 || bytes[12] != b' ' || bytes[18] != b' ' {
+        // Doesn't match the messages format. Render plain.
+        return truncate_spans_to_width(vec![Span::raw(trimmed.to_string())], max_width);
+    }
+    let level_token = &trimmed[13..18];
+    let level_style = match level_token {
+        "TRACE" => theme.messages_trace_style,
+        "DEBUG" => theme.messages_debug_style,
+        " INFO" => theme.messages_info_style,
+        " WARN" => theme.messages_warn_style,
+        "ERROR" => theme.messages_error_style,
+        _ => {
+            // Unknown level token -- treat the whole line as
+            // plain. Keeps a misformatted record readable
+            // instead of mid-line-colored.
+            return truncate_spans_to_width(
+                vec![Span::raw(trimmed.to_string())],
+                max_width,
+            );
+        }
+    };
+    let timestamp = &trimmed[0..12];
+    // Byte 12 + byte 18 are spaces; carry them in the
+    // adjacent (timestamp / level) span so the styled tokens
+    // stay visually distinct without an extra raw span.
+    let body = &trimmed[19..];
+    let mut spans = vec![
+        Span::styled(timestamp.to_string(), theme.messages_timestamp_style),
+        Span::raw(" ".to_string()),
+        Span::styled(level_token.to_string(), level_style),
+        Span::raw(" ".to_string()),
+        Span::raw(body.to_string()),
+    ];
+    // Drop empty spans so the line length math stays sane.
+    spans.retain(|s| !s.content.is_empty());
+    truncate_spans_to_width(spans, max_width)
+}
+
 fn render_styled_line(line: &str, spans: &[StyledSpan], max_width: u32) -> Vec<Span<'static>> {
     let mut out: Vec<Span<'static>> = Vec::new();
     let mut cursor = 0usize;
@@ -4238,6 +4325,74 @@ mod tests {
             .find(|s| s.style != TuiStyle::default())
             .expect("at least one styled span");
         assert_eq!(first.content.as_ref(), "fn");
+    }
+
+    /// msg-mode.3: a well-formed messages record produces a
+    /// styled level token. Order: timestamp (dim), space,
+    /// LEVEL (themed), space, body.
+    #[test]
+    fn messages_line_spans_styles_each_level() {
+        let theme = crate::theme::Theme::default();
+        for (token, expected) in [
+            ("TRACE", theme.messages_trace_style),
+            ("DEBUG", theme.messages_debug_style),
+            (" INFO", theme.messages_info_style),
+            (" WARN", theme.messages_warn_style),
+            ("ERROR", theme.messages_error_style),
+        ] {
+            let line = format!("00:01:23.456 {token} hello world\n");
+            let spans = messages_line_spans(&line, &theme, 200);
+            let level_span = spans
+                .iter()
+                .find(|s| s.content.as_ref() == token)
+                .unwrap_or_else(|| panic!("level token `{token}` missing"));
+            assert_eq!(
+                level_span.style, expected,
+                "level token `{token}` style mismatch",
+            );
+        }
+    }
+
+    /// msg-mode.3: timestamp prefix carries the dim theme
+    /// style so it doesn't compete with the level + body.
+    #[test]
+    fn messages_line_spans_dims_timestamp() {
+        let theme = crate::theme::Theme::default();
+        let spans = messages_line_spans("00:01:23.456  WARN hello\n", &theme, 200);
+        let timestamp = spans
+            .iter()
+            .find(|s| s.content.as_ref() == "00:01:23.456")
+            .expect("timestamp span");
+        assert_eq!(timestamp.style, theme.messages_timestamp_style);
+    }
+
+    /// msg-mode.3: malformed lines (empty rope tail, future
+    /// records from a different formatter) fall through to
+    /// plain rendering. No panic, no wrong color.
+    #[test]
+    fn messages_line_spans_falls_back_to_plain_on_unknown_format() {
+        let theme = crate::theme::Theme::default();
+        let spans = messages_line_spans("just some random text\n", &theme, 200);
+        let total: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(total, "just some random text");
+        // No styled spans (everything default).
+        assert!(
+            spans.iter().all(|s| s.style == TuiStyle::default()),
+            "fallback should not apply any custom styles"
+        );
+    }
+
+    /// msg-mode.3: a line whose format prefix is right but
+    /// whose level token isn't recognised renders plain. Keeps
+    /// future formatter changes from mid-line-coloring random
+    /// text.
+    #[test]
+    fn messages_line_spans_falls_back_on_unknown_level() {
+        let theme = crate::theme::Theme::default();
+        let spans = messages_line_spans("00:01:23.456 OTHER hi\n", &theme, 200);
+        let total: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(total, "00:01:23.456 OTHER hi");
+        assert!(spans.iter().all(|s| s.style == TuiStyle::default()));
     }
 
     #[test]

@@ -127,7 +127,9 @@ proc-macro2 = "1"
 
 # Logging
 tracing = "0.1"
-tracing-subscriber = "0.3"
+# `env-filter` enables `EnvFilter` for msg-mode.2's
+# `messages.filter` typed option (live-editable directive parser).
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # CLI
 clap = { version = "4", features = ["derive"] }

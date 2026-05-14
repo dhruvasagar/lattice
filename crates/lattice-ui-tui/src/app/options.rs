@@ -454,6 +454,28 @@ impl App {
                 // returns immediately).
                 self.recompute_folds();
             }
+            "messages.filter" => {
+                // msg-mode.2: live-reload the `MessagesLayer`'s
+                // `EnvFilter` directive. Validator already
+                // rejected unparseable specs at `:set` time, so
+                // the typed value here is known good; the only
+                // way to hit `Err` is the test path where
+                // `install_messages_subscriber` wasn't called
+                // (no global subscriber to reload). Surface as
+                // a warn so users see the failure without
+                // panicking the editor.
+                let spec = self
+                    .config
+                    .get_typed::<lattice_config::MessagesFilter>()
+                    .map(|v| (*v).clone())
+                    .unwrap_or_else(|| String::from("info"));
+                if let Err(e) = lattice_runtime::reload_messages_filter(&spec) {
+                    self.set_message(
+                        EchoLevel::Warn,
+                        format!("messages.filter reload skipped: {e}"),
+                    );
+                }
+            }
             n if n.starts_with("ui.") => {
                 self.sync_theme_from_config();
                 if n == "ui.nerd_fonts" {

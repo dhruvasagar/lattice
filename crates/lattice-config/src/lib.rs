@@ -118,15 +118,16 @@ pub use core_options::{
     CompletionSourceBufferWordsPriority, CompletionSourceLspPriority, CompletionSourcePathPriority,
     CompletionSourceSnippetPriority, CompletionSourceTreeSitterPriority, CursorLine, FoldEnable,
     FoldMethodOption, HelpAproposDisplay, HelpDescribeDisplay, HelpListDisplay, HelpTopicDisplay,
-    HoverDisplay, IgnoreCase, LspLogDisplay, LspStatusDisplay, MessagesDisplay, Number,
+    HoverDisplay, IgnoreCase, LspLogDisplay, LspStatusDisplay, MessagesDisplay, MessagesFilter,
+    Number,
     PickerResultDisplay, ReadOnly, RelativeNumber, Scrolloff, SignatureDisplay, Tabstop,
     Whitespace, WhitespaceEol, WhitespaceLeading, WhitespaceSpace, WhitespaceTab,
     WhitespaceTrailing, Wrap,
 };
 pub use erased::ErasedOption;
 pub use group::{
-    Appearance, Completion, Display, Editing, Editor, Filetree, GROUP_DECLS, Help, Lsp, Oil,
-    OptionGroup, OptionGroupMetadata, Picker, ends_with_mode_suffix,
+    Appearance, Completion, Display, Editing, Editor, Filetree, GROUP_DECLS, Help, Lsp, Messages,
+    Oil, OptionGroup, OptionGroupMetadata, Picker, ends_with_mode_suffix,
 };
 pub use loader::{
     LoadMessage, LoadMessageLevel, LoadOutcome, default_user_config_path, load_default_paths,

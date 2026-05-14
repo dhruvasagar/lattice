@@ -375,9 +375,15 @@ impl App {
         let messages_ring = std::sync::Arc::new(std::sync::Mutex::new(
             crate::app::MessagesRing::default(),
         ));
+        // msg-mode.2: install with the typed-option's documented
+        // default (`"info"`). The user's TOML override (if any)
+        // is applied via `reload_messages_filter` from the
+        // option-change cascade once the config layer has
+        // loaded.
         let _ = lattice_runtime::install_messages_subscriber(
             messages_ring.clone(),
             event_bus.clone(),
+            "info",
         );
         // Wire the logger's publisher to the same bus. The
         // logger lives in `lattice-lsp`; the closure captures an

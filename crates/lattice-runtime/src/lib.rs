@@ -76,7 +76,9 @@ pub use events::{EventBus, EventFilter, SubscriptionId, SubscriptionTarget};
 pub use handle::{DocumentHandle, spawn_document};
 pub use lattice_grammar::CancellationToken;
 pub use messages::{MessagePushed, MessageRecord, MessagesRing};
-pub use messages_subscriber::{MessagesLayer, install_messages_subscriber};
+pub use messages_subscriber::{
+    MessagesFilterReloadError, MessagesLayer, install_messages_subscriber, reload_messages_filter,
+};
 pub use pending::{InvocationId, Pending, RuntimeError};
 pub use runtime::{block_on, shared_runtime, spawn_task};
 pub use snapshot::{DocumentSnapshot, PublishedSnapshot, SnapshotCache};

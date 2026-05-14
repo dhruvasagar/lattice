@@ -59,8 +59,36 @@ impl App {
     /// implementation tolerates the bootstrap window where the
     /// registration hasn't completed.
     pub fn activate_major_for_buffer_kind(&mut self, buffer_id: BufferId, kind: BufferKind) {
-        // Only Document buffers consult Lang; the others have
-        // a fixed mode regardless of content.
+        // Idempotency / preserve-intent: if the buffer already has
+        // any major active, don't preempt it. Three cases this
+        // covers cleanly:
+        //   1. Re-call on the same buffer (buffer-switch path
+        //      re-running through `activate_buffer_state`): the
+        //      resolved major is already active -- skip the
+        //      registry reload (would otherwise deactivate +
+        //      re-activate the implies cascade).
+        //   2. Synthetic Document buffers (`*lsp:rust*`,
+        //      `*messages*`, ...) whose creator activated a
+        //      specific major via `activate_major_by_id`. They
+        //      have no path; kind/lang resolution would pick
+        //      `text-mode` and clobber the log/messages major
+        //      (dropping its subscription Guard with it).
+        //   3. User-driven `:toggle-mode <name>` swaps (e.g. the
+        //      `lsp_mode_survives_major_swap` test path). The
+        //      user's choice must survive subsequent buffer
+        //      switches.
+        // Either way, still run the auto-LSP hook so `lsp-mode`
+        // propagates per-buffer; the hook is itself no-op-when-
+        // already-active and no-op-when-no-server-for-path.
+        if self.active_modes.get(&buffer_id).and_then(|m| m.major()).is_some() {
+            if matches!(kind, BufferKind::Document) {
+                self.maybe_auto_activate_lsp_mode(buffer_id);
+            }
+            return;
+        }
+        // No major yet: resolve from kind + lang. Document
+        // buffers consult `Lang::detect_from_path`; other kinds
+        // have a fixed mode regardless of content.
         let lang = match kind {
             BufferKind::Document => {
                 let snap = self.document.snapshot();
@@ -1000,6 +1028,58 @@ mod tests {
             ready,
             "lsp-mode deactivate should clear buffer_uris[id] after detach drain"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn lsp_mode_auto_activates_on_each_new_rust_buffer() {
+        // Bug fix: pre-fix, only the boot buffer ran
+        // `activate_major_for_buffer_kind`; `:e other.rs` skipped
+        // it, so `lsp-mode` never woke up on subsequent buffers.
+        // Post-fix, `activate_buffer_state` re-runs the major
+        // activation (idempotent on re-entry), which triggers
+        // the existing `maybe_auto_activate_lsp_mode` hook for
+        // every newly-visited buffer whose path has a server
+        // configured.
+        use crate::app::test_helpers::{app_with_path, write_temp_file};
+        let mut a = app_with_path("fn first() {}", 5, std::path::PathBuf::from("first.rs"));
+        let first_id = a.pane_tree.active().buffer_id;
+        // Boot path's lsp-mode activation is async since
+        // M-async.5 -- wait for it to settle.
+        let first_attached = wait_for(
+            || a.lsp_mode_enabled_for(first_id),
+            std::time::Duration::from_secs(2),
+        )
+        .await;
+        assert!(first_attached, "first rust buffer should auto-attach lsp-mode at boot");
+        // Open a second `.rs` file. Pre-fix this was the bug:
+        // `do_edit` created the buffer and called
+        // `activate_buffer_state` but skipped major activation,
+        // so the auto-LSP hook never fired.
+        let second_path = write_temp_file("auto-lsp-second.rs", "fn second() {}\n");
+        a.do_edit(Some(second_path.clone()), false);
+        let second_id = a.document_buffer_id;
+        assert_ne!(second_id, first_id, ":e should have opened a new buffer");
+        let second_attached = wait_for(
+            || a.lsp_mode_enabled_for(second_id),
+            std::time::Duration::from_secs(2),
+        )
+        .await;
+        assert!(
+            second_attached,
+            "lsp-mode should auto-activate on the second rust buffer after :e (buffer-switch fix)"
+        );
+        // First buffer's lsp-mode untouched -- per-buffer state.
+        assert!(a.lsp_mode_enabled_for(first_id), "first buffer's lsp-mode should persist after switch");
+        // Switching back via the activate-document path: the
+        // idempotency guard inside `activate_major_for_buffer_kind`
+        // skips the registry reload, the auto-LSP hook short-
+        // circuits (already-active minor). lsp-mode stays on.
+        a.activate_document(first_id);
+        assert!(
+            a.lsp_mode_enabled_for(first_id),
+            "first buffer's lsp-mode should still be active after switch-back via :b"
+        );
+        let _ = std::fs::remove_file(second_path);
     }
 
     #[test]

@@ -995,6 +995,38 @@ impl App {
     /// principled instead of sprinkling per-option fixups across
     /// every entry point that changes the active buffer.
     pub(super) fn activate_buffer_state(&mut self) {
+        // Ensure the buffer's major mode is wired up before the
+        // option-cache rebuild reads mode contributions. On first
+        // visit (new buffer from `:e foo.rs`), this activates the
+        // language major (e.g. `rust-mode`) and -- via the
+        // existing `maybe_auto_activate_lsp_mode` hook in
+        // `activate_major_for_buffer_kind` -- auto-activates
+        // `lsp-mode` if a server is configured for the path.
+        // On re-visits, the idempotency guard inside the helper
+        // turns this into a cheap "already active" no-op + a
+        // single auto-LSP hook re-run (which is itself
+        // no-op-when-already-active). This is what makes
+        // `lsp-mode` follow the user across buffer switches
+        // without each opening path having to remember to call
+        // it -- the existing classifier (LSP supervisor's
+        // `has_server_for_path`) is the "is this a language
+        // we support?" predicate, so the list of LSP-eligible
+        // languages grows automatically as servers register.
+        let active_id = self.pane_tree.active().buffer_id;
+        self.activate_major_for_buffer_kind(active_id, BufferKind::Document);
+        // Re-resolve the buffer's options against the *current*
+        // global typed-option layer. `apply_option_cascade` only
+        // refreshes the ACTIVE buffer's `resolved_options` entry
+        // on each `:set`, so a global option write that happened
+        // while a different buffer was active leaves this
+        // buffer's entry stale. Calling
+        // `recompute_options_for_buffer` here closes that gap
+        // before `rebuild_option_cache` reads from it. (Modes,
+        // buffer-local overrides, and registry values are all
+        // re-stitched -- it's the same path the option cascade
+        // takes, just scoped to the buffer we're activating
+        // rather than every buffer.)
+        self.recompute_options_for_buffer(active_id);
         // M.4: refresh the renderer's hot-path option cache from
         // the just-activated buffer's resolved options. Without
         // this, `app.show_line_numbers()` etc. would still reflect

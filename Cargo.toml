@@ -16,6 +16,7 @@ members = [
 	"crates/lattice-file-tree",
 	"crates/lattice-oil",
 	"crates/lattice-lsp",
+	"crates/lattice-host",
 	"crates/lattice-ui-tui",
 	"crates/lattice-cli",
 ]

@@ -24,6 +24,13 @@ lattice-lsp = { path = "../lattice-lsp" }
 lattice-help = { path = "../lattice-help" }
 lattice-oil = { path = "../lattice-oil" }
 lattice-file-tree = { path = "../lattice-file-tree" }
+# Phase 5.1: dep declared, unused. Phase 5.2 begins migrating
+# renderer-agnostic modules out of this crate and into
+# `lattice-host`; this dep is what makes those moves a single
+# import change in downstream consumers (they keep importing
+# from `lattice_ui_tui::*` while the crate re-exports from
+# lattice-host). See docs/dev/architecture/phase-5-extraction.md.
+lattice-host = { path = "../lattice-host" }
 lsp-types = { workspace = true }
 tokio = { workspace = true }
 tree-sitter = { workspace = true }

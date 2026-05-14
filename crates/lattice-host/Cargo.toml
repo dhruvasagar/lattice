@@ -1,0 +1,28 @@
+[package]
+name = "lattice-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Renderer-agnostic substrate. Owns the App state, dispatch, picker
+# sources, mode lifecycle, LSP coordination, options cascade, keymap
+# registry, buffer registry, folds, search, completion engine, file
+# ops, oil + file-tree state. Both `lattice-ui-tui` and (Phase 5.7+)
+# `lattice-ui-gpui` depend on this crate; neither depends on the
+# other.
+#
+# Anchor: docs/dev/architecture/phase-5-extraction.md (the slice plan).
+#
+# Phase 5.1: this crate is intentionally empty. Slice 5.2 begins
+# migrating renderer-agnostic modules out of `lattice-ui-tui` and
+# into this crate, one or two modules per commit, with the TUI
+# re-exporting via `pub use lattice_host::*;` so downstream
+# consumers don't break across the move.
+
+[dependencies]
+
+[dev-dependencies]
+
+[lints]
+workspace = true

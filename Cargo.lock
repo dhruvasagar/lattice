@@ -942,6 +942,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "lattice-host"
+version = "0.1.0"
+
+[[package]]
 name = "lattice-lsp"
 version = "0.1.0"
 dependencies = [
@@ -1084,6 +1088,7 @@ dependencies = [
  "lattice-file-tree",
  "lattice-grammar",
  "lattice-help",
+ "lattice-host",
  "lattice-lsp",
  "lattice-mode",
  "lattice-oil",

@@ -1013,6 +1013,55 @@ mod tests {
     }
 
     #[test]
+    fn ui_set_cascade_keeps_host_theme_and_tui_theme_in_sync() {
+        // Phase 5.3 contract: `host_theme` is the canonical
+        // renderer-neutral state; `theme` is the cached
+        // ratatui-typed adapter. `sync_theme_from_config` MUST
+        // update both. We exercise a representative subset of
+        // user-tweakable fields (`dim_inactive`, `nerd_fonts`,
+        // separator glyph, separator color) and assert each
+        // mutation lands in BOTH places.
+        let mut a = app_with("xx", 10);
+        // Flip dim_inactive false.
+        a.config
+            .set_typed::<crate::tui_options::UiDimInactive>(false)
+            .unwrap();
+        a.drain_option_changes();
+        assert!(!a.host_theme.dim_inactive_panes, "host: dim_inactive flipped");
+        assert!(!a.theme.dim_inactive_panes, "tui: dim_inactive flipped");
+        // Flip nerd_fonts on.
+        a.config
+            .set_typed::<crate::tui_options::UiNerdFonts>(true)
+            .unwrap();
+        a.drain_option_changes();
+        assert!(a.host_theme.nerd_fonts);
+        assert!(a.theme.nerd_fonts);
+        // Change separator glyph.
+        a.config
+            .set_typed::<crate::tui_options::UiSeparator>("┃".to_string())
+            .unwrap();
+        a.drain_option_changes();
+        assert_eq!(a.host_theme.pane_separator_vertical, '┃');
+        assert_eq!(a.theme.pane_separator_vertical, '┃');
+        // Change separator color (named).
+        a.config
+            .set_typed::<crate::tui_options::UiSeparatorColor>("red".to_string())
+            .unwrap();
+        a.drain_option_changes();
+        use lattice_host::ui::theme as ht;
+        assert_eq!(
+            a.host_theme.pane_separator.fg,
+            Some(ht::Color::Named(ht::NamedColor::Red)),
+            "host: separator fg=red",
+        );
+        assert_eq!(
+            a.theme.pane_separator.fg,
+            Some(ratatui::style::Color::Red),
+            "tui: separator fg=red",
+        );
+    }
+
+    #[test]
     fn drain_option_changes_handles_chained_cascade_writes() {
         let mut a = app_with("xx", 10);
         a.config.set_typed::<lattice_config::Number>(false).unwrap();

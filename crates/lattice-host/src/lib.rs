@@ -39,3 +39,4 @@ pub mod help_topics;
 pub mod host_generators;
 pub mod oil;
 pub mod popup;
+pub mod ui;

@@ -767,6 +767,7 @@ impl App {
             buffer_local_overrides: std::collections::HashMap::new(),
             help_topics,
             theme: crate::theme::Theme::default(),
+            host_theme: lattice_host::ui::theme::Theme::default(),
             pane_highlights: HashMap::new(),
             command_history: Vec::new(),
             command_history_cursor: None,
@@ -1025,46 +1026,54 @@ impl App {
             UiDimInactive, UiNerdFonts, UiSeparator, UiSeparatorColor, UiStatuslineActiveFg,
             UiStatuslineInactiveFg,
         };
-        use ratatui::style::Style;
-        // ui.dim_inactive -- bool flag projected directly.
-        self.theme.dim_inactive_panes = *self
+        use lattice_host::ui::theme as host_theme;
+        // Phase 5.3: write `self.host_theme` first (the
+        // canonical neutral state); then rebuild `self.theme`
+        // from it via the From<&host::Theme> adapter. Every
+        // user-tweakable field flows through host first so a
+        // future GPUI renderer that reads from `host_theme`
+        // sees the same values the TUI cache derives from.
+        let dim_inactive = *self
             .config
             .get_typed::<UiDimInactive>()
             .expect("UiDimInactive");
-        // ui.nerd_fonts -- selects the icon glyph palette
-        // (nerd-font Private Use codepoints vs. BMP fallback).
-        self.theme.nerd_fonts = *self.config.get_typed::<UiNerdFonts>().expect("UiNerdFonts");
-        // ui.separator -- one-character glyph for the vertical
-        // pane divider. Validated to len==1 at parse; fall back to
-        // the default if a forged value sneaks through.
+        let nerd_fonts = *self.config.get_typed::<UiNerdFonts>().expect("UiNerdFonts");
         let sep = self.config.get_typed::<UiSeparator>().expect("UiSeparator");
-        self.theme.pane_separator_vertical = sep.chars().next().unwrap_or('│');
-        // ui.separator_color -- color name; parse_color returned
+        let sep_char = sep.chars().next().unwrap_or('│');
+        self.host_theme.dim_inactive_panes = dim_inactive;
+        self.host_theme.nerd_fonts = nerd_fonts;
+        self.host_theme.pane_separator_vertical = sep_char;
+        // ui.separator_color -- color name; host parser returned
         // Ok during validate so unwrap-via-fallback is safe.
         let sep_color = self
             .config
             .get_typed::<UiSeparatorColor>()
             .expect("UiSeparatorColor");
-        if let Ok(c) = crate::theme::parse_color(&sep_color) {
-            self.theme.pane_separator = Style::default().fg(c);
+        if let Ok(c) = host_theme::parse_color(&sep_color) {
+            self.host_theme.pane_separator = host_theme::Style::empty().fg(c);
         }
-        // ui.statusline_active_fg -- foreground only; preserve any
-        // existing modifiers / background by chaining `.fg(c)` on
-        // the current style.
+        // ui.statusline_active_fg / _inactive_fg -- foreground
+        // only; preserve modifiers / background by chaining `.fg(c)`
+        // on the current host style (which itself preserves the
+        // host-side modifier set).
         let active_fg = self
             .config
             .get_typed::<UiStatuslineActiveFg>()
             .expect("UiStatuslineActiveFg");
-        if let Ok(c) = crate::theme::parse_color(&active_fg) {
-            self.theme.pane_status_active = self.theme.pane_status_active.fg(c);
+        if let Ok(c) = host_theme::parse_color(&active_fg) {
+            self.host_theme.pane_status_active.fg = Some(c);
         }
         let inactive_fg = self
             .config
             .get_typed::<UiStatuslineInactiveFg>()
             .expect("UiStatuslineInactiveFg");
-        if let Ok(c) = crate::theme::parse_color(&inactive_fg) {
-            self.theme.pane_status_inactive = self.theme.pane_status_inactive.fg(c);
+        if let Ok(c) = host_theme::parse_color(&inactive_fg) {
+            self.host_theme.pane_status_inactive.fg = Some(c);
         }
+        // Rebuild the cached TUI-typed adapter. Cheap (every
+        // field is Copy); the rebuild fires only on option
+        // cascade, not per frame.
+        self.theme = crate::theme::Theme::from(&self.host_theme);
     }
 
     /// Load `~/.config/lattice/lattice.toml` (user) and

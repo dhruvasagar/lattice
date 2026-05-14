@@ -12,6 +12,8 @@
 
 use ratatui::style::{Color, Modifier, Style};
 
+use lattice_host::ui::theme as host_theme;
+
 /// One full UI theme. Cheap to clone (Style + char fields are all
 /// `Copy`); the App holds it directly and `:set ui.*` writes
 /// through.
@@ -193,30 +195,117 @@ pub fn diagnostic_glyph_and_style(
     }
 }
 
-/// Parse a user-typed color name into a ratatui [`Color`]. Accepts
-/// the 16 ANSI names (lowercase + dark-prefixed variants) plus
-/// `default` / `reset` for terminal-default. Hex colors arrive
-/// post-1.0 (depends on a terminal-true-color check).
+/// Parse a user-typed color name into a ratatui [`Color`].
+///
+/// Phase 5.3: delegates to `lattice_host::ui::theme::parse_color`
+/// (the canonical parser) and converts the host [`host_theme::Color`]
+/// into a ratatui [`Color`]. The validation surface (accepted
+/// names, error format) stays identical so `:set ui.*_color=...`
+/// behaves the same. Hex colors arrive post-1.0 (depends on a
+/// terminal-true-color check).
 pub fn parse_color(s: &str) -> Result<Color, String> {
-    Ok(match s.to_ascii_lowercase().as_str() {
-        "default" | "reset" => Color::Reset,
-        "black" => Color::Black,
-        "red" => Color::Red,
-        "green" => Color::Green,
-        "yellow" => Color::Yellow,
-        "blue" => Color::Blue,
-        "magenta" => Color::Magenta,
-        "cyan" => Color::Cyan,
-        "gray" | "grey" | "white" => Color::Gray,
-        "darkgray" | "darkgrey" => Color::DarkGray,
-        "lightred" => Color::LightRed,
-        "lightgreen" => Color::LightGreen,
-        "lightyellow" => Color::LightYellow,
-        "lightblue" => Color::LightBlue,
-        "lightmagenta" => Color::LightMagenta,
-        "lightcyan" => Color::LightCyan,
-        other => return Err(format!("unknown color `{other}`")),
-    })
+    host_theme::parse_color(s).map(host_color_to_ratatui)
+}
+
+/// Adapt a renderer-neutral [`host_theme::Color`] into a ratatui
+/// [`Color`]. Lossless on all variants except `Rgb` when the
+/// terminal doesn't support truecolor -- in that case the
+/// renderer's frame submission stage handles the lossy fallback
+/// (ratatui already does palette closest-match itself).
+pub fn host_color_to_ratatui(c: host_theme::Color) -> Color {
+    use host_theme::NamedColor as N;
+    match c {
+        host_theme::Color::Default => Color::Reset,
+        host_theme::Color::Named(N::Black) => Color::Black,
+        host_theme::Color::Named(N::Red) => Color::Red,
+        host_theme::Color::Named(N::Green) => Color::Green,
+        host_theme::Color::Named(N::Yellow) => Color::Yellow,
+        host_theme::Color::Named(N::Blue) => Color::Blue,
+        host_theme::Color::Named(N::Magenta) => Color::Magenta,
+        host_theme::Color::Named(N::Cyan) => Color::Cyan,
+        host_theme::Color::Named(N::Gray) => Color::Gray,
+        host_theme::Color::Named(N::DarkGray) => Color::DarkGray,
+        host_theme::Color::Named(N::LightRed) => Color::LightRed,
+        host_theme::Color::Named(N::LightGreen) => Color::LightGreen,
+        host_theme::Color::Named(N::LightYellow) => Color::LightYellow,
+        host_theme::Color::Named(N::LightBlue) => Color::LightBlue,
+        host_theme::Color::Named(N::LightMagenta) => Color::LightMagenta,
+        host_theme::Color::Named(N::LightCyan) => Color::LightCyan,
+        host_theme::Color::Named(N::White) => Color::White,
+        host_theme::Color::Indexed(idx) => Color::Indexed(idx),
+        host_theme::Color::Rgb(r, g, b) => Color::Rgb(r, g, b),
+    }
+}
+
+/// Adapt a renderer-neutral [`host_theme::Style`] into a ratatui
+/// [`Style`]. Empty fg/bg map to "unset" on the ratatui side
+/// (same as `Style::default()`); modifiers chain via
+/// `add_modifier`.
+pub fn host_style_to_ratatui(s: host_theme::Style) -> Style {
+    let mut style = Style::default();
+    if let Some(fg) = s.fg {
+        style = style.fg(host_color_to_ratatui(fg));
+    }
+    if let Some(bg) = s.bg {
+        style = style.bg(host_color_to_ratatui(bg));
+    }
+    if s.modifiers.bold {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    if s.modifiers.italic {
+        style = style.add_modifier(Modifier::ITALIC);
+    }
+    if s.modifiers.underline {
+        style = style.add_modifier(Modifier::UNDERLINED);
+    }
+    if s.modifiers.dim {
+        style = style.add_modifier(Modifier::DIM);
+    }
+    if s.modifiers.reverse {
+        style = style.add_modifier(Modifier::REVERSED);
+    }
+    style
+}
+
+/// Adapter: build the ratatui-typed [`Theme`] from the canonical
+/// host [`host_theme::Theme`]. The TUI's `App.theme` cache is
+/// rebuilt via this conversion every time the option cascade
+/// writes `App.host_theme`. Cheap (every field is `Copy`); the
+/// rebuild fires at mode-transition / option-set rate, not per
+/// frame.
+impl From<&host_theme::Theme> for Theme {
+    fn from(h: &host_theme::Theme) -> Self {
+        Self {
+            pane_status_active: host_style_to_ratatui(h.pane_status_active),
+            pane_status_inactive: host_style_to_ratatui(h.pane_status_inactive),
+            inactive_pane_overlay: host_style_to_ratatui(h.inactive_pane_overlay),
+            dim_inactive_panes: h.dim_inactive_panes,
+            pane_separator: host_style_to_ratatui(h.pane_separator),
+            pane_separator_vertical: h.pane_separator_vertical,
+            pane_separator_horizontal: h.pane_separator_horizontal,
+            file_tree_dir_style: host_style_to_ratatui(h.file_tree_dir_style),
+            file_tree_hidden_style: host_style_to_ratatui(h.file_tree_hidden_style),
+            file_tree_file_style: host_style_to_ratatui(h.file_tree_file_style),
+            nerd_fonts: h.nerd_fonts,
+            diagnostic_error_glyph: h.diagnostic_error_glyph,
+            diagnostic_error_style: host_style_to_ratatui(h.diagnostic_error_style),
+            diagnostic_warning_glyph: h.diagnostic_warning_glyph,
+            diagnostic_warning_style: host_style_to_ratatui(h.diagnostic_warning_style),
+            diagnostic_info_glyph: h.diagnostic_info_glyph,
+            diagnostic_info_style: host_style_to_ratatui(h.diagnostic_info_style),
+            diagnostic_hint_glyph: h.diagnostic_hint_glyph,
+            diagnostic_hint_style: host_style_to_ratatui(h.diagnostic_hint_style),
+            whitespace_style: host_style_to_ratatui(h.whitespace_style),
+            whitespace_trailing_style: host_style_to_ratatui(h.whitespace_trailing_style),
+            cursor_line_bg: host_color_to_ratatui(h.cursor_line_bg),
+            messages_timestamp_style: host_style_to_ratatui(h.messages_timestamp_style),
+            messages_trace_style: host_style_to_ratatui(h.messages_trace_style),
+            messages_debug_style: host_style_to_ratatui(h.messages_debug_style),
+            messages_info_style: host_style_to_ratatui(h.messages_info_style),
+            messages_warn_style: host_style_to_ratatui(h.messages_warn_style),
+            messages_error_style: host_style_to_ratatui(h.messages_error_style),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -244,6 +333,31 @@ mod tests {
 
     #[test]
     fn parse_color_unknown_errors() {
+        assert!(parse_color("rainbow").is_err());
+    }
+
+    #[test]
+    fn host_theme_default_adapts_to_tui_theme_default() {
+        // Phase 5.3 contract: the host-side `Theme::default()`
+        // adapts (via `From<&host::Theme>`) to the same ratatui
+        // `Theme::default()` the TUI hand-rolls. If either default
+        // impl drifts, this test fails immediately -- we want a
+        // single source of truth for the default theme; the
+        // duplication is transitional, not load-bearing.
+        let host: super::host_theme::Theme = super::host_theme::Theme::default();
+        let adapted: Theme = (&host).into();
+        let tui: Theme = Theme::default();
+        assert_eq!(adapted, tui, "host theme default must adapt to TUI theme default");
+    }
+
+    #[test]
+    fn parse_color_routes_through_host() {
+        // The TUI parser delegates to the host parser. Pin the
+        // observable behaviour: same string → equivalent
+        // ratatui Color.
+        assert_eq!(parse_color("red").unwrap(), Color::Red);
+        assert_eq!(parse_color("default").unwrap(), Color::Reset);
+        assert_eq!(parse_color("DarkGray").unwrap(), Color::DarkGray);
         assert!(parse_color("rainbow").is_err());
     }
 }

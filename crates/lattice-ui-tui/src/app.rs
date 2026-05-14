@@ -1766,7 +1766,22 @@ pub struct App {
     /// UI styling knobs (DESIGN.md §5.6). Carries per-pane status
     /// line colors, the inactive-pane dim overlay, separator
     /// characters, etc. Customizable via `:set ui.*` options.
+    ///
+    /// Phase 5.3: the canonical state is [`Self::host_theme`]
+    /// (renderer-neutral). This field is the cached ratatui-typed
+    /// adapter that the TUI renderer reads on the hot path; it's
+    /// rebuilt from `host_theme` on every successful
+    /// `sync_theme_from_config`. The duplication is transitional;
+    /// when GPUI lands and the TUI cache moves off `App`,
+    /// `App.theme` collapses into `host_theme` (renamed) and each
+    /// renderer maintains its own cached view.
     pub theme: crate::theme::Theme,
+    /// Phase 5.3: renderer-neutral canonical theme. `:set ui.*`
+    /// writes this; the cached TUI adapter [`Self::theme`] is
+    /// rebuilt from it. Future renderers (GPUI) read from this
+    /// field and maintain their own cached view -- the host owns
+    /// the canonical neutral state.
+    pub host_theme: lattice_host::ui::theme::Theme,
     /// Per-frame snapshot of inactive panes' visible-window syntax
     /// highlights, keyed by pane index. Refreshed by
     /// [`Self::refresh_pane_highlights`] before each draw so the

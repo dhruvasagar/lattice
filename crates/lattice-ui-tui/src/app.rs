@@ -444,7 +444,7 @@ pub struct App {
     ///
     /// Steady-state hit rate: ~100% (cursor blinking, no edit).
     /// Drops cleanly to 0% during edits/scroll/fold-toggle.
-    visible_highlights_key: Option<highlights::VisibleHighlightsKey>,
+    visible_highlights_key: Option<lattice_host::highlights::VisibleHighlightsKey>,
     // Phase 5.B.7: `search_line`, `last_search`,
     // `current_match`, `all_matches`, `substitute_preview`
     // moved to `editor.search_line` / `editor.last_search`
@@ -652,7 +652,7 @@ pub struct App {
     /// popup can restore the prior frame without leaving Help.
     /// Drained on `dismiss_popup`; reset whenever a fresh top-
     /// level popup opens from outside Help.
-    pub popup_back_stack: Vec<crate::app::popup::PopupSnapshot>,
+    pub popup_back_stack: Vec<lattice_host::popup::PopupSnapshot>,
     /// Pane state captured before activating help -- used by
     /// `dismiss_popup` to restore the user to whatever buffer +
     /// cursor + scroll they came from. Set by both display

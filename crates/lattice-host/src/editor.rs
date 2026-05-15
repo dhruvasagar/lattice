@@ -405,6 +405,9 @@ pub struct Editor {
     /// state when no text mutation has happened since the
     /// previous frame.
     pub last_parsed_text_version: u64,
+    /// Cache key validating visible_highlights contents.
+    pub visible_highlights_key: Option<crate::highlights::VisibleHighlightsKey>,
+
     /// Tree-sitter-shaped edit deltas accumulated since the
     /// last `maybe_reparse_syntax` call. Pushed by
     /// `publish_document_changed` after each

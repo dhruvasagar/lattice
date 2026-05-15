@@ -41,27 +41,7 @@ use super::{App, BufferId, BufferKind, folds};
 /// QueryCursor walk only fires when this key changes. So
 /// the cursor blinks but nothing else changes, so the key stays
 /// equal across frames and we never re-run the QueryCursor walk.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct VisibleHighlightsKey {
-    pub(super) snapshot_ptr: usize,
-    /// Syntax snapshot's `text_version` (== version the worker
-    /// has parsed up to). Cache invalidates when the worker
-    /// publishes a fresh tree -- that's the right trigger for
-    /// re-highlighting. The document's own `text_version` is
-    /// deliberately NOT in the key: between an edit and the
-    /// worker's publish, the latest snapshot has no new
-    /// information, so re-highlighting against it would just
-    /// produce the same (slightly stale) result as the previous
-    /// frame at the cost of a ~178µs walk. Letting the cache
-    /// hold across that window keeps unchanged lines'
-    /// highlighting continuous; only the just-edited line's
-    /// spans are briefly at stale byte positions until the
-    /// worker publishes.
-    pub(super) syntax_text_version: u64,
-    pub(super) scroll: u32,
-    pub(super) viewport_height: u32,
-    pub(super) fold_hash: u64,
-}
+use lattice_host::highlights::VisibleHighlightsKey;
 
 impl App {
     /// Slice C.3: keep `visible_highlights` line-aligned with the
@@ -278,7 +258,7 @@ impl App {
             return;
         };
         let snap = syntax.snapshot();
-        let key = VisibleHighlightsKey {
+        let key = lattice_host::highlights::VisibleHighlightsKey {
             snapshot_ptr: std::sync::Arc::as_ptr(&snap) as usize,
             syntax_text_version: snap.text_version(),
             scroll: self.editor.scroll,

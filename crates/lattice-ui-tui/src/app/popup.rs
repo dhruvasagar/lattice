@@ -37,8 +37,8 @@
 //! field, exactly as it does today.
 
 use crate::buffers::BufferKind;
-use crate::help::{HelpContent, HelpMetadata};
-use crate::popup::PopupPlacement;
+use crate::help::HelpContent;
+use lattice_host::popup::{HelpMetadata, PopupPlacement};
 
 use super::{App, PositionSource, PrevPaneState};
 
@@ -49,15 +49,8 @@ use super::{App, PositionSource, PrevPaneState};
 /// needed to fully restore the prior view: title, rope, cursor,
 /// scroll, placement, and the link / anchor / highlight metadata
 /// that backs the renderer + follow-link reader.
-#[derive(Debug, Clone)]
-pub struct PopupSnapshot {
-    pub title: String,
-    pub content: lattice_core::Buffer,
-    pub cursor: lattice_protocol::position::Position,
-    pub scroll: u32,
-    pub metadata: HelpMetadata,
-    pub placement: PopupPlacement,
-}
+// Moved to lattice_host::popup::PopupSnapshot; keep local alias if needed.
+pub use lattice_host::popup::PopupSnapshot;
 
 impl App {
     /// Open a popup with `content` as its body at the requested

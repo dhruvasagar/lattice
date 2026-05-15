@@ -46,7 +46,7 @@ pub(super) fn press(app: &mut App, event: crossterm::event::KeyEvent) {
         active_buffer: app.active_buffer,
         completion_open: app.completion_state.is_some(),
         chord_capture: app.chord_capture_active(),
-        picker_open: app.picker.is_some(),
+        picker_open: app.editor.picker.is_some(),
         insert_completion_open: app.completion_popup_active(),
         snippet_active: app.active_snippet.is_some(),
         keymap: &app.keymap,

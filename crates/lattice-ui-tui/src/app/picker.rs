@@ -288,10 +288,10 @@ impl App {
         if !persist {
             return;
         }
-        let Some(path) = self.picker_mru_path.as_ref() else {
+        let Some(path) = self.editor.picker_mru_path.as_ref() else {
             return;
         };
-        if let Err(e) = self.picker_mru.save_to(path) {
+        if let Err(e) = self.editor.picker_mru.save_to(path) {
             eprintln!(
                 "lattice: failed to persist picker MRU at {}: {e}",
                 path.display(),
@@ -397,7 +397,7 @@ impl App {
             lattice_picker::PickerAction::JumpToLspLocation,
         );
         p.set_lsp_locations(rows);
-        self.picker = Some(p);
+        self.editor.picker = Some(p);
     }
 
     /// Build + open an LSP instance picker. Called by `:lsp-log`,
@@ -475,7 +475,7 @@ impl App {
             on_accept,
         );
         p.set_lsp_instances(rows);
-        self.picker = Some(p);
+        self.editor.picker = Some(p);
     }
 
     /// `:b` with no arg (DESIGN.md §5.9.7) -- open the vertico-style
@@ -507,8 +507,8 @@ impl App {
         // entry without a generator (metadata-only legacy
         // shape) surfaces a distinct echo so the drift is
         // visible.
-        let Some(entry) = self.picker_registry.entry(&source) else {
-            let known: Vec<&str> = self.picker_registry.ids().collect();
+        let Some(entry) = self.editor.picker_registry.entry(&source) else {
+            let known: Vec<&str> = self.editor.picker_registry.ids().collect();
             let msg = if known.is_empty() {
                 format!("picker: unknown source `{source}` (no sources registered)")
             } else {
@@ -559,14 +559,14 @@ impl App {
         // keystrokes during the seat already have somewhere
         // to land. The state survives until dismiss.
         let entry_is_live = self
-            .picker_registry
+            .editor.picker_registry
             .entry(&source)
             .map(|e| e.spec.live)
             .unwrap_or(false);
         if entry_is_live {
             // Cancel any prior live picker's in-flight task
             // (vim "do what I last said") and replace the slot.
-            if let Some(prev) = self.live_picker_query.take()
+            if let Some(prev) = self.editor.live_picker_query.take()
                 && let Some(inflight) = prev.inflight
             {
                 inflight.cancel.cancel();
@@ -577,7 +577,7 @@ impl App {
             // user keystrokes extend it). `seat_picker_from_pairs`
             // consumes this on the first seat.
             let initial_query = args.first().map(|s| s.trim()).filter(|s| !s.is_empty()).map(String::from);
-            self.live_picker_query = Some(crate::app::LivePickerQueryState {
+            self.editor.live_picker_query = Some(crate::app::LivePickerQueryState {
                 source_id: source.clone(),
                 generator: generator.clone(),
                 debounce_until: None,
@@ -595,7 +595,7 @@ impl App {
                 // may still resolve in the background; the
                 // cancel token tells the spawn closure to drop
                 // the result without sending.
-                if let Some(prev) = self.pending_picker_init.take() {
+                if let Some(prev) = self.editor.pending_picker_init.take() {
                     prev.cancel.cancel();
                 }
                 let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -607,7 +607,7 @@ impl App {
                         let _ = tx.send(result);
                     }
                 });
-                self.pending_picker_init = Some(crate::app::PendingPickerInit {
+                self.editor.pending_picker_init = Some(crate::app::PendingPickerInit {
                     source_id: source.clone(),
                     generator: generator.clone(),
                     rx,
@@ -639,7 +639,7 @@ impl App {
     /// closed channel = task dropped without sending (the
     /// cancel path took it).
     pub(crate) fn drain_pending_picker_init(&mut self) {
-        let Some(pending) = self.pending_picker_init.as_mut() else {
+        let Some(pending) = self.editor.pending_picker_init.as_mut() else {
             return;
         };
         let result = match pending.rx.try_recv() {
@@ -648,11 +648,11 @@ impl App {
             Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
                 // Task ended without sending (cancelled or
                 // panicked). Drop the pending and move on.
-                self.pending_picker_init = None;
+                self.editor.pending_picker_init = None;
                 return;
             }
         };
-        let pending = self.pending_picker_init.take().expect("guarded above");
+        let pending = self.editor.pending_picker_init.take().expect("guarded above");
         match result {
             Ok(pairs) => {
                 self.seat_picker_from_pairs(pending.source_id, pairs);
@@ -670,7 +670,7 @@ impl App {
     /// pushes the deadline to `now + LIVE_PICKER_DEBOUNCE`; the
     /// drain fires when `now >= deadline`.
     pub(crate) fn bump_live_picker_debounce(&mut self) {
-        let Some(state) = self.live_picker_query.as_mut() else {
+        let Some(state) = self.editor.live_picker_query.as_mut() else {
             return;
         };
         state.debounce_until =
@@ -698,7 +698,7 @@ impl App {
         // Step 1: fire on_query_changed if debounce elapsed.
         let now = std::time::Instant::now();
         let should_fire = self
-            .live_picker_query
+            .editor.live_picker_query
             .as_ref()
             .and_then(|s| s.debounce_until)
             .map(|d| now >= d)
@@ -713,7 +713,7 @@ impl App {
     /// Internal: take the snapshot, cancel any in-flight, call
     /// `on_query_changed`, route the result.
     fn fire_live_picker_query_changed(&mut self) {
-        let Some(state) = self.live_picker_query.as_mut() else {
+        let Some(state) = self.editor.live_picker_query.as_mut() else {
             return;
         };
         state.debounce_until = None;
@@ -725,10 +725,10 @@ impl App {
             prev.cancel.cancel();
         }
         // Snapshot the current query (cloned so the borrow on
-        // `self.picker` is released before we re-borrow `self`
+        // `self.editor.picker` is released before we re-borrow `self`
         // mutably for the dispatch). Empty picker (closed
         // before the timer fired) is a race we just no-op.
-        let query = match self.picker.as_ref() {
+        let query = match self.editor.picker.as_ref() {
             Some(p) => p.query.clone(),
             None => return,
         };
@@ -768,7 +768,7 @@ impl App {
                         let _ = tx.send(result.map(lattice_picker::PickerInitResult::Inline));
                     }
                 });
-                if let Some(state) = self.live_picker_query.as_mut() {
+                if let Some(state) = self.editor.live_picker_query.as_mut() {
                     state.inflight = Some(crate::app::InFlightLiveQuery {
                         cancel,
                         rx,
@@ -791,7 +791,7 @@ impl App {
     /// completion's launched query no longer matches the
     /// picker's current query, drop it (stale).
     fn drain_inflight_live_picker_query(&mut self) {
-        let Some(state) = self.live_picker_query.as_mut() else {
+        let Some(state) = self.editor.live_picker_query.as_mut() else {
             return;
         };
         let Some(inflight) = state.inflight.as_mut() else {
@@ -812,7 +812,7 @@ impl App {
         // the stale result; the newer fire is either in flight
         // already or queued behind the debounce.
         let current_query = self
-            .picker
+            .editor.picker
             .as_ref()
             .map(|p| p.query.clone())
             .unwrap_or_default();
@@ -821,7 +821,7 @@ impl App {
         }
         // Extract source id (must still be present -- the
         // dismiss path clears `live_picker_query`).
-        let source_id = match self.live_picker_query.as_ref() {
+        let source_id = match self.editor.live_picker_query.as_ref() {
             Some(s) => s.source_id.clone(),
             None => return,
         };
@@ -869,7 +869,7 @@ impl App {
                 .iter()
                 .map(
                     |(_cand, routing)| match lattice_picker::routing_identity(routing) {
-                        Some(id) => self.picker_mru.frecency_bonus(&source, &id, now, half_life),
+                        Some(id) => self.editor.picker_mru.frecency_bonus(&source, &id, now, half_life),
                         None => 0.0,
                     },
                 )
@@ -891,7 +891,7 @@ impl App {
         // Sources not in the registry (legacy imperative
         // pickers) default to non-live.
         let live = self
-            .picker_registry
+            .editor.picker_registry
             .entry(&source)
             .map(|e| e.spec.live)
             .unwrap_or(false);
@@ -904,7 +904,7 @@ impl App {
         // hits) don't reset the prompt back to the original
         // pattern.
         let initial_query = self
-            .live_picker_query
+            .editor.live_picker_query
             .as_mut()
             .and_then(|s| s.initial_query.take());
         if let Some(initial) = initial_query {
@@ -917,7 +917,7 @@ impl App {
         if source == "buffers" {
             picker.preview_origin = Some(self.active_pane_buffer_id().0);
         }
-        self.picker = Some(picker);
+        self.editor.picker = Some(picker);
         if source == "buffers" {
             self.preview_picker_selection();
         }
@@ -974,7 +974,7 @@ impl App {
         // because `Picker::preview_origin` is renderer-agnostic
         // (the host newtype-wraps).
         p.preview_origin = Some(active.0);
-        self.picker = Some(p);
+        self.editor.picker = Some(p);
         // Preview the initial selection. With the active buffer
         // floated to the bottom, the initial selection is a
         // *different* buffer (the alternate-buffer convention),
@@ -990,7 +990,7 @@ impl App {
     /// commit. Called after every selection change while a buffer
     /// picker is open.
     pub(super) fn preview_picker_selection(&mut self) {
-        let Some(picker) = self.picker.as_ref() else {
+        let Some(picker) = self.editor.picker.as_ref() else {
             return;
         };
         if !matches!(
@@ -1011,9 +1011,9 @@ impl App {
             // Already showing this buffer; nothing to preview.
             return;
         }
-        self.previewing = true;
+        self.editor.previewing = true;
         self.activate_buffer(id);
-        self.previewing = false;
+        self.editor.previewing = false;
     }
 
     /// Apply `Action::PickerDismiss` -- close the picker and, if
@@ -1025,7 +1025,7 @@ impl App {
         // cancel any in-flight `on_query_changed` future so the
         // spawned task drops its result instead of seating into
         // a closed picker.
-        if let Some(state) = self.live_picker_query.take()
+        if let Some(state) = self.editor.live_picker_query.take()
             && let Some(inflight) = state.inflight
         {
             inflight.cancel.cancel();
@@ -1036,14 +1036,14 @@ impl App {
         // inherit the stale origin and a later accept would
         // push the wrong entry.
         self.editor.pending_tag_origin = None;
-        let Some(picker) = self.picker.take() else {
+        let Some(picker) = self.editor.picker.take() else {
             return;
         };
         // 4.4.b: SMR picker dismiss = reply `null` to the
         // server. Snapshot the request id before any other
         // mutation; the finalize call removes the slot, the
         // queue advance opens the next picker (which sets
-        // `self.picker` again so the preview-restore branch
+        // `self.editor.picker` again so the preview-restore branch
         // below must not run for SMR).
         if let lattice_picker::PickerSource::LspShowMessageRequest { request_id, .. } =
             picker.source
@@ -1067,9 +1067,9 @@ impl App {
         if let Some(origin_raw) = picker.preview_origin {
             let origin = BufferId(origin_raw);
             if origin != self.active_pane_buffer_id() {
-                self.previewing = true;
+                self.editor.previewing = true;
                 self.activate_buffer(origin);
-                self.previewing = false;
+                self.editor.previewing = false;
             }
         }
     }
@@ -1084,7 +1084,7 @@ impl App {
     /// future, today the help-arm autopush handles cross-buffer-
     /// kind landings).
     pub(super) fn do_picker_accept(&mut self) {
-        let Some(picker) = self.picker.take() else {
+        let Some(picker) = self.editor.picker.take() else {
             return;
         };
         let Some(c) = picker.selected_candidate() else {
@@ -1092,9 +1092,9 @@ impl App {
             // already gone since we `take()`d it). Restore the
             // original buffer if we'd been previewing.
             if let Some(origin) = picker.preview_origin {
-                self.previewing = true;
+                self.editor.previewing = true;
                 self.activate_buffer(BufferId(origin));
-                self.previewing = false;
+                self.editor.previewing = false;
             }
             return;
         };
@@ -1111,9 +1111,9 @@ impl App {
                     "picker: candidate carries no routing payload".to_string(),
                 );
                 if let Some(origin) = picker.preview_origin {
-                    self.previewing = true;
+                    self.editor.previewing = true;
                     self.activate_buffer(BufferId(origin));
-                    self.previewing = false;
+                    self.editor.previewing = false;
                 }
                 return;
             }
@@ -1123,7 +1123,7 @@ impl App {
         // stamped on the Picker. Resolve the generator, call
         // its `accept`, and translate the typed outcome.
         if let Some(source_id) = picker.source_id.as_deref()
-            && let Some(generator) = self.picker_registry.generator(source_id).cloned()
+            && let Some(generator) = self.editor.picker_registry.generator(source_id).cloned()
         {
             let source_id_owned = source_id.to_string();
             let snap = self.document.snapshot();
@@ -1152,7 +1152,7 @@ impl App {
                 .unwrap_or(true);
             let identity = lattice_picker::routing_identity(&routing);
             if mru_enabled && let Some(identity) = identity.as_deref() {
-                self.picker_mru.record(&source_id_owned, identity);
+                self.editor.picker_mru.record(&source_id_owned, identity);
                 self.persist_picker_mru_best_effort();
             }
             // Publish the typed accept event AFTER the MRU
@@ -1595,7 +1595,7 @@ mod tests {
         let doc_id = app.buffers.document_ids_sorted().first().copied().unwrap();
         app.activate_document(doc_id);
         app.open_buffer_picker();
-        let p = app.picker.as_ref().expect("picker should be open");
+        let p = app.editor.picker.as_ref().expect("picker should be open");
         // Initial: every buffer in the registry. With no filter,
         // both the doc and the help buffer should be present.
         assert!(p.candidates.len() >= 2);
@@ -1618,7 +1618,7 @@ mod tests {
         }
         app.apply(Action::PickerAccept);
         // Picker is dismissed; active pane is on the help buffer.
-        assert!(app.picker.is_none());
+        assert!(app.editor.picker.is_none());
         assert_eq!(app.active_pane_buffer_id(), help_id);
         assert!(matches!(app.active_buffer, BufferKind::Help));
     }
@@ -1630,7 +1630,7 @@ mod tests {
         app.activate_document(doc_id);
         app.open_buffer_picker();
         app.apply(Action::PickerDismiss);
-        assert!(app.picker.is_none());
+        assert!(app.editor.picker.is_none());
         assert_eq!(app.active_pane_buffer_id(), doc_id);
     }
 
@@ -1665,7 +1665,7 @@ mod tests {
         assert_ne!(app.active_pane_buffer_id(), doc_id);
         app.apply(Action::PickerDismiss);
         // Esc restored the original.
-        assert!(app.picker.is_none());
+        assert!(app.editor.picker.is_none());
         assert_eq!(app.active_pane_buffer_id(), doc_id);
         assert!(matches!(app.active_buffer, BufferKind::Document));
     }
@@ -1785,7 +1785,7 @@ mod tests {
     #[test]
     fn boot_registers_builtin_picker_sources() {
         let app = app_with("hi\n", 5);
-        let ids: Vec<&'static str> = app.picker_registry.ids().collect();
+        let ids: Vec<&'static str> = app.editor.picker_registry.ids().collect();
         assert!(ids.contains(&"files"));
         assert!(ids.contains(&"recent"));
         assert!(ids.contains(&"buffers"));
@@ -1802,7 +1802,7 @@ mod tests {
         std::fs::write(tmp.join("a.rs"), "").unwrap();
         let mut app = app_with("hi\n", 5);
         app.open_picker("files".into(), vec![tmp.display().to_string()]);
-        let p = app.picker.as_ref().expect("picker open");
+        let p = app.editor.picker.as_ref().expect("picker open");
         assert!(!p.candidates.is_empty());
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -1813,7 +1813,7 @@ mod tests {
     fn open_picker_buffers_opens_buffer_switcher() {
         let mut app = app_with("hi\n", 5);
         app.open_picker("buffers".into(), Vec::new());
-        let p = app.picker.as_ref().expect("picker open");
+        let p = app.editor.picker.as_ref().expect("picker open");
         assert!(!p.candidates.is_empty());
     }
 
@@ -1823,7 +1823,7 @@ mod tests {
     fn open_picker_recent_with_empty_mru_echoes() {
         let mut app = app_with("hi\n", 5);
         app.open_picker("recent".into(), Vec::new());
-        assert!(app.picker.is_none());
+        assert!(app.editor.picker.is_none());
         let msg = app.editor.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("no recent files"));
     }
@@ -1870,7 +1870,7 @@ mod tests {
             ]
         );
         // Sanity: matches what the registry itself reports.
-        let registry_ids: Vec<&'static str> = app.picker_registry.ids().collect();
+        let registry_ids: Vec<&'static str> = app.editor.picker_registry.ids().collect();
         let mut expected: Vec<String> = registry_ids.iter().map(|s| s.to_string()).collect();
         expected.sort();
         assert_eq!(ids, expected);
@@ -1912,7 +1912,7 @@ mod tests {
     fn open_picker_lines_seeds_one_row_per_line() {
         let mut app = app_with("alpha\nbeta\ngamma\n", 10);
         app.open_picker("lines".into(), Vec::new());
-        let p = app.picker.as_ref().expect("picker open");
+        let p = app.editor.picker.as_ref().expect("picker open");
         assert_eq!(p.candidates.len(), 3);
         assert_eq!(p.source_id.as_deref(), Some("lines"));
     }
@@ -1929,7 +1929,7 @@ mod tests {
         // and accept.
         app.apply(Action::PickerSelectNext);
         app.apply(Action::PickerAccept);
-        assert!(app.picker.is_none());
+        assert!(app.editor.picker.is_none());
         assert_eq!(app.cursor.line, 1);
         assert_eq!(app.cursor.byte, 0);
     }
@@ -1945,7 +1945,7 @@ mod tests {
     fn open_picker_snippets_empty_registry_echoes() {
         let mut app = app_with("hi\n", 5);
         app.open_picker("snippets".into(), Vec::new());
-        assert!(app.picker.is_none());
+        assert!(app.editor.picker.is_none());
         let msg = app.editor.last_message.as_ref().expect("echo");
         assert!(
             msg.text.contains("no snippets registered"),
@@ -1971,15 +1971,15 @@ mod tests {
         // touching the user's real cache. Also clear any
         // pre-loaded entries from disk so the assertions
         // measure deltas, not absolute counts.
-        app.picker_mru.clear();
-        app.picker_mru_path = None;
+        app.editor.picker_mru.clear();
+        app.editor.picker_mru_path = None;
         // Open the files picker and accept the alphabetically-
         // first candidate (alpha.rs sorts before beta.rs in
         // walker output, but order depends on read_dir so use
         // whichever the picker surfaces).
         app.open_picker("files".into(), vec![tmp.display().to_string()]);
         let first_id = {
-            let p = app.picker.as_ref().expect("picker open");
+            let p = app.editor.picker.as_ref().expect("picker open");
             let c = p.selected_candidate().expect("first selected");
             match p.routing_for(c).expect("routing") {
                 lattice_picker::RoutingPayload::OpenFile { path } => path.clone(),
@@ -1987,18 +1987,18 @@ mod tests {
             }
         };
         app.apply(Action::PickerAccept);
-        assert!(app.picker.is_none());
+        assert!(app.editor.picker.is_none());
         // The MRU should now have one entry under `files`.
         let identity = format!("file:{}", first_id.display());
         assert!(
-            app.picker_mru.lookup("files", &identity).is_some(),
+            app.editor.picker_mru.lookup("files", &identity).is_some(),
             "expected MRU entry for {identity}"
         );
         // Re-open the picker. The accepted file should now
         // float to the top (MRU bonus > 0 vs 0 for the other).
         app.open_picker("files".into(), vec![tmp.display().to_string()]);
         let top = {
-            let p = app.picker.as_ref().expect("picker open");
+            let p = app.editor.picker.as_ref().expect("picker open");
             let c = p.selected_candidate().expect("top selected");
             match p.routing_for(c).expect("routing") {
                 lattice_picker::RoutingPayload::OpenFile { path } => path.clone(),
@@ -2024,13 +2024,13 @@ mod tests {
         std::fs::create_dir_all(&tmp).unwrap();
         std::fs::write(tmp.join("alpha.rs"), "").unwrap();
         let mut app = app_with("hi\n", 5);
-        app.picker_mru_path = None;
+        app.editor.picker_mru_path = None;
         // Subscribe before firing the picker.
         let (tx, mut rx) =
             tokio::sync::mpsc::unbounded_channel::<lattice_picker::events::PickerAccepted>();
         app.event_bus.subscribe_typed(tx);
         app.open_picker("files".into(), vec![tmp.display().to_string()]);
-        let _ = app.picker.as_ref().expect("picker open");
+        let _ = app.editor.picker.as_ref().expect("picker open");
         app.apply(Action::PickerAccept);
         // The event lands synchronously through the bus's
         // forwarder closures; try_recv should see it.
@@ -2072,19 +2072,19 @@ mod tests {
         // Start from an empty MRU regardless of what's on the
         // user's disk cache; we measure the delta caused by
         // the accept, not the absolute count.
-        app.picker_mru.clear();
-        app.picker_mru_path = None;
-        let before = app.picker_mru.len();
+        app.editor.picker_mru.clear();
+        app.editor.picker_mru_path = None;
+        let before = app.editor.picker_mru.len();
         // Disable MRU.
         app.config
             .parse_and_set_command("picker.mru.enabled=false")
             .unwrap();
         app.open_picker("files".into(), vec![tmp.display().to_string()]);
-        let _ = app.picker.as_ref().expect("picker open");
+        let _ = app.editor.picker.as_ref().expect("picker open");
         app.apply(Action::PickerAccept);
         // With MRU off, the accept must not add a record.
         assert_eq!(
-            app.picker_mru.len(),
+            app.editor.picker_mru.len(),
             before,
             "accept with MRU off must not change the index"
         );
@@ -2173,8 +2173,8 @@ mod tests {
         );
         picker.set_live_source_mode(true);
         picker.source_id = Some("live-stub".to_string());
-        app.picker = Some(picker);
-        app.live_picker_query = Some(crate::app::LivePickerQueryState {
+        app.editor.picker = Some(picker);
+        app.editor.live_picker_query = Some(crate::app::LivePickerQueryState {
             source_id: "live-stub".to_string(),
             generator: stub as Arc<dyn PickerSourceGenerator>,
             debounce_until: None,
@@ -2192,11 +2192,11 @@ mod tests {
         // Type a single character. The dispatch handler in
         // dispatch.rs calls `bump_live_picker_debounce` after
         // the picker mutation, so we mirror both here.
-        app.picker.as_mut().unwrap().append_query('h');
+        app.editor.picker.as_mut().unwrap().append_query('h');
         app.bump_live_picker_debounce();
         // Verify the debounce deadline got installed.
         assert!(
-            app.live_picker_query
+            app.editor.live_picker_query
                 .as_ref()
                 .and_then(|s| s.debounce_until)
                 .is_some(),
@@ -2204,7 +2204,7 @@ mod tests {
         );
         // Force the deadline into the past so the drain fires
         // without sleeping.
-        if let Some(state) = app.live_picker_query.as_mut() {
+        if let Some(state) = app.editor.live_picker_query.as_mut() {
             state.debounce_until =
                 Some(std::time::Instant::now() - std::time::Duration::from_millis(1));
         }
@@ -2213,12 +2213,12 @@ mod tests {
         let recorded = calls.lock().unwrap().clone();
         assert_eq!(recorded, vec!["h".to_string()]);
         // Picker raw was refreshed from the stub's Inline result.
-        let picker = app.picker.as_ref().expect("picker still open");
+        let picker = app.editor.picker.as_ref().expect("picker still open");
         assert_eq!(picker.candidates.len(), 1, "stub seated one candidate");
         assert!(picker.candidates[0].raw.display.contains("hit:h"));
         // Debounce slot cleared after fire.
         assert!(
-            app.live_picker_query
+            app.editor.live_picker_query
                 .as_ref()
                 .and_then(|s| s.debounce_until)
                 .is_none(),
@@ -2236,7 +2236,7 @@ mod tests {
         let calls = stub.calls.clone();
         let mut app = app_with_live_stub(stub);
         for c in "foo".chars() {
-            app.picker.as_mut().unwrap().append_query(c);
+            app.editor.picker.as_mut().unwrap().append_query(c);
             app.bump_live_picker_debounce();
             // Drain BETWEEN bumps -- deadline is still in the
             // future so the drain is a no-op. Mirrors what the
@@ -2245,7 +2245,7 @@ mod tests {
         }
         assert!(calls.lock().unwrap().is_empty(), "no fire while bouncing the deadline forward");
         // Now collapse: force deadline to past, drain once.
-        if let Some(state) = app.live_picker_query.as_mut() {
+        if let Some(state) = app.editor.live_picker_query.as_mut() {
             state.debounce_until =
                 Some(std::time::Instant::now() - std::time::Duration::from_millis(1));
         }
@@ -2262,11 +2262,11 @@ mod tests {
     fn live_picker_dismiss_clears_state() {
         let stub = Arc::new(LiveStubSource::new("live-stub"));
         let mut app = app_with_live_stub(stub);
-        assert!(app.live_picker_query.is_some());
+        assert!(app.editor.live_picker_query.is_some());
         app.do_picker_dismiss();
-        assert!(app.picker.is_none(), "picker closed");
+        assert!(app.editor.picker.is_none(), "picker closed");
         assert!(
-            app.live_picker_query.is_none(),
+            app.editor.live_picker_query.is_none(),
             "live-picker state torn down on dismiss",
         );
     }
@@ -2291,13 +2291,13 @@ mod tests {
         let mut app = app_with("hi\n", 5);
         app.open_picker("grep".into(), Vec::new());
         // Picker open, empty candidates (init returned Inline(empty)).
-        let picker = app.picker.as_ref().expect("picker open");
+        let picker = app.editor.picker.as_ref().expect("picker open");
         assert_eq!(picker.title, "grep");
         assert!(picker.is_live_source_mode(), "grep must be live");
         assert!(picker.candidates.is_empty(), "no candidates without a pattern");
         assert!(picker.query.is_empty(), "prompt empty when no initial pattern");
         // Live-picker state installed; no initial query stashed.
-        let live = app.live_picker_query.as_ref().expect("live state installed");
+        let live = app.editor.live_picker_query.as_ref().expect("live state installed");
         assert_eq!(live.source_id, "grep");
         assert!(live.initial_query.is_none());
         assert!(live.debounce_until.is_none(), "no keystroke yet -> no deadline");
@@ -2317,13 +2317,13 @@ mod tests {
         // against a real workspace.
         app.open_picker("grep".into(), vec!["needle".to_string()]);
         let live = app
-            .live_picker_query
+            .editor.live_picker_query
             .as_ref()
             .expect("live state must be installed");
         assert_eq!(live.initial_query.as_deref(), Some("needle"));
         // pending_picker_init carries the in-flight future.
         assert!(
-            app.pending_picker_init.is_some(),
+            app.editor.pending_picker_init.is_some(),
             "init returned Future -> drain rx parked",
         );
     }
@@ -2341,11 +2341,11 @@ mod tests {
         // The seed-on-seat behaviour fires regardless of the
         // batch contents.
         app.seat_picker_from_pairs("grep".to_string(), Vec::new());
-        let picker = app.picker.as_ref().expect("picker open");
+        let picker = app.editor.picker.as_ref().expect("picker open");
         assert_eq!(picker.query, "TODO", "initial pattern seeded into prompt");
         assert_eq!(picker.query_cursor, "TODO".len());
         // Stash consumed.
-        let live = app.live_picker_query.as_ref().expect("live state present");
+        let live = app.editor.live_picker_query.as_ref().expect("live state present");
         assert!(live.initial_query.is_none(), "initial_query taken on seat");
     }
 
@@ -2356,7 +2356,7 @@ mod tests {
     fn open_picker_unknown_source_echoes_with_known_ids() {
         let mut app = app_with("hi\n", 5);
         app.open_picker("nope".into(), Vec::new());
-        assert!(app.picker.is_none());
+        assert!(app.editor.picker.is_none());
         let msg = app.editor.last_message.as_ref().expect("echo");
         assert!(
             msg.text.contains("unknown source `nope`"),

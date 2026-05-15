@@ -371,27 +371,27 @@ impl App {
 
             Action::CloseHover => self.do_close_hover(),
             Action::PickerAppend(c) => {
-                if let Some(p) = self.picker.as_mut() {
+                if let Some(p) = self.editor.picker.as_mut() {
                     p.append_query(c);
                 }
                 self.bump_live_picker_debounce();
                 self.preview_picker_selection();
             }
             Action::PickerBackspace => {
-                if let Some(p) = self.picker.as_mut() {
+                if let Some(p) = self.editor.picker.as_mut() {
                     p.backspace_query();
                 }
                 self.bump_live_picker_debounce();
                 self.preview_picker_selection();
             }
             Action::PickerSelectNext => {
-                if let Some(p) = self.picker.as_mut() {
+                if let Some(p) = self.editor.picker.as_mut() {
                     p.select_next();
                 }
                 self.preview_picker_selection();
             }
             Action::PickerSelectPrev => {
-                if let Some(p) = self.picker.as_mut() {
+                if let Some(p) = self.editor.picker.as_mut() {
                     p.select_prev();
                 }
                 self.preview_picker_selection();

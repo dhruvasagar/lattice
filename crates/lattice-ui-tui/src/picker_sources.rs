@@ -1991,24 +1991,24 @@ mod tests {
         let mut reg = lattice_picker::PickerRegistry::new();
         let source: Arc<dyn PickerSourceGenerator> = Arc::new(DelayedFutureSource::new());
         reg.register_generator(source);
-        app.picker_registry = Arc::new(reg);
+        app.editor.picker_registry = Arc::new(reg);
         // Fire the picker. Init returns Future; the picker
         // should NOT seat synchronously.
         app.open_picker("delayed-test".into(), Vec::new());
-        assert!(app.picker.is_none(), "picker shouldn't seat sync on Future");
-        assert!(app.pending_picker_init.is_some(), "pending should be set");
+        assert!(app.editor.picker.is_none(), "picker shouldn't seat sync on Future");
+        assert!(app.editor.pending_picker_init.is_some(), "pending should be set");
         // Pump the drain. The future needs at least one tokio
         // poll to resolve -- we give the spawned task a
         // chance to land by sleeping briefly.
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         while std::time::Instant::now() < deadline {
             app.drain_pending_picker_init();
-            if app.picker.is_some() {
+            if app.editor.picker.is_some() {
                 break;
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-        let p = app.picker.as_ref().expect("picker seated after drain");
+        let p = app.editor.picker.as_ref().expect("picker seated after drain");
         assert_eq!(p.candidates.len(), 1);
         assert_eq!(p.source_id.as_deref(), Some("delayed-test"));
     }

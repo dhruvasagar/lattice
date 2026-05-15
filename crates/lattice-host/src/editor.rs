@@ -37,13 +37,15 @@ use std::sync::Arc;
 use lattice_core::ui::popup::PopupPlacement;
 use lattice_protocol::edit::EditDelta;
 use lattice_runtime::{MessagePushed, MessagesRing};
+use lattice_picker::{Picker, PickerMruIndex, PickerRegistry};
 use lattice_syntax::{LangRegistry, StyledSpan, SyntaxHandle};
 
 use crate::action::EchoMessage;
 use crate::buffers::BufferId;
 use crate::state::{
-    LastFind, LastSearch, LastVisual, MacroRecording, PendingBlockInsert, PositionEntry,
-    PrevPaneState, ReplaceEntry, SearchLine, SubstitutePreview, TagStackEntry, UnnamedRegister,
+    LastFind, LastSearch, LastVisual, LivePickerQueryState, MacroRecording, PendingBlockInsert,
+    PendingPickerInit, PositionEntry, PrevPaneState, ReplaceEntry, SearchLine, SubstitutePreview,
+    TagStackEntry, UnnamedRegister,
 };
 
 /// Renderer-agnostic editor state.
@@ -100,6 +102,13 @@ use crate::state::{
 ///   `VisibleHighlightsKey` lives in
 ///   `lattice-ui-tui::app::highlights` with `pub(super)`
 ///   visibility; follow-up slice promotes it to host first.
+/// - 5.B.13 -- picker (`picker`, `picker_registry`,
+///   `picker_mru`, `picker_mru_path`,
+///   `pending_picker_init`, `live_picker_query`,
+///   `previewing`). Picker support types (`PendingPickerInit`,
+///   `LivePickerQueryState`, `InFlightLiveQuery`,
+///   `LIVE_PICKER_DEBOUNCE`) also moved from
+///   `lattice-ui-tui::app` to `lattice_host::state`.
 #[derive(Debug, Default)]
 pub struct Editor {
     /// Completed macro recordings keyed by register name.
@@ -335,4 +344,24 @@ pub struct Editor {
     /// renderer can read via `&App`. The active pane uses
     /// the live [`Self::visible_highlights`] field instead.
     pub pane_highlights: std::collections::HashMap<usize, Vec<Vec<StyledSpan>>>,
+    /// Active picker overlay. `None` outside picker mode.
+    pub picker: Option<Picker>,
+    /// Picker source registry -- `:picker` source kinds.
+    pub picker_registry: Arc<PickerRegistry>,
+    /// Per-source MRU index that biases the picker's initial
+    /// candidate ordering toward recently-accepted picks.
+    pub picker_mru: PickerMruIndex,
+    /// Optional on-disk persistence path for [`Self::picker_mru`].
+    /// `None` for ephemeral / test installs.
+    pub picker_mru_path: Option<PathBuf>,
+    /// In-flight async picker init, if the active picker
+    /// source's `init` returned a Future.
+    pub pending_picker_init: Option<PendingPickerInit>,
+    /// Live-picker query state -- present only when the
+    /// active picker source has `spec().live == true`.
+    pub live_picker_query: Option<LivePickerQueryState>,
+    /// One-tick preview gate: set when the picker should
+    /// render its candidate row preview into the auxiliary
+    /// region. Cleared after the renderer reads it.
+    pub previewing: bool,
 }

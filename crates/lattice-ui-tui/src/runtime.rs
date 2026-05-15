@@ -395,7 +395,7 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
         // renderer actually paints.
         let size = terminal.size().context("query terminal size")?;
         let extra_rows = app
-            .picker
+            .editor.picker
             .as_ref()
             .map(|p| popup_height_for(p.candidates.len().max(1)))
             .unwrap_or(0)
@@ -457,7 +457,7 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
                         active_buffer: app.active_buffer,
                         completion_open: app.completion_state.is_some(),
                         chord_capture: app.chord_capture_active(),
-                        picker_open: app.picker.is_some(),
+                        picker_open: app.editor.picker.is_some(),
                         insert_completion_open: app.completion_popup_active(),
                         snippet_active: app.active_snippet.is_some(),
                         keymap: &app.keymap,

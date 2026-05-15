@@ -186,7 +186,7 @@ impl App {
         // Skip on no-op activations (already on this buffer), on
         // picker previews (the user hasn't committed yet), and on
         // duplicate entries (`push_position_history` coalesces).
-        if !self.previewing && id != self.active_pane_buffer_id() {
+        if !self.editor.previewing && id != self.active_pane_buffer_id() {
             let cur = self.active_cursor();
             self.push_position_history(cur, PositionSource::AutoJump);
         }
@@ -261,7 +261,7 @@ impl App {
         // don't want every cursor over a candidate to bloat the
         // jump list. The real push happens on `PickerAccept` if
         // the user commits.
-        if !self.previewing && matches!(self.active_buffer, BufferKind::Document) {
+        if !self.editor.previewing && matches!(self.active_buffer, BufferKind::Document) {
             let cur = self.cursor;
             self.push_position_history(cur, PositionSource::AutoJump);
         }

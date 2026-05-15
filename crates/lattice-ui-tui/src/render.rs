@@ -182,7 +182,7 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) {
     // (only one is reachable interactively at a time, but the
     // ordering matters for layout sizing).
     let picker_rows = app
-        .picker
+        .editor.picker
         .as_ref()
         .map(|p| popup_height(p.candidates.len().max(1)))
         .unwrap_or(0);
@@ -218,7 +218,7 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) {
     // user types in the picker's own query buffer, not the `:`
     // line, so the cmdline / echo content is hidden until the
     // picker dismisses.
-    if app.picker.is_some() {
+    if app.editor.picker.is_some() {
         draw_picker_prompt(frame, chunks[2], app);
     } else {
         draw_command_or_echo(frame, chunks[2], app);
@@ -781,7 +781,7 @@ fn candidate_to_line<'a>(
 /// candidate list is rendered below by
 /// [`draw_picker_candidates`].
 fn draw_picker_prompt(frame: &mut Frame, area: Rect, app: &App) {
-    let Some(p) = app.picker.as_ref() else {
+    let Some(p) = app.editor.picker.as_ref() else {
         return;
     };
     let count = if p.candidates.is_empty() {
@@ -812,7 +812,7 @@ fn draw_picker_prompt(frame: &mut Frame, area: Rect, app: &App) {
 /// for per-row rendering so match highlights + marginalia stay
 /// consistent with the cmdline completion popup.
 fn draw_picker_candidates(frame: &mut Frame, area: Rect, app: &App) {
-    let Some(p) = app.picker.as_ref() else {
+    let Some(p) = app.editor.picker.as_ref() else {
         return;
     };
     frame.render_widget(Clear, area);

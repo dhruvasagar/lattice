@@ -1510,7 +1510,7 @@ impl App {
             ));
             self.lsp_pending_show_message_requests
                 .insert(request_id, req);
-            if self.picker.is_some() {
+            if self.editor.picker.is_some() {
                 self.lsp_show_message_request_queue.push_back(request_id);
             } else {
                 self.open_show_message_request_picker(request_id);
@@ -1582,7 +1582,7 @@ impl App {
             lattice_picker::PickerAction::AcceptShowMessageAction,
         );
         p.set_raw_candidates_with_routing(items);
-        self.picker = Some(p);
+        self.editor.picker = Some(p);
     }
 
     /// Send the LSP response for one in-flight
@@ -2582,7 +2582,7 @@ impl App {
                     lattice_picker::PickerAction::AcceptLspCodeAction,
                 );
                 p.set_raw_candidates_with_routing(pairs);
-                self.picker = Some(p);
+                self.editor.picker = Some(p);
             }
         }
     }
@@ -2755,7 +2755,7 @@ impl App {
                     lattice_picker::PickerAction::AcceptLspCompletion,
                 );
                 p.set_raw_candidates_with_routing(pairs);
-                self.picker = Some(p);
+                self.editor.picker = Some(p);
             }
         }
     }
@@ -3138,7 +3138,7 @@ impl App {
                     lattice_picker::PickerAction::JumpToLspLocation,
                 );
                 p.set_lsp_locations(picker_rows);
-                self.picker = Some(p);
+                self.editor.picker = Some(p);
             }
         }
     }
@@ -4018,7 +4018,7 @@ impl App {
             lattice_picker::PickerAction::JumpToLspLocation,
         );
         p.set_lsp_locations(rows);
-        self.picker = Some(p);
+        self.editor.picker = Some(p);
     }
 
     /// `]d` / `:diag-next` / `:cnext` -- move the cursor to the
@@ -5551,7 +5551,7 @@ impl App {
             lattice_picker::PickerAction::AcceptLspCodeLens,
         );
         p.set_raw_candidates_with_routing(pairs);
-        self.picker = Some(p);
+        self.editor.picker = Some(p);
     }
 
     /// 4.5.d: accept a code lens by `index` (the routing
@@ -5841,7 +5841,7 @@ impl App {
             lattice_picker::PickerAction::AcceptColorPresentation,
         );
         p.set_raw_candidates_with_routing(pairs);
-        self.picker = Some(p);
+        self.editor.picker = Some(p);
     }
 
     /// 4.5.e: accept one color presentation by index. Splices
@@ -8121,7 +8121,7 @@ mod tests {
         .unwrap();
         a.drain_pending_references();
         // Picker opened, NOT a help buffer (the pre-picker shape).
-        let picker = a.picker.as_ref().expect("picker");
+        let picker = a.editor.picker.as_ref().expect("picker");
         assert_eq!(picker.title, "references: foo");
         assert!(matches!(
             picker.source,
@@ -8166,7 +8166,7 @@ mod tests {
         })
         .unwrap();
         a.drain_pending_references();
-        assert!(a.picker.is_none());
+        assert!(a.editor.picker.is_none());
         let msg = a.editor.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("no references"));
         assert!(msg.text.contains("missing"));
@@ -8330,7 +8330,7 @@ mod tests {
         })
         .unwrap();
         a.drain_pending_symbols();
-        let picker = a.picker.as_ref().expect("picker");
+        let picker = a.editor.picker.as_ref().expect("picker");
         assert_eq!(picker.title, "symbols (2)");
         assert_eq!(picker.candidates.len(), 2);
         // depth-1 row carries indentation in display.
@@ -8350,7 +8350,7 @@ mod tests {
         })
         .unwrap();
         a.drain_pending_symbols();
-        assert!(a.picker.is_none());
+        assert!(a.editor.picker.is_none());
         let msg = a.editor.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("no symbols"));
     }
@@ -8387,7 +8387,7 @@ mod tests {
         tx.send(super::CodeActionOutcome::Items(Vec::new()))
             .unwrap();
         a.drain_pending_code_actions();
-        assert!(a.picker.is_none());
+        assert!(a.editor.picker.is_none());
         let msg = a.editor.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("no code actions"));
     }
@@ -8417,7 +8417,7 @@ mod tests {
         ]))
         .unwrap();
         a.drain_pending_code_actions();
-        let picker = a.picker.as_ref().expect("picker");
+        let picker = a.editor.picker.as_ref().expect("picker");
         assert!(picker.title.starts_with("code-actions"));
         assert!(matches!(
             picker.on_accept,
@@ -9028,7 +9028,7 @@ mod tests {
         ]))
         .unwrap();
         a.drain_pending_completion();
-        let picker = a.picker.as_ref().expect("picker");
+        let picker = a.editor.picker.as_ref().expect("picker");
         assert!(picker.title.starts_with("complete"));
         assert!(matches!(
             picker.on_accept,
@@ -9064,7 +9064,7 @@ mod tests {
         tx.send(super::CompletionOutcome::Items(Vec::new()))
             .unwrap();
         a.drain_pending_completion();
-        assert!(a.picker.is_none());
+        assert!(a.editor.picker.is_none());
         let msg = a.editor.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("no completions"));
     }
@@ -9257,7 +9257,7 @@ mod tests {
         ])
         .unwrap();
         a.drain_pending_definitions();
-        let picker = a.picker.as_ref().expect("multi-result opens picker");
+        let picker = a.editor.picker.as_ref().expect("multi-result opens picker");
         assert_eq!(picker.title, "lsp:definitions");
         assert_eq!(picker.candidates.len(), 2);
         assert!(matches!(
@@ -9323,7 +9323,7 @@ mod tests {
         let initial = app.active_pane_buffer_id();
         assert_ne!(initial, lsp_buf);
         app.do_open_lsp_log(None);
-        assert!(app.picker.is_none(), "no picker on no-arg :lsp-log");
+        assert!(app.editor.picker.is_none(), "no picker on no-arg :lsp-log");
         assert_eq!(
             app.active_pane_buffer_id(),
             lsp_buf,
@@ -9909,7 +9909,7 @@ mod tests {
             outcome.selected.is_none(),
             "actionless prompt should auto-dismiss",
         );
-        assert!(app.picker.is_none(), "no picker for actionless prompt");
+        assert!(app.editor.picker.is_none(), "no picker for actionless prompt");
         let msg = app.editor.last_message.as_ref().expect("minibuffer set");
         assert!(msg.text.contains("Heads up!"));
         let records = app
@@ -9935,7 +9935,7 @@ mod tests {
         inject_show_message_request(&mut app, req);
         // Picker opened; pending slot registered.
         assert!(
-            app.picker.is_some(),
+            app.editor.picker.is_some(),
             "picker should open for actionful prompt"
         );
         assert_eq!(app.lsp_pending_show_message_requests.len(), 1);
@@ -9947,7 +9947,7 @@ mod tests {
         let outcome = response_rx.try_recv().expect("reply landed");
         let selected = outcome.selected.expect("an action was selected");
         assert_eq!(selected.title, "No");
-        assert!(app.picker.is_none(), "picker closed after accept");
+        assert!(app.editor.picker.is_none(), "picker closed after accept");
         assert!(app.lsp_pending_show_message_requests.is_empty());
     }
 
@@ -9959,11 +9959,11 @@ mod tests {
         let server_id: std::sync::Arc<str> = std::sync::Arc::from("rust");
         let (req, mut response_rx) = make_smr(&server_id, "Reload workspace?", vec!["Yes", "No"]);
         inject_show_message_request(&mut app, req);
-        assert!(app.picker.is_some());
+        assert!(app.editor.picker.is_some());
         app.apply(crate::Action::PickerDismiss);
         let outcome = response_rx.try_recv().expect("reply landed");
         assert!(outcome.selected.is_none(), "dismiss should reply null",);
-        assert!(app.picker.is_none());
+        assert!(app.editor.picker.is_none());
         assert!(app.lsp_pending_show_message_requests.is_empty());
     }
 
@@ -9982,7 +9982,7 @@ mod tests {
         app.pending_show_message_request_rx = Some(rx);
         app.drain_inbound_show_message_requests();
         // First request: picker open. Second: queued.
-        assert!(app.picker.is_some());
+        assert!(app.editor.picker.is_some());
         assert_eq!(app.lsp_show_message_request_queue.len(), 1);
         assert_eq!(app.lsp_pending_show_message_requests.len(), 2);
         // Dismiss the first; the second picker should open
@@ -9992,10 +9992,10 @@ mod tests {
         let outcome1 = rx1.try_recv().expect("first reply landed");
         assert!(outcome1.selected.is_none());
         assert!(
-            app.picker.is_some(),
+            app.editor.picker.is_some(),
             "queued picker should auto-open after dismiss",
         );
-        let title = app.picker.as_ref().unwrap().title.clone();
+        let title = app.editor.picker.as_ref().unwrap().title.clone();
         assert!(title.contains("Second?"));
         // Accept the second.
         app.apply(crate::Action::PickerAccept);
@@ -10462,7 +10462,7 @@ mod tests {
         let mut app = app_with("hi\n", 5);
         seed_diags_at_lines(&mut app, &[0, 1]);
         app.do_list_diagnostics();
-        let picker = app.picker.as_ref().expect("picker should open");
+        let picker = app.editor.picker.as_ref().expect("picker should open");
         assert!(picker.title.starts_with("diagnostics"));
         assert!(matches!(
             picker.source,
@@ -10487,7 +10487,7 @@ mod tests {
         // No diagnostics seeded.
         app.do_list_diagnostics();
         // Empty diagnostics: no picker, just an echo.
-        assert!(app.picker.is_none());
+        assert!(app.editor.picker.is_none());
         let msg = app.editor.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("no diagnostics"));
     }

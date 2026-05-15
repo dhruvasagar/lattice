@@ -240,73 +240,13 @@ pub(super) fn resolve_command_name_or_alias(
 // below.
 pub use lattice_host::state::{LastSearch, PrevPaneState, SearchLine, UnnamedRegister};
 
-/// In-flight async picker init. The future from
-/// `PickerSourceGenerator::init` is spawned on the LSP
-/// runtime; its resolved batch lands here via `rx`. The
-/// `cancel` token lets a subsequent `:picker <source>` drop
-/// the predecessor before it completes.
-pub struct PendingPickerInit {
-    pub source_id: String,
-    pub generator: std::sync::Arc<dyn lattice_picker::PickerSourceGenerator>,
-    pub rx: tokio::sync::mpsc::UnboundedReceiver<
-        lattice_picker::SourceResult<lattice_picker::CandidateBatch>,
-    >,
-    pub cancel: lattice_protocol::CancellationToken,
-}
-
-/// Live-picker query state. Installed when [`App::open_picker`]
-/// resolves a source whose `spec().live` is true; survives until
-/// the picker is dismissed.
-///
-/// Two phases:
-///
-/// 1. **Debouncing.** `debounce_until = Some(deadline)` while a
-///    keystroke is pending. Every fresh keystroke reschedules
-///    the deadline forward. Once `Instant::now() >= deadline`,
-///    the main-loop drain fires
-///    [`PickerSourceGenerator::on_query_changed`] and clears
-///    `debounce_until` to None.
-/// 2. **In-flight.** When `on_query_changed` returns a `Future`
-///    or a `Stream`, the spawned task lands its result on
-///    `inflight.rx`. The drain seats new raw candidates (if the
-///    result is still relevant) or drops the result (if the
-///    user has typed past the launched query).
-pub struct LivePickerQueryState {
-    pub source_id: String,
-    pub generator: std::sync::Arc<dyn lattice_picker::PickerSourceGenerator>,
-    pub debounce_until: Option<std::time::Instant>,
-    pub inflight: Option<InFlightLiveQuery>,
-    /// Set by `open_picker` from the first positional arg
-    /// when the source is live; consumed (taken) by
-    /// `seat_picker_from_pairs` on the first seat so the
-    /// picker prompt opens pre-populated with the user's
-    /// `:picker grep <pattern>` argument. None for live
-    /// pickers opened without an initial pattern.
-    pub initial_query: Option<String>,
-}
-
-/// Spawned `on_query_changed` future / stream paired with the
-/// query it was launched against. The drain compares
-/// `launched_for_query` against the picker's live query; if
-/// they differ, the user has kept typing and a newer fire is
-/// already in flight (or coming via debounce) -- discard the
-/// stale result.
-pub struct InFlightLiveQuery {
-    pub cancel: lattice_protocol::CancellationToken,
-    pub rx: tokio::sync::mpsc::UnboundedReceiver<
-        lattice_picker::SourceResult<lattice_picker::PickerInitResult>,
-    >,
-    pub launched_for_query: String,
-}
-
-/// Debounce window before a live picker's query change fires
-/// `on_query_changed`. Telescope uses ~150ms; chosen so that
-/// burst keystrokes coalesce into one source call without
-/// feeling laggy. Constant lives here (not in `lattice-picker`)
-/// because debounce is host policy -- the picker primitive is
-/// renderer- and timer-agnostic.
-pub const LIVE_PICKER_DEBOUNCE: std::time::Duration =
-    std::time::Duration::from_millis(150);
+// Phase 5.B.13: `PendingPickerInit`, `LivePickerQueryState`,
+// `InFlightLiveQuery`, `LIVE_PICKER_DEBOUNCE` moved to
+// `lattice_host::state`. Re-exported below so existing
+// `crate::app::*` references keep resolving.
+pub use lattice_host::state::{
+    InFlightLiveQuery, LIVE_PICKER_DEBOUNCE, LivePickerQueryState, PendingPickerInit,
+};
 
 // `UnnamedRegister` and `PrevPaneState` moved to
 // `lattice_host::state` (re-export above).
@@ -974,7 +914,7 @@ pub struct App {
     /// [`crate::input::translate`] before falling through to the
     /// modal handlers; render takes precedence over completion +
     /// hover popups.
-    pub picker: Option<lattice_picker::Picker>,
+    // Phase 5.B.13: `picker` moved to `editor.editor.picker`.
     /// Metadata registry of every picker source the
     /// `:picker <source>` ex-command can dispatch to. Populated
     /// at boot with first-party source specs; feature crates
@@ -988,7 +928,8 @@ pub struct App {
     /// the source list on every keystroke without keeping the
     /// registry alive past the App. Mirror of the
     /// `Arc<ModeRegistry>` pattern used by `gen:modes`.
-    pub picker_registry: Arc<lattice_picker::PickerRegistry>,
+    // Phase 5.B.13: `picker_registry` moved to
+    // `editor.editor.picker_registry`.
     /// Picker MRU index. Loaded from
     /// `$XDG_CACHE_HOME/lattice/picker-mru.bincode` at boot
     /// (best-effort -- corruption / version-mismatch silently
@@ -999,12 +940,14 @@ pub struct App {
     /// host today; if plugin sources ever need shared access
     /// this becomes `Arc<RwLock<...>>` -- the trait surface
     /// already supports that move.
-    pub picker_mru: lattice_picker::PickerMruIndex,
+    // Phase 5.B.13: `picker_mru` moved to
+    // `editor.editor.picker_mru`.
     /// Resolved persistence path for the MRU cache.
     /// `Some(path)` when `dirs::cache_dir()` returned a usable
     /// path at boot; `None` disables persistence (in-memory
     /// only -- sandboxed runs, headless test fixtures).
-    pub picker_mru_path: Option<std::path::PathBuf>,
+    // Phase 5.B.13: `picker_mru_path` moved to
+    // `editor.editor.picker_mru_path`.
     /// `Some` while an async picker source's `init` future is
     /// in-flight. Holds the spawned-task channel handle + the
     /// generator + the source id; the main loop's
@@ -1014,7 +957,8 @@ pub struct App {
     /// A second `:picker <source>` invocation while one is
     /// pending cancels the predecessor (`cancel.cancel()`) and
     /// replaces this slot -- vim-style "do what I last said."
-    pub pending_picker_init: Option<crate::app::PendingPickerInit>,
+    // Phase 5.B.13: `pending_picker_init` moved to
+    // `editor.editor.pending_picker_init`.
     /// `Some` while a live picker is open
     /// ([`PickerSourceSpec::live`] == true). Holds the
     /// generator + debounce deadline + any in-flight
@@ -1022,13 +966,15 @@ pub struct App {
     /// `drain_pending_live_picker_query` fires the source's
     /// re-fetch when the debounce expires and seats the new
     /// batch when the future resolves.
-    pub live_picker_query: Option<crate::app::LivePickerQueryState>,
+    // Phase 5.B.13: `live_picker_query` moved to
+    // `editor.editor.live_picker_query`.
     /// True while a buffer activation is in *preview* mode --
     /// driven by the picker's `select_next` / `select_prev`
     /// hooks. Activate paths gate position-history pushes on
     /// this flag so a hover-preview doesn't pollute the jump
     /// list. Cleared at the end of every preview tick.
-    pub previewing: bool,
+    // Phase 5.B.13: `previewing` moved to
+    // `editor.editor.previewing`.
     /// Receiver for [`lattice_lsp::LspLogPushed`] events (Phase
     /// 4; M.5.3.b moved the event type from `lattice-protocol`'s
     /// central enum to `lattice-lsp::events`). Drained once per
@@ -3160,7 +3106,7 @@ mod tests {
             lattice_picker::PickerAction::JumpToLspLocation,
         );
         p.set_lsp_locations(Vec::new());
-        a.picker = Some(p);
+        a.editor.picker = Some(p);
         a.apply(Action::PickerDismiss);
         assert!(a.editor.pending_tag_origin.is_none());
     }

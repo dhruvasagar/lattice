@@ -26,12 +26,13 @@
 //! system.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use lattice_grammar::Register;
 use lattice_protocol::position::Position;
 
 use crate::action::Action;
-use crate::state::{MacroRecording, UnnamedRegister};
+use crate::state::{MacroRecording, PositionEntry, TagStackEntry, UnnamedRegister};
 
 /// Renderer-agnostic editor state.
 ///
@@ -57,6 +58,9 @@ use crate::state::{MacroRecording, UnnamedRegister};
 ///   `macro_recording`, `last_played_macro`).
 /// - 5.B.5 -- marks + registers (`marks`, `registers`,
 ///   `pending_register`, `unnamed_register`).
+/// - 5.B.6 -- position history + tag stack
+///   (`position_history`, `position_history_cursor`,
+///   `recent_files`, `tag_stack`, `pending_tag_origin`).
 #[derive(Debug, Default)]
 pub struct Editor {
     /// Completed macro recordings keyed by register name.
@@ -92,4 +96,31 @@ pub struct Editor {
     /// (operators) and `do_paste` (paste). `None` means use
     /// unnamed.
     pub pending_register: Option<Register>,
+    /// Unified position-history ring (DESIGN.md §5.1.1).
+    /// Every entry is tagged by source so different keybindings
+    /// walk filtered views of the same data (`Ctrl-O` / `Ctrl-I`
+    /// walk `AutoJump` + `PluginPush`; `g;` / `g,` walk
+    /// `NamedMark`).
+    pub position_history: Vec<PositionEntry>,
+    /// Cursor into [`Self::position_history`] -- the next entry
+    /// the navigation action would visit.
+    pub position_history_cursor: usize,
+    /// MRU list of canonical paths the user has opened via
+    /// `:edit` (or any path flowing through `do_edit`). Newest
+    /// first; deduplicated; capped at `MAX_RECENT_FILES`. Source
+    /// for the `:recent` picker.
+    pub recent_files: Vec<PathBuf>,
+    /// Vim-style tag stack (DESIGN.md §5.1.1 follow-up).
+    /// Distinct from the jump list: each "drill-down" navigation
+    /// (`gd` / `gD` / `gy` / `gI` and their multi-result picker
+    /// accept variants) pushes one entry; `<C-t>` pops the most
+    /// recent entry. `<C-o>` walks all jumps chronologically;
+    /// `<C-t>` pops only the LIFO tag-style drill-downs.
+    pub tag_stack: Vec<TagStackEntry>,
+    /// Pre-jump origin captured when an LSP nav request fires;
+    /// transferred to [`Self::tag_stack`] on the actual jump
+    /// (single-result drain or multi-result picker accept).
+    /// Cleared on picker dismiss / nav cancellation / drain
+    /// with no results.
+    pub pending_tag_origin: Option<TagStackEntry>,
 }

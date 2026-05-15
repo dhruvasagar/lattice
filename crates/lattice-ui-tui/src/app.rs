@@ -740,31 +740,12 @@ pub struct App {
     /// Pushed before "big jumps" (gg, G, search submit, n / N, *, #,
     /// %, mark jumps) with `AutoJump`, plus on every `mX` with
     /// `NamedMark(X)`. The cursor sits at one past the last navigated
-    /// entry; the navigation action chooses both direction and filter.
-    pub position_history: Vec<PositionEntry>,
-    pub position_history_cursor: usize,
-    /// P.2: MRU list of canonical paths the user has opened via
-    /// `:edit` (or any path that flowed through `do_edit`).
-    /// Newest first; dedup keeps a single entry per path. Capped
-    /// at `MAX_RECENT_FILES`. Surfaces in `:recent` (the
-    /// recent-files picker) and as input to per-language /
-    /// per-workspace history features later.
-    pub recent_files: Vec<std::path::PathBuf>,
-    /// Vim-style tag stack (DESIGN.md §5.1.1 follow-up). Distinct
-    /// from the jump list: every "drill-down" navigation
-    /// (`gd` / `gD` / `gy` / `gI` and their multi-result picker
-    /// accept variants) pushes one entry; `<C-t>` pops the most
-    /// recent entry and walks back to the recorded position.
-    /// The user's mental model: `<C-o>` walks all jumps in
-    /// chronological order; `<C-t>` pops only the LIFO tag-style
-    /// drill-downs. They coexist deliberately and can have
-    /// different lengths.
-    pub tag_stack: Vec<TagStackEntry>,
-    /// Pre-jump origin captured when an LSP nav request fires;
-    /// transferred to `tag_stack` on the actual jump (single-
-    /// result drain or multi-result picker accept). Cleared on
-    /// picker dismiss / nav cancellation / drain with no results.
-    pub pending_tag_origin: Option<TagStackEntry>,
+    // Phase 5.B.6: `position_history`,
+    // `position_history_cursor`, `recent_files`, `tag_stack`,
+    // `pending_tag_origin` moved to
+    // `editor.position_history` / `editor.position_history_cursor`
+    // / `editor.recent_files` / `editor.tag_stack` /
+    // `editor.pending_tag_origin`.
     // Phase 5.B.4: `macros`, `macro_recording`,
     // `last_played_macro` moved to `editor.macros` /
     // `editor.macro_recording` / `editor.last_played_macro`.
@@ -3265,7 +3246,7 @@ mod tests {
     #[test]
     fn picker_dismiss_clears_pending_tag_origin() {
         let mut a = app_with("foo\n", 10);
-        a.pending_tag_origin = Some(super::TagStackEntry {
+        a.editor.pending_tag_origin = Some(super::TagStackEntry {
             buffer: a.active_buffer,
             buffer_id: a.active_pane_buffer_id(),
             position: Position::new(0, 0),
@@ -3282,7 +3263,7 @@ mod tests {
         p.set_lsp_locations(Vec::new());
         a.picker = Some(p);
         a.apply(Action::PickerDismiss);
-        assert!(a.pending_tag_origin.is_none());
+        assert!(a.editor.pending_tag_origin.is_none());
     }
 
     #[test]
@@ -3293,14 +3274,14 @@ mod tests {
         // clear the origin so a later JumpToLspLocation accept
         // doesn't push the wrong entry.
         let mut a = app_with("foo\n", 10);
-        a.pending_tag_origin = Some(super::TagStackEntry {
+        a.editor.pending_tag_origin = Some(super::TagStackEntry {
             buffer: a.active_buffer,
             buffer_id: a.active_pane_buffer_id(),
             position: Position::new(0, 0),
             label: "stale".into(),
         });
         a.do_list_diagnostics();
-        assert!(a.pending_tag_origin.is_none());
+        assert!(a.editor.pending_tag_origin.is_none());
     }
 
     // ---- :help (DESIGN.md §5.11) ----

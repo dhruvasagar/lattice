@@ -161,12 +161,12 @@ impl App {
             return;
         }
         if delta < 0
-            && self.position_history_cursor == self.position_history.len()
-            && self.position_history.iter().any(|e| e.is_jump())
+            && self.editor.position_history_cursor == self.editor.position_history.len()
+            && self.editor.position_history.iter().any(|e| e.is_jump())
         {
             let cur = self.active_cursor();
             let already_there = self
-                .position_history
+                .editor.position_history
                 .last()
                 .map(|e| e.position == cur && e.buffer == self.active_buffer)
                 .unwrap_or(false);
@@ -175,7 +175,7 @@ impl App {
                 // After push the cursor==len. Step it one back so the
                 // walk finds the entry preceding our snapshot rather
                 // than the snapshot itself.
-                self.position_history_cursor = self.position_history.len().saturating_sub(1);
+                self.editor.position_history_cursor = self.editor.position_history.len().saturating_sub(1);
             }
         }
         self.do_walk_history(delta, |e| e.is_jump(), "jumps", "jump list");
@@ -210,7 +210,7 @@ impl App {
         empty_label: &str,
         bound_label: &str,
     ) {
-        if !self.position_history.iter().any(&pred) {
+        if !self.editor.position_history.iter().any(&pred) {
             self.set_message(EchoLevel::Error, format!("no {empty_label}"));
             return;
         }
@@ -230,15 +230,15 @@ impl App {
         };
         let combined = |e: &PositionEntry| pred(e) && reachable(e);
         let target_idx = if delta < 0 {
-            self.position_history[..self.position_history_cursor]
+            self.editor.position_history[..self.editor.position_history_cursor]
                 .iter()
                 .rposition(&combined)
         } else {
             let from = self
-                .position_history_cursor
+                .editor.position_history_cursor
                 .saturating_add(1)
-                .min(self.position_history.len());
-            self.position_history[from..]
+                .min(self.editor.position_history.len());
+            self.editor.position_history[from..]
                 .iter()
                 .position(&combined)
                 .map(|i| i + from)
@@ -248,8 +248,8 @@ impl App {
             self.set_message(EchoLevel::Error, format!("at {bound} of {bound_label}"));
             return;
         };
-        self.position_history_cursor = idx;
-        let entry = self.position_history[idx];
+        self.editor.position_history_cursor = idx;
+        let entry = self.editor.position_history[idx];
         // Cross-buffer landing: switch active_buffer and write the
         // cursor onto the right buffer's tracking field.
         match entry.buffer {
@@ -517,7 +517,7 @@ impl App {
     /// to walk the chronological jump record after a `<C-t>`
     /// step.
     pub(super) fn do_tag_stack_pop(&mut self) {
-        let Some(entry) = self.tag_stack.pop() else {
+        let Some(entry) = self.editor.tag_stack.pop() else {
             self.set_message(EchoLevel::Info, "tag stack empty".to_string());
             return;
         };
@@ -599,7 +599,7 @@ impl App {
     pub(super) fn push_position_history(&mut self, pos: Position, source: PositionSource) {
         let buffer = self.active_buffer;
         let buffer_id = self.active_buffer_id();
-        if let Some(last) = self.position_history.last()
+        if let Some(last) = self.editor.position_history.last()
             && last.position == pos
             && last.source == source
             && last.buffer == buffer
@@ -607,22 +607,22 @@ impl App {
         {
             return;
         }
-        if self.position_history_cursor < self.position_history.len() {
-            self.position_history.truncate(self.position_history_cursor);
+        if self.editor.position_history_cursor < self.editor.position_history.len() {
+            self.editor.position_history.truncate(self.editor.position_history_cursor);
         }
-        self.position_history.push(PositionEntry {
+        self.editor.position_history.push(PositionEntry {
             position: pos,
             source,
             buffer,
             buffer_id,
         });
-        if self.position_history.len() > POSITION_HISTORY_CAP {
-            self.position_history.remove(0);
+        if self.editor.position_history.len() > POSITION_HISTORY_CAP {
+            self.editor.position_history.remove(0);
             // Truncating from the front shifts the cursor too; clamp
             // before we re-anchor it.
-            self.position_history_cursor = self.position_history_cursor.saturating_sub(1);
+            self.editor.position_history_cursor = self.editor.position_history_cursor.saturating_sub(1);
         }
-        self.position_history_cursor = self.position_history.len();
+        self.editor.position_history_cursor = self.editor.position_history.len();
     }
 
     /// Id of whichever buffer is currently active. The active
@@ -845,7 +845,7 @@ mod tests {
         a.cursor = Position::new(1, 2);
         a.apply(Action::SetMark('a'));
         // Last entry is a NamedMark.
-        let last = a.position_history.last().unwrap();
+        let last = a.editor.position_history.last().unwrap();
         assert_eq!(last.position, Position::new(1, 2));
         assert!(matches!(last.source, PositionSource::NamedMark('a')));
     }
@@ -893,7 +893,7 @@ mod tests {
         a.push_position_history(Position::new(2, 0), PositionSource::AutoJump);
         a.push_position_history(Position::new(2, 0), PositionSource::AutoJump);
         // Pushing the same position-and-source twice in a row -> single entry.
-        assert_eq!(a.position_history.len(), 1);
+        assert_eq!(a.editor.position_history.len(), 1);
     }
 
     #[test]
@@ -902,7 +902,7 @@ mod tests {
         for i in 0..200 {
             a.push_position_history(Position::new(i % 3, 0), PositionSource::AutoJump);
         }
-        assert!(a.position_history.len() <= 100);
+        assert!(a.editor.position_history.len() <= 100);
     }
 
     #[test]
@@ -1310,7 +1310,7 @@ mod tests {
         // col 1 (the gd-like `do_lsp_nav_request` -> drain
         // single-result path normally pushes; we synthesise
         // the entry directly to keep the test free of LSP wire).
-        a.tag_stack.push(TagStackEntry {
+        a.editor.tag_stack.push(TagStackEntry {
             buffer: a.active_buffer,
             buffer_id: a.active_pane_buffer_id(),
             position: Position::new(0, 2),
@@ -1319,10 +1319,10 @@ mod tests {
         a.cursor = Position::new(3, 1);
         a.apply(Action::TagStackPop);
         assert_eq!(a.cursor, Position::new(0, 2));
-        assert!(a.tag_stack.is_empty());
+        assert!(a.editor.tag_stack.is_empty());
         // Pop pushes the post-pop cursor onto position history
         // (PluginPush) so a follow-up `<C-i>` returns to (3, 1).
-        let last = a.position_history.last().expect("history entry");
+        let last = a.editor.position_history.last().expect("history entry");
         assert!(matches!(last.source, PositionSource::PluginPush));
         assert_eq!(last.position, Position::new(3, 1));
     }

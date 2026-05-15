@@ -2396,7 +2396,7 @@ impl App {
             token.cancel();
         }
         // Browse-style; not a tag-intent drill-down.
-        self.pending_tag_origin = None;
+        self.editor.pending_tag_origin = None;
         // M.6.2: lsp-code-action-mode gate (after cancel-stale-work).
         if !self.check_lsp_sub_mode_gate(
             lattice_lsp::modes::LspCodeActionMode::mode_id(),
@@ -2607,7 +2607,7 @@ impl App {
             token.cancel();
         }
         // Browse-style; not a tag-intent drill-down.
-        self.pending_tag_origin = None;
+        self.editor.pending_tag_origin = None;
         // M.6.2: lsp-completion-mode gate (after cancel-stale-work).
         if !self.check_lsp_sub_mode_gate(
             lattice_lsp::modes::LspCompletionMode::mode_id(),
@@ -2943,7 +2943,7 @@ impl App {
             token.cancel();
         }
         // Outline browse; not a tag-intent drill-down.
-        self.pending_tag_origin = None;
+        self.editor.pending_tag_origin = None;
         // M.6.2: lsp-symbols-mode gate (after cancel-stale-work).
         if !self.check_lsp_sub_mode_gate(
             lattice_lsp::modes::LspSymbolsMode::mode_id(),
@@ -3015,7 +3015,7 @@ impl App {
             token.cancel();
         }
         // Workspace search browse; not a tag-intent drill-down.
-        self.pending_tag_origin = None;
+        self.editor.pending_tag_origin = None;
         // M.6.2: lsp-symbols-mode gate (after cancel-stale-work).
         if !self.check_lsp_sub_mode_gate(
             lattice_lsp::modes::LspSymbolsMode::mode_id(),
@@ -3167,7 +3167,7 @@ impl App {
         // `<C-t>` pops it cleanly.
         let snapshot_for_label = self.document.snapshot();
         let label = word_under_cursor(&snapshot_for_label.buffer, self.cursor).unwrap_or_default();
-        self.pending_tag_origin = Some(TagStackEntry {
+        self.editor.pending_tag_origin = Some(TagStackEntry {
             buffer: self.active_buffer,
             buffer_id: self.active_pane_buffer_id(),
             position: self.cursor,
@@ -3301,7 +3301,7 @@ impl App {
         }
         let snapshot_for_label = self.document.snapshot();
         let label = word_under_cursor(&snapshot_for_label.buffer, self.cursor).unwrap_or_default();
-        self.pending_tag_origin = Some(TagStackEntry {
+        self.editor.pending_tag_origin = Some(TagStackEntry {
             buffer: self.active_buffer,
             buffer_id: self.active_pane_buffer_id(),
             position: self.cursor,
@@ -3635,7 +3635,7 @@ impl App {
         // <C-t> to walk back even after navigating through a
         // chain of definitions.
         let label = word_under_cursor(&snapshot.buffer, self.cursor).unwrap_or_default();
-        self.pending_tag_origin = Some(TagStackEntry {
+        self.editor.pending_tag_origin = Some(TagStackEntry {
             buffer: self.active_buffer,
             buffer_id: self.active_pane_buffer_id(),
             position: self.cursor,
@@ -3771,15 +3771,15 @@ impl App {
                 // No drill-down happened; drop the captured tag
                 // origin so a follow-up nav doesn't see a stale
                 // value.
-                self.pending_tag_origin = None;
+                self.editor.pending_tag_origin = None;
                 self.set_message(EchoLevel::Info, format!("no {noun} found"));
             }
             1 => {
                 // Vim-style "do what I mean" -- a single-result
                 // nav request still jumps directly. Single-result
                 // jump pushes the tag stack now.
-                if let Some(origin) = self.pending_tag_origin.take() {
-                    self.tag_stack.push(origin);
+                if let Some(origin) = self.editor.pending_tag_origin.take() {
+                    self.editor.tag_stack.push(origin);
                 }
                 self.jump_to_lsp_location(&locs[0]);
             }
@@ -3802,7 +3802,7 @@ impl App {
             token.cancel();
         }
         // Browse-style; not a tag-intent drill-down.
-        self.pending_tag_origin = None;
+        self.editor.pending_tag_origin = None;
         // M.6.2: lsp-nav-mode gate (after cancel-stale-work).
         // `gr` is part of the nav family.
         if !self.check_lsp_sub_mode_gate(lattice_lsp::modes::LspNavMode::mode_id(), "lsp-nav-mode")
@@ -3978,7 +3978,7 @@ impl App {
         // intent drill-down -- clear any stale nav origin so a
         // later JumpToLspLocation accept doesn't push a phantom
         // tag stack entry.
-        self.pending_tag_origin = None;
+        self.editor.pending_tag_origin = None;
         let snapshot = self.lsp_diagnostics.snapshot();
         if snapshot.is_empty() {
             self.set_message(EchoLevel::Info, "no diagnostics".to_string());
@@ -9155,7 +9155,7 @@ mod tests {
             lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap(),
         );
         a.apply(Action::LspDefinitionRequest);
-        let origin = a.pending_tag_origin.as_ref().expect("origin set");
+        let origin = a.editor.pending_tag_origin.as_ref().expect("origin set");
         assert_eq!(origin.position, Position::new(0, 1));
         assert_eq!(origin.label, "foo");
     }
@@ -9228,7 +9228,7 @@ mod tests {
         assert_eq!(a.cursor.byte, 5);
         // Pre-jump position pushed onto history as PluginPush.
         let pushed = a
-            .position_history
+            .editor.position_history
             .iter()
             .any(|e| e.source == PositionSource::PluginPush && e.position == Position::ZERO);
         assert!(pushed, "expected PluginPush entry for pre-jump cursor");

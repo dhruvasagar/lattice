@@ -125,7 +125,7 @@ impl App {
         // PositionEntry (which carries BufferKind) into the
         // picker's renderer-agnostic view.
         let position_history: Vec<PositionEntry> = self
-            .position_history
+            .editor.position_history
             .iter()
             .map(|e| PositionEntry {
                 buffer_id: e.buffer_id.0,
@@ -143,7 +143,7 @@ impl App {
         PickerContext {
             active_buffer,
             workspace_root,
-            recent_files: &self.recent_files,
+            recent_files: &self.editor.recent_files,
             position_history,
             buffers,
             marks,
@@ -1035,7 +1035,7 @@ impl App {
         // a subsequent `:lsp-symbols` (or any picker open) would
         // inherit the stale origin and a later accept would
         // push the wrong entry.
-        self.pending_tag_origin = None;
+        self.editor.pending_tag_origin = None;
         let Some(picker) = self.picker.take() else {
             return;
         };
@@ -1217,8 +1217,8 @@ impl App {
                 // a drill-down candidate. References /
                 // `:diagnostics` / symbol pickers don't set
                 // the origin so this is a no-op for them.
-                if let Some(origin) = self.pending_tag_origin.take() {
-                    self.tag_stack.push(origin);
+                if let Some(origin) = self.editor.pending_tag_origin.take() {
+                    self.editor.tag_stack.push(origin);
                 }
                 // M.4: honour `BufferDisplayCategory::PickerResult`
                 // for the destination pane (split into a new sibling
@@ -1703,13 +1703,13 @@ mod tests {
         let _h2 = app.open_help_in_pane(HelpContent::from_lines("h-two", vec!["b".into()]));
         let doc_id = app.buffers.document_ids_sorted().first().copied().unwrap();
         app.activate_document(doc_id);
-        let history_before = app.position_history.len();
+        let history_before = app.editor.position_history.len();
         app.open_buffer_picker();
         app.apply(Action::PickerSelectNext);
         app.apply(Action::PickerSelectNext);
         app.apply(Action::PickerSelectPrev);
         app.apply(Action::PickerDismiss);
-        let history_after = app.position_history.len();
+        let history_after = app.editor.position_history.len();
         assert_eq!(
             history_before, history_after,
             "preview hovers should leave the jump list alone"
@@ -1769,13 +1769,13 @@ mod tests {
         let canon_b = std::fs::canonicalize(&b_path).unwrap();
         let canon_c = std::fs::canonicalize(&c_path).unwrap();
         assert_eq!(
-            app.recent_files,
+            app.editor.recent_files,
             vec![canon_c.clone(), canon_b.clone(), canon_a.clone()]
         );
         // Re-pushing `a` floats it to the front and drops the
         // older occurrence -- list length stays at 3.
         app.push_recent_file(&a_path);
-        assert_eq!(app.recent_files, vec![canon_a, canon_c, canon_b]);
+        assert_eq!(app.editor.recent_files, vec![canon_a, canon_c, canon_b]);
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

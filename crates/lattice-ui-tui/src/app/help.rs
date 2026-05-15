@@ -168,7 +168,7 @@ impl App {
         lines.push(format!("marks set:      {}", self.editor.marks.len()));
         lines.push(format!(
             "position-history depth: {}",
-            self.position_history.len()
+            self.editor.position_history.len()
         ));
         lines.push(format!("macros stored:  {}", self.editor.macros.len()));
         lines.push(format!("folds:          {}", self.folds.len()));

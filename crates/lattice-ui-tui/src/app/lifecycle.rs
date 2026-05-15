@@ -499,8 +499,8 @@ impl App {
                 self.last_visual = None;
                 self.visual_anchor = None;
                 self.replace_history.clear();
-                self.position_history.clear();
-                self.position_history_cursor = 0;
+                self.editor.position_history.clear();
+                self.editor.position_history_cursor = 0;
                 self.folds.clear();
                 self.set_message(
                     EchoLevel::Info,
@@ -577,8 +577,8 @@ impl App {
         self.replace_history.clear();
         self.folds.clear();
         // Position history follows the active buffer.
-        self.position_history.clear();
-        self.position_history_cursor = 0;
+        self.editor.position_history.clear();
+        self.editor.position_history_cursor = 0;
         self.pane_tree.active_mut().buffer = BufferKind::Document;
         self.pane_tree.active_mut().buffer_id = new_id;
         self.activate_buffer_state();
@@ -598,10 +598,10 @@ impl App {
         let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
         // Drop any existing occurrence so the freshly-pushed entry
         // floats to the front.
-        self.recent_files.retain(|p| p != &canonical);
-        self.recent_files.insert(0, canonical);
-        if self.recent_files.len() > MAX_RECENT_FILES {
-            self.recent_files.truncate(MAX_RECENT_FILES);
+        self.editor.recent_files.retain(|p| p != &canonical);
+        self.editor.recent_files.insert(0, canonical);
+        if self.editor.recent_files.len() > MAX_RECENT_FILES {
+            self.editor.recent_files.truncate(MAX_RECENT_FILES);
         }
     }
 
@@ -1849,10 +1849,10 @@ mod tests {
         a.cursor = Position::new(2, 1);
         a.apply(invoke_motion(a.builtins.goto_first_line));
         // Now position_history has an entry.
-        assert!(!a.position_history.is_empty());
+        assert!(!a.editor.position_history.is_empty());
         let cmd = format!("e {}", path.display());
         submit_ex(&mut a, &cmd);
-        assert!(a.position_history.is_empty());
+        assert!(a.editor.position_history.is_empty());
         assert_eq!(a.cursor, Position::ZERO);
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -3293,7 +3293,7 @@ mod tests {
         a.open_buffer_picker();
         // Position history should already have the origin entry
         // from the picker-open push, before any preview activates.
-        let last = a.position_history.last().expect("origin entry");
+        let last = a.editor.position_history.last().expect("origin entry");
         assert_eq!(last.position, Position::new(1, 2));
         assert_eq!(last.buffer_id, origin);
         // Dismiss the picker so we're not stuck on a preview.
@@ -3302,7 +3302,7 @@ mod tests {
         // remains on the same buffer + position (idempotent).
         // The real value is on the accept path -- but the
         // entry must exist for the walker to find it.
-        let history_len_before = a.position_history.len();
+        let history_len_before = a.editor.position_history.len();
         assert!(history_len_before >= 1);
     }
 
@@ -3322,7 +3322,7 @@ mod tests {
         assert_ne!(initial, lsp_id);
         a.activate_buffer(lsp_id);
         // Position history should contain the pre-jump entry.
-        let last = a.position_history.last().expect("history entry");
+        let last = a.editor.position_history.last().expect("history entry");
         assert_eq!(last.position, Position::new(1, 2));
         assert_eq!(last.buffer_id, initial);
         // `<C-o>` walks back to the original buffer.

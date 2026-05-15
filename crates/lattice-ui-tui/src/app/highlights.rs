@@ -254,7 +254,7 @@ impl App {
         // multi-buffer reads it would route through `buffer_locals`.
         let Some(syntax) = self.document_syntax_for(self.editor.document_buffer_id) else {
             self.editor.visible_highlights = Vec::new();
-            self.visible_highlights_key = None;
+            self.editor.visible_highlights_key = None;
             return;
         };
         let snap = syntax.snapshot();
@@ -265,7 +265,7 @@ impl App {
             viewport_height: self.editor.viewport_height,
             fold_hash: folds::compute_fold_hash(&self.folds),
         };
-        if self.visible_highlights_key == Some(key) {
+        if self.editor.visible_highlights_key == Some(key) {
             // Cache hit -- existing visible_highlights is valid.
             return;
         }
@@ -290,7 +290,7 @@ impl App {
         // from one CORRECT set to another -- never through an
         // empty/wrong intermediate that would visibly flicker.
         if snap.text_version() < self.document.text_version() {
-            self.visible_highlights_key = Some(key);
+            self.editor.visible_highlights_key = Some(key);
             return;
         }
         // Snapshot is current with the document. Recompute.
@@ -302,7 +302,7 @@ impl App {
             .visible_buffer_line_extent(start, self.editor.viewport_height)
             .saturating_add(1);
         self.editor.visible_highlights = snap.highlight_lines(start, end).unwrap_or_default();
-        self.visible_highlights_key = Some(key);
+        self.editor.visible_highlights_key = Some(key);
     }
 
     /// Last buffer-line index that ends up rendered when the

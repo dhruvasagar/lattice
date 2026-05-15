@@ -1736,7 +1736,7 @@ impl App {
         // anything else invalidates the key). Regression test
         // pinned in `redraw_screen_repopulates_visible_highlights`.
         self.editor.visible_highlights.clear();
-        self.visible_highlights_key = None;
+        self.editor.visible_highlights_key = None;
         self.editor.pane_highlights.clear();
         // Recompute folds in case the fold set drifted from the
         // current document state (paranoia; the seam already runs

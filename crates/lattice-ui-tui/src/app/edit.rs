@@ -422,7 +422,7 @@ impl App {
 
         // Drop visual mode and enter Insert. enter_mode handles
         // recording_insert so the typed prefix is captured.
-        self.visual_anchor = None;
+        self.editor.visual_anchor = None;
         self.enter_mode(ModalState::Insert);
     }
 
@@ -1166,7 +1166,7 @@ mod tests {
         a.apply(Action::Invoke(inv));
         // After dw: "bar foo bar".
         assert_eq!(a.document.text(), "bar foo bar");
-        assert!(a.last_change.is_some());
+        assert!(a.editor.last_change.is_some());
         // `.` replays the same dw at the new cursor position.
         a.apply(Action::RepeatLastChange);
         assert_eq!(a.document.text(), "foo bar");
@@ -1316,7 +1316,7 @@ mod tests {
         a.cursor = anchor;
         a.apply(Action::EnterVisual(VisualKind::Blockwise));
         a.cursor = head;
-        a.visual_anchor = Some(anchor);
+        a.editor.visual_anchor = Some(anchor);
         let sel = Selection {
             anchor,
             head,
@@ -1461,7 +1461,7 @@ mod tests {
         a.apply(invoke_motion(a.builtins.char_right));
         // Cursor should now be at (2, 2). visual_anchor was (0, 1).
         assert_eq!(a.cursor, Position::new(2, 2));
-        assert_eq!(a.visual_anchor, Some(Position::new(0, 1)));
+        assert_eq!(a.editor.visual_anchor, Some(Position::new(0, 1)));
 
         a.apply(Action::EnterBlockVisualInsert);
         assert!(matches!(a.modal, ModalState::Insert));

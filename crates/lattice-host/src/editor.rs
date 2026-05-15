@@ -28,13 +28,13 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use lattice_grammar::Register;
+use lattice_grammar::{CommandInvocation, Register};
 use lattice_protocol::position::{Position, Range as ProtoRange};
 
 use crate::action::Action;
 use crate::state::{
-    LastSearch, MacroRecording, PositionEntry, SearchLine, SubstitutePreview, TagStackEntry,
-    UnnamedRegister,
+    LastFind, LastSearch, LastVisual, MacroRecording, PositionEntry, SearchLine, SubstitutePreview,
+    TagStackEntry, UnnamedRegister,
 };
 
 /// Renderer-agnostic editor state.
@@ -66,6 +66,9 @@ use crate::state::{
 ///   `recent_files`, `tag_stack`, `pending_tag_origin`).
 /// - 5.B.7 -- search state (`search_line`, `last_search`,
 ///   `current_match`, `all_matches`, `substitute_preview`).
+/// - 5.B.8 -- vim repeat + visual state (`pending_count`,
+///   `op_count`, `visual_anchor`, `last_change`,
+///   `last_visual`, `last_find`).
 #[derive(Debug, Default)]
 pub struct Editor {
     /// Completed macro recordings keyed by register name.
@@ -150,4 +153,30 @@ pub struct Editor {
     /// input no longer parses as a substitute (DESIGN.md
     /// §5.9.10).
     pub substitute_preview: Option<SubstitutePreview>,
+    /// In-progress count prefix being typed (`3` of `3w`,
+    /// `12` of `12dd`). 0 means "no count typed". The next
+    /// `Action::Invoke` consumes this and resets it to 0.
+    pub pending_count: u32,
+    /// Count latched when an operator key was pressed (`2`
+    /// of `2d3w`). Multiplied with the motion's count (`3`)
+    /// to give the final count the operator dispatches with
+    /// (`6`). 0 means "no operator count".
+    pub op_count: u32,
+    /// Anchor position when Visual mode was entered. `None`
+    /// outside Visual; restored on Esc. The `head` of the
+    /// selection follows the cursor; the anchor stays put so
+    /// the selection extends or contracts as the user moves.
+    pub visual_anchor: Option<Position>,
+    /// Last operator-class invocation that mutated the
+    /// buffer. `.` re-dispatches it from the current cursor.
+    /// v1 records operator + motion / operator + range /
+    /// Visual-mode operator; insert-mode text replay remains
+    /// a §5.2.4 gap.
+    pub last_change: Option<CommandInvocation>,
+    /// Last Visual-mode selection extents, captured on exit
+    /// so `gv` can re-enter Visual with the same anchor /
+    /// head / kind.
+    pub last_visual: Option<LastVisual>,
+    /// Last f/F/t/T find on this buffer, for `;` / `,`.
+    pub last_find: Option<LastFind>,
 }

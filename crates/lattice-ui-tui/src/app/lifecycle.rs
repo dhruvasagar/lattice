@@ -494,10 +494,10 @@ impl App {
                 self.editor.all_matches.clear();
                 self.editor.search_line = None;
                 self.editor.last_search = None;
-                self.last_find = None;
-                self.last_change = None;
-                self.last_visual = None;
-                self.visual_anchor = None;
+                self.editor.last_find = None;
+                self.editor.last_change = None;
+                self.editor.last_visual = None;
+                self.editor.visual_anchor = None;
                 self.replace_history.clear();
                 self.editor.position_history.clear();
                 self.editor.position_history_cursor = 0;
@@ -570,10 +570,10 @@ impl App {
         self.editor.all_matches.clear();
         self.editor.search_line = None;
         self.editor.last_search = None;
-        self.last_find = None;
-        self.last_change = None;
-        self.last_visual = None;
-        self.visual_anchor = None;
+        self.editor.last_find = None;
+        self.editor.last_change = None;
+        self.editor.last_visual = None;
+        self.editor.visual_anchor = None;
         self.replace_history.clear();
         self.folds.clear();
         // Position history follows the active buffer.

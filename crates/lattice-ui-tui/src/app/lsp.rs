@@ -2473,7 +2473,7 @@ impl App {
     /// Visual selection when active; point range at cursor otherwise.
     fn code_action_range(&self, buffer: &lattice_core::Buffer) -> lsp_types::Range {
         if let lattice_grammar::ModalState::Visual(_) = self.modal {
-            let anchor = self.visual_anchor.unwrap_or(self.cursor);
+            let anchor = self.editor.visual_anchor.unwrap_or(self.cursor);
             let head = self.cursor;
             let (start_pos, end_pos) = if (anchor.line, anchor.byte) <= (head.line, head.byte) {
                 (anchor, head)
@@ -2796,7 +2796,7 @@ impl App {
         let range_lines: Option<(u32, u32)> = if is_range {
             // Use the active Visual selection if any, else the whole buffer.
             if let ModalState::Visual(_) = self.modal {
-                let anchor = self.visual_anchor.unwrap_or(self.cursor);
+                let anchor = self.editor.visual_anchor.unwrap_or(self.cursor);
                 let head = self.cursor;
                 let (s, e): (u32, u32) = if anchor.line <= head.line {
                     (anchor.line, head.line)
@@ -6132,7 +6132,7 @@ impl App {
         use lattice_grammar::{ModalState, VisualKind};
         use lattice_protocol::selection::{Selection, SelectionSet, VisualMode};
         self.modal = ModalState::Visual(VisualKind::Charwise);
-        self.visual_anchor = Some(anchor);
+        self.editor.visual_anchor = Some(anchor);
         // The cursor lands on the head; the head sits *inside*
         // the range (LSP ranges are half-open).
         self.cursor = head;

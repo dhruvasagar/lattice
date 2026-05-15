@@ -77,7 +77,10 @@ use lattice_grammar::SearchDirection;
 #[cfg(test)]
 use lattice_grammar::YankKind;
 use lattice_grammar::builtins::Builtins;
-use lattice_grammar::command::CommandInvocation;
+// Re-exported so submodule tests using `use super::*;` keep
+// seeing `CommandInvocation` after Phase 5.B.8 moved
+// `App.last_change` to `Editor`.
+pub use lattice_grammar::command::CommandInvocation;
 use lattice_grammar::register::Register;
 use lattice_lsp::{DiagnosticsLayer, LspLogger, LspSupervisorHandle};
 use lattice_protocol::Event;
@@ -684,27 +687,10 @@ pub struct App {
     // `editor.substitute_preview`.
     // Phase 5.B.5: `unnamed_register` moved to
     // `editor.unnamed_register`.
-    /// In-progress count prefix being typed (`3` of `3w`, `12` of `12dd`).
-    /// 0 means "no count typed". The next `Action::Invoke` consumes this
-    /// and resets it to 0.
-    pub pending_count: u32,
-    /// Count latched when an operator key was pressed (`2` of `2d3w`).
-    /// Multiplied with the motion's count (`3`) to give the final count
-    /// the operator dispatches with (`6`). 0 means "no operator count".
-    pub op_count: u32,
-    /// Anchor position when Visual mode was entered. `None` outside
-    /// Visual; restored on Esc. The `head` of the selection follows the
-    /// cursor; the `anchor` stays put so the selection extends or
-    /// contracts as the user moves.
-    pub visual_anchor: Option<Position>,
-    /// Last operator-class invocation that mutated the buffer.
-    /// `.` re-dispatches it from the current cursor. v1 records
-    /// operator + motion / operator + range / Visual-mode operator;
-    /// insert-mode text replay is a known gap (§5.2.4).
-    pub last_change: Option<CommandInvocation>,
-    /// Last Visual-mode selection extents, captured on exit so `gv` can
-    /// re-enter Visual with the same anchor / head / kind.
-    pub last_visual: Option<LastVisual>,
+    // Phase 5.B.8: `pending_count`, `op_count`,
+    // `visual_anchor`, `last_change`, `last_visual` moved
+    // to `editor.{pending_count, op_count, visual_anchor,
+    // last_change, last_visual}`.
     // Phase 5.B.5: `marks` moved to `editor.marks`.
     /// Per-Replace-session log of overwritten bytes so backspace can
     /// restore the original (rather than deleting). Cleared on entry,
@@ -734,8 +720,7 @@ pub struct App {
     // Phase 5.B.4: `macros`, `macro_recording`,
     // `last_played_macro` moved to `editor.macros` /
     // `editor.macro_recording` / `editor.last_played_macro`.
-    /// Last f/F/t/T find on this buffer, for `;` / `,`.
-    pub last_find: Option<LastFind>,
+    // Phase 5.B.8: `last_find` moved to `editor.last_find`.
     /// Manual folds. v1 supports non-nested folds defined by line range.
     /// `closed=true` means the fold's interior is skipped during render.
     pub folds: Vec<Fold>,
@@ -2659,7 +2644,7 @@ mod tests {
     fn motion_does_not_record_last_change() {
         let mut a = app_with("hello world", 10);
         a.apply(invoke_motion(a.builtins.word_forward));
-        assert!(a.last_change.is_none());
+        assert!(a.editor.last_change.is_none());
     }
 
     // ---- count prefix end-to-end ----
@@ -2670,7 +2655,7 @@ mod tests {
         a.apply(Action::PushDigit(1));
         a.apply(Action::PushDigit(2));
         a.apply(Action::PushDigit(3));
-        assert_eq!(a.pending_count, 123);
+        assert_eq!(a.editor.pending_count, 123);
     }
 
     // Slice 8.i.4.f: the next batch of tests bake `Count(N)`
@@ -3768,7 +3753,7 @@ mod tests {
         );
         a.apply(Action::Invoke(inv));
         // Yank doesn't mutate the buffer; dot-repeat shouldn't pick this up.
-        assert!(a.last_change.is_none());
+        assert!(a.editor.last_change.is_none());
     }
 
     #[test]
@@ -3779,7 +3764,7 @@ mod tests {
         );
         a.apply(Action::Invoke(inv));
         // change drops to Insert, but the change itself is recorded.
-        assert!(a.last_change.is_some());
+        assert!(a.editor.last_change.is_some());
     }
 
     #[test]

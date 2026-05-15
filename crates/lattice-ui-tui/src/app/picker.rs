@@ -60,7 +60,7 @@ impl App {
         // captures the prior selection -- exactly what `:grep`
         // would want as its default pattern when invoked after
         // selecting a word.
-        let selection = self.last_visual.as_ref().map(|v| (v.anchor, v.head));
+        let selection = self.editor.last_visual.as_ref().map(|v| (v.anchor, v.head));
 
         // Collect tree-sitter symbol locations once per
         // picker-open. Cost is O(parse-tree-size); reads through

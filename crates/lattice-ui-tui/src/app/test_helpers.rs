@@ -40,8 +40,8 @@ pub(super) fn press(app: &mut App, event: crossterm::event::KeyEvent) {
     let ctx = crate::input::TranslateContext {
         modal: app.modal,
         builtins: &app.builtins,
-        pending_count: app.pending_count,
-        op_count: app.op_count,
+        pending_count: app.editor.pending_count,
+        op_count: app.editor.op_count,
         recording_macro: app.editor.macro_recording.is_some(),
         active_buffer: app.active_buffer,
         completion_open: app.completion_state.is_some(),

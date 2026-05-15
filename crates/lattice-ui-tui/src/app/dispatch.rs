@@ -402,8 +402,8 @@ impl App {
             Action::PushDigit(d) => {
                 // Accumulate one decimal digit into the pending count.
                 // Saturating math prevents overflow on absurd inputs.
-                self.pending_count = self
-                    .pending_count
+                self.editor.pending_count = self
+                    .editor.pending_count
                     .saturating_mul(10)
                     .saturating_add(d.into());
             }
@@ -519,7 +519,7 @@ impl App {
             Action::JumpToMarkExact(name) => self.do_jump_mark(name, true),
 
             Action::RepeatLastChange => {
-                if let Some(inv) = self.last_change.clone() {
+                if let Some(inv) = self.editor.last_change.clone() {
                     // Snapshot last_insert because run_invocation may
                     // reset it (running the change op enters Insert,
                     // which clears recording_insert) -- we want the
@@ -798,8 +798,8 @@ impl App {
         if effective_count > 1 {
             inv = inv.with_count(lattice_grammar::command::Count(effective_count));
         }
-        self.pending_count = 0;
-        self.op_count = 0;
+        self.editor.pending_count = 0;
+        self.editor.op_count = 0;
 
         let mut temp_doc = lattice_core::Document::from_text(oil_text);
         let was_visual = matches!(self.modal, ModalState::Visual(_));
@@ -833,7 +833,7 @@ impl App {
                 if let Some(first) = edits.first() {
                     self.cursor = first.original_range.start;
                 }
-                self.last_change = Some(inv_for_repeat);
+                self.editor.last_change = Some(inv_for_repeat);
                 should_exit_visual = true;
             }
             Effect::SelectionChange(set) => {
@@ -908,8 +908,8 @@ impl App {
             return;
         };
         if !matches!(spec.kind, lattice_grammar::CommandKind::Motion) {
-            self.pending_count = 0;
-            self.op_count = 0;
+            self.editor.pending_count = 0;
+            self.editor.op_count = 0;
             self.editor.pending_register = None;
             self.set_message(EchoLevel::Info, "buffer is read-only".to_string());
             return;
@@ -927,8 +927,8 @@ impl App {
         // reads the baked `inv.count` and dispatches with it -- no
         // `pending_count * op_count` math here. Read-only motions
         // arriving without a baked count default to 1.
-        self.pending_count = 0;
-        self.op_count = 0;
+        self.editor.pending_count = 0;
+        self.editor.op_count = 0;
         let buffer = self.active_text();
         let cancel = lattice_runtime::CancellationToken::never();
         match lattice_grammar::execute_motion_only(
@@ -992,7 +992,7 @@ impl App {
                 None
             };
             if let Some(kind) = kind {
-                self.last_find = Some(LastFind { kind, target: c });
+                self.editor.last_find = Some(LastFind { kind, target: c });
             }
         }
         // Slice 8.i.4.f: count multiplication lives entirely in
@@ -1018,8 +1018,8 @@ impl App {
         if effective_count > 1 {
             inv = inv.with_count(lattice_grammar::command::Count(effective_count));
         }
-        self.pending_count = 0;
-        self.op_count = 0;
+        self.editor.pending_count = 0;
+        self.editor.op_count = 0;
         let was_visual = matches!(self.modal, ModalState::Visual(_));
         let mut should_exit_visual = false;
         let inv_for_repeat = inv.clone();
@@ -1045,7 +1045,7 @@ impl App {
                 // yank-only); dot-repeat only records buffer mutations.
                 should_exit_visual = effect_mutates_or_yanks(&effect);
                 if effect_mutates(&effect) {
-                    self.last_change = Some(inv_for_repeat);
+                    self.editor.last_change = Some(inv_for_repeat);
                 }
                 self.apply_effect(effect);
                 if is_vertical_jump {
@@ -1088,7 +1088,7 @@ impl App {
                 // document's selection to reflect the extension.
                 if let ModalState::Visual(kind) = self.modal {
                     let sel = Selection {
-                        anchor: self.visual_anchor.unwrap_or(new_head),
+                        anchor: self.editor.visual_anchor.unwrap_or(new_head),
                         head: new_head,
                         visual: Some(visual::visual_kind_to_mode(kind)),
                     };
@@ -1301,9 +1301,9 @@ impl App {
                 // the top of this dispatch (since `Action::Invoke`
                 // is not `AbsorbPartialChord(_)`). Populate it
                 // here.
-                if self.pending_count > 0 {
-                    self.op_count = self.pending_count;
-                    self.pending_count = 0;
+                if self.editor.pending_count > 0 {
+                    self.editor.op_count = self.editor.pending_count;
+                    self.editor.pending_count = 0;
                 }
                 let prefix = crate::keymap_normal::operator_prefix(op, &self.builtins);
                 self.partial_chord.extend(prefix);
@@ -1894,7 +1894,7 @@ mod tests {
     #[test]
     fn dot_with_no_prior_change_emits_error() {
         let mut a = app_with("hello", 10);
-        assert!(a.last_change.is_none());
+        assert!(a.editor.last_change.is_none());
         a.apply(Action::RepeatLastChange);
         let msg = a.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Error);
@@ -1963,7 +1963,7 @@ mod tests {
         // attach_count earlier in the pipeline). Press-harness
         // tests cover the full keystroke flow.
         let mut a = app_with("one two three four five", 10);
-        a.pending_count = 3;
+        a.editor.pending_count = 3;
         a.apply(Action::Invoke(
             CommandInvocation::of(a.builtins.word_forward.0)
                 .with_count(lattice_grammar::command::Count(3)),
@@ -1971,14 +1971,14 @@ mod tests {
         // 3w from origin: "one two three FOUR five" -> 'f' of "four" at byte 14.
         assert_eq!(a.cursor, Position::new(0, 14));
         // pending_count is reset after dispatch.
-        assert_eq!(a.pending_count, 0);
+        assert_eq!(a.editor.pending_count, 0);
     }
 
     #[test]
     fn dispatcher_runs_counted_operator_on_motion_2dw() {
         let mut a = app_with("one two three four five", 10);
         // Mirror translate-time state: `2d` already absorbed.
-        a.op_count = 2;
+        a.editor.op_count = 2;
         let inv = CommandInvocation::of(a.builtins.delete.0)
             .with_target(lattice_grammar::Target::Motion(
                 a.builtins.word_forward,
@@ -1988,14 +1988,14 @@ mod tests {
         a.apply(Action::Invoke(inv));
         // 2dw: deletes "one two " leaving "three four five".
         assert_eq!(a.document.text(), "three four five");
-        assert_eq!(a.op_count, 0);
+        assert_eq!(a.editor.op_count, 0);
     }
 
     #[test]
     fn dispatcher_runs_counted_operator_on_motion_2d3w_equals_count_6() {
         let mut a = app_with("a b c d e f g h i j", 10);
-        a.op_count = 2;
-        a.pending_count = 3;
+        a.editor.op_count = 2;
+        a.editor.pending_count = 3;
         let inv = CommandInvocation::of(a.builtins.delete.0)
             .with_target(lattice_grammar::Target::Motion(
                 a.builtins.word_forward,

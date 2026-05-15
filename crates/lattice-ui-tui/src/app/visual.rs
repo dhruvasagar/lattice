@@ -26,7 +26,7 @@ use super::{App, EchoLevel, LastVisual};
 impl App {
     pub(super) fn do_enter_visual(&mut self, kind: VisualKind) {
         self.modal = ModalState::Visual(kind);
-        self.visual_anchor = Some(self.cursor);
+        self.editor.visual_anchor = Some(self.cursor);
         // Seed document.selections so Range::Selection picks up the
         // anchor=head=cursor selection immediately.
         let sel = Selection {
@@ -44,27 +44,27 @@ impl App {
         if let ModalState::Visual(kind) = self.modal {
             let sels = self.document.selections();
             let sel = sels.primary();
-            self.last_visual = Some(LastVisual {
+            self.editor.last_visual = Some(LastVisual {
                 anchor: sel.anchor,
                 head: sel.head,
                 kind,
             });
         }
         self.modal = ModalState::Normal;
-        self.visual_anchor = None;
+        self.editor.visual_anchor = None;
         // Collapse selection to a cursor at the current head.
         self.set_selections_blocking(SelectionSet::single(Selection::cursor(self.cursor)));
     }
 
     pub(super) fn do_reselect_visual(&mut self) {
-        let Some(last) = self.last_visual else {
+        let Some(last) = self.editor.last_visual else {
             self.set_message(EchoLevel::Error, "no previous visual selection".to_string());
             return;
         };
         // Restore the selection: cursor lands at `head`, anchor at `anchor`,
         // visual mode is the saved kind.
         self.modal = ModalState::Visual(last.kind);
-        self.visual_anchor = Some(last.anchor);
+        self.editor.visual_anchor = Some(last.anchor);
         self.cursor = last.head;
         let sel = Selection {
             anchor: last.anchor,
@@ -111,7 +111,7 @@ mod tests {
         a.apply(invoke_motion(a.builtins.word_forward));
         // Now selection is anchor=ZERO, head=(0,6).
         a.apply(Action::ExitVisual);
-        let last = a.last_visual.expect("last_visual captured");
+        let last = a.editor.last_visual.expect("last_visual captured");
         assert_eq!(last.anchor, Position::ZERO);
         assert_eq!(last.head, Position::new(0, 6));
         assert_eq!(last.kind, VisualKind::Charwise);
@@ -120,7 +120,7 @@ mod tests {
     #[test]
     fn gv_with_no_prior_visual_emits_error() {
         let mut a = app_with("hello", 10);
-        assert!(a.last_visual.is_none());
+        assert!(a.editor.last_visual.is_none());
         a.apply(Action::ReselectLastVisual);
         let msg = a.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Error);
@@ -180,7 +180,7 @@ mod tests {
         a.cursor = Position::new(0, 1);
         a.apply(Action::EnterVisual(VisualKind::Charwise));
         assert_eq!(a.modal, ModalState::Visual(VisualKind::Charwise));
-        assert_eq!(a.visual_anchor, Some(Position::new(0, 1)));
+        assert_eq!(a.editor.visual_anchor, Some(Position::new(0, 1)));
         let sels = a.document.selections();
         let sel = sels.primary();
         assert_eq!(sel.anchor, Position::new(0, 1));
@@ -207,7 +207,7 @@ mod tests {
         a.apply(invoke_motion(a.builtins.char_right));
         a.apply(Action::ExitVisual);
         assert_eq!(a.modal, ModalState::Normal);
-        assert!(a.visual_anchor.is_none());
+        assert!(a.editor.visual_anchor.is_none());
         assert!(a.document.selections().primary().is_cursor());
     }
 

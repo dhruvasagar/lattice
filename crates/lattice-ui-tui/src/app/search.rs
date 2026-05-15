@@ -420,7 +420,7 @@ impl App {
     /// line. `reverse = false` keeps the original direction; `true`
     /// flips it.
     pub(super) fn do_find_repeat(&mut self, reverse: bool) {
-        let Some(last) = self.last_find else {
+        let Some(last) = self.editor.last_find else {
             self.set_message(EchoLevel::Error, "no previous find".to_string());
             return;
         };

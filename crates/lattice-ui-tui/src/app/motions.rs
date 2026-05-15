@@ -1170,7 +1170,7 @@ mod tests {
         // single `u` should restore the original buffer.
         let mut a = app_with("one\ntwo\nthree\nfour", 10);
         a.cursor = Position::new(0, 0);
-        a.op_count = 2;
+        a.editor.op_count = 2;
         let inv = CommandInvocation::of(a.builtins.delete.0)
             .with_range(lattice_grammar::Range::CurrentLine)
             .with_count(lattice_grammar::command::Count(2));
@@ -1195,7 +1195,7 @@ mod tests {
         // via apply_edit_batch.
         let mut a = app_with("one\ntwo\nthree\nfour", 10);
         a.cursor = Position::new(0, 0);
-        a.op_count = 2;
+        a.editor.op_count = 2;
         let inv = CommandInvocation::of(a.builtins.indent_right.0)
             .with_range(lattice_grammar::Range::CurrentLine)
             .with_count(lattice_grammar::command::Count(2));
@@ -1210,7 +1210,7 @@ mod tests {
     fn count_with_indent_left_dedents_n_lines_as_single_undo() {
         let mut a = app_with("    one\n    two\nthree\nfour", 10);
         a.cursor = Position::new(0, 0);
-        a.op_count = 2;
+        a.editor.op_count = 2;
         let inv = CommandInvocation::of(a.builtins.indent_left.0)
             .with_range(lattice_grammar::Range::CurrentLine)
             .with_count(lattice_grammar::command::Count(2));

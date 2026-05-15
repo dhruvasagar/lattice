@@ -1017,8 +1017,8 @@ pub struct App {
     /// (server_id, token). `Begin` inserts; `Report` updates;
     /// `End` removes. The modeline picks the most recent
     /// active entry to surface.
-    pub lsp_progress:
-        std::collections::HashMap<(std::sync::Arc<str>, String), lattice_lsp::LspProgressUpdate>,
+    // Phase 5.B.17: `lsp_progress` moved to
+    // `editor.lsp_progress`.
     /// 4.4.e: cached `textDocument/selectionRange` chain for
     /// the smart-expansion operator. Index 0 is the innermost
     /// range (closest to the cursor); each subsequent entry is
@@ -1026,10 +1026,12 @@ pub struct App {
     /// anchor that captured this chain; we invalidate the cache
     /// when the cursor moves outside the innermost range or
     /// the active buffer changes.
-    pub lsp_selection_chain: Option<LspSelectionChain>,
+    // Phase 5.B.17: `lsp_selection_chain` moved to
+    // `editor.lsp_selection_chain`.
     /// 4.4.e: current step inside `lsp_selection_chain.ranges`.
     /// `0` = innermost; `chain.ranges.len() - 1` = outermost.
-    pub lsp_selection_chain_index: usize,
+    // Phase 5.B.17: `lsp_selection_chain_index` moved to
+    // `editor.lsp_selection_chain_index`.
     /// 4.4.e: receiver for the in-flight `selectionRange`
     /// response. Drained per frame.
     pub pending_selection_range_rx:
@@ -1044,13 +1046,16 @@ pub struct App {
     /// per-tick pump when the cursor moves to a different
     /// (line, byte). Renderer reads this to paint the soft
     /// overlay across same-symbol occurrences.
-    pub lsp_document_highlights: Option<DocumentHighlightCache>,
+    // Phase 5.B.17: `lsp_document_highlights` moved to
+    // `editor.lsp_document_highlights`.
     /// 4.4.e: cursor position at which the most recent
     /// `documentHighlight` request was issued. Used by the
     /// pump to decide whether to re-issue (cursor moved) vs.
     /// reuse the cache. Distinct from `cache.cursor` because
     /// the in-flight request may not have landed yet.
-    pub last_document_highlight_issue_cursor: Option<Position>,
+    // Phase 5.B.17: `last_document_highlight_issue_cursor`
+    // moved to
+    // `editor.last_document_highlight_issue_cursor`.
     /// 4.4.e: cancellation token + receiver for the in-flight
     /// `documentHighlight` request.
     pub pending_document_highlight_token: Option<lattice_protocol::CancellationToken>,
@@ -1061,7 +1066,8 @@ pub struct App {
     /// per-buffer setting; multiple open buffers can each track
     /// their own LSP fold list. Invalidated by the pump when
     /// the document version bumps.
-    pub lsp_folds_cache: std::collections::HashMap<BufferId, LspFoldsCache>,
+    // Phase 5.B.17: `lsp_folds_cache` moved to
+    // `editor.lsp_folds_cache`.
     /// 4.4.f: cancellation token + receiver for the in-flight
     /// `foldingRange` request. Single-flight: a new request
     /// cancels any predecessor.
@@ -1070,14 +1076,16 @@ pub struct App {
     /// 4.4.g: per-buffer `inlayHint` cache. Refilled by the
     /// per-tick pump when the document version changes; the
     /// renderer overlay splices each hint as virtual text.
-    pub lsp_inlay_hints_cache: std::collections::HashMap<BufferId, LspInlayHintCache>,
+    // Phase 5.B.17: `lsp_inlay_hints_cache` moved to
+    // `editor.lsp_inlay_hints_cache`.
     /// 4.5.c: per-buffer `documentLink` cache. Refilled by
     /// the per-tick pump on document-version change; consumed
     /// by `gx` (Normal-mode keystroke) -- the first link whose
     /// range covers the cursor wins. The renderer overlay
     /// (underline link ranges) is queued; today the cache only
     /// drives navigation, not visuals.
-    pub lsp_document_links_cache: std::collections::HashMap<BufferId, LspDocumentLinksCache>,
+    // Phase 5.B.17: `lsp_document_links_cache` moved to
+    // `editor.lsp_document_links_cache`.
     /// 4.5.c: in-flight `documentLink` single-flight slot.
     pub pending_document_links_token: Option<lattice_protocol::CancellationToken>,
     pub pending_document_links_rx:
@@ -1088,7 +1096,8 @@ pub struct App {
     /// lenses). Cleared via `workspace/codeLens/refresh` so
     /// servers that recompute lenses out-of-band (test runs,
     /// debug session start) can force a refetch.
-    pub lsp_code_lens_cache: std::collections::HashMap<BufferId, LspCodeLensCache>,
+    // Phase 5.B.17: `lsp_code_lens_cache` moved to
+    // `editor.lsp_code_lens_cache`.
     /// 4.5.d: in-flight `codeLens` single-flight slot.
     pub pending_code_lens_token: Option<lattice_protocol::CancellationToken>,
     pub pending_code_lens_rx: Option<tokio::sync::mpsc::UnboundedReceiver<CodeLensOutcome>>,
@@ -1108,7 +1117,8 @@ pub struct App {
     /// the originating server (commands are server-specific).
     pub pending_code_lens_server: Option<std::sync::Arc<str>>,
     /// 4.5.e: per-buffer `documentColor` cache.
-    pub lsp_document_color_cache: std::collections::HashMap<BufferId, LspDocumentColorCache>,
+    // Phase 5.B.17: `lsp_document_color_cache` moved to
+    // `editor.lsp_document_color_cache`.
     /// 4.5.e: in-flight `documentColor` single-flight slot.
     pub pending_document_color_token: Option<lattice_protocol::CancellationToken>,
     pub pending_document_color_rx:
@@ -1129,7 +1139,8 @@ pub struct App {
     /// the document version changes; the renderer overlay
     /// repaints span ranges that fall under a token with a
     /// kind-driven style.
-    pub lsp_semantic_tokens_cache: std::collections::HashMap<BufferId, LspSemanticTokensCache>,
+    // Phase 5.B.17: `lsp_semantic_tokens_cache` moved to
+    // `editor.lsp_semantic_tokens_cache`.
     /// 4.4.h: in-flight semanticTokens/full single-flight slot.
     pub pending_semantic_tokens_token: Option<lattice_protocol::CancellationToken>,
     pub pending_semantic_tokens_rx:
@@ -1139,7 +1150,8 @@ pub struct App {
     /// can be answered as `Unchanged` cheaply. The pump
     /// re-issues on document-version change OR cache miss
     /// (e.g. after `workspace/diagnostic/refresh` evicts).
-    pub lsp_pull_diagnostics_cache: std::collections::HashMap<BufferId, LspPullDiagnosticsCache>,
+    // Phase 5.B.17: `lsp_pull_diagnostics_cache` moved to
+    // `editor.lsp_pull_diagnostics_cache`.
     /// 4.4.j: in-flight `textDocument/diagnostic` single-flight
     /// slot. Each new request cancels its predecessor.
     pub pending_pull_diagnostics_token: Option<lattice_protocol::CancellationToken>,

@@ -37,6 +37,11 @@ use lattice_config::{ConfigRegistry, OptionOverrideSet, ResolvedOptions};
 use lattice_core::ui::popup::PopupPlacement;
 use lattice_help::topics::HelpTopicRegistry;
 use lattice_mode::{ActiveModes, BufferLocals, GuardStoreHandle, ModeRegistry, ServiceRegistry};
+use lattice_lsp::cache::{
+    DocumentHighlightCache, LspCodeLensCache, LspDocumentColorCache, LspDocumentLinksCache,
+    LspFoldsCache, LspInlayHintCache, LspPullDiagnosticsCache, LspSelectionChain,
+    LspSemanticTokensCache,
+};
 use lattice_picker::{Picker, PickerMruIndex, PickerRegistry};
 use lattice_grammar::ModalState;
 use lattice_grammar::builtins::Builtins;
@@ -139,6 +144,15 @@ use crate::ui::theme::Theme as HostTheme;
 ///   + tree-with-root invariants). Follow-up slice removes
 ///   `#[derive(Default)]` from `Editor` in favour of an
 ///   `Editor::new(...)` constructor so these can migrate.
+/// - 5.B.17 -- LSP per-buffer caches (`lsp_progress`,
+///   `lsp_selection_chain`, `lsp_selection_chain_index`,
+///   `lsp_document_highlights`,
+///   `last_document_highlight_issue_cursor`,
+///   `lsp_folds_cache`, `lsp_inlay_hints_cache`,
+///   `lsp_document_links_cache`, `lsp_code_lens_cache`,
+///   `lsp_document_color_cache`,
+///   `lsp_semantic_tokens_cache`,
+///   `lsp_pull_diagnostics_cache`).
 #[derive(Debug, Default)]
 pub struct Editor {
     /// Completed macro recordings keyed by register name.
@@ -535,4 +549,37 @@ pub struct Editor {
     /// every open buffer regardless of kind -- documents,
     /// file trees, future outline / diagnostics views.
     pub buffers: BufferRegistry,
+    /// Accumulated `$/progress` state keyed by
+    /// `(server_id, token)`. `Begin` inserts; `Report`
+    /// updates; `End` removes. The modeline picks the most
+    /// recent active entry to surface.
+    pub lsp_progress: HashMap<(Arc<str>, String), lattice_lsp::LspProgressUpdate>,
+    /// Cached `textDocument/selectionRange` chain for the
+    /// smart-expansion operator.
+    pub lsp_selection_chain: Option<LspSelectionChain>,
+    /// Current step inside `lsp_selection_chain.ranges`.
+    /// 0 = innermost; `chain.ranges.len() - 1` = outermost.
+    pub lsp_selection_chain_index: usize,
+    /// Cached `textDocument/documentHighlight` for the
+    /// active buffer + symbol position.
+    pub lsp_document_highlights: Option<DocumentHighlightCache>,
+    /// Cursor position at which the most recent
+    /// `documentHighlight` request was issued.
+    pub last_document_highlight_issue_cursor: Option<ProtoPosition>,
+    /// Per-buffer cache of the last
+    /// `textDocument/foldingRange` response.
+    pub lsp_folds_cache: HashMap<BufferId, LspFoldsCache>,
+    /// Per-buffer `inlayHint` cache.
+    pub lsp_inlay_hints_cache: HashMap<BufferId, LspInlayHintCache>,
+    /// Per-buffer `documentLink` cache.
+    pub lsp_document_links_cache: HashMap<BufferId, LspDocumentLinksCache>,
+    /// Per-buffer code-lens cache.
+    pub lsp_code_lens_cache: HashMap<BufferId, LspCodeLensCache>,
+    /// Per-buffer `documentColor` cache.
+    pub lsp_document_color_cache: HashMap<BufferId, LspDocumentColorCache>,
+    /// Per-buffer semantic-tokens cache.
+    pub lsp_semantic_tokens_cache: HashMap<BufferId, LspSemanticTokensCache>,
+    /// Per-buffer pull-diagnostics cache (keyed
+    /// `result_id`s for `Unchanged` short-circuit).
+    pub lsp_pull_diagnostics_cache: HashMap<BufferId, LspPullDiagnosticsCache>,
 }

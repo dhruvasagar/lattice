@@ -2193,7 +2193,7 @@ fn active_lsp_segment(app: &App) -> String {
     }
     let attached: std::collections::HashSet<&str> = ids.iter().copied().collect();
     let mut best: Option<&lattice_lsp::LspProgressUpdate> = None;
-    for ((sid, _tok), update) in &app.lsp_progress {
+    for ((sid, _tok), update) in &app.editor.lsp_progress {
         if !attached.contains(sid.as_ref()) {
             continue;
         }
@@ -2463,7 +2463,7 @@ fn compose_visible_lines_inner(
         // their bg / underline on top of the LSP-driven fg
         // -- the user's selection and search highlight stay
         // visible over semantic-colored text.
-        if let Some(cache) = app.lsp_semantic_tokens_cache.get(&app.editor.document_buffer_id)
+        if let Some(cache) = app.editor.lsp_semantic_tokens_cache.get(&app.editor.document_buffer_id)
             && app.lsp_semantic_tokens_mode_enabled_for(app.editor.document_buffer_id)
         {
             for tok in cache.tokens.iter().filter(|t| t.line == line_idx) {
@@ -2561,7 +2561,7 @@ fn compose_visible_lines_inner(
         // Write = red-ish, Text/None = blue-ish). The styling
         // composes with diagnostics + hlsearch + visual so a
         // symbol caught by all four still reads correctly.
-        if let Some(cache) = app.lsp_document_highlights.as_ref()
+        if let Some(cache) = app.editor.lsp_document_highlights.as_ref()
             && cache.buffer_id == app.editor.document_buffer_id
             && app.lsp_document_highlight_mode_enabled_for(app.editor.document_buffer_id)
         {
@@ -2596,7 +2596,7 @@ fn compose_visible_lines_inner(
         // beside it, not as part of it. Iterate in *reverse*
         // position order so earlier splices don't shift the
         // byte offsets of later ones.
-        if let Some(cache) = app.lsp_inlay_hints_cache.get(&app.editor.document_buffer_id)
+        if let Some(cache) = app.editor.lsp_inlay_hints_cache.get(&app.editor.document_buffer_id)
             && app.lsp_inlay_hint_mode_enabled_for(app.editor.document_buffer_id)
         {
             let mut on_line: Vec<&lsp_types::InlayHint> = cache
@@ -5199,7 +5199,7 @@ mod tests {
         if !app.lsp_document_highlight_mode_enabled_for(app.editor.document_buffer_id) {
             app.toggle_mode_by_name("lsp-document-highlight-mode");
         }
-        app.lsp_document_highlights = Some(crate::app::DocumentHighlightCache {
+        app.editor.lsp_document_highlights = Some(crate::app::DocumentHighlightCache {
             buffer_id: app.editor.document_buffer_id,
             cursor: lattice_protocol::Position::new(0, 4),
             highlights: vec![
@@ -5267,7 +5267,7 @@ mod tests {
             app.toggle_mode_by_name("lsp-inlay-hint-mode");
         }
         // Hint at column 5 (end of "let x") with label ": i32".
-        app.lsp_inlay_hints_cache.insert(
+        app.editor.lsp_inlay_hints_cache.insert(
             app.editor.document_buffer_id,
             crate::app::LspInlayHintCache {
                 document_version: app.document.snapshot().version,
@@ -5316,7 +5316,7 @@ mod tests {
         }
         // Seed: "fn" as keyword (chars 0..=1), "main" as function
         // (chars 3..=6).
-        app.lsp_semantic_tokens_cache.insert(
+        app.editor.lsp_semantic_tokens_cache.insert(
             app.editor.document_buffer_id,
             crate::app::LspSemanticTokensCache {
                 document_version: app.document.snapshot().version,
@@ -5374,7 +5374,7 @@ mod tests {
         if app.lsp_semantic_tokens_mode_enabled_for(app.editor.document_buffer_id) {
             app.toggle_mode_by_name("lsp-semantic-tokens-mode");
         }
-        app.lsp_semantic_tokens_cache.insert(
+        app.editor.lsp_semantic_tokens_cache.insert(
             app.editor.document_buffer_id,
             crate::app::LspSemanticTokensCache {
                 document_version: app.document.snapshot().version,
@@ -5418,7 +5418,7 @@ mod tests {
         if app.lsp_inlay_hint_mode_enabled_for(app.editor.document_buffer_id) {
             app.toggle_mode_by_name("lsp-inlay-hint-mode");
         }
-        app.lsp_inlay_hints_cache.insert(
+        app.editor.lsp_inlay_hints_cache.insert(
             app.editor.document_buffer_id,
             crate::app::LspInlayHintCache {
                 document_version: app.document.snapshot().version,
@@ -5466,7 +5466,7 @@ mod tests {
         if app.lsp_document_highlight_mode_enabled_for(app.editor.document_buffer_id) {
             app.toggle_mode_by_name("lsp-document-highlight-mode");
         }
-        app.lsp_document_highlights = Some(crate::app::DocumentHighlightCache {
+        app.editor.lsp_document_highlights = Some(crate::app::DocumentHighlightCache {
             buffer_id: app.editor.document_buffer_id,
             cursor: lattice_protocol::Position::new(0, 4),
             highlights: vec![lsp_types::DocumentHighlight {

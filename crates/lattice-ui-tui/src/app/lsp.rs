@@ -1123,7 +1123,7 @@ impl App {
     }
 
     /// 4.4.c: drain queued `LspProgressUpdate` events and
-    /// fold them into `self.lsp_progress`. `Begin` inserts,
+    /// fold them into `self.editor.lsp_progress`. `Begin` inserts,
     /// `Report` updates (preserving title from the prior
     /// `Begin` when the report doesn't restate it), `End`
     /// removes. Called once per main-loop tick.
@@ -1171,14 +1171,14 @@ impl App {
             let key = (event.server_id.clone(), event.token.clone());
             match event.kind {
                 lattice_lsp::LspProgressKind::Begin => {
-                    self.lsp_progress.insert(key, event);
+                    self.editor.lsp_progress.insert(key, event);
                 }
                 lattice_lsp::LspProgressKind::Report => {
                     // LSP §3.16: report inherits title from
                     // the preceding begin. If the begin entry
                     // was already removed (shouldn't happen
                     // in practice), insert as-is.
-                    if let Some(prev) = self.lsp_progress.get(&key) {
+                    if let Some(prev) = self.editor.lsp_progress.get(&key) {
                         let title = event.title.clone().or_else(|| prev.title.clone());
                         let merged = lattice_lsp::LspProgressUpdate {
                             server_id: event.server_id,
@@ -1189,13 +1189,13 @@ impl App {
                             percentage: event.percentage.or(prev.percentage),
                             cancellable: event.cancellable,
                         };
-                        self.lsp_progress.insert(key, merged);
+                        self.editor.lsp_progress.insert(key, merged);
                     } else {
-                        self.lsp_progress.insert(key, event);
+                        self.editor.lsp_progress.insert(key, event);
                     }
                 }
                 lattice_lsp::LspProgressKind::End => {
-                    self.lsp_progress.remove(&key);
+                    self.editor.lsp_progress.remove(&key);
                 }
             }
         }
@@ -4345,7 +4345,7 @@ impl App {
         }
         let snapshot = self.document.snapshot();
         let version = snapshot.version;
-        if let Some(cache) = self.lsp_folds_cache.get(&self.editor.document_buffer_id)
+        if let Some(cache) = self.editor.lsp_folds_cache.get(&self.editor.document_buffer_id)
             && cache.document_version == version
         {
             return;
@@ -4427,7 +4427,7 @@ impl App {
                 if buffer_id != self.editor.document_buffer_id {
                     return;
                 }
-                self.lsp_folds_cache.insert(
+                self.editor.lsp_folds_cache.insert(
                     buffer_id,
                     super::LspFoldsCache {
                         document_version,
@@ -4446,7 +4446,7 @@ impl App {
                 // Remember the version so we don't re-issue
                 // immediately; a future edit will bump the
                 // version and re-trigger.
-                self.lsp_folds_cache.insert(
+                self.editor.lsp_folds_cache.insert(
                     buffer_id,
                     super::LspFoldsCache {
                         document_version,
@@ -4474,7 +4474,7 @@ impl App {
         // version-equal early-return. The delta path uses the
         // previous result_id; if we already cached this version
         // we have nothing to do.
-        let prior = self.lsp_semantic_tokens_cache.get(&self.editor.document_buffer_id);
+        let prior = self.editor.lsp_semantic_tokens_cache.get(&self.editor.document_buffer_id);
         if let Some(cache) = prior
             && cache.document_version == version
         {
@@ -4627,7 +4627,7 @@ impl App {
                 if buffer_id != self.editor.document_buffer_id {
                     return;
                 }
-                self.lsp_semantic_tokens_cache.insert(
+                self.editor.lsp_semantic_tokens_cache.insert(
                     buffer_id,
                     super::LspSemanticTokensCache {
                         document_version,
@@ -4657,21 +4657,21 @@ impl App {
                 if buffer_id != self.editor.document_buffer_id {
                     return;
                 }
-                let Some(cache) = self.lsp_semantic_tokens_cache.get(&buffer_id) else {
+                let Some(cache) = self.editor.lsp_semantic_tokens_cache.get(&buffer_id) else {
                     return;
                 };
                 if cache.result_id.as_deref() != Some(previous_result_id.as_str()) {
-                    self.lsp_semantic_tokens_cache.remove(&buffer_id);
+                    self.editor.lsp_semantic_tokens_cache.remove(&buffer_id);
                     return;
                 }
                 let mut raw_data = cache.raw_data.clone();
                 if crate::app::apply_semantic_token_edits(&mut raw_data, &edits).is_err() {
-                    self.lsp_semantic_tokens_cache.remove(&buffer_id);
+                    self.editor.lsp_semantic_tokens_cache.remove(&buffer_id);
                     return;
                 }
                 let decoded =
                     crate::app::decode_semantic_tokens(&raw_data, &token_types, &token_modifiers);
-                self.lsp_semantic_tokens_cache.insert(
+                self.editor.lsp_semantic_tokens_cache.insert(
                     buffer_id,
                     super::LspSemanticTokensCache {
                         document_version,
@@ -4688,7 +4688,7 @@ impl App {
                 if buffer_id != self.editor.document_buffer_id {
                     return;
                 }
-                self.lsp_semantic_tokens_cache.insert(
+                self.editor.lsp_semantic_tokens_cache.insert(
                     buffer_id,
                     super::LspSemanticTokensCache {
                         document_version,
@@ -4724,7 +4724,7 @@ impl App {
         let snapshot = self.document.snapshot();
         let version = snapshot.version;
         let prior = self
-            .lsp_pull_diagnostics_cache
+            .editor.lsp_pull_diagnostics_cache
             .get(&self.editor.document_buffer_id);
         if let Some(cache) = prior
             && cache.document_version == version
@@ -4826,7 +4826,7 @@ impl App {
                 result_id,
                 diagnostics,
             } => {
-                self.lsp_pull_diagnostics_cache.insert(
+                self.editor.lsp_pull_diagnostics_cache.insert(
                     buffer_id,
                     super::LspPullDiagnosticsCache {
                         document_version,
@@ -4853,7 +4853,7 @@ impl App {
                 document_version,
                 result_id,
             } => {
-                self.lsp_pull_diagnostics_cache.insert(
+                self.editor.lsp_pull_diagnostics_cache.insert(
                     buffer_id,
                     super::LspPullDiagnosticsCache {
                         document_version,
@@ -4865,7 +4865,7 @@ impl App {
                 buffer_id,
                 document_version,
             } => {
-                self.lsp_pull_diagnostics_cache.insert(
+                self.editor.lsp_pull_diagnostics_cache.insert(
                     buffer_id,
                     super::LspPullDiagnosticsCache {
                         document_version,
@@ -4907,7 +4907,7 @@ impl App {
             })
             .collect();
         for buffer_id in buffer_ids {
-            self.lsp_pull_diagnostics_cache.remove(&buffer_id);
+            self.editor.lsp_pull_diagnostics_cache.remove(&buffer_id);
         }
     }
 
@@ -4947,7 +4947,7 @@ impl App {
         let requested_last = viewport_last
             .saturating_add(OVERSCAN_LINES)
             .min(last_buffer_line);
-        if let Some(cache) = self.lsp_inlay_hints_cache.get(&self.editor.document_buffer_id)
+        if let Some(cache) = self.editor.lsp_inlay_hints_cache.get(&self.editor.document_buffer_id)
             && cache.document_version == version
             && viewport_first >= cache.requested_first_line
             && viewport_last <= cache.requested_last_line
@@ -5057,7 +5057,7 @@ impl App {
             })
             .collect();
         for buffer_id in buffer_ids {
-            self.lsp_inlay_hints_cache.remove(&buffer_id);
+            self.editor.lsp_inlay_hints_cache.remove(&buffer_id);
         }
     }
 
@@ -5094,7 +5094,7 @@ impl App {
             })
             .collect();
         for buffer_id in buffer_ids {
-            self.lsp_semantic_tokens_cache.remove(&buffer_id);
+            self.editor.lsp_semantic_tokens_cache.remove(&buffer_id);
         }
     }
 
@@ -5123,7 +5123,7 @@ impl App {
                 if buffer_id != self.editor.document_buffer_id {
                     return;
                 }
-                self.lsp_inlay_hints_cache.insert(
+                self.editor.lsp_inlay_hints_cache.insert(
                     buffer_id,
                     super::LspInlayHintCache {
                         document_version,
@@ -5145,7 +5145,7 @@ impl App {
                 // Cache empty list so we don't re-issue
                 // immediately; bumped on next edit / when the
                 // viewport scrolls outside the requested range.
-                self.lsp_inlay_hints_cache.insert(
+                self.editor.lsp_inlay_hints_cache.insert(
                     buffer_id,
                     super::LspInlayHintCache {
                         document_version,
@@ -5170,7 +5170,7 @@ impl App {
         };
         let snapshot = self.document.snapshot();
         let version = snapshot.version;
-        if let Some(cache) = self.lsp_document_links_cache.get(&self.editor.document_buffer_id)
+        if let Some(cache) = self.editor.lsp_document_links_cache.get(&self.editor.document_buffer_id)
             && cache.document_version == version
         {
             return;
@@ -5245,7 +5245,7 @@ impl App {
                 if buffer_id != self.editor.document_buffer_id {
                     return;
                 }
-                self.lsp_document_links_cache.insert(
+                self.editor.lsp_document_links_cache.insert(
                     buffer_id,
                     super::LspDocumentLinksCache {
                         document_version,
@@ -5262,7 +5262,7 @@ impl App {
                 }
                 // Empty cache prevents re-issuing for the same
                 // version; bumped on next edit.
-                self.lsp_document_links_cache.insert(
+                self.editor.lsp_document_links_cache.insert(
                     buffer_id,
                     super::LspDocumentLinksCache {
                         document_version,
@@ -5288,7 +5288,7 @@ impl App {
         };
         let buffer_id = self.editor.document_buffer_id;
         let link = self
-            .lsp_document_links_cache
+            .editor.lsp_document_links_cache
             .get(&buffer_id)
             .and_then(|c| c.links.iter().find(|l| range_covers(l.range, pos)).cloned());
         let Some(link) = link else {
@@ -5392,7 +5392,7 @@ impl App {
         };
         let snapshot = self.document.snapshot();
         let version = snapshot.version;
-        if let Some(cache) = self.lsp_code_lens_cache.get(&self.editor.document_buffer_id)
+        if let Some(cache) = self.editor.lsp_code_lens_cache.get(&self.editor.document_buffer_id)
             && cache.document_version == version
         {
             return;
@@ -5470,7 +5470,7 @@ impl App {
                 if buffer_id != self.editor.document_buffer_id {
                     return;
                 }
-                self.lsp_code_lens_cache.insert(
+                self.editor.lsp_code_lens_cache.insert(
                     buffer_id,
                     super::LspCodeLensCache {
                         document_version,
@@ -5488,7 +5488,7 @@ impl App {
                 }
                 // Empty cache prevents re-issuing for the same
                 // version; bumped on next edit / refresh.
-                self.lsp_code_lens_cache.insert(
+                self.editor.lsp_code_lens_cache.insert(
                     buffer_id,
                     super::LspCodeLensCache {
                         document_version,
@@ -5506,7 +5506,7 @@ impl App {
     /// [`Self::accept_lsp_code_lens`].
     pub(super) fn do_lsp_code_lens_picker(&mut self) {
         let buffer_id = self.editor.document_buffer_id;
-        let Some(cache) = self.lsp_code_lens_cache.get(&buffer_id).cloned() else {
+        let Some(cache) = self.editor.lsp_code_lens_cache.get(&buffer_id).cloned() else {
             self.set_message(EchoLevel::Info, "no code lenses (cache empty)".to_string());
             return;
         };
@@ -5638,7 +5638,7 @@ impl App {
         };
         let snapshot = self.document.snapshot();
         let version = snapshot.version;
-        if let Some(cache) = self.lsp_document_color_cache.get(&self.editor.document_buffer_id)
+        if let Some(cache) = self.editor.lsp_document_color_cache.get(&self.editor.document_buffer_id)
             && cache.document_version == version
         {
             return;
@@ -5715,7 +5715,7 @@ impl App {
                 if buffer_id != self.editor.document_buffer_id {
                     return;
                 }
-                self.lsp_document_color_cache.insert(
+                self.editor.lsp_document_color_cache.insert(
                     buffer_id,
                     super::LspDocumentColorCache {
                         document_version,
@@ -5731,7 +5731,7 @@ impl App {
                 if buffer_id != self.editor.document_buffer_id {
                     return;
                 }
-                self.lsp_document_color_cache.insert(
+                self.editor.lsp_document_color_cache.insert(
                     buffer_id,
                     super::LspDocumentColorCache {
                         document_version,
@@ -5756,7 +5756,7 @@ impl App {
             return;
         };
         let buffer_id = self.editor.document_buffer_id;
-        let cache = self.lsp_document_color_cache.get(&buffer_id).cloned();
+        let cache = self.editor.lsp_document_color_cache.get(&buffer_id).cloned();
         let Some(cache) = cache else {
             self.set_message(
                 EchoLevel::Info,
@@ -5889,7 +5889,7 @@ impl App {
         if servers.is_empty() {
             return;
         }
-        self.lsp_code_lens_cache.retain(|_buf, cache| {
+        self.editor.lsp_code_lens_cache.retain(|_buf, cache| {
             !servers
                 .iter()
                 .any(|s| s.as_ref() == cache.server_id.as_ref())
@@ -5913,22 +5913,22 @@ impl App {
         if !self.lsp_document_highlight_mode_enabled_for(self.editor.document_buffer_id) {
             // Mode off: clear stale state so the overlay
             // disappears the moment the user disables the mode.
-            self.lsp_document_highlights = None;
-            self.last_document_highlight_issue_cursor = None;
+            self.editor.lsp_document_highlights = None;
+            self.editor.last_document_highlight_issue_cursor = None;
             if let Some(token) = self.pending_document_highlight_token.take() {
                 token.cancel();
             }
             return;
         }
-        if self.last_document_highlight_issue_cursor == Some(self.editor.cursor) {
+        if self.editor.last_document_highlight_issue_cursor == Some(self.editor.cursor) {
             return;
         }
         // Invalidate stale cache if it belonged to a different
         // buffer.
-        if let Some(cache) = self.lsp_document_highlights.as_ref()
+        if let Some(cache) = self.editor.lsp_document_highlights.as_ref()
             && cache.buffer_id != self.editor.document_buffer_id
         {
-            self.lsp_document_highlights = None;
+            self.editor.lsp_document_highlights = None;
         }
         let Some(uri) = self.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
             return;
@@ -5944,7 +5944,7 @@ impl App {
         }
         let buffer_id = self.editor.document_buffer_id;
         let anchor_cursor = self.editor.cursor;
-        self.last_document_highlight_issue_cursor = Some(anchor_cursor);
+        self.editor.last_document_highlight_issue_cursor = Some(anchor_cursor);
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::DocumentHighlightOutcome>();
         let token = lattice_protocol::CancellationToken::new();
         self.pending_document_highlight_rx = Some(rx);
@@ -6010,7 +6010,7 @@ impl App {
                 if buffer_id != self.editor.document_buffer_id {
                     return;
                 }
-                self.lsp_document_highlights = Some(super::DocumentHighlightCache {
+                self.editor.lsp_document_highlights = Some(super::DocumentHighlightCache {
                     buffer_id,
                     cursor,
                     highlights,
@@ -6018,7 +6018,7 @@ impl App {
             }
             super::DocumentHighlightOutcome::Empty { buffer_id } => {
                 if buffer_id == self.editor.document_buffer_id {
-                    self.lsp_document_highlights = None;
+                    self.editor.lsp_document_highlights = None;
                 }
             }
         }
@@ -6060,12 +6060,12 @@ impl App {
     /// `false` means the caller must fall back to issuing a
     /// fresh request (expand) or surfacing an error (shrink).
     fn try_step_cached_region(&mut self, step: super::SelectionRangeStep) -> bool {
-        let Some(chain) = self.lsp_selection_chain.as_ref() else {
+        let Some(chain) = self.editor.lsp_selection_chain.as_ref() else {
             return false;
         };
         if chain.buffer_id != self.editor.document_buffer_id {
-            self.lsp_selection_chain = None;
-            self.lsp_selection_chain_index = 0;
+            self.editor.lsp_selection_chain = None;
+            self.editor.lsp_selection_chain_index = 0;
             return false;
         }
         // Cache is anchored at the original cursor. If the
@@ -6077,26 +6077,26 @@ impl App {
             .first()
             .is_some_and(|r| crate::app::cursor_inside_range(self.editor.cursor, r));
         if !inside {
-            self.lsp_selection_chain = None;
-            self.lsp_selection_chain_index = 0;
+            self.editor.lsp_selection_chain = None;
+            self.editor.lsp_selection_chain_index = 0;
             return false;
         }
         match step {
             super::SelectionRangeStep::Expand => {
-                let next = self.lsp_selection_chain_index + 1;
+                let next = self.editor.lsp_selection_chain_index + 1;
                 if next >= chain.ranges.len() {
                     self.set_message(EchoLevel::Info, "lsp-expand-region: outermost".to_string());
                     return true;
                 }
-                self.lsp_selection_chain_index = next;
+                self.editor.lsp_selection_chain_index = next;
             }
             super::SelectionRangeStep::Shrink => {
-                if self.lsp_selection_chain_index == 0 {
+                if self.editor.lsp_selection_chain_index == 0 {
                     // Collapse to cursor; exit Visual.
                     self.do_exit_visual();
                     return true;
                 }
-                self.lsp_selection_chain_index -= 1;
+                self.editor.lsp_selection_chain_index -= 1;
             }
         }
         self.apply_selection_chain_step();
@@ -6104,10 +6104,10 @@ impl App {
     }
 
     fn apply_selection_chain_step(&mut self) {
-        let Some(chain) = self.lsp_selection_chain.as_ref() else {
+        let Some(chain) = self.editor.lsp_selection_chain.as_ref() else {
             return;
         };
-        let Some(range) = chain.ranges.get(self.lsp_selection_chain_index).cloned() else {
+        let Some(range) = chain.ranges.get(self.editor.lsp_selection_chain_index).cloned() else {
             return;
         };
         let snapshot = self.document.snapshot();
@@ -6244,7 +6244,7 @@ impl App {
                 ranges,
                 pending_step,
             } => {
-                self.lsp_selection_chain = Some(super::LspSelectionChain {
+                self.editor.lsp_selection_chain = Some(super::LspSelectionChain {
                     buffer_id: anchor_buffer,
                     anchor_cursor,
                     ranges,
@@ -6255,9 +6255,9 @@ impl App {
                 // shrink-triggered fetch we leave at 0 (the
                 // shrink-without-cache case is the user's bail
                 // path).
-                self.lsp_selection_chain_index = match pending_step {
+                self.editor.lsp_selection_chain_index = match pending_step {
                     super::SelectionRangeStep::Expand => {
-                        let chain = self.lsp_selection_chain.as_ref().unwrap();
+                        let chain = self.editor.lsp_selection_chain.as_ref().unwrap();
                         if chain.ranges.len() > 1 { 1 } else { 0 }
                     }
                     super::SelectionRangeStep::Shrink => 0,
@@ -6327,7 +6327,7 @@ impl App {
         }
         let mut sent = 0usize;
         let mut skipped_non_cancellable = 0usize;
-        for ((sid, token), update) in &self.lsp_progress {
+        for ((sid, token), update) in &self.editor.lsp_progress {
             if !allowed.contains(sid.as_ref()) {
                 continue;
             }
@@ -7402,7 +7402,7 @@ mod tests {
             token_type: 0,
             token_modifiers_bitset: 0,
         }];
-        a.lsp_semantic_tokens_cache.insert(
+        a.editor.lsp_semantic_tokens_cache.insert(
             buffer_id,
             crate::app::LspSemanticTokensCache {
                 document_version: 1,
@@ -7449,7 +7449,7 @@ mod tests {
         a.pending_semantic_tokens_rx = Some(rx);
         a.drain_pending_semantic_tokens();
         let cache = a
-            .lsp_semantic_tokens_cache
+            .editor.lsp_semantic_tokens_cache
             .get(&buffer_id)
             .expect("cache seated");
         assert_eq!(cache.document_version, 2);
@@ -7468,7 +7468,7 @@ mod tests {
     fn drain_semantic_tokens_delta_stale_baseline_evicts_cache() {
         let mut a = app_with("fn main() {}\n", 5);
         let buffer_id = a.editor.document_buffer_id;
-        a.lsp_semantic_tokens_cache.insert(
+        a.editor.lsp_semantic_tokens_cache.insert(
             buffer_id,
             crate::app::LspSemanticTokensCache {
                 document_version: 1,
@@ -7491,7 +7491,7 @@ mod tests {
         a.pending_semantic_tokens_rx = Some(rx);
         a.drain_pending_semantic_tokens();
         assert!(
-            a.lsp_semantic_tokens_cache.get(&buffer_id).is_none(),
+            a.editor.lsp_semantic_tokens_cache.get(&buffer_id).is_none(),
             "stale-baseline delta should evict the cache",
         );
     }
@@ -7589,7 +7589,7 @@ mod tests {
         app.pending_pull_diagnostics_rx = Some(rx);
         app.drain_pending_pull_diagnostics();
         let cache = app
-            .lsp_pull_diagnostics_cache
+            .editor.lsp_pull_diagnostics_cache
             .get(&buffer_id)
             .expect("cache seated");
         assert_eq!(cache.document_version, 1);
@@ -7615,7 +7615,7 @@ mod tests {
         let mut app = app_with("fn main() {}\n", 5);
         let buffer_id = app.editor.document_buffer_id;
         // Seed initial cache state.
-        app.lsp_pull_diagnostics_cache.insert(
+        app.editor.lsp_pull_diagnostics_cache.insert(
             buffer_id,
             crate::app::LspPullDiagnosticsCache {
                 document_version: 1,
@@ -7632,7 +7632,7 @@ mod tests {
         app.pending_pull_diagnostics_rx = Some(rx);
         app.drain_pending_pull_diagnostics();
         let cache = app
-            .lsp_pull_diagnostics_cache
+            .editor.lsp_pull_diagnostics_cache
             .get(&buffer_id)
             .expect("cache seated");
         assert_eq!(cache.document_version, 2);
@@ -7652,7 +7652,7 @@ mod tests {
     fn drain_diagnostic_refresh_handles_no_attached_buffers() {
         let mut app = app_with("fn main() {}\n", 5);
         let buffer_id = app.editor.document_buffer_id;
-        app.lsp_pull_diagnostics_cache.insert(
+        app.editor.lsp_pull_diagnostics_cache.insert(
             buffer_id,
             crate::app::LspPullDiagnosticsCache {
                 document_version: 1,
@@ -7667,7 +7667,7 @@ mod tests {
         app.pending_diagnostic_refresh_rx = Some(rx);
         app.drain_diagnostic_refresh();
         // No actors attached -> no eviction.
-        assert!(app.lsp_pull_diagnostics_cache.contains_key(&buffer_id));
+        assert!(app.editor.lsp_pull_diagnostics_cache.contains_key(&buffer_id));
     }
 
     /// 4.4.j: pump short-circuits when the cache's
@@ -7678,7 +7678,7 @@ mod tests {
         let mut app = app_with("fn main() {}\n", 5);
         let buffer_id = app.editor.document_buffer_id;
         let version = app.document.snapshot().version;
-        app.lsp_pull_diagnostics_cache.insert(
+        app.editor.lsp_pull_diagnostics_cache.insert(
             buffer_id,
             crate::app::LspPullDiagnosticsCache {
                 document_version: version,
@@ -7706,7 +7706,7 @@ mod tests {
         let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
         app.buffer_uris.insert(app.editor.document_buffer_id, uri);
         // Seed cache with a wide range covering 0..=1000.
-        app.lsp_inlay_hints_cache.insert(
+        app.editor.lsp_inlay_hints_cache.insert(
             app.editor.document_buffer_id,
             crate::app::LspInlayHintCache {
                 document_version: app.document.snapshot().version,
@@ -7743,7 +7743,7 @@ mod tests {
         let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
         app.buffer_uris.insert(app.editor.document_buffer_id, uri);
         // Cached range: lines 0..=200.
-        app.lsp_inlay_hints_cache.insert(
+        app.editor.lsp_inlay_hints_cache.insert(
             app.editor.document_buffer_id,
             crate::app::LspInlayHintCache {
                 document_version: app.document.snapshot().version,
@@ -7781,7 +7781,7 @@ mod tests {
         app.buffer_uris.insert(app.editor.document_buffer_id, uri);
         // Cache covers lines 100..=400 (the overscan-padded
         // window the pump would have fetched at scroll=200).
-        app.lsp_inlay_hints_cache.insert(
+        app.editor.lsp_inlay_hints_cache.insert(
             app.editor.document_buffer_id,
             crate::app::LspInlayHintCache {
                 document_version: app.document.snapshot().version,
@@ -7876,7 +7876,7 @@ mod tests {
             kind: None,
             collapsed_text: None,
         });
-        app.lsp_folds_cache.insert(
+        app.editor.lsp_folds_cache.insert(
             app.editor.document_buffer_id,
             crate::app::LspFoldsCache {
                 document_version: app.document.snapshot().version,
@@ -9651,7 +9651,7 @@ mod tests {
     }
 
     /// 4.4.c: a Begin+Report+End sequence on the typed event
-    /// stream lands in `app.lsp_progress`, gets updated, and is
+    /// stream lands in `app.editor.lsp_progress`, gets updated, and is
     /// removed at End.
     #[test]
     fn lsp_progress_drain_accumulates_lifecycle() {
@@ -9668,7 +9668,7 @@ mod tests {
         });
         app.drain_lsp_progress_events();
         let key = (server.clone(), "build-1".to_string());
-        let entry = app.lsp_progress.get(&key).expect("begin landed");
+        let entry = app.editor.lsp_progress.get(&key).expect("begin landed");
         assert_eq!(entry.title.as_deref(), Some("Building"));
         assert_eq!(entry.percentage, Some(0));
 
@@ -9684,7 +9684,7 @@ mod tests {
             cancellable: true,
         });
         app.drain_lsp_progress_events();
-        let entry = app.lsp_progress.get(&key).expect("report landed");
+        let entry = app.editor.lsp_progress.get(&key).expect("report landed");
         assert_eq!(entry.title.as_deref(), Some("Building"));
         assert_eq!(entry.message.as_deref(), Some("linking"));
         assert_eq!(entry.percentage, Some(73));
@@ -9700,7 +9700,7 @@ mod tests {
         });
         app.drain_lsp_progress_events();
         assert!(
-            app.lsp_progress.get(&key).is_none(),
+            app.editor.lsp_progress.get(&key).is_none(),
             "End should remove the entry"
         );
     }

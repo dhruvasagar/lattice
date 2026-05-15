@@ -138,7 +138,7 @@ impl App {
     /// per-tick runtime drain.
     fn recompute_lsp_folds(&self, buffer: &lattice_core::Buffer) -> Vec<Fold> {
         if self.lsp_folding_mode_enabled_for(self.editor.document_buffer_id)
-            && let Some(cache) = self.lsp_folds_cache.get(&self.editor.document_buffer_id)
+            && let Some(cache) = self.editor.lsp_folds_cache.get(&self.editor.document_buffer_id)
             && !cache.folds.is_empty()
         {
             return cache.folds.clone();

@@ -64,6 +64,7 @@ use crate::chord::KeyChord;
 use crate::keymap_registry::{KeymapHandle, LayerId};
 use crate::buffer_registry::BufferRegistry;
 use crate::buffers::BufferId;
+use crate::pane::PaneTree;
 use crate::state::{
     CompletionState, LastFind, LastSearch, LastVisual, LivePickerQueryState, MacroRecording,
     OptionCache, PendingBlockInsert, PendingPickerInit, PositionEntry, PrevPaneState, ReplaceEntry,
@@ -420,6 +421,9 @@ pub struct Editor {
     /// request so the worker can verify edits apply to the
     /// correct tree baseline.
     pub last_synced_syntax_version: u64,
+    /// Pane tree (DESIGN.md §5.9).
+    pub pane_tree: PaneTree,
+
     /// Per-line `StyledSpan`s for the currently visible
     /// viewport, indexed from `[scroll, scroll +
     /// viewport_height)`. Recomputed each frame by

@@ -315,11 +315,8 @@ pub struct App {
     // `editor.{document_buffer_id, buffers, active_buffer,
     // cursor, scroll, should_quit, viewport_height,
     // terminal_width}`.
-    /// Pane tree (DESIGN.md §5.9). Held on App for now;
-    /// migrates to `editor.pane_tree` in a follow-up slice
-    /// after `Editor::new` replaces `Default` and
-    /// `PaneTree` gets a non-panicking placeholder.
-    pub pane_tree: PaneTree,
+    /// Pane tree (DESIGN.md §5.9).
+    /// Moved to `editor.pane_tree` (Phase 5.B C4).
     // Phase 5.B.15: `modal` moved to `editor.editor.modal`.
     /// In-flight partial-chord stack from the trie (slice 8.i.4).
     /// When the trie returns `LookupResult::Partial`,

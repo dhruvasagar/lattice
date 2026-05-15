@@ -671,6 +671,7 @@ impl App {
                 // Move completion registry and state into the host editor.
                 completion_registry,
                 completion_state: None,
+                pane_tree,
                 document_buffer_id,
                 buffers,
                 active_buffer: BufferKind::Document,
@@ -694,7 +695,7 @@ impl App {
             },
             document,
             snapshot_cache,
-            pane_tree,
+            
             visible_highlights_key: None,
             folds: Vec::new(),
             pane_render_registry: crate::render::build_pane_render_registry(),

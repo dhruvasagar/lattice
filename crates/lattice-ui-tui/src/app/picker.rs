@@ -1228,7 +1228,7 @@ impl App {
                 self.jump_to_file_line_col(&path, line, col);
             }
             lattice_picker::RoutingPayload::LspCompletion { index } => {
-                let Some(items) = self.pending_completion_items.take() else {
+                let Some(items) = self.editor.pending_completion_items.take() else {
                     return;
                 };
                 let Some(item) = items.into_iter().nth(index as usize) else {
@@ -1241,10 +1241,10 @@ impl App {
                 self.apply_lsp_completion_item(&item);
             }
             lattice_picker::RoutingPayload::LspCodeAction { index } => {
-                let Some(items) = self.pending_code_action_items.take() else {
+                let Some(items) = self.editor.pending_code_action_items.take() else {
                     return;
                 };
-                let handle = self.pending_code_action_handle.take();
+                let handle = self.editor.pending_code_action_handle.take();
                 let Some(row) = items.into_iter().nth(index as usize) else {
                     self.set_message(
                         EchoLevel::Error,

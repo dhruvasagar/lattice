@@ -349,115 +349,14 @@ pub struct App {
     /// other subscribers (plugins, autocmds) wire up the same way.
     // Phase 5.B.15: `event_bus` moved to
     // `editor.editor.event_bus`.
-    /// Receiver for in-flight LSP hover responses (Phase 4.2.b).
-    /// `K` fires a `textDocument/hover` request through the typed
-    /// wrapper; the spawned task awaits the actor's response and
-    /// pushes a [`HoverOutcome`] onto this channel. The main loop
-    /// drains it before each draw via [`Self::drain_pending_hover`]
-    /// and either feeds the body into the existing hover popup
-    /// via the private `do_open_hover`, or echoes the no-result
-    /// reason so the user knows their `K` press was received and
-    /// processed (versus silently dropped).
-    ///
-    /// `Option` only because the field needs to be `take`-able so
-    /// the drain method can borrow `&mut self` for the popup
-    /// update; always `Some` between calls.
-    pub pending_hover_rx: Option<tokio::sync::mpsc::UnboundedReceiver<HoverOutcome>>,
-    /// Cancellation token of the most recent hover request. Flipped
-    /// when the user re-fires `K`, moves the cursor, or changes
-    /// mode -- so a slow server's response arrives marked stale and
-    /// is dropped by the typed wrapper's relay. `None` when no
-    /// hover is in flight.
-    pub pending_hover_token: Option<lattice_protocol::CancellationToken>,
-    /// Receiver for in-flight goto-definition responses (Phase
-    /// 4.2.c). Shape mirrors [`Self::pending_hover_rx`] -- `gd`
-    /// fires every attached server's `textDocument/definition`,
-    /// the spawned task collects the merged + deduped location
-    /// list, and pushes it onto this channel. Drained per frame
-    /// in [`Self::drain_pending_definitions`]; single-result
-    /// case jumps in-place, multi-result case echoes a count
-    /// (picker buffer lands with 4.2.d).
-    pub pending_definition_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<Vec<lsp_types::Location>>>,
-    /// Cancellation token of the most recent goto-definition
-    /// request. Flipped on a follow-up `gd` so a slow server's
-    /// stale response can't drop a popup over a moved cursor.
-    pub pending_definition_token: Option<lattice_protocol::CancellationToken>,
-    /// Which navigation flavour the in-flight request is for. Used
-    /// by [`Self::drain_pending_definitions`] to pick the right
-    /// "no X found" echo and the pre-jump history-source tag.
-    /// `None` when no nav request is in flight; matches the
-    /// nullness of `pending_definition_token`.
-    ///
-    /// All four nav requests (definition / declaration /
-    /// typeDefinition / implementation) share the same
-    /// `pending_definition_*` slot because there's never a
-    /// reason to have more than one in flight at once -- a
-    /// follow-up nav cancels its predecessor.
-    pub pending_nav_kind: Option<LspNavKind>,
-    /// Receiver for in-flight references responses (Phase 4.2.d).
-    /// References gets its own slot (separate from
-    /// `pending_definition_*`) because the result handling differs
-    /// -- references opens a buffer-backed list view rather than
-    /// jumping. The two surfaces could coexist (a hover popup +
-    /// a references list), so they don't fight over the slot.
-    pub pending_references_rx: Option<tokio::sync::mpsc::UnboundedReceiver<ReferencesOutcome>>,
-    /// Cancellation token for the most recent references request.
-    /// Flipped on follow-up `gr` so a slow server's response
-    /// can't open a list against a moved cursor.
-    pub pending_references_token: Option<lattice_protocol::CancellationToken>,
-    /// Receiver for in-flight document-symbol responses (Phase
-    /// 4.2.e). Same shape as references -- the merged symbol
-    /// outline arrives as a `Vec<SymbolRow>` ready to seed the
-    /// picker.
-    pub pending_symbols_rx: Option<tokio::sync::mpsc::UnboundedReceiver<SymbolsOutcome>>,
-    pub pending_symbols_token: Option<lattice_protocol::CancellationToken>,
-    /// Receiver for in-flight format responses (Phase 4.3).
-    pub pending_format_rx: Option<tokio::sync::mpsc::UnboundedReceiver<FormatOutcome>>,
-    pub pending_format_token: Option<lattice_protocol::CancellationToken>,
-    /// Receiver for in-flight signature help responses (Phase
-    /// 4.3). The drain feeds the markdown body into the same
-    /// popup pipeline `K` uses, so the user can dismiss with
-    /// `<Esc>` or move the cursor to clear.
-    pub pending_signature_help_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<SignatureHelpOutcome>>,
-    pub pending_signature_help_token: Option<lattice_protocol::CancellationToken>,
-    /// Receiver for in-flight LSP completion responses (Phase
-    /// 4.2.g). The accept path stitches the chosen item's
-    /// insert_text into the buffer at the captured replace
-    /// range.
-    pub pending_completion_rx: Option<tokio::sync::mpsc::UnboundedReceiver<CompletionOutcome>>,
-    pub pending_completion_token: Option<lattice_protocol::CancellationToken>,
-    /// Captured at request fire so the accept path can splice
-    /// the chosen item's text into the buffer at the right
-    /// position. Cleared on dismiss / outcome consumption.
-    pub pending_completion_items: Option<Vec<CompletionItemRow>>,
-    /// 4.5.g: receiver for in-flight `:lsp-moniker` responses.
-    /// Each request creates a fresh channel; the drain
-    /// (`drain_pending_moniker`) reads at most one summary line
-    /// per tick and surfaces it as a minibuffer echo.
-    pub pending_moniker_rx: Option<tokio::sync::mpsc::UnboundedReceiver<String>>,
-    /// Receiver for in-flight `:rename` responses (Phase 4.3).
-    /// Drained per-frame; the `Edits` arm fans out across every
-    /// affected URI applying TextEdits (one undo unit per file
-    /// in v1; cross-file atomic application is queued).
-    pub pending_rename_rx: Option<tokio::sync::mpsc::UnboundedReceiver<RenameOutcome>>,
-    pub pending_rename_token: Option<lattice_protocol::CancellationToken>,
-    /// Receiver for in-flight `:code-actions` responses (Phase
-    /// 4.3). Drained per-frame; the Items arm pins items on
-    /// the App and opens a picker.
-    pub pending_code_action_rx: Option<tokio::sync::mpsc::UnboundedReceiver<CodeActionOutcome>>,
-    pub pending_code_action_token: Option<lattice_protocol::CancellationToken>,
-    /// Pinned code-action items, indexed by the picker's
-    /// candidate `text` (`#<idx>`). Cleared on dismiss /
-    /// outcome consumption / accept.
-    pub pending_code_action_items: Option<Vec<CodeActionRow>>,
-    /// The handle that produced the in-flight code-action
-    /// request, kept alive so the resolve / executeCommand
-    /// follow-up routes to the same server. v1 picks the first
-    /// server that advertises the provider; the handle clone
-    /// is cheap (Arc-backed).
-    pub pending_code_action_handle: Option<lattice_lsp::ServerHandle>,
+    // Phase 5.B.19: all LSP per-feature request channel fields
+    // (`pending_hover_rx/token`, `pending_definition_rx/token`,
+    // `pending_nav_kind`, `pending_references_rx/token`,
+    // `pending_symbols_rx/token`, `pending_format_rx/token`,
+    // `pending_signature_help_rx/token`, `pending_completion_rx/token/items`,
+    // `pending_moniker_rx`, `pending_rename_rx/token`,
+    // `pending_code_action_rx/token/items/handle`) moved to
+    // `editor.*` -- access via `self.editor.pending_*`.
     /// Receiver end of the App's own subscription to
     /// `EventKind::OptionChanged` (DESIGN.md §5.10 + §5.12). The
     /// typed-options registry publishes through `event_bus` on
@@ -789,24 +688,8 @@ pub struct App {
     /// keymap layer while it's `Some`. Behavioural spec lives in
     /// [`docs/dev/architecture/insert-completion.md`](../../docs/dev/architecture/insert-completion.md).
     pub insert_completion: Option<lattice_completion::InsertCompletionState>,
-    /// Receiver for in-flight LSP insert-completion responses.
-    /// Drained per-frame; the drain merges new items into
-    /// `insert_completion.raw` and refilters.
-    pub pending_insert_completion_lsp_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<InsertCompletionLspOutcome>>,
-    /// Cancellation token for the most recent LSP insert-
-    /// completion request. Flipped on every re-trigger
-    /// (isIncomplete refresh, manual `<C-Space>` re-fire) so a
-    /// slow server's stale response can't pollute the popup.
-    pub pending_insert_completion_lsp_token: Option<lattice_protocol::CancellationToken>,
-    /// Receiver for in-flight `completionItem/resolve` results
-    /// (Phase 4.2.g.3). Populates the focused candidate's
-    /// LspCompletionMeta `documentation` field + the docs
-    /// popup body. Cancelled when selection changes / popup
-    /// closes / fresher resolve fires.
-    pub pending_completion_resolve_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<CompletionResolveOutcome>>,
-    pub pending_completion_resolve_token: Option<lattice_protocol::CancellationToken>,
+    // Phase 5.B.19: `pending_insert_completion_lsp_rx/token`,
+    // `pending_completion_resolve_rx/token` moved to `editor.*`.
     /// Per-language snippet registry (Phase 4.2.g.4). Loaded
     /// at startup from bundled / user / project paths via
     /// `lattice-snippet::load`; the `gen:snippet` source
@@ -966,48 +849,9 @@ pub struct App {
     // 5.B.18b: `lsp_log_event_rx`, `lsp_progress_event_rx`
     // moved to `editor.{lsp_log_event_rx,
     // lsp_progress_event_rx}`.
-    /// Receiver for [`lattice_lsp::LspBufferDetached`] events
-    /// published by `LspMode::on_deactivate`. Drained once per
-    /// main-loop tick by [`Self::drain_lsp_detach_events`]; for
-    /// each event the App calls [`Self::lsp_close_buffer`]
-    /// (which sends `textDocument/didClose` per attached server
-    /// and clears `buffer_uris`). The subscriber pattern keeps
-    /// the wire-level close off the mode-activation path:
-    /// `deactivate_mode_by_id` no longer special-cases
-    /// `lsp-mode`; any future renderer hosting the App gets the
-    /// same behaviour for free.
-    pub pending_lsp_detach_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspBufferDetached>>,
-    /// M-async.3: receiver for [`lattice_mode::ModeEvent`].
-    /// The dispatcher publishes lifecycle events through the
-    /// typed bus; the App's per-tick drain processes
-    /// `ModeActivationFailed` for rollback (clearing
-    /// `active_modes` + dropping any leaked Guards for failed
-    /// modes). Other variants (`MajorEntered` etc.) are
-    /// observable here too -- subscribers that need them
-    /// (modeline refresh, telemetry) hook in by sharing this
-    /// receiver via a fan-out later; for now the drain only
-    /// acts on the failure variant.
-    pub pending_mode_lifecycle_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_mode::ModeEvent>>,
-    /// 4.4.g: receiver for `LspInlayHintRefresh` events. The
-    /// actor publishes these when a server sends
-    /// `workspace/inlayHint/refresh`; the App's per-tick drain
-    /// clears `lsp_inlay_hints_cache` for buffers attached to
-    /// the requesting server. The next render tick re-issues
-    /// `inlayHint` and refills.
-    pub pending_inlay_hint_refresh_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspInlayHintRefresh>>,
-    /// 4.4.i: receiver for `LspSemanticTokensRefresh` events.
-    /// Mirrors `pending_inlay_hint_refresh_rx`: actor publishes
-    /// on `workspace/semanticTokens/refresh`; the App's per-tick
-    /// drain drops `lsp_semantic_tokens_cache` entries (including
-    /// the cached `result_id`) for buffers attached to the
-    /// requesting server, forcing the next render tick to issue
-    /// a fresh `semanticTokens/full` baseline rather than a
-    /// delta against a now-stale id.
-    pub pending_semantic_tokens_refresh_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspSemanticTokensRefresh>>,
+    // Phase 5.B.19: `pending_lsp_detach_rx`, `pending_mode_lifecycle_rx`,
+    // `pending_inlay_hint_refresh_rx`, `pending_semantic_tokens_refresh_rx`
+    // moved to `editor.*`.
     /// Accumulated `$/progress` state keyed by
     /// (server_id, token). `Begin` inserts; `Report` updates;
     /// `End` removes. The modeline picks the most recent
@@ -1027,15 +871,7 @@ pub struct App {
     /// `0` = innermost; `chain.ranges.len() - 1` = outermost.
     // Phase 5.B.17: `lsp_selection_chain_index` moved to
     // `editor.lsp_selection_chain_index`.
-    /// 4.4.e: receiver for the in-flight `selectionRange`
-    /// response. Drained per frame.
-    pub pending_selection_range_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<SelectionRangeOutcome>>,
-    /// 4.4.e: cancellation token for the in-flight
-    /// `selectionRange` request. Flipped when the user invokes
-    /// `:lsp-expand-region` again (or moves the cursor) before
-    /// the prior response lands; the response is then dropped.
-    pub pending_selection_range_token: Option<lattice_protocol::CancellationToken>,
+    // Phase 5.B.19: `pending_selection_range_rx/token` moved to `editor.*`.
     /// 4.4.e: cached `textDocument/documentHighlight` for the
     /// active buffer + symbol position. Refreshed by the
     /// per-tick pump when the cursor moves to a different
@@ -1051,11 +887,7 @@ pub struct App {
     // Phase 5.B.17: `last_document_highlight_issue_cursor`
     // moved to
     // `editor.last_document_highlight_issue_cursor`.
-    /// 4.4.e: cancellation token + receiver for the in-flight
-    /// `documentHighlight` request.
-    pub pending_document_highlight_token: Option<lattice_protocol::CancellationToken>,
-    pub pending_document_highlight_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<DocumentHighlightOutcome>>,
+    // Phase 5.B.19: `pending_document_highlight_token/rx` moved to `editor.*`.
     /// 4.4.f: per-buffer cache of the last `textDocument/foldingRange`
     /// response. Keyed by `BufferId` because the foldmethod is a
     /// per-buffer setting; multiple open buffers can each track
@@ -1063,11 +895,7 @@ pub struct App {
     /// the document version bumps.
     // Phase 5.B.17: `lsp_folds_cache` moved to
     // `editor.lsp_folds_cache`.
-    /// 4.4.f: cancellation token + receiver for the in-flight
-    /// `foldingRange` request. Single-flight: a new request
-    /// cancels any predecessor.
-    pub pending_folding_range_token: Option<lattice_protocol::CancellationToken>,
-    pub pending_folding_range_rx: Option<tokio::sync::mpsc::UnboundedReceiver<FoldingRangeOutcome>>,
+    // Phase 5.B.19: `pending_folding_range_token/rx` moved to `editor.*`.
     /// 4.4.g: per-buffer `inlayHint` cache. Refilled by the
     /// per-tick pump when the document version changes; the
     /// renderer overlay splices each hint as virtual text.
@@ -1081,10 +909,7 @@ pub struct App {
     /// drives navigation, not visuals.
     // Phase 5.B.17: `lsp_document_links_cache` moved to
     // `editor.lsp_document_links_cache`.
-    /// 4.5.c: in-flight `documentLink` single-flight slot.
-    pub pending_document_links_token: Option<lattice_protocol::CancellationToken>,
-    pub pending_document_links_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<DocumentLinksOutcome>>,
+    // Phase 5.B.19: `pending_document_links_token/rx` moved to `editor.*`.
     /// 4.5.d: per-buffer code-lens cache. Refilled by the
     /// per-tick pump on document-version change; consumed by
     /// `:lsp-code-lens` (opens a picker over the cached
@@ -1093,53 +918,16 @@ pub struct App {
     /// debug session start) can force a refetch.
     // Phase 5.B.17: `lsp_code_lens_cache` moved to
     // `editor.lsp_code_lens_cache`.
-    /// 4.5.d: in-flight `codeLens` single-flight slot.
-    pub pending_code_lens_token: Option<lattice_protocol::CancellationToken>,
-    pub pending_code_lens_rx: Option<tokio::sync::mpsc::UnboundedReceiver<CodeLensOutcome>>,
-    /// 4.5.d: workspace/codeLens/refresh inbound stream. The
-    /// actor publishes `LspCodeLensRefresh`; the drain pulls
-    /// from this rx (subscribed via `event_bus.subscribe_typed`)
-    /// and evicts per-buffer caches.
-    pub pending_code_lens_refresh_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspCodeLensRefresh>>,
-    /// 4.5.d: snapshot of the lenses the open picker is
-    /// referencing. Cleared on picker dismiss / accept.
-    /// `RoutingPayload::LspCodeLens { index }` indexes into
-    /// this vec.
-    pub pending_code_lens_items: Option<Vec<lsp_types::CodeLens>>,
-    /// 4.5.d: server id the snapshot came from -- used by the
-    /// accept handler to route `workspace/executeCommand` to
-    /// the originating server (commands are server-specific).
-    pub pending_code_lens_server: Option<std::sync::Arc<str>>,
-    /// 4.5.e: per-buffer `documentColor` cache.
-    // Phase 5.B.17: `lsp_document_color_cache` moved to
-    // `editor.lsp_document_color_cache`.
-    /// 4.5.e: in-flight `documentColor` single-flight slot.
-    pub pending_document_color_token: Option<lattice_protocol::CancellationToken>,
-    pub pending_document_color_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<DocumentColorOutcome>>,
-    /// 4.5.e: snapshot of color presentations the open picker
-    /// is referencing. Cleared on dismiss / accept.
-    /// Routing payload index points into this vec.
-    pub pending_color_presentations: Option<Vec<lsp_types::ColorPresentation>>,
-    /// 4.5.e: original color literal's range -- needed by the
-    /// accept handler so it can replace the literal even when
-    /// the chosen `ColorPresentation` has no `text_edit` (the
-    /// `label` then replaces at this range).
-    pub pending_color_range: Option<lsp_types::Range>,
-    /// 4.4.g: in-flight inlayHint single-flight slot.
-    pub pending_inlay_hint_token: Option<lattice_protocol::CancellationToken>,
-    pub pending_inlay_hint_rx: Option<tokio::sync::mpsc::UnboundedReceiver<InlayHintOutcome>>,
+    // Phase 5.B.19: `pending_code_lens_{token,rx,refresh_rx,items,server}`,
+    // `pending_document_color_{token,rx}`, `pending_color_{presentations,range}`,
+    // `pending_inlay_hint_{token,rx}` moved to `editor.*`.
     /// 4.4.h: per-buffer semantic-tokens cache. Refilled when
     /// the document version changes; the renderer overlay
     /// repaints span ranges that fall under a token with a
     /// kind-driven style.
     // Phase 5.B.17: `lsp_semantic_tokens_cache` moved to
     // `editor.lsp_semantic_tokens_cache`.
-    /// 4.4.h: in-flight semanticTokens/full single-flight slot.
-    pub pending_semantic_tokens_token: Option<lattice_protocol::CancellationToken>,
-    pub pending_semantic_tokens_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<SemanticTokensOutcome>>,
+    // Phase 5.B.19: `pending_semantic_tokens_{token,rx}` moved to `editor.*`.
     /// 4.4.j: per-buffer pull-diagnostics cache. Keys the
     /// last `result_id` the server issued so the next pull
     /// can be answered as `Unchanged` cheaply. The pump
@@ -1147,19 +935,8 @@ pub struct App {
     /// (e.g. after `workspace/diagnostic/refresh` evicts).
     // Phase 5.B.17: `lsp_pull_diagnostics_cache` moved to
     // `editor.lsp_pull_diagnostics_cache`.
-    /// 4.4.j: in-flight `textDocument/diagnostic` single-flight
-    /// slot. Each new request cancels its predecessor.
-    pub pending_pull_diagnostics_token: Option<lattice_protocol::CancellationToken>,
-    pub pending_pull_diagnostics_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<PullDiagnosticsOutcome>>,
-    /// 4.4.j: receiver for `LspDiagnosticRefresh` events.
-    /// Actor publishes when a server sends
-    /// `workspace/diagnostic/refresh`; the App's per-tick
-    /// drain evicts `lsp_pull_diagnostics_cache` entries for
-    /// buffers attached to that server, and the next render
-    /// tick re-pulls.
-    pub pending_diagnostic_refresh_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspDiagnosticRefresh>>,
+    // Phase 5.B.19: `pending_pull_diagnostics_{token,rx}`,
+    // `pending_diagnostic_refresh_rx` moved to `editor.*`.
     // 4.4.f: stash for `lsp-folding-mode` activation moved
     // into `BufferLocals` (owned by the mode via the
     // `PriorFoldmethod` typed local in

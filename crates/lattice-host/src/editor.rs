@@ -185,6 +185,15 @@ use crate::ui::theme::Theme as HostTheme;
 ///   type `LspFileWatcher` lives in `lattice-ui-tui::app::
 ///   lsp_watcher` -- migrates with a follow-up that moves
 ///   the watcher into a host module.
+/// - 5.B.19 -- call-site migration for all LSP per-feature
+///   request channel fields scaffolded in 5.B.18: updated
+///   all `self.pending_*` / `app.pending_*` accesses in
+///   `app/lsp.rs`, `app/boot.rs`, `app/picker.rs`,
+///   `app/mode.rs`, `app/completion.rs` to
+///   `self.editor.pending_*`; removed the now-redundant
+///   duplicate declarations from `App`. Completion cluster
+///   (`completion_registry`, `completion_state`,
+///   `insert_completion`, etc.) stays on App -- next slice.
 #[derive(Debug, Default)]
 pub struct Editor {
     /// Completed macro recordings keyed by register name.

@@ -356,7 +356,7 @@ impl App {
         // in-flight first. (Cancel-stale-work runs before the
         // M.5.4 gate so the prior request's relay loop sees the
         // flip even when the gate is now closed.)
-        if let Some(token) = self.pending_hover_token.take() {
+        if let Some(token) = self.editor.pending_hover_token.take() {
             token.cancel();
         }
         // M.6.2: lsp-hover-mode gate (umbrella check inside).
@@ -391,8 +391,8 @@ impl App {
         // Fresh channel + token for this request.
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<HoverOutcome>();
         let token = lattice_protocol::CancellationToken::new();
-        self.pending_hover_rx = Some(rx);
-        self.pending_hover_token = Some(token.clone());
+        self.editor.pending_hover_rx = Some(rx);
+        self.editor.pending_hover_token = Some(token.clone());
 
         let lsp = self.editor.lsp.clone();
         let logger = self.editor.lsp_logger.clone();
@@ -488,7 +488,7 @@ impl App {
     /// Called once per main_loop iteration before draw; cheap
     /// when the channel is empty (the common case).
     pub fn drain_pending_hover(&mut self) {
-        let Some(mut rx) = self.pending_hover_rx.take() else {
+        let Some(mut rx) = self.editor.pending_hover_rx.take() else {
             return;
         };
         // Last-writer-wins -- if a stale outcome and a fresh one
@@ -522,9 +522,9 @@ impl App {
             }
             // Outcome delivered: clear the in-flight token so a
             // subsequent motion doesn't try to flip a stale token.
-            self.pending_hover_token = None;
+            self.editor.pending_hover_token = None;
         }
-        self.pending_hover_rx = Some(rx);
+        self.editor.pending_hover_rx = Some(rx);
     }
 
     /// Apply an accepted LSP completion item. Routes the main
@@ -632,7 +632,7 @@ impl App {
     pub(super) fn do_completion_resolve_focused(&mut self) {
         // Cancel any prior in-flight resolve -- the focus moved
         // to a different candidate.
-        if let Some(token) = self.pending_completion_resolve_token.take() {
+        if let Some(token) = self.editor.pending_completion_resolve_token.take() {
             token.cancel();
         }
         let Some(state) = self.insert_completion.as_ref() else {
@@ -689,8 +689,8 @@ impl App {
         };
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<CompletionResolveOutcome>();
         let token = lattice_protocol::CancellationToken::new();
-        self.pending_completion_resolve_rx = Some(rx);
-        self.pending_completion_resolve_token = Some(token.clone());
+        self.editor.pending_completion_resolve_rx = Some(rx);
+        self.editor.pending_completion_resolve_token = Some(token.clone());
         let lsp = self.editor.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
             let handle = lsp
@@ -743,7 +743,7 @@ impl App {
         if !self.lsp_completion_mode_enabled_for(self.editor.document_buffer_id) {
             return;
         }
-        if let Some(token) = self.pending_insert_completion_lsp_token.take() {
+        if let Some(token) = self.editor.pending_insert_completion_lsp_token.take() {
             token.cancel();
         }
         // Path-completion mode (4.2.g.6 (2/2)) suppresses LSP
@@ -774,8 +774,8 @@ impl App {
         // waiting on a no-op async round-trip.
         if self.editor.lsp.servers_for(&uri).is_empty() {
             let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<InsertCompletionLspOutcome>();
-            self.pending_insert_completion_lsp_rx = Some(rx);
-            self.pending_insert_completion_lsp_token = None;
+            self.editor.pending_insert_completion_lsp_rx = Some(rx);
+            self.editor.pending_insert_completion_lsp_token = None;
             let _ = tx.send(InsertCompletionLspOutcome::NoServers);
             return;
         }
@@ -826,8 +826,8 @@ impl App {
         };
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<InsertCompletionLspOutcome>();
         let token = lattice_protocol::CancellationToken::new();
-        self.pending_insert_completion_lsp_rx = Some(rx);
-        self.pending_insert_completion_lsp_token = Some(token.clone());
+        self.editor.pending_insert_completion_lsp_rx = Some(rx);
+        self.editor.pending_insert_completion_lsp_token = Some(token.clone());
         let sink = std::sync::Arc::new(BatchingSink::new());
         let sink_for_fut = sink.clone();
         let token_for_fut = token.clone();
@@ -849,18 +849,18 @@ impl App {
     /// currently-focused one. CSM.8b.5: state.raw is the
     /// source of truth; no parallel sidecar to keep in sync.
     pub fn drain_pending_completion_resolve(&mut self) {
-        let Some(mut rx) = self.pending_completion_resolve_rx.take() else {
+        let Some(mut rx) = self.editor.pending_completion_resolve_rx.take() else {
             return;
         };
         let mut latest: Option<CompletionResolveOutcome> = None;
         while let Ok(o) = rx.try_recv() {
             latest = Some(o);
         }
-        self.pending_completion_resolve_rx = Some(rx);
+        self.editor.pending_completion_resolve_rx = Some(rx);
         let Some(outcome) = latest else {
             return;
         };
-        self.pending_completion_resolve_token = None;
+        self.editor.pending_completion_resolve_token = None;
         let Some(state) = self.insert_completion.as_mut() else {
             return;
         };
@@ -967,19 +967,19 @@ impl App {
     /// into the active popup's `raw` set, refilter, and update
     /// the `lsp_incomplete` flag.
     pub fn drain_pending_insert_completion_lsp(&mut self) {
-        let Some(mut rx) = self.pending_insert_completion_lsp_rx.take() else {
+        let Some(mut rx) = self.editor.pending_insert_completion_lsp_rx.take() else {
             return;
         };
         let mut latest: Option<InsertCompletionLspOutcome> = None;
         while let Ok(o) = rx.try_recv() {
             latest = Some(o);
         }
-        self.pending_insert_completion_lsp_rx = Some(rx);
+        self.editor.pending_insert_completion_lsp_rx = Some(rx);
         let outcome = match latest {
             Some(o) => o,
             None => return,
         };
-        self.pending_insert_completion_lsp_token = None;
+        self.editor.pending_insert_completion_lsp_token = None;
         let Some(state) = self.insert_completion.as_mut() else {
             // Popup closed before the response arrived; drop it.
             return;
@@ -1141,7 +1141,7 @@ impl App {
     /// Cheap when the buffer has no URI mapping (the close path
     /// short-circuits on `buffer_uris.remove` returning `None`).
     pub fn drain_lsp_detach_events(&mut self) {
-        let Some(mut rx) = self.pending_lsp_detach_rx.take() else {
+        let Some(mut rx) = self.editor.pending_lsp_detach_rx.take() else {
             return;
         };
         // Collect first so the subsequent `lsp_close_buffer`
@@ -1157,7 +1157,7 @@ impl App {
             // ctx.buffer_id().0 as u64)` so the value fits.
             buffer_ids.push(BufferId(event.id.raw() as u32));
         }
-        self.pending_lsp_detach_rx = Some(rx);
+        self.editor.pending_lsp_detach_rx = Some(rx);
         for buffer_id in buffer_ids {
             self.lsp_close_buffer(buffer_id);
         }
@@ -1996,13 +1996,13 @@ impl App {
         // via the same async drain path the format request uses.
         // Reuse `pending_format_*` since onType and `:format` are
         // mutually exclusive in time.
-        if let Some(token) = self.pending_format_token.take() {
+        if let Some(token) = self.editor.pending_format_token.take() {
             token.cancel();
         }
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<FormatOutcome>();
         let token = lattice_protocol::CancellationToken::new();
-        self.pending_format_rx = Some(rx);
-        self.pending_format_token = Some(token.clone());
+        self.editor.pending_format_rx = Some(rx);
+        self.editor.pending_format_token = Some(token.clone());
         crate::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
             let chosen = handles
@@ -2042,7 +2042,7 @@ impl App {
     /// placeholder (when available). When prepareRename returns
     /// nothing AND `new_name` is empty, we error.
     pub(super) fn do_lsp_rename_request(&mut self, new_name: &str) {
-        if let Some(token) = self.pending_rename_token.take() {
+        if let Some(token) = self.editor.pending_rename_token.take() {
             token.cancel();
         }
         // M.6.2: lsp-rename-mode gate (umbrella check inside).
@@ -2070,8 +2070,8 @@ impl App {
         let new_name = new_name.to_string();
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<RenameOutcome>();
         let token = lattice_protocol::CancellationToken::new();
-        self.pending_rename_rx = Some(rx);
-        self.pending_rename_token = Some(token.clone());
+        self.editor.pending_rename_rx = Some(rx);
+        self.editor.pending_rename_token = Some(token.clone());
         let lsp = self.editor.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
@@ -2149,19 +2149,19 @@ impl App {
     /// v1: per-file edits land as one undo unit in each affected
     /// buffer.
     pub fn drain_pending_rename(&mut self) {
-        let Some(mut rx) = self.pending_rename_rx.take() else {
+        let Some(mut rx) = self.editor.pending_rename_rx.take() else {
             return;
         };
         let mut latest: Option<RenameOutcome> = None;
         while let Ok(o) = rx.try_recv() {
             latest = Some(o);
         }
-        self.pending_rename_rx = Some(rx);
+        self.editor.pending_rename_rx = Some(rx);
         let outcome = match latest {
             Some(o) => o,
             None => return,
         };
-        self.pending_rename_token = None;
+        self.editor.pending_rename_token = None;
         match outcome {
             RenameOutcome::NoProvider => {
                 self.set_message(EchoLevel::Info, "no server with renameProvider")
@@ -2291,9 +2291,9 @@ impl App {
         let token = lattice_protocol::CancellationToken::new();
         // Stash the original handle so the post-resolve dispatch
         // can route back to the same server.
-        self.pending_code_action_rx = Some(rx);
-        self.pending_code_action_token = Some(token.clone());
-        self.pending_code_action_handle = Some(handle.clone());
+        self.editor.pending_code_action_rx = Some(rx);
+        self.editor.pending_code_action_token = Some(token.clone());
+        self.editor.pending_code_action_handle = Some(handle.clone());
         crate::runtime::spawn_on_lsp_runtime(async move {
             if token.is_cancelled() {
                 return;
@@ -2392,7 +2392,7 @@ impl App {
     /// merged item list as a vertico picker. v1 picks the first
     /// server with `codeActionProvider`.
     pub(super) fn do_lsp_code_action_request(&mut self) {
-        if let Some(token) = self.pending_code_action_token.take() {
+        if let Some(token) = self.editor.pending_code_action_token.take() {
             token.cancel();
         }
         // Browse-style; not a tag-intent drill-down.
@@ -2420,8 +2420,8 @@ impl App {
         };
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<CodeActionOutcome>();
         let token = lattice_protocol::CancellationToken::new();
-        self.pending_code_action_rx = Some(rx);
-        self.pending_code_action_token = Some(token.clone());
+        self.editor.pending_code_action_rx = Some(rx);
+        self.editor.pending_code_action_token = Some(token.clone());
         let lsp = self.editor.lsp.clone();
         let stash = std::sync::Arc::new(std::sync::Mutex::new(None::<lattice_lsp::ServerHandle>));
         let stash_for_task = stash.clone();
@@ -2525,19 +2525,19 @@ impl App {
     /// the resolved action) apply directly when the original handle
     /// is still pinned.
     pub fn drain_pending_code_actions(&mut self) {
-        let Some(mut rx) = self.pending_code_action_rx.take() else {
+        let Some(mut rx) = self.editor.pending_code_action_rx.take() else {
             return;
         };
         let mut latest: Option<CodeActionOutcome> = None;
         while let Ok(o) = rx.try_recv() {
             latest = Some(o);
         }
-        self.pending_code_action_rx = Some(rx);
+        self.editor.pending_code_action_rx = Some(rx);
         let outcome = match latest {
             Some(o) => o,
             None => return,
         };
-        self.pending_code_action_token = None;
+        self.editor.pending_code_action_token = None;
         match outcome {
             CodeActionOutcome::NoProvider => {
                 self.set_message(
@@ -2546,7 +2546,7 @@ impl App {
                 );
             }
             CodeActionOutcome::Resolved(action) => {
-                let handle = self.pending_code_action_handle.take();
+                let handle = self.editor.pending_code_action_handle.take();
                 self.apply_resolved_code_action(handle, action);
             }
             CodeActionOutcome::Items(items) => {
@@ -2574,8 +2574,8 @@ impl App {
                     })
                     .collect();
                 let handle = self.first_code_action_handle();
-                self.pending_code_action_items = Some(items);
-                self.pending_code_action_handle = handle;
+                self.editor.pending_code_action_items = Some(items);
+                self.editor.pending_code_action_handle = handle;
                 let mut p = lattice_picker::Picker::new(
                     format!("code-actions ({total})"),
                     lattice_picker::PickerSource::LspLocations,
@@ -2603,7 +2603,7 @@ impl App {
     /// list opens as a vertico picker. Multi-server union;
     /// dedup by `(label, kind)`.
     pub(super) fn do_lsp_completion_request(&mut self) {
-        if let Some(token) = self.pending_completion_token.take() {
+        if let Some(token) = self.editor.pending_completion_token.take() {
             token.cancel();
         }
         // Browse-style; not a tag-intent drill-down.
@@ -2642,8 +2642,8 @@ impl App {
         let cursor_col = self.editor.cursor.byte;
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<CompletionOutcome>();
         let token = lattice_protocol::CancellationToken::new();
-        self.pending_completion_rx = Some(rx);
-        self.pending_completion_token = Some(token.clone());
+        self.editor.pending_completion_rx = Some(rx);
+        self.editor.pending_completion_token = Some(token.clone());
         let lsp = self.editor.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
@@ -2704,19 +2704,19 @@ impl App {
     /// Drain queued LSP completion responses and open a picker.
     /// `NoServers` echoes; empty list echoes.
     pub fn drain_pending_completion(&mut self) {
-        let Some(mut rx) = self.pending_completion_rx.take() else {
+        let Some(mut rx) = self.editor.pending_completion_rx.take() else {
             return;
         };
         let mut latest: Option<CompletionOutcome> = None;
         while let Ok(o) = rx.try_recv() {
             latest = Some(o);
         }
-        self.pending_completion_rx = Some(rx);
+        self.editor.pending_completion_rx = Some(rx);
         let outcome = match latest {
             Some(o) => o,
             None => return,
         };
-        self.pending_completion_token = None;
+        self.editor.pending_completion_token = None;
         match outcome {
             CompletionOutcome::NoServers => {
                 self.set_message(EchoLevel::Info, "no LSP server attached".to_string());
@@ -2748,7 +2748,7 @@ impl App {
                         )
                     })
                     .collect();
-                self.pending_completion_items = Some(items);
+                self.editor.pending_completion_items = Some(items);
                 let mut p = lattice_picker::Picker::new(
                     format!("complete ({total})"),
                     lattice_picker::PickerSource::LspLocations,
@@ -2773,7 +2773,7 @@ impl App {
     /// Range source for `is_range`: active Visual selection (if
     /// in Visual mode), else the whole buffer.
     pub(super) fn do_lsp_format_request(&mut self, is_range: bool) {
-        if let Some(token) = self.pending_format_token.take() {
+        if let Some(token) = self.editor.pending_format_token.take() {
             token.cancel();
         }
         // M.6.2: lsp-format-mode gate (after cancel-stale-work).
@@ -2812,8 +2812,8 @@ impl App {
         };
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<FormatOutcome>();
         let token = lattice_protocol::CancellationToken::new();
-        self.pending_format_rx = Some(rx);
-        self.pending_format_token = Some(token.clone());
+        self.editor.pending_format_rx = Some(rx);
+        self.editor.pending_format_token = Some(token.clone());
         let lsp = self.editor.lsp.clone();
         // Compute the LSP range parameters when needed.
         let lsp_range = range_lines.map(|(s, e)| {
@@ -2891,19 +2891,19 @@ impl App {
     /// edits as one undo unit. Echoes when the server returned no
     /// edits ("already formatted") or no provider was available.
     pub fn drain_pending_format(&mut self) {
-        let Some(mut rx) = self.pending_format_rx.take() else {
+        let Some(mut rx) = self.editor.pending_format_rx.take() else {
             return;
         };
         let mut latest: Option<FormatOutcome> = None;
         while let Ok(o) = rx.try_recv() {
             latest = Some(o);
         }
-        self.pending_format_rx = Some(rx);
+        self.editor.pending_format_rx = Some(rx);
         let outcome = match latest {
             Some(o) => o,
             None => return,
         };
-        self.pending_format_token = None;
+        self.editor.pending_format_token = None;
         match outcome {
             FormatOutcome::NoProvider { is_range } => {
                 let kind = if is_range { "range " } else { "" };
@@ -2939,7 +2939,7 @@ impl App {
     /// flatten the hierarchy + merge across servers; drain on
     /// the next frame opens a picker.
     pub(super) fn do_lsp_document_symbol_request(&mut self) {
-        if let Some(token) = self.pending_symbols_token.take() {
+        if let Some(token) = self.editor.pending_symbols_token.take() {
             token.cancel();
         }
         // Outline browse; not a tag-intent drill-down.
@@ -2970,8 +2970,8 @@ impl App {
         };
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<SymbolsOutcome>();
         let token = lattice_protocol::CancellationToken::new();
-        self.pending_symbols_rx = Some(rx);
-        self.pending_symbols_token = Some(token.clone());
+        self.editor.pending_symbols_rx = Some(rx);
+        self.editor.pending_symbols_token = Some(token.clone());
         let lsp = self.editor.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
@@ -3011,7 +3011,7 @@ impl App {
 
     /// `:lsp-workspace-symbol [query]` (Phase 4.2.f).
     pub(super) fn do_lsp_workspace_symbol_request(&mut self, query: &str) {
-        if let Some(token) = self.pending_symbols_token.take() {
+        if let Some(token) = self.editor.pending_symbols_token.take() {
             token.cancel();
         }
         // Workspace search browse; not a tag-intent drill-down.
@@ -3030,8 +3030,8 @@ impl App {
         let query = query.to_string();
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<SymbolsOutcome>();
         let token = lattice_protocol::CancellationToken::new();
-        self.pending_symbols_rx = Some(rx);
-        self.pending_symbols_token = Some(token.clone());
+        self.editor.pending_symbols_rx = Some(rx);
+        self.editor.pending_symbols_token = Some(token.clone());
         crate::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = lsp.all_running_handles();
             if handles.is_empty() {
@@ -3092,19 +3092,19 @@ impl App {
     /// Drain queued document-symbol / workspace-symbol responses
     /// and open the picker.
     pub fn drain_pending_symbols(&mut self) {
-        let Some(mut rx) = self.pending_symbols_rx.take() else {
+        let Some(mut rx) = self.editor.pending_symbols_rx.take() else {
             return;
         };
         let mut latest: Option<SymbolsOutcome> = None;
         while let Ok(o) = rx.try_recv() {
             latest = Some(o);
         }
-        self.pending_symbols_rx = Some(rx);
+        self.editor.pending_symbols_rx = Some(rx);
         let outcome = match latest {
             Some(o) => o,
             None => return,
         };
-        self.pending_symbols_token = None;
+        self.editor.pending_symbols_token = None;
         match outcome {
             SymbolsOutcome::NoServers => {
                 self.set_message(EchoLevel::Info, "no LSP server attached".to_string());
@@ -3159,7 +3159,7 @@ impl App {
     /// land through the existing `RoutingPayload::JumpToLspLocation`
     /// path -- no new picker action variant required.
     pub(super) fn do_lsp_call_hierarchy_request(&mut self, outgoing: bool) {
-        if let Some(token) = self.pending_symbols_token.take() {
+        if let Some(token) = self.editor.pending_symbols_token.take() {
             token.cancel();
         }
         // Tag-stack: a call-hierarchy drill-down is a
@@ -3201,8 +3201,8 @@ impl App {
         };
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<SymbolsOutcome>();
         let token = lattice_protocol::CancellationToken::new();
-        self.pending_symbols_rx = Some(rx);
-        self.pending_symbols_token = Some(token.clone());
+        self.editor.pending_symbols_rx = Some(rx);
+        self.editor.pending_symbols_token = Some(token.clone());
         let direction_label = if outgoing { "outgoing" } else { "incoming" };
         crate::runtime::spawn_on_lsp_runtime(async move {
             // 1. Prepare at cursor.
@@ -3296,7 +3296,7 @@ impl App {
     /// with type-hierarchy support" instead of firing a request
     /// that would error.
     pub(super) fn do_lsp_type_hierarchy_request(&mut self, subtypes: bool) {
-        if let Some(token) = self.pending_symbols_token.take() {
+        if let Some(token) = self.editor.pending_symbols_token.take() {
             token.cancel();
         }
         let snapshot_for_label = self.document.snapshot();
@@ -3335,8 +3335,8 @@ impl App {
         };
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<SymbolsOutcome>();
         let token = lattice_protocol::CancellationToken::new();
-        self.pending_symbols_rx = Some(rx);
-        self.pending_symbols_token = Some(token.clone());
+        self.editor.pending_symbols_rx = Some(rx);
+        self.editor.pending_symbols_token = Some(token.clone());
         let direction_label = if subtypes { "subtypes" } else { "supertypes" };
         crate::runtime::spawn_on_lsp_runtime(async move {
             let prepare_params = lsp_types::TypeHierarchyPrepareParams {
@@ -3441,7 +3441,7 @@ impl App {
         // overwrites the minibuffer when it arrives.
         self.set_message(EchoLevel::Info, "moniker: …".to_string());
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-        self.pending_moniker_rx = Some(rx);
+        self.editor.pending_moniker_rx = Some(rx);
         let token = lattice_protocol::CancellationToken::new();
         crate::runtime::spawn_on_lsp_runtime(async move {
             let params = lsp_types::MonikerParams {
@@ -3478,14 +3478,14 @@ impl App {
     /// per main-loop tick like the other LSP drains; cheap when
     /// the channel is empty.
     pub fn drain_pending_moniker(&mut self) {
-        let Some(mut rx) = self.pending_moniker_rx.take() else {
+        let Some(mut rx) = self.editor.pending_moniker_rx.take() else {
             return;
         };
         let mut latest: Option<String> = None;
         while let Ok(s) = rx.try_recv() {
             latest = Some(s);
         }
-        self.pending_moniker_rx = Some(rx);
+        self.editor.pending_moniker_rx = Some(rx);
         if let Some(msg) = latest {
             self.set_message(EchoLevel::Info, format!("moniker: {msg}"));
         }
@@ -3497,7 +3497,7 @@ impl App {
     /// Signatures are usually language-specific; merging rarely
     /// useful.").
     pub(super) fn do_lsp_signature_help_request(&mut self) {
-        if let Some(token) = self.pending_signature_help_token.take() {
+        if let Some(token) = self.editor.pending_signature_help_token.take() {
             token.cancel();
         }
         // M.6.2: lsp-signature-mode gate (after cancel-stale-work).
@@ -3521,8 +3521,8 @@ impl App {
         };
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<SignatureHelpOutcome>();
         let token = lattice_protocol::CancellationToken::new();
-        self.pending_signature_help_rx = Some(rx);
-        self.pending_signature_help_token = Some(token.clone());
+        self.editor.pending_signature_help_rx = Some(rx);
+        self.editor.pending_signature_help_token = Some(token.clone());
         let lsp = self.editor.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
@@ -3561,19 +3561,19 @@ impl App {
     /// renders into the popup; empty echoes "no signature info";
     /// `NoServers` echoes the standard "no LSP server" message.
     pub fn drain_pending_signature_help(&mut self) {
-        let Some(mut rx) = self.pending_signature_help_rx.take() else {
+        let Some(mut rx) = self.editor.pending_signature_help_rx.take() else {
             return;
         };
         let mut latest: Option<SignatureHelpOutcome> = None;
         while let Ok(o) = rx.try_recv() {
             latest = Some(o);
         }
-        self.pending_signature_help_rx = Some(rx);
+        self.editor.pending_signature_help_rx = Some(rx);
         let outcome = match latest {
             Some(o) => o,
             None => return,
         };
-        self.pending_signature_help_token = None;
+        self.editor.pending_signature_help_token = None;
         match outcome {
             SignatureHelpOutcome::NoServers => {
                 self.set_message(
@@ -3602,7 +3602,7 @@ impl App {
     /// `(uri, range.start)`. A single result jumps; multiple
     /// results echo a count and open the LSP-locations picker.
     pub(super) fn do_lsp_nav_request(&mut self, kind: LspNavKind) {
-        if let Some(token) = self.pending_definition_token.take() {
+        if let Some(token) = self.editor.pending_definition_token.take() {
             token.cancel();
         }
         // M.6.2: lsp-nav-mode gate (after cancel-stale-work).
@@ -3643,9 +3643,9 @@ impl App {
         });
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Vec<lsp_types::Location>>();
         let token = lattice_protocol::CancellationToken::new();
-        self.pending_definition_rx = Some(rx);
-        self.pending_definition_token = Some(token.clone());
-        self.pending_nav_kind = Some(kind);
+        self.editor.pending_definition_rx = Some(rx);
+        self.editor.pending_definition_token = Some(token.clone());
+        self.editor.pending_nav_kind = Some(kind);
         let lsp = self.editor.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
@@ -3746,22 +3746,22 @@ impl App {
     /// in echoes (`definitions` vs `implementations` etc.) reads
     /// from `pending_nav_kind`.
     pub fn drain_pending_definitions(&mut self) {
-        let Some(mut rx) = self.pending_definition_rx.take() else {
+        let Some(mut rx) = self.editor.pending_definition_rx.take() else {
             return;
         };
         let mut latest: Option<Vec<lsp_types::Location>> = None;
         while let Ok(locs) = rx.try_recv() {
             latest = Some(locs);
         }
-        self.pending_definition_rx = Some(rx);
+        self.editor.pending_definition_rx = Some(rx);
         let locs = match latest {
             Some(l) => l,
             None => return,
         };
         // Result delivered; clear the in-flight token.
-        self.pending_definition_token = None;
+        self.editor.pending_definition_token = None;
         let kind = self
-            .pending_nav_kind
+            .editor.pending_nav_kind
             .take()
             .unwrap_or(LspNavKind::Definition);
         let noun = kind.noun_plural();
@@ -3798,7 +3798,7 @@ impl App {
     /// the LSP runtime; drain on the next frame opens a buffer-
     /// backed `*lsp:references*` view in the active pane.
     pub(super) fn do_lsp_references_request(&mut self) {
-        if let Some(token) = self.pending_references_token.take() {
+        if let Some(token) = self.editor.pending_references_token.take() {
             token.cancel();
         }
         // Browse-style; not a tag-intent drill-down.
@@ -3830,8 +3830,8 @@ impl App {
         let symbol = word_under_cursor(&snapshot.buffer, self.editor.cursor).unwrap_or_default();
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<ReferencesOutcome>();
         let token = lattice_protocol::CancellationToken::new();
-        self.pending_references_rx = Some(rx);
-        self.pending_references_token = Some(token.clone());
+        self.editor.pending_references_rx = Some(rx);
+        self.editor.pending_references_token = Some(token.clone());
         let lsp = self.editor.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
@@ -3882,21 +3882,21 @@ impl App {
     /// `NoServers` echoes "no LSP server attached"; an empty
     /// `Found(_, [])` echoes "no references for X".
     pub fn drain_pending_references(&mut self) {
-        let Some(mut rx) = self.pending_references_rx.take() else {
+        let Some(mut rx) = self.editor.pending_references_rx.take() else {
             return;
         };
         let mut latest: Option<ReferencesOutcome> = None;
         while let Ok(o) = rx.try_recv() {
             latest = Some(o);
         }
-        self.pending_references_rx = Some(rx);
+        self.editor.pending_references_rx = Some(rx);
         let outcome = match latest {
             Some(o) => o,
             None => return,
         };
         // Delivered; clear the in-flight token regardless of
         // shape so a follow-up gr fires fresh.
-        self.pending_references_token = None;
+        self.editor.pending_references_token = None;
         match outcome {
             ReferencesOutcome::NoServers => {
                 self.set_message(
@@ -4353,14 +4353,14 @@ impl App {
         let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
             return;
         };
-        if let Some(token) = self.pending_folding_range_token.take() {
+        if let Some(token) = self.editor.pending_folding_range_token.take() {
             token.cancel();
         }
         let buffer_id = self.editor.document_buffer_id;
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::FoldingRangeOutcome>();
         let token = lattice_protocol::CancellationToken::new();
-        self.pending_folding_range_rx = Some(rx);
-        self.pending_folding_range_token = Some(token.clone());
+        self.editor.pending_folding_range_rx = Some(rx);
+        self.editor.pending_folding_range_token = Some(token.clone());
         let lsp = self.editor.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
@@ -4407,14 +4407,14 @@ impl App {
     /// `recompute_folds` so the renderer picks up the new
     /// extents on the next frame.
     pub fn drain_pending_folding_range(&mut self) {
-        let Some(mut rx) = self.pending_folding_range_rx.take() else {
+        let Some(mut rx) = self.editor.pending_folding_range_rx.take() else {
             return;
         };
         let mut latest: Option<super::FoldingRangeOutcome> = None;
         while let Ok(outcome) = rx.try_recv() {
             latest = Some(outcome);
         }
-        self.pending_folding_range_rx = Some(rx);
+        self.editor.pending_folding_range_rx = Some(rx);
         let Some(outcome) = latest else {
             return;
         };
@@ -4484,14 +4484,14 @@ impl App {
         let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
             return;
         };
-        if let Some(token) = self.pending_semantic_tokens_token.take() {
+        if let Some(token) = self.editor.pending_semantic_tokens_token.take() {
             token.cancel();
         }
         let buffer_id = self.editor.document_buffer_id;
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::SemanticTokensOutcome>();
         let token = lattice_protocol::CancellationToken::new();
-        self.pending_semantic_tokens_rx = Some(rx);
-        self.pending_semantic_tokens_token = Some(token.clone());
+        self.editor.pending_semantic_tokens_rx = Some(rx);
+        self.editor.pending_semantic_tokens_token = Some(token.clone());
         let lsp = self.editor.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
@@ -4605,14 +4605,14 @@ impl App {
     /// latest. On success seats the cache; on Empty seats an
     /// empty list so we don't re-issue immediately.
     pub fn drain_pending_semantic_tokens(&mut self) {
-        let Some(mut rx) = self.pending_semantic_tokens_rx.take() else {
+        let Some(mut rx) = self.editor.pending_semantic_tokens_rx.take() else {
             return;
         };
         let mut latest: Option<super::SemanticTokensOutcome> = None;
         while let Ok(outcome) = rx.try_recv() {
             latest = Some(outcome);
         }
-        self.pending_semantic_tokens_rx = Some(rx);
+        self.editor.pending_semantic_tokens_rx = Some(rx);
         let Some(outcome) = latest else {
             return;
         };
@@ -4735,14 +4735,14 @@ impl App {
         let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
             return;
         };
-        if let Some(token) = self.pending_pull_diagnostics_token.take() {
+        if let Some(token) = self.editor.pending_pull_diagnostics_token.take() {
             token.cancel();
         }
         let buffer_id = self.editor.document_buffer_id;
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::PullDiagnosticsOutcome>();
         let token = lattice_protocol::CancellationToken::new();
-        self.pending_pull_diagnostics_rx = Some(rx);
-        self.pending_pull_diagnostics_token = Some(token.clone());
+        self.editor.pending_pull_diagnostics_rx = Some(rx);
+        self.editor.pending_pull_diagnostics_token = Some(token.clone());
         let lsp = self.editor.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = lsp.servers_for(&uri);
@@ -4806,14 +4806,14 @@ impl App {
     /// (version, result_id) pair; Empty reports seat the
     /// version so the pump doesn't re-fire idly.
     pub fn drain_pending_pull_diagnostics(&mut self) {
-        let Some(mut rx) = self.pending_pull_diagnostics_rx.take() else {
+        let Some(mut rx) = self.editor.pending_pull_diagnostics_rx.take() else {
             return;
         };
         let mut latest: Option<super::PullDiagnosticsOutcome> = None;
         while let Ok(outcome) = rx.try_recv() {
             latest = Some(outcome);
         }
-        self.pending_pull_diagnostics_rx = Some(rx);
+        self.editor.pending_pull_diagnostics_rx = Some(rx);
         let Some(outcome) = latest else {
             return;
         };
@@ -4882,14 +4882,14 @@ impl App {
     /// next pump tick re-pulls without a `previous_result_id`
     /// and the server emits a forced `Full` report.
     pub fn drain_diagnostic_refresh(&mut self) {
-        let Some(mut rx) = self.pending_diagnostic_refresh_rx.take() else {
+        let Some(mut rx) = self.editor.pending_diagnostic_refresh_rx.take() else {
             return;
         };
         let mut refreshes: Vec<lattice_lsp::LspDiagnosticRefresh> = Vec::new();
         while let Ok(event) = rx.try_recv() {
             refreshes.push(event);
         }
-        self.pending_diagnostic_refresh_rx = Some(rx);
+        self.editor.pending_diagnostic_refresh_rx = Some(rx);
         if refreshes.is_empty() {
             return;
         }
@@ -4957,7 +4957,7 @@ impl App {
         let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
             return;
         };
-        if let Some(token) = self.pending_inlay_hint_token.take() {
+        if let Some(token) = self.editor.pending_inlay_hint_token.take() {
             token.cancel();
         }
         let buffer_id = self.editor.document_buffer_id;
@@ -4977,8 +4977,8 @@ impl App {
         };
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::InlayHintOutcome>();
         let token = lattice_protocol::CancellationToken::new();
-        self.pending_inlay_hint_rx = Some(rx);
-        self.pending_inlay_hint_token = Some(token.clone());
+        self.editor.pending_inlay_hint_rx = Some(rx);
+        self.editor.pending_inlay_hint_token = Some(token.clone());
         let lsp = self.editor.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
@@ -5026,14 +5026,14 @@ impl App {
     /// buffer attached to that server so the next render
     /// tick's pump re-issues `inlayHint`.
     pub fn drain_inlay_hint_refresh(&mut self) {
-        let Some(mut rx) = self.pending_inlay_hint_refresh_rx.take() else {
+        let Some(mut rx) = self.editor.pending_inlay_hint_refresh_rx.take() else {
             return;
         };
         let mut refreshes: Vec<lattice_lsp::LspInlayHintRefresh> = Vec::new();
         while let Ok(event) = rx.try_recv() {
             refreshes.push(event);
         }
-        self.pending_inlay_hint_refresh_rx = Some(rx);
+        self.editor.pending_inlay_hint_refresh_rx = Some(rx);
         if refreshes.is_empty() {
             return;
         }
@@ -5069,14 +5069,14 @@ impl App {
     /// the now-stale `result_id` rules out a delta request that
     /// the server would reject).
     pub fn drain_semantic_tokens_refresh(&mut self) {
-        let Some(mut rx) = self.pending_semantic_tokens_refresh_rx.take() else {
+        let Some(mut rx) = self.editor.pending_semantic_tokens_refresh_rx.take() else {
             return;
         };
         let mut refreshes: Vec<lattice_lsp::LspSemanticTokensRefresh> = Vec::new();
         while let Ok(event) = rx.try_recv() {
             refreshes.push(event);
         }
-        self.pending_semantic_tokens_refresh_rx = Some(rx);
+        self.editor.pending_semantic_tokens_refresh_rx = Some(rx);
         if refreshes.is_empty() {
             return;
         }
@@ -5101,14 +5101,14 @@ impl App {
     /// 4.4.g: drain the in-flight `inlayHint` response.
     /// Coalesces multiple queued outcomes to the latest.
     pub fn drain_pending_inlay_hint(&mut self) {
-        let Some(mut rx) = self.pending_inlay_hint_rx.take() else {
+        let Some(mut rx) = self.editor.pending_inlay_hint_rx.take() else {
             return;
         };
         let mut latest: Option<super::InlayHintOutcome> = None;
         while let Ok(outcome) = rx.try_recv() {
             latest = Some(outcome);
         }
-        self.pending_inlay_hint_rx = Some(rx);
+        self.editor.pending_inlay_hint_rx = Some(rx);
         let Some(outcome) = latest else {
             return;
         };
@@ -5175,14 +5175,14 @@ impl App {
         {
             return;
         }
-        if let Some(token) = self.pending_document_links_token.take() {
+        if let Some(token) = self.editor.pending_document_links_token.take() {
             token.cancel();
         }
         let buffer_id = self.editor.document_buffer_id;
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::DocumentLinksOutcome>();
         let token = lattice_protocol::CancellationToken::new();
-        self.pending_document_links_rx = Some(rx);
-        self.pending_document_links_token = Some(token.clone());
+        self.editor.pending_document_links_rx = Some(rx);
+        self.editor.pending_document_links_token = Some(token.clone());
         let lsp = self.editor.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = lsp.servers_for(&uri);
@@ -5223,19 +5223,19 @@ impl App {
     /// cache. Cancels stale single-flight tokens; `gx`
     /// consults the cache when triggered.
     pub fn drain_pending_document_link(&mut self) {
-        let Some(mut rx) = self.pending_document_links_rx.take() else {
+        let Some(mut rx) = self.editor.pending_document_links_rx.take() else {
             return;
         };
         let mut latest: Option<super::DocumentLinksOutcome> = None;
         while let Ok(o) = rx.try_recv() {
             latest = Some(o);
         }
-        self.pending_document_links_rx = Some(rx);
+        self.editor.pending_document_links_rx = Some(rx);
         let outcome = match latest {
             Some(o) => o,
             None => return,
         };
-        self.pending_document_links_token = None;
+        self.editor.pending_document_links_token = None;
         match outcome {
             super::DocumentLinksOutcome::Items {
                 buffer_id,
@@ -5397,14 +5397,14 @@ impl App {
         {
             return;
         }
-        if let Some(token) = self.pending_code_lens_token.take() {
+        if let Some(token) = self.editor.pending_code_lens_token.take() {
             token.cancel();
         }
         let buffer_id = self.editor.document_buffer_id;
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::CodeLensOutcome>();
         let token = lattice_protocol::CancellationToken::new();
-        self.pending_code_lens_rx = Some(rx);
-        self.pending_code_lens_token = Some(token.clone());
+        self.editor.pending_code_lens_rx = Some(rx);
+        self.editor.pending_code_lens_token = Some(token.clone());
         let lsp = self.editor.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = lsp.servers_for(&uri);
@@ -5447,19 +5447,19 @@ impl App {
     /// cache. The cache feeds `:lsp-code-lens`; the picker
     /// reads from it.
     pub fn drain_pending_code_lens(&mut self) {
-        let Some(mut rx) = self.pending_code_lens_rx.take() else {
+        let Some(mut rx) = self.editor.pending_code_lens_rx.take() else {
             return;
         };
         let mut latest: Option<super::CodeLensOutcome> = None;
         while let Ok(o) = rx.try_recv() {
             latest = Some(o);
         }
-        self.pending_code_lens_rx = Some(rx);
+        self.editor.pending_code_lens_rx = Some(rx);
         let outcome = match latest {
             Some(o) => o,
             None => return,
         };
-        self.pending_code_lens_token = None;
+        self.editor.pending_code_lens_token = None;
         match outcome {
             super::CodeLensOutcome::Items {
                 buffer_id,
@@ -5543,8 +5543,8 @@ impl App {
             })
             .collect();
         let total = pairs.len();
-        self.pending_code_lens_items = Some(cache.lenses.clone());
-        self.pending_code_lens_server = Some(cache.server_id.clone());
+        self.editor.pending_code_lens_items = Some(cache.lenses.clone());
+        self.editor.pending_code_lens_server = Some(cache.server_id.clone());
         let mut p = lattice_picker::Picker::new(
             format!("code-lens ({total})"),
             lattice_picker::PickerSource::LspLocations,
@@ -5562,10 +5562,10 @@ impl App {
     /// on the originating server (the one that produced the
     /// cache).
     pub(super) fn accept_lsp_code_lens(&mut self, index: u32) {
-        let Some(items) = self.pending_code_lens_items.take() else {
+        let Some(items) = self.editor.pending_code_lens_items.take() else {
             return;
         };
-        let server_id = self.pending_code_lens_server.take();
+        let server_id = self.editor.pending_code_lens_server.take();
         let Some(lens) = items.get(index as usize).cloned() else {
             self.set_message(
                 EchoLevel::Warn,
@@ -5643,14 +5643,14 @@ impl App {
         {
             return;
         }
-        if let Some(token) = self.pending_document_color_token.take() {
+        if let Some(token) = self.editor.pending_document_color_token.take() {
             token.cancel();
         }
         let buffer_id = self.editor.document_buffer_id;
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::DocumentColorOutcome>();
         let token = lattice_protocol::CancellationToken::new();
-        self.pending_document_color_rx = Some(rx);
-        self.pending_document_color_token = Some(token.clone());
+        self.editor.pending_document_color_rx = Some(rx);
+        self.editor.pending_document_color_token = Some(token.clone());
         let lsp = self.editor.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = lsp.servers_for(&uri);
@@ -5692,19 +5692,19 @@ impl App {
     /// 4.5.e: drain queued `documentColor` responses + seat
     /// the cache.
     pub fn drain_pending_document_color(&mut self) {
-        let Some(mut rx) = self.pending_document_color_rx.take() else {
+        let Some(mut rx) = self.editor.pending_document_color_rx.take() else {
             return;
         };
         let mut latest: Option<super::DocumentColorOutcome> = None;
         while let Ok(o) = rx.try_recv() {
             latest = Some(o);
         }
-        self.pending_document_color_rx = Some(rx);
+        self.editor.pending_document_color_rx = Some(rx);
         let outcome = match latest {
             Some(o) => o,
             None => return,
         };
-        self.pending_document_color_token = None;
+        self.editor.pending_document_color_token = None;
         match outcome {
             super::DocumentColorOutcome::Items {
                 buffer_id,
@@ -5833,8 +5833,8 @@ impl App {
             })
             .collect();
         let total = pairs.len();
-        self.pending_color_presentations = Some(presentations);
-        self.pending_color_range = Some(entry.range);
+        self.editor.pending_color_presentations = Some(presentations);
+        self.editor.pending_color_range = Some(entry.range);
         let mut p = lattice_picker::Picker::new(
             format!("color alternatives ({total})"),
             lattice_picker::PickerSource::LspLocations,
@@ -5849,10 +5849,10 @@ impl App {
     /// `text_edit` when present; falls back to a plain replace
     /// with `label` otherwise.
     pub(super) fn accept_lsp_color_presentation(&mut self, index: u32) {
-        let Some(items) = self.pending_color_presentations.take() else {
+        let Some(items) = self.editor.pending_color_presentations.take() else {
             return;
         };
-        let range = self.pending_color_range.take();
+        let range = self.editor.pending_color_range.take();
         let Some(item) = items.get(index as usize).cloned() else {
             return;
         };
@@ -5878,14 +5878,14 @@ impl App {
     /// entry that came from that server. The next pump tick
     /// re-issues `textDocument/codeLens`.
     pub fn drain_code_lens_refresh(&mut self) {
-        let Some(mut rx) = self.pending_code_lens_refresh_rx.take() else {
+        let Some(mut rx) = self.editor.pending_code_lens_refresh_rx.take() else {
             return;
         };
         let mut servers: Vec<std::sync::Arc<str>> = Vec::new();
         while let Ok(ev) = rx.try_recv() {
             servers.push(ev.server_id);
         }
-        self.pending_code_lens_refresh_rx = Some(rx);
+        self.editor.pending_code_lens_refresh_rx = Some(rx);
         if servers.is_empty() {
             return;
         }
@@ -5915,7 +5915,7 @@ impl App {
             // disappears the moment the user disables the mode.
             self.editor.lsp_document_highlights = None;
             self.editor.last_document_highlight_issue_cursor = None;
-            if let Some(token) = self.pending_document_highlight_token.take() {
+            if let Some(token) = self.editor.pending_document_highlight_token.take() {
                 token.cancel();
             }
             return;
@@ -5939,7 +5939,7 @@ impl App {
         };
         // Cancel any in-flight request so its response is
         // dropped if it lands after this one is issued.
-        if let Some(token) = self.pending_document_highlight_token.take() {
+        if let Some(token) = self.editor.pending_document_highlight_token.take() {
             token.cancel();
         }
         let buffer_id = self.editor.document_buffer_id;
@@ -5947,8 +5947,8 @@ impl App {
         self.editor.last_document_highlight_issue_cursor = Some(anchor_cursor);
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::DocumentHighlightOutcome>();
         let token = lattice_protocol::CancellationToken::new();
-        self.pending_document_highlight_rx = Some(rx);
-        self.pending_document_highlight_token = Some(token.clone());
+        self.editor.pending_document_highlight_rx = Some(rx);
+        self.editor.pending_document_highlight_token = Some(token.clone());
         let lsp = self.editor.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
@@ -5987,14 +5987,14 @@ impl App {
     /// latest one so a burst of cursor moves only commits the
     /// final response.
     pub fn drain_pending_document_highlight(&mut self) {
-        let Some(mut rx) = self.pending_document_highlight_rx.take() else {
+        let Some(mut rx) = self.editor.pending_document_highlight_rx.take() else {
             return;
         };
         let mut latest: Option<super::DocumentHighlightOutcome> = None;
         while let Ok(outcome) = rx.try_recv() {
             latest = Some(outcome);
         }
-        self.pending_document_highlight_rx = Some(rx);
+        self.editor.pending_document_highlight_rx = Some(rx);
         let Some(outcome) = latest else {
             return;
         };
@@ -6154,7 +6154,7 @@ impl App {
         }
         // Cancel any in-flight request first so the prior
         // response can't seat a stale chain.
-        if let Some(token) = self.pending_selection_range_token.take() {
+        if let Some(token) = self.editor.pending_selection_range_token.take() {
             token.cancel();
         }
         let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
@@ -6179,8 +6179,8 @@ impl App {
         let anchor_buffer = self.editor.document_buffer_id;
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::SelectionRangeOutcome>();
         let token = lattice_protocol::CancellationToken::new();
-        self.pending_selection_range_rx = Some(rx);
-        self.pending_selection_range_token = Some(token.clone());
+        self.editor.pending_selection_range_rx = Some(rx);
+        self.editor.pending_selection_range_token = Some(token.clone());
         let lsp = self.editor.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
@@ -6222,7 +6222,7 @@ impl App {
     /// Seats the chain into `App::lsp_selection_chain` and
     /// applies the step the original invocation requested.
     pub fn drain_pending_selection_range(&mut self) {
-        let Some(mut rx) = self.pending_selection_range_rx.take() else {
+        let Some(mut rx) = self.editor.pending_selection_range_rx.take() else {
             return;
         };
         // Coalesce: only the most recent outcome wins. A user
@@ -6233,7 +6233,7 @@ impl App {
         while let Ok(outcome) = rx.try_recv() {
             latest = Some(outcome);
         }
-        self.pending_selection_range_rx = Some(rx);
+        self.editor.pending_selection_range_rx = Some(rx);
         let Some(outcome) = latest else {
             return;
         };
@@ -6999,7 +6999,7 @@ mod tests {
         let mut a = app_with("xx", 10);
         // Manually install an in-flight token.
         let stale = lattice_protocol::CancellationToken::new();
-        a.pending_hover_token = Some(stale.clone());
+        a.editor.pending_hover_token = Some(stale.clone());
         // Trigger another hover. With no LSP attached the new
         // request bails on the URI lookup, but the cancel of the
         // previous token should still happen first.
@@ -7014,8 +7014,8 @@ mod tests {
     fn drain_pending_hover_body_outcome_opens_popup() {
         let mut a = app_with("xx", 10);
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<crate::app::HoverOutcome>();
-        a.pending_hover_rx = Some(rx);
-        a.pending_hover_token = Some(lattice_protocol::CancellationToken::new());
+        a.editor.pending_hover_rx = Some(rx);
+        a.editor.pending_hover_token = Some(lattice_protocol::CancellationToken::new());
         tx.send(crate::app::HoverOutcome::Body("**bold body**".into()))
             .unwrap();
         a.drain_pending_hover();
@@ -7025,7 +7025,7 @@ mod tests {
         assert!(matches!(a.editor.active_buffer, BufferKind::Document));
         assert!(a.editor.prev_pane_for_help.is_none());
         assert!(
-            a.pending_hover_token.is_none(),
+            a.editor.pending_hover_token.is_none(),
             "delivering the outcome should clear the in-flight token"
         );
     }
@@ -7038,8 +7038,8 @@ mod tests {
         // info" so the user knows their K press was received.
         let mut a = app_with("xx", 10);
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<crate::app::HoverOutcome>();
-        a.pending_hover_rx = Some(rx);
-        a.pending_hover_token = Some(lattice_protocol::CancellationToken::new());
+        a.editor.pending_hover_rx = Some(rx);
+        a.editor.pending_hover_token = Some(lattice_protocol::CancellationToken::new());
         tx.send(crate::app::HoverOutcome::NoBody { servers_tried: 1 })
             .unwrap();
         a.drain_pending_hover();
@@ -7060,8 +7060,8 @@ mod tests {
         // :lsp-status / :lsp-log so they can investigate.
         let mut a = app_with("xx", 10);
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<crate::app::HoverOutcome>();
-        a.pending_hover_rx = Some(rx);
-        a.pending_hover_token = Some(lattice_protocol::CancellationToken::new());
+        a.editor.pending_hover_rx = Some(rx);
+        a.editor.pending_hover_token = Some(lattice_protocol::CancellationToken::new());
         tx.send(crate::app::HoverOutcome::NoServers).unwrap();
         a.drain_pending_hover();
         let msg = a
@@ -7080,7 +7080,7 @@ mod tests {
     fn drain_pending_hover_idle_channel_is_noop() {
         let mut a = app_with("xx", 10);
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<crate::app::HoverOutcome>();
-        a.pending_hover_rx = Some(rx);
+        a.editor.pending_hover_rx = Some(rx);
         a.drain_pending_hover();
         assert!(a.editor.popup_buffer.is_none());
         assert!(a.editor.last_message.is_none());
@@ -7446,7 +7446,7 @@ mod tests {
             token_modifiers,
         })
         .expect("send delta");
-        a.pending_semantic_tokens_rx = Some(rx);
+        a.editor.pending_semantic_tokens_rx = Some(rx);
         a.drain_pending_semantic_tokens();
         let cache = a
             .editor.lsp_semantic_tokens_cache
@@ -7488,7 +7488,7 @@ mod tests {
             token_modifiers: Vec::new(),
         })
         .expect("send delta");
-        a.pending_semantic_tokens_rx = Some(rx);
+        a.editor.pending_semantic_tokens_rx = Some(rx);
         a.drain_pending_semantic_tokens();
         assert!(
             a.editor.lsp_semantic_tokens_cache.get(&buffer_id).is_none(),
@@ -7586,7 +7586,7 @@ mod tests {
             diagnostics: vec![diag.clone()],
         })
         .expect("send full");
-        app.pending_pull_diagnostics_rx = Some(rx);
+        app.editor.pending_pull_diagnostics_rx = Some(rx);
         app.drain_pending_pull_diagnostics();
         let cache = app
             .editor.lsp_pull_diagnostics_cache
@@ -7629,7 +7629,7 @@ mod tests {
             result_id: "r2".into(),
         })
         .expect("send unchanged");
-        app.pending_pull_diagnostics_rx = Some(rx);
+        app.editor.pending_pull_diagnostics_rx = Some(rx);
         app.drain_pending_pull_diagnostics();
         let cache = app
             .editor.lsp_pull_diagnostics_cache
@@ -7664,7 +7664,7 @@ mod tests {
             server_id: std::sync::Arc::from("rust"),
         })
         .expect("send refresh");
-        app.pending_diagnostic_refresh_rx = Some(rx);
+        app.editor.pending_diagnostic_refresh_rx = Some(rx);
         app.drain_diagnostic_refresh();
         // No actors attached -> no eviction.
         assert!(app.editor.lsp_pull_diagnostics_cache.contains_key(&buffer_id));
@@ -7687,7 +7687,7 @@ mod tests {
         );
         app.maybe_request_pull_diagnostics();
         assert!(
-            app.pending_pull_diagnostics_rx.is_none(),
+            app.editor.pending_pull_diagnostics_rx.is_none(),
             "pump should short-circuit on unchanged version",
         );
     }
@@ -7724,7 +7724,7 @@ mod tests {
         app.editor.scroll = 0;
         app.maybe_request_inlay_hint();
         assert!(
-            app.pending_inlay_hint_rx.is_none(),
+            app.editor.pending_inlay_hint_rx.is_none(),
             "pump should short-circuit when viewport is inside cached range",
         );
     }
@@ -7759,7 +7759,7 @@ mod tests {
         app.editor.scroll = 1500;
         app.maybe_request_inlay_hint();
         assert!(
-            app.pending_inlay_hint_rx.is_some(),
+            app.editor.pending_inlay_hint_rx.is_some(),
             "pump should issue a new request when viewport leaves cached range",
         );
     }
@@ -7795,7 +7795,7 @@ mod tests {
         app.editor.scroll = 250;
         app.maybe_request_inlay_hint();
         assert!(
-            app.pending_inlay_hint_rx.is_none(),
+            app.editor.pending_inlay_hint_rx.is_none(),
             "small scroll inside cached window should not refetch",
         );
     }
@@ -8037,9 +8037,9 @@ mod tests {
         // Verify the kind drives the verb in the "no X found" echo.
         let mut a = app_with("xx", 10);
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Vec<lsp_types::Location>>();
-        a.pending_definition_rx = Some(rx);
-        a.pending_definition_token = Some(lattice_protocol::CancellationToken::new());
-        a.pending_nav_kind = Some(super::LspNavKind::Implementation);
+        a.editor.pending_definition_rx = Some(rx);
+        a.editor.pending_definition_token = Some(lattice_protocol::CancellationToken::new());
+        a.editor.pending_nav_kind = Some(super::LspNavKind::Implementation);
         tx.send(Vec::new()).unwrap();
         a.drain_pending_definitions();
         let msg = a.editor.last_message.as_ref().expect("echo");
@@ -8048,16 +8048,16 @@ mod tests {
             "expected implementations echo, got: {}",
             msg.text
         );
-        assert!(a.pending_nav_kind.is_none());
+        assert!(a.editor.pending_nav_kind.is_none());
     }
 
     #[test]
     fn drain_pending_no_type_definitions_echoes_kind_specific_message() {
         let mut a = app_with("xx", 10);
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Vec<lsp_types::Location>>();
-        a.pending_definition_rx = Some(rx);
-        a.pending_definition_token = Some(lattice_protocol::CancellationToken::new());
-        a.pending_nav_kind = Some(super::LspNavKind::TypeDefinition);
+        a.editor.pending_definition_rx = Some(rx);
+        a.editor.pending_definition_token = Some(lattice_protocol::CancellationToken::new());
+        a.editor.pending_nav_kind = Some(super::LspNavKind::TypeDefinition);
         tx.send(Vec::new()).unwrap();
         a.drain_pending_definitions();
         let msg = a.editor.last_message.as_ref().expect("echo");
@@ -8068,9 +8068,9 @@ mod tests {
     fn drain_pending_no_declarations_echoes_kind_specific_message() {
         let mut a = app_with("xx", 10);
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Vec<lsp_types::Location>>();
-        a.pending_definition_rx = Some(rx);
-        a.pending_definition_token = Some(lattice_protocol::CancellationToken::new());
-        a.pending_nav_kind = Some(super::LspNavKind::Declaration);
+        a.editor.pending_definition_rx = Some(rx);
+        a.editor.pending_definition_token = Some(lattice_protocol::CancellationToken::new());
+        a.editor.pending_nav_kind = Some(super::LspNavKind::Declaration);
         tx.send(Vec::new()).unwrap();
         a.drain_pending_definitions();
         let msg = a.editor.last_message.as_ref().expect("echo");
@@ -8090,7 +8090,7 @@ mod tests {
     fn lsp_references_request_pre_cancels_in_flight_token() {
         let mut a = app_with("xx", 10);
         let stale = lattice_protocol::CancellationToken::new();
-        a.pending_references_token = Some(stale.clone());
+        a.editor.pending_references_token = Some(stale.clone());
         a.apply(Action::LspReferencesRequest);
         assert!(stale.is_cancelled());
     }
@@ -8099,21 +8099,21 @@ mod tests {
     fn drain_pending_references_no_servers_outcome_echoes() {
         let mut a = app_with("xx", 10);
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::ReferencesOutcome>();
-        a.pending_references_rx = Some(rx);
-        a.pending_references_token = Some(lattice_protocol::CancellationToken::new());
+        a.editor.pending_references_rx = Some(rx);
+        a.editor.pending_references_token = Some(lattice_protocol::CancellationToken::new());
         tx.send(super::ReferencesOutcome::NoServers).unwrap();
         a.drain_pending_references();
         let msg = a.editor.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("no LSP server"));
-        assert!(a.pending_references_token.is_none());
+        assert!(a.editor.pending_references_token.is_none());
     }
 
     #[test]
     fn drain_pending_references_found_opens_lsp_locations_picker() {
         let mut a = app_with("xx", 10);
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::ReferencesOutcome>();
-        a.pending_references_rx = Some(rx);
-        a.pending_references_token = Some(lattice_protocol::CancellationToken::new());
+        a.editor.pending_references_rx = Some(rx);
+        a.editor.pending_references_token = Some(lattice_protocol::CancellationToken::new());
         tx.send(super::ReferencesOutcome::Found {
             symbol: "foo".into(),
             locations: vec![loc("/tmp/notarealfile.rs", 3, 5)],
@@ -8158,8 +8158,8 @@ mod tests {
         // than the echo.
         let mut a = app_with("xx", 10);
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::ReferencesOutcome>();
-        a.pending_references_rx = Some(rx);
-        a.pending_references_token = Some(lattice_protocol::CancellationToken::new());
+        a.editor.pending_references_rx = Some(rx);
+        a.editor.pending_references_token = Some(lattice_protocol::CancellationToken::new());
         tx.send(super::ReferencesOutcome::Found {
             symbol: "missing".into(),
             locations: Vec::new(),
@@ -8290,21 +8290,21 @@ mod tests {
     fn drain_pending_symbols_no_servers_outcome_echoes() {
         let mut a = app_with("xx", 10);
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::SymbolsOutcome>();
-        a.pending_symbols_rx = Some(rx);
-        a.pending_symbols_token = Some(lattice_protocol::CancellationToken::new());
+        a.editor.pending_symbols_rx = Some(rx);
+        a.editor.pending_symbols_token = Some(lattice_protocol::CancellationToken::new());
         tx.send(super::SymbolsOutcome::NoServers).unwrap();
         a.drain_pending_symbols();
         let msg = a.editor.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("no LSP server"));
-        assert!(a.pending_symbols_token.is_none());
+        assert!(a.editor.pending_symbols_token.is_none());
     }
 
     #[test]
     fn drain_pending_symbols_found_opens_picker() {
         let mut a = app_with("xx", 10);
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::SymbolsOutcome>();
-        a.pending_symbols_rx = Some(rx);
-        a.pending_symbols_token = Some(lattice_protocol::CancellationToken::new());
+        a.editor.pending_symbols_rx = Some(rx);
+        a.editor.pending_symbols_token = Some(lattice_protocol::CancellationToken::new());
         tx.send(super::SymbolsOutcome::Found {
             title: "symbols (2)".into(),
             rows: vec![
@@ -8342,8 +8342,8 @@ mod tests {
     fn drain_pending_symbols_empty_echoes() {
         let mut a = app_with("xx", 10);
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::SymbolsOutcome>();
-        a.pending_symbols_rx = Some(rx);
-        a.pending_symbols_token = Some(lattice_protocol::CancellationToken::new());
+        a.editor.pending_symbols_rx = Some(rx);
+        a.editor.pending_symbols_token = Some(lattice_protocol::CancellationToken::new());
         tx.send(super::SymbolsOutcome::Found {
             title: "symbols (0)".into(),
             rows: Vec::new(),
@@ -8370,8 +8370,8 @@ mod tests {
     fn drain_pending_code_actions_no_provider_echoes() {
         let mut a = app_with("xx", 10);
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::CodeActionOutcome>();
-        a.pending_code_action_rx = Some(rx);
-        a.pending_code_action_token = Some(lattice_protocol::CancellationToken::new());
+        a.editor.pending_code_action_rx = Some(rx);
+        a.editor.pending_code_action_token = Some(lattice_protocol::CancellationToken::new());
         tx.send(super::CodeActionOutcome::NoProvider).unwrap();
         a.drain_pending_code_actions();
         let msg = a.editor.last_message.as_ref().expect("echo");
@@ -8382,8 +8382,8 @@ mod tests {
     fn drain_pending_code_actions_empty_echoes_no_actions() {
         let mut a = app_with("xx", 10);
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::CodeActionOutcome>();
-        a.pending_code_action_rx = Some(rx);
-        a.pending_code_action_token = Some(lattice_protocol::CancellationToken::new());
+        a.editor.pending_code_action_rx = Some(rx);
+        a.editor.pending_code_action_token = Some(lattice_protocol::CancellationToken::new());
         tx.send(super::CodeActionOutcome::Items(Vec::new()))
             .unwrap();
         a.drain_pending_code_actions();
@@ -8396,8 +8396,8 @@ mod tests {
     fn drain_pending_code_actions_items_open_picker() {
         let mut a = app_with("foo\n", 10);
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::CodeActionOutcome>();
-        a.pending_code_action_rx = Some(rx);
-        a.pending_code_action_token = Some(lattice_protocol::CancellationToken::new());
+        a.editor.pending_code_action_rx = Some(rx);
+        a.editor.pending_code_action_token = Some(lattice_protocol::CancellationToken::new());
         let act = lsp_types::CodeAction {
             title: "Add `mut` modifier".into(),
             kind: Some(lsp_types::CodeActionKind::QUICKFIX),
@@ -8427,7 +8427,7 @@ mod tests {
         let display = &picker.candidates[0].raw.display;
         assert!(display.contains("🛠 Add `mut` modifier"));
         // Items pinned for the accept path.
-        assert!(a.pending_code_action_items.is_some());
+        assert!(a.editor.pending_code_action_items.is_some());
     }
 
     #[test]
@@ -8466,8 +8466,8 @@ mod tests {
     fn drain_pending_rename_no_provider_echoes() {
         let mut a = app_with("xx", 10);
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::RenameOutcome>();
-        a.pending_rename_rx = Some(rx);
-        a.pending_rename_token = Some(lattice_protocol::CancellationToken::new());
+        a.editor.pending_rename_rx = Some(rx);
+        a.editor.pending_rename_token = Some(lattice_protocol::CancellationToken::new());
         tx.send(super::RenameOutcome::NoProvider).unwrap();
         a.drain_pending_rename();
         let msg = a.editor.last_message.as_ref().expect("echo");
@@ -8478,8 +8478,8 @@ mod tests {
     fn drain_pending_rename_not_renameable_echoes_reason() {
         let mut a = app_with("xx", 10);
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::RenameOutcome>();
-        a.pending_rename_rx = Some(rx);
-        a.pending_rename_token = Some(lattice_protocol::CancellationToken::new());
+        a.editor.pending_rename_rx = Some(rx);
+        a.editor.pending_rename_token = Some(lattice_protocol::CancellationToken::new());
         tx.send(super::RenameOutcome::NotRenameable {
             reason: "out of bounds".into(),
         })
@@ -8494,8 +8494,8 @@ mod tests {
     fn drain_pending_rename_empty_echoes_no_changes() {
         let mut a = app_with("xx", 10);
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::RenameOutcome>();
-        a.pending_rename_rx = Some(rx);
-        a.pending_rename_token = Some(lattice_protocol::CancellationToken::new());
+        a.editor.pending_rename_rx = Some(rx);
+        a.editor.pending_rename_token = Some(lattice_protocol::CancellationToken::new());
         tx.send(super::RenameOutcome::Empty).unwrap();
         a.drain_pending_rename();
         let msg = a.editor.last_message.as_ref().expect("echo");
@@ -8544,8 +8544,8 @@ mod tests {
             },
         ];
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::RenameOutcome>();
-        a.pending_rename_rx = Some(rx);
-        a.pending_rename_token = Some(lattice_protocol::CancellationToken::new());
+        a.editor.pending_rename_rx = Some(rx);
+        a.editor.pending_rename_token = Some(lattice_protocol::CancellationToken::new());
         tx.send(super::RenameOutcome::Edits {
             per_file: vec![(uri, edits)],
             new_name: "bar".into(),
@@ -8576,8 +8576,8 @@ mod tests {
         // a NoServers outcome to verify the drain handles it
         // without exploding.
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::InsertCompletionLspOutcome>();
-        a.pending_insert_completion_lsp_rx = Some(rx);
-        a.pending_insert_completion_lsp_token = Some(lattice_protocol::CancellationToken::new());
+        a.editor.pending_insert_completion_lsp_rx = Some(rx);
+        a.editor.pending_insert_completion_lsp_token = Some(lattice_protocol::CancellationToken::new());
         tx.send(super::InsertCompletionLspOutcome::NoServers)
             .unwrap();
         a.drain_pending_insert_completion_lsp();
@@ -8601,8 +8601,8 @@ mod tests {
             "fo".to_string(),
         ));
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::InsertCompletionLspOutcome>();
-        a.pending_insert_completion_lsp_rx = Some(rx);
-        a.pending_insert_completion_lsp_token = Some(lattice_protocol::CancellationToken::new());
+        a.editor.pending_insert_completion_lsp_rx = Some(rx);
+        a.editor.pending_insert_completion_lsp_token = Some(lattice_protocol::CancellationToken::new());
         tx.send(super::InsertCompletionLspOutcome::Items {
             candidates: vec![
                 lsp_meta_candidate(super::LspCompletionMeta {
@@ -8712,8 +8712,8 @@ mod tests {
         // First batch.
         let (tx1, rx1) =
             tokio::sync::mpsc::unbounded_channel::<super::InsertCompletionLspOutcome>();
-        a.pending_insert_completion_lsp_rx = Some(rx1);
-        a.pending_insert_completion_lsp_token = Some(lattice_protocol::CancellationToken::new());
+        a.editor.pending_insert_completion_lsp_rx = Some(rx1);
+        a.editor.pending_insert_completion_lsp_token = Some(lattice_protocol::CancellationToken::new());
         tx1.send(super::InsertCompletionLspOutcome::Items {
             candidates: vec![
                 lsp_meta_candidate(mk_item("alpha")),
@@ -8733,8 +8733,8 @@ mod tests {
         // rows should be pruned.
         let (tx2, rx2) =
             tokio::sync::mpsc::unbounded_channel::<super::InsertCompletionLspOutcome>();
-        a.pending_insert_completion_lsp_rx = Some(rx2);
-        a.pending_insert_completion_lsp_token = Some(lattice_protocol::CancellationToken::new());
+        a.editor.pending_insert_completion_lsp_rx = Some(rx2);
+        a.editor.pending_insert_completion_lsp_token = Some(lattice_protocol::CancellationToken::new());
         tx2.send(super::InsertCompletionLspOutcome::Items {
             candidates: vec![lsp_meta_candidate(mk_item("beta"))],
             is_incomplete: false,
@@ -8834,8 +8834,8 @@ mod tests {
         a.insert_completion = Some(state);
         // Push a resolve outcome that fills documentation.
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::CompletionResolveOutcome>();
-        a.pending_completion_resolve_rx = Some(rx);
-        a.pending_completion_resolve_token = Some(lattice_protocol::CancellationToken::new());
+        a.editor.pending_completion_resolve_rx = Some(rx);
+        a.editor.pending_completion_resolve_token = Some(lattice_protocol::CancellationToken::new());
         let mut resolved = lsp_types::CompletionItem::default();
         resolved.label = "foo".into();
         resolved.detail = Some("fn foo() -> i32".into());
@@ -8930,8 +8930,8 @@ mod tests {
         });
         a.insert_completion = Some(state);
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::CompletionResolveOutcome>();
-        a.pending_completion_resolve_rx = Some(rx);
-        a.pending_completion_resolve_token = Some(lattice_protocol::CancellationToken::new());
+        a.editor.pending_completion_resolve_rx = Some(rx);
+        a.editor.pending_completion_resolve_token = Some(lattice_protocol::CancellationToken::new());
         let mut resolved = lsp_types::CompletionItem::default();
         resolved.label = "c0".into();
         resolved.documentation = Some(lsp_types::Documentation::String("stale".into()));
@@ -9002,8 +9002,8 @@ mod tests {
     fn drain_pending_completion_no_servers_echoes() {
         let mut a = app_with("xx", 10);
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::CompletionOutcome>();
-        a.pending_completion_rx = Some(rx);
-        a.pending_completion_token = Some(lattice_protocol::CancellationToken::new());
+        a.editor.pending_completion_rx = Some(rx);
+        a.editor.pending_completion_token = Some(lattice_protocol::CancellationToken::new());
         tx.send(super::CompletionOutcome::NoServers).unwrap();
         a.drain_pending_completion();
         let msg = a.editor.last_message.as_ref().expect("echo");
@@ -9014,8 +9014,8 @@ mod tests {
     fn drain_pending_completion_items_open_picker_with_indexed_text() {
         let mut a = app_with("foo\n", 10);
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::CompletionOutcome>();
-        a.pending_completion_rx = Some(rx);
-        a.pending_completion_token = Some(lattice_protocol::CancellationToken::new());
+        a.editor.pending_completion_rx = Some(rx);
+        a.editor.pending_completion_token = Some(lattice_protocol::CancellationToken::new());
         tx.send(super::CompletionOutcome::Items(vec![
             super::CompletionItemRow {
                 label: "foo_bar".into(),
@@ -9052,15 +9052,15 @@ mod tests {
             other => panic!("expected LspCompletion routing, got {other:?}"),
         }
         // Items survive on the App for the accept path.
-        assert!(a.pending_completion_items.is_some());
+        assert!(a.editor.pending_completion_items.is_some());
     }
 
     #[test]
     fn drain_pending_completion_empty_echoes_no_completions() {
         let mut a = app_with("xx", 10);
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::CompletionOutcome>();
-        a.pending_completion_rx = Some(rx);
-        a.pending_completion_token = Some(lattice_protocol::CancellationToken::new());
+        a.editor.pending_completion_rx = Some(rx);
+        a.editor.pending_completion_token = Some(lattice_protocol::CancellationToken::new());
         tx.send(super::CompletionOutcome::Items(Vec::new()))
             .unwrap();
         a.drain_pending_completion();
@@ -9111,8 +9111,8 @@ mod tests {
     fn drain_pending_signature_help_body_opens_popup() {
         let mut a = app_with("xx", 10);
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::SignatureHelpOutcome>();
-        a.pending_signature_help_rx = Some(rx);
-        a.pending_signature_help_token = Some(lattice_protocol::CancellationToken::new());
+        a.editor.pending_signature_help_rx = Some(rx);
+        a.editor.pending_signature_help_token = Some(lattice_protocol::CancellationToken::new());
         tx.send(super::SignatureHelpOutcome::Body(
             "```text\nfn x()\n```\n".into(),
         ))
@@ -9120,15 +9120,15 @@ mod tests {
         a.drain_pending_signature_help();
         let h = a.popup_help().expect("popup");
         assert_eq!(h.title, "hover");
-        assert!(a.pending_signature_help_token.is_none());
+        assert!(a.editor.pending_signature_help_token.is_none());
     }
 
     #[test]
     fn drain_pending_signature_help_empty_body_echoes_no_signature_info() {
         let mut a = app_with("xx", 10);
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::SignatureHelpOutcome>();
-        a.pending_signature_help_rx = Some(rx);
-        a.pending_signature_help_token = Some(lattice_protocol::CancellationToken::new());
+        a.editor.pending_signature_help_rx = Some(rx);
+        a.editor.pending_signature_help_token = Some(lattice_protocol::CancellationToken::new());
         tx.send(super::SignatureHelpOutcome::Body(String::new()))
             .unwrap();
         a.drain_pending_signature_help();
@@ -9166,7 +9166,7 @@ mod tests {
         // request of any other kind -- they all share one slot.
         let mut a = app_with("xx", 10);
         let stale = lattice_protocol::CancellationToken::new();
-        a.pending_definition_token = Some(stale.clone());
+        a.editor.pending_definition_token = Some(stale.clone());
         a.apply(Action::LspImplementationRequest);
         assert!(stale.is_cancelled());
     }
@@ -9175,7 +9175,7 @@ mod tests {
     fn lsp_definition_request_pre_cancels_in_flight_token() {
         let mut a = app_with("xx", 10);
         let stale = lattice_protocol::CancellationToken::new();
-        a.pending_definition_token = Some(stale.clone());
+        a.editor.pending_definition_token = Some(stale.clone());
         a.apply(Action::LspDefinitionRequest);
         assert!(stale.is_cancelled());
     }
@@ -9184,13 +9184,13 @@ mod tests {
     fn drain_pending_definitions_with_no_results_echoes_not_found() {
         let mut a = app_with("xx", 10);
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Vec<lsp_types::Location>>();
-        a.pending_definition_rx = Some(rx);
-        a.pending_definition_token = Some(lattice_protocol::CancellationToken::new());
+        a.editor.pending_definition_rx = Some(rx);
+        a.editor.pending_definition_token = Some(lattice_protocol::CancellationToken::new());
         tx.send(Vec::new()).unwrap();
         a.drain_pending_definitions();
         let msg = a.editor.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("no definitions"));
-        assert!(a.pending_definition_token.is_none());
+        assert!(a.editor.pending_definition_token.is_none());
     }
 
     #[test]
@@ -9206,8 +9206,8 @@ mod tests {
         // line 2 col 5 (utf-16 character; same as utf-8 byte for
         // ASCII).
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Vec<lsp_types::Location>>();
-        a.pending_definition_rx = Some(rx);
-        a.pending_definition_token = Some(lattice_protocol::CancellationToken::new());
+        a.editor.pending_definition_rx = Some(rx);
+        a.editor.pending_definition_token = Some(lattice_protocol::CancellationToken::new());
         let target = lsp_types::Location {
             uri: super::tests::fake_uri(path.to_str().unwrap()),
             range: lsp_types::Range {
@@ -9247,9 +9247,9 @@ mod tests {
         let mut a = App::new(doc);
         a.set_viewport_height(10);
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Vec<lsp_types::Location>>();
-        a.pending_definition_rx = Some(rx);
-        a.pending_definition_token = Some(lattice_protocol::CancellationToken::new());
-        a.pending_nav_kind = Some(super::LspNavKind::Definition);
+        a.editor.pending_definition_rx = Some(rx);
+        a.editor.pending_definition_token = Some(lattice_protocol::CancellationToken::new());
+        a.editor.pending_nav_kind = Some(super::LspNavKind::Definition);
         let target_path = path.to_str().unwrap();
         tx.send(vec![
             super::tests::loc(target_path, 1, 0),

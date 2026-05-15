@@ -609,7 +609,7 @@ impl App {
         // attached and a response is in flight) or didn't
         // (in which case `do_lsp_insert_completion_request`
         // returned early without spawning).
-        let lsp_pending = self.pending_insert_completion_lsp_token.is_some();
+        let lsp_pending = self.editor.pending_insert_completion_lsp_token.is_some();
         if !lsp_pending
             && let Some(state) = self.insert_completion.as_ref()
             && state.rendered.is_empty()

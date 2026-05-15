@@ -458,7 +458,7 @@ impl App {
     /// `Empty`). Called once per main-loop tick by
     /// `runtime.rs`.
     pub fn drain_mode_lifecycle_events(&mut self) {
-        let Some(mut rx) = self.pending_mode_lifecycle_rx.take() else {
+        let Some(mut rx) = self.editor.pending_mode_lifecycle_rx.take() else {
             return;
         };
         // Collect first so the subsequent `deactivate_mode_by_id`
@@ -470,7 +470,7 @@ impl App {
                 to_rollback.push((BufferId(buffer.raw() as u32), mode));
             }
         }
-        self.pending_mode_lifecycle_rx = Some(rx);
+        self.editor.pending_mode_lifecycle_rx = Some(rx);
         for (buffer_id, mode_id) in to_rollback {
             // Idempotent: if the mode wasn't in `active_modes`,
             // `deactivate_mode_by_id` no-ops. Surfacing the

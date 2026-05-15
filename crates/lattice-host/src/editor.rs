@@ -65,9 +65,9 @@ use crate::keymap_registry::{KeymapHandle, LayerId};
 use crate::buffer_registry::BufferRegistry;
 use crate::buffers::BufferId;
 use crate::state::{
-    LastFind, LastSearch, LastVisual, LivePickerQueryState, MacroRecording, OptionCache,
-    PendingBlockInsert, PendingPickerInit, PositionEntry, PrevPaneState, ReplaceEntry, SearchLine,
-    SubstitutePreview, TagStackEntry, UnnamedRegister,
+    CompletionState, LastFind, LastSearch, LastVisual, LivePickerQueryState, MacroRecording,
+    OptionCache, PendingBlockInsert, PendingPickerInit, PositionEntry, PrevPaneState, ReplaceEntry,
+    SearchLine, SubstitutePreview, TagStackEntry, UnnamedRegister,
 };
 use lattice_core::BufferKind;
 use lattice_protocol::position::Position as ProtoPosition;
@@ -557,6 +557,11 @@ pub struct Editor {
     /// lockstep pattern as
     /// [`Self::completion_popup_layer`].
     pub snippet_layer: Option<LayerId>,
+    /// Pluggable completion pipeline (DESIGN.md §5.11.3). Owned by
+    /// the host editor.
+    pub completion_registry: lattice_completion::CompletionRegistry,
+    /// Active command-line completion popup state (for `:` line).
+    pub completion_state: Option<CompletionState>,
     /// Active buffer's cursor (DESIGN.md §5.1.1). Updated
     /// in lockstep with the active pane's stash so cross-
     /// pane jumps restore the right position.

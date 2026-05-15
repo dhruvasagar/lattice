@@ -187,6 +187,7 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) {
         .map(|p| popup_height(p.candidates.len().max(1)))
         .unwrap_or(0);
     let completion_rows = app
+        .editor
         .completion_state
         .as_ref()
         .map(|s| popup_height(s.candidates.len()))
@@ -666,7 +667,7 @@ fn source_tag_for_kind(kind: lattice_completion::CandidateKind) -> &'static str 
 /// cmdline itself by [`draw_command_or_echo`] when completion is
 /// open, matching the picker's prompt-inline `(n/m)` style.
 fn draw_completion_popup(frame: &mut Frame, popup_area: Rect, app: &App) {
-    let Some(state) = app.completion_state.as_ref() else {
+    let Some(state) = app.editor.completion_state.as_ref() else {
         return;
     };
     if state.candidates.is_empty() {
@@ -2099,7 +2100,7 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
         // open: `(selected/total)` faintly trailing the cmdline.
         // Mirrors the picker prompt's `(n/m)` so both surfaces
         // read the same.
-        if let Some(state) = app.completion_state.as_ref()
+        if let Some(state) = app.editor.completion_state.as_ref()
             && !state.candidates.is_empty()
         {
             spans.push(Span::styled(

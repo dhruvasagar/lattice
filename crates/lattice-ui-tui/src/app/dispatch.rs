@@ -283,7 +283,7 @@ impl App {
                 if matches!(self.editor.active_buffer, BufferKind::Document) {
                     self.dismiss_popup();
                 }
-                self.completion_state = None;
+                self.editor.completion_state = None;
             }
             Action::CommandLineAppend(c) => {
                 if matches!(self.editor.modal, ModalState::Command) {
@@ -292,7 +292,7 @@ impl App {
                     // open, re-run the pipeline against the new
                     // prefix. The user can keep typing to drill
                     // down without losing the popup.
-                    if self.completion_state.is_some() {
+                    if self.editor.completion_state.is_some() {
                         self.refresh_completion_popup();
                     }
                     self.refresh_substitute_preview();
@@ -303,10 +303,10 @@ impl App {
                     if self.editor.command_line.pop().is_none() {
                         // Empty buffer + backspace -> exit Command modal.
                         self.editor.modal = ModalState::Normal;
-                        self.completion_state = None;
+                        self.editor.completion_state = None;
                         self.editor.substitute_preview = None;
                     } else {
-                        if self.completion_state.is_some() {
+                        if self.editor.completion_state.is_some() {
                             // Popup live-refilters against the shorter
                             // prefix (vertico-style).
                             self.refresh_completion_popup();
@@ -547,7 +547,7 @@ impl App {
             Action::CommandLineClear => {
                 if matches!(self.editor.modal, ModalState::Command) {
                     self.editor.command_line.clear();
-                    if self.completion_state.is_some() {
+                    if self.editor.completion_state.is_some() {
                         // Empty cmdline -> slot becomes Empty, which
                         // surfaces every command. Same live-refilter
                         // contract as the other edit actions.
@@ -558,7 +558,7 @@ impl App {
             Action::CommandLineDeleteWordBackward => {
                 if matches!(self.editor.modal, ModalState::Command) {
                     delete_trailing_word(&mut self.editor.command_line);
-                    if self.completion_state.is_some() {
+                    if self.editor.completion_state.is_some() {
                         // Same live-refilter contract as Append /
                         // Backspace.
                         self.refresh_completion_popup();
@@ -572,7 +572,7 @@ impl App {
                     // Chord-capture suppresses the completion popup
                     // (no useful candidates for chord input). If
                     // somehow open, drop it to keep the screen clean.
-                    self.completion_state = None;
+                    self.editor.completion_state = None;
                     // One-shot auto-submit: when the cmdline was
                     // armed by a missing-arg prompt, the very next
                     // chord token also fires submit. Recursive
@@ -591,7 +591,7 @@ impl App {
                         // Empty buffer + delete -> exit Command modal,
                         // matching plain `<BS>` semantics.
                         self.editor.modal = ModalState::Normal;
-                        self.completion_state = None;
+                        self.editor.completion_state = None;
                     } else {
                         let new_len = self.editor.command_line.len() - n;
                         self.editor.command_line.truncate(new_len);
@@ -602,7 +602,7 @@ impl App {
             Action::CommandLineCompletePrev => self.do_command_line_complete_prev(),
             Action::CommandLineAcceptCompletion => self.do_command_line_accept_completion(),
             Action::CommandLineDismissCompletion => {
-                self.completion_state = None;
+                self.editor.completion_state = None;
             }
 
             Action::HelpDismiss => match self.editor.active_buffer {

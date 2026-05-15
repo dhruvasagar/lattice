@@ -668,6 +668,9 @@ impl App {
                     crate::keymap_normal::register_normal_bindings(&h, &builtins, &action_ids);
                     h
                 },
+                // Move completion registry and state into the host editor.
+                completion_registry,
+                completion_state: None,
                 document_buffer_id,
                 buffers,
                 active_buffer: BufferKind::Document,
@@ -697,8 +700,6 @@ impl App {
             pane_render_registry: crate::render::build_pane_render_registry(),
             theme: crate::theme::Theme::default(),
             popup_back_stack: Vec::new(),
-            completion_registry,
-            completion_state: None,
             insert_completion: None,
             snippet_registry: snippet_registry_handle,
             insert_completion_snippet_meta: Vec::new(),

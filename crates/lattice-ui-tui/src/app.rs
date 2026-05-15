@@ -130,6 +130,7 @@ mod state;
 mod syntax;
 mod visual;
 
+
 #[cfg(test)]
 pub(crate) mod test_helpers;
 
@@ -233,7 +234,7 @@ pub(super) fn resolve_command_name_or_alias(
 // Phase 5.2: `SearchLine`, `LastSearch`, `UnnamedRegister`,
 // `PrevPaneState` moved to `lattice_host::state`. Re-exported
 // below.
-pub use lattice_host::state::{LastSearch, PrevPaneState, SearchLine, UnnamedRegister};
+pub use lattice_host::state::{CompletionState, LastSearch, PrevPaneState, SearchLine, UnnamedRegister};
 
 // Phase 5.B.13: `PendingPickerInit`, `LivePickerQueryState`,
 // `InFlightLiveQuery`, `LIVE_PICKER_DEBOUNCE` moved to
@@ -672,13 +673,6 @@ pub struct App {
     // Phase 5.B.10: `popup_placement` moved to
     // `editor.popup_placement`.
 
-    /// Pluggable completion pipeline (DESIGN.md §5.11.3). Owned by
-    /// the App at v1 -- promotes to a sibling crate when plugins
-    /// need cross-buffer access.
-    pub completion_registry: lattice_completion::CompletionRegistry,
-    /// Active completion popup. `Some` while the user has Tab-
-    /// triggered completion in the `:` line.
-    pub completion_state: Option<CompletionState>,
     /// Active **Insert-mode** completion popup (Phase 4.2.g).
     /// Distinct from `completion_state` (which drives the `:` line
     /// completion popup): this one floats over the buffer, shows
@@ -990,19 +984,6 @@ pub struct App {
 /// rendering). Built by `Action::CommandLineCompleteOrAdvance`
 /// when the user presses Tab; consumed by accept / dismiss / scroll
 /// actions.
-#[derive(Debug, Clone)]
-pub struct CompletionState {
-    pub candidates: Vec<lattice_completion::RenderedCandidate>,
-    pub selected: usize,
-    /// Byte offset within `App.editor.command_line` where the prefix being
-    /// completed begins. The accept-handler replaces
-    /// `[replace_start, command_line.len())` with the chosen
-    /// candidate's `text`.
-    pub replace_start: usize,
-    /// What the cmdline looked like at popup-open time (for
-    /// debugging + future filter-as-you-type refinement).
-    pub original_line: String,
-}
 
 // `Fold` + `FoldMethod` moved to `lattice_core::folding` for
 // renderer-agnostic ownership. Both re-exported through
@@ -1988,7 +1969,7 @@ mod tests {
             for arg in &spec.args_schema {
                 if let Some(source) = arg.completion {
                     assert!(
-                        a.completion_registry.generator_by_name(source).is_some(),
+                        a.editor.completion_registry.generator_by_name(source).is_some(),
                         "{name}'s arg `{}` advertises completion source `{source}` \
                          but no generator with that name is registered at boot",
                         arg.name,

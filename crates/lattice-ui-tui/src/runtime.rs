@@ -400,7 +400,7 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
             .map(|p| popup_height_for(p.candidates.len().max(1)))
             .unwrap_or(0)
             .max(
-                app.completion_state
+                app.editor.completion_state
                     .as_ref()
                     .map(|s| popup_height_for(s.candidates.len()))
                     .unwrap_or(0),
@@ -455,7 +455,7 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
                         op_count: app.editor.op_count,
                         recording_macro: app.editor.macro_recording.is_some(),
                         active_buffer: app.editor.active_buffer,
-                        completion_open: app.completion_state.is_some(),
+                        completion_open: app.editor.completion_state.is_some(),
                         chord_capture: app.chord_capture_active(),
                         picker_open: app.editor.picker.is_some(),
                         insert_completion_open: app.completion_popup_active(),

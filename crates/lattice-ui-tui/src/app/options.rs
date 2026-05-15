@@ -1438,22 +1438,22 @@ mod tests {
         // open and re-runs the pipeline against the longer prefix.
         let mut a = app_in_command_mode("descr");
         a.apply(Action::CommandLineCompleteOrAdvance);
-        assert!(a.completion_state.is_some());
-        let initial_count = a.completion_state.as_ref().unwrap().candidates.len();
+        assert!(a.editor.completion_state.is_some());
+        let initial_count = a.editor.completion_state.as_ref().unwrap().candidates.len();
 
         a.apply(Action::CommandLineAppend('i'));
         assert!(
-            a.completion_state.is_some(),
+            a.editor.completion_state.is_some(),
             "popup must stay open while filtering"
         );
         assert_eq!(a.editor.command_line, "descri");
         // Typing narrows the prefix -> candidate set should shrink
         // or stay equal, never grow.
-        let narrowed = a.completion_state.as_ref().unwrap().candidates.len();
+        let narrowed = a.editor.completion_state.as_ref().unwrap().candidates.len();
         assert!(narrowed <= initial_count);
         // Selection resets to first match (the candidate set
         // changed; previous index would be meaningless).
-        assert_eq!(a.completion_state.as_ref().unwrap().selected, 0);
+        assert_eq!(a.editor.completion_state.as_ref().unwrap().selected, 0);
     }
 
     #[test]
@@ -1466,7 +1466,7 @@ mod tests {
             a.apply(Action::CommandLineAppend(c));
         }
         let state = a
-            .completion_state
+            .editor.completion_state
             .as_ref()
             .expect("popup must stay open on no-match");
         assert!(state.candidates.is_empty());
@@ -1474,8 +1474,8 @@ mod tests {
         for _ in 0.."zxqzxqzxq".len() {
             a.apply(Action::CommandLineBackspace);
         }
-        assert!(a.completion_state.is_some());
-        assert!(!a.completion_state.as_ref().unwrap().candidates.is_empty());
+        assert!(a.editor.completion_state.is_some());
+        assert!(!a.editor.completion_state.as_ref().unwrap().candidates.is_empty());
     }
 
     #[test]
@@ -1484,7 +1484,7 @@ mod tests {
         // typing without a prior <Tab> stays as it was.
         let mut a = app_in_command_mode("desc");
         a.apply(Action::CommandLineAppend('r'));
-        assert!(a.completion_state.is_none());
+        assert!(a.editor.completion_state.is_none());
         assert_eq!(a.editor.command_line, "descr");
     }
 

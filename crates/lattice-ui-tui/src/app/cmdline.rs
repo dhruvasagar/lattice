@@ -134,7 +134,7 @@ impl App {
         if !matches!(self.editor.modal, ModalState::Command) {
             return;
         }
-        if let Some(state) = self.completion_state.as_mut() {
+        if let Some(state) = self.editor.completion_state.as_mut() {
             if !state.candidates.is_empty() {
                 state.selected = (state.selected + 1) % state.candidates.len();
             }
@@ -144,7 +144,7 @@ impl App {
     }
 
     pub(super) fn do_command_line_complete_prev(&mut self) {
-        if let Some(state) = self.completion_state.as_mut()
+        if let Some(state) = self.editor.completion_state.as_mut()
             && !state.candidates.is_empty()
         {
             if state.selected == 0 {
@@ -156,7 +156,7 @@ impl App {
     }
 
     pub(super) fn do_command_line_accept_completion(&mut self) {
-        let Some(state) = self.completion_state.take() else {
+        let Some(state) = self.editor.completion_state.take() else {
             return;
         };
         if state.candidates.is_empty() {
@@ -324,7 +324,7 @@ impl App {
                     // the pipeline against the new line.
                     return;
                 }
-                self.completion_state = Some(state);
+                self.editor.completion_state = Some(state);
             }
             Err(err) => {
                 let (level, msg) = err.echo();
@@ -341,17 +341,17 @@ impl App {
     /// popup alive (so further edits can repopulate it); a slot
     /// transition that has no completion source closes it.
     pub(super) fn refresh_completion_popup(&mut self) {
-        if self.completion_state.is_none() {
+        if self.editor.completion_state.is_none() {
             return;
         }
         match self.compute_completion_state() {
             Ok(state) => {
-                self.completion_state = Some(state);
+                self.editor.completion_state = Some(state);
             }
             Err(CompletionComputeError::NoMatches { .. }) => {
                 // Keep the popup open with zero candidates so the user
                 // can backspace and re-match without re-tabbing.
-                if let Some(state) = self.completion_state.as_mut() {
+                if let Some(state) = self.editor.completion_state.as_mut() {
                     state.candidates.clear();
                     state.selected = 0;
                     state.original_line = self.editor.command_line.clone();
@@ -362,7 +362,7 @@ impl App {
                 // (UnknownCommand, BeyondSchema, arg without
                 // `completion`). Drop the popup; the user can re-Tab
                 // to re-arm it later.
-                self.completion_state = None;
+                self.editor.completion_state = None;
             }
         }
     }
@@ -407,14 +407,14 @@ impl App {
             }
         };
 
-        let Some(generator) = self.completion_registry.generator_by_name(source_name) else {
+        let Some(generator) = self.editor.completion_registry.generator_by_name(source_name) else {
             return Err(CompletionComputeError::MissingSource(
                 source_name.to_string(),
             ));
         };
         let generator_id = generator.id;
         let Some(pipeline) = lattice_completion::CompletionPipeline::for_generator(
-            &self.completion_registry,
+            &self.editor.completion_registry,
             generator_id,
         ) else {
             return Err(CompletionComputeError::PipelineUnconfigured);
@@ -426,7 +426,7 @@ impl App {
             registry: &self.editor.registry,
             case_sensitive: false,
         };
-        let mut candidates = pipeline.run(&ctx, &prefix, &self.completion_registry.cache);
+        let mut candidates = pipeline.run(&ctx, &prefix, &self.editor.completion_registry.cache);
 
         // Host-side post-process: command candidates from
         // `gen:commands` come back as canonical names

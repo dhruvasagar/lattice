@@ -1838,7 +1838,7 @@ mod tests {
     fn gen_picker_sources_emits_candidate_per_registered_source() {
         let app = app_with("hi\n", 5);
         let generator = app
-            .completion_registry
+            .editor.completion_registry
             .generator_by_name("gen:picker-sources")
             .expect("gen:picker-sources must be registered at boot");
         let snap = app.document.snapshot();

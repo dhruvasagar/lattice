@@ -1118,7 +1118,7 @@ impl App {
             ctx.current_word = Some(word);
         }
         // CLIPBOARD via the system register.
-        if let Some(reg) = self.registers.get(&Register::System) {
+        if let Some(reg) = self.editor.registers.get(&Register::System) {
             ctx.clipboard = Some(reg.content.clone());
         }
         ctx

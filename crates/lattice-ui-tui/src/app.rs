@@ -697,9 +697,8 @@ pub struct App {
     /// the cmdline closes or the input no longer parses as a
     /// substitute. (DESIGN.md §5.9.10 minibuffer live preview.)
     pub substitute_preview: Option<SubstitutePreview>,
-    /// Unnamed register -- destination of `y` / `d` / `c`, source of
-    /// `p` / `P`. `None` until something has been yanked.
-    pub unnamed_register: Option<UnnamedRegister>,
+    // Phase 5.B.5: `unnamed_register` moved to
+    // `editor.unnamed_register`.
     /// In-progress count prefix being typed (`3` of `3w`, `12` of `12dd`).
     /// 0 means "no count typed". The next `Action::Invoke` consumes this
     /// and resets it to 0.
@@ -721,10 +720,7 @@ pub struct App {
     /// Last Visual-mode selection extents, captured on exit so `gv` can
     /// re-enter Visual with the same anchor / head / kind.
     pub last_visual: Option<LastVisual>,
-    /// User-set marks. v1 stores them flat by name (a-z, A-Z, 0-9);
-    /// uppercase / numbered global marks treat all marks as buffer-local
-    /// since the v1 TUI runs against a single document.
-    pub marks: HashMap<char, Position>,
+    // Phase 5.B.5: `marks` moved to `editor.marks`.
     /// Per-Replace-session log of overwritten bytes so backspace can
     /// restore the original (rather than deleting). Cleared on entry,
     /// pushed on each `OverwriteChar`, popped on `ReplaceUndoLast`.
@@ -732,14 +728,8 @@ pub struct App {
     /// overwrite extended the line -- backspace deletes that byte rather
     /// than relying on it.
     pub replace_history: Vec<ReplaceEntry>,
-    /// Named registers `"a-z`, `"A-Z`, numbered `"0-"9`, etc. Stores
-    /// content + kind. `""` (the unnamed register) is the
-    /// `unnamed_register` field above; this map covers everything else.
-    pub registers: HashMap<Register, UnnamedRegister>,
-    /// Register selected for the next operator / paste (`"a` prefix).
-    /// Consumed-and-cleared by `run_invocation` (operators) and
-    /// `do_paste` (paste). `None` means use unnamed.
-    pub pending_register: Option<Register>,
+    // Phase 5.B.5: `registers` and `pending_register` moved
+    // to `editor.registers` / `editor.pending_register`.
     /// Unified position-history ring (§5.1.1). Every entry is tagged
     /// by source, so different keybindings can iterate filtered views
     /// of the same data:
@@ -2660,7 +2650,7 @@ mod tests {
         a.apply(Action::SetMark(' '));
         let msg = a.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Error);
-        assert!(a.marks.is_empty());
+        assert!(a.editor.marks.is_empty());
     }
 
     #[test]
@@ -2785,7 +2775,7 @@ mod tests {
             lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
         );
         a.apply(Action::Invoke(inv));
-        let reg = a.unnamed_register.as_ref().unwrap();
+        let reg = a.editor.unnamed_register.as_ref().unwrap();
         assert_eq!(reg.content, "hello ");
         assert_eq!(reg.kind, YankKind::Charwise);
         // Buffer untouched by yank.
@@ -3785,12 +3775,12 @@ mod tests {
         );
         a.apply(Action::Invoke(inv));
         // Named slot populated.
-        let named = a.registers.get(&Register::Named('a')).unwrap();
+        let named = a.editor.registers.get(&Register::Named('a')).unwrap();
         assert_eq!(named.content, "hello ");
         // Unnamed also populated.
-        assert_eq!(a.unnamed_register.as_ref().unwrap().content, "hello ");
+        assert_eq!(a.editor.unnamed_register.as_ref().unwrap().content, "hello ");
         // Pending register consumed.
-        assert!(a.pending_register.is_none());
+        assert!(a.editor.pending_register.is_none());
     }
 
     #[test]
@@ -3800,7 +3790,7 @@ mod tests {
             lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
         );
         a.apply(Action::Invoke(inv));
-        let zero = a.registers.get(&Register::Numbered(0)).unwrap();
+        let zero = a.editor.registers.get(&Register::Numbered(0)).unwrap();
         assert_eq!(zero.content, "hello ");
     }
 

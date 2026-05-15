@@ -475,7 +475,7 @@ impl App {
             Action::LspDocumentSymbolRequest => self.do_lsp_document_symbol_request(),
             Action::LspWorkspaceSymbolRequest(q) => self.do_lsp_workspace_symbol_request(&q),
             Action::SelectRegister(reg) => {
-                self.pending_register = Some(reg);
+                self.editor.pending_register = Some(reg);
             }
             Action::JumpHistoryBack => self.do_jump_history(-1),
             Action::JumpHistoryForward => self.do_jump_history(1),
@@ -506,7 +506,7 @@ impl App {
 
             Action::SetMark(name) => {
                 if is_valid_mark_name(name) {
-                    self.marks.insert(name, self.cursor);
+                    self.editor.marks.insert(name, self.cursor);
                     // Also fold into the unified position history so
                     // `g;` / `g,` can walk through marks chronologically.
                     let cur = self.cursor;
@@ -789,7 +789,7 @@ impl App {
         // pre-processing so oil keystrokes feel identical to
         // document keystrokes.
         let mut inv = inv;
-        if let Some(reg) = self.pending_register.take()
+        if let Some(reg) = self.editor.pending_register.take()
             && inv.register.is_none()
         {
             inv = inv.with_register(reg);
@@ -910,7 +910,7 @@ impl App {
         if !matches!(spec.kind, lattice_grammar::CommandKind::Motion) {
             self.pending_count = 0;
             self.op_count = 0;
-            self.pending_register = None;
+            self.editor.pending_register = None;
             self.set_message(EchoLevel::Info, "buffer is read-only".to_string());
             return;
         }
@@ -965,7 +965,7 @@ impl App {
     fn run_document_invocation(&mut self, mut inv: CommandInvocation) {
         // Attach the pending register (from a `"a` prefix) to the
         // invocation if not already specified.
-        if let Some(reg) = self.pending_register.take()
+        if let Some(reg) = self.editor.pending_register.take()
             && inv.register.is_none()
         {
             inv = inv.with_register(reg);
@@ -1867,10 +1867,10 @@ mod tests {
         a.apply(Action::Invoke(inv));
         // Unnamed populated; "0 also populated by vim's auto-fill on yank.
         // Named map's only entry is the numbered "0 register.
-        assert!(a.unnamed_register.is_some());
-        assert!(a.registers.contains_key(&Register::Numbered(0)));
+        assert!(a.editor.unnamed_register.is_some());
+        assert!(a.editor.registers.contains_key(&Register::Numbered(0)));
         // No alphabetic named slots populated.
-        assert!(!a.registers.keys().any(|r| matches!(r, Register::Named(_))));
+        assert!(!a.editor.registers.keys().any(|r| matches!(r, Register::Named(_))));
     }
 
     #[test]
@@ -2014,7 +2014,7 @@ mod tests {
         let inv = CommandInvocation::of(a.builtins.yank.0)
             .with_range(lattice_grammar::Range::CurrentLine);
         a.apply(Action::Invoke(inv));
-        let reg = a.unnamed_register.as_ref().unwrap();
+        let reg = a.editor.unnamed_register.as_ref().unwrap();
         assert_eq!(reg.content, "BBB\n");
         assert_eq!(reg.kind, YankKind::Linewise);
         assert_eq!(a.document.text(), "aaa\nBBB\nccc");
@@ -2028,7 +2028,7 @@ mod tests {
         let inv = CommandInvocation::of(a.builtins.delete.0)
             .with_range(lattice_grammar::Range::CurrentLine);
         a.apply(Action::Invoke(inv));
-        let reg = a.unnamed_register.as_ref().unwrap();
+        let reg = a.editor.unnamed_register.as_ref().unwrap();
         assert_eq!(reg.kind, YankKind::Linewise);
         assert_eq!(reg.content, "BBB\n");
     }
@@ -2077,7 +2077,7 @@ mod tests {
         let inv = CommandInvocation::of(a.builtins.yank.0)
             .with_range(lattice_grammar::Range::CurrentLine);
         a.apply(Action::Invoke(inv));
-        let reg = a.unnamed_register.as_ref().unwrap();
+        let reg = a.editor.unnamed_register.as_ref().unwrap();
         assert_eq!(reg.kind, YankKind::Linewise);
         assert!(
             reg.content.contains("# H1"),
@@ -2138,7 +2138,7 @@ mod tests {
         let inv = CommandInvocation::of(a.builtins.delete.0)
             .with_range(lattice_grammar::Range::CurrentLine);
         a.apply(Action::Invoke(inv));
-        let reg = a.unnamed_register.as_ref().unwrap();
+        let reg = a.editor.unnamed_register.as_ref().unwrap();
         assert_eq!(reg.kind, YankKind::Linewise);
         assert_eq!(reg.content, "BBB\n");
     }

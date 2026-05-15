@@ -897,10 +897,10 @@ impl App {
     /// alphabetic registers in alphabetical order.
     pub(super) fn do_list_registers(&mut self) {
         let mut lines: Vec<String> = Vec::new();
-        if let Some(reg) = &self.unnamed_register {
+        if let Some(reg) = &self.editor.unnamed_register {
             lines.push(format!("\"\"  {}", preview_register(&reg.content)));
         }
-        let mut keys: Vec<Register> = self.registers.keys().copied().collect();
+        let mut keys: Vec<Register> = self.editor.registers.keys().copied().collect();
         keys.sort_by_key(|k| match k {
             Register::Named(c) => format!("a{c}"),
             Register::Numbered(n) => format!("b{n}"),
@@ -908,9 +908,9 @@ impl App {
             _ => "z".into(),
         });
         for k in keys {
-            // The keys came from `self.registers.keys()`, so the lookup
+            // The keys came from `self.editor.registers.keys()`, so the lookup
             // can't fail unless someone races us -- which we don't.
-            let Some(entry) = self.registers.get(&k) else {
+            let Some(entry) = self.editor.registers.get(&k) else {
                 continue;
             };
             let label = match k {
@@ -930,7 +930,7 @@ impl App {
 
     /// Vim's `:marks` -- list every set mark's name + position.
     pub(super) fn do_list_marks(&mut self) {
-        let mut entries: Vec<(char, Position)> = self.marks.iter().map(|(c, p)| (*c, *p)).collect();
+        let mut entries: Vec<(char, Position)> = self.editor.marks.iter().map(|(c, p)| (*c, *p)).collect();
         entries.sort_by_key(|(c, _)| *c);
         if entries.is_empty() {
             self.set_message(EchoLevel::Info, "no marks set".to_string());
@@ -1832,11 +1832,11 @@ mod tests {
             lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
         );
         a.apply(Action::Invoke(inv));
-        assert!(a.unnamed_register.is_some());
+        assert!(a.editor.unnamed_register.is_some());
         let cmd = format!("e {}", path.display());
         submit_ex(&mut a, &cmd);
         // Register survives.
-        assert!(a.unnamed_register.is_some());
+        assert!(a.editor.unnamed_register.is_some());
         std::fs::remove_dir_all(&dir).ok();
     }
 

@@ -92,16 +92,16 @@ impl App {
 
         // Marks: HashMap<char, Position> -> Vec<(char, Position)>.
         let mut marks: Vec<(char, lattice_protocol::Position)> =
-            self.marks.iter().map(|(c, p)| (*c, *p)).collect();
+            self.editor.marks.iter().map(|(c, p)| (*c, *p)).collect();
         marks.sort_by_key(|(c, _)| *c);
 
         // Registers: unnamed + named, both as (name, preview).
         let mut registers: Vec<(String, String)> = Vec::new();
-        if let Some(r) = &self.unnamed_register {
+        if let Some(r) = &self.editor.unnamed_register {
             registers.push(("\"".into(), super::preview_register(&r.content)));
         }
         let mut named: Vec<(super::Register, String)> = self
-            .registers
+            .editor.registers
             .iter()
             .map(|(k, v)| (*k, super::preview_register(&v.content)))
             .collect();
@@ -231,7 +231,7 @@ impl App {
                 // paste path. Invalid register names (`_`,
                 // unknown chars) echo without panicking.
                 if let Some(reg) = lattice_grammar::register::Register::from_input_char(name) {
-                    self.pending_register = Some(reg);
+                    self.editor.pending_register = Some(reg);
                     self.do_paste(false);
                 } else {
                     self.set_message(

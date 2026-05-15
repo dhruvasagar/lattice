@@ -267,7 +267,7 @@ impl App {
     /// cursor / below current line). Linewise yanks insert on a new
     /// line; charwise yanks splice at the cursor.
     pub(super) fn do_paste(&mut self, before: bool) {
-        let chosen = self.pending_register.take();
+        let chosen = self.editor.pending_register.take();
         let Some(reg) = self.read_register(chosen) else {
             self.set_message(EchoLevel::Error, "register empty".to_string());
             return;
@@ -697,13 +697,13 @@ impl App {
             kind,
         };
         // Always update unnamed.
-        self.unnamed_register = Some(entry.clone());
+        self.editor.unnamed_register = Some(entry.clone());
         // If a named / numbered / system register was explicitly chosen,
         // store there too.
         match register {
             Register::Unnamed | Register::BlackHole => {}
             other => {
-                self.registers.insert(other, entry.clone());
+                self.editor.registers.insert(other, entry.clone());
             }
         }
         // For uppercase named registers, vim *appends* to the lowercase
@@ -716,13 +716,13 @@ impl App {
     /// `unnamed_register`.
     pub(super) fn read_register(&self, register: Option<Register>) -> Option<UnnamedRegister> {
         match register {
-            None | Some(Register::Unnamed) => self.unnamed_register.clone(),
+            None | Some(Register::Unnamed) => self.editor.unnamed_register.clone(),
             Some(Register::BlackHole) => None,
             Some(r) => self
-                .registers
+                .editor.registers
                 .get(&r)
                 .cloned()
-                .or_else(|| self.unnamed_register.clone()),
+                .or_else(|| self.editor.unnamed_register.clone()),
         }
     }
 
@@ -991,7 +991,7 @@ mod tests {
     fn paste_from_named_register_uses_named_content() {
         let mut a = app_with("hello", 10);
         // Manually populate "a with custom content.
-        a.registers.insert(
+        a.editor.registers.insert(
             Register::Named('a'),
             UnnamedRegister {
                 content: "X".into(),
@@ -1011,7 +1011,7 @@ mod tests {
             lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
         );
         a.apply(Action::Invoke(yank));
-        let pre_delete_unnamed = a.unnamed_register.as_ref().unwrap().content.clone();
+        let pre_delete_unnamed = a.editor.unnamed_register.as_ref().unwrap().content.clone();
         // Now delete into black hole; unnamed should be untouched.
         a.apply(Action::SelectRegister(Register::BlackHole));
         let inv = CommandInvocation::of(a.builtins.delete.0).with_target(
@@ -1019,7 +1019,7 @@ mod tests {
         );
         a.apply(Action::Invoke(inv));
         assert_eq!(
-            a.unnamed_register.as_ref().unwrap().content,
+            a.editor.unnamed_register.as_ref().unwrap().content,
             pre_delete_unnamed
         );
     }
@@ -1032,14 +1032,14 @@ mod tests {
         );
         a.apply(Action::Invoke(inv));
         // Delete populates unnamed but NOT "0.
-        assert!(!a.registers.contains_key(&Register::Numbered(0)));
-        assert!(a.unnamed_register.is_some());
+        assert!(!a.editor.registers.contains_key(&Register::Numbered(0)));
+        assert!(a.editor.unnamed_register.is_some());
     }
 
     #[test]
     fn paste_from_unset_named_register_falls_back_to_unnamed() {
         let mut a = app_with("hello", 10);
-        a.unnamed_register = Some(UnnamedRegister {
+        a.editor.unnamed_register = Some(UnnamedRegister {
             content: "X".into(),
             kind: YankKind::Charwise,
         });
@@ -1185,7 +1185,7 @@ mod tests {
     #[test]
     fn paste_after_charwise_inserts_after_cursor() {
         let mut a = app_with("hello", 10);
-        a.unnamed_register = Some(UnnamedRegister {
+        a.editor.unnamed_register = Some(UnnamedRegister {
             content: "X".into(),
             kind: YankKind::Charwise,
         });
@@ -1199,7 +1199,7 @@ mod tests {
     #[test]
     fn paste_before_charwise_inserts_at_cursor() {
         let mut a = app_with("hello", 10);
-        a.unnamed_register = Some(UnnamedRegister {
+        a.editor.unnamed_register = Some(UnnamedRegister {
             content: "X".into(),
             kind: YankKind::Charwise,
         });
@@ -1212,7 +1212,7 @@ mod tests {
     #[test]
     fn paste_after_linewise_inserts_below_current_line() {
         let mut a = app_with("aaa\nBBB\nccc", 10);
-        a.unnamed_register = Some(UnnamedRegister {
+        a.editor.unnamed_register = Some(UnnamedRegister {
             content: "XXX\n".into(),
             kind: YankKind::Linewise,
         });
@@ -1225,7 +1225,7 @@ mod tests {
     #[test]
     fn paste_before_linewise_inserts_above_current_line() {
         let mut a = app_with("aaa\nBBB\nccc", 10);
-        a.unnamed_register = Some(UnnamedRegister {
+        a.editor.unnamed_register = Some(UnnamedRegister {
             content: "XXX\n".into(),
             kind: YankKind::Linewise,
         });
@@ -1238,7 +1238,7 @@ mod tests {
     #[test]
     fn paste_with_empty_register_emits_error_message() {
         let mut a = app_with("hello", 10);
-        assert!(a.unnamed_register.is_none());
+        assert!(a.editor.unnamed_register.is_none());
         a.apply(Action::PasteAfter);
         let msg = a.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Error);
@@ -1398,7 +1398,7 @@ mod tests {
         assert_eq!(a.document.text(), "abcd\n1234\nWXYZ");
         // Unnamed register has the 3 column slices joined by newline,
         // tagged Blockwise.
-        let reg = a.unnamed_register.as_ref().expect("yank stored");
+        let reg = a.editor.unnamed_register.as_ref().expect("yank stored");
         assert_eq!(reg.content, "bc\n23\nXY");
         assert_eq!(reg.kind, YankKind::Blockwise);
     }
@@ -1411,7 +1411,7 @@ mod tests {
         let inv =
             CommandInvocation::of(a.builtins.yank.0).with_range(lattice_grammar::Range::Selection);
         a.apply(Action::Invoke(inv));
-        let reg = a.unnamed_register.as_ref().unwrap();
+        let reg = a.editor.unnamed_register.as_ref().unwrap();
         assert_eq!(reg.content, "bc\n2\nXY");
         assert_eq!(reg.kind, YankKind::Blockwise);
     }
@@ -1424,7 +1424,7 @@ mod tests {
         let inv =
             CommandInvocation::of(a.builtins.yank.0).with_range(lattice_grammar::Range::Selection);
         a.apply(Action::Invoke(inv));
-        let reg = a.unnamed_register.as_ref().unwrap();
+        let reg = a.editor.unnamed_register.as_ref().unwrap();
         assert_eq!(reg.content, "bc\n\nXY");
         assert_eq!(reg.kind, YankKind::Blockwise);
     }

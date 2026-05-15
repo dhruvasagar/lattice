@@ -233,7 +233,7 @@ mod tests {
         a.apply(invoke_motion(a.builtins.word_forward));
         let inv = CommandInvocation::of(a.builtins.yank.0).with_range(GrammarRange::Selection);
         a.apply(Action::Invoke(inv));
-        let reg = a.unnamed_register.as_ref().unwrap();
+        let reg = a.editor.unnamed_register.as_ref().unwrap();
         assert_eq!(reg.kind, YankKind::Charwise);
         // Document text untouched.
         assert_eq!(a.document.text(), "hello world");
@@ -262,7 +262,7 @@ mod tests {
         // content always ends with `\n`.
         let inv = CommandInvocation::of(a.builtins.yank.0).with_range(GrammarRange::Selection);
         a.apply(Action::Invoke(inv));
-        let reg = a.unnamed_register.as_ref().unwrap();
+        let reg = a.editor.unnamed_register.as_ref().unwrap();
         assert_eq!(reg.kind, YankKind::Linewise);
         assert_eq!(reg.content, "BBB\n");
     }
@@ -274,7 +274,7 @@ mod tests {
         a.apply(invoke_motion(a.builtins.line_down));
         let inv = CommandInvocation::of(a.builtins.yank.0).with_range(GrammarRange::Selection);
         a.apply(Action::Invoke(inv));
-        let reg = a.unnamed_register.as_ref().unwrap();
+        let reg = a.editor.unnamed_register.as_ref().unwrap();
         assert_eq!(reg.kind, YankKind::Linewise);
         // Lines 0 and 1 -> "aaa\nbbb\n" (slice 8.i.4.g: trailing
         // `\n` always present for linewise content).
@@ -314,6 +314,6 @@ mod tests {
     fn select_register_stashes_pending_register() {
         let mut a = app_with("hello", 10);
         a.apply(Action::SelectRegister(Register::Named('a')));
-        assert_eq!(a.pending_register, Some(Register::Named('a')));
+        assert_eq!(a.editor.pending_register, Some(Register::Named('a')));
     }
 }

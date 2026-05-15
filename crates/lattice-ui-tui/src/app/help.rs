@@ -164,8 +164,8 @@ impl App {
         lines.push(format!("dirty:          {dirty}"));
         lines.push(format!("line count:     {line_count}"));
         lines.push(format!("byte count:     {byte_count}"));
-        lines.push(format!("registers set:  {}", self.registers.len()));
-        lines.push(format!("marks set:      {}", self.marks.len()));
+        lines.push(format!("registers set:  {}", self.editor.registers.len()));
+        lines.push(format!("marks set:      {}", self.editor.marks.len()));
         lines.push(format!(
             "position-history depth: {}",
             self.position_history.len()
@@ -2177,7 +2177,7 @@ mod tests {
         ));
         let msg = a.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("read-only"), "got: {msg:?}");
-        assert!(a.unnamed_register.is_none());
+        assert!(a.editor.unnamed_register.is_none());
     }
 
     #[test]

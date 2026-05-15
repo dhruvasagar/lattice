@@ -563,7 +563,7 @@ impl App {
             self.set_message(EchoLevel::Error, format!("invalid mark: {name}"));
             return;
         }
-        let Some(&pos) = self.marks.get(&name) else {
+        let Some(&pos) = self.editor.marks.get(&name) else {
             self.set_message(EchoLevel::Error, format!("mark not set: {name}"));
             return;
         };
@@ -1121,7 +1121,7 @@ mod tests {
         let mut a = app_with("hello\nworld", 10);
         a.cursor = Position::new(1, 2);
         a.apply(Action::SetMark('a'));
-        assert_eq!(a.marks.get(&'a'), Some(&Position::new(1, 2)));
+        assert_eq!(a.editor.marks.get(&'a'), Some(&Position::new(1, 2)));
     }
 
     #[test]

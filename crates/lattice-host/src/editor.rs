@@ -27,8 +27,11 @@
 
 use std::collections::HashMap;
 
+use lattice_grammar::Register;
+use lattice_protocol::position::Position;
+
 use crate::action::Action;
-use crate::state::MacroRecording;
+use crate::state::{MacroRecording, UnnamedRegister};
 
 /// Renderer-agnostic editor state.
 ///
@@ -52,6 +55,8 @@ use crate::state::MacroRecording;
 /// **Clusters landed so far:**
 /// - 5.B.4 -- macro recording state (`macros`,
 ///   `macro_recording`, `last_played_macro`).
+/// - 5.B.5 -- marks + registers (`marks`, `registers`,
+///   `pending_register`, `unnamed_register`).
 #[derive(Debug, Default)]
 pub struct Editor {
     /// Completed macro recordings keyed by register name.
@@ -68,4 +73,23 @@ pub struct Editor {
     /// The most recently played macro register, for `@@`
     /// repeat.
     pub last_played_macro: Option<char>,
+    /// Unnamed register -- destination of `y` / `d` / `c`,
+    /// source of `p` / `P`. `None` until something has been
+    /// yanked.
+    pub unnamed_register: Option<UnnamedRegister>,
+    /// User-set marks. v1 stores them flat by name (a-z,
+    /// A-Z, 0-9); uppercase / numbered global marks treat
+    /// all marks as buffer-local since the v1 TUI runs
+    /// against a single document.
+    pub marks: HashMap<char, Position>,
+    /// Named registers `"a-z`, `"A-Z`, numbered `"0-"9`,
+    /// etc. Stores content + kind. `""` (the unnamed
+    /// register) is [`Self::unnamed_register`]; this map
+    /// covers everything else.
+    pub registers: HashMap<Register, UnnamedRegister>,
+    /// Register selected for the next operator / paste
+    /// (`"a` prefix). Consumed-and-cleared by `run_invocation`
+    /// (operators) and `do_paste` (paste). `None` means use
+    /// unnamed.
+    pub pending_register: Option<Register>,
 }

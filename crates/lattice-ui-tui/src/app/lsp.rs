@@ -1697,7 +1697,7 @@ impl App {
                 // Cross-file edits: open via `:e` then apply.
                 self.do_edit(Some(target_path.clone()), false);
                 if matches!(
-                    self.last_message.as_ref().map(|m| m.level),
+                    self.editor.last_message.as_ref().map(|m| m.level),
                     Some(EchoLevel::Error)
                 ) {
                     failed_files.push(format!("{}: open failed", target_path.display()));
@@ -2212,7 +2212,7 @@ impl App {
                 // Cross-file edits: open the file via :e and apply.
                 self.do_edit(Some(target_path.clone()), false);
                 if matches!(
-                    self.last_message.as_ref().map(|m| m.level),
+                    self.editor.last_message.as_ref().map(|m| m.level),
                     Some(EchoLevel::Error)
                 ) {
                     deferred_files.push(target_path.display().to_string());
@@ -6695,7 +6695,7 @@ mod tests {
         }
         // M.5.4 request gate: hover echoes the gate message.
         a.apply(Action::LspHoverRequest);
-        let msg = a.last_message.as_ref().expect("gate echo");
+        let msg = a.editor.last_message.as_ref().expect("gate echo");
         assert!(
             msg.text.contains("lsp-mode disabled"),
             "expected gate echo, got: {}",
@@ -6729,7 +6729,7 @@ mod tests {
         // Default: no auto-activation (no path).
         assert!(!a.lsp_mode_enabled_for(a.document_buffer_id));
         a.apply(Action::LspHoverRequest);
-        let msg = a.last_message.as_ref().expect("gate echo");
+        let msg = a.editor.last_message.as_ref().expect("gate echo");
         assert_eq!(msg.level, EchoLevel::Info);
         assert!(
             msg.text.contains("lsp-mode disabled"),
@@ -6753,7 +6753,7 @@ mod tests {
         // Hover request now bails with sub-mode echo (umbrella
         // is on, so the umbrella check inside the helper passes).
         a.apply(Action::LspHoverRequest);
-        let msg = a.last_message.as_ref().expect("gate echo");
+        let msg = a.editor.last_message.as_ref().expect("gate echo");
         assert_eq!(msg.level, EchoLevel::Info);
         assert!(
             msg.text.contains("lsp-hover-mode disabled"),
@@ -6774,7 +6774,7 @@ mod tests {
         // method directly -- the dispatch path through
         // ex-commands also routes here.)
         a.do_lsp_format_request(false);
-        let msg = a.last_message.as_ref().expect("format gate echo");
+        let msg = a.editor.last_message.as_ref().expect("format gate echo");
         assert!(
             msg.text.contains("lsp-format-mode disabled"),
             "expected lsp-format-mode-disabled echo, got: {}",
@@ -6790,7 +6790,7 @@ mod tests {
         a.toggle_mode_by_name("lsp-mode");
         a.toggle_mode_by_name("lsp-nav-mode");
         a.do_lsp_definition_request();
-        let msg = a.last_message.as_ref().expect("nav gate echo");
+        let msg = a.editor.last_message.as_ref().expect("nav gate echo");
         assert!(
             msg.text.contains("lsp-nav-mode disabled"),
             "expected lsp-nav-mode-disabled echo, got: {}",
@@ -6814,7 +6814,7 @@ mod tests {
         a.toggle_mode_by_name("lsp-mode");
         assert!(!a.lsp_mode_enabled_for(a.document_buffer_id));
         a.apply(Action::LspHoverRequest);
-        let msg = a.last_message.as_ref().expect("umbrella echo");
+        let msg = a.editor.last_message.as_ref().expect("umbrella echo");
         // Umbrella echo, not sub-mode echo.
         assert!(
             msg.text.contains("lsp-mode disabled") && !msg.text.contains("lsp-hover-mode"),
@@ -6900,7 +6900,7 @@ mod tests {
     fn hover_open_populates_help_buffer() {
         let mut a = app_with("alpha\nbeta\ngamma", 10);
         a.cursor = Position::new(1, 2);
-        a.command_line = "hover documentation".into();
+        a.editor.command_line = "hover documentation".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let h = a.popup_help().expect("hover open");
@@ -6914,11 +6914,11 @@ mod tests {
     #[test]
     fn hover_close_dismisses_popup() {
         let mut a = app_with("xx", 10);
-        a.command_line = "hover x".into();
+        a.editor.command_line = "hover x".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert!(a.editor.popup_buffer.is_some());
-        a.command_line = "HoverClose".into();
+        a.editor.command_line = "HoverClose".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert!(a.editor.popup_buffer.is_none());
@@ -6927,7 +6927,7 @@ mod tests {
     #[test]
     fn hover_with_no_arg_uses_placeholder() {
         let mut a = app_with("xx", 10);
-        a.command_line = "hover".into();
+        a.editor.command_line = "hover".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let h = a.popup_help().expect("hover open");
@@ -6985,7 +6985,7 @@ mod tests {
         let mut a = app_with("xx", 10);
         a.toggle_mode_by_name("lsp-mode");
         a.apply(Action::LspHoverRequest);
-        let msg = a.last_message.as_ref().expect("echo");
+        let msg = a.editor.last_message.as_ref().expect("echo");
         assert_eq!(msg.level, EchoLevel::Info);
         assert!(msg.text.contains("no LSP server"));
     }
@@ -7044,7 +7044,7 @@ mod tests {
             .unwrap();
         a.drain_pending_hover();
         assert!(a.editor.popup_buffer.is_none(), "no popup for empty hover");
-        let msg = a.last_message.as_ref().expect("echo on no-hover-info");
+        let msg = a.editor.last_message.as_ref().expect("echo on no-hover-info");
         assert_eq!(msg.level, EchoLevel::Info);
         assert!(
             msg.text.contains("no hover info"),
@@ -7065,7 +7065,7 @@ mod tests {
         tx.send(crate::app::HoverOutcome::NoServers).unwrap();
         a.drain_pending_hover();
         let msg = a
-            .last_message
+            .editor.last_message
             .as_ref()
             .expect("echo on no-servers-attached");
         assert_eq!(msg.level, EchoLevel::Warn);
@@ -7083,7 +7083,7 @@ mod tests {
         a.pending_hover_rx = Some(rx);
         a.drain_pending_hover();
         assert!(a.editor.popup_buffer.is_none());
-        assert!(a.last_message.is_none());
+        assert!(a.editor.last_message.is_none());
     }
 
     #[test]
@@ -7998,7 +7998,7 @@ mod tests {
         let mut a = app_with("xx", 10);
         a.toggle_mode_by_name("lsp-mode");
         a.apply(Action::LspDefinitionRequest);
-        let msg = a.last_message.as_ref().expect("echo");
+        let msg = a.editor.last_message.as_ref().expect("echo");
         assert_eq!(msg.level, EchoLevel::Info);
         assert!(msg.text.contains("no LSP server"));
     }
@@ -8009,7 +8009,7 @@ mod tests {
         a.toggle_mode_by_name("lsp-mode");
         a.apply(Action::LspDeclarationRequest);
         // No URI mapped, same "no LSP server" guard fires.
-        let msg = a.last_message.as_ref().expect("echo");
+        let msg = a.editor.last_message.as_ref().expect("echo");
         assert_eq!(msg.level, EchoLevel::Info);
         assert!(msg.text.contains("no LSP server"));
     }
@@ -8019,7 +8019,7 @@ mod tests {
         let mut a = app_with("xx", 10);
         a.toggle_mode_by_name("lsp-mode");
         a.apply(Action::LspTypeDefinitionRequest);
-        let msg = a.last_message.as_ref().expect("echo");
+        let msg = a.editor.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("no LSP server"));
     }
 
@@ -8028,7 +8028,7 @@ mod tests {
         let mut a = app_with("xx", 10);
         a.toggle_mode_by_name("lsp-mode");
         a.apply(Action::LspImplementationRequest);
-        let msg = a.last_message.as_ref().expect("echo");
+        let msg = a.editor.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("no LSP server"));
     }
 
@@ -8042,7 +8042,7 @@ mod tests {
         a.pending_nav_kind = Some(super::LspNavKind::Implementation);
         tx.send(Vec::new()).unwrap();
         a.drain_pending_definitions();
-        let msg = a.last_message.as_ref().expect("echo");
+        let msg = a.editor.last_message.as_ref().expect("echo");
         assert!(
             msg.text.contains("no implementations"),
             "expected implementations echo, got: {}",
@@ -8060,7 +8060,7 @@ mod tests {
         a.pending_nav_kind = Some(super::LspNavKind::TypeDefinition);
         tx.send(Vec::new()).unwrap();
         a.drain_pending_definitions();
-        let msg = a.last_message.as_ref().expect("echo");
+        let msg = a.editor.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("no type definitions"));
     }
 
@@ -8073,7 +8073,7 @@ mod tests {
         a.pending_nav_kind = Some(super::LspNavKind::Declaration);
         tx.send(Vec::new()).unwrap();
         a.drain_pending_definitions();
-        let msg = a.last_message.as_ref().expect("echo");
+        let msg = a.editor.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("no declarations"));
     }
 
@@ -8082,7 +8082,7 @@ mod tests {
         let mut a = app_with("xx", 10);
         a.toggle_mode_by_name("lsp-mode");
         a.apply(Action::LspReferencesRequest);
-        let msg = a.last_message.as_ref().expect("echo");
+        let msg = a.editor.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("no LSP server"));
     }
 
@@ -8103,7 +8103,7 @@ mod tests {
         a.pending_references_token = Some(lattice_protocol::CancellationToken::new());
         tx.send(super::ReferencesOutcome::NoServers).unwrap();
         a.drain_pending_references();
-        let msg = a.last_message.as_ref().expect("echo");
+        let msg = a.editor.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("no LSP server"));
         assert!(a.pending_references_token.is_none());
     }
@@ -8167,7 +8167,7 @@ mod tests {
         .unwrap();
         a.drain_pending_references();
         assert!(a.picker.is_none());
-        let msg = a.last_message.as_ref().expect("echo");
+        let msg = a.editor.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("no references"));
         assert!(msg.text.contains("missing"));
     }
@@ -8294,7 +8294,7 @@ mod tests {
         a.pending_symbols_token = Some(lattice_protocol::CancellationToken::new());
         tx.send(super::SymbolsOutcome::NoServers).unwrap();
         a.drain_pending_symbols();
-        let msg = a.last_message.as_ref().expect("echo");
+        let msg = a.editor.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("no LSP server"));
         assert!(a.pending_symbols_token.is_none());
     }
@@ -8351,7 +8351,7 @@ mod tests {
         .unwrap();
         a.drain_pending_symbols();
         assert!(a.picker.is_none());
-        let msg = a.last_message.as_ref().expect("echo");
+        let msg = a.editor.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("no symbols"));
     }
 
@@ -8374,7 +8374,7 @@ mod tests {
         a.pending_code_action_token = Some(lattice_protocol::CancellationToken::new());
         tx.send(super::CodeActionOutcome::NoProvider).unwrap();
         a.drain_pending_code_actions();
-        let msg = a.last_message.as_ref().expect("echo");
+        let msg = a.editor.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("codeActionProvider"));
     }
 
@@ -8388,7 +8388,7 @@ mod tests {
             .unwrap();
         a.drain_pending_code_actions();
         assert!(a.picker.is_none());
-        let msg = a.last_message.as_ref().expect("echo");
+        let msg = a.editor.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("no code actions"));
     }
 
@@ -8470,7 +8470,7 @@ mod tests {
         a.pending_rename_token = Some(lattice_protocol::CancellationToken::new());
         tx.send(super::RenameOutcome::NoProvider).unwrap();
         a.drain_pending_rename();
-        let msg = a.last_message.as_ref().expect("echo");
+        let msg = a.editor.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("renameProvider"));
     }
 
@@ -8485,7 +8485,7 @@ mod tests {
         })
         .unwrap();
         a.drain_pending_rename();
-        let msg = a.last_message.as_ref().expect("echo");
+        let msg = a.editor.last_message.as_ref().expect("echo");
         assert_eq!(msg.level, EchoLevel::Error);
         assert!(msg.text.contains("out of bounds"));
     }
@@ -8498,7 +8498,7 @@ mod tests {
         a.pending_rename_token = Some(lattice_protocol::CancellationToken::new());
         tx.send(super::RenameOutcome::Empty).unwrap();
         a.drain_pending_rename();
-        let msg = a.last_message.as_ref().expect("echo");
+        let msg = a.editor.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("no changes"));
     }
 
@@ -9006,7 +9006,7 @@ mod tests {
         a.pending_completion_token = Some(lattice_protocol::CancellationToken::new());
         tx.send(super::CompletionOutcome::NoServers).unwrap();
         a.drain_pending_completion();
-        let msg = a.last_message.as_ref().expect("echo");
+        let msg = a.editor.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("no LSP server"));
     }
 
@@ -9065,7 +9065,7 @@ mod tests {
             .unwrap();
         a.drain_pending_completion();
         assert!(a.picker.is_none());
-        let msg = a.last_message.as_ref().expect("echo");
+        let msg = a.editor.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("no completions"));
     }
 
@@ -9132,7 +9132,7 @@ mod tests {
         tx.send(super::SignatureHelpOutcome::Body(String::new()))
             .unwrap();
         a.drain_pending_signature_help();
-        let msg = a.last_message.as_ref().expect("echo");
+        let msg = a.editor.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("no signature info"));
         assert!(a.editor.popup_buffer.is_none());
     }
@@ -9188,7 +9188,7 @@ mod tests {
         a.pending_definition_token = Some(lattice_protocol::CancellationToken::new());
         tx.send(Vec::new()).unwrap();
         a.drain_pending_definitions();
-        let msg = a.last_message.as_ref().expect("echo");
+        let msg = a.editor.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("no definitions"));
         assert!(a.pending_definition_token.is_none());
     }
@@ -9335,7 +9335,7 @@ mod tests {
     fn lsp_log_with_arg_no_match_echoes_message() {
         let mut app = app_with("hi\n", 5);
         app.do_open_lsp_log(Some("rust"));
-        let msg = app.last_message.as_ref().unwrap();
+        let msg = app.editor.last_message.as_ref().unwrap();
         assert!(msg.text.contains("no LSP server"));
     }
 
@@ -9396,7 +9396,7 @@ mod tests {
             "indexing complete",
         );
         app.drain_lsp_log_events();
-        let msg = app.last_message.as_ref().expect("set_message fired");
+        let msg = app.editor.last_message.as_ref().expect("set_message fired");
         assert_eq!(msg.level, EchoLevel::Warn);
         assert!(msg.text.contains("indexing complete"), "got `{}`", msg.text);
         // Prefix carries the server id so multi-server users
@@ -9417,7 +9417,7 @@ mod tests {
         );
         let _id: std::sync::Arc<str> = std::sync::Arc::clone(&instance.server_id);
         // Capture initial message to compare after drain.
-        let before = app.last_message.clone();
+        let before = app.editor.last_message.clone();
         app.lsp_logger.log(
             Some(&instance),
             lattice_lsp::LogLevel::Info,
@@ -9426,7 +9426,7 @@ mod tests {
         );
         app.drain_lsp_log_events();
         assert_eq!(
-            app.last_message, before,
+            app.editor.last_message, before,
             "logMessage should NOT touch the echo area"
         );
     }
@@ -9604,7 +9604,7 @@ mod tests {
         // Pure toggle now -- the trace buffer is opened separately
         // via :lsp-trace-log so peeking doesn't flip the toggle off.
         assert!(app.editor.popup_buffer.is_none());
-        let msg = app.last_message.as_ref().unwrap();
+        let msg = app.editor.last_message.as_ref().unwrap();
         assert!(msg.text.contains("on"));
         assert!(msg.text.contains(":lsp-trace-log"));
         // On -> off.
@@ -9637,7 +9637,7 @@ mod tests {
         // because there's no actor to attach to.
         assert!(!app.lsp_logger.is_tracing(&canonical));
         assert!(!app.lsp_logger.is_tracing(&phantom));
-        let msg = app.last_message.as_ref().unwrap();
+        let msg = app.editor.last_message.as_ref().unwrap();
         assert!(msg.text.contains("resolved"));
     }
 
@@ -9645,7 +9645,7 @@ mod tests {
     fn lsp_trace_unknown_name_echoes_error_with_running_servers() {
         let mut app = app_with("hi\n", 5);
         app.do_toggle_lsp_trace("totally-fake-server-name");
-        let msg = app.last_message.as_ref().unwrap();
+        let msg = app.editor.last_message.as_ref().unwrap();
         assert!(matches!(msg.level, EchoLevel::Error));
         assert!(msg.text.contains("totally-fake-server-name"));
     }
@@ -9719,7 +9719,7 @@ mod tests {
         let mut app = app_with("hi\n", 5);
         for lvl in ["error", "warn", "info", "debug", "trace"] {
             app.do_set_lsp_log_level(None, lvl);
-            let msg = app.last_message.as_ref().unwrap();
+            let msg = app.editor.last_message.as_ref().unwrap();
             assert!(
                 msg.text.contains(lvl),
                 "echo should mention {lvl}, got {}",
@@ -9732,7 +9732,7 @@ mod tests {
     fn lsp_log_level_rejects_unknown_level() {
         let mut app = app_with("hi\n", 5);
         app.do_set_lsp_log_level(None, "babble");
-        let msg = app.last_message.as_ref().unwrap();
+        let msg = app.editor.last_message.as_ref().unwrap();
         assert!(msg.text.contains("unknown log level"));
     }
 
@@ -9910,7 +9910,7 @@ mod tests {
             "actionless prompt should auto-dismiss",
         );
         assert!(app.picker.is_none(), "no picker for actionless prompt");
-        let msg = app.last_message.as_ref().expect("minibuffer set");
+        let msg = app.editor.last_message.as_ref().expect("minibuffer set");
         assert!(msg.text.contains("Heads up!"));
         let records = app
             .lsp_logger
@@ -10017,7 +10017,7 @@ mod tests {
         // supervisor's own tests.
         let mut app = app_with("hi\n", 5);
         app.do_lsp_restart("rust");
-        let msg = app.last_message.as_ref().unwrap();
+        let msg = app.editor.last_message.as_ref().unwrap();
         assert!(
             msg.text.contains("queued"),
             "expected immediate `queued` echo; got `{}`",
@@ -10371,7 +10371,7 @@ mod tests {
         app.toggle_mode_by_name("lsp-mode");
         // No buffer_uris mapping -> "no LSP attachment".
         app.do_next_diagnostic();
-        let msg = app.last_message.as_ref().expect("expected echo");
+        let msg = app.editor.last_message.as_ref().expect("expected echo");
         assert!(msg.text.contains("no LSP attachment"), "got: {}", msg.text);
     }
 
@@ -10385,7 +10385,7 @@ mod tests {
         app.buffer_uris.insert(app.document_buffer_id, uri);
         app.toggle_mode_by_name("lsp-mode");
         app.do_next_diagnostic();
-        let msg = app.last_message.as_ref().expect("expected echo");
+        let msg = app.editor.last_message.as_ref().expect("expected echo");
         assert!(msg.text.contains("no diagnostics"), "got: {}", msg.text);
     }
 
@@ -10413,19 +10413,19 @@ mod tests {
         // Format request bails with format-mode echo.
         a.do_lsp_format_request(false);
         assert!(
-            a.last_message
+            a.editor.last_message
                 .as_ref()
                 .map(|m| m.text.contains("lsp-format-mode disabled"))
                 .unwrap_or(false),
             "expected format-mode echo, got: {:?}",
-            a.last_message,
+            a.editor.last_message,
         );
 
         // Hover still works (well, fails for "no LSP server" but
         // not for "mode disabled" -- the sub-mode gate passes).
-        a.last_message = None;
+        a.editor.last_message = None;
         a.apply(Action::LspHoverRequest);
-        if let Some(msg) = &a.last_message {
+        if let Some(msg) = &a.editor.last_message {
             assert!(
                 !msg.text.contains("lsp-hover-mode disabled"),
                 "hover sub-mode unexpectedly gated: {}",
@@ -10449,7 +10449,7 @@ mod tests {
         // diagnostics-mode.
         app.toggle_mode_by_name("lsp-diagnostics-mode");
         app.do_next_diagnostic();
-        let msg = app.last_message.as_ref().expect("gate echo");
+        let msg = app.editor.last_message.as_ref().expect("gate echo");
         assert!(
             msg.text.contains("lsp-diagnostics-mode disabled"),
             "expected sub-mode gate echo, got: {}",
@@ -10488,7 +10488,7 @@ mod tests {
         app.do_list_diagnostics();
         // Empty diagnostics: no picker, just an echo.
         assert!(app.picker.is_none());
-        let msg = app.last_message.as_ref().expect("echo");
+        let msg = app.editor.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("no diagnostics"));
     }
 }

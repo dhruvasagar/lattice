@@ -92,7 +92,7 @@ mod tests {
     fn invalid_macro_register_emits_error() {
         let mut a = app_with("hello", 10);
         a.apply(Action::StartMacroRecord(' '));
-        let msg = a.last_message.as_ref().unwrap();
+        let msg = a.editor.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Error);
         assert!(a.editor.macro_recording.is_none());
     }
@@ -138,7 +138,7 @@ mod tests {
     fn play_unrecorded_macro_emits_error() {
         let mut a = app_with("hello", 10);
         a.apply(Action::PlayMacro('z'));
-        let msg = a.last_message.as_ref().unwrap();
+        let msg = a.editor.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Error);
     }
 
@@ -162,7 +162,7 @@ mod tests {
     fn play_last_macro_with_no_history_emits_error() {
         let mut a = app_with("hello", 10);
         a.apply(Action::PlayLastMacro);
-        let msg = a.last_message.as_ref().unwrap();
+        let msg = a.editor.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Error);
     }
 

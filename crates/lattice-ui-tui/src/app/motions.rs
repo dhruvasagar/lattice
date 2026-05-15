@@ -792,7 +792,7 @@ mod tests {
     fn jump_history_with_no_jumps_emits_error() {
         let mut a = app_with("hello", 10);
         a.apply(Action::JumpHistoryBack);
-        let msg = a.last_message.as_ref().unwrap();
+        let msg = a.editor.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Error);
     }
 
@@ -930,7 +930,7 @@ mod tests {
     fn star_with_no_word_on_line_emits_error() {
         let mut a = app_with("   ", 10);
         a.apply(Action::SearchWordUnderCursor(SearchDirection::Forward));
-        let msg = a.last_message.as_ref().unwrap();
+        let msg = a.editor.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Error);
     }
 
@@ -980,7 +980,7 @@ mod tests {
     fn percent_with_no_bracket_on_line_emits_error() {
         let mut a = app_with("plain text only", 10);
         a.apply(Action::MatchBracket);
-        let msg = a.last_message.as_ref().unwrap();
+        let msg = a.editor.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Error);
     }
 
@@ -989,7 +989,7 @@ mod tests {
         let mut a = app_with("foo(bar", 10);
         a.cursor = Position::new(0, 3);
         a.apply(Action::MatchBracket);
-        let msg = a.last_message.as_ref().unwrap();
+        let msg = a.editor.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Error);
     }
 
@@ -1149,7 +1149,7 @@ mod tests {
     fn jump_to_unset_mark_emits_error() {
         let mut a = app_with("hello", 10);
         a.apply(Action::JumpToMarkExact('z'));
-        let msg = a.last_message.as_ref().unwrap();
+        let msg = a.editor.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Error);
     }
 
@@ -1264,7 +1264,7 @@ mod tests {
     fn tag_stack_pop_on_empty_echoes_message() {
         let mut a = app_with("xx", 10);
         a.apply(Action::TagStackPop);
-        let msg = a.last_message.as_ref().expect("echo");
+        let msg = a.editor.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("tag stack empty"));
     }
 

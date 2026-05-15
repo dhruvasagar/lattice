@@ -75,7 +75,7 @@ impl App {
         // local Vec, then release before formatting +
         // appending (Drop semantics: keep the critical section
         // short).
-        let backlog_records: Vec<lattice_runtime::MessageRecord> = match self.messages.lock() {
+        let backlog_records: Vec<lattice_runtime::MessageRecord> = match self.editor.messages.lock() {
             Ok(ring) => ring.records().iter().cloned().collect(),
             Err(_) => Vec::new(),
         };
@@ -102,7 +102,7 @@ impl App {
     /// `apply_edit_batch` so the actor sees one edit per drain
     /// regardless of event rate.
     pub fn drain_message_events(&mut self) {
-        let Some(mut rx) = self.pending_message_event_rx.take() else {
+        let Some(mut rx) = self.editor.pending_message_event_rx.take() else {
             return;
         };
         let mut text = String::new();
@@ -110,7 +110,7 @@ impl App {
             text.push_str(&format_message_record(&ev.record));
             text.push('\n');
         }
-        self.pending_message_event_rx = Some(rx);
+        self.editor.pending_message_event_rx = Some(rx);
         if text.is_empty() {
             return;
         }

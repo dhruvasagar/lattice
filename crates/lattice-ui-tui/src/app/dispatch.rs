@@ -267,9 +267,9 @@ impl App {
             }
 
             Action::EnterCommandLine => {
-                self.command_line.clear();
+                self.editor.command_line.clear();
                 self.modal = ModalState::Command;
-                self.last_message = None;
+                self.editor.last_message = None;
                 // Q16: opening the cmdline dismisses STATE A
                 // help popups (hover overlay still anchored to
                 // doc cursor). State B help buffers (`:lsp-log`,
@@ -287,7 +287,7 @@ impl App {
             }
             Action::CommandLineAppend(c) => {
                 if matches!(self.modal, ModalState::Command) {
-                    self.command_line.push(c);
+                    self.editor.command_line.push(c);
                     // Vertico-style live filtering: if the popup is
                     // open, re-run the pipeline against the new
                     // prefix. The user can keep typing to drill
@@ -300,7 +300,7 @@ impl App {
             }
             Action::CommandLineBackspace => {
                 if matches!(self.modal, ModalState::Command) {
-                    if self.command_line.pop().is_none() {
+                    if self.editor.command_line.pop().is_none() {
                         // Empty buffer + backspace -> exit Command modal.
                         self.modal = ModalState::Normal;
                         self.completion_state = None;
@@ -330,23 +330,23 @@ impl App {
                     // kinds the user types and submits normally.
                     if let Some(info) = self.try_resolve_missing_arg_prompt() {
                         let is_chord = info.kind == lattice_grammar::ArgKind::Chord;
-                        self.command_line = info.prefill;
-                        self.auto_submit_after_chord = is_chord;
+                        self.editor.command_line = info.prefill;
+                        self.editor.auto_submit_after_chord = is_chord;
                         self.set_message(EchoLevel::Info, info.prompt);
                         return;
                     }
-                    let line = std::mem::take(&mut self.command_line);
+                    let line = std::mem::take(&mut self.editor.command_line);
                     self.modal = ModalState::Normal;
-                    self.command_history_cursor = None;
-                    self.command_history_pending = None;
-                    self.auto_submit_after_chord = false;
+                    self.editor.command_history_cursor = None;
+                    self.editor.command_history_pending = None;
+                    self.editor.auto_submit_after_chord = false;
                     self.editor.substitute_preview = None;
                     if !line.trim().is_empty() {
                         // De-duplicate consecutive identical entries.
-                        if self.command_history.last() != Some(&line) {
-                            self.command_history.push(line.clone());
-                            if self.command_history.len() > COMMAND_HISTORY_CAP {
-                                self.command_history.remove(0);
+                        if self.editor.command_history.last() != Some(&line) {
+                            self.editor.command_history.push(line.clone());
+                            if self.editor.command_history.len() > COMMAND_HISTORY_CAP {
+                                self.editor.command_history.remove(0);
                             }
                         }
                     }
@@ -355,18 +355,18 @@ impl App {
             }
             Action::CommandLineCancel => {
                 if matches!(self.modal, ModalState::Command) {
-                    self.command_line.clear();
-                    self.command_history_cursor = None;
-                    self.command_history_pending = None;
+                    self.editor.command_line.clear();
+                    self.editor.command_history_cursor = None;
+                    self.editor.command_history_pending = None;
                     self.modal = ModalState::Normal;
-                    self.auto_submit_after_chord = false;
+                    self.editor.auto_submit_after_chord = false;
                     self.editor.substitute_preview = None;
                 }
             }
             Action::CommandLineHistoryPrev => self.do_command_history_step(true),
             Action::CommandLineHistoryNext => self.do_command_history_step(false),
             Action::Echo(message) => {
-                self.last_message = Some(message);
+                self.editor.last_message = Some(message);
             }
 
             Action::CloseHover => self.do_close_hover(),
@@ -546,7 +546,7 @@ impl App {
             // ---- Command-line editing + completion ----
             Action::CommandLineClear => {
                 if matches!(self.modal, ModalState::Command) {
-                    self.command_line.clear();
+                    self.editor.command_line.clear();
                     if self.completion_state.is_some() {
                         // Empty cmdline -> slot becomes Empty, which
                         // surfaces every command. Same live-refilter
@@ -557,7 +557,7 @@ impl App {
             }
             Action::CommandLineDeleteWordBackward => {
                 if matches!(self.modal, ModalState::Command) {
-                    delete_trailing_word(&mut self.command_line);
+                    delete_trailing_word(&mut self.editor.command_line);
                     if self.completion_state.is_some() {
                         // Same live-refilter contract as Append /
                         // Backspace.
@@ -568,7 +568,7 @@ impl App {
             Action::CommandLineDescribeUnderCursor => self.do_command_line_describe_under_cursor(),
             Action::CommandLineAppendChord(token) => {
                 if matches!(self.modal, ModalState::Command) {
-                    self.command_line.push_str(&token);
+                    self.editor.command_line.push_str(&token);
                     // Chord-capture suppresses the completion popup
                     // (no useful candidates for chord input). If
                     // somehow open, drop it to keep the screen clean.
@@ -578,23 +578,23 @@ impl App {
                     // chord token also fires submit. Recursive
                     // re-entry into apply() is fine -- Submit
                     // resets the flag before doing anything else.
-                    if self.auto_submit_after_chord {
-                        self.auto_submit_after_chord = false;
+                    if self.editor.auto_submit_after_chord {
+                        self.editor.auto_submit_after_chord = false;
                         self.apply(Action::CommandLineSubmit);
                     }
                 }
             }
             Action::CommandLineDeleteChord => {
                 if matches!(self.modal, ModalState::Command) {
-                    let n = crate::chord::last_chord_token_byte_len(&self.command_line);
+                    let n = crate::chord::last_chord_token_byte_len(&self.editor.command_line);
                     if n == 0 {
                         // Empty buffer + delete -> exit Command modal,
                         // matching plain `<BS>` semantics.
                         self.modal = ModalState::Normal;
                         self.completion_state = None;
                     } else {
-                        let new_len = self.command_line.len() - n;
-                        self.command_line.truncate(new_len);
+                        let new_len = self.editor.command_line.len() - n;
+                        self.editor.command_line.truncate(new_len);
                     }
                 }
             }
@@ -638,7 +638,7 @@ impl App {
                     origin: self.cursor,
                 });
                 self.modal = ModalState::Search(direction);
-                self.last_message = None;
+                self.editor.last_message = None;
                 self.editor.current_match = None;
             }
             Action::SearchAppend(c) => {
@@ -1896,7 +1896,7 @@ mod tests {
         let mut a = app_with("hello", 10);
         assert!(a.editor.last_change.is_none());
         a.apply(Action::RepeatLastChange);
-        let msg = a.last_message.as_ref().unwrap();
+        let msg = a.editor.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Error);
     }
 
@@ -2158,11 +2158,11 @@ mod tests {
     fn first_chord_after_arming_auto_submits() {
         let mut a = app_in_command_mode("describe-key");
         a.apply(Action::CommandLineSubmit);
-        assert!(a.auto_submit_after_chord);
+        assert!(a.editor.auto_submit_after_chord);
         // The first chord token captured should auto-fire submit;
         // the cmdline should clear and we land back in Normal.
         a.apply(Action::CommandLineAppendChord("j".into()));
-        assert!(!a.auto_submit_after_chord);
+        assert!(!a.editor.auto_submit_after_chord);
         assert!(matches!(a.modal, ModalState::Normal));
         // The submitted line was `describe-key j` -- which opens
         // a help buffer for chord `j`. Smoke check that some
@@ -2175,7 +2175,7 @@ mod tests {
         let mut a = app_in_command_mode("foo bar baz");
         a.apply(Action::CommandLineCompleteOrAdvance);
         a.apply(Action::CommandLineClear);
-        assert_eq!(a.command_line, "");
+        assert_eq!(a.editor.command_line, "");
         assert!(a.completion_state.is_none());
     }
 
@@ -2183,21 +2183,21 @@ mod tests {
     fn ctrl_w_deletes_trailing_word() {
         let mut a = app_in_command_mode("foo bar baz");
         a.apply(Action::CommandLineDeleteWordBackward);
-        assert_eq!(a.command_line, "foo bar ");
+        assert_eq!(a.editor.command_line, "foo bar ");
     }
 
     #[test]
     fn ctrl_w_with_trailing_whitespace_strips_word() {
         let mut a = app_in_command_mode("foo bar  ");
         a.apply(Action::CommandLineDeleteWordBackward);
-        assert_eq!(a.command_line, "foo ");
+        assert_eq!(a.editor.command_line, "foo ");
     }
 
     #[test]
     fn ctrl_w_on_single_word_clears() {
         let mut a = app_in_command_mode("foo");
         a.apply(Action::CommandLineDeleteWordBackward);
-        assert_eq!(a.command_line, "");
+        assert_eq!(a.editor.command_line, "");
     }
 
     #[test]
@@ -2252,9 +2252,9 @@ mod tests {
         //   sees the next frame the tree matches the document).
         let mut a = app_with("fn main() {}\n", 10);
         a.pane_highlights.insert(0, vec![Vec::new(); 1]);
-        a.pending_redraw = false;
+        a.editor.pending_redraw = false;
         a.apply(Action::RedrawScreen);
-        assert!(a.pending_redraw, "runtime should clear terminal next frame");
+        assert!(a.editor.pending_redraw, "runtime should clear terminal next frame");
         assert!(
             a.pane_highlights.is_empty(),
             "pane highlights cache must reset (so next frame repopulates from scratch)"
@@ -2269,7 +2269,7 @@ mod tests {
             a.document.text_version(),
             "post-apply reparse must have synced the version mirror"
         );
-        let msg = a.last_message.as_ref().expect("info echo");
+        let msg = a.editor.last_message.as_ref().expect("info echo");
         assert!(msg.text.contains("redraw"), "user-visible echo: {msg:?}");
     }
 
@@ -2311,11 +2311,11 @@ mod tests {
             .expect("fold");
         a.folds[first_idx].closed = true;
         // Open + activate the new buffer.
-        a.command_line = format!("e {}", path.display());
+        a.editor.command_line = format!("e {}", path.display());
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         // Switch back via :bn.
-        a.command_line = "bn".into();
+        a.editor.command_line = "bn".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.document_buffer_id, initial_id);
@@ -2339,7 +2339,7 @@ mod tests {
         // Open the second file under foldmethod=manual so no folds
         // get seeded into its entry.
         a.set_foldmethod_for_test(FoldMethod::Manual);
-        a.command_line = format!("e {}", path.display());
+        a.editor.command_line = format!("e {}", path.display());
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let id_target = a.document_buffer_id;
@@ -2516,9 +2516,9 @@ mod tests {
         a.load_persistent_config(Some(&ws));
         // Loader echo handles structural sections silently
         // until `apply_per_language_toml_overrides` runs.
-        let pre = a.last_message.clone();
+        let pre = a.editor.last_message.clone();
         a.apply_per_language_toml_overrides();
-        let msg = a.last_message.as_ref().expect("warning echoed");
+        let msg = a.editor.last_message.as_ref().expect("warning echoed");
         assert_ne!(Some(msg.clone()), pre, "new echo posted");
         assert_eq!(msg.level, EchoLevel::Warn);
         assert!(msg.text.contains("bogus_field"), "got `{}`", msg.text);

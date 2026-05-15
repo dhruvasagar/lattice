@@ -415,9 +415,9 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
         // by clearing the terminal buffer so the next draw repaints
         // every cell instead of letting ratatui's diff engine
         // assume the previous frame's contents are intact.
-        if app.pending_redraw {
+        if app.editor.pending_redraw {
             terminal.clear().context("clear terminal for redraw")?;
-            app.pending_redraw = false;
+            app.editor.pending_redraw = false;
         }
         app.refresh_highlights();
         app.refresh_pane_highlights();

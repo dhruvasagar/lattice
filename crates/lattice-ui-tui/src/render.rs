@@ -2063,7 +2063,7 @@ fn draw_buffer(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot
 fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
     if matches!(app.modal, ModalState::Command) {
         // ":<typed>" with the cursor sitting at the end of the typed text.
-        let prompt = format!(":{}", app.command_line);
+        let prompt = format!(":{}", app.editor.command_line);
         let cursor_col = area
             .x
             .saturating_add(prompt.len().min(area.width as usize) as u16);
@@ -2078,7 +2078,7 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
         //      (cursor in a `Chord` arg slot), show a softer
         //      `(chord)` tag so the user knows the cmdline is
         //      consuming raw key events as chord tokens.
-        let hint: Option<&'static str> = if app.auto_submit_after_chord {
+        let hint: Option<&'static str> = if app.editor.auto_submit_after_chord {
             Some("press a chord")
         } else if app.chord_capture_active() {
             Some("(chord)")
@@ -2133,7 +2133,7 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    let Some(msg) = &app.last_message else {
+    let Some(msg) = &app.editor.last_message else {
         // Nothing to show -- render nothing (the row stays blank).
         return;
     };

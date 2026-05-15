@@ -597,37 +597,10 @@ pub struct App {
     /// snippet is in flight; `None` otherwise. Same lockstep
     /// pattern as [`Self::completion_popup_layer`].
     snippet_layer: Option<crate::keymap_registry::LayerId>,
-    /// In-progress text in the `:` minibuffer. Populated only while
-    /// `modal == ModalState::Command`.
-    pub command_line: String,
-    /// Most recent transient status / error message, displayed in the echo
-    /// area until replaced.
-    pub last_message: Option<EchoMessage>,
-    /// Append-only chronological ring of every echo
-    /// (`set_message` call). The `:messages` ex-command opens
-    /// a `*messages*` buffer rendered from this ring -- the
-    /// emacs `*Messages*` analogue. Updated on every call to
-    /// `set_message`; bounded by [`MessagesRing::capacity`]
-    /// so the editor never grows unboundedly.
-    ///
-    /// **msg-mode.1:** wrapped in `Arc<Mutex<>>` so the
-    /// boot-installed `MessagesLayer` (a `tracing::Layer`
-    /// running on whatever thread emitted the event) can
-    /// push into the same ring the App reads on the main
-    /// thread for backlog seeding.
-    pub messages: std::sync::Arc<std::sync::Mutex<MessagesRing>>,
-    /// Receiver for [`lattice_runtime::MessagePushed`] events
-    /// published by `set_message`. The runtime's per-tick
-    /// drain ([`Self::drain_message_events`]) coalesces
-    /// bursts and rebuilds the `*messages*` buffer view once
-    /// per frame.
-    pub pending_message_event_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_runtime::MessagePushed>>,
-    /// Set by [`Action::RedrawScreen`] (`<C-l>`); the runtime
-    /// clears this on its next frame after issuing a full
-    /// terminal-clear so any leftover ANSI / stale glyph state
-    /// gets repainted from scratch.
-    pub pending_redraw: bool,
+    // Phase 5.B.11: `command_line`, `last_message`,
+    // `messages`, `pending_message_event_rx`, `pending_redraw`
+    // moved to `editor.{command_line, last_message, messages,
+    // pending_message_event_rx, pending_redraw}`.
     /// Per-document tree-sitter state. `None` when the document's language
     /// is `Plain` (no grammar bundled).
     ///
@@ -855,14 +828,10 @@ pub struct App {
     /// renderer can read via `&App`. The active pane uses the live
     /// [`Self::visible_highlights`] field instead.
     pub pane_highlights: HashMap<usize, Vec<Vec<StyledSpan>>>,
-    /// Submitted `:` command history. Newest at the back. Bounded.
-    pub command_history: Vec<String>,
-    /// While in Command modal: index into `command_history` of the
-    /// entry currently shown (None = the user's in-progress text).
-    pub command_history_cursor: Option<usize>,
-    /// Snapshot of the user's typed command_line on the first Up so
-    /// Down can return to it after walking through history.
-    pub command_history_pending: Option<String>,
+    // Phase 5.B.11: `command_history`,
+    // `command_history_cursor`, `command_history_pending`
+    // moved to `editor.{command_history,
+    // command_history_cursor, command_history_pending}`.
     /// Active popup overlay's buffer id (DESIGN.md §5.11; M.4).
     /// `Some(id)` while a `:describe-*` / `:apropos` / hover / etc.
     /// popup is open; the actual buffer lives in
@@ -1288,13 +1257,8 @@ pub struct App {
     // registry (`self.config` type-keyed by
     // `lattice_config::CompletionAutoInsertSingle`). Read via
     // [`Self::completion_auto_insert_single`].
-    /// One-shot "auto-submit on next chord" flag. Set when the
-    /// user submitted a Chord-arg-required command with no value
-    /// (`:describe-key<CR>`); the cmdline pre-fills with the
-    /// command word + space, and the very next captured chord
-    /// auto-fires [`Action::CommandLineSubmit`] without an
-    /// explicit `<CR>`. Reset on cancel / submit.
-    pub auto_submit_after_chord: bool,
+    // Phase 5.B.11: `auto_submit_after_chord` moved to
+    // `editor.editor.auto_submit_after_chord`.
     /// LSP subsystem handle (DESIGN.md §5.4, Phase 4.1.h +
     /// audit slice 1). Reads (`servers_for`, `running_actors`,
     /// `configs`, ...) are wait-free against an
@@ -1409,7 +1373,7 @@ pub struct App {
 pub struct CompletionState {
     pub candidates: Vec<lattice_completion::RenderedCandidate>,
     pub selected: usize,
-    /// Byte offset within `App.command_line` where the prefix being
+    /// Byte offset within `App.editor.command_line` where the prefix being
     /// completed begins. The accept-handler replaces
     /// `[replace_start, command_line.len())` with the chosen
     /// candidate's `text`.
@@ -1472,8 +1436,8 @@ impl std::fmt::Debug for App {
             .field("should_quit", &self.should_quit)
             .field("viewport_height", &self.viewport_height)
             .field("modal", &self.modal)
-            .field("command_line", &self.command_line)
-            .field("last_message", &self.last_message)
+            .field("command_line", &self.editor.command_line)
+            .field("last_message", &self.editor.last_message)
             .field("dirty", &self.document.dirty())
             .finish()
     }
@@ -1515,7 +1479,7 @@ impl App {
     /// the only consumers of its own `set_message` calls.
     pub fn set_message(&mut self, level: EchoLevel, text: impl Into<String>) {
         let text: String = text.into();
-        self.last_message = Some(EchoMessage {
+        self.editor.last_message = Some(EchoMessage {
             text: text.clone(),
             level,
         });
@@ -1524,7 +1488,7 @@ impl App {
             level: echo_level_to_wire(level),
             text,
         };
-        if let Ok(mut ring) = self.messages.lock() {
+        if let Ok(mut ring) = self.editor.messages.lock() {
             ring.push(record.clone());
         }
         self.event_bus.publish_typed(MessagePushed { record });
@@ -2456,13 +2420,13 @@ mod tests {
             text: "hi".into(),
             level: EchoLevel::Info,
         }));
-        assert_eq!(a.last_message.as_ref().unwrap().text, "hi");
+        assert_eq!(a.editor.last_message.as_ref().unwrap().text, "hi");
         a.apply(Action::Echo(EchoMessage {
             text: "bye".into(),
             level: EchoLevel::Warn,
         }));
-        assert_eq!(a.last_message.as_ref().unwrap().text, "bye");
-        assert_eq!(a.last_message.as_ref().unwrap().level, EchoLevel::Warn);
+        assert_eq!(a.editor.last_message.as_ref().unwrap().text, "bye");
+        assert_eq!(a.editor.last_message.as_ref().unwrap().level, EchoLevel::Warn);
     }
     // ---- change operator end-to-end ----
 
@@ -2545,7 +2509,7 @@ mod tests {
         a.cursor = Position::new(2, 0);
         a.apply(invoke_motion(a.builtins.goto_first_line)); // pushes AutoJump
         a.apply(Action::WalkMarkHistoryBack);
-        let msg = a.last_message.as_ref().unwrap();
+        let msg = a.editor.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Error);
         assert!(msg.text.contains("no marks"));
     }
@@ -2586,7 +2550,7 @@ mod tests {
     fn invalid_mark_name_emits_error() {
         let mut a = app_with("hello", 10);
         a.apply(Action::SetMark(' '));
-        let msg = a.last_message.as_ref().unwrap();
+        let msg = a.editor.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Error);
         assert!(a.editor.marks.is_empty());
     }
@@ -2621,7 +2585,7 @@ mod tests {
     fn jumping_to_mark_with_invalid_name_is_error() {
         let mut a = app_with("hello", 10);
         a.apply(Action::JumpToMarkExact(' '));
-        let msg = a.last_message.as_ref().unwrap();
+        let msg = a.editor.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Error);
     }
 
@@ -2850,9 +2814,9 @@ mod tests {
         // ranking) is one of the describe-* family.
         a.apply(Action::CommandLineAcceptCompletion);
         assert!(
-            a.command_line.starts_with("describe-") || a.command_line == "apropos",
+            a.editor.command_line.starts_with("describe-") || a.editor.command_line == "apropos",
             "expected user-facing alias, got `{}`",
-            a.command_line
+            a.editor.command_line
         );
         assert!(a.completion_state.is_none());
     }
@@ -2865,9 +2829,9 @@ mod tests {
     fn cancel_clears_armed_chord_prompt() {
         let mut a = app_in_command_mode("describe-key");
         a.apply(Action::CommandLineSubmit);
-        assert!(a.auto_submit_after_chord);
+        assert!(a.editor.auto_submit_after_chord);
         a.apply(Action::CommandLineCancel);
-        assert!(!a.auto_submit_after_chord);
+        assert!(!a.editor.auto_submit_after_chord);
     }
 
     #[test]
@@ -2899,7 +2863,7 @@ mod tests {
         a.apply(Action::CommandLineAcceptCompletion);
         // Should now be "describe-command motion:..." -- the
         // command word + space preserved; only `moti` replaced.
-        assert!(a.command_line.starts_with("describe-command motion:"));
+        assert!(a.editor.command_line.starts_with("describe-command motion:"));
     }
 
     // ---- Hybrid <C-h> (DESIGN.md §5.11.3 Q11) ----
@@ -2982,16 +2946,16 @@ mod tests {
         let path = write_temp_file("b", "one\n");
         let mut a = app_with("xx", 10);
         let first_id = a.document_buffer_id;
-        a.command_line = format!("e {}", path.display());
+        a.editor.command_line = format!("e {}", path.display());
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let second_id = a.document_buffer_id;
         assert_ne!(first_id, second_id);
-        a.command_line = "bn".into();
+        a.editor.command_line = "bn".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.document_buffer_id, first_id);
-        a.command_line = "bn".into();
+        a.editor.command_line = "bn".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.document_buffer_id, second_id);
@@ -3003,18 +2967,18 @@ mod tests {
         let path = write_temp_file("d", "alpha\n");
         let mut a = app_with("xx", 10);
         let initial_id = a.document_buffer_id;
-        a.command_line = format!("e {}", path.display());
+        a.editor.command_line = format!("e {}", path.display());
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let new_id = a.document_buffer_id;
         // Cycle back to first buffer.
-        a.command_line = "bn".into();
+        a.editor.command_line = "bn".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.document_buffer_id, initial_id);
         // Re-editing the new file's path should switch to its
         // existing buffer rather than spawning a third.
-        a.command_line = format!("e {}", path.display());
+        a.editor.command_line = format!("e {}", path.display());
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.document_buffer_id, new_id);
@@ -3041,7 +3005,7 @@ mod tests {
         let path = write_temp_file("activate-manual", "a:\n    x\n    y\nb:\n    p\n    q\n");
         let mut a = app_with("xx", 10);
         a.set_foldmethod_for_test(FoldMethod::Manual);
-        a.command_line = format!("e {}", path.display());
+        a.editor.command_line = format!("e {}", path.display());
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert!(
@@ -3246,7 +3210,7 @@ mod tests {
     #[test]
     fn h_alias_resolves_to_help() {
         let mut a = app_with("xx", 10);
-        a.command_line = "h folding".into();
+        a.editor.command_line = "h folding".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let h = a.popup_help().expect("help open");
@@ -3618,7 +3582,7 @@ mod tests {
     fn list_registers_with_no_state_says_so() {
         let mut a = app_with("hello", 10);
         submit_ex(&mut a, "reg");
-        let msg = a.last_message.as_ref().unwrap();
+        let msg = a.editor.last_message.as_ref().unwrap();
         assert!(msg.text.contains("no registers"));
     }
 
@@ -3630,7 +3594,7 @@ mod tests {
         );
         a.apply(Action::Invoke(inv));
         submit_ex(&mut a, "reg");
-        let msg = a.last_message.as_ref().unwrap();
+        let msg = a.editor.last_message.as_ref().unwrap();
         assert!(msg.text.contains("\"\""));
         assert!(msg.text.contains("\"0"));
     }
@@ -3639,7 +3603,7 @@ mod tests {
     fn list_marks_with_no_marks_says_so() {
         let mut a = app_with("hello", 10);
         submit_ex(&mut a, "marks");
-        let msg = a.last_message.as_ref().unwrap();
+        let msg = a.editor.last_message.as_ref().unwrap();
         assert!(msg.text.contains("no marks"));
     }
 
@@ -3649,7 +3613,7 @@ mod tests {
         a.cursor = Position::new(1, 2);
         a.apply(Action::SetMark('a'));
         submit_ex(&mut a, "marks");
-        let msg = a.last_message.as_ref().unwrap();
+        let msg = a.editor.last_message.as_ref().unwrap();
         assert!(msg.text.contains('a'));
         // Line 2 (1-indexed for display) at byte 2.
         assert!(msg.text.contains("2:2"));
@@ -3683,7 +3647,7 @@ mod tests {
     fn global_no_matches_emits_error() {
         let mut a = app_with("hello\nworld", 10);
         submit_ex(&mut a, "g/xyz/d");
-        let msg = a.last_message.as_ref().unwrap();
+        let msg = a.editor.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Error);
     }
 
@@ -3767,7 +3731,7 @@ mod tests {
     fn app_in_command_mode(line: &str) -> App {
         let mut a = app_with("xx", 10);
         a.modal = ModalState::Command;
-        a.command_line = line.into();
+        a.editor.command_line = line.into();
         a
     }
 
@@ -3776,7 +3740,7 @@ mod tests {
         let mut a = app_in_command_mode("descri");
         a.apply(Action::CommandLineCompleteOrAdvance);
         a.apply(Action::CommandLineDismissCompletion);
-        assert_eq!(a.command_line, "descri");
+        assert_eq!(a.editor.command_line, "descri");
         assert!(a.completion_state.is_none());
     }
 
@@ -3787,7 +3751,7 @@ mod tests {
         let narrow_count = a.completion_state.as_ref().unwrap().candidates.len();
         a.apply(Action::CommandLineClear);
         assert!(a.completion_state.is_some());
-        assert_eq!(a.command_line, "");
+        assert_eq!(a.editor.command_line, "");
         let widened = a.completion_state.as_ref().unwrap().candidates.len();
         assert!(widened >= narrow_count);
     }
@@ -3796,7 +3760,7 @@ mod tests {
     fn append_chord_concatenates_token() {
         let mut a = app_in_command_mode("describe-key ");
         a.apply(Action::CommandLineAppendChord("<C-c>".into()));
-        assert_eq!(a.command_line, "describe-key <C-c>");
+        assert_eq!(a.editor.command_line, "describe-key <C-c>");
     }
 
     #[test]
@@ -3806,7 +3770,7 @@ mod tests {
         let mut a = app_in_command_mode("describe-key ");
         a.apply(Action::CommandLineAppendChord("g".into()));
         a.apply(Action::CommandLineAppendChord("g".into()));
-        assert_eq!(a.command_line, "describe-key gg");
+        assert_eq!(a.editor.command_line, "describe-key gg");
     }
 
     #[test]
@@ -3814,7 +3778,7 @@ mod tests {
         let mut a = app_with("xx", 10);
         a.apply(Action::ClosePane);
         assert_eq!(a.pane_tree.len(), 1);
-        let msg = a.last_message.as_ref().expect("warn echo");
+        let msg = a.editor.last_message.as_ref().expect("warn echo");
         assert!(msg.text.contains("only one pane"));
     }
 
@@ -3893,7 +3857,7 @@ mod tests {
         // Wire up a Rust syntax instance so there's something to lose.
         attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
         // Open the tree, then dismiss.
-        a.command_line = format!("Filetree {}", dir.display());
+        a.editor.command_line = format!("Filetree {}", dir.display());
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert!(matches!(
@@ -3901,7 +3865,7 @@ mod tests {
             crate::buffers::BufferKind::FileTree
         ));
         // `:TreeClose` (the path `q` takes in the tree).
-        a.command_line = "FiletreeClose".into();
+        a.editor.command_line = "FiletreeClose".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert!(matches!(
@@ -3927,7 +3891,7 @@ mod tests {
         a.terminal_width = Some(80);
         a.apply(Action::SplitPaneVertical);
         a.apply(Action::NavigatePane(PaneDirection::Right));
-        a.command_line = format!("Filetree {}", dir.display());
+        a.editor.command_line = format!("Filetree {}", dir.display());
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.buffers.file_tree_ids_sorted().len(), 1);
@@ -3942,12 +3906,12 @@ mod tests {
         let path = write_temp_file("e", "alpha\n");
         let mut a = app_with("xx", 10);
         let initial_id = a.document_buffer_id;
-        a.command_line = format!("e {}", path.display());
+        a.editor.command_line = format!("e {}", path.display());
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         // Now active = new buffer; delete it. Successor should
         // be initial_id.
-        a.command_line = "bd".into();
+        a.editor.command_line = "bd".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.document_buffer_id, initial_id);
@@ -3960,7 +3924,7 @@ mod tests {
     #[test]
     fn bdelete_only_buffer_is_rejected() {
         let mut a = app_with("xx", 10);
-        a.command_line = "bd".into();
+        a.editor.command_line = "bd".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         // The listed count gates the "only buffer" check.
@@ -3968,7 +3932,7 @@ mod tests {
         // switch destinations, so the rejection still fires when
         // only one user-listed buffer remains.
         assert_eq!(a.buffers.listed_ids_sorted().len(), 1);
-        let msg = a.last_message.as_ref().expect("error echo");
+        let msg = a.editor.last_message.as_ref().expect("error echo");
         assert!(msg.text.contains("only buffer"));
     }
 
@@ -3983,7 +3947,7 @@ mod tests {
         );
         let mut a = app_with("xx", 10);
         a.set_foldmethod_for_test(FoldMethod::Indent);
-        a.command_line = format!("e {}", path.display());
+        a.editor.command_line = format!("e {}", path.display());
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         // The new buffer should have folds without `<C-l>`.
@@ -4159,7 +4123,7 @@ mod tests {
         let mut a = app_with("xx", 10);
         // Open a help buffer so the active modal/buffer state
         // matches what `FollowLink` expects.
-        a.command_line = "help".into();
+        a.editor.command_line = "help".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         // Build a synthetic source link inside the help buffer.
@@ -4221,7 +4185,7 @@ mod tests {
             std::env::temp_dir().join(format!("lattice-srclink-clamp-{}.rs", std::process::id()));
         std::fs::write(&path, "only-line\n").unwrap();
         let mut a = app_with("xx", 10);
-        a.command_line = "help".into();
+        a.editor.command_line = "help".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let link = crate::help::HelpLink {
@@ -4581,7 +4545,7 @@ mod tests {
         // production path had read from the (empty) struct
         // field, the message would have been "no link under
         // cursor".
-        let msg = a.last_message.as_ref().expect("echo set by FollowLink");
+        let msg = a.editor.last_message.as_ref().expect("echo set by FollowLink");
         assert!(
             !msg.text.contains("no link under cursor"),
             "production reader should have found the link via buffer_locals, \

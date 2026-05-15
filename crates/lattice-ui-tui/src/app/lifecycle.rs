@@ -1744,7 +1744,7 @@ impl App {
         // hook so we err on the side of re-running it).
         self.recompute_folds();
         // Tell the runtime to clear the terminal on next frame.
-        self.pending_redraw = true;
+        self.editor.pending_redraw = true;
         self.set_message(EchoLevel::Info, "redraw".to_string());
     }
 }
@@ -1801,7 +1801,7 @@ mod tests {
         a.apply(Action::EnterMode(ModalState::Normal));
         assert!(a.document.dirty());
         submit_ex(&mut a, "e /nonexistent");
-        let msg = a.last_message.as_ref().unwrap();
+        let msg = a.editor.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Error);
         // Document unchanged.
         assert_eq!(a.document.text(), "Xmodified");
@@ -1861,7 +1861,7 @@ mod tests {
     fn edit_unknown_path_emits_error() {
         let mut a = app_with("hello", 10);
         submit_ex(&mut a, "e /absolutely/does/not/exist/anywhere.txt");
-        let msg = a.last_message.as_ref().unwrap();
+        let msg = a.editor.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Error);
         // Buffer unchanged.
         assert_eq!(a.document.text(), "hello");
@@ -1930,7 +1930,7 @@ mod tests {
         a.do_quit(false);
         assert!(!a.should_quit);
         assert!(
-            a.last_message
+            a.editor.last_message
                 .as_ref()
                 .map(|m| m.text.contains("no write since last change"))
                 .unwrap_or(false)
@@ -1992,7 +1992,7 @@ mod tests {
         let path = write_temp_file("a", "alpha\n");
         let mut a = app_with("xx", 10);
         let initial_id = a.document_buffer_id;
-        a.command_line = format!("e {}", path.display());
+        a.editor.command_line = format!("e {}", path.display());
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         // Two listed buffers (initial + opened); the synthetic
@@ -2007,10 +2007,10 @@ mod tests {
     fn ls_renders_help_with_every_open_buffer() {
         let path = write_temp_file("c", "x\n");
         let mut a = app_with("xx", 10);
-        a.command_line = format!("e {}", path.display());
+        a.editor.command_line = format!("e {}", path.display());
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        a.command_line = "ls".into();
+        a.editor.command_line = "ls".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let h = a.popup_help().expect("buffers help");
@@ -2033,7 +2033,7 @@ mod tests {
         std::fs::create_dir_all(&dir).ok();
         std::fs::write(dir.join("a.txt"), "alpha").ok();
         let mut a = app_with("xx", 10);
-        a.command_line = format!("Filetree {}", dir.display());
+        a.editor.command_line = format!("Filetree {}", dir.display());
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.active_buffer, BufferKind::FileTree);
@@ -2046,7 +2046,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("lattice-tree-close-{}", std::process::id()));
         std::fs::create_dir_all(&dir).ok();
         let mut a = app_with("xx", 10);
-        a.command_line = format!("Filetree {}", dir.display());
+        a.editor.command_line = format!("Filetree {}", dir.display());
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         a.apply(Action::HelpDismiss);
@@ -2062,7 +2062,7 @@ mod tests {
         std::fs::write(dir.join("a.txt"), "x").ok();
         std::fs::write(dir.join("b.txt"), "y").ok();
         let mut a = app_with("xx", 10);
-        a.command_line = format!("Filetree {}", dir.display());
+        a.editor.command_line = format!("Filetree {}", dir.display());
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let line_down = a.builtins.line_down;
@@ -2080,7 +2080,7 @@ mod tests {
         std::fs::create_dir_all(&dir).ok();
         std::fs::write(dir.join("alpha.txt"), "hello").ok();
         let mut a = app_with("xx", 10);
-        a.command_line = format!("Filetree {}", dir.display());
+        a.editor.command_line = format!("Filetree {}", dir.display());
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         // Move cursor to the alpha.txt entry (row 1).
@@ -2178,7 +2178,7 @@ mod tests {
         let toml_text = "[lsp]\nlog-level = \"debug\"\n";
         app.lsp_config_tree = toml_text.parse().expect("toml parse");
         app.apply_persistent_lsp_editor_options();
-        let msg = app.last_message.as_ref().expect("deprecation warn");
+        let msg = app.editor.last_message.as_ref().expect("deprecation warn");
         assert_eq!(msg.level, crate::app::EchoLevel::Warn);
         assert!(
             msg.text.contains("`lsp.log-level` is deprecated")
@@ -2215,9 +2215,9 @@ mod tests {
         app.apply_persistent_lsp_editor_options();
         // No deprecation echo when canonical is present.
         assert!(
-            app.last_message.is_none(),
+            app.editor.last_message.is_none(),
             "canonical present ⇒ silent; got {:?}",
-            app.last_message,
+            app.editor.last_message,
         );
     }
 
@@ -2227,7 +2227,7 @@ mod tests {
         let toml_text = "[lsp-mode]\nlog-level = \"babble\"\n";
         app.lsp_config_tree = toml_text.parse().expect("toml parse");
         app.apply_persistent_lsp_editor_options();
-        let msg = app.last_message.as_ref().expect("warn echo");
+        let msg = app.editor.last_message.as_ref().expect("warn echo");
         assert!(
             msg.text.contains("lsp-mode.log-level") && msg.text.contains("babble"),
             "echo should name the key + value, got {}",
@@ -2238,12 +2238,12 @@ mod tests {
     #[test]
     fn persistent_lsp_log_level_silent_when_missing() {
         let mut app = app_with("hi\n", 5);
-        app.last_message = None;
+        app.editor.last_message = None;
         // Empty tree: nothing under [lsp].
         app.lsp_config_tree = toml::Table::new();
         app.apply_persistent_lsp_editor_options();
         assert!(
-            app.last_message.is_none(),
+            app.editor.last_message.is_none(),
             "no echo when key is absent (default applies)",
         );
     }
@@ -2315,7 +2315,7 @@ mod tests {
         let mut a = app_with("", 5);
         a.load_persistent_config(Some(&ws));
         // The echo carries the loader's warning.
-        let msg = a.last_message.as_ref().expect("warning echoed");
+        let msg = a.editor.last_message.as_ref().expect("warning echoed");
         assert_eq!(msg.level, EchoLevel::Warn);
         assert!(msg.text.contains("config:"), "got `{}`", msg.text);
         assert!(msg.text.contains("no_such_option"), "got `{}`", msg.text,);
@@ -2450,11 +2450,11 @@ mod tests {
         // Empty workspace -- no .lattice/config.toml. Loader
         // produces no messages; the modeline stays clean.
         let mut a = app_with("", 5);
-        let prior = a.last_message.clone();
+        let prior = a.editor.last_message.clone();
         a.load_persistent_config(Some(&ws));
         // No new echo (modeline message is whatever the test
         // setup left, which for app_with is None).
-        assert_eq!(a.last_message, prior);
+        assert_eq!(a.editor.last_message, prior);
     }
 
     #[test]
@@ -2761,7 +2761,7 @@ mod tests {
 
         // Save. Should run OilBuffer::apply and create the file.
         a.do_write(None);
-        let msg = a.last_message.as_ref().expect("write echo");
+        let msg = a.editor.last_message.as_ref().expect("write echo");
         assert!(
             msg.text.contains("oil: applied"),
             "expected oil-apply success echo, got: {}",
@@ -2847,7 +2847,7 @@ mod tests {
             "expected {} to be created via the keystroke path; \
              write echo: {:?}",
             new_path.display(),
-            a.last_message,
+            a.editor.last_message,
         );
 
         let _ = std::fs::remove_dir_all(&tmp);

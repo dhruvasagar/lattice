@@ -873,7 +873,7 @@ mod tests {
             .map(|m| m.minors().len())
             .unwrap_or(0);
         a.toggle_mode_by_name("definitely-not-a-mode");
-        let msg = a.last_message.as_ref().expect("error echo");
+        let msg = a.editor.last_message.as_ref().expect("error echo");
         assert!(msg.text.contains("not a registered mode"));
         let after_minors_len = a
             .active_modes
@@ -1146,7 +1146,7 @@ mod tests {
     fn describe_event_unknown_name_emits_error_echo() {
         let mut a = app_with("hi", 5);
         a.do_describe_event("definitely-not-an-event");
-        let msg = a.last_message.as_ref().expect("error echo");
+        let msg = a.editor.last_message.as_ref().expect("error echo");
         assert!(msg.text.contains("no event named"));
         assert!(a.editor.popup_buffer.is_none());
     }

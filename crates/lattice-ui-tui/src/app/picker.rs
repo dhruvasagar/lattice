@@ -1824,7 +1824,7 @@ mod tests {
         let mut app = app_with("hi\n", 5);
         app.open_picker("recent".into(), Vec::new());
         assert!(app.picker.is_none());
-        let msg = app.last_message.as_ref().expect("echo");
+        let msg = app.editor.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("no recent files"));
     }
 
@@ -1946,7 +1946,7 @@ mod tests {
         let mut app = app_with("hi\n", 5);
         app.open_picker("snippets".into(), Vec::new());
         assert!(app.picker.is_none());
-        let msg = app.last_message.as_ref().expect("echo");
+        let msg = app.editor.last_message.as_ref().expect("echo");
         assert!(
             msg.text.contains("no snippets registered"),
             "got `{}`",
@@ -2357,7 +2357,7 @@ mod tests {
         let mut app = app_with("hi\n", 5);
         app.open_picker("nope".into(), Vec::new());
         assert!(app.picker.is_none());
-        let msg = app.last_message.as_ref().expect("echo");
+        let msg = app.editor.last_message.as_ref().expect("echo");
         assert!(
             msg.text.contains("unknown source `nope`"),
             "missing unknown-source prefix: {}",

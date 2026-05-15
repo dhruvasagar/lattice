@@ -74,7 +74,7 @@ impl App {
         if !matches!(self.modal, ModalState::Command) {
             return;
         }
-        let line = self.command_line.clone();
+        let line = self.editor.command_line.clone();
         let cursor = line.len();
         let alias_resolver = |short: &str| {
             crate::excommand::aliases()
@@ -163,8 +163,8 @@ impl App {
             return;
         }
         let chosen = &state.candidates[state.selected];
-        self.command_line.replace_range(
-            state.replace_start..self.command_line.len(),
+        self.editor.command_line.replace_range(
+            state.replace_start..self.editor.command_line.len(),
             &chosen.raw.text,
         );
     }
@@ -175,29 +175,29 @@ impl App {
         if !matches!(self.modal, ModalState::Command) {
             return;
         }
-        if self.command_history.is_empty() {
+        if self.editor.command_history.is_empty() {
             return;
         }
-        let new_cursor = match (self.command_history_cursor, back) {
+        let new_cursor = match (self.editor.command_history_cursor, back) {
             (None, true) => {
-                self.command_history_pending = Some(self.command_line.clone());
-                Some(self.command_history.len() - 1)
+                self.editor.command_history_pending = Some(self.editor.command_line.clone());
+                Some(self.editor.command_history.len() - 1)
             }
             (None, false) => return,
             (Some(0), true) => return,
             (Some(i), true) => Some(i - 1),
-            (Some(i), false) if i + 1 >= self.command_history.len() => {
-                if let Some(pending) = self.command_history_pending.take() {
-                    self.command_line = pending;
+            (Some(i), false) if i + 1 >= self.editor.command_history.len() => {
+                if let Some(pending) = self.editor.command_history_pending.take() {
+                    self.editor.command_line = pending;
                 }
-                self.command_history_cursor = None;
+                self.editor.command_history_cursor = None;
                 return;
             }
             (Some(i), false) => Some(i + 1),
         };
         if let Some(idx) = new_cursor {
-            self.command_line = self.command_history[idx].clone();
-            self.command_history_cursor = Some(idx);
+            self.editor.command_line = self.editor.command_history[idx].clone();
+            self.editor.command_history_cursor = Some(idx);
         }
     }
 
@@ -223,7 +223,7 @@ impl App {
     /// - There's no first arg or it's not Required.
     /// - The command's args use the delimiter form (`:s/.../.../`).
     pub(super) fn try_resolve_missing_arg_prompt(&self) -> Option<MissingArgPrompt> {
-        let line = self.command_line.trim();
+        let line = self.editor.command_line.trim();
         if line.is_empty() {
             return None;
         }
@@ -286,7 +286,7 @@ impl App {
         if !matches!(self.modal, ModalState::Command) {
             return false;
         }
-        let line = &self.command_line;
+        let line = &self.editor.command_line;
         let alias_resolver = |short: &str| {
             crate::excommand::aliases()
                 .get(short)
@@ -316,8 +316,8 @@ impl App {
             Ok(state) => {
                 if self.completion_auto_insert_single() && state.candidates.len() == 1 {
                     let chosen_text = state.candidates[0].raw.text.clone();
-                    self.command_line
-                        .replace_range(state.replace_start..self.command_line.len(), &chosen_text);
+                    self.editor.command_line
+                        .replace_range(state.replace_start..self.editor.command_line.len(), &chosen_text);
                     // Don't open the popup -- the single candidate
                     // is already applied. `completion_state` stays
                     // `None` so the next `<Tab>` would re-trigger
@@ -354,7 +354,7 @@ impl App {
                 if let Some(state) = self.completion_state.as_mut() {
                     state.candidates.clear();
                     state.selected = 0;
-                    state.original_line = self.command_line.clone();
+                    state.original_line = self.editor.command_line.clone();
                 }
             }
             Err(_) => {
@@ -375,7 +375,7 @@ impl App {
     pub(super) fn compute_completion_state(
         &self,
     ) -> Result<CompletionState, CompletionComputeError> {
-        let line = self.command_line.clone();
+        let line = self.editor.command_line.clone();
         let cursor = line.len();
         let alias_resolver = |short: &str| {
             crate::excommand::aliases()
@@ -618,15 +618,15 @@ mod tests {
     #[test]
     fn enter_command_line_clears_buffer_and_sets_modal() {
         let mut a = app_with("abc", 10);
-        a.command_line = "stale".into();
-        a.last_message = Some(EchoMessage {
+        a.editor.command_line = "stale".into();
+        a.editor.last_message = Some(EchoMessage {
             text: "stale".into(),
             level: EchoLevel::Info,
         });
         a.apply(Action::EnterCommandLine);
         assert_eq!(a.modal, ModalState::Command);
-        assert_eq!(a.command_line, "");
-        assert!(a.last_message.is_none());
+        assert_eq!(a.editor.command_line, "");
+        assert!(a.editor.last_message.is_none());
     }
 
     #[test]
@@ -635,7 +635,7 @@ mod tests {
         a.apply(Action::EnterCommandLine);
         a.apply(Action::CommandLineAppend('w'));
         a.apply(Action::CommandLineAppend('q'));
-        assert_eq!(a.command_line, "wq");
+        assert_eq!(a.editor.command_line, "wq");
     }
 
     #[test]
@@ -645,7 +645,7 @@ mod tests {
         a.apply(Action::CommandLineAppend('w'));
         a.apply(Action::CommandLineAppend('q'));
         a.apply(Action::CommandLineBackspace);
-        assert_eq!(a.command_line, "w");
+        assert_eq!(a.editor.command_line, "w");
     }
 
     #[test]
@@ -663,7 +663,7 @@ mod tests {
         a.apply(Action::CommandLineAppend('w'));
         a.apply(Action::CommandLineCancel);
         assert_eq!(a.modal, ModalState::Normal);
-        assert_eq!(a.command_line, "");
+        assert_eq!(a.editor.command_line, "");
     }
 
     #[test]
@@ -690,7 +690,7 @@ mod tests {
         a.apply(Action::CommandLineAppend('q'));
         a.apply(Action::CommandLineSubmit);
         assert!(!a.should_quit);
-        let msg = a.last_message.as_ref().unwrap();
+        let msg = a.editor.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Error);
         assert!(msg.text.contains("no write since last change"));
     }
@@ -715,7 +715,7 @@ mod tests {
         a.apply(Action::EnterCommandLine);
         a.apply(Action::CommandLineAppend('w'));
         a.apply(Action::CommandLineSubmit);
-        let msg = a.last_message.as_ref().unwrap();
+        let msg = a.editor.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Error);
         assert!(msg.text.contains("no file name"));
     }
@@ -740,7 +740,7 @@ mod tests {
         a.apply(Action::CommandLineSubmit);
 
         assert!(!a.document.dirty());
-        let msg = a.last_message.as_ref().unwrap();
+        let msg = a.editor.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Info);
         assert!(msg.text.contains("written"));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello!");
@@ -779,7 +779,7 @@ mod tests {
             a.apply(Action::CommandLineAppend(c));
         }
         a.apply(Action::CommandLineSubmit);
-        let msg = a.last_message.as_ref().unwrap();
+        let msg = a.editor.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Error);
         assert!(msg.text.contains("frobnicate"));
     }
@@ -788,7 +788,7 @@ mod tests {
     fn submit_pushes_command_into_history() {
         let mut a = app_with("hello", 10);
         submit_ex(&mut a, "set number");
-        assert_eq!(a.command_history, vec!["set number".to_string()]);
+        assert_eq!(a.editor.command_history, vec!["set number".to_string()]);
     }
 
     #[test]
@@ -796,7 +796,7 @@ mod tests {
         let mut a = app_with("hello", 10);
         submit_ex(&mut a, "set number");
         submit_ex(&mut a, "set number");
-        assert_eq!(a.command_history.len(), 1);
+        assert_eq!(a.editor.command_history.len(), 1);
     }
 
     #[test]
@@ -804,7 +804,7 @@ mod tests {
         let mut a = app_with("hello", 10);
         a.apply(Action::EnterCommandLine);
         a.apply(Action::CommandLineSubmit);
-        assert!(a.command_history.is_empty());
+        assert!(a.editor.command_history.is_empty());
     }
 
     #[test]
@@ -814,7 +814,7 @@ mod tests {
         submit_ex(&mut a, "set nonumber");
         a.apply(Action::EnterCommandLine);
         a.apply(Action::CommandLineHistoryPrev);
-        assert_eq!(a.command_line, "set nonumber");
+        assert_eq!(a.editor.command_line, "set nonumber");
     }
 
     #[test]
@@ -825,7 +825,7 @@ mod tests {
         a.apply(Action::EnterCommandLine);
         a.apply(Action::CommandLineHistoryPrev);
         a.apply(Action::CommandLineHistoryPrev);
-        assert_eq!(a.command_line, "set number");
+        assert_eq!(a.editor.command_line, "set number");
     }
 
     #[test]
@@ -838,10 +838,10 @@ mod tests {
         }
         // User starts typing "se", presses Up -> walks to "set number".
         a.apply(Action::CommandLineHistoryPrev);
-        assert_eq!(a.command_line, "set number");
+        assert_eq!(a.editor.command_line, "set number");
         // Down returns to "se".
         a.apply(Action::CommandLineHistoryNext);
-        assert_eq!(a.command_line, "se");
+        assert_eq!(a.editor.command_line, "se");
     }
 
     #[test]
@@ -850,7 +850,7 @@ mod tests {
         a.apply(Action::EnterCommandLine);
         a.apply(Action::CommandLineAppend('w'));
         a.apply(Action::CommandLineHistoryPrev);
-        assert_eq!(a.command_line, "w");
+        assert_eq!(a.editor.command_line, "w");
     }
 
     #[test]
@@ -860,7 +860,7 @@ mod tests {
         // Reopen command line; Up should still recall.
         a.apply(Action::EnterCommandLine);
         a.apply(Action::CommandLineHistoryPrev);
-        assert_eq!(a.command_line, "set number");
+        assert_eq!(a.editor.command_line, "set number");
     }
 
     #[test]
@@ -903,22 +903,22 @@ mod tests {
         let mut a = app_with("xx", 10);
         a.modal = ModalState::Command;
         // Empty cmdline -> CommandName slot, not chord-capture.
-        a.command_line = String::new();
+        a.editor.command_line = String::new();
         assert!(!a.chord_capture_active());
         // Mid command-name slot.
-        a.command_line = "describe-key".into();
+        a.editor.command_line = "describe-key".into();
         assert!(!a.chord_capture_active());
         // Now the cursor is past the space; arg slot is `chord`
         // with kind=Chord -> capture is active.
-        a.command_line = "describe-key ".into();
+        a.editor.command_line = "describe-key ".into();
         assert!(a.chord_capture_active());
         // describe-command's first arg is String, NOT Chord ->
         // no capture even though we're in an arg slot.
-        a.command_line = "describe-command ".into();
+        a.editor.command_line = "describe-command ".into();
         assert!(!a.chord_capture_active());
         // Outside Command modal, never active.
         a.modal = ModalState::Normal;
-        a.command_line = "describe-key ".into();
+        a.editor.command_line = "describe-key ".into();
         assert!(!a.chord_capture_active());
     }
 
@@ -929,7 +929,7 @@ mod tests {
         // to alias-expand, so both forms switch into chord-capture.
         let mut a = app_with("xx", 10);
         a.modal = ModalState::Command;
-        a.command_line = "ex:describe-key ".into();
+        a.editor.command_line = "ex:describe-key ".into();
         assert!(a.chord_capture_active());
     }
 
@@ -940,8 +940,8 @@ mod tests {
         // prefill the cmdline and arm auto-submit.
         let mut a = app_in_command_mode("describe-key");
         a.apply(Action::CommandLineSubmit);
-        assert_eq!(a.command_line, "describe-key ");
-        assert!(a.auto_submit_after_chord);
+        assert_eq!(a.editor.command_line, "describe-key ");
+        assert!(a.editor.auto_submit_after_chord);
         assert!(matches!(a.modal, ModalState::Command));
     }
 
@@ -951,8 +951,8 @@ mod tests {
         // the alias.
         let mut a = app_in_command_mode("ex:describe-key");
         a.apply(Action::CommandLineSubmit);
-        assert_eq!(a.command_line, "ex:describe-key ");
-        assert!(a.auto_submit_after_chord);
+        assert_eq!(a.editor.command_line, "ex:describe-key ");
+        assert!(a.editor.auto_submit_after_chord);
     }
 
     #[test]
@@ -965,11 +965,11 @@ mod tests {
         let mut a = app_in_command_mode("describe-command");
         a.apply(Action::CommandLineSubmit);
         assert!(matches!(a.modal, ModalState::Command));
-        assert!(!a.auto_submit_after_chord);
+        assert!(!a.editor.auto_submit_after_chord);
         // Prefilled with the command word + space; cursor in arg slot.
-        assert_eq!(a.command_line, "describe-command ");
+        assert_eq!(a.editor.command_line, "describe-command ");
         // Echo area carries the arg's prompt.
-        assert!(a.last_message.is_some());
+        assert!(a.editor.last_message.is_some());
     }
 
     #[test]
@@ -982,7 +982,7 @@ mod tests {
         // Cmdline closed -- the missing-arg prompt path skipped this
         // command because its schema's first arg is Optional.
         assert!(matches!(a.modal, ModalState::Normal));
-        assert!(!a.auto_submit_after_chord);
+        assert!(!a.editor.auto_submit_after_chord);
     }
 
     #[test]
@@ -992,7 +992,7 @@ mod tests {
         // `ex:apropos`. (Apropos's `pattern` arg is Required.)
         let mut a = app_in_command_mode("apropos");
         a.apply(Action::CommandLineSubmit);
-        assert_eq!(a.command_line, "apropos ");
+        assert_eq!(a.editor.command_line, "apropos ");
         assert!(matches!(a.modal, ModalState::Command));
     }
 
@@ -1002,7 +1002,7 @@ mod tests {
         // prompt mode -- it should just dispatch.
         let mut a = app_in_command_mode("describe-key j");
         a.apply(Action::CommandLineSubmit);
-        assert!(!a.auto_submit_after_chord);
+        assert!(!a.editor.auto_submit_after_chord);
         assert!(matches!(a.modal, ModalState::Normal));
         assert!(a.editor.popup_buffer.is_some());
     }
@@ -1049,7 +1049,7 @@ mod tests {
         let mut a = app_in_command_mode("no-such-command");
         a.apply(Action::CommandLineDescribeUnderCursor);
         assert!(a.editor.popup_buffer.is_none());
-        let msg = a.last_message.as_ref().unwrap();
+        let msg = a.editor.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Error);
     }
 

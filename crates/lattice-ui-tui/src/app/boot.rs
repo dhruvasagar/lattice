@@ -635,7 +635,11 @@ impl App {
         // also hold one (BufferRegistry is `Clone` via Arc).
         let buffers_for_services = buffers.clone();
         let mut app = Self {
-            editor: lattice_host::editor::Editor::default(),
+            editor: lattice_host::editor::Editor {
+                messages: messages_ring.clone(),
+                pending_message_event_rx: Some(message_event_rx),
+                ..lattice_host::editor::Editor::default()
+            },
             document,
             snapshot_cache,
             document_buffer_id,
@@ -693,9 +697,6 @@ impl App {
             },
             completion_popup_layer: None,
             snippet_layer: None,
-            command_line: String::new(),
-            last_message: None,
-            pending_redraw: false,
             syntax,
             last_parsed_text_version,
             pending_syntax_edits: Vec::new(),
@@ -743,9 +744,6 @@ impl App {
             theme: crate::theme::Theme::default(),
             host_theme: lattice_host::ui::theme::Theme::default(),
             pane_highlights: HashMap::new(),
-            command_history: Vec::new(),
-            command_history_cursor: None,
-            command_history_pending: None,
             popup_back_stack: Vec::new(),
             completion_registry,
             completion_state: None,
@@ -811,9 +809,6 @@ impl App {
             pending_pull_diagnostics_token: None,
             pending_pull_diagnostics_rx: None,
             pending_diagnostic_refresh_rx: Some(lsp_diagnostic_refresh_rx),
-            messages: messages_ring.clone(),
-            pending_message_event_rx: Some(message_event_rx),
-            auto_submit_after_chord: false,
             lsp,
             lsp_file_watcher: None,
             pending_moniker_rx: None,

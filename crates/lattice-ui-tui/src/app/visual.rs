@@ -122,7 +122,7 @@ mod tests {
         let mut a = app_with("hello", 10);
         assert!(a.editor.last_visual.is_none());
         a.apply(Action::ReselectLastVisual);
-        let msg = a.last_message.as_ref().unwrap();
+        let msg = a.editor.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Error);
         assert_eq!(a.modal, ModalState::Normal);
     }

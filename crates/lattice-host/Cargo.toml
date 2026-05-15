@@ -59,6 +59,10 @@ streaming-iterator = { workspace = true }
 lattice-snippet = { path = "../lattice-snippet" }
 # buffer_registry.rs uses `lattice_runtime::DocumentHandle`.
 lattice-runtime = { path = "../lattice-runtime" }
+# Phase 5.B.11: `Editor` holds typed `tokio::sync::mpsc`
+# receivers (message events; later: LSP request channels).
+# Naming those receiver types requires tokio as a direct dep.
+tokio = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
 

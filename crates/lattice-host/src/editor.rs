@@ -33,7 +33,9 @@ use lattice_protocol::position::{Position, Range as ProtoRange};
 
 use crate::action::Action;
 use lattice_core::ui::popup::PopupPlacement;
+use lattice_runtime::{MessagePushed, MessagesRing};
 
+use crate::action::EchoMessage;
 use crate::buffers::BufferId;
 use crate::state::{
     LastFind, LastSearch, LastVisual, MacroRecording, PendingBlockInsert, PositionEntry,
@@ -81,6 +83,11 @@ use crate::state::{
 ///   lives in `lattice-ui-tui::app::popup`; follow-up slice
 ///   moves the snapshot type to host before migrating the
 ///   field.
+/// - 5.B.11 -- cmdline + echo (`command_line`,
+///   `last_message`, `messages`,
+///   `pending_message_event_rx`, `pending_redraw`,
+///   `command_history`, `command_history_cursor`,
+///   `command_history_pending`, `auto_submit_after_chord`).
 #[derive(Debug, Default)]
 pub struct Editor {
     /// Completed macro recordings keyed by register name.
@@ -231,4 +238,49 @@ pub struct Editor {
     /// property of the popup, not of whatever buffer happens
     /// to be its content.
     pub popup_placement: PopupPlacement,
+    /// In-progress text in the `:` minibuffer. Populated
+    /// only while `modal == ModalState::Command`.
+    pub command_line: String,
+    /// Most recent transient status / error message,
+    /// displayed in the echo area until replaced.
+    pub last_message: Option<EchoMessage>,
+    /// Append-only chronological ring of every echo
+    /// (`set_message` call). The `:messages` ex-command
+    /// opens a `*messages*` buffer rendered from this ring
+    /// (the emacs `*Messages*` analogue). Bounded by
+    /// `MessagesRing::capacity`. Wrapped in `Arc<Mutex<>>`
+    /// so the boot-installed `MessagesLayer` (a
+    /// `tracing::Layer` running on whatever thread emitted
+    /// the event) can push into the same ring the App reads
+    /// on the main thread for backlog seeding.
+    pub messages: std::sync::Arc<std::sync::Mutex<MessagesRing>>,
+    /// Receiver for [`lattice_runtime::MessagePushed`] events
+    /// published by `set_message`. The runtime's per-tick
+    /// drain coalesces bursts and rebuilds the `*messages*`
+    /// buffer view once per frame.
+    pub pending_message_event_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<MessagePushed>>,
+    /// Set by `Action::RedrawScreen` (`<C-l>`); the runtime
+    /// clears this on its next frame after issuing a full
+    /// terminal-clear so any leftover ANSI / stale glyph
+    /// state gets repainted from scratch.
+    pub pending_redraw: bool,
+    /// Submitted `:` command history. Newest at the back.
+    /// Bounded.
+    pub command_history: Vec<String>,
+    /// While in Command modal: index into
+    /// [`Self::command_history`] of the entry currently
+    /// shown (`None` = the user's in-progress text).
+    pub command_history_cursor: Option<usize>,
+    /// Snapshot of the user's typed `command_line` on the
+    /// first Up so Down can return to it after walking
+    /// through history.
+    pub command_history_pending: Option<String>,
+    /// One-shot "auto-submit on next chord" flag. Set when
+    /// the user submitted a Chord-arg-required command with
+    /// no value (`:describe-key<CR>`); the cmdline pre-fills
+    /// with the command word + space, and the very next
+    /// captured chord auto-fires `Action::CommandLineSubmit`
+    /// without an explicit `<CR>`. Reset on cancel / submit.
+    pub auto_submit_after_chord: bool,
 }

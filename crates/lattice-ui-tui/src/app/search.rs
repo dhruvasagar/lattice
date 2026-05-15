@@ -242,7 +242,7 @@ impl App {
     /// compilation fails. Cleared explicitly by CommandLineCancel
     /// and by execute_ex_line on submit.
     pub(super) fn refresh_substitute_preview(&mut self) {
-        let parsed = match crate::excommand::try_parse_substitute_partial(&self.command_line) {
+        let parsed = match crate::excommand::try_parse_substitute_partial(&self.editor.command_line) {
             Some(p) => p,
             None => {
                 self.editor.substitute_preview = None;
@@ -757,7 +757,7 @@ mod tests {
         a.apply(Action::SearchSubmit);
         assert!(a.editor.current_match.is_none());
         assert_eq!(a.editor.last_search.as_ref().unwrap().pattern, "xyz");
-        let msg = a.last_message.as_ref().unwrap();
+        let msg = a.editor.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Error);
         assert!(msg.text.contains("Pattern not found"));
     }
@@ -803,7 +803,7 @@ mod tests {
     fn n_with_no_last_search_emits_error() {
         let mut a = app_with("hello", 10);
         a.apply(Action::SearchNext);
-        let msg = a.last_message.as_ref().unwrap();
+        let msg = a.editor.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Error);
         assert!(msg.text.contains("no previous"));
     }
@@ -819,7 +819,7 @@ mod tests {
         a.apply(Action::SearchSubmit);
         // First "alpha" is at byte 0; we wrapped from byte 18.
         assert_eq!(a.cursor, Position::new(0, 0));
-        let msg = a.last_message.as_ref().unwrap();
+        let msg = a.editor.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Warn);
         assert!(msg.text.contains("BOTTOM"));
     }
@@ -875,7 +875,7 @@ mod tests {
     fn substitute_no_match_emits_error() {
         let mut a = app_with("hello", 10);
         submit_ex(&mut a, "s/xyz/abc/");
-        let msg = a.last_message.as_ref().unwrap();
+        let msg = a.editor.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Error);
         assert!(msg.text.contains("Pattern not found"));
         assert_eq!(a.document.text(), "hello");
@@ -892,7 +892,7 @@ mod tests {
     fn substitute_count_message() {
         let mut a = app_with("foo foo foo", 10);
         submit_ex(&mut a, "s/foo/X/g");
-        let msg = a.last_message.as_ref().unwrap();
+        let msg = a.editor.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Info);
         assert!(msg.text.contains("3"));
     }
@@ -939,7 +939,7 @@ mod tests {
     fn find_repeat_with_no_history_emits_error() {
         let mut a = app_with("hello", 10);
         a.apply(Action::FindRepeat { reverse: false });
-        let msg = a.last_message.as_ref().unwrap();
+        let msg = a.editor.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Error);
     }
 
@@ -1069,9 +1069,9 @@ mod tests {
             a.modal
         );
         assert!(
-            a.last_message.is_none(),
+            a.editor.last_message.is_none(),
             "no read-only echo expected, got {:?}",
-            a.last_message
+            a.editor.last_message
         );
     }
 

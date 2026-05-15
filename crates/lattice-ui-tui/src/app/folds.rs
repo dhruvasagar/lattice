@@ -576,7 +576,7 @@ mod tests {
     fn zf_outside_visual_emits_error() {
         let mut a = app_with("hello", 10);
         a.apply(Action::CreateFoldFromVisual);
-        let msg = a.last_message.as_ref().unwrap();
+        let msg = a.editor.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Error);
     }
 
@@ -759,7 +759,7 @@ mod tests {
         // No state change; both still closed.
         assert!(a.folds.iter().all(|f| f.closed));
         // E490 echoed.
-        let msg = a.last_message.as_ref().expect("message").text.clone();
+        let msg = a.editor.last_message.as_ref().expect("message").text.clone();
         assert!(msg.contains("E490"), "expected E490, got {msg:?}");
     }
 
@@ -1200,7 +1200,7 @@ mod tests {
     fn zj_with_no_more_folds_emits_error() {
         let mut a = app_with("a\nb\nc", 10);
         a.apply(Action::GotoNextFold);
-        let msg = a.last_message.as_ref().unwrap();
+        let msg = a.editor.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Error);
     }
 
@@ -1227,7 +1227,7 @@ mod tests {
     #[test]
     fn foldmethod_indent_populates_folds_from_indentation() {
         let mut a = app_with("def f():\n    pass\n    pass\n", 10);
-        a.command_line = "set foldmethod=indent".into();
+        a.editor.command_line = "set foldmethod=indent".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.foldmethod(), FoldMethod::Indent);
@@ -1259,7 +1259,7 @@ mod tests {
     #[test]
     fn foldmethod_markdown_populates_folds_from_atx_headings() {
         let mut a = app_with("# H1\nbody\nmore body\n", 10);
-        a.command_line = "set foldmethod=markdown".into();
+        a.editor.command_line = "set foldmethod=markdown".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.foldmethod(), FoldMethod::Markdown);
@@ -1273,7 +1273,7 @@ mod tests {
         // Plain-text buffer (no `Syntax`): syntax provider returns
         // None and we cascade to indent.
         let mut a = app_with("def f():\n    pass\n    pass\n", 10);
-        a.command_line = "set foldmethod=syntax".into();
+        a.editor.command_line = "set foldmethod=syntax".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.foldmethod(), FoldMethod::Syntax);
@@ -1292,7 +1292,7 @@ mod tests {
         // Wire up Rust syntax + parse the document so the fold
         // provider has a tree to query.
         attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
-        a.command_line = "set foldmethod=syntax".into();
+        a.editor.command_line = "set foldmethod=syntax".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.foldmethod(), FoldMethod::Syntax);
@@ -1348,10 +1348,10 @@ mod tests {
     #[test]
     fn foldmethod_rejects_unknown_value() {
         let mut a = app_with("a\n", 10);
-        a.command_line = "set foldmethod=bogus".into();
+        a.editor.command_line = "set foldmethod=bogus".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.foldmethod(), FoldMethod::Manual);
-        assert!(a.last_message.is_some());
+        assert!(a.editor.last_message.is_some());
     }
 }

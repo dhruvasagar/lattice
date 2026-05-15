@@ -962,6 +962,7 @@ dependencies = [
  "lattice-syntax",
  "streaming-iterator",
  "thiserror 2.0.18",
+ "tokio",
  "tree-sitter",
 ]
 

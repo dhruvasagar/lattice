@@ -236,8 +236,8 @@ impl App {
         }
         match self.modal {
             ModalState::Command => {
-                self.command_line.push_str(text);
-                self.command_history_cursor = None;
+                self.editor.command_line.push_str(text);
+                self.editor.command_history_cursor = None;
             }
             ModalState::Search(_) => {
                 if let Some(line) = self.editor.search_line.as_mut() {
@@ -1240,7 +1240,7 @@ mod tests {
         let mut a = app_with("hello", 10);
         assert!(a.editor.unnamed_register.is_none());
         a.apply(Action::PasteAfter);
-        let msg = a.last_message.as_ref().unwrap();
+        let msg = a.editor.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Error);
         assert_eq!(a.document.text(), "hello");
     }
@@ -1275,9 +1275,9 @@ mod tests {
     fn paste_text_in_command_appends_to_command_line() {
         let mut a = app_with("xx", 10);
         a.apply(Action::EnterMode(ModalState::Command));
-        a.command_line = "w ".into();
+        a.editor.command_line = "w ".into();
         a.apply(Action::PasteText("foo.rs".into()));
-        assert_eq!(a.command_line, "w foo.rs");
+        assert_eq!(a.editor.command_line, "w foo.rs");
         // Document untouched.
         assert_eq!(a.document.text(), "xx");
     }
@@ -1597,7 +1597,7 @@ mod tests {
         let narrow_count = a.completion_state.as_ref().unwrap().candidates.len();
         a.apply(Action::CommandLineBackspace);
         assert!(a.completion_state.is_some());
-        assert_eq!(a.command_line, "descri");
+        assert_eq!(a.editor.command_line, "descri");
         // Shorter prefix -> at least as many candidates.
         let widened = a.completion_state.as_ref().unwrap().candidates.len();
         assert!(widened >= narrow_count);
@@ -1611,7 +1611,7 @@ mod tests {
         // Word-delete leaves us with an empty cmdline -> Empty slot
         // -> all commands; popup stays open.
         assert!(a.completion_state.is_some());
-        assert_eq!(a.command_line, "");
+        assert_eq!(a.editor.command_line, "");
     }
 
     #[test]
@@ -1620,21 +1620,21 @@ mod tests {
         a.apply(Action::CommandLineDeleteChord);
         // The whole `<C-c>` token (5 bytes) gets removed in one
         // delete -- not a single byte.
-        assert_eq!(a.command_line, "describe-key ");
+        assert_eq!(a.editor.command_line, "describe-key ");
     }
 
     #[test]
     fn delete_chord_on_plain_char_pops_one_char() {
         let mut a = app_in_command_mode("describe-key gg");
         a.apply(Action::CommandLineDeleteChord);
-        assert_eq!(a.command_line, "describe-key g");
+        assert_eq!(a.editor.command_line, "describe-key g");
     }
 
     #[test]
     fn delete_chord_on_empty_cmdline_exits_command_mode() {
         let mut a = app_with("xx", 10);
         a.modal = ModalState::Command;
-        a.command_line = String::new();
+        a.editor.command_line = String::new();
         a.apply(Action::CommandLineDeleteChord);
         assert!(matches!(a.modal, ModalState::Normal));
     }
@@ -1659,7 +1659,7 @@ mod tests {
         a.cursor = Position::new(0, 5);
         a.do_completion_trigger();
         assert!(a.insert_completion.is_none());
-        let msg = a.last_message.as_ref().expect("echo");
+        let msg = a.editor.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("no completions"));
     }
 

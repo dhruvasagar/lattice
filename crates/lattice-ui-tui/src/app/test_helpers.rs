@@ -163,7 +163,7 @@ pub(super) fn app_with_path(text: &str, viewport: u32, path: std::path::PathBuf)
 pub(super) fn app_in_command_mode(line: &str) -> App {
     let mut a = app_with("xx", 10);
     a.modal = ModalState::Command;
-    a.command_line = line.into();
+    a.editor.command_line = line.into();
     a
 }
 

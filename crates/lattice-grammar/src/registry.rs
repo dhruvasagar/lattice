@@ -24,28 +24,28 @@ use crate::register::Register;
 use crate::source::{SourceKind, SourceLayer, SourceLocation};
 
 /// Strongly-typed handle to an operator command in the registry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct OperatorId(pub CommandId);
 
 /// Strongly-typed handle to a motion command in the registry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct MotionId(pub CommandId);
 
 /// Strongly-typed handle to a text-object command in the registry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct TextObjectId(pub CommandId);
 
 /// Strongly-typed handle to an ex-command in the registry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ExCommandId(pub CommandId);
 
 /// Strongly-typed handle to a custom range source (plugin-registered) used by
 /// `Range::Custom(RangeId)`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct RangeId(pub CommandId);
 

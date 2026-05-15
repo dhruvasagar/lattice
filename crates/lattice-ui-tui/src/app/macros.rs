@@ -123,8 +123,8 @@ mod tests {
     fn play_macro_replays_recorded_actions() {
         let mut a = app_with("foo bar", 10);
         a.apply(Action::StartMacroRecord('a'));
-        let inv = CommandInvocation::of(a.builtins.delete.0)
-            .with_target(Target::Motion(a.builtins.word_forward, Args::None));
+        let inv = CommandInvocation::of(a.editor.builtins.delete.0)
+            .with_target(Target::Motion(a.editor.builtins.word_forward, Args::None));
         a.apply(Action::Invoke(inv));
         a.apply(Action::StopMacroRecord);
         // After dw: "bar".
@@ -146,8 +146,8 @@ mod tests {
     fn at_at_replays_last_macro() {
         let mut a = app_with("foo bar baz qux", 10);
         a.apply(Action::StartMacroRecord('a'));
-        let inv = CommandInvocation::of(a.builtins.delete.0)
-            .with_target(Target::Motion(a.builtins.word_forward, Args::None));
+        let inv = CommandInvocation::of(a.editor.builtins.delete.0)
+            .with_target(Target::Motion(a.editor.builtins.word_forward, Args::None));
         a.apply(Action::Invoke(inv));
         a.apply(Action::StopMacroRecord);
         // First play.

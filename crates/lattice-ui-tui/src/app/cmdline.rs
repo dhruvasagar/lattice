@@ -71,7 +71,7 @@ impl App {
     ///    `arg:<name>`.
     /// 3. Else, no-op + status message.
     pub(super) fn do_command_line_describe_under_cursor(&mut self) {
-        if !matches!(self.modal, ModalState::Command) {
+        if !matches!(self.editor.modal, ModalState::Command) {
             return;
         }
         let line = self.editor.command_line.clone();
@@ -81,18 +81,18 @@ impl App {
                 .get(short)
                 .map(|s| (*s).to_string())
         };
-        let slot = lattice_completion::current_slot(&line, cursor, &self.registry, &alias_resolver);
+        let slot = lattice_completion::current_slot(&line, cursor, &self.editor.registry, &alias_resolver);
 
         let word = slot.prefix();
         let canonical = if word.is_empty() {
             None
         } else {
             alias_resolver(word)
-                .or_else(|| self.registry.id_by_name(word).and(Some(word.to_string())))
+                .or_else(|| self.editor.registry.id_by_name(word).and(Some(word.to_string())))
         };
 
         if let Some(name) = canonical
-            && self.registry.id_by_name(&name).is_some()
+            && self.editor.registry.id_by_name(&name).is_some()
         {
             self.do_describe_command(&name, None);
             return;
@@ -131,7 +131,7 @@ impl App {
     /// pipeline runs through the registered matcher / ranker /
     /// annotators.
     pub(super) fn do_command_line_complete_or_advance(&mut self) {
-        if !matches!(self.modal, ModalState::Command) {
+        if !matches!(self.editor.modal, ModalState::Command) {
             return;
         }
         if let Some(state) = self.completion_state.as_mut() {
@@ -172,7 +172,7 @@ impl App {
     /// Walk through `:` command history in Command modal. `back = true`
     /// goes to older entries (Up); `false` goes newer (Down).
     pub(super) fn do_command_history_step(&mut self, back: bool) {
-        if !matches!(self.modal, ModalState::Command) {
+        if !matches!(self.editor.modal, ModalState::Command) {
             return;
         }
         if self.editor.command_history.is_empty() {
@@ -240,13 +240,13 @@ impl App {
             return None;
         }
         let cmd = raw_cmd.strip_suffix('!').unwrap_or(raw_cmd);
-        let canonical = self.registry.id_by_name(cmd).or_else(|| {
+        let canonical = self.editor.registry.id_by_name(cmd).or_else(|| {
             crate::excommand::aliases()
                 .get(cmd)
                 .copied()
-                .and_then(|c| self.registry.id_by_name(c))
+                .and_then(|c| self.editor.registry.id_by_name(c))
         })?;
-        let spec = self.registry.ex_command_spec(canonical)?;
+        let spec = self.editor.registry.ex_command_spec(canonical)?;
         // Delimiter-form commands (`:s`, `:g`, `:v`) don't go
         // through the keyword arg-prompt path -- their syntax is
         // its own UX.
@@ -283,7 +283,7 @@ impl App {
     /// `chord` arg is the only `Chord`-kinded arg in the registry;
     /// when `:map` / `:nnoremap` land they reuse this gate.
     pub fn chord_capture_active(&self) -> bool {
-        if !matches!(self.modal, ModalState::Command) {
+        if !matches!(self.editor.modal, ModalState::Command) {
             return false;
         }
         let line = &self.editor.command_line;
@@ -293,7 +293,7 @@ impl App {
                 .map(|s| (*s).to_string())
         };
         let slot =
-            lattice_completion::current_slot(line, line.len(), &self.registry, &alias_resolver);
+            lattice_completion::current_slot(line, line.len(), &self.editor.registry, &alias_resolver);
         matches!(
             &slot,
             lattice_completion::CommandLineSlot::Arg { arg_spec, .. }
@@ -382,7 +382,7 @@ impl App {
                 .get(short)
                 .map(|s| (*s).to_string())
         };
-        let slot = lattice_completion::current_slot(&line, cursor, &self.registry, &alias_resolver);
+        let slot = lattice_completion::current_slot(&line, cursor, &self.editor.registry, &alias_resolver);
         let (source_name, prefix, replace_start) = match &slot {
             lattice_completion::CommandLineSlot::CommandName {
                 prefix,
@@ -423,7 +423,7 @@ impl App {
         let ctx = lattice_completion::GenerateContext {
             prefix: &prefix,
             buffer: &snap.buffer,
-            registry: &self.registry,
+            registry: &self.editor.registry,
             case_sensitive: false,
         };
         let mut candidates = pipeline.run(&ctx, &prefix, &self.completion_registry.cache);
@@ -624,7 +624,7 @@ mod tests {
             level: EchoLevel::Info,
         });
         a.apply(Action::EnterCommandLine);
-        assert_eq!(a.modal, ModalState::Command);
+        assert_eq!(a.editor.modal, ModalState::Command);
         assert_eq!(a.editor.command_line, "");
         assert!(a.editor.last_message.is_none());
     }
@@ -653,7 +653,7 @@ mod tests {
         let mut a = app_with("", 10);
         a.apply(Action::EnterCommandLine);
         a.apply(Action::CommandLineBackspace);
-        assert_eq!(a.modal, ModalState::Normal);
+        assert_eq!(a.editor.modal, ModalState::Normal);
     }
 
     #[test]
@@ -662,7 +662,7 @@ mod tests {
         a.apply(Action::EnterCommandLine);
         a.apply(Action::CommandLineAppend('w'));
         a.apply(Action::CommandLineCancel);
-        assert_eq!(a.modal, ModalState::Normal);
+        assert_eq!(a.editor.modal, ModalState::Normal);
         assert_eq!(a.editor.command_line, "");
     }
 
@@ -675,7 +675,7 @@ mod tests {
         }
         a.apply(Action::CommandLineSubmit);
         assert!(a.should_quit);
-        assert_eq!(a.modal, ModalState::Normal);
+        assert_eq!(a.editor.modal, ModalState::Normal);
     }
 
     #[test]
@@ -727,7 +727,7 @@ mod tests {
         let mut a = App::new(Document::from_text("hello"));
         a.set_viewport_height(10);
         // Move to end of line, then enter insert and append "!".
-        a.apply(invoke_motion(a.builtins.line_end));
+        a.apply(invoke_motion(a.editor.builtins.line_end));
         a.apply(Action::EnterMode(ModalState::Insert));
         a.apply(Action::Insert("!".into()));
         a.apply(Action::EnterMode(ModalState::Normal));
@@ -901,7 +901,7 @@ mod tests {
     #[test]
     fn chord_capture_active_only_when_in_chord_arg_slot() {
         let mut a = app_with("xx", 10);
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         // Empty cmdline -> CommandName slot, not chord-capture.
         a.editor.command_line = String::new();
         assert!(!a.chord_capture_active());
@@ -917,7 +917,7 @@ mod tests {
         a.editor.command_line = "describe-command ".into();
         assert!(!a.chord_capture_active());
         // Outside Command modal, never active.
-        a.modal = ModalState::Normal;
+        a.editor.modal = ModalState::Normal;
         a.editor.command_line = "describe-key ".into();
         assert!(!a.chord_capture_active());
     }
@@ -928,7 +928,7 @@ mod tests {
         // detector tries `id_by_name` first and only falls back
         // to alias-expand, so both forms switch into chord-capture.
         let mut a = app_with("xx", 10);
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.editor.command_line = "ex:describe-key ".into();
         assert!(a.chord_capture_active());
     }
@@ -942,7 +942,7 @@ mod tests {
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.editor.command_line, "describe-key ");
         assert!(a.editor.auto_submit_after_chord);
-        assert!(matches!(a.modal, ModalState::Command));
+        assert!(matches!(a.editor.modal, ModalState::Command));
     }
 
     #[test]
@@ -964,7 +964,7 @@ mod tests {
         // on the next keystroke).
         let mut a = app_in_command_mode("describe-command");
         a.apply(Action::CommandLineSubmit);
-        assert!(matches!(a.modal, ModalState::Command));
+        assert!(matches!(a.editor.modal, ModalState::Command));
         assert!(!a.editor.auto_submit_after_chord);
         // Prefilled with the command word + space; cursor in arg slot.
         assert_eq!(a.editor.command_line, "describe-command ");
@@ -981,7 +981,7 @@ mod tests {
         a.apply(Action::CommandLineSubmit);
         // Cmdline closed -- the missing-arg prompt path skipped this
         // command because its schema's first arg is Optional.
-        assert!(matches!(a.modal, ModalState::Normal));
+        assert!(matches!(a.editor.modal, ModalState::Normal));
         assert!(!a.editor.auto_submit_after_chord);
     }
 
@@ -993,7 +993,7 @@ mod tests {
         let mut a = app_in_command_mode("apropos");
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.editor.command_line, "apropos ");
-        assert!(matches!(a.modal, ModalState::Command));
+        assert!(matches!(a.editor.modal, ModalState::Command));
     }
 
     #[test]
@@ -1003,7 +1003,7 @@ mod tests {
         let mut a = app_in_command_mode("describe-key j");
         a.apply(Action::CommandLineSubmit);
         assert!(!a.editor.auto_submit_after_chord);
-        assert!(matches!(a.modal, ModalState::Normal));
+        assert!(matches!(a.editor.modal, ModalState::Normal));
         assert!(a.editor.popup_buffer.is_some());
     }
 

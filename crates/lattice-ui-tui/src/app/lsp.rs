@@ -1769,7 +1769,7 @@ impl App {
             self.buffer_uris.insert(buffer_id, uri);
         }
 
-        self.event_bus.publish(Event::DocumentOpened {
+        self.editor.event_bus.publish(Event::DocumentOpened {
             id: lattice_protocol::ids::DocumentId::new(buffer_id.0 as u64),
             path: path_opt,
             version,
@@ -2472,7 +2472,7 @@ impl App {
     /// LSP-shape range for the current code-action request.
     /// Visual selection when active; point range at cursor otherwise.
     fn code_action_range(&self, buffer: &lattice_core::Buffer) -> lsp_types::Range {
-        if let lattice_grammar::ModalState::Visual(_) = self.modal {
+        if let lattice_grammar::ModalState::Visual(_) = self.editor.modal {
             let anchor = self.editor.visual_anchor.unwrap_or(self.cursor);
             let head = self.cursor;
             let (start_pos, end_pos) = if (anchor.line, anchor.byte) <= (head.line, head.byte) {
@@ -2795,7 +2795,7 @@ impl App {
         // Range resolution.
         let range_lines: Option<(u32, u32)> = if is_range {
             // Use the active Visual selection if any, else the whole buffer.
-            if let ModalState::Visual(_) = self.modal {
+            if let ModalState::Visual(_) = self.editor.modal {
                 let anchor = self.editor.visual_anchor.unwrap_or(self.cursor);
                 let head = self.cursor;
                 let (s, e): (u32, u32) = if anchor.line <= head.line {
@@ -6131,7 +6131,7 @@ impl App {
         // already, then seat the selection with anchor/head.
         use lattice_grammar::{ModalState, VisualKind};
         use lattice_protocol::selection::{Selection, SelectionSet, VisualMode};
-        self.modal = ModalState::Visual(VisualKind::Charwise);
+        self.editor.modal = ModalState::Visual(VisualKind::Charwise);
         self.editor.visual_anchor = Some(anchor);
         // The cursor lands on the head; the head sits *inside*
         // the range (LSP ranges are half-open).
@@ -6636,7 +6636,7 @@ mod tests {
         let mut a = app_with("xx", 10);
         let (tx, mut rx) =
             tokio::sync::mpsc::unbounded_channel::<lattice_lsp::LspDocumentChanged>();
-        a.event_bus.subscribe_typed(tx);
+        a.editor.event_bus.subscribe_typed(tx);
         // Default (no path → lsp-mode off): drive an edit; no
         // typed event should reach the subscriber.
         a.apply(Action::Insert("a".into()));
@@ -6675,10 +6675,10 @@ mod tests {
 
         let (detach_tx, mut detach_rx) =
             tokio::sync::mpsc::unbounded_channel::<lattice_lsp::LspBufferDetached>();
-        a.event_bus.subscribe_typed(detach_tx);
+        a.editor.event_bus.subscribe_typed(detach_tx);
         let (changed_tx, mut changed_rx) =
             tokio::sync::mpsc::unbounded_channel::<lattice_lsp::LspDocumentChanged>();
-        a.event_bus.subscribe_typed(changed_tx);
+        a.editor.event_bus.subscribe_typed(changed_tx);
 
         // ---- toggle off: gate closes. ----
         a.toggle_mode_by_name("lsp-mode");
@@ -6849,7 +6849,7 @@ mod tests {
                 &mut active,
                 &a.editor.mode_guards,
                 &a.editor.config,
-                &a.event_bus,
+                &a.editor.event_bus,
                 &a.editor.services,
                 proto_id,
                 lattice_lsp::modes::LspMode::mode_id(),
@@ -6872,7 +6872,7 @@ mod tests {
         assert!(a.editor.prev_pane_for_help.is_none());
         assert!(matches!(a.active_buffer, BufferKind::Document));
         // Drive a real motion through `apply` (`l` -- char-right).
-        let inv = lattice_grammar::CommandInvocation::of(a.builtins.char_right.0);
+        let inv = lattice_grammar::CommandInvocation::of(a.editor.builtins.char_right.0);
         a.apply(Action::Invoke(inv));
         assert!(
             a.editor.popup_buffer.is_none(),
@@ -6901,7 +6901,7 @@ mod tests {
         let mut a = app_with("alpha\nbeta\ngamma", 10);
         a.cursor = Position::new(1, 2);
         a.editor.command_line = "hover documentation".into();
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let h = a.popup_help().expect("hover open");
         assert_eq!(h.title, "hover");
@@ -6915,11 +6915,11 @@ mod tests {
     fn hover_close_dismisses_popup() {
         let mut a = app_with("xx", 10);
         a.editor.command_line = "hover x".into();
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert!(a.editor.popup_buffer.is_some());
         a.editor.command_line = "HoverClose".into();
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert!(a.editor.popup_buffer.is_none());
     }
@@ -6928,7 +6928,7 @@ mod tests {
     fn hover_with_no_arg_uses_placeholder() {
         let mut a = app_with("xx", 10);
         a.editor.command_line = "hover".into();
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let h = a.popup_help().expect("hover open");
         assert!(h.content.as_string().contains("empty"));
@@ -8568,7 +8568,7 @@ mod tests {
         // When sync sources gave us candidates and LSP says
         // NoServers, the popup stays open with the sync set.
         let mut a = app_with("alpha alphabet alligator\nal", 10);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::new(1, 2);
         a.do_completion_trigger();
         // No URI mapped -> LSP request didn't fire; the popup
@@ -8588,7 +8588,7 @@ mod tests {
     #[test]
     fn drain_pending_insert_completion_lsp_items_merge_into_popup() {
         let mut a = app_with("\nfo", 10);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::new(1, 2);
         // Seed the popup state directly -- skip do_completion_trigger
         // so the test doesn't depend on sync sources producing
@@ -8682,7 +8682,7 @@ mod tests {
         // First merge populates LSP rows; second merge with
         // a different item set should REPLACE (not append).
         let mut a = app_with("xx", 10);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::ZERO;
         a.insert_completion = Some(lattice_completion::InsertCompletionState::open(
             lattice_completion::CompletionTrigger::Manual,
@@ -8776,7 +8776,7 @@ mod tests {
     #[test]
     fn drain_pending_completion_resolve_fills_metadata_and_body() {
         let mut a = app_with("xx", 10);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::ZERO;
         // Build state with one candidate pointing at meta[0].
         let mut state = lattice_completion::InsertCompletionState::open(
@@ -9657,7 +9657,7 @@ mod tests {
     fn lsp_progress_drain_accumulates_lifecycle() {
         let mut app = app_with("hi\n", 5);
         let server: std::sync::Arc<str> = std::sync::Arc::from("rust");
-        app.event_bus.publish_typed(lattice_lsp::LspProgressUpdate {
+        app.editor.event_bus.publish_typed(lattice_lsp::LspProgressUpdate {
             server_id: server.clone(),
             token: "build-1".into(),
             kind: lattice_lsp::LspProgressKind::Begin,
@@ -9674,7 +9674,7 @@ mod tests {
 
         // Report without restating the title -- the drain merges
         // with the existing entry's title.
-        app.event_bus.publish_typed(lattice_lsp::LspProgressUpdate {
+        app.editor.event_bus.publish_typed(lattice_lsp::LspProgressUpdate {
             server_id: server.clone(),
             token: "build-1".into(),
             kind: lattice_lsp::LspProgressKind::Report,
@@ -9689,7 +9689,7 @@ mod tests {
         assert_eq!(entry.message.as_deref(), Some("linking"));
         assert_eq!(entry.percentage, Some(73));
 
-        app.event_bus.publish_typed(lattice_lsp::LspProgressUpdate {
+        app.editor.event_bus.publish_typed(lattice_lsp::LspProgressUpdate {
             server_id: server.clone(),
             token: "build-1".into(),
             kind: lattice_lsp::LspProgressKind::End,
@@ -10236,7 +10236,7 @@ mod tests {
         // applies BOTH edits in a single batch; one Ctrl-Z
         // reverts both.
         let mut a = app_with("\n\nfor", 10);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::new(2, 3);
         // Manually install the popup state: one candidate
         // with snippet `insertTextFormat`, an auto-import

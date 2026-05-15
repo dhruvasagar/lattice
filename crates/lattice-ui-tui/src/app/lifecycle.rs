@@ -539,7 +539,7 @@ impl App {
                 }
                 _ => None,
             };
-        let new_handle = spawn_document(new_doc, self.registry.clone());
+        let new_handle = spawn_document(new_doc, self.editor.registry.clone());
         let new_id = BufferId::next();
         self.buffers.insert(BufferEntry {
             id: new_id,
@@ -683,7 +683,7 @@ impl App {
         }
         // BeforeQuit is observation-only in v1 (no veto seam yet).
         // Subscribers see it; the quit proceeds regardless.
-        self.event_bus.publish(Event::BeforeQuit);
+        self.editor.event_bus.publish(Event::BeforeQuit);
         self.should_quit = true;
     }
 
@@ -1138,7 +1138,7 @@ impl App {
         // Always publish the generic editor event -- non-LSP
         // subscribers (renderer, future plugins) see every
         // edit regardless of `lsp-mode`.
-        self.event_bus.publish(Event::DocumentChanged {
+        self.editor.event_bus.publish(Event::DocumentChanged {
             id: snap.id,
             path: path.clone(),
             version: snap.version,
@@ -1152,7 +1152,7 @@ impl App {
         // ("don't bother LSP for this buffer") is honoured at
         // the editor layer rather than per-server.
         if self.lsp_mode_enabled_for(self.document_buffer_id) {
-            self.event_bus
+            self.editor.event_bus
                 .publish_typed(lattice_lsp::LspDocumentChanged {
                     id: snap.id,
                     path,
@@ -1195,7 +1195,7 @@ impl App {
     /// `gv` reselect, etc.).
     pub(super) fn publish_selections_changed(&self) {
         let snap = self.document.snapshot();
-        self.event_bus.publish(Event::SelectionsChanged {
+        self.editor.event_bus.publish(Event::SelectionsChanged {
             id: snap.id,
             version: snap.version,
             selections: (*snap.selections).clone(),
@@ -1476,7 +1476,7 @@ impl App {
         // BeforeSave runs only for telemetry / autocmd compatibility.
         let snap = self.document.snapshot();
         if let Some(path) = snap.path.as_ref() {
-            self.event_bus.publish(Event::BeforeSave {
+            self.editor.event_bus.publish(Event::BeforeSave {
                 id: snap.id,
                 path: (**path).clone(),
             });
@@ -1502,7 +1502,7 @@ impl App {
         self.run_will_save_wait_until_blocking();
         let result = block_on(self.document.save());
         if let Ok(path) = result.as_ref() {
-            self.event_bus.publish(Event::DocumentSaved {
+            self.editor.event_bus.publish(Event::DocumentSaved {
                 id: snap.id,
                 path: path.clone(),
             });
@@ -1697,13 +1697,13 @@ impl App {
 
     pub(super) fn save_as_blocking(&self, path: std::path::PathBuf) -> Result<(), RuntimeError> {
         let snap = self.document.snapshot();
-        self.event_bus.publish(Event::BeforeSave {
+        self.editor.event_bus.publish(Event::BeforeSave {
             id: snap.id,
             path: path.clone(),
         });
         let result = block_on(self.document.save_as(path.clone()));
         if result.is_ok() {
-            self.event_bus
+            self.editor.event_bus
                 .publish(Event::DocumentSaved { id: snap.id, path });
         }
         result
@@ -1828,8 +1828,8 @@ mod tests {
         let path = dir.join("preserve.txt");
         std::fs::write(&path, "new content").unwrap();
         let mut a = app_with("hello world", 10);
-        let inv = CommandInvocation::of(a.builtins.yank.0).with_target(
-            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
+        let inv = CommandInvocation::of(a.editor.builtins.yank.0).with_target(
+            lattice_grammar::Target::Motion(a.editor.builtins.word_forward, lattice_grammar::Args::None),
         );
         a.apply(Action::Invoke(inv));
         assert!(a.editor.unnamed_register.is_some());
@@ -1847,7 +1847,7 @@ mod tests {
         std::fs::write(&path, "fresh").unwrap();
         let mut a = app_with("aaa\nbbb\nccc", 10);
         a.cursor = Position::new(2, 1);
-        a.apply(invoke_motion(a.builtins.goto_first_line));
+        a.apply(invoke_motion(a.editor.builtins.goto_first_line));
         // Now position_history has an entry.
         assert!(!a.editor.position_history.is_empty());
         let cmd = format!("e {}", path.display());
@@ -1993,7 +1993,7 @@ mod tests {
         let mut a = app_with("xx", 10);
         let initial_id = a.document_buffer_id;
         a.editor.command_line = format!("e {}", path.display());
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         // Two listed buffers (initial + opened); the synthetic
         // `*lsp*` buffer is unlisted and filtered out here.
@@ -2008,10 +2008,10 @@ mod tests {
         let path = write_temp_file("c", "x\n");
         let mut a = app_with("xx", 10);
         a.editor.command_line = format!("e {}", path.display());
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         a.editor.command_line = "ls".into();
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let h = a.popup_help().expect("buffers help");
         let body = h.content.as_string();
@@ -2034,7 +2034,7 @@ mod tests {
         std::fs::write(dir.join("a.txt"), "alpha").ok();
         let mut a = app_with("xx", 10);
         a.editor.command_line = format!("Filetree {}", dir.display());
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.active_buffer, BufferKind::FileTree);
         assert_eq!(a.buffers.file_tree_ids_sorted().len(), 1);
@@ -2047,7 +2047,7 @@ mod tests {
         std::fs::create_dir_all(&dir).ok();
         let mut a = app_with("xx", 10);
         a.editor.command_line = format!("Filetree {}", dir.display());
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         a.apply(Action::HelpDismiss);
         assert_eq!(a.active_buffer, BufferKind::Document);
@@ -2063,9 +2063,9 @@ mod tests {
         std::fs::write(dir.join("b.txt"), "y").ok();
         let mut a = app_with("xx", 10);
         a.editor.command_line = format!("Filetree {}", dir.display());
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let line_down = a.builtins.line_down;
+        let line_down = a.editor.builtins.line_down;
         a.apply(Action::Invoke(CommandInvocation::of(line_down.0)));
         // After unification, `self.cursor` is the active buffer's
         // cursor. The tree's own `cursor` field is archival save-
@@ -2081,10 +2081,10 @@ mod tests {
         std::fs::write(dir.join("alpha.txt"), "hello").ok();
         let mut a = app_with("xx", 10);
         a.editor.command_line = format!("Filetree {}", dir.display());
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         // Move cursor to the alpha.txt entry (row 1).
-        let line_down = a.builtins.line_down;
+        let line_down = a.editor.builtins.line_down;
         a.apply(Action::Invoke(CommandInvocation::of(line_down.0)));
         // Follow.
         a.apply(Action::FollowLink);
@@ -2326,7 +2326,7 @@ mod tests {
         let source = "fn outer(arg: i32) {\n    let local = arg;\n}\n";
         let mut a = app_with(source, 10);
         set_rust_syntax(&mut a, source);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         // Cursor at end-of-buffer with empty query so every
         // candidate matches uniformly; the matcher won't drop
         // anything for prefix mismatch.
@@ -2353,7 +2353,7 @@ mod tests {
         let source = "fn outer() {\n    let local = 1;\n}\n";
         let mut a = app_with(source, 10);
         set_rust_syntax(&mut a, source);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::new(2, 1);
         // Override the active language (test buffer has no
         // path -> language id is "") to exclude tree-sitter.
@@ -2392,7 +2392,7 @@ mod tests {
         let source = "fn outer() {\n    outer();\n}\n";
         let mut a = app_with(source, 10);
         set_rust_syntax(&mut a, source);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::new(2, 1);
         a.do_completion_trigger();
         let state = a.insert_completion.as_ref().expect("popup");
@@ -2430,7 +2430,7 @@ mod tests {
         // `self.editor.syntax = None`; tree-sitter source emits
         // nothing.
         let mut a = app_with("alpha bravo charlie", 5);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::new(0, 19);
         a.do_completion_trigger();
         if let Some(state) = a.insert_completion.as_ref() {
@@ -2835,7 +2835,7 @@ mod tests {
         let mut a = app_with("hi", 5);
         a.do_open_oil(Some(tmp.clone()));
         a.apply(crate::app::Action::OpenLineBelow);
-        assert_eq!(a.modal, lattice_grammar::ModalState::Insert);
+        assert_eq!(a.editor.modal, lattice_grammar::ModalState::Insert);
         a.apply(crate::app::Action::Insert("new.rs".into()));
         a.apply(crate::app::Action::EnterMode(
             lattice_grammar::ModalState::Normal,
@@ -2884,7 +2884,7 @@ mod tests {
         );
         // Dispatch an Insert action with text. In an oil buffer,
         // this should land in the oil rope, not the document.
-        a.modal = lattice_grammar::ModalState::Insert;
+        a.editor.modal = lattice_grammar::ModalState::Insert;
         a.apply(crate::app::Action::Insert("foo".into()));
         let after = a.buffers.with_oil(oil_id, |o| o.content.as_string());
         assert!(

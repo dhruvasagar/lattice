@@ -881,7 +881,7 @@ mod tests {
         let mut a = app_with("xx", 10);
         let mut rx = subscribe_all_events(&a);
         a.editor.command_line = "set tabstop=4".into();
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let mut found_opt = None;
         while let Ok(evt) = rx.try_recv() {
@@ -901,7 +901,7 @@ mod tests {
         let mut a = app_with("xx", 10);
         let mut rx = subscribe_all_events(&a);
         a.editor.command_line = "set nonumber".into();
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let mut found = false;
         while let Ok(evt) = rx.try_recv() {
@@ -1082,7 +1082,7 @@ mod tests {
         let mut a = app_with("xx", 10);
         let mut rx = subscribe_all_events(&a);
         a.editor.command_line = "set number?".into();
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         while let Ok(evt) = rx.try_recv() {
             assert!(
@@ -1107,7 +1107,7 @@ mod tests {
     fn set_unknown_option_errors() {
         let mut a = app_with("xx", 10);
         a.editor.command_line = "set whatever".into();
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let msg = a.editor.last_message.as_ref().expect("error");
         assert!(msg.text.contains("Unknown option"), "got: {}", msg.text);
@@ -1117,7 +1117,7 @@ mod tests {
     fn set_no_form_clears_boolean() {
         let mut a = app_with("xx", 10);
         a.editor.command_line = "set nonumber".into();
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert!(!a.show_line_numbers());
     }
@@ -1126,7 +1126,7 @@ mod tests {
     fn set_no_form_rejects_non_boolean() {
         let mut a = app_with("xx", 10);
         a.editor.command_line = "set notabstop".into();
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let msg = a.editor.last_message.as_ref().expect("error");
         assert!(msg.text.contains("not a boolean"), "got: {}", msg.text);
@@ -1136,7 +1136,7 @@ mod tests {
     fn set_int_out_of_range_errors() {
         let mut a = app_with("xx", 10);
         a.editor.command_line = "set tabstop=999".into();
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let msg = a.editor.last_message.as_ref().expect("error");
         assert!(msg.text.contains("out of range"), "got: {}", msg.text);
@@ -1148,7 +1148,7 @@ mod tests {
     fn describe_option_renders_help_with_metadata() {
         let mut a = app_with("xx", 10);
         a.editor.command_line = "describe-option tabstop".into();
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let h = a.popup_help().expect("describe-option help");
         let body = h.content.as_string();
@@ -1161,7 +1161,7 @@ mod tests {
     fn list_options_includes_every_registered_option() {
         let mut a = app_with("xx", 10);
         a.editor.command_line = "options".into();
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let h = a.popup_help().expect("options help");
         let body = h.content.as_string();
@@ -1174,7 +1174,7 @@ mod tests {
     fn list_options_groups_by_group_and_includes_docs() {
         let mut a = app_with("xx", 10);
         a.editor.command_line = "options".into();
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let h = a.popup_help().expect("options help");
         let body = h.content.as_string();
@@ -1207,7 +1207,7 @@ mod tests {
         // user-typed); the live reference should hide it.
         let mut a = app_with("xx", 10);
         a.editor.command_line = "options".into();
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let h = a.popup_help().expect("options help");
         let body = h.content.as_string();
@@ -1282,7 +1282,7 @@ mod tests {
                 &mut active,
                 &guards,
                 &a.editor.config,
-                &a.event_bus,
+                &a.editor.event_bus,
                 &a.editor.services,
                 lattice_protocol::ids::BufferId::new(0),
                 mode_id,
@@ -1315,7 +1315,7 @@ mod tests {
                 &mut active,
                 &guards,
                 &a.editor.config,
-                &a.event_bus,
+                &a.editor.event_bus,
                 &a.editor.services,
                 lattice_protocol::ids::BufferId::new(0),
                 mode_id,
@@ -1511,7 +1511,7 @@ mod tests {
     fn set_tabstop_assignment_updates_field() {
         let mut a = app_with("xx", 10);
         a.editor.command_line = "set tabstop=4".into();
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.tabstop(), 4);
     }
@@ -1520,7 +1520,7 @@ mod tests {
     fn set_tabstop_via_alias() {
         let mut a = app_with("xx", 10);
         a.editor.command_line = "set ts=2".into();
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.tabstop(), 2);
     }

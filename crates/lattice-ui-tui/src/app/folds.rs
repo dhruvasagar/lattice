@@ -152,7 +152,7 @@ impl App {
     /// Vim's `zf`: create a fold over the current Visual selection's
     /// line range. No-op outside Visual mode.
     pub(super) fn do_create_fold_from_visual(&mut self) {
-        if !matches!(self.modal, ModalState::Visual(_)) {
+        if !matches!(self.editor.modal, ModalState::Visual(_)) {
             self.set_message(
                 EchoLevel::Error,
                 "zf requires a Visual selection".to_string(),
@@ -559,8 +559,8 @@ mod tests {
     fn zf_from_visual_creates_a_closed_fold() {
         let mut a = app_with("a\nb\nc\nd\ne", 10);
         a.apply(Action::EnterVisual(VisualKind::Linewise));
-        a.apply(invoke_motion(a.builtins.line_down));
-        a.apply(invoke_motion(a.builtins.line_down));
+        a.apply(invoke_motion(a.editor.builtins.line_down));
+        a.apply(invoke_motion(a.editor.builtins.line_down));
         // Selection now spans lines 0..2.
         a.apply(Action::CreateFoldFromVisual);
         assert_eq!(a.folds.len(), 1);
@@ -569,7 +569,7 @@ mod tests {
         assert_eq!(fold.end_line, 2);
         assert!(fold.closed);
         // Visual exited.
-        assert_eq!(a.modal, ModalState::Normal);
+        assert_eq!(a.editor.modal, ModalState::Normal);
     }
 
     #[test]
@@ -786,7 +786,7 @@ mod tests {
             identity: None,
         });
         a.cursor = Position::new(1, 0);
-        a.apply(invoke_motion(a.builtins.line_down));
+        a.apply(invoke_motion(a.editor.builtins.line_down));
         assert_eq!(
             a.cursor.line, 5,
             "j from closed-fold heading must skip to fold.end_line + 1"
@@ -805,7 +805,7 @@ mod tests {
             identity: None,
         });
         a.cursor = Position::new(5, 0);
-        a.apply(invoke_motion(a.builtins.line_up));
+        a.apply(invoke_motion(a.editor.builtins.line_up));
         assert_eq!(
             a.cursor.line, 1,
             "k into a closed fold must snap to its heading line"
@@ -823,7 +823,7 @@ mod tests {
             identity: None,
         });
         a.cursor = Position::new(1, 0);
-        a.apply(invoke_motion(a.builtins.line_down));
+        a.apply(invoke_motion(a.editor.builtins.line_down));
         assert_eq!(a.cursor.line, 2);
     }
 
@@ -840,7 +840,7 @@ mod tests {
         });
         a.set_foldenable_for_test(false);
         a.cursor = Position::new(1, 0);
-        a.apply(invoke_motion(a.builtins.line_down));
+        a.apply(invoke_motion(a.editor.builtins.line_down));
         assert_eq!(a.cursor.line, 2);
     }
 
@@ -871,11 +871,11 @@ mod tests {
             identity: None,
         });
         a.cursor = Position::new(1, 0);
-        a.apply(invoke_motion(a.builtins.line_down));
+        a.apply(invoke_motion(a.editor.builtins.line_down));
         assert_eq!(a.cursor.line, 4, "first j → fold B heading");
-        a.apply(invoke_motion(a.builtins.line_down));
+        a.apply(invoke_motion(a.editor.builtins.line_down));
         assert_eq!(a.cursor.line, 7, "second j → fold C heading");
-        a.apply(invoke_motion(a.builtins.line_down));
+        a.apply(invoke_motion(a.editor.builtins.line_down));
         assert_eq!(a.cursor.line, 10, "third j → past fold C");
     }
 
@@ -905,11 +905,11 @@ mod tests {
             identity: None,
         });
         a.cursor = Position::new(0, 0);
-        a.apply(invoke_motion(a.builtins.word_forward));
+        a.apply(invoke_motion(a.editor.builtins.word_forward));
         // Without snap the cursor would land on "bravo" (line 0,
         // byte 6) -- still visible. Press w again: would go into
         // hidden `charlie`. The snap kicks in there.
-        a.apply(invoke_motion(a.builtins.word_forward));
+        a.apply(invoke_motion(a.editor.builtins.word_forward));
         assert!(
             !a.line_inside_closed_fold(a.cursor.line),
             "w must not leave cursor inside a hidden fold body \
@@ -1037,7 +1037,7 @@ mod tests {
             identity: None,
         });
         a.cursor = Position::new(0, 0);
-        a.apply(invoke_motion(a.builtins.paragraph_forward));
+        a.apply(invoke_motion(a.editor.builtins.paragraph_forward));
         assert!(
             !a.line_inside_closed_fold(a.cursor.line),
             "}} must not leave cursor inside a hidden fold body \
@@ -1097,7 +1097,7 @@ mod tests {
         a.cursor = Position::new(1, 0);
         // j from fn a's heading: snap over fn a's body, swallow the
         // blank, land on fn b's heading (line 4).
-        a.apply(invoke_motion(a.builtins.line_down));
+        a.apply(invoke_motion(a.editor.builtins.line_down));
         assert_eq!(
             a.cursor.line, 4,
             "j after fold A must skip the blank and land on fn b"
@@ -1106,7 +1106,7 @@ mod tests {
         a.apply(Action::CloseFoldAtCursor);
         let fnb = a.folds.iter().find(|f| f.start_line == 4).unwrap();
         assert!(fnb.closed, "zc on fn b heading closes fn b");
-        a.apply(invoke_motion(a.builtins.line_down));
+        a.apply(invoke_motion(a.editor.builtins.line_down));
         assert_eq!(
             a.cursor.line, 7,
             "j after fold B must skip the blank and land on fn c"
@@ -1149,7 +1149,7 @@ mod tests {
         });
         a.cursor = Position::new(1, 0);
         // Move to the sibling's heading.
-        a.apply(invoke_motion(a.builtins.line_down));
+        a.apply(invoke_motion(a.editor.builtins.line_down));
         assert_eq!(
             a.cursor.line, 5,
             "cursor should land on sibling, not interior"
@@ -1228,7 +1228,7 @@ mod tests {
     fn foldmethod_indent_populates_folds_from_indentation() {
         let mut a = app_with("def f():\n    pass\n    pass\n", 10);
         a.editor.command_line = "set foldmethod=indent".into();
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.foldmethod(), FoldMethod::Indent);
         assert!(!a.folds.is_empty());
@@ -1260,7 +1260,7 @@ mod tests {
     fn foldmethod_markdown_populates_folds_from_atx_headings() {
         let mut a = app_with("# H1\nbody\nmore body\n", 10);
         a.editor.command_line = "set foldmethod=markdown".into();
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.foldmethod(), FoldMethod::Markdown);
         assert!(!a.folds.is_empty());
@@ -1274,7 +1274,7 @@ mod tests {
         // None and we cascade to indent.
         let mut a = app_with("def f():\n    pass\n    pass\n", 10);
         a.editor.command_line = "set foldmethod=syntax".into();
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.foldmethod(), FoldMethod::Syntax);
         assert!(a.folds.iter().any(|f| f.start_line == 0 && f.end_line == 2));
@@ -1293,7 +1293,7 @@ mod tests {
         // provider has a tree to query.
         attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
         a.editor.command_line = "set foldmethod=syntax".into();
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.foldmethod(), FoldMethod::Syntax);
         // Tree-sitter fold for the struct (lines 0..=2).
@@ -1349,7 +1349,7 @@ mod tests {
     fn foldmethod_rejects_unknown_value() {
         let mut a = app_with("a\n", 10);
         a.editor.command_line = "set foldmethod=bogus".into();
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.foldmethod(), FoldMethod::Manual);
         assert!(a.editor.last_message.is_some());

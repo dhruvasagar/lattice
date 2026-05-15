@@ -698,7 +698,7 @@ mod tests {
     #[test]
     fn invoke_char_right_advances_cursor() {
         let mut a = app_with("abc", 10);
-        let id = a.builtins.char_right;
+        let id = a.editor.builtins.char_right;
         a.apply(invoke_motion(id));
         assert_eq!(a.cursor, Position::new(0, 1));
     }
@@ -706,7 +706,7 @@ mod tests {
     #[test]
     fn invoke_char_left_at_origin_does_not_underflow() {
         let mut a = app_with("abc", 10);
-        let id = a.builtins.char_left;
+        let id = a.editor.builtins.char_left;
         a.apply(invoke_motion(id));
         assert_eq!(a.cursor, Position::ZERO);
     }
@@ -714,8 +714,8 @@ mod tests {
     #[test]
     fn invoke_line_down_then_line_up() {
         let mut a = app_with("hello\nworld", 10);
-        let down = a.builtins.line_down;
-        let up = a.builtins.line_up;
+        let down = a.editor.builtins.line_down;
+        let up = a.editor.builtins.line_up;
         a.apply(invoke_motion(down));
         assert_eq!(a.cursor.line, 1);
         a.apply(invoke_motion(up));
@@ -725,7 +725,7 @@ mod tests {
     #[test]
     fn invoke_goto_last_line_jumps_to_last_line() {
         let mut a = app_with("a\nb\nc", 10);
-        let id = a.builtins.goto_last_line;
+        let id = a.editor.builtins.goto_last_line;
         a.apply(invoke_motion(id));
         assert_eq!(a.cursor.line, 2);
     }
@@ -733,8 +733,8 @@ mod tests {
     #[test]
     fn invoke_goto_first_line_returns_to_origin() {
         let mut a = app_with("a\nb\nc", 10);
-        let last = a.builtins.goto_last_line;
-        let first = a.builtins.goto_first_line;
+        let last = a.editor.builtins.goto_last_line;
+        let first = a.editor.builtins.goto_first_line;
         a.apply(invoke_motion(last));
         a.apply(invoke_motion(first));
         assert_eq!(a.cursor, Position::ZERO);
@@ -743,7 +743,7 @@ mod tests {
     #[test]
     fn invoke_line_end_moves_to_eol() {
         let mut a = app_with("hello world", 10);
-        let id = a.builtins.line_end;
+        let id = a.editor.builtins.line_end;
         a.apply(invoke_motion(id));
         assert_eq!(a.cursor, Position::new(0, 11));
     }
@@ -751,7 +751,7 @@ mod tests {
     #[test]
     fn ensure_visible_scrolls_when_cursor_goes_off_bottom() {
         let mut a = app_with("0\n1\n2\n3\n4\n5\n6\n7\n8\n9", 3);
-        let id = a.builtins.goto_last_line;
+        let id = a.editor.builtins.goto_last_line;
         a.apply(invoke_motion(id));
         assert_eq!(a.cursor.line, 9);
         assert_eq!(a.scroll, 9 - 3 + 1);
@@ -760,8 +760,8 @@ mod tests {
     #[test]
     fn ensure_visible_scrolls_back_to_top_on_goto_first() {
         let mut a = app_with("0\n1\n2\n3\n4", 2);
-        let last = a.builtins.goto_last_line;
-        let first = a.builtins.goto_first_line;
+        let last = a.editor.builtins.goto_last_line;
+        let first = a.editor.builtins.goto_first_line;
         a.apply(invoke_motion(last));
         a.apply(invoke_motion(first));
         assert_eq!(a.scroll, 0);
@@ -774,7 +774,7 @@ mod tests {
             'm',
         )));
         a.apply(Action::SetMark('a'));
-        assert!(a.partial_chord.is_empty());
+        assert!(a.editor.partial_chord.is_empty());
     }
 
     #[test]
@@ -785,7 +785,7 @@ mod tests {
             '`',
         )));
         a.apply(Action::JumpToMarkExact('a'));
-        assert!(a.partial_chord.is_empty());
+        assert!(a.editor.partial_chord.is_empty());
     }
 
     #[test]
@@ -800,7 +800,7 @@ mod tests {
     fn gg_pushes_jump_history_and_ctrl_o_returns() {
         let mut a = app_with("a\nb\nc\nd\ne", 10);
         a.cursor = Position::new(3, 0); // line 3 ('d')
-        a.apply(invoke_motion(a.builtins.goto_first_line));
+        a.apply(invoke_motion(a.editor.builtins.goto_first_line));
         assert_eq!(a.cursor, Position::ZERO);
         a.apply(Action::JumpHistoryBack);
         assert_eq!(a.cursor, Position::new(3, 0));
@@ -859,7 +859,7 @@ mod tests {
         a.apply(Action::SetMark('a'));
         // Position history now has [NamedMark('a') at (1,0)].
         a.cursor = Position::new(3, 0);
-        a.apply(invoke_motion(a.builtins.goto_first_line));
+        a.apply(invoke_motion(a.editor.builtins.goto_first_line));
         // Now history: [NamedMark('a'), AutoJump (3,0)].
         a.apply(Action::JumpHistoryBack);
         // Ctrl-O lands on the AutoJump entry, not the named mark.
@@ -874,7 +874,7 @@ mod tests {
         a.cursor = Position::new(1, 0);
         a.apply(Action::SetMark('a')); // ring [NamedMark a@(1,0)] cursor=1
         a.cursor = Position::new(3, 0);
-        a.apply(invoke_motion(a.builtins.goto_first_line));
+        a.apply(invoke_motion(a.editor.builtins.goto_first_line));
         // ring [NamedMark a, AutoJump (3,0)] cursor=2
         // Ctrl-O jumps to AutoJump (3,0). Snapshot of (0,0) pushed.
         // Actually: with snapshot pre-step, ring [a, (3,0), (0,0)],
@@ -1157,7 +1157,7 @@ mod tests {
     fn count_with_line_motion_advances_count_lines() {
         let mut a = app_with("0\n1\n2\n3\n4\n5\n6\n7\n8\n9", 20);
         a.apply(Action::Invoke(
-            CommandInvocation::of(a.builtins.line_down.0)
+            CommandInvocation::of(a.editor.builtins.line_down.0)
                 .with_count(lattice_grammar::command::Count(5)),
         ));
         assert_eq!(a.cursor.line, 5);
@@ -1171,7 +1171,7 @@ mod tests {
         let mut a = app_with("one\ntwo\nthree\nfour", 10);
         a.cursor = Position::new(0, 0);
         a.editor.op_count = 2;
-        let inv = CommandInvocation::of(a.builtins.delete.0)
+        let inv = CommandInvocation::of(a.editor.builtins.delete.0)
             .with_range(lattice_grammar::Range::CurrentLine)
             .with_count(lattice_grammar::command::Count(2));
         a.apply(Action::Invoke(inv));
@@ -1196,7 +1196,7 @@ mod tests {
         let mut a = app_with("one\ntwo\nthree\nfour", 10);
         a.cursor = Position::new(0, 0);
         a.editor.op_count = 2;
-        let inv = CommandInvocation::of(a.builtins.indent_right.0)
+        let inv = CommandInvocation::of(a.editor.builtins.indent_right.0)
             .with_range(lattice_grammar::Range::CurrentLine)
             .with_count(lattice_grammar::command::Count(2));
         a.apply(Action::Invoke(inv));
@@ -1211,7 +1211,7 @@ mod tests {
         let mut a = app_with("    one\n    two\nthree\nfour", 10);
         a.cursor = Position::new(0, 0);
         a.editor.op_count = 2;
-        let inv = CommandInvocation::of(a.builtins.indent_left.0)
+        let inv = CommandInvocation::of(a.editor.builtins.indent_left.0)
             .with_range(lattice_grammar::Range::CurrentLine)
             .with_count(lattice_grammar::command::Count(2));
         a.apply(Action::Invoke(inv));
@@ -1224,7 +1224,7 @@ mod tests {
     fn count_zero_through_pending_count_is_ignored_by_motion() {
         // pending_count remains 0 after no digit; motion uses default 1.
         let mut a = app_with("hello world", 10);
-        let id = a.builtins.word_forward;
+        let id = a.editor.builtins.word_forward;
         a.apply(invoke_motion(id));
         assert_eq!(a.cursor, Position::new(0, 6));
     }

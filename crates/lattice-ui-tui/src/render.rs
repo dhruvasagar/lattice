@@ -2051,7 +2051,7 @@ fn draw_buffer(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot
     // Place the buffer-area cursor only when the prompt isn't claiming it.
     // In Command (`:`) and Search (`/`, `?`) modal states the cursor lives
     // in the bottom prompt row -- handled by `draw_command_or_echo`.
-    let prompt_owns_cursor = matches!(app.modal, ModalState::Command | ModalState::Search(_));
+    let prompt_owns_cursor = matches!(app.editor.modal, ModalState::Command | ModalState::Search(_));
     if !prompt_owns_cursor {
         let view = FrameView::from_app(app);
         if let Some((screen_x, screen_y)) = cursor_screen_position(&view, snap, area) {
@@ -2061,7 +2061,7 @@ fn draw_buffer(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot
 }
 
 fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
-    if matches!(app.modal, ModalState::Command) {
+    if matches!(app.editor.modal, ModalState::Command) {
         // ":<typed>" with the cursor sitting at the end of the typed text.
         let prompt = format!(":{}", app.editor.command_line);
         let cursor_col = area
@@ -2113,7 +2113,7 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    if let ModalState::Search(direction) = app.modal {
+    if let ModalState::Search(direction) = app.editor.modal {
         let lead = match direction {
             SearchDirection::Forward => '/',
             SearchDirection::Backward => '?',
@@ -2764,7 +2764,7 @@ fn substitute_preview_style() -> TuiStyle {
 /// `(anchor, head)` positions. Returns `None` if not in blockwise mode.
 fn visual_block_extents(app: &App) -> Option<BlockExtents> {
     if !matches!(
-        app.modal,
+        app.editor.modal,
         ModalState::Visual(lattice_grammar::VisualKind::Blockwise)
     ) {
         return None;
@@ -2796,7 +2796,7 @@ struct BlockExtents {
 /// and last lines are normalized to cover the full lines (mirrored from
 /// the dispatcher's `Range::Selection` resolution).
 fn visual_selection_range(app: &App) -> Option<ProtoRange> {
-    if !matches!(app.modal, ModalState::Visual(_)) {
+    if !matches!(app.editor.modal, ModalState::Visual(_)) {
         return None;
     }
     let sels = app.document.selections();
@@ -4603,7 +4603,7 @@ mod tests {
         // prefix-matching top candidate, the cursor's line ends
         // with a dimmed span carrying the suffix.
         let mut app = app_with("foo", 5);
-        app.modal = lattice_grammar::ModalState::Insert;
+        app.editor.modal = lattice_grammar::ModalState::Insert;
         app.cursor = pos(0, 3);
         app.editor.config
             .set_typed::<lattice_config::CompletionGhostText>(true)
@@ -4656,7 +4656,7 @@ mod tests {
         // Cursor mid-line -> ghost would visually clash with
         // existing buffer content; producer suppresses.
         let mut app = app_with("foobaz", 5);
-        app.modal = lattice_grammar::ModalState::Insert;
+        app.editor.modal = lattice_grammar::ModalState::Insert;
         app.cursor = pos(0, 3); // between `foo` and `baz`
         app.editor.config
             .set_typed::<lattice_config::CompletionGhostText>(true)

@@ -1595,7 +1595,7 @@ mod tests {
     #[test]
     fn first_party_generators_returns_all_built_in_sources() {
         let app = app_with("hi\n", 5);
-        let generators = first_party_generators(app.registry.clone(), app.editor.config.clone());
+        let generators = first_party_generators(app.editor.registry.clone(), app.editor.config.clone());
         let ids: Vec<&'static str> = generators.iter().map(|g| g.spec().id).collect();
         assert_eq!(
             ids,
@@ -1637,7 +1637,7 @@ mod tests {
         let app = app_with("hi\n", 5);
         let snap = app.document.snapshot();
         let ctx = app.build_picker_context(&snap);
-        let source = CommandsSource::new(app.registry.clone());
+        let source = CommandsSource::new(app.editor.registry.clone());
         let result = source.init(&ctx, &[]).expect("inline");
         let PickerInitResult::Inline(pairs) = result else {
             panic!("expected Inline");
@@ -1679,7 +1679,7 @@ mod tests {
         let app = app_with("hi\n", 5);
         let snap = app.document.snapshot();
         let ctx = app.build_picker_context(&snap);
-        let source = CommandsSource::new(app.registry.clone());
+        let source = CommandsSource::new(app.editor.registry.clone());
         let result = source.init(&ctx, &[]).expect("inline");
         let PickerInitResult::Inline(pairs) = result else {
             panic!("expected Inline");
@@ -1737,7 +1737,7 @@ mod tests {
         let app = app_with("hi\n", 5);
         let snap = app.document.snapshot();
         let ctx = app.build_picker_context(&snap);
-        let source = CommandsSource::new(app.registry.clone());
+        let source = CommandsSource::new(app.editor.registry.clone());
         let routing = RoutingPayload::InvokeCommand {
             id: "ex:write".into(),
             args: Args::None,

@@ -85,7 +85,7 @@ impl App {
         let Some(line) = self.editor.search_line.take() else {
             return;
         };
-        self.modal = lattice_grammar::ModalState::Normal;
+        self.editor.modal = lattice_grammar::ModalState::Normal;
         if line.pattern.is_empty() {
             // Empty submit: re-run last_search if any (vim behavior).
             if self.editor.last_search.is_some() {
@@ -168,7 +168,7 @@ impl App {
         }
         self.editor.current_match = None;
         self.editor.all_matches.clear();
-        self.modal = lattice_grammar::ModalState::Normal;
+        self.editor.modal = lattice_grammar::ModalState::Normal;
     }
 
     /// Repeat last search. `reverse=false` keeps the original direction
@@ -435,10 +435,10 @@ impl App {
             last.kind
         };
         let motion_id = match kind {
-            FindKind::Forward => self.builtins.find_char_forward,
-            FindKind::Backward => self.builtins.find_char_backward,
-            FindKind::TillForward => self.builtins.till_char_forward,
-            FindKind::TillBackward => self.builtins.till_char_backward,
+            FindKind::Forward => self.editor.builtins.find_char_forward,
+            FindKind::Backward => self.editor.builtins.find_char_backward,
+            FindKind::TillForward => self.editor.builtins.till_char_forward,
+            FindKind::TillBackward => self.editor.builtins.till_char_backward,
         };
         // Don't update last_find on repeat -- the original direction
         // sticks (vim semantics: ; preserves direction even after ,).
@@ -696,7 +696,7 @@ mod tests {
     fn enter_search_seeds_state() {
         let mut a = app_with("hello world", 10);
         a.apply(Action::EnterSearch(SearchDirection::Forward));
-        assert_eq!(a.modal, ModalState::Search(SearchDirection::Forward));
+        assert_eq!(a.editor.modal, ModalState::Search(SearchDirection::Forward));
         let line = a.editor.search_line.as_ref().expect("search_line populated");
         assert_eq!(line.pattern, "");
         assert_eq!(line.origin, Position::ZERO);
@@ -731,7 +731,7 @@ mod tests {
         let mut a = app_with("hello", 10);
         a.apply(Action::EnterSearch(SearchDirection::Forward));
         a.apply(Action::SearchBackspace);
-        assert_eq!(a.modal, ModalState::Normal);
+        assert_eq!(a.editor.modal, ModalState::Normal);
         assert!(a.editor.search_line.is_none());
     }
 
@@ -741,7 +741,7 @@ mod tests {
         a.apply(Action::EnterSearch(SearchDirection::Forward));
         type_pattern(&mut a, "bar");
         a.apply(Action::SearchSubmit);
-        assert_eq!(a.modal, ModalState::Normal);
+        assert_eq!(a.editor.modal, ModalState::Normal);
         assert_eq!(a.cursor, Position::new(0, 4));
         assert!(a.editor.search_line.is_none());
         let last = a.editor.last_search.as_ref().unwrap();
@@ -771,7 +771,7 @@ mod tests {
         // Preview should have set current_match to "foo" at byte 8.
         assert_eq!(a.editor.current_match.unwrap().start, Position::new(0, 8));
         a.apply(Action::SearchCancel);
-        assert_eq!(a.modal, ModalState::Normal);
+        assert_eq!(a.editor.modal, ModalState::Normal);
         assert_eq!(a.cursor, Position::new(0, 5));
         assert!(a.editor.current_match.is_none());
     }
@@ -911,7 +911,7 @@ mod tests {
     fn semicolon_repeats_last_find_forward() {
         let mut a = app_with("hello world", 10);
         // First f-find for 'l': cursor moves to byte 2.
-        let inv = lattice_grammar::CommandInvocation::of(a.builtins.find_char_forward.0)
+        let inv = lattice_grammar::CommandInvocation::of(a.editor.builtins.find_char_forward.0)
             .with_args(lattice_grammar::Args::Char('l'));
         a.apply(Action::Invoke(inv));
         assert_eq!(a.cursor, Position::new(0, 2));
@@ -924,7 +924,7 @@ mod tests {
     fn comma_reverses_last_find_direction() {
         let mut a = app_with("hello world", 10);
         // f l forward.
-        let inv = lattice_grammar::CommandInvocation::of(a.builtins.find_char_forward.0)
+        let inv = lattice_grammar::CommandInvocation::of(a.editor.builtins.find_char_forward.0)
             .with_args(lattice_grammar::Args::Char('l'));
         a.apply(Action::Invoke(inv));
         assert_eq!(a.cursor, Position::new(0, 2));
@@ -982,7 +982,7 @@ mod tests {
             pattern: "needle".into(),
             direction: SearchDirection::Forward,
         });
-        a.modal = ModalState::Search(SearchDirection::Forward);
+        a.editor.modal = ModalState::Search(SearchDirection::Forward);
         a.apply(Action::SearchSubmit);
         // The fold containing `body one` should now be open.
         let fold = a
@@ -1064,9 +1064,9 @@ mod tests {
         // Should be in search modal, not Normal with a read-only
         // echo.
         assert!(
-            matches!(a.modal, ModalState::Search(_)),
+            matches!(a.editor.modal, ModalState::Search(_)),
             "should be in Search modal, got {:?}",
-            a.modal
+            a.editor.modal
         );
         assert!(
             a.editor.last_message.is_none(),
@@ -1127,7 +1127,7 @@ mod tests {
     fn find_no_match_keeps_cursor() {
         let mut a = app_with("hello", 10);
         a.cursor = Position::new(0, 1);
-        let inv = CommandInvocation::of(a.builtins.find_char_forward.0)
+        let inv = CommandInvocation::of(a.editor.builtins.find_char_forward.0)
             .with_args(lattice_grammar::Args::Char('z'));
         a.apply(Action::Invoke(inv));
         assert_eq!(a.cursor, Position::new(0, 1));

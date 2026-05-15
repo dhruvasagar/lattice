@@ -83,7 +83,7 @@ impl App {
     /// snippet registry; expands the matching snippet directly
     /// without surfacing the popup.
     pub fn do_snippet_expand_at_cursor(&mut self) {
-        if !matches!(self.modal, ModalState::Insert) {
+        if !matches!(self.editor.modal, ModalState::Insert) {
             return;
         }
         let snap = self.document.snapshot();
@@ -512,7 +512,7 @@ impl App {
     /// already open. Sources contributing today: buffer-words.
     /// LSP / snippets / path / tree-sitter follow in 4.2.g.2+.
     pub fn do_completion_trigger(&mut self) {
-        if !matches!(self.modal, ModalState::Insert) {
+        if !matches!(self.editor.modal, ModalState::Insert) {
             // Manual trigger from any other mode is a no-op
             // (completion is an Insert-mode surface). The
             // explicit echo-free no-op is intentional -- no
@@ -1250,7 +1250,7 @@ impl App {
                 self.cursor = pos;
             }
             self.active_snippet = Some(active);
-            self.modal = ModalState::Insert;
+            self.editor.modal = ModalState::Insert;
         } else {
             self.cursor = main_applied.inserted_range.end;
         }
@@ -1295,7 +1295,7 @@ impl App {
                 self.cursor = pos;
             }
             self.active_snippet = Some(active);
-            self.modal = ModalState::Insert;
+            self.editor.modal = ModalState::Insert;
         } else {
             self.cursor = applied.inserted_range.end;
         }
@@ -1458,11 +1458,11 @@ mod tests {
         // `:set completion.auto_insert_single` flips it back.
         let mut a = app_with("xx", 10);
         a.editor.command_line = "set nocompletion.auto_insert_single".into();
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert!(!a.completion_auto_insert_single());
         a.editor.command_line = "set completion.auto_insert_single".into();
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert!(a.completion_auto_insert_single());
     }
@@ -1484,7 +1484,7 @@ mod tests {
         // expect the snippet's literal text in the buffer
         // and an active snippet pointing at $1.
         let mut a = app_with("for", 10);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::new(0, 3);
         install_snippet(
             &mut a,
@@ -1507,7 +1507,7 @@ mod tests {
     #[test]
     fn snippet_next_placeholder_walks_through_groups_and_drops_on_zero() {
         let mut a = app_with("for", 10);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::new(0, 3);
         install_snippet(
             &mut a,
@@ -1532,7 +1532,7 @@ mod tests {
     #[test]
     fn snippet_prev_placeholder_walks_back() {
         let mut a = app_with("for", 10);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::new(0, 3);
         install_snippet(&mut a, "*", "for-loop", "for", "for ${1:i} in ${2:iter} {}");
         a.do_snippet_expand_at_cursor();
@@ -1545,7 +1545,7 @@ mod tests {
     #[test]
     fn snippet_expand_with_no_match_is_a_no_op() {
         let mut a = app_with("xyz", 10);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::new(0, 3);
         a.do_snippet_expand_at_cursor();
         assert!(a.active_snippet.is_none());
@@ -1567,7 +1567,7 @@ mod tests {
     #[test]
     fn completion_trigger_includes_snippet_candidate_for_matching_prefix() {
         let mut a = app_with("for", 10);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::new(0, 3);
         install_snippet(&mut a, "*", "for-loop", "for", "for ${1:i} in ${2:iter} {}");
         a.do_completion_trigger();
@@ -1589,7 +1589,7 @@ mod tests {
     #[test]
     fn completion_accept_on_snippet_candidate_starts_active_snippet() {
         let mut a = app_with("for", 10);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::new(0, 3);
         install_snippet(&mut a, "*", "for-loop", "for", "for ${1:i} in ${2:iter} {}");
         a.do_completion_trigger();
@@ -1625,7 +1625,7 @@ mod tests {
         // accept a candidate. The App's accept-frequency map
         // gets a new entry keyed by `(text, kind)` with count 1.
         let mut a = app_with("alpha bravo charlie ", 10);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::new(0, 20);
         a.do_completion_trigger();
         // Empty query at end of line -> all three buffer words
@@ -1652,7 +1652,7 @@ mod tests {
         // -> uniform 100); a previous accept of `bravo` lifts
         // it to the top of the rendered list.
         let mut a = app_with("alpha bravo charlie ", 10);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::new(0, 20);
         // Seed the freq map directly -- this is the integration
         // boundary we care about (the App's map fed into the
@@ -1687,7 +1687,7 @@ mod tests {
         let doc_path = ws.join("buffer.rs");
         let mut a = app_with_path(source, 10, doc_path);
         set_rust_syntax(&mut a, source);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         // Cursor between the empty string's quotes -> string
         // scope.
         a.cursor = Position::new(0, source.find("\"\"").unwrap() as u32 + 1);
@@ -1728,7 +1728,7 @@ mod tests {
         let source = "let p = \"\";\n";
         let mut a = app_with_path(source, 10, ws.join("buffer.rs"));
         set_rust_syntax(&mut a, source);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::new(0, source.find("\"\"").unwrap() as u32 + 1);
         a.do_completion_trigger();
         let state = a.insert_completion.as_ref().expect("popup");
@@ -1744,7 +1744,7 @@ mod tests {
         let source = "fn main() { let x = 1; }\n";
         let mut a = app_with(source, 10);
         set_rust_syntax(&mut a, source);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         // Cursor at end of line -- outside any string.
         a.cursor = Position::new(0, source.trim_end().len() as u32);
         a.do_completion_trigger();
@@ -1768,7 +1768,7 @@ mod tests {
         let source = "let p = \"\";\n";
         let mut a = app_with_path(source, 10, ws.join("buffer.rs"));
         set_rust_syntax(&mut a, source);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::new(0, source.find("\"\"").unwrap() as u32 + 1);
         // Override the active language ("rust", since the
         // buffer path ends in `.rs`) to drop path source.
@@ -1797,7 +1797,7 @@ mod tests {
         let source = "let p = \"src/\";\n";
         let mut a = app_with_path(source, 10, ws.join("buffer.rs"));
         set_rust_syntax(&mut a, source);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         // Cursor after `src/`.
         let after_slash = source.find("src/").unwrap() + "src/".len();
         a.cursor = Position::new(0, after_slash as u32);
@@ -1815,7 +1815,7 @@ mod tests {
     #[test]
     fn ghost_text_off_by_default_returns_none() {
         let mut a = app_with("foo", 5);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::new(0, 3);
         open_popup_with_top_text(&mut a, "foo", "foobar");
         // Default: completion.ghost_text = false -> no ghost.
@@ -1825,7 +1825,7 @@ mod tests {
     #[test]
     fn ghost_text_returns_suffix_for_prefix_matching_top_candidate() {
         let mut a = app_with("foo", 5);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::new(0, 3);
         a.do_set("completion.ghost_text=true");
         open_popup_with_top_text(&mut a, "foo", "foobar");
@@ -1839,7 +1839,7 @@ mod tests {
     #[test]
     fn ghost_text_case_insensitive_prefix_match() {
         let mut a = app_with("Foo", 5);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::new(0, 3);
         a.do_set("completion.ghost_text=true");
         open_popup_with_top_text(&mut a, "Foo", "foobar");
@@ -1849,7 +1849,7 @@ mod tests {
     #[test]
     fn ghost_text_none_when_top_doesnt_prefix_match_query() {
         let mut a = app_with("xyz", 5);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::new(0, 3);
         a.do_set("completion.ghost_text=true");
         // Top candidate is `bar`; query `xyz` doesn't prefix
@@ -1862,7 +1862,7 @@ mod tests {
     #[test]
     fn ghost_text_none_when_query_is_empty() {
         let mut a = app_with("", 5);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::new(0, 0);
         a.do_set("completion.ghost_text=true");
         open_popup_with_top_text(&mut a, "", "alpha");
@@ -1875,7 +1875,7 @@ mod tests {
     #[test]
     fn ghost_text_none_in_path_context() {
         let mut a = app_with("\"\"", 5);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::new(0, 1);
         a.do_set("completion.ghost_text=true");
         a.completion_in_path_context = true;
@@ -1889,7 +1889,7 @@ mod tests {
     #[test]
     fn ghost_text_none_when_popup_closed() {
         let mut a = app_with("foo", 5);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::new(0, 3);
         a.do_set("completion.ghost_text=true");
         // No open_popup_with_top_text call -> insert_completion = None.
@@ -1903,7 +1903,7 @@ mod tests {
         // gen:buffer-words (default 100). The LSP candidate
         // sorts above the buffer-words peer.
         let mut a = app_with("", 10);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::new(0, 0);
         let mut state = lattice_completion::InsertCompletionState::open(
             lattice_completion::CompletionTrigger::Manual,
@@ -1940,7 +1940,7 @@ mod tests {
         // the buffer-words candidate outranks the LSP one
         // (300 > 200) at tied matcher score.
         let mut a = app_with("", 10);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::new(0, 0);
         a.do_set("completion.source.buffer-words.priority=300");
         let mut state = lattice_completion::InsertCompletionState::open(
@@ -1979,7 +1979,7 @@ mod tests {
         // bonus; sorts below a tagged peer at tied matcher
         // score, but still appears in the rendered list.
         let mut a = app_with("", 10);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::new(0, 0);
         let mut state = lattice_completion::InsertCompletionState::open(
             lattice_completion::CompletionTrigger::Manual,
@@ -2012,7 +2012,7 @@ mod tests {
         // ranker can apply per-source priority without the host
         // having to remember to tag.
         let mut a = app_with("alpha bravo ", 10);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::new(0, 12);
         a.do_completion_trigger();
         let state = a.insert_completion.as_ref().expect("popup");
@@ -2031,7 +2031,7 @@ mod tests {
     fn completion_accept_increments_existing_frequency_count() {
         // Two accepts of the same item bump the count to 2.
         let mut a = app_with("alpha bravo charlie ", 10);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::new(0, 20);
         let key = (
             "bravo".to_string(),
@@ -2058,7 +2058,7 @@ mod tests {
     #[test]
     fn completion_mode_activates_when_popup_opens() {
         let mut a = app_with("alpha bravo charlie ", 10);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::new(0, 20);
         assert!(
             !a.completion_popup_active(),
@@ -2075,7 +2075,7 @@ mod tests {
     #[test]
     fn completion_mode_deactivates_after_cancel() {
         let mut a = app_with("alpha bravo charlie ", 10);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::new(0, 20);
         a.apply(Action::CompletionTrigger);
         assert!(a.completion_popup_active());
@@ -2090,7 +2090,7 @@ mod tests {
     #[test]
     fn completion_mode_deactivates_after_accept() {
         let mut a = app_with("alpha bravo charlie ", 10);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::new(0, 20);
         a.apply(Action::CompletionTrigger);
         assert!(a.completion_popup_active());
@@ -2133,7 +2133,7 @@ mod tests {
     fn completion_trigger_noop_when_completion_mode_inactive() {
         use lattice_grammar::ModalState;
         let mut a = app_with("alpha bravo charlie ", 10);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::new(0, 20);
         // Force-deactivate completion-mode so the gate kicks in.
         let buffer_id = a.document_buffer_id;
@@ -2153,7 +2153,7 @@ mod tests {
     fn completion_popup_mode_distinct_from_completion_mode() {
         use lattice_grammar::ModalState;
         let mut a = app_with("alpha bravo charlie ", 10);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::new(0, 20);
         let buffer_id = a.document_buffer_id;
         // completion-mode is on (auto-activated); popup-mode is
@@ -2271,7 +2271,7 @@ mod tests {
     #[test]
     fn buffer_words_populates_via_mode_contributed_source() {
         let mut a = app_with("alpha bravo charlie ", 10);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::new(0, 20);
         a.do_completion_trigger();
         let state = a.insert_completion.as_ref().expect("popup open");
@@ -2380,7 +2380,7 @@ mod tests {
     #[test]
     fn completion_popup_active_reads_mode_not_state_field() {
         let mut a = app_with("alpha bravo charlie ", 10);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::new(0, 20);
         a.apply(Action::CompletionTrigger);
         assert!(a.completion_popup_active());
@@ -2404,7 +2404,7 @@ mod tests {
     #[test]
     fn completion_filter_to_source_narrows_rendered_list() {
         let mut a = app_with("", 10);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::new(0, 0);
         let mut state = lattice_completion::InsertCompletionState::open(
             lattice_completion::CompletionTrigger::Manual,
@@ -2446,7 +2446,7 @@ mod tests {
     #[test]
     fn completion_filter_clear_restores_full_list() {
         let mut a = app_with("", 10);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::new(0, 0);
         let mut state = lattice_completion::InsertCompletionState::open(
             lattice_completion::CompletionTrigger::Manual,

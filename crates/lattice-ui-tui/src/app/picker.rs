@@ -547,7 +547,7 @@ impl App {
         // specific opens; today there are no first-party
         // subscribers, but the surface is introspectable
         // via `:describe-events`.
-        self.event_bus
+        self.editor.event_bus
             .publish_typed(lattice_picker::events::PickerOpened {
                 source_id: source.clone(),
                 ts: std::time::SystemTime::now(),
@@ -1058,7 +1058,7 @@ impl App {
         // multi-result LSP locations); skip the publish in
         // that case rather than emit a misleading default.
         if let Some(source_id) = picker.source_id.as_deref() {
-            self.event_bus
+            self.editor.event_bus
                 .publish_typed(lattice_picker::events::PickerDismissed {
                     source_id: source_id.to_string(),
                     ts: std::time::SystemTime::now(),
@@ -1164,7 +1164,7 @@ impl App {
             // record stays on the direct path because it's
             // load-bearing for the very next picker-open and
             // bus delivery is queue-deferred.
-            self.event_bus
+            self.editor.event_bus
                 .publish_typed(lattice_picker::events::PickerAccepted {
                     source_id: source_id_owned.clone(),
                     identity,
@@ -1845,7 +1845,7 @@ mod tests {
         let ctx = lattice_completion::GenerateContext {
             prefix: "",
             buffer: &snap.buffer,
-            registry: &app.registry,
+            registry: &app.editor.registry,
             case_sensitive: false,
         };
         let candidates = generator.inner.generate(&ctx);
@@ -1896,7 +1896,7 @@ mod tests {
         let ctx = lattice_completion::GenerateContext {
             prefix: "",
             buffer: &snap.buffer,
-            registry: &app.registry,
+            registry: &app.editor.registry,
             case_sensitive: false,
         };
         let candidates = lattice_completion::traits::CandidateGenerator::generate(&generator, &ctx);
@@ -2028,7 +2028,7 @@ mod tests {
         // Subscribe before firing the picker.
         let (tx, mut rx) =
             tokio::sync::mpsc::unbounded_channel::<lattice_picker::events::PickerAccepted>();
-        app.event_bus.subscribe_typed(tx);
+        app.editor.event_bus.subscribe_typed(tx);
         app.open_picker("files".into(), vec![tmp.display().to_string()]);
         let _ = app.editor.picker.as_ref().expect("picker open");
         app.apply(Action::PickerAccept);
@@ -2050,7 +2050,7 @@ mod tests {
         let mut app = app_with("hi\n", 5);
         let (tx, mut rx) =
             tokio::sync::mpsc::unbounded_channel::<lattice_picker::events::PickerOpened>();
-        app.event_bus.subscribe_typed(tx);
+        app.editor.event_bus.subscribe_typed(tx);
         // `:picker buffers` always seats (the App's
         // BufferRegistry has at least the active doc).
         app.open_picker("buffers".into(), Vec::new());

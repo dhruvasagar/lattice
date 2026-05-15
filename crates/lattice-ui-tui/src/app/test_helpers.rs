@@ -38,8 +38,8 @@ pub(crate) fn app_with(text: &str, viewport: u32) -> App {
 /// neither exercises this seam.
 pub(super) fn press(app: &mut App, event: crossterm::event::KeyEvent) {
     let ctx = crate::input::TranslateContext {
-        modal: app.modal,
-        builtins: &app.builtins,
+        modal: app.editor.modal,
+        builtins: &app.editor.builtins,
         pending_count: app.editor.pending_count,
         op_count: app.editor.op_count,
         recording_macro: app.editor.macro_recording.is_some(),
@@ -49,8 +49,8 @@ pub(super) fn press(app: &mut App, event: crossterm::event::KeyEvent) {
         picker_open: app.editor.picker.is_some(),
         insert_completion_open: app.completion_popup_active(),
         snippet_active: app.active_snippet.is_some(),
-        keymap: &app.keymap,
-        partial_chord: &app.partial_chord,
+        keymap: &app.editor.keymap,
+        partial_chord: &app.editor.partial_chord,
     };
     let action = crate::input::translate(ctx, event);
     app.apply(action);
@@ -86,7 +86,7 @@ pub(super) fn attach_test_syntax(a: &mut App, lang: lattice_syntax::Lang) {
 /// `Event::OptionChanged`, `Event::ModalModeChanged`).
 pub(super) fn subscribe_all_events(a: &App) -> tokio::sync::mpsc::UnboundedReceiver<Event> {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    a.event_bus.subscribe(
+    a.editor.event_bus.subscribe(
         lattice_runtime::EventFilter::any(),
         lattice_runtime::SubscriptionTarget::Channel(tx),
     );
@@ -162,7 +162,7 @@ pub(super) fn app_with_path(text: &str, viewport: u32, path: std::path::PathBuf)
 /// cmdline pre-populated.
 pub(super) fn app_in_command_mode(line: &str) -> App {
     let mut a = app_with("xx", 10);
-    a.modal = ModalState::Command;
+    a.editor.modal = ModalState::Command;
     a.editor.command_line = line.into();
     a
 }

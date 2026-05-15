@@ -234,7 +234,7 @@ impl App {
         if text.is_empty() {
             return;
         }
-        match self.modal {
+        match self.editor.modal {
             ModalState::Command => {
                 self.editor.command_line.push_str(text);
                 self.editor.command_history_cursor = None;
@@ -251,7 +251,7 @@ impl App {
             _ => {
                 if let Ok(applied) = self.apply_edit_blocking(Edit::insert(self.cursor, text)) {
                     self.cursor = applied.inserted_range.end;
-                    if matches!(self.modal, ModalState::Insert)
+                    if matches!(self.editor.modal, ModalState::Insert)
                         && let Some(rec) = self.editor.recording_insert.as_mut()
                     {
                         rec.push_str(text);
@@ -382,7 +382,7 @@ impl App {
         if self.cursor.byte < len {
             self.cursor.byte += 1;
         }
-        self.modal = ModalState::Insert;
+        self.editor.modal = ModalState::Insert;
     }
 
     /// Vim's blockwise-visual `I` (`append=false`) and `A`
@@ -394,7 +394,7 @@ impl App {
     /// No-op if the modal is not blockwise visual; called only
     /// from translate_visual which guards on the mode.
     pub(super) fn do_enter_block_visual_insert(&mut self, append: bool) {
-        if !matches!(self.modal, ModalState::Visual(VisualKind::Blockwise)) {
+        if !matches!(self.editor.modal, ModalState::Visual(VisualKind::Blockwise)) {
             return;
         }
         let sels = self.document.selections();
@@ -441,7 +441,7 @@ impl App {
         if self.apply_edit_blocking(Edit::insert(eol, "\n")).is_ok() {
             self.cursor = Position::new(self.cursor.line + 1, 0);
         }
-        self.modal = ModalState::Insert;
+        self.editor.modal = ModalState::Insert;
     }
 
     /// Vim's `O` -- open a new line above the cursor; mirror of
@@ -452,7 +452,7 @@ impl App {
         if self.apply_edit_blocking(Edit::insert(bol, "\n")).is_ok() {
             self.cursor = bol;
         }
-        self.modal = ModalState::Insert;
+        self.editor.modal = ModalState::Insert;
     }
 
     /// Delete the cursor's whole line including its trailing newline
@@ -640,7 +640,7 @@ impl App {
             // attached server advertises any triggers, and when
             // the inserted text is multi-character (paste, snippet
             // expansion -- those land via different paths).
-            if matches!(self.modal, ModalState::Insert) && s.chars().count() == 1 {
+            if matches!(self.editor.modal, ModalState::Insert) && s.chars().count() == 1 {
                 let inserted_char = s.chars().next().unwrap_or('\0');
                 if self.signature_help_trigger_chars().contains(&inserted_char) {
                     self.do_lsp_signature_help_request();
@@ -868,7 +868,7 @@ mod tests {
     fn enter_append_advances_cursor_one_byte_then_inserts() {
         let mut a = app_with("ab", 10);
         a.apply(Action::EnterAppend);
-        assert_eq!(a.modal, ModalState::Insert);
+        assert_eq!(a.editor.modal, ModalState::Insert);
         assert_eq!(a.cursor, Position::new(0, 1));
     }
 
@@ -876,7 +876,7 @@ mod tests {
     fn open_line_below_creates_new_line_and_drops_cursor_to_it() {
         let mut a = app_with("first", 10);
         a.apply(Action::OpenLineBelow);
-        assert_eq!(a.modal, ModalState::Insert);
+        assert_eq!(a.editor.modal, ModalState::Insert);
         assert_eq!(a.document.text(), "first\n");
         assert_eq!(a.cursor, Position::new(1, 0));
     }
@@ -885,7 +885,7 @@ mod tests {
     fn open_line_above_creates_new_line_above() {
         let mut a = app_with("second", 10);
         a.apply(Action::OpenLineAbove);
-        assert_eq!(a.modal, ModalState::Insert);
+        assert_eq!(a.editor.modal, ModalState::Insert);
         assert_eq!(a.document.text(), "\nsecond");
         assert_eq!(a.cursor, Position::new(0, 0));
     }
@@ -893,8 +893,8 @@ mod tests {
     #[test]
     fn delete_with_word_forward_target_dw_in_app() {
         let mut a = app_with("hello world", 10);
-        let inv = CommandInvocation::of(a.builtins.delete.0).with_target(
-            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
+        let inv = CommandInvocation::of(a.editor.builtins.delete.0).with_target(
+            lattice_grammar::Target::Motion(a.editor.builtins.word_forward, lattice_grammar::Args::None),
         );
         a.apply(Action::Invoke(inv));
         assert_eq!(a.document.text(), "world");
@@ -904,8 +904,8 @@ mod tests {
     #[test]
     fn delete_char_under_cursor_x_in_app() {
         let mut a = app_with("abc", 10);
-        let inv = CommandInvocation::of(a.builtins.delete.0).with_target(
-            lattice_grammar::Target::Motion(a.builtins.char_right, lattice_grammar::Args::None),
+        let inv = CommandInvocation::of(a.editor.builtins.delete.0).with_target(
+            lattice_grammar::Target::Motion(a.editor.builtins.char_right, lattice_grammar::Args::None),
         );
         a.apply(Action::Invoke(inv));
         assert_eq!(a.document.text(), "bc");
@@ -937,12 +937,12 @@ mod tests {
     #[test]
     fn cw_deletes_word_and_enters_insert_mode() {
         let mut a = app_with("hello world", 10);
-        let inv = CommandInvocation::of(a.builtins.change.0).with_target(
-            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
+        let inv = CommandInvocation::of(a.editor.builtins.change.0).with_target(
+            lattice_grammar::Target::Motion(a.editor.builtins.word_forward, lattice_grammar::Args::None),
         );
         a.apply(Action::Invoke(inv));
         assert_eq!(a.document.text(), "world");
-        assert_eq!(a.modal, ModalState::Insert);
+        assert_eq!(a.editor.modal, ModalState::Insert);
         assert_eq!(a.cursor, Position::ZERO);
     }
 
@@ -950,11 +950,11 @@ mod tests {
     fn cc_clears_current_line_and_enters_insert_mode() {
         let mut a = app_with("aaa\nBBB\nccc", 10);
         a.cursor = Position::new(1, 0);
-        let inv = CommandInvocation::of(a.builtins.change.0)
+        let inv = CommandInvocation::of(a.editor.builtins.change.0)
             .with_range(lattice_grammar::Range::CurrentLine);
         a.apply(Action::Invoke(inv));
         assert_eq!(a.document.text(), "aaa\n\nccc");
-        assert_eq!(a.modal, ModalState::Insert);
+        assert_eq!(a.editor.modal, ModalState::Insert);
     }
 
     #[test]
@@ -1007,15 +1007,15 @@ mod tests {
     fn delete_into_black_hole_does_not_overwrite_unnamed() {
         let mut a = app_with("hello world", 10);
         // First yank into unnamed.
-        let yank = CommandInvocation::of(a.builtins.yank.0).with_target(
-            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
+        let yank = CommandInvocation::of(a.editor.builtins.yank.0).with_target(
+            lattice_grammar::Target::Motion(a.editor.builtins.word_forward, lattice_grammar::Args::None),
         );
         a.apply(Action::Invoke(yank));
         let pre_delete_unnamed = a.editor.unnamed_register.as_ref().unwrap().content.clone();
         // Now delete into black hole; unnamed should be untouched.
         a.apply(Action::SelectRegister(Register::BlackHole));
-        let inv = CommandInvocation::of(a.builtins.delete.0).with_target(
-            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
+        let inv = CommandInvocation::of(a.editor.builtins.delete.0).with_target(
+            lattice_grammar::Target::Motion(a.editor.builtins.word_forward, lattice_grammar::Args::None),
         );
         a.apply(Action::Invoke(inv));
         assert_eq!(
@@ -1027,8 +1027,8 @@ mod tests {
     #[test]
     fn delete_does_not_populate_zero_register() {
         let mut a = app_with("hello world", 10);
-        let inv = CommandInvocation::of(a.builtins.delete.0).with_target(
-            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
+        let inv = CommandInvocation::of(a.editor.builtins.delete.0).with_target(
+            lattice_grammar::Target::Motion(a.editor.builtins.word_forward, lattice_grammar::Args::None),
         );
         a.apply(Action::Invoke(inv));
         // Delete populates unnamed but NOT "0.
@@ -1160,8 +1160,8 @@ mod tests {
     #[test]
     fn delete_records_last_change_and_dot_replays_it() {
         let mut a = app_with("foo bar foo bar", 10);
-        let inv = CommandInvocation::of(a.builtins.delete.0).with_target(
-            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
+        let inv = CommandInvocation::of(a.editor.builtins.delete.0).with_target(
+            lattice_grammar::Target::Motion(a.editor.builtins.word_forward, lattice_grammar::Args::None),
         );
         a.apply(Action::Invoke(inv));
         // After dw: "bar foo bar".
@@ -1265,7 +1265,7 @@ mod tests {
         a.apply(Action::PasteText("bcd".into()));
         assert_eq!(a.document.text(), "abcd");
         assert_eq!(a.cursor, Position::new(0, 4));
-        assert!(matches!(a.modal, ModalState::Insert));
+        assert!(matches!(a.editor.modal, ModalState::Insert));
         // Dot-repeat insert recording captured the pasted text.
         let rec = a.editor.recording_insert.as_ref().unwrap();
         assert_eq!(rec, "bcd");
@@ -1333,7 +1333,7 @@ mod tests {
         // After d :   "ad\n14\nWZ"
         let mut a =
             enter_block_visual("abcd\n1234\nWXYZ", Position::new(0, 1), Position::new(2, 2));
-        let inv = CommandInvocation::of(a.builtins.delete.0)
+        let inv = CommandInvocation::of(a.editor.builtins.delete.0)
             .with_range(lattice_grammar::Range::Selection);
         a.apply(Action::Invoke(inv));
         assert_eq!(a.document.text(), "ad\n14\nWZ");
@@ -1345,7 +1345,7 @@ mod tests {
         // at the block's top-left column, not at column 0.
         let mut a =
             enter_block_visual("abcd\n1234\nWXYZ", Position::new(0, 1), Position::new(2, 2));
-        let inv = CommandInvocation::of(a.builtins.delete.0)
+        let inv = CommandInvocation::of(a.editor.builtins.delete.0)
             .with_range(lattice_grammar::Range::Selection);
         a.apply(Action::Invoke(inv));
         // Top-left of block was (0, 1); after the delete column 1
@@ -1360,7 +1360,7 @@ mod tests {
         // by snapshotting pre/post and replaying as one Edit::replace.
         let mut a =
             enter_block_visual("abcd\n1234\nWXYZ", Position::new(0, 1), Position::new(2, 2));
-        let inv = CommandInvocation::of(a.builtins.delete.0)
+        let inv = CommandInvocation::of(a.editor.builtins.delete.0)
             .with_range(lattice_grammar::Range::Selection);
         a.apply(Action::Invoke(inv));
         assert_eq!(a.document.text(), "ad\n14\nWZ");
@@ -1375,11 +1375,11 @@ mod tests {
         // typed text would be batched separately by the I/A path.
         let mut a =
             enter_block_visual("abcd\n1234\nWXYZ", Position::new(0, 1), Position::new(2, 2));
-        let inv = CommandInvocation::of(a.builtins.change.0)
+        let inv = CommandInvocation::of(a.editor.builtins.change.0)
             .with_range(lattice_grammar::Range::Selection);
         a.apply(Action::Invoke(inv));
         assert_eq!(a.document.text(), "ad\n14\nWZ");
-        assert!(matches!(a.modal, ModalState::Insert));
+        assert!(matches!(a.editor.modal, ModalState::Insert));
         // Exit Insert without typing anything to isolate the deletion.
         a.apply(Action::EnterMode(ModalState::Normal));
         let _ = a.undo_blocking();
@@ -1392,7 +1392,7 @@ mod tests {
         let mut a =
             enter_block_visual("abcd\n1234\nWXYZ", Position::new(0, 1), Position::new(2, 2));
         let inv =
-            CommandInvocation::of(a.builtins.yank.0).with_range(lattice_grammar::Range::Selection);
+            CommandInvocation::of(a.editor.builtins.yank.0).with_range(lattice_grammar::Range::Selection);
         a.apply(Action::Invoke(inv));
         // Document untouched.
         assert_eq!(a.document.text(), "abcd\n1234\nWXYZ");
@@ -1409,7 +1409,7 @@ mod tests {
         // line len 2, intersection is `[1, 2)` = "2".
         let mut a = enter_block_visual("abcd\n12\nWXYZ", Position::new(0, 1), Position::new(2, 2));
         let inv =
-            CommandInvocation::of(a.builtins.yank.0).with_range(lattice_grammar::Range::Selection);
+            CommandInvocation::of(a.editor.builtins.yank.0).with_range(lattice_grammar::Range::Selection);
         a.apply(Action::Invoke(inv));
         let reg = a.editor.unnamed_register.as_ref().unwrap();
         assert_eq!(reg.content, "bc\n2\nXY");
@@ -1422,7 +1422,7 @@ mod tests {
         // intersection is empty.
         let mut a = enter_block_visual("abcd\n\nWXYZ", Position::new(0, 1), Position::new(2, 2));
         let inv =
-            CommandInvocation::of(a.builtins.yank.0).with_range(lattice_grammar::Range::Selection);
+            CommandInvocation::of(a.editor.builtins.yank.0).with_range(lattice_grammar::Range::Selection);
         a.apply(Action::Invoke(inv));
         let reg = a.editor.unnamed_register.as_ref().unwrap();
         assert_eq!(reg.content, "bc\n\nXY");
@@ -1438,7 +1438,7 @@ mod tests {
         // via blockwise_per_row=false; the indent operator's
         // apply_edit_batch makes the multi-line indent atomic).
         let mut a = enter_block_visual("abc\n123\nWXY", Position::new(0, 1), Position::new(2, 1));
-        let inv = CommandInvocation::of(a.builtins.indent_right.0)
+        let inv = CommandInvocation::of(a.editor.builtins.indent_right.0)
             .with_range(lattice_grammar::Range::Selection);
         a.apply(Action::Invoke(inv));
         assert_eq!(a.document.text(), "    abc\n    123\n    WXY");
@@ -1456,15 +1456,15 @@ mod tests {
         a.cursor = Position::new(0, 1);
         a.apply(Action::EnterVisual(VisualKind::Blockwise));
         // Move down 2 rows + right 1 column via motions.
-        a.apply(invoke_motion(a.builtins.line_down));
-        a.apply(invoke_motion(a.builtins.line_down));
-        a.apply(invoke_motion(a.builtins.char_right));
+        a.apply(invoke_motion(a.editor.builtins.line_down));
+        a.apply(invoke_motion(a.editor.builtins.line_down));
+        a.apply(invoke_motion(a.editor.builtins.char_right));
         // Cursor should now be at (2, 2). visual_anchor was (0, 1).
         assert_eq!(a.cursor, Position::new(2, 2));
         assert_eq!(a.editor.visual_anchor, Some(Position::new(0, 1)));
 
         a.apply(Action::EnterBlockVisualInsert);
-        assert!(matches!(a.modal, ModalState::Insert));
+        assert!(matches!(a.editor.modal, ModalState::Insert));
         // I should land at column 1 (block's left col) on the top row.
         assert_eq!(a.cursor, Position::new(0, 1));
         a.apply(Action::Insert("X".into()));
@@ -1479,7 +1479,7 @@ mod tests {
         let mut a =
             enter_block_visual("abcd\n1234\nWXYZ", Position::new(0, 1), Position::new(2, 2));
         a.apply(Action::EnterBlockVisualInsert);
-        assert!(matches!(a.modal, ModalState::Insert));
+        assert!(matches!(a.editor.modal, ModalState::Insert));
         assert_eq!(a.cursor, Position::new(0, 1));
         a.apply(Action::Insert("X".into()));
         a.apply(Action::EnterMode(ModalState::Normal));
@@ -1492,7 +1492,7 @@ mod tests {
         let mut a =
             enter_block_visual("abcd\n1234\nWXYZ", Position::new(0, 1), Position::new(2, 2));
         a.apply(Action::EnterBlockVisualAppend);
-        assert!(matches!(a.modal, ModalState::Insert));
+        assert!(matches!(a.editor.modal, ModalState::Insert));
         assert_eq!(a.cursor, Position::new(0, 3));
         a.apply(Action::Insert("@".into()));
         a.apply(Action::EnterMode(ModalState::Normal));
@@ -1551,7 +1551,7 @@ mod tests {
             Position::new(0, 0),
             Position::new(2, 0),
         );
-        let inv = CommandInvocation::of(a.builtins.indent_left.0)
+        let inv = CommandInvocation::of(a.editor.builtins.indent_left.0)
             .with_range(lattice_grammar::Range::Selection);
         a.apply(Action::Invoke(inv));
         assert_eq!(a.document.text(), "abc\n123\nWXY");
@@ -1561,11 +1561,11 @@ mod tests {
     fn block_change_deletes_rectangle_and_enters_insert() {
         let mut a =
             enter_block_visual("abcd\n1234\nWXYZ", Position::new(0, 1), Position::new(2, 2));
-        let inv = CommandInvocation::of(a.builtins.change.0)
+        let inv = CommandInvocation::of(a.editor.builtins.change.0)
             .with_range(lattice_grammar::Range::Selection);
         a.apply(Action::Invoke(inv));
         assert_eq!(a.document.text(), "ad\n14\nWZ");
-        assert!(matches!(a.modal, ModalState::Insert));
+        assert!(matches!(a.editor.modal, ModalState::Insert));
     }
 
     #[test]
@@ -1579,7 +1579,7 @@ mod tests {
             Position::new(1, 2),
         );
         let yank =
-            CommandInvocation::of(a.builtins.yank.0).with_range(lattice_grammar::Range::Selection);
+            CommandInvocation::of(a.editor.builtins.yank.0).with_range(lattice_grammar::Range::Selection);
         a.apply(Action::Invoke(yank));
         // Exit visual and move to a fresh paste site.
         a.apply(Action::ExitVisual);
@@ -1633,10 +1633,10 @@ mod tests {
     #[test]
     fn delete_chord_on_empty_cmdline_exits_command_mode() {
         let mut a = app_with("xx", 10);
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.editor.command_line = String::new();
         a.apply(Action::CommandLineDeleteChord);
-        assert!(matches!(a.modal, ModalState::Normal));
+        assert!(matches!(a.editor.modal, ModalState::Normal));
     }
 
     #[test]
@@ -1650,7 +1650,7 @@ mod tests {
     #[test]
     fn insert_completion_trigger_with_no_matches_echoes_no_completions() {
         let mut a = app_with("hello world hello\nfoo bar baz qux", 10);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         // Cursor at end of `hello` on line 0 -- prefix "hello".
         // BufferWordsSource skips the cursor's own word, and
         // none of the remaining buffer words fuzzy-match
@@ -1666,7 +1666,7 @@ mod tests {
     #[test]
     fn insert_completion_open_with_matching_query_keeps_popup() {
         let mut a = app_with("hello world helper helmet hi", 10);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         // Cursor right after `hel` -- prefix "hel". Buffer words:
         // "hello", "world", "helper", "helmet", "hi".
         a.cursor = Position::new(0, 3);
@@ -1694,7 +1694,7 @@ mod tests {
     #[test]
     fn insert_completion_next_prev_navigates_with_wrap() {
         let mut a = app_with("alpha alphabet alligator", 10);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         let _ = a.apply_edit_blocking(Edit::insert(Position::new(0, 24), "\nal"));
         a.cursor = Position::new(1, 2);
         a.do_completion_trigger();
@@ -1712,7 +1712,7 @@ mod tests {
     #[test]
     fn insert_completion_accept_replaces_prefix_and_closes() {
         let mut a = app_with("alphabet alligator\nal", 10);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::new(1, 2);
         a.do_completion_trigger();
         // Pick the first candidate.
@@ -1733,32 +1733,32 @@ mod tests {
     #[test]
     fn insert_completion_cancel_drops_popup() {
         let mut a = app_with("alpha alphabet\nal", 10);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::new(1, 2);
         a.do_completion_trigger();
         assert!(a.insert_completion.is_some());
         a.do_completion_cancel();
         assert!(a.insert_completion.is_none());
         // Modal stays Insert.
-        assert!(matches!(a.modal, ModalState::Insert));
+        assert!(matches!(a.editor.modal, ModalState::Insert));
     }
 
     #[test]
     fn insert_completion_cancel_and_exit_insert_drops_popup_and_exits() {
         let mut a = app_with("alpha alphabet\nal", 10);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::new(1, 2);
         a.do_completion_trigger();
         assert!(a.insert_completion.is_some());
         a.apply(Action::CompletionCancelAndExitInsert);
         assert!(a.insert_completion.is_none());
-        assert!(matches!(a.modal, ModalState::Normal));
+        assert!(matches!(a.editor.modal, ModalState::Normal));
     }
 
     #[test]
     fn insert_completion_toggle_docs_flips_state() {
         let mut a = app_with("alpha alphabet\nal", 10);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::new(1, 2);
         a.do_completion_trigger();
         assert!(
@@ -1776,7 +1776,7 @@ mod tests {
     #[test]
     fn insert_completion_refilters_on_keystroke() {
         let mut a = app_with("alpha alphabet alligator\nal", 10);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::new(1, 2);
         a.do_completion_trigger();
         let pre_count = a.insert_completion.as_ref().expect("popup").rendered.len();
@@ -1795,7 +1795,7 @@ mod tests {
     #[test]
     fn insert_completion_closes_when_query_leaves_word_boundary() {
         let mut a = app_with("alpha alphabet\nal", 10);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::new(1, 2);
         a.do_completion_trigger();
         assert!(a.insert_completion.is_some());
@@ -1810,7 +1810,7 @@ mod tests {
         // appended as a fresh line.
         let mut a = enter_block_visual("abcd\n1234", Position::new(0, 1), Position::new(1, 2));
         let yank =
-            CommandInvocation::of(a.builtins.yank.0).with_range(lattice_grammar::Range::Selection);
+            CommandInvocation::of(a.editor.builtins.yank.0).with_range(lattice_grammar::Range::Selection);
         a.apply(Action::Invoke(yank));
         a.apply(Action::ExitVisual);
         // Move to last line and paste with `P` (before-cursor) at col 0.
@@ -1826,8 +1826,8 @@ mod tests {
         let mut a = app_with("abc", 10);
         a.cursor = Position::ZERO;
         // x: delete char-right
-        let inv = CommandInvocation::of(a.builtins.delete.0).with_target(
-            lattice_grammar::Target::Motion(a.builtins.char_right, lattice_grammar::Args::None),
+        let inv = CommandInvocation::of(a.editor.builtins.delete.0).with_target(
+            lattice_grammar::Target::Motion(a.editor.builtins.char_right, lattice_grammar::Args::None),
         );
         a.apply(Action::Invoke(inv));
         assert_eq!(a.document.text(), "bc");

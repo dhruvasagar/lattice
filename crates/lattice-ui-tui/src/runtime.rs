@@ -425,10 +425,10 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
         // Push the cursor shape only when modal changes -- terminals
         // accept these every frame, but emitting on every iteration adds
         // a few bytes of escape sequence to the stream that isn't free.
-        if last_modal != Some(app.modal) {
-            execute!(terminal.backend_mut(), cursor_style_for(app.modal))
+        if last_modal != Some(app.editor.modal) {
+            execute!(terminal.backend_mut(), cursor_style_for(app.editor.modal))
                 .context("set cursor style")?;
-            last_modal = Some(app.modal);
+            last_modal = Some(app.editor.modal);
         }
 
         // §5.6.8: one Cache::load per frame for the active document.
@@ -449,8 +449,8 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
             match event::read().context("read event")? {
                 Event::Key(k) => {
                     let ctx = TranslateContext {
-                        modal: app.modal,
-                        builtins: &app.builtins,
+                        modal: app.editor.modal,
+                        builtins: &app.editor.builtins,
                         pending_count: app.editor.pending_count,
                         op_count: app.editor.op_count,
                         recording_macro: app.editor.macro_recording.is_some(),
@@ -460,8 +460,8 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
                         picker_open: app.editor.picker.is_some(),
                         insert_completion_open: app.completion_popup_active(),
                         snippet_active: app.active_snippet.is_some(),
-                        keymap: &app.keymap,
-                        partial_chord: &app.partial_chord,
+                        keymap: &app.editor.keymap,
+                        partial_chord: &app.editor.partial_chord,
                     };
                     let action = translate(ctx, k);
                     app.apply(action);

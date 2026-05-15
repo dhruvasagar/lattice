@@ -146,7 +146,7 @@ fn echo_level_from_grammar(level: lattice_grammar::EchoLevel) -> EchoLevel {
 
 impl App {
     /// Block_on a grammar dispatch through the actor (DESIGN.md
-    /// §5.2.1). Replaces direct `lattice_grammar::execute(&self.registry,
+    /// §5.2.1). Replaces direct `lattice_grammar::execute(&self.editor.registry,
     /// &mut self.document, ...)` calls; the actor holds the only
     /// `&mut Document` and runs `execute` inside its task.
     ///
@@ -217,7 +217,7 @@ impl App {
         // accumulates count chars BETWEEN chord steps. The
         // operator-pending stack must survive the digit input.
         if !matches!(action, Action::AbsorbPartialChord(_) | Action::PushDigit(_)) {
-            self.partial_chord.clear();
+            self.editor.partial_chord.clear();
         }
         // Read-only guard for help: when a help buffer holds focus
         // (DESIGN.md §5.9 active-buffer routing), buffer-mutating
@@ -237,7 +237,7 @@ impl App {
         match action {
             Action::None => {}
             Action::Quit => {
-                self.event_bus.publish(Event::BeforeQuit);
+                self.editor.event_bus.publish(Event::BeforeQuit);
                 self.should_quit = true;
             }
             Action::Invoke(inv) => self.run_invocation(inv),
@@ -247,7 +247,7 @@ impl App {
                 // signal. Append to `partial_chord` and otherwise
                 // no-op -- the next keystroke runs through
                 // `dispatch_normal` with this stack as prefix.
-                self.partial_chord.push(chord);
+                self.editor.partial_chord.push(chord);
             }
             Action::Insert(s) => self.do_insert_text(&s),
             Action::DeleteCharBackward => self.do_delete_char_backward(),
@@ -268,7 +268,7 @@ impl App {
 
             Action::EnterCommandLine => {
                 self.editor.command_line.clear();
-                self.modal = ModalState::Command;
+                self.editor.modal = ModalState::Command;
                 self.editor.last_message = None;
                 // Q16: opening the cmdline dismisses STATE A
                 // help popups (hover overlay still anchored to
@@ -286,7 +286,7 @@ impl App {
                 self.completion_state = None;
             }
             Action::CommandLineAppend(c) => {
-                if matches!(self.modal, ModalState::Command) {
+                if matches!(self.editor.modal, ModalState::Command) {
                     self.editor.command_line.push(c);
                     // Vertico-style live filtering: if the popup is
                     // open, re-run the pipeline against the new
@@ -299,10 +299,10 @@ impl App {
                 }
             }
             Action::CommandLineBackspace => {
-                if matches!(self.modal, ModalState::Command) {
+                if matches!(self.editor.modal, ModalState::Command) {
                     if self.editor.command_line.pop().is_none() {
                         // Empty buffer + backspace -> exit Command modal.
-                        self.modal = ModalState::Normal;
+                        self.editor.modal = ModalState::Normal;
                         self.completion_state = None;
                         self.editor.substitute_preview = None;
                     } else {
@@ -316,7 +316,7 @@ impl App {
                 }
             }
             Action::CommandLineSubmit => {
-                if matches!(self.modal, ModalState::Command) {
+                if matches!(self.editor.modal, ModalState::Command) {
                     // Missing-arg prompt path (DESIGN.md §B.1):
                     // if the user submitted with a required first
                     // arg empty (`:describe-key<CR>`, `:write<CR>`,
@@ -336,7 +336,7 @@ impl App {
                         return;
                     }
                     let line = std::mem::take(&mut self.editor.command_line);
-                    self.modal = ModalState::Normal;
+                    self.editor.modal = ModalState::Normal;
                     self.editor.command_history_cursor = None;
                     self.editor.command_history_pending = None;
                     self.editor.auto_submit_after_chord = false;
@@ -354,11 +354,11 @@ impl App {
                 }
             }
             Action::CommandLineCancel => {
-                if matches!(self.modal, ModalState::Command) {
+                if matches!(self.editor.modal, ModalState::Command) {
                     self.editor.command_line.clear();
                     self.editor.command_history_cursor = None;
                     self.editor.command_history_pending = None;
-                    self.modal = ModalState::Normal;
+                    self.editor.modal = ModalState::Normal;
                     self.editor.auto_submit_after_chord = false;
                     self.editor.substitute_preview = None;
                 }
@@ -453,7 +453,7 @@ impl App {
             Action::CompletionCancel => self.do_completion_cancel(),
             Action::CompletionCancelAndExitInsert => {
                 self.do_completion_cancel();
-                self.modal = ModalState::Normal;
+                self.editor.modal = ModalState::Normal;
             }
             Action::CompletionToggleDocs => self.do_completion_toggle_docs(),
             Action::CompletionDocsScrollDown => self.do_completion_docs_scroll_down(),
@@ -470,7 +470,7 @@ impl App {
             Action::SnippetPrevPlaceholder => self.do_snippet_prev_placeholder(),
             Action::SnippetLeave => {
                 self.active_snippet = None;
-                self.modal = ModalState::Normal;
+                self.editor.modal = ModalState::Normal;
             }
             Action::LspDocumentSymbolRequest => self.do_lsp_document_symbol_request(),
             Action::LspWorkspaceSymbolRequest(q) => self.do_lsp_workspace_symbol_request(&q),
@@ -528,7 +528,7 @@ impl App {
                     self.run_invocation(inv);
                     // If the change flipped us into Insert and there's
                     // captured text, replay it and exit back to Normal.
-                    if matches!(self.modal, ModalState::Insert)
+                    if matches!(self.editor.modal, ModalState::Insert)
                         && let Some(text) = insert_replay
                     {
                         self.do_insert_text(&text);
@@ -545,7 +545,7 @@ impl App {
 
             // ---- Command-line editing + completion ----
             Action::CommandLineClear => {
-                if matches!(self.modal, ModalState::Command) {
+                if matches!(self.editor.modal, ModalState::Command) {
                     self.editor.command_line.clear();
                     if self.completion_state.is_some() {
                         // Empty cmdline -> slot becomes Empty, which
@@ -556,7 +556,7 @@ impl App {
                 }
             }
             Action::CommandLineDeleteWordBackward => {
-                if matches!(self.modal, ModalState::Command) {
+                if matches!(self.editor.modal, ModalState::Command) {
                     delete_trailing_word(&mut self.editor.command_line);
                     if self.completion_state.is_some() {
                         // Same live-refilter contract as Append /
@@ -567,7 +567,7 @@ impl App {
             }
             Action::CommandLineDescribeUnderCursor => self.do_command_line_describe_under_cursor(),
             Action::CommandLineAppendChord(token) => {
-                if matches!(self.modal, ModalState::Command) {
+                if matches!(self.editor.modal, ModalState::Command) {
                     self.editor.command_line.push_str(&token);
                     // Chord-capture suppresses the completion popup
                     // (no useful candidates for chord input). If
@@ -585,12 +585,12 @@ impl App {
                 }
             }
             Action::CommandLineDeleteChord => {
-                if matches!(self.modal, ModalState::Command) {
+                if matches!(self.editor.modal, ModalState::Command) {
                     let n = crate::chord::last_chord_token_byte_len(&self.editor.command_line);
                     if n == 0 {
                         // Empty buffer + delete -> exit Command modal,
                         // matching plain `<BS>` semantics.
-                        self.modal = ModalState::Normal;
+                        self.editor.modal = ModalState::Normal;
                         self.completion_state = None;
                     } else {
                         let new_len = self.editor.command_line.len() - n;
@@ -637,7 +637,7 @@ impl App {
                     pattern: String::new(),
                     origin: self.cursor,
                 });
-                self.modal = ModalState::Search(direction);
+                self.editor.modal = ModalState::Search(direction);
                 self.editor.last_message = None;
                 self.editor.current_match = None;
             }
@@ -701,7 +701,7 @@ impl App {
     }
 
     pub(super) fn execute_ex_line(&mut self, line: &str) {
-        match excommand::parse(line, &self.registry) {
+        match excommand::parse(line, &self.editor.registry) {
             Ok(inv) => match self.dispatch_blocking(inv) {
                 Ok(eff) => self.apply_effect(eff),
                 Err(e) => self.set_message(EchoLevel::Error, e.to_string()),
@@ -724,7 +724,7 @@ impl App {
         // `Effect::AppAction(AbsorbOperatorPrefix(_))` that
         // wants to latch them). Run `execute()` directly and
         // apply the resulting effect.
-        if let Some(spec) = self.registry.lookup(inv.command)
+        if let Some(spec) = self.editor.registry.lookup(inv.command)
             && matches!(spec.kind, lattice_grammar::CommandKind::Action)
         {
             let cancel = lattice_grammar::CancellationToken::never();
@@ -736,7 +736,7 @@ impl App {
             // still wants a `&mut Document`, so we feed it a
             // throwaway empty one.
             let mut scratch = lattice_core::Document::empty();
-            match lattice_grammar::execute(&self.registry, &mut scratch, pos, inv, &cancel) {
+            match lattice_grammar::execute(&self.editor.registry, &mut scratch, pos, inv, &cancel) {
                 Ok(effect) => self.apply_effect(effect),
                 Err(e) => {
                     self.set_message(EchoLevel::Error, format!("action dispatch failed: {e:?}"));
@@ -802,11 +802,11 @@ impl App {
         self.editor.op_count = 0;
 
         let mut temp_doc = lattice_core::Document::from_text(oil_text);
-        let was_visual = matches!(self.modal, ModalState::Visual(_));
+        let was_visual = matches!(self.editor.modal, ModalState::Visual(_));
         let inv_for_repeat = inv.clone();
         let cursor_before = self.cursor;
         let result = lattice_grammar::execute(
-            &self.registry,
+            &self.editor.registry,
             &mut temp_doc,
             cursor_before,
             inv,
@@ -849,7 +849,7 @@ impl App {
                 should_exit_visual = true;
             }
             Effect::EnterMode(modal) => {
-                self.modal = *modal;
+                self.editor.modal = *modal;
             }
             Effect::None => {}
             // Ex-command effects + other variants don't apply
@@ -859,7 +859,7 @@ impl App {
             // invocations against an oil buffer.
             _ => {}
         }
-        if was_visual && should_exit_visual && matches!(self.modal, ModalState::Visual(_)) {
+        if was_visual && should_exit_visual && matches!(self.editor.modal, ModalState::Visual(_)) {
             self.do_exit_visual();
         }
         self.clamp_cursor_to_buffer();
@@ -904,7 +904,7 @@ impl App {
     /// classes (operators, text-objects, ex bodies that reach
     /// here) echo "buffer is read-only" and bail.
     fn run_read_only_motion(&mut self, inv: CommandInvocation) {
-        let Some(spec) = self.registry.lookup(inv.command) else {
+        let Some(spec) = self.editor.registry.lookup(inv.command) else {
             return;
         };
         if !matches!(spec.kind, lattice_grammar::CommandKind::Motion) {
@@ -916,8 +916,8 @@ impl App {
         }
         // Jump-class motions push history before dispatch so
         // `<C-o>` can return.
-        if inv.command == self.builtins.goto_first_line.0
-            || inv.command == self.builtins.goto_last_line.0
+        if inv.command == self.editor.builtins.goto_first_line.0
+            || inv.command == self.editor.builtins.goto_last_line.0
         {
             let cur = self.cursor;
             self.push_position_history(cur, PositionSource::AutoJump);
@@ -932,7 +932,7 @@ impl App {
         let buffer = self.active_text();
         let cancel = lattice_runtime::CancellationToken::never();
         match lattice_grammar::execute_motion_only(
-            &self.registry,
+            &self.editor.registry,
             &buffer,
             self.cursor,
             inv,
@@ -972,21 +972,21 @@ impl App {
         }
         // Jump-class motions (gg, G) push history before dispatch so
         // Ctrl-O can return.
-        if inv.command == self.builtins.goto_first_line.0
-            || inv.command == self.builtins.goto_last_line.0
+        if inv.command == self.editor.builtins.goto_first_line.0
+            || inv.command == self.editor.builtins.goto_last_line.0
         {
             let cur = self.cursor;
             self.push_position_history(cur, PositionSource::AutoJump);
         }
         // Capture find/till invocations for `;` / `,` repeat.
         if let lattice_grammar::Args::Char(c) = inv.args {
-            let kind = if inv.command == self.builtins.find_char_forward.0 {
+            let kind = if inv.command == self.editor.builtins.find_char_forward.0 {
                 Some(FindKind::Forward)
-            } else if inv.command == self.builtins.find_char_backward.0 {
+            } else if inv.command == self.editor.builtins.find_char_backward.0 {
                 Some(FindKind::Backward)
-            } else if inv.command == self.builtins.till_char_forward.0 {
+            } else if inv.command == self.editor.builtins.till_char_forward.0 {
                 Some(FindKind::TillForward)
-            } else if inv.command == self.builtins.till_char_backward.0 {
+            } else if inv.command == self.editor.builtins.till_char_backward.0 {
                 Some(FindKind::TillBackward)
             } else {
                 None
@@ -1020,7 +1020,7 @@ impl App {
         }
         self.editor.pending_count = 0;
         self.editor.op_count = 0;
-        let was_visual = matches!(self.modal, ModalState::Visual(_));
+        let was_visual = matches!(self.editor.modal, ModalState::Visual(_));
         let mut should_exit_visual = false;
         let inv_for_repeat = inv.clone();
         // Vertical-jump motions auto-open folds the cursor lands in
@@ -1028,8 +1028,8 @@ impl App {
         // is intentionally narrow: `gg`, `G`, and counted `numberG`
         // (the same builtins the jump-list `<C-o>`/`<C-i>` walk
         // uses).
-        let is_vertical_jump = inv.command == self.builtins.goto_first_line.0
-            || inv.command == self.builtins.goto_last_line.0;
+        let is_vertical_jump = inv.command == self.editor.builtins.goto_first_line.0
+            || inv.command == self.editor.builtins.goto_last_line.0;
         // Every motion that goes through the dispatcher and isn't a
         // jump-class command runs the fold-aware snap so the cursor
         // never settles inside a closed fold's hidden body. Without
@@ -1069,7 +1069,7 @@ impl App {
         // to Normal. Pure motion in Visual extends the selection -- keep
         // Visual. The `c` operator already flipped to Insert via
         // Effect::EnterMode; the post-check would be a no-op there.
-        if was_visual && should_exit_visual && matches!(self.modal, ModalState::Visual(_)) {
+        if was_visual && should_exit_visual && matches!(self.editor.modal, ModalState::Visual(_)) {
             self.do_exit_visual();
         }
         self.clamp_cursor_to_buffer();
@@ -1086,7 +1086,7 @@ impl App {
                 // -- the dispatcher's `replace_primary(Selection::cursor(...))`
                 // would otherwise collapse the selection. Refresh the
                 // document's selection to reflect the extension.
-                if let ModalState::Visual(kind) = self.modal {
+                if let ModalState::Visual(kind) = self.editor.modal {
                     let sel = Selection {
                         anchor: self.editor.visual_anchor.unwrap_or(new_head),
                         head: new_head,
@@ -1305,8 +1305,8 @@ impl App {
                     self.editor.op_count = self.editor.pending_count;
                     self.editor.pending_count = 0;
                 }
-                let prefix = crate::keymap_normal::operator_prefix(op, &self.builtins);
-                self.partial_chord.extend(prefix);
+                let prefix = crate::keymap_normal::operator_prefix(op, &self.editor.builtins);
+                self.editor.partial_chord.extend(prefix);
             }
             AppEffect::SplitPaneHorizontal => self.apply(Action::SplitPaneHorizontal),
             AppEffect::SplitPaneVertical => self.apply(Action::SplitPaneVertical),
@@ -1700,7 +1700,7 @@ mod tests {
         press_chars(&mut a, "ihi");
         press(&mut a, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert_eq!(a.document.text(), "hi");
-        assert_eq!(a.modal, ModalState::Normal);
+        assert_eq!(a.editor.modal, ModalState::Normal);
     }
 
     #[test]
@@ -1831,10 +1831,10 @@ mod tests {
         a.apply(Action::AbsorbPartialChord(crate::chord::KeyChord::char(
             'g',
         )));
-        assert_eq!(a.partial_chord.len(), 1);
-        let id = a.builtins.char_right;
+        assert_eq!(a.editor.partial_chord.len(), 1);
+        let id = a.editor.builtins.char_right;
         a.apply(invoke_motion(id));
-        assert!(a.partial_chord.is_empty());
+        assert!(a.editor.partial_chord.is_empty());
     }
 
     #[test]
@@ -1842,7 +1842,7 @@ mod tests {
         let mut a = app_with("abc", 10);
         let before = a.cursor;
         a.apply(Action::EnterMode(ModalState::Insert));
-        assert_eq!(a.modal, ModalState::Insert);
+        assert_eq!(a.editor.modal, ModalState::Insert);
         assert_eq!(a.cursor, before);
     }
 
@@ -1850,7 +1850,7 @@ mod tests {
     fn ctrl_o_then_ctrl_i_round_trips() {
         let mut a = app_with("a\nb\nc\nd\ne", 10);
         a.cursor = Position::new(2, 0);
-        a.apply(invoke_motion(a.builtins.goto_first_line));
+        a.apply(invoke_motion(a.editor.builtins.goto_first_line));
         // Now at line 0; jump list has [(2,0)] cursor at end.
         a.apply(Action::JumpHistoryBack);
         assert_eq!(a.cursor, Position::new(2, 0));
@@ -1861,8 +1861,8 @@ mod tests {
     #[test]
     fn invocation_with_no_pending_register_uses_unnamed() {
         let mut a = app_with("hello world", 10);
-        let inv = CommandInvocation::of(a.builtins.yank.0).with_target(
-            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
+        let inv = CommandInvocation::of(a.editor.builtins.yank.0).with_target(
+            lattice_grammar::Target::Motion(a.editor.builtins.word_forward, lattice_grammar::Args::None),
         );
         a.apply(Action::Invoke(inv));
         // Unnamed populated; "0 also populated by vim's auto-fill on yank.
@@ -1877,7 +1877,7 @@ mod tests {
     fn enter_replace_sets_modal() {
         let mut a = app_with("hello", 10);
         a.apply(Action::EnterMode(ModalState::Replace));
-        assert_eq!(a.modal, ModalState::Replace);
+        assert_eq!(a.editor.modal, ModalState::Replace);
     }
 
     #[test]
@@ -1904,7 +1904,7 @@ mod tests {
     fn dd_records_last_change_and_dot_replays_it() {
         let mut a = app_with("aaa\nBBB\nccc\nddd", 10);
         a.cursor = Position::new(1, 0);
-        let inv = CommandInvocation::of(a.builtins.delete.0)
+        let inv = CommandInvocation::of(a.editor.builtins.delete.0)
             .with_range(lattice_grammar::Range::CurrentLine);
         a.apply(Action::Invoke(inv));
         // Slice 8.i.4.g: `dd` consumes BBB + its trailing newline.
@@ -1922,8 +1922,8 @@ mod tests {
         // replaces that word with "foo" too.
         let mut a = app_with("alpha beta gamma", 10);
         // cw on first word.
-        let inv = CommandInvocation::of(a.builtins.change.0).with_target(
-            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
+        let inv = CommandInvocation::of(a.editor.builtins.change.0).with_target(
+            lattice_grammar::Target::Motion(a.editor.builtins.word_forward, lattice_grammar::Args::None),
         );
         a.apply(Action::Invoke(inv));
         a.apply(Action::Insert("X".into()));
@@ -1938,15 +1938,15 @@ mod tests {
         // (Note: our cw includes the trailing space; vim's cw is implicitly
         // ce, a deferred refinement.)
         assert_eq!(a.document.text(), "XXgamma");
-        assert_eq!(a.modal, ModalState::Normal);
+        assert_eq!(a.editor.modal, ModalState::Normal);
     }
 
     #[test]
     fn dot_without_insert_replay_when_no_text_was_typed() {
         // dw (no insert phase) -> . repeats just the delete.
         let mut a = app_with("alpha beta gamma", 10);
-        let inv = CommandInvocation::of(a.builtins.delete.0).with_target(
-            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
+        let inv = CommandInvocation::of(a.editor.builtins.delete.0).with_target(
+            lattice_grammar::Target::Motion(a.editor.builtins.word_forward, lattice_grammar::Args::None),
         );
         a.apply(Action::Invoke(inv));
         // dw deletes "alpha "; then `.` deletes another word (no insert).
@@ -1965,7 +1965,7 @@ mod tests {
         let mut a = app_with("one two three four five", 10);
         a.editor.pending_count = 3;
         a.apply(Action::Invoke(
-            CommandInvocation::of(a.builtins.word_forward.0)
+            CommandInvocation::of(a.editor.builtins.word_forward.0)
                 .with_count(lattice_grammar::command::Count(3)),
         ));
         // 3w from origin: "one two three FOUR five" -> 'f' of "four" at byte 14.
@@ -1979,9 +1979,9 @@ mod tests {
         let mut a = app_with("one two three four five", 10);
         // Mirror translate-time state: `2d` already absorbed.
         a.editor.op_count = 2;
-        let inv = CommandInvocation::of(a.builtins.delete.0)
+        let inv = CommandInvocation::of(a.editor.builtins.delete.0)
             .with_target(lattice_grammar::Target::Motion(
-                a.builtins.word_forward,
+                a.editor.builtins.word_forward,
                 lattice_grammar::Args::None,
             ))
             .with_count(lattice_grammar::command::Count(2));
@@ -1996,9 +1996,9 @@ mod tests {
         let mut a = app_with("a b c d e f g h i j", 10);
         a.editor.op_count = 2;
         a.editor.pending_count = 3;
-        let inv = CommandInvocation::of(a.builtins.delete.0)
+        let inv = CommandInvocation::of(a.editor.builtins.delete.0)
             .with_target(lattice_grammar::Target::Motion(
-                a.builtins.word_forward,
+                a.editor.builtins.word_forward,
                 lattice_grammar::Args::None,
             ))
             .with_count(lattice_grammar::command::Count(6));
@@ -2011,7 +2011,7 @@ mod tests {
     fn yy_populates_register_linewise() {
         let mut a = app_with("aaa\nBBB\nccc", 10);
         a.cursor = Position::new(1, 0);
-        let inv = CommandInvocation::of(a.builtins.yank.0)
+        let inv = CommandInvocation::of(a.editor.builtins.yank.0)
             .with_range(lattice_grammar::Range::CurrentLine);
         a.apply(Action::Invoke(inv));
         let reg = a.editor.unnamed_register.as_ref().unwrap();
@@ -2025,7 +2025,7 @@ mod tests {
         // delete also yanks; register kind is linewise for dd.
         let mut a = app_with("aaa\nBBB\nccc", 10);
         a.cursor = Position::new(1, 0);
-        let inv = CommandInvocation::of(a.builtins.delete.0)
+        let inv = CommandInvocation::of(a.editor.builtins.delete.0)
             .with_range(lattice_grammar::Range::CurrentLine);
         a.apply(Action::Invoke(inv));
         let reg = a.editor.unnamed_register.as_ref().unwrap();
@@ -2050,7 +2050,7 @@ mod tests {
             .expect("H1 fold");
         a.folds[idx].closed = true;
         a.cursor = Position::new(0, 0);
-        let inv = CommandInvocation::of(a.builtins.delete.0)
+        let inv = CommandInvocation::of(a.editor.builtins.delete.0)
             .with_range(lattice_grammar::Range::CurrentLine);
         a.apply(Action::Invoke(inv));
         let text = a.document.text();
@@ -2074,7 +2074,7 @@ mod tests {
             .expect("H1 fold");
         a.folds[idx].closed = true;
         a.cursor = Position::new(0, 0);
-        let inv = CommandInvocation::of(a.builtins.yank.0)
+        let inv = CommandInvocation::of(a.editor.builtins.yank.0)
             .with_range(lattice_grammar::Range::CurrentLine);
         a.apply(Action::Invoke(inv));
         let reg = a.editor.unnamed_register.as_ref().unwrap();
@@ -2112,7 +2112,7 @@ mod tests {
         a.recompute_folds();
         // Leave open (default).
         a.cursor = Position::new(0, 0);
-        let inv = CommandInvocation::of(a.builtins.delete.0)
+        let inv = CommandInvocation::of(a.editor.builtins.delete.0)
             .with_range(lattice_grammar::Range::CurrentLine);
         a.apply(Action::Invoke(inv));
         let text = a.document.text();
@@ -2135,7 +2135,7 @@ mod tests {
         a.set_foldmethod_for_test(FoldMethod::Indent);
         a.recompute_folds();
         a.cursor = Position::new(1, 0);
-        let inv = CommandInvocation::of(a.builtins.delete.0)
+        let inv = CommandInvocation::of(a.editor.builtins.delete.0)
             .with_range(lattice_grammar::Range::CurrentLine);
         a.apply(Action::Invoke(inv));
         let reg = a.editor.unnamed_register.as_ref().unwrap();
@@ -2163,7 +2163,7 @@ mod tests {
         // the cmdline should clear and we land back in Normal.
         a.apply(Action::CommandLineAppendChord("j".into()));
         assert!(!a.editor.auto_submit_after_chord);
-        assert!(matches!(a.modal, ModalState::Normal));
+        assert!(matches!(a.editor.modal, ModalState::Normal));
         // The submitted line was `describe-key j` -- which opens
         // a help buffer for chord `j`. Smoke check that some
         // help got produced.
@@ -2312,11 +2312,11 @@ mod tests {
         a.folds[first_idx].closed = true;
         // Open + activate the new buffer.
         a.editor.command_line = format!("e {}", path.display());
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         // Switch back via :bn.
         a.editor.command_line = "bn".into();
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.document_buffer_id, initial_id);
         // Closed state survived the round-trip.
@@ -2340,7 +2340,7 @@ mod tests {
         // get seeded into its entry.
         a.set_foldmethod_for_test(FoldMethod::Manual);
         a.editor.command_line = format!("e {}", path.display());
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let id_target = a.document_buffer_id;
         assert!(a.folds.is_empty(), "manual leaves folds empty");
@@ -2542,7 +2542,7 @@ mod tests {
                 &mut active,
                 &guards,
                 &a.editor.config,
-                &a.event_bus,
+                &a.editor.event_bus,
                 &a.editor.services,
                 lattice_protocol::ids::BufferId::new(0),
                 mode_id,
@@ -2588,7 +2588,7 @@ mod tests {
                 &mut active,
                 &guards,
                 &a.editor.config,
-                &a.event_bus,
+                &a.editor.event_bus,
                 &a.editor.services,
                 lattice_protocol::ids::BufferId::new(0),
                 mode_id,
@@ -2607,7 +2607,7 @@ mod tests {
             .deactivate_minor(
                 &mut active,
                 &guards,
-                &a.event_bus,
+                &a.editor.event_bus,
                 lattice_protocol::ids::BufferId::new(0),
                 mode_id,
             )

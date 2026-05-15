@@ -105,7 +105,7 @@ impl App {
             &mut active,
             &self.editor.mode_guards,
             &self.editor.config,
-            &self.event_bus,
+            &self.editor.event_bus,
             &self.editor.services,
             proto_id,
             major_id,
@@ -127,7 +127,7 @@ impl App {
                 &mut active,
                 &self.editor.mode_guards,
                 &self.editor.config,
-                &self.event_bus,
+                &self.editor.event_bus,
                 &self.editor.services,
                 proto_id,
                 minor_id,
@@ -147,7 +147,7 @@ impl App {
                 &mut active,
                 &self.editor.mode_guards,
                 &self.editor.config,
-                &self.event_bus,
+                &self.editor.event_bus,
                 &self.editor.services,
                 proto_id,
                 minor_id,
@@ -246,7 +246,7 @@ impl App {
                 &mut active,
                 &self.editor.mode_guards,
                 &self.editor.config,
-                &self.event_bus,
+                &self.editor.event_bus,
                 &self.editor.services,
                 proto_id,
                 mode_id,
@@ -256,7 +256,7 @@ impl App {
                 &mut active,
                 &self.editor.mode_guards,
                 &self.editor.config,
-                &self.event_bus,
+                &self.editor.event_bus,
                 &self.editor.services,
                 proto_id,
                 mode_id,
@@ -320,13 +320,13 @@ impl App {
             ModeKind::Major => self.editor.mode_registry.deactivate_major(
                 &mut active,
                 &self.editor.mode_guards,
-                &self.event_bus,
+                &self.editor.event_bus,
                 proto_id,
             ),
             ModeKind::Minor => self.editor.mode_registry.deactivate_minor(
                 &mut active,
                 &self.editor.mode_guards,
-                &self.event_bus,
+                &self.editor.event_bus,
                 proto_id,
                 mode_id,
             ),
@@ -482,7 +482,7 @@ impl App {
     }
 
     pub fn modal_label(&self) -> &'static str {
-        match self.modal {
+        match self.editor.modal {
             ModalState::Normal => "NORMAL",
             ModalState::Insert => "INSERT",
             ModalState::Visual(_) => "VISUAL",
@@ -494,13 +494,13 @@ impl App {
     }
 
     pub(super) fn enter_mode(&mut self, state: ModalState) {
-        let prior = self.modal;
+        let prior = self.editor.modal;
         // Reset Replace's history every time we enter (or re-enter) Replace
         // so backspace-restore is bounded to the current `R` session.
         if matches!(state, ModalState::Replace) {
             self.editor.replace_history.clear();
         }
-        let was_insert_like = matches!(self.modal, ModalState::Insert | ModalState::Replace);
+        let was_insert_like = matches!(self.editor.modal, ModalState::Insert | ModalState::Replace);
         let entering_insert_like = matches!(state, ModalState::Insert | ModalState::Replace);
         // Insert-replay capture:
         //   - Entering Insert/Replace from anything else: start recording.
@@ -530,7 +530,7 @@ impl App {
             // I/A starts clean).
             self.editor.pending_block_insert = None;
         }
-        self.modal = state;
+        self.editor.modal = state;
         if matches!(state, ModalState::Normal) {
             // Vim's behavior: leaving Insert mode pulls the cursor back one
             // byte if it's not already at the start of the line, so the
@@ -545,7 +545,7 @@ impl App {
         // for the side-effect of recording/replay accounting --
         // doesn't fire the event.
         if prior != state {
-            self.event_bus.publish(Event::ModalModeChanged {
+            self.editor.event_bus.publish(Event::ModalModeChanged {
                 from: format!("{prior:?}"),
                 to: format!("{state:?}"),
             });
@@ -985,7 +985,7 @@ mod tests {
         // try_insert mismatch and still publishes
         // LspBufferDetached).
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<lattice_lsp::LspBufferDetached>();
-        a.event_bus.subscribe_typed(tx);
+        a.editor.event_bus.subscribe_typed(tx);
         a.toggle_mode_by_name("lsp-mode");
         assert!(!a.lsp_mode_enabled_for(id));
         let got_detach = wait_for(
@@ -1165,7 +1165,7 @@ mod tests {
         for (mode_id, _kind) in a.editor.mode_registry.iter_meta() {
             let name = mode_id.to_string();
             assert!(
-                a.registry.id_by_name(&name).is_some(),
+                a.editor.registry.id_by_name(&name).is_some(),
                 "no ex-command registered for mode `{name}`"
             );
         }

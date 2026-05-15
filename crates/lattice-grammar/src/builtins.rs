@@ -591,7 +591,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct Builtins {
     pub word_forward: MotionId,
     pub word_backward: MotionId,

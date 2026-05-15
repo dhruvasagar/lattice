@@ -65,7 +65,7 @@ impl App {
         }
         let id = BufferId::next();
         let document = lattice_core::Document::empty();
-        let handle = lattice_runtime::spawn_document(document, self.registry.clone());
+        let handle = lattice_runtime::spawn_document(document, self.editor.registry.clone());
         self.buffers.insert(BufferEntry {
             id,
             flags,
@@ -108,7 +108,7 @@ impl App {
             &mut active,
             &self.editor.mode_guards,
             &self.editor.config,
-            &self.event_bus,
+            &self.editor.event_bus,
             &self.editor.services,
             proto_id,
             major_id,

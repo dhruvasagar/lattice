@@ -66,28 +66,25 @@
 use lattice_core::Buffer;
 #[cfg(test)]
 use lattice_core::Document;
-use lattice_grammar::CommandRegistry;
-use lattice_grammar::ModalState;
-// SearchDirection + YankKind: only referenced from `mod tests`
-// after the state-types extraction. Gate to test-only so the
-// `#![deny(unused_imports)]` lint stays clean for production
-// builds.
+// SearchDirection + YankKind + ModalState: only referenced
+// from `mod tests` after the migrations. Gate to test-only
+// (or `pub use`) so the `#![deny(unused_imports)]` lint
+// stays clean for production builds while submodule tests
+// keep resolving them via `use super::*;`.
 #[cfg(test)]
 use lattice_grammar::SearchDirection;
 #[cfg(test)]
 use lattice_grammar::YankKind;
-use lattice_grammar::builtins::Builtins;
 // Re-exported so submodule tests using `use super::*;` keep
-// seeing `CommandInvocation` after Phase 5.B.8 moved
-// `App.last_change` to `Editor`.
+// seeing the names after Phase 5.B.* migrations.
+pub use lattice_grammar::ModalState;
 pub use lattice_grammar::command::CommandInvocation;
 use lattice_grammar::register::Register;
 use lattice_lsp::{DiagnosticsLayer, LspLogger, LspSupervisorHandle};
 use lattice_protocol::position::Position;
 #[cfg(test)]
 use lattice_protocol::selection::{Selection, SelectionSet};
-use lattice_runtime::{DocumentHandle, EventBus, SnapshotCache};
-use std::sync::Arc;
+use lattice_runtime::{DocumentHandle, SnapshotCache};
 
 use crate::buffer_registry::{BufferData, BufferEntry, BufferRegistry, DocumentEntry};
 use crate::buffers::{BufferFlags, BufferId, BufferKind};
@@ -349,7 +346,7 @@ pub struct App {
     /// horizontally adjacent). `None` until the renderer first
     /// records it.
     pub terminal_width: Option<u16>,
-    pub modal: ModalState,
+    // Phase 5.B.15: `modal` moved to `editor.editor.modal`.
     /// In-flight partial-chord stack from the trie (slice 8.i.4).
     /// When the trie returns `LookupResult::Partial`,
     /// `dispatch_normal` / `dispatch_insert` emit
@@ -362,13 +359,14 @@ pub struct App {
     /// `AppEffect::AbsorbOperatorPrefix(_)` via
     /// `apply_app_effect`, which also latches `pending_count`
     /// into `op_count` atomically with the prefix push.
-    pub partial_chord: Vec<crate::chord::KeyChord>,
+    // Phase 5.B.15: `partial_chord` moved to
+    // `editor.editor.partial_chord`.
     /// Grammar registry shared with the document actor by `Arc`. The
     /// actor calls `lattice_grammar::execute` with this registry from
     /// inside its own task. The App also reads it directly for the
     /// parser, completion pipeline, and introspection -- all
     /// read-only operations.
-    pub registry: Arc<CommandRegistry>,
+    // Phase 5.B.15: `registry` moved to `editor.editor.registry`.
     /// In-process event bus (DESIGN.md §5.10). The App publishes
     /// editor lifecycle events (DocumentChanged, SelectionsChanged,
     /// ModalModeChanged, BeforeSave, DocumentSaved, BeforeQuit,
@@ -376,7 +374,8 @@ pub struct App {
     /// transitions. The App itself subscribes to `OptionChanged`
     /// for the cascade hook (see [`Self::option_change_rx`]);
     /// other subscribers (plugins, autocmds) wire up the same way.
-    pub event_bus: Arc<EventBus>,
+    // Phase 5.B.15: `event_bus` moved to
+    // `editor.editor.event_bus`.
     /// Receiver for in-flight LSP hover responses (Phase 4.2.b).
     /// `K` fires a `textDocument/hover` request through the typed
     /// wrapper; the spawned task awaits the actor's response and
@@ -509,7 +508,7 @@ pub struct App {
     /// language tag) sourced from this same registry.
     // Phase 5.B.12: `lang_registry` moved to
     // `editor.editor.lang_registry`.
-    pub builtins: Builtins,
+    // Phase 5.B.15: `builtins` moved to `editor.editor.builtins`.
     /// App-side typed action IDs (`CommandKind::Action`
     /// registrations from `crate::actions::populate`). Each
     /// field is a `CommandId` resolving to an `ActionSpec` whose
@@ -517,7 +516,8 @@ pub struct App {
     /// mode keymap modules consume this alongside `builtins` to
     /// build typed `CommandInvocation`s for chord bindings (slice
     /// 8.i; see `docs/dev/notes/8i-approach.md`).
-    pub action_ids: crate::actions::ActionIds,
+    // Phase 5.B.15: `action_ids` moved to
+    // `editor.editor.action_ids`.
     /// Layered keymap registry (DESIGN.md §5.2.3, audit slice 8.c).
     /// Populated at construction time; the input dispatcher reads
     /// from it on every keystroke. Wait-free reads via the
@@ -525,16 +525,18 @@ pub struct App {
     /// push/pop, plugin registration, `:bind`) never stall the
     /// input path. Slices 8.d / 8.e / 8.f wire Replace, Visual,
     /// and Insert through this; Normal follows in 8.g.
-    pub keymap: crate::keymap_registry::KeymapHandle,
+    // Phase 5.B.15: `keymap` moved to `editor.editor.keymap`.
     /// `LayerId` of the active completion-popup minor-mode
     /// layer when the popup is open; `None` otherwise. Pushed /
     /// popped by [`Self::sync_keymap_overlays`] in lockstep with
     /// `self.insert_completion`. Slice 8.f.
-    completion_popup_layer: Option<crate::keymap_registry::LayerId>,
+    // Phase 5.B.15: `completion_popup_layer` moved to
+    // `editor.editor.completion_popup_layer`.
     /// `LayerId` of the active-snippet minor-mode layer when a
     /// snippet is in flight; `None` otherwise. Same lockstep
     /// pattern as [`Self::completion_popup_layer`].
-    snippet_layer: Option<crate::keymap_registry::LayerId>,
+    // Phase 5.B.15: `snippet_layer` moved to
+    // `editor.editor.snippet_layer`.
     // Phase 5.B.11: `command_line`, `last_message`,
     // `messages`, `pending_message_event_rx`, `pending_redraw`
     // moved to `editor.{command_line, last_message, messages,
@@ -1364,7 +1366,7 @@ impl std::fmt::Debug for App {
             .field("scroll", &self.scroll)
             .field("should_quit", &self.should_quit)
             .field("viewport_height", &self.viewport_height)
-            .field("modal", &self.modal)
+            .field("modal", &self.editor.modal)
             .field("command_line", &self.editor.command_line)
             .field("last_message", &self.editor.last_message)
             .field("dirty", &self.document.dirty())
@@ -1420,7 +1422,7 @@ impl App {
         if let Ok(mut ring) = self.editor.messages.lock() {
             ring.push(record.clone());
         }
-        self.event_bus.publish_typed(MessagePushed { record });
+        self.editor.event_bus.publish_typed(MessagePushed { record });
     }
 }
 
@@ -2276,8 +2278,8 @@ mod tests {
         assert_eq!(a.cursor, Position::ZERO);
         assert_eq!(a.scroll, 0);
         assert!(!a.should_quit);
-        assert_eq!(a.modal, ModalState::Normal);
-        assert!(a.partial_chord.is_empty());
+        assert_eq!(a.editor.modal, ModalState::Normal);
+        assert!(a.editor.partial_chord.is_empty());
     }
 
     #[test]
@@ -2288,9 +2290,9 @@ mod tests {
         // `<Tab>` on that arg silently produces no candidates --
         // the bug class that motivated this slice.
         let a = app_with("hi", 5);
-        for name in a.registry.names() {
-            let id = a.registry.id_by_name(name).unwrap();
-            let Some(spec) = a.registry.ex_command_spec(id) else {
+        for name in a.editor.registry.names() {
+            let id = a.editor.registry.id_by_name(name).unwrap();
+            let Some(spec) = a.editor.registry.ex_command_spec(id) else {
                 continue;
             };
             for arg in &spec.args_schema {
@@ -2339,7 +2341,7 @@ mod tests {
         a.apply(Action::EnterCommandLine);
         a.apply(Action::CommandLineAppend('q'));
         a.apply(Action::CommandLineSubmit);
-        assert_eq!(a.modal, ModalState::Normal);
+        assert_eq!(a.editor.modal, ModalState::Normal);
     }
 
     #[test]
@@ -2385,7 +2387,7 @@ mod tests {
             'z',
         )));
         a.apply(Action::ScrollCursorTo(ScrollPos::Center));
-        assert!(a.partial_chord.is_empty());
+        assert!(a.editor.partial_chord.is_empty());
     }
 
     #[test]
@@ -2396,7 +2398,7 @@ mod tests {
         )));
         // No macro recorded; this errors but should still clear partial_chord.
         a.apply(Action::PlayMacro('z'));
-        assert!(a.partial_chord.is_empty());
+        assert!(a.editor.partial_chord.is_empty());
     }
 
     // ---- §5.1.1 unified position history ----
@@ -2436,7 +2438,7 @@ mod tests {
     fn g_semicolon_with_no_named_marks_emits_error() {
         let mut a = app_with("a\nb\nc", 10);
         a.cursor = Position::new(2, 0);
-        a.apply(invoke_motion(a.builtins.goto_first_line)); // pushes AutoJump
+        a.apply(invoke_motion(a.editor.builtins.goto_first_line)); // pushes AutoJump
         a.apply(Action::WalkMarkHistoryBack);
         let msg = a.editor.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Error);
@@ -2469,7 +2471,7 @@ mod tests {
         // Cursor at (0,1) after one overwrite.
         a.apply(Action::EnterMode(ModalState::Normal));
         // enter_mode pulls cursor back one byte on Normal entry.
-        assert_eq!(a.modal, ModalState::Normal);
+        assert_eq!(a.editor.modal, ModalState::Normal);
         assert_eq!(a.cursor, Position::new(0, 0));
     }
 
@@ -2523,7 +2525,7 @@ mod tests {
     #[test]
     fn motion_does_not_record_last_change() {
         let mut a = app_with("hello world", 10);
-        a.apply(invoke_motion(a.builtins.word_forward));
+        a.apply(invoke_motion(a.editor.builtins.word_forward));
         assert!(a.editor.last_change.is_none());
     }
 
@@ -2551,7 +2553,7 @@ mod tests {
     #[test]
     fn fz_jumps_to_z_on_current_line() {
         let mut a = app_with("hello, world", 10);
-        let inv = CommandInvocation::of(a.builtins.find_char_forward.0)
+        let inv = CommandInvocation::of(a.editor.builtins.find_char_forward.0)
             .with_args(lattice_grammar::Args::Char('w'));
         a.apply(Action::Invoke(inv));
         assert_eq!(a.cursor, Position::new(0, 7));
@@ -2560,7 +2562,7 @@ mod tests {
     #[test]
     fn t_lands_one_byte_before_target() {
         let mut a = app_with("hello, world", 10);
-        let inv = CommandInvocation::of(a.builtins.till_char_forward.0)
+        let inv = CommandInvocation::of(a.editor.builtins.till_char_forward.0)
             .with_args(lattice_grammar::Args::Char('w'));
         a.apply(Action::Invoke(inv));
         assert_eq!(a.cursor, Position::new(0, 6));
@@ -2571,9 +2573,9 @@ mod tests {
         // From "hello, world" with cursor at 0, `df,` deletes "hello," and
         // leaves " world".
         let mut a = app_with("hello, world", 10);
-        let inv = CommandInvocation::of(a.builtins.delete.0).with_target(
+        let inv = CommandInvocation::of(a.editor.builtins.delete.0).with_target(
             lattice_grammar::Target::Motion(
-                a.builtins.find_char_forward,
+                a.editor.builtins.find_char_forward,
                 lattice_grammar::Args::Char(','),
             ),
         );
@@ -2587,14 +2589,14 @@ mod tests {
     #[test]
     fn ct_with_change_enters_insert_mode() {
         let mut a = app_with("hello, world", 10);
-        let inv = CommandInvocation::of(a.builtins.change.0).with_target(
+        let inv = CommandInvocation::of(a.editor.builtins.change.0).with_target(
             lattice_grammar::Target::Motion(
-                a.builtins.till_char_forward,
+                a.editor.builtins.till_char_forward,
                 lattice_grammar::Args::Char(','),
             ),
         );
         a.apply(Action::Invoke(inv));
-        assert_eq!(a.modal, ModalState::Insert);
+        assert_eq!(a.editor.modal, ModalState::Insert);
     }
 
     // ---- yank + paste end-to-end ----
@@ -2602,8 +2604,8 @@ mod tests {
     #[test]
     fn yw_populates_unnamed_register_charwise() {
         let mut a = app_with("hello world", 10);
-        let inv = CommandInvocation::of(a.builtins.yank.0).with_target(
-            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
+        let inv = CommandInvocation::of(a.editor.builtins.yank.0).with_target(
+            lattice_grammar::Target::Motion(a.editor.builtins.word_forward, lattice_grammar::Args::None),
         );
         a.apply(Action::Invoke(inv));
         let reg = a.editor.unnamed_register.as_ref().unwrap();
@@ -2627,7 +2629,7 @@ mod tests {
         a.folds[idx].closed = true;
         // Move cursor away first (so gg is a non-trivial jump).
         a.cursor = Position::new(4, 0);
-        let inv = CommandInvocation::of(a.builtins.goto_first_line.0);
+        let inv = CommandInvocation::of(a.editor.builtins.goto_first_line.0);
         a.apply(Action::Invoke(inv));
         let fold = a
             .folds
@@ -2678,7 +2680,7 @@ mod tests {
         a.folds[idx].closed = true;
         a.set_foldenable_for_test(false);
         a.cursor = Position::new(0, 0);
-        let inv = CommandInvocation::of(a.builtins.delete.0)
+        let inv = CommandInvocation::of(a.editor.builtins.delete.0)
             .with_range(lattice_grammar::Range::CurrentLine);
         a.apply(Action::Invoke(inv));
         // With foldenable=false, dd should affect just one line.
@@ -2862,7 +2864,7 @@ mod tests {
         a.do_lsp_hover_request(); // -> State B
         assert!(matches!(a.active_buffer, BufferKind::Help));
         // Move within popup.
-        let inv = lattice_grammar::CommandInvocation::of(a.builtins.line_down.0);
+        let inv = lattice_grammar::CommandInvocation::of(a.editor.builtins.line_down.0);
         a.apply(Action::Invoke(inv));
         assert!(a.editor.popup_buffer.is_some(), "popup persists in State B");
         assert_eq!(a.cursor.line, 1);
@@ -2876,16 +2878,16 @@ mod tests {
         let mut a = app_with("xx", 10);
         let first_id = a.document_buffer_id;
         a.editor.command_line = format!("e {}", path.display());
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let second_id = a.document_buffer_id;
         assert_ne!(first_id, second_id);
         a.editor.command_line = "bn".into();
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.document_buffer_id, first_id);
         a.editor.command_line = "bn".into();
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.document_buffer_id, second_id);
         let _ = std::fs::remove_file(path);
@@ -2897,18 +2899,18 @@ mod tests {
         let mut a = app_with("xx", 10);
         let initial_id = a.document_buffer_id;
         a.editor.command_line = format!("e {}", path.display());
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let new_id = a.document_buffer_id;
         // Cycle back to first buffer.
         a.editor.command_line = "bn".into();
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.document_buffer_id, initial_id);
         // Re-editing the new file's path should switch to its
         // existing buffer rather than spawning a third.
         a.editor.command_line = format!("e {}", path.display());
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.document_buffer_id, new_id);
         // Listed-count gates the "did we accidentally spawn a third?"
@@ -2935,7 +2937,7 @@ mod tests {
         let mut a = app_with("xx", 10);
         a.set_foldmethod_for_test(FoldMethod::Manual);
         a.editor.command_line = format!("e {}", path.display());
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert!(
             a.folds.is_empty(),
@@ -3140,7 +3142,7 @@ mod tests {
     fn h_alias_resolves_to_help() {
         let mut a = app_with("xx", 10);
         a.editor.command_line = "h folding".into();
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let h = a.popup_help().expect("help open");
         assert_eq!(h.title, "help folding");
@@ -3149,11 +3151,11 @@ mod tests {
     #[test]
     fn after_change_user_can_type_and_replacement_lands() {
         let mut a = app_with("hello world", 10);
-        let inv = CommandInvocation::of(a.builtins.change.0).with_target(
-            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
+        let inv = CommandInvocation::of(a.editor.builtins.change.0).with_target(
+            lattice_grammar::Target::Motion(a.editor.builtins.word_forward, lattice_grammar::Args::None),
         );
         a.apply(Action::Invoke(inv));
-        assert_eq!(a.modal, ModalState::Insert);
+        assert_eq!(a.editor.modal, ModalState::Insert);
         a.apply(Action::Insert("HEY ".into()));
         assert_eq!(a.document.text(), "HEY world");
     }
@@ -3346,7 +3348,7 @@ mod tests {
     #[test]
     fn commit_char_in_lsp_item_accepts_then_inserts() {
         let mut a = app_with("foo", 10);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::new(0, 3);
         install_lsp_candidate_with_commit_chars(&mut a, "foo", vec!['.', '('], Position::new(0, 0));
         a.do_completion_accept_then_insert('.');
@@ -3359,7 +3361,7 @@ mod tests {
     #[test]
     fn non_commit_char_is_plain_insert_popup_refilters() {
         let mut a = app_with("foo", 10);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::new(0, 3);
         install_lsp_candidate_with_commit_chars(&mut a, "foo", vec!['.'], Position::new(0, 0));
         a.do_completion_accept_then_insert('a');
@@ -3374,7 +3376,7 @@ mod tests {
     #[test]
     fn extra_commit_chars_option_contributes_globally() {
         let mut a = app_with("foo", 10);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::new(0, 3);
         // Server says no commit chars; the global option
         // adds `,`.
@@ -3391,7 +3393,7 @@ mod tests {
         // list (sync sources don't carry one). The global
         // extras still apply.
         let mut a = app_with("alpha bravo ", 10);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::new(0, 12);
         a.do_completion_trigger();
         // Server-supplied list is empty for sync candidates;
@@ -3418,7 +3420,7 @@ mod tests {
         // snippets only -> buffer-words emit is suppressed even
         // though the buffer is full of word-completion fodder.
         let mut a = app_with("foo bar baz qux quux ", 10);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::new(0, 21);
         // Pretend the active language is rust by overriding
         // the `rust` slot. (Test buffer has no path so
@@ -3518,8 +3520,8 @@ mod tests {
     #[test]
     fn list_registers_includes_unnamed_and_zero() {
         let mut a = app_with("hello world", 10);
-        let inv = CommandInvocation::of(a.builtins.yank.0).with_target(
-            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
+        let inv = CommandInvocation::of(a.editor.builtins.yank.0).with_target(
+            lattice_grammar::Target::Motion(a.editor.builtins.word_forward, lattice_grammar::Args::None),
         );
         a.apply(Action::Invoke(inv));
         submit_ex(&mut a, "reg");
@@ -3583,7 +3585,7 @@ mod tests {
     #[test]
     fn capital_w_skips_punctuation() {
         let mut a = app_with("foo,bar baz", 10);
-        a.apply(invoke_motion(a.builtins.big_word_forward));
+        a.apply(invoke_motion(a.editor.builtins.big_word_forward));
         assert_eq!(a.cursor, Position::new(0, 8));
     }
 
@@ -3594,15 +3596,15 @@ mod tests {
             'z',
         )));
         a.apply(Action::OpenFoldAtCursor);
-        assert!(a.partial_chord.is_empty());
+        assert!(a.editor.partial_chord.is_empty());
     }
 
     #[test]
     fn yank_with_named_register_stores_into_named_and_unnamed() {
         let mut a = app_with("hello world", 10);
         a.apply(Action::SelectRegister(Register::Named('a')));
-        let inv = CommandInvocation::of(a.builtins.yank.0).with_target(
-            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
+        let inv = CommandInvocation::of(a.editor.builtins.yank.0).with_target(
+            lattice_grammar::Target::Motion(a.editor.builtins.word_forward, lattice_grammar::Args::None),
         );
         a.apply(Action::Invoke(inv));
         // Named slot populated.
@@ -3617,8 +3619,8 @@ mod tests {
     #[test]
     fn yank_auto_populates_zero_register() {
         let mut a = app_with("hello world", 10);
-        let inv = CommandInvocation::of(a.builtins.yank.0).with_target(
-            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
+        let inv = CommandInvocation::of(a.editor.builtins.yank.0).with_target(
+            lattice_grammar::Target::Motion(a.editor.builtins.word_forward, lattice_grammar::Args::None),
         );
         a.apply(Action::Invoke(inv));
         let zero = a.editor.registers.get(&Register::Numbered(0)).unwrap();
@@ -3628,8 +3630,8 @@ mod tests {
     #[test]
     fn yank_does_not_record_last_change() {
         let mut a = app_with("hello world", 10);
-        let inv = CommandInvocation::of(a.builtins.yank.0).with_target(
-            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
+        let inv = CommandInvocation::of(a.editor.builtins.yank.0).with_target(
+            lattice_grammar::Target::Motion(a.editor.builtins.word_forward, lattice_grammar::Args::None),
         );
         a.apply(Action::Invoke(inv));
         // Yank doesn't mutate the buffer; dot-repeat shouldn't pick this up.
@@ -3639,8 +3641,8 @@ mod tests {
     #[test]
     fn change_records_last_change() {
         let mut a = app_with("hello world", 10);
-        let inv = CommandInvocation::of(a.builtins.change.0).with_target(
-            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
+        let inv = CommandInvocation::of(a.editor.builtins.change.0).with_target(
+            lattice_grammar::Target::Motion(a.editor.builtins.word_forward, lattice_grammar::Args::None),
         );
         a.apply(Action::Invoke(inv));
         // change drops to Insert, but the change itself is recorded.
@@ -3651,7 +3653,7 @@ mod tests {
     fn capital_f_jumps_backward() {
         let mut a = app_with("hello, world", 10);
         a.cursor = Position::new(0, 11); // on 'd'
-        let inv = CommandInvocation::of(a.builtins.find_char_backward.0)
+        let inv = CommandInvocation::of(a.editor.builtins.find_char_backward.0)
             .with_args(lattice_grammar::Args::Char('h'));
         a.apply(Action::Invoke(inv));
         assert_eq!(a.cursor, Position::ZERO);
@@ -3659,7 +3661,7 @@ mod tests {
 
     fn app_in_command_mode(line: &str) -> App {
         let mut a = app_with("xx", 10);
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.editor.command_line = line.into();
         a
     }
@@ -3720,7 +3722,7 @@ mod tests {
         a.do_open_hover("hover body");
         a.do_lsp_hover_request(); // -> State B
         // Move inside the popup.
-        let inv = lattice_grammar::CommandInvocation::of(a.builtins.line_down.0);
+        let inv = lattice_grammar::CommandInvocation::of(a.editor.builtins.line_down.0);
         a.apply(Action::Invoke(inv));
         assert!(matches!(a.active_buffer, BufferKind::Help));
         // Dismiss.
@@ -3787,7 +3789,7 @@ mod tests {
         attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
         // Open the tree, then dismiss.
         a.editor.command_line = format!("Filetree {}", dir.display());
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert!(matches!(
             a.active_buffer,
@@ -3795,7 +3797,7 @@ mod tests {
         ));
         // `:TreeClose` (the path `q` takes in the tree).
         a.editor.command_line = "FiletreeClose".into();
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert!(matches!(
             a.active_buffer,
@@ -3821,7 +3823,7 @@ mod tests {
         a.apply(Action::SplitPaneVertical);
         a.apply(Action::NavigatePane(PaneDirection::Right));
         a.editor.command_line = format!("Filetree {}", dir.display());
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.buffers.file_tree_ids_sorted().len(), 1);
         a.apply(Action::ClosePane);
@@ -3836,12 +3838,12 @@ mod tests {
         let mut a = app_with("xx", 10);
         let initial_id = a.document_buffer_id;
         a.editor.command_line = format!("e {}", path.display());
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         // Now active = new buffer; delete it. Successor should
         // be initial_id.
         a.editor.command_line = "bd".into();
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.document_buffer_id, initial_id);
         // Listed-count: only the original document remains in the
@@ -3854,7 +3856,7 @@ mod tests {
     fn bdelete_only_buffer_is_rejected() {
         let mut a = app_with("xx", 10);
         a.editor.command_line = "bd".into();
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         // The listed count gates the "only buffer" check.
         // Synthetic unlisted buffers (`*lsp*`, ...) don't count as
@@ -3877,7 +3879,7 @@ mod tests {
         let mut a = app_with("xx", 10);
         a.set_foldmethod_for_test(FoldMethod::Indent);
         a.editor.command_line = format!("e {}", path.display());
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         // The new buffer should have folds without `<C-l>`.
         assert!(
@@ -3895,7 +3897,7 @@ mod tests {
     #[test]
     fn docs_toggle_pulls_body_from_cached_metadata_documentation() {
         let mut a = app_with("xx", 10);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::ZERO;
         // Seed popup state with a single LSP candidate that
         // already has documentation cached.
@@ -3958,7 +3960,7 @@ mod tests {
     #[test]
     fn docs_toggle_a_second_time_closes_popup() {
         let mut a = app_with("xx", 10);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::ZERO;
         a.insert_completion = Some(lattice_completion::InsertCompletionState::open(
             lattice_completion::CompletionTrigger::Manual,
@@ -3987,7 +3989,7 @@ mod tests {
     #[test]
     fn docs_scroll_clamps_at_zero_and_advances_by_eight() {
         let mut a = app_with("xx", 10);
-        a.modal = ModalState::Insert;
+        a.editor.modal = ModalState::Insert;
         a.cursor = Position::ZERO;
         a.insert_completion = Some(lattice_completion::InsertCompletionState::open(
             lattice_completion::CompletionTrigger::Manual,
@@ -4053,7 +4055,7 @@ mod tests {
         // Open a help buffer so the active modal/buffer state
         // matches what `FollowLink` expects.
         a.editor.command_line = "help".into();
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         // Build a synthetic source link inside the help buffer.
         // 1-based line number: line 3 in the file → cursor at
@@ -4115,7 +4117,7 @@ mod tests {
         std::fs::write(&path, "only-line\n").unwrap();
         let mut a = app_with("xx", 10);
         a.editor.command_line = "help".into();
-        a.modal = ModalState::Command;
+        a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let link = crate::help::HelpLink {
             range: lattice_protocol::Range::new(
@@ -4158,8 +4160,8 @@ mod tests {
     #[test]
     fn yank_then_paste_round_trips_word() {
         let mut a = app_with("hello world", 10);
-        let yank = CommandInvocation::of(a.builtins.yank.0).with_target(
-            lattice_grammar::Target::Motion(a.builtins.word_forward, lattice_grammar::Args::None),
+        let yank = CommandInvocation::of(a.editor.builtins.yank.0).with_target(
+            lattice_grammar::Target::Motion(a.editor.builtins.word_forward, lattice_grammar::Args::None),
         );
         a.apply(Action::Invoke(yank));
         // Move cursor to end of buffer.

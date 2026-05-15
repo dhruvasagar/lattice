@@ -186,7 +186,7 @@ mod tests {
         use lattice_runtime::MessagePushed;
         let mut app = app_with("hi\n", 5);
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<MessagePushed>();
-        app.event_bus.subscribe_typed(tx);
+        app.editor.event_bus.subscribe_typed(tx);
         app.set_message(EchoLevel::Info, "first");
         app.set_message(EchoLevel::Warn, "second");
         app.set_message(EchoLevel::Error, "third");

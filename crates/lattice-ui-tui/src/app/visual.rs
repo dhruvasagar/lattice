@@ -25,7 +25,7 @@ use super::{App, EchoLevel, LastVisual};
 
 impl App {
     pub(super) fn do_enter_visual(&mut self, kind: VisualKind) {
-        self.modal = ModalState::Visual(kind);
+        self.editor.modal = ModalState::Visual(kind);
         self.editor.visual_anchor = Some(self.cursor);
         // Seed document.selections so Range::Selection picks up the
         // anchor=head=cursor selection immediately.
@@ -39,9 +39,9 @@ impl App {
 
     pub(super) fn do_exit_visual(&mut self) {
         // Capture the selection extents BEFORE collapsing, so `gv` can
-        // restore them. We want the kind from `self.modal` (Visual carries
+        // restore them. We want the kind from `self.editor.modal` (Visual carries
         // it) and the anchor / head from the document selection.
-        if let ModalState::Visual(kind) = self.modal {
+        if let ModalState::Visual(kind) = self.editor.modal {
             let sels = self.document.selections();
             let sel = sels.primary();
             self.editor.last_visual = Some(LastVisual {
@@ -50,7 +50,7 @@ impl App {
                 kind,
             });
         }
-        self.modal = ModalState::Normal;
+        self.editor.modal = ModalState::Normal;
         self.editor.visual_anchor = None;
         // Collapse selection to a cursor at the current head.
         self.set_selections_blocking(SelectionSet::single(Selection::cursor(self.cursor)));
@@ -63,7 +63,7 @@ impl App {
         };
         // Restore the selection: cursor lands at `head`, anchor at `anchor`,
         // visual mode is the saved kind.
-        self.modal = ModalState::Visual(last.kind);
+        self.editor.modal = ModalState::Visual(last.kind);
         self.editor.visual_anchor = Some(last.anchor);
         self.cursor = last.head;
         let sel = Selection {
@@ -108,7 +108,7 @@ mod tests {
     fn exit_visual_captures_last_visual() {
         let mut a = app_with("hello world", 10);
         a.apply(Action::EnterVisual(VisualKind::Charwise));
-        a.apply(invoke_motion(a.builtins.word_forward));
+        a.apply(invoke_motion(a.editor.builtins.word_forward));
         // Now selection is anchor=ZERO, head=(0,6).
         a.apply(Action::ExitVisual);
         let last = a.editor.last_visual.expect("last_visual captured");
@@ -124,20 +124,20 @@ mod tests {
         a.apply(Action::ReselectLastVisual);
         let msg = a.editor.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Error);
-        assert_eq!(a.modal, ModalState::Normal);
+        assert_eq!(a.editor.modal, ModalState::Normal);
     }
 
     #[test]
     fn gv_restores_anchor_head_and_kind() {
         let mut a = app_with("hello world", 10);
         a.apply(Action::EnterVisual(VisualKind::Charwise));
-        a.apply(invoke_motion(a.builtins.word_forward));
+        a.apply(invoke_motion(a.editor.builtins.word_forward));
         a.apply(Action::ExitVisual);
         // Cursor now collapsed; modal Normal.
-        assert_eq!(a.modal, ModalState::Normal);
+        assert_eq!(a.editor.modal, ModalState::Normal);
         // gv:
         a.apply(Action::ReselectLastVisual);
-        assert_eq!(a.modal, ModalState::Visual(VisualKind::Charwise));
+        assert_eq!(a.editor.modal, ModalState::Visual(VisualKind::Charwise));
         let sels = a.document.selections();
         let sel = sels.primary();
         assert_eq!(sel.anchor, Position::ZERO);
@@ -151,12 +151,12 @@ mod tests {
         // should bring back the same selection so you can re-operate.
         let mut a = app_with("hello world", 10);
         a.apply(Action::EnterVisual(VisualKind::Charwise));
-        a.apply(invoke_motion(a.builtins.word_forward));
-        let inv = CommandInvocation::of(a.builtins.yank.0).with_range(GrammarRange::Selection);
+        a.apply(invoke_motion(a.editor.builtins.word_forward));
+        let inv = CommandInvocation::of(a.editor.builtins.yank.0).with_range(GrammarRange::Selection);
         a.apply(Action::Invoke(inv));
-        assert_eq!(a.modal, ModalState::Normal);
+        assert_eq!(a.editor.modal, ModalState::Normal);
         a.apply(Action::ReselectLastVisual);
-        assert_eq!(a.modal, ModalState::Visual(VisualKind::Charwise));
+        assert_eq!(a.editor.modal, ModalState::Visual(VisualKind::Charwise));
         let sels = a.document.selections();
         let sel = sels.primary();
         assert_eq!(sel.head, Position::new(0, 6));
@@ -166,10 +166,10 @@ mod tests {
     fn gv_preserves_linewise_kind() {
         let mut a = app_with("aaa\nbbb\nccc", 10);
         a.apply(Action::EnterVisual(VisualKind::Linewise));
-        a.apply(invoke_motion(a.builtins.line_down));
+        a.apply(invoke_motion(a.editor.builtins.line_down));
         a.apply(Action::ExitVisual);
         a.apply(Action::ReselectLastVisual);
-        assert_eq!(a.modal, ModalState::Visual(VisualKind::Linewise));
+        assert_eq!(a.editor.modal, ModalState::Visual(VisualKind::Linewise));
     }
 
     // ---- Visual mode end-to-end ----
@@ -179,7 +179,7 @@ mod tests {
         let mut a = app_with("hello", 10);
         a.cursor = Position::new(0, 1);
         a.apply(Action::EnterVisual(VisualKind::Charwise));
-        assert_eq!(a.modal, ModalState::Visual(VisualKind::Charwise));
+        assert_eq!(a.editor.modal, ModalState::Visual(VisualKind::Charwise));
         assert_eq!(a.editor.visual_anchor, Some(Position::new(0, 1)));
         let sels = a.document.selections();
         let sel = sels.primary();
@@ -192,7 +192,7 @@ mod tests {
     fn motion_in_visual_extends_head_keeps_anchor() {
         let mut a = app_with("hello world", 10);
         a.apply(Action::EnterVisual(VisualKind::Charwise));
-        a.apply(invoke_motion(a.builtins.word_forward));
+        a.apply(invoke_motion(a.editor.builtins.word_forward));
         let sels = a.document.selections();
         let sel = sels.primary();
         assert_eq!(sel.anchor, Position::ZERO);
@@ -204,9 +204,9 @@ mod tests {
     fn esc_in_visual_collapses_selection_and_returns_to_normal() {
         let mut a = app_with("hello", 10);
         a.apply(Action::EnterVisual(VisualKind::Charwise));
-        a.apply(invoke_motion(a.builtins.char_right));
+        a.apply(invoke_motion(a.editor.builtins.char_right));
         a.apply(Action::ExitVisual);
-        assert_eq!(a.modal, ModalState::Normal);
+        assert_eq!(a.editor.modal, ModalState::Normal);
         assert!(a.editor.visual_anchor.is_none());
         assert!(a.document.selections().primary().is_cursor());
     }
@@ -215,41 +215,41 @@ mod tests {
     fn delete_in_visual_removes_selection_and_returns_to_normal() {
         let mut a = app_with("hello world", 10);
         a.apply(Action::EnterVisual(VisualKind::Charwise));
-        a.apply(invoke_motion(a.builtins.char_right));
-        a.apply(invoke_motion(a.builtins.char_right));
-        a.apply(invoke_motion(a.builtins.char_right));
+        a.apply(invoke_motion(a.editor.builtins.char_right));
+        a.apply(invoke_motion(a.editor.builtins.char_right));
+        a.apply(invoke_motion(a.editor.builtins.char_right));
         // Selection now covers bytes 0..3 of "hello world" charwise (vim
         // INCLUSIVE -> visual range covers 0..=3 = 4 bytes "hell").
-        let inv = CommandInvocation::of(a.builtins.delete.0).with_range(GrammarRange::Selection);
+        let inv = CommandInvocation::of(a.editor.builtins.delete.0).with_range(GrammarRange::Selection);
         a.apply(Action::Invoke(inv));
         assert_eq!(a.document.text(), "o world");
-        assert_eq!(a.modal, ModalState::Normal);
+        assert_eq!(a.editor.modal, ModalState::Normal);
     }
 
     #[test]
     fn yank_in_visual_populates_register_charwise() {
         let mut a = app_with("hello world", 10);
         a.apply(Action::EnterVisual(VisualKind::Charwise));
-        a.apply(invoke_motion(a.builtins.word_forward));
-        let inv = CommandInvocation::of(a.builtins.yank.0).with_range(GrammarRange::Selection);
+        a.apply(invoke_motion(a.editor.builtins.word_forward));
+        let inv = CommandInvocation::of(a.editor.builtins.yank.0).with_range(GrammarRange::Selection);
         a.apply(Action::Invoke(inv));
         let reg = a.editor.unnamed_register.as_ref().unwrap();
         assert_eq!(reg.kind, YankKind::Charwise);
         // Document text untouched.
         assert_eq!(a.document.text(), "hello world");
         // Visual mode exited.
-        assert_eq!(a.modal, ModalState::Normal);
+        assert_eq!(a.editor.modal, ModalState::Normal);
     }
 
     #[test]
     fn change_in_visual_enters_insert_mode() {
         let mut a = app_with("hello world", 10);
         a.apply(Action::EnterVisual(VisualKind::Charwise));
-        a.apply(invoke_motion(a.builtins.word_forward));
-        let inv = CommandInvocation::of(a.builtins.change.0).with_range(GrammarRange::Selection);
+        a.apply(invoke_motion(a.editor.builtins.word_forward));
+        let inv = CommandInvocation::of(a.editor.builtins.change.0).with_range(GrammarRange::Selection);
         a.apply(Action::Invoke(inv));
         // Change in Visual deletes selection AND drops into Insert.
-        assert_eq!(a.modal, ModalState::Insert);
+        assert_eq!(a.editor.modal, ModalState::Insert);
     }
 
     #[test]
@@ -260,7 +260,7 @@ mod tests {
         // Selection is single line; yank captures the whole line
         // regardless of byte offsets. Slice 8.i.4.g: linewise yank
         // content always ends with `\n`.
-        let inv = CommandInvocation::of(a.builtins.yank.0).with_range(GrammarRange::Selection);
+        let inv = CommandInvocation::of(a.editor.builtins.yank.0).with_range(GrammarRange::Selection);
         a.apply(Action::Invoke(inv));
         let reg = a.editor.unnamed_register.as_ref().unwrap();
         assert_eq!(reg.kind, YankKind::Linewise);
@@ -271,8 +271,8 @@ mod tests {
     fn linewise_visual_extends_to_multiple_lines() {
         let mut a = app_with("aaa\nbbb\nccc\nddd", 10);
         a.apply(Action::EnterVisual(VisualKind::Linewise));
-        a.apply(invoke_motion(a.builtins.line_down));
-        let inv = CommandInvocation::of(a.builtins.yank.0).with_range(GrammarRange::Selection);
+        a.apply(invoke_motion(a.editor.builtins.line_down));
+        let inv = CommandInvocation::of(a.editor.builtins.yank.0).with_range(GrammarRange::Selection);
         a.apply(Action::Invoke(inv));
         let reg = a.editor.unnamed_register.as_ref().unwrap();
         assert_eq!(reg.kind, YankKind::Linewise);
@@ -291,7 +291,7 @@ mod tests {
         let mut a = app_with("one two three four five", 10);
         a.apply(Action::EnterVisual(VisualKind::Charwise));
         a.apply(Action::Invoke(
-            CommandInvocation::of(a.builtins.word_forward.0).with_count(Count(2)),
+            CommandInvocation::of(a.editor.builtins.word_forward.0).with_count(Count(2)),
         ));
         let sels = a.document.selections();
         let sel = sels.primary();
@@ -307,7 +307,7 @@ mod tests {
             '"',
         )));
         a.apply(Action::SelectRegister(Register::Named('a')));
-        assert!(a.partial_chord.is_empty());
+        assert!(a.editor.partial_chord.is_empty());
     }
 
     #[test]

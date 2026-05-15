@@ -38,12 +38,18 @@ use lattice_core::ui::popup::PopupPlacement;
 use lattice_help::topics::HelpTopicRegistry;
 use lattice_mode::{ActiveModes, BufferLocals, GuardStoreHandle, ModeRegistry, ServiceRegistry};
 use lattice_picker::{Picker, PickerMruIndex, PickerRegistry};
+use lattice_grammar::ModalState;
+use lattice_grammar::builtins::Builtins;
+use lattice_grammar::CommandRegistry;
 use lattice_protocol::Event;
 use lattice_protocol::edit::EditDelta;
-use lattice_runtime::{MessagePushed, MessagesRing};
+use lattice_runtime::{EventBus, MessagePushed, MessagesRing};
 use lattice_syntax::{LangRegistry, StyledSpan, SyntaxHandle};
 
 use crate::action::{Action, EchoMessage};
+use crate::actions::ActionIds;
+use crate::chord::KeyChord;
+use crate::keymap_registry::{KeymapHandle, LayerId};
 use crate::buffers::BufferId;
 use crate::state::{
     LastFind, LastSearch, LastVisual, LivePickerQueryState, MacroRecording, OptionCache,
@@ -118,6 +124,9 @@ use crate::ui::theme::Theme as HostTheme;
 ///   `active_modes`, `buffer_locals`, `resolved_options`,
 ///   `buffer_local_overrides`, `option_change_rx`,
 ///   `help_topics`, `host_theme`).
+/// - 5.B.15 -- modal + dispatch (`modal`, `partial_chord`,
+///   `registry`, `event_bus`, `builtins`, `action_ids`,
+///   `keymap`, `completion_popup_layer`, `snippet_layer`).
 #[derive(Debug, Default)]
 pub struct Editor {
     /// Completed macro recordings keyed by register name.
@@ -433,4 +442,52 @@ pub struct Editor {
     /// `lattice_ui_tui::App.theme`) is rebuilt from this on
     /// every successful cascade.
     pub host_theme: HostTheme,
+    /// Buffer-level modal state machine (DESIGN.md §5.2).
+    /// One of Normal / Insert / Visual / Op-pending /
+    /// Command / Search / Replace.
+    pub modal: ModalState,
+    /// In-flight partial-chord stack from the trie. When the
+    /// trie returns `LookupResult::Partial`, the dispatch
+    /// layer appends the chord here; the next keystroke
+    /// runs through the trie with this stack as prefix.
+    /// Cleared on every non-`AbsorbPartialChord` action.
+    pub partial_chord: Vec<KeyChord>,
+    /// Grammar registry shared with the document actor by
+    /// `Arc`. The actor calls `lattice_grammar::execute`
+    /// with this registry from inside its own task. The App
+    /// also reads it directly for the parser, completion
+    /// pipeline, and introspection.
+    pub registry: Arc<CommandRegistry>,
+    /// In-process event bus (DESIGN.md §5.10). The App
+    /// publishes editor lifecycle events
+    /// (DocumentChanged, SelectionsChanged,
+    /// ModalModeChanged, BeforeSave, DocumentSaved,
+    /// BeforeQuit, OptionChanged) after observing the
+    /// corresponding state transitions.
+    pub event_bus: Arc<EventBus>,
+    /// Built-in command-ids (`d`, `y`, `w`, `j`, …) -- the
+    /// canonical `CommandId` values keymap registrations
+    /// resolve against.
+    pub builtins: Builtins,
+    /// App-side typed action IDs (`CommandKind::Action`
+    /// registrations). Each field is a `CommandId`
+    /// resolving to an `ActionSpec` whose `apply` returns
+    /// `Effect::AppAction(AppEffect::Foo)`.
+    pub action_ids: ActionIds,
+    /// Layered keymap registry (DESIGN.md §5.2.3).
+    /// Populated at construction; the input dispatcher
+    /// reads from it on every keystroke. Wait-free reads
+    /// via internal `ArcSwap`; concurrent writes (mode
+    /// push/pop, plugin registration, `:bind`) never stall
+    /// the input path.
+    pub keymap: KeymapHandle,
+    /// `LayerId` of the active completion-popup minor-mode
+    /// layer when the popup is open; `None` otherwise.
+    /// Pushed / popped in lockstep with `insert_completion`.
+    pub completion_popup_layer: Option<LayerId>,
+    /// `LayerId` of the active-snippet minor-mode layer
+    /// when a snippet is in flight; `None` otherwise. Same
+    /// lockstep pattern as
+    /// [`Self::completion_popup_layer`].
+    pub snippet_layer: Option<LayerId>,
 }

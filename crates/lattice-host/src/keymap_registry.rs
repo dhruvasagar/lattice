@@ -277,6 +277,12 @@ pub struct KeymapHandle {
     registry: Arc<KeymapRegistry>,
 }
 
+impl std::fmt::Debug for KeymapHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KeymapHandle").finish_non_exhaustive()
+    }
+}
+
 impl KeymapHandle {
     pub fn new() -> Self {
         Self {

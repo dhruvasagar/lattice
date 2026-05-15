@@ -40,7 +40,7 @@ use lattice_protocol::ids::CommandId;
 /// at startup. The App stores this struct; per-mode keymap
 /// modules consume it to build typed `CommandInvocation`s for
 /// chord bindings.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct ActionIds {
     pub match_bracket: CommandId,
     pub toggle_case_at_cursor: CommandId,

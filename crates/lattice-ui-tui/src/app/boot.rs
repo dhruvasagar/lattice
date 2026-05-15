@@ -19,7 +19,6 @@
 
 use lattice_core::Document;
 use lattice_grammar::CommandRegistry;
-use lattice_grammar::ModalState;
 use lattice_grammar::builtins::populate;
 use lattice_lsp::{DiagnosticsLayer, LspLogger, LspSupervisor, LspSupervisorHandle};
 use lattice_protocol::position::Position;
@@ -657,6 +656,18 @@ impl App {
                 },
                 buffer_locals,
                 help_topics,
+                registry,
+                event_bus: event_bus.clone(),
+                builtins,
+                action_ids,
+                keymap: {
+                    let h = crate::keymap_registry::KeymapHandle::new();
+                    crate::keymap_replace::register_replace_bindings(&h, &action_ids);
+                    crate::keymap_visual::register_visual_bindings(&h, &builtins, &action_ids);
+                    crate::keymap_insert::register_insert_bindings(&h, &action_ids);
+                    crate::keymap_normal::register_normal_bindings(&h, &builtins, &action_ids);
+                    h
+                },
                 ..lattice_host::editor::Editor::default()
             },
             document,
@@ -670,10 +681,6 @@ impl App {
             should_quit: false,
             viewport_height: 1,
             terminal_width: None,
-            modal: ModalState::Normal,
-            partial_chord: Vec::new(),
-            registry,
-            event_bus: event_bus.clone(),
             pending_hover_rx: None,
             pending_hover_token: None,
             pending_definition_rx: None,
@@ -696,24 +703,6 @@ impl App {
             pending_code_action_token: None,
             pending_code_action_items: None,
             pending_code_action_handle: None,
-            builtins,
-            action_ids,
-            keymap: {
-                // Slices 8.d -- 8.g.i: register the per-mode
-                // built-in catalogs into the Builtin layer at
-                // startup. Normal mode is being migrated in
-                // sub-slices 8.g.i -- 8.g.vi; this slice
-                // (8.g.i) covers the simple single-key
-                // bindings.
-                let h = crate::keymap_registry::KeymapHandle::new();
-                crate::keymap_replace::register_replace_bindings(&h, &action_ids);
-                crate::keymap_visual::register_visual_bindings(&h, &builtins, &action_ids);
-                crate::keymap_insert::register_insert_bindings(&h, &action_ids);
-                crate::keymap_normal::register_normal_bindings(&h, &builtins, &action_ids);
-                h
-            },
-            completion_popup_layer: None,
-            snippet_layer: None,
             visible_highlights_key: None,
             folds: Vec::new(),
             pane_render_registry: crate::render::build_pane_render_registry(),
@@ -861,8 +850,8 @@ impl App {
     pub fn sync_keymap_overlays(&mut self) {
         let want_popup = self.insert_completion.is_some();
         let want_snippet = self.active_snippet.is_some();
-        let have_popup = self.completion_popup_layer.is_some();
-        let have_snippet = self.snippet_layer.is_some();
+        let have_popup = self.editor.completion_popup_layer.is_some();
+        let have_snippet = self.editor.snippet_layer.is_some();
         // CSM.K1: `completion-popup-mode` minor reflects popup
         // state (formerly `completion-mode` in CSM.2 -- renamed
         // for the two-mode split where `completion-mode` is now
@@ -876,27 +865,27 @@ impl App {
         }
         // Re-stack: pop everything, then push in the canonical
         // order (snippet first, popup second).
-        if let Some(id) = self.completion_popup_layer.take() {
-            self.keymap.pop_layer(id);
+        if let Some(id) = self.editor.completion_popup_layer.take() {
+            self.editor.keymap.pop_layer(id);
         }
-        if let Some(id) = self.snippet_layer.take() {
-            self.keymap.pop_layer(id);
+        if let Some(id) = self.editor.snippet_layer.take() {
+            self.editor.keymap.pop_layer(id);
         }
         if want_snippet {
-            let id = self.keymap.push_layer(
+            let id = self.editor.keymap.push_layer(
                 crate::keymap_registry::PushLayerKind::MinorMode,
                 "active-snippet",
-                crate::keymap_insert::active_snippet_layer_bindings(&self.action_ids),
+                crate::keymap_insert::active_snippet_layer_bindings(&self.editor.action_ids),
             );
-            self.snippet_layer = Some(id);
+            self.editor.snippet_layer = Some(id);
         }
         if want_popup {
-            let id = self.keymap.push_layer(
+            let id = self.editor.keymap.push_layer(
                 crate::keymap_registry::PushLayerKind::MinorMode,
                 "completion-popup",
-                crate::keymap_insert::completion_popup_layer_bindings(&self.action_ids),
+                crate::keymap_insert::completion_popup_layer_bindings(&self.editor.action_ids),
             );
-            self.completion_popup_layer = Some(id);
+            self.editor.completion_popup_layer = Some(id);
         }
     }
 
@@ -923,7 +912,7 @@ impl App {
                 &mut active,
                 &self.editor.mode_guards,
                 &self.editor.config,
-                &self.event_bus,
+                &self.editor.event_bus,
                 &self.editor.services,
                 proto_id,
                 mode_id,
@@ -933,7 +922,7 @@ impl App {
             let _ = self.editor.mode_registry.deactivate_minor(
                 &mut active,
                 &self.editor.mode_guards,
-                &self.event_bus,
+                &self.editor.event_bus,
                 proto_id,
                 mode_id,
             );

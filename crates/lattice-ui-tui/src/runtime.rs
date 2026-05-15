@@ -437,7 +437,7 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
         // The Arc keeps the snapshot alive for the entire frame --
         // the actor is free to publish concurrently and the new
         // pointer is observed by next frame's load.
-        let frame_snap = app.snapshot_cache.load_arc();
+        let frame_snap = app.editor.snapshot_cache.load_arc();
         terminal
             .draw(|frame| draw_frame(frame, &app, &frame_snap))
             .context("draw frame")?;

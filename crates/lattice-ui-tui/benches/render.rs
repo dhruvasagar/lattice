@@ -54,7 +54,7 @@ fn build_app(corpus: &str, viewport: u32) -> App {
 /// would dominate the measurement and isn't representative of the
 /// real frame path (one load amortised across the whole compose).
 fn pinned_snapshot(app: &App) -> Arc<DocumentSnapshot> {
-    app.document.snapshot()
+    app.editor.snapshot_cache.load()
 }
 
 fn frame_render_24(c: &mut Criterion) {

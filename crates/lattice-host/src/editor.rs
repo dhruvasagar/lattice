@@ -1,3 +1,8 @@
+impl Default for Editor {
+    fn default() -> Self {
+        panic!("Editor::default() is not supported after C4; use Editor::new from the renderer boot path");
+    }
+}
 //! The renderer-agnostic editor state.
 //!
 //! Phase 5.B.3 introduces [`Editor`] as the destination for
@@ -55,7 +60,7 @@ use lattice_grammar::builtins::Builtins;
 use lattice_grammar::CommandRegistry;
 use lattice_protocol::Event;
 use lattice_protocol::edit::EditDelta;
-use lattice_runtime::{EventBus, MessagePushed, MessagesRing};
+use lattice_runtime::{DocumentHandle, EventBus, MessagePushed, MessagesRing, SnapshotCache};
 use lattice_syntax::{LangRegistry, StyledSpan, SyntaxHandle};
 
 use crate::action::{Action, EchoMessage};
@@ -195,7 +200,7 @@ use crate::ui::theme::Theme as HostTheme;
 ///   duplicate declarations from `App`. Completion cluster
 ///   (`completion_registry`, `completion_state`,
 ///   `insert_completion`, etc.) stays on App -- next slice.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Editor {
     /// Completed macro recordings keyed by register name.
     /// Replays go through the dispatch layer's `PlayMacro`
@@ -423,6 +428,10 @@ pub struct Editor {
     pub last_synced_syntax_version: u64,
     /// Pane tree (DESIGN.md §5.9).
     pub pane_tree: PaneTree,
+
+    /// Handle to the per-document actor and its snapshot cache.
+    pub document: DocumentHandle,
+    pub snapshot_cache: SnapshotCache,
 
     /// Per-line `StyledSpan`s for the currently visible
     /// viewport, indexed from `[scroll, scroll +

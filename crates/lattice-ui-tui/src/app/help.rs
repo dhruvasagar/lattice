@@ -144,7 +144,7 @@ impl App {
 
     pub(super) fn do_describe_buffer(&mut self) {
         let mut lines: Vec<String> = Vec::new();
-        let snap = self.document.snapshot();
+        let snap = self.editor.document.snapshot();
         let path = snap
             .path()
             .map(|p| p.display().to_string())
@@ -152,7 +152,7 @@ impl App {
         let lang = lattice_syntax::Lang::detect_from_path(snap.path());
         let line_count = snap.buffer.line_count();
         let byte_count = snap.buffer.as_string().len();
-        let dirty = if self.document.dirty() { "yes" } else { "no" };
+        let dirty = if self.editor.document.dirty() { "yes" } else { "no" };
         lines.push(format!("path:           {path}"));
         lines.push(format!("language:       {lang:?}"));
         lines.push(format!("modal state:    {:?}", self.editor.modal));
@@ -1335,7 +1335,7 @@ impl App {
                 // every editor + every `path:line` convention);
                 // convert to the App's 0-based line index, clamping
                 // to a valid line in the now-loaded buffer.
-                let snap = self.document.snapshot();
+                let snap = self.editor.document.snapshot();
                 let last = snap.buffer.line_count().saturating_sub(1);
                 let target_line = line.saturating_sub(1).min(last);
                 self.editor.cursor = Position::new(target_line, 0);

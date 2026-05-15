@@ -30,7 +30,7 @@ impl App {
     /// worker task off the UI thread (audit slice 3 / paramount
     /// goal #1: "UI thread does no … parsing").
     pub(super) fn maybe_reparse_syntax(&mut self) {
-        let tv = self.document.text_version();
+        let tv = self.editor.document.text_version();
         if tv == self.editor.last_parsed_text_version {
             return;
         }
@@ -53,7 +53,7 @@ impl App {
             // its thread, so the O(n) alloc + memcpy stays off
             // the input thread.
             let edits = std::mem::take(&mut self.editor.pending_syntax_edits);
-            let buffer = self.document.snapshot().buffer.clone();
+            let buffer = self.editor.document.snapshot().buffer.clone();
             syntax.request_reparse(self.editor.last_synced_syntax_version, tv, buffer, edits);
         }
         self.editor.last_parsed_text_version = tv;

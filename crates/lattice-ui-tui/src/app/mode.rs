@@ -91,7 +91,7 @@ impl App {
         // have a fixed mode regardless of content.
         let lang = match kind {
             BufferKind::Document => {
-                let snap = self.document.snapshot();
+                let snap = self.editor.document.snapshot();
                 let path_owned = snap.path.as_ref().map(|p| (**p).clone());
                 let path_ref = path_owned.as_deref();
                 lattice_syntax::Lang::detect_from_path(path_ref)
@@ -215,7 +215,7 @@ impl App {
     /// Used by the LSP auto-activation hook above.
     fn path_for_buffer(&self, buffer_id: BufferId) -> Option<std::path::PathBuf> {
         if buffer_id == self.editor.document_buffer_id {
-            return self.document.path().map(|p| p.to_path_buf());
+            return self.editor.document.path().map(|p| p.to_path_buf());
         }
         self.editor.buffers.document_path(buffer_id)
     }

@@ -57,7 +57,7 @@ impl App {
         if matches!(fm, FoldMethod::Manual) {
             return;
         }
-        let snapshot = self.document.snapshot();
+        let snapshot = self.editor.document.snapshot();
         let mut next = match fm {
             FoldMethod::Manual => return,
             FoldMethod::Indent => crate::folds::compute_indent_folds(&snapshot.buffer),
@@ -159,7 +159,7 @@ impl App {
             );
             return;
         }
-        let sels = self.document.selections();
+        let sels = self.editor.document.selections();
         let sel = sels.primary();
         let start_line = sel.anchor.line.min(sel.head.line);
         let end_line = sel.anchor.line.max(sel.head.line);
@@ -290,7 +290,7 @@ impl App {
             return;
         }
         let going_down = new_line > prev_line;
-        let snap = self.document.snapshot();
+        let snap = self.editor.document.snapshot();
         let last = last_addressable_line(&snap.buffer);
         let mut snapped = new_line;
         let mut exited_a_fold = false;

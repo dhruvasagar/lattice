@@ -108,14 +108,14 @@ impl App {
         // Load destination -- clone the handle out under the
         // registry lock so we don't hold the lock past the
         // borrow.
-        self.document = self
+        self.editor.document = self
             .editor.buffers
             .document_handle(id)
             .expect("contains_document lookup above succeeded");
         // Rebuild the cache against the activated document's
         // published-cell; the previous cache pointed at the old
         // document.
-        self.snapshot_cache = self.document.snapshot_cache();
+        self.editor.snapshot_cache = self.editor.document.snapshot_cache();
         // M.3.2.c.5: pull stashed mode-state out of buffer_locals
         // (formerly held on `entry.editor.syntax` / `entry.folds` etc.).
         // First activation has empty locals; `activate_buffer_state`
@@ -560,8 +560,8 @@ impl App {
         self.snapshot_active_document();
         self.editor.active_buffer = BufferKind::Document;
         self.editor.document_buffer_id = new_id;
-        self.document = new_handle;
-        self.snapshot_cache = self.document.snapshot_cache();
+        self.editor.document = new_handle;
+        self.editor.snapshot_cache = self.editor.document.snapshot_cache();
         self.editor.syntax = syntax;
         self.editor.last_parsed_text_version = self.document.text_version();
         self.editor.cursor = Position::ZERO;
@@ -1124,7 +1124,7 @@ impl App {
     /// can sync without re-walking the buffer or holding the
     /// supervisor lock.
     pub(super) fn publish_document_changed(&mut self, applied: &[AppliedEdit]) {
-        let snap = self.document.snapshot();
+        let snap = self.editor.document.snapshot();
         let path = snap.path().map(|p| p.to_path_buf());
         let edits: Vec<lattice_protocol::event::AppliedEdit> = applied
             .iter()
@@ -1194,7 +1194,7 @@ impl App {
     /// rotates (visual extension, dispatcher SelectionChange effect,
     /// `gv` reselect, etc.).
     pub(super) fn publish_selections_changed(&self) {
-        let snap = self.document.snapshot();
+        let snap = self.editor.document.snapshot();
         self.editor.event_bus.publish(Event::SelectionsChanged {
             id: snap.id,
             version: snap.version,
@@ -1280,7 +1280,7 @@ impl App {
         // cursor (e.g. user edited the file after the picker
         // populated). `last_addressable_line` accounts for
         // ropey's trailing-newline pseudo-line.
-        let snap = self.document.snapshot();
+        let snap = self.editor.document.snapshot();
         let line = line.min(super::last_addressable_line(&snap.buffer));
         let line_len = super::line_byte_len(&snap.buffer, line);
         let col = col.min(line_len);
@@ -1474,7 +1474,7 @@ impl App {
         // veto-class handler (§5.10.2) can format / sanitize the
         // buffer before it hits disk. v1 is observation-only, so
         // BeforeSave runs only for telemetry / autocmd compatibility.
-        let snap = self.document.snapshot();
+        let snap = self.editor.document.snapshot();
         if let Some(path) = snap.path.as_ref() {
             self.editor.event_bus.publish(Event::BeforeSave {
                 id: snap.id,
@@ -1675,7 +1675,7 @@ impl App {
         };
         let uri = uri.clone();
         let handles = self.editor.lsp.servers_for(&uri);
-        let snap = self.document.snapshot();
+        let snap = self.editor.document.snapshot();
         let full_text = snap.buffer.as_string();
         for h in handles {
             let caps = h.capabilities();
@@ -1696,7 +1696,7 @@ impl App {
     }
 
     pub(super) fn save_as_blocking(&self, path: std::path::PathBuf) -> Result<(), RuntimeError> {
-        let snap = self.document.snapshot();
+        let snap = self.editor.document.snapshot();
         self.editor.event_bus.publish(Event::BeforeSave {
             id: snap.id,
             path: path.clone(),

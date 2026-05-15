@@ -86,7 +86,7 @@ impl App {
         if matches!(self.editor.active_buffer, super::BufferKind::Oil) {
             return self.apply_edit_to_oil(edit);
         }
-        let result = block_on(self.document.apply_edit(edit));
+        let result = block_on(self.editor.document.apply_edit(edit));
         if let Ok(applied) = result.as_ref() {
             self.publish_document_changed(std::slice::from_ref(applied));
         }
@@ -114,7 +114,7 @@ impl App {
             }
             return Ok(applied);
         }
-        let result = block_on(self.document.apply_edit_batch(edits));
+        let result = block_on(self.editor.document.apply_edit_batch(edits));
         if let Ok(applied) = result.as_ref() {
             self.publish_document_changed(applied);
         }
@@ -140,7 +140,7 @@ impl App {
     }
 
     pub(super) fn undo_blocking(&mut self) -> Result<Vec<AppliedEdit>, RuntimeError> {
-        let result = block_on(self.document.undo());
+        let result = block_on(self.editor.document.undo());
         if let Ok(applied) = result.as_ref() {
             self.publish_document_changed(applied);
         }
@@ -148,7 +148,7 @@ impl App {
     }
 
     pub(super) fn redo_blocking(&mut self) -> Result<Vec<AppliedEdit>, RuntimeError> {
-        let result = block_on(self.document.redo());
+        let result = block_on(self.editor.document.redo());
         if let Ok(applied) = result.as_ref() {
             self.publish_document_changed(applied);
         }
@@ -170,7 +170,7 @@ impl App {
         // Compute how many leading whitespace bytes to trim from the
         // next line's content (only for J, not gJ).
         let trim = if with_space {
-            let text = self.document.text();
+            let text = self.editor.document.text();
             let next_text = text
                 .split_inclusive('\n')
                 .nth(next_line as usize)
@@ -499,7 +499,7 @@ impl App {
         // (so subsequent edits don't shift our intent).
         let mut targets = Vec::new();
         {
-            let text = self.document.text();
+            let text = self.editor.document.text();
             for (i, line) in text.split_inclusive('\n').enumerate() {
                 if i as u32 > last {
                     break;

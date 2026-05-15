@@ -42,7 +42,7 @@ impl App {
         // restore them. We want the kind from `self.editor.modal` (Visual carries
         // it) and the anchor / head from the document selection.
         if let ModalState::Visual(kind) = self.editor.modal {
-            let sels = self.document.selections();
+            let sels = self.editor.document.selections();
             let sel = sels.primary();
             self.editor.last_visual = Some(LastVisual {
                 anchor: sel.anchor,
@@ -77,7 +77,7 @@ impl App {
     pub fn set_selections_blocking(&self, selections: SelectionSet) {
         // SetSelections only fails on actor-gone; ignore the
         // Result (post-shutdown nothing meaningful to do).
-        let _ = block_on(self.document.set_selections(selections));
+        let _ = block_on(self.editor.document.set_selections(selections));
         self.publish_selections_changed();
     }
 }
@@ -208,7 +208,7 @@ mod tests {
         a.apply(Action::ExitVisual);
         assert_eq!(a.editor.modal, ModalState::Normal);
         assert!(a.editor.visual_anchor.is_none());
-        assert!(a.document.selections().primary().is_cursor());
+        assert!(a.editor.document.selections().primary().is_cursor());
     }
 
     #[test]

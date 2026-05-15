@@ -158,7 +158,7 @@ impl App {
     /// the dispatch token on Esc; see `dispatch_with_cancel` on
     /// `DocumentHandle`.
     pub fn dispatch_blocking(&self, invocation: CommandInvocation) -> Result<Effect, RuntimeError> {
-        block_on(self.document.dispatch_with_cancel(
+        block_on(self.editor.document.dispatch_with_cancel(
             invocation,
             self.editor.cursor,
             CancellationToken::never(),

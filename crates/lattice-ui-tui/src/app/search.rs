@@ -268,7 +268,7 @@ impl App {
             .map(|f| f.contains('g'))
             .unwrap_or(false);
 
-        let buffer = self.document.snapshot().buffer.clone();
+        let buffer = self.editor.document.snapshot().buffer.clone();
         let mut matches: Vec<ProtoRange> = Vec::new();
         match parsed.scope {
             crate::excommand::SubstitutePartialScope::CurrentLine => {
@@ -361,7 +361,7 @@ impl App {
         let (first_line, last_line) = match scope {
             lattice_grammar::SubstituteScope::CurrentLine => (self.editor.cursor.line, self.editor.cursor.line),
             lattice_grammar::SubstituteScope::Whole => {
-                let last = last_addressable_line(&self.document.snapshot().buffer);
+                let last = last_addressable_line(&self.editor.document.snapshot().buffer);
                 (0, last)
             }
         };
@@ -455,7 +455,7 @@ impl App {
     /// invoking the search engine.
     pub(super) fn do_search_word_under_cursor(&mut self, direction: SearchDirection) {
         let pre_jump = self.editor.cursor;
-        let text = self.document.text();
+        let text = self.editor.document.text();
         let bytes = text.as_bytes();
         let cursor_byte = match self
             .document
@@ -498,7 +498,7 @@ impl App {
         };
         // Skip the current match: search from one byte past for forward,
         // one byte before for backward.
-        let from = step_byte(&self.document.snapshot().buffer, self.editor.cursor, direction);
+        let from = step_byte(&self.editor.document.snapshot().buffer, self.editor.cursor, direction);
         // The word is a literal we want to find verbatim, not a
         // pattern. Escape regex metachars before compiling so words
         // containing `.`, `*`, `(` etc. don't trigger metacharacter
@@ -514,7 +514,7 @@ impl App {
             }
         };
         match lattice_core::search::find(
-            &self.document.snapshot().buffer,
+            &self.editor.document.snapshot().buffer,
             &regex,
             from,
             dir,
@@ -525,7 +525,7 @@ impl App {
                 self.editor.cursor = hit.range.start;
                 self.editor.current_match = Some(hit.range);
                 self.editor.all_matches = lattice_core::search::find_all(
-                    &self.document.snapshot().buffer,
+                    &self.editor.document.snapshot().buffer,
                     &regex,
                     &CancellationToken::never(),
                 )

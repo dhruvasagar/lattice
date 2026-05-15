@@ -46,7 +46,7 @@ impl App {
     /// char; that bracket and its match define the jump. If the
     /// cursor is past every bracket on the line, do nothing.
     pub(super) fn do_match_bracket(&mut self) {
-        let text = self.document.text();
+        let text = self.editor.document.text();
         let bytes = text.as_bytes();
         let cursor_byte = match self
             .document
@@ -574,7 +574,7 @@ impl App {
             self.editor.cursor = pos;
         } else {
             // Line-only jump: snap byte to first non-blank on that line.
-            let text = self.document.text();
+            let text = self.editor.document.text();
             let line_text = text
                 .split_inclusive('\n')
                 .nth(pos.line as usize)
@@ -672,16 +672,16 @@ impl App {
             BufferKind::Help => self
                 .popup_help()
                 .map(|h| h.content.clone())
-                .unwrap_or_else(|| self.document.snapshot().buffer.clone()),
+                .unwrap_or_else(|| self.editor.document.snapshot().buffer.clone()),
             BufferKind::FileTree => self
                 .editor.buffers
                 .with_file_tree(self.active_pane_buffer_id(), |t| t.content.clone())
-                .unwrap_or_else(|| self.document.snapshot().buffer.clone()),
-            BufferKind::Document => self.document.snapshot().buffer.clone(),
+                .unwrap_or_else(|| self.editor.document.snapshot().buffer.clone()),
+            BufferKind::Document => self.editor.document.snapshot().buffer.clone(),
             BufferKind::Oil => self
                 .editor.buffers
                 .with_oil(self.active_pane_buffer_id(), |o| o.content.clone())
-                .unwrap_or_else(|| self.document.snapshot().buffer.clone()),
+                .unwrap_or_else(|| self.editor.document.snapshot().buffer.clone()),
         }
     }
 }

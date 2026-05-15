@@ -3,7 +3,8 @@
 //!
 //! Moved from `lattice-ui-tui` in Phase 5.2 first wave.
 
-pub use lattice_core::ui::popup::{PopupPlacement, HelpMetadata};
+pub use lattice_core::ui::popup::PopupPlacement;
+pub use lattice_help::HelpMetadata;
 
 /// Renderer-agnostic snapshot of popup content + position + metadata.
 #[derive(Debug, Clone)]

@@ -151,7 +151,7 @@ impl<'a> FrameView<'a> {
 /// Render one terminal frame.
 ///
 /// `snap` is the active document's snapshot, loaded once per frame
-/// by the runtime via `app.snapshot_cache.load_arc()` (DESIGN.md
+/// by the runtime via `app.editor.snapshot_cache.load_arc()` (DESIGN.md
 /// §5.6.8). All active-pane render paths read through this single
 /// snapshot -- inactive panes (different documents) still go
 /// through `entry.handle.snapshot()` since the cache is per-cell.
@@ -2354,7 +2354,7 @@ fn compose_visible_lines_inner(
         .unwrap_or(false);
     // §5.6.8 contract: one snapshot per frame, used for everything.
     // The snapshot was loaded by the runtime via
-    // `app.snapshot_cache.load_arc()` and threaded through.
+    // `app.editor.snapshot_cache.load_arc()` and threaded through.
     // §8.2 hot path: never materialise the whole buffer -- iterate
     // ropey's line API and pull only the visible window. A 100MB
     // log file should cost the same per-frame as a 100-line file.

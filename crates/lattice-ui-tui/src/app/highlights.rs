@@ -289,7 +289,7 @@ impl App {
         // recompute correctly. The spans only ever transition
         // from one CORRECT set to another -- never through an
         // empty/wrong intermediate that would visibly flicker.
-        if snap.text_version() < self.document.text_version() {
+        if snap.text_version() < self.editor.document.text_version() {
             self.editor.visible_highlights_key = Some(key);
             return;
         }
@@ -313,7 +313,7 @@ impl App {
     /// caller's `+1` then yields a non-empty range so
     /// `highlight_lines` doesn't short-circuit.
     fn visible_buffer_line_extent(&self, scroll: u32, height: u32) -> u32 {
-        let total_lines = self.document.snapshot().buffer.line_count();
+        let total_lines = self.editor.document.snapshot().buffer.line_count();
         if total_lines == 0 {
             return scroll;
         }

@@ -86,7 +86,7 @@ impl App {
         if !matches!(self.editor.modal, ModalState::Insert) {
             return;
         }
-        let snap = self.document.snapshot();
+        let snap = self.editor.document.snapshot();
         // Walk back from cursor over word chars to compute the
         // prefix. Same heuristic as `do_completion_trigger`.
         let line_text = snap.buffer.line(self.editor.cursor.line).unwrap_or_default();
@@ -232,7 +232,7 @@ impl App {
         let Some(first) = group.ranges.first() else {
             return;
         };
-        let snap = self.document.snapshot();
+        let snap = self.editor.document.snapshot();
         if let Ok(pos) = snap.buffer.byte_to_position(first.start) {
             self.editor.cursor = pos;
         }
@@ -528,7 +528,7 @@ impl App {
         if !self.completion_mode_active_for(self.editor.document_buffer_id) {
             return;
         }
-        let snap = self.document.snapshot();
+        let snap = self.editor.document.snapshot();
         let buffer = &snap.buffer;
         let line_text = buffer.line(self.editor.cursor.line).unwrap_or_default();
         let bytes = line_text.as_bytes();

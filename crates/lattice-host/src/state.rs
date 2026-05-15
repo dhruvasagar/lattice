@@ -13,23 +13,6 @@ use lattice_core::{BufferId, BufferKind, FoldMethod};
 use lattice_grammar::{SearchDirection, VisualKind, YankKind};
 
 
-/// One open completion popup (DESIGN.md §5.11.3 vertico-style
-/// rendering). Built by the cmdline `<Tab>` handler; consumed by
-/// accept / dismiss / scroll actions. Renderer-agnostic state moved
-/// from lattice-ui-tui::app (Phase 5.B C1).
-#[derive(Debug, Clone)]
-pub struct CompletionState {
-    pub candidates: Vec<lattice_completion::RenderedCandidate>,
-    pub selected: usize,
-    /// Byte offset within the command-line where the prefix being
-    /// completed begins. The accept-handler replaces
-    /// `[replace_start, command_line.len())` with the chosen
-    /// candidate's `text`.
-    pub replace_start: usize,
-    /// What the cmdline looked like at popup-open time (for
-    /// debugging + future filter-as-you-type refinement).
-    pub original_line: String,
-}
 use lattice_protocol::CancellationToken;
 use lattice_protocol::position::{Position, Range as ProtoRange};
 

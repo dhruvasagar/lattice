@@ -7677,7 +7677,7 @@ mod tests {
     fn pull_diagnostics_pump_skips_when_version_unchanged() {
         let mut app = app_with("fn main() {}\n", 5);
         let buffer_id = app.editor.document_buffer_id;
-        let version = app.document.snapshot().version;
+        let version = app.editor.document.snapshot().version;
         app.editor.lsp_pull_diagnostics_cache.insert(
             buffer_id,
             crate::app::LspPullDiagnosticsCache {
@@ -9829,7 +9829,7 @@ mod tests {
         assert!(outcome.success);
         // The active document should now reflect the opened
         // file (path matches).
-        let snap = app.document.snapshot();
+        let snap = app.editor.document.snapshot();
         assert_eq!(snap.path(), Some(file_path.as_ref()));
         let _ = std::fs::remove_file(&file_path);
     }

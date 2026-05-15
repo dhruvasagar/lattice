@@ -672,6 +672,8 @@ impl App {
                 completion_registry,
                 completion_state: None,
                 pane_tree,
+                document,
+                snapshot_cache,
                 document_buffer_id,
                 buffers,
                 active_buffer: BufferKind::Document,
@@ -693,8 +695,7 @@ impl App {
                 pending_diagnostic_refresh_rx: Some(lsp_diagnostic_refresh_rx),
                 ..lattice_host::editor::Editor::default()
             },
-            document,
-            snapshot_cache,
+            
             
             visible_highlights_key: None,
             folds: Vec::new(),

@@ -419,7 +419,7 @@ impl App {
         ) else {
             return Err(CompletionComputeError::PipelineUnconfigured);
         };
-        let snap = self.document.snapshot();
+        let snap = self.editor.document.snapshot();
         let ctx = lattice_completion::GenerateContext {
             prefix: &prefix,
             buffer: &snap.buffer,

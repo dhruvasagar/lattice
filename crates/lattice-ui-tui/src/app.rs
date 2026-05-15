@@ -293,7 +293,7 @@ pub struct App {
     /// mutations route through it; reads load a versioned snapshot.
     /// Denormalized from `documents[active_document_id].handle` for
     /// hot-path access.
-    pub document: DocumentHandle,
+    // Moved to `editor.document`.
     /// Per-thread cached reader for [`Self::document`]'s published
     /// snapshot cell (DESIGN.md §5.6.8). The renderer's per-frame
     /// `snapshot_cache.load()` returns the current
@@ -302,7 +302,7 @@ pub struct App {
     /// Rebuilt whenever [`Self::document`] is reassigned --
     /// `arc_swap::Cache` caches against a specific cell, so it must
     /// follow the active document's handle.
-    pub snapshot_cache: SnapshotCache,
+    // Moved to `editor.snapshot_cache`.
     /// Stable id for the *active* document buffer. Mirrors the
     /// active pane's `buffer_id` whenever that pane holds a
     /// Document leaf. Position-history entries (§5.1.1) and
@@ -1037,7 +1037,7 @@ impl std::fmt::Debug for App {
             .field("modal", &self.editor.modal)
             .field("command_line", &self.editor.command_line)
             .field("last_message", &self.editor.last_message)
-            .field("dirty", &self.document.dirty())
+            .field("dirty", &self.editor.document.dirty())
             .finish()
     }
 }

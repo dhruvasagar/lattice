@@ -702,11 +702,7 @@ impl App {
             last_synced_syntax_version: 0,
             visible_highlights: Vec::new(),
             visible_highlights_key: None,
-            replace_history: Vec::new(),
             folds: Vec::new(),
-            last_insert: None,
-            recording_insert: None,
-            pending_block_insert: None,
             config,
             // Default placeholder; rebuilt from config below before
             // the App is returned. The placeholder lets the struct

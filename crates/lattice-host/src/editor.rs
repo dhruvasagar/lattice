@@ -33,8 +33,8 @@ use lattice_protocol::position::{Position, Range as ProtoRange};
 
 use crate::action::Action;
 use crate::state::{
-    LastFind, LastSearch, LastVisual, MacroRecording, PositionEntry, SearchLine, SubstitutePreview,
-    TagStackEntry, UnnamedRegister,
+    LastFind, LastSearch, LastVisual, MacroRecording, PendingBlockInsert, PositionEntry,
+    ReplaceEntry, SearchLine, SubstitutePreview, TagStackEntry, UnnamedRegister,
 };
 
 /// Renderer-agnostic editor state.
@@ -69,6 +69,9 @@ use crate::state::{
 /// - 5.B.8 -- vim repeat + visual state (`pending_count`,
 ///   `op_count`, `visual_anchor`, `last_change`,
 ///   `last_visual`, `last_find`).
+/// - 5.B.9 -- replace + insert state (`replace_history`,
+///   `last_insert`, `recording_insert`,
+///   `pending_block_insert`).
 #[derive(Debug, Default)]
 pub struct Editor {
     /// Completed macro recordings keyed by register name.
@@ -179,4 +182,26 @@ pub struct Editor {
     pub last_visual: Option<LastVisual>,
     /// Last f/F/t/T find on this buffer, for `;` / `,`.
     pub last_find: Option<LastFind>,
+    /// Per-Replace-session log of overwritten bytes so
+    /// backspace can restore the original (rather than
+    /// deleting). Cleared on entry, pushed on each
+    /// `OverwriteChar`, popped on `ReplaceUndoLast`.
+    pub replace_history: Vec<ReplaceEntry>,
+    /// Text inserted during the most recently completed
+    /// Insert session. Captured on Esc out of Insert;
+    /// replayed by dot-repeat after the operator part. `None`
+    /// if the last change had no insert phase.
+    pub last_insert: Option<String>,
+    /// In-flight blockwise-visual `I` / `A` session. Captured
+    /// at mode-entry time (block extents + per-line insert
+    /// column); consumed when Insert exits, at which point
+    /// the recorded text is replicated to every line in the
+    /// block other than the top row (the top row's insert is
+    /// the recording itself). `None` outside a block-visual
+    /// insert.
+    pub pending_block_insert: Option<PendingBlockInsert>,
+    /// Text being captured during the *current* Insert
+    /// session. Promoted into [`Self::last_insert`] when
+    /// leaving Insert.
+    pub recording_insert: Option<String>,
 }

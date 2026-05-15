@@ -498,7 +498,7 @@ impl App {
         // Reset Replace's history every time we enter (or re-enter) Replace
         // so backspace-restore is bounded to the current `R` session.
         if matches!(state, ModalState::Replace) {
-            self.replace_history.clear();
+            self.editor.replace_history.clear();
         }
         let was_insert_like = matches!(self.modal, ModalState::Insert | ModalState::Replace);
         let entering_insert_like = matches!(state, ModalState::Insert | ModalState::Replace);
@@ -506,17 +506,17 @@ impl App {
         //   - Entering Insert/Replace from anything else: start recording.
         //   - Leaving Insert/Replace to anything else: promote into last_insert.
         if entering_insert_like && !was_insert_like {
-            self.recording_insert = Some(String::new());
+            self.editor.recording_insert = Some(String::new());
         }
         if was_insert_like
             && !entering_insert_like
-            && let Some(rec) = self.recording_insert.take()
+            && let Some(rec) = self.editor.recording_insert.take()
         {
             // Snapshot the recording before consuming the block-
             // insert spec; we need both to replicate.
-            let block_spec = self.pending_block_insert.take();
+            let block_spec = self.editor.pending_block_insert.take();
             if !rec.is_empty() {
-                self.last_insert = Some(rec.clone());
+                self.editor.last_insert = Some(rec.clone());
             }
             if let Some(spec) = block_spec
                 && !rec.is_empty()
@@ -528,7 +528,7 @@ impl App {
             // (shouldn't happen given enter_mode pairs them, but
             // belt-and-braces -- still clear any spec so a future
             // I/A starts clean).
-            self.pending_block_insert = None;
+            self.editor.pending_block_insert = None;
         }
         self.modal = state;
         if matches!(state, ModalState::Normal) {

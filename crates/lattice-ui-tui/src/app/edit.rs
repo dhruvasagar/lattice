@@ -252,7 +252,7 @@ impl App {
                 if let Ok(applied) = self.apply_edit_blocking(Edit::insert(self.cursor, text)) {
                     self.cursor = applied.inserted_range.end;
                     if matches!(self.modal, ModalState::Insert)
-                        && let Some(rec) = self.recording_insert.as_mut()
+                        && let Some(rec) = self.editor.recording_insert.as_mut()
                     {
                         rec.push_str(text);
                     }
@@ -405,7 +405,7 @@ impl App {
         let right_col = sel.anchor.byte.max(sel.head.byte);
         let insert_col = if append { right_col + 1 } else { left_col };
 
-        self.pending_block_insert = Some(PendingBlockInsert {
+        self.editor.pending_block_insert = Some(PendingBlockInsert {
             start_line,
             end_line,
             insert_col,
@@ -556,7 +556,7 @@ impl App {
             let original = self.document.snapshot().buffer.slice(r).ok();
             if let Ok(applied) = self.apply_edit_blocking(Edit::replace(r, &s)) {
                 self.cursor = applied.inserted_range.end;
-                self.replace_history.push(ReplaceEntry {
+                self.editor.replace_history.push(ReplaceEntry {
                     at: entry_pos,
                     original,
                 });
@@ -565,7 +565,7 @@ impl App {
             // Past end of line: extend. Original is None.
             if let Ok(applied) = self.apply_edit_blocking(Edit::insert(self.cursor, &s)) {
                 self.cursor = applied.inserted_range.end;
-                self.replace_history.push(ReplaceEntry {
+                self.editor.replace_history.push(ReplaceEntry {
                     at: entry_pos,
                     original: None,
                 });
@@ -579,7 +579,7 @@ impl App {
     /// the byte. Either way the cursor moves back to the entry's
     /// position.
     pub(super) fn do_replace_undo_last(&mut self) {
-        let Some(entry) = self.replace_history.pop() else {
+        let Some(entry) = self.editor.replace_history.pop() else {
             return;
         };
         let after = Position::new(entry.at.line, entry.at.byte + 1);
@@ -609,13 +609,13 @@ impl App {
         if let Ok(applied) = self.apply_edit_blocking(Edit::insert(self.cursor, s)) {
             self.cursor = applied.inserted_range.end;
             // Capture into the in-flight Insert recording for dot-repeat.
-            if let Some(rec) = self.recording_insert.as_mut() {
+            if let Some(rec) = self.editor.recording_insert.as_mut() {
                 rec.push_str(s);
             }
             // Block-visual I/A: count this edit so the Esc handler
             // can rewind the whole session and re-emit it as a
             // single batched undo unit.
-            if let Some(spec) = self.pending_block_insert.as_mut() {
+            if let Some(spec) = self.editor.pending_block_insert.as_mut() {
                 spec.live_edits = spec.live_edits.saturating_add(1);
             }
             // Insert-mode completion live-refresh (Phase 4.2.g.1).
@@ -673,7 +673,7 @@ impl App {
         let range = ProtoRange::new(prev, self.cursor);
         if self.apply_edit_blocking(Edit::delete(range)).is_ok() {
             self.cursor = prev;
-            if let Some(spec) = self.pending_block_insert.as_mut() {
+            if let Some(spec) = self.editor.pending_block_insert.as_mut() {
                 spec.live_edits = spec.live_edits.saturating_add(1);
             }
         }
@@ -1179,7 +1179,7 @@ mod tests {
         a.apply(Action::Insert("X".into()));
         a.apply(Action::Insert("Y".into()));
         a.apply(Action::EnterMode(ModalState::Normal));
-        assert_eq!(a.last_insert.as_deref(), Some("XY"));
+        assert_eq!(a.editor.last_insert.as_deref(), Some("XY"));
     }
 
     #[test]
@@ -1267,7 +1267,7 @@ mod tests {
         assert_eq!(a.cursor, Position::new(0, 4));
         assert!(matches!(a.modal, ModalState::Insert));
         // Dot-repeat insert recording captured the pasted text.
-        let rec = a.recording_insert.as_ref().unwrap();
+        let rec = a.editor.recording_insert.as_ref().unwrap();
         assert_eq!(rec, "bcd");
     }
 

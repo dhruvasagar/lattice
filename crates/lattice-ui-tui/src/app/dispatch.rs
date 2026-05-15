@@ -524,7 +524,7 @@ impl App {
                     // reset it (running the change op enters Insert,
                     // which clears recording_insert) -- we want the
                     // OLD text to replay.
-                    let insert_replay = self.last_insert.clone();
+                    let insert_replay = self.editor.last_insert.clone();
                     self.run_invocation(inv);
                     // If the change flipped us into Insert and there's
                     // captured text, replay it and exit back to Normal.
@@ -1885,10 +1885,10 @@ mod tests {
         let mut a = app_with("hello", 10);
         a.apply(Action::EnterMode(ModalState::Replace));
         a.apply(Action::OverwriteChar('H'));
-        assert_eq!(a.replace_history.len(), 1);
+        assert_eq!(a.editor.replace_history.len(), 1);
         a.apply(Action::EnterMode(ModalState::Normal));
         a.apply(Action::EnterMode(ModalState::Replace));
-        assert!(a.replace_history.is_empty());
+        assert!(a.editor.replace_history.is_empty());
     }
 
     #[test]

@@ -498,7 +498,7 @@ impl App {
                 self.editor.last_change = None;
                 self.editor.last_visual = None;
                 self.editor.visual_anchor = None;
-                self.replace_history.clear();
+                self.editor.replace_history.clear();
                 self.editor.position_history.clear();
                 self.editor.position_history_cursor = 0;
                 self.folds.clear();
@@ -574,7 +574,7 @@ impl App {
         self.editor.last_change = None;
         self.editor.last_visual = None;
         self.editor.visual_anchor = None;
-        self.replace_history.clear();
+        self.editor.replace_history.clear();
         self.folds.clear();
         // Position history follows the active buffer.
         self.editor.position_history.clear();

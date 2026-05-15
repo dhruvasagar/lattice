@@ -692,13 +692,8 @@ pub struct App {
     // to `editor.{pending_count, op_count, visual_anchor,
     // last_change, last_visual}`.
     // Phase 5.B.5: `marks` moved to `editor.marks`.
-    /// Per-Replace-session log of overwritten bytes so backspace can
-    /// restore the original (rather than deleting). Cleared on entry,
-    /// pushed on each `OverwriteChar`, popped on `ReplaceUndoLast`.
-    /// `original` is `None` when the cursor was past EOL and the
-    /// overwrite extended the line -- backspace deletes that byte rather
-    /// than relying on it.
-    pub replace_history: Vec<ReplaceEntry>,
+    // Phase 5.B.9: `replace_history` moved to
+    // `editor.replace_history`.
     // Phase 5.B.5: `registers` and `pending_register` moved
     // to `editor.registers` / `editor.pending_register`.
     /// Unified position-history ring (§5.1.1). Every entry is tagged
@@ -724,20 +719,9 @@ pub struct App {
     /// Manual folds. v1 supports non-nested folds defined by line range.
     /// `closed=true` means the fold's interior is skipped during render.
     pub folds: Vec<Fold>,
-    /// Text inserted during the most recently completed Insert session.
-    /// Captured on Esc out of Insert; replayed by dot-repeat after the
-    /// operator part. `None` if the last change had no insert phase.
-    pub last_insert: Option<String>,
-    /// In-flight blockwise-visual `I` / `A` session. Captured at
-    /// mode-entry time (block extents + per-line insert column);
-    /// consumed when Insert exits, at which point the recorded
-    /// text is replicated to every line in the block other than
-    /// the top row (the top row's insert is the recording itself).
-    /// `None` outside a block-visual insert.
-    pub pending_block_insert: Option<PendingBlockInsert>,
-    /// Text being captured during the *current* Insert session.
-    /// Promoted into `last_insert` when leaving Insert.
-    pub recording_insert: Option<String>,
+    // Phase 5.B.9: `last_insert`, `pending_block_insert`,
+    // `recording_insert` moved to `editor.{last_insert,
+    // pending_block_insert, recording_insert}`.
     /// Shared typed-options registry (DESIGN.md §5.12). Every
     /// option's *current value* lives in here behind an
     /// `ArcSwap<T>`; `:set` parses against it; the customize

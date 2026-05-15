@@ -635,6 +635,7 @@ impl App {
         // also hold one (BufferRegistry is `Clone` via Arc).
         let buffers_for_services = buffers.clone();
         let mut app = Self {
+            editor: lattice_host::editor::Editor::default(),
             document,
             snapshot_cache,
             document_buffer_id,

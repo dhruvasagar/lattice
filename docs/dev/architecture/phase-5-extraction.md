@@ -277,12 +277,18 @@ This pattern -- "host owns the canonical neutral state; each renderer owns a cac
 | 5.2 | `5753e38` | pane shim migrated |
 | 5.2 | `93fc8d8` | App helper state types extracted (SearchLine, LastSearch, UnnamedRegister, PrevPaneState) |
 | 5.2 | `1f1ca50` | Batch: OptionCache, LastFind, MacroRecording, TagStackEntry, PositionEntry, PositionSource, ReplaceEntry, LastVisual, SubstitutePreview, PendingBlockInsert all extracted to `lattice_host::state` |
+| 5.2 | `3d66a3b` | LSP cache + outcome types moved to `lattice_lsp::cache` (~620 LoC, 35 types) |
+| 5.B.0 | `f7416a1` | App field audit doc -- [`phase-5b-app-fields.md`](phase-5b-app-fields.md) (2 of ~200 fields renderer-specific) |
+| 5.B.1 | `6f651a4` | `lattice_host::Renderer` trait + `MinimalRenderer` headless impl |
+| 5.B.2 | `3649c18` | `App<R: Renderer = TuiRenderer>` parametrisation (subsequently reverted in 5.B.3 -- see Option-E pivot below) |
+| 5.B (design) | (this commit) | [`phase-5b-app-design.md`](phase-5b-app-design.md) -- Option D → Option E pivot. Composition replaces generic parametrisation. |
+| 5.B.3 | (this commit) | Reverted 5.B.2's `App<R>` generics; defined empty `lattice_host::editor::Editor` and added `editor: Editor` field on `App`. Per-cluster field migration begins from 5.B.4. |
 
-**Total moved from `lattice-ui-tui`:** ~17k LoC. **Test count:** 1599 throughout (1424 ui-tui + 175 host at session end).
+**Total moved from `lattice-ui-tui`:** ~17.5k LoC. **Test count:** 1781 throughout (1424 ui-tui + 177 host + 180 lsp at session end).
 
 ## Remaining work
 
-The slices that haven't landed gate on **the App keystone migration**. App lives in `lattice-ui-tui/src/app.rs` (~5500 LoC after extractions) and is referenced by:
+The slices that haven't landed gate on **the App keystone migration**. App lives in `lattice-ui-tui/src/app.rs` (~4.6k LoC after extractions) and is referenced by:
 
 - Every `app/*.rs` submodule (~35k LoC of method impls)
 - `picker_sources.rs` (tests use `app_with`)
@@ -290,14 +296,14 @@ The slices that haven't landed gate on **the App keystone migration**. App lives
 - The keymap catalog files (import `crate::app::Action` -- still resolves via lattice-host re-export)
 - The pane render registry (Hard Case §2 -- references `&App`)
 
-Moving App needs its own focused session. Sketch of approach:
+**Approach: composition, not generic parametrisation.** See [`phase-5b-app-design.md`](phase-5b-app-design.md) for the analysis. Option D (`App<R: Renderer>` parametrised over a host-side trait) was attempted in 5.B.2 and reverted in 5.B.3 once the Rust orphan rule made every renderer-specific method either (a) require a single mega-commit moving 35k LoC, or (b) require lifelong extension-trait machinery. Option E (composition) achieves the same separation more cleanly:
 
-1. Define `lattice_host::app::App` as a new struct with the full field set
-2. All `impl App` blocks in `app/*.rs` either: move to lattice-host (renderer-agnostic methods) OR stay in lattice-ui-tui (renderer-coupled methods that touch ratatui/crossterm directly via `app.theme`, etc.)
-3. `lattice-ui-tui::app` becomes a re-export hub: `pub use lattice_host::app::*;`
-4. Test infrastructure (`app_with`, etc.) moves with the helpers it tests
+1. `lattice_host::editor::Editor` holds the renderer-agnostic editor state.
+2. Each renderer crate's `App` struct composes `editor: Editor` alongside its renderer-specific caches (`theme`, `pane_render_registry`).
+3. Per-cluster commits relocate field clusters from `App` into `Editor`, moving the methods that touch only those fields into `impl Editor` in lattice-host.
+4. `App`'s remaining inherent impl surface ends up genuinely TUI-only.
 
-This is several days of work and want to be done with the user in the loop on architectural calls (e.g., where to draw the line between renderer-agnostic and renderer-coupled methods on App).
+Every per-cluster commit ships green: methods that still live in `impl App` access migrated fields via `self.editor.foo`; methods that have moved to `impl Editor` use `self.foo` directly. The discipline that broke under Option D is preserved under Option E.
 
 ## Slice ordering
 

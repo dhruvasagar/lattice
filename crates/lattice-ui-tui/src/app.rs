@@ -328,13 +328,30 @@ pub use lattice_lsp::cache::{
     apply_semantic_token_edits, decode_semantic_tokens,
 };
 
-// Phase 5.B.2: parametrized over the host-side `Renderer`
-// trait. The default `R = TuiRenderer` keeps every existing
-// `App` reference in this crate (and downstream consumers)
-// resolving unchanged. Renderer-specific cache fields use
-// `R::Theme` and `R::PaneRenderRegistry` so a future GPUI
-// renderer can substitute its own native types here.
-pub struct App<R: lattice_host::Renderer = crate::TuiRenderer> {
+// Phase 5.B.3: composition pivot (see
+// `docs/dev/architecture/phase-5b-app-design.md`). App is a
+// concrete struct -- a thin renderer-specific wrapper around
+// the renderer-agnostic `lattice_host::editor::Editor` plus
+// the two TUI-shaped caches (`theme`, `pane_render_registry`).
+// GPUI's analogue (future `lattice_ui_gpui::App`) takes the
+// same shape with its own renderer-specific caches. No
+// generics: every `impl App` inside this crate is a plain
+// inherent impl, the orphan rule doesn't bite, and per-cluster
+// field migrations from App → Editor can land green one at a
+// time. The 5.B.2 `App<R: Renderer>` parametrization is
+// reverted; the `lattice_host::Renderer` trait + `TuiRenderer`
+// marker are retained as Phase 5.6's `lattice-render` work may
+// reuse them.
+pub struct App {
+    /// Composition root for the renderer-agnostic editor state
+    /// (Phase 5.B.3 -- see
+    /// `docs/dev/architecture/phase-5b-app-design.md`). Empty
+    /// at the start of the migration; grows as per-cluster
+    /// commits relocate field clusters from `App` into
+    /// `Editor`. Host-level call sites that need only
+    /// renderer-agnostic state take `&mut Editor` directly;
+    /// renderer-side code reaches it via `app.editor`.
+    pub editor: lattice_host::editor::Editor,
     /// Handle to the per-document actor (DESIGN.md §5.2.1, §5.7).
     /// The actor owns the writable `Document` (from `lattice-core`);
     /// mutations route through it; reads load a versioned snapshot.
@@ -849,7 +866,7 @@ pub struct App<R: lattice_host::Renderer = crate::TuiRenderer> {
     /// document path as the fallback when no provider matches.
     /// Replaces the helper-side `match buffer.kind` in
     /// `draw_pane_content` and `pane_status_label`.
-    pub pane_render_registry: R::PaneRenderRegistry,
+    pub pane_render_registry: crate::pane_render::PaneRenderRegistry,
     /// Per-buffer active modes (major + minors). M.1 wired the
     /// field on `Document` for the document buffer, but
     /// `Document` lives behind the actor's snapshot-cache, so
@@ -908,7 +925,7 @@ pub struct App<R: lattice_host::Renderer = crate::TuiRenderer> {
     /// when GPUI lands and the TUI cache moves off `App`,
     /// `App.theme` collapses into `host_theme` (renamed) and each
     /// renderer maintains its own cached view.
-    pub theme: R::Theme,
+    pub theme: crate::theme::Theme,
     /// Phase 5.3: renderer-neutral canonical theme. `:set ui.*`
     /// writes this; the cached TUI adapter [`Self::theme`] is
     /// rebuilt from it. Future renderers (GPUI) read from this

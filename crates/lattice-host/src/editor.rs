@@ -38,10 +38,17 @@ use lattice_core::ui::popup::PopupPlacement;
 use lattice_help::topics::HelpTopicRegistry;
 use lattice_mode::{ActiveModes, BufferLocals, GuardStoreHandle, ModeRegistry, ServiceRegistry};
 use lattice_lsp::cache::{
-    DocumentHighlightCache, LspCodeLensCache, LspDocumentColorCache, LspDocumentLinksCache,
-    LspFoldsCache, LspInlayHintCache, LspPullDiagnosticsCache, LspSelectionChain,
-    LspSemanticTokensCache,
+    CodeActionOutcome, CodeActionRow, CodeLensOutcome, CompletionItemRow, CompletionOutcome,
+    CompletionResolveOutcome, DocumentColorOutcome, DocumentHighlightCache,
+    DocumentHighlightOutcome, DocumentLinksOutcome, FoldingRangeOutcome, FormatOutcome,
+    HoverOutcome, InlayHintOutcome, InsertCompletionLspOutcome, LspCodeLensCache,
+    LspDocumentColorCache, LspDocumentLinksCache, LspFoldsCache, LspInlayHintCache, LspNavKind,
+    LspPullDiagnosticsCache, LspSelectionChain, LspSemanticTokensCache, PullDiagnosticsOutcome,
+    ReferencesOutcome, RenameOutcome, SelectionRangeOutcome, SemanticTokensOutcome,
+    SignatureHelpOutcome, SymbolsOutcome,
 };
+use lattice_lsp::{DiagnosticsLayer, LspLogger, LspSupervisorHandle};
+use lattice_protocol::CancellationToken;
 use lattice_picker::{Picker, PickerMruIndex, PickerRegistry};
 use lattice_grammar::ModalState;
 use lattice_grammar::builtins::Builtins;
@@ -153,6 +160,31 @@ use crate::ui::theme::Theme as HostTheme;
 ///   `lsp_document_color_cache`,
 ///   `lsp_semantic_tokens_cache`,
 ///   `lsp_pull_diagnostics_cache`).
+/// - 5.B.18 -- all remaining LSP fields: subsystem handles
+///   (`lsp`, `lsp_diagnostics`, `lsp_logger`, plus
+///   `lsp_log_event_rx`, `lsp_progress_event_rx`,
+///   `lsp_config_tree`, `buffer_uris`), server-initiated
+///   channels (`pending_apply_edit_rx`,
+///   `pending_configuration_rx`, `pending_show_document_rx`,
+///   `pending_show_message_request_rx`,
+///   `lsp_pending_show_message_requests`,
+///   `lsp_show_message_request_queue`,
+///   `lsp_next_show_message_request_id`), and all per-
+///   feature request channels (the `pending_*_rx` /
+///   `pending_*_token` pairs for hover, definition,
+///   references, symbols, format, signature-help,
+///   completion, moniker, rename, code-action,
+///   selection-range, document-highlight, folding-range,
+///   document-links, code-lens, document-color, inlay-hint,
+///   semantic-tokens, pull-diagnostics, plus the refresh
+///   channels and the lifecycle / detach channels).
+///   `LspSupervisorHandle` and `DiagnosticsLayer` gained
+///   placeholder `Default` impls (dropped-receiver
+///   channels; production overwrites in `boot.rs`).
+///   `lsp_file_watcher` stays on App for now: its inner
+///   type `LspFileWatcher` lives in `lattice-ui-tui::app::
+///   lsp_watcher` -- migrates with a follow-up that moves
+///   the watcher into a host module.
 #[derive(Debug, Default)]
 pub struct Editor {
     /// Completed macro recordings keyed by register name.
@@ -582,4 +614,98 @@ pub struct Editor {
     /// Per-buffer pull-diagnostics cache (keyed
     /// `result_id`s for `Unchanged` short-circuit).
     pub lsp_pull_diagnostics_cache: HashMap<BufferId, LspPullDiagnosticsCache>,
+    // ---- LSP subsystem handles + log/progress channels ----
+    pub lsp: LspSupervisorHandle,
+    pub lsp_diagnostics: DiagnosticsLayer,
+    pub lsp_logger: LspLogger,
+    pub lsp_log_event_rx: Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspLogPushed>>,
+    pub lsp_progress_event_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspProgressUpdate>>,
+    pub lsp_config_tree: toml::Table,
+    pub buffer_uris: HashMap<BufferId, lattice_lsp::Uri>,
+    // ---- LSP server-initiated channels ----
+    pub pending_apply_edit_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::InboundApplyEdit>>,
+    pub pending_configuration_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::InboundConfigurationRequest>>,
+    pub pending_show_document_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::InboundShowDocument>>,
+    pub pending_show_message_request_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::InboundShowMessageRequest>>,
+    pub lsp_pending_show_message_requests:
+        HashMap<u32, tokio::sync::oneshot::Sender<Option<lsp_types::MessageActionItem>>>,
+    pub lsp_show_message_request_queue: std::collections::VecDeque<u32>,
+    pub lsp_next_show_message_request_id: u32,
+    // ---- LSP per-feature request channels (rx + token pairs) ----
+    pub pending_hover_rx: Option<tokio::sync::mpsc::UnboundedReceiver<HoverOutcome>>,
+    pub pending_hover_token: Option<CancellationToken>,
+    pub pending_definition_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<Vec<lsp_types::Location>>>,
+    pub pending_definition_token: Option<CancellationToken>,
+    pub pending_nav_kind: Option<LspNavKind>,
+    pub pending_references_rx: Option<tokio::sync::mpsc::UnboundedReceiver<ReferencesOutcome>>,
+    pub pending_references_token: Option<CancellationToken>,
+    pub pending_symbols_rx: Option<tokio::sync::mpsc::UnboundedReceiver<SymbolsOutcome>>,
+    pub pending_symbols_token: Option<CancellationToken>,
+    pub pending_format_rx: Option<tokio::sync::mpsc::UnboundedReceiver<FormatOutcome>>,
+    pub pending_format_token: Option<CancellationToken>,
+    pub pending_signature_help_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<SignatureHelpOutcome>>,
+    pub pending_signature_help_token: Option<CancellationToken>,
+    pub pending_completion_rx: Option<tokio::sync::mpsc::UnboundedReceiver<CompletionOutcome>>,
+    pub pending_completion_token: Option<CancellationToken>,
+    pub pending_completion_items: Option<Vec<CompletionItemRow>>,
+    pub pending_moniker_rx: Option<tokio::sync::mpsc::UnboundedReceiver<String>>,
+    pub pending_rename_rx: Option<tokio::sync::mpsc::UnboundedReceiver<RenameOutcome>>,
+    pub pending_rename_token: Option<CancellationToken>,
+    pub pending_code_action_rx: Option<tokio::sync::mpsc::UnboundedReceiver<CodeActionOutcome>>,
+    pub pending_code_action_token: Option<CancellationToken>,
+    pub pending_code_action_items: Option<Vec<CodeActionRow>>,
+    pub pending_code_action_handle: Option<lattice_lsp::ServerHandle>,
+    pub pending_selection_range_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<SelectionRangeOutcome>>,
+    pub pending_selection_range_token: Option<CancellationToken>,
+    pub pending_document_highlight_token: Option<CancellationToken>,
+    pub pending_document_highlight_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<DocumentHighlightOutcome>>,
+    pub pending_folding_range_token: Option<CancellationToken>,
+    pub pending_folding_range_rx: Option<tokio::sync::mpsc::UnboundedReceiver<FoldingRangeOutcome>>,
+    pub pending_document_links_token: Option<CancellationToken>,
+    pub pending_document_links_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<DocumentLinksOutcome>>,
+    pub pending_code_lens_token: Option<CancellationToken>,
+    pub pending_code_lens_rx: Option<tokio::sync::mpsc::UnboundedReceiver<CodeLensOutcome>>,
+    pub pending_code_lens_refresh_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspCodeLensRefresh>>,
+    pub pending_code_lens_items: Option<Vec<lsp_types::CodeLens>>,
+    pub pending_code_lens_server: Option<Arc<str>>,
+    pub pending_document_color_token: Option<CancellationToken>,
+    pub pending_document_color_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<DocumentColorOutcome>>,
+    pub pending_color_presentations: Option<Vec<lsp_types::ColorPresentation>>,
+    pub pending_color_range: Option<lsp_types::Range>,
+    pub pending_inlay_hint_token: Option<CancellationToken>,
+    pub pending_inlay_hint_rx: Option<tokio::sync::mpsc::UnboundedReceiver<InlayHintOutcome>>,
+    pub pending_semantic_tokens_token: Option<CancellationToken>,
+    pub pending_semantic_tokens_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<SemanticTokensOutcome>>,
+    pub pending_pull_diagnostics_token: Option<CancellationToken>,
+    pub pending_pull_diagnostics_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<PullDiagnosticsOutcome>>,
+    pub pending_diagnostic_refresh_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspDiagnosticRefresh>>,
+    pub pending_inlay_hint_refresh_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspInlayHintRefresh>>,
+    pub pending_semantic_tokens_refresh_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspSemanticTokensRefresh>>,
+    pub pending_lsp_detach_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::events::LspBufferDetached>>,
+    pub pending_mode_lifecycle_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_mode::ModeEvent>>,
+    pub pending_insert_completion_lsp_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<InsertCompletionLspOutcome>>,
+    pub pending_insert_completion_lsp_token: Option<CancellationToken>,
+    pub pending_completion_resolve_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<CompletionResolveOutcome>>,
+    pub pending_completion_resolve_token: Option<CancellationToken>,
 }

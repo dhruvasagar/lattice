@@ -960,9 +960,11 @@ dependencies = [
  "lattice-runtime",
  "lattice-snippet",
  "lattice-syntax",
+ "lsp-types",
  "streaming-iterator",
  "thiserror 2.0.18",
  "tokio",
+ "toml",
  "tree-sitter",
 ]
 

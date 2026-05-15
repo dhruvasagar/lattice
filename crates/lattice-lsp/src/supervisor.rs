@@ -1116,6 +1116,27 @@ pub struct LspSupervisorHandle {
     logger: LspLogger,
 }
 
+/// Placeholder handle for `Editor::default()` / headless
+/// test scaffolding. The receiver is dropped immediately, so
+/// any cmd sent through this handle silently no-ops (the
+/// caller's reply oneshot drops without being completed,
+/// which `LspSupervisor::send_with_reply` reports as a
+/// "supervisor gone" error). Real construction goes through
+/// `LspSupervisor::spawn`. Production code overwrites this
+/// in `boot.rs` before any cmd flows.
+impl Default for LspSupervisorHandle {
+    fn default() -> Self {
+        let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel();
+        let logger = LspLogger::default();
+        Self {
+            snapshot: Arc::new(ArcSwap::from(Arc::new(SupervisorSnapshot::default()))),
+            cmd_tx,
+            diagnostics: DiagnosticsLayer::default(),
+            logger,
+        }
+    }
+}
+
 impl LspSupervisorHandle {
     // ----- read API (wait-free) --------------------------------
 

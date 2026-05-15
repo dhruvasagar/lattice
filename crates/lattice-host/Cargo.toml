@@ -63,6 +63,11 @@ lattice-runtime = { path = "../lattice-runtime" }
 # receivers (message events; later: LSP request channels).
 # Naming those receiver types requires tokio as a direct dep.
 tokio = { workspace = true, features = ["sync"] }
+# Phase 5.B.18: LSP request channels carry `lsp_types::*`
+# values (CodeLens, ColorPresentation, Range, Location,
+# MessageActionItem). `lsp_config_tree` is a `toml::Table`.
+lsp-types = { workspace = true }
+toml = { workspace = true }
 
 [dev-dependencies]
 

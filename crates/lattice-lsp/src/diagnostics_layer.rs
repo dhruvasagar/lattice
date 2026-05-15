@@ -107,7 +107,7 @@ struct DiagnosticsSnapshot {
 /// Cloneable; every clone shares the same `ArcSwap` cell + the
 /// same write lock (so the layer behaves as one logical state
 /// across actor pumps).
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct DiagnosticsLayer {
     /// Wait-free read cell. RCU-flavoured: `load` is ~2ns;
     /// `store` is one atomic release-store.

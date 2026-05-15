@@ -57,6 +57,23 @@ pub mod theme;
 pub mod tui_options;
 
 pub use app::{Action, App, EchoLevel, EchoMessage};
+
+// Phase 5.B.2: TuiRenderer marker type implementing
+// `lattice_host::Renderer`. The App struct in `app.rs` is now
+// generic over `R: Renderer` with `R = TuiRenderer` as the
+// default, so every existing `App` reference in this crate +
+// downstream consumers keeps resolving via the default. When
+// the App struct moves to lattice-host (Phase 5.B.3),
+// `App` becomes a type alias `pub type App =
+// lattice_host::App<TuiRenderer>;` and this marker stays here
+// as the renderer's identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TuiRenderer;
+
+impl lattice_host::Renderer for TuiRenderer {
+    type Theme = crate::theme::Theme;
+    type PaneRenderRegistry = crate::pane_render::PaneRenderRegistry;
+}
 pub use buffer_registry::{BufferData, BufferEntry, BufferRegistry, DocumentEntry};
 pub use buffers::{BufferFlags, BufferId, BufferKind};
 pub use excommand::ExCommandError;

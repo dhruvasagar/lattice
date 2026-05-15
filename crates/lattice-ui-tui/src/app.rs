@@ -328,7 +328,13 @@ pub use lattice_lsp::cache::{
     apply_semantic_token_edits, decode_semantic_tokens,
 };
 
-pub struct App {
+// Phase 5.B.2: parametrized over the host-side `Renderer`
+// trait. The default `R = TuiRenderer` keeps every existing
+// `App` reference in this crate (and downstream consumers)
+// resolving unchanged. Renderer-specific cache fields use
+// `R::Theme` and `R::PaneRenderRegistry` so a future GPUI
+// renderer can substitute its own native types here.
+pub struct App<R: lattice_host::Renderer = crate::TuiRenderer> {
     /// Handle to the per-document actor (DESIGN.md §5.2.1, §5.7).
     /// The actor owns the writable `Document` (from `lattice-core`);
     /// mutations route through it; reads load a versioned snapshot.
@@ -843,7 +849,7 @@ pub struct App {
     /// document path as the fallback when no provider matches.
     /// Replaces the helper-side `match buffer.kind` in
     /// `draw_pane_content` and `pane_status_label`.
-    pub pane_render_registry: crate::pane_render::PaneRenderRegistry,
+    pub pane_render_registry: R::PaneRenderRegistry,
     /// Per-buffer active modes (major + minors). M.1 wired the
     /// field on `Document` for the document buffer, but
     /// `Document` lives behind the actor's snapshot-cache, so
@@ -902,7 +908,7 @@ pub struct App {
     /// when GPUI lands and the TUI cache moves off `App`,
     /// `App.theme` collapses into `host_theme` (renamed) and each
     /// renderer maintains its own cached view.
-    pub theme: crate::theme::Theme,
+    pub theme: R::Theme,
     /// Phase 5.3: renderer-neutral canonical theme. `:set ui.*`
     /// writes this; the cached TUI adapter [`Self::theme`] is
     /// rebuilt from it. Future renderers (GPUI) read from this

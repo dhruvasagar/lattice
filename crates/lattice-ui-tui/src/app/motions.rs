@@ -154,7 +154,7 @@ impl App {
         // to the outer position-history walk.
         if delta < 0
             && matches!(self.active_buffer, BufferKind::Help)
-            && self.popup_buffer.is_some()
+            && self.editor.popup_buffer.is_some()
             && !self.popup_back_stack.is_empty()
             && self.pop_popup_back()
         {
@@ -218,7 +218,7 @@ impl App {
         // recorded buffer id (in-pane Help / Document / FileTree
         // all live in `self.buffers`); the transient popup-mode
         // Help overlay's id is checked separately.
-        let popup_help_id = self.popup_buffer;
+        let popup_help_id = self.editor.popup_buffer;
         let reachable = |e: &PositionEntry| -> bool {
             match e.buffer {
                 BufferKind::Document | BufferKind::FileTree => self.buffers.contains(e.buffer_id),
@@ -274,7 +274,7 @@ impl App {
                 // fall back to the transient popup. Either way the
                 // live cursor lands on `self.cursor` (unified).
                 let buffer_present = self.buffers.contains_help(entry.buffer_id)
-                    || self.popup_buffer == Some(entry.buffer_id);
+                    || self.editor.popup_buffer == Some(entry.buffer_id);
                 if buffer_present {
                     self.cursor = entry.position;
                     self.pane_tree.active_mut().buffer = BufferKind::Help;
@@ -424,7 +424,7 @@ impl App {
             u16::MAX,
             buffer_h,
             line_count,
-            self.popup_placement,
+            self.editor.popup_placement,
         );
         Some(u32::from(height).saturating_sub(2).max(1))
     }
@@ -633,7 +633,7 @@ impl App {
     /// the active pane's id.
     pub fn active_buffer_id(&self) -> BufferId {
         match self.active_buffer {
-            BufferKind::Help => self.popup_buffer.unwrap_or(self.document_buffer_id),
+            BufferKind::Help => self.editor.popup_buffer.unwrap_or(self.document_buffer_id),
             BufferKind::Document | BufferKind::FileTree | BufferKind::Oil => {
                 self.pane_tree.active().buffer_id
             }

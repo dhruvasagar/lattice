@@ -1148,7 +1148,7 @@ mod tests {
         a.do_describe_event("definitely-not-an-event");
         let msg = a.last_message.as_ref().expect("error echo");
         assert!(msg.text.contains("no event named"));
-        assert!(a.popup_buffer.is_none());
+        assert!(a.editor.popup_buffer.is_none());
     }
 
     #[test]

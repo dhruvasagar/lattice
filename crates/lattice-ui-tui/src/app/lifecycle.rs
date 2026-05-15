@@ -246,7 +246,7 @@ impl App {
     /// Switch the active pane to an existing help buffer in the
     /// registry. Snapshots prior pane state so `<C-o>` returns the
     /// user to the document/cursor they came from. The registry's
-    /// HelpBuffer is mirrored into `self.popup_buffer` so the
+    /// HelpBuffer is mirrored into `self.editor.popup_buffer` so the
     /// existing keymap + render paths transparently target it.
     pub(super) fn activate_help_in_pane(&mut self, id: BufferId) {
         if !self.buffers.contains_help(id) {
@@ -272,7 +272,7 @@ impl App {
         // preserve the original origin.
         if !matches!(self.active_buffer, BufferKind::Help) {
             let active = self.pane_tree.active();
-            self.prev_pane_for_help = Some(PrevPaneState {
+            self.editor.prev_pane_for_help = Some(PrevPaneState {
                 buffer: active.buffer,
                 buffer_id: active.buffer_id,
                 cursor: self.cursor,
@@ -292,8 +292,8 @@ impl App {
         // round-trip back to the same document via
         // activate_document early-returns on matching
         // document_buffer_id.
-        if self.popup_buffer != Some(id) && self.buffers.contains_help(id) {
-            self.popup_buffer = Some(id);
+        if self.editor.popup_buffer != Some(id) && self.buffers.contains_help(id) {
+            self.editor.popup_buffer = Some(id);
         }
         let (stash_cursor, stash_scroll) = self
             .popup_help()
@@ -770,10 +770,10 @@ impl App {
         // if the active pane points at a different help buffer
         // than the one currently mirrored.
         if matches!(pane.buffer, BufferKind::Help)
-            && self.popup_buffer != Some(pane.buffer_id)
+            && self.editor.popup_buffer != Some(pane.buffer_id)
             && self.buffers.contains_help(pane.buffer_id)
         {
-            self.popup_buffer = Some(pane.buffer_id);
+            self.editor.popup_buffer = Some(pane.buffer_id);
         }
     }
 
@@ -1088,7 +1088,7 @@ impl App {
                 // M.4 (b): the popup buffer lives in the registry;
                 // mutate it in place there. The hot-path slot is
                 // just an id, so there's nothing to mirror back.
-                if let Some(id) = self.popup_buffer
+                if let Some(id) = self.editor.popup_buffer
                     && id == pane_id
                 {
                     self.buffers.with_help_mut(pane_id, |reg| {
@@ -1337,7 +1337,7 @@ impl App {
         }
         let id = BufferId::next();
         // Clone for the registry record; the active hot-path copy
-        // lands on `self.popup_buffer` via `activate_help_in_pane`.
+        // lands on `self.editor.popup_buffer` via `activate_help_in_pane`.
         // Note: `buffer.id` (the construction-time id) and the
         // registered `id` here are intentionally different.
         // Production reader sites that look up `buffer_locals` use
@@ -1357,7 +1357,7 @@ impl App {
         // and link-follow path resolve against).
         self.seed_help_metadata_locals(id, metadata);
         // M.4 (b): popup_buffer is just the registry id.
-        self.popup_buffer = Some(id);
+        self.editor.popup_buffer = Some(id);
         self.activate_help_in_pane(id);
         id
     }

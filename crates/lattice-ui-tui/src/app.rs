@@ -873,7 +873,8 @@ pub struct App {
     /// reference into the registry. Display strategy is governed
     /// by [`lattice_core::ui::display::BufferDisplayCategory`];
     /// callers route through the private `display_buffer` helper.
-    pub popup_buffer: Option<crate::buffers::BufferId>,
+    // Phase 5.B.10: `popup_buffer` moved to
+    // `editor.popup_buffer`.
     /// LIFO stack of snapshots taken every time the popup's content
     /// gets swapped in place by a help → help link follow (e.g.
     /// `:describe-buffer` → click `[text-mode](mode:text-mode)` →
@@ -892,7 +893,8 @@ pub struct App {
     /// `open_help_popup_overlay`); cleared by dismiss. v1 single-
     /// pane scope -- multi-pane help dismissal will key by pane
     /// id when that scenario surfaces.
-    pub prev_pane_for_help: Option<PrevPaneState>,
+    // Phase 5.B.10: `prev_pane_for_help` moved to
+    // `editor.prev_pane_for_help`.
     /// Where the popup overlay sits on screen when one is open.
     /// Carried on App (not on the buffer) because the popup is a
     /// generic rectangular surface inside which any buffer kind
@@ -901,7 +903,8 @@ pub struct App {
     /// popups (hover / signature help) set this when they open;
     /// the default (centred) covers `:lsp-status`, `:describe-*`,
     /// `:apropos`, `:help`, `:keymap`, `:options`, `:ls`, ...
-    pub popup_placement: crate::popup::PopupPlacement,
+    // Phase 5.B.10: `popup_placement` moved to
+    // `editor.popup_placement`.
 
     /// Pluggable completion pipeline (DESIGN.md §5.11.3). Owned by
     /// the App at v1 -- promotes to a sibling crate when plugins
@@ -2935,7 +2938,7 @@ mod tests {
         // Should have opened the help buffer; no "unknown
         // command" error from the parser.
         assert!(
-            a.popup_buffer.is_some(),
+            a.editor.popup_buffer.is_some(),
             "help should open from canonical-name describe-command"
         );
     }
@@ -2968,7 +2971,7 @@ mod tests {
         // Move within popup.
         let inv = lattice_grammar::CommandInvocation::of(a.builtins.line_down.0);
         a.apply(Action::Invoke(inv));
-        assert!(a.popup_buffer.is_some(), "popup persists in State B");
+        assert!(a.editor.popup_buffer.is_some(), "popup persists in State B");
         assert_eq!(a.cursor.line, 1);
     }
 
@@ -3829,10 +3832,10 @@ mod tests {
         assert!(matches!(a.active_buffer, BufferKind::Help));
         // Dismiss.
         a.apply(Action::HelpDismiss);
-        assert!(a.popup_buffer.is_none());
+        assert!(a.editor.popup_buffer.is_none());
         assert!(matches!(a.active_buffer, BufferKind::Document));
         assert_eq!(a.cursor, lattice_protocol::Position::new(1, 4));
-        assert!(a.prev_pane_for_help.is_none());
+        assert!(a.editor.prev_pane_for_help.is_none());
     }
 
     #[test]
@@ -4176,7 +4179,7 @@ mod tests {
         // seed the synthetic link there directly. The locals key
         // is the popup buffer's construction id (centred-popup
         // resolution rule).
-        let buf_id = a.popup_buffer.unwrap();
+        let buf_id = a.editor.popup_buffer.unwrap();
         a.with_popup_help_mut(|h| {
             h.cursor = lattice_protocol::Position::ZERO;
         });
@@ -4235,7 +4238,7 @@ mod tests {
         // seed the synthetic link there directly. The locals key
         // is the popup buffer's construction id (centred-popup
         // resolution rule).
-        let buf_id = a.popup_buffer.unwrap();
+        let buf_id = a.editor.popup_buffer.unwrap();
         a.with_popup_help_mut(|h| {
             h.cursor = lattice_protocol::Position::ZERO;
         });

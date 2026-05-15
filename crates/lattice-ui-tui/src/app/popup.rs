@@ -69,7 +69,7 @@ impl App {
     /// scroll.
     ///
     /// `content` is a [`HelpContent`] = (slim `HelpBuffer`, parsed
-    /// `HelpMetadata`). The buffer becomes `App.popup_buffer` (the
+    /// `HelpMetadata`). The buffer becomes `App.editor.popup_buffer` (the
     /// popup hot-path slot); the metadata is seeded into
     /// `App.buffer_locals[buffer.id]` via [`Self::seed_help_metadata_locals`]
     /// so the renderer + link-follow / anchor-jump readers route
@@ -87,7 +87,7 @@ impl App {
         //   place; snapshot the prior state onto `popup_back_stack`
         //   so `<C-o>` walks back to it without leaving the
         //   popup.
-        if matches!(self.active_buffer, BufferKind::Help) && self.popup_buffer.is_some() {
+        if matches!(self.active_buffer, BufferKind::Help) && self.editor.popup_buffer.is_some() {
             if let Some(snap) = self.snapshot_current_popup() {
                 self.popup_back_stack.push(snap);
             }
@@ -125,7 +125,7 @@ impl App {
         // Mirrors `activate_help_in_pane` / `focus_help_popup`.
         if !matches!(self.active_buffer, BufferKind::Help) {
             let active = self.pane_tree.active();
-            self.prev_pane_for_help = Some(PrevPaneState {
+            self.editor.prev_pane_for_help = Some(PrevPaneState {
                 buffer: active.buffer,
                 buffer_id: active.buffer_id,
                 cursor: self.cursor,
@@ -154,8 +154,8 @@ impl App {
             data: crate::buffer_registry::BufferData::Help(buffer),
             name: None,
         });
-        self.popup_buffer = Some(buffer_id);
-        self.popup_placement = placement;
+        self.editor.popup_buffer = Some(buffer_id);
+        self.editor.popup_placement = placement;
         self.cursor = stash_cursor;
         self.scroll = stash_scroll;
         self.active_buffer = BufferKind::Help;
@@ -202,8 +202,8 @@ impl App {
             data: crate::buffer_registry::BufferData::Help(buffer),
             name: None,
         });
-        self.popup_buffer = Some(buffer_id);
-        self.popup_placement = placement;
+        self.editor.popup_buffer = Some(buffer_id);
+        self.editor.popup_placement = placement;
         self.seed_help_metadata_locals(buffer_id, metadata);
         // markdown-mode major + hover-mode minor. Markdown
         // carries the syntax pipeline; hover-mode adds the
@@ -247,7 +247,7 @@ impl App {
     /// accumulate stale entries) and by [`Self::dismiss_popup`]
     /// when the popup closes. No-op when no popup is set.
     pub(super) fn dismiss_stale_popup_registry(&mut self) {
-        let Some(prev) = self.popup_buffer else {
+        let Some(prev) = self.editor.popup_buffer else {
             return;
         };
         self.buffers.remove(prev);
@@ -263,7 +263,7 @@ impl App {
     /// cloned snapshot (the rope is cheap-to-clone); `None` when no
     /// popup is open or the registry entry has been torn down.
     pub fn popup_help(&self) -> Option<crate::help::HelpBuffer> {
-        let id = self.popup_buffer?;
+        let id = self.editor.popup_buffer?;
         self.buffers.with_help(id, |h| h.clone())
     }
 
@@ -274,7 +274,7 @@ impl App {
         &mut self,
         f: impl FnOnce(&mut crate::help::HelpBuffer) -> R,
     ) -> Option<R> {
-        let id = self.popup_buffer?;
+        let id = self.editor.popup_buffer?;
         self.buffers.with_help_mut(id, f)
     }
 
@@ -304,7 +304,7 @@ impl App {
     /// the active popup's buffer-locals. Returns `None` when no
     /// popup is open or the locals slot was not seeded.
     pub fn popup_help_links(&self) -> Option<&[crate::help::HelpLink]> {
-        let id = self.popup_buffer?;
+        let id = self.editor.popup_buffer?;
         self.buffer_locals
             .get(&id)
             .and_then(|l| l.get::<crate::modes::HelpLinks>())
@@ -316,7 +316,7 @@ impl App {
     /// popup's buffer-locals. Returns `None` when no popup is
     /// open or the locals slot was not seeded.
     pub fn popup_help_anchors(&self) -> Option<&[crate::help::HelpAnchor]> {
-        let id = self.popup_buffer?;
+        let id = self.editor.popup_buffer?;
         self.buffer_locals
             .get(&id)
             .and_then(|l| l.get::<crate::modes::HelpAnchors>())
@@ -328,7 +328,7 @@ impl App {
     /// `None` when no popup is open or the locals slot was not
     /// seeded.
     pub fn popup_help_highlights(&self) -> Option<&[Vec<lattice_syntax::StyledSpan>]> {
-        let id = self.popup_buffer?;
+        let id = self.editor.popup_buffer?;
         self.buffer_locals
             .get(&id)
             .and_then(|l| l.get::<crate::modes::HelpHighlights>())
@@ -348,8 +348,8 @@ impl App {
     /// lands. Tests below exercise it.
     #[allow(dead_code)]
     pub(crate) fn set_popup_placement(&mut self, placement: PopupPlacement) {
-        if self.popup_buffer.is_some() {
-            self.popup_placement = placement;
+        if self.editor.popup_buffer.is_some() {
+            self.editor.popup_placement = placement;
         }
     }
 
@@ -357,7 +357,7 @@ impl App {
     /// it can be restored later by `<C-o>`. Returns `None` if no
     /// popup is open or the registry entry has been torn down.
     pub(super) fn snapshot_current_popup(&self) -> Option<PopupSnapshot> {
-        let id = self.popup_buffer?;
+        let id = self.editor.popup_buffer?;
         let (title, content) = self
             .buffers
             .with_help(id, |buf| (buf.title.clone(), buf.content.clone()))?;
@@ -382,7 +382,7 @@ impl App {
             cursor: self.cursor,
             scroll: self.scroll,
             metadata,
-            placement: self.popup_placement,
+            placement: self.editor.popup_placement,
         })
     }
 
@@ -393,7 +393,7 @@ impl App {
     /// title, cursor, scroll, placement, and the
     /// `links`/`anchors`/`highlights` buffer-locals.
     pub(super) fn swap_popup_content(&mut self, content: HelpContent, placement: PopupPlacement) {
-        let Some(id) = self.popup_buffer else {
+        let Some(id) = self.editor.popup_buffer else {
             return;
         };
         let HelpContent {
@@ -411,7 +411,7 @@ impl App {
         });
         self.cursor = lattice_protocol::position::Position::ZERO;
         self.scroll = 0;
-        self.popup_placement = placement;
+        self.editor.popup_placement = placement;
         self.seed_help_metadata_locals(id, metadata);
     }
 
@@ -423,7 +423,7 @@ impl App {
         let Some(snap) = self.popup_back_stack.pop() else {
             return false;
         };
-        let Some(id) = self.popup_buffer else {
+        let Some(id) = self.editor.popup_buffer else {
             return false;
         };
         self.buffers.with_help_mut(id, |existing| {
@@ -434,15 +434,21 @@ impl App {
         });
         self.cursor = snap.cursor;
         self.scroll = snap.scroll;
-        self.popup_placement = snap.placement;
+        self.editor.popup_placement = snap.placement;
         self.seed_help_metadata_locals(id, snap.metadata);
         true
     }
 
     /// Read-side accessor for the renderer: the active popup's
     /// placement, or `None` when no popup is open.
-    pub fn popup_placement(&self) -> Option<PopupPlacement> {
-        self.popup_buffer.map(|_| self.popup_placement)
+    ///
+    /// Renamed from `popup_placement()` in Phase 5.B.10
+    /// because the migrated `Editor::popup_placement` field
+    /// shadowed the method via auto-deref; the rename keeps
+    /// the method's intent (Option-returning gated accessor)
+    /// distinct from the raw field.
+    pub fn active_popup_placement(&self) -> Option<PopupPlacement> {
+        self.editor.popup_buffer.map(|_| self.editor.popup_placement)
     }
 
     /// Close the popup. Drops the popup's content slot, resets
@@ -451,15 +457,15 @@ impl App {
     /// is open is a no-op.
     pub(crate) fn dismiss_popup(&mut self) {
         self.dismiss_stale_popup_registry();
-        self.popup_buffer = None;
+        self.editor.popup_buffer = None;
         self.popup_back_stack.clear();
-        self.popup_placement = PopupPlacement::default();
+        self.editor.popup_placement = PopupPlacement::default();
         // Restore pre-popup state if focus had moved into it
         // (State B for hover; in-pane mode for `:lsp-log` etc.).
         // State A (popup shown but never focused) leaves
         // `prev_pane_for_help` as `None` -- nothing to restore;
         // active was never flipped to Help.
-        if let Some(prev) = self.prev_pane_for_help.take() {
+        if let Some(prev) = self.editor.prev_pane_for_help.take() {
             self.cursor = prev.cursor;
             self.scroll = prev.scroll;
             let pane = self.pane_tree.active_mut();
@@ -482,14 +488,14 @@ mod tests {
     fn lsp_status_popup_is_centered() {
         let mut a = app_with("hello", 10);
         a.do_lsp_status();
-        assert_eq!(a.popup_placement(), Some(PopupPlacement::Centered));
+        assert_eq!(a.active_popup_placement(), Some(PopupPlacement::Centered));
     }
 
     #[test]
     fn hover_popup_is_cursor_anchored() {
         let mut a = app_with("hello", 10);
         a.do_open_hover("hover body");
-        assert_eq!(a.popup_placement(), Some(PopupPlacement::CursorAnchored));
+        assert_eq!(a.active_popup_placement(), Some(PopupPlacement::CursorAnchored));
     }
 
     #[test]
@@ -500,7 +506,7 @@ mod tests {
         // shape (`prev_pane_for_help.is_none()`).
         let mut a = app_with("hello", 10);
         a.do_open_hover("hover body");
-        let buffer_id = a.popup_buffer.expect("popup open");
+        let buffer_id = a.editor.popup_buffer.expect("popup open");
         let modes = a.active_modes.get(&buffer_id).expect("popup has modes");
         assert!(
             modes.minors().contains(&crate::modes::HoverMode::mode_id()),
@@ -514,7 +520,7 @@ mod tests {
         let mut a = app_with("hello", 10);
         let buf = HelpContent::from_lines("test", vec!["body".into()]);
         a.open_popup(buf, PopupPlacement::CursorAnchored);
-        assert_eq!(a.popup_placement(), Some(PopupPlacement::CursorAnchored));
+        assert_eq!(a.active_popup_placement(), Some(PopupPlacement::CursorAnchored));
     }
 
     #[test]
@@ -522,7 +528,7 @@ mod tests {
         let mut a = app_with("hello", 10);
         a.do_lsp_status();
         a.set_popup_placement(PopupPlacement::CursorAnchored);
-        assert_eq!(a.popup_placement(), Some(PopupPlacement::CursorAnchored));
+        assert_eq!(a.active_popup_placement(), Some(PopupPlacement::CursorAnchored));
     }
 
     #[test]
@@ -530,7 +536,7 @@ mod tests {
         let mut a = app_with("hello", 10);
         a.set_popup_placement(PopupPlacement::CursorAnchored);
         // No popup open: placement read returns None regardless.
-        assert_eq!(a.popup_placement(), None);
+        assert_eq!(a.active_popup_placement(), None);
     }
 
     #[test]
@@ -541,7 +547,7 @@ mod tests {
         // don't have windows of their own).
         let mut a = app_with("hello", 10);
         a.do_lsp_status();
-        let id = a.popup_buffer.expect("popup open");
+        let id = a.editor.popup_buffer.expect("popup open");
         let (flags, is_help) = a
             .buffers
             .with_entry(id, |entry| (entry.flags, entry.help().is_some()))
@@ -560,7 +566,7 @@ mod tests {
         // accumulate stale entries indefinitely.
         let mut a = app_with("hello", 10);
         a.do_lsp_status();
-        let id = a.popup_buffer.expect("popup open");
+        let id = a.editor.popup_buffer.expect("popup open");
         assert!(a.buffers.contains(id));
         a.dismiss_popup();
         assert!(!a.buffers.contains(id));
@@ -577,9 +583,9 @@ mod tests {
         // registry never holds more than one popup at a time.
         let mut a = app_with("hello", 10);
         a.do_lsp_status();
-        let first_id = a.popup_buffer.expect("first popup open");
+        let first_id = a.editor.popup_buffer.expect("first popup open");
         a.do_lsp_status();
-        let second_id = a.popup_buffer.expect("second popup open");
+        let second_id = a.editor.popup_buffer.expect("second popup open");
         assert_eq!(
             first_id, second_id,
             "popup id should be reused on in-Help reopen"
@@ -597,10 +603,10 @@ mod tests {
     fn dismiss_popup_clears_placement() {
         let mut a = app_with("hello", 10);
         a.do_open_hover("hover body");
-        assert_eq!(a.popup_placement(), Some(PopupPlacement::CursorAnchored));
+        assert_eq!(a.active_popup_placement(), Some(PopupPlacement::CursorAnchored));
         a.dismiss_popup();
-        assert_eq!(a.popup_placement(), None);
-        assert_eq!(a.popup_placement, PopupPlacement::default());
+        assert_eq!(a.active_popup_placement(), None);
+        assert_eq!(a.editor.popup_placement, PopupPlacement::default());
     }
 
     #[test]
@@ -611,6 +617,6 @@ mod tests {
         // sticky CursorAnchored placement from the prior hover.
         a.dismiss_popup();
         a.do_lsp_status();
-        assert_eq!(a.popup_placement(), Some(PopupPlacement::Centered));
+        assert_eq!(a.active_popup_placement(), Some(PopupPlacement::Centered));
     }
 }

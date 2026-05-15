@@ -1004,7 +1004,7 @@ mod tests {
         a.apply(Action::CommandLineSubmit);
         assert!(!a.auto_submit_after_chord);
         assert!(matches!(a.modal, ModalState::Normal));
-        assert!(a.popup_buffer.is_some());
+        assert!(a.editor.popup_buffer.is_some());
     }
 
     #[test]
@@ -1048,7 +1048,7 @@ mod tests {
     fn ctrl_h_on_unknown_word_emits_error_message() {
         let mut a = app_in_command_mode("no-such-command");
         a.apply(Action::CommandLineDescribeUnderCursor);
-        assert!(a.popup_buffer.is_none());
+        assert!(a.editor.popup_buffer.is_none());
         let msg = a.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Error);
     }

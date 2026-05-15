@@ -113,7 +113,7 @@ pub(super) fn install_help(a: &mut App, h: HelpContent) {
         data: crate::buffer_registry::BufferData::Help(buffer),
         name: None,
     });
-    a.popup_buffer = Some(id);
+    a.editor.popup_buffer = Some(id);
     a.active_buffer = BufferKind::Help;
     a.seed_help_metadata_locals(id, metadata);
 }

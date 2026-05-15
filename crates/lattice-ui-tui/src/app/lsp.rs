@@ -348,7 +348,7 @@ impl App {
         // Popup shown but focus still on main buffer (State A) --
         // second K transfers focus into the popup. No new LSP
         // request fires; we just promote.
-        if self.popup_buffer.is_some() {
+        if self.editor.popup_buffer.is_some() {
             self.focus_help_popup();
             return;
         }
@@ -6867,15 +6867,15 @@ mod tests {
         // async LSP path), move the cursor, assert dismissal.
         let mut a = app_with("fn main() {}\nlet x = 1;\n", 5);
         a.do_open_hover("hover body");
-        assert!(a.popup_buffer.is_some());
+        assert!(a.editor.popup_buffer.is_some());
         // State A: focus still on doc, prev_pane_for_help is None.
-        assert!(a.prev_pane_for_help.is_none());
+        assert!(a.editor.prev_pane_for_help.is_none());
         assert!(matches!(a.active_buffer, BufferKind::Document));
         // Drive a real motion through `apply` (`l` -- char-right).
         let inv = lattice_grammar::CommandInvocation::of(a.builtins.char_right.0);
         a.apply(Action::Invoke(inv));
         assert!(
-            a.popup_buffer.is_none(),
+            a.editor.popup_buffer.is_none(),
             "hover popup should dismiss on cursor motion in State A"
         );
     }
@@ -6888,10 +6888,10 @@ mod tests {
         // doesn't move the cursor.
         let mut a = app_with("fn main() {}\n", 5);
         a.do_open_hover("hover body");
-        assert!(a.popup_buffer.is_some());
+        assert!(a.editor.popup_buffer.is_some());
         a.apply(Action::PushDigit(5));
         assert!(
-            a.popup_buffer.is_some(),
+            a.editor.popup_buffer.is_some(),
             "hover should survive a count-prefix push"
         );
     }
@@ -6908,7 +6908,7 @@ mod tests {
         assert!(h.content.as_string().contains("documentation"));
         // State A: focus stays on doc.
         assert!(matches!(a.active_buffer, BufferKind::Document));
-        assert!(a.prev_pane_for_help.is_none());
+        assert!(a.editor.prev_pane_for_help.is_none());
     }
 
     #[test]
@@ -6917,11 +6917,11 @@ mod tests {
         a.command_line = "hover x".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        assert!(a.popup_buffer.is_some());
+        assert!(a.editor.popup_buffer.is_some());
         a.command_line = "HoverClose".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        assert!(a.popup_buffer.is_none());
+        assert!(a.editor.popup_buffer.is_none());
     }
 
     #[test]
@@ -7023,7 +7023,7 @@ mod tests {
         assert!(h.content.as_string().contains("**bold body**"));
         // State A entry: focus still on the doc.
         assert!(matches!(a.active_buffer, BufferKind::Document));
-        assert!(a.prev_pane_for_help.is_none());
+        assert!(a.editor.prev_pane_for_help.is_none());
         assert!(
             a.pending_hover_token.is_none(),
             "delivering the outcome should clear the in-flight token"
@@ -7043,7 +7043,7 @@ mod tests {
         tx.send(crate::app::HoverOutcome::NoBody { servers_tried: 1 })
             .unwrap();
         a.drain_pending_hover();
-        assert!(a.popup_buffer.is_none(), "no popup for empty hover");
+        assert!(a.editor.popup_buffer.is_none(), "no popup for empty hover");
         let msg = a.last_message.as_ref().expect("echo on no-hover-info");
         assert_eq!(msg.level, EchoLevel::Info);
         assert!(
@@ -7082,7 +7082,7 @@ mod tests {
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<crate::app::HoverOutcome>();
         a.pending_hover_rx = Some(rx);
         a.drain_pending_hover();
-        assert!(a.popup_buffer.is_none());
+        assert!(a.editor.popup_buffer.is_none());
         assert!(a.last_message.is_none());
     }
 
@@ -9134,7 +9134,7 @@ mod tests {
         a.drain_pending_signature_help();
         let msg = a.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("no signature info"));
-        assert!(a.popup_buffer.is_none());
+        assert!(a.editor.popup_buffer.is_none());
     }
 
     #[test]
@@ -9603,14 +9603,14 @@ mod tests {
         assert!(app.lsp_logger.is_tracing(&instance));
         // Pure toggle now -- the trace buffer is opened separately
         // via :lsp-trace-log so peeking doesn't flip the toggle off.
-        assert!(app.popup_buffer.is_none());
+        assert!(app.editor.popup_buffer.is_none());
         let msg = app.last_message.as_ref().unwrap();
         assert!(msg.text.contains("on"));
         assert!(msg.text.contains(":lsp-trace-log"));
         // On -> off.
         app.do_toggle_lsp_trace("rust");
         assert!(!app.lsp_logger.is_tracing(&instance));
-        assert!(app.popup_buffer.is_none());
+        assert!(app.editor.popup_buffer.is_none());
     }
 
     #[test]
@@ -10478,7 +10478,7 @@ mod tests {
         let display = &picker.candidates[0].raw.display;
         assert!(display.starts_with("[E]"), "got: {display}");
         // Help buffer is NOT opened (the pre-picker shape).
-        assert!(app.popup_buffer.is_none());
+        assert!(app.editor.popup_buffer.is_none());
     }
 
     #[test]

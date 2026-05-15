@@ -50,11 +50,11 @@ impl App {
         match display {
             BufferDisplay::Popup(placement) => {
                 self.open_popup(content, placement);
-                self.popup_buffer
+                self.editor.popup_buffer
             }
             BufferDisplay::FloatingPopup(placement) => {
                 self.open_floating_popup(content, placement);
-                self.popup_buffer
+                self.editor.popup_buffer
             }
             BufferDisplay::ActivePane => Some(self.open_help_in_pane(content)),
             BufferDisplay::Split(orientation) => {
@@ -200,8 +200,8 @@ mod tests {
         let mut a = app_with("hi", 5);
         let content = HelpContent::from_lines("status", vec!["server: rust-analyzer".into()]);
         a.display_buffer(content, BufferDisplayCategory::LspStatus);
-        assert_eq!(a.popup_placement(), Some(PopupPlacement::Centered));
-        assert!(a.popup_buffer.is_some());
+        assert_eq!(a.active_popup_placement(), Some(PopupPlacement::Centered));
+        assert!(a.editor.popup_buffer.is_some());
     }
 
     #[test]
@@ -226,7 +226,7 @@ mod tests {
         let mut a = app_with("hi", 5);
         let content = HelpContent::from_lines("hover", vec!["doc string".into()]);
         a.display_buffer(content, BufferDisplayCategory::Hover);
-        assert_eq!(a.popup_placement(), Some(PopupPlacement::CursorAnchored));
+        assert_eq!(a.active_popup_placement(), Some(PopupPlacement::CursorAnchored));
     }
 
     #[test]

@@ -236,7 +236,7 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) {
     //   paints with a visible cursor at `app.cursor`; doc paints
     //   as inactive (frozen at `pane.cursor`) below.
     let active_pane_kind = app.pane_tree.active().buffer;
-    if app.popup_buffer.is_some() && active_pane_kind != crate::buffers::BufferKind::Help {
+    if app.editor.popup_buffer.is_some() && active_pane_kind != crate::buffers::BufferKind::Help {
         draw_help_overlay(frame, chunks[0], app, snap);
     }
     // Picker candidate list (precedence over completion popup --
@@ -896,7 +896,7 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App, snap: &Doc
     let Some(help) = app.popup_help() else {
         return;
     };
-    let popup_id = app.popup_buffer.expect("popup_help is Some");
+    let popup_id = app.editor.popup_buffer.expect("popup_help is Some");
     // Sizing routes through `lattice_core::ui::popup::popup_outer_size`
     // so the renderer + the App's `help_popup_inner_height`
     // (motion / scroll / ensure_cursor_visible) agree on the
@@ -910,7 +910,7 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App, snap: &Doc
         buffer_area.width,
         buffer_area.height,
         line_count,
-        app.popup_placement,
+        app.editor.popup_placement,
     );
     let popup = position_help_popup(app, snap, buffer_area, width, height);
 
@@ -1257,7 +1257,7 @@ fn position_help_popup(
             height,
         }
     };
-    if matches!(app.popup_placement, crate::popup::PopupPlacement::Centered) {
+    if matches!(app.editor.popup_placement, crate::popup::PopupPlacement::Centered) {
         return centered();
     }
     let pane_area = match active_pane_content_rect(app, buffer_area) {

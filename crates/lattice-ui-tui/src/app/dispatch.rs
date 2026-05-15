@@ -185,7 +185,7 @@ impl App {
         // Document"; State B (focused popup) is "active is Help"
         // -- the second clause stays as the State-A discriminator.
         let popup_has_hover_mode = self
-            .popup_buffer
+            .editor.popup_buffer
             .and_then(|id| self.active_modes.get(&id))
             .map(|modes| modes.minors().contains(&crate::modes::HoverMode::mode_id()))
             .unwrap_or(false);
@@ -2167,7 +2167,7 @@ mod tests {
         // The submitted line was `describe-key j` -- which opens
         // a help buffer for chord `j`. Smoke check that some
         // help got produced.
-        assert!(a.popup_buffer.is_some());
+        assert!(a.editor.popup_buffer.is_some());
     }
 
     #[test]
@@ -2221,9 +2221,9 @@ mod tests {
             data: crate::buffer_registry::BufferData::Help(buffer),
             name: None,
         });
-        a.popup_buffer = Some(id);
+        a.editor.popup_buffer = Some(id);
         a.apply(Action::EnterCommandLine);
-        assert!(a.popup_buffer.is_none());
+        assert!(a.editor.popup_buffer.is_none());
     }
 
     #[test]
@@ -2282,14 +2282,14 @@ mod tests {
         // captures pre-State-B state so dismiss restores cleanly.
         let mut a = app_with("fn main() {}\n", 5);
         a.do_open_hover("hover body line 1\nhover body line 2");
-        assert!(a.popup_buffer.is_some());
+        assert!(a.editor.popup_buffer.is_some());
         assert!(matches!(a.active_buffer, BufferKind::Document));
-        assert!(a.prev_pane_for_help.is_none());
+        assert!(a.editor.prev_pane_for_help.is_none());
         // Second K -> focus into popup.
         a.do_lsp_hover_request();
-        assert!(a.popup_buffer.is_some(), "popup stays up after focus");
+        assert!(a.editor.popup_buffer.is_some(), "popup stays up after focus");
         assert!(matches!(a.active_buffer, BufferKind::Help));
-        let stash = a.prev_pane_for_help.expect("State B captures stash");
+        let stash = a.editor.prev_pane_for_help.expect("State B captures stash");
         assert_eq!(stash.buffer, BufferKind::Document);
     }
 

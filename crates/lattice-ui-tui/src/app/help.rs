@@ -327,7 +327,7 @@ impl App {
         let stash_scroll = help.scroll as u32;
         // Capture pre-State-B state so dismiss restores cleanly.
         let active = self.pane_tree.active();
-        self.prev_pane_for_help = Some(PrevPaneState {
+        self.editor.prev_pane_for_help = Some(PrevPaneState {
             buffer: active.buffer,
             buffer_id: active.buffer_id,
             cursor: self.cursor,
@@ -1174,7 +1174,7 @@ impl App {
         }
 
         let cursor = self.cursor;
-        if self.popup_buffer.is_none() {
+        if self.editor.popup_buffer.is_none() {
             return;
         }
         // M.3.2.c.1: prefer help-mode-owned link data from
@@ -1202,7 +1202,7 @@ impl App {
         // `pane.buffer_id` for the in-pane case (where the pane
         // was swapped to the registered help id).
         let active_help_id = self
-            .popup_buffer
+            .editor.popup_buffer
             .unwrap_or_else(|| self.pane_tree.active().buffer_id);
         let Some(link) = self
             .buffer_locals
@@ -1290,7 +1290,7 @@ impl App {
                 // own id first (centred-popup case where
                 // pane.buffer_id is the doc behind the popup),
                 // then fall back to the pane's id (in-pane case).
-                let popup_id = self.popup_buffer;
+                let popup_id = self.editor.popup_buffer;
                 let pane_id = self.pane_tree.active().buffer_id;
                 let target_line = popup_id
                     .and_then(|id| self.buffer_locals.get(&id))
@@ -1647,7 +1647,7 @@ mod tests {
     fn describe_command_unknown_alias_emits_error() {
         let mut a = app_in_command_mode("describe-command xyzzy-not-a-thing");
         a.apply(Action::CommandLineSubmit);
-        assert!(a.popup_buffer.is_none());
+        assert!(a.editor.popup_buffer.is_none());
         let m = a.last_message.as_ref().unwrap();
         assert_eq!(m.level, EchoLevel::Error);
     }
@@ -1672,7 +1672,7 @@ mod tests {
         a.command_line = "describe-command ex:nope".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        assert!(a.popup_buffer.is_none());
+        assert!(a.editor.popup_buffer.is_none());
         let msg = a.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Error);
     }
@@ -1730,7 +1730,7 @@ mod tests {
         a.command_line = "describe-buffer".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let initial_id = a.popup_buffer.expect("describe-buffer should open");
+        let initial_id = a.editor.popup_buffer.expect("describe-buffer should open");
         let link = a
             .popup_help_links()
             .expect("help links seeded")
@@ -1749,7 +1749,7 @@ mod tests {
         assert_eq!(h.title, "describe-mode text-mode");
         assert!(h.content.as_string().contains("text-mode"));
         assert_eq!(
-            a.popup_buffer,
+            a.editor.popup_buffer,
             Some(initial_id),
             "popup buffer id should be reused across in-popup navigation",
         );
@@ -1861,7 +1861,7 @@ mod tests {
         a.command_line = "help nonexistent".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        assert!(a.popup_buffer.is_none());
+        assert!(a.editor.popup_buffer.is_none());
         let msg = a.last_message.as_ref().expect("error");
         assert!(msg.text.contains("no help topic"), "got: {}", msg.text);
     }
@@ -1968,7 +1968,7 @@ mod tests {
             HelpContent::from_lines("test", vec!["a".into(), "b".into()]),
         );
         a.apply(Action::HelpDismiss);
-        assert!(a.popup_buffer.is_none());
+        assert!(a.editor.popup_buffer.is_none());
         assert_eq!(a.active_buffer, BufferKind::Document);
     }
 
@@ -2039,7 +2039,7 @@ mod tests {
         let mut a = app_with("xx", 60);
         let lines: Vec<String> = (0..50).map(|i| format!("line-{i}")).collect();
         install_help(&mut a, HelpContent::from_lines("size", lines));
-        a.popup_placement = crate::popup::PopupPlacement::CursorAnchored;
+        a.editor.popup_placement = crate::popup::PopupPlacement::CursorAnchored;
         assert_eq!(a.help_popup_inner_height(60), Some(18));
     }
 
@@ -2314,7 +2314,7 @@ mod tests {
         a.command_line = "describe-mode definitely-not-a-mode".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        assert!(a.popup_buffer.is_none());
+        assert!(a.editor.popup_buffer.is_none());
         let msg = a.last_message.as_ref().expect("error echo");
         assert_eq!(msg.level, EchoLevel::Error);
         assert!(msg.text.contains("no mode named"));
@@ -2451,7 +2451,7 @@ mod tests {
         a.command_line = "customize".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let popup_id = a.popup_buffer.expect("picker open");
+        let popup_id = a.editor.popup_buffer.expect("picker open");
         let editor_link = a
             .buffer_locals
             .get(&popup_id)
@@ -2491,7 +2491,7 @@ mod tests {
         a.command_line = "customize editor".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let popup_id = a.popup_buffer.expect("customize editor open");
+        let popup_id = a.editor.popup_buffer.expect("customize editor open");
         // Find the customize-edit link for `tabstop`.
         let edit_link = a
             .buffer_locals
@@ -2527,7 +2527,7 @@ mod tests {
         a.command_line = "customize editor".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let popup_id = a.popup_buffer.expect("editor view open");
+        let popup_id = a.editor.popup_buffer.expect("editor view open");
         let link = a
             .buffer_locals
             .get(&popup_id)
@@ -2592,7 +2592,7 @@ mod tests {
         a.command_line = "customize definitely-not-a-group".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        assert!(a.popup_buffer.is_none());
+        assert!(a.editor.popup_buffer.is_none());
         let msg = a.last_message.as_ref().expect("error echo");
         assert_eq!(msg.level, EchoLevel::Error);
         assert!(msg.text.contains("no group named"));
@@ -2604,7 +2604,7 @@ mod tests {
         a.command_line = "customize definitely-not-a-mode".into();
         a.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        assert!(a.popup_buffer.is_none());
+        assert!(a.editor.popup_buffer.is_none());
         let msg = a.last_message.as_ref().expect("error echo");
         assert_eq!(msg.level, EchoLevel::Error);
         assert!(msg.text.contains("no mode named"));

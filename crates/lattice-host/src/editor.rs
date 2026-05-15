@@ -32,9 +32,12 @@ use lattice_grammar::{CommandInvocation, Register};
 use lattice_protocol::position::{Position, Range as ProtoRange};
 
 use crate::action::Action;
+use lattice_core::ui::popup::PopupPlacement;
+
+use crate::buffers::BufferId;
 use crate::state::{
     LastFind, LastSearch, LastVisual, MacroRecording, PendingBlockInsert, PositionEntry,
-    ReplaceEntry, SearchLine, SubstitutePreview, TagStackEntry, UnnamedRegister,
+    PrevPaneState, ReplaceEntry, SearchLine, SubstitutePreview, TagStackEntry, UnnamedRegister,
 };
 
 /// Renderer-agnostic editor state.
@@ -72,6 +75,12 @@ use crate::state::{
 /// - 5.B.9 -- replace + insert state (`replace_history`,
 ///   `last_insert`, `recording_insert`,
 ///   `pending_block_insert`).
+/// - 5.B.10 -- popup (subset) (`popup_buffer`,
+///   `prev_pane_for_help`, `popup_placement`). Skipped:
+///   `popup_back_stack` -- holds `PopupSnapshot` which still
+///   lives in `lattice-ui-tui::app::popup`; follow-up slice
+///   moves the snapshot type to host before migrating the
+///   field.
 #[derive(Debug, Default)]
 pub struct Editor {
     /// Completed macro recordings keyed by register name.
@@ -204,4 +213,22 @@ pub struct Editor {
     /// session. Promoted into [`Self::last_insert`] when
     /// leaving Insert.
     pub recording_insert: Option<String>,
+    /// Active popup buffer slot, if a popup overlay is open.
+    /// The concrete content lives in the [`crate::buffer_registry::BufferRegistry`]
+    /// keyed by this id, flagged
+    /// `BufferFlags { listed: false, hidden: true }`.
+    pub popup_buffer: Option<BufferId>,
+    /// Pane state captured before activating help -- used by
+    /// `dismiss_popup` to restore the user to whatever buffer
+    /// / cursor / scroll they came from. Set by both display
+    /// paths (in-pane activation and popup overlay); cleared
+    /// by dismiss.
+    pub prev_pane_for_help: Option<PrevPaneState>,
+    /// Where the popup overlay sits on screen when one is
+    /// open. Lives on the editor (not on the buffer) because
+    /// the popup is a generic rectangular surface inside
+    /// which any buffer kind renders -- placement is a
+    /// property of the popup, not of whatever buffer happens
+    /// to be its content.
+    pub popup_placement: PopupPlacement,
 }

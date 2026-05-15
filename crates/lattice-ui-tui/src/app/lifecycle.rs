@@ -1535,10 +1535,10 @@ impl App {
     /// pre-emptively to avoid sending notifications the
     /// server will discard.
     fn fire_did_create_files_notifications(&self, path: &std::path::Path) {
-        let Some(uri) = self.buffer_uris.get(&self.editor.document_buffer_id) else {
+        let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id) else {
             return;
         };
-        let handles = self.lsp.servers_for(uri);
+        let handles = self.editor.lsp.servers_for(uri);
         if handles.is_empty() {
             return;
         }
@@ -1559,11 +1559,11 @@ impl App {
     /// Cheap on no-LSP buffers (the URI lookup short-circuits).
     /// Notification only -- responses, if any, drop on the floor.
     fn fire_will_save_notifications(&self) {
-        let Some(uri) = self.buffer_uris.get(&self.editor.document_buffer_id) else {
+        let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id) else {
             return;
         };
         let uri = uri.clone();
-        let handles = self.lsp.servers_for(&uri);
+        let handles = self.editor.lsp.servers_for(&uri);
         let params = lsp_types::WillSaveTextDocumentParams {
             text_document: lsp_types::TextDocumentIdentifier { uri },
             reason: lsp_types::TextDocumentSaveReason::MANUAL,
@@ -1591,10 +1591,10 @@ impl App {
     /// concern (1.5s+ stalls for multi-server saves) without
     /// the behavioural change of fully-async save.
     fn run_will_save_wait_until_blocking(&mut self) {
-        let Some(uri) = self.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
+        let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
             return;
         };
-        let handles = self.lsp.servers_for(&uri);
+        let handles = self.editor.lsp.servers_for(&uri);
         let interested: Vec<lattice_lsp::ServerHandle> = handles
             .into_iter()
             .filter(|h| h.capabilities().wants_will_save_wait_until())
@@ -1670,11 +1670,11 @@ impl App {
     /// server requested `includeText`, attach the post-save
     /// text from the rope.
     fn fire_did_save_notifications(&self) {
-        let Some(uri) = self.buffer_uris.get(&self.editor.document_buffer_id) else {
+        let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id) else {
             return;
         };
         let uri = uri.clone();
-        let handles = self.lsp.servers_for(&uri);
+        let handles = self.editor.lsp.servers_for(&uri);
         let snap = self.document.snapshot();
         let full_text = snap.buffer.as_string();
         for h in handles {
@@ -2147,7 +2147,7 @@ mod tests {
         // M.6.5: canonical `lsp-mode.log-level` key.
         let mut app = app_with("hi\n", 5);
         let toml_text = "[lsp-mode]\nlog-level = \"debug\"\n";
-        app.lsp_config_tree = toml_text.parse().expect("toml parse");
+        app.editor.lsp_config_tree = toml_text.parse().expect("toml parse");
         app.apply_persistent_lsp_editor_options();
         // Effect: a Debug-level record on an unattached server lands
         // in the ring. Default min-level is Info; without the TOML
@@ -2157,13 +2157,13 @@ mod tests {
             std::sync::Arc::<str>::from("rust"),
             std::sync::Arc::<std::path::Path>::from(std::path::Path::new("/tmp/test-ws")),
         );
-        app.lsp_logger.log(
+        app.editor.lsp_logger.log(
             Some(&instance),
             lattice_lsp::LogLevel::Debug,
             lattice_lsp::LogSource::Client,
             "after-toml",
         );
-        let recs = app.lsp_logger.snapshot_instance(&instance);
+        let recs = app.editor.lsp_logger.snapshot_instance(&instance);
         assert!(
             recs.iter().any(|r| r.message == "after-toml"),
             "Debug record should pass through after TOML log-level=debug",
@@ -2176,7 +2176,7 @@ mod tests {
         // minor version; emits a deprecation warn before applying.
         let mut app = app_with("hi\n", 5);
         let toml_text = "[lsp]\nlog-level = \"debug\"\n";
-        app.lsp_config_tree = toml_text.parse().expect("toml parse");
+        app.editor.lsp_config_tree = toml_text.parse().expect("toml parse");
         app.apply_persistent_lsp_editor_options();
         let msg = app.editor.last_message.as_ref().expect("deprecation warn");
         assert_eq!(msg.level, crate::app::EchoLevel::Warn);
@@ -2191,13 +2191,13 @@ mod tests {
             std::sync::Arc::<str>::from("rust"),
             std::sync::Arc::<std::path::Path>::from(std::path::Path::new("/tmp/test-ws")),
         );
-        app.lsp_logger.log(
+        app.editor.lsp_logger.log(
             Some(&instance),
             lattice_lsp::LogLevel::Debug,
             lattice_lsp::LogSource::Client,
             "after-legacy-toml",
         );
-        let recs = app.lsp_logger.snapshot_instance(&instance);
+        let recs = app.editor.lsp_logger.snapshot_instance(&instance);
         assert!(
             recs.iter().any(|r| r.message == "after-legacy-toml"),
             "legacy key should still apply for one minor version",
@@ -2211,7 +2211,7 @@ mod tests {
         // is a leftover).
         let mut app = app_with("hi\n", 5);
         let toml_text = "[lsp]\nlog-level = \"trace\"\n[lsp-mode]\nlog-level = \"debug\"\n";
-        app.lsp_config_tree = toml_text.parse().expect("toml parse");
+        app.editor.lsp_config_tree = toml_text.parse().expect("toml parse");
         app.apply_persistent_lsp_editor_options();
         // No deprecation echo when canonical is present.
         assert!(
@@ -2225,7 +2225,7 @@ mod tests {
     fn persistent_lsp_log_level_warns_on_unknown_value() {
         let mut app = app_with("hi\n", 5);
         let toml_text = "[lsp-mode]\nlog-level = \"babble\"\n";
-        app.lsp_config_tree = toml_text.parse().expect("toml parse");
+        app.editor.lsp_config_tree = toml_text.parse().expect("toml parse");
         app.apply_persistent_lsp_editor_options();
         let msg = app.editor.last_message.as_ref().expect("warn echo");
         assert!(
@@ -2240,7 +2240,7 @@ mod tests {
         let mut app = app_with("hi\n", 5);
         app.editor.last_message = None;
         // Empty tree: nothing under [lsp].
-        app.lsp_config_tree = toml::Table::new();
+        app.editor.lsp_config_tree = toml::Table::new();
         app.apply_persistent_lsp_editor_options();
         assert!(
             app.editor.last_message.is_none(),

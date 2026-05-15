@@ -238,7 +238,7 @@ impl App {
         // every running actor; `running_actors` returns
         // `(ActorKey, ServerHandle)` where ActorKey is
         // (PathBuf, String).
-        let actors = self.lsp.running_actors();
+        let actors = self.editor.lsp.running_actors();
         let actors_with_watchers: Vec<_> = actors
             .into_iter()
             .filter(|(_, h)| {
@@ -259,7 +259,7 @@ impl App {
             match LspFileWatcher::new() {
                 Ok(w) => self.lsp_file_watcher = Some(w),
                 Err(e) => {
-                    self.lsp_logger.log(
+                    self.editor.lsp_logger.log(
                         None,
                         LogLevel::Warn,
                         LogSource::Client,
@@ -281,7 +281,7 @@ impl App {
             .iter()
             .map(|((root, _), _)| root.clone())
             .collect();
-        let logger = self.lsp_logger.clone();
+        let logger = self.editor.lsp_logger.clone();
         watcher.sync_watched_roots(&target_roots, &logger);
         // Per-server fingerprint compare + recompile. Each
         // actor's subscriptions anchor to its own workspace
@@ -373,7 +373,7 @@ impl App {
             return;
         }
         // Fan out: one notification per server.
-        for (_key, handle) in self.lsp.running_actors() {
+        for (_key, handle) in self.editor.lsp.running_actors() {
             let server_id = handle.server_id().to_string();
             let Some(batch) = per_server.remove(&server_id) else {
                 continue;
@@ -381,7 +381,7 @@ impl App {
             let params = lsp_types::DidChangeWatchedFilesParams { changes: batch };
             if let Err(e) = handle.did_change_watched_files(params) {
                 let instance = handle.instance();
-                self.lsp_logger.log(
+                self.editor.lsp_logger.log(
                     Some(&instance),
                     LogLevel::Warn,
                     LogSource::Client,

@@ -238,7 +238,7 @@ mod tests {
         let a = app_with("hi", 5);
         let id = a.editor.buffers.by_name(LSP_SUBSYSTEM_LOG_NAME).unwrap();
         let before = a.editor.buffers.document_handle(id).unwrap().text();
-        a.lsp_logger.log(
+        a.editor.lsp_logger.log(
             None,
             lattice_lsp::LogLevel::Info,
             lattice_lsp::LogSource::Client,

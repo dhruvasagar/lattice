@@ -369,7 +369,7 @@ impl App {
 
         // Resolve the active buffer's URI. No URI = no LSP for
         // this buffer (e.g. unsaved scratch); echo + bail.
-        let Some(uri) = self.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
+        let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
             self.set_message(
                 EchoLevel::Info,
                 "no LSP server attached to current buffer".to_string(),
@@ -394,8 +394,8 @@ impl App {
         self.pending_hover_rx = Some(rx);
         self.pending_hover_token = Some(token.clone());
 
-        let lsp = self.lsp.clone();
-        let logger = self.lsp_logger.clone();
+        let lsp = self.editor.lsp.clone();
+        let logger = self.editor.lsp_logger.clone();
         let request_started = std::time::Instant::now();
         let request_uri = uri.as_str().to_string();
         crate::runtime::spawn_on_lsp_runtime(async move {
@@ -611,10 +611,10 @@ impl App {
         // Optional: fire the LSP `command` payload (e.g. server-
         // side post-accept hooks).
         if let Some(cmd) = meta.command.clone() {
-            let uri = self.buffer_uris.get(&self.editor.document_buffer_id).cloned();
+            let uri = self.editor.buffer_uris.get(&self.editor.document_buffer_id).cloned();
             if let Some(uri) = uri {
                 let handle = self
-                    .lsp
+                    .editor.lsp
                     .servers_for(&uri)
                     .into_iter()
                     .find(|h| h.capabilities().supports_execute_command());
@@ -684,14 +684,14 @@ impl App {
             return;
         };
         // Resolve URI to find the originating server handle.
-        let Some(uri) = self.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
+        let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
             return;
         };
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<CompletionResolveOutcome>();
         let token = lattice_protocol::CancellationToken::new();
         self.pending_completion_resolve_rx = Some(rx);
         self.pending_completion_resolve_token = Some(token.clone());
-        let lsp = self.lsp.clone();
+        let lsp = self.editor.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
             let handle = lsp
                 .servers_for(&uri)
@@ -759,7 +759,7 @@ impl App {
         if !effective.source_enabled(&lsp_id) {
             return;
         }
-        let Some(uri) = self.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
+        let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
             // No URI -- no LSP. Sync sources still populate the
             // popup; just skip the LSP request silently.
             return;
@@ -772,7 +772,7 @@ impl App {
         // CSM.8b.3: pre-check "no servers attached" synchronously
         // so the existing popup-empty-close gate fires without
         // waiting on a no-op async round-trip.
-        if self.lsp.servers_for(&uri).is_empty() {
+        if self.editor.lsp.servers_for(&uri).is_empty() {
             let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<InsertCompletionLspOutcome>();
             self.pending_insert_completion_lsp_rx = Some(rx);
             self.pending_insert_completion_lsp_token = None;
@@ -1089,7 +1089,7 @@ impl App {
     ///
     /// Called once per main-loop tick.
     pub fn drain_lsp_log_events(&mut self) {
-        let Some(mut rx) = self.lsp_log_event_rx.take() else {
+        let Some(mut rx) = self.editor.lsp_log_event_rx.take() else {
             return;
         };
         let mut last_show: Option<(EchoLevel, String)> = None;
@@ -1119,7 +1119,7 @@ impl App {
         if let Some((level, msg)) = last_show {
             self.set_message(level, msg);
         }
-        self.lsp_log_event_rx = Some(rx);
+        self.editor.lsp_log_event_rx = Some(rx);
     }
 
     /// 4.4.c: drain queued `LspProgressUpdate` events and
@@ -1164,7 +1164,7 @@ impl App {
     }
 
     pub fn drain_lsp_progress_events(&mut self) {
-        let Some(mut rx) = self.lsp_progress_event_rx.take() else {
+        let Some(mut rx) = self.editor.lsp_progress_event_rx.take() else {
             return;
         };
         while let Ok(event) = rx.try_recv() {
@@ -1199,7 +1199,7 @@ impl App {
                 }
             }
         }
-        self.lsp_progress_event_rx = Some(rx);
+        self.editor.lsp_progress_event_rx = Some(rx);
     }
 
     /// Drain server-initiated `workspace/configuration` requests.
@@ -1211,14 +1211,14 @@ impl App {
     /// servers' keys don't collide. The drain prepends `lsp.` to
     /// the requested section before walking the tree.
     pub fn drain_inbound_configuration_requests(&mut self) {
-        let Some(mut rx) = self.pending_configuration_rx.take() else {
+        let Some(mut rx) = self.editor.pending_configuration_rx.take() else {
             return;
         };
         let mut requests: Vec<lattice_lsp::InboundConfigurationRequest> = Vec::new();
         while let Ok(req) = rx.try_recv() {
             requests.push(req);
         }
-        self.pending_configuration_rx = Some(rx);
+        self.editor.pending_configuration_rx = Some(rx);
         for req in requests {
             let values: Vec<serde_json::Value> = req
                 .sections
@@ -1250,14 +1250,14 @@ impl App {
     pub fn fan_out_did_change_configuration(&mut self, server_id: &str) {
         let settings = self.lookup_lsp_config_section(server_id);
         let params = lsp_types::DidChangeConfigurationParams { settings };
-        let supervisor = self.lsp.clone();
+        let supervisor = self.editor.lsp.clone();
         for (_key, handle) in supervisor.running_actors() {
             if handle.server_id() != server_id {
                 continue;
             }
             if let Err(e) = handle.did_change_configuration(params.clone()) {
                 let instance = handle.instance();
-                self.lsp_logger.log(
+                self.editor.lsp_logger.log(
                     Some(&instance),
                     lattice_lsp::LogLevel::Warn,
                     lattice_lsp::LogSource::Client,
@@ -1278,7 +1278,7 @@ impl App {
         } else {
             format!("lsp.{section}")
         };
-        let toml_value = match lattice_config::lookup_dotted_path(&self.lsp_config_tree, &path) {
+        let toml_value = match lattice_config::lookup_dotted_path(&self.editor.lsp_config_tree, &path) {
             Some(v) => v,
             None => return serde_json::Value::Null,
         };
@@ -1307,14 +1307,14 @@ impl App {
     ///   `success: false` (we don't know how to surface a
     ///   non-file URI in a buffer).
     pub fn drain_inbound_show_documents(&mut self) {
-        let Some(mut rx) = self.pending_show_document_rx.take() else {
+        let Some(mut rx) = self.editor.pending_show_document_rx.take() else {
             return;
         };
         let mut requests: Vec<lattice_lsp::InboundShowDocument> = Vec::new();
         while let Ok(req) = rx.try_recv() {
             requests.push(req);
         }
-        self.pending_show_document_rx = Some(rx);
+        self.editor.pending_show_document_rx = Some(rx);
         for req in requests {
             let instance = lattice_lsp::InstanceKey::new(
                 std::sync::Arc::clone(&req.server_id),
@@ -1347,7 +1347,7 @@ impl App {
         }
         // In-editor branch: only `file://` URIs reach here.
         if !uri_str.starts_with("file://") {
-            self.lsp_logger.log(
+            self.editor.lsp_logger.log(
                 Some(instance),
                 lattice_lsp::LogLevel::Warn,
                 lattice_lsp::LogSource::Client,
@@ -1356,7 +1356,7 @@ impl App {
             return false;
         }
         let Some(path) = lattice_lsp::actor::uri_to_path(uri) else {
-            self.lsp_logger.log(
+            self.editor.lsp_logger.log(
                 Some(instance),
                 lattice_lsp::LogLevel::Warn,
                 lattice_lsp::LogSource::Client,
@@ -1391,7 +1391,7 @@ impl App {
         let cmd = "xdg-open";
         match std::process::Command::new(cmd).arg(uri).spawn() {
             Ok(_) => {
-                self.lsp_logger.log(
+                self.editor.lsp_logger.log(
                     Some(instance),
                     lattice_lsp::LogLevel::Info,
                     lattice_lsp::LogSource::Client,
@@ -1400,7 +1400,7 @@ impl App {
                 true
             }
             Err(e) => {
-                self.lsp_logger.log(
+                self.editor.lsp_logger.log(
                     Some(instance),
                     lattice_lsp::LogLevel::Warn,
                     lattice_lsp::LogSource::Client,
@@ -1447,14 +1447,14 @@ impl App {
     /// response, then drain the queue so the next pending SMR
     /// opens on the same tick.
     pub fn drain_inbound_show_message_requests(&mut self) {
-        let Some(mut rx) = self.pending_show_message_request_rx.take() else {
+        let Some(mut rx) = self.editor.pending_show_message_request_rx.take() else {
             return;
         };
         let mut requests: Vec<lattice_lsp::InboundShowMessageRequest> = Vec::new();
         while let Ok(req) = rx.try_recv() {
             requests.push(req);
         }
-        self.pending_show_message_request_rx = Some(rx);
+        self.editor.pending_show_message_request_rx = Some(rx);
         let mut last_minibuffer: Option<(EchoLevel, String)> = None;
         for req in requests {
             let labels: Vec<&str> = req.actions.iter().map(|a| a.title.as_str()).collect();
@@ -1477,7 +1477,7 @@ impl App {
             // (the prompt is purely informational); surface the
             // prompt on the minibuffer + LSP log and move on.
             if req.actions.is_empty() {
-                self.lsp_logger.log(
+                self.editor.lsp_logger.log(
                     Some(&instance),
                     log_level,
                     lattice_lsp::LogSource::LspShowMessage,
@@ -1495,7 +1495,7 @@ impl App {
             // every request so nothing is lost when multiple
             // arrive together.
             let request_id = self.allocate_smr_request_id();
-            self.lsp_logger.log(
+            self.editor.lsp_logger.log(
                 Some(&instance),
                 log_level,
                 lattice_lsp::LogSource::LspShowMessage,
@@ -1508,10 +1508,10 @@ impl App {
                 echo_level,
                 format!("[{}] {} [{labels_joined}]", req.server_id, req.message),
             ));
-            self.lsp_pending_show_message_requests
+            self.editor.lsp_pending_show_message_requests
                 .insert(request_id, req);
             if self.editor.picker.is_some() {
-                self.lsp_show_message_request_queue.push_back(request_id);
+                self.editor.lsp_show_message_request_queue.push_back(request_id);
             } else {
                 self.open_show_message_request_picker(request_id);
             }
@@ -1529,10 +1529,10 @@ impl App {
     /// invariant honest.
     fn allocate_smr_request_id(&mut self) -> u32 {
         loop {
-            let id = self.lsp_next_show_message_request_id;
-            self.lsp_next_show_message_request_id =
-                self.lsp_next_show_message_request_id.wrapping_add(1);
-            if !self.lsp_pending_show_message_requests.contains_key(&id) {
+            let id = self.editor.lsp_next_show_message_request_id;
+            self.editor.lsp_next_show_message_request_id =
+                self.editor.lsp_next_show_message_request_id.wrapping_add(1);
+            if !self.editor.lsp_pending_show_message_requests.contains_key(&id) {
                 return id;
             }
         }
@@ -1546,7 +1546,7 @@ impl App {
     /// the server-prefixed prompt so the user always sees what
     /// they're answering.
     pub(super) fn open_show_message_request_picker(&mut self, request_id: u32) {
-        let Some(req) = self.lsp_pending_show_message_requests.get(&request_id) else {
+        let Some(req) = self.editor.lsp_pending_show_message_requests.get(&request_id) else {
             return;
         };
         let server_id = req.server_id.to_string();
@@ -1596,7 +1596,7 @@ impl App {
         request_id: u32,
         selected_index: Option<u32>,
     ) {
-        let Some(req) = self.lsp_pending_show_message_requests.remove(&request_id) else {
+        let Some(req) = self.editor.lsp_pending_show_message_requests.remove(&request_id) else {
             return;
         };
         let selected = selected_index.and_then(|i| req.actions.get(i as usize).cloned());
@@ -1610,9 +1610,9 @@ impl App {
     /// another id is queued, open its picker on the same tick
     /// so the user sees the next prompt without a frame's gap.
     pub(crate) fn open_next_queued_show_message_request(&mut self) {
-        while let Some(next_id) = self.lsp_show_message_request_queue.pop_front() {
+        while let Some(next_id) = self.editor.lsp_show_message_request_queue.pop_front() {
             if self
-                .lsp_pending_show_message_requests
+                .editor.lsp_pending_show_message_requests
                 .contains_key(&next_id)
             {
                 self.open_show_message_request_picker(next_id);
@@ -1636,14 +1636,14 @@ impl App {
     /// files echo a warning but don't roll back successfully-
     /// applied files.
     pub fn drain_inbound_apply_edits(&mut self) {
-        let Some(mut rx) = self.pending_apply_edit_rx.take() else {
+        let Some(mut rx) = self.editor.pending_apply_edit_rx.take() else {
             return;
         };
         let mut requests: Vec<lattice_lsp::InboundApplyEdit> = Vec::new();
         while let Ok(req) = rx.try_recv() {
             requests.push(req);
         }
-        self.pending_apply_edit_rx = Some(rx);
+        self.editor.pending_apply_edit_rx = Some(rx);
         for req in requests {
             let outcome =
                 self.apply_inbound_workspace_edit(&req.server_id, req.label.as_deref(), req.edit);
@@ -1766,7 +1766,7 @@ impl App {
 
         if let Some(ref path) = path_opt {
             let uri = lattice_lsp::actor::uri_from_path(path);
-            self.buffer_uris.insert(buffer_id, uri);
+            self.editor.buffer_uris.insert(buffer_id, uri);
         }
 
         self.editor.event_bus.publish(Event::DocumentOpened {
@@ -1809,7 +1809,7 @@ impl App {
     /// that have no on-disk path yet (new unsaved scratch
     /// buffers).
     pub fn buffer_uri(&self, id: BufferId) -> Option<&lattice_lsp::Uri> {
-        self.buffer_uris.get(&id)
+        self.editor.buffer_uris.get(&id)
     }
 
     /// Flush queued didChange events for a buffer immediately.
@@ -1817,10 +1817,10 @@ impl App {
     /// caught up before pre-save requests fire. Fire-and-forget
     /// against the supervisor mailbox.
     pub fn lsp_flush(&self, buffer_id: BufferId) {
-        let Some(uri) = self.buffer_uris.get(&buffer_id).cloned() else {
+        let Some(uri) = self.editor.buffer_uris.get(&buffer_id).cloned() else {
             return;
         };
-        self.lsp.flush(uri);
+        self.editor.lsp.flush(uri);
     }
 
     /// Detach a buffer from every attached LSP server. Called
@@ -1828,10 +1828,10 @@ impl App {
     /// clears the URI's diagnostics. Fire-and-forget against
     /// the supervisor mailbox.
     pub fn lsp_close_buffer(&mut self, buffer_id: BufferId) {
-        let Some(uri) = self.buffer_uris.remove(&buffer_id) else {
+        let Some(uri) = self.editor.buffer_uris.remove(&buffer_id) else {
             return;
         };
-        self.lsp.close_buffer(uri);
+        self.editor.lsp.close_buffer(uri);
     }
 
     /// Apply editor-side LSP options that the user configured
@@ -1861,10 +1861,10 @@ impl App {
         // echo so existing TOMLs keep working for one minor
         // version.
         let canonical =
-            lattice_config::lookup_dotted_path(&self.lsp_config_tree, "lsp-mode.log-level")
+            lattice_config::lookup_dotted_path(&self.editor.lsp_config_tree, "lsp-mode.log-level")
                 .and_then(|v| v.as_str())
                 .map(String::from);
-        let legacy = lattice_config::lookup_dotted_path(&self.lsp_config_tree, "lsp.log-level")
+        let legacy = lattice_config::lookup_dotted_path(&self.editor.lsp_config_tree, "lsp.log-level")
             .and_then(|v| v.as_str())
             .map(String::from);
         let (key, level) = match (canonical, legacy) {
@@ -1882,7 +1882,7 @@ impl App {
             (None, None) => return,
         };
         match lattice_lsp::LogLevel::parse(&level) {
-            Some(parsed) => self.lsp_logger.set_default_level(parsed),
+            Some(parsed) => self.editor.lsp_logger.set_default_level(parsed),
             None => self.set_message(
                 EchoLevel::Warn,
                 format!(
@@ -1930,10 +1930,10 @@ impl App {
     /// Union of onTypeFormatting trigger characters across LSP
     /// servers attached to the active document.
     pub(super) fn on_type_formatting_trigger_chars(&self) -> Vec<char> {
-        let Some(uri) = self.buffer_uris.get(&self.editor.document_buffer_id) else {
+        let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id) else {
             return Vec::new();
         };
-        let handles = self.lsp.servers_for(uri);
+        let handles = self.editor.lsp.servers_for(uri);
         let mut chars: Vec<char> = Vec::new();
         for h in handles {
             for c in h.capabilities().on_type_formatting_trigger_chars() {
@@ -1949,10 +1949,10 @@ impl App {
     /// LSP server attached to the active document. Empty when
     /// no server advertises the provider.
     pub(super) fn signature_help_trigger_chars(&self) -> Vec<char> {
-        let Some(uri) = self.buffer_uris.get(&self.editor.document_buffer_id) else {
+        let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id) else {
             return Vec::new();
         };
-        let handles = self.lsp.servers_for(uri);
+        let handles = self.editor.lsp.servers_for(uri);
         let mut chars: Vec<char> = Vec::new();
         for h in handles {
             for c in h.capabilities().signature_help_trigger_chars() {
@@ -1974,7 +1974,7 @@ impl App {
         if !self.lsp_format_mode_enabled_for(self.editor.document_buffer_id) {
             return;
         }
-        let Some(uri) = self.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
+        let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
             return;
         };
         let snapshot = self.document.snapshot();
@@ -1982,7 +1982,7 @@ impl App {
             Some(p) => p,
             None => return,
         };
-        let lsp = self.lsp.clone();
+        let lsp = self.editor.lsp.clone();
         let trigger_str = trigger.to_string();
         let options = lsp_types::FormattingOptions {
             tab_size: 4,
@@ -2052,7 +2052,7 @@ impl App {
         ) {
             return;
         }
-        let Some(uri) = self.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
+        let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
             self.set_message(
                 EchoLevel::Info,
                 "no LSP server attached to current buffer".to_string(),
@@ -2072,7 +2072,7 @@ impl App {
         let token = lattice_protocol::CancellationToken::new();
         self.pending_rename_rx = Some(rx);
         self.pending_rename_token = Some(token.clone());
-        let lsp = self.lsp.clone();
+        let lsp = self.editor.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
             let chosen = handles
@@ -2404,7 +2404,7 @@ impl App {
         ) {
             return;
         }
-        let Some(uri) = self.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
+        let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
             self.set_message(
                 EchoLevel::Info,
                 "no LSP server attached to current buffer".to_string(),
@@ -2422,7 +2422,7 @@ impl App {
         let token = lattice_protocol::CancellationToken::new();
         self.pending_code_action_rx = Some(rx);
         self.pending_code_action_token = Some(token.clone());
-        let lsp = self.lsp.clone();
+        let lsp = self.editor.lsp.clone();
         let stash = std::sync::Arc::new(std::sync::Mutex::new(None::<lattice_lsp::ServerHandle>));
         let stash_for_task = stash.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
@@ -2504,7 +2504,7 @@ impl App {
         uri: &lattice_lsp::Uri,
         range: &lsp_types::Range,
     ) -> Vec<lattice_lsp::Diagnostic> {
-        self.lsp_diagnostics
+        self.editor.lsp_diagnostics
             .diagnostics_for(uri)
             .into_iter()
             .filter(|d| {
@@ -2591,8 +2591,8 @@ impl App {
     /// `codeActionProvider` -- mirrors the choice the spawn task
     /// made when firing the original request.
     fn first_code_action_handle(&self) -> Option<lattice_lsp::ServerHandle> {
-        let uri = self.buffer_uris.get(&self.editor.document_buffer_id)?;
-        self.lsp
+        let uri = self.editor.buffer_uris.get(&self.editor.document_buffer_id)?;
+        self.editor.lsp
             .servers_for(uri)
             .into_iter()
             .find(|h| h.capabilities().supports_code_action())
@@ -2615,7 +2615,7 @@ impl App {
         ) {
             return;
         }
-        let Some(uri) = self.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
+        let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
             self.set_message(
                 EchoLevel::Info,
                 "no LSP server attached to current buffer".to_string(),
@@ -2644,7 +2644,7 @@ impl App {
         let token = lattice_protocol::CancellationToken::new();
         self.pending_completion_rx = Some(rx);
         self.pending_completion_token = Some(token.clone());
-        let lsp = self.lsp.clone();
+        let lsp = self.editor.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
             if handles.is_empty() {
@@ -2783,7 +2783,7 @@ impl App {
         ) {
             return;
         }
-        let Some(uri) = self.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
+        let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
             self.set_message(
                 EchoLevel::Info,
                 "no LSP server attached to current buffer".to_string(),
@@ -2814,7 +2814,7 @@ impl App {
         let token = lattice_protocol::CancellationToken::new();
         self.pending_format_rx = Some(rx);
         self.pending_format_token = Some(token.clone());
-        let lsp = self.lsp.clone();
+        let lsp = self.editor.lsp.clone();
         // Compute the LSP range parameters when needed.
         let lsp_range = range_lines.map(|(s, e)| {
             let end_line_text_len = line_byte_len(&snapshot.buffer, e);
@@ -2951,7 +2951,7 @@ impl App {
         ) {
             return;
         }
-        let Some(uri) = self.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
+        let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
             self.set_message(
                 EchoLevel::Info,
                 "no LSP server attached to current buffer".to_string(),
@@ -2972,7 +2972,7 @@ impl App {
         let token = lattice_protocol::CancellationToken::new();
         self.pending_symbols_rx = Some(rx);
         self.pending_symbols_token = Some(token.clone());
-        let lsp = self.lsp.clone();
+        let lsp = self.editor.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
             if handles.is_empty() {
@@ -3026,7 +3026,7 @@ impl App {
         // Workspace symbol is workspace-scoped, so we fan out
         // over EVERY server the supervisor has running -- not
         // just servers attached to the current buffer.
-        let lsp = self.lsp.clone();
+        let lsp = self.editor.lsp.clone();
         let query = query.to_string();
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<SymbolsOutcome>();
         let token = lattice_protocol::CancellationToken::new();
@@ -3173,7 +3173,7 @@ impl App {
             position: self.editor.cursor,
             label,
         });
-        let Some(uri) = self.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
+        let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
             self.set_message(
                 EchoLevel::Info,
                 "no buffer URI -- save the file first".to_string(),
@@ -3188,7 +3188,7 @@ impl App {
                 return;
             }
         };
-        let handles = self.lsp.servers_for(&uri);
+        let handles = self.editor.lsp.servers_for(&uri);
         let handle = handles
             .into_iter()
             .find(|h| h.capabilities().supports_call_hierarchy());
@@ -3307,7 +3307,7 @@ impl App {
             position: self.editor.cursor,
             label,
         });
-        let Some(uri) = self.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
+        let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
             self.set_message(
                 EchoLevel::Info,
                 "no buffer URI -- save the file first".to_string(),
@@ -3322,7 +3322,7 @@ impl App {
                 return;
             }
         };
-        let handles = self.lsp.servers_for(&uri);
+        let handles = self.editor.lsp.servers_for(&uri);
         let handle = handles
             .into_iter()
             .find(|h| h.capabilities().supports_type_hierarchy());
@@ -3411,7 +3411,7 @@ impl App {
     /// moniker is metadata about the symbol identity rather
     /// than a navigation target.
     pub(super) fn do_lsp_moniker_request(&mut self) {
-        let Some(uri) = self.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
+        let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
             self.set_message(
                 EchoLevel::Info,
                 "no buffer URI -- save the file first".to_string(),
@@ -3426,7 +3426,7 @@ impl App {
                 return;
             }
         };
-        let handles = self.lsp.servers_for(&uri);
+        let handles = self.editor.lsp.servers_for(&uri);
         let handle = handles
             .into_iter()
             .find(|h| h.capabilities().supports_moniker());
@@ -3507,7 +3507,7 @@ impl App {
         if !self.lsp_signature_mode_enabled_for(self.editor.document_buffer_id) {
             return;
         }
-        let Some(uri) = self.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
+        let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
             self.set_message(
                 EchoLevel::Info,
                 "no LSP server attached to current buffer".to_string(),
@@ -3523,7 +3523,7 @@ impl App {
         let token = lattice_protocol::CancellationToken::new();
         self.pending_signature_help_rx = Some(rx);
         self.pending_signature_help_token = Some(token.clone());
-        let lsp = self.lsp.clone();
+        let lsp = self.editor.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
             if handles.is_empty() {
@@ -3612,7 +3612,7 @@ impl App {
         {
             return;
         }
-        let Some(uri) = self.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
+        let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
             self.set_message(
                 EchoLevel::Info,
                 "no LSP server attached to current buffer".to_string(),
@@ -3646,7 +3646,7 @@ impl App {
         self.pending_definition_rx = Some(rx);
         self.pending_definition_token = Some(token.clone());
         self.pending_nav_kind = Some(kind);
-        let lsp = self.lsp.clone();
+        let lsp = self.editor.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
             let mut all: Vec<lsp_types::Location> = Vec::new();
@@ -3809,7 +3809,7 @@ impl App {
         {
             return;
         }
-        let Some(uri) = self.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
+        let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
             self.set_message(
                 EchoLevel::Info,
                 "no LSP server attached to current buffer".to_string(),
@@ -3832,7 +3832,7 @@ impl App {
         let token = lattice_protocol::CancellationToken::new();
         self.pending_references_rx = Some(rx);
         self.pending_references_token = Some(token.clone());
-        let lsp = self.lsp.clone();
+        let lsp = self.editor.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
             if handles.is_empty() {
@@ -3979,7 +3979,7 @@ impl App {
         // later JumpToLspLocation accept doesn't push a phantom
         // tag stack entry.
         self.editor.pending_tag_origin = None;
-        let snapshot = self.lsp_diagnostics.snapshot();
+        let snapshot = self.editor.lsp_diagnostics.snapshot();
         if snapshot.is_empty() {
             self.set_message(EchoLevel::Info, "no diagnostics".to_string());
             return;
@@ -4033,11 +4033,11 @@ impl App {
         ) {
             return;
         }
-        let Some(uri) = self.buffer_uris.get(&self.editor.document_buffer_id) else {
+        let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id) else {
             self.set_message(EchoLevel::Error, "no LSP attachment".to_string());
             return;
         };
-        let mut diags = self.lsp_diagnostics.diagnostics_for(uri);
+        let mut diags = self.editor.lsp_diagnostics.diagnostics_for(uri);
         if diags.is_empty() {
             self.set_message(EchoLevel::Info, "no diagnostics in buffer".to_string());
             return;
@@ -4069,11 +4069,11 @@ impl App {
         ) {
             return;
         }
-        let Some(uri) = self.buffer_uris.get(&self.editor.document_buffer_id) else {
+        let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id) else {
             self.set_message(EchoLevel::Error, "no LSP attachment".to_string());
             return;
         };
-        let mut diags = self.lsp_diagnostics.diagnostics_for(uri);
+        let mut diags = self.editor.lsp_diagnostics.diagnostics_for(uri);
         if diags.is_empty() {
             self.set_message(EchoLevel::Info, "no diagnostics in buffer".to_string());
             return;
@@ -4177,12 +4177,12 @@ impl App {
         // the supervisor builds its `InstanceKey`).
         let mut now_on_any = false;
         let mut toggled_instances: Vec<lattice_lsp::InstanceKey> = Vec::new();
-        for (_key, handle) in self.lsp.running_actors() {
+        for (_key, handle) in self.editor.lsp.running_actors() {
             if handle.server_id() != server_id {
                 continue;
             }
             let instance = handle.instance();
-            let on = self.lsp_logger.toggle_trace(instance.clone());
+            let on = self.editor.lsp_logger.toggle_trace(instance.clone());
             if on {
                 now_on_any = true;
             }
@@ -4197,7 +4197,7 @@ impl App {
                         .as_path(),
                 ),
             );
-            let on = self.lsp_logger.toggle_trace(synth.clone());
+            let on = self.editor.lsp_logger.toggle_trace(synth.clone());
             if on {
                 now_on_any = true;
             }
@@ -4236,13 +4236,13 @@ impl App {
         } else {
             lsp_types::TraceValue::Off
         };
-        for (_key, handle) in self.lsp.running_actors() {
+        for (_key, handle) in self.editor.lsp.running_actors() {
             if handle.server_id() != server_id {
                 continue;
             }
             if let Err(e) = handle.set_trace(trace_value) {
                 let instance = handle.instance();
-                self.lsp_logger.log(
+                self.editor.lsp_logger.log(
                     Some(&instance),
                     lattice_lsp::LogLevel::Warn,
                     lattice_lsp::LogSource::Client,
@@ -4261,7 +4261,7 @@ impl App {
     /// `:lsp-status` -- render every running server in a
     /// help-style buffer.
     pub fn do_lsp_status(&mut self) {
-        let buffer = lattice_lsp::help_views::lsp_status_help(&self.lsp)
+        let buffer = lattice_lsp::help_views::lsp_status_help(&self.editor.lsp)
             .with_markdown_syntax(self.editor.lang_registry.clone());
         self.display_buffer(
             buffer,
@@ -4290,10 +4290,10 @@ impl App {
         // we don't have an executor on the UI thread, so we
         // spawn into the LSP runtime and let the result echo
         // via the bus-message path.
-        let supervisor = self.lsp.clone();
+        let supervisor = self.editor.lsp.clone();
         let id_owned = server_id.to_string();
         let runtime = crate::runtime::lsp_runtime();
-        let logger = self.lsp_logger.clone();
+        let logger = self.editor.lsp_logger.clone();
         runtime.spawn(async move {
             match supervisor.restart_server(id_owned.clone()).await {
                 Ok(report) => {
@@ -4350,7 +4350,7 @@ impl App {
         {
             return;
         }
-        let Some(uri) = self.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
+        let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
             return;
         };
         if let Some(token) = self.pending_folding_range_token.take() {
@@ -4361,7 +4361,7 @@ impl App {
         let token = lattice_protocol::CancellationToken::new();
         self.pending_folding_range_rx = Some(rx);
         self.pending_folding_range_token = Some(token.clone());
-        let lsp = self.lsp.clone();
+        let lsp = self.editor.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
             let Some(handle) = handles
@@ -4481,7 +4481,7 @@ impl App {
             return;
         }
         let prior_result_id = prior.and_then(|c| c.result_id.clone());
-        let Some(uri) = self.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
+        let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
             return;
         };
         if let Some(token) = self.pending_semantic_tokens_token.take() {
@@ -4492,7 +4492,7 @@ impl App {
         let token = lattice_protocol::CancellationToken::new();
         self.pending_semantic_tokens_rx = Some(rx);
         self.pending_semantic_tokens_token = Some(token.clone());
-        let lsp = self.lsp.clone();
+        let lsp = self.editor.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
             let Some(handle) = handles
@@ -4732,7 +4732,7 @@ impl App {
             return;
         }
         let prior_result_id = prior.and_then(|c| c.result_id.clone());
-        let Some(uri) = self.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
+        let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
             return;
         };
         if let Some(token) = self.pending_pull_diagnostics_token.take() {
@@ -4743,7 +4743,7 @@ impl App {
         let token = lattice_protocol::CancellationToken::new();
         self.pending_pull_diagnostics_rx = Some(rx);
         self.pending_pull_diagnostics_token = Some(token.clone());
-        let lsp = self.lsp.clone();
+        let lsp = self.editor.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = lsp.servers_for(&uri);
             let Some(handle) = handles
@@ -4841,7 +4841,7 @@ impl App {
                 // lets the layer's stale-drop logic stay
                 // honest).
                 let version_i32 = i32::try_from(document_version).ok();
-                self.lsp_diagnostics.apply(lattice_lsp::DiagnosticEvent {
+                self.editor.lsp_diagnostics.apply(lattice_lsp::DiagnosticEvent {
                     server_id,
                     uri,
                     version: version_i32,
@@ -4894,10 +4894,10 @@ impl App {
             return;
         }
         let buffer_ids: Vec<BufferId> = self
-            .buffer_uris
+            .editor.buffer_uris
             .iter()
             .filter_map(|(id, uri)| {
-                let handles = self.lsp.servers_for(uri);
+                let handles = self.editor.lsp.servers_for(uri);
                 let attached = handles.iter().any(|h| {
                     refreshes
                         .iter()
@@ -4954,7 +4954,7 @@ impl App {
         {
             return;
         }
-        let Some(uri) = self.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
+        let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
             return;
         };
         if let Some(token) = self.pending_inlay_hint_token.take() {
@@ -4979,7 +4979,7 @@ impl App {
         let token = lattice_protocol::CancellationToken::new();
         self.pending_inlay_hint_rx = Some(rx);
         self.pending_inlay_hint_token = Some(token.clone());
-        let lsp = self.lsp.clone();
+        let lsp = self.editor.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
             let Some(handle) = handles
@@ -5044,10 +5044,10 @@ impl App {
         // whose attached servers list contains the named id
         // gets its cache cleared.
         let buffer_ids: Vec<BufferId> = self
-            .buffer_uris
+            .editor.buffer_uris
             .iter()
             .filter_map(|(id, uri)| {
-                let handles = self.lsp.servers_for(uri);
+                let handles = self.editor.lsp.servers_for(uri);
                 let attached = handles.iter().any(|h| {
                     refreshes
                         .iter()
@@ -5081,10 +5081,10 @@ impl App {
             return;
         }
         let buffer_ids: Vec<BufferId> = self
-            .buffer_uris
+            .editor.buffer_uris
             .iter()
             .filter_map(|(id, uri)| {
-                let handles = self.lsp.servers_for(uri);
+                let handles = self.editor.lsp.servers_for(uri);
                 let attached = handles.iter().any(|h| {
                     refreshes
                         .iter()
@@ -5165,7 +5165,7 @@ impl App {
     /// to a viewport. Single-flight per buffer; each new
     /// request cancels its predecessor.
     pub fn maybe_request_document_link(&mut self) {
-        let Some(uri) = self.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
+        let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
             return;
         };
         let snapshot = self.document.snapshot();
@@ -5183,7 +5183,7 @@ impl App {
         let token = lattice_protocol::CancellationToken::new();
         self.pending_document_links_rx = Some(rx);
         self.pending_document_links_token = Some(token.clone());
-        let lsp = self.lsp.clone();
+        let lsp = self.editor.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = lsp.servers_for(&uri);
             let Some(handle) = handles
@@ -5304,10 +5304,10 @@ impl App {
         // gate: silently skip when the server doesn't advertise
         // resolveProvider (the link wouldn't get a target on a
         // round-trip anyway).
-        let Some(uri) = self.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
+        let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
             return;
         };
-        let handles = self.lsp.servers_for(&uri);
+        let handles = self.editor.lsp.servers_for(&uri);
         let Some(handle) = handles.into_iter().find(|h| {
             let c = h.capabilities();
             c.supports_document_link() && c.document_link_resolve_provider()
@@ -5387,7 +5387,7 @@ impl App {
     /// version change OR cache miss (`workspace/codeLens/refresh`
     /// evicts the entry). Single-flight per buffer.
     pub fn maybe_request_code_lens(&mut self) {
-        let Some(uri) = self.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
+        let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
             return;
         };
         let snapshot = self.document.snapshot();
@@ -5405,7 +5405,7 @@ impl App {
         let token = lattice_protocol::CancellationToken::new();
         self.pending_code_lens_rx = Some(rx);
         self.pending_code_lens_token = Some(token.clone());
-        let lsp = self.lsp.clone();
+        let lsp = self.editor.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = lsp.servers_for(&uri);
             let Some(handle) = handles
@@ -5581,11 +5581,11 @@ impl App {
             return;
         };
         // Look up the originating server handle by id.
-        let Some(uri) = self.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
+        let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
             return;
         };
         let handle = self
-            .lsp
+            .editor.lsp
             .servers_for(&uri)
             .into_iter()
             .find(|h| h.server_id() == server_id.as_ref());
@@ -5633,7 +5633,7 @@ impl App {
     /// the documentLink pump: fires on doc-version change,
     /// single-flight per buffer.
     pub fn maybe_request_document_color(&mut self) {
-        let Some(uri) = self.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
+        let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
             return;
         };
         let snapshot = self.document.snapshot();
@@ -5651,7 +5651,7 @@ impl App {
         let token = lattice_protocol::CancellationToken::new();
         self.pending_document_color_rx = Some(rx);
         self.pending_document_color_token = Some(token.clone());
-        let lsp = self.lsp.clone();
+        let lsp = self.editor.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = lsp.servers_for(&uri);
             let Some(handle) = handles
@@ -5773,11 +5773,11 @@ impl App {
             self.set_message(EchoLevel::Info, "no color literal at cursor".to_string());
             return;
         };
-        let Some(uri) = self.buffer_uris.get(&buffer_id).cloned() else {
+        let Some(uri) = self.editor.buffer_uris.get(&buffer_id).cloned() else {
             return;
         };
         let handle = self
-            .lsp
+            .editor.lsp
             .servers_for(&uri)
             .into_iter()
             .find(|h| h.server_id() == cache.server_id.as_ref());
@@ -5930,7 +5930,7 @@ impl App {
         {
             self.editor.lsp_document_highlights = None;
         }
-        let Some(uri) = self.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
+        let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
             return;
         };
         let snapshot = self.document.snapshot();
@@ -5949,7 +5949,7 @@ impl App {
         let token = lattice_protocol::CancellationToken::new();
         self.pending_document_highlight_rx = Some(rx);
         self.pending_document_highlight_token = Some(token.clone());
-        let lsp = self.lsp.clone();
+        let lsp = self.editor.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
             let Some(handle) = handles
@@ -6157,7 +6157,7 @@ impl App {
         if let Some(token) = self.pending_selection_range_token.take() {
             token.cancel();
         }
-        let Some(uri) = self.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
+        let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
             self.set_message(
                 EchoLevel::Info,
                 "no LSP server attached to current buffer".to_string(),
@@ -6181,7 +6181,7 @@ impl App {
         let token = lattice_protocol::CancellationToken::new();
         self.pending_selection_range_rx = Some(rx);
         self.pending_selection_range_token = Some(token.clone());
-        let lsp = self.lsp.clone();
+        let lsp = self.editor.lsp.clone();
         crate::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
             let Some(handle) = handles
@@ -6294,14 +6294,14 @@ impl App {
         let allowed: std::collections::HashSet<String> = match server_id {
             Some(id) => std::iter::once(id.to_string()).collect(),
             None => {
-                let Some(uri) = self.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
+                let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
                     self.set_message(
                         EchoLevel::Info,
                         "lsp-progress-cancel: buffer has no URI".to_string(),
                     );
                     return;
                 };
-                self.lsp
+                self.editor.lsp
                     .servers_for(&uri)
                     .into_iter()
                     .map(|h| h.server_id().to_string())
@@ -6319,7 +6319,7 @@ impl App {
         // walk `running_actors()` per token.
         let mut handles_by_id: std::collections::HashMap<String, lattice_lsp::ServerHandle> =
             std::collections::HashMap::new();
-        for (_key, h) in self.lsp.running_actors() {
+        for (_key, h) in self.editor.lsp.running_actors() {
             let id = h.server_id().to_string();
             if allowed.contains(&id) {
                 handles_by_id.insert(id, h);
@@ -6375,7 +6375,7 @@ impl App {
         };
         match server_id {
             None => {
-                self.lsp_logger.set_default_level(parsed);
+                self.editor.lsp_logger.set_default_level(parsed);
                 self.set_message(EchoLevel::Info, format!("lsp default log level: {level}"));
             }
             Some(id) => {
@@ -6388,7 +6388,7 @@ impl App {
                 // this matches the pre-B'.2 per-server behaviour.
                 let mut applied = 0usize;
                 let targets: Vec<lattice_lsp::InstanceKey> = self
-                    .lsp_logger
+                    .editor.lsp_logger
                     .known_instances()
                     .into_iter()
                     .filter(|k| k.server_id.as_ref() == id)
@@ -6397,7 +6397,7 @@ impl App {
                 // an entry in the logger (no records emitted yet).
                 let mut seen: std::collections::HashSet<lattice_lsp::InstanceKey> =
                     targets.iter().cloned().collect();
-                for (_key, handle) in self.lsp.running_actors() {
+                for (_key, handle) in self.editor.lsp.running_actors() {
                     if handle.server_id() != id {
                         continue;
                     }
@@ -6407,7 +6407,7 @@ impl App {
                     }
                 }
                 for inst in seen {
-                    self.lsp_logger.set_instance_level(inst, Some(parsed));
+                    self.editor.lsp_logger.set_instance_level(inst, Some(parsed));
                     applied += 1;
                 }
                 // If nothing matched, still record a synthetic
@@ -6422,7 +6422,7 @@ impl App {
                                 .as_path(),
                         ),
                     );
-                    self.lsp_logger.set_instance_level(synth, Some(parsed));
+                    self.editor.lsp_logger.set_instance_level(synth, Some(parsed));
                     applied = 1;
                 }
                 self.set_message(
@@ -6437,7 +6437,7 @@ impl App {
     pub fn do_lsp_log_clear(&mut self, server_id: Option<&str>) {
         match server_id {
             None => {
-                self.lsp_logger.clear_global();
+                self.editor.lsp_logger.clear_global();
                 self.set_message(EchoLevel::Info, "*lsp* cleared".to_string());
             }
             Some(id) => {
@@ -6446,14 +6446,14 @@ impl App {
                 // exited-but-buffer-still-open instances, and
                 // synthetic test instances.
                 let targets: Vec<lattice_lsp::InstanceKey> = self
-                    .lsp_logger
+                    .editor.lsp_logger
                     .known_instances()
                     .into_iter()
                     .filter(|k| k.server_id.as_ref() == id)
                     .collect();
                 let cleared = targets.len();
                 for inst in targets {
-                    self.lsp_logger.clear_instance(&inst);
+                    self.editor.lsp_logger.clear_instance(&inst);
                 }
                 self.set_message(
                     EchoLevel::Info,
@@ -6502,12 +6502,12 @@ impl App {
     /// then synthesise a cwd-based instance as a last resort
     /// (matches the fallback used by `:lsp-trace` / `:lsp-log-level`).
     fn resolve_lsp_instance_for(&self, server_id: &str) -> lattice_lsp::InstanceKey {
-        for (_key, handle) in self.lsp.running_actors() {
+        for (_key, handle) in self.editor.lsp.running_actors() {
             if handle.server_id() == server_id {
                 return handle.instance();
             }
         }
-        for inst in self.lsp_logger.known_instances() {
+        for inst in self.editor.lsp_logger.known_instances() {
             if inst.server_id.as_ref() == server_id {
                 return inst;
             }
@@ -6547,12 +6547,12 @@ impl App {
     ///
     /// Returns `None` when none matches.
     pub(super) fn resolve_server_id(&self, name: &str) -> Option<String> {
-        for ((_, sid), _) in self.lsp.running_actors() {
+        for ((_, sid), _) in self.editor.lsp.running_actors() {
             if sid == name {
                 return Some(sid);
             }
         }
-        for cfg in self.lsp.configs() {
+        for cfg in self.editor.lsp.configs() {
             if cfg.id == name {
                 return Some(cfg.id.clone());
             }
@@ -6573,7 +6573,7 @@ impl App {
     /// messages so the user sees what's available.
     pub(super) fn running_server_ids(&self) -> Vec<String> {
         let mut ids: Vec<String> = self
-            .lsp
+            .editor.lsp
             .running_actors()
             .into_iter()
             .map(|((_, sid), _)| sid)
@@ -7554,7 +7554,7 @@ mod tests {
         let mut app = app_with("fn main() {}\n", 5);
         let buffer_id = app.editor.document_buffer_id;
         let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
-        app.buffer_uris.insert(buffer_id, uri.clone());
+        app.editor.buffer_uris.insert(buffer_id, uri.clone());
         let server_id: std::sync::Arc<str> = std::sync::Arc::from("rust");
         let diag = lsp_types::Diagnostic {
             range: lsp_types::Range {
@@ -7597,7 +7597,7 @@ mod tests {
         // Layer should now carry the diagnostic. URI equality
         // goes via `as_str()` (fluent_uri's Uri doesn't impl
         // PartialEq across the typed/owning split).
-        let snap = app.lsp_diagnostics.snapshot();
+        let snap = app.editor.lsp_diagnostics.snapshot();
         let entry = snap
             .iter()
             .find(|(u, _)| u.as_str() == uri.as_str())
@@ -7704,7 +7704,7 @@ mod tests {
             app.toggle_mode_by_name("lsp-inlay-hint-mode");
         }
         let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
-        app.buffer_uris.insert(app.editor.document_buffer_id, uri);
+        app.editor.buffer_uris.insert(app.editor.document_buffer_id, uri);
         // Seed cache with a wide range covering 0..=1000.
         app.editor.lsp_inlay_hints_cache.insert(
             app.editor.document_buffer_id,
@@ -7741,7 +7741,7 @@ mod tests {
             app.toggle_mode_by_name("lsp-inlay-hint-mode");
         }
         let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
-        app.buffer_uris.insert(app.editor.document_buffer_id, uri);
+        app.editor.buffer_uris.insert(app.editor.document_buffer_id, uri);
         // Cached range: lines 0..=200.
         app.editor.lsp_inlay_hints_cache.insert(
             app.editor.document_buffer_id,
@@ -7778,7 +7778,7 @@ mod tests {
             app.toggle_mode_by_name("lsp-inlay-hint-mode");
         }
         let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
-        app.buffer_uris.insert(app.editor.document_buffer_id, uri);
+        app.editor.buffer_uris.insert(app.editor.document_buffer_id, uri);
         // Cache covers lines 100..=400 (the overscan-padded
         // window the pump would have fetched at scroll=200).
         app.editor.lsp_inlay_hints_cache.insert(
@@ -9150,7 +9150,7 @@ mod tests {
         // Manually set a uri so do_lsp_nav_request gets past
         // the "no LSP server" guard.
         use std::str::FromStr;
-        a.buffer_uris.insert(
+        a.editor.buffer_uris.insert(
             a.editor.document_buffer_id,
             lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap(),
         );
@@ -9275,13 +9275,13 @@ mod tests {
         // Builtin registry: rust, python, go, typescript, c-cpp,
         // lua. Six entries today.
         assert!(
-            app.lsp.configs().len() >= 6,
+            app.editor.lsp.configs().len() >= 6,
             "expected at least 6 builtin server configs"
         );
         // Supervisor starts dormant.
-        assert_eq!(app.lsp.running_actor_count(), 0);
-        assert_eq!(app.lsp.attached_buffer_count(), 0);
-        assert!(app.buffer_uris.is_empty());
+        assert_eq!(app.editor.lsp.running_actor_count(), 0);
+        assert_eq!(app.editor.lsp.attached_buffer_count(), 0);
+        assert!(app.editor.buffer_uris.is_empty());
     }
 
     #[test]
@@ -9291,7 +9291,7 @@ mod tests {
         // had landed for a path-bearing buffer).
         let fake_uri =
             <lattice_lsp::Uri as std::str::FromStr>::from_str("file:///tmp/x.rs").unwrap();
-        app.buffer_uris.insert(app.editor.document_buffer_id, fake_uri);
+        app.editor.buffer_uris.insert(app.editor.document_buffer_id, fake_uri);
         assert!(app.buffer_uri(app.editor.document_buffer_id).is_some());
 
         app.lsp_close_buffer(app.editor.document_buffer_id);
@@ -9303,7 +9303,7 @@ mod tests {
         let mut app = App::new(Document::from_text(""));
         // No mapping exists; close must not panic.
         app.lsp_close_buffer(app.editor.document_buffer_id);
-        assert!(app.buffer_uris.is_empty());
+        assert!(app.editor.buffer_uris.is_empty());
     }
 
     #[test]
@@ -9361,7 +9361,7 @@ mod tests {
             .expect("per-instance log buffer registered");
         let body_before = app.editor.buffers.document_handle(log_id).unwrap().text();
         assert!(!body_before.contains("fresh-after-open"));
-        app.lsp_logger.log(
+        app.editor.lsp_logger.log(
             Some(&instance),
             lattice_lsp::LogLevel::Info,
             lattice_lsp::LogSource::Client,
@@ -9389,7 +9389,7 @@ mod tests {
             std::sync::Arc::<std::path::Path>::from(std::path::Path::new("/tmp/test-ws")),
         );
         let _id: std::sync::Arc<str> = std::sync::Arc::clone(&instance.server_id);
-        app.lsp_logger.log(
+        app.editor.lsp_logger.log(
             Some(&instance),
             lattice_lsp::LogLevel::Warn,
             lattice_lsp::LogSource::LspShowMessage,
@@ -9418,7 +9418,7 @@ mod tests {
         let _id: std::sync::Arc<str> = std::sync::Arc::clone(&instance.server_id);
         // Capture initial message to compare after drain.
         let before = app.editor.last_message.clone();
-        app.lsp_logger.log(
+        app.editor.lsp_logger.log(
             Some(&instance),
             lattice_lsp::LogLevel::Info,
             lattice_lsp::LogSource::LspMessage,
@@ -9444,13 +9444,13 @@ mod tests {
             std::sync::Arc::<std::path::Path>::from(std::path::Path::new("/tmp/test-ws")),
         );
         let _id: std::sync::Arc<str> = std::sync::Arc::clone(&instance.server_id);
-        app.lsp_logger.log(
+        app.editor.lsp_logger.log(
             Some(&instance),
             lattice_lsp::LogLevel::Debug,
             lattice_lsp::LogSource::Client,
             "should-be-filtered",
         );
-        let records = app.lsp_logger.snapshot_instance(&instance);
+        let records = app.editor.lsp_logger.snapshot_instance(&instance);
         assert!(
             !records
                 .iter()
@@ -9463,15 +9463,15 @@ mod tests {
             .parse_and_set_command("lsp.log_level=debug")
             .unwrap();
         // The runtime path:
-        app.lsp_logger
+        app.editor.lsp_logger
             .set_default_level(lattice_lsp::LogLevel::Debug);
-        app.lsp_logger.log(
+        app.editor.lsp_logger.log(
             Some(&instance),
             lattice_lsp::LogLevel::Debug,
             lattice_lsp::LogSource::Client,
             "should-pass-now",
         );
-        let records = app.lsp_logger.snapshot_instance(&instance);
+        let records = app.editor.lsp_logger.snapshot_instance(&instance);
         assert!(
             records
                 .iter()
@@ -9504,7 +9504,7 @@ mod tests {
             std::sync::Arc::<std::path::Path>::from(std::path::Path::new("/tmp/test-ws")),
         );
         let _id: std::sync::Arc<str> = std::sync::Arc::clone(&instance.server_id);
-        app.lsp_logger.log(
+        app.editor.lsp_logger.log(
             Some(&instance),
             lattice_lsp::LogLevel::Info,
             lattice_lsp::LogSource::Client,
@@ -9531,7 +9531,7 @@ mod tests {
             ),
         );
         let _id: std::sync::Arc<str> = std::sync::Arc::clone(&instance.server_id);
-        app.lsp_logger.enable_trace(instance.clone());
+        app.editor.lsp_logger.enable_trace(instance.clone());
         app.open_lsp_trace_log_in_pane("rust");
         let trace_id = app
             .editor.buffers
@@ -9539,7 +9539,7 @@ mod tests {
             .expect("trace buffer registered");
         let before = app.editor.buffers.document_handle(trace_id).unwrap().text();
         assert!(!before.contains("→ NEW"));
-        app.lsp_logger.log(
+        app.editor.lsp_logger.log(
             Some(&instance),
             lattice_lsp::LogLevel::Trace,
             lattice_lsp::LogSource::Trace,
@@ -9566,7 +9566,7 @@ mod tests {
         let _id: std::sync::Arc<str> = std::sync::Arc::clone(&instance.server_id);
         app.open_lsp_log_in_pane("rust");
         for i in 0..50 {
-            app.lsp_logger.log(
+            app.editor.lsp_logger.log(
                 Some(&instance),
                 lattice_lsp::LogLevel::Info,
                 lattice_lsp::LogSource::Client,
@@ -9600,7 +9600,7 @@ mod tests {
         let _id: std::sync::Arc<str> = std::sync::Arc::clone(&instance.server_id);
         // Off -> on.
         app.do_toggle_lsp_trace("rust");
-        assert!(app.lsp_logger.is_tracing(&instance));
+        assert!(app.editor.lsp_logger.is_tracing(&instance));
         // Pure toggle now -- the trace buffer is opened separately
         // via :lsp-trace-log so peeking doesn't flip the toggle off.
         assert!(app.editor.popup_buffer.is_none());
@@ -9609,7 +9609,7 @@ mod tests {
         assert!(msg.text.contains(":lsp-trace-log"));
         // On -> off.
         app.do_toggle_lsp_trace("rust");
-        assert!(!app.lsp_logger.is_tracing(&instance));
+        assert!(!app.editor.lsp_logger.is_tracing(&instance));
         assert!(app.editor.popup_buffer.is_none());
     }
 
@@ -9635,8 +9635,8 @@ mod tests {
         // resolves no instances; this test asserts the resolution
         // *would* target `rust`, not the phantom. Both are off
         // because there's no actor to attach to.
-        assert!(!app.lsp_logger.is_tracing(&canonical));
-        assert!(!app.lsp_logger.is_tracing(&phantom));
+        assert!(!app.editor.lsp_logger.is_tracing(&canonical));
+        assert!(!app.editor.lsp_logger.is_tracing(&phantom));
         let msg = app.editor.last_message.as_ref().unwrap();
         assert!(msg.text.contains("resolved"));
     }
@@ -9752,28 +9752,28 @@ mod tests {
                     .as_path(),
             ),
         );
-        app.lsp_logger.log(
+        app.editor.lsp_logger.log(
             Some(&instance),
             lattice_lsp::LogLevel::Debug,
             lattice_lsp::LogSource::Client,
             "debug event",
         );
-        let recs = app.lsp_logger.snapshot_instance(&instance);
+        let recs = app.editor.lsp_logger.snapshot_instance(&instance);
         assert!(recs.iter().any(|r| r.message == "debug event"));
     }
 
     #[test]
     fn lsp_log_clear_drops_global_records() {
         let mut app = app_with("hi\n", 5);
-        app.lsp_logger.log(
+        app.editor.lsp_logger.log(
             None,
             lattice_lsp::LogLevel::Info,
             lattice_lsp::LogSource::Client,
             "x",
         );
-        assert_eq!(app.lsp_logger.snapshot_global().len(), 1);
+        assert_eq!(app.editor.lsp_logger.snapshot_global().len(), 1);
         app.do_lsp_log_clear(None);
-        assert_eq!(app.lsp_logger.snapshot_global().len(), 0);
+        assert_eq!(app.editor.lsp_logger.snapshot_global().len(), 0);
     }
 
     #[test]
@@ -9784,15 +9784,15 @@ mod tests {
             std::sync::Arc::<std::path::Path>::from(std::path::Path::new("/tmp/test-ws")),
         );
         let _id: std::sync::Arc<str> = std::sync::Arc::clone(&instance.server_id);
-        app.lsp_logger.log(
+        app.editor.lsp_logger.log(
             Some(&instance),
             lattice_lsp::LogLevel::Info,
             lattice_lsp::LogSource::Client,
             "x",
         );
-        assert_eq!(app.lsp_logger.snapshot_instance(&instance).len(), 1);
+        assert_eq!(app.editor.lsp_logger.snapshot_instance(&instance).len(), 1);
         app.do_lsp_log_clear(Some("rust"));
-        assert_eq!(app.lsp_logger.snapshot_instance(&instance).len(), 0);
+        assert_eq!(app.editor.lsp_logger.snapshot_instance(&instance).len(), 0);
     }
 
     /// 4.4.b: show-document drain on a `file://` URI opens the
@@ -9808,7 +9808,7 @@ mod tests {
 
         let mut app = app_with("hi\n", 5);
         let (response_tx, mut response_rx) = tokio::sync::oneshot::channel();
-        let bus_sender = app.pending_show_document_rx.take().unwrap();
+        let bus_sender = app.editor.pending_show_document_rx.take().unwrap();
         // Re-push back so the App drain can consume it.
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         tx.send(lattice_lsp::InboundShowDocument {
@@ -9821,7 +9821,7 @@ mod tests {
             response: response_tx,
         })
         .unwrap();
-        app.pending_show_document_rx = Some(rx);
+        app.editor.pending_show_document_rx = Some(rx);
         drop(bus_sender); // discard the boot-time receiver
 
         app.drain_inbound_show_documents();
@@ -9853,7 +9853,7 @@ mod tests {
             response: response_tx,
         })
         .unwrap();
-        app.pending_show_document_rx = Some(rx);
+        app.editor.pending_show_document_rx = Some(rx);
         app.drain_inbound_show_documents();
         let outcome = response_rx.try_recv().expect("reply landed");
         assert!(!outcome.success);
@@ -9865,7 +9865,7 @@ mod tests {
     fn inject_show_message_request(app: &mut App, req: lattice_lsp::InboundShowMessageRequest) {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         tx.send(req).unwrap();
-        app.pending_show_message_request_rx = Some(rx);
+        app.editor.pending_show_message_request_rx = Some(rx);
         app.drain_inbound_show_message_requests();
     }
 
@@ -9913,7 +9913,7 @@ mod tests {
         let msg = app.editor.last_message.as_ref().expect("minibuffer set");
         assert!(msg.text.contains("Heads up!"));
         let records = app
-            .lsp_logger
+            .editor.lsp_logger
             .snapshot_instance(&lattice_lsp::InstanceKey::new(
                 std::sync::Arc::clone(&server_id),
                 std::sync::Arc::<std::path::Path>::from(std::path::Path::new("/tmp")),
@@ -9938,7 +9938,7 @@ mod tests {
             app.editor.picker.is_some(),
             "picker should open for actionful prompt"
         );
-        assert_eq!(app.lsp_pending_show_message_requests.len(), 1);
+        assert_eq!(app.editor.lsp_pending_show_message_requests.len(), 1);
         // Move the cursor to the second action ("No") and
         // accept. PickerNext is the canonical down-arrow
         // action.
@@ -9948,7 +9948,7 @@ mod tests {
         let selected = outcome.selected.expect("an action was selected");
         assert_eq!(selected.title, "No");
         assert!(app.editor.picker.is_none(), "picker closed after accept");
-        assert!(app.lsp_pending_show_message_requests.is_empty());
+        assert!(app.editor.lsp_pending_show_message_requests.is_empty());
     }
 
     /// 4.4.b: dismissing the picker replies `null`. The pending
@@ -9964,7 +9964,7 @@ mod tests {
         let outcome = response_rx.try_recv().expect("reply landed");
         assert!(outcome.selected.is_none(), "dismiss should reply null",);
         assert!(app.editor.picker.is_none());
-        assert!(app.lsp_pending_show_message_requests.is_empty());
+        assert!(app.editor.lsp_pending_show_message_requests.is_empty());
     }
 
     /// 4.4.b: two requests in one tick -- the picker opens the
@@ -9979,12 +9979,12 @@ mod tests {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         tx.send(req1).unwrap();
         tx.send(req2).unwrap();
-        app.pending_show_message_request_rx = Some(rx);
+        app.editor.pending_show_message_request_rx = Some(rx);
         app.drain_inbound_show_message_requests();
         // First request: picker open. Second: queued.
         assert!(app.editor.picker.is_some());
-        assert_eq!(app.lsp_show_message_request_queue.len(), 1);
-        assert_eq!(app.lsp_pending_show_message_requests.len(), 2);
+        assert_eq!(app.editor.lsp_show_message_request_queue.len(), 1);
+        assert_eq!(app.editor.lsp_pending_show_message_requests.len(), 2);
         // Dismiss the first; the second picker should open
         // immediately on the same tick. Verify by asserting
         // the picker title is the second request's prompt.
@@ -10002,8 +10002,8 @@ mod tests {
         let outcome2 = rx2.try_recv().expect("second reply landed");
         let selected = outcome2.selected.expect("action picked");
         assert_eq!(selected.title, "X");
-        assert!(app.lsp_pending_show_message_requests.is_empty());
-        assert!(app.lsp_show_message_request_queue.is_empty());
+        assert!(app.editor.lsp_pending_show_message_requests.is_empty());
+        assert!(app.editor.lsp_show_message_request_queue.is_empty());
     }
 
     #[test]
@@ -10039,7 +10039,7 @@ mod tests {
     fn inject_inbound_apply_edit(a: &mut App, inbound: lattice_lsp::InboundApplyEdit) {
         let (bus, new_rx) = lattice_lsp::ApplyEditBus::new();
         bus.dispatch(inbound).expect("dispatch");
-        a.pending_apply_edit_rx = Some(new_rx);
+        a.editor.pending_apply_edit_rx = Some(new_rx);
     }
 
     #[test]
@@ -10142,7 +10142,7 @@ mod tests {
                          features = [\"foo\", \"bar\"]\n\
                          [lsp.rust-analyzer]\n\
                          checkOnSave = true\n";
-        a.lsp_config_tree = toml_text.parse().expect("toml parse");
+        a.editor.lsp_config_tree = toml_text.parse().expect("toml parse");
         let (resp_tx, mut resp_rx) = tokio::sync::oneshot::channel();
         let req = lattice_lsp::InboundConfigurationRequest {
             server_id: std::sync::Arc::from("rust-analyzer"),
@@ -10155,7 +10155,7 @@ mod tests {
         };
         let (bus, new_rx) = lattice_lsp::ConfigurationBus::new();
         bus.dispatch(req).expect("dispatch");
-        a.pending_configuration_rx = Some(new_rx);
+        a.editor.pending_configuration_rx = Some(new_rx);
         a.drain_inbound_configuration_requests();
         let values = resp_rx.try_recv().expect("drain replied");
         assert_eq!(values.len(), 2);
@@ -10180,7 +10180,7 @@ mod tests {
         };
         let (bus, new_rx) = lattice_lsp::ConfigurationBus::new();
         bus.dispatch(req).expect("dispatch");
-        a.pending_configuration_rx = Some(new_rx);
+        a.editor.pending_configuration_rx = Some(new_rx);
         a.drain_inbound_configuration_requests();
         let values = resp_rx.try_recv().expect("drain replied");
         assert_eq!(values.len(), 1);
@@ -10194,7 +10194,7 @@ mod tests {
         // this from the namespaced top.
         let mut a = app_with("", 5);
         let toml_text = "[lsp.rust-analyzer]\nchecker = \"clippy\"\n";
-        a.lsp_config_tree = toml_text.parse().unwrap();
+        a.editor.lsp_config_tree = toml_text.parse().unwrap();
         let (resp_tx, mut resp_rx) = tokio::sync::oneshot::channel();
         let req = lattice_lsp::InboundConfigurationRequest {
             server_id: std::sync::Arc::from("rust-analyzer"),
@@ -10204,7 +10204,7 @@ mod tests {
         };
         let (bus, new_rx) = lattice_lsp::ConfigurationBus::new();
         bus.dispatch(req).expect("dispatch");
-        a.pending_configuration_rx = Some(new_rx);
+        a.editor.pending_configuration_rx = Some(new_rx);
         a.drain_inbound_configuration_requests();
         let values = resp_rx.try_recv().expect("drain replied");
         // Whole `lsp` sub-tree comes back as a JSON object.
@@ -10216,7 +10216,7 @@ mod tests {
     fn drain_inbound_configuration_no_op_when_channel_empty() {
         let mut a = app_with("", 5);
         a.drain_inbound_configuration_requests();
-        assert!(a.pending_configuration_rx.is_some());
+        assert!(a.editor.pending_configuration_rx.is_some());
     }
 
     #[test]
@@ -10226,7 +10226,7 @@ mod tests {
         let mut a = app_with("", 5);
         a.drain_inbound_apply_edits();
         // Receiver is restored after the drain (the take + put-back).
-        assert!(a.pending_apply_edit_rx.is_some());
+        assert!(a.editor.pending_apply_edit_rx.is_some());
     }
 
     #[test]
@@ -10382,7 +10382,7 @@ mod tests {
         // activates lsp-diagnostics-mode).
         use std::str::FromStr;
         let uri = lattice_lsp::Uri::from_str("file:///tmp/empty.rs").unwrap();
-        app.buffer_uris.insert(app.editor.document_buffer_id, uri);
+        app.editor.buffer_uris.insert(app.editor.document_buffer_id, uri);
         app.toggle_mode_by_name("lsp-mode");
         app.do_next_diagnostic();
         let msg = app.editor.last_message.as_ref().expect("expected echo");

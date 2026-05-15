@@ -61,7 +61,7 @@ use crate::app::{App, EchoLevel, Fold};
 ///   deterministic if the option flips mid-chain under
 ///   multi-thread input.
 ///
-/// `app.lsp_diagnostics` is left as a borrowed
+/// `app.editor.lsp_diagnostics` is left as a borrowed
 /// `&DiagnosticsLayer` because that layer is already wait-free
 /// behind its own `ArcSwap` (audit slice 2); the existing
 /// `line_severity` / `diagnostics_on_line` API is structurally
@@ -2171,10 +2171,10 @@ fn active_lsp_segment(app: &App) -> String {
     if !app.lsp_mode_enabled_for(app.editor.document_buffer_id) {
         return String::new();
     }
-    let Some(uri) = app.buffer_uris.get(&app.editor.document_buffer_id) else {
+    let Some(uri) = app.editor.buffer_uris.get(&app.editor.document_buffer_id) else {
         return String::new();
     };
-    let handles = app.lsp.servers_for(uri);
+    let handles = app.editor.lsp.servers_for(uri);
     if handles.is_empty() {
         return String::new();
     }
@@ -3179,7 +3179,7 @@ fn render_diagnostic_severity_cell(
 }
 
 /// Resolve the most-severe diagnostic on `line_idx` of the
-/// active buffer. Walks `app.lsp_diagnostics` keyed by the
+/// active buffer. Walks `app.editor.lsp_diagnostics` keyed by the
 /// active URI (looked up via `app.buffer_uri`). Returns `None`
 /// when:
 /// - `lsp-mode` is inactive on the active buffer (M.5.6 gate),
@@ -3201,7 +3201,7 @@ pub(crate) fn severity_for_line(
         return None;
     }
     let uri = app.buffer_uri(app.editor.document_buffer_id)?;
-    app.lsp_diagnostics.line_severity(uri, line_idx)
+    app.editor.lsp_diagnostics.line_severity(uri, line_idx)
 }
 
 /// Diagnostics that overlap `line_idx` of the active buffer.
@@ -3222,7 +3222,7 @@ pub(crate) fn diagnostics_on_line(
     let Some(uri) = app.buffer_uri(app.editor.document_buffer_id) else {
         return Vec::new();
     };
-    app.lsp_diagnostics.diagnostics_on_line(uri, line_idx)
+    app.editor.lsp_diagnostics.diagnostics_on_line(uri, line_idx)
 }
 
 /// M.7.3.b parameter bundle for the whitespace-decoration
@@ -5079,7 +5079,7 @@ mod tests {
     ) {
         use std::str::FromStr;
         let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
-        app.buffer_uris.insert(app.editor.document_buffer_id, uri.clone());
+        app.editor.buffer_uris.insert(app.editor.document_buffer_id, uri.clone());
         // Activate lsp-mode so the M.5.6 render gate doesn't
         // suppress what we're about to paint. Idempotent: tests
         // that have already toggled it on no-op here.
@@ -5106,7 +5106,7 @@ mod tests {
             tags: None,
             data: None,
         };
-        app.lsp_diagnostics.apply(lattice_lsp::DiagnosticEvent {
+        app.editor.lsp_diagnostics.apply(lattice_lsp::DiagnosticEvent {
             server_id: std::sync::Arc::from("rust"),
             uri,
             version: None,
@@ -5189,7 +5189,7 @@ mod tests {
         // Seed a URI so the mode gate's URI check passes (the
         // overlay also checks lsp_document_highlight_mode).
         let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
-        app.buffer_uris.insert(app.editor.document_buffer_id, uri);
+        app.editor.buffer_uris.insert(app.editor.document_buffer_id, uri);
         if !app.lsp_mode_enabled_for(app.editor.document_buffer_id) {
             app.toggle_mode_by_name("lsp-mode");
         }
@@ -5259,7 +5259,7 @@ mod tests {
         use std::str::FromStr;
         let mut app = app_with("let x = 1;\n", 5);
         let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
-        app.buffer_uris.insert(app.editor.document_buffer_id, uri);
+        app.editor.buffer_uris.insert(app.editor.document_buffer_id, uri);
         if !app.lsp_mode_enabled_for(app.editor.document_buffer_id) {
             app.toggle_mode_by_name("lsp-mode");
         }
@@ -5307,7 +5307,7 @@ mod tests {
         use std::str::FromStr;
         let mut app = app_with("fn main() {}\n", 5);
         let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
-        app.buffer_uris.insert(app.editor.document_buffer_id, uri);
+        app.editor.buffer_uris.insert(app.editor.document_buffer_id, uri);
         if !app.lsp_mode_enabled_for(app.editor.document_buffer_id) {
             app.toggle_mode_by_name("lsp-mode");
         }
@@ -5367,7 +5367,7 @@ mod tests {
         use std::str::FromStr;
         let mut app = app_with("fn main() {}\n", 5);
         let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
-        app.buffer_uris.insert(app.editor.document_buffer_id, uri);
+        app.editor.buffer_uris.insert(app.editor.document_buffer_id, uri);
         if !app.lsp_mode_enabled_for(app.editor.document_buffer_id) {
             app.toggle_mode_by_name("lsp-mode");
         }
@@ -5410,7 +5410,7 @@ mod tests {
         use std::str::FromStr;
         let mut app = app_with("let x = 1;\n", 5);
         let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
-        app.buffer_uris.insert(app.editor.document_buffer_id, uri);
+        app.editor.buffer_uris.insert(app.editor.document_buffer_id, uri);
         if !app.lsp_mode_enabled_for(app.editor.document_buffer_id) {
             app.toggle_mode_by_name("lsp-mode");
         }
@@ -5457,7 +5457,7 @@ mod tests {
         use std::str::FromStr;
         let mut app = app_with("let x = x;\n", 5);
         let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
-        app.buffer_uris.insert(app.editor.document_buffer_id, uri);
+        app.editor.buffer_uris.insert(app.editor.document_buffer_id, uri);
         if !app.lsp_mode_enabled_for(app.editor.document_buffer_id) {
             app.toggle_mode_by_name("lsp-mode");
         }
@@ -5594,7 +5594,7 @@ mod tests {
         // returns an empty handle list, so the indicator stays empty.
         let fake_uri =
             <lattice_lsp::Uri as std::str::FromStr>::from_str("file:///tmp/x.rs").unwrap();
-        app.buffer_uris.insert(app.editor.document_buffer_id, fake_uri);
+        app.editor.buffer_uris.insert(app.editor.document_buffer_id, fake_uri);
         assert_eq!(active_lsp_segment(&app), "");
     }
 

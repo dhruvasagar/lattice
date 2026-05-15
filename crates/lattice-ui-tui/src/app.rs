@@ -80,7 +80,6 @@ use lattice_grammar::YankKind;
 pub use lattice_grammar::ModalState;
 pub use lattice_grammar::command::CommandInvocation;
 use lattice_grammar::register::Register;
-use lattice_lsp::{DiagnosticsLayer, LspLogger, LspSupervisorHandle};
 use lattice_protocol::position::Position;
 #[cfg(test)]
 use lattice_protocol::selection::{Selection, SelectionSet};
@@ -964,13 +963,9 @@ pub struct App {
     /// the logger snapshot so `*lsp*` / `*lsp:<server>*` /
     /// `*lsp:<server>:trace*` views update live without the
     /// user having to reopen them.
-    pub lsp_log_event_rx: Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspLogPushed>>,
-    /// Receiver for [`lattice_lsp::LspProgressUpdate`] events
-    /// (4.4.c). Drained once per main-loop tick by
-    /// [`Self::drain_lsp_progress_events`]; the modeline reads
-    /// the accumulated state on each render.
-    pub lsp_progress_event_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspProgressUpdate>>,
+    // 5.B.18b: `lsp_log_event_rx`, `lsp_progress_event_rx`
+    // moved to `editor.{lsp_log_event_rx,
+    // lsp_progress_event_rx}`.
     /// Receiver for [`lattice_lsp::LspBufferDetached`] events
     /// published by `LspMode::on_deactivate`. Drained once per
     /// main-loop tick by [`Self::drain_lsp_detach_events`]; for
@@ -1188,98 +1183,30 @@ pub struct App {
     /// silently dropped work via `try_lock` whenever an async
     /// `:e <path>` held the mutex across the LSP `initialize`
     /// handshake -- is gone.
-    pub lsp: LspSupervisorHandle,
+    // 5.B.18b: `lsp`, `lsp_diagnostics`, `lsp_logger`
+    // moved to `editor.{lsp, lsp_diagnostics, lsp_logger}`.
     /// 4.4.l.2: file-watcher service backing
-    /// `workspace/didChangeWatchedFiles`. `None` until the first
-    /// server registers at least one
-    /// `workspace/didChangeWatchedFiles` capability; auto-spawned
-    /// by `refresh_lsp_file_watcher`. Tearing the App down drops
-    /// this, which tears down the notify background thread.
+    /// `workspace/didChangeWatchedFiles`. Held on App for now;
+    /// migrates when its inner type
+    /// (`crate::app::lsp_watcher::LspFileWatcher`) relocates to
+    /// a host module.
     pub lsp_file_watcher: Option<crate::app::lsp_watcher::LspFileWatcher>,
-    /// Cloned handle to the supervisor's diagnostics layer.
-    /// `DiagnosticsLayer` is Clone-via-Arc-internal so this is
-    /// cheap; the renderer's per-frame `app.lsp_diagnostics
-    /// .line_severity(...)` reads happen without taking the
-    /// supervisor lock.
-    pub lsp_diagnostics: DiagnosticsLayer,
-    /// Cloned handle to the supervisor's logger. Same lock-
-    /// free read pattern as `lsp_diagnostics`.
-    pub lsp_logger: LspLogger,
-    /// Server-initiated `workspace/applyEdit` request stream
-    /// (Phase 4.3). Drained per-frame by
-    /// [`Self::drain_inbound_apply_edits`]: each request lands
-    /// as an [`lattice_lsp::InboundApplyEdit`] carrying a
-    /// `WorkspaceEdit` + a oneshot the App fills with the
-    /// outcome. The receiver is taken once at App init; `None`
-    /// after the runtime hands it off to the drain (we
-    /// take-and-restore around `try_recv` so the drain's loop
-    /// can run without holding `&mut self` on the receiver
-    /// itself; matches `drain_option_changes` etc.).
-    pub pending_apply_edit_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::InboundApplyEdit>>,
-    /// Server-initiated `workspace/configuration` request stream
-    /// (Phase 4.1 follow-up). Drained per-frame by
-    /// [`Self::drain_inbound_configuration_requests`]; each
-    /// request walks the cached TOML tree at `lsp.<section>`
-    /// for every requested item and replies with the
-    /// per-section `serde_json::Value`s via the embedded
-    /// oneshot. Same take-and-restore pattern as the other
-    /// drain channels.
-    pub pending_configuration_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::InboundConfigurationRequest>>,
-    /// 4.4.b: server-initiated `window/showDocument` request
-    /// stream. Drained per-frame by
-    /// [`Self::drain_inbound_show_documents`]; each request
-    /// opens the supplied URI (in a buffer for `file://`, in
-    /// the OS handler when `external` is set) and writes
-    /// `{ success }` back via the oneshot.
-    pub pending_show_document_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::InboundShowDocument>>,
-    /// 4.4.b: server-initiated `window/showMessageRequest`
-    /// request stream. Drained per-frame by
-    /// [`Self::drain_inbound_show_message_requests`]; each
-    /// request opens an action picker and writes the user's
-    /// selection (or `None` on dismiss) back via the oneshot.
-    pub pending_show_message_request_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::InboundShowMessageRequest>>,
-    /// 4.4.b picker UX: in-flight `showMessageRequest` slots
-    /// keyed by an App-local `u32` request id. The drain
-    /// registers each inbound request here before opening the
-    /// picker; `do_picker_accept` (AcceptShowMessageAction arm)
-    /// and `do_picker_dismiss` (LspShowMessageRequest source
-    /// arm) pull the slot back out and send the LSP response.
-    /// Slots stay in the map until exactly one of accept /
-    /// dismiss / drop fires for them.
-    pub lsp_pending_show_message_requests:
-        std::collections::HashMap<u32, lattice_lsp::InboundShowMessageRequest>,
-    /// 4.4.b picker UX: FIFO of `request_id`s waiting for the
-    /// picker slot. Only one SMR picker is open at a time; the
-    /// drain enqueues here when a request lands while another
-    /// picker is already open, and the accept/dismiss arms pop
-    /// the next id off after they finish.
-    pub lsp_show_message_request_queue: std::collections::VecDeque<u32>,
-    /// 4.4.b picker UX: monotonically-incrementing request id
-    /// counter for `lsp_pending_show_message_requests`. Wraps
-    /// on `u32::MAX` -- with one-at-a-time picker UX the
-    /// collision window is effectively zero, but the assignment
-    /// path still checks for an existing id before insert.
-    pub lsp_next_show_message_request_id: u32,
-    /// Merged TOML tree of every loaded config file (user +
-    /// project, project deep-merged on top). Populated by
-    /// [`Self::load_persistent_config`] from the loader's new
-    /// `LoadOutcome.raw_tree` field. The
-    /// `workspace/configuration` drain walks this by
-    /// `lsp.<section>` to surface server-namespaced settings
-    /// the typed registry doesn't pre-register.
-    pub lsp_config_tree: toml::Table,
-    /// `BufferId` → `Uri` map. Maintained by buffer-open /
-    /// buffer-close paths; the supervisor's API is keyed by
-    /// `Uri`, so this is the bridge. Set eagerly when a
-    /// path-bearing buffer is opened (the URI is a
-    /// deterministic `uri_from_path`); attachment of an actual
-    /// LSP server happens asynchronously via the
-    /// `Event::DocumentOpened` attach driver.
-    pub buffer_uris: std::collections::HashMap<BufferId, lattice_lsp::Uri>,
+    // 5.B.18b: `pending_apply_edit_rx`,
+    // `pending_configuration_rx`,
+    // `pending_show_document_rx`,
+    // `pending_show_message_request_rx` moved to
+    // `editor.{pending_apply_edit_rx,
+    // pending_configuration_rx, pending_show_document_rx,
+    // pending_show_message_request_rx}`.
+    // 5.B.18b: `lsp_pending_show_message_requests` moved to
+    // `editor.lsp_pending_show_message_requests`.
+    // 5.B.18b: `lsp_show_message_request_queue`,
+    // `lsp_next_show_message_request_id` moved to
+    // `editor.{lsp_show_message_request_queue,
+    // lsp_next_show_message_request_id}`.
+    // 5.B.18b: `lsp_config_tree` moved to
+    // `editor.lsp_config_tree`.
+    // 5.B.18b: `buffer_uris` moved to `editor.buffer_uris`.
 }
 
 /// One open completion popup (DESIGN.md §5.11.3 vertico-style
@@ -4172,7 +4099,7 @@ mod tests {
                     .as_path(),
             ),
         );
-        app.lsp_logger.log(
+        app.editor.lsp_logger.log(
             Some(&instance),
             lattice_lsp::LogLevel::Warn,
             lattice_lsp::LogSource::Stderr,
@@ -4208,14 +4135,14 @@ mod tests {
                     .as_path(),
             ),
         );
-        app.lsp_logger.enable_trace(instance.clone());
-        app.lsp_logger.log(
+        app.editor.lsp_logger.enable_trace(instance.clone());
+        app.editor.lsp_logger.log(
             Some(&instance),
             lattice_lsp::LogLevel::Trace,
             lattice_lsp::LogSource::Trace,
             "→ Request id=1",
         );
-        app.lsp_logger.log(
+        app.editor.lsp_logger.log(
             Some(&instance),
             lattice_lsp::LogLevel::Info,
             lattice_lsp::LogSource::Client,
@@ -4245,14 +4172,14 @@ mod tests {
                     .as_path(),
             ),
         );
-        app.lsp_logger.enable_trace(instance.clone());
-        app.lsp_logger.log(
+        app.editor.lsp_logger.enable_trace(instance.clone());
+        app.editor.lsp_logger.log(
             Some(&instance),
             lattice_lsp::LogLevel::Trace,
             lattice_lsp::LogSource::Trace,
             "→ Request id=1",
         );
-        app.lsp_logger.log(
+        app.editor.lsp_logger.log(
             Some(&instance),
             lattice_lsp::LogLevel::Info,
             lattice_lsp::LogSource::Client,

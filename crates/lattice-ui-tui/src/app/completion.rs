@@ -313,7 +313,7 @@ impl App {
         // the cursor's UTF-16 position can't be derived (out-
         // of-range -- shouldn't happen in practice).
         let uri_string: Option<String> = self
-            .buffer_uris
+            .editor.buffer_uris
             .get(&self.editor.document_buffer_id)
             .map(|u| u.as_str().to_string());
         let lsp_position_pair: Option<(u32, u32)> = {
@@ -894,10 +894,10 @@ impl App {
         }
         // Walk attached servers; check if the originating one
         // (by id) advertises `completionProvider.resolveProvider`.
-        let Some(uri) = self.buffer_uris.get(&self.editor.document_buffer_id) else {
+        let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id) else {
             return false;
         };
-        for h in self.lsp.servers_for(uri) {
+        for h in self.editor.lsp.servers_for(uri) {
             if h.server_id() == meta.server_id.as_str() {
                 return h.capabilities().completion_resolve_provider();
             }

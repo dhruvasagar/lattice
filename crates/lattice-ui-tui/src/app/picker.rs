@@ -322,12 +322,12 @@ impl App {
     /// fall-through (degrade to empty if supervisor was
     /// busy) is gone -- the snapshot is always readable.
     fn snapshot_lsp_instances(&mut self) -> Vec<lattice_picker::LspInstanceRow> {
-        let actors = self.lsp.running_actors();
+        let actors = self.editor.lsp.running_actors();
         actors
             .into_iter()
             .map(|((workspace, server_id), handle)| {
                 let key = (workspace.clone(), server_id.clone());
-                let buffer_count = self.lsp.buffer_count_for(&key);
+                let buffer_count = self.editor.lsp.buffer_count_for(&key);
                 let caps = handle.capabilities();
                 let cap_summary = lattice_lsp::help_views::summarise_capabilities(&caps);
                 lattice_picker::LspInstanceRow {

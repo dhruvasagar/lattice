@@ -2417,7 +2417,7 @@ mod tests {
         // reaches the supervisor.
         use std::str::FromStr;
         let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
-        app.buffer_uris.insert(app.editor.document_buffer_id, uri.clone());
+        app.editor.buffer_uris.insert(app.editor.document_buffer_id, uri.clone());
         // Test-only: register the URI directly with the
         // supervisor under a mock actor. Without a real
         // ServerHandle attach_handle requires one, so instead
@@ -2428,7 +2428,7 @@ mod tests {
         let _ = app.apply_edit_blocking(edit.clone());
         // Buffer mapping unchanged; record_edit is best-effort
         // (skips if no actor attached for the URI).
-        assert_eq!(app.buffer_uris.get(&app.editor.document_buffer_id), Some(&uri));
+        assert_eq!(app.editor.buffer_uris.get(&app.editor.document_buffer_id), Some(&uri));
     }
 
     #[test]

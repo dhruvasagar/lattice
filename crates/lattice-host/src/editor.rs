@@ -633,7 +633,7 @@ pub struct Editor {
     pub pending_show_message_request_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::InboundShowMessageRequest>>,
     pub lsp_pending_show_message_requests:
-        HashMap<u32, tokio::sync::oneshot::Sender<Option<lsp_types::MessageActionItem>>>,
+        HashMap<u32, lattice_lsp::InboundShowMessageRequest>,
     pub lsp_show_message_request_queue: std::collections::VecDeque<u32>,
     pub lsp_next_show_message_request_id: u32,
     // ---- LSP per-feature request channels (rx + token pairs) ----

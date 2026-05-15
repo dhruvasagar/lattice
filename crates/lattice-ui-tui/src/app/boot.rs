@@ -672,6 +672,15 @@ impl App {
                 buffers,
                 active_buffer: BufferKind::Document,
                 viewport_height: 1,
+                lsp,
+                lsp_diagnostics,
+                lsp_logger,
+                lsp_log_event_rx: Some(lsp_log_event_rx),
+                lsp_progress_event_rx: Some(lsp_progress_event_rx),
+                pending_apply_edit_rx: Some(lsp_apply_edit_rx),
+                pending_configuration_rx: Some(lsp_configuration_rx),
+                pending_show_document_rx: Some(lsp_show_document_rx),
+                pending_show_message_request_rx: Some(lsp_show_message_request_rx),
                 ..lattice_host::editor::Editor::default()
             },
             document,
@@ -719,8 +728,6 @@ impl App {
             completion_in_path_context: false,
             active_snippet: None,
             snippet_dirs: Vec::new(),
-            lsp_log_event_rx: Some(lsp_log_event_rx),
-            lsp_progress_event_rx: Some(lsp_progress_event_rx),
             pending_lsp_detach_rx: Some(lsp_detach_rx),
             pending_mode_lifecycle_rx: Some(mode_lifecycle_rx),
             pending_inlay_hint_refresh_rx: Some(lsp_inlay_refresh_rx),
@@ -749,20 +756,8 @@ impl App {
             pending_pull_diagnostics_token: None,
             pending_pull_diagnostics_rx: None,
             pending_diagnostic_refresh_rx: Some(lsp_diagnostic_refresh_rx),
-            lsp,
             lsp_file_watcher: None,
             pending_moniker_rx: None,
-            lsp_diagnostics,
-            lsp_logger,
-            pending_apply_edit_rx: Some(lsp_apply_edit_rx),
-            pending_configuration_rx: Some(lsp_configuration_rx),
-            pending_show_document_rx: Some(lsp_show_document_rx),
-            pending_show_message_request_rx: Some(lsp_show_message_request_rx),
-            lsp_pending_show_message_requests: std::collections::HashMap::new(),
-            lsp_show_message_request_queue: std::collections::VecDeque::new(),
-            lsp_next_show_message_request_id: 0,
-            lsp_config_tree: toml::Table::new(),
-            buffer_uris: std::collections::HashMap::new(),
         };
         // Sync derived theme styles from the freshly-registered
         // ui.* options so the renderer's first frame uses the
@@ -1031,7 +1026,7 @@ impl App {
         // user files at deep-merge time so an `[lsp.X.Y]`
         // sibling key in the user config survives a project
         // override of `[lsp.X.Z]`.
-        self.lsp_config_tree = outcome.raw_tree;
+        self.editor.lsp_config_tree = outcome.raw_tree;
         // Apply editor-side LSP options that live in the same
         // `[lsp]` table as server-namespaced keys. These are scalars
         // the editor consumes itself (not forwarded via

@@ -218,7 +218,7 @@ pub(super) fn write_workspace_config(workspace: &std::path::Path, contents: &str
 pub(super) fn seed_diags_at_lines(app: &mut App, lines: &[u32]) {
     use std::str::FromStr;
     let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
-    app.buffer_uris.insert(app.editor.document_buffer_id, uri.clone());
+    app.editor.buffer_uris.insert(app.editor.document_buffer_id, uri.clone());
     let diags: Vec<lattice_lsp::Diagnostic> = lines
         .iter()
         .map(|line| lattice_lsp::Diagnostic {
@@ -242,7 +242,7 @@ pub(super) fn seed_diags_at_lines(app: &mut App, lines: &[u32]) {
             data: None,
         })
         .collect();
-    app.lsp_diagnostics.apply(lattice_lsp::DiagnosticEvent {
+    app.editor.lsp_diagnostics.apply(lattice_lsp::DiagnosticEvent {
         server_id: std::sync::Arc::from("rust"),
         uri,
         version: None,

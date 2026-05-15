@@ -204,7 +204,7 @@ impl App {
             // is path-driven.
             None => return,
         };
-        if !self.lsp.has_server_for_path(&path) {
+        if !self.editor.lsp.has_server_for_path(&path) {
             return;
         }
         self.activate_mode_by_id(buffer_id, lattice_lsp::modes::LspMode::mode_id());

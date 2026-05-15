@@ -11,20 +11,24 @@
 //!   concrete `App` wrapper alongside its renderer-specific
 //!   caches (`theme`, `pane_render_registry`, ...).
 //!
-//! This file lands empty. Subsequent slices (5.B.4 onwards)
-//! relocate field clusters one at a time from `App` into
-//! `Editor`, moving the methods that touch only those fields
-//! into `impl Editor` here. Each per-cluster commit ships
-//! green: methods that still live in `impl App` access
-//! migrated fields via `self.editor.foo`; methods that have
-//! moved access them via `self.foo` (now an inherent method
-//! on `Editor`).
+//! Subsequent slices (5.B.4 onwards) relocate field clusters
+//! one at a time from `App` into `Editor`, moving the methods
+//! that touch only those fields into `impl Editor` here. Each
+//! per-cluster commit ships green: methods that still live in
+//! `impl App` access migrated fields via `self.editor.foo`;
+//! methods that have moved access them via `self.foo` (now an
+//! inherent method on `Editor`).
 //!
 //! The empty-now/grows-later shape is intentional: it lets
 //! the wrapper field `editor: Editor` get added to `App`
 //! before any field actually moves, giving every subsequent
 //! migration a target that already exists in the type
 //! system.
+
+use std::collections::HashMap;
+
+use crate::action::Action;
+use crate::state::MacroRecording;
 
 /// Renderer-agnostic editor state.
 ///
@@ -35,15 +39,33 @@
 /// takes `&mut Editor` directly; renderer-side code takes
 /// `&mut App` and reaches the editor via `app.editor`.
 ///
-/// **Field set at 5.B.3:** empty. The struct exists as a
-/// destination so subsequent per-cluster migrations have a
-/// type to move fields into. As clusters land, this struct
-/// grows; in parallel, `App`'s direct field set shrinks.
+/// **Field set grows per-cluster.** Each 5.B.x slice
+/// migrates a logical cluster of fields here from
+/// `lattice-ui-tui::App`. As clusters land, this struct
+/// accumulates state; in parallel, `App`'s direct field set
+/// shrinks. When the migration completes, every renderer-
+/// agnostic field on App lives here, every renderer-agnostic
+/// method on App lives in this crate's `impl Editor` blocks,
+/// and App becomes a thin wrapper holding `editor: Editor`
+/// plus renderer-specific caches only.
 ///
-/// **End state (after the per-cluster migration finishes):**
-/// every renderer-agnostic field on App lives here, every
-/// renderer-agnostic method on App lives in this crate's
-/// `impl Editor` blocks. App becomes a thin wrapper holding
-/// `editor: Editor` plus renderer-specific caches only.
+/// **Clusters landed so far:**
+/// - 5.B.4 -- macro recording state (`macros`,
+///   `macro_recording`, `last_played_macro`).
 #[derive(Debug, Default)]
-pub struct Editor {}
+pub struct Editor {
+    /// Completed macro recordings keyed by register name.
+    /// Replays go through the dispatch layer's `PlayMacro`
+    /// action handler. v1 records `Action` streams; insert-
+    /// mode keystrokes ARE captured (every Action::Insert is
+    /// recorded), but dot-repeat-style replay of insert content
+    /// from `c`/`i`/`a` remains a §15 follow-up.
+    pub macros: HashMap<char, Vec<Action>>,
+    /// In-flight macro recording. `Some` while between
+    /// `q<reg>` start and the matching `q` stop; pushed
+    /// Actions append to `actions`.
+    pub macro_recording: Option<MacroRecording>,
+    /// The most recently played macro register, for `@@`
+    /// repeat.
+    pub last_played_macro: Option<char>,
+}

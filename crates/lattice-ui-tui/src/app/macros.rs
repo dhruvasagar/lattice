@@ -23,11 +23,11 @@ impl App {
             );
             return;
         }
-        if self.macro_recording.is_some() {
+        if self.editor.macro_recording.is_some() {
             // Already recording -- ignore (vim treats this as a no-op).
             return;
         }
-        self.macro_recording = Some(MacroRecording {
+        self.editor.macro_recording = Some(MacroRecording {
             register,
             actions: Vec::new(),
         });
@@ -35,11 +35,11 @@ impl App {
     }
 
     pub(super) fn do_stop_macro_record(&mut self) {
-        let Some(rec) = self.macro_recording.take() else {
+        let Some(rec) = self.editor.macro_recording.take() else {
             return;
         };
         let label = rec.register;
-        self.macros.insert(rec.register, rec.actions);
+        self.editor.macros.insert(rec.register, rec.actions);
         self.set_message(EchoLevel::Info, format!("recorded @{label}"));
     }
 
@@ -51,14 +51,14 @@ impl App {
             );
             return;
         }
-        let Some(actions) = self.macros.get(&register).cloned() else {
+        let Some(actions) = self.editor.macros.get(&register).cloned() else {
             self.set_message(EchoLevel::Error, format!("no macro in register {register}"));
             return;
         };
         // Suppress recording-into-current-macro while replaying. (We don't
         // want a `q` started before play to capture the playback's actions
         // -- vim explicitly drops play actions from the recording.)
-        let mut paused = self.macro_recording.take();
+        let mut paused = self.editor.macro_recording.take();
         for action in actions {
             self.apply(action);
             if self.should_quit {
@@ -66,9 +66,9 @@ impl App {
             }
         }
         if let Some(rec) = paused.take() {
-            self.macro_recording = Some(rec);
+            self.editor.macro_recording = Some(rec);
         }
-        self.last_played_macro = Some(register);
+        self.editor.last_played_macro = Some(register);
     }
 }
 
@@ -84,8 +84,8 @@ mod tests {
     fn start_macro_record_seeds_recording_state() {
         let mut a = app_with("hello", 10);
         a.apply(Action::StartMacroRecord('a'));
-        assert!(a.macro_recording.is_some());
-        assert_eq!(a.macro_recording.as_ref().unwrap().register, 'a');
+        assert!(a.editor.macro_recording.is_some());
+        assert_eq!(a.editor.macro_recording.as_ref().unwrap().register, 'a');
     }
 
     #[test]
@@ -94,7 +94,7 @@ mod tests {
         a.apply(Action::StartMacroRecord(' '));
         let msg = a.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Error);
-        assert!(a.macro_recording.is_none());
+        assert!(a.editor.macro_recording.is_none());
     }
 
     #[test]
@@ -103,7 +103,7 @@ mod tests {
         a.apply(Action::StartMacroRecord('a'));
         a.apply(Action::StartMacroRecord('b'));
         // Still recording into 'a'.
-        assert_eq!(a.macro_recording.as_ref().unwrap().register, 'a');
+        assert_eq!(a.editor.macro_recording.as_ref().unwrap().register, 'a');
     }
 
     #[test]
@@ -114,8 +114,8 @@ mod tests {
         a.apply(Action::Insert("X".into()));
         a.apply(Action::EnterMode(ModalState::Normal));
         a.apply(Action::StopMacroRecord);
-        assert!(a.macro_recording.is_none());
-        let actions = a.macros.get(&'a').unwrap();
+        assert!(a.editor.macro_recording.is_none());
+        let actions = a.editor.macros.get(&'a').unwrap();
         assert!(!actions.is_empty());
     }
 
@@ -180,7 +180,7 @@ mod tests {
         a.apply(Action::Insert("z".into()));
         a.apply(Action::EnterMode(ModalState::Normal));
         a.apply(Action::StopMacroRecord);
-        let actions = a.macros.get(&'a').unwrap();
+        let actions = a.editor.macros.get(&'a').unwrap();
         for action in actions {
             assert!(!matches!(
                 action,

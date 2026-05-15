@@ -170,7 +170,7 @@ impl App {
             "position-history depth: {}",
             self.position_history.len()
         ));
-        lines.push(format!("macros stored:  {}", self.macros.len()));
+        lines.push(format!("macros stored:  {}", self.editor.macros.len()));
         lines.push(format!("folds:          {}", self.folds.len()));
         lines.push(format!(
             "options:        number={}  relativenumber={}",

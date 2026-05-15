@@ -42,7 +42,7 @@ pub(super) fn press(app: &mut App, event: crossterm::event::KeyEvent) {
         builtins: &app.builtins,
         pending_count: app.pending_count,
         op_count: app.op_count,
-        recording_macro: app.macro_recording.is_some(),
+        recording_macro: app.editor.macro_recording.is_some(),
         active_buffer: app.active_buffer,
         completion_open: app.completion_state.is_some(),
         chord_capture: app.chord_capture_active(),

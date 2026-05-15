@@ -193,7 +193,7 @@ impl App {
         // While a macro recording is in flight, capture every Action
         // EXCEPT the recording-management ones themselves (otherwise the
         // recording would include "stop recording" or recurse on play).
-        if let Some(rec) = self.macro_recording.as_mut()
+        if let Some(rec) = self.editor.macro_recording.as_mut()
             && !matches!(
                 action,
                 Action::StartMacroRecord(_)
@@ -487,7 +487,7 @@ impl App {
             Action::StopMacroRecord => self.do_stop_macro_record(),
             Action::PlayMacro(reg) => self.do_play_macro(reg),
             Action::PlayLastMacro => {
-                if let Some(reg) = self.last_played_macro {
+                if let Some(reg) = self.editor.last_played_macro {
                     self.do_play_macro(reg);
                 } else {
                     self.set_message(EchoLevel::Error, "no previous macro".to_string());

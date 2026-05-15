@@ -775,17 +775,9 @@ pub struct App {
     /// result drain or multi-result picker accept). Cleared on
     /// picker dismiss / nav cancellation / drain with no results.
     pub pending_tag_origin: Option<TagStackEntry>,
-    /// Macros: completed recordings keyed by register name. Replays go
-    /// through `do_play_macro`. v1 records `Action` streams; insert-mode
-    /// keystrokes ARE captured (every Action::Insert is recorded), but
-    /// dot-repeat-style replay of insert content from `c`/`i`/`a`
-    /// remains a §15 follow-up.
-    pub macros: HashMap<char, Vec<Action>>,
-    /// In-flight macro recording. `Some` while between `q<reg>` start
-    /// and the matching `q` stop; pushed Actions append to `actions`.
-    pub macro_recording: Option<MacroRecording>,
-    /// The most recently played macro register, for `@@` repeat.
-    pub last_played_macro: Option<char>,
+    // Phase 5.B.4: `macros`, `macro_recording`,
+    // `last_played_macro` moved to `editor.macros` /
+    // `editor.macro_recording` / `editor.last_played_macro`.
     /// Last f/F/t/T find on this buffer, for `;` / `,`.
     pub last_find: Option<LastFind>,
     /// Manual folds. v1 supports non-nested folds defined by line range.

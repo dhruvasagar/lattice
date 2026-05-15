@@ -48,5 +48,11 @@ pub mod modes;
 pub mod oil;
 pub mod pane;
 pub mod popup;
+pub mod renderer;
 pub mod state;
 pub mod ui;
+
+// Re-export the host-side Renderer trait at the crate root for
+// the conventional `lattice_host::Renderer` path renderer
+// crates use when implementing.
+pub use renderer::{MinimalRenderer, Renderer};

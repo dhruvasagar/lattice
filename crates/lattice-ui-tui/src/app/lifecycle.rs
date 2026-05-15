@@ -49,10 +49,10 @@ impl App {
     /// destination's entry. No-op if `id` is already active or
     /// not registered.
     pub fn activate_document(&mut self, id: BufferId) {
-        if id == self.document_buffer_id && matches!(self.active_buffer, BufferKind::Document) {
+        if id == self.editor.document_buffer_id && matches!(self.editor.active_buffer, BufferKind::Document) {
             return;
         }
-        if !self.buffers.contains_document(id) {
+        if !self.editor.buffers.contains_document(id) {
             self.set_message(EchoLevel::Error, format!("buffer #{} not a document", id.0));
             return;
         }
@@ -64,8 +64,8 @@ impl App {
         // file-tree leaves it as Some (stashed via
         // snapshot_active_document). The "is the entry stashed?"
         // check is `entry.editor.syntax.is_some()`; folds piggyback.
-        if id == self.document_buffer_id {
-            self.active_buffer = BufferKind::Document;
+        if id == self.editor.document_buffer_id {
+            self.editor.active_buffer = BufferKind::Document;
             let pane = self.pane_tree.active_mut();
             pane.buffer = BufferKind::Document;
             pane.buffer_id = id;
@@ -109,7 +109,7 @@ impl App {
         // registry lock so we don't hold the lock past the
         // borrow.
         self.document = self
-            .buffers
+            .editor.buffers
             .document_handle(id)
             .expect("contains_document lookup above succeeded");
         // Rebuild the cache against the activated document's
@@ -143,7 +143,7 @@ impl App {
             .and_then(|l| l.get::<crate::modes::DocumentFolds>())
             .map(|f| f.0.clone())
             .unwrap_or_default();
-        self.document_buffer_id = id;
+        self.editor.document_buffer_id = id;
         let pane = self.pane_tree.active_mut();
         pane.buffer = BufferKind::Document;
         pane.buffer_id = id;
@@ -151,8 +151,8 @@ impl App {
         self.editor.current_match = None;
         self.editor.all_matches.clear();
         self.editor.search_line = None;
-        self.cursor = Position::ZERO;
-        self.scroll = 0;
+        self.editor.cursor = Position::ZERO;
+        self.editor.scroll = 0;
         self.load_active_pane();
         // Single principled hook for everything that needs to
         // come up with the buffer (parse, folds, highlight cache).
@@ -176,7 +176,7 @@ impl App {
     /// load the tree's stash; help buffers go through
     /// `activate_help_in_pane`.
     pub fn activate_buffer(&mut self, id: BufferId) {
-        let Some(kind) = self.buffers.kind_of(id) else {
+        let Some(kind) = self.editor.buffers.kind_of(id) else {
             self.set_message(EchoLevel::Error, format!("buffer #{} not found", id.0));
             return;
         };
@@ -203,23 +203,23 @@ impl App {
     /// stashed cursor / scroll load into the tree's hot fields
     /// via `load_active_pane`.
     pub fn activate_file_tree(&mut self, id: BufferId) {
-        if !self.buffers.contains_file_tree(id) {
+        if !self.editor.buffers.contains_file_tree(id) {
             self.set_message(EchoLevel::Error, format!("buffer #{} not a tree", id.0));
             return;
         }
-        if id == self.active_pane_buffer_id() && matches!(self.active_buffer, BufferKind::FileTree)
+        if id == self.active_pane_buffer_id() && matches!(self.editor.active_buffer, BufferKind::FileTree)
         {
             return;
         }
         self.snapshot_active_pane();
         self.snapshot_active_document();
         let (stash_cursor, stash_scroll) = self
-            .buffers
+            .editor.buffers
             .with_file_tree(id, |t| (t.cursor, t.scroll as u32))
             .unwrap_or((Position::ZERO, 0));
-        self.cursor = stash_cursor;
-        self.scroll = stash_scroll;
-        self.active_buffer = BufferKind::FileTree;
+        self.editor.cursor = stash_cursor;
+        self.editor.scroll = stash_scroll;
+        self.editor.active_buffer = BufferKind::FileTree;
         let pane = self.pane_tree.active_mut();
         pane.buffer = BufferKind::FileTree;
         pane.buffer_id = id;
@@ -229,18 +229,18 @@ impl App {
 
     /// Switch the active pane to the oil buffer with `id`.
     pub fn activate_oil(&mut self, id: BufferId) {
-        let Some((oil_cursor, oil_scroll)) = self.buffers.with_oil(id, |o| (o.cursor, o.scroll))
+        let Some((oil_cursor, oil_scroll)) = self.editor.buffers.with_oil(id, |o| (o.cursor, o.scroll))
         else {
             return;
         };
-        self.active_buffer = BufferKind::Oil;
+        self.editor.active_buffer = BufferKind::Oil;
         let pane = self.pane_tree.active_mut();
         pane.buffer = BufferKind::Oil;
         pane.buffer_id = id;
         pane.cursor = oil_cursor;
         pane.scroll = oil_scroll as u32;
-        self.cursor = oil_cursor;
-        self.scroll = oil_scroll as u32;
+        self.editor.cursor = oil_cursor;
+        self.editor.scroll = oil_scroll as u32;
     }
 
     /// Switch the active pane to an existing help buffer in the
@@ -249,7 +249,7 @@ impl App {
     /// HelpBuffer is mirrored into `self.editor.popup_buffer` so the
     /// existing keymap + render paths transparently target it.
     pub(super) fn activate_help_in_pane(&mut self, id: BufferId) {
-        if !self.buffers.contains_help(id) {
+        if !self.editor.buffers.contains_help(id) {
             self.set_message(
                 EchoLevel::Error,
                 format!("buffer #{} not a help buffer", id.0),
@@ -261,8 +261,8 @@ impl App {
         // don't want every cursor over a candidate to bloat the
         // jump list. The real push happens on `PickerAccept` if
         // the user commits.
-        if !self.editor.previewing && matches!(self.active_buffer, BufferKind::Document) {
-            let cur = self.cursor;
+        if !self.editor.previewing && matches!(self.editor.active_buffer, BufferKind::Document) {
+            let cur = self.editor.cursor;
             self.push_position_history(cur, PositionSource::AutoJump);
         }
         // Capture pre-activation pane + active state so dismiss
@@ -270,13 +270,13 @@ impl App {
         // Only set when transitioning into help from a non-help
         // buffer; help-to-help transitions (link follows etc.)
         // preserve the original origin.
-        if !matches!(self.active_buffer, BufferKind::Help) {
+        if !matches!(self.editor.active_buffer, BufferKind::Help) {
             let active = self.pane_tree.active();
             self.editor.prev_pane_for_help = Some(PrevPaneState {
                 buffer: active.buffer,
                 buffer_id: active.buffer_id,
-                cursor: self.cursor,
-                scroll: self.scroll,
+                cursor: self.editor.cursor,
+                scroll: self.editor.scroll,
             });
         }
         self.snapshot_active_pane();
@@ -292,16 +292,16 @@ impl App {
         // round-trip back to the same document via
         // activate_document early-returns on matching
         // document_buffer_id.
-        if self.editor.popup_buffer != Some(id) && self.buffers.contains_help(id) {
+        if self.editor.popup_buffer != Some(id) && self.editor.buffers.contains_help(id) {
             self.editor.popup_buffer = Some(id);
         }
         let (stash_cursor, stash_scroll) = self
             .popup_help()
             .map(|h| (h.cursor, h.scroll as u32))
             .unwrap_or((Position::ZERO, 0));
-        self.cursor = stash_cursor;
-        self.scroll = stash_scroll;
-        self.active_buffer = BufferKind::Help;
+        self.editor.cursor = stash_cursor;
+        self.editor.scroll = stash_scroll;
+        self.editor.active_buffer = BufferKind::Help;
         let pane = self.pane_tree.active_mut();
         pane.buffer = BufferKind::Help;
         pane.buffer_id = id;
@@ -342,9 +342,9 @@ impl App {
         // happily activate `*lsp*` as the successor and leave the
         // user staring at a read-only log buffer with no document
         // to return to.
-        let listed = self.buffers.listed_ids_sorted();
+        let listed = self.editor.buffers.listed_ids_sorted();
         let to_remove_is_listed = self
-            .buffers
+            .editor.buffers
             .flags_of(to_remove)
             .map(|f| f.listed)
             .unwrap_or(false);
@@ -356,7 +356,7 @@ impl App {
             return;
         }
         // Dirty check applies to documents only.
-        if !force && self.buffers.document_dirty(to_remove) {
+        if !force && self.editor.buffers.document_dirty(to_remove) {
             self.set_message(
                 EchoLevel::Error,
                 "no write since last change (add ! to override)".to_string(),
@@ -368,7 +368,7 @@ impl App {
         let mut successor = listed.iter().copied().find(|id| *id != to_remove);
         if successor.is_none() {
             successor = self
-                .buffers
+                .editor.buffers
                 .sorted_ids()
                 .into_iter()
                 .find(|id| *id != to_remove);
@@ -381,10 +381,10 @@ impl App {
         // entry so the supervisor sees the URI go away while the
         // BufferId is still mapped.
         self.lsp_close_buffer(to_remove);
-        self.buffers.remove(to_remove);
+        self.editor.buffers.remove(to_remove);
         // Re-point any pane still referencing the removed buffer.
         let new_id = self.active_pane_buffer_id();
-        let new_kind = self.active_buffer;
+        let new_kind = self.editor.active_buffer;
         for pane in self.pane_tree.leaves_mut() {
             if pane.buffer_id == to_remove {
                 pane.buffer_id = new_id;
@@ -398,7 +398,7 @@ impl App {
     /// `:bp` cycle through this; unlisted buffers (vim
     /// `nobuflisted`) are filtered out.
     fn listed_buffer_ids_sorted(&self) -> Vec<BufferId> {
-        self.buffers.listed_ids_sorted()
+        self.editor.buffers.listed_ids_sorted()
     }
 
     fn next_listed_buffer_id(&self) -> Option<BufferId> {
@@ -455,7 +455,7 @@ impl App {
         // If `target` is already open, switch to it. The dirty
         // check only applies when we'd discard the current buffer.
         if let Some(existing_id) = self.find_document_by_path(&target) {
-            if existing_id == self.document_buffer_id {
+            if existing_id == self.editor.document_buffer_id {
                 // Re-edit current: reload from disk (vim's `:e`).
                 if !force && self.document.dirty() {
                     self.set_message(
@@ -488,8 +488,8 @@ impl App {
                 self.editor.last_parsed_text_version = initial_text_version;
                 self.editor.syntax = syntax;
                 self.replace_document_blocking(new_doc);
-                self.cursor = Position::ZERO;
-                self.scroll = 0;
+                self.editor.cursor = Position::ZERO;
+                self.editor.scroll = 0;
                 self.editor.current_match = None;
                 self.editor.all_matches.clear();
                 self.editor.search_line = None;
@@ -541,7 +541,7 @@ impl App {
             };
         let new_handle = spawn_document(new_doc, self.editor.registry.clone());
         let new_id = BufferId::next();
-        self.buffers.insert(BufferEntry {
+        self.editor.buffers.insert(BufferEntry {
             id: new_id,
             flags: BufferFlags::default(),
             data: BufferData::Document(DocumentEntry {
@@ -558,14 +558,14 @@ impl App {
         // hot path.
         self.snapshot_active_pane();
         self.snapshot_active_document();
-        self.active_buffer = BufferKind::Document;
-        self.document_buffer_id = new_id;
+        self.editor.active_buffer = BufferKind::Document;
+        self.editor.document_buffer_id = new_id;
         self.document = new_handle;
         self.snapshot_cache = self.document.snapshot_cache();
         self.editor.syntax = syntax;
         self.editor.last_parsed_text_version = self.document.text_version();
-        self.cursor = Position::ZERO;
-        self.scroll = 0;
+        self.editor.cursor = Position::ZERO;
+        self.editor.scroll = 0;
         self.editor.current_match = None;
         self.editor.all_matches.clear();
         self.editor.search_line = None;
@@ -611,7 +611,7 @@ impl App {
     /// save_blocking / save_as_blocking against the document
     /// actor.
     pub(super) fn do_write(&mut self, path: Option<std::path::PathBuf>) {
-        if matches!(self.active_buffer, BufferKind::Oil) {
+        if matches!(self.editor.active_buffer, BufferKind::Oil) {
             let oil_id = self.active_pane_buffer_id();
             // M.3.2.c.5: dir lives in the OilDir buffer-local
             // (no struct mirror). Read it once and pass into
@@ -625,7 +625,7 @@ impl App {
                 return;
             };
             let dir_display = dir.display().to_string();
-            let result = self.buffers.with_oil_mut(oil_id, |oil| oil.apply(&dir));
+            let result = self.editor.buffers.with_oil_mut(oil_id, |oil| oil.apply(&dir));
             if let Some(r) = result {
                 match r {
                     Ok(()) => self.set_message(
@@ -666,10 +666,10 @@ impl App {
         }
         if !force {
             let dirty_id = self
-                .buffers
+                .editor.buffers
                 .document_ids_sorted()
                 .into_iter()
-                .find(|id| self.buffers.document_dirty(*id));
+                .find(|id| self.editor.buffers.document_dirty(*id));
             if let Some(id) = dirty_id {
                 self.set_message(
                     EchoLevel::Error,
@@ -684,7 +684,7 @@ impl App {
         // BeforeQuit is observation-only in v1 (no veto seam yet).
         // Subscribers see it; the quit proceeds regardless.
         self.editor.event_bus.publish(Event::BeforeQuit);
-        self.should_quit = true;
+        self.editor.should_quit = true;
     }
 
     /// Split the active pane along `orientation`. The new sibling
@@ -755,23 +755,23 @@ impl App {
     /// hot-path fields. `active_buffer` is denormalized from the
     /// pane's `buffer` kind.
     ///
-    /// **Unified hot-path**: `self.cursor` and `self.scroll` are
+    /// **Unified hot-path**: `self.editor.cursor` and `self.editor.scroll` are
     /// the active buffer's, regardless of kind. Help / file-tree
     /// keep their own cursor / scroll fields as **save state** --
     /// updated at the snapshot boundary so the registry record is
-    /// archival-correct, but the *live* cursor is `self.cursor`
+    /// archival-correct, but the *live* cursor is `self.editor.cursor`
     /// for every motion / scroll / search / render path.
     pub(super) fn load_active_pane(&mut self) {
         let pane = *self.pane_tree.active();
-        self.active_buffer = pane.buffer;
-        self.cursor = pane.cursor;
-        self.scroll = pane.scroll;
+        self.editor.active_buffer = pane.buffer;
+        self.editor.cursor = pane.cursor;
+        self.editor.scroll = pane.scroll;
         // Help: restore the registry copy into the hot-path slot
         // if the active pane points at a different help buffer
         // than the one currently mirrored.
         if matches!(pane.buffer, BufferKind::Help)
             && self.editor.popup_buffer != Some(pane.buffer_id)
-            && self.buffers.contains_help(pane.buffer_id)
+            && self.editor.buffers.contains_help(pane.buffer_id)
         {
             self.editor.popup_buffer = Some(pane.buffer_id);
         }
@@ -781,11 +781,11 @@ impl App {
     /// of kind) in a help-style view. The `%` marker points at
     /// whichever buffer the active pane is currently showing.
     pub(super) fn do_list_buffers(&mut self) {
-        let ids = self.buffers.sorted_ids();
+        let ids = self.editor.buffers.sorted_ids();
         let active_id = self.active_pane_buffer_id();
-        let doc_count = self.buffers.document_ids_sorted().len();
-        let tree_count = self.buffers.file_tree_ids_sorted().len();
-        let help_count = self.buffers.help_ids_sorted().len();
+        let doc_count = self.editor.buffers.document_ids_sorted().len();
+        let tree_count = self.editor.buffers.file_tree_ids_sorted().len();
+        let help_count = self.editor.buffers.help_ids_sorted().len();
         let mut lines: Vec<String> = Vec::new();
         lines.push(format!(
             "{} open buffer(s) ({} document, {} tree, {} help):",
@@ -809,7 +809,7 @@ impl App {
             help_title: Option<String>,
         }
         let mut rows: Vec<EntryRow> = Vec::with_capacity(ids.len());
-        self.buffers.for_each(|entry| {
+        self.editor.buffers.for_each(|entry| {
             let (doc_path, doc_dirty) = match &entry.data {
                 BufferData::Document(d) => (d.handle.path(), d.handle.dirty()),
                 _ => (None, false),
@@ -953,7 +953,7 @@ impl App {
     /// Look up a buffer by file path. Used by `:e FILE` to detect
     /// "already open"; later by `:b NAME` for completion.
     pub(super) fn find_document_by_path(&self, path: &std::path::Path) -> Option<BufferId> {
-        self.buffers.document_with_path(path)
+        self.editor.buffers.document_with_path(path)
     }
 
     /// Save the currently-active document's hot-path state
@@ -970,7 +970,7 @@ impl App {
     /// (the visible symptom: opening `:Tree` and pressing `q`
     /// returned to the document with no syntax colours).
     pub(super) fn snapshot_active_document(&mut self) {
-        if !matches!(self.active_buffer, BufferKind::Document) {
+        if !matches!(self.editor.active_buffer, BufferKind::Document) {
             return;
         }
         // M.3.2.c.5: stash mode-state into buffer_locals (the
@@ -979,7 +979,7 @@ impl App {
         // `last_synced_syntax_version` — preserves the syntax
         // worker baseline across a switch-away-and-back so an
         // out-of-order reparse race can't slip through.
-        let id = self.document_buffer_id;
+        let id = self.editor.document_buffer_id;
         let syntax = self.editor.syntax.take();
         let last_parsed = self.editor.last_parsed_text_version;
         let last_synced = self.editor.last_synced_syntax_version;
@@ -1071,19 +1071,19 @@ impl App {
     /// pane's stash. Called before any operation that flips which
     /// pane is active.
     ///
-    /// **Unified hot-path**: `self.cursor` and `self.scroll` are
+    /// **Unified hot-path**: `self.editor.cursor` and `self.editor.scroll` are
     /// the active buffer's regardless of kind, so the snapshot
     /// reads from there uniformly. Help / file-tree records are
     /// also synced into their kind-specific cursor / scroll fields
     /// (and the registry copy for help) so the archival state stays
     /// current; live state always lives on `self`.
     pub(super) fn snapshot_active_pane(&mut self) {
-        let cursor = self.cursor;
-        let scroll = self.scroll;
+        let cursor = self.editor.cursor;
+        let scroll = self.editor.scroll;
         let pane_id = self.pane_tree.active().buffer_id;
         // Mirror live state into the buffer-specific stash + the
         // registry record for archival / cross-pane round-trips.
-        match self.active_buffer {
+        match self.editor.active_buffer {
             BufferKind::Help => {
                 // M.4 (b): the popup buffer lives in the registry;
                 // mutate it in place there. The hot-path slot is
@@ -1091,20 +1091,20 @@ impl App {
                 if let Some(id) = self.editor.popup_buffer
                     && id == pane_id
                 {
-                    self.buffers.with_help_mut(pane_id, |reg| {
+                    self.editor.buffers.with_help_mut(pane_id, |reg| {
                         reg.cursor = cursor;
                         reg.scroll = scroll as usize;
                     });
                 }
             }
             BufferKind::FileTree => {
-                self.buffers.with_file_tree_mut(pane_id, |t| {
+                self.editor.buffers.with_file_tree_mut(pane_id, |t| {
                     t.cursor = cursor;
                     t.scroll = scroll as usize;
                 });
             }
             BufferKind::Oil => {
-                self.buffers.with_oil_mut(pane_id, |o| {
+                self.editor.buffers.with_oil_mut(pane_id, |o| {
                     o.cursor = cursor;
                     o.scroll = scroll as usize;
                 });
@@ -1151,7 +1151,7 @@ impl App {
         // didChange goes to any server; the user's intent
         // ("don't bother LSP for this buffer") is honoured at
         // the editor layer rather than per-server.
-        if self.lsp_mode_enabled_for(self.document_buffer_id) {
+        if self.lsp_mode_enabled_for(self.editor.document_buffer_id) {
             self.editor.event_bus
                 .publish_typed(lattice_lsp::LspDocumentChanged {
                     id: snap.id,
@@ -1214,8 +1214,8 @@ impl App {
         crate::pane::PaneRect {
             x: 0,
             y: 0,
-            width: self.terminal_width.unwrap_or(120),
-            height: self.viewport_height as u16,
+            width: self.editor.terminal_width.unwrap_or(120),
+            height: self.editor.viewport_height as u16,
         }
     }
 
@@ -1235,14 +1235,14 @@ impl App {
         // `name` slot carries synthetic labels for buffers without
         // a physical file (`*lsp*`, `*messages*`, ...); for
         // path-backed Documents it stays None and the path wins.
-        if !self.buffers.contains_document(pane.buffer_id) {
+        if !self.editor.buffers.contains_document(pane.buffer_id) {
             return "[no buffer]".to_string();
         }
         let label = self
-            .buffers
+            .editor.buffers
             .document_path(pane.buffer_id)
             .map(|p| p.display().to_string())
-            .or_else(|| self.buffers.name_of(pane.buffer_id))
+            .or_else(|| self.editor.buffers.name_of(pane.buffer_id))
             .unwrap_or_else(|| "[no name]".to_string());
         // Synthetic buffers (`*lsp*`, `*messages*`, ...) carry a
         // name but no path; their content is streamed by the
@@ -1253,8 +1253,8 @@ impl App {
         // synthetic ones -- the user can't "save" a streaming
         // buffer's current state because new records keep
         // arriving. Suppress the marker for synthetics.
-        let synthetic = self.buffers.name_of(pane.buffer_id).is_some();
-        let dirty = if !synthetic && self.buffers.document_dirty(pane.buffer_id) {
+        let synthetic = self.editor.buffers.name_of(pane.buffer_id).is_some();
+        let dirty = if !synthetic && self.editor.buffers.document_dirty(pane.buffer_id) {
             " [+]"
         } else {
             ""
@@ -1269,7 +1269,7 @@ impl App {
     /// position history with `PluginPush` so `<C-o>` walks back.
     pub(super) fn jump_to_file_line_col(&mut self, path: &std::path::Path, line: u32, col: u32) {
         // Push pre-jump cursor before any state mutates.
-        self.push_position_history(self.cursor, PositionSource::PluginPush);
+        self.push_position_history(self.editor.cursor, PositionSource::PluginPush);
 
         let same_buffer = self.document.path().map(|p| p == path).unwrap_or(false);
         if !same_buffer {
@@ -1284,7 +1284,7 @@ impl App {
         let line = line.min(super::last_addressable_line(&snap.buffer));
         let line_len = super::line_byte_len(&snap.buffer, line);
         let col = col.min(line_len);
-        self.cursor = Position::new(line, col);
+        self.editor.cursor = Position::new(line, col);
     }
 
     /// Adopt a freshly-built help buffer as the active view. Records
@@ -1323,13 +1323,13 @@ impl App {
     /// `syntax`/`folds` snapshots.
     pub(crate) fn open_help_in_pane(&mut self, content: HelpContent) -> BufferId {
         let HelpContent { buffer, metadata } = content;
-        if let Some(existing_id) = self.buffers.help_with_title(&buffer.title) {
+        if let Some(existing_id) = self.editor.buffers.help_with_title(&buffer.title) {
             // Already open: refresh its content (so `:lsp-log` re-
             // run picks up new records) and switch the active pane
             // to it. Re-seed buffer_locals with the fresh metadata
             // so live-tail readers (link / anchor / highlights)
             // see the updated parse.
-            self.buffers
+            self.editor.buffers
                 .with_help_mut(existing_id, |slot| *slot = buffer);
             self.seed_help_metadata_locals(existing_id, metadata);
             self.activate_help_in_pane(existing_id);
@@ -1342,7 +1342,7 @@ impl App {
         // registered `id` here are intentionally different.
         // Production reader sites that look up `buffer_locals` use
         // the registered id; the construction-time id is discarded.
-        self.buffers.insert(BufferEntry {
+        self.editor.buffers.insert(BufferEntry {
             id,
             flags: BufferFlags::default(),
             data: BufferData::Help(buffer),
@@ -1378,17 +1378,17 @@ impl App {
     /// M.3.2.c.4 mirror for the active document: copy the App's
     /// hot-path fields (`syntax`, `last_parsed_text_version`,
     /// `last_synced_syntax_version`, `folds`) into the buffer-
-    /// locals map for `self.document_buffer_id`. Called from
+    /// locals map for `self.editor.document_buffer_id`. Called from
     /// every site that mutates those fields so reader-side flips
     /// (M.3.2.c.4 follow-up + retirement) can resolve mode-owned
     /// state through `buffer_locals` uniformly across active /
     /// inactive buffers.
     #[allow(dead_code)]
     pub(super) fn seed_active_document_locals(&mut self) {
-        if !matches!(self.active_buffer, BufferKind::Document) {
+        if !matches!(self.editor.active_buffer, BufferKind::Document) {
             return;
         }
-        let id = self.document_buffer_id;
+        let id = self.editor.document_buffer_id;
         let syntax = self.editor.syntax.clone();
         let last_parsed = self.editor.last_parsed_text_version;
         let last_synced = self.editor.last_synced_syntax_version;
@@ -1418,7 +1418,7 @@ impl App {
         &self,
         id: BufferId,
     ) -> Option<&lattice_syntax::SyntaxHandle> {
-        if id == self.document_buffer_id && matches!(self.active_buffer, BufferKind::Document) {
+        if id == self.editor.document_buffer_id && matches!(self.editor.active_buffer, BufferKind::Document) {
             return self.editor.syntax.as_ref();
         }
         self.editor.buffer_locals
@@ -1433,7 +1433,7 @@ impl App {
     /// non-document buffers).
     #[allow(dead_code)]
     pub(crate) fn document_folds_for(&self, id: BufferId) -> &[crate::app::Fold] {
-        if id == self.document_buffer_id && matches!(self.active_buffer, BufferKind::Document) {
+        if id == self.editor.document_buffer_id && matches!(self.editor.active_buffer, BufferKind::Document) {
             return &self.folds;
         }
         self.editor.buffer_locals
@@ -1446,7 +1446,7 @@ impl App {
     /// Mode-owned `last_parsed_text_version` for `id`.
     #[allow(dead_code)]
     pub(crate) fn document_last_parsed_text_version_for(&self, id: BufferId) -> u64 {
-        if id == self.document_buffer_id && matches!(self.active_buffer, BufferKind::Document) {
+        if id == self.editor.document_buffer_id && matches!(self.editor.active_buffer, BufferKind::Document) {
             return self.editor.last_parsed_text_version;
         }
         self.editor.buffer_locals
@@ -1459,7 +1459,7 @@ impl App {
     /// Mode-owned `last_synced_syntax_version` for `id`.
     #[allow(dead_code)]
     pub(crate) fn document_last_synced_syntax_version_for(&self, id: BufferId) -> u64 {
-        if id == self.document_buffer_id && matches!(self.active_buffer, BufferKind::Document) {
+        if id == self.editor.document_buffer_id && matches!(self.editor.active_buffer, BufferKind::Document) {
             return self.editor.last_synced_syntax_version;
         }
         self.editor.buffer_locals
@@ -1535,7 +1535,7 @@ impl App {
     /// pre-emptively to avoid sending notifications the
     /// server will discard.
     fn fire_did_create_files_notifications(&self, path: &std::path::Path) {
-        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id) else {
+        let Some(uri) = self.buffer_uris.get(&self.editor.document_buffer_id) else {
             return;
         };
         let handles = self.lsp.servers_for(uri);
@@ -1559,7 +1559,7 @@ impl App {
     /// Cheap on no-LSP buffers (the URI lookup short-circuits).
     /// Notification only -- responses, if any, drop on the floor.
     fn fire_will_save_notifications(&self) {
-        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id) else {
+        let Some(uri) = self.buffer_uris.get(&self.editor.document_buffer_id) else {
             return;
         };
         let uri = uri.clone();
@@ -1591,7 +1591,7 @@ impl App {
     /// concern (1.5s+ stalls for multi-server saves) without
     /// the behavioural change of fully-async save.
     fn run_will_save_wait_until_blocking(&mut self) {
-        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
+        let Some(uri) = self.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
             return;
         };
         let handles = self.lsp.servers_for(&uri);
@@ -1670,7 +1670,7 @@ impl App {
     /// server requested `includeText`, attach the post-save
     /// text from the rope.
     fn fire_did_save_notifications(&self) {
-        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id) else {
+        let Some(uri) = self.buffer_uris.get(&self.editor.document_buffer_id) else {
             return;
         };
         let uri = uri.clone();
@@ -1789,7 +1789,7 @@ mod tests {
         let cmd = format!("e {}", path.display());
         submit_ex(&mut a, &cmd);
         assert_eq!(a.document.text(), "loaded contents\nsecond line");
-        assert_eq!(a.cursor, Position::ZERO);
+        assert_eq!(a.editor.cursor, Position::ZERO);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -1846,14 +1846,14 @@ mod tests {
         let path = dir.join("reset.txt");
         std::fs::write(&path, "fresh").unwrap();
         let mut a = app_with("aaa\nbbb\nccc", 10);
-        a.cursor = Position::new(2, 1);
+        a.editor.cursor = Position::new(2, 1);
         a.apply(invoke_motion(a.editor.builtins.goto_first_line));
         // Now position_history has an entry.
         assert!(!a.editor.position_history.is_empty());
         let cmd = format!("e {}", path.display());
         submit_ex(&mut a, &cmd);
         assert!(a.editor.position_history.is_empty());
-        assert_eq!(a.cursor, Position::ZERO);
+        assert_eq!(a.editor.cursor, Position::ZERO);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -1897,7 +1897,7 @@ mod tests {
         a.apply(Action::SplitPaneVertical);
         assert_eq!(a.pane_tree.len(), 2);
         a.do_quit(false);
-        assert!(!a.should_quit, "extra pane: :q must not exit the editor");
+        assert!(!a.editor.should_quit, "extra pane: :q must not exit the editor");
         assert_eq!(a.pane_tree.len(), 1);
     }
 
@@ -1910,7 +1910,7 @@ mod tests {
         a.apply(Action::EnterMode(ModalState::Normal));
         assert!(a.document.dirty());
         a.do_quit(false);
-        assert!(!a.should_quit);
+        assert!(!a.editor.should_quit);
         assert_eq!(a.pane_tree.len(), 1);
     }
 
@@ -1918,7 +1918,7 @@ mod tests {
     fn quit_with_last_pane_clean_quits_editor() {
         let mut a = app_with("xx", 10);
         a.do_quit(false);
-        assert!(a.should_quit);
+        assert!(a.editor.should_quit);
     }
 
     #[test]
@@ -1928,7 +1928,7 @@ mod tests {
         a.apply(Action::Insert("z".into()));
         a.apply(Action::EnterMode(ModalState::Normal));
         a.do_quit(false);
-        assert!(!a.should_quit);
+        assert!(!a.editor.should_quit);
         assert!(
             a.editor.last_message
                 .as_ref()
@@ -1944,22 +1944,22 @@ mod tests {
         a.apply(Action::Insert("z".into()));
         a.apply(Action::EnterMode(ModalState::Normal));
         a.do_quit(true);
-        assert!(a.should_quit);
+        assert!(a.editor.should_quit);
     }
 
     #[test]
     fn open_help_popup_preserves_doc_pane_cursor_for_render() {
         // Bug: invoking a popup-mode help command (`:lsp-status`,
         // `:describe-key`, etc.) flipped `active_buffer` to Help
-        // without first syncing the doc's `app.cursor` /
-        // `app.scroll` into the active pane's stash. The renderer
+        // without first syncing the doc's `app.editor.cursor` /
+        // `app.editor.scroll` into the active pane's stash. The renderer
         // reads `pane.cursor` for any pane whose buffer kind
         // doesn't match `active_buffer` (popup mode = mismatch),
         // so the doc visibly jumped to wherever pane.cursor was
         // last (often (0,0)).
         let mut a = app_with("line0\nline1\nline2\nline3\nline4\n", 5);
-        a.cursor = Position::new(3, 2);
-        a.scroll = 1;
+        a.editor.cursor = Position::new(3, 2);
+        a.editor.scroll = 1;
         a.do_lsp_status();
         // After open_help, active is Help but the active pane
         // still shows the doc -- pane.cursor must reflect where
@@ -1976,8 +1976,8 @@ mod tests {
     #[test]
     fn split_inherits_cursor_and_scroll_from_active() {
         let mut a = app_with("a\nb\nc\nd", 10);
-        a.cursor = Position::new(2, 0);
-        a.scroll = 1;
+        a.editor.cursor = Position::new(2, 0);
+        a.editor.scroll = 1;
         a.apply(Action::SplitPaneVertical);
         // Both panes should have (line=2, scroll=1) initially.
         let panes = a.pane_tree.leaves();
@@ -1991,14 +1991,14 @@ mod tests {
     fn edit_new_file_registers_a_second_buffer() {
         let path = write_temp_file("a", "alpha\n");
         let mut a = app_with("xx", 10);
-        let initial_id = a.document_buffer_id;
+        let initial_id = a.editor.document_buffer_id;
         a.editor.command_line = format!("e {}", path.display());
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         // Two listed buffers (initial + opened); the synthetic
         // `*lsp*` buffer is unlisted and filtered out here.
-        assert_eq!(a.buffers.listed_ids_sorted().len(), 2);
-        assert_ne!(a.document_buffer_id, initial_id);
+        assert_eq!(a.editor.buffers.listed_ids_sorted().len(), 2);
+        assert_ne!(a.editor.document_buffer_id, initial_id);
         assert_eq!(a.document.text(), "alpha\n");
         let _ = std::fs::remove_file(path);
     }
@@ -2036,8 +2036,8 @@ mod tests {
         a.editor.command_line = format!("Filetree {}", dir.display());
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        assert_eq!(a.active_buffer, BufferKind::FileTree);
-        assert_eq!(a.buffers.file_tree_ids_sorted().len(), 1);
+        assert_eq!(a.editor.active_buffer, BufferKind::FileTree);
+        assert_eq!(a.editor.buffers.file_tree_ids_sorted().len(), 1);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -2050,8 +2050,8 @@ mod tests {
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         a.apply(Action::HelpDismiss);
-        assert_eq!(a.active_buffer, BufferKind::Document);
-        assert_eq!(a.buffers.file_tree_ids_sorted().len(), 0);
+        assert_eq!(a.editor.active_buffer, BufferKind::Document);
+        assert_eq!(a.editor.buffers.file_tree_ids_sorted().len(), 0);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -2067,10 +2067,10 @@ mod tests {
         a.apply(Action::CommandLineSubmit);
         let line_down = a.editor.builtins.line_down;
         a.apply(Action::Invoke(CommandInvocation::of(line_down.0)));
-        // After unification, `self.cursor` is the active buffer's
+        // After unification, `self.editor.cursor` is the active buffer's
         // cursor. The tree's own `cursor` field is archival save-
         // state synced at activation transitions.
-        assert_eq!(a.cursor.line, 1);
+        assert_eq!(a.editor.cursor.line, 1);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -2090,8 +2090,8 @@ mod tests {
         a.apply(Action::FollowLink);
         // Active pane now shows the file's Document buffer; the
         // tree stays in the registry (reachable via :bn / :b).
-        assert_eq!(a.active_buffer, BufferKind::Document);
-        assert_eq!(a.buffers.file_tree_ids_sorted().len(), 1);
+        assert_eq!(a.editor.active_buffer, BufferKind::Document);
+        assert_eq!(a.editor.buffers.file_tree_ids_sorted().len(), 1);
         assert_eq!(a.document.text(), "hello");
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -2102,14 +2102,14 @@ mod tests {
         let buf = HelpContent::from_lines("test-help", vec!["# heading".into(), "body".into()]);
         let id = app.open_help_in_pane(buf);
         // Lives in the registry as a Help variant.
-        assert!(app.buffers.contains_help(id));
+        assert!(app.editor.buffers.contains_help(id));
         // Active pane points at it.
         assert_eq!(app.active_pane_buffer_id(), id);
-        assert!(matches!(app.active_buffer, BufferKind::Help));
+        assert!(matches!(app.editor.active_buffer, BufferKind::Help));
         // Hot-path popup slot mirrors the registry copy.
         assert_eq!(app.popup_help().unwrap().title, "test-help");
         // :ls walks the registry; help variants count.
-        assert!(app.buffers.help_ids_sorted().contains(&id));
+        assert!(app.editor.buffers.help_ids_sorted().contains(&id));
     }
 
     #[test]
@@ -2125,7 +2125,7 @@ mod tests {
         let body = app.popup_help().unwrap().content.as_string();
         assert!(body.contains("refreshed"));
         // Single help entry in the registry.
-        assert_eq!(app.buffers.help_ids_sorted().len(), 1);
+        assert_eq!(app.editor.buffers.help_ids_sorted().len(), 1);
     }
 
     #[test]
@@ -2330,7 +2330,7 @@ mod tests {
         // Cursor at end-of-buffer with empty query so every
         // candidate matches uniformly; the matcher won't drop
         // anything for prefix mismatch.
-        a.cursor = Position::new(2, 1);
+        a.editor.cursor = Position::new(2, 1);
         a.do_completion_trigger();
         let state = a.insert_completion.as_ref().expect("popup");
         let tree_sitter_id = lattice_completion::TREE_SITTER_SYMBOL_SOURCE_ID;
@@ -2354,7 +2354,7 @@ mod tests {
         let mut a = app_with(source, 10);
         set_rust_syntax(&mut a, source);
         a.editor.modal = ModalState::Insert;
-        a.cursor = Position::new(2, 1);
+        a.editor.cursor = Position::new(2, 1);
         // Override the active language (test buffer has no
         // path -> language id is "") to exclude tree-sitter.
         a.per_language_completion.insert(
@@ -2393,7 +2393,7 @@ mod tests {
         let mut a = app_with(source, 10);
         set_rust_syntax(&mut a, source);
         a.editor.modal = ModalState::Insert;
-        a.cursor = Position::new(2, 1);
+        a.editor.cursor = Position::new(2, 1);
         a.do_completion_trigger();
         let state = a.insert_completion.as_ref().expect("popup");
         let raw_sources: Vec<&str> = state
@@ -2431,7 +2431,7 @@ mod tests {
         // nothing.
         let mut a = app_with("alpha bravo charlie", 5);
         a.editor.modal = ModalState::Insert;
-        a.cursor = Position::new(0, 19);
+        a.editor.cursor = Position::new(0, 19);
         a.do_completion_trigger();
         if let Some(state) = a.insert_completion.as_ref() {
             let tree_sitter_id = lattice_completion::TREE_SITTER_SYMBOL_SOURCE_ID;
@@ -2531,7 +2531,7 @@ mod tests {
         // last_synced, folds) seeded with empty defaults. Reader-
         // side flips later in this slice route through this map.
         let a = app_with("hello", 10);
-        let id = a.document_buffer_id;
+        let id = a.editor.document_buffer_id;
         let locals = a
             .editor.buffer_locals
             .get(&id)
@@ -2565,7 +2565,7 @@ mod tests {
         // buffer-locals for that document should reflect the
         // entry's new contents.
         let mut a = app_with("hello\nworld", 10);
-        let active_id = a.document_buffer_id;
+        let active_id = a.editor.document_buffer_id;
         // Force a non-default fold so the mirror has something
         // to observe.
         a.folds.push(crate::app::Fold {
@@ -2607,23 +2607,23 @@ mod tests {
         let many_lines: String = (0..50).map(|i| format!("line {i}\n")).collect();
         let mut a = app_with(&many_lines, 30);
         // Park the cursor mid-document so scroll is non-zero.
-        a.cursor = lattice_protocol::position::Position::new(40, 0);
-        a.scroll = 30;
-        let pre_cursor = a.cursor;
-        let pre_scroll = a.scroll;
+        a.editor.cursor = lattice_protocol::position::Position::new(40, 0);
+        a.editor.scroll = 30;
+        let pre_cursor = a.editor.cursor;
+        let pre_scroll = a.editor.scroll;
         // :lsp-status opens a centred popup (focuses Help mode).
         a.do_lsp_status();
         // viewport_height is now the popup's inner height (small).
         // Set it explicitly to mimic what runtime would do.
-        a.set_viewport_height(a.help_popup_inner_height(30).unwrap_or(a.viewport_height));
+        a.set_viewport_height(a.help_popup_inner_height(30).unwrap_or(a.editor.viewport_height));
         // Dismiss the popup (the dispatch path calls this on Esc).
         a.dismiss_popup();
         // Now simulate what `apply` does post-dispatch: the fix is
         // that ensure_cursor_visible gets skipped on this transition,
         // so we don't even need to call it. Verify cursor + scroll
         // are restored to pre-popup values.
-        assert_eq!(a.cursor, pre_cursor, "cursor restored");
-        assert_eq!(a.scroll, pre_scroll, "scroll restored without jolt");
+        assert_eq!(a.editor.cursor, pre_cursor, "cursor restored");
+        assert_eq!(a.editor.scroll, pre_scroll, "scroll restored without jolt");
     }
 
     #[test]
@@ -2649,28 +2649,28 @@ mod tests {
         // viewport. Each iteration mirrors the runtime: refresh
         // viewport_height, then process the keystroke.
         for _ in 0..(inner + 5) {
-            a.set_viewport_height(a.help_popup_inner_height(30).unwrap_or(a.viewport_height));
+            a.set_viewport_height(a.help_popup_inner_height(30).unwrap_or(a.editor.viewport_height));
             crate::app::test_helpers::press(
                 &mut a,
                 KeyEvent::new(KeyCode::Char('j'), KeyModifiers::empty()),
             );
         }
         assert!(
-            a.cursor.line >= inner,
+            a.editor.cursor.line >= inner,
             "cursor should descend past the visible viewport, got line {} (inner {})",
-            a.cursor.line,
+            a.editor.cursor.line,
             inner
         );
         assert!(
-            a.scroll > 0,
+            a.editor.scroll > 0,
             "scroll should advance once cursor leaves the visible window, got scroll {}",
-            a.scroll
+            a.editor.scroll
         );
         assert!(
-            a.cursor.line < a.scroll + inner,
+            a.editor.cursor.line < a.editor.scroll + inner,
             "cursor must still be inside the scrolled viewport (cursor {}, scroll {}, inner {})",
-            a.cursor.line,
-            a.scroll,
+            a.editor.cursor.line,
+            a.editor.scroll,
             inner
         );
     }
@@ -2688,7 +2688,7 @@ mod tests {
         // does this through `do_edit`.
         let inactive_id = BufferId::next();
         let doc_handle = a.document.clone();
-        a.buffers.insert(BufferEntry {
+        a.editor.buffers.insert(BufferEntry {
             id: inactive_id,
             flags: BufferFlags::default(),
             data: BufferData::Document(DocumentEntry {
@@ -2715,7 +2715,7 @@ mod tests {
     #[test]
     fn document_locals_carry_owner_metadata() {
         let a = app_with("hi", 10);
-        let id = a.document_buffer_id;
+        let id = a.editor.document_buffer_id;
         let locals = a.editor.buffer_locals.get(&id).unwrap();
         let descriptors: Vec<_> = locals.iter_descriptors().collect();
         for d in descriptors
@@ -2745,10 +2745,10 @@ mod tests {
 
         let mut a = app_with("hi", 5);
         a.do_open_oil(Some(tmp.clone()));
-        assert_eq!(a.active_buffer, BufferKind::Oil);
+        assert_eq!(a.editor.active_buffer, BufferKind::Oil);
 
         let oil_id = a.active_pane_buffer_id();
-        a.buffers
+        a.editor.buffers
             .with_oil_mut(oil_id, |oil| {
                 oil.content
                     .apply_edit(&lattice_protocol::edit::Edit::insert(
@@ -2812,10 +2812,10 @@ mod tests {
         // path -- this falls back to cwd.
         let mut a = app_with("hi", 5);
         // Start in a Document buffer (default).
-        assert_eq!(a.active_buffer, BufferKind::Document);
+        assert_eq!(a.editor.active_buffer, BufferKind::Document);
         a.apply(crate::app::Action::OilNavigateUp);
         // Active buffer should now be Oil.
-        assert_eq!(a.active_buffer, BufferKind::Oil);
+        assert_eq!(a.editor.active_buffer, BufferKind::Oil);
     }
 
     #[test]
@@ -2873,7 +2873,7 @@ mod tests {
         a.do_open_oil(Some(tmp.clone()));
         let oil_id = a.active_pane_buffer_id();
         // Initial rope has one row: `existing.txt`.
-        let initial = a.buffers.with_oil(oil_id, |o| o.content.as_string());
+        let initial = a.editor.buffers.with_oil(oil_id, |o| o.content.as_string());
         assert!(
             initial
                 .as_ref()
@@ -2886,7 +2886,7 @@ mod tests {
         // this should land in the oil rope, not the document.
         a.editor.modal = lattice_grammar::ModalState::Insert;
         a.apply(crate::app::Action::Insert("foo".into()));
-        let after = a.buffers.with_oil(oil_id, |o| o.content.as_string());
+        let after = a.editor.buffers.with_oil(oil_id, |o| o.content.as_string());
         assert!(
             after.as_ref().map(|s| s.contains("foo")).unwrap_or(false),
             "expected `foo` to land in oil rope: {:?}",
@@ -2942,11 +2942,11 @@ mod tests {
         // stale, the path is wrong and `do_edit` opens
         // something that doesn't exist (or worse, the wrong
         // file).
-        a.cursor.line = 0;
-        a.cursor.byte = 0;
+        a.editor.cursor.line = 0;
+        a.editor.cursor.byte = 0;
         // Find a.txt's row (dirs come first; "sub" is dir, then "a.txt").
         let names: Vec<String> = a
-            .buffers
+            .editor.buffers
             .with_oil(oil_id, |o| {
                 o.snapshot_entries()
                     .iter()
@@ -2958,7 +2958,7 @@ mod tests {
             .iter()
             .position(|n| n == "a.txt")
             .expect("a.txt in listing");
-        a.cursor.line = a_txt_row as u32;
+        a.editor.cursor.line = a_txt_row as u32;
         a.do_oil_follow();
         let opened = a.document.path().map(|p| p.to_path_buf());
         assert_eq!(opened, Some(tmp.join("a.txt")));
@@ -3054,7 +3054,7 @@ mod tests {
         let oil_id = a.active_pane_buffer_id();
         // Find `sub` (dirs first; should be row 0).
         let names: Vec<String> = a
-            .buffers
+            .editor.buffers
             .with_oil(oil_id, |o| {
                 o.snapshot_entries()
                     .iter()
@@ -3066,8 +3066,8 @@ mod tests {
             .iter()
             .position(|n| n == "sub")
             .expect("sub in listing");
-        a.cursor.line = sub_row as u32;
-        a.cursor.byte = 0;
+        a.editor.cursor.line = sub_row as u32;
+        a.editor.cursor.byte = 0;
         a.do_oil_follow();
         // Now in oil rooted at tmp/sub (read via OilDir, the
         // canonical buffer-local).
@@ -3075,7 +3075,7 @@ mod tests {
         assert_eq!(dir_after, tmp.join("sub"));
         // Listing should show `inside.txt` at row 0.
         let names_after: Vec<String> = a
-            .buffers
+            .editor.buffers
             .with_oil(oil_id, |o| {
                 o.snapshot_entries()
                     .iter()
@@ -3087,7 +3087,7 @@ mod tests {
             .iter()
             .position(|n| n == "inside.txt")
             .expect("inside.txt in listing");
-        a.cursor.line = inside_row as u32;
+        a.editor.cursor.line = inside_row as u32;
         a.do_oil_follow();
         let opened = a.document.path().map(|p| p.to_path_buf());
         assert_eq!(opened, Some(tmp.join("sub/inside.txt")));
@@ -3101,9 +3101,9 @@ mod tests {
         // open the first row's item regardless of where the
         // user had moved with `j` / `k`. Root cause: the
         // OilBuffer's own `cursor` field is never synced to
-        // `app.cursor`; `entry_at_cursor()` read the stale
+        // `app.editor.cursor`; `entry_at_cursor()` read the stale
         // internal field and always indexed snapshot[0]. The
-        // fix routes through `self.cursor.line` (the App's
+        // fix routes through `self.editor.cursor.line` (the App's
         // hot-path cursor, same surface the user moves).
         let tmp = std::env::temp_dir().join(format!(
             "lattice-oil-follow-cursor-test-{}",
@@ -3122,7 +3122,7 @@ mod tests {
         let oil_id = a.active_pane_buffer_id();
         // Snapshot order: alpha, beta, gamma.
         let names: Vec<String> = a
-            .buffers
+            .editor.buffers
             .with_oil(oil_id, |o| {
                 o.snapshot_entries()
                     .iter()
@@ -3141,14 +3141,14 @@ mod tests {
 
         // Move the cursor to row 2 (gamma.txt). Pre-fix: follow
         // would open alpha.txt regardless.
-        a.cursor.line = 2;
-        a.cursor.byte = 0;
+        a.editor.cursor.line = 2;
+        a.editor.cursor.byte = 0;
         a.do_oil_follow();
 
         // Follow on a file routes through `do_edit`, which
         // opens the file as a Document. The active buffer's
         // path should be gamma.txt, not alpha.txt.
-        assert_eq!(a.active_buffer, BufferKind::Document);
+        assert_eq!(a.editor.active_buffer, BufferKind::Document);
         let active_path = a.document.path().map(|p| p.to_path_buf());
         assert_eq!(
             active_path,
@@ -3171,7 +3171,7 @@ mod tests {
         let oil_id = a.active_pane_buffer_id();
 
         // The rope content lists `subdir` (and `..`).
-        let listing_before = a.buffers.with_oil(oil_id, |o| o.content.as_string());
+        let listing_before = a.editor.buffers.with_oil(oil_id, |o| o.content.as_string());
         assert!(
             listing_before
                 .as_ref()
@@ -3185,7 +3185,7 @@ mod tests {
         // depends on sort: dirs first, so subdir is at 0 (or 1
         // if `..` is included). Let's find it.
         let snap: Vec<String> = a
-            .buffers
+            .editor.buffers
             .with_oil(oil_id, |o| {
                 o.snapshot_entries()
                     .iter()
@@ -3197,12 +3197,12 @@ mod tests {
             .iter()
             .position(|n| n == "subdir")
             .expect("subdir in snapshot");
-        a.cursor.line = subdir_line as u32;
-        a.cursor.byte = 0;
+        a.editor.cursor.line = subdir_line as u32;
+        a.editor.cursor.byte = 0;
         a.do_oil_follow();
 
         // Listing now shows subdir's contents (`inner.txt`).
-        let listing_after = a.buffers.with_oil(oil_id, |o| o.content.as_string());
+        let listing_after = a.editor.buffers.with_oil(oil_id, |o| o.content.as_string());
         assert!(
             listing_after
                 .as_ref()
@@ -3263,8 +3263,8 @@ mod tests {
         // because the test fixture's `app_with` already produces an
         // unsaved buffer (`handle.path()` is None).
         let handle = a.document.clone();
-        a.buffers.remove(active);
-        a.buffers.insert(BufferEntry {
+        a.editor.buffers.remove(active);
+        a.editor.buffers.insert(BufferEntry {
             id: active,
             flags: BufferFlags::default(),
             data: BufferData::Document(DocumentEntry { id: active, handle }),
@@ -3289,7 +3289,7 @@ mod tests {
         // Fix pushes the origin at `open_buffer_picker`.
         let mut a = app_with("alpha\nbeta\ngamma\n", 10);
         let origin = a.active_pane_buffer_id();
-        a.cursor = Position::new(1, 2);
+        a.editor.cursor = Position::new(1, 2);
         a.open_buffer_picker();
         // Position history should already have the origin entry
         // from the picker-open push, before any preview activates.
@@ -3316,9 +3316,9 @@ mod tests {
         let mut a = app_with("alpha\nbeta\ngamma\n", 10);
         let initial = a.active_pane_buffer_id();
         // Position cursor somewhere distinctive.
-        a.cursor = Position::new(1, 2);
+        a.editor.cursor = Position::new(1, 2);
         // Boot creates *lsp* and *messages*; activate *lsp*.
-        let lsp_id = a.buffers.by_name("*lsp*").unwrap();
+        let lsp_id = a.editor.buffers.by_name("*lsp*").unwrap();
         assert_ne!(initial, lsp_id);
         a.activate_buffer(lsp_id);
         // Position history should contain the pre-jump entry.
@@ -3328,7 +3328,7 @@ mod tests {
         // `<C-o>` walks back to the original buffer.
         a.apply(Action::JumpHistoryBack);
         assert_eq!(a.active_pane_buffer_id(), initial);
-        assert_eq!(a.cursor, Position::new(1, 2));
+        assert_eq!(a.editor.cursor, Position::new(1, 2));
     }
 
     #[test]
@@ -3343,8 +3343,8 @@ mod tests {
         let a = app_with("hi", 5);
         let active = a.active_pane_buffer_id();
         let handle = a.document.clone();
-        a.buffers.remove(active);
-        a.buffers.insert(BufferEntry {
+        a.editor.buffers.remove(active);
+        a.editor.buffers.insert(BufferEntry {
             id: active,
             flags: BufferFlags::default(),
             data: BufferData::Document(DocumentEntry {

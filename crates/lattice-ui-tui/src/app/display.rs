@@ -158,7 +158,7 @@ impl App {
     /// (vertical) -- the new pane gains focus, the original
     /// stays put with its content.
     ///
-    /// The help buffer is registered in `app.buffers` (same shape
+    /// The help buffer is registered in `app.editor.buffers` (same shape
     /// as [`Self::open_help_in_pane`]) and adopted by the new
     /// pane through the activation path so mode state, help
     /// metadata locals, and the popup hot-path slot all converge
@@ -216,7 +216,7 @@ mod tests {
         // hot-path mirror by `open_help_in_pane`; that's expected
         // -- the popup *slot* is reused; what matters here is the
         // pane state.)
-        assert_eq!(a.active_buffer, BufferKind::Help);
+        assert_eq!(a.editor.active_buffer, BufferKind::Help);
         assert_eq!(a.pane_tree.active().buffer_id, id);
         assert_eq!(a.pane_tree.active().buffer, BufferKind::Help);
     }
@@ -282,6 +282,6 @@ mod tests {
         assert_eq!(a.pane_tree.len(), initial_pane_count + 1);
         // The active pane after the split holds the help buffer.
         assert_eq!(a.pane_tree.active().buffer_id, id);
-        assert_eq!(a.active_buffer, BufferKind::Help);
+        assert_eq!(a.editor.active_buffer, BufferKind::Help);
     }
 }

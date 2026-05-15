@@ -43,7 +43,7 @@ pub(super) fn press(app: &mut App, event: crossterm::event::KeyEvent) {
         pending_count: app.editor.pending_count,
         op_count: app.editor.op_count,
         recording_macro: app.editor.macro_recording.is_some(),
-        active_buffer: app.active_buffer,
+        active_buffer: app.editor.active_buffer,
         completion_open: app.completion_state.is_some(),
         chord_capture: app.chord_capture_active(),
         picker_open: app.editor.picker.is_some(),
@@ -104,7 +104,7 @@ pub(super) fn install_help(a: &mut App, h: HelpContent) {
     // M.4 (b): popup buffer lives in the registry like every
     // other buffer. Test fixture mirrors the production
     // `open_popup` path with the same unlisted/hidden flags.
-    a.buffers.insert(crate::buffer_registry::BufferEntry {
+    a.editor.buffers.insert(crate::buffer_registry::BufferEntry {
         id,
         flags: crate::buffers::BufferFlags {
             listed: false,
@@ -114,7 +114,7 @@ pub(super) fn install_help(a: &mut App, h: HelpContent) {
         name: None,
     });
     a.editor.popup_buffer = Some(id);
-    a.active_buffer = BufferKind::Help;
+    a.editor.active_buffer = BufferKind::Help;
     a.seed_help_metadata_locals(id, metadata);
 }
 
@@ -218,7 +218,7 @@ pub(super) fn write_workspace_config(workspace: &std::path::Path, contents: &str
 pub(super) fn seed_diags_at_lines(app: &mut App, lines: &[u32]) {
     use std::str::FromStr;
     let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
-    app.buffer_uris.insert(app.document_buffer_id, uri.clone());
+    app.buffer_uris.insert(app.editor.document_buffer_id, uri.clone());
     let diags: Vec<lattice_lsp::Diagnostic> = lines
         .iter()
         .map(|line| lattice_lsp::Diagnostic {
@@ -253,7 +253,7 @@ pub(super) fn seed_diags_at_lines(app: &mut App, lines: &[u32]) {
     // umbrella so the cascade brings every sub-mode up; tests
     // can override per-test if they want a specific sub-mode
     // off.
-    if !app.lsp_mode_enabled_for(app.document_buffer_id) {
+    if !app.lsp_mode_enabled_for(app.editor.document_buffer_id) {
         app.toggle_mode_by_name("lsp-mode");
     }
 }
@@ -274,8 +274,8 @@ pub(super) fn write_temp_file(name: &str, content: &str) -> std::path::PathBuf {
 pub(super) fn open_popup_with_top_text(a: &mut App, query: &str, top_text: &str) {
     let mut state = lattice_completion::InsertCompletionState::open(
         lattice_completion::CompletionTrigger::Manual,
-        a.cursor,
-        a.cursor,
+        a.editor.cursor,
+        a.editor.cursor,
         query.to_string(),
     );
     let raw =

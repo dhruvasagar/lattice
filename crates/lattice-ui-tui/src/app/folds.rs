@@ -105,7 +105,7 @@ impl App {
     /// async syntax handle (wait-free).
     fn recompute_syntax_folds(&self, buffer: &lattice_core::Buffer) -> Vec<Fold> {
         // M.3.2.c.4: route through the locals-backed accessor.
-        if let Some(syntax) = self.document_syntax_for(self.document_buffer_id) {
+        if let Some(syntax) = self.document_syntax_for(self.editor.document_buffer_id) {
             let snap = syntax.snapshot();
             if let Some(folds) = crate::folds::compute_syntax_folds(&snap) {
                 return folds;
@@ -137,8 +137,8 @@ impl App {
     /// [`Self::maybe_request_folding_range`], invoked from the
     /// per-tick runtime drain.
     fn recompute_lsp_folds(&self, buffer: &lattice_core::Buffer) -> Vec<Fold> {
-        if self.lsp_folding_mode_enabled_for(self.document_buffer_id)
-            && let Some(cache) = self.lsp_folds_cache.get(&self.document_buffer_id)
+        if self.lsp_folding_mode_enabled_for(self.editor.document_buffer_id)
+            && let Some(cache) = self.lsp_folds_cache.get(&self.editor.document_buffer_id)
             && !cache.folds.is_empty()
         {
             return cache.folds.clone();
@@ -172,7 +172,7 @@ impl App {
             closed: true,
             identity: None,
         });
-        self.cursor = Position::new(start_line, 0);
+        self.editor.cursor = Position::new(start_line, 0);
         self.do_exit_visual();
     }
 
@@ -184,7 +184,7 @@ impl App {
     /// - `zo`: outermost closed containing cursor.
     /// - `za`: zo if any closed contains cursor, else zc.
     pub(super) fn do_set_fold_state_at_cursor(&mut self, state: Option<bool>) {
-        let line = self.cursor.line;
+        let line = self.editor.cursor.line;
         let target = match state {
             Some(true) => fold_to_close_at(&self.folds, line),
             Some(false) => outermost_fold_idx(&self.folds, line, |f| f.closed),
@@ -217,7 +217,7 @@ impl App {
     }
 
     pub(super) fn do_goto_fold(&mut self, forward: bool) {
-        let line = self.cursor.line;
+        let line = self.editor.cursor.line;
         let target = if forward {
             self.folds
                 .iter()
@@ -232,14 +232,14 @@ impl App {
                 .max()
         };
         if let Some(t) = target {
-            self.cursor = Position::new(t, 0);
+            self.editor.cursor = Position::new(t, 0);
         } else {
             self.set_message(EchoLevel::Error, "no more folds".to_string());
         }
     }
 
     pub(super) fn do_delete_fold_at_cursor(&mut self) {
-        let line = self.cursor.line;
+        let line = self.editor.cursor.line;
         if let Some(idx) = innermost_fold_idx(&self.folds, line, |_| true) {
             self.folds.remove(idx);
         } else {
@@ -285,7 +285,7 @@ impl App {
         if !self.foldenable() {
             return;
         }
-        let new_line = self.cursor.line;
+        let new_line = self.editor.cursor.line;
         if new_line == prev_line {
             return;
         }
@@ -320,8 +320,8 @@ impl App {
             return;
         }
         let len = line_byte_len(&snap.buffer, snapped);
-        let byte = self.cursor.byte.min(len);
-        self.cursor = Position::new(snapped, byte);
+        let byte = self.editor.cursor.byte.min(len);
+        self.editor.cursor = Position::new(snapped, byte);
     }
 
     /// Open every closed fold whose range contains the current cursor
@@ -332,7 +332,7 @@ impl App {
         if !self.foldenable() {
             return;
         }
-        let line = self.cursor.line;
+        let line = self.editor.cursor.line;
         for fold in self.folds.iter_mut() {
             if fold.closed && line >= fold.start_line && line <= fold.end_line {
                 fold.closed = false;
@@ -668,7 +668,7 @@ mod tests {
             closed: true,
             identity: None,
         });
-        a.cursor = Position::new(1, 0);
+        a.editor.cursor = Position::new(1, 0);
         a.apply(Action::DeleteFoldAtCursor);
         assert!(a.folds.is_empty());
     }
@@ -691,7 +691,7 @@ mod tests {
             closed: false,
             identity: None,
         });
-        a.cursor = Position::new(4, 0);
+        a.editor.cursor = Position::new(4, 0);
         a
     }
 
@@ -785,10 +785,10 @@ mod tests {
             closed: true,
             identity: None,
         });
-        a.cursor = Position::new(1, 0);
+        a.editor.cursor = Position::new(1, 0);
         a.apply(invoke_motion(a.editor.builtins.line_down));
         assert_eq!(
-            a.cursor.line, 5,
+            a.editor.cursor.line, 5,
             "j from closed-fold heading must skip to fold.end_line + 1"
         );
     }
@@ -804,10 +804,10 @@ mod tests {
             closed: true,
             identity: None,
         });
-        a.cursor = Position::new(5, 0);
+        a.editor.cursor = Position::new(5, 0);
         a.apply(invoke_motion(a.editor.builtins.line_up));
         assert_eq!(
-            a.cursor.line, 1,
+            a.editor.cursor.line, 1,
             "k into a closed fold must snap to its heading line"
         );
     }
@@ -822,9 +822,9 @@ mod tests {
             closed: false,
             identity: None,
         });
-        a.cursor = Position::new(1, 0);
+        a.editor.cursor = Position::new(1, 0);
         a.apply(invoke_motion(a.editor.builtins.line_down));
-        assert_eq!(a.cursor.line, 2);
+        assert_eq!(a.editor.cursor.line, 2);
     }
 
     #[test]
@@ -839,9 +839,9 @@ mod tests {
             identity: None,
         });
         a.set_foldenable_for_test(false);
-        a.cursor = Position::new(1, 0);
+        a.editor.cursor = Position::new(1, 0);
         a.apply(invoke_motion(a.editor.builtins.line_down));
-        assert_eq!(a.cursor.line, 2);
+        assert_eq!(a.editor.cursor.line, 2);
     }
 
     fn line_down_lands_on_next_fold_heading_when_consecutive() {
@@ -870,13 +870,13 @@ mod tests {
             closed: true,
             identity: None,
         });
-        a.cursor = Position::new(1, 0);
+        a.editor.cursor = Position::new(1, 0);
         a.apply(invoke_motion(a.editor.builtins.line_down));
-        assert_eq!(a.cursor.line, 4, "first j → fold B heading");
+        assert_eq!(a.editor.cursor.line, 4, "first j → fold B heading");
         a.apply(invoke_motion(a.editor.builtins.line_down));
-        assert_eq!(a.cursor.line, 7, "second j → fold C heading");
+        assert_eq!(a.editor.cursor.line, 7, "second j → fold C heading");
         a.apply(invoke_motion(a.editor.builtins.line_down));
-        assert_eq!(a.cursor.line, 10, "third j → past fold C");
+        assert_eq!(a.editor.cursor.line, 10, "third j → past fold C");
     }
 
     #[test]
@@ -904,17 +904,17 @@ mod tests {
             closed: true,
             identity: None,
         });
-        a.cursor = Position::new(0, 0);
+        a.editor.cursor = Position::new(0, 0);
         a.apply(invoke_motion(a.editor.builtins.word_forward));
         // Without snap the cursor would land on "bravo" (line 0,
         // byte 6) -- still visible. Press w again: would go into
         // hidden `charlie`. The snap kicks in there.
         a.apply(invoke_motion(a.editor.builtins.word_forward));
         assert!(
-            !a.line_inside_closed_fold(a.cursor.line),
+            !a.line_inside_closed_fold(a.editor.cursor.line),
             "w must not leave cursor inside a hidden fold body \
              (cursor.line = {})",
-            a.cursor.line
+            a.editor.cursor.line
         );
     }
 
@@ -984,7 +984,7 @@ mod tests {
         // line. zc should pick the outermost fold whose start_line
         // is 1 (the if_expression / let_declaration), not the
         // inner then-block.
-        a.cursor = Position::new(1, 0);
+        a.editor.cursor = Position::new(1, 0);
         a.apply(Action::CloseFoldAtCursor);
         let fold = a
             .fold_start_at(1)
@@ -1012,7 +1012,7 @@ mod tests {
         // Cursor on line 0 (the `let` line). zc must pick the
         // outermost fold starting at line 0 -- the if_expression /
         // let_declaration spanning (0, 4) -- and close it.
-        a.cursor = Position::new(0, 0);
+        a.editor.cursor = Position::new(0, 0);
         a.apply(Action::CloseFoldAtCursor);
         let fold = a
             .fold_start_at(0)
@@ -1036,13 +1036,13 @@ mod tests {
             closed: true,
             identity: None,
         });
-        a.cursor = Position::new(0, 0);
+        a.editor.cursor = Position::new(0, 0);
         a.apply(invoke_motion(a.editor.builtins.paragraph_forward));
         assert!(
-            !a.line_inside_closed_fold(a.cursor.line),
+            !a.line_inside_closed_fold(a.editor.cursor.line),
             "}} must not leave cursor inside a hidden fold body \
              (cursor.line = {})",
-            a.cursor.line
+            a.editor.cursor.line
         );
     }
 
@@ -1094,12 +1094,12 @@ mod tests {
             closed: false,
             identity: None,
         });
-        a.cursor = Position::new(1, 0);
+        a.editor.cursor = Position::new(1, 0);
         // j from fn a's heading: snap over fn a's body, swallow the
         // blank, land on fn b's heading (line 4).
         a.apply(invoke_motion(a.editor.builtins.line_down));
         assert_eq!(
-            a.cursor.line, 4,
+            a.editor.cursor.line, 4,
             "j after fold A must skip the blank and land on fn b"
         );
         // Close fn b, j again, land on fn c's heading (line 7).
@@ -1108,7 +1108,7 @@ mod tests {
         assert!(fnb.closed, "zc on fn b heading closes fn b");
         a.apply(invoke_motion(a.editor.builtins.line_down));
         assert_eq!(
-            a.cursor.line, 7,
+            a.editor.cursor.line, 7,
             "j after fold B must skip the blank and land on fn c"
         );
         // Close fn c. The outer impl must remain open.
@@ -1147,11 +1147,11 @@ mod tests {
             closed: false,
             identity: None,
         });
-        a.cursor = Position::new(1, 0);
+        a.editor.cursor = Position::new(1, 0);
         // Move to the sibling's heading.
         a.apply(invoke_motion(a.editor.builtins.line_down));
         assert_eq!(
-            a.cursor.line, 5,
+            a.editor.cursor.line, 5,
             "cursor should land on sibling, not interior"
         );
         // Close the sibling.
@@ -1177,9 +1177,9 @@ mod tests {
             closed: false,
             identity: None,
         });
-        a.cursor = Position::ZERO;
+        a.editor.cursor = Position::ZERO;
         a.apply(Action::GotoNextFold);
-        assert_eq!(a.cursor.line, 2);
+        assert_eq!(a.editor.cursor.line, 2);
     }
 
     #[test]
@@ -1191,9 +1191,9 @@ mod tests {
             closed: false,
             identity: None,
         });
-        a.cursor = Position::new(5, 0);
+        a.editor.cursor = Position::new(5, 0);
         a.apply(Action::GotoPrevFold);
-        assert_eq!(a.cursor.line, 2);
+        assert_eq!(a.editor.cursor.line, 2);
     }
 
     #[test]

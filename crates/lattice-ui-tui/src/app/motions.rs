@@ -52,7 +52,7 @@ impl App {
             .document
             .snapshot()
             .buffer
-            .position_to_byte(self.cursor)
+            .position_to_byte(self.editor.cursor)
         {
             Ok(b) => b,
             Err(_) => return,
@@ -79,7 +79,7 @@ impl App {
             b'}' => (b'{', b'}', false),
             _ => return,
         };
-        let pre_jump = self.cursor;
+        let pre_jump = self.editor.cursor;
         let target = if forward {
             scan_forward_for_match(bytes, start, open, close)
         } else {
@@ -89,7 +89,7 @@ impl App {
             Some(t) => {
                 if let Ok(pos) = self.document.snapshot().buffer.byte_to_position(t) {
                     self.push_position_history(pre_jump, PositionSource::AutoJump);
-                    self.cursor = pos;
+                    self.editor.cursor = pos;
                     self.auto_open_folds_at_cursor();
                 }
             }
@@ -153,7 +153,7 @@ impl App {
         // after the back-stack is empty does `<C-o>` fall through
         // to the outer position-history walk.
         if delta < 0
-            && matches!(self.active_buffer, BufferKind::Help)
+            && matches!(self.editor.active_buffer, BufferKind::Help)
             && self.editor.popup_buffer.is_some()
             && !self.popup_back_stack.is_empty()
             && self.pop_popup_back()
@@ -168,7 +168,7 @@ impl App {
             let already_there = self
                 .editor.position_history
                 .last()
-                .map(|e| e.position == cur && e.buffer == self.active_buffer)
+                .map(|e| e.position == cur && e.buffer == self.editor.active_buffer)
                 .unwrap_or(false);
             if !already_there {
                 self.push_position_history(cur, PositionSource::AutoJump);
@@ -216,16 +216,16 @@ impl App {
         }
         // Reachable: the registry still holds an entry for the
         // recorded buffer id (in-pane Help / Document / FileTree
-        // all live in `self.buffers`); the transient popup-mode
+        // all live in `self.editor.buffers`); the transient popup-mode
         // Help overlay's id is checked separately.
         let popup_help_id = self.editor.popup_buffer;
         let reachable = |e: &PositionEntry| -> bool {
             match e.buffer {
-                BufferKind::Document | BufferKind::FileTree => self.buffers.contains(e.buffer_id),
+                BufferKind::Document | BufferKind::FileTree => self.editor.buffers.contains(e.buffer_id),
                 BufferKind::Help => {
-                    self.buffers.contains_help(e.buffer_id) || popup_help_id == Some(e.buffer_id)
+                    self.editor.buffers.contains_help(e.buffer_id) || popup_help_id == Some(e.buffer_id)
                 }
-                BufferKind::Oil => self.buffers.contains(e.buffer_id),
+                BufferKind::Oil => self.editor.buffers.contains(e.buffer_id),
             }
         };
         let combined = |e: &PositionEntry| pred(e) && reachable(e);
@@ -261,40 +261,40 @@ impl App {
                 // `activate_document` so motion / search / save target the
                 // recorded buffer. The reachable check above already verified
                 // the registry entry; activate_document re-checks for safety.
-                if self.buffers.contains_document(entry.buffer_id) {
+                if self.editor.buffers.contains_document(entry.buffer_id) {
                     self.activate_document(entry.buffer_id);
-                    self.cursor = entry.position;
+                    self.editor.cursor = entry.position;
                     self.clamp_cursor_to_buffer();
                     self.auto_open_folds_at_cursor();
                 }
             }
             BufferKind::Help => {
-                self.active_buffer = BufferKind::Help;
+                self.editor.active_buffer = BufferKind::Help;
                 // Prefer an in-pane help buffer with the recorded id;
                 // fall back to the transient popup. Either way the
-                // live cursor lands on `self.cursor` (unified).
-                let buffer_present = self.buffers.contains_help(entry.buffer_id)
+                // live cursor lands on `self.editor.cursor` (unified).
+                let buffer_present = self.editor.buffers.contains_help(entry.buffer_id)
                     || self.editor.popup_buffer == Some(entry.buffer_id);
                 if buffer_present {
-                    self.cursor = entry.position;
+                    self.editor.cursor = entry.position;
                     self.pane_tree.active_mut().buffer = BufferKind::Help;
                     self.pane_tree.active_mut().buffer_id = entry.buffer_id;
                     self.clamp_cursor_to_active_buffer();
                 }
             }
             BufferKind::FileTree => {
-                if self.buffers.contains_file_tree(entry.buffer_id) {
-                    self.active_buffer = BufferKind::FileTree;
-                    self.cursor = entry.position;
+                if self.editor.buffers.contains_file_tree(entry.buffer_id) {
+                    self.editor.active_buffer = BufferKind::FileTree;
+                    self.editor.cursor = entry.position;
                     self.pane_tree.active_mut().buffer = BufferKind::FileTree;
                     self.pane_tree.active_mut().buffer_id = entry.buffer_id;
                     self.clamp_cursor_to_active_buffer();
                 }
             }
             BufferKind::Oil => {
-                if self.buffers.contains_oil(entry.buffer_id) {
-                    self.active_buffer = BufferKind::Oil;
-                    self.cursor = entry.position;
+                if self.editor.buffers.contains_oil(entry.buffer_id) {
+                    self.editor.active_buffer = BufferKind::Oil;
+                    self.editor.cursor = entry.position;
                     self.pane_tree.active_mut().buffer = BufferKind::Oil;
                     self.pane_tree.active_mut().buffer_id = entry.buffer_id;
                     self.clamp_cursor_to_active_buffer();
@@ -307,36 +307,36 @@ impl App {
         self.clamp_cursor_to_active_buffer();
     }
 
-    /// Clamp `self.cursor` to the active buffer's bounds. Same as
+    /// Clamp `self.editor.cursor` to the active buffer's bounds. Same as
     /// `clamp_cursor_to_buffer` but reads from `active_text()` so
     /// it works for help / file-tree / document uniformly.
     pub(super) fn clamp_cursor_to_active_buffer(&mut self) {
         let buffer = self.active_text();
         let last_line = last_addressable_line(&buffer);
-        if self.cursor.line > last_line {
-            self.cursor.line = last_line;
+        if self.editor.cursor.line > last_line {
+            self.editor.cursor.line = last_line;
         }
-        let len = line_byte_len(&buffer, self.cursor.line);
-        if self.cursor.byte > len {
-            self.cursor.byte = len;
+        let len = line_byte_len(&buffer, self.editor.cursor.line);
+        if self.editor.cursor.byte > len {
+            self.editor.cursor.byte = len;
         }
     }
 
     pub(super) fn ensure_cursor_visible(&mut self) {
-        if self.viewport_height == 0 {
+        if self.editor.viewport_height == 0 {
             return;
         }
-        if self.cursor.line < self.scroll {
-            self.scroll = self.cursor.line;
+        if self.editor.cursor.line < self.editor.scroll {
+            self.editor.scroll = self.editor.cursor.line;
         }
-        let bottom = self.scroll + self.viewport_height - 1;
-        if self.cursor.line > bottom {
-            self.scroll = self.cursor.line + 1 - self.viewport_height;
+        let bottom = self.editor.scroll + self.editor.viewport_height - 1;
+        if self.editor.cursor.line > bottom {
+            self.editor.scroll = self.editor.cursor.line + 1 - self.editor.viewport_height;
         }
     }
 
     pub fn set_viewport_height(&mut self, height: u32) {
-        self.viewport_height = height.max(1);
+        self.editor.viewport_height = height.max(1);
         self.ensure_cursor_visible();
     }
 
@@ -405,7 +405,7 @@ impl App {
     /// Border rows (top + bottom) are subtracted; the result is
     /// the row count `Paragraph` actually paints into.
     pub fn help_popup_inner_height(&self, buffer_height: u32) -> Option<u32> {
-        if !matches!(self.active_buffer, BufferKind::Help) {
+        if !matches!(self.editor.active_buffer, BufferKind::Help) {
             return None;
         }
         if self.pane_tree.active().buffer == BufferKind::Help {
@@ -433,20 +433,20 @@ impl App {
     /// `M` -> middle, `L` -> bottom. Column is preserved (clamped to the
     /// destination line's length).
     pub(super) fn do_jump_viewport(&mut self, vpos: ViewportPos) {
-        let height = self.viewport_height.max(1);
+        let height = self.editor.viewport_height.max(1);
         let line = match vpos {
-            ViewportPos::Top => self.scroll,
-            ViewportPos::Middle => self.scroll + height / 2,
-            ViewportPos::Bottom => self.scroll + height.saturating_sub(1),
+            ViewportPos::Top => self.editor.scroll,
+            ViewportPos::Middle => self.editor.scroll + height / 2,
+            ViewportPos::Bottom => self.editor.scroll + height.saturating_sub(1),
         };
         let buffer = self.active_text();
         let last = last_addressable_line(&buffer);
         let line = line.min(last);
         let len = line_byte_len(&buffer, line);
-        let byte = self.cursor.byte.min(len);
-        self.cursor = Position::new(line, byte);
+        let byte = self.editor.cursor.byte.min(len);
+        self.editor.cursor = Position::new(line, byte);
         // Folds only apply to documents.
-        if matches!(self.active_buffer, BufferKind::Document) {
+        if matches!(self.editor.active_buffer, BufferKind::Document) {
             self.auto_open_folds_at_cursor();
         }
     }
@@ -454,11 +454,11 @@ impl App {
     /// Adjust scroll so the cursor lands at the requested viewport row.
     /// Cursor itself doesn't move (vim's `zt`/`zz`/`zb`).
     pub(super) fn do_scroll_cursor_to(&mut self, spos: ScrollPos) {
-        let height = self.viewport_height.max(1);
-        self.scroll = match spos {
-            ScrollPos::Top => self.cursor.line,
-            ScrollPos::Center => self.cursor.line.saturating_sub(height / 2),
-            ScrollPos::Bottom => self.cursor.line.saturating_sub(height.saturating_sub(1)),
+        let height = self.editor.viewport_height.max(1);
+        self.editor.scroll = match spos {
+            ScrollPos::Top => self.editor.cursor.line,
+            ScrollPos::Center => self.editor.cursor.line.saturating_sub(height / 2),
+            ScrollPos::Bottom => self.editor.cursor.line.saturating_sub(height.saturating_sub(1)),
         };
     }
 
@@ -467,44 +467,44 @@ impl App {
     /// `viewport_height - 2` lines and letting `ensure_cursor_visible`
     /// handle the scroll.
     pub(super) fn do_page(&mut self, down: bool) {
-        let height = self.viewport_height.max(1);
+        let height = self.editor.viewport_height.max(1);
         let step = height.saturating_sub(2).max(1);
         let buffer = self.active_text();
         let last = last_addressable_line(&buffer);
         let new_line = if down {
-            self.cursor.line.saturating_add(step).min(last)
+            self.editor.cursor.line.saturating_add(step).min(last)
         } else {
-            self.cursor.line.saturating_sub(step)
+            self.editor.cursor.line.saturating_sub(step)
         };
         let len = line_byte_len(&buffer, new_line);
-        let byte = self.cursor.byte.min(len);
-        self.cursor = Position::new(new_line, byte);
+        let byte = self.editor.cursor.byte.min(len);
+        self.editor.cursor = Position::new(new_line, byte);
     }
 
     /// Scroll one line. `down = true` -> Ctrl-E (scroll content up,
     /// pulling the next line into view); `down = false` -> Ctrl-Y.
     /// Cursor follows so it stays on-screen.
     pub(super) fn do_scroll_line(&mut self, down: bool) {
-        let height = self.viewport_height.max(1);
+        let height = self.editor.viewport_height.max(1);
         let buffer = self.active_text();
         if down {
             let last = last_addressable_line(&buffer);
-            self.scroll = self.scroll.saturating_add(1).min(last);
+            self.editor.scroll = self.editor.scroll.saturating_add(1).min(last);
             // Pull cursor down if it's now off the top of the viewport.
-            if self.cursor.line < self.scroll {
-                self.cursor.line = self.scroll;
+            if self.editor.cursor.line < self.editor.scroll {
+                self.editor.cursor.line = self.editor.scroll;
             }
         } else {
-            self.scroll = self.scroll.saturating_sub(1);
+            self.editor.scroll = self.editor.scroll.saturating_sub(1);
             // Push cursor up if it's now off the bottom.
-            let bottom = self.scroll + height.saturating_sub(1);
-            if self.cursor.line > bottom {
-                self.cursor.line = bottom;
+            let bottom = self.editor.scroll + height.saturating_sub(1);
+            if self.editor.cursor.line > bottom {
+                self.editor.cursor.line = bottom;
             }
         }
-        let len = line_byte_len(&buffer, self.cursor.line);
-        if self.cursor.byte > len {
-            self.cursor.byte = len;
+        let len = line_byte_len(&buffer, self.editor.cursor.line);
+        if self.editor.cursor.byte > len {
+            self.editor.cursor.byte = len;
         }
     }
 
@@ -523,7 +523,7 @@ impl App {
         };
         // Push the *current* cursor onto the jump list before
         // walking back so `<C-i>` returns to the post-pop spot.
-        self.push_position_history(self.cursor, PositionSource::PluginPush);
+        self.push_position_history(self.editor.cursor, PositionSource::PluginPush);
         // If the recorded buffer differs from the active one,
         // switch to it. The match is structural: prefer the
         // exact `buffer_id` if it still exists in the registry,
@@ -535,7 +535,7 @@ impl App {
             // buffer is active. Acceptable v1 behaviour --
             // future passes can echo "tag origin buffer gone"
             // or hop to the alternate of the same kind.
-            if self.buffers.contains(entry.buffer_id) {
+            if self.editor.buffers.contains(entry.buffer_id) {
                 self.activate_buffer(entry.buffer_id);
             }
         }
@@ -546,7 +546,7 @@ impl App {
         let line = entry.position.line.min(last);
         let len = line_byte_len(&buffer, line);
         let col = entry.position.byte.min(len);
-        self.cursor = Position::new(line, col);
+        self.editor.cursor = Position::new(line, col);
         let label = if entry.label.is_empty() {
             format!("tag pop -> ({},{})", line + 1, col + 1)
         } else {
@@ -568,10 +568,10 @@ impl App {
             return;
         };
         // Push pre-jump position so Ctrl-O can return.
-        let cur = self.cursor;
+        let cur = self.editor.cursor;
         self.push_position_history(cur, PositionSource::AutoJump);
         if exact {
-            self.cursor = pos;
+            self.editor.cursor = pos;
         } else {
             // Line-only jump: snap byte to first non-blank on that line.
             let text = self.document.text();
@@ -585,7 +585,7 @@ impl App {
             while col < bytes.len() && (bytes[col] == b' ' || bytes[col] == b'\t') {
                 col += 1;
             }
-            self.cursor = Position::new(pos.line, col as u32);
+            self.editor.cursor = Position::new(pos.line, col as u32);
         }
         self.clamp_cursor_to_buffer();
         self.auto_open_folds_at_cursor();
@@ -597,7 +597,7 @@ impl App {
     /// semantics. Capped at POSITION_HISTORY_CAP entries; oldest dropped.
     /// Adjacent same-position-and-source duplicates are coalesced.
     pub(super) fn push_position_history(&mut self, pos: Position, source: PositionSource) {
-        let buffer = self.active_buffer;
+        let buffer = self.editor.active_buffer;
         let buffer_id = self.active_buffer_id();
         if let Some(last) = self.editor.position_history.last()
             && last.position == pos
@@ -632,8 +632,8 @@ impl App {
     /// overlay; while help is active we return its id, otherwise
     /// the active pane's id.
     pub fn active_buffer_id(&self) -> BufferId {
-        match self.active_buffer {
-            BufferKind::Help => self.editor.popup_buffer.unwrap_or(self.document_buffer_id),
+        match self.editor.active_buffer {
+            BufferKind::Help => self.editor.popup_buffer.unwrap_or(self.editor.document_buffer_id),
             BufferKind::Document | BufferKind::FileTree | BufferKind::Oil => {
                 self.pane_tree.active().buffer_id
             }
@@ -648,38 +648,38 @@ impl App {
     /// without needing to know which buffer kind that origin came
     /// from.
     pub fn active_cursor(&self) -> Position {
-        match self.active_buffer {
-            BufferKind::Document => self.cursor,
-            BufferKind::Help => self.popup_help().map(|h| h.cursor).unwrap_or(self.cursor),
+        match self.editor.active_buffer {
+            BufferKind::Document => self.editor.cursor,
+            BufferKind::Help => self.popup_help().map(|h| h.cursor).unwrap_or(self.editor.cursor),
             BufferKind::FileTree => self
-                .buffers
+                .editor.buffers
                 .with_file_tree(self.active_pane_buffer_id(), |t| t.cursor)
-                .unwrap_or(self.cursor),
+                .unwrap_or(self.editor.cursor),
             BufferKind::Oil => self
-                .buffers
+                .editor.buffers
                 .with_oil(self.active_pane_buffer_id(), |o| o.cursor)
-                .unwrap_or(self.cursor),
+                .unwrap_or(self.editor.cursor),
         }
     }
 
     /// The active buffer's text -- a `Buffer` clone (rope is O(1)).
     /// Document, help, file-tree all flow through this, so motion /
     /// scroll / search code can read text without branching on
-    /// `BufferKind`. `self.cursor` / `self.scroll` are the live
+    /// `BufferKind`. `self.editor.cursor` / `self.editor.scroll` are the live
     /// position into this buffer.
     pub fn active_text(&self) -> Buffer {
-        match self.active_buffer {
+        match self.editor.active_buffer {
             BufferKind::Help => self
                 .popup_help()
                 .map(|h| h.content.clone())
                 .unwrap_or_else(|| self.document.snapshot().buffer.clone()),
             BufferKind::FileTree => self
-                .buffers
+                .editor.buffers
                 .with_file_tree(self.active_pane_buffer_id(), |t| t.content.clone())
                 .unwrap_or_else(|| self.document.snapshot().buffer.clone()),
             BufferKind::Document => self.document.snapshot().buffer.clone(),
             BufferKind::Oil => self
-                .buffers
+                .editor.buffers
                 .with_oil(self.active_pane_buffer_id(), |o| o.content.clone())
                 .unwrap_or_else(|| self.document.snapshot().buffer.clone()),
         }
@@ -700,7 +700,7 @@ mod tests {
         let mut a = app_with("abc", 10);
         let id = a.editor.builtins.char_right;
         a.apply(invoke_motion(id));
-        assert_eq!(a.cursor, Position::new(0, 1));
+        assert_eq!(a.editor.cursor, Position::new(0, 1));
     }
 
     #[test]
@@ -708,7 +708,7 @@ mod tests {
         let mut a = app_with("abc", 10);
         let id = a.editor.builtins.char_left;
         a.apply(invoke_motion(id));
-        assert_eq!(a.cursor, Position::ZERO);
+        assert_eq!(a.editor.cursor, Position::ZERO);
     }
 
     #[test]
@@ -717,9 +717,9 @@ mod tests {
         let down = a.editor.builtins.line_down;
         let up = a.editor.builtins.line_up;
         a.apply(invoke_motion(down));
-        assert_eq!(a.cursor.line, 1);
+        assert_eq!(a.editor.cursor.line, 1);
         a.apply(invoke_motion(up));
-        assert_eq!(a.cursor.line, 0);
+        assert_eq!(a.editor.cursor.line, 0);
     }
 
     #[test]
@@ -727,7 +727,7 @@ mod tests {
         let mut a = app_with("a\nb\nc", 10);
         let id = a.editor.builtins.goto_last_line;
         a.apply(invoke_motion(id));
-        assert_eq!(a.cursor.line, 2);
+        assert_eq!(a.editor.cursor.line, 2);
     }
 
     #[test]
@@ -737,7 +737,7 @@ mod tests {
         let first = a.editor.builtins.goto_first_line;
         a.apply(invoke_motion(last));
         a.apply(invoke_motion(first));
-        assert_eq!(a.cursor, Position::ZERO);
+        assert_eq!(a.editor.cursor, Position::ZERO);
     }
 
     #[test]
@@ -745,7 +745,7 @@ mod tests {
         let mut a = app_with("hello world", 10);
         let id = a.editor.builtins.line_end;
         a.apply(invoke_motion(id));
-        assert_eq!(a.cursor, Position::new(0, 11));
+        assert_eq!(a.editor.cursor, Position::new(0, 11));
     }
 
     #[test]
@@ -753,8 +753,8 @@ mod tests {
         let mut a = app_with("0\n1\n2\n3\n4\n5\n6\n7\n8\n9", 3);
         let id = a.editor.builtins.goto_last_line;
         a.apply(invoke_motion(id));
-        assert_eq!(a.cursor.line, 9);
-        assert_eq!(a.scroll, 9 - 3 + 1);
+        assert_eq!(a.editor.cursor.line, 9);
+        assert_eq!(a.editor.scroll, 9 - 3 + 1);
     }
 
     #[test]
@@ -764,7 +764,7 @@ mod tests {
         let first = a.editor.builtins.goto_first_line;
         a.apply(invoke_motion(last));
         a.apply(invoke_motion(first));
-        assert_eq!(a.scroll, 0);
+        assert_eq!(a.editor.scroll, 0);
     }
 
     #[test]
@@ -799,50 +799,50 @@ mod tests {
     #[test]
     fn gg_pushes_jump_history_and_ctrl_o_returns() {
         let mut a = app_with("a\nb\nc\nd\ne", 10);
-        a.cursor = Position::new(3, 0); // line 3 ('d')
+        a.editor.cursor = Position::new(3, 0); // line 3 ('d')
         a.apply(invoke_motion(a.editor.builtins.goto_first_line));
-        assert_eq!(a.cursor, Position::ZERO);
+        assert_eq!(a.editor.cursor, Position::ZERO);
         a.apply(Action::JumpHistoryBack);
-        assert_eq!(a.cursor, Position::new(3, 0));
+        assert_eq!(a.editor.cursor, Position::new(3, 0));
     }
 
     #[test]
     fn star_pushes_position_history() {
         let mut a = app_with("foo bar foo", 10);
-        a.cursor = Position::new(0, 1); // on 'o' of first "foo"
+        a.editor.cursor = Position::new(0, 1); // on 'o' of first "foo"
         a.apply(Action::SearchWordUnderCursor(SearchDirection::Forward));
         // Cursor now on second "foo" at byte 8.
-        assert_eq!(a.cursor, Position::new(0, 8));
+        assert_eq!(a.editor.cursor, Position::new(0, 8));
         a.apply(Action::JumpHistoryBack);
-        assert_eq!(a.cursor, Position::new(0, 1));
+        assert_eq!(a.editor.cursor, Position::new(0, 1));
     }
 
     #[test]
     fn percent_pushes_position_history() {
         let mut a = app_with("call(arg)", 10);
-        a.cursor = Position::new(0, 4); // on '('
+        a.editor.cursor = Position::new(0, 4); // on '('
         a.apply(Action::MatchBracket);
-        assert_eq!(a.cursor, Position::new(0, 8)); // ')'
+        assert_eq!(a.editor.cursor, Position::new(0, 8)); // ')'
         a.apply(Action::JumpHistoryBack);
-        assert_eq!(a.cursor, Position::new(0, 4));
+        assert_eq!(a.editor.cursor, Position::new(0, 4));
     }
 
     #[test]
     fn mark_jump_pushes_position_history() {
         let mut a = app_with("hello\nworld", 10);
-        a.cursor = Position::new(1, 2);
+        a.editor.cursor = Position::new(1, 2);
         a.apply(Action::SetMark('a'));
-        a.cursor = Position::ZERO;
+        a.editor.cursor = Position::ZERO;
         a.apply(Action::JumpToMarkExact('a'));
-        assert_eq!(a.cursor, Position::new(1, 2));
+        assert_eq!(a.editor.cursor, Position::new(1, 2));
         a.apply(Action::JumpHistoryBack);
-        assert_eq!(a.cursor, Position::ZERO);
+        assert_eq!(a.editor.cursor, Position::ZERO);
     }
 
     #[test]
     fn set_mark_pushes_named_mark_into_position_history() {
         let mut a = app_with("hello\nworld", 10);
-        a.cursor = Position::new(1, 2);
+        a.editor.cursor = Position::new(1, 2);
         a.apply(Action::SetMark('a'));
         // Last entry is a NamedMark.
         let last = a.editor.position_history.last().unwrap();
@@ -855,15 +855,15 @@ mod tests {
         let mut a = app_with("aaa\nbbb\nccc\nddd", 10);
         // mX (NamedMark) followed by gg (AutoJump). Ctrl-O should walk
         // to the AutoJump entry, NOT the NamedMark.
-        a.cursor = Position::new(1, 0);
+        a.editor.cursor = Position::new(1, 0);
         a.apply(Action::SetMark('a'));
         // Position history now has [NamedMark('a') at (1,0)].
-        a.cursor = Position::new(3, 0);
+        a.editor.cursor = Position::new(3, 0);
         a.apply(invoke_motion(a.editor.builtins.goto_first_line));
         // Now history: [NamedMark('a'), AutoJump (3,0)].
         a.apply(Action::JumpHistoryBack);
         // Ctrl-O lands on the AutoJump entry, not the named mark.
-        assert_eq!(a.cursor, Position::new(3, 0));
+        assert_eq!(a.editor.cursor, Position::new(3, 0));
     }
 
     #[test]
@@ -871,20 +871,20 @@ mod tests {
         // After Ctrl-O moves cursor through the ring, g; should pick
         // up from the new cursor position when scanning for marks.
         let mut a = app_with("a\nb\nc\nd\ne", 10);
-        a.cursor = Position::new(1, 0);
+        a.editor.cursor = Position::new(1, 0);
         a.apply(Action::SetMark('a')); // ring [NamedMark a@(1,0)] cursor=1
-        a.cursor = Position::new(3, 0);
+        a.editor.cursor = Position::new(3, 0);
         a.apply(invoke_motion(a.editor.builtins.goto_first_line));
         // ring [NamedMark a, AutoJump (3,0)] cursor=2
         // Ctrl-O jumps to AutoJump (3,0). Snapshot of (0,0) pushed.
         // Actually: with snapshot pre-step, ring [a, (3,0), (0,0)],
         // cursor walks from 3 backward to find jump -> index 1 ((3,0)).
         a.apply(Action::JumpHistoryBack);
-        assert_eq!(a.cursor, Position::new(3, 0));
+        assert_eq!(a.editor.cursor, Position::new(3, 0));
         // g; from current ring cursor (1) walks back to find NamedMark
         // at index 0.
         a.apply(Action::WalkMarkHistoryBack);
-        assert_eq!(a.cursor, Position::new(1, 0));
+        assert_eq!(a.editor.cursor, Position::new(1, 0));
     }
 
     #[test]
@@ -908,9 +908,9 @@ mod tests {
     #[test]
     fn star_finds_next_occurrence_of_word_under_cursor() {
         let mut a = app_with("foo bar foo bar", 10);
-        a.cursor = Position::new(0, 1); // on 'o' of first "foo"
+        a.editor.cursor = Position::new(0, 1); // on 'o' of first "foo"
         a.apply(Action::SearchWordUnderCursor(SearchDirection::Forward));
-        assert_eq!(a.cursor, Position::new(0, 8)); // start of second "foo"
+        assert_eq!(a.editor.cursor, Position::new(0, 8)); // start of second "foo"
         let last = a.editor.last_search.as_ref().unwrap();
         assert_eq!(last.pattern, "foo");
     }
@@ -918,7 +918,7 @@ mod tests {
     #[test]
     fn star_when_cursor_not_on_word_scans_forward() {
         let mut a = app_with("  hello world", 10);
-        a.cursor = Position::new(0, 0); // on space
+        a.editor.cursor = Position::new(0, 0); // on space
         a.apply(Action::SearchWordUnderCursor(SearchDirection::Forward));
         // The first word "hello" appears once in the buffer; pattern is
         // recorded but no match is found beyond it (no second "hello").
@@ -937,7 +937,7 @@ mod tests {
     #[test]
     fn star_records_pattern_even_on_no_other_match() {
         let mut a = app_with("only hello", 10);
-        a.cursor = Position::new(0, 5); // on 'h'
+        a.editor.cursor = Position::new(0, 5); // on 'h'
         a.apply(Action::SearchWordUnderCursor(SearchDirection::Forward));
         // Only one occurrence; wrap puts us at the same place.
         let last = a.editor.last_search.as_ref().unwrap();
@@ -947,33 +947,33 @@ mod tests {
     #[test]
     fn percent_jumps_from_open_to_close_paren() {
         let mut a = app_with("call(arg1, arg2)", 10);
-        a.cursor = Position::new(0, 4); // on '('
+        a.editor.cursor = Position::new(0, 4); // on '('
         a.apply(Action::MatchBracket);
-        assert_eq!(a.cursor, Position::new(0, 15));
+        assert_eq!(a.editor.cursor, Position::new(0, 15));
     }
 
     #[test]
     fn percent_jumps_from_close_to_open_paren() {
         let mut a = app_with("call(arg1, arg2)", 10);
-        a.cursor = Position::new(0, 15); // on ')'
+        a.editor.cursor = Position::new(0, 15); // on ')'
         a.apply(Action::MatchBracket);
-        assert_eq!(a.cursor, Position::new(0, 4));
+        assert_eq!(a.editor.cursor, Position::new(0, 4));
     }
 
     #[test]
     fn percent_with_nested_picks_correct_match() {
         let mut a = app_with("a(b(c)d)e", 10);
-        a.cursor = Position::new(0, 1); // on outer '('
+        a.editor.cursor = Position::new(0, 1); // on outer '('
         a.apply(Action::MatchBracket);
-        assert_eq!(a.cursor, Position::new(0, 7)); // outer ')'
+        assert_eq!(a.editor.cursor, Position::new(0, 7)); // outer ')'
     }
 
     #[test]
     fn percent_searches_forward_for_first_bracket_when_cursor_off() {
         let mut a = app_with("call(arg)", 10);
-        a.cursor = Position::ZERO; // 'c'; first bracket on line is '(' at byte 4
+        a.editor.cursor = Position::ZERO; // 'c'; first bracket on line is '(' at byte 4
         a.apply(Action::MatchBracket);
-        assert_eq!(a.cursor, Position::new(0, 8)); // ')'
+        assert_eq!(a.editor.cursor, Position::new(0, 8)); // ')'
     }
 
     #[test]
@@ -987,7 +987,7 @@ mod tests {
     #[test]
     fn percent_with_unmatched_bracket_emits_error() {
         let mut a = app_with("foo(bar", 10);
-        a.cursor = Position::new(0, 3);
+        a.editor.cursor = Position::new(0, 3);
         a.apply(Action::MatchBracket);
         let msg = a.editor.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Error);
@@ -996,130 +996,130 @@ mod tests {
     #[test]
     fn percent_works_for_brackets_and_braces() {
         let mut a = app_with("[a, b, c]", 10);
-        a.cursor = Position::ZERO;
+        a.editor.cursor = Position::ZERO;
         a.apply(Action::MatchBracket);
-        assert_eq!(a.cursor, Position::new(0, 8));
+        assert_eq!(a.editor.cursor, Position::new(0, 8));
     }
 
     #[test]
     fn jump_viewport_top_lands_on_scroll_line() {
         let mut a = app_with("0\n1\n2\n3\n4\n5\n6\n7\n8\n9", 5);
-        a.scroll = 3;
-        a.cursor = Position::new(7, 0);
+        a.editor.scroll = 3;
+        a.editor.cursor = Position::new(7, 0);
         a.apply(Action::JumpViewport(ViewportPos::Top));
-        assert_eq!(a.cursor.line, 3);
+        assert_eq!(a.editor.cursor.line, 3);
     }
 
     #[test]
     fn jump_viewport_middle_lands_at_half_height() {
         let mut a = app_with("0\n1\n2\n3\n4\n5\n6\n7\n8\n9", 6);
-        a.scroll = 0;
+        a.editor.scroll = 0;
         a.apply(Action::JumpViewport(ViewportPos::Middle));
         // height/2 = 3, so cursor goes to line 3.
-        assert_eq!(a.cursor.line, 3);
+        assert_eq!(a.editor.cursor.line, 3);
     }
 
     #[test]
     fn jump_viewport_bottom_lands_at_height_minus_one() {
         let mut a = app_with("0\n1\n2\n3\n4\n5\n6\n7\n8\n9", 5);
-        a.scroll = 2;
+        a.editor.scroll = 2;
         a.apply(Action::JumpViewport(ViewportPos::Bottom));
         // 2 + 5 - 1 = 6.
-        assert_eq!(a.cursor.line, 6);
+        assert_eq!(a.editor.cursor.line, 6);
     }
 
     #[test]
     fn jump_viewport_clamps_to_last_addressable_line() {
         let mut a = app_with("a\nb", 50);
         a.apply(Action::JumpViewport(ViewportPos::Bottom));
-        assert_eq!(a.cursor.line, 1);
+        assert_eq!(a.editor.cursor.line, 1);
     }
 
     #[test]
     fn scroll_cursor_to_center_centers_cursor() {
         let mut a = app_with("0\n1\n2\n3\n4\n5\n6\n7\n8\n9", 5);
-        a.cursor = Position::new(6, 0);
+        a.editor.cursor = Position::new(6, 0);
         a.apply(Action::ScrollCursorTo(ScrollPos::Center));
         // cursor.line - height/2 = 6 - 2 = 4.
-        assert_eq!(a.scroll, 4);
+        assert_eq!(a.editor.scroll, 4);
         // Cursor itself unchanged.
-        assert_eq!(a.cursor.line, 6);
+        assert_eq!(a.editor.cursor.line, 6);
     }
 
     #[test]
     fn scroll_cursor_to_top_aligns_scroll_with_cursor() {
         let mut a = app_with("0\n1\n2\n3\n4\n5\n6\n7\n8\n9", 5);
-        a.cursor = Position::new(6, 0);
+        a.editor.cursor = Position::new(6, 0);
         a.apply(Action::ScrollCursorTo(ScrollPos::Top));
-        assert_eq!(a.scroll, 6);
+        assert_eq!(a.editor.scroll, 6);
     }
 
     #[test]
     fn scroll_cursor_to_bottom_pulls_scroll_up_by_height_minus_one() {
         let mut a = app_with("0\n1\n2\n3\n4\n5\n6\n7\n8\n9", 5);
-        a.cursor = Position::new(8, 0);
+        a.editor.cursor = Position::new(8, 0);
         a.apply(Action::ScrollCursorTo(ScrollPos::Bottom));
         // 8 - (5 - 1) = 4.
-        assert_eq!(a.scroll, 4);
+        assert_eq!(a.editor.scroll, 4);
     }
 
     #[test]
     fn page_down_advances_by_viewport_height_minus_two() {
         let mut a = app_with("0\n1\n2\n3\n4\n5\n6\n7\n8\n9", 5);
-        a.cursor = Position::ZERO;
+        a.editor.cursor = Position::ZERO;
         a.apply(Action::PageDown);
-        assert_eq!(a.cursor.line, 3);
+        assert_eq!(a.editor.cursor.line, 3);
     }
 
     #[test]
     fn page_down_clamps_to_last_addressable_line() {
         let mut a = app_with("0\n1\n2\n3\n4\n5\n6\n7\n8\n9", 5);
-        a.cursor = Position::new(8, 0);
+        a.editor.cursor = Position::new(8, 0);
         a.apply(Action::PageDown);
-        assert_eq!(a.cursor.line, 9);
+        assert_eq!(a.editor.cursor.line, 9);
     }
 
     #[test]
     fn page_up_steps_back_by_viewport_height_minus_two() {
         let mut a = app_with("0\n1\n2\n3\n4\n5\n6\n7\n8\n9", 5);
-        a.cursor = Position::new(7, 0);
+        a.editor.cursor = Position::new(7, 0);
         a.apply(Action::PageUp);
-        assert_eq!(a.cursor.line, 4);
+        assert_eq!(a.editor.cursor.line, 4);
     }
 
     #[test]
     fn page_up_at_top_stays_at_top() {
         let mut a = app_with("0\n1\n2", 5);
         a.apply(Action::PageUp);
-        assert_eq!(a.cursor.line, 0);
+        assert_eq!(a.editor.cursor.line, 0);
     }
 
     #[test]
     fn scroll_line_down_advances_scroll_and_pulls_cursor_if_off_top() {
         let mut a = app_with("0\n1\n2\n3\n4\n5\n6", 3);
-        a.cursor = Position::ZERO;
-        a.scroll = 0;
+        a.editor.cursor = Position::ZERO;
+        a.editor.scroll = 0;
         a.apply(Action::ScrollLineDown);
-        assert_eq!(a.scroll, 1);
+        assert_eq!(a.editor.scroll, 1);
         // Cursor was at line 0; now it's off the top, so it follows.
-        assert_eq!(a.cursor.line, 1);
+        assert_eq!(a.editor.cursor.line, 1);
     }
 
     #[test]
     fn scroll_line_up_decreases_scroll_and_pushes_cursor_if_off_bottom() {
         let mut a = app_with("0\n1\n2\n3\n4\n5\n6", 3);
-        a.cursor = Position::new(4, 0);
-        a.scroll = 2; // viewport covers lines 2,3,4.
+        a.editor.cursor = Position::new(4, 0);
+        a.editor.scroll = 2; // viewport covers lines 2,3,4.
         a.apply(Action::ScrollLineUp);
-        assert_eq!(a.scroll, 1);
+        assert_eq!(a.editor.scroll, 1);
         // Bottom of new viewport is line 3; cursor was at 4, gets pushed up.
-        assert_eq!(a.cursor.line, 3);
+        assert_eq!(a.editor.cursor.line, 3);
     }
 
     #[test]
     fn set_mark_records_cursor_position() {
         let mut a = app_with("hello\nworld", 10);
-        a.cursor = Position::new(1, 2);
+        a.editor.cursor = Position::new(1, 2);
         a.apply(Action::SetMark('a'));
         assert_eq!(a.editor.marks.get(&'a'), Some(&Position::new(1, 2)));
     }
@@ -1127,22 +1127,22 @@ mod tests {
     #[test]
     fn jump_mark_exact_restores_cursor_position() {
         let mut a = app_with("hello\nworld\nfoo", 10);
-        a.cursor = Position::new(0, 3);
+        a.editor.cursor = Position::new(0, 3);
         a.apply(Action::SetMark('m'));
-        a.cursor = Position::new(2, 0);
+        a.editor.cursor = Position::new(2, 0);
         a.apply(Action::JumpToMarkExact('m'));
-        assert_eq!(a.cursor, Position::new(0, 3));
+        assert_eq!(a.editor.cursor, Position::new(0, 3));
     }
 
     #[test]
     fn jump_mark_line_lands_on_first_non_blank() {
         let mut a = app_with("hello\n    indented\nfoo", 10);
-        a.cursor = Position::new(1, 8); // mid-word on the indented line
+        a.editor.cursor = Position::new(1, 8); // mid-word on the indented line
         a.apply(Action::SetMark('a'));
-        a.cursor = Position::ZERO;
+        a.editor.cursor = Position::ZERO;
         a.apply(Action::JumpToMarkLine('a'));
         // Line 1, byte 4 = 'i' (after 4 leading spaces).
-        assert_eq!(a.cursor, Position::new(1, 4));
+        assert_eq!(a.editor.cursor, Position::new(1, 4));
     }
 
     #[test]
@@ -1160,7 +1160,7 @@ mod tests {
             CommandInvocation::of(a.editor.builtins.line_down.0)
                 .with_count(lattice_grammar::command::Count(5)),
         ));
-        assert_eq!(a.cursor.line, 5);
+        assert_eq!(a.editor.cursor.line, 5);
     }
 
     #[test]
@@ -1169,7 +1169,7 @@ mod tests {
         // The whole deletion MUST land as a single undo unit -- a
         // single `u` should restore the original buffer.
         let mut a = app_with("one\ntwo\nthree\nfour", 10);
-        a.cursor = Position::new(0, 0);
+        a.editor.cursor = Position::new(0, 0);
         a.editor.op_count = 2;
         let inv = CommandInvocation::of(a.editor.builtins.delete.0)
             .with_range(lattice_grammar::Range::CurrentLine)
@@ -1194,7 +1194,7 @@ mod tests {
         // operator builds the per-line edits up front and commits
         // via apply_edit_batch.
         let mut a = app_with("one\ntwo\nthree\nfour", 10);
-        a.cursor = Position::new(0, 0);
+        a.editor.cursor = Position::new(0, 0);
         a.editor.op_count = 2;
         let inv = CommandInvocation::of(a.editor.builtins.indent_right.0)
             .with_range(lattice_grammar::Range::CurrentLine)
@@ -1209,7 +1209,7 @@ mod tests {
     #[test]
     fn count_with_indent_left_dedents_n_lines_as_single_undo() {
         let mut a = app_with("    one\n    two\nthree\nfour", 10);
-        a.cursor = Position::new(0, 0);
+        a.editor.cursor = Position::new(0, 0);
         a.editor.op_count = 2;
         let inv = CommandInvocation::of(a.editor.builtins.indent_left.0)
             .with_range(lattice_grammar::Range::CurrentLine)
@@ -1226,31 +1226,31 @@ mod tests {
         let mut a = app_with("hello world", 10);
         let id = a.editor.builtins.word_forward;
         a.apply(invoke_motion(id));
-        assert_eq!(a.cursor, Position::new(0, 6));
+        assert_eq!(a.editor.cursor, Position::new(0, 6));
     }
 
     #[test]
     fn next_pane_cycles_active() {
         let mut a = app_with("first\nsecond\nthird", 10);
-        a.cursor = Position::new(2, 0);
+        a.editor.cursor = Position::new(2, 0);
         a.apply(Action::SplitPaneVertical);
         // After split: 2 panes, both seeded with cursor (2, 0).
         // Move cursor in the active pane.
-        a.cursor = Position::new(0, 0);
+        a.editor.cursor = Position::new(0, 0);
         a.apply(Action::NextPane);
         assert_eq!(a.pane_tree.active_index(), 1);
         // Pane 1 should still hold its stashed cursor (2, 0).
-        assert_eq!(a.cursor, Position::new(2, 0));
+        assert_eq!(a.editor.cursor, Position::new(2, 0));
         // Cycle back -- pane 0 holds (0, 0) per the in-active mutation.
         a.apply(Action::NextPane);
         assert_eq!(a.pane_tree.active_index(), 0);
-        assert_eq!(a.cursor, Position::new(0, 0));
+        assert_eq!(a.editor.cursor, Position::new(0, 0));
     }
 
     #[test]
     fn navigate_pane_walks_to_spatial_neighbour() {
         let mut a = app_with("xx", 10);
-        a.terminal_width = Some(80);
+        a.editor.terminal_width = Some(80);
         a.apply(Action::SplitPaneVertical);
         // Active=0 (left). Navigate Right -> active=1.
         a.apply(Action::NavigatePane(PaneDirection::Right));
@@ -1271,25 +1271,25 @@ mod tests {
     #[test]
     fn ctrl_o_from_help_buffer_swaps_pane_back_to_document() {
         // Regression: do_walk_history's Document arm previously only
-        // updated `active_buffer` + `self.cursor` and forgot to update
+        // updated `active_buffer` + `self.editor.cursor` and forgot to update
         // `pane.buffer` / `pane.buffer_id`. The renderer + modeline read
         // pane.buffer_id, so <C-o> from a help-in-pane buffer back to a
         // document position left the renderer painting the help buffer.
         let mut a = app_with("alpha\nbeta\ngamma\n", 10);
-        let doc_id = a.document_buffer_id;
-        a.cursor = Position::new(1, 2);
+        let doc_id = a.editor.document_buffer_id;
+        a.editor.cursor = Position::new(1, 2);
         // Open a help buffer in-pane; activate_help_in_pane pushes an
         // AutoJump entry recording the pre-activation Document cursor.
         let help =
             crate::help::HelpContent::from_lines("regression", vec!["help body".to_string()]);
         a.open_help_in_pane(help);
-        assert_eq!(a.active_buffer, BufferKind::Help);
+        assert_eq!(a.editor.active_buffer, BufferKind::Help);
         let active_pane = a.pane_tree.active();
         assert_eq!(active_pane.buffer, BufferKind::Help);
         assert_ne!(active_pane.buffer_id, doc_id);
         // <C-o> walks back to the AutoJump entry pointing at the doc.
         a.apply(Action::JumpHistoryBack);
-        assert_eq!(a.active_buffer, BufferKind::Document);
+        assert_eq!(a.editor.active_buffer, BufferKind::Document);
         let active_pane = a.pane_tree.active();
         assert_eq!(
             active_pane.buffer,
@@ -1300,7 +1300,7 @@ mod tests {
             active_pane.buffer_id, doc_id,
             "pane.buffer_id must point at the original document so the renderer paints it"
         );
-        assert_eq!(a.cursor, Position::new(1, 2));
+        assert_eq!(a.editor.cursor, Position::new(1, 2));
     }
 
     #[test]
@@ -1311,14 +1311,14 @@ mod tests {
         // single-result path normally pushes; we synthesise
         // the entry directly to keep the test free of LSP wire).
         a.editor.tag_stack.push(TagStackEntry {
-            buffer: a.active_buffer,
+            buffer: a.editor.active_buffer,
             buffer_id: a.active_pane_buffer_id(),
             position: Position::new(0, 2),
             label: "foo".into(),
         });
-        a.cursor = Position::new(3, 1);
+        a.editor.cursor = Position::new(3, 1);
         a.apply(Action::TagStackPop);
-        assert_eq!(a.cursor, Position::new(0, 2));
+        assert_eq!(a.editor.cursor, Position::new(0, 2));
         assert!(a.editor.tag_stack.is_empty());
         // Pop pushes the post-pop cursor onto position history
         // (PluginPush) so a follow-up `<C-i>` returns to (3, 1).

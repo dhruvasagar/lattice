@@ -76,7 +76,7 @@ impl App {
             buffer_id: active_id.0,
             path,
             language,
-            cursor: self.cursor,
+            cursor: self.editor.cursor,
             selection,
             buffer: &snap.buffer,
             syntax_symbols,
@@ -86,7 +86,7 @@ impl App {
 
         // Buffer registry -> picker BufferEntry view.
         let mut buffers: Vec<BufferEntry> = Vec::new();
-        self.buffers.for_each(|entry| {
+        self.editor.buffers.for_each(|entry| {
             buffers.push(picker_buffer_entry(entry, &self.editor.buffer_locals));
         });
 
@@ -173,7 +173,7 @@ impl App {
                 line,
                 col,
             } => {
-                self.push_position_history(self.cursor, super::PositionSource::PluginPush);
+                self.push_position_history(self.editor.cursor, super::PositionSource::PluginPush);
                 let id = BufferId(buffer_id);
                 if id != self.active_pane_buffer_id() {
                     self.prepare_pane_for_picker_result();
@@ -183,7 +183,7 @@ impl App {
                 let line = line.min(super::last_addressable_line(&snap.buffer));
                 let len = super::line_byte_len(&snap.buffer, line);
                 let col = col.min(len);
-                self.cursor = lattice_protocol::Position::new(line, col);
+                self.editor.cursor = lattice_protocol::Position::new(line, col);
             }
             JumpToLocation { path, line, col } => {
                 self.prepare_pane_for_picker_result();
@@ -253,7 +253,7 @@ impl App {
                     self.set_message(EchoLevel::Error, format!("picker: no snippet named `{id}`"));
                     return;
                 };
-                self.expand_snippet(&snippet.body, self.cursor);
+                self.expand_snippet(&snippet.body, self.editor.cursor);
             }
             ApplyLspCodeAction { handle, index } => self.set_message(
                 EchoLevel::Error,
@@ -966,7 +966,7 @@ impl App {
         );
         // Host-side candidate build (the picker module is
         // renderer-agnostic and doesn't import `BufferRegistry`).
-        let pairs = raw_buffer_candidates(&self.buffers, &self.editor.buffer_locals, active);
+        let pairs = raw_buffer_candidates(&self.editor.buffers, &self.editor.buffer_locals, active);
         p.set_raw_candidates_with_routing(pairs);
         // Stash the original active buffer id so dismiss can
         // restore. None on no-buffer pickers (LSP); for the
@@ -1592,7 +1592,7 @@ mod tests {
         let _help_id = app.open_help_in_pane(HelpContent::from_lines("lsp:rust", vec!["a".into()]));
         // Activate back to the document so the picker's "active"
         // marker doesn't land on the help buffer.
-        let doc_id = app.buffers.document_ids_sorted().first().copied().unwrap();
+        let doc_id = app.editor.buffers.document_ids_sorted().first().copied().unwrap();
         app.activate_document(doc_id);
         app.open_buffer_picker();
         let p = app.editor.picker.as_ref().expect("picker should be open");
@@ -1607,10 +1607,10 @@ mod tests {
         let mut app = app_with("hi\n", 5);
         let help_id =
             app.open_help_in_pane(HelpContent::from_lines("test-target", vec!["body".into()]));
-        let doc_id = app.buffers.document_ids_sorted().first().copied().unwrap();
+        let doc_id = app.editor.buffers.document_ids_sorted().first().copied().unwrap();
         // Start on the doc.
         app.activate_document(doc_id);
-        assert!(matches!(app.active_buffer, BufferKind::Document));
+        assert!(matches!(app.editor.active_buffer, BufferKind::Document));
         // Open picker, type the help title, accept.
         app.open_buffer_picker();
         for c in "test-target".chars() {
@@ -1620,13 +1620,13 @@ mod tests {
         // Picker is dismissed; active pane is on the help buffer.
         assert!(app.editor.picker.is_none());
         assert_eq!(app.active_pane_buffer_id(), help_id);
-        assert!(matches!(app.active_buffer, BufferKind::Help));
+        assert!(matches!(app.editor.active_buffer, BufferKind::Help));
     }
 
     #[test]
     fn picker_dismiss_leaves_active_pane_unchanged() {
         let mut app = app_with("hi\n", 5);
-        let doc_id = app.buffers.document_ids_sorted().first().copied().unwrap();
+        let doc_id = app.editor.buffers.document_ids_sorted().first().copied().unwrap();
         app.activate_document(doc_id);
         app.open_buffer_picker();
         app.apply(Action::PickerDismiss);
@@ -1642,7 +1642,7 @@ mod tests {
         let mut app = app_with("hi\n", 5);
         let help_id =
             app.open_help_in_pane(HelpContent::from_lines("alt", vec!["alt body".into()]));
-        let doc_id = app.buffers.document_ids_sorted().first().copied().unwrap();
+        let doc_id = app.editor.buffers.document_ids_sorted().first().copied().unwrap();
         app.activate_document(doc_id);
         // Sanity: starting state.
         assert_eq!(app.active_pane_buffer_id(), doc_id);
@@ -1650,7 +1650,7 @@ mod tests {
         // Picker open + preview switched the pane to the help
         // buffer (the alternate -- "(current)" is the doc).
         assert_eq!(app.active_pane_buffer_id(), help_id);
-        assert!(matches!(app.active_buffer, BufferKind::Help));
+        assert!(matches!(app.editor.active_buffer, BufferKind::Help));
     }
 
     #[test]
@@ -1658,7 +1658,7 @@ mod tests {
         let mut app = app_with("hi\n", 5);
         let _help_id =
             app.open_help_in_pane(HelpContent::from_lines("alt", vec!["alt body".into()]));
-        let doc_id = app.buffers.document_ids_sorted().first().copied().unwrap();
+        let doc_id = app.editor.buffers.document_ids_sorted().first().copied().unwrap();
         app.activate_document(doc_id);
         app.open_buffer_picker();
         // Preview moved us off the doc.
@@ -1667,7 +1667,7 @@ mod tests {
         // Esc restored the original.
         assert!(app.editor.picker.is_none());
         assert_eq!(app.active_pane_buffer_id(), doc_id);
-        assert!(matches!(app.active_buffer, BufferKind::Document));
+        assert!(matches!(app.editor.active_buffer, BufferKind::Document));
     }
 
     #[test]
@@ -1675,7 +1675,7 @@ mod tests {
         let mut app = app_with("hi\n", 5);
         let help_a = app.open_help_in_pane(HelpContent::from_lines("alpha-help", vec!["a".into()]));
         let help_b = app.open_help_in_pane(HelpContent::from_lines("beta-help", vec!["b".into()]));
-        let doc_id = app.buffers.document_ids_sorted().first().copied().unwrap();
+        let doc_id = app.editor.buffers.document_ids_sorted().first().copied().unwrap();
         app.activate_document(doc_id);
         app.open_buffer_picker();
         let first_preview = app.active_pane_buffer_id();
@@ -1701,7 +1701,7 @@ mod tests {
         let mut app = app_with("hi\n", 5);
         let _h1 = app.open_help_in_pane(HelpContent::from_lines("h-one", vec!["a".into()]));
         let _h2 = app.open_help_in_pane(HelpContent::from_lines("h-two", vec!["b".into()]));
-        let doc_id = app.buffers.document_ids_sorted().first().copied().unwrap();
+        let doc_id = app.editor.buffers.document_ids_sorted().first().copied().unwrap();
         app.activate_document(doc_id);
         let history_before = app.editor.position_history.len();
         app.open_buffer_picker();
@@ -1930,8 +1930,8 @@ mod tests {
         app.apply(Action::PickerSelectNext);
         app.apply(Action::PickerAccept);
         assert!(app.editor.picker.is_none());
-        assert_eq!(app.cursor.line, 1);
-        assert_eq!(app.cursor.byte, 0);
+        assert_eq!(app.editor.cursor.line, 1);
+        assert_eq!(app.editor.cursor.byte, 0);
     }
 
     /// P.10: `:picker snippets` against an empty registry

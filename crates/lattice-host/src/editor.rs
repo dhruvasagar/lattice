@@ -50,12 +50,15 @@ use crate::action::{Action, EchoMessage};
 use crate::actions::ActionIds;
 use crate::chord::KeyChord;
 use crate::keymap_registry::{KeymapHandle, LayerId};
+use crate::buffer_registry::BufferRegistry;
 use crate::buffers::BufferId;
 use crate::state::{
     LastFind, LastSearch, LastVisual, LivePickerQueryState, MacroRecording, OptionCache,
     PendingBlockInsert, PendingPickerInit, PositionEntry, PrevPaneState, ReplaceEntry, SearchLine,
     SubstitutePreview, TagStackEntry, UnnamedRegister,
 };
+use lattice_core::BufferKind;
+use lattice_protocol::position::Position as ProtoPosition;
 use crate::ui::theme::Theme as HostTheme;
 
 /// Renderer-agnostic editor state.
@@ -127,6 +130,15 @@ use crate::ui::theme::Theme as HostTheme;
 /// - 5.B.15 -- modal + dispatch (`modal`, `partial_chord`,
 ///   `registry`, `event_bus`, `builtins`, `action_ids`,
 ///   `keymap`, `completion_popup_layer`, `snippet_layer`).
+/// - 5.B.16 -- active-pane state (subset) (`cursor`,
+///   `scroll`, `should_quit`, `viewport_height`,
+///   `terminal_width`, `active_buffer`,
+///   `document_buffer_id`, `buffers`). Skipped:
+///   `document`, `snapshot_cache`, `pane_tree` --
+///   their types have no natural `Default` (actor handles
+///   + tree-with-root invariants). Follow-up slice removes
+///   `#[derive(Default)]` from `Editor` in favour of an
+///   `Editor::new(...)` constructor so these can migrate.
 #[derive(Debug, Default)]
 pub struct Editor {
     /// Completed macro recordings keyed by register name.
@@ -490,4 +502,37 @@ pub struct Editor {
     /// lockstep pattern as
     /// [`Self::completion_popup_layer`].
     pub snippet_layer: Option<LayerId>,
+    /// Active buffer's cursor (DESIGN.md §5.1.1). Updated
+    /// in lockstep with the active pane's stash so cross-
+    /// pane jumps restore the right position.
+    pub cursor: ProtoPosition,
+    /// First visible line in the viewport (0-based).
+    pub scroll: u32,
+    /// Quit flag. The main loop reads this and tears down
+    /// after the next paint. Set by `:q` / `:qa` / `Ctrl-C`
+    /// / SIGINT.
+    pub should_quit: bool,
+    /// Last height we were drawn at; used by motion
+    /// clamping and viewport scrolling. Updated by the
+    /// renderer before each frame.
+    pub viewport_height: u32,
+    /// Last terminal width we were drawn at. Used by pane
+    /// geometry (DESIGN.md §5.9 navigation needs to know
+    /// which pane is horizontally adjacent). `None` until
+    /// the renderer first records it.
+    pub terminal_width: Option<u16>,
+    /// Which buffer the input pipeline currently routes to.
+    /// When a help overlay is open this is `Help`; otherwise
+    /// `Document`. Denormalized from
+    /// `pane_tree.active().buffer` -- updated in lockstep
+    /// with the active pane.
+    pub active_buffer: BufferKind,
+    /// Stable id for the *active* document buffer. Mirrors
+    /// the active pane's `buffer_id` whenever that pane
+    /// holds a Document leaf.
+    pub document_buffer_id: BufferId,
+    /// Unified buffer registry (DESIGN.md §5.9). Holds
+    /// every open buffer regardless of kind -- documents,
+    /// file trees, future outline / diagnostics views.
+    pub buffers: BufferRegistry,
 }

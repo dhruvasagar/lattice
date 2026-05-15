@@ -38,7 +38,7 @@ impl App {
         // Clone the handle (cheap Arc bump) to release the
         // immutable `self` borrow before we mutably borrow
         // `self.editor.pending_syntax_edits` below.
-        let syntax = self.document_syntax_for(self.document_buffer_id).cloned();
+        let syntax = self.document_syntax_for(self.editor.document_buffer_id).cloned();
         if let Some(syntax) = syntax {
             // Slice B.2 part 2: ship the accumulated EditDeltas
             // to the worker. Worker applies them via tree.edit()

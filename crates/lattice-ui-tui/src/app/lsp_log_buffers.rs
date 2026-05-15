@@ -60,13 +60,13 @@ impl App {
         major_id: lattice_mode::ModeId,
         flags: BufferFlags,
     ) -> BufferId {
-        if let Some(id) = self.buffers.by_name(name) {
+        if let Some(id) = self.editor.buffers.by_name(name) {
             return id;
         }
         let id = BufferId::next();
         let document = lattice_core::Document::empty();
         let handle = lattice_runtime::spawn_document(document, self.editor.registry.clone());
-        self.buffers.insert(BufferEntry {
+        self.editor.buffers.insert(BufferEntry {
             id,
             flags,
             data: BufferData::Document(DocumentEntry { id, handle }),
@@ -149,7 +149,7 @@ impl App {
         if text.is_empty() {
             return;
         }
-        let Some(handle) = self.buffers.document_handle(buffer_id) else {
+        let Some(handle) = self.editor.buffers.document_handle(buffer_id) else {
             return;
         };
         let snap = handle.snapshot();
@@ -180,13 +180,13 @@ mod tests {
     fn boot_creates_subsystem_lsp_buffer() {
         let a = app_with("hi", 5);
         let id = a
-            .buffers
+            .editor.buffers
             .by_name(LSP_SUBSYSTEM_LOG_NAME)
             .expect("`*lsp*` buffer present at boot");
         // Must be a Document (slice B requirement) with the
         // synthetic name set.
         let (is_doc, name, listed) = a
-            .buffers
+            .editor.buffers
             .with_entry(id, |entry| {
                 (
                     matches!(entry.data, BufferData::Document(_)),
@@ -204,7 +204,7 @@ mod tests {
     #[test]
     fn lsp_log_buffer_contributes_read_only() {
         let a = app_with("hi", 5);
-        let id = a.buffers.by_name(LSP_SUBSYSTEM_LOG_NAME).unwrap();
+        let id = a.editor.buffers.by_name(LSP_SUBSYSTEM_LOG_NAME).unwrap();
         // lsp-log-mode contributes ReadOnly = true. The resolved
         // option for this buffer must reflect that contribution.
         let ro = *a.resolved_option::<ReadOnly>(id);
@@ -219,7 +219,7 @@ mod tests {
         // Slice A + B together: a synthetic Document buffer's
         // modeline shows its `name`, not "[no name]".
         let mut a = app_with("hi", 5);
-        let id = a.buffers.by_name(LSP_SUBSYSTEM_LOG_NAME).unwrap();
+        let id = a.editor.buffers.by_name(LSP_SUBSYSTEM_LOG_NAME).unwrap();
         a.activate_buffer(id);
         let pane = a.pane_tree.active().clone();
         let label = a.pane_status_label(&pane);
@@ -236,8 +236,8 @@ mod tests {
         // spawned via tokio; the test sleeps a few millis so the
         // task gets scheduled before we inspect the buffer.
         let a = app_with("hi", 5);
-        let id = a.buffers.by_name(LSP_SUBSYSTEM_LOG_NAME).unwrap();
-        let before = a.buffers.document_handle(id).unwrap().text();
+        let id = a.editor.buffers.by_name(LSP_SUBSYSTEM_LOG_NAME).unwrap();
+        let before = a.editor.buffers.document_handle(id).unwrap().text();
         a.lsp_logger.log(
             None,
             lattice_lsp::LogLevel::Info,
@@ -247,7 +247,7 @@ mod tests {
         // Let the LspLogMode tokio task drain + apply its edit.
         // 50ms is generous; production drain coalesces in <1ms.
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        let after = a.buffers.document_handle(id).unwrap().text();
+        let after = a.editor.buffers.document_handle(id).unwrap().text();
         assert!(after.len() > before.len());
         assert!(
             after.contains("boot-time chatter"),
@@ -270,7 +270,7 @@ mod tests {
         // no-arg `:lsp-log` is the direct subsystem-view entry.
         let mut a = app_with("hi", 5);
         let initial = a.active_pane_buffer_id();
-        let lsp_buf = a.buffers.by_name("*lsp*").expect("*lsp* at boot");
+        let lsp_buf = a.editor.buffers.by_name("*lsp*").expect("*lsp* at boot");
         assert_ne!(initial, lsp_buf);
         a.do_open_lsp_log(None);
         assert_eq!(
@@ -315,7 +315,7 @@ mod tests {
         let expected = lsp_server_log_name(&instance);
         a.open_lsp_log_in_pane("rust");
         let log_id = a
-            .buffers
+            .editor.buffers
             .by_name(&expected)
             .expect("per-instance log buffer registered");
         assert_eq!(a.active_pane_buffer_id(), log_id);
@@ -335,7 +335,7 @@ mod tests {
         let expected = lsp_server_trace_log_name(&instance);
         a.open_lsp_trace_log_in_pane("rust");
         let trace_id = a
-            .buffers
+            .editor.buffers
             .by_name(&expected)
             .expect("per-instance trace buffer registered");
         assert_eq!(a.active_pane_buffer_id(), trace_id);
@@ -363,13 +363,13 @@ mod tests {
             std::sync::Arc::<std::path::Path>::from(std::path::Path::new("/tmp/test-ws")),
         );
         let expected_name = lsp_server_trace_log_name(&instance);
-        assert!(a.buffers.by_name(&expected_name).is_none());
+        assert!(a.editor.buffers.by_name(&expected_name).is_none());
         let id = a.ensure_named_synthetic_document(
             &expected_name,
             lattice_lsp::modes::LspTraceLogMode::mode_id(),
             crate::app::App::SYNTHETIC_BUFFER_FLAGS,
         );
-        assert_eq!(a.buffers.by_name(&expected_name), Some(id));
+        assert_eq!(a.editor.buffers.by_name(&expected_name), Some(id));
         // Trace buffer also read-only via lsp-trace-log-mode.
         let ro = *a.resolved_option::<ReadOnly>(id);
         assert!(

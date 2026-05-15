@@ -214,10 +214,10 @@ impl App {
     /// document's path for Document buffers, `None` otherwise.
     /// Used by the LSP auto-activation hook above.
     fn path_for_buffer(&self, buffer_id: BufferId) -> Option<std::path::PathBuf> {
-        if buffer_id == self.document_buffer_id {
+        if buffer_id == self.editor.document_buffer_id {
             return self.document.path().map(|p| p.to_path_buf());
         }
-        self.buffers.document_path(buffer_id)
+        self.editor.buffers.document_path(buffer_id)
     }
 
     /// M.5.1: programmatic activation of `mode_id` on `buffer_id`.
@@ -535,8 +535,8 @@ impl App {
             // Vim's behavior: leaving Insert mode pulls the cursor back one
             // byte if it's not already at the start of the line, so the
             // cursor sits on the last inserted char rather than past it.
-            if self.cursor.byte > 0 {
-                self.cursor.byte -= 1;
+            if self.editor.cursor.byte > 0 {
+                self.editor.cursor.byte -= 1;
             }
         }
         // Publish ModalModeChanged whenever the modal axis actually
@@ -1057,7 +1057,7 @@ mod tests {
         // so the auto-LSP hook never fired.
         let second_path = write_temp_file("auto-lsp-second.rs", "fn second() {}\n");
         a.do_edit(Some(second_path.clone()), false);
-        let second_id = a.document_buffer_id;
+        let second_id = a.editor.document_buffer_id;
         assert_ne!(second_id, first_id, ":e should have opened a new buffer");
         let second_attached = wait_for(
             || a.lsp_mode_enabled_for(second_id),

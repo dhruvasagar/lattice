@@ -87,7 +87,7 @@ impl App {
         //   place; snapshot the prior state onto `popup_back_stack`
         //   so `<C-o>` walks back to it without leaving the
         //   popup.
-        if matches!(self.active_buffer, BufferKind::Help) && self.editor.popup_buffer.is_some() {
+        if matches!(self.editor.active_buffer, BufferKind::Help) && self.editor.popup_buffer.is_some() {
             if let Some(snap) = self.snapshot_current_popup() {
                 self.popup_back_stack.push(snap);
             }
@@ -107,29 +107,29 @@ impl App {
         // flip). Skip the push if we're already in Help (a help->
         // help re-open from a link follow); the inter-help
         // transition is recorded by `do_help_follow_link` itself.
-        if matches!(self.active_buffer, BufferKind::Document) {
-            let cur = self.cursor;
+        if matches!(self.editor.active_buffer, BufferKind::Document) {
+            let cur = self.editor.cursor;
             self.push_position_history(cur, PositionSource::AutoJump);
         }
         // Sync the active pane's cursor / scroll stash *before*
         // swapping `active_buffer` to Help. Once active is Help,
         // the active pane's buffer (Document) no longer matches
-        // `app.active_buffer`, so the renderer paints it as
+        // `app.editor.active_buffer`, so the renderer paints it as
         // visually inactive -- reading from `pane.cursor` rather
-        // than `app.cursor`. Without this snapshot the pane stash
+        // than `app.editor.cursor`. Without this snapshot the pane stash
         // is whatever it was last set to (often (0,0)) and the
         // doc visibly jumps to the top of file when the popup
         // opens.
         self.snapshot_active_pane();
         // Capture pre-popup state so dismiss restores cleanly.
         // Mirrors `activate_help_in_pane` / `focus_help_popup`.
-        if !matches!(self.active_buffer, BufferKind::Help) {
+        if !matches!(self.editor.active_buffer, BufferKind::Help) {
             let active = self.pane_tree.active();
             self.editor.prev_pane_for_help = Some(PrevPaneState {
                 buffer: active.buffer,
                 buffer_id: active.buffer_id,
-                cursor: self.cursor,
-                scroll: self.scroll,
+                cursor: self.editor.cursor,
+                scroll: self.editor.scroll,
             });
         }
         // Load the buffer's cursor / scroll into the App's hot
@@ -137,7 +137,7 @@ impl App {
         // uniformly across buffer kinds.
         let stash_cursor = buffer.cursor;
         let stash_scroll = buffer.scroll as u32;
-        // M.4 (b): popup buffers participate in `app.buffers` like
+        // M.4 (b): popup buffers participate in `app.editor.buffers` like
         // any other buffer. The registry entry is the durable
         // record; the `popup_buffer` slot just holds the id.
         // `listed: false` keeps `:ls` / `:bn` / `:bp` from cycling
@@ -145,7 +145,7 @@ impl App {
         // informational (popups don't have windows of their own).
         // Same shape as [`Self::open_help_in_pane`] uses for
         // `:lsp-log` etc.
-        self.buffers.insert(crate::buffer_registry::BufferEntry {
+        self.editor.buffers.insert(crate::buffer_registry::BufferEntry {
             id: buffer_id,
             flags: crate::buffers::BufferFlags {
                 listed: false,
@@ -156,9 +156,9 @@ impl App {
         });
         self.editor.popup_buffer = Some(buffer_id);
         self.editor.popup_placement = placement;
-        self.cursor = stash_cursor;
-        self.scroll = stash_scroll;
-        self.active_buffer = BufferKind::Help;
+        self.editor.cursor = stash_cursor;
+        self.editor.scroll = stash_scroll;
+        self.editor.active_buffer = BufferKind::Help;
         // M.3.2.c.5: seed parsed metadata into buffer_locals.
         // Reader sites (renderer's link / anchor / highlights
         // lookups, do_help_follow_link, scroll-to-anchor) consume
@@ -191,9 +191,9 @@ impl App {
         // Drop any previous popup buffer cleanly before adopting
         // the new one (back-to-back hovers shouldn't pile up).
         self.dismiss_stale_popup_registry();
-        // Popup buffers participate in `app.buffers` like every
+        // Popup buffers participate in `app.editor.buffers` like every
         // other buffer (same shape `open_popup` uses).
-        self.buffers.insert(crate::buffer_registry::BufferEntry {
+        self.editor.buffers.insert(crate::buffer_registry::BufferEntry {
             id: buffer_id,
             flags: crate::buffers::BufferFlags {
                 listed: false,
@@ -250,7 +250,7 @@ impl App {
         let Some(prev) = self.editor.popup_buffer else {
             return;
         };
-        self.buffers.remove(prev);
+        self.editor.buffers.remove(prev);
         self.editor.active_modes.remove(&prev);
         self.editor.buffer_locals.remove(&prev);
         self.editor.resolved_options.remove(&prev);
@@ -258,13 +258,13 @@ impl App {
 
     /// M.4 (b): resolve the popup's `HelpBuffer` through the
     /// unified registry. The field stores only the `BufferId`; the
-    /// actual buffer lives in `app.buffers` with
+    /// actual buffer lives in `app.editor.buffers` with
     /// `BufferFlags { listed: false, hidden: true }`. Returns a
     /// cloned snapshot (the rope is cheap-to-clone); `None` when no
     /// popup is open or the registry entry has been torn down.
     pub fn popup_help(&self) -> Option<crate::help::HelpBuffer> {
         let id = self.editor.popup_buffer?;
-        self.buffers.with_help(id, |h| h.clone())
+        self.editor.buffers.with_help(id, |h| h.clone())
     }
 
     /// Mutable counterpart to [`Self::popup_help`]. The closure
@@ -275,7 +275,7 @@ impl App {
         f: impl FnOnce(&mut crate::help::HelpBuffer) -> R,
     ) -> Option<R> {
         let id = self.editor.popup_buffer?;
-        self.buffers.with_help_mut(id, f)
+        self.editor.buffers.with_help_mut(id, f)
     }
 
     /// M.3.2.c.5: mirror parsed help metadata into the buffer-locals
@@ -359,7 +359,7 @@ impl App {
     pub(super) fn snapshot_current_popup(&self) -> Option<PopupSnapshot> {
         let id = self.editor.popup_buffer?;
         let (title, content) = self
-            .buffers
+            .editor.buffers
             .with_help(id, |buf| (buf.title.clone(), buf.content.clone()))?;
         let locals = self.editor.buffer_locals.get(&id)?;
         let metadata = HelpMetadata {
@@ -379,8 +379,8 @@ impl App {
         Some(PopupSnapshot {
             title,
             content,
-            cursor: self.cursor,
-            scroll: self.scroll,
+            cursor: self.editor.cursor,
+            scroll: self.editor.scroll,
             metadata,
             placement: self.editor.popup_placement,
         })
@@ -403,14 +403,14 @@ impl App {
         // Update the registered HelpBuffer in place. We retain `id`
         // (the existing popup's id) -- not `new_buf.id` -- so every
         // outer-state slot keyed on the popup id stays coherent.
-        self.buffers.with_help_mut(id, |existing| {
+        self.editor.buffers.with_help_mut(id, |existing| {
             existing.title = new_buf.title;
             existing.content = new_buf.content;
             existing.scroll = 0;
             existing.cursor = lattice_protocol::position::Position::ZERO;
         });
-        self.cursor = lattice_protocol::position::Position::ZERO;
-        self.scroll = 0;
+        self.editor.cursor = lattice_protocol::position::Position::ZERO;
+        self.editor.scroll = 0;
         self.editor.popup_placement = placement;
         self.seed_help_metadata_locals(id, metadata);
     }
@@ -426,14 +426,14 @@ impl App {
         let Some(id) = self.editor.popup_buffer else {
             return false;
         };
-        self.buffers.with_help_mut(id, |existing| {
+        self.editor.buffers.with_help_mut(id, |existing| {
             existing.title = snap.title;
             existing.content = snap.content;
             existing.scroll = snap.scroll as usize;
             existing.cursor = snap.cursor;
         });
-        self.cursor = snap.cursor;
-        self.scroll = snap.scroll;
+        self.editor.cursor = snap.cursor;
+        self.editor.scroll = snap.scroll;
         self.editor.popup_placement = snap.placement;
         self.seed_help_metadata_locals(id, snap.metadata);
         true
@@ -466,14 +466,14 @@ impl App {
         // `prev_pane_for_help` as `None` -- nothing to restore;
         // active was never flipped to Help.
         if let Some(prev) = self.editor.prev_pane_for_help.take() {
-            self.cursor = prev.cursor;
-            self.scroll = prev.scroll;
+            self.editor.cursor = prev.cursor;
+            self.editor.scroll = prev.scroll;
             let pane = self.pane_tree.active_mut();
             pane.buffer = prev.buffer;
             pane.buffer_id = prev.buffer_id;
-            self.active_buffer = prev.buffer;
+            self.editor.active_buffer = prev.buffer;
         } else {
-            self.active_buffer = BufferKind::Document;
+            self.editor.active_buffer = BufferKind::Document;
         }
     }
 }
@@ -541,7 +541,7 @@ mod tests {
 
     #[test]
     fn popup_registers_buffer_with_unlisted_hidden_flags() {
-        // M.4 (b): popup buffers participate in `app.buffers` like
+        // M.4 (b): popup buffers participate in `app.editor.buffers` like
         // every other buffer, with `listed: false` (skipped by `:bn`
         // / `:bp` / `:ls`) and `hidden: true` (informational; popups
         // don't have windows of their own).
@@ -549,14 +549,14 @@ mod tests {
         a.do_lsp_status();
         let id = a.editor.popup_buffer.expect("popup open");
         let (flags, is_help) = a
-            .buffers
+            .editor.buffers
             .with_entry(id, |entry| (entry.flags, entry.help().is_some()))
             .expect("popup registered");
         assert!(!flags.listed);
         assert!(flags.hidden);
         assert!(is_help);
         // `:ls` / `:bn` cycling skips it.
-        assert!(!a.buffers.listed_ids_sorted().contains(&id));
+        assert!(!a.editor.buffers.listed_ids_sorted().contains(&id));
     }
 
     #[test]
@@ -567,9 +567,9 @@ mod tests {
         let mut a = app_with("hello", 10);
         a.do_lsp_status();
         let id = a.editor.popup_buffer.expect("popup open");
-        assert!(a.buffers.contains(id));
+        assert!(a.editor.buffers.contains(id));
         a.dismiss_popup();
-        assert!(!a.buffers.contains(id));
+        assert!(!a.editor.buffers.contains(id));
         assert!(a.editor.active_modes.get(&id).is_none());
         assert!(a.editor.buffer_locals.get(&id).is_none());
     }
@@ -591,7 +591,7 @@ mod tests {
             "popup id should be reused on in-Help reopen"
         );
         assert!(
-            a.buffers.contains(first_id),
+            a.editor.buffers.contains(first_id),
             "popup buffer survives the swap"
         );
         // The prior frame is recorded on the back-stack so `<C-o>`

@@ -309,43 +309,17 @@ pub struct App {
     /// per-pane state record this id; switching the active
     /// document via `:bnext` / `:e FILE` rotates `Self::document` /
     /// `Self::syntax` etc. to the new active.
-    pub document_buffer_id: BufferId,
-    /// Unified buffer registry (DESIGN.md §5.9). Holds every open
-    /// buffer regardless of kind -- documents, file trees, future
-    /// outline / diagnostics views -- under one [`BufferId`]
-    /// keyspace. `:bn` / `:bp` / `:ls` / `:bd` operate on this
-    /// registry; `:e FILE` and `:Tree path` insert into it. The
-    /// *active* document's hot-path state mirrors fields on App
-    /// directly ([`Self::document`], [`Self::syntax`], etc.); the
-    /// matching registry entry's `syntax` slot stays `None` until
-    /// a switch saves the active state back.
-    pub buffers: BufferRegistry,
-    /// Which buffer the input pipeline currently routes to. When a
-    /// help overlay is open this is `Help`; otherwise `Document`.
-    /// Motions, jumps, and `<C-o>` / `<C-i>` consult this to pick
-    /// the cursor + buffer they operate on (DESIGN.md §5.9).
-    /// Denormalized from `pane_tree.active().buffer` -- updated in
-    /// lockstep with the active pane.
-    pub active_buffer: BufferKind,
-    /// Pane tree (DESIGN.md §5.9). Holds one `PaneState` per
-    /// visible viewport plus the split layout. Always non-empty;
-    /// the active pane's cursor / scroll are stored on
-    /// [`Self::cursor`] / [`Self::scroll`] for hot-path code, and
-    /// snapshotted back into the pane tree on every active-pane
-    /// switch.
+    // Phase 5.B.16: `document_buffer_id`, `buffers`,
+    // `active_buffer`, `cursor`, `scroll`, `should_quit`,
+    // `viewport_height`, `terminal_width` moved to
+    // `editor.{document_buffer_id, buffers, active_buffer,
+    // cursor, scroll, should_quit, viewport_height,
+    // terminal_width}`.
+    /// Pane tree (DESIGN.md §5.9). Held on App for now;
+    /// migrates to `editor.pane_tree` in a follow-up slice
+    /// after `Editor::new` replaces `Default` and
+    /// `PaneTree` gets a non-panicking placeholder.
     pub pane_tree: PaneTree,
-    pub cursor: Position,
-    /// First visible line in the viewport (0-based).
-    pub scroll: u32,
-    pub should_quit: bool,
-    /// Last height we were drawn at; used by motion clamping and viewport
-    /// scrolling. Updated by the renderer before each frame.
-    pub viewport_height: u32,
-    /// Last terminal width we were drawn at. Used by pane geometry
-    /// (DESIGN.md §5.9 navigation needs to know which pane is
-    /// horizontally adjacent). `None` until the renderer first
-    /// records it.
-    pub terminal_width: Option<u16>,
     // Phase 5.B.15: `modal` moved to `editor.editor.modal`.
     /// In-flight partial-chord stack from the trie (slice 8.i.4).
     /// When the trie returns `LookupResult::Partial`,
@@ -1362,10 +1336,10 @@ pub use lattice_host::state::{
 impl std::fmt::Debug for App {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("App")
-            .field("cursor", &self.cursor)
-            .field("scroll", &self.scroll)
-            .field("should_quit", &self.should_quit)
-            .field("viewport_height", &self.viewport_height)
+            .field("cursor", &self.editor.cursor)
+            .field("scroll", &self.editor.scroll)
+            .field("should_quit", &self.editor.should_quit)
+            .field("viewport_height", &self.editor.viewport_height)
             .field("modal", &self.editor.modal)
             .field("command_line", &self.editor.command_line)
             .field("last_message", &self.editor.last_message)
@@ -2275,9 +2249,9 @@ mod tests {
     #[test]
     fn new_app_starts_at_origin_in_normal_mode() {
         let a = app_with("abc", 10);
-        assert_eq!(a.cursor, Position::ZERO);
-        assert_eq!(a.scroll, 0);
-        assert!(!a.should_quit);
+        assert_eq!(a.editor.cursor, Position::ZERO);
+        assert_eq!(a.editor.scroll, 0);
+        assert!(!a.editor.should_quit);
         assert_eq!(a.editor.modal, ModalState::Normal);
         assert!(a.editor.partial_chord.is_empty());
     }
@@ -2320,7 +2294,7 @@ mod tests {
     fn quit_sets_flag() {
         let mut a = app_with("abc", 10);
         a.apply(Action::Quit);
-        assert!(a.should_quit);
+        assert!(a.editor.should_quit);
     }
 
     // ---- Motion via grammar engine ----
@@ -2407,37 +2381,37 @@ mod tests {
     fn g_semicolon_walks_named_mark_history_backward() {
         let mut a = app_with("a\nb\nc\nd\ne", 10);
         // Set marks at three positions.
-        a.cursor = Position::new(1, 0);
+        a.editor.cursor = Position::new(1, 0);
         a.apply(Action::SetMark('a'));
-        a.cursor = Position::new(3, 0);
+        a.editor.cursor = Position::new(3, 0);
         a.apply(Action::SetMark('b'));
-        a.cursor = Position::new(4, 0);
+        a.editor.cursor = Position::new(4, 0);
         // g; lands on 'b' (most recent named mark).
         a.apply(Action::WalkMarkHistoryBack);
-        assert_eq!(a.cursor, Position::new(3, 0));
+        assert_eq!(a.editor.cursor, Position::new(3, 0));
         // g; again -> 'a'.
         a.apply(Action::WalkMarkHistoryBack);
-        assert_eq!(a.cursor, Position::new(1, 0));
+        assert_eq!(a.editor.cursor, Position::new(1, 0));
     }
 
     #[test]
     fn g_comma_walks_named_mark_history_forward() {
         let mut a = app_with("a\nb\nc\nd\ne", 10);
-        a.cursor = Position::new(1, 0);
+        a.editor.cursor = Position::new(1, 0);
         a.apply(Action::SetMark('a'));
-        a.cursor = Position::new(3, 0);
+        a.editor.cursor = Position::new(3, 0);
         a.apply(Action::SetMark('b'));
-        a.cursor = Position::new(4, 0);
+        a.editor.cursor = Position::new(4, 0);
         a.apply(Action::WalkMarkHistoryBack); // -> 'b'
         a.apply(Action::WalkMarkHistoryBack); // -> 'a'
         a.apply(Action::WalkMarkHistoryForward); // -> 'b'
-        assert_eq!(a.cursor, Position::new(3, 0));
+        assert_eq!(a.editor.cursor, Position::new(3, 0));
     }
 
     #[test]
     fn g_semicolon_with_no_named_marks_emits_error() {
         let mut a = app_with("a\nb\nc", 10);
-        a.cursor = Position::new(2, 0);
+        a.editor.cursor = Position::new(2, 0);
         a.apply(invoke_motion(a.editor.builtins.goto_first_line)); // pushes AutoJump
         a.apply(Action::WalkMarkHistoryBack);
         let msg = a.editor.last_message.as_ref().unwrap();
@@ -2454,9 +2428,9 @@ mod tests {
     #[test]
     fn hash_finds_previous_occurrence_of_word_under_cursor() {
         let mut a = app_with("foo bar foo bar", 10);
-        a.cursor = Position::new(0, 8); // on 'f' of second "foo"
+        a.editor.cursor = Position::new(0, 8); // on 'f' of second "foo"
         a.apply(Action::SearchWordUnderCursor(SearchDirection::Backward));
-        assert_eq!(a.cursor, Position::ZERO);
+        assert_eq!(a.editor.cursor, Position::ZERO);
     }
 
     // ---- Viewport motions ----
@@ -2472,7 +2446,7 @@ mod tests {
         a.apply(Action::EnterMode(ModalState::Normal));
         // enter_mode pulls cursor back one byte on Normal entry.
         assert_eq!(a.editor.modal, ModalState::Normal);
-        assert_eq!(a.cursor, Position::new(0, 0));
+        assert_eq!(a.editor.cursor, Position::new(0, 0));
     }
 
     // ---- Marks ----
@@ -2489,15 +2463,15 @@ mod tests {
     #[test]
     fn marks_are_keyed_by_name() {
         let mut a = app_with("hello\nworld", 10);
-        a.cursor = Position::new(0, 1);
+        a.editor.cursor = Position::new(0, 1);
         a.apply(Action::SetMark('a'));
-        a.cursor = Position::new(1, 3);
+        a.editor.cursor = Position::new(1, 3);
         a.apply(Action::SetMark('b'));
-        a.cursor = Position::ZERO;
+        a.editor.cursor = Position::ZERO;
         a.apply(Action::JumpToMarkExact('a'));
-        assert_eq!(a.cursor, Position::new(0, 1));
+        assert_eq!(a.editor.cursor, Position::new(0, 1));
         a.apply(Action::JumpToMarkExact('b'));
-        assert_eq!(a.cursor, Position::new(1, 3));
+        assert_eq!(a.editor.cursor, Position::new(1, 3));
     }
 
     #[test]
@@ -2505,11 +2479,11 @@ mod tests {
         // v1 makes no distinction between buffer-local (a-z) and global
         // (A-Z) marks since the TUI runs against a single document.
         let mut a = app_with("hello\nworld", 10);
-        a.cursor = Position::new(1, 2);
+        a.editor.cursor = Position::new(1, 2);
         a.apply(Action::SetMark('A'));
-        a.cursor = Position::ZERO;
+        a.editor.cursor = Position::ZERO;
         a.apply(Action::JumpToMarkExact('A'));
-        assert_eq!(a.cursor, Position::new(1, 2));
+        assert_eq!(a.editor.cursor, Position::new(1, 2));
     }
 
     #[test]
@@ -2556,7 +2530,7 @@ mod tests {
         let inv = CommandInvocation::of(a.editor.builtins.find_char_forward.0)
             .with_args(lattice_grammar::Args::Char('w'));
         a.apply(Action::Invoke(inv));
-        assert_eq!(a.cursor, Position::new(0, 7));
+        assert_eq!(a.editor.cursor, Position::new(0, 7));
     }
 
     #[test]
@@ -2565,7 +2539,7 @@ mod tests {
         let inv = CommandInvocation::of(a.editor.builtins.till_char_forward.0)
             .with_args(lattice_grammar::Args::Char('w'));
         a.apply(Action::Invoke(inv));
-        assert_eq!(a.cursor, Position::new(0, 6));
+        assert_eq!(a.editor.cursor, Position::new(0, 6));
     }
 
     #[test]
@@ -2628,7 +2602,7 @@ mod tests {
             .expect("H1 fold");
         a.folds[idx].closed = true;
         // Move cursor away first (so gg is a non-trivial jump).
-        a.cursor = Position::new(4, 0);
+        a.editor.cursor = Position::new(4, 0);
         let inv = CommandInvocation::of(a.editor.builtins.goto_first_line.0);
         a.apply(Action::Invoke(inv));
         let fold = a
@@ -2679,7 +2653,7 @@ mod tests {
             .expect("H1 fold");
         a.folds[idx].closed = true;
         a.set_foldenable_for_test(false);
-        a.cursor = Position::new(0, 0);
+        a.editor.cursor = Position::new(0, 0);
         let inv = CommandInvocation::of(a.editor.builtins.delete.0)
             .with_range(lattice_grammar::Range::CurrentLine);
         a.apply(Action::Invoke(inv));
@@ -2713,7 +2687,7 @@ mod tests {
             .expect("H1 fold");
         a.folds[idx].closed = true;
         // Direct cursor move (not via auto-open path).
-        a.cursor = Position::new(1, 0);
+        a.editor.cursor = Position::new(1, 0);
         let still_closed = a
             .folds
             .iter()
@@ -2862,12 +2836,12 @@ mod tests {
         let mut a = app_with("fn main() {}\n", 5);
         a.do_open_hover("line 1\nline 2\nline 3");
         a.do_lsp_hover_request(); // -> State B
-        assert!(matches!(a.active_buffer, BufferKind::Help));
+        assert!(matches!(a.editor.active_buffer, BufferKind::Help));
         // Move within popup.
         let inv = lattice_grammar::CommandInvocation::of(a.editor.builtins.line_down.0);
         a.apply(Action::Invoke(inv));
         assert!(a.editor.popup_buffer.is_some(), "popup persists in State B");
-        assert_eq!(a.cursor.line, 1);
+        assert_eq!(a.editor.cursor.line, 1);
     }
 
     // ---- Multiple Document buffers (DESIGN.md §5.9, B.1.c) ----
@@ -2876,20 +2850,20 @@ mod tests {
     fn bnext_cycles_through_open_buffers() {
         let path = write_temp_file("b", "one\n");
         let mut a = app_with("xx", 10);
-        let first_id = a.document_buffer_id;
+        let first_id = a.editor.document_buffer_id;
         a.editor.command_line = format!("e {}", path.display());
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let second_id = a.document_buffer_id;
+        let second_id = a.editor.document_buffer_id;
         assert_ne!(first_id, second_id);
         a.editor.command_line = "bn".into();
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        assert_eq!(a.document_buffer_id, first_id);
+        assert_eq!(a.editor.document_buffer_id, first_id);
         a.editor.command_line = "bn".into();
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        assert_eq!(a.document_buffer_id, second_id);
+        assert_eq!(a.editor.document_buffer_id, second_id);
         let _ = std::fs::remove_file(path);
     }
 
@@ -2897,25 +2871,25 @@ mod tests {
     fn editing_already_open_path_switches_back_to_it() {
         let path = write_temp_file("d", "alpha\n");
         let mut a = app_with("xx", 10);
-        let initial_id = a.document_buffer_id;
+        let initial_id = a.editor.document_buffer_id;
         a.editor.command_line = format!("e {}", path.display());
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let new_id = a.document_buffer_id;
+        let new_id = a.editor.document_buffer_id;
         // Cycle back to first buffer.
         a.editor.command_line = "bn".into();
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        assert_eq!(a.document_buffer_id, initial_id);
+        assert_eq!(a.editor.document_buffer_id, initial_id);
         // Re-editing the new file's path should switch to its
         // existing buffer rather than spawning a third.
         a.editor.command_line = format!("e {}", path.display());
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        assert_eq!(a.document_buffer_id, new_id);
+        assert_eq!(a.editor.document_buffer_id, new_id);
         // Listed-count gates the "did we accidentally spawn a third?"
         // assertion; synthetic `*lsp*` doesn't count.
-        assert_eq!(a.buffers.listed_ids_sorted().len(), 2);
+        assert_eq!(a.editor.buffers.listed_ids_sorted().len(), 2);
         let _ = std::fs::remove_file(path);
     }
 
@@ -3099,7 +3073,7 @@ mod tests {
     fn picker_dismiss_clears_pending_tag_origin() {
         let mut a = app_with("foo\n", 10);
         a.editor.pending_tag_origin = Some(super::TagStackEntry {
-            buffer: a.active_buffer,
+            buffer: a.editor.active_buffer,
             buffer_id: a.active_pane_buffer_id(),
             position: Position::new(0, 0),
             label: "foo".into(),
@@ -3127,7 +3101,7 @@ mod tests {
         // doesn't push the wrong entry.
         let mut a = app_with("foo\n", 10);
         a.editor.pending_tag_origin = Some(super::TagStackEntry {
-            buffer: a.active_buffer,
+            buffer: a.editor.active_buffer,
             buffer_id: a.active_pane_buffer_id(),
             position: Position::new(0, 0),
             label: "stale".into(),
@@ -3170,7 +3144,7 @@ mod tests {
         // no `buffer_uris` entry. The attach driver ignores
         // path-less events.
         let app = App::new(Document::from_text("fn main() {}"));
-        assert!(app.buffer_uri(app.document_buffer_id).is_none());
+        assert!(app.buffer_uri(app.editor.document_buffer_id).is_none());
     }
 
     // ---- LSP diagnostic navigation tests (Phase 4.1.d.iv) ----
@@ -3232,7 +3206,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            app.buffer_uri(app.document_buffer_id),
+            app.buffer_uri(app.editor.document_buffer_id),
             Some(&expected),
             "path-bearing initial document must register URI eagerly"
         );
@@ -3298,7 +3272,7 @@ mod tests {
         commit_chars: Vec<char>,
         anchor: Position,
     ) {
-        let cursor = a.cursor;
+        let cursor = a.editor.cursor;
         let snap = a.document.snapshot();
         let line = snap.buffer.line(cursor.line).unwrap_or_default();
         let query = line
@@ -3349,7 +3323,7 @@ mod tests {
     fn commit_char_in_lsp_item_accepts_then_inserts() {
         let mut a = app_with("foo", 10);
         a.editor.modal = ModalState::Insert;
-        a.cursor = Position::new(0, 3);
+        a.editor.cursor = Position::new(0, 3);
         install_lsp_candidate_with_commit_chars(&mut a, "foo", vec!['.', '('], Position::new(0, 0));
         a.do_completion_accept_then_insert('.');
         // Popup closed; accept replaced the partial with the
@@ -3362,7 +3336,7 @@ mod tests {
     fn non_commit_char_is_plain_insert_popup_refilters() {
         let mut a = app_with("foo", 10);
         a.editor.modal = ModalState::Insert;
-        a.cursor = Position::new(0, 3);
+        a.editor.cursor = Position::new(0, 3);
         install_lsp_candidate_with_commit_chars(&mut a, "foo", vec!['.'], Position::new(0, 0));
         a.do_completion_accept_then_insert('a');
         // `a` isn't a commit char -> the focused candidate
@@ -3377,7 +3351,7 @@ mod tests {
     fn extra_commit_chars_option_contributes_globally() {
         let mut a = app_with("foo", 10);
         a.editor.modal = ModalState::Insert;
-        a.cursor = Position::new(0, 3);
+        a.editor.cursor = Position::new(0, 3);
         // Server says no commit chars; the global option
         // adds `,`.
         install_lsp_candidate_with_commit_chars(&mut a, "foo", Vec::new(), Position::new(0, 0));
@@ -3394,7 +3368,7 @@ mod tests {
         // extras still apply.
         let mut a = app_with("alpha bravo ", 10);
         a.editor.modal = ModalState::Insert;
-        a.cursor = Position::new(0, 12);
+        a.editor.cursor = Position::new(0, 12);
         a.do_completion_trigger();
         // Server-supplied list is empty for sync candidates;
         // set the global extras to include `;`.
@@ -3421,7 +3395,7 @@ mod tests {
         // though the buffer is full of word-completion fodder.
         let mut a = app_with("foo bar baz qux quux ", 10);
         a.editor.modal = ModalState::Insert;
-        a.cursor = Position::new(0, 21);
+        a.editor.cursor = Position::new(0, 21);
         // Pretend the active language is rust by overriding
         // the `rust` slot. (Test buffer has no path so
         // active_language_id() returns ""; insert that as the
@@ -3458,7 +3432,7 @@ mod tests {
     fn document_buffer_active_mode_is_text_mode() {
         // Plain document with no path ⇒ Lang::Plain ⇒ text-mode.
         let a = app_with("hi", 5);
-        let buf = a.document_buffer_id;
+        let buf = a.editor.document_buffer_id;
         let active = a.editor.active_modes.get(&buf).expect("active_modes populated");
         assert_eq!(active.major(), Some(lattice_mode::TextMode::mode_id()));
     }
@@ -3541,7 +3515,7 @@ mod tests {
     #[test]
     fn list_marks_shows_set_marks() {
         let mut a = app_with("hello\nworld", 10);
-        a.cursor = Position::new(1, 2);
+        a.editor.cursor = Position::new(1, 2);
         a.apply(Action::SetMark('a'));
         submit_ex(&mut a, "marks");
         let msg = a.editor.last_message.as_ref().unwrap();
@@ -3586,7 +3560,7 @@ mod tests {
     fn capital_w_skips_punctuation() {
         let mut a = app_with("foo,bar baz", 10);
         a.apply(invoke_motion(a.editor.builtins.big_word_forward));
-        assert_eq!(a.cursor, Position::new(0, 8));
+        assert_eq!(a.editor.cursor, Position::new(0, 8));
     }
 
     #[test]
@@ -3652,11 +3626,11 @@ mod tests {
     #[test]
     fn capital_f_jumps_backward() {
         let mut a = app_with("hello, world", 10);
-        a.cursor = Position::new(0, 11); // on 'd'
+        a.editor.cursor = Position::new(0, 11); // on 'd'
         let inv = CommandInvocation::of(a.editor.builtins.find_char_backward.0)
             .with_args(lattice_grammar::Args::Char('h'));
         a.apply(Action::Invoke(inv));
-        assert_eq!(a.cursor, Position::ZERO);
+        assert_eq!(a.editor.cursor, Position::ZERO);
     }
 
     fn app_in_command_mode(line: &str) -> App {
@@ -3718,18 +3692,18 @@ mod tests {
         // Esc / q in State B routes to HelpDismiss, which restores
         // the pre-State-B cursor / scroll on the doc.
         let mut a = app_with("fn main() {}\nlet x = 1;\n", 5);
-        a.cursor = lattice_protocol::Position::new(1, 4);
+        a.editor.cursor = lattice_protocol::Position::new(1, 4);
         a.do_open_hover("hover body");
         a.do_lsp_hover_request(); // -> State B
         // Move inside the popup.
         let inv = lattice_grammar::CommandInvocation::of(a.editor.builtins.line_down.0);
         a.apply(Action::Invoke(inv));
-        assert!(matches!(a.active_buffer, BufferKind::Help));
+        assert!(matches!(a.editor.active_buffer, BufferKind::Help));
         // Dismiss.
         a.apply(Action::HelpDismiss);
         assert!(a.editor.popup_buffer.is_none());
-        assert!(matches!(a.active_buffer, BufferKind::Document));
-        assert_eq!(a.cursor, lattice_protocol::Position::new(1, 4));
+        assert!(matches!(a.editor.active_buffer, BufferKind::Document));
+        assert_eq!(a.editor.cursor, lattice_protocol::Position::new(1, 4));
         assert!(a.editor.prev_pane_for_help.is_none());
     }
 
@@ -3749,13 +3723,13 @@ mod tests {
         // for the same-doc case and skips the restore (entry has
         // nothing to give).
         let mut a = app_with("fn main() {}\n", 10);
-        a.terminal_width = Some(80);
+        a.editor.terminal_width = Some(80);
         attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
         assert!(a.editor.syntax.is_some(), "fixture syntax wired");
         // Open a help buffer in pane (mimics `:lsp-log rust`).
         let _help_id =
             a.open_help_in_pane(HelpContent::from_lines("lsp:rust", vec!["log line".into()]));
-        assert!(matches!(a.active_buffer, BufferKind::Help));
+        assert!(matches!(a.editor.active_buffer, BufferKind::Help));
         // The document's syntax must remain on the hot path so the
         // pane underneath paints with highlights.
         assert!(
@@ -3763,9 +3737,9 @@ mod tests {
             "syntax must stay live during help-in-pane overlay"
         );
         // Round-trip back to the document.
-        let doc_id = a.buffers.document_ids_sorted().first().copied().unwrap();
+        let doc_id = a.editor.buffers.document_ids_sorted().first().copied().unwrap();
         a.activate_document(doc_id);
-        assert!(matches!(a.active_buffer, BufferKind::Document));
+        assert!(matches!(a.editor.active_buffer, BufferKind::Document));
         assert!(
             a.editor.syntax.is_some(),
             "syntax must survive the help-in-pane round trip"
@@ -3784,7 +3758,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("lattice-tree-syntax-{}", std::process::id()));
         std::fs::create_dir_all(&dir).ok();
         let mut a = app_with("fn main() {}\n", 10);
-        a.terminal_width = Some(80);
+        a.editor.terminal_width = Some(80);
         // Wire up a Rust syntax instance so there's something to lose.
         attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
         // Open the tree, then dismiss.
@@ -3792,7 +3766,7 @@ mod tests {
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert!(matches!(
-            a.active_buffer,
+            a.editor.active_buffer,
             crate::buffers::BufferKind::FileTree
         ));
         // `:TreeClose` (the path `q` takes in the tree).
@@ -3800,7 +3774,7 @@ mod tests {
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert!(matches!(
-            a.active_buffer,
+            a.editor.active_buffer,
             crate::buffers::BufferKind::Document
         ));
         assert!(
@@ -3819,16 +3793,16 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("lattice-tree-gc-{}", std::process::id()));
         std::fs::create_dir_all(&dir).ok();
         let mut a = app_with("xx", 10);
-        a.terminal_width = Some(80);
+        a.editor.terminal_width = Some(80);
         a.apply(Action::SplitPaneVertical);
         a.apply(Action::NavigatePane(PaneDirection::Right));
         a.editor.command_line = format!("Filetree {}", dir.display());
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        assert_eq!(a.buffers.file_tree_ids_sorted().len(), 1);
+        assert_eq!(a.editor.buffers.file_tree_ids_sorted().len(), 1);
         a.apply(Action::ClosePane);
         // Tree stays in the registry post-close.
-        assert_eq!(a.buffers.file_tree_ids_sorted().len(), 1);
+        assert_eq!(a.editor.buffers.file_tree_ids_sorted().len(), 1);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -3836,7 +3810,7 @@ mod tests {
     fn bdelete_closes_active_buffer_and_picks_a_successor() {
         let path = write_temp_file("e", "alpha\n");
         let mut a = app_with("xx", 10);
-        let initial_id = a.document_buffer_id;
+        let initial_id = a.editor.document_buffer_id;
         a.editor.command_line = format!("e {}", path.display());
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
@@ -3845,10 +3819,10 @@ mod tests {
         a.editor.command_line = "bd".into();
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        assert_eq!(a.document_buffer_id, initial_id);
+        assert_eq!(a.editor.document_buffer_id, initial_id);
         // Listed-count: only the original document remains in the
         // user-facing cycle; the synthetic `*lsp*` is unlisted.
-        assert_eq!(a.buffers.listed_ids_sorted().len(), 1);
+        assert_eq!(a.editor.buffers.listed_ids_sorted().len(), 1);
         let _ = std::fs::remove_file(path);
     }
 
@@ -3862,7 +3836,7 @@ mod tests {
         // Synthetic unlisted buffers (`*lsp*`, ...) don't count as
         // switch destinations, so the rejection still fires when
         // only one user-listed buffer remains.
-        assert_eq!(a.buffers.listed_ids_sorted().len(), 1);
+        assert_eq!(a.editor.buffers.listed_ids_sorted().len(), 1);
         let msg = a.editor.last_message.as_ref().expect("error echo");
         assert!(msg.text.contains("only buffer"));
     }
@@ -3898,7 +3872,7 @@ mod tests {
     fn docs_toggle_pulls_body_from_cached_metadata_documentation() {
         let mut a = app_with("xx", 10);
         a.editor.modal = ModalState::Insert;
-        a.cursor = Position::ZERO;
+        a.editor.cursor = Position::ZERO;
         // Seed popup state with a single LSP candidate that
         // already has documentation cached.
         let mut state = lattice_completion::InsertCompletionState::open(
@@ -3961,7 +3935,7 @@ mod tests {
     fn docs_toggle_a_second_time_closes_popup() {
         let mut a = app_with("xx", 10);
         a.editor.modal = ModalState::Insert;
-        a.cursor = Position::ZERO;
+        a.editor.cursor = Position::ZERO;
         a.insert_completion = Some(lattice_completion::InsertCompletionState::open(
             lattice_completion::CompletionTrigger::Manual,
             Position::ZERO,
@@ -3990,7 +3964,7 @@ mod tests {
     fn docs_scroll_clamps_at_zero_and_advances_by_eight() {
         let mut a = app_with("xx", 10);
         a.editor.modal = ModalState::Insert;
-        a.cursor = Position::ZERO;
+        a.editor.cursor = Position::ZERO;
         a.insert_completion = Some(lattice_completion::InsertCompletionState::open(
             lattice_completion::CompletionTrigger::Manual,
             Position::ZERO,
@@ -4089,14 +4063,14 @@ mod tests {
             .entry(buf_id)
             .or_default()
             .insert(crate::modes::HelpLinks(existing_links));
-        a.active_buffer = BufferKind::Help;
+        a.editor.active_buffer = BufferKind::Help;
         a.apply(Action::FollowLink);
         // The file should now be the active document.
-        assert_eq!(a.active_buffer, BufferKind::Document);
+        assert_eq!(a.editor.active_buffer, BufferKind::Document);
         let opened = a.document.path().expect("active doc has a path");
         assert_eq!(opened, path);
         // Cursor at line index 2 (1-based 3 → 0-based 2).
-        assert_eq!(a.cursor.line, 2);
+        assert_eq!(a.editor.cursor.line, 2);
         // NOTE: a `PluginPush` history entry is pushed *before*
         // `do_edit` runs, but `do_edit`'s new-file branch clears
         // the position history (so a fresh buffer's `<C-o>` doesn't
@@ -4148,12 +4122,12 @@ mod tests {
             .entry(buf_id)
             .or_default()
             .insert(crate::modes::HelpLinks(existing_links));
-        a.active_buffer = BufferKind::Help;
+        a.editor.active_buffer = BufferKind::Help;
         a.apply(Action::FollowLink);
         // Out-of-range line should clamp to the last valid line,
         // not panic and not echo a confusing error.
         let last_line = a.document.snapshot().buffer.line_count().saturating_sub(1);
-        assert_eq!(a.cursor.line, last_line);
+        assert_eq!(a.editor.cursor.line, last_line);
         let _ = std::fs::remove_file(path);
     }
 
@@ -4165,7 +4139,7 @@ mod tests {
         );
         a.apply(Action::Invoke(yank));
         // Move cursor to end of buffer.
-        a.cursor = Position::new(0, 11);
+        a.editor.cursor = Position::new(0, 11);
         a.apply(Action::PasteAfter);
         assert_eq!(a.document.text(), "hello worldhello ");
     }
@@ -4199,12 +4173,12 @@ mod tests {
         // pre-open record.
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let log_id = app
-            .buffers
+            .editor.buffers
             .by_name(&lattice_lsp::lsp_server_log_name(&instance))
             .expect("per-instance log buffer registered");
         assert_eq!(app.active_pane_buffer_id(), log_id);
         let body = app
-            .buffers
+            .editor.buffers
             .document_handle(log_id)
             .expect("log buffer is a Document")
             .text();
@@ -4238,10 +4212,10 @@ mod tests {
         app.open_lsp_log_in_pane("rust");
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let log_id = app
-            .buffers
+            .editor.buffers
             .by_name(&lattice_lsp::lsp_server_log_name(&instance))
             .expect("per-instance log buffer registered");
-        let body = app.buffers.document_handle(log_id).unwrap().text();
+        let body = app.editor.buffers.document_handle(log_id).unwrap().text();
         // Trace records route to the trace buffer; non-trace
         // records (including lifecycle) land here.
         assert!(!body.contains("→ Request"), "got `{body}`");
@@ -4275,10 +4249,10 @@ mod tests {
         app.open_lsp_trace_log_in_pane("rust");
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let trace_id = app
-            .buffers
+            .editor.buffers
             .by_name(&lattice_lsp::lsp_server_trace_log_name(&instance))
             .expect("per-instance trace buffer registered");
-        let body = app.buffers.document_handle(trace_id).unwrap().text();
+        let body = app.editor.buffers.document_handle(trace_id).unwrap().text();
         // Trace records here; non-trace records routed to the
         // matching `*lsp:rust:<ws>*` buffer instead.
         assert!(body.contains("→ Request"), "got `{body}`");
@@ -4398,7 +4372,7 @@ mod tests {
         // the source-code middle-dot, not the nerd-font rust
         // glyph.
         let body = a
-            .buffers
+            .editor.buffers
             .with_file_tree(tree_id, |t| t.content.as_string())
             .unwrap();
         assert!(
@@ -4416,7 +4390,7 @@ mod tests {
         submit_ex(&mut a, "set ui.nerd_fonts=on");
 
         let body = a
-            .buffers
+            .editor.buffers
             .with_file_tree(tree_id, |t| t.content.as_string())
             .unwrap();
         assert!(
@@ -4461,7 +4435,7 @@ mod tests {
             .expect("locals seeded")
             .insert(synthetic);
 
-        a.cursor = lattice_protocol::Position::new(0, 0);
+        a.editor.cursor = lattice_protocol::Position::new(0, 0);
         // `open_help_in_pane` already activates the pane on
         // the registered help buffer; FollowLink reads
         // `pane_tree.active().buffer_id` to look up locals.

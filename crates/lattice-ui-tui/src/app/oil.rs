@@ -75,7 +75,7 @@ impl App {
     /// dir lives in buffer-locals; we walk the registry's
     /// oil-id list and probe each buffer-local entry.
     pub(super) fn oil_with_dir(&self, dir: &Path) -> Option<crate::buffers::BufferId> {
-        self.buffers
+        self.editor.buffers
             .oil_ids()
             .into_iter()
             .find(|&id| self.oil_dir_for(id).as_deref() == Some(dir))
@@ -134,8 +134,8 @@ impl App {
                 return;
             }
         };
-        if matches!(self.active_buffer, BufferKind::Document) {
-            let cur = self.cursor;
+        if matches!(self.editor.active_buffer, BufferKind::Document) {
+            let cur = self.editor.cursor;
             self.push_position_history(cur, PositionSource::AutoJump);
         }
         let new_id = oil.id;
@@ -144,7 +144,7 @@ impl App {
         // dir change for this buffer goes through `set_oil_dir`
         // as well.
         self.set_oil_dir(new_id, dir.clone());
-        self.buffers.insert(BufferEntry {
+        self.editor.buffers.insert(BufferEntry {
             id: new_id,
             flags: BufferFlags::default(),
             data: BufferData::Oil(oil),
@@ -153,18 +153,18 @@ impl App {
         self.activate_major_for_buffer_kind(new_id, BufferKind::Oil);
         self.snapshot_active_pane();
         self.snapshot_active_document();
-        self.active_buffer = BufferKind::Oil;
+        self.editor.active_buffer = BufferKind::Oil;
         let pane = self.pane_tree.active_mut();
         pane.buffer = BufferKind::Oil;
         pane.buffer_id = new_id;
         pane.cursor = Position::ZERO;
         pane.scroll = 0;
         // Sync the App-side hot-path cursor / scroll to the
-        // freshly-activated oil pane. Without this, `self.cursor`
+        // freshly-activated oil pane. Without this, `self.editor.cursor`
         // carries over from the prior document buffer and oil
         // edits land at the wrong rope position.
-        self.cursor = Position::ZERO;
-        self.scroll = 0;
+        self.editor.cursor = Position::ZERO;
+        self.editor.scroll = 0;
         self.set_message(EchoLevel::Info, format!("oil: {}", dir.display()));
     }
 
@@ -172,9 +172,9 @@ impl App {
         let active_id = self.active_pane_buffer_id();
         // Read the entry by the App's hot-path cursor line
         // (the cursor the user actually moves with `j` / `k`).
-        let idx = self.cursor.line as usize;
+        let idx = self.editor.cursor.line as usize;
         let Some(entry) = self
-            .buffers
+            .editor.buffers
             .with_oil(active_id, |o| o.snapshot_entries().get(idx).cloned())
             .flatten()
         else {
@@ -187,7 +187,7 @@ impl App {
         if entry.is_dir {
             let new_dir = dir.join(&entry.name);
             let reload_result = self
-                .buffers
+                .editor.buffers
                 .with_oil_mut(active_id, |oil| oil.reload(&new_dir));
             match reload_result {
                 Some(Err(e)) => {
@@ -198,8 +198,8 @@ impl App {
                     // local mirrors no struct field, it IS the
                     // state.
                     self.set_oil_dir(active_id, new_dir);
-                    self.cursor = Position::ZERO;
-                    self.scroll = 0;
+                    self.editor.cursor = Position::ZERO;
+                    self.editor.scroll = 0;
                 }
                 None => {}
             }
@@ -216,7 +216,7 @@ impl App {
     /// when it's a directory). Anywhere else: open oil rooted at
     /// the parent of the active document's path.
     pub(super) fn do_oil_navigate_up(&mut self) {
-        match self.active_buffer {
+        match self.editor.active_buffer {
             BufferKind::Oil => {
                 let id = self.active_pane_buffer_id();
                 let Some(current_dir) = self.oil_dir_for(id) else {
@@ -226,15 +226,15 @@ impl App {
                     // Already at the filesystem root; no-op.
                     return;
                 };
-                let reload_result = self.buffers.with_oil_mut(id, |oil| oil.reload(&parent));
+                let reload_result = self.editor.buffers.with_oil_mut(id, |oil| oil.reload(&parent));
                 match reload_result {
                     Some(Err(e)) => {
                         self.set_message(EchoLevel::Error, format!("oil navigate up: {e}"));
                     }
                     Some(Ok(_)) => {
                         self.set_oil_dir(id, parent);
-                        self.cursor = Position::ZERO;
-                        self.scroll = 0;
+                        self.editor.cursor = Position::ZERO;
+                        self.editor.scroll = 0;
                     }
                     None => {}
                 }
@@ -244,7 +244,7 @@ impl App {
                 // M.3.2.c.5: entries live in the FileTreeEntries
                 // buffer-local; index by the App's cursor line
                 // (same pattern as oil's `do_oil_follow`).
-                let line = self.cursor.line;
+                let line = self.editor.cursor.line;
                 let dir = self.file_tree_entries_for(id).and_then(|entries| {
                     crate::file_tree::entry_at_line(&entries, line).map(|e| {
                         if matches!(

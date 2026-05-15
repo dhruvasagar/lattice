@@ -171,7 +171,7 @@ fn popup_height_for(candidate_count: usize) -> usize {
 
 fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) -> Result<()> {
     let mut last_modal: Option<ModalState> = None;
-    while !app.should_quit {
+    while !app.editor.should_quit {
         // No queue-and-drain step for LSP opens any more --
         // `Event::DocumentOpened` flows directly from the
         // publisher (`App::new` / `App::do_edit`) into the
@@ -410,7 +410,7 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
             .saturating_sub(2)
             .saturating_sub(extra_rows as u16) as u32;
         app.set_viewport_height(app.active_pane_content_height(buffer_height));
-        app.terminal_width = Some(size.width);
+        app.editor.terminal_width = Some(size.width);
         // `<C-l>` (RedrawScreen) sets `pending_redraw`; honour it
         // by clearing the terminal buffer so the next draw repaints
         // every cell instead of letting ratatui's diff engine
@@ -454,7 +454,7 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
                         pending_count: app.editor.pending_count,
                         op_count: app.editor.op_count,
                         recording_macro: app.editor.macro_recording.is_some(),
-                        active_buffer: app.active_buffer,
+                        active_buffer: app.editor.active_buffer,
                         completion_open: app.completion_state.is_some(),
                         chord_capture: app.chord_capture_active(),
                         picker_open: app.editor.picker.is_some(),

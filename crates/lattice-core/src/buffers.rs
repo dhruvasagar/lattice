@@ -70,7 +70,7 @@ impl BufferKind {
 /// The App allocates these via [`BufferId::next`] at buffer-
 /// creation time and stores them on each buffer + on every
 /// position-history entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct BufferId(pub u32);
 
 impl BufferId {

@@ -674,7 +674,7 @@ mod tests {
             a.apply(Action::CommandLineAppend(c));
         }
         a.apply(Action::CommandLineSubmit);
-        assert!(a.should_quit);
+        assert!(a.editor.should_quit);
         assert_eq!(a.editor.modal, ModalState::Normal);
     }
 
@@ -689,7 +689,7 @@ mod tests {
         a.apply(Action::EnterCommandLine);
         a.apply(Action::CommandLineAppend('q'));
         a.apply(Action::CommandLineSubmit);
-        assert!(!a.should_quit);
+        assert!(!a.editor.should_quit);
         let msg = a.editor.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Error);
         assert!(msg.text.contains("no write since last change"));
@@ -706,7 +706,7 @@ mod tests {
             a.apply(Action::CommandLineAppend(c));
         }
         a.apply(Action::CommandLineSubmit);
-        assert!(a.should_quit);
+        assert!(a.editor.should_quit);
     }
 
     #[test]
@@ -765,7 +765,7 @@ mod tests {
         }
         a.apply(Action::CommandLineSubmit);
 
-        assert!(a.should_quit);
+        assert!(a.editor.should_quit);
         let on_disk = std::fs::read_to_string(&path).unwrap();
         assert!(on_disk.starts_with("X"));
         std::fs::remove_dir_all(&dir).ok();

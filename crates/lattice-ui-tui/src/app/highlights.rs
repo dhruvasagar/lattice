@@ -89,7 +89,7 @@ impl App {
     /// Only mutates the cache; doesn't touch the snapshot.
     pub(super) fn shift_highlights_for_edit(&mut self, delta: &EditDelta) {
         let edit_start = delta.start_position.line;
-        let scroll = self.scroll;
+        let scroll = self.editor.scroll;
         if edit_start < scroll {
             // Edit started above the visible viewport. Bail and
             // let the worker's publish drive a normal recompute.
@@ -272,7 +272,7 @@ impl App {
         // accessor. For the active buffer this still resolves to
         // `self.editor.syntax` (App's hot-path slot); for any future
         // multi-buffer reads it would route through `buffer_locals`.
-        let Some(syntax) = self.document_syntax_for(self.document_buffer_id) else {
+        let Some(syntax) = self.document_syntax_for(self.editor.document_buffer_id) else {
             self.editor.visible_highlights = Vec::new();
             self.visible_highlights_key = None;
             return;
@@ -281,8 +281,8 @@ impl App {
         let key = VisibleHighlightsKey {
             snapshot_ptr: std::sync::Arc::as_ptr(&snap) as usize,
             syntax_text_version: snap.text_version(),
-            scroll: self.scroll,
-            viewport_height: self.viewport_height,
+            scroll: self.editor.scroll,
+            viewport_height: self.editor.viewport_height,
             fold_hash: folds::compute_fold_hash(&self.folds),
         };
         if self.visible_highlights_key == Some(key) {
@@ -317,9 +317,9 @@ impl App {
         // The window stretches via `visible_buffer_line_extent`
         // to cover lines under closed folds (see method
         // docstring).
-        let start = self.scroll;
+        let start = self.editor.scroll;
         let end = self
-            .visible_buffer_line_extent(start, self.viewport_height)
+            .visible_buffer_line_extent(start, self.editor.viewport_height)
             .saturating_add(1);
         self.editor.visible_highlights = snap.highlight_lines(start, end).unwrap_or_default();
         self.visible_highlights_key = Some(key);
@@ -377,8 +377,8 @@ impl App {
     pub fn refresh_pane_highlights(&mut self) {
         self.editor.pane_highlights.clear();
         let active_idx = self.pane_tree.active_index();
-        let active_doc_id = if matches!(self.active_buffer, BufferKind::Document) {
-            Some(self.document_buffer_id)
+        let active_doc_id = if matches!(self.editor.active_buffer, BufferKind::Document) {
+            Some(self.editor.document_buffer_id)
         } else {
             None
         };
@@ -402,8 +402,8 @@ impl App {
                 }
                 // Use the pane's own viewport slice (the per-pane
                 // status line eats one row, so subtract; for v1
-                // we approximate using app.viewport_height).
-                let h = self.viewport_height;
+                // we approximate using app.editor.viewport_height).
+                let h = self.editor.viewport_height;
                 Some((idx, pane.buffer_id, pane.scroll, h))
             })
             .collect();
@@ -419,7 +419,7 @@ impl App {
             };
             let last_parsed = self.document_last_parsed_text_version_for(doc_id);
             let last_synced = self.document_last_synced_syntax_version_for(doc_id);
-            let Some(handle) = self.buffers.document_handle(doc_id) else {
+            let Some(handle) = self.editor.buffers.document_handle(doc_id) else {
                 continue;
             };
             let snap = handle.snapshot();
@@ -471,10 +471,10 @@ impl App {
     /// don't desync syntax styling -- viewport row 5 might be buffer
     /// line 12 once a fold collapses lines 5..=11.
     pub fn highlights_for_buffer_line(&self, line: u32) -> &[StyledSpan] {
-        if line < self.scroll {
+        if line < self.editor.scroll {
             return &[];
         }
-        let offset = (line - self.scroll) as usize;
+        let offset = (line - self.editor.scroll) as usize;
         self.editor.visible_highlights
             .get(offset)
             .map(Vec::as_slice)
@@ -533,7 +533,7 @@ mod tests {
         attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
         a.refresh_highlights();
         let key1 = a.visible_highlights_key;
-        a.scroll = 2;
+        a.editor.scroll = 2;
         a.refresh_highlights();
         let key2 = a.visible_highlights_key;
         assert_ne!(key1, key2, "scroll change must invalidate cache");

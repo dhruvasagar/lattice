@@ -157,7 +157,7 @@ impl App {
             Number, RelativeNumber, Scrolloff, Tabstop, Whitespace, WhitespaceEol,
             WhitespaceLeading, WhitespaceSpace, WhitespaceTab, WhitespaceTrailing, Wrap,
         };
-        let buffer = self.document_buffer_id;
+        let buffer = self.editor.document_buffer_id;
         // M.7.3.a: parse a typed-option String into a single
         // glyph. Empty string ⇒ category is not decorated.
         // First-char semantics keeps v1 simple; future combining
@@ -273,7 +273,7 @@ impl App {
         // buffer's resolved options so the renderer's hot-path
         // accessors (`app.show_line_numbers()` etc.) reflect mode
         // contributions for the buffer the user is looking at.
-        if buffer == self.document_buffer_id {
+        if buffer == self.editor.document_buffer_id {
             self.rebuild_option_cache();
         }
     }
@@ -421,7 +421,7 @@ impl App {
         // resolved data and the user-visible option doesn't
         // change. Inactive buffers re-resolve lazily on their
         // next `recompute_options_for_buffer` (mode toggle, etc.).
-        let active_id = self.document_buffer_id;
+        let active_id = self.editor.document_buffer_id;
         self.recompute_options_for_buffer(active_id);
         // Refresh the hot-path cache so subsequent reads from
         // `app.show_line_numbers()` etc. see the new value.
@@ -485,7 +485,7 @@ impl App {
                     // renderer reads the toggle each frame and needs
                     // no rope-side refresh.
                     let nerd_fonts = self.theme.nerd_fonts;
-                    for id in self.buffers.file_tree_ids() {
+                    for id in self.editor.buffers.file_tree_ids() {
                         self.set_file_tree_nerd_fonts(id, nerd_fonts);
                     }
                 }
@@ -541,7 +541,7 @@ impl App {
                 })
                 .collect()
         };
-        let buffer_id = self.document_buffer_id;
+        let buffer_id = self.editor.document_buffer_id;
         for mode_id in mirror_ids {
             let currently_active = self
                 .editor.active_modes
@@ -1258,7 +1258,7 @@ mod tests {
     #[test]
     fn recompute_options_uses_registry_defaults_when_no_modes() {
         let mut a = app_with("hi", 5);
-        let buf = a.document_buffer_id;
+        let buf = a.editor.document_buffer_id;
         a.recompute_options_for_buffer(buf);
         let v = a.resolved_option::<lattice_config::Tabstop>(buf);
         assert_eq!(*v, 8);
@@ -1269,7 +1269,7 @@ mod tests {
     #[test]
     fn recompute_options_overlays_active_mode_contributions() {
         let mut a = app_with("hi", 5);
-        let buf = a.document_buffer_id;
+        let buf = a.editor.document_buffer_id;
         // See dispatch.rs notes for `make_mut` vs `get_mut`.
         let registry = std::sync::Arc::make_mut(&mut a.editor.mode_registry);
         let mode_id = registry
@@ -1302,7 +1302,7 @@ mod tests {
     #[test]
     fn buffer_local_override_beats_mode_contribution() {
         let mut a = app_with("hi", 5);
-        let buf = a.document_buffer_id;
+        let buf = a.editor.document_buffer_id;
         // See dispatch.rs notes for `make_mut` vs `get_mut`.
         let registry = std::sync::Arc::make_mut(&mut a.editor.mode_registry);
         let mode_id = registry
@@ -1342,7 +1342,7 @@ mod tests {
     #[test]
     fn resolved_option_falls_back_to_registry_pre_recompute() {
         let a = app_with("hi", 5);
-        let buf = a.document_buffer_id;
+        let buf = a.editor.document_buffer_id;
         let v = a.resolved_option::<lattice_config::Tabstop>(buf);
         assert_eq!(*v, 8);
     }
@@ -1356,11 +1356,11 @@ mod tests {
         use crate::buffer_registry::{BufferData, BufferEntry, DocumentEntry};
         use crate::buffers::{BufferFlags, BufferId};
         let mut a = app_with("hi", 5);
-        let active = a.document_buffer_id;
+        let active = a.editor.document_buffer_id;
         // Manufacture a second document buffer.
         let other = BufferId::next();
         let handle = a.document.clone();
-        a.buffers.insert(BufferEntry {
+        a.editor.buffers.insert(BufferEntry {
             id: other,
             flags: BufferFlags::default(),
             data: BufferData::Document(DocumentEntry { id: other, handle }),
@@ -1385,7 +1385,7 @@ mod tests {
     #[test]
     fn document_buffer_resolves_read_only_false() {
         let a = app_with("hi", 5);
-        let buf = a.document_buffer_id;
+        let buf = a.editor.document_buffer_id;
         let read_only: bool = *a.resolved_option::<lattice_config::ReadOnly>(buf);
         assert!(!read_only, "Document buffer should be writable by default");
     }
@@ -1492,10 +1492,10 @@ mod tests {
     fn fresh_app_has_one_document_pane() {
         let a = app_with("xx", 10);
         assert_eq!(a.pane_tree.len(), 1);
-        assert_eq!(a.active_buffer, BufferKind::Document);
+        assert_eq!(a.editor.active_buffer, BufferKind::Document);
         let active = a.pane_tree.active();
         assert_eq!(active.buffer, BufferKind::Document);
-        assert_eq!(active.buffer_id, a.document_buffer_id);
+        assert_eq!(active.buffer_id, a.editor.document_buffer_id);
     }
 
     #[test]
@@ -1503,8 +1503,8 @@ mod tests {
         let a = app_with("xx", 10);
         // Listed-buffer view filters out synthetic LSP / messages
         // buffers, leaving just the user's document.
-        assert_eq!(a.buffers.listed_ids_sorted().len(), 1);
-        assert!(a.buffers.contains_document(a.document_buffer_id));
+        assert_eq!(a.editor.buffers.listed_ids_sorted().len(), 1);
+        assert!(a.editor.buffers.contains_document(a.editor.document_buffer_id));
     }
 
     #[test]

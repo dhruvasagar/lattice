@@ -61,7 +61,7 @@ impl App {
         let mut paused = self.editor.macro_recording.take();
         for action in actions {
             self.apply(action);
-            if self.should_quit {
+            if self.editor.should_quit {
                 break;
             }
         }

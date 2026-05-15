@@ -158,8 +158,8 @@ impl App {
         lines.push(format!("modal state:    {:?}", self.editor.modal));
         lines.push(format!(
             "cursor:         line {}, col {}",
-            self.cursor.line + 1,
-            self.cursor.byte
+            self.editor.cursor.line + 1,
+            self.editor.cursor.byte
         ));
         lines.push(format!("dirty:          {dirty}"));
         lines.push(format!("line count:     {line_count}"));
@@ -183,7 +183,7 @@ impl App {
         // `<C-o>` walks back to this view.
         lines.push(String::new());
         lines.push("## Active modes".to_string());
-        let active = self.editor.active_modes.get(&self.document_buffer_id);
+        let active = self.editor.active_modes.get(&self.editor.document_buffer_id);
         let major = active.and_then(|a| a.major());
         let minors: Vec<_> = active.map(|a| a.minors().to_vec()).unwrap_or_default();
         if let Some(major) = major {
@@ -330,15 +330,15 @@ impl App {
         self.editor.prev_pane_for_help = Some(PrevPaneState {
             buffer: active.buffer,
             buffer_id: active.buffer_id,
-            cursor: self.cursor,
-            scroll: self.scroll,
+            cursor: self.editor.cursor,
+            scroll: self.editor.scroll,
         });
         // Sync active pane's cursor / scroll stash *before*
         // swapping `active_buffer` to Help.
         self.snapshot_active_pane();
-        self.cursor = stash_cursor;
-        self.scroll = stash_scroll;
-        self.active_buffer = BufferKind::Help;
+        self.editor.cursor = stash_cursor;
+        self.editor.scroll = stash_scroll;
+        self.editor.active_buffer = BufferKind::Help;
     }
 
     /// `:HoverClose` -- dismiss the hover popup. Routes through
@@ -511,7 +511,7 @@ impl App {
         majors.sort_by_key(|m| m.as_str().to_string());
         minors.sort_by_key(|m| m.as_str().to_string());
 
-        let buffer_id = self.document_buffer_id;
+        let buffer_id = self.editor.document_buffer_id;
         let active = self.editor.active_modes.get(&buffer_id);
         let active_major = active.and_then(|a| a.major());
         let is_minor_active =
@@ -577,7 +577,7 @@ impl App {
                 .map(|d| ((d.type_id)(), d.name))
                 .collect();
 
-        let buffer_id = self.document_buffer_id;
+        let buffer_id = self.editor.document_buffer_id;
         let active = self.editor.active_modes.get(&buffer_id);
         let is_active = match mode.kind() {
             lattice_mode::ModeKind::Major => active.and_then(|a| a.major()) == Some(mode_id),
@@ -658,7 +658,7 @@ impl App {
             .map(|d| (d.type_id)())
             .expect("registered option must have OPTION_DECLS entry");
 
-        let buffer_id = self.document_buffer_id;
+        let buffer_id = self.editor.document_buffer_id;
         let modes_snapshot = self
             .editor.active_modes
             .get(&buffer_id)
@@ -949,7 +949,7 @@ impl App {
             .map(|d| ((d.type_id)(), *d))
             .collect();
 
-        let buffer_id = self.document_buffer_id;
+        let buffer_id = self.editor.document_buffer_id;
         let active = self.editor.active_modes.get(&buffer_id);
         let mode_active_here = match mode.kind() {
             lattice_mode::ModeKind::Major => active.and_then(|a| a.major()) == Some(mode_id),
@@ -1173,7 +1173,7 @@ impl App {
             true
         }
 
-        let cursor = self.cursor;
+        let cursor = self.editor.cursor;
         if self.editor.popup_buffer.is_none() {
             return;
         }
@@ -1307,8 +1307,8 @@ impl App {
                 if let Some(line) = target_line {
                     let buffer = self.active_text();
                     let len = line_byte_len(&buffer, line);
-                    self.cursor = Position::new(line, self.cursor.byte.min(len));
-                    self.scroll = line;
+                    self.editor.cursor = Position::new(line, self.editor.cursor.byte.min(len));
+                    self.editor.scroll = line;
                 } else {
                     self.set_message(EchoLevel::Warn, format!("anchor not found: #{slug}"));
                 }
@@ -1338,7 +1338,7 @@ impl App {
                 let snap = self.document.snapshot();
                 let last = snap.buffer.line_count().saturating_sub(1);
                 let target_line = line.saturating_sub(1).min(last);
-                self.cursor = Position::new(target_line, 0);
+                self.editor.cursor = Position::new(target_line, 0);
             }
             crate::help::HelpLinkTarget::Unresolved(url) => {
                 self.set_message(EchoLevel::Warn, format!("no handler for `{url}`"));
@@ -1743,7 +1743,7 @@ mod tests {
             })
             .expect("text-mode link present")
             .clone();
-        a.cursor = link.range.start;
+        a.editor.cursor = link.range.start;
         a.apply(Action::FollowLink);
         let h = a.popup_help().expect("popup should still be open");
         assert_eq!(h.title, "describe-mode text-mode");
@@ -1781,7 +1781,7 @@ mod tests {
             })
             .expect("text-mode link present")
             .clone();
-        a.cursor = link.range.start;
+        a.editor.cursor = link.range.start;
         a.apply(Action::FollowLink);
         assert_eq!(
             a.popup_help().unwrap().title,
@@ -1797,7 +1797,7 @@ mod tests {
             "<C-o> should restore the originating describe-buffer popup",
         );
         assert_eq!(
-            a.active_buffer,
+            a.editor.active_buffer,
             BufferKind::Help,
             "user should remain within the popup, not bail to the document",
         );
@@ -1902,7 +1902,7 @@ mod tests {
             .expect("topic link present")
             .clone();
         let target_pos = link.range.start;
-        a.cursor = target_pos;
+        a.editor.cursor = target_pos;
         a.apply(Action::FollowLink);
         let h = a.popup_help().expect("help reopen");
         assert_eq!(h.title, "help buffers");
@@ -1941,9 +1941,9 @@ mod tests {
             .expect("anchor generated for `## 1. Tree-sitter, core`")
             .line;
         // Position the cursor on the link, then follow.
-        // After unification, the active cursor lives on `app.cursor`
+        // After unification, the active cursor lives on `app.editor.cursor`
         // (regardless of buffer kind); we set it there.
-        a.cursor = link.range.start;
+        a.editor.cursor = link.range.start;
         a.apply(Action::FollowLink);
         let h = a.popup_help().expect("help still open");
         assert_eq!(
@@ -1951,11 +1951,11 @@ mod tests {
             "follow-link must NOT swap topics for an anchor jump"
         );
         assert_eq!(
-            a.cursor.line, target_anchor_line,
+            a.editor.cursor.line, target_anchor_line,
             "cursor should land on the heading line"
         );
         assert_eq!(
-            a.scroll, target_anchor_line,
+            a.editor.scroll, target_anchor_line,
             "scroll should follow the anchor"
         );
     }
@@ -1969,7 +1969,7 @@ mod tests {
         );
         a.apply(Action::HelpDismiss);
         assert!(a.editor.popup_buffer.is_none());
-        assert_eq!(a.active_buffer, BufferKind::Document);
+        assert_eq!(a.editor.active_buffer, BufferKind::Document);
     }
 
     #[test]
@@ -1986,11 +1986,11 @@ mod tests {
         for _ in 0..3 {
             a.apply(Action::Invoke(CommandInvocation::of(line_down.0)));
         }
-        // After unification, `self.cursor` / `self.scroll` are
+        // After unification, `self.editor.cursor` / `self.editor.scroll` are
         // the active buffer's. The popup_buffer's cursor field is
         // archival save-state synced at activation transitions.
-        assert_eq!(a.cursor.line, 3);
-        assert_eq!(a.scroll, 0);
+        assert_eq!(a.editor.cursor.line, 3);
+        assert_eq!(a.editor.scroll, 0);
     }
 
     #[test]
@@ -2002,13 +2002,13 @@ mod tests {
         for _ in 0..1000 {
             a.apply(Action::Invoke(CommandInvocation::of(line_down.0)));
         }
-        assert_eq!(a.cursor.line, 49);
+        assert_eq!(a.editor.cursor.line, 49);
         // Scroll keeps cursor on screen: viewport 10, cursor 49,
         // so scroll = 49 + 1 - 10 = 40. Production runtime sets
         // viewport per-frame via active_pane_content_height (which
         // shrinks for help popups); the test fixture sets a fixed
         // viewport of 10 and the assertion follows from that.
-        assert_eq!(a.scroll, 40);
+        assert_eq!(a.editor.scroll, 40);
     }
 
     #[test]
@@ -2083,17 +2083,17 @@ mod tests {
         // `G` to the last line first so we're at the clamp.
         let goto_last = a.editor.builtins.goto_last_line;
         a.apply(Action::Invoke(CommandInvocation::of(goto_last.0)));
-        assert_eq!(a.cursor.line, 49);
+        assert_eq!(a.editor.cursor.line, 49);
         // Press j five times past the last line. cursor.line must
         // stay pinned at 49 -- no phantom overshoot.
         for _ in 0..5 {
             a.apply(Action::Invoke(CommandInvocation::of(line_down.0)));
         }
-        assert_eq!(a.cursor.line, 49);
+        assert_eq!(a.editor.cursor.line, 49);
         // First k must move up immediately, not "unwind" any
         // overshoot.
         a.apply(Action::Invoke(CommandInvocation::of(line_up.0)));
-        assert_eq!(a.cursor.line, 48);
+        assert_eq!(a.editor.cursor.line, 48);
     }
 
     #[test]
@@ -2107,8 +2107,8 @@ mod tests {
         for _ in 0..1000 {
             a.apply(Action::Invoke(CommandInvocation::of(line_up.0)));
         }
-        assert_eq!(a.cursor.line, 0);
-        assert_eq!(a.scroll, 0);
+        assert_eq!(a.editor.cursor.line, 0);
+        assert_eq!(a.editor.scroll, 0);
     }
 
     #[test]
@@ -2125,17 +2125,17 @@ mod tests {
         for _ in 0..3 {
             a.apply(Action::Invoke(CommandInvocation::of(char_right.0)));
         }
-        assert_eq!(a.cursor.byte, 3);
+        assert_eq!(a.editor.cursor.byte, 3);
         a.apply(Action::Invoke(CommandInvocation::of(char_left.0)));
-        assert_eq!(a.cursor.byte, 2);
+        assert_eq!(a.editor.cursor.byte, 2);
         a.apply(Action::Invoke(CommandInvocation::of(line_end.0)));
         // `motion:line-end` lands at `byte == line_len` (one past
         // the last byte) -- the same convention as the document
         // path. The grammar uses this position so operator targets
         // (d$, c$, y$) take an exclusive end.
-        assert_eq!(a.cursor.byte, 11);
+        assert_eq!(a.editor.cursor.byte, 11);
         a.apply(Action::Invoke(CommandInvocation::of(line_start.0)));
-        assert_eq!(a.cursor.byte, 0);
+        assert_eq!(a.editor.cursor.byte, 0);
     }
 
     #[test]
@@ -2145,11 +2145,11 @@ mod tests {
         let goto_first = a.editor.builtins.goto_first_line;
         let goto_last = a.editor.builtins.goto_last_line;
         a.apply(Action::Invoke(CommandInvocation::of(goto_last.0)));
-        assert_eq!(a.cursor.line, 29);
-        assert!(a.scroll > 0);
+        assert_eq!(a.editor.cursor.line, 29);
+        assert!(a.editor.scroll > 0);
         a.apply(Action::Invoke(CommandInvocation::of(goto_first.0)));
-        assert_eq!(a.cursor.line, 0);
-        assert_eq!(a.scroll, 0);
+        assert_eq!(a.editor.cursor.line, 0);
+        assert_eq!(a.editor.scroll, 0);
     }
 
     #[test]
@@ -2162,7 +2162,7 @@ mod tests {
         a.apply(Action::Invoke(
             CommandInvocation::of(line_down.0).with_count(lattice_grammar::command::Count(5)),
         ));
-        assert_eq!(a.cursor.line, 5);
+        assert_eq!(a.editor.cursor.line, 5);
     }
 
     #[test]
@@ -2469,8 +2469,8 @@ mod tests {
         let link = editor_link.expect("no editor link in picker");
         // Move cursor to the link's start position, then
         // dispatch follow-link.
-        a.cursor.line = link.range.start.line;
-        a.cursor.byte = link.range.start.byte;
+        a.editor.cursor.line = link.range.start.line;
+        a.editor.cursor.byte = link.range.start.byte;
         a.do_help_follow_link();
         // After the follow, the popup buffer holds the focused
         // group view.
@@ -2509,8 +2509,8 @@ mod tests {
             });
         let link = edit_link.expect("no customize-edit link for tabstop");
         // Move cursor to the link, follow.
-        a.cursor.line = link.range.start.line;
-        a.cursor.byte = link.range.start.byte;
+        a.editor.cursor.line = link.range.start.line;
+        a.editor.cursor.byte = link.range.start.byte;
         a.do_help_follow_link();
         // Cmdline should be prefilled with `set tabstop=8`
         // (default value).
@@ -2543,8 +2543,8 @@ mod tests {
                     .cloned()
             })
             .expect("no edit link");
-        a.cursor.line = link.range.start.line;
-        a.cursor.byte = link.range.start.byte;
+        a.editor.cursor.line = link.range.start.line;
+        a.editor.cursor.byte = link.range.start.byte;
         a.do_help_follow_link();
         // User edits the value: `set tabstop=4`.
         a.editor.command_line = "set tabstop=4".into();

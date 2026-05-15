@@ -160,7 +160,7 @@ impl App {
     pub fn dispatch_blocking(&self, invocation: CommandInvocation) -> Result<Effect, RuntimeError> {
         block_on(self.document.dispatch_with_cancel(
             invocation,
-            self.cursor,
+            self.editor.cursor,
             CancellationToken::never(),
         ))
     }
@@ -175,8 +175,8 @@ impl App {
         // pressed `K` again to *focus into* the popup (State B,
         // active_buffer == Help), this auto-dismiss is skipped:
         // motions there move the popup's cursor, not the doc's.
-        let pre_active = self.active_buffer;
-        let pre_cursor = self.cursor;
+        let pre_active = self.editor.active_buffer;
+        let pre_cursor = self.editor.cursor;
         // M.4 hover-popup unification: gate the auto-dismiss-on-
         // doc-cursor-motion behaviour on `hover-mode` being active
         // on the popup buffer, instead of the structural
@@ -228,7 +228,7 @@ impl App {
         // editing actions all keep working -- the read-only set is
         // narrow and explicit, so additions to `Action` default to
         // working in help unless they're added to this list.
-        if matches!(self.active_buffer, BufferKind::Help) && action_is_document_mutation(&action) {
+        if matches!(self.editor.active_buffer, BufferKind::Help) && action_is_document_mutation(&action) {
             self.set_message(EchoLevel::Info, "buffer is read-only".to_string());
             self.ensure_cursor_visible();
             self.maybe_reparse_syntax();
@@ -238,7 +238,7 @@ impl App {
             Action::None => {}
             Action::Quit => {
                 self.editor.event_bus.publish(Event::BeforeQuit);
-                self.should_quit = true;
+                self.editor.should_quit = true;
             }
             Action::Invoke(inv) => self.run_invocation(inv),
             Action::AbsorbPartialChord(chord) => {
@@ -280,7 +280,7 @@ impl App {
                 // without losing their log view. Only auto-
                 // dismiss when active_buffer is Document, which
                 // is the State A shape.
-                if matches!(self.active_buffer, BufferKind::Document) {
+                if matches!(self.editor.active_buffer, BufferKind::Document) {
                     self.dismiss_popup();
                 }
                 self.completion_state = None;
@@ -506,10 +506,10 @@ impl App {
 
             Action::SetMark(name) => {
                 if is_valid_mark_name(name) {
-                    self.editor.marks.insert(name, self.cursor);
+                    self.editor.marks.insert(name, self.editor.cursor);
                     // Also fold into the unified position history so
                     // `g;` / `g,` can walk through marks chronologically.
-                    let cur = self.cursor;
+                    let cur = self.editor.cursor;
                     self.push_position_history(cur, PositionSource::NamedMark(name));
                 } else {
                     self.set_message(EchoLevel::Error, format!("invalid mark: {name}"));
@@ -605,12 +605,12 @@ impl App {
                 self.completion_state = None;
             }
 
-            Action::HelpDismiss => match self.active_buffer {
+            Action::HelpDismiss => match self.editor.active_buffer {
                 BufferKind::Help => self.dismiss_popup(),
                 BufferKind::FileTree => self.dismiss_file_tree(),
                 BufferKind::Document | BufferKind::Oil => {}
             },
-            Action::FollowLink => match self.active_buffer {
+            Action::FollowLink => match self.editor.active_buffer {
                 BufferKind::Help => self.do_help_follow_link(),
                 BufferKind::Oil => self.do_oil_follow(),
                 BufferKind::FileTree => self.do_file_tree_follow(),
@@ -635,7 +635,7 @@ impl App {
                 self.editor.search_line = Some(SearchLine {
                     direction,
                     pattern: String::new(),
-                    origin: self.cursor,
+                    origin: self.editor.cursor,
                 });
                 self.editor.modal = ModalState::Search(direction);
                 self.editor.last_message = None;
@@ -669,7 +669,7 @@ impl App {
             Action::SearchPrevious => self.repeat_search(true),
         }
         // Skip ensure_cursor_visible when the popup just dismissed
-        // back to the document. `app.viewport_height` is still the
+        // back to the document. `app.editor.viewport_height` is still the
         // popup's small inner height at this point (runtime resets
         // it on the *next* iteration), so running ensure on the
         // restored doc cursor / scroll would adjust scroll against
@@ -678,7 +678,7 @@ impl App {
         // viewport and the restored (cursor, scroll) is already a
         // valid view -- it's the pair we captured pre-popup.
         let popup_dismissed = matches!(pre_active, BufferKind::Help)
-            && matches!(self.active_buffer, BufferKind::Document);
+            && matches!(self.editor.active_buffer, BufferKind::Document);
         if !popup_dismissed {
             self.ensure_cursor_visible();
         }
@@ -688,8 +688,8 @@ impl App {
         // and the doc cursor moved. Drop the popup -- it's
         // anchored to the prior symbol and is now stale.
         if popup_in_state_a
-            && self.active_buffer == BufferKind::Document
-            && self.cursor != pre_cursor
+            && self.editor.active_buffer == BufferKind::Document
+            && self.editor.cursor != pre_cursor
         {
             self.dismiss_popup();
         }
@@ -728,7 +728,7 @@ impl App {
             && matches!(spec.kind, lattice_grammar::CommandKind::Action)
         {
             let cancel = lattice_grammar::CancellationToken::never();
-            let pos = self.cursor;
+            let pos = self.editor.cursor;
             // `CommandKind::Action` evaluators don't touch the
             // document (DESIGN.md §5.2.1 -- Action specs return
             // an `Effect::AppAction(_)` payload without reading
@@ -750,15 +750,15 @@ impl App {
         // reach Help -- ex-commands route through `execute_ex_line`,
         // text-objects only resolve via operators -- but if they do
         // they get the same read-only echo.
-        if matches!(self.active_buffer, BufferKind::Help) {
+        if matches!(self.editor.active_buffer, BufferKind::Help) {
             self.run_help_invocation(inv);
             return;
         }
-        if matches!(self.active_buffer, BufferKind::Oil) {
+        if matches!(self.editor.active_buffer, BufferKind::Oil) {
             self.run_oil_invocation(inv);
             return;
         }
-        if matches!(self.active_buffer, BufferKind::FileTree) {
+        if matches!(self.editor.active_buffer, BufferKind::FileTree) {
             self.run_file_tree_invocation(inv);
             return;
         }
@@ -782,7 +782,7 @@ impl App {
     /// `BufferKind::Oil` and routes to `OilBuffer::apply`).
     fn run_oil_invocation(&mut self, inv: CommandInvocation) {
         let oil_id = self.active_pane_buffer_id();
-        let Some(oil_text) = self.buffers.with_oil(oil_id, |o| o.content.as_string()) else {
+        let Some(oil_text) = self.editor.buffers.with_oil(oil_id, |o| o.content.as_string()) else {
             return;
         };
         // Mirror the document-side dispatcher's count + register
@@ -804,7 +804,7 @@ impl App {
         let mut temp_doc = lattice_core::Document::from_text(oil_text);
         let was_visual = matches!(self.editor.modal, ModalState::Visual(_));
         let inv_for_repeat = inv.clone();
-        let cursor_before = self.cursor;
+        let cursor_before = self.editor.cursor;
         let result = lattice_grammar::execute(
             &self.editor.registry,
             &mut temp_doc,
@@ -819,7 +819,7 @@ impl App {
         // buffer. For motion-only effects this is a no-op (the
         // grammar's motion path doesn't mutate the document);
         // for operator effects it carries the change.
-        self.buffers.with_oil_mut(oil_id, |oil| {
+        self.editor.buffers.with_oil_mut(oil_id, |oil| {
             oil.content = temp_doc.buffer().clone();
         });
         // Apply the effect's cursor / mode / register / yank
@@ -831,14 +831,14 @@ impl App {
         match &effect {
             Effect::Edits(edits) => {
                 if let Some(first) = edits.first() {
-                    self.cursor = first.original_range.start;
+                    self.editor.cursor = first.original_range.start;
                 }
                 self.editor.last_change = Some(inv_for_repeat);
                 should_exit_visual = true;
             }
             Effect::SelectionChange(set) => {
                 let primary = set.primary();
-                self.cursor = primary.head;
+                self.editor.cursor = primary.head;
             }
             Effect::Yank {
                 register,
@@ -897,7 +897,7 @@ impl App {
 
     /// Unified motion dispatch for read-only buffer kinds (help /
     /// file-tree). Reads buffer text via [`Self::active_text`] and
-    /// the live cursor / scroll from `self.cursor` / `self.scroll`
+    /// the live cursor / scroll from `self.editor.cursor` / `self.editor.scroll`
     /// -- same hot-path the document dispatcher uses, so motion
     /// semantics (counts, jump-history pushes for `gg` / `G`,
     /// scroll-aware visibility) are identical. Non-motion command
@@ -919,7 +919,7 @@ impl App {
         if inv.command == self.editor.builtins.goto_first_line.0
             || inv.command == self.editor.builtins.goto_last_line.0
         {
-            let cur = self.cursor;
+            let cur = self.editor.cursor;
             self.push_position_history(cur, PositionSource::AutoJump);
         }
         // Slice 8.i.4.f: count multiplication lives entirely in
@@ -934,14 +934,14 @@ impl App {
         match lattice_grammar::execute_motion_only(
             &self.editor.registry,
             &buffer,
-            self.cursor,
+            self.editor.cursor,
             inv,
             &cancel,
         ) {
             Ok(target) => {
-                self.cursor = target;
+                self.editor.cursor = target;
                 // ensure_cursor_visible at the end of `apply` does
-                // the scroll math -- self.viewport_height is the
+                // the scroll math -- self.editor.viewport_height is the
                 // active buffer's visible row count.
             }
             Err(_) => {
@@ -975,7 +975,7 @@ impl App {
         if inv.command == self.editor.builtins.goto_first_line.0
             || inv.command == self.editor.builtins.goto_last_line.0
         {
-            let cur = self.cursor;
+            let cur = self.editor.cursor;
             self.push_position_history(cur, PositionSource::AutoJump);
         }
         // Capture find/till invocations for `;` / `,` repeat.
@@ -1010,7 +1010,7 @@ impl App {
         // `Effect::Edits` from the expanded range.
         if self.foldenable()
             && matches!(inv.range, Some(lattice_grammar::range::Range::CurrentLine))
-            && let Some(fold) = self.fold_start_at(self.cursor.line)
+            && let Some(fold) = self.fold_start_at(self.editor.cursor.line)
         {
             let span = fold.end_line.saturating_sub(fold.start_line) + 1;
             effective_count = effective_count.max(span);
@@ -1038,7 +1038,7 @@ impl App {
         // location diverged from `cursor.line`. The snap is
         // direction-aware (uses `prev_cursor_line`) and idempotent
         // when the cursor was already on a visible line.
-        let prev_cursor_line = self.cursor.line;
+        let prev_cursor_line = self.editor.cursor.line;
         match self.dispatch_blocking(inv) {
             Ok(effect) => {
                 // Visual exits on any operator-class effect (mutation OR
@@ -1081,7 +1081,7 @@ impl App {
             Effect::Edits(edits) => self.handle_edits(&edits),
             Effect::SelectionChange(set) => {
                 let new_head = set.primary().head;
-                self.cursor = new_head;
+                self.editor.cursor = new_head;
                 // In Visual mode the head moves but the anchor is preserved
                 // -- the dispatcher's `replace_primary(Selection::cursor(...))`
                 // would otherwise collapse the selection. Refresh the
@@ -1341,7 +1341,7 @@ impl App {
         // After a delete, the cursor sits at the start of the deleted range
         // (which is now the position of whatever followed). Vim's behavior.
         if let Some(first) = edits.first() {
-            self.cursor = first.original_range.start;
+            self.editor.cursor = first.original_range.start;
         }
         // Slice C.5: grammar-driven edits (operators like `>>`,
         // `dd`, `c`, `y`) reach this path with `Effect::Edits`
@@ -1618,7 +1618,7 @@ mod tests {
     fn key_harness_j_advances_cursor_one_line() {
         let mut a = app_with("one\ntwo\nthree", 10);
         press_chars(&mut a, "j");
-        assert_eq!(a.cursor.line, 1);
+        assert_eq!(a.editor.cursor.line, 1);
     }
 
     #[test]
@@ -1632,7 +1632,7 @@ mod tests {
     fn key_harness_count_before_motion_advances_n_lines() {
         let mut a = app_with("a\nb\nc\nd\ne", 10);
         press_chars(&mut a, "3j");
-        assert_eq!(a.cursor.line, 3);
+        assert_eq!(a.editor.cursor.line, 3);
     }
 
     #[test]
@@ -1660,18 +1660,18 @@ mod tests {
     fn key_harness_count_clears_after_motion_fires() {
         let mut a = app_with("a\nb\nc\nd\ne\nf", 10);
         press_chars(&mut a, "3j");
-        assert_eq!(a.cursor.line, 3);
+        assert_eq!(a.editor.cursor.line, 3);
         press_chars(&mut a, "j");
-        assert_eq!(a.cursor.line, 4);
+        assert_eq!(a.editor.cursor.line, 4);
     }
 
     #[test]
     fn key_harness_gg_jumps_to_first_line() {
         let mut a = app_with("one\ntwo\nthree\nfour", 10);
         press_chars(&mut a, "G");
-        assert_eq!(a.cursor.line, 3);
+        assert_eq!(a.editor.cursor.line, 3);
         press_chars(&mut a, "gg");
-        assert_eq!(a.cursor.line, 0);
+        assert_eq!(a.editor.cursor.line, 0);
     }
 
     #[test]
@@ -1804,7 +1804,7 @@ mod tests {
             }
         }
         assert!(found, "BeforeQuit should be published on Action::Quit");
-        assert!(a.should_quit);
+        assert!(a.editor.should_quit);
     }
 
     #[test]
@@ -1840,22 +1840,22 @@ mod tests {
     #[test]
     fn entering_insert_mode_does_not_move_cursor() {
         let mut a = app_with("abc", 10);
-        let before = a.cursor;
+        let before = a.editor.cursor;
         a.apply(Action::EnterMode(ModalState::Insert));
         assert_eq!(a.editor.modal, ModalState::Insert);
-        assert_eq!(a.cursor, before);
+        assert_eq!(a.editor.cursor, before);
     }
 
     #[test]
     fn ctrl_o_then_ctrl_i_round_trips() {
         let mut a = app_with("a\nb\nc\nd\ne", 10);
-        a.cursor = Position::new(2, 0);
+        a.editor.cursor = Position::new(2, 0);
         a.apply(invoke_motion(a.editor.builtins.goto_first_line));
         // Now at line 0; jump list has [(2,0)] cursor at end.
         a.apply(Action::JumpHistoryBack);
-        assert_eq!(a.cursor, Position::new(2, 0));
+        assert_eq!(a.editor.cursor, Position::new(2, 0));
         a.apply(Action::JumpHistoryForward);
-        assert_eq!(a.cursor, Position::ZERO);
+        assert_eq!(a.editor.cursor, Position::ZERO);
     }
 
     #[test]
@@ -1903,7 +1903,7 @@ mod tests {
     #[test]
     fn dd_records_last_change_and_dot_replays_it() {
         let mut a = app_with("aaa\nBBB\nccc\nddd", 10);
-        a.cursor = Position::new(1, 0);
+        a.editor.cursor = Position::new(1, 0);
         let inv = CommandInvocation::of(a.editor.builtins.delete.0)
             .with_range(lattice_grammar::Range::CurrentLine);
         a.apply(Action::Invoke(inv));
@@ -1931,7 +1931,7 @@ mod tests {
         assert_eq!(a.document.text(), "Xbeta gamma");
         // Move to "beta" (cursor is now on 'X' / position 0; let's go to 'b'
         // at byte 1).
-        a.cursor = Position::new(0, 1);
+        a.editor.cursor = Position::new(0, 1);
         // Repeat.
         a.apply(Action::RepeatLastChange);
         // cw replays: deletes "beta " and inserts "X" -> "XXgamma".
@@ -1969,7 +1969,7 @@ mod tests {
                 .with_count(lattice_grammar::command::Count(3)),
         ));
         // 3w from origin: "one two three FOUR five" -> 'f' of "four" at byte 14.
-        assert_eq!(a.cursor, Position::new(0, 14));
+        assert_eq!(a.editor.cursor, Position::new(0, 14));
         // pending_count is reset after dispatch.
         assert_eq!(a.editor.pending_count, 0);
     }
@@ -2010,7 +2010,7 @@ mod tests {
     #[test]
     fn yy_populates_register_linewise() {
         let mut a = app_with("aaa\nBBB\nccc", 10);
-        a.cursor = Position::new(1, 0);
+        a.editor.cursor = Position::new(1, 0);
         let inv = CommandInvocation::of(a.editor.builtins.yank.0)
             .with_range(lattice_grammar::Range::CurrentLine);
         a.apply(Action::Invoke(inv));
@@ -2024,7 +2024,7 @@ mod tests {
     fn dd_populates_register_linewise_via_delete() {
         // delete also yanks; register kind is linewise for dd.
         let mut a = app_with("aaa\nBBB\nccc", 10);
-        a.cursor = Position::new(1, 0);
+        a.editor.cursor = Position::new(1, 0);
         let inv = CommandInvocation::of(a.editor.builtins.delete.0)
             .with_range(lattice_grammar::Range::CurrentLine);
         a.apply(Action::Invoke(inv));
@@ -2049,7 +2049,7 @@ mod tests {
             .position(|f| f.start_line == 0)
             .expect("H1 fold");
         a.folds[idx].closed = true;
-        a.cursor = Position::new(0, 0);
+        a.editor.cursor = Position::new(0, 0);
         let inv = CommandInvocation::of(a.editor.builtins.delete.0)
             .with_range(lattice_grammar::Range::CurrentLine);
         a.apply(Action::Invoke(inv));
@@ -2073,7 +2073,7 @@ mod tests {
             .position(|f| f.start_line == 0)
             .expect("H1 fold");
         a.folds[idx].closed = true;
-        a.cursor = Position::new(0, 0);
+        a.editor.cursor = Position::new(0, 0);
         let inv = CommandInvocation::of(a.editor.builtins.yank.0)
             .with_range(lattice_grammar::Range::CurrentLine);
         a.apply(Action::Invoke(inv));
@@ -2111,7 +2111,7 @@ mod tests {
         a.set_foldmethod_for_test(FoldMethod::Markdown);
         a.recompute_folds();
         // Leave open (default).
-        a.cursor = Position::new(0, 0);
+        a.editor.cursor = Position::new(0, 0);
         let inv = CommandInvocation::of(a.editor.builtins.delete.0)
             .with_range(lattice_grammar::Range::CurrentLine);
         a.apply(Action::Invoke(inv));
@@ -2134,7 +2134,7 @@ mod tests {
         let mut a = app_with("aaa\nBBB\nccc", 10);
         a.set_foldmethod_for_test(FoldMethod::Indent);
         a.recompute_folds();
-        a.cursor = Position::new(1, 0);
+        a.editor.cursor = Position::new(1, 0);
         let inv = CommandInvocation::of(a.editor.builtins.delete.0)
             .with_range(lattice_grammar::Range::CurrentLine);
         a.apply(Action::Invoke(inv));
@@ -2212,7 +2212,7 @@ mod tests {
         let crate::help::HelpContent { buffer, .. } =
             crate::help::HelpContent::from_lines("preexisting", vec!["x".into()]);
         let id = buffer.id;
-        a.buffers.insert(crate::buffer_registry::BufferEntry {
+        a.editor.buffers.insert(crate::buffer_registry::BufferEntry {
             id,
             flags: crate::buffers::BufferFlags {
                 listed: false,
@@ -2283,12 +2283,12 @@ mod tests {
         let mut a = app_with("fn main() {}\n", 5);
         a.do_open_hover("hover body line 1\nhover body line 2");
         assert!(a.editor.popup_buffer.is_some());
-        assert!(matches!(a.active_buffer, BufferKind::Document));
+        assert!(matches!(a.editor.active_buffer, BufferKind::Document));
         assert!(a.editor.prev_pane_for_help.is_none());
         // Second K -> focus into popup.
         a.do_lsp_hover_request();
         assert!(a.editor.popup_buffer.is_some(), "popup stays up after focus");
-        assert!(matches!(a.active_buffer, BufferKind::Help));
+        assert!(matches!(a.editor.active_buffer, BufferKind::Help));
         let stash = a.editor.prev_pane_for_help.expect("State B captures stash");
         assert_eq!(stash.buffer, BufferKind::Document);
     }
@@ -2302,7 +2302,7 @@ mod tests {
         let mut a = app_with("first:\n    p\n    q\nsecond:\n    r\n    s\n", 10);
         a.set_foldmethod_for_test(FoldMethod::Indent);
         a.recompute_folds();
-        let initial_id = a.document_buffer_id;
+        let initial_id = a.editor.document_buffer_id;
         // Close the first fold (line 0) on the initial buffer.
         let first_idx = a
             .folds
@@ -2318,7 +2318,7 @@ mod tests {
         a.editor.command_line = "bn".into();
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        assert_eq!(a.document_buffer_id, initial_id);
+        assert_eq!(a.editor.document_buffer_id, initial_id);
         // Closed state survived the round-trip.
         assert!(
             a.folds.iter().any(|f| f.start_line == 0 && f.closed),
@@ -2342,11 +2342,11 @@ mod tests {
         a.editor.command_line = format!("e {}", path.display());
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        let id_target = a.document_buffer_id;
+        let id_target = a.editor.document_buffer_id;
         assert!(a.folds.is_empty(), "manual leaves folds empty");
         // Switch back to the original buffer.
         let original_id = a
-            .buffers
+            .editor.buffers
             .document_ids_sorted()
             .into_iter()
             .find(|id| *id != id_target)
@@ -2357,7 +2357,7 @@ mod tests {
         // buffer on first visit.
         a.set_foldmethod_for_test(FoldMethod::Indent);
         a.activate_document(id_target);
-        assert_eq!(a.document_buffer_id, id_target);
+        assert_eq!(a.editor.document_buffer_id, id_target);
         assert!(
             !a.folds.is_empty(),
             "expected activation hook to seed folds on first visit under indent: {:?}",
@@ -2369,15 +2369,15 @@ mod tests {
     #[test]
     fn word_under_cursor_returns_alphanumeric_run() {
         let mut a = app_with("hello world", 10);
-        a.cursor = Position::new(0, 0);
+        a.editor.cursor = Position::new(0, 0);
         let snap = a.document.snapshot();
         assert_eq!(
-            word_under_cursor(&snap.buffer, a.cursor),
+            word_under_cursor(&snap.buffer, a.editor.cursor),
             Some("hello".to_string())
         );
-        a.cursor = Position::new(0, 6);
+        a.editor.cursor = Position::new(0, 6);
         assert_eq!(
-            word_under_cursor(&snap.buffer, a.cursor),
+            word_under_cursor(&snap.buffer, a.editor.cursor),
             Some("world".to_string())
         );
     }
@@ -2397,17 +2397,17 @@ mod tests {
         // document spot the user opened the help from. That's the
         // first user-visible win of active-buffer routing.
         let mut a = app_with("first\nsecond\nthird\nfourth", 10);
-        a.cursor = Position::new(2, 0);
+        a.editor.cursor = Position::new(2, 0);
         // Open help via the same path the App uses internally so
         // the position-history entry is recorded.
         a.open_popup(
             HelpContent::from_lines("h", vec!["help body".into()]),
             crate::popup::PopupPlacement::Centered,
         );
-        assert_eq!(a.active_buffer, BufferKind::Help);
+        assert_eq!(a.editor.active_buffer, BufferKind::Help);
         a.apply(Action::JumpHistoryBack);
-        assert_eq!(a.active_buffer, BufferKind::Document);
-        assert_eq!(a.cursor.line, 2);
+        assert_eq!(a.editor.active_buffer, BufferKind::Document);
+        assert_eq!(a.editor.cursor.line, 2);
     }
 
     #[test]
@@ -2417,7 +2417,7 @@ mod tests {
         // reaches the supervisor.
         use std::str::FromStr;
         let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
-        app.buffer_uris.insert(app.document_buffer_id, uri.clone());
+        app.buffer_uris.insert(app.editor.document_buffer_id, uri.clone());
         // Test-only: register the URI directly with the
         // supervisor under a mock actor. Without a real
         // ServerHandle attach_handle requires one, so instead
@@ -2428,7 +2428,7 @@ mod tests {
         let _ = app.apply_edit_blocking(edit.clone());
         // Buffer mapping unchanged; record_edit is best-effort
         // (skips if no actor attached for the URI).
-        assert_eq!(app.buffer_uris.get(&app.document_buffer_id), Some(&uri));
+        assert_eq!(app.buffer_uris.get(&app.editor.document_buffer_id), Some(&uri));
     }
 
     #[test]

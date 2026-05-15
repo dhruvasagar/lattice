@@ -70,7 +70,7 @@ impl App {
             .entry(buffer_id)
             .or_default()
             .insert(crate::modes::FileTreeEntries(entries));
-        self.buffers
+        self.editor.buffers
             .with_file_tree_mut(buffer_id, |tree| tree.content = content);
     }
 
@@ -87,7 +87,7 @@ impl App {
             .insert(crate::modes::FileTreeNerdFonts(nerd_fonts));
         if let Some(entries) = self.file_tree_entries_for(buffer_id) {
             let content = crate::file_tree::render_to_buffer(&entries, nerd_fonts);
-            self.buffers
+            self.editor.buffers
                 .with_file_tree_mut(buffer_id, |tree| tree.content = content);
         }
     }
@@ -126,7 +126,7 @@ impl App {
     /// matches `root`. Mirrors `App::oil_with_dir` -- registry
     /// can't answer on its own (root lives in buffer-locals).
     pub(super) fn file_tree_with_root(&self, root: &Path) -> Option<crate::buffers::BufferId> {
-        self.buffers
+        self.editor.buffers
             .file_tree_ids()
             .into_iter()
             .find(|&id| self.file_tree_root_for(id).as_deref() == Some(root))
@@ -173,8 +173,8 @@ impl App {
                 return;
             }
         };
-        if matches!(self.active_buffer, BufferKind::Document) {
-            let cur = self.cursor;
+        if matches!(self.editor.active_buffer, BufferKind::Document) {
+            let cur = self.editor.cursor;
             self.push_position_history(cur, PositionSource::AutoJump);
         }
         let new_id = tree.id;
@@ -188,7 +188,7 @@ impl App {
         // with the same content -- the rendered rope from
         // `FileTreeBuffer::open` is correct; the chokepoint
         // call is here for symmetry + uniform write path.
-        self.buffers.insert(BufferEntry {
+        self.editor.buffers.insert(BufferEntry {
             id: new_id,
             flags: BufferFlags::default(),
             data: BufferData::FileTree(tree),
@@ -198,7 +198,7 @@ impl App {
         self.activate_major_for_buffer_kind(new_id, BufferKind::FileTree);
         self.snapshot_active_pane();
         self.snapshot_active_document();
-        self.active_buffer = BufferKind::FileTree;
+        self.editor.active_buffer = BufferKind::FileTree;
         let pane = self.pane_tree.active_mut();
         pane.buffer = BufferKind::FileTree;
         pane.buffer_id = new_id;
@@ -211,19 +211,19 @@ impl App {
     /// the active pane back to a Document buffer and dropping the
     /// tree from the registry.
     pub(super) fn dismiss_file_tree(&mut self) {
-        if !matches!(self.active_buffer, BufferKind::FileTree) {
+        if !matches!(self.editor.active_buffer, BufferKind::FileTree) {
             return;
         }
         let tree_id = self.active_pane_buffer_id();
         let successor = self
-            .buffers
+            .editor.buffers
             .document_ids_sorted()
             .first()
             .copied()
-            .unwrap_or(self.document_buffer_id);
+            .unwrap_or(self.editor.document_buffer_id);
         self.activate_buffer(successor);
-        self.buffers.remove(tree_id);
-        let new_kind = self.active_buffer;
+        self.editor.buffers.remove(tree_id);
+        let new_kind = self.editor.active_buffer;
         let new_id = self.active_pane_buffer_id();
         for pane in self.pane_tree.leaves_mut() {
             if pane.buffer_id == tree_id {
@@ -239,7 +239,7 @@ impl App {
     /// [`Self::set_file_tree_entries`].
     pub(super) fn do_file_tree_follow(&mut self) {
         let active_id = self.active_pane_buffer_id();
-        let idx = self.cursor.line as usize;
+        let idx = self.editor.cursor.line as usize;
         // Canonical read: entries live in buffer-locals.
         let Some(mut entries) = self.file_tree_entries_for(active_id) else {
             return;

@@ -26,12 +26,12 @@ use super::{App, EchoLevel, LastVisual};
 impl App {
     pub(super) fn do_enter_visual(&mut self, kind: VisualKind) {
         self.editor.modal = ModalState::Visual(kind);
-        self.editor.visual_anchor = Some(self.cursor);
+        self.editor.visual_anchor = Some(self.editor.cursor);
         // Seed document.selections so Range::Selection picks up the
         // anchor=head=cursor selection immediately.
         let sel = Selection {
-            anchor: self.cursor,
-            head: self.cursor,
+            anchor: self.editor.cursor,
+            head: self.editor.cursor,
             visual: Some(visual_kind_to_mode(kind)),
         };
         self.set_selections_blocking(SelectionSet::single(sel));
@@ -53,7 +53,7 @@ impl App {
         self.editor.modal = ModalState::Normal;
         self.editor.visual_anchor = None;
         // Collapse selection to a cursor at the current head.
-        self.set_selections_blocking(SelectionSet::single(Selection::cursor(self.cursor)));
+        self.set_selections_blocking(SelectionSet::single(Selection::cursor(self.editor.cursor)));
     }
 
     pub(super) fn do_reselect_visual(&mut self) {
@@ -65,7 +65,7 @@ impl App {
         // visual mode is the saved kind.
         self.editor.modal = ModalState::Visual(last.kind);
         self.editor.visual_anchor = Some(last.anchor);
-        self.cursor = last.head;
+        self.editor.cursor = last.head;
         let sel = Selection {
             anchor: last.anchor,
             head: last.head,
@@ -142,7 +142,7 @@ mod tests {
         let sel = sels.primary();
         assert_eq!(sel.anchor, Position::ZERO);
         assert_eq!(sel.head, Position::new(0, 6));
-        assert_eq!(a.cursor, Position::new(0, 6));
+        assert_eq!(a.editor.cursor, Position::new(0, 6));
     }
 
     #[test]
@@ -177,7 +177,7 @@ mod tests {
     #[test]
     fn enter_visual_charwise_sets_modal_and_anchor() {
         let mut a = app_with("hello", 10);
-        a.cursor = Position::new(0, 1);
+        a.editor.cursor = Position::new(0, 1);
         a.apply(Action::EnterVisual(VisualKind::Charwise));
         assert_eq!(a.editor.modal, ModalState::Visual(VisualKind::Charwise));
         assert_eq!(a.editor.visual_anchor, Some(Position::new(0, 1)));
@@ -197,7 +197,7 @@ mod tests {
         let sel = sels.primary();
         assert_eq!(sel.anchor, Position::ZERO);
         assert_eq!(sel.head, Position::new(0, 6));
-        assert_eq!(a.cursor, Position::new(0, 6));
+        assert_eq!(a.editor.cursor, Position::new(0, 6));
     }
 
     #[test]
@@ -255,7 +255,7 @@ mod tests {
     #[test]
     fn linewise_visual_yank_captures_full_lines() {
         let mut a = app_with("aaa\nBBB\nccc", 10);
-        a.cursor = Position::new(1, 1); // mid-line on "BBB"
+        a.editor.cursor = Position::new(1, 1); // mid-line on "BBB"
         a.apply(Action::EnterVisual(VisualKind::Linewise));
         // Selection is single line; yank captures the whole line
         // regardless of byte offsets. Slice 8.i.4.g: linewise yank

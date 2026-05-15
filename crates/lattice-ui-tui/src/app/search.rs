@@ -121,7 +121,7 @@ impl App {
             &CancellationToken::never(),
         ) {
             Ok(Some(hit)) => {
-                self.cursor = hit.range.start;
+                self.editor.cursor = hit.range.start;
                 self.editor.current_match = Some(hit.range);
                 self.editor.all_matches =
                     lattice_core::search::find_all(&buffer, &regex, &CancellationToken::never())
@@ -138,7 +138,7 @@ impl App {
                     pattern: line.pattern,
                     direction: line.direction,
                 });
-                if matches!(self.active_buffer, BufferKind::Document) {
+                if matches!(self.editor.active_buffer, BufferKind::Document) {
                     self.auto_open_folds_at_cursor();
                 }
             }
@@ -164,7 +164,7 @@ impl App {
 
     pub(super) fn cancel_search(&mut self) {
         if let Some(line) = self.editor.search_line.take() {
-            self.cursor = line.origin;
+            self.editor.cursor = line.origin;
         }
         self.editor.current_match = None;
         self.editor.all_matches.clear();
@@ -184,7 +184,7 @@ impl App {
         // Push pre-jump cursor onto the unified ring regardless
         // of buffer kind so `<C-o>` walks back across help /
         // tree / document boundaries.
-        let cur = self.cursor;
+        let cur = self.editor.cursor;
         self.push_position_history(cur, PositionSource::AutoJump);
         let direction = match (last.direction, reverse) {
             (SearchDirection::Forward, false) | (SearchDirection::Backward, true) => {
@@ -200,7 +200,7 @@ impl App {
         };
         let buffer = self.active_text();
         // Skip current match: advance one byte in the chosen direction.
-        let from = step_byte(&buffer, self.cursor, direction);
+        let from = step_byte(&buffer, self.editor.cursor, direction);
         let regex = match compile_search_pattern(&last.pattern) {
             Ok(r) => r,
             Err(msg) => {
@@ -211,7 +211,7 @@ impl App {
         };
         match lattice_core::search::find(&buffer, &regex, from, dir, &CancellationToken::never()) {
             Ok(Some(hit)) => {
-                self.cursor = hit.range.start;
+                self.editor.cursor = hit.range.start;
                 self.editor.current_match = Some(hit.range);
                 if hit.wrapped {
                     let text = match direction {
@@ -220,7 +220,7 @@ impl App {
                     };
                     self.set_message(EchoLevel::Warn, text.to_string());
                 }
-                if matches!(self.active_buffer, BufferKind::Document) {
+                if matches!(self.editor.active_buffer, BufferKind::Document) {
                     self.auto_open_folds_at_cursor();
                 }
             }
@@ -275,7 +275,7 @@ impl App {
                 self.collect_substitute_matches_for_line(
                     &buffer,
                     &regex,
-                    self.cursor.line,
+                    self.editor.cursor.line,
                     global,
                     &mut matches,
                 );
@@ -359,7 +359,7 @@ impl App {
         };
         // Determine the line range.
         let (first_line, last_line) = match scope {
-            lattice_grammar::SubstituteScope::CurrentLine => (self.cursor.line, self.cursor.line),
+            lattice_grammar::SubstituteScope::CurrentLine => (self.editor.cursor.line, self.editor.cursor.line),
             lattice_grammar::SubstituteScope::Whole => {
                 let last = last_addressable_line(&self.document.snapshot().buffer);
                 (0, last)
@@ -454,14 +454,14 @@ impl App {
     /// Skips the current match by stepping one byte beyond it before
     /// invoking the search engine.
     pub(super) fn do_search_word_under_cursor(&mut self, direction: SearchDirection) {
-        let pre_jump = self.cursor;
+        let pre_jump = self.editor.cursor;
         let text = self.document.text();
         let bytes = text.as_bytes();
         let cursor_byte = match self
             .document
             .snapshot()
             .buffer
-            .position_to_byte(self.cursor)
+            .position_to_byte(self.editor.cursor)
         {
             Ok(b) => b,
             Err(_) => return,
@@ -498,7 +498,7 @@ impl App {
         };
         // Skip the current match: search from one byte past for forward,
         // one byte before for backward.
-        let from = step_byte(&self.document.snapshot().buffer, self.cursor, direction);
+        let from = step_byte(&self.document.snapshot().buffer, self.editor.cursor, direction);
         // The word is a literal we want to find verbatim, not a
         // pattern. Escape regex metachars before compiling so words
         // containing `.`, `*`, `(` etc. don't trigger metacharacter
@@ -522,7 +522,7 @@ impl App {
         ) {
             Ok(Some(hit)) => {
                 self.push_position_history(pre_jump, PositionSource::AutoJump);
-                self.cursor = hit.range.start;
+                self.editor.cursor = hit.range.start;
                 self.editor.current_match = Some(hit.range);
                 self.editor.all_matches = lattice_core::search::find_all(
                     &self.document.snapshot().buffer,
@@ -620,7 +620,7 @@ mod tests {
     #[test]
     fn substitute_preview_highlights_first_match_on_current_line_without_g() {
         let mut a = app_with("foo bar foo baz foo\nfoo elsewhere", 10);
-        a.cursor = Position::new(0, 0);
+        a.editor.cursor = Position::new(0, 0);
         type_cmdline(&mut a, "s/foo/X");
         let preview = a.editor.substitute_preview.as_ref().expect("preview live");
         assert_eq!(preview.matches.len(), 1, "only the leftmost match -- no /g");
@@ -632,7 +632,7 @@ mod tests {
     #[test]
     fn substitute_preview_with_g_flag_highlights_every_match_on_line() {
         let mut a = app_with("foo bar foo baz foo\nfoo elsewhere", 10);
-        a.cursor = Position::new(0, 0);
+        a.editor.cursor = Position::new(0, 0);
         type_cmdline(&mut a, "s/foo/X/g");
         let preview = a.editor.substitute_preview.as_ref().unwrap();
         // Three matches on the cursor's line; line 1 is out of scope.
@@ -643,7 +643,7 @@ mod tests {
     #[test]
     fn substitute_preview_percent_scope_walks_whole_buffer() {
         let mut a = app_with("foo\nbar foo\nfoo", 10);
-        a.cursor = Position::new(0, 0);
+        a.editor.cursor = Position::new(0, 0);
         type_cmdline(&mut a, "%s/foo/X/g");
         let preview = a.editor.substitute_preview.as_ref().unwrap();
         // Three matches across three lines.
@@ -712,7 +712,7 @@ mod tests {
         // Preview should highlight the first match without moving cursor.
         let m = a.editor.current_match.expect("match previewed");
         assert_eq!(m.start, Position::new(0, 4));
-        assert_eq!(a.cursor, Position::ZERO);
+        assert_eq!(a.editor.cursor, Position::ZERO);
     }
 
     #[test]
@@ -742,7 +742,7 @@ mod tests {
         type_pattern(&mut a, "bar");
         a.apply(Action::SearchSubmit);
         assert_eq!(a.editor.modal, ModalState::Normal);
-        assert_eq!(a.cursor, Position::new(0, 4));
+        assert_eq!(a.editor.cursor, Position::new(0, 4));
         assert!(a.editor.search_line.is_none());
         let last = a.editor.last_search.as_ref().unwrap();
         assert_eq!(last.pattern, "bar");
@@ -765,14 +765,14 @@ mod tests {
     #[test]
     fn search_cancel_restores_cursor_to_origin() {
         let mut a = app_with("foo bar foo", 10);
-        a.cursor = Position::new(0, 5);
+        a.editor.cursor = Position::new(0, 5);
         a.apply(Action::EnterSearch(SearchDirection::Forward));
         type_pattern(&mut a, "foo");
         // Preview should have set current_match to "foo" at byte 8.
         assert_eq!(a.editor.current_match.unwrap().start, Position::new(0, 8));
         a.apply(Action::SearchCancel);
         assert_eq!(a.editor.modal, ModalState::Normal);
-        assert_eq!(a.cursor, Position::new(0, 5));
+        assert_eq!(a.editor.cursor, Position::new(0, 5));
         assert!(a.editor.current_match.is_none());
     }
 
@@ -782,9 +782,9 @@ mod tests {
         a.apply(Action::EnterSearch(SearchDirection::Forward));
         type_pattern(&mut a, "foo");
         a.apply(Action::SearchSubmit);
-        assert_eq!(a.cursor, Position::new(0, 0));
+        assert_eq!(a.editor.cursor, Position::new(0, 0));
         a.apply(Action::SearchNext);
-        assert_eq!(a.cursor, Position::new(0, 8));
+        assert_eq!(a.editor.cursor, Position::new(0, 8));
     }
 
     #[test]
@@ -794,9 +794,9 @@ mod tests {
         type_pattern(&mut a, "foo");
         a.apply(Action::SearchSubmit);
         a.apply(Action::SearchNext);
-        assert_eq!(a.cursor, Position::new(0, 8));
+        assert_eq!(a.editor.cursor, Position::new(0, 8));
         a.apply(Action::SearchPrevious);
-        assert_eq!(a.cursor, Position::new(0, 0));
+        assert_eq!(a.editor.cursor, Position::new(0, 0));
     }
 
     #[test]
@@ -811,14 +811,14 @@ mod tests {
     #[test]
     fn search_forward_wraps_and_warns() {
         let mut a = app_with("alpha beta gamma alpha", 10);
-        a.cursor = Position::new(0, 17); // past the second "alpha"... actually at it
+        a.editor.cursor = Position::new(0, 17); // past the second "alpha"... actually at it
         // Move past it for clarity.
-        a.cursor = Position::new(0, 18);
+        a.editor.cursor = Position::new(0, 18);
         a.apply(Action::EnterSearch(SearchDirection::Forward));
         type_pattern(&mut a, "alpha");
         a.apply(Action::SearchSubmit);
         // First "alpha" is at byte 0; we wrapped from byte 18.
-        assert_eq!(a.cursor, Position::new(0, 0));
+        assert_eq!(a.editor.cursor, Position::new(0, 0));
         let msg = a.editor.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Warn);
         assert!(msg.text.contains("BOTTOM"));
@@ -827,11 +827,11 @@ mod tests {
     #[test]
     fn search_backward_finds_previous_match() {
         let mut a = app_with("alpha beta gamma alpha", 10);
-        a.cursor = Position::new(0, 22);
+        a.editor.cursor = Position::new(0, 22);
         a.apply(Action::EnterSearch(SearchDirection::Backward));
         type_pattern(&mut a, "alpha");
         a.apply(Action::SearchSubmit);
-        assert_eq!(a.cursor, Position::new(0, 17));
+        assert_eq!(a.editor.cursor, Position::new(0, 17));
     }
 
     // ---- :noh ----
@@ -900,7 +900,7 @@ mod tests {
     #[test]
     fn substitute_only_current_line_without_percent() {
         let mut a = app_with("foo\nfoo\nfoo", 10);
-        a.cursor = Position::new(1, 0);
+        a.editor.cursor = Position::new(1, 0);
         submit_ex(&mut a, "s/foo/X/");
         assert_eq!(a.document.text(), "foo\nX\nfoo");
     }
@@ -914,10 +914,10 @@ mod tests {
         let inv = lattice_grammar::CommandInvocation::of(a.editor.builtins.find_char_forward.0)
             .with_args(lattice_grammar::Args::Char('l'));
         a.apply(Action::Invoke(inv));
-        assert_eq!(a.cursor, Position::new(0, 2));
+        assert_eq!(a.editor.cursor, Position::new(0, 2));
         // `;` repeats: byte 3.
         a.apply(Action::FindRepeat { reverse: false });
-        assert_eq!(a.cursor, Position::new(0, 3));
+        assert_eq!(a.editor.cursor, Position::new(0, 3));
     }
 
     #[test]
@@ -927,12 +927,12 @@ mod tests {
         let inv = lattice_grammar::CommandInvocation::of(a.editor.builtins.find_char_forward.0)
             .with_args(lattice_grammar::Args::Char('l'));
         a.apply(Action::Invoke(inv));
-        assert_eq!(a.cursor, Position::new(0, 2));
+        assert_eq!(a.editor.cursor, Position::new(0, 2));
         // f l again, then `,` should reverse to find the previous 'l'.
         a.apply(Action::FindRepeat { reverse: false });
-        assert_eq!(a.cursor, Position::new(0, 3));
+        assert_eq!(a.editor.cursor, Position::new(0, 3));
         a.apply(Action::FindRepeat { reverse: true });
-        assert_eq!(a.cursor, Position::new(0, 2));
+        assert_eq!(a.editor.cursor, Position::new(0, 2));
     }
 
     #[test]
@@ -948,16 +948,16 @@ mod tests {
     #[test]
     fn search_submit_pushes_position_history() {
         let mut a = app_with("foo bar baz foo", 10);
-        a.cursor = Position::new(0, 8); // on 'b' of "baz"
+        a.editor.cursor = Position::new(0, 8); // on 'b' of "baz"
         a.apply(Action::EnterSearch(SearchDirection::Forward));
         for c in "foo".chars() {
             a.apply(Action::SearchAppend(c));
         }
         a.apply(Action::SearchSubmit);
         // Cursor jumped to second "foo" at byte 12.
-        assert_eq!(a.cursor, Position::new(0, 12));
+        assert_eq!(a.editor.cursor, Position::new(0, 12));
         a.apply(Action::JumpHistoryBack);
-        assert_eq!(a.cursor, Position::new(0, 8));
+        assert_eq!(a.editor.cursor, Position::new(0, 8));
     }
 
     // ---- Search auto-opens fold ----
@@ -999,8 +999,8 @@ mod tests {
     fn search_in_help_buffer_targets_help_text() {
         // After unification, `/` works in any read-only buffer
         // (help, file-tree, future kinds). Search reads
-        // `active_text()` and `self.cursor`; on a hit it writes
-        // `self.cursor` -- exactly the document path.
+        // `active_text()` and `self.editor.cursor`; on a hit it writes
+        // `self.editor.cursor` -- exactly the document path.
         let mut a = app_with("xx", 10);
         let body: Vec<String> = vec![
             "alpha".into(),
@@ -1016,10 +1016,10 @@ mod tests {
         }
         a.apply(Action::SearchSubmit);
         // Cursor should land on line 2 (gamma needle).
-        assert_eq!(a.cursor.line, 2, "cursor jumped to the help line");
+        assert_eq!(a.editor.cursor.line, 2, "cursor jumped to the help line");
         // Active buffer stays Help -- search didn't leak into the
         // document.
-        assert!(matches!(a.active_buffer, BufferKind::Help));
+        assert!(matches!(a.editor.active_buffer, BufferKind::Help));
     }
 
     #[test]
@@ -1107,7 +1107,7 @@ mod tests {
     #[test]
     fn search_word_under_cursor_populates_all_matches() {
         let mut a = app_with("foo bar foo bar foo", 10);
-        a.cursor = Position::new(0, 1); // on first "foo"
+        a.editor.cursor = Position::new(0, 1); // on first "foo"
         a.apply(Action::SearchWordUnderCursor(SearchDirection::Forward));
         assert_eq!(a.editor.all_matches.len(), 3);
     }
@@ -1118,18 +1118,18 @@ mod tests {
         a.apply(Action::EnterSearch(SearchDirection::Forward));
         type_pattern(&mut a, "foo");
         a.apply(Action::SearchSubmit);
-        assert_eq!(a.cursor, Position::new(0, 0));
+        assert_eq!(a.editor.cursor, Position::new(0, 0));
         a.apply(Action::SearchNext);
-        assert_eq!(a.cursor, Position::new(2, 0));
+        assert_eq!(a.editor.cursor, Position::new(2, 0));
     }
 
     #[test]
     fn find_no_match_keeps_cursor() {
         let mut a = app_with("hello", 10);
-        a.cursor = Position::new(0, 1);
+        a.editor.cursor = Position::new(0, 1);
         let inv = CommandInvocation::of(a.editor.builtins.find_char_forward.0)
             .with_args(lattice_grammar::Args::Char('z'));
         a.apply(Action::Invoke(inv));
-        assert_eq!(a.cursor, Position::new(0, 1));
+        assert_eq!(a.editor.cursor, Position::new(0, 1));
     }
 }

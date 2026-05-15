@@ -8,7 +8,9 @@ use serde::{Deserialize, Serialize};
 
 /// A logical cursor position: zero-based line, zero-based byte offset within
 /// that line. UTF-8 byte offsets, not codepoint indices.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 pub struct Position {
     pub line: u32,
     pub byte: u32,

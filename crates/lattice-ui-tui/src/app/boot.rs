@@ -668,19 +668,15 @@ impl App {
                     crate::keymap_normal::register_normal_bindings(&h, &builtins, &action_ids);
                     h
                 },
+                document_buffer_id,
+                buffers,
+                active_buffer: BufferKind::Document,
+                viewport_height: 1,
                 ..lattice_host::editor::Editor::default()
             },
             document,
             snapshot_cache,
-            document_buffer_id,
-            buffers,
-            active_buffer: BufferKind::Document,
             pane_tree,
-            cursor: Position::ZERO,
-            scroll: 0,
-            should_quit: false,
-            viewport_height: 1,
-            terminal_width: None,
             pending_hover_rx: None,
             pending_hover_token: None,
             pending_definition_rx: None,
@@ -798,7 +794,7 @@ impl App {
         // `active_modes[buffer]` and triggers the option-cache
         // recompute so `ResolvedOptions` reflects the major's
         // contributions (e.g. ReadOnly = true for Help).
-        app.activate_major_for_buffer_kind(app.document_buffer_id, BufferKind::Document);
+        app.activate_major_for_buffer_kind(app.editor.document_buffer_id, BufferKind::Document);
         // Initial-document attach. Path-bearing buffers register
         // their URI eagerly (the URI is a deterministic
         // `uri_from_path`; LSP attach is async and doesn't gate
@@ -898,11 +894,11 @@ impl App {
     ///
     /// Per-buffer scope: the popup belongs to the document the
     /// user is typing in. v1 has a single document buffer
-    /// (`self.document_buffer_id`); multi-document support
+    /// (`self.editor.document_buffer_id`); multi-document support
     /// activates this mode on whichever doc owns the popup at
     /// open time when that lands. Deactivation is symmetric.
     fn sync_completion_popup_mode_activation(&mut self, want_popup: bool) {
-        let buffer_id = self.document_buffer_id;
+        let buffer_id = self.editor.document_buffer_id;
         let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
         let mode_id = lattice_mode::CompletionPopupMode::mode_id();
         let mut active = self.editor.active_modes.remove(&buffer_id).unwrap_or_default();

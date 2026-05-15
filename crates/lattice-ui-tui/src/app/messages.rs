@@ -50,7 +50,7 @@ impl App {
     /// records have already accumulated shows the backlog).
     /// Activates `text-mode` major + `read-only-mode` minor.
     pub(crate) fn ensure_messages_buffer(&mut self) -> BufferId {
-        let already_present = self.buffers.by_name(MESSAGES_BUFFER_NAME).is_some();
+        let already_present = self.editor.buffers.by_name(MESSAGES_BUFFER_NAME).is_some();
         // msg-mode.1: the buffer's major mode IS `messages-mode`
         // (symmetric with `lsp-log-mode` for `*lsp*`). The
         // mode contributes `ReadOnly = true` directly --
@@ -216,7 +216,7 @@ mod tests {
         app.set_message(EchoLevel::Warn, "bravo");
         app.drain_message_events();
         let body = app
-            .buffers
+            .editor.buffers
             .document_handle(buffer_id)
             .expect("*messages* is a Document")
             .text();
@@ -231,9 +231,9 @@ mod tests {
         use crate::app::test_helpers::app_with;
         let mut app = app_with("hi\n", 5);
         let id = app.ensure_messages_buffer();
-        assert_eq!(app.buffers.by_name(MESSAGES_BUFFER_NAME), Some(id));
+        assert_eq!(app.editor.buffers.by_name(MESSAGES_BUFFER_NAME), Some(id));
         let (is_doc, name, listed) = app
-            .buffers
+            .editor.buffers
             .with_entry(id, |entry| {
                 (
                     matches!(entry.data, crate::buffer_registry::BufferData::Document(_)),
@@ -257,7 +257,7 @@ mod tests {
         let initial = app.active_pane_buffer_id();
         app.do_open_messages();
         let msgs_id = app
-            .buffers
+            .editor.buffers
             .by_name(MESSAGES_BUFFER_NAME)
             .expect("*messages* present");
         assert_ne!(initial, msgs_id);

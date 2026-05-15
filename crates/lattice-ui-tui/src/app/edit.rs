@@ -83,7 +83,7 @@ impl App {
     /// operations. LSP `didChange` is intentionally not fired
     /// for oil edits (oil isn't an LSP-tracked buffer).
     pub(super) fn apply_edit_blocking(&mut self, edit: Edit) -> Result<AppliedEdit, RuntimeError> {
-        if matches!(self.active_buffer, super::BufferKind::Oil) {
+        if matches!(self.editor.active_buffer, super::BufferKind::Oil) {
             return self.apply_edit_to_oil(edit);
         }
         let result = block_on(self.document.apply_edit(edit));
@@ -107,7 +107,7 @@ impl App {
         &mut self,
         edits: Vec<Edit>,
     ) -> Result<Vec<AppliedEdit>, RuntimeError> {
-        if matches!(self.active_buffer, super::BufferKind::Oil) {
+        if matches!(self.editor.active_buffer, super::BufferKind::Oil) {
             let mut applied = Vec::with_capacity(edits.len());
             for edit in edits {
                 applied.push(self.apply_edit_to_oil(edit)?);
@@ -133,7 +133,7 @@ impl App {
         // only for the apply_edit call. The closure runs the
         // mutation; the outer Option unwraps to either the
         // inner Result or the "no oil entry" Cancelled error.
-        self.buffers
+        self.editor.buffers
             .with_oil_mut(oil_id, |oil| oil.content.apply_edit(&edit))
             .ok_or(RuntimeError::Core(lattice_core::CoreError::Cancelled))?
             .map_err(RuntimeError::Core)
@@ -161,10 +161,10 @@ impl App {
     /// `with_space = false` (gJ), no replacement -- pure concat.
     pub(super) fn do_join_lines(&mut self, with_space: bool) {
         let last = last_addressable_line(&self.document.snapshot().buffer);
-        if self.cursor.line >= last {
+        if self.editor.cursor.line >= last {
             return;
         }
-        let line = self.cursor.line;
+        let line = self.editor.cursor.line;
         let next_line = line + 1;
         let cur_len = line_byte_len(&self.document.snapshot().buffer, line);
         // Compute how many leading whitespace bytes to trim from the
@@ -191,7 +191,7 @@ impl App {
         if let Ok(applied) = self.apply_edit_blocking(Edit::replace(range, replacement)) {
             // Cursor lands at the end of the original first line (vim's
             // standard J behavior puts cursor on the first space).
-            self.cursor = applied.original_range.start;
+            self.editor.cursor = applied.original_range.start;
         }
     }
 
@@ -199,13 +199,13 @@ impl App {
     /// Non-letter chars are unchanged; cursor still advances. At EOL
     /// the cursor stops (no wrap).
     pub(super) fn do_toggle_case_at_cursor(&mut self) {
-        let line_len = line_byte_len(&self.document.snapshot().buffer, self.cursor.line);
-        if self.cursor.byte >= line_len {
+        let line_len = line_byte_len(&self.document.snapshot().buffer, self.editor.cursor.line);
+        if self.editor.cursor.byte >= line_len {
             return;
         }
         let r = ProtoRange::new(
-            self.cursor,
-            Position::new(self.cursor.line, self.cursor.byte + 1),
+            self.editor.cursor,
+            Position::new(self.editor.cursor.line, self.editor.cursor.byte + 1),
         );
         let original = match self.document.snapshot().buffer.slice(r) {
             Ok(s) => s,
@@ -221,7 +221,7 @@ impl App {
             })
             .collect();
         if let Ok(applied) = self.apply_edit_blocking(Edit::replace(r, &toggled)) {
-            self.cursor = applied.inserted_range.end;
+            self.editor.cursor = applied.inserted_range.end;
         }
     }
 
@@ -249,8 +249,8 @@ impl App {
             // transition modes -- the user's mode is preserved across
             // the paste, matching Vim's `paste` option behaviour.
             _ => {
-                if let Ok(applied) = self.apply_edit_blocking(Edit::insert(self.cursor, text)) {
-                    self.cursor = applied.inserted_range.end;
+                if let Ok(applied) = self.apply_edit_blocking(Edit::insert(self.editor.cursor, text)) {
+                    self.editor.cursor = applied.inserted_range.end;
                     if matches!(self.editor.modal, ModalState::Insert)
                         && let Some(rec) = self.editor.recording_insert.as_mut()
                     {
@@ -275,19 +275,19 @@ impl App {
         match reg.kind {
             YankKind::Charwise => {
                 // `p` inserts after the cursor's byte; `P` at the cursor.
-                let line_len = line_byte_len(&self.document.snapshot().buffer, self.cursor.line);
+                let line_len = line_byte_len(&self.document.snapshot().buffer, self.editor.cursor.line);
                 let insert_at = if before {
-                    self.cursor
-                } else if self.cursor.byte < line_len {
-                    Position::new(self.cursor.line, self.cursor.byte + 1)
+                    self.editor.cursor
+                } else if self.editor.cursor.byte < line_len {
+                    Position::new(self.editor.cursor.line, self.editor.cursor.byte + 1)
                 } else {
-                    self.cursor
+                    self.editor.cursor
                 };
                 if let Ok(applied) = self.apply_edit_blocking(Edit::insert(insert_at, &reg.content))
                 {
                     // Vim leaves the cursor on the last char of the pasted text.
                     let end = applied.inserted_range.end;
-                    self.cursor = if end.byte > 0 {
+                    self.editor.cursor = if end.byte > 0 {
                         Position::new(end.line, end.byte - 1)
                     } else {
                         end
@@ -303,28 +303,28 @@ impl App {
                     payload.push('\n');
                 }
                 let insert_at = if before {
-                    Position::new(self.cursor.line, 0)
+                    Position::new(self.editor.cursor.line, 0)
                 } else {
-                    let len = line_byte_len(&self.document.snapshot().buffer, self.cursor.line);
+                    let len = line_byte_len(&self.document.snapshot().buffer, self.editor.cursor.line);
                     // Insert at end of current line then a newline -- but
                     // vim's `p` puts the line BELOW. So insert at start of
                     // the next line. If we're on the last line and there's
                     // no trailing newline, insert "\n<payload-without-tail>".
-                    if self.cursor.line + 1 < self.document.snapshot().buffer.line_count() {
-                        Position::new(self.cursor.line + 1, 0)
+                    if self.editor.cursor.line + 1 < self.document.snapshot().buffer.line_count() {
+                        Position::new(self.editor.cursor.line + 1, 0)
                     } else {
                         // Append at EOL of last line; payload starts with \n
                         // implicit in being on a "new" line.
                         let _ = self.apply_edit_blocking(Edit::insert(
-                            Position::new(self.cursor.line, len),
+                            Position::new(self.editor.cursor.line, len),
                             "\n",
                         ));
-                        Position::new(self.cursor.line + 1, 0)
+                        Position::new(self.editor.cursor.line + 1, 0)
                     }
                 };
                 if let Ok(applied) = self.apply_edit_blocking(Edit::insert(insert_at, &payload)) {
                     // Cursor lands at the start of the pasted block.
-                    self.cursor = applied.inserted_range.start;
+                    self.editor.cursor = applied.inserted_range.start;
                 }
             }
             YankKind::Blockwise => self.do_paste_blockwise(&reg.content, before),
@@ -343,14 +343,14 @@ impl App {
             return;
         }
         let rows: Vec<&str> = content.split('\n').collect();
-        let start_line = self.cursor.line;
+        let start_line = self.editor.cursor.line;
         let line_len = line_byte_len(&self.document.snapshot().buffer, start_line);
         let start_col = if before {
-            self.cursor.byte
-        } else if self.cursor.byte < line_len {
-            self.cursor.byte + 1
+            self.editor.cursor.byte
+        } else if self.editor.cursor.byte < line_len {
+            self.editor.cursor.byte + 1
         } else {
-            self.cursor.byte
+            self.editor.cursor.byte
         };
 
         for (i, row) in rows.iter().enumerate() {
@@ -372,15 +372,15 @@ impl App {
             // end-of-line instead.
             let _ = self.apply_edit_blocking(Edit::insert(pos, *row));
         }
-        self.cursor = Position::new(start_line, start_col);
+        self.editor.cursor = Position::new(start_line, start_col);
     }
 
     /// Vim's `a` -- step the cursor one byte forward (clamped to
     /// EOL) and switch to Insert.
     pub(super) fn do_enter_append(&mut self) {
-        let len = line_byte_len(&self.document.snapshot().buffer, self.cursor.line);
-        if self.cursor.byte < len {
-            self.cursor.byte += 1;
+        let len = line_byte_len(&self.document.snapshot().buffer, self.editor.cursor.line);
+        if self.editor.cursor.byte < len {
+            self.editor.cursor.byte += 1;
         }
         self.editor.modal = ModalState::Insert;
     }
@@ -418,7 +418,7 @@ impl App {
         // replay handles short lines per-row.
         let line_len = line_byte_len(&self.document.snapshot().buffer, start_line);
         let cursor_col = insert_col.min(line_len);
-        self.cursor = Position::new(start_line, cursor_col);
+        self.editor.cursor = Position::new(start_line, cursor_col);
 
         // Drop visual mode and enter Insert. enter_mode handles
         // recording_insert so the typed prefix is captured.
@@ -436,10 +436,10 @@ impl App {
     /// line length and inserts mid-row.
     pub(super) fn do_open_line_below(&mut self) {
         let buf = self.active_text();
-        let len = line_byte_len(&buf, self.cursor.line);
-        let eol = Position::new(self.cursor.line, len);
+        let len = line_byte_len(&buf, self.editor.cursor.line);
+        let eol = Position::new(self.editor.cursor.line, len);
         if self.apply_edit_blocking(Edit::insert(eol, "\n")).is_ok() {
-            self.cursor = Position::new(self.cursor.line + 1, 0);
+            self.editor.cursor = Position::new(self.editor.cursor.line + 1, 0);
         }
         self.editor.modal = ModalState::Insert;
     }
@@ -448,9 +448,9 @@ impl App {
     /// `do_open_line_below` but inserts at start-of-line and
     /// keeps the cursor on the inserted (now upper) row.
     pub(super) fn do_open_line_above(&mut self) {
-        let bol = Position::new(self.cursor.line, 0);
+        let bol = Position::new(self.editor.cursor.line, 0);
         if self.apply_edit_blocking(Edit::insert(bol, "\n")).is_ok() {
-            self.cursor = bol;
+            self.editor.cursor = bol;
         }
         self.editor.modal = ModalState::Insert;
     }
@@ -461,7 +461,7 @@ impl App {
     /// fine for `dd` (cursor stays put on a now-empty line) but wrong
     /// for `:d` and `:g/.../d`. Here we explicitly include the newline.
     pub(super) fn do_delete_line(&mut self) {
-        let line = self.cursor.line;
+        let line = self.editor.cursor.line;
         let last = last_addressable_line(&self.document.snapshot().buffer);
         let len = line_byte_len(&self.document.snapshot().buffer, line);
         let r = if line < last {
@@ -478,7 +478,7 @@ impl App {
             ProtoRange::new(Position::new(line, 0), Position::new(line, len))
         };
         if self.apply_edit_blocking(Edit::delete(r)).is_ok() {
-            self.cursor = Position::new(
+            self.editor.cursor = Position::new(
                 line.min(last_addressable_line(&self.document.snapshot().buffer)),
                 0,
             );
@@ -527,7 +527,7 @@ impl App {
         // compiled it once at submit time, so we just clone the
         // invocation per match.
         for &line in targets.iter().rev() {
-            self.cursor = Position::new(line, 0);
+            self.editor.cursor = Position::new(line, 0);
             match self.dispatch_blocking(body.clone()) {
                 Ok(eff) => self.apply_effect(eff),
                 Err(e) => {
@@ -544,18 +544,18 @@ impl App {
     /// one byte. The original byte (or `None` if past EOL) is pushed
     /// onto `replace_history` so backspace can restore it.
     pub(super) fn do_overwrite_char(&mut self, c: char) {
-        let len = line_byte_len(&self.document.snapshot().buffer, self.cursor.line);
+        let len = line_byte_len(&self.document.snapshot().buffer, self.editor.cursor.line);
         let s = c.to_string();
-        let entry_pos = self.cursor;
-        if self.cursor.byte < len {
+        let entry_pos = self.editor.cursor;
+        if self.editor.cursor.byte < len {
             let r = ProtoRange::new(
-                self.cursor,
-                Position::new(self.cursor.line, self.cursor.byte + 1),
+                self.editor.cursor,
+                Position::new(self.editor.cursor.line, self.editor.cursor.byte + 1),
             );
             // Capture the original byte before the replace lands.
             let original = self.document.snapshot().buffer.slice(r).ok();
             if let Ok(applied) = self.apply_edit_blocking(Edit::replace(r, &s)) {
-                self.cursor = applied.inserted_range.end;
+                self.editor.cursor = applied.inserted_range.end;
                 self.editor.replace_history.push(ReplaceEntry {
                     at: entry_pos,
                     original,
@@ -563,8 +563,8 @@ impl App {
             }
         } else {
             // Past end of line: extend. Original is None.
-            if let Ok(applied) = self.apply_edit_blocking(Edit::insert(self.cursor, &s)) {
-                self.cursor = applied.inserted_range.end;
+            if let Ok(applied) = self.apply_edit_blocking(Edit::insert(self.editor.cursor, &s)) {
+                self.editor.cursor = applied.inserted_range.end;
                 self.editor.replace_history.push(ReplaceEntry {
                     at: entry_pos,
                     original: None,
@@ -592,7 +592,7 @@ impl App {
                 let _ = self.apply_edit_blocking(Edit::delete(r));
             }
         }
-        self.cursor = entry.at;
+        self.editor.cursor = entry.at;
     }
 
     /// Splice `s` at the cursor as the canonical Insert-mode insertion
@@ -606,8 +606,8 @@ impl App {
         if s.is_empty() {
             return;
         }
-        if let Ok(applied) = self.apply_edit_blocking(Edit::insert(self.cursor, s)) {
-            self.cursor = applied.inserted_range.end;
+        if let Ok(applied) = self.apply_edit_blocking(Edit::insert(self.editor.cursor, s)) {
+            self.editor.cursor = applied.inserted_range.end;
             // Capture into the in-flight Insert recording for dot-repeat.
             if let Some(rec) = self.editor.recording_insert.as_mut() {
                 rec.push_str(s);
@@ -666,13 +666,13 @@ impl App {
     /// start of the buffer. Bumps the block-visual `I` / `A`
     /// live-edit counter so the Esc replay accounts for the deletion.
     pub(super) fn do_delete_char_backward(&mut self) {
-        let prev = previous_position(&self.document.snapshot().buffer, self.cursor);
-        if prev == self.cursor {
+        let prev = previous_position(&self.document.snapshot().buffer, self.editor.cursor);
+        if prev == self.editor.cursor {
             return;
         }
-        let range = ProtoRange::new(prev, self.cursor);
+        let range = ProtoRange::new(prev, self.editor.cursor);
         if self.apply_edit_blocking(Edit::delete(range)).is_ok() {
-            self.cursor = prev;
+            self.editor.cursor = prev;
             if let Some(spec) = self.editor.pending_block_insert.as_mut() {
                 spec.live_edits = spec.live_edits.saturating_add(1);
             }
@@ -776,7 +776,7 @@ impl App {
         // the top row -- vim's behavior. The previous cursor pos
         // (one past the typed text on top row) is no longer
         // accurate after the rewind.
-        self.cursor = Position::new(spec.start_line, top_col);
+        self.editor.cursor = Position::new(spec.start_line, top_col);
     }
 }
 
@@ -822,7 +822,7 @@ mod tests {
         a.apply(Action::Insert("h".into()));
         a.apply(Action::Insert("i".into()));
         assert_eq!(a.document.text(), "hi");
-        assert_eq!(a.cursor, Position::new(0, 2));
+        assert_eq!(a.editor.cursor, Position::new(0, 2));
     }
 
     #[test]
@@ -830,19 +830,19 @@ mod tests {
         let mut a = app_with("", 10);
         a.apply(Action::EnterMode(ModalState::Insert));
         a.apply(Action::Insert("hi".into()));
-        assert_eq!(a.cursor, Position::new(0, 2));
+        assert_eq!(a.editor.cursor, Position::new(0, 2));
         a.apply(Action::EnterMode(ModalState::Normal));
-        assert_eq!(a.cursor, Position::new(0, 1));
+        assert_eq!(a.editor.cursor, Position::new(0, 1));
     }
 
     #[test]
     fn backspace_deletes_char_before_cursor_in_insert() {
         let mut a = app_with("hi", 10);
-        a.cursor.byte = 2;
+        a.editor.cursor.byte = 2;
         a.apply(Action::EnterMode(ModalState::Insert));
         a.apply(Action::DeleteCharBackward);
         assert_eq!(a.document.text(), "h");
-        assert_eq!(a.cursor, Position::new(0, 1));
+        assert_eq!(a.editor.cursor, Position::new(0, 1));
     }
 
     #[test]
@@ -851,17 +851,17 @@ mod tests {
         a.apply(Action::EnterMode(ModalState::Insert));
         a.apply(Action::DeleteCharBackward);
         assert_eq!(a.document.text(), "hi");
-        assert_eq!(a.cursor, Position::ZERO);
+        assert_eq!(a.editor.cursor, Position::ZERO);
     }
 
     #[test]
     fn backspace_across_line_boundary_joins_lines() {
         let mut a = app_with("a\nb", 10);
-        a.cursor = Position::new(1, 0);
+        a.editor.cursor = Position::new(1, 0);
         a.apply(Action::EnterMode(ModalState::Insert));
         a.apply(Action::DeleteCharBackward);
         assert_eq!(a.document.text(), "ab");
-        assert_eq!(a.cursor, Position::new(0, 1));
+        assert_eq!(a.editor.cursor, Position::new(0, 1));
     }
 
     #[test]
@@ -869,7 +869,7 @@ mod tests {
         let mut a = app_with("ab", 10);
         a.apply(Action::EnterAppend);
         assert_eq!(a.editor.modal, ModalState::Insert);
-        assert_eq!(a.cursor, Position::new(0, 1));
+        assert_eq!(a.editor.cursor, Position::new(0, 1));
     }
 
     #[test]
@@ -878,7 +878,7 @@ mod tests {
         a.apply(Action::OpenLineBelow);
         assert_eq!(a.editor.modal, ModalState::Insert);
         assert_eq!(a.document.text(), "first\n");
-        assert_eq!(a.cursor, Position::new(1, 0));
+        assert_eq!(a.editor.cursor, Position::new(1, 0));
     }
 
     #[test]
@@ -887,7 +887,7 @@ mod tests {
         a.apply(Action::OpenLineAbove);
         assert_eq!(a.editor.modal, ModalState::Insert);
         assert_eq!(a.document.text(), "\nsecond");
-        assert_eq!(a.cursor, Position::new(0, 0));
+        assert_eq!(a.editor.cursor, Position::new(0, 0));
     }
 
     #[test]
@@ -898,7 +898,7 @@ mod tests {
         );
         a.apply(Action::Invoke(inv));
         assert_eq!(a.document.text(), "world");
-        assert_eq!(a.cursor, Position::ZERO);
+        assert_eq!(a.editor.cursor, Position::ZERO);
     }
 
     #[test]
@@ -909,7 +909,7 @@ mod tests {
         );
         a.apply(Action::Invoke(inv));
         assert_eq!(a.document.text(), "bc");
-        assert_eq!(a.cursor, Position::ZERO);
+        assert_eq!(a.editor.cursor, Position::ZERO);
     }
 
     #[test]
@@ -943,13 +943,13 @@ mod tests {
         a.apply(Action::Invoke(inv));
         assert_eq!(a.document.text(), "world");
         assert_eq!(a.editor.modal, ModalState::Insert);
-        assert_eq!(a.cursor, Position::ZERO);
+        assert_eq!(a.editor.cursor, Position::ZERO);
     }
 
     #[test]
     fn cc_clears_current_line_and_enters_insert_mode() {
         let mut a = app_with("aaa\nBBB\nccc", 10);
-        a.cursor = Position::new(1, 0);
+        a.editor.cursor = Position::new(1, 0);
         let inv = CommandInvocation::of(a.editor.builtins.change.0)
             .with_range(lattice_grammar::Range::CurrentLine);
         a.apply(Action::Invoke(inv));
@@ -963,7 +963,7 @@ mod tests {
         a.apply(Action::JoinLines { with_space: true });
         assert_eq!(a.document.text(), "hello world");
         // Cursor lands at the join point (end of original first line).
-        assert_eq!(a.cursor, Position::new(0, 5));
+        assert_eq!(a.editor.cursor, Position::new(0, 5));
     }
 
     #[test]
@@ -1054,7 +1054,7 @@ mod tests {
         let mut a = app_with("hello", 10);
         a.apply(Action::ToggleCaseAtCursor);
         assert_eq!(a.document.text(), "Hello");
-        assert_eq!(a.cursor, Position::new(0, 1));
+        assert_eq!(a.editor.cursor, Position::new(0, 1));
     }
 
     #[test]
@@ -1065,16 +1065,16 @@ mod tests {
         a.apply(Action::ToggleCaseAtCursor);
         // Space at byte 1 -> unchanged but cursor advances.
         assert_eq!(a.document.text(), "A 1 b");
-        assert_eq!(a.cursor, Position::new(0, 2));
+        assert_eq!(a.editor.cursor, Position::new(0, 2));
     }
 
     #[test]
     fn toggle_case_at_eol_is_no_op() {
         let mut a = app_with("hi", 10);
-        a.cursor = Position::new(0, 2);
+        a.editor.cursor = Position::new(0, 2);
         a.apply(Action::ToggleCaseAtCursor);
         assert_eq!(a.document.text(), "hi");
-        assert_eq!(a.cursor, Position::new(0, 2));
+        assert_eq!(a.editor.cursor, Position::new(0, 2));
     }
 
     #[test]
@@ -1083,7 +1083,7 @@ mod tests {
         a.apply(Action::EnterMode(ModalState::Replace));
         a.apply(Action::OverwriteChar('H'));
         assert_eq!(a.document.text(), "Hello");
-        assert_eq!(a.cursor, Position::new(0, 1));
+        assert_eq!(a.editor.cursor, Position::new(0, 1));
     }
 
     #[test]
@@ -1094,17 +1094,17 @@ mod tests {
             a.apply(Action::OverwriteChar(c));
         }
         assert_eq!(a.document.text(), "WORLo");
-        assert_eq!(a.cursor, Position::new(0, 4));
+        assert_eq!(a.editor.cursor, Position::new(0, 4));
     }
 
     #[test]
     fn overwrite_at_eol_extends_line() {
         let mut a = app_with("hi", 10);
-        a.cursor = Position::new(0, 2);
+        a.editor.cursor = Position::new(0, 2);
         a.apply(Action::EnterMode(ModalState::Replace));
         a.apply(Action::OverwriteChar('!'));
         assert_eq!(a.document.text(), "hi!");
-        assert_eq!(a.cursor, Position::new(0, 3));
+        assert_eq!(a.editor.cursor, Position::new(0, 3));
     }
 
     #[test]
@@ -1113,23 +1113,23 @@ mod tests {
         a.apply(Action::EnterMode(ModalState::Replace));
         a.apply(Action::OverwriteChar('H'));
         assert_eq!(a.document.text(), "Hello");
-        assert_eq!(a.cursor, Position::new(0, 1));
+        assert_eq!(a.editor.cursor, Position::new(0, 1));
         // Backspace: should restore 'h' and step cursor back.
         a.apply(Action::ReplaceUndoLast);
         assert_eq!(a.document.text(), "hello");
-        assert_eq!(a.cursor, Position::ZERO);
+        assert_eq!(a.editor.cursor, Position::ZERO);
     }
 
     #[test]
     fn replace_undo_after_eol_extension_deletes_extension() {
         let mut a = app_with("hi", 10);
-        a.cursor = Position::new(0, 2);
+        a.editor.cursor = Position::new(0, 2);
         a.apply(Action::EnterMode(ModalState::Replace));
         a.apply(Action::OverwriteChar('!'));
         assert_eq!(a.document.text(), "hi!");
         a.apply(Action::ReplaceUndoLast);
         assert_eq!(a.document.text(), "hi");
-        assert_eq!(a.cursor, Position::new(0, 2));
+        assert_eq!(a.editor.cursor, Position::new(0, 2));
     }
 
     #[test]
@@ -1138,7 +1138,7 @@ mod tests {
         a.apply(Action::EnterMode(ModalState::Replace));
         a.apply(Action::ReplaceUndoLast);
         assert_eq!(a.document.text(), "hello");
-        assert_eq!(a.cursor, Position::ZERO);
+        assert_eq!(a.editor.cursor, Position::ZERO);
     }
 
     #[test]
@@ -1189,11 +1189,11 @@ mod tests {
             content: "X".into(),
             kind: YankKind::Charwise,
         });
-        a.cursor = Position::new(0, 0); // on 'h'
+        a.editor.cursor = Position::new(0, 0); // on 'h'
         a.apply(Action::PasteAfter);
         assert_eq!(a.document.text(), "hXello");
         // Cursor lands on the last char of the pasted text (still 'X').
-        assert_eq!(a.cursor, Position::new(0, 1));
+        assert_eq!(a.editor.cursor, Position::new(0, 1));
     }
 
     #[test]
@@ -1203,10 +1203,10 @@ mod tests {
             content: "X".into(),
             kind: YankKind::Charwise,
         });
-        a.cursor = Position::new(0, 2); // on 'l'
+        a.editor.cursor = Position::new(0, 2); // on 'l'
         a.apply(Action::PasteBefore);
         assert_eq!(a.document.text(), "heXllo");
-        assert_eq!(a.cursor, Position::new(0, 2));
+        assert_eq!(a.editor.cursor, Position::new(0, 2));
     }
 
     #[test]
@@ -1216,10 +1216,10 @@ mod tests {
             content: "XXX\n".into(),
             kind: YankKind::Linewise,
         });
-        a.cursor = Position::new(1, 0); // on 'B' line
+        a.editor.cursor = Position::new(1, 0); // on 'B' line
         a.apply(Action::PasteAfter);
         assert_eq!(a.document.text(), "aaa\nBBB\nXXX\nccc");
-        assert_eq!(a.cursor, Position::new(2, 0));
+        assert_eq!(a.editor.cursor, Position::new(2, 0));
     }
 
     #[test]
@@ -1229,10 +1229,10 @@ mod tests {
             content: "XXX\n".into(),
             kind: YankKind::Linewise,
         });
-        a.cursor = Position::new(1, 0);
+        a.editor.cursor = Position::new(1, 0);
         a.apply(Action::PasteBefore);
         assert_eq!(a.document.text(), "aaa\nXXX\nBBB\nccc");
-        assert_eq!(a.cursor, Position::new(1, 0));
+        assert_eq!(a.editor.cursor, Position::new(1, 0));
     }
 
     #[test]
@@ -1248,10 +1248,10 @@ mod tests {
     #[test]
     fn paste_text_in_normal_inserts_at_cursor_one_undo_unit() {
         let mut a = app_with("hello", 10);
-        a.cursor = Position::new(0, 5);
+        a.editor.cursor = Position::new(0, 5);
         a.apply(Action::PasteText(" world".into()));
         assert_eq!(a.document.text(), "hello world");
-        assert_eq!(a.cursor, Position::new(0, 11));
+        assert_eq!(a.editor.cursor, Position::new(0, 11));
         // One bracketed-paste = one undo unit.
         a.apply(Action::Undo);
         assert_eq!(a.document.text(), "hello");
@@ -1260,11 +1260,11 @@ mod tests {
     #[test]
     fn paste_text_in_insert_inserts_and_records_for_dot_repeat() {
         let mut a = app_with("a", 10);
-        a.cursor = Position::new(0, 1);
+        a.editor.cursor = Position::new(0, 1);
         a.apply(Action::EnterMode(ModalState::Insert));
         a.apply(Action::PasteText("bcd".into()));
         assert_eq!(a.document.text(), "abcd");
-        assert_eq!(a.cursor, Position::new(0, 4));
+        assert_eq!(a.editor.cursor, Position::new(0, 4));
         assert!(matches!(a.editor.modal, ModalState::Insert));
         // Dot-repeat insert recording captured the pasted text.
         let rec = a.editor.recording_insert.as_ref().unwrap();
@@ -1305,17 +1305,17 @@ mod tests {
     #[test]
     fn paste_text_with_newlines_lands_as_single_edit() {
         let mut a = app_with("a", 10);
-        a.cursor = Position::new(0, 1);
+        a.editor.cursor = Position::new(0, 1);
         a.apply(Action::PasteText("\nb\nc".into()));
         assert_eq!(a.document.text(), "a\nb\nc");
-        assert_eq!(a.cursor, Position::new(2, 1));
+        assert_eq!(a.editor.cursor, Position::new(2, 1));
     }
 
     fn enter_block_visual(text: &str, anchor: Position, head: Position) -> App {
         let mut a = app_with(text, 10);
-        a.cursor = anchor;
+        a.editor.cursor = anchor;
         a.apply(Action::EnterVisual(VisualKind::Blockwise));
-        a.cursor = head;
+        a.editor.cursor = head;
         a.editor.visual_anchor = Some(anchor);
         let sel = Selection {
             anchor,
@@ -1350,7 +1350,7 @@ mod tests {
         a.apply(Action::Invoke(inv));
         // Top-left of block was (0, 1); after the delete column 1
         // is the new content's start on the top row.
-        assert_eq!(a.cursor, Position::new(0, 1));
+        assert_eq!(a.editor.cursor, Position::new(0, 1));
     }
 
     #[test]
@@ -1453,20 +1453,20 @@ mod tests {
         // No manual set_selections_blocking -- selections must be
         // maintained by the SelectionChange effect from motions.
         let mut a = app_with("abcd\n1234\nWXYZ", 10);
-        a.cursor = Position::new(0, 1);
+        a.editor.cursor = Position::new(0, 1);
         a.apply(Action::EnterVisual(VisualKind::Blockwise));
         // Move down 2 rows + right 1 column via motions.
         a.apply(invoke_motion(a.editor.builtins.line_down));
         a.apply(invoke_motion(a.editor.builtins.line_down));
         a.apply(invoke_motion(a.editor.builtins.char_right));
         // Cursor should now be at (2, 2). visual_anchor was (0, 1).
-        assert_eq!(a.cursor, Position::new(2, 2));
+        assert_eq!(a.editor.cursor, Position::new(2, 2));
         assert_eq!(a.editor.visual_anchor, Some(Position::new(0, 1)));
 
         a.apply(Action::EnterBlockVisualInsert);
         assert!(matches!(a.editor.modal, ModalState::Insert));
         // I should land at column 1 (block's left col) on the top row.
-        assert_eq!(a.cursor, Position::new(0, 1));
+        assert_eq!(a.editor.cursor, Position::new(0, 1));
         a.apply(Action::Insert("X".into()));
         a.apply(Action::EnterMode(ModalState::Normal));
         assert_eq!(a.document.text(), "aXbcd\n1X234\nWXXYZ");
@@ -1480,7 +1480,7 @@ mod tests {
             enter_block_visual("abcd\n1234\nWXYZ", Position::new(0, 1), Position::new(2, 2));
         a.apply(Action::EnterBlockVisualInsert);
         assert!(matches!(a.editor.modal, ModalState::Insert));
-        assert_eq!(a.cursor, Position::new(0, 1));
+        assert_eq!(a.editor.cursor, Position::new(0, 1));
         a.apply(Action::Insert("X".into()));
         a.apply(Action::EnterMode(ModalState::Normal));
         assert_eq!(a.document.text(), "aXbcd\n1X234\nWXXYZ");
@@ -1493,7 +1493,7 @@ mod tests {
             enter_block_visual("abcd\n1234\nWXYZ", Position::new(0, 1), Position::new(2, 2));
         a.apply(Action::EnterBlockVisualAppend);
         assert!(matches!(a.editor.modal, ModalState::Insert));
-        assert_eq!(a.cursor, Position::new(0, 3));
+        assert_eq!(a.editor.cursor, Position::new(0, 3));
         a.apply(Action::Insert("@".into()));
         a.apply(Action::EnterMode(ModalState::Normal));
         assert_eq!(a.document.text(), "abc@d\n123@4\nWXY@Z");
@@ -1583,7 +1583,7 @@ mod tests {
         a.apply(Action::Invoke(yank));
         // Exit visual and move to a fresh paste site.
         a.apply(Action::ExitVisual);
-        a.cursor = Position::new(2, 0);
+        a.editor.cursor = Position::new(2, 0);
         // `p` (after-cursor) -> insert at col 1 on line 2 and line 3.
         a.apply(Action::PasteAfter);
         // Line 2: "WXYZ" -> "WbcXYZ"; Line 3: "----" -> "-23---"
@@ -1656,7 +1656,7 @@ mod tests {
         // none of the remaining buffer words fuzzy-match
         // "hello", so the popup auto-closes with the
         // "no completions" echo.
-        a.cursor = Position::new(0, 5);
+        a.editor.cursor = Position::new(0, 5);
         a.do_completion_trigger();
         assert!(a.insert_completion.is_none());
         let msg = a.editor.last_message.as_ref().expect("echo");
@@ -1669,13 +1669,13 @@ mod tests {
         a.editor.modal = ModalState::Insert;
         // Cursor right after `hel` -- prefix "hel". Buffer words:
         // "hello", "world", "helper", "helmet", "hi".
-        a.cursor = Position::new(0, 3);
+        a.editor.cursor = Position::new(0, 3);
         // Place hel at the cursor: rewrite content via cursor
         // positioning (the buffer already has "hel" as part of
         // hello). For the test, just place cursor on a different
         // line.
         let _ = a.apply_edit_blocking(Edit::insert(Position::new(0, 28), "\nhel"));
-        a.cursor = Position::new(1, 3);
+        a.editor.cursor = Position::new(1, 3);
         a.do_completion_trigger();
         let state = a.insert_completion.as_ref().expect("popup opened");
         assert_eq!(state.query, "hel");
@@ -1696,7 +1696,7 @@ mod tests {
         let mut a = app_with("alpha alphabet alligator", 10);
         a.editor.modal = ModalState::Insert;
         let _ = a.apply_edit_blocking(Edit::insert(Position::new(0, 24), "\nal"));
-        a.cursor = Position::new(1, 2);
+        a.editor.cursor = Position::new(1, 2);
         a.do_completion_trigger();
         let total = a.insert_completion.as_ref().expect("popup").rendered.len();
         assert!(total >= 2, "need ≥ 2 candidates for wrap test");
@@ -1713,7 +1713,7 @@ mod tests {
     fn insert_completion_accept_replaces_prefix_and_closes() {
         let mut a = app_with("alphabet alligator\nal", 10);
         a.editor.modal = ModalState::Insert;
-        a.cursor = Position::new(1, 2);
+        a.editor.cursor = Position::new(1, 2);
         a.do_completion_trigger();
         // Pick the first candidate.
         let first_text = a
@@ -1734,7 +1734,7 @@ mod tests {
     fn insert_completion_cancel_drops_popup() {
         let mut a = app_with("alpha alphabet\nal", 10);
         a.editor.modal = ModalState::Insert;
-        a.cursor = Position::new(1, 2);
+        a.editor.cursor = Position::new(1, 2);
         a.do_completion_trigger();
         assert!(a.insert_completion.is_some());
         a.do_completion_cancel();
@@ -1747,7 +1747,7 @@ mod tests {
     fn insert_completion_cancel_and_exit_insert_drops_popup_and_exits() {
         let mut a = app_with("alpha alphabet\nal", 10);
         a.editor.modal = ModalState::Insert;
-        a.cursor = Position::new(1, 2);
+        a.editor.cursor = Position::new(1, 2);
         a.do_completion_trigger();
         assert!(a.insert_completion.is_some());
         a.apply(Action::CompletionCancelAndExitInsert);
@@ -1759,7 +1759,7 @@ mod tests {
     fn insert_completion_toggle_docs_flips_state() {
         let mut a = app_with("alpha alphabet\nal", 10);
         a.editor.modal = ModalState::Insert;
-        a.cursor = Position::new(1, 2);
+        a.editor.cursor = Position::new(1, 2);
         a.do_completion_trigger();
         assert!(
             a.insert_completion
@@ -1777,7 +1777,7 @@ mod tests {
     fn insert_completion_refilters_on_keystroke() {
         let mut a = app_with("alpha alphabet alligator\nal", 10);
         a.editor.modal = ModalState::Insert;
-        a.cursor = Position::new(1, 2);
+        a.editor.cursor = Position::new(1, 2);
         a.do_completion_trigger();
         let pre_count = a.insert_completion.as_ref().expect("popup").rendered.len();
         // Type 'p' -- query becomes "alp"; only "alpha" /
@@ -1796,7 +1796,7 @@ mod tests {
     fn insert_completion_closes_when_query_leaves_word_boundary() {
         let mut a = app_with("alpha alphabet\nal", 10);
         a.editor.modal = ModalState::Insert;
-        a.cursor = Position::new(1, 2);
+        a.editor.cursor = Position::new(1, 2);
         a.do_completion_trigger();
         assert!(a.insert_completion.is_some());
         // Type a space -- pushes the cursor past the word.
@@ -1814,7 +1814,7 @@ mod tests {
         a.apply(Action::Invoke(yank));
         a.apply(Action::ExitVisual);
         // Move to last line and paste with `P` (before-cursor) at col 0.
-        a.cursor = Position::new(1, 0);
+        a.editor.cursor = Position::new(1, 0);
         a.apply(Action::PasteBefore);
         // Line 1 becomes "bc1234"; new line 2 holds "23".
         assert_eq!(a.document.text(), "abcd\nbc1234\n23");
@@ -1824,7 +1824,7 @@ mod tests {
     fn delete_then_paste_after_emulates_xp_swap() {
         // Vim trick: cursor on 'a' of "abc"; `xp` swaps 'a' and 'b' -> "bac".
         let mut a = app_with("abc", 10);
-        a.cursor = Position::ZERO;
+        a.editor.cursor = Position::ZERO;
         // x: delete char-right
         let inv = CommandInvocation::of(a.editor.builtins.delete.0).with_target(
             lattice_grammar::Target::Motion(a.editor.builtins.char_right, lattice_grammar::Args::None),

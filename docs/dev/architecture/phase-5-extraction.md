@@ -327,11 +327,21 @@ Each slice ships green; lattice-ui-tui keeps working at every commit.
 
 ## What we are not doing in Phase 5
 
-- **No new picker primitives** beyond what already exists. Phase 6 owns the `DocumentRenderer` work and the picker / popup / status-line elaboration. The host crate inherits today's picker as-is.
-- **No reorganisation of picker sources.** `picker_sources.rs` moves to `lattice-host` whole. The "Files / Grep don't belong here" conversation (parked) stays parked.
-- **No `lattice-render-common` crate** factoring shared composition logic across renderers. Premature; we have one renderer.
-- **No `wgpu` + `parley` fallback path** to GPUI. The design doc names it as a fallback but Phase 5's primary thread is GPUI. Revisit only if GPUI churns under us.
-- **No accessibility tree work** beyond stubbing the `Renderer::accessibility_tree` method. GPUI's accessibility story comes after parity.
+- **No new picker primitives** beyond what already exists. Phase 6
+  owns the `DocumentRenderer` work and the picker / popup /
+  status-line elaboration. The host crate inherits today's picker
+  as-is.
+- **No reorganisation of picker sources.** `picker_sources.rs` moves
+  to `lattice-host` whole. The "Files / Grep don't belong here"
+  conversation (parked) stays parked.
+- **No `lattice-render-common` crate** factoring shared composition
+  logic across renderers. Premature; we have one renderer.
+- **No `wgpu` + `parley` fallback path** to GPUI. The design doc names
+  it as a fallback but Phase 5's primary thread is GPUI. Revisit only
+  if GPUI churns under us.
+- **No accessibility tree work** beyond stubbing the
+  `Renderer::accessibility_tree` method. GPUI's accessibility story
+  comes after parity.
 
 ## Open questions to resolve before 5.2
 

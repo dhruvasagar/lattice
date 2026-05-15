@@ -52,6 +52,7 @@ pub mod apply_edit;
 // bus's `DocumentOpened` event still fires for other
 // subscribers but LSP no longer keys off it.
 pub mod buffer_names;
+pub mod cache;
 pub mod capabilities;
 pub mod codec;
 pub mod completion;

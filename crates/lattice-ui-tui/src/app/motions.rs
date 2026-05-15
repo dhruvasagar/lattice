@@ -911,7 +911,7 @@ mod tests {
         a.cursor = Position::new(0, 1); // on 'o' of first "foo"
         a.apply(Action::SearchWordUnderCursor(SearchDirection::Forward));
         assert_eq!(a.cursor, Position::new(0, 8)); // start of second "foo"
-        let last = a.last_search.as_ref().unwrap();
+        let last = a.editor.last_search.as_ref().unwrap();
         assert_eq!(last.pattern, "foo");
     }
 
@@ -922,7 +922,7 @@ mod tests {
         a.apply(Action::SearchWordUnderCursor(SearchDirection::Forward));
         // The first word "hello" appears once in the buffer; pattern is
         // recorded but no match is found beyond it (no second "hello").
-        let last = a.last_search.as_ref().unwrap();
+        let last = a.editor.last_search.as_ref().unwrap();
         assert_eq!(last.pattern, "hello");
     }
 
@@ -940,7 +940,7 @@ mod tests {
         a.cursor = Position::new(0, 5); // on 'h'
         a.apply(Action::SearchWordUnderCursor(SearchDirection::Forward));
         // Only one occurrence; wrap puts us at the same place.
-        let last = a.last_search.as_ref().unwrap();
+        let last = a.editor.last_search.as_ref().unwrap();
         assert_eq!(last.pattern, "hello");
     }
 

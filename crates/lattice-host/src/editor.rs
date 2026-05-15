@@ -29,10 +29,13 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use lattice_grammar::Register;
-use lattice_protocol::position::Position;
+use lattice_protocol::position::{Position, Range as ProtoRange};
 
 use crate::action::Action;
-use crate::state::{MacroRecording, PositionEntry, TagStackEntry, UnnamedRegister};
+use crate::state::{
+    LastSearch, MacroRecording, PositionEntry, SearchLine, SubstitutePreview, TagStackEntry,
+    UnnamedRegister,
+};
 
 /// Renderer-agnostic editor state.
 ///
@@ -61,6 +64,8 @@ use crate::state::{MacroRecording, PositionEntry, TagStackEntry, UnnamedRegister
 /// - 5.B.6 -- position history + tag stack
 ///   (`position_history`, `position_history_cursor`,
 ///   `recent_files`, `tag_stack`, `pending_tag_origin`).
+/// - 5.B.7 -- search state (`search_line`, `last_search`,
+///   `current_match`, `all_matches`, `substitute_preview`).
 #[derive(Debug, Default)]
 pub struct Editor {
     /// Completed macro recordings keyed by register name.
@@ -123,4 +128,26 @@ pub struct Editor {
     /// Cleared on picker dismiss / nav cancellation / drain
     /// with no results.
     pub pending_tag_origin: Option<TagStackEntry>,
+    /// In-progress `/` or `?` search. `Some` only while
+    /// `modal == ModalState::Search(_)`.
+    pub search_line: Option<SearchLine>,
+    /// Most recent submitted search; consulted by `n` / `N`.
+    pub last_search: Option<LastSearch>,
+    /// Range of the most recent search match, used to draw
+    /// the primary highlight in the buffer view. Cleared on
+    /// Esc and on cursor motion.
+    pub current_match: Option<ProtoRange>,
+    /// Every occurrence of the most recent search pattern,
+    /// used to draw the secondary "hlsearch" overlay.
+    /// Cleared on Esc; persists after submit until the next
+    /// search.
+    pub all_matches: Vec<ProtoRange>,
+    /// In-progress substitute preview. Populated as the user
+    /// types `:s/pat...`; the renderer overlays match ranges
+    /// (and the typed replacement once the second `/` has
+    /// been entered) so the user sees the substitution before
+    /// pressing Enter. Cleared when the cmdline closes or the
+    /// input no longer parses as a substitute (DESIGN.md
+    /// §5.9.10).
+    pub substitute_preview: Option<SubstitutePreview>,
 }

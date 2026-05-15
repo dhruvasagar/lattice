@@ -45,19 +45,19 @@ impl App {
     /// current match while typing in `/` or `?`. Does not move cursor;
     /// the cursor jumps only on `SearchSubmit`.
     pub(super) fn preview_search(&mut self) {
-        let Some(line) = self.search_line.as_ref() else {
+        let Some(line) = self.editor.search_line.as_ref() else {
             return;
         };
         if line.pattern.is_empty() {
-            self.current_match = None;
-            self.all_matches.clear();
+            self.editor.current_match = None;
+            self.editor.all_matches.clear();
             return;
         }
         // Live preview tolerates compile errors silently -- the user
         // is still typing. The submit path surfaces the error.
         let Ok(regex) = compile_search_pattern(&line.pattern) else {
-            self.current_match = None;
-            self.all_matches.clear();
+            self.editor.current_match = None;
+            self.editor.all_matches.clear();
             return;
         };
         let dir = match line.direction {
@@ -72,23 +72,23 @@ impl App {
             dir,
             &CancellationToken::never(),
         ) {
-            Ok(Some(SearchHit { range, .. })) => self.current_match = Some(range),
-            _ => self.current_match = None,
+            Ok(Some(SearchHit { range, .. })) => self.editor.current_match = Some(range),
+            _ => self.editor.current_match = None,
         }
         // Live hlsearch: highlight every occurrence as the user types.
-        self.all_matches =
+        self.editor.all_matches =
             lattice_core::search::find_all(&buffer, &regex, &CancellationToken::never())
                 .unwrap_or_default();
     }
 
     pub(super) fn submit_search(&mut self) {
-        let Some(line) = self.search_line.take() else {
+        let Some(line) = self.editor.search_line.take() else {
             return;
         };
         self.modal = lattice_grammar::ModalState::Normal;
         if line.pattern.is_empty() {
             // Empty submit: re-run last_search if any (vim behavior).
-            if self.last_search.is_some() {
+            if self.editor.last_search.is_some() {
                 self.repeat_search(false);
             }
             return;
@@ -103,8 +103,8 @@ impl App {
             Ok(r) => r,
             Err(msg) => {
                 self.set_message(EchoLevel::Error, format!("regex: {msg}"));
-                self.current_match = None;
-                self.all_matches.clear();
+                self.editor.current_match = None;
+                self.editor.all_matches.clear();
                 return;
             }
         };
@@ -122,8 +122,8 @@ impl App {
         ) {
             Ok(Some(hit)) => {
                 self.cursor = hit.range.start;
-                self.current_match = Some(hit.range);
-                self.all_matches =
+                self.editor.current_match = Some(hit.range);
+                self.editor.all_matches =
                     lattice_core::search::find_all(&buffer, &regex, &CancellationToken::never())
                         .unwrap_or_default();
                 if hit.wrapped {
@@ -134,7 +134,7 @@ impl App {
                     };
                     self.set_message(level, text.to_string());
                 }
-                self.last_search = Some(LastSearch {
+                self.editor.last_search = Some(LastSearch {
                     pattern: line.pattern,
                     direction: line.direction,
                 });
@@ -143,38 +143,38 @@ impl App {
                 }
             }
             Ok(None) => {
-                self.current_match = None;
-                self.all_matches.clear();
+                self.editor.current_match = None;
+                self.editor.all_matches.clear();
                 self.set_message(
                     EchoLevel::Error,
                     format!("E486: Pattern not found: {}", line.pattern),
                 );
                 // Vim still records the pattern so `n`/`N` can retry later.
-                self.last_search = Some(LastSearch {
+                self.editor.last_search = Some(LastSearch {
                     pattern: line.pattern,
                     direction: line.direction,
                 });
             }
             Err(_) => {
-                self.current_match = None;
-                self.all_matches.clear();
+                self.editor.current_match = None;
+                self.editor.all_matches.clear();
             }
         }
     }
 
     pub(super) fn cancel_search(&mut self) {
-        if let Some(line) = self.search_line.take() {
+        if let Some(line) = self.editor.search_line.take() {
             self.cursor = line.origin;
         }
-        self.current_match = None;
-        self.all_matches.clear();
+        self.editor.current_match = None;
+        self.editor.all_matches.clear();
         self.modal = lattice_grammar::ModalState::Normal;
     }
 
     /// Repeat last search. `reverse=false` keeps the original direction
     /// (`n`); `reverse=true` flips it (`N`).
     pub(super) fn repeat_search(&mut self, reverse: bool) {
-        let Some(last) = self.last_search.clone() else {
+        let Some(last) = self.editor.last_search.clone() else {
             self.set_message(
                 EchoLevel::Error,
                 "E35: no previous regular expression".to_string(),
@@ -205,14 +205,14 @@ impl App {
             Ok(r) => r,
             Err(msg) => {
                 self.set_message(EchoLevel::Error, format!("regex: {msg}"));
-                self.current_match = None;
+                self.editor.current_match = None;
                 return;
             }
         };
         match lattice_core::search::find(&buffer, &regex, from, dir, &CancellationToken::never()) {
             Ok(Some(hit)) => {
                 self.cursor = hit.range.start;
-                self.current_match = Some(hit.range);
+                self.editor.current_match = Some(hit.range);
                 if hit.wrapped {
                     let text = match direction {
                         SearchDirection::Forward => "search hit BOTTOM, continuing at TOP",
@@ -225,14 +225,14 @@ impl App {
                 }
             }
             Ok(None) => {
-                self.current_match = None;
+                self.editor.current_match = None;
                 self.set_message(
                     EchoLevel::Error,
                     format!("E486: Pattern not found: {}", last.pattern),
                 );
             }
             Err(_) => {
-                self.current_match = None;
+                self.editor.current_match = None;
             }
         }
     }
@@ -245,12 +245,12 @@ impl App {
         let parsed = match crate::excommand::try_parse_substitute_partial(&self.command_line) {
             Some(p) => p,
             None => {
-                self.substitute_preview = None;
+                self.editor.substitute_preview = None;
                 return;
             }
         };
         if parsed.pattern.is_empty() {
-            self.substitute_preview = None;
+            self.editor.substitute_preview = None;
             return;
         }
         let regex = match compile_search_pattern(&parsed.pattern) {
@@ -294,7 +294,7 @@ impl App {
             }
         }
 
-        self.substitute_preview = Some(SubstitutePreview {
+        self.editor.substitute_preview = Some(SubstitutePreview {
             matches,
             replacement: parsed.replacement,
             global,
@@ -523,8 +523,8 @@ impl App {
             Ok(Some(hit)) => {
                 self.push_position_history(pre_jump, PositionSource::AutoJump);
                 self.cursor = hit.range.start;
-                self.current_match = Some(hit.range);
-                self.all_matches = lattice_core::search::find_all(
+                self.editor.current_match = Some(hit.range);
+                self.editor.all_matches = lattice_core::search::find_all(
                     &self.document.snapshot().buffer,
                     &regex,
                     &CancellationToken::never(),
@@ -539,16 +539,16 @@ impl App {
                 }
             }
             Ok(None) => {
-                self.current_match = None;
-                self.all_matches.clear();
+                self.editor.current_match = None;
+                self.editor.all_matches.clear();
                 self.set_message(EchoLevel::Error, format!("E486: Pattern not found: {word}"));
             }
             Err(_) => {
-                self.current_match = None;
-                self.all_matches.clear();
+                self.editor.current_match = None;
+                self.editor.all_matches.clear();
             }
         }
-        self.last_search = Some(LastSearch {
+        self.editor.last_search = Some(LastSearch {
             pattern: word,
             direction,
         });
@@ -622,7 +622,7 @@ mod tests {
         let mut a = app_with("foo bar foo baz foo\nfoo elsewhere", 10);
         a.cursor = Position::new(0, 0);
         type_cmdline(&mut a, "s/foo/X");
-        let preview = a.substitute_preview.as_ref().expect("preview live");
+        let preview = a.editor.substitute_preview.as_ref().expect("preview live");
         assert_eq!(preview.matches.len(), 1, "only the leftmost match -- no /g");
         assert_eq!(preview.matches[0].start, Position::new(0, 0));
         assert_eq!(preview.replacement.as_deref(), Some("X"));
@@ -634,7 +634,7 @@ mod tests {
         let mut a = app_with("foo bar foo baz foo\nfoo elsewhere", 10);
         a.cursor = Position::new(0, 0);
         type_cmdline(&mut a, "s/foo/X/g");
-        let preview = a.substitute_preview.as_ref().unwrap();
+        let preview = a.editor.substitute_preview.as_ref().unwrap();
         // Three matches on the cursor's line; line 1 is out of scope.
         assert_eq!(preview.matches.len(), 3);
         assert!(preview.global);
@@ -645,7 +645,7 @@ mod tests {
         let mut a = app_with("foo\nbar foo\nfoo", 10);
         a.cursor = Position::new(0, 0);
         type_cmdline(&mut a, "%s/foo/X/g");
-        let preview = a.substitute_preview.as_ref().unwrap();
+        let preview = a.editor.substitute_preview.as_ref().unwrap();
         // Three matches across three lines.
         assert_eq!(preview.matches.len(), 3);
     }
@@ -654,18 +654,18 @@ mod tests {
     fn substitute_preview_clears_on_cmdline_cancel() {
         let mut a = app_with("foo bar", 10);
         type_cmdline(&mut a, "s/foo/X");
-        assert!(a.substitute_preview.is_some());
+        assert!(a.editor.substitute_preview.is_some());
         a.apply(Action::CommandLineCancel);
-        assert!(a.substitute_preview.is_none());
+        assert!(a.editor.substitute_preview.is_none());
     }
 
     #[test]
     fn substitute_preview_clears_on_cmdline_submit() {
         let mut a = app_with("foo bar", 10);
         type_cmdline(&mut a, "s/foo/X");
-        assert!(a.substitute_preview.is_some());
+        assert!(a.editor.substitute_preview.is_some());
         a.apply(Action::CommandLineSubmit);
-        assert!(a.substitute_preview.is_none());
+        assert!(a.editor.substitute_preview.is_none());
     }
 
     #[test]
@@ -674,11 +674,11 @@ mod tests {
         // Enter a substitute, get preview, then backspace past `s` --
         // input is no longer a substitute.
         type_cmdline(&mut a, "s/foo");
-        assert!(a.substitute_preview.is_some());
+        assert!(a.editor.substitute_preview.is_some());
         for _ in 0.."s/foo".len() {
             a.apply(Action::CommandLineBackspace);
         }
-        assert!(a.substitute_preview.is_none());
+        assert!(a.editor.substitute_preview.is_none());
     }
 
     #[test]
@@ -687,7 +687,7 @@ mod tests {
         // highlight anything (no matches to show).
         let mut a = app_with("foo bar", 10);
         type_cmdline(&mut a, "s/");
-        assert!(a.substitute_preview.is_none());
+        assert!(a.editor.substitute_preview.is_none());
     }
 
     // ---- Search basic (/, ?, n, N) ----
@@ -697,7 +697,7 @@ mod tests {
         let mut a = app_with("hello world", 10);
         a.apply(Action::EnterSearch(SearchDirection::Forward));
         assert_eq!(a.modal, ModalState::Search(SearchDirection::Forward));
-        let line = a.search_line.as_ref().expect("search_line populated");
+        let line = a.editor.search_line.as_ref().expect("search_line populated");
         assert_eq!(line.pattern, "");
         assert_eq!(line.origin, Position::ZERO);
     }
@@ -707,10 +707,10 @@ mod tests {
         let mut a = app_with("foo bar foo", 10);
         a.apply(Action::EnterSearch(SearchDirection::Forward));
         type_pattern(&mut a, "bar");
-        let line = a.search_line.as_ref().unwrap();
+        let line = a.editor.search_line.as_ref().unwrap();
         assert_eq!(line.pattern, "bar");
         // Preview should highlight the first match without moving cursor.
-        let m = a.current_match.expect("match previewed");
+        let m = a.editor.current_match.expect("match previewed");
         assert_eq!(m.start, Position::new(0, 4));
         assert_eq!(a.cursor, Position::ZERO);
     }
@@ -721,8 +721,8 @@ mod tests {
         a.apply(Action::EnterSearch(SearchDirection::Forward));
         type_pattern(&mut a, "baz");
         a.apply(Action::SearchBackspace);
-        assert_eq!(a.search_line.as_ref().unwrap().pattern, "ba");
-        let m = a.current_match.expect("preview after backspace");
+        assert_eq!(a.editor.search_line.as_ref().unwrap().pattern, "ba");
+        let m = a.editor.current_match.expect("preview after backspace");
         assert_eq!(m.start, Position::new(0, 4));
     }
 
@@ -732,7 +732,7 @@ mod tests {
         a.apply(Action::EnterSearch(SearchDirection::Forward));
         a.apply(Action::SearchBackspace);
         assert_eq!(a.modal, ModalState::Normal);
-        assert!(a.search_line.is_none());
+        assert!(a.editor.search_line.is_none());
     }
 
     #[test]
@@ -743,8 +743,8 @@ mod tests {
         a.apply(Action::SearchSubmit);
         assert_eq!(a.modal, ModalState::Normal);
         assert_eq!(a.cursor, Position::new(0, 4));
-        assert!(a.search_line.is_none());
-        let last = a.last_search.as_ref().unwrap();
+        assert!(a.editor.search_line.is_none());
+        let last = a.editor.last_search.as_ref().unwrap();
         assert_eq!(last.pattern, "bar");
         assert_eq!(last.direction, SearchDirection::Forward);
     }
@@ -755,8 +755,8 @@ mod tests {
         a.apply(Action::EnterSearch(SearchDirection::Forward));
         type_pattern(&mut a, "xyz");
         a.apply(Action::SearchSubmit);
-        assert!(a.current_match.is_none());
-        assert_eq!(a.last_search.as_ref().unwrap().pattern, "xyz");
+        assert!(a.editor.current_match.is_none());
+        assert_eq!(a.editor.last_search.as_ref().unwrap().pattern, "xyz");
         let msg = a.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Error);
         assert!(msg.text.contains("Pattern not found"));
@@ -769,11 +769,11 @@ mod tests {
         a.apply(Action::EnterSearch(SearchDirection::Forward));
         type_pattern(&mut a, "foo");
         // Preview should have set current_match to "foo" at byte 8.
-        assert_eq!(a.current_match.unwrap().start, Position::new(0, 8));
+        assert_eq!(a.editor.current_match.unwrap().start, Position::new(0, 8));
         a.apply(Action::SearchCancel);
         assert_eq!(a.modal, ModalState::Normal);
         assert_eq!(a.cursor, Position::new(0, 5));
-        assert!(a.current_match.is_none());
+        assert!(a.editor.current_match.is_none());
     }
 
     #[test]
@@ -842,10 +842,10 @@ mod tests {
         a.apply(Action::EnterSearch(SearchDirection::Forward));
         type_pattern(&mut a, "foo");
         a.apply(Action::SearchSubmit);
-        assert!(!a.all_matches.is_empty());
+        assert!(!a.editor.all_matches.is_empty());
         submit_ex(&mut a, "noh");
-        assert!(a.all_matches.is_empty());
-        assert!(a.current_match.is_none());
+        assert!(a.editor.all_matches.is_empty());
+        assert!(a.editor.current_match.is_none());
     }
 
     // ---- Substitute (:s/foo/bar/[g]) ----
@@ -977,7 +977,7 @@ mod tests {
             .expect("H1 fold");
         a.folds[idx].closed = true;
         // Submit a forward search from the top of the buffer.
-        a.search_line = Some(SearchLine {
+        a.editor.search_line = Some(SearchLine {
             origin: Position::ZERO,
             pattern: "needle".into(),
             direction: SearchDirection::Forward,
@@ -1024,7 +1024,7 @@ mod tests {
 
     #[test]
     fn search_in_help_buffer_populates_all_matches_for_hlsearch() {
-        // The renderer paints `app.all_matches` as styled overlays
+        // The renderer paints `app.editor.all_matches` as styled overlays
         // on each visible help line (same painter the document
         // path uses). This test ensures `submit_search` in a help
         // buffer fills `all_matches` against the help text -- the
@@ -1045,11 +1045,11 @@ mod tests {
         }
         a.apply(Action::SearchSubmit);
         assert_eq!(
-            a.all_matches.len(),
+            a.editor.all_matches.len(),
             3,
             "every occurrence in the help body should be in all_matches"
         );
-        assert!(a.current_match.is_some());
+        assert!(a.editor.current_match.is_some());
     }
 
     #[test]
@@ -1082,7 +1082,7 @@ mod tests {
         let mut a = app_with("foo bar foo baz foo", 10);
         a.apply(Action::EnterSearch(SearchDirection::Forward));
         type_pattern(&mut a, "foo");
-        assert_eq!(a.all_matches.len(), 3);
+        assert_eq!(a.editor.all_matches.len(), 3);
     }
 
     #[test]
@@ -1091,7 +1091,7 @@ mod tests {
         a.apply(Action::EnterSearch(SearchDirection::Forward));
         type_pattern(&mut a, "foo");
         a.apply(Action::SearchSubmit);
-        assert_eq!(a.all_matches.len(), 2);
+        assert_eq!(a.editor.all_matches.len(), 2);
     }
 
     #[test]
@@ -1099,9 +1099,9 @@ mod tests {
         let mut a = app_with("foo bar foo", 10);
         a.apply(Action::EnterSearch(SearchDirection::Forward));
         type_pattern(&mut a, "foo");
-        assert!(!a.all_matches.is_empty());
+        assert!(!a.editor.all_matches.is_empty());
         a.apply(Action::SearchCancel);
-        assert!(a.all_matches.is_empty());
+        assert!(a.editor.all_matches.is_empty());
     }
 
     #[test]
@@ -1109,7 +1109,7 @@ mod tests {
         let mut a = app_with("foo bar foo bar foo", 10);
         a.cursor = Position::new(0, 1); // on first "foo"
         a.apply(Action::SearchWordUnderCursor(SearchDirection::Forward));
-        assert_eq!(a.all_matches.len(), 3);
+        assert_eq!(a.editor.all_matches.len(), 3);
     }
 
     #[test]

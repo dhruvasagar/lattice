@@ -240,7 +240,7 @@ impl App {
                 self.command_history_cursor = None;
             }
             ModalState::Search(_) => {
-                if let Some(line) = self.search_line.as_mut() {
+                if let Some(line) = self.editor.search_line.as_mut() {
                     line.pattern.push_str(text);
                 }
             }
@@ -1290,7 +1290,7 @@ mod tests {
         ));
         a.apply(Action::SearchAppend('a'));
         a.apply(Action::PasteText("bcd".into()));
-        let line = a.search_line.as_ref().unwrap();
+        let line = a.editor.search_line.as_ref().unwrap();
         assert_eq!(line.pattern, "abcd");
     }
 

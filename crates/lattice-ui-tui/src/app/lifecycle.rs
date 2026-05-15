@@ -148,9 +148,9 @@ impl App {
         pane.buffer = BufferKind::Document;
         pane.buffer_id = id;
         // Per-document transient state resets.
-        self.current_match = None;
-        self.all_matches.clear();
-        self.search_line = None;
+        self.editor.current_match = None;
+        self.editor.all_matches.clear();
+        self.editor.search_line = None;
         self.cursor = Position::ZERO;
         self.scroll = 0;
         self.load_active_pane();
@@ -490,10 +490,10 @@ impl App {
                 self.replace_document_blocking(new_doc);
                 self.cursor = Position::ZERO;
                 self.scroll = 0;
-                self.current_match = None;
-                self.all_matches.clear();
-                self.search_line = None;
-                self.last_search = None;
+                self.editor.current_match = None;
+                self.editor.all_matches.clear();
+                self.editor.search_line = None;
+                self.editor.last_search = None;
                 self.last_find = None;
                 self.last_change = None;
                 self.last_visual = None;
@@ -566,10 +566,10 @@ impl App {
         self.last_parsed_text_version = self.document.text_version();
         self.cursor = Position::ZERO;
         self.scroll = 0;
-        self.current_match = None;
-        self.all_matches.clear();
-        self.search_line = None;
-        self.last_search = None;
+        self.editor.current_match = None;
+        self.editor.all_matches.clear();
+        self.editor.search_line = None;
+        self.editor.last_search = None;
         self.last_find = None;
         self.last_change = None;
         self.last_visual = None;

@@ -984,7 +984,7 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App, snap: &Doc
             // state is active-buffer-relative).
             if matches!(app.active_buffer, crate::buffers::BufferKind::Help) {
                 let line_len = l.len();
-                for &range in app.all_matches.iter() {
+                for &range in app.editor.all_matches.iter() {
                     if let Some((overlay_start, overlay_end)) =
                         match_overlay_range(range, line_idx as u32, line_len)
                     {
@@ -992,7 +992,7 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App, snap: &Doc
                             apply_match_overlay(body, overlay_start, overlay_end, hlsearch_style());
                     }
                 }
-                if let Some(range) = app.current_match
+                if let Some(range) = app.editor.current_match
                     && let Some((overlay_start, overlay_end)) =
                         match_overlay_range(range, line_idx as u32, line_len)
                 {
@@ -1405,10 +1405,10 @@ fn draw_help_in_pane(frame: &mut Frame, area: Rect, app: &App) {
             }
             let mut body = render_help_line(l, &spans);
             let line_len = l.len();
-            // Hlsearch overlay: every `app.all_matches` range that
+            // Hlsearch overlay: every `app.editor.all_matches` range that
             // touches this line. Same painter the document path
             // uses, so visual + match styles compose identically.
-            for &range in app.all_matches.iter() {
+            for &range in app.editor.all_matches.iter() {
                 if let Some((overlay_start, overlay_end)) =
                     match_overlay_range(range, line_idx as u32, line_len)
                 {
@@ -1417,7 +1417,7 @@ fn draw_help_in_pane(frame: &mut Frame, area: Rect, app: &App) {
             }
             // Current-match (the one the cursor is on after `/`
             // submit / `n` / `N`) gets the louder match style.
-            if let Some(range) = app.current_match
+            if let Some(range) = app.editor.current_match
                 && let Some((overlay_start, overlay_end)) =
                     match_overlay_range(range, line_idx as u32, line_len)
             {
@@ -2119,7 +2119,7 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
             SearchDirection::Backward => '?',
         };
         let pattern = app
-            .search_line
+            .editor.search_line
             .as_ref()
             .map(|s| s.pattern.as_str())
             .unwrap_or("");
@@ -2511,14 +2511,14 @@ fn compose_visible_lines_inner(
         }
         // Hlsearch overlay: every other occurrence of the search pattern,
         // softer than the current_match style.
-        for &range in app.all_matches.iter() {
+        for &range in app.editor.all_matches.iter() {
             if let Some((overlay_start, overlay_end)) =
                 match_overlay_range(range, line_idx, line_len)
             {
                 body = apply_match_overlay(body, overlay_start, overlay_end, hlsearch_style());
             }
         }
-        if let Some(range) = app.current_match
+        if let Some(range) = app.editor.current_match
             && let Some((overlay_start, overlay_end)) =
                 match_overlay_range(range, line_idx, line_len)
         {
@@ -2633,7 +2633,7 @@ fn compose_visible_lines_inner(
         // the about-to-be-replaced ranges in a strike-through-ish
         // style so the user sees what will change before they hit
         // Enter. Distinct from hlsearch's plain match highlight.
-        if let Some(preview) = app.substitute_preview.as_ref() {
+        if let Some(preview) = app.editor.substitute_preview.as_ref() {
             for &range in preview.matches.iter() {
                 if let Some((overlay_start, overlay_end)) =
                     match_overlay_range(range, line_idx, line_len)
@@ -4696,7 +4696,7 @@ mod tests {
     #[test]
     fn compose_visible_lines_applies_match_overlay() {
         let mut app = app_with("hello world", 1);
-        app.current_match = Some(ProtoRange::new(pos(0, 6), pos(0, 11)));
+        app.editor.current_match = Some(ProtoRange::new(pos(0, 6), pos(0, 11)));
         let lines = compose_visible_lines(&app, &app.document.snapshot(), 1, 80);
         let dump = format!("{:?}", lines[0]);
         // Spans should be split so "world" is its own span; we look for the

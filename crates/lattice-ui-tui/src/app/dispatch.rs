@@ -304,7 +304,7 @@ impl App {
                         // Empty buffer + backspace -> exit Command modal.
                         self.modal = ModalState::Normal;
                         self.completion_state = None;
-                        self.substitute_preview = None;
+                        self.editor.substitute_preview = None;
                     } else {
                         if self.completion_state.is_some() {
                             // Popup live-refilters against the shorter
@@ -340,7 +340,7 @@ impl App {
                     self.command_history_cursor = None;
                     self.command_history_pending = None;
                     self.auto_submit_after_chord = false;
-                    self.substitute_preview = None;
+                    self.editor.substitute_preview = None;
                     if !line.trim().is_empty() {
                         // De-duplicate consecutive identical entries.
                         if self.command_history.last() != Some(&line) {
@@ -360,7 +360,7 @@ impl App {
                     self.command_history_pending = None;
                     self.modal = ModalState::Normal;
                     self.auto_submit_after_chord = false;
-                    self.substitute_preview = None;
+                    self.editor.substitute_preview = None;
                 }
             }
             Action::CommandLineHistoryPrev => self.do_command_history_step(true),
@@ -632,23 +632,23 @@ impl App {
             }
 
             Action::EnterSearch(direction) => {
-                self.search_line = Some(SearchLine {
+                self.editor.search_line = Some(SearchLine {
                     direction,
                     pattern: String::new(),
                     origin: self.cursor,
                 });
                 self.modal = ModalState::Search(direction);
                 self.last_message = None;
-                self.current_match = None;
+                self.editor.current_match = None;
             }
             Action::SearchAppend(c) => {
-                if let Some(line) = self.search_line.as_mut() {
+                if let Some(line) = self.editor.search_line.as_mut() {
                     line.pattern.push(c);
                     self.preview_search();
                 }
             }
             Action::SearchBackspace => {
-                let leave = match self.search_line.as_mut() {
+                let leave = match self.editor.search_line.as_mut() {
                     Some(line) => {
                         if line.pattern.pop().is_none() {
                             true
@@ -1116,8 +1116,8 @@ impl App {
             Effect::OpenBuffer { path, force } => self.do_edit(path, force),
             Effect::SetOption { spec } => self.do_set(&spec),
             Effect::ClearSearchHighlight => {
-                self.current_match = None;
-                self.all_matches.clear();
+                self.editor.current_match = None;
+                self.editor.all_matches.clear();
             }
             Effect::Echo { level, text } => self.set_message(echo_level_from_grammar(level), text),
             Effect::EchoRegisters => self.do_list_registers(),

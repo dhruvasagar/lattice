@@ -81,7 +81,7 @@ use lattice_grammar::command::CommandInvocation;
 use lattice_grammar::register::Register;
 use lattice_lsp::{DiagnosticsLayer, LspLogger, LspSupervisorHandle};
 use lattice_protocol::Event;
-use lattice_protocol::position::{Position, Range as ProtoRange};
+use lattice_protocol::position::Position;
 #[cfg(test)]
 use lattice_protocol::selection::{Selection, SelectionSet};
 use lattice_runtime::{DocumentHandle, EventBus, SnapshotCache};
@@ -677,26 +677,11 @@ pub struct App {
     /// Steady-state hit rate: ~100% (cursor blinking, no edit).
     /// Drops cleanly to 0% during edits/scroll/fold-toggle.
     visible_highlights_key: Option<highlights::VisibleHighlightsKey>,
-    /// In-progress `/` or `?` search. `Some` only while
-    /// `modal == ModalState::Search(_)`.
-    pub search_line: Option<SearchLine>,
-    /// Most recent submitted search; consulted by `n` / `N`.
-    pub last_search: Option<LastSearch>,
-    /// Range of the most recent search match, used to draw the highlight
-    /// in the buffer view. Cleared on Esc and on cursor motion.
-    pub current_match: Option<ProtoRange>,
-    /// Every occurrence of the most recent search pattern, used to draw
-    /// the secondary "hlsearch" overlay. Cleared on Esc; persists after
-    /// submit until the next search.
-    pub all_matches: Vec<ProtoRange>,
-    /// In-progress substitute preview. Populated as the user types
-    /// `:s/pat...` or `:%s/pat...` in the cmdline; the renderer
-    /// overlays match ranges (and the typed replacement, when the
-    /// user has typed past the second `/`) so the user sees what
-    /// the substitute will do before pressing Enter. Cleared when
-    /// the cmdline closes or the input no longer parses as a
-    /// substitute. (DESIGN.md §5.9.10 minibuffer live preview.)
-    pub substitute_preview: Option<SubstitutePreview>,
+    // Phase 5.B.7: `search_line`, `last_search`,
+    // `current_match`, `all_matches`, `substitute_preview`
+    // moved to `editor.search_line` / `editor.last_search`
+    // / `editor.current_match` / `editor.all_matches` /
+    // `editor.substitute_preview`.
     // Phase 5.B.5: `unnamed_register` moved to
     // `editor.unnamed_register`.
     /// In-progress count prefix being typed (`3` of `3w`, `12` of `12dd`).

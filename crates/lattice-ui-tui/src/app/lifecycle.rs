@@ -60,10 +60,10 @@ impl App {
         // Same-document fast path: returning to the document
         // buffer that `self.document` still points at (e.g. from
         // a help-in-pane overlay or a file-tree pane).
-        // Help overlay leaves `entry.syntax` as None (no stash);
+        // Help overlay leaves `entry.editor.syntax` as None (no stash);
         // file-tree leaves it as Some (stashed via
         // snapshot_active_document). The "is the entry stashed?"
-        // check is `entry.syntax.is_some()`; folds piggyback.
+        // check is `entry.editor.syntax.is_some()`; folds piggyback.
         if id == self.document_buffer_id {
             self.active_buffer = BufferKind::Document;
             let pane = self.pane_tree.active_mut();
@@ -75,21 +75,21 @@ impl App {
             // help-overlay invariant -- when the active buffer
             // returns from a popup that didn't focus into help, no
             // sync happened, so locals are stale and we leave
-            // App.syntax / App.folds untouched.
+            // App.editor.syntax / App.folds untouched.
             let stashed_syntax = self
                 .buffer_locals
                 .get(&id)
                 .and_then(|l| l.get::<crate::modes::DocumentSyntax>())
                 .and_then(|s| s.0.clone());
             if stashed_syntax.is_some() {
-                self.syntax = stashed_syntax;
-                self.last_parsed_text_version = self
+                self.editor.syntax = stashed_syntax;
+                self.editor.last_parsed_text_version = self
                     .buffer_locals
                     .get(&id)
                     .and_then(|l| l.get::<crate::modes::DocumentLastParsedTextVersion>())
                     .map(|v| v.0)
                     .unwrap_or(0);
-                self.last_synced_syntax_version = self
+                self.editor.last_synced_syntax_version = self
                     .buffer_locals
                     .get(&id)
                     .and_then(|l| l.get::<crate::modes::DocumentLastSyncedSyntaxVersion>())
@@ -117,21 +117,21 @@ impl App {
         // document.
         self.snapshot_cache = self.document.snapshot_cache();
         // M.3.2.c.5: pull stashed mode-state out of buffer_locals
-        // (formerly held on `entry.syntax` / `entry.folds` etc.).
+        // (formerly held on `entry.editor.syntax` / `entry.folds` etc.).
         // First activation has empty locals; `activate_buffer_state`
         // seeds via the foldmethod / reparse seam.
-        self.syntax = self
+        self.editor.syntax = self
             .buffer_locals
             .get(&id)
             .and_then(|l| l.get::<crate::modes::DocumentSyntax>())
             .and_then(|s| s.0.clone());
-        self.last_parsed_text_version = self
+        self.editor.last_parsed_text_version = self
             .buffer_locals
             .get(&id)
             .and_then(|l| l.get::<crate::modes::DocumentLastParsedTextVersion>())
             .map(|v| v.0)
             .unwrap_or(0);
-        self.last_synced_syntax_version = self
+        self.editor.last_synced_syntax_version = self
             .buffer_locals
             .get(&id)
             .and_then(|l| l.get::<crate::modes::DocumentLastSyncedSyntaxVersion>())
@@ -284,9 +284,9 @@ impl App {
         // is rendered as a popup overlay over the underlying
         // document; the pane's per-frame paint draws the active
         // document via draw_buffer(snap) which reads from
-        // self.syntax / self.folds for highlights + fold overlays.
+        // self.editor.syntax / self.folds for highlights + fold overlays.
         // Stashing those onto the document entry would leave
-        // self.syntax = None for the duration of the help session,
+        // self.editor.syntax = None for the duration of the help session,
         // so the document underneath the popup paints
         // unhighlighted. The hot-path state stays live; the
         // round-trip back to the same document via
@@ -475,7 +475,7 @@ impl App {
                 let initial_text = new_doc.text();
                 let initial_text_version = new_doc.text_version();
                 let syntax: Option<lattice_syntax::SyntaxHandle> =
-                    match Syntax::for_language_with_registry(lang, self.lang_registry.clone()) {
+                    match Syntax::for_language_with_registry(lang, self.editor.lang_registry.clone()) {
                         Ok(Some(mut s)) => {
                             s.parse_at(&initial_text, initial_text_version);
                             Some(lattice_syntax::SyntaxHandle::seeded_with_runtime(
@@ -485,8 +485,8 @@ impl App {
                         }
                         _ => None,
                     };
-                self.last_parsed_text_version = initial_text_version;
-                self.syntax = syntax;
+                self.editor.last_parsed_text_version = initial_text_version;
+                self.editor.syntax = syntax;
                 self.replace_document_blocking(new_doc);
                 self.cursor = Position::ZERO;
                 self.scroll = 0;
@@ -529,7 +529,7 @@ impl App {
         let initial_text = new_doc.text();
         let initial_text_version = new_doc.text_version();
         let syntax: Option<lattice_syntax::SyntaxHandle> =
-            match Syntax::for_language_with_registry(lang, self.lang_registry.clone()) {
+            match Syntax::for_language_with_registry(lang, self.editor.lang_registry.clone()) {
                 Ok(Some(mut s)) => {
                     s.parse_at(&initial_text, initial_text_version);
                     Some(lattice_syntax::SyntaxHandle::seeded_with_runtime(
@@ -562,8 +562,8 @@ impl App {
         self.document_buffer_id = new_id;
         self.document = new_handle;
         self.snapshot_cache = self.document.snapshot_cache();
-        self.syntax = syntax;
-        self.last_parsed_text_version = self.document.text_version();
+        self.editor.syntax = syntax;
+        self.editor.last_parsed_text_version = self.document.text_version();
         self.cursor = Position::ZERO;
         self.scroll = 0;
         self.editor.current_match = None;
@@ -887,7 +887,7 @@ impl App {
         }
         self.display_buffer(
             HelpContent::from_lines("buffers", lines)
-                .with_markdown_syntax(self.lang_registry.clone()),
+                .with_markdown_syntax(self.editor.lang_registry.clone()),
             lattice_core::ui::display::BufferDisplayCategory::HelpList,
         );
     }
@@ -962,7 +962,7 @@ impl App {
     /// buffer so the rotation is round-trippable.
     ///
     /// Guarded by `active_buffer == Document`: when the active
-    /// buffer is a file tree or help, `self.syntax` was already
+    /// buffer is a file tree or help, `self.editor.syntax` was already
     /// moved into the document entry on the *previous* transition
     /// (when we left the document). Calling this again would
     /// `take()` an already-None value and overwrite the entry's
@@ -980,9 +980,9 @@ impl App {
         // worker baseline across a switch-away-and-back so an
         // out-of-order reparse race can't slip through.
         let id = self.document_buffer_id;
-        let syntax = self.syntax.take();
-        let last_parsed = self.last_parsed_text_version;
-        let last_synced = self.last_synced_syntax_version;
+        let syntax = self.editor.syntax.take();
+        let last_parsed = self.editor.last_parsed_text_version;
+        let last_synced = self.editor.last_synced_syntax_version;
         let folds = std::mem::take(&mut self.folds);
         let locals = self.buffer_locals.entry(id).or_default();
         locals.insert(crate::modes::DocumentSyntax(syntax));
@@ -1056,8 +1056,8 @@ impl App {
         // Drop frame-level highlight caches so the next
         // `refresh_highlights` repopulates against the activated
         // buffer's content rather than the previous buffer's.
-        self.visible_highlights.clear();
-        self.pane_highlights.clear();
+        self.editor.visible_highlights.clear();
+        self.editor.pane_highlights.clear();
     }
 
     /// What `:bn` / `:bp` consider the "current" buffer for
@@ -1167,8 +1167,8 @@ impl App {
         // running an incremental Parser::parse. If no syntax
         // handle is attached, skip the push to keep the vec
         // bounded.
-        if self.syntax.is_some() {
-            self.pending_syntax_edits
+        if self.editor.syntax.is_some() {
+            self.editor.pending_syntax_edits
                 .extend(applied.iter().map(|a| a.delta));
             // Slice C.3: shift `visible_highlights` synchronously
             // so line indices track the post-edit content even
@@ -1389,9 +1389,9 @@ impl App {
             return;
         }
         let id = self.document_buffer_id;
-        let syntax = self.syntax.clone();
-        let last_parsed = self.last_parsed_text_version;
-        let last_synced = self.last_synced_syntax_version;
+        let syntax = self.editor.syntax.clone();
+        let last_parsed = self.editor.last_parsed_text_version;
+        let last_synced = self.editor.last_synced_syntax_version;
         let folds = self.folds.clone();
         let locals = self.buffer_locals.entry(id).or_default();
         locals.insert(crate::modes::DocumentSyntax(syntax));
@@ -1405,12 +1405,12 @@ impl App {
     // These resolve mode-owned document state through
     // `buffer_locals` so callers don't have to branch on
     // active-vs-inactive. The active buffer's hot-path fields
-    // (`App.syntax`, `App.folds`, etc.) remain canonical;
+    // (`App.editor.syntax`, `App.folds`, etc.) remain canonical;
     // locals mirror them at de-activation boundaries so reads
     // for inactive buffers route through this path uniformly.
 
     /// Mode-owned syntax handle for `id`. For the active
-    /// document this is `App.syntax` (the live hot-path slot);
+    /// document this is `App.editor.syntax` (the live hot-path slot);
     /// for inactive documents it routes through `buffer_locals`.
     /// Returns `None` for `Lang::Plain` documents and for
     /// non-document buffers.
@@ -1419,7 +1419,7 @@ impl App {
         id: BufferId,
     ) -> Option<&lattice_syntax::SyntaxHandle> {
         if id == self.document_buffer_id && matches!(self.active_buffer, BufferKind::Document) {
-            return self.syntax.as_ref();
+            return self.editor.syntax.as_ref();
         }
         self.buffer_locals
             .get(&id)
@@ -1447,7 +1447,7 @@ impl App {
     #[allow(dead_code)]
     pub(crate) fn document_last_parsed_text_version_for(&self, id: BufferId) -> u64 {
         if id == self.document_buffer_id && matches!(self.active_buffer, BufferKind::Document) {
-            return self.last_parsed_text_version;
+            return self.editor.last_parsed_text_version;
         }
         self.buffer_locals
             .get(&id)
@@ -1460,7 +1460,7 @@ impl App {
     #[allow(dead_code)]
     pub(crate) fn document_last_synced_syntax_version_for(&self, id: BufferId) -> u64 {
         if id == self.document_buffer_id && matches!(self.active_buffer, BufferKind::Document) {
-            return self.last_synced_syntax_version;
+            return self.editor.last_synced_syntax_version;
         }
         self.buffer_locals
             .get(&id)
@@ -1724,7 +1724,7 @@ impl App {
     ///   crashed external programs / partial repaints.
     pub(super) fn do_redraw_screen(&mut self) {
         // Force a syntax reparse on the next frame.
-        self.last_parsed_text_version = u64::MAX;
+        self.editor.last_parsed_text_version = u64::MAX;
         // Drop cached spans AND the cache key so
         // refresh_highlights's B.3 cache check sees a miss and
         // recomputes. Without clearing the key, the next
@@ -1735,9 +1735,9 @@ impl App {
         // disappearing after `<C-l>` until the user scrolls (or
         // anything else invalidates the key). Regression test
         // pinned in `redraw_screen_repopulates_visible_highlights`.
-        self.visible_highlights.clear();
+        self.editor.visible_highlights.clear();
         self.visible_highlights_key = None;
-        self.pane_highlights.clear();
+        self.editor.pane_highlights.clear();
         // Recompute folds in case the fold set drifted from the
         // current document state (paranoia; the seam already runs
         // on every reparse, but `<C-l>` is the explicit "reset"
@@ -1765,19 +1765,19 @@ mod tests {
     fn maybe_reparse_syntax_drains_pending_edits_and_updates_version() {
         let mut a = app_with("hello", 5);
         attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
-        let initial_synced = a.last_synced_syntax_version;
+        let initial_synced = a.editor.last_synced_syntax_version;
         a.apply_edit_blocking(Edit::insert(Position::new(0, 5), " world"))
             .unwrap();
-        assert_eq!(a.pending_syntax_edits.len(), 1);
+        assert_eq!(a.editor.pending_syntax_edits.len(), 1);
         // Drive the reparse-request seam directly (mirrors what
         // the runtime loop does at the end of each Action).
         a.maybe_reparse_syntax();
         // Edits drained.
-        assert_eq!(a.pending_syntax_edits.len(), 0);
+        assert_eq!(a.editor.pending_syntax_edits.len(), 0);
         // Version baseline advanced -- next request will use
         // this as `from_version`.
-        assert!(a.last_synced_syntax_version > initial_synced);
-        assert_eq!(a.last_synced_syntax_version, a.document.text_version());
+        assert!(a.editor.last_synced_syntax_version > initial_synced);
+        assert_eq!(a.editor.last_synced_syntax_version, a.document.text_version());
     }
 
     #[test]
@@ -2427,7 +2427,7 @@ mod tests {
     #[test]
     fn tree_sitter_source_silent_without_syntax_attached() {
         // No `set_rust_syntax` -> `app_with` leaves
-        // `self.syntax = None`; tree-sitter source emits
+        // `self.editor.syntax = None`; tree-sitter source emits
         // nothing.
         let mut a = app_with("alpha bravo charlie", 5);
         a.modal = ModalState::Insert;
@@ -2560,8 +2560,8 @@ mod tests {
 
     #[test]
     fn snapshot_active_document_mirrors_into_locals() {
-        // After de-activating a document (which moves App.syntax
-        // / App.folds into entry.syntax / entry.folds), the
+        // After de-activating a document (which moves App.editor.syntax
+        // / App.folds into entry.editor.syntax / entry.folds), the
         // buffer-locals for that document should reflect the
         // entry's new contents.
         let mut a = app_with("hello\nworld", 10);
@@ -2574,8 +2574,8 @@ mod tests {
             closed: false,
             identity: None,
         });
-        a.last_parsed_text_version = 42;
-        a.last_synced_syntax_version = 41;
+        a.editor.last_parsed_text_version = 42;
+        a.editor.last_synced_syntax_version = 41;
         a.snapshot_active_document();
         let locals = a
             .buffer_locals
@@ -2678,7 +2678,7 @@ mod tests {
     #[test]
     fn document_syntax_for_inactive_resolves_through_locals() {
         // For an inactive document buffer the accessor must
-        // resolve through buffer_locals (since `App.syntax` only
+        // resolve through buffer_locals (since `App.editor.syntax` only
         // holds the active document's handle).
         use crate::buffer_registry::{BufferData, BufferEntry, DocumentEntry};
         use crate::buffers::{BufferFlags, BufferId};

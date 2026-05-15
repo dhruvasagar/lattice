@@ -1,5 +1,5 @@
 //! Syntax / tree-sitter App surface -- the (re)parse
-//! request trigger that keeps `self.syntax`'s worker in
+//! request trigger that keeps `self.editor.syntax`'s worker in
 //! lockstep with the document's `text_version`.
 //!
 //! Methods that live here:
@@ -31,13 +31,13 @@ impl App {
     /// goal #1: "UI thread does no … parsing").
     pub(super) fn maybe_reparse_syntax(&mut self) {
         let tv = self.document.text_version();
-        if tv == self.last_parsed_text_version {
+        if tv == self.editor.last_parsed_text_version {
             return;
         }
         // M.3.2.c.4: route through the locals-backed accessor.
         // Clone the handle (cheap Arc bump) to release the
         // immutable `self` borrow before we mutably borrow
-        // `self.pending_syntax_edits` below.
+        // `self.editor.pending_syntax_edits` below.
         let syntax = self.document_syntax_for(self.document_buffer_id).cloned();
         if let Some(syntax) = syntax {
             // Slice B.2 part 2: ship the accumulated EditDeltas
@@ -52,16 +52,16 @@ impl App {
             // full text here. Worker calls buffer.as_string() on
             // its thread, so the O(n) alloc + memcpy stays off
             // the input thread.
-            let edits = std::mem::take(&mut self.pending_syntax_edits);
+            let edits = std::mem::take(&mut self.editor.pending_syntax_edits);
             let buffer = self.document.snapshot().buffer.clone();
-            syntax.request_reparse(self.last_synced_syntax_version, tv, buffer, edits);
+            syntax.request_reparse(self.editor.last_synced_syntax_version, tv, buffer, edits);
         }
-        self.last_parsed_text_version = tv;
+        self.editor.last_parsed_text_version = tv;
         // Worker WILL be at this version after the request
         // completes. If a request gets dropped (worker panicked),
         // the next request's from_version mismatch triggers a
         // full reparse and self-corrects.
-        self.last_synced_syntax_version = tv;
+        self.editor.last_synced_syntax_version = tv;
         // Recompute computed folds in lockstep with the syntax
         // reparse request so `foldmethod=indent` stays in sync.
         // Manual foldmethod skips the recompute (the user's `zf`

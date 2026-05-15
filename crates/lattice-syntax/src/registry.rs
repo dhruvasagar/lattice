@@ -93,6 +93,11 @@ pub(crate) struct LangConfig {
 /// Catalog of every supported language's parser + highlight + injection
 /// configuration. Construct once via [`Self::standard`] and share by
 /// `Arc` clone.
+///
+/// `Default` produces an empty registry -- used by
+/// `lattice_host::editor::Editor::default()` for headless / placeholder
+/// construction. Production uses [`Self::standard`].
+#[derive(Default)]
 pub struct LangRegistry {
     configs: HashMap<&'static str, LangConfig>,
 }

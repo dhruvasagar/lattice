@@ -480,7 +480,7 @@ mod tests {
         // means the worker doesn't run, so the snapshot stays
         // at the prior version). Drive the parse explicitly so
         // the cache key reflects the new snapshot.
-        if let Some(syntax) = a.syntax.as_ref() {
+        if let Some(syntax) = a.editor.syntax.as_ref() {
             // Re-seed via the test helper: parses the current
             // text synchronously, replaces the handle. Mirrors
             // the worker's effect.
@@ -490,8 +490,8 @@ mod tests {
                 .unwrap()
                 .expect("syntax registered for lang");
             s.parse_at(&new_text, new_tv);
-            a.syntax = Some(lattice_syntax::SyntaxHandle::seeded(s));
-            a.last_synced_syntax_version = new_tv;
+            a.editor.syntax = Some(lattice_syntax::SyntaxHandle::seeded(s));
+            a.editor.last_synced_syntax_version = new_tv;
         }
         a.refresh_highlights();
         let key2 = a.visible_highlights_key;

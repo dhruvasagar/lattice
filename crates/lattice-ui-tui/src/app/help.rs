@@ -73,7 +73,7 @@ impl App {
         };
         self.display_buffer(
             HelpContent::from_lines_and_anchors(title, lines, anchors)
-                .with_markdown_syntax(self.lang_registry.clone()),
+                .with_markdown_syntax(self.editor.lang_registry.clone()),
             lattice_core::ui::display::BufferDisplayCategory::HelpTopic,
         );
     }
@@ -127,7 +127,7 @@ impl App {
         }
         let mut content =
             HelpContent::from_lines_and_anchors(format!("describe-command {name}"), lines, anchors)
-                .with_markdown_syntax(self.lang_registry.clone());
+                .with_markdown_syntax(self.editor.lang_registry.clone());
         // M.3.2.c.5: scroll-to-anchor was a method on `HelpBuffer`
         // that read `self.anchors`. With anchors retired off the
         // struct, look them up on the metadata directly.
@@ -201,7 +201,7 @@ impl App {
         }
         self.display_buffer(
             HelpContent::from_lines("describe-buffer", lines)
-                .with_markdown_syntax(self.lang_registry.clone()),
+                .with_markdown_syntax(self.editor.lang_registry.clone()),
             lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
         );
     }
@@ -257,7 +257,7 @@ impl App {
         }
         self.display_buffer(
             HelpContent::from_lines(format!("apropos {pattern}"), lines)
-                .with_markdown_syntax(self.lang_registry.clone()),
+                .with_markdown_syntax(self.editor.lang_registry.clone()),
             lattice_core::ui::display::BufferDisplayCategory::HelpApropos,
         );
     }
@@ -284,7 +284,7 @@ impl App {
         }
         self.display_buffer(
             HelpContent::from_lines(format!("describe-key {chord}"), lines)
-                .with_markdown_syntax(self.lang_registry.clone()),
+                .with_markdown_syntax(self.editor.lang_registry.clone()),
             lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
         );
     }
@@ -299,7 +299,7 @@ impl App {
     pub(super) fn do_open_hover(&mut self, markdown: &str) {
         let lines: Vec<String> = markdown.split('\n').map(String::from).collect();
         let content = HelpContent::from_lines("hover", lines)
-            .with_markdown_syntax(self.lang_registry.clone());
+            .with_markdown_syntax(self.editor.lang_registry.clone());
         // M.4 follow-up: hover routes through the unified
         // dispatch like every other dedicated-buffer producer.
         // `BufferDisplayCategory::Hover` resolves to
@@ -408,7 +408,7 @@ impl App {
         }
         self.display_buffer(
             HelpContent::from_lines("keymap", lines)
-                .with_markdown_syntax(self.lang_registry.clone()),
+                .with_markdown_syntax(self.editor.lang_registry.clone()),
             lattice_core::ui::display::BufferDisplayCategory::HelpList,
         );
     }
@@ -461,7 +461,7 @@ impl App {
         }
         self.display_buffer(
             HelpContent::from_lines("describe-events", lines)
-                .with_markdown_syntax(self.lang_registry.clone()),
+                .with_markdown_syntax(self.editor.lang_registry.clone()),
             lattice_core::ui::display::BufferDisplayCategory::HelpList,
         );
     }
@@ -490,7 +490,7 @@ impl App {
         );
         self.display_buffer(
             HelpContent::from_lines(format!("describe-event {name}"), lines)
-                .with_markdown_syntax(self.lang_registry.clone()),
+                .with_markdown_syntax(self.editor.lang_registry.clone()),
             lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
         );
     }
@@ -549,7 +549,7 @@ impl App {
 
         self.display_buffer(
             HelpContent::from_lines("list-modes", lines)
-                .with_markdown_syntax(self.lang_registry.clone()),
+                .with_markdown_syntax(self.editor.lang_registry.clone()),
             lattice_core::ui::display::BufferDisplayCategory::HelpList,
         );
     }
@@ -629,7 +629,7 @@ impl App {
 
         self.display_buffer(
             HelpContent::from_lines(format!("describe-mode {name}"), lines)
-                .with_markdown_syntax(self.lang_registry.clone()),
+                .with_markdown_syntax(self.editor.lang_registry.clone()),
             lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
         );
     }
@@ -767,7 +767,7 @@ impl App {
 
         self.display_buffer(
             HelpContent::from_lines(format!("describe-option-resolution {name}"), lines)
-                .with_markdown_syntax(self.lang_registry.clone()),
+                .with_markdown_syntax(self.editor.lang_registry.clone()),
             lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
         );
     }
@@ -872,7 +872,7 @@ impl App {
 
         self.display_buffer(
             HelpContent::from_lines("customize", lines)
-                .with_markdown_syntax(self.lang_registry.clone()),
+                .with_markdown_syntax(self.editor.lang_registry.clone()),
             lattice_core::ui::display::BufferDisplayCategory::HelpList,
         );
     }
@@ -921,7 +921,7 @@ impl App {
         );
         self.display_buffer(
             HelpContent::from_lines(format!("customize {group_name}"), lines)
-                .with_markdown_syntax(self.lang_registry.clone()),
+                .with_markdown_syntax(self.editor.lang_registry.clone()),
             lattice_core::ui::display::BufferDisplayCategory::HelpList,
         );
     }
@@ -1009,7 +1009,7 @@ impl App {
         );
         self.display_buffer(
             HelpContent::from_lines(format!("customize {mode_name}"), lines)
-                .with_markdown_syntax(self.lang_registry.clone()),
+                .with_markdown_syntax(self.editor.lang_registry.clone()),
             lattice_core::ui::display::BufferDisplayCategory::HelpList,
         );
     }

@@ -96,7 +96,7 @@ impl App {
             return;
         }
         let viewport_idx = (edit_start - scroll) as usize;
-        if viewport_idx >= self.visible_highlights.len() {
+        if viewport_idx >= self.editor.visible_highlights.len() {
             // Edit started below the visible viewport. Nothing
             // visible changes.
             return;
@@ -153,18 +153,18 @@ impl App {
         let action_idx = if delta.start_position.byte == 0 {
             viewport_idx
         } else {
-            (viewport_idx + 1).min(self.visible_highlights.len())
+            (viewport_idx + 1).min(self.editor.visible_highlights.len())
         };
         if old_lines > new_lines {
             let to_remove = old_lines - new_lines;
-            let drain_end = (action_idx + to_remove).min(self.visible_highlights.len());
+            let drain_end = (action_idx + to_remove).min(self.editor.visible_highlights.len());
             if action_idx < drain_end {
-                self.visible_highlights.drain(action_idx..drain_end);
+                self.editor.visible_highlights.drain(action_idx..drain_end);
             }
         } else {
             let to_insert = new_lines - old_lines;
             for _ in 0..to_insert {
-                self.visible_highlights.insert(action_idx, Vec::new());
+                self.editor.visible_highlights.insert(action_idx, Vec::new());
             }
         }
     }
@@ -197,7 +197,7 @@ impl App {
             // No-op edit: empty range replaced with empty text.
             return;
         }
-        let Some(line_spans) = self.visible_highlights.get_mut(viewport_idx) else {
+        let Some(line_spans) = self.editor.visible_highlights.get_mut(viewport_idx) else {
             return;
         };
         line_spans.retain_mut(|span| {
@@ -270,10 +270,10 @@ impl App {
     pub fn refresh_highlights(&mut self) {
         // M.3.2.c.4: route through the buffer-locals-backed
         // accessor. For the active buffer this still resolves to
-        // `self.syntax` (App's hot-path slot); for any future
+        // `self.editor.syntax` (App's hot-path slot); for any future
         // multi-buffer reads it would route through `buffer_locals`.
         let Some(syntax) = self.document_syntax_for(self.document_buffer_id) else {
-            self.visible_highlights = Vec::new();
+            self.editor.visible_highlights = Vec::new();
             self.visible_highlights_key = None;
             return;
         };
@@ -321,7 +321,7 @@ impl App {
         let end = self
             .visible_buffer_line_extent(start, self.viewport_height)
             .saturating_add(1);
-        self.visible_highlights = snap.highlight_lines(start, end).unwrap_or_default();
+        self.editor.visible_highlights = snap.highlight_lines(start, end).unwrap_or_default();
         self.visible_highlights_key = Some(key);
     }
 
@@ -375,7 +375,7 @@ impl App {
     /// document also fall through to `visible_highlights` -- a
     /// single parse covers both panes.
     pub fn refresh_pane_highlights(&mut self) {
-        self.pane_highlights.clear();
+        self.editor.pane_highlights.clear();
         let active_idx = self.pane_tree.active_index();
         let active_doc_id = if matches!(self.active_buffer, BufferKind::Document) {
             Some(self.document_buffer_id)
@@ -428,7 +428,7 @@ impl App {
                 // Slice B.2 part 2: inactive-pane path doesn't
                 // yet accumulate per-document edit deltas (the
                 // active-pane path does, on
-                // App.pending_syntax_edits). For now we send
+                // App.editor.pending_syntax_edits). For now we send
                 // empty edits which routes the worker to full
                 // reparse. The inactive-pane path is rare
                 // (only fires when pane shows a different
@@ -445,7 +445,7 @@ impl App {
                 .snapshot()
                 .highlight_lines(scroll, end)
                 .unwrap_or_default();
-            self.pane_highlights.insert(idx, spans);
+            self.editor.pane_highlights.insert(idx, spans);
         }
     }
 
@@ -457,7 +457,7 @@ impl App {
     /// `viewport_row` no longer maps to `scroll + row` once folds
     /// hide interior lines.
     pub fn highlights_for_viewport_row(&self, viewport_row: u32) -> &[StyledSpan] {
-        self.visible_highlights
+        self.editor.visible_highlights
             .get(viewport_row as usize)
             .map(Vec::as_slice)
             .unwrap_or(&[])
@@ -475,7 +475,7 @@ impl App {
             return &[];
         }
         let offset = (line - self.scroll) as usize;
-        self.visible_highlights
+        self.editor.visible_highlights
             .get(offset)
             .map(Vec::as_slice)
             .unwrap_or(&[])
@@ -508,7 +508,7 @@ mod tests {
         let mut a = app_with("fn main() {}", 5);
         a.refresh_highlights();
         assert!(a.visible_highlights_key.is_none());
-        assert!(a.visible_highlights.is_empty());
+        assert!(a.editor.visible_highlights.is_empty());
     }
 
     #[test]
@@ -614,12 +614,12 @@ mod tests {
         let mut a = app_with("fn main() {}", 5);
         attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
         a.refresh_highlights();
-        let spans_before = a.visible_highlights.clone();
+        let spans_before = a.editor.visible_highlights.clone();
         assert!(!spans_before.is_empty());
         // <C-l> should clear both spans + key.
         a.apply(Action::RedrawScreen);
         assert!(
-            a.visible_highlights.is_empty(),
+            a.editor.visible_highlights.is_empty(),
             "<C-l> should clear visible_highlights synchronously"
         );
         assert!(
@@ -630,7 +630,7 @@ mod tests {
         // the cleared spans.
         a.refresh_highlights();
         assert!(
-            !a.visible_highlights.is_empty(),
+            !a.editor.visible_highlights.is_empty(),
             "refresh_highlights after <C-l> must recompute spans -- bug-#2 regression"
         );
     }
@@ -648,8 +648,8 @@ mod tests {
         let mut a = app_with("fn main() {}", 5);
         attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
         a.refresh_highlights();
-        assert!(!a.visible_highlights.is_empty());
-        let line0_spans_before = a.visible_highlights[0].clone();
+        assert!(!a.editor.visible_highlights.is_empty());
+        let line0_spans_before = a.editor.visible_highlights[0].clone();
         // Apply an edit that adds a new line below line 0.
         // Without a real worker (no tokio runtime in lib tests),
         // the syntax snapshot stays at the old version -- the
@@ -664,17 +664,17 @@ mod tests {
         // an empty placeholder at index 1 (the new line) without
         // disturbing index 0.
         assert!(
-            !a.visible_highlights.is_empty(),
+            !a.editor.visible_highlights.is_empty(),
             "refresh_highlights must NOT drop spans during the worker window"
         );
         assert_eq!(
-            a.visible_highlights[0], line0_spans_before,
+            a.editor.visible_highlights[0], line0_spans_before,
             "line 0's spans must be preserved -- its content didn't change"
         );
         // The new line 1 has an empty placeholder spans entry
         // (will be filled in when the worker publishes).
         assert!(
-            a.visible_highlights.len() >= 2,
+            a.editor.visible_highlights.len() >= 2,
             "shift should have inserted a placeholder for the new line"
         );
     }
@@ -697,8 +697,8 @@ mod tests {
         let mut a = app_with("fn a() {}\nfn b() {}\nfn c() {}\nfn d() {}", 10);
         attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
         a.refresh_highlights();
-        let line0_spans = a.visible_highlights[0].clone();
-        let line2_spans_before_delete = a.visible_highlights[2].clone();
+        let line0_spans = a.editor.visible_highlights[0].clone();
+        let line2_spans_before_delete = a.editor.visible_highlights[2].clone();
         // Delete the entire line 1 (`fn b() {}\n` at bytes
         // [10..20]).
         let range = lattice_protocol::Range::new(Position::new(1, 0), Position::new(2, 0));
@@ -706,9 +706,9 @@ mod tests {
         // visible_highlights should have one fewer entry.
         // Line 0's spans unchanged. Line 1 (post-delete) now
         // has the spans that USED to be at index 2.
-        assert_eq!(a.visible_highlights[0], line0_spans);
+        assert_eq!(a.editor.visible_highlights[0], line0_spans);
         assert_eq!(
-            a.visible_highlights[1], line2_spans_before_delete,
+            a.editor.visible_highlights[1], line2_spans_before_delete,
             "line below the deleted line must inherit its prior spans -- \
              this is what eliminates the gray->white->gray flicker"
         );
@@ -722,19 +722,19 @@ mod tests {
         let mut a = app_with("fn main() {}", 10);
         attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
         a.refresh_highlights();
-        let line0_spans = a.visible_highlights[0].clone();
+        let line0_spans = a.editor.visible_highlights[0].clone();
         // Insert "\nfn b() {}" at end of line 0 (byte 12).
         a.apply_edit_blocking(Edit::insert(Position::new(0, 12), "\nfn b() {}"))
             .unwrap();
         // Line 0's spans preserved at index 0; empty
         // placeholder inserted at index 1.
-        assert_eq!(a.visible_highlights[0], line0_spans);
+        assert_eq!(a.editor.visible_highlights[0], line0_spans);
         assert!(
-            a.visible_highlights.len() >= 2,
+            a.editor.visible_highlights.len() >= 2,
             "line insert should add a placeholder entry"
         );
         assert!(
-            a.visible_highlights[1].is_empty(),
+            a.editor.visible_highlights[1].is_empty(),
             "new line's placeholder should be empty until worker publishes"
         );
     }
@@ -747,7 +747,7 @@ mod tests {
         let mut a = app_with("fn main() {}", 10);
         attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
         a.refresh_highlights();
-        let line0_spans = a.visible_highlights[0].clone();
+        let line0_spans = a.editor.visible_highlights[0].clone();
         // Insert "\n" at start of line 0 (byte 0). After:
         // line 0 = "" (new), line 1 = "fn main() {}" (old).
         a.apply_edit_blocking(Edit::insert(Position::new(0, 0), "\n"))
@@ -756,11 +756,11 @@ mod tests {
         // new line); visible_highlights[1] has the original
         // spans.
         assert!(
-            a.visible_highlights[0].is_empty(),
+            a.editor.visible_highlights[0].is_empty(),
             "new empty line's placeholder at index 0"
         );
         assert_eq!(
-            a.visible_highlights[1], line0_spans,
+            a.editor.visible_highlights[1], line0_spans,
             "original line content moved to index 1"
         );
     }
@@ -778,16 +778,16 @@ mod tests {
         let mut a = app_with("fn main() {}", 10);
         attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
         a.refresh_highlights();
-        let len_before = a.visible_highlights.len();
-        let line0_before = a.visible_highlights[0].clone();
+        let len_before = a.editor.visible_highlights.len();
+        let line0_before = a.editor.visible_highlights[0].clone();
         // Insert "    " at start of line 0 (mimics >> indent).
         a.apply_edit_blocking(Edit::insert(Position::new(0, 0), "    "))
             .unwrap();
         // Line count unchanged; visible_highlights length stays.
-        assert_eq!(a.visible_highlights.len(), len_before);
+        assert_eq!(a.editor.visible_highlights.len(), len_before);
         // Each span on line 0 should have shifted right by 4 --
         // they were entirely after byte 0 (the edit point).
-        let line0_after = &a.visible_highlights[0];
+        let line0_after = &a.editor.visible_highlights[0];
         assert_eq!(
             line0_after.len(),
             line0_before.len(),
@@ -808,11 +808,11 @@ mod tests {
         let mut a = app_with("fn main() { let x = 1; }", 10);
         attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
         a.refresh_highlights();
-        let line0_before = a.visible_highlights[0].clone();
+        let line0_before = a.editor.visible_highlights[0].clone();
         // Insert "abc" at byte 12 (between "{ " and "let").
         a.apply_edit_blocking(Edit::insert(Position::new(0, 12), "abc"))
             .unwrap();
-        let line0_after = &a.visible_highlights[0];
+        let line0_after = &a.editor.visible_highlights[0];
         // For each span, classify based on its position relative
         // to byte 12. Spans with end <= 12 unchanged. Spans
         // with start >= 12 shifted by +3.
@@ -837,12 +837,12 @@ mod tests {
         a.refresh_highlights();
         // Find the span covering "longname" -- it crosses any
         // mid-identifier insert.
-        let line0_before = a.visible_highlights[0].clone();
+        let line0_before = a.editor.visible_highlights[0].clone();
         // Insert "X" at byte 6 (mid-"longname": "long" + "X" +
         // "name").
         a.apply_edit_blocking(Edit::insert(Position::new(0, 6), "X"))
             .unwrap();
-        let line0_after = &a.visible_highlights[0];
+        let line0_after = &a.editor.visible_highlights[0];
         // For each span, if it crossed byte 6, its end should
         // have extended by 1 while start stayed.
         for (before, after) in line0_before.iter().zip(line0_after.iter()) {
@@ -864,11 +864,11 @@ mod tests {
         let mut a = app_with("fn main() { let xx = 1; }", 10);
         attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
         a.refresh_highlights();
-        let line0_before = a.visible_highlights[0].clone();
+        let line0_before = a.editor.visible_highlights[0].clone();
         // Delete byte 17 ("x" -- one of the two chars in "xx").
         let range = lattice_protocol::Range::new(Position::new(0, 17), Position::new(0, 18));
         a.apply_edit_blocking(Edit::delete(range)).unwrap();
-        let line0_after = &a.visible_highlights[0];
+        let line0_after = &a.editor.visible_highlights[0];
         for (before, after) in line0_before.iter().zip(line0_after.iter()) {
             if before.end <= 17 {
                 assert_eq!(after.start, before.start, "before-delete span unchanged");

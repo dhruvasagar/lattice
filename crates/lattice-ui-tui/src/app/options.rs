@@ -578,7 +578,7 @@ impl App {
         lines.push(spec.doc().to_string());
         self.display_buffer(
             HelpContent::from_lines(format!("describe-option {name}"), lines)
-                .with_markdown_syntax(self.lang_registry.clone()),
+                .with_markdown_syntax(self.editor.lang_registry.clone()),
             lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
         );
     }
@@ -682,7 +682,7 @@ impl App {
 
         self.display_buffer(
             HelpContent::from_lines("options", lines)
-                .with_markdown_syntax(self.lang_registry.clone()),
+                .with_markdown_syntax(self.editor.lang_registry.clone()),
             lattice_core::ui::display::BufferDisplayCategory::HelpList,
         );
     }

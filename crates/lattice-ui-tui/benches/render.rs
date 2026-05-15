@@ -44,7 +44,7 @@ fn build_app(corpus: &str, viewport: u32) -> App {
     // already-populated snapshot from the first frame.
     let mut syn = Syntax::for_language(Lang::Rust).unwrap().unwrap();
     syn.parse(&a.document.text());
-    a.syntax = Some(lattice_syntax::SyntaxHandle::seeded(syn));
+    a.editor.syntax = Some(lattice_syntax::SyntaxHandle::seeded(syn));
     a.refresh_highlights();
     a
 }

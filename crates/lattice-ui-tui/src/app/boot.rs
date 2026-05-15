@@ -638,6 +638,9 @@ impl App {
             editor: lattice_host::editor::Editor {
                 messages: messages_ring.clone(),
                 pending_message_event_rx: Some(message_event_rx),
+                lang_registry: lang_registry.clone(),
+                syntax,
+                last_parsed_text_version,
                 ..lattice_host::editor::Editor::default()
             },
             document,
@@ -678,7 +681,6 @@ impl App {
             pending_code_action_token: None,
             pending_code_action_items: None,
             pending_code_action_handle: None,
-            lang_registry,
             builtins,
             action_ids,
             keymap: {
@@ -697,11 +699,6 @@ impl App {
             },
             completion_popup_layer: None,
             snippet_layer: None,
-            syntax,
-            last_parsed_text_version,
-            pending_syntax_edits: Vec::new(),
-            last_synced_syntax_version: 0,
-            visible_highlights: Vec::new(),
             visible_highlights_key: None,
             folds: Vec::new(),
             config,
@@ -743,7 +740,6 @@ impl App {
             help_topics,
             theme: crate::theme::Theme::default(),
             host_theme: lattice_host::ui::theme::Theme::default(),
-            pane_highlights: HashMap::new(),
             popup_back_stack: Vec::new(),
             completion_registry,
             completion_state: None,

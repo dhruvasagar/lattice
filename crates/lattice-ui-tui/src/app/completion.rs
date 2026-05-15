@@ -548,7 +548,7 @@ impl App {
         let path_context = path_source_enabled
             && match buffer.position_to_byte(self.cursor) {
                 Ok(abs) => self
-                    .syntax
+                    .editor.syntax
                     .as_ref()
                     .map(|s| s.snapshot().cursor_in_string_scope(abs))
                     .unwrap_or(false),

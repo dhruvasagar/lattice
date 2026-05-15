@@ -68,7 +68,7 @@ impl App {
         // no parser is registered for the buffer's language
         // (the `outline` source returns Err in that case).
         let syntax_symbols = self
-            .syntax
+            .editor.syntax
             .as_ref()
             .map(|s| s.snapshot().collect_symbol_locations())
             .unwrap_or_default();

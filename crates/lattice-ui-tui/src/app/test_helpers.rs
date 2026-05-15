@@ -76,7 +76,7 @@ pub(super) fn attach_test_syntax(a: &mut App, lang: lattice_syntax::Lang) {
         .unwrap()
         .expect("syntax registered for lang");
     s.parse_at(&text, tv);
-    a.syntax = Some(lattice_syntax::SyntaxHandle::seeded(s));
+    a.editor.syntax = Some(lattice_syntax::SyntaxHandle::seeded(s));
 }
 
 /// Subscribe to every event the App publishes; the caller
@@ -175,7 +175,7 @@ pub(super) fn set_rust_syntax(a: &mut App, source: &str) {
         .unwrap()
         .expect("rust syntax");
     s.parse_at(source, 0);
-    a.syntax = Some(lattice_syntax::SyntaxHandle::seeded(s));
+    a.editor.syntax = Some(lattice_syntax::SyntaxHandle::seeded(s));
 }
 
 /// Build a fresh per-test temp workspace directory. The

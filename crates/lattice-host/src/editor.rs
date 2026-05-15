@@ -32,8 +32,12 @@ use lattice_grammar::{CommandInvocation, Register};
 use lattice_protocol::position::{Position, Range as ProtoRange};
 
 use crate::action::Action;
+use std::sync::Arc;
+
 use lattice_core::ui::popup::PopupPlacement;
+use lattice_protocol::edit::EditDelta;
 use lattice_runtime::{MessagePushed, MessagesRing};
+use lattice_syntax::{LangRegistry, StyledSpan, SyntaxHandle};
 
 use crate::action::EchoMessage;
 use crate::buffers::BufferId;
@@ -88,6 +92,14 @@ use crate::state::{
 ///   `pending_message_event_rx`, `pending_redraw`,
 ///   `command_history`, `command_history_cursor`,
 ///   `command_history_pending`, `auto_submit_after_chord`).
+/// - 5.B.12 -- syntax (`lang_registry`, `syntax`,
+///   `last_parsed_text_version`, `pending_syntax_edits`,
+///   `last_synced_syntax_version`, `visible_highlights`,
+///   `pane_highlights`). Skipped:
+///   `visible_highlights_key` -- its type
+///   `VisibleHighlightsKey` lives in
+///   `lattice-ui-tui::app::highlights` with `pub(super)`
+///   visibility; follow-up slice promotes it to host first.
 #[derive(Debug, Default)]
 pub struct Editor {
     /// Completed macro recordings keyed by register name.
@@ -283,4 +295,44 @@ pub struct Editor {
     /// captured chord auto-fires `Action::CommandLineSubmit`
     /// without an explicit `<CR>`. Reset on cancel / submit.
     pub auto_submit_after_chord: bool,
+    /// Tree-sitter language registry. Services the document
+    /// buffer's `Syntax` and every `HelpBuffer` constructed
+    /// by `:describe-*` / `:apropos` / `:keymap` (help
+    /// bodies render with markdown highlighting + fenced-
+    /// block injections sourced from this same registry).
+    pub lang_registry: Arc<LangRegistry>,
+    /// Per-document tree-sitter state. `None` when the
+    /// document's language is `Plain` (no grammar bundled).
+    /// Reparses run on a worker task; reads against the
+    /// latest snapshot are wait-free via `ArcSwap`.
+    pub syntax: Option<SyntaxHandle>,
+    /// `text_version` last sent to the syntax handle's
+    /// reparse channel. Used to skip republishing identical
+    /// state when no text mutation has happened since the
+    /// previous frame.
+    pub last_parsed_text_version: u64,
+    /// Tree-sitter-shaped edit deltas accumulated since the
+    /// last `maybe_reparse_syntax` call. Pushed by
+    /// `publish_document_changed` after each
+    /// `Buffer::apply_edit`; drained by
+    /// `maybe_reparse_syntax` and shipped to the syntax
+    /// worker as `Vec<EditDelta>` for incremental reparse.
+    pub pending_syntax_edits: Vec<EditDelta>,
+    /// `text_version` the syntax worker's tree is known to
+    /// be at. Sent as `from_version` on the next reparse
+    /// request so the worker can verify edits apply to the
+    /// correct tree baseline.
+    pub last_synced_syntax_version: u64,
+    /// Per-line `StyledSpan`s for the currently visible
+    /// viewport, indexed from `[scroll, scroll +
+    /// viewport_height)`. Recomputed each frame by
+    /// `refresh_highlights` (called from the runtime before
+    /// drawing).
+    pub visible_highlights: Vec<Vec<StyledSpan>>,
+    /// Per-frame snapshot of inactive panes' visible-window
+    /// syntax highlights, keyed by pane index. Refreshed by
+    /// `refresh_pane_highlights` before each draw so the
+    /// renderer can read via `&App`. The active pane uses
+    /// the live [`Self::visible_highlights`] field instead.
+    pub pane_highlights: std::collections::HashMap<usize, Vec<Vec<StyledSpan>>>,
 }

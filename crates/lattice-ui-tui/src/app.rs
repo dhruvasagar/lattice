@@ -88,9 +88,6 @@ use lattice_protocol::position::Position;
 #[cfg(test)]
 use lattice_protocol::selection::{Selection, SelectionSet};
 use lattice_runtime::{DocumentHandle, EventBus, SnapshotCache};
-use lattice_syntax::{LangRegistry, StyledSpan};
-
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::buffer_registry::{BufferData, BufferEntry, BufferRegistry, DocumentEntry};
@@ -570,7 +567,8 @@ pub struct App {
     /// `:apropos` / `:keymap`. Help bodies render with markdown
     /// highlighting (headings, fenced-block injections to the
     /// language tag) sourced from this same registry.
-    pub lang_registry: Arc<LangRegistry>,
+    // Phase 5.B.12: `lang_registry` moved to
+    // `editor.editor.lang_registry`.
     pub builtins: Builtins,
     /// App-side typed action IDs (`CommandKind::Action`
     /// registrations from `crate::actions::populate`). Each
@@ -610,32 +608,11 @@ pub struct App {
     /// are wait-free via `ArcSwap`. The `Syntax` struct itself
     /// stays accessible for one-shot users (help-buffer
     /// markdown highlighting).
-    pub syntax: Option<lattice_syntax::SyntaxHandle>,
-    /// `text_version` last sent to the syntax handle's reparse
-    /// channel. Used to skip republishing identical state when
-    /// no text mutation has happened since the previous frame.
-    last_parsed_text_version: u64,
-    /// Slice B.2 part 2: tree-sitter-shaped edit deltas
-    /// accumulated since the last `maybe_reparse_syntax` call.
-    /// Pushed by `publish_document_changed` after each
-    /// `Buffer::apply_edit`; drained by `maybe_reparse_syntax`
-    /// and shipped to the syntax worker as `Vec<EditDelta>` for
-    /// incremental reparse via `tree.edit()` + `Parser::parse(_,
-    /// Some(&old_tree))`. Empty between Actions; never grows
-    /// unboundedly because every Action ends in
-    /// `maybe_reparse_syntax` which drains.
-    pending_syntax_edits: Vec<lattice_protocol::edit::EditDelta>,
-    /// `text_version` the syntax worker's tree is known to be at.
-    /// Sent as `from_version` on the next reparse request so the
-    /// worker can verify edits apply to the correct tree
-    /// baseline; mismatch triggers full-reparse fallback. Reset
-    /// to 0 when a fresh syntax handle is wired up (file open /
-    /// language change / active-buffer switch).
-    last_synced_syntax_version: u64,
-    /// Per-line `StyledSpan`s for the currently visible viewport, indexed
-    /// from `[scroll, scroll + viewport_height)`. Recomputed each frame by
-    /// `refresh_highlights` (called from the runtime before drawing).
-    pub visible_highlights: Vec<Vec<StyledSpan>>,
+    // Phase 5.B.12: `syntax`, `last_parsed_text_version`,
+    // `pending_syntax_edits`, `last_synced_syntax_version`,
+    // `visible_highlights` moved to `editor.{syntax,
+    // last_parsed_text_version, pending_syntax_edits,
+    // last_synced_syntax_version, visible_highlights}`.
     /// Slice B.3: cache key validating the contents of
     /// `visible_highlights`. When `refresh_highlights` finds the
     /// freshly-computed key matches this stored key, the
@@ -827,7 +804,8 @@ pub struct App {
     /// [`Self::refresh_pane_highlights`] before each draw so the
     /// renderer can read via `&App`. The active pane uses the live
     /// [`Self::visible_highlights`] field instead.
-    pub pane_highlights: HashMap<usize, Vec<Vec<StyledSpan>>>,
+    // Phase 5.B.12: `pane_highlights` moved to
+    // `editor.editor.pane_highlights`.
     // Phase 5.B.11: `command_history`,
     // `command_history_cursor`, `command_history_pending`
     // moved to `editor.{command_history,
@@ -2333,7 +2311,7 @@ mod tests {
 
     // ---- Slice B.2 part 2: edit-delta accumulation -------------
     //
-    // Pin that EditDeltas accumulate on App.pending_syntax_edits
+    // Pin that EditDeltas accumulate on App.editor.pending_syntax_edits
     // across edits, drain on maybe_reparse_syntax, and the
     // version baseline tracks correctly. The actual incremental
     // reparse correctness is covered by lattice-syntax's parity
@@ -3806,10 +3784,10 @@ mod tests {
     fn opening_help_in_pane_keeps_document_syntax_live() {
         // Bug: opening `:lsp-log` (which routes through
         // `open_help_in_pane`) stashed the document's syntax onto
-        // the registry entry, leaving `self.syntax = None` for the
+        // the registry entry, leaving `self.editor.syntax = None` for the
         // duration of the help session. The help buffer renders as
         // a popup overlay over the underlying document; the
-        // document paint reads `self.syntax`, so the document
+        // document paint reads `self.editor.syntax`, so the document
         // appeared unhighlighted under the popup.
         //
         // Fix: `activate_help_in_pane` does NOT call
@@ -3820,7 +3798,7 @@ mod tests {
         let mut a = app_with("fn main() {}\n", 10);
         a.terminal_width = Some(80);
         attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
-        assert!(a.syntax.is_some(), "fixture syntax wired");
+        assert!(a.editor.syntax.is_some(), "fixture syntax wired");
         // Open a help buffer in pane (mimics `:lsp-log rust`).
         let _help_id =
             a.open_help_in_pane(HelpContent::from_lines("lsp:rust", vec!["log line".into()]));
@@ -3828,7 +3806,7 @@ mod tests {
         // The document's syntax must remain on the hot path so the
         // pane underneath paints with highlights.
         assert!(
-            a.syntax.is_some(),
+            a.editor.syntax.is_some(),
             "syntax must stay live during help-in-pane overlay"
         );
         // Round-trip back to the document.
@@ -3836,7 +3814,7 @@ mod tests {
         a.activate_document(doc_id);
         assert!(matches!(a.active_buffer, BufferKind::Document));
         assert!(
-            a.syntax.is_some(),
+            a.editor.syntax.is_some(),
             "syntax must survive the help-in-pane round trip"
         );
     }
@@ -3844,7 +3822,7 @@ mod tests {
     #[test]
     fn dismissing_tree_preserves_document_syntax_state() {
         // Regression: opening `:Tree` and pressing `q` to dismiss
-        // it returned to the document with `self.syntax = None`,
+        // it returned to the document with `self.editor.syntax = None`,
         // so the renderer fell back to plain text (no
         // colours). Cause: the on-tree-open snapshot moved syntax
         // into the document entry, then activate_document on
@@ -3873,7 +3851,7 @@ mod tests {
             crate::buffers::BufferKind::Document
         ));
         assert!(
-            a.syntax.is_some(),
+            a.editor.syntax.is_some(),
             "syntax must survive the tree round-trip"
         );
         std::fs::remove_dir_all(&dir).ok();

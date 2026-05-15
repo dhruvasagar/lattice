@@ -1716,11 +1716,11 @@ mod tests {
     fn apply_edit_accumulates_delta_when_syntax_attached() {
         let mut a = app_with("hello", 5);
         attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
-        assert_eq!(a.pending_syntax_edits.len(), 0);
+        assert_eq!(a.editor.pending_syntax_edits.len(), 0);
         a.apply_edit_blocking(Edit::insert(Position::new(0, 5), " world"))
             .unwrap();
-        assert_eq!(a.pending_syntax_edits.len(), 1);
-        let delta = a.pending_syntax_edits[0];
+        assert_eq!(a.editor.pending_syntax_edits.len(), 1);
+        let delta = a.editor.pending_syntax_edits[0];
         assert_eq!(delta.start_byte, 5);
         assert_eq!(delta.old_end_byte, 5);
         assert_eq!(delta.new_end_byte, 11);
@@ -1731,10 +1731,10 @@ mod tests {
         // No syntax attached -> publish_document_changed
         // short-circuits the delta push to keep the vec bounded.
         let mut a = app_with("hello", 5);
-        assert!(a.syntax.is_none());
+        assert!(a.editor.syntax.is_none());
         a.apply_edit_blocking(Edit::insert(Position::new(0, 5), " world"))
             .unwrap();
-        assert_eq!(a.pending_syntax_edits.len(), 0);
+        assert_eq!(a.editor.pending_syntax_edits.len(), 0);
     }
 
     #[test]
@@ -1746,7 +1746,7 @@ mod tests {
             Edit::insert(Position::new(0, 2), "2"),
         ];
         a.apply_edit_batch_blocking(edits).unwrap();
-        assert_eq!(a.pending_syntax_edits.len(), 2);
+        assert_eq!(a.editor.pending_syntax_edits.len(), 2);
     }
 
     #[test]
@@ -2251,12 +2251,12 @@ mod tests {
         //   the bumped version mirror, so by the time the user
         //   sees the next frame the tree matches the document).
         let mut a = app_with("fn main() {}\n", 10);
-        a.pane_highlights.insert(0, vec![Vec::new(); 1]);
+        a.editor.pane_highlights.insert(0, vec![Vec::new(); 1]);
         a.editor.pending_redraw = false;
         a.apply(Action::RedrawScreen);
         assert!(a.editor.pending_redraw, "runtime should clear terminal next frame");
         assert!(
-            a.pane_highlights.is_empty(),
+            a.editor.pane_highlights.is_empty(),
             "pane highlights cache must reset (so next frame repopulates from scratch)"
         );
         // Post-apply, the version mirror equals the document's
@@ -2265,7 +2265,7 @@ mod tests {
         // desired flow -- a single keystroke produces an
         // already-fresh tree.
         assert_eq!(
-            a.last_parsed_text_version,
+            a.editor.last_parsed_text_version,
             a.document.text_version(),
             "post-apply reparse must have synced the version mirror"
         );

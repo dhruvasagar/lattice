@@ -801,18 +801,18 @@ mod tests {
         attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
         a.apply_edit_blocking(Edit::insert(Position::new(0, 1), "b"))
             .unwrap();
-        assert_eq!(a.pending_syntax_edits.len(), 1);
-        let forward = a.pending_syntax_edits[0];
+        assert_eq!(a.editor.pending_syntax_edits.len(), 1);
+        let forward = a.editor.pending_syntax_edits[0];
         a.undo_blocking().unwrap();
-        assert_eq!(a.pending_syntax_edits.len(), 2);
-        let undo_delta = a.pending_syntax_edits[1];
+        assert_eq!(a.editor.pending_syntax_edits.len(), 2);
+        let undo_delta = a.editor.pending_syntax_edits[1];
         // Undo's old_end/new_end are swapped relative to
         // forward.
         assert_eq!(undo_delta.start_byte, forward.start_byte);
         assert_eq!(undo_delta.old_end_byte, forward.new_end_byte);
         assert_eq!(undo_delta.new_end_byte, forward.old_end_byte);
         a.redo_blocking().unwrap();
-        assert_eq!(a.pending_syntax_edits.len(), 3);
+        assert_eq!(a.editor.pending_syntax_edits.len(), 3);
     }
 
     #[test]

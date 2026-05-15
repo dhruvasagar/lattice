@@ -54,7 +54,7 @@ use crate::app::{App, EchoLevel, Fold};
 ///   `app.folds.iter()` reads.
 /// - `visible_highlights: Arc<[Vec<StyledSpan>]>` -- frozen
 ///   viewport highlight grid. Replaces direct
-///   `app.visible_highlights[...]` reads.
+///   `app.editor.visible_highlights[...]` reads.
 /// - `show_line_numbers: bool` -- cached typed-options value.
 ///   The typed-options ArcSwap read is wait-free per call, but
 ///   caching once per chain keeps gutter computation
@@ -92,7 +92,7 @@ impl<'a> FrameView<'a> {
         Self {
             app,
             folds: Arc::from(app.folds.clone().into_boxed_slice()),
-            visible_highlights: Arc::from(app.visible_highlights.clone().into_boxed_slice()),
+            visible_highlights: Arc::from(app.editor.visible_highlights.clone().into_boxed_slice()),
             show_line_numbers: app.show_line_numbers(),
             relative_line_numbers: app.relative_line_numbers(),
         }
@@ -103,12 +103,12 @@ impl<'a> FrameView<'a> {
     /// inactive-pane render paths so each pane's mode stack drives
     /// its own gutter independently. The fold / highlight snapshots
     /// stay tied to the active doc (inactive panes pull their own
-    /// per-pane span snapshots through `app.pane_highlights`).
+    /// per-pane span snapshots through `app.editor.pane_highlights`).
     pub fn for_buffer(app: &'a App, buffer_id: crate::buffers::BufferId) -> Self {
         Self {
             app,
             folds: Arc::from(app.folds.clone().into_boxed_slice()),
-            visible_highlights: Arc::from(app.visible_highlights.clone().into_boxed_slice()),
+            visible_highlights: Arc::from(app.editor.visible_highlights.clone().into_boxed_slice()),
             show_line_numbers: app.show_line_numbers_for(buffer_id),
             relative_line_numbers: app.relative_line_numbers_for(buffer_id),
         }
@@ -1821,11 +1821,11 @@ fn draw_inactive_document(
         None
     };
     let highlights: Vec<Vec<lattice_syntax::StyledSpan>> =
-        if let Some(spans) = app.pane_highlights.get(&pane_idx) {
+        if let Some(spans) = app.editor.pane_highlights.get(&pane_idx) {
             spans.clone()
         } else if active_doc_id == Some(pane.buffer_id) && pane.scroll == app.scroll {
             // Read from the FrameView snapshot rather than the
-            // live `app.visible_highlights` -- protects against
+            // live `app.editor.visible_highlights` -- protects against
             // a multi-thread renderer racing with App's
             // `refresh_highlights`.
             view.visible_highlights.iter().cloned().collect()
@@ -2308,7 +2308,7 @@ fn draw_mode_line(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnaps
 
 /// Produce the visible buffer lines as `ratatui::text::Line`s, including
 /// gutter (line numbers), tab expansion, and styled spans pulled from
-/// `app.visible_highlights` (populated by the runtime via
+/// `app.editor.visible_highlights` (populated by the runtime via
 /// `App::refresh_highlights`).
 ///
 /// Spans are owned (`Cow::Owned`) so the returned `Line`s outlive the

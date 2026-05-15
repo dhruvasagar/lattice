@@ -4262,7 +4262,7 @@ impl App {
     /// help-style buffer.
     pub fn do_lsp_status(&mut self) {
         let buffer = lattice_lsp::help_views::lsp_status_help(&self.lsp)
-            .with_markdown_syntax(self.lang_registry.clone());
+            .with_markdown_syntax(self.editor.lang_registry.clone());
         self.display_buffer(
             buffer,
             lattice_core::ui::display::BufferDisplayCategory::LspStatus,

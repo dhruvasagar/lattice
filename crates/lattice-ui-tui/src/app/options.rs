@@ -28,9 +28,9 @@ use crate::help::HelpContent;
 impl App {
     // ---- Typed-options accessors (DESIGN.md §5.12) ----
     //
-    // The current value of each option lives in `self.config`
+    // The current value of each option lives in `self.editor.config`
     // behind an `ArcSwap` (single source of truth). These
-    // accessors read from `self.option_cache` -- a derived
+    // accessors read from `self.editor.option_cache` -- a derived
     // projection refreshed via the §5.10 cascade hook on every
     // `Event::OptionChanged` -- so the renderer's per-line option
     // checks stay at field-access speed (~1ns) instead of the
@@ -39,7 +39,7 @@ impl App {
     /// `:set number`. Default `true`. Reads the active buffer's
     /// resolved value via the hot-path cache.
     pub fn show_line_numbers(&self) -> bool {
-        self.option_cache.show_line_numbers
+        self.editor.option_cache.show_line_numbers
     }
 
     /// `:set number` for an arbitrary buffer (per-pane resolution).
@@ -56,7 +56,7 @@ impl App {
     /// behaviour) -- the private `apply_option_cascade` cascade
     /// hook mirrors that cascade.
     pub fn relative_line_numbers(&self) -> bool {
-        self.option_cache.relative_line_numbers
+        self.editor.option_cache.relative_line_numbers
     }
 
     /// `:set relativenumber` for an arbitrary buffer (per-pane
@@ -68,12 +68,12 @@ impl App {
     /// `:set wrap`. Default `false`. (v1 renderer always
     /// horizontal-scrolls; this flag is read by future B.3 polish.)
     pub fn wrap_lines(&self) -> bool {
-        self.option_cache.wrap_lines
+        self.editor.option_cache.wrap_lines
     }
 
     /// `:set ignorecase`. Default `false`.
     pub fn ignorecase(&self) -> bool {
-        self.option_cache.ignorecase
+        self.editor.option_cache.ignorecase
     }
 
     /// `:set tabstop=N`. Default `8`. Stored as `i64` in config
@@ -81,28 +81,28 @@ impl App {
     /// at cache-rebuild time -- the validate closure on the option
     /// caps the range to `1..=32` so the cast can never lose bits.
     pub fn tabstop(&self) -> u32 {
-        self.option_cache.tabstop
+        self.editor.option_cache.tabstop
     }
 
     /// `:set scrolloff=N`. Default `0`. Same `i64`→`u32` shape
     /// as [`Self::tabstop`]; range `0..=64`.
     pub fn scrolloff(&self) -> u32 {
-        self.option_cache.scrolloff
+        self.editor.option_cache.scrolloff
     }
 
     /// `:set foldmethod=...`. Default [`FoldMethod::Manual`].
     pub fn foldmethod(&self) -> FoldMethod {
-        self.option_cache.foldmethod
+        self.editor.option_cache.foldmethod
     }
 
     /// `:set foldenable` / `:set nofoldenable` (`zi`). Default `true`.
     pub fn foldenable(&self) -> bool {
-        self.option_cache.foldenable
+        self.editor.option_cache.foldenable
     }
 
     /// `:set completion.auto_insert_single`. Default `true`.
     pub fn completion_auto_insert_single(&self) -> bool {
-        self.option_cache.completion_auto_insert_single
+        self.editor.option_cache.completion_auto_insert_single
     }
 
     // ---- Test-only typed setters (kept on the public surface
@@ -118,7 +118,7 @@ impl App {
     /// for the caller -- mirrors what production's `do_set` does
     /// after the cmdline path.
     pub fn set_foldmethod_for_test(&mut self, fm: FoldMethod) {
-        self.config
+        self.editor.config
             .set_typed::<lattice_config::FoldMethodOption>(fm)
             .expect("set foldmethod");
         self.drain_option_changes();
@@ -127,7 +127,7 @@ impl App {
     /// Set `foldenable` directly. Drains the cascade so the cache
     /// reflects the new value before the caller observes it.
     pub fn set_foldenable_for_test(&mut self, on: bool) {
-        let _ = self.config.set_typed::<lattice_config::FoldEnable>(on);
+        let _ = self.editor.config.set_typed::<lattice_config::FoldEnable>(on);
         self.drain_option_changes();
     }
 
@@ -136,7 +136,7 @@ impl App {
     /// caller observes it.
     pub fn set_completion_auto_insert_single_for_test(&mut self, on: bool) {
         let _ = self
-            .config
+            .editor.config
             .set_typed::<lattice_config::CompletionAutoInsertSingle>(on);
         self.drain_option_changes();
     }
@@ -165,7 +165,7 @@ impl App {
         // the cache layer can grow into something richer (e.g.
         // `SmallString`) without changing the boundary.
         let glyph = |s: &str| -> Option<char> { s.chars().next() };
-        self.option_cache = OptionCache {
+        self.editor.option_cache = OptionCache {
             show_line_numbers: *self.resolved_option::<Number>(buffer),
             relative_line_numbers: *self.resolved_option::<RelativeNumber>(buffer),
             wrap_lines: *self.resolved_option::<Wrap>(buffer),
@@ -216,34 +216,34 @@ impl App {
     pub fn recompute_options_for_buffer(&mut self, buffer: crate::buffers::BufferId) {
         let mut resolved = lattice_config::ResolvedOptions::new();
         // Layer 5/6: bootstrap with current registry values.
-        self.config
+        self.editor.config
             .bootstrap_resolved_with_current_values(&mut resolved);
 
         // Active modes (layers 4 + 3): walk in activation order
         // for minors, prepend major. Pulled from
-        // `self.active_modes[buffer]`; absent ⇒ empty (no major,
+        // `self.editor.active_modes[buffer]`; absent ⇒ empty (no major,
         // no minors). M.3 lands the per-kind majors that
         // populate this map at buffer creation.
-        let modes_snapshot = self.active_modes.get(&buffer).cloned().unwrap_or_default();
+        let modes_snapshot = self.editor.active_modes.get(&buffer).cloned().unwrap_or_default();
 
         let mut mode_contributions: Vec<lattice_config::OptionOverrideSet> =
             Vec::with_capacity(modes_snapshot.minors().len() + 1);
         // Major first (lower priority than minors per §6.1).
         if let Some(major_id) = modes_snapshot.major()
-            && let Some(major) = self.mode_registry.get(major_id)
+            && let Some(major) = self.editor.mode_registry.get(major_id)
         {
             mode_contributions.push(major.options());
         }
         // Minors in activation order.
         for &minor_id in modes_snapshot.minors() {
-            if let Some(minor) = self.mode_registry.get(minor_id) {
+            if let Some(minor) = self.editor.mode_registry.get(minor_id) {
                 mode_contributions.push(minor.options());
             }
         }
 
         // Buffer-local overrides (layer 2).
         let buffer_local = self
-            .buffer_local_overrides
+            .editor.buffer_local_overrides
             .get(&buffer)
             .cloned()
             .unwrap_or_default();
@@ -268,7 +268,7 @@ impl App {
         let resolver = lattice_config::Resolver::new();
         resolver.resolve_into(layered, &mut resolved);
 
-        self.resolved_options.insert(buffer, resolved);
+        self.editor.resolved_options.insert(buffer, resolved);
         // M.4: keep `option_cache` in lockstep with the active
         // buffer's resolved options so the renderer's hot-path
         // accessors (`app.show_line_numbers()` etc.) reflect mode
@@ -295,14 +295,14 @@ impl App {
     /// behaviour.
     pub fn recompute_active_completion_sources_for(&mut self, buffer: crate::buffers::BufferId) {
         let mut merged: Vec<lattice_completion::CompletionSourceContribution> = Vec::new();
-        if let Some(modes_snapshot) = self.active_modes.get(&buffer).cloned() {
+        if let Some(modes_snapshot) = self.editor.active_modes.get(&buffer).cloned() {
             if let Some(major_id) = modes_snapshot.major()
-                && let Some(major) = self.mode_registry.get(major_id)
+                && let Some(major) = self.editor.mode_registry.get(major_id)
             {
                 merged.extend(major.completion_sources());
             }
             for &minor_id in modes_snapshot.minors() {
-                if let Some(minor) = self.mode_registry.get(minor_id) {
+                if let Some(minor) = self.editor.mode_registry.get(minor_id) {
                     merged.extend(minor.completion_sources());
                 }
             }
@@ -314,7 +314,7 @@ impl App {
         // popup *could* open but doesn't have any active sources
         // shows up with a count of 0, rather than just looking
         // like the cache hasn't run yet.
-        self.buffer_locals
+        self.editor.buffer_locals
             .entry(buffer)
             .or_default()
             .insert(lattice_mode::ActiveCompletionSources(merged));
@@ -336,16 +336,16 @@ impl App {
     where
         D::Value: Clone + Send + Sync + 'static,
     {
-        if let Some(cache) = self.resolved_options.get(&buffer)
+        if let Some(cache) = self.editor.resolved_options.get(&buffer)
             && let Some(v) = cache.get::<D>()
         {
             return v;
         }
-        self.config.get_typed::<D>().expect("option not registered")
+        self.editor.config.get_typed::<D>().expect("option not registered")
     }
 
     pub(super) fn do_set(&mut self, option: &str) {
-        let echo = match self.config.parse_and_set_command(option) {
+        let echo = match self.editor.config.parse_and_set_command(option) {
             Ok(echo) => echo,
             Err(err) => {
                 self.set_message(EchoLevel::Error, err.to_string());
@@ -397,7 +397,7 @@ impl App {
         // to mutate `self` for cascades while reading from the rx).
         // Always restored after the loop; the `Option` is purely a
         // borrow gymnastic, never observed in any other state.
-        let mut rx = match self.option_change_rx.take() {
+        let mut rx = match self.editor.option_change_rx.take() {
             Some(rx) => rx,
             None => return,
         };
@@ -406,7 +406,7 @@ impl App {
                 self.apply_option_cascade(&name);
             }
         }
-        self.option_change_rx = Some(rx);
+        self.editor.option_change_rx = Some(rx);
     }
 
     /// Run the per-option cascade for `canonical_name` (already
@@ -445,7 +445,7 @@ impl App {
                 // gutter renders at all. The reverse (`:set nornu`)
                 // does NOT clear `nu` -- preserves user intent.
                 if self.relative_line_numbers() {
-                    let _ = self.config.set_typed::<lattice_config::Number>(true);
+                    let _ = self.editor.config.set_typed::<lattice_config::Number>(true);
                 }
             }
             "foldmethod" => {
@@ -465,7 +465,7 @@ impl App {
                 // a warn so users see the failure without
                 // panicking the editor.
                 let spec = self
-                    .config
+                    .editor.config
                     .get_typed::<lattice_config::MessagesFilter>()
                     .map(|v| (*v).clone())
                     .unwrap_or_else(|| String::from("info"));
@@ -521,14 +521,14 @@ impl App {
     /// resolution. Non-bool options short-circuit at the
     /// `get_bool_by_name` step; the loop is a no-op.
     fn mirror_option_to_modes(&mut self, canonical_name: &str) {
-        let Some(on) = self.config.get_bool_by_name(canonical_name) else {
+        let Some(on) = self.editor.config.get_bool_by_name(canonical_name) else {
             return;
         };
         // Collect mode ids first so the activate/deactivate
         // calls (which take `&mut self`) don't conflict with the
         // registry borrow inside `iter_meta`.
         let mirror_ids: Vec<lattice_mode::ModeId> = {
-            let registry = &self.mode_registry;
+            let registry = &self.editor.mode_registry;
             registry
                 .iter_meta()
                 .filter_map(|(id, _kind)| {
@@ -544,7 +544,7 @@ impl App {
         let buffer_id = self.document_buffer_id;
         for mode_id in mirror_ids {
             let currently_active = self
-                .active_modes
+                .editor.active_modes
                 .get(&buffer_id)
                 .map(|modes| modes.has_minor(mode_id))
                 .unwrap_or(false);
@@ -559,7 +559,7 @@ impl App {
     /// `:describe-option <name>` (DESIGN.md §5.11). Renders the
     /// option's metadata + current value into a help buffer.
     pub(super) fn do_describe_option(&mut self, name: &str) {
-        let Some(spec) = self.config.lookup(name) else {
+        let Some(spec) = self.editor.config.lookup(name) else {
             self.set_message(EchoLevel::Error, format!("E518: Unknown option: {name}"));
             return;
         };
@@ -642,7 +642,7 @@ impl App {
             }
             lines.push(String::new());
             for meta in options {
-                let spec = self.config.lookup(meta.name);
+                let spec = self.editor.config.lookup(meta.name);
                 let aliases = spec
                     .as_ref()
                     .map(|s| s.aliases())
@@ -926,7 +926,7 @@ mod tests {
         // the bus-subscription model fixes that gap.
         let mut a = app_with("def f():\n    pass\n    pass\n", 10);
         // No :set involved -- direct write to the registry.
-        a.config
+        a.editor.config
             .set_typed::<lattice_config::FoldMethodOption>(FoldMethod::Indent)
             .unwrap();
         // Folds should not be populated yet -- the cascade is
@@ -942,10 +942,10 @@ mod tests {
     #[test]
     fn drain_option_changes_runs_relativenumber_to_number_cascade() {
         let mut a = app_with("xx", 10);
-        a.config.set_typed::<lattice_config::Number>(false).unwrap();
+        a.editor.config.set_typed::<lattice_config::Number>(false).unwrap();
         a.drain_option_changes();
         assert!(!a.show_line_numbers());
-        a.config
+        a.editor.config
             .set_typed::<lattice_config::RelativeNumber>(true)
             .unwrap();
         a.drain_option_changes();
@@ -963,7 +963,7 @@ mod tests {
         // whitespace-mode's visible set: tab + trailing +
         // leading on, space + EOL off.
         let a = app_with("xx", 10);
-        let cache = &a.option_cache;
+        let cache = &a.editor.option_cache;
         // Whitespace decoration starts off (the option is
         // false by default; the mode isn't auto-active).
         assert!(!cache.show_whitespace);
@@ -981,7 +981,7 @@ mod tests {
         // M.7.3.a: cursor-line option projects through the
         // cache. Default off.
         let a = app_with("xx", 10);
-        assert!(!a.option_cache.current_line_highlight);
+        assert!(!a.editor.option_cache.current_line_highlight);
     }
 
     #[test]
@@ -992,17 +992,17 @@ mod tests {
         let mut a = app_with("xx", 10);
         a.do_set("display.whitespace.tab=⇥");
         a.drain_option_changes();
-        assert_eq!(a.option_cache.whitespace_tab, Some('⇥'));
+        assert_eq!(a.editor.option_cache.whitespace_tab, Some('⇥'));
         // Empty string disables the category.
         a.do_set("display.whitespace.tab=");
         a.drain_option_changes();
-        assert_eq!(a.option_cache.whitespace_tab, None);
+        assert_eq!(a.editor.option_cache.whitespace_tab, None);
     }
 
     #[test]
     fn drain_option_changes_runs_ui_theme_sync_for_direct_writes() {
         let mut a = app_with("xx", 10);
-        a.config
+        a.editor.config
             .set_typed::<crate::tui_options::UiDimInactive>(false)
             .unwrap();
         a.drain_option_changes();
@@ -1023,34 +1023,34 @@ mod tests {
         // mutation lands in BOTH places.
         let mut a = app_with("xx", 10);
         // Flip dim_inactive false.
-        a.config
+        a.editor.config
             .set_typed::<crate::tui_options::UiDimInactive>(false)
             .unwrap();
         a.drain_option_changes();
-        assert!(!a.host_theme.dim_inactive_panes, "host: dim_inactive flipped");
+        assert!(!a.editor.host_theme.dim_inactive_panes, "host: dim_inactive flipped");
         assert!(!a.theme.dim_inactive_panes, "tui: dim_inactive flipped");
         // Flip nerd_fonts on.
-        a.config
+        a.editor.config
             .set_typed::<crate::tui_options::UiNerdFonts>(true)
             .unwrap();
         a.drain_option_changes();
-        assert!(a.host_theme.nerd_fonts);
+        assert!(a.editor.host_theme.nerd_fonts);
         assert!(a.theme.nerd_fonts);
         // Change separator glyph.
-        a.config
+        a.editor.config
             .set_typed::<crate::tui_options::UiSeparator>("┃".to_string())
             .unwrap();
         a.drain_option_changes();
-        assert_eq!(a.host_theme.pane_separator_vertical, '┃');
+        assert_eq!(a.editor.host_theme.pane_separator_vertical, '┃');
         assert_eq!(a.theme.pane_separator_vertical, '┃');
         // Change separator color (named).
-        a.config
+        a.editor.config
             .set_typed::<crate::tui_options::UiSeparatorColor>("red".to_string())
             .unwrap();
         a.drain_option_changes();
         use lattice_host::ui::theme as ht;
         assert_eq!(
-            a.host_theme.pane_separator.fg,
+            a.editor.host_theme.pane_separator.fg,
             Some(ht::Color::Named(ht::NamedColor::Red)),
             "host: separator fg=red",
         );
@@ -1064,9 +1064,9 @@ mod tests {
     #[test]
     fn drain_option_changes_handles_chained_cascade_writes() {
         let mut a = app_with("xx", 10);
-        a.config.set_typed::<lattice_config::Number>(false).unwrap();
+        a.editor.config.set_typed::<lattice_config::Number>(false).unwrap();
         a.drain_option_changes();
-        a.config
+        a.editor.config
             .set_typed::<lattice_config::RelativeNumber>(true)
             .unwrap();
         a.drain_option_changes();
@@ -1271,25 +1271,25 @@ mod tests {
         let mut a = app_with("hi", 5);
         let buf = a.document_buffer_id;
         // See dispatch.rs notes for `make_mut` vs `get_mut`.
-        let registry = std::sync::Arc::make_mut(&mut a.mode_registry);
+        let registry = std::sync::Arc::make_mut(&mut a.editor.mode_registry);
         let mode_id = registry
             .register(OptionContributingMode::new())
             .expect("register");
         let mut active = lattice_mode::ActiveModes::new();
         let guards = lattice_mode::GuardStoreHandle::new();
-        a.mode_registry
+        a.editor.mode_registry
             .activate_minor(
                 &mut active,
                 &guards,
-                &a.config,
+                &a.editor.config,
                 &a.event_bus,
-                &a.services,
+                &a.editor.services,
                 lattice_protocol::ids::BufferId::new(0),
                 mode_id,
                 lattice_mode::CapabilitySet::empty(),
             )
             .expect("activate");
-        a.active_modes.insert(buf, active);
+        a.editor.active_modes.insert(buf, active);
 
         a.recompute_options_for_buffer(buf);
 
@@ -1304,32 +1304,32 @@ mod tests {
         let mut a = app_with("hi", 5);
         let buf = a.document_buffer_id;
         // See dispatch.rs notes for `make_mut` vs `get_mut`.
-        let registry = std::sync::Arc::make_mut(&mut a.mode_registry);
+        let registry = std::sync::Arc::make_mut(&mut a.editor.mode_registry);
         let mode_id = registry
             .register(OptionContributingMode::new())
             .expect("register");
         let mut active = lattice_mode::ActiveModes::new();
         let guards = lattice_mode::GuardStoreHandle::new();
-        a.mode_registry
+        a.editor.mode_registry
             .activate_minor(
                 &mut active,
                 &guards,
-                &a.config,
+                &a.editor.config,
                 &a.event_bus,
-                &a.services,
+                &a.editor.services,
                 lattice_protocol::ids::BufferId::new(0),
                 mode_id,
                 lattice_mode::CapabilitySet::empty(),
             )
             .expect("activate");
-        a.active_modes.insert(buf, active);
+        a.editor.active_modes.insert(buf, active);
 
         let mut local = lattice_config::OptionOverrideSet::new();
         local.push(lattice_config::OptionOverride::new(
             std::any::TypeId::of::<lattice_config::Tabstop>(),
             16i64,
         ));
-        a.buffer_local_overrides.insert(buf, local);
+        a.editor.buffer_local_overrides.insert(buf, local);
 
         a.recompute_options_for_buffer(buf);
 
@@ -1372,7 +1372,7 @@ mod tests {
             std::any::TypeId::of::<lattice_config::Number>(),
             false,
         ));
-        a.buffer_local_overrides.insert(other, local);
+        a.editor.buffer_local_overrides.insert(other, local);
         a.recompute_options_for_buffer(other);
         // Active buffer keeps the default (true); the override
         // only applies to `other`.

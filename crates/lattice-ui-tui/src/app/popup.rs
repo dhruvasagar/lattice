@@ -71,7 +71,7 @@ impl App {
     /// `content` is a [`HelpContent`] = (slim `HelpBuffer`, parsed
     /// `HelpMetadata`). The buffer becomes `App.editor.popup_buffer` (the
     /// popup hot-path slot); the metadata is seeded into
-    /// `App.buffer_locals[buffer.id]` via [`Self::seed_help_metadata_locals`]
+    /// `App.editor.buffer_locals[buffer.id]` via [`Self::seed_help_metadata_locals`]
     /// so the renderer + link-follow / anchor-jump readers route
     /// uniformly through buffer_locals (M.3.2.c.5).
     pub(crate) fn open_popup(&mut self, content: HelpContent, placement: PopupPlacement) {
@@ -213,28 +213,28 @@ impl App {
         // markdown that may include fenced code, but its links
         // are typically external URLs we don't follow internally.
         let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
-        let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
-        let _ = self.mode_registry.activate_major(
+        let mut active = self.editor.active_modes.remove(&buffer_id).unwrap_or_default();
+        let _ = self.editor.mode_registry.activate_major(
             &mut active,
-            &self.mode_guards,
-            &self.config,
+            &self.editor.mode_guards,
+            &self.editor.config,
             &self.event_bus,
-            &self.services,
+            &self.editor.services,
             proto_id,
             lattice_syntax::MarkdownMode::mode_id(),
             lattice_mode::CapabilitySet::empty(),
         );
-        let _ = self.mode_registry.activate_minor(
+        let _ = self.editor.mode_registry.activate_minor(
             &mut active,
-            &self.mode_guards,
-            &self.config,
+            &self.editor.mode_guards,
+            &self.editor.config,
             &self.event_bus,
-            &self.services,
+            &self.editor.services,
             proto_id,
             crate::modes::HoverMode::mode_id(),
             lattice_mode::CapabilitySet::empty(),
         );
-        self.active_modes.insert(buffer_id, active);
+        self.editor.active_modes.insert(buffer_id, active);
         self.recompute_options_for_buffer(buffer_id);
         // Crucially, NO active_buffer flip, NO prev_pane_for_help
         // capture, NO position-history push, NO cursor/scroll
@@ -251,9 +251,9 @@ impl App {
             return;
         };
         self.buffers.remove(prev);
-        self.active_modes.remove(&prev);
-        self.buffer_locals.remove(&prev);
-        self.resolved_options.remove(&prev);
+        self.editor.active_modes.remove(&prev);
+        self.editor.buffer_locals.remove(&prev);
+        self.editor.resolved_options.remove(&prev);
     }
 
     /// M.4 (b): resolve the popup's `HelpBuffer` through the
@@ -294,7 +294,7 @@ impl App {
             anchors,
             highlights,
         } = metadata;
-        let locals = self.buffer_locals.entry(buffer_id).or_default();
+        let locals = self.editor.buffer_locals.entry(buffer_id).or_default();
         locals.insert(crate::modes::HelpLinks(links));
         locals.insert(crate::modes::HelpAnchors(anchors));
         locals.insert(crate::modes::HelpHighlights(highlights));
@@ -305,7 +305,7 @@ impl App {
     /// popup is open or the locals slot was not seeded.
     pub fn popup_help_links(&self) -> Option<&[crate::help::HelpLink]> {
         let id = self.editor.popup_buffer?;
-        self.buffer_locals
+        self.editor.buffer_locals
             .get(&id)
             .and_then(|l| l.get::<crate::modes::HelpLinks>())
             .map(|h| h.0.as_slice())
@@ -317,7 +317,7 @@ impl App {
     /// open or the locals slot was not seeded.
     pub fn popup_help_anchors(&self) -> Option<&[crate::help::HelpAnchor]> {
         let id = self.editor.popup_buffer?;
-        self.buffer_locals
+        self.editor.buffer_locals
             .get(&id)
             .and_then(|l| l.get::<crate::modes::HelpAnchors>())
             .map(|h| h.0.as_slice())
@@ -329,7 +329,7 @@ impl App {
     /// seeded.
     pub fn popup_help_highlights(&self) -> Option<&[Vec<lattice_syntax::StyledSpan>]> {
         let id = self.editor.popup_buffer?;
-        self.buffer_locals
+        self.editor.buffer_locals
             .get(&id)
             .and_then(|l| l.get::<crate::modes::HelpHighlights>())
             .map(|h| h.0.as_slice())
@@ -361,7 +361,7 @@ impl App {
         let (title, content) = self
             .buffers
             .with_help(id, |buf| (buf.title.clone(), buf.content.clone()))?;
-        let locals = self.buffer_locals.get(&id)?;
+        let locals = self.editor.buffer_locals.get(&id)?;
         let metadata = HelpMetadata {
             links: locals
                 .get::<crate::modes::HelpLinks>()
@@ -507,7 +507,7 @@ mod tests {
         let mut a = app_with("hello", 10);
         a.do_open_hover("hover body");
         let buffer_id = a.editor.popup_buffer.expect("popup open");
-        let modes = a.active_modes.get(&buffer_id).expect("popup has modes");
+        let modes = a.editor.active_modes.get(&buffer_id).expect("popup has modes");
         assert!(
             modes.minors().contains(&crate::modes::HoverMode::mode_id()),
             "hover popup should activate hover-mode minor; got {:?}",
@@ -570,8 +570,8 @@ mod tests {
         assert!(a.buffers.contains(id));
         a.dismiss_popup();
         assert!(!a.buffers.contains(id));
-        assert!(a.active_modes.get(&id).is_none());
-        assert!(a.buffer_locals.get(&id).is_none());
+        assert!(a.editor.active_modes.get(&id).is_none());
+        assert!(a.editor.buffer_locals.get(&id).is_none());
     }
 
     #[test]

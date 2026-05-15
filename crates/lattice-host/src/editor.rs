@@ -31,22 +31,26 @@ use std::path::PathBuf;
 use lattice_grammar::{CommandInvocation, Register};
 use lattice_protocol::position::{Position, Range as ProtoRange};
 
-use crate::action::Action;
 use std::sync::Arc;
 
+use lattice_config::{ConfigRegistry, OptionOverrideSet, ResolvedOptions};
 use lattice_core::ui::popup::PopupPlacement;
+use lattice_help::topics::HelpTopicRegistry;
+use lattice_mode::{ActiveModes, BufferLocals, GuardStoreHandle, ModeRegistry, ServiceRegistry};
+use lattice_picker::{Picker, PickerMruIndex, PickerRegistry};
+use lattice_protocol::Event;
 use lattice_protocol::edit::EditDelta;
 use lattice_runtime::{MessagePushed, MessagesRing};
-use lattice_picker::{Picker, PickerMruIndex, PickerRegistry};
 use lattice_syntax::{LangRegistry, StyledSpan, SyntaxHandle};
 
-use crate::action::EchoMessage;
+use crate::action::{Action, EchoMessage};
 use crate::buffers::BufferId;
 use crate::state::{
-    LastFind, LastSearch, LastVisual, LivePickerQueryState, MacroRecording, PendingBlockInsert,
-    PendingPickerInit, PositionEntry, PrevPaneState, ReplaceEntry, SearchLine, SubstitutePreview,
-    TagStackEntry, UnnamedRegister,
+    LastFind, LastSearch, LastVisual, LivePickerQueryState, MacroRecording, OptionCache,
+    PendingBlockInsert, PendingPickerInit, PositionEntry, PrevPaneState, ReplaceEntry, SearchLine,
+    SubstitutePreview, TagStackEntry, UnnamedRegister,
 };
+use crate::ui::theme::Theme as HostTheme;
 
 /// Renderer-agnostic editor state.
 ///
@@ -109,6 +113,11 @@ use crate::state::{
 ///   `LivePickerQueryState`, `InFlightLiveQuery`,
 ///   `LIVE_PICKER_DEBOUNCE`) also moved from
 ///   `lattice-ui-tui::app` to `lattice_host::state`.
+/// - 5.B.14 -- config + modes (`config`, `option_cache`,
+///   `mode_registry`, `services`, `mode_guards`,
+///   `active_modes`, `buffer_locals`, `resolved_options`,
+///   `buffer_local_overrides`, `option_change_rx`,
+///   `help_topics`, `host_theme`).
 #[derive(Debug, Default)]
 pub struct Editor {
     /// Completed macro recordings keyed by register name.
@@ -364,4 +373,64 @@ pub struct Editor {
     /// render its candidate row preview into the auxiliary
     /// region. Cleared after the renderer reads it.
     pub previewing: bool,
+    /// Shared typed-options registry (DESIGN.md §5.12).
+    /// Every option's *current value* lives in here behind
+    /// an `ArcSwap<T>`; `:set` parses against it; the
+    /// customize buffer view (post-1.0) reads + writes
+    /// through the same surface.
+    pub config: Arc<ConfigRegistry>,
+    /// Hot-path read cache for the option values.
+    /// Repopulated by `rebuild_option_cache` after every
+    /// `:set`. Accessor methods on App read this cached
+    /// primitive directly (~1ns) instead of going through
+    /// the registry's mutex + ArcSwap + downcast (~33ns).
+    pub option_cache: OptionCache,
+    /// Mode registry (M.1). Owns the catalogue of registered
+    /// modes; activation / deactivation routes through here.
+    pub mode_registry: Arc<ModeRegistry>,
+    /// Typed service map subsystems hand off to modes so
+    /// `Mode::on_activate` can pull subsystem handles via
+    /// `ctx.service::<T>()`. Populated at boot; read-only
+    /// after init.
+    pub services: Arc<ServiceRegistry>,
+    /// Per-`(buffer, mode)` Guard storage. Modes return an
+    /// owned `Mode::Guard` from `on_activate`; the
+    /// dispatcher stashes it here keyed by `(BufferId,
+    /// ModeId)`. On deactivation the dispatcher drops the
+    /// Guard, firing its `Drop` impl for synchronous
+    /// cleanup. Wrapped in `Arc<Mutex<>>` because the
+    /// spawned lifecycle task inserts from a worker thread.
+    pub mode_guards: GuardStoreHandle,
+    /// Per-buffer active modes (major + minors).
+    pub active_modes: HashMap<BufferId, ActiveModes>,
+    /// Per-buffer mode-owned local state. Modes populate
+    /// locals via the `BufferLocal` typed-map during
+    /// `on_activate`; the App routes `&mut BufferLocals`
+    /// into the registry's activation methods.
+    pub buffer_locals: HashMap<BufferId, BufferLocals>,
+    /// Per-buffer mode-resolved options cache. Refreshed
+    /// eagerly on mode toggle and option write.
+    pub resolved_options: HashMap<BufferId, ResolvedOptions>,
+    /// Buffer-local explicit overrides (`:setlocal foo=bar`)
+    /// per buffer. Inputs to resolution; the resolver chains
+    /// these with mode contributions before writing
+    /// [`Self::resolved_options`].
+    pub buffer_local_overrides: HashMap<BufferId, OptionOverrideSet>,
+    /// Receiver for `OptionChanged` events published by the
+    /// option-cascade pipeline. `Option` only because the
+    /// field needs to be `take`-able so the drain method can
+    /// borrow `&mut self` for cascade work while iterating
+    /// the receiver. Always `Some` between calls.
+    pub option_change_rx: Option<tokio::sync::mpsc::UnboundedReceiver<Event>>,
+    /// Free-form help topic registry (DESIGN.md §5.11).
+    /// `:help` reads from this; built-ins are sourced from
+    /// `docs/user/*.md` at build time. Plugins / future LSP
+    /// integrations register additional topics through the
+    /// same registry.
+    pub help_topics: Arc<HelpTopicRegistry>,
+    /// Renderer-neutral canonical theme. `:set ui.*` writes
+    /// this; the renderer's cached adapter (e.g.
+    /// `lattice_ui_tui::App.theme`) is rebuilt from this on
+    /// every successful cascade.
+    pub host_theme: HostTheme,
 }

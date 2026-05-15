@@ -87,7 +87,7 @@ impl App {
         // Buffer registry -> picker BufferEntry view.
         let mut buffers: Vec<BufferEntry> = Vec::new();
         self.buffers.for_each(|entry| {
-            buffers.push(picker_buffer_entry(entry, &self.buffer_locals));
+            buffers.push(picker_buffer_entry(entry, &self.editor.buffer_locals));
         });
 
         // Marks: HashMap<char, Position> -> Vec<(char, Position)>.
@@ -281,7 +281,7 @@ impl App {
     /// can elevate to a debounced background write.
     fn persist_picker_mru_best_effort(&self) {
         let persist = self
-            .config
+            .editor.config
             .get_typed::<lattice_config::core_options::PickerMruPersist>()
             .map(|b| *b)
             .unwrap_or(true);
@@ -854,13 +854,13 @@ impl App {
         // `picker.mru.enabled` (skip bonuses entirely when
         // off) and `picker.mru.recency-half-life-days`.
         let mru_enabled = self
-            .config
+            .editor.config
             .get_typed::<lattice_config::core_options::PickerMruEnabled>()
             .map(|b| *b)
             .unwrap_or(true);
         let now = std::time::SystemTime::now();
         let half_life = self
-            .config
+            .editor.config
             .get_typed::<lattice_config::core_options::PickerMruRecencyHalfLifeDays>()
             .map(|d| std::time::Duration::from_secs((*d).max(1) as u64 * 24 * 60 * 60))
             .unwrap_or(lattice_picker::DEFAULT_HALF_LIFE);
@@ -966,7 +966,7 @@ impl App {
         );
         // Host-side candidate build (the picker module is
         // renderer-agnostic and doesn't import `BufferRegistry`).
-        let pairs = raw_buffer_candidates(&self.buffers, &self.buffer_locals, active);
+        let pairs = raw_buffer_candidates(&self.buffers, &self.editor.buffer_locals, active);
         p.set_raw_candidates_with_routing(pairs);
         // Stash the original active buffer id so dismiss can
         // restore. None on no-buffer pickers (LSP); for the
@@ -1146,7 +1146,7 @@ impl App {
             // gates the whole path so users who disable MRU
             // see no recording either.
             let mru_enabled = self
-                .config
+                .editor.config
                 .get_typed::<lattice_config::core_options::PickerMruEnabled>()
                 .map(|b| *b)
                 .unwrap_or(true);
@@ -2076,7 +2076,7 @@ mod tests {
         app.editor.picker_mru_path = None;
         let before = app.editor.picker_mru.len();
         // Disable MRU.
-        app.config
+        app.editor.config
             .parse_and_set_command("picker.mru.enabled=false")
             .unwrap();
         app.open_picker("files".into(), vec![tmp.display().to_string()]);

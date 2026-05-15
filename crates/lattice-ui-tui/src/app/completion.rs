@@ -351,7 +351,7 @@ impl App {
         // each contribution -- the per-language TOML filter
         // applies on top of the mode-contributed set.
         if let Some(active_sources) = self
-            .buffer_locals
+            .editor.buffer_locals
             .get(&self.document_buffer_id)
             .and_then(|locals| locals.get::<lattice_mode::ActiveCompletionSources>())
         {
@@ -480,23 +480,23 @@ impl App {
         // directly.
         let raw: i64 = match source.as_str() {
             "gen:lsp-completion" => *self
-                .config
+                .editor.config
                 .get_typed::<CompletionSourceLspPriority>()
                 .expect("CompletionSourceLspPriority"),
             "gen:snippet" => *self
-                .config
+                .editor.config
                 .get_typed::<CompletionSourceSnippetPriority>()
                 .expect("CompletionSourceSnippetPriority"),
             "gen:buffer-words" => *self
-                .config
+                .editor.config
                 .get_typed::<CompletionSourceBufferWordsPriority>()
                 .expect("CompletionSourceBufferWordsPriority"),
             "gen:tree-sitter-symbol" => *self
-                .config
+                .editor.config
                 .get_typed::<CompletionSourceTreeSitterPriority>()
                 .expect("CompletionSourceTreeSitterPriority"),
             "gen:path" => *self
-                .config
+                .editor.config
                 .get_typed::<CompletionSourcePathPriority>()
                 .expect("CompletionSourcePathPriority"),
             _ => return 0,
@@ -657,7 +657,7 @@ impl App {
     ///   would surprise the user).
     pub fn completion_ghost_text_suffix(&self) -> Option<String> {
         if !*self
-            .config
+            .editor.config
             .get_typed::<lattice_config::CompletionGhostText>()
             .expect("CompletionGhostText")
         {
@@ -701,7 +701,7 @@ impl App {
             .map(|meta| meta.commit_characters.clone())
             .unwrap_or_default();
         let extra = self
-            .config
+            .editor.config
             .get_typed::<lattice_config::CompletionExtraCommitChars>()
             .expect("CompletionExtraCommitChars");
         for c in extra.chars() {
@@ -979,7 +979,7 @@ impl App {
         // reads via `config.get_typed::<T>()` -- same TypeId
         // lookup the priority_for_source helper uses.
         let freq = &self.completion_accept_freq;
-        let config = &self.config;
+        let config = &self.editor.config;
         ranker.rank_with_bonus(&mut scored, |raw| {
             let priority = match raw.source.as_ref().map(|s| s.as_str()) {
                 Some("gen:lsp-completion") => *config
@@ -2186,7 +2186,7 @@ mod tests {
         let mut a = app_with("hi", 5);
         let buffer_id = a.document_buffer_id;
         let pre_ids: Vec<_> = a
-            .buffer_locals
+            .editor.buffer_locals
             .get(&buffer_id)
             .and_then(|locals| locals.get::<lattice_mode::ActiveCompletionSources>())
             .map(|c| c.0.iter().map(|c| c.id.as_str().to_string()).collect())
@@ -2197,7 +2197,7 @@ mod tests {
         );
         a.toggle_mode_by_name("lsp-mode");
         let cache = a
-            .buffer_locals
+            .editor.buffer_locals
             .get(&buffer_id)
             .and_then(|locals| locals.get::<lattice_mode::ActiveCompletionSources>())
             .expect("cache present");
@@ -2224,7 +2224,7 @@ mod tests {
     fn active_completion_sources_seeded_with_default_modes_at_boot() {
         let a = app_with("alpha bravo", 10);
         let cache = a
-            .buffer_locals
+            .editor.buffer_locals
             .get(&a.document_buffer_id)
             .and_then(|locals| locals.get::<lattice_mode::ActiveCompletionSources>())
             .expect("cache should be seeded at boot");
@@ -2332,7 +2332,7 @@ mod tests {
         }
 
         let mut a = app_with("hi", 5);
-        let registry = std::sync::Arc::make_mut(&mut a.mode_registry);
+        let registry = std::sync::Arc::make_mut(&mut a.editor.mode_registry);
         let mode_id = registry.register(StubMode).expect("register");
         let buffer_id = a.document_buffer_id;
         a.activate_mode_by_id(buffer_id, mode_id);
@@ -2342,7 +2342,7 @@ mod tests {
         // `gen:buffer-words` plus the freshly-activated
         // `gen:stub-csm3`.
         let cache = a
-            .buffer_locals
+            .editor.buffer_locals
             .get(&buffer_id)
             .and_then(|locals| locals.get::<lattice_mode::ActiveCompletionSources>())
             .expect("cache present");
@@ -2358,7 +2358,7 @@ mod tests {
 
         a.deactivate_mode_by_id(buffer_id, mode_id);
         let cache = a
-            .buffer_locals
+            .editor.buffer_locals
             .get(&buffer_id)
             .and_then(|locals| locals.get::<lattice_mode::ActiveCompletionSources>())
             .expect("cache present");

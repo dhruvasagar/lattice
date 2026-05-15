@@ -880,7 +880,7 @@ fn help_render_data<'a>(
     // synthetic test path constructed a help buffer without
     // seeding locals, in which case nothing to highlight or
     // follow.
-    let locals = app.buffer_locals.get(&buffer_id);
+    let locals = app.editor.buffer_locals.get(&buffer_id);
     let highlights = locals
         .and_then(|l| l.get::<crate::modes::HelpHighlights>())
         .map(|h| h.0.as_slice())
@@ -1640,7 +1640,7 @@ fn help_pane_status(app: &App, _pane: &crate::pane::PaneState) -> String {
 
 fn file_tree_pane_status(app: &App, pane: &crate::pane::PaneState) -> String {
     let root = app
-        .buffer_locals
+        .editor.buffer_locals
         .get(&pane.buffer_id)
         .and_then(|locals| locals.get::<crate::modes::FileTreeRoot>())
         .map(|r| r.0.clone());
@@ -1655,7 +1655,7 @@ fn oil_pane_status(app: &App, pane: &crate::pane::PaneState) -> String {
     };
     let dirty = if is_dirty { " [+]" } else { "" };
     let dir = app
-        .buffer_locals
+        .editor.buffer_locals
         .get(&pane.buffer_id)
         .and_then(|locals| locals.get::<crate::modes::OilDir>())
         .map(|d| d.0.display().to_string())
@@ -1854,7 +1854,7 @@ fn draw_inactive_document(
         // panes too -- consistency with the active pane.
         // Same gate as the active path (cache mirror is global,
         // not per-pane in v1).
-        if view.app.option_cache.show_whitespace {
+        if view.app.editor.option_cache.show_whitespace {
             let decoration = WhitespaceDecoration::from_app(view.app);
             body = apply_whitespace_decoration(body, &line_text, &decoration);
         }
@@ -1941,7 +1941,7 @@ fn draw_file_tree_pane(
     // M.3.2.c.5: entries live exclusively in the
     // FileTreeEntries buffer-local. Nothing to drift.
     let entries: &[crate::file_tree::FileTreeEntry] = app
-        .buffer_locals
+        .editor.buffer_locals
         .get(&pane.buffer_id)
         .and_then(|locals| locals.get::<crate::modes::FileTreeEntries>())
         .map(|e| e.0.as_slice())
@@ -2002,7 +2002,7 @@ fn draw_oil_pane(
     // M.3.2.c.5: dir lives exclusively in the OilDir
     // buffer-local. No struct fallback; nothing to drift.
     let dir = app
-        .buffer_locals
+        .editor.buffer_locals
         .get(&pane.buffer_id)
         .and_then(|locals| locals.get::<crate::modes::OilDir>())
         .map(|d| d.0.clone())
@@ -2346,7 +2346,7 @@ fn compose_visible_lines_inner(
     // unit the spans pipeline carries).
     let active_buffer = app.pane_tree.active().buffer_id;
     let is_messages_buffer = app
-        .active_modes
+        .editor.active_modes
         .get(&active_buffer)
         .and_then(|m| m.major())
         .map(|m| m == lattice_mode::MessagesMode::mode_id())
@@ -2434,7 +2434,7 @@ fn compose_visible_lines_inner(
         // on, walks each rendered span and substitutes glyphs
         // for tab / trailing / leading / space / EOL per the
         // typed `display.whitespace.*` options.
-        if app.option_cache.show_whitespace {
+        if app.editor.option_cache.show_whitespace {
             let decoration = WhitespaceDecoration::from_app(app);
             body = apply_whitespace_decoration(body, &line_text, &decoration);
         }
@@ -2691,7 +2691,7 @@ fn compose_visible_lines_inner(
         // highlighted -- they're their own visual column. vim
         // does highlight the line-number column; lattice can
         // add that as a follow-up if users want it.
-        if line_idx == app.cursor.line && app.option_cache.current_line_highlight {
+        if line_idx == app.cursor.line && app.editor.option_cache.current_line_highlight {
             let bg = app.theme.cursor_line_bg;
             for span in body.iter_mut() {
                 if span.style.bg.is_none() {
@@ -3245,15 +3245,15 @@ pub(crate) struct WhitespaceDecoration {
 impl WhitespaceDecoration {
     /// Build from app + theme. Used at every render-line call
     /// site that wants whitespace decoration applied -- gating
-    /// on `app.option_cache.show_whitespace` is the caller's
+    /// on `app.editor.option_cache.show_whitespace` is the caller's
     /// responsibility.
     fn from_app(app: &App) -> Self {
         Self {
-            tab: app.option_cache.whitespace_tab,
-            trailing: app.option_cache.whitespace_trailing,
-            leading: app.option_cache.whitespace_leading,
-            space: app.option_cache.whitespace_space,
-            eol: app.option_cache.whitespace_eol,
+            tab: app.editor.option_cache.whitespace_tab,
+            trailing: app.editor.option_cache.whitespace_trailing,
+            leading: app.editor.option_cache.whitespace_leading,
+            space: app.editor.option_cache.whitespace_space,
+            eol: app.editor.option_cache.whitespace_eol,
             style_normal: app.theme.whitespace_style,
             style_trailing: app.theme.whitespace_trailing_style,
         }
@@ -4605,7 +4605,7 @@ mod tests {
         let mut app = app_with("foo", 5);
         app.modal = lattice_grammar::ModalState::Insert;
         app.cursor = pos(0, 3);
-        app.config
+        app.editor.config
             .set_typed::<lattice_config::CompletionGhostText>(true)
             .expect("set ghost_text");
         // Install a popup with `foobar` as the top candidate
@@ -4658,7 +4658,7 @@ mod tests {
         let mut app = app_with("foobaz", 5);
         app.modal = lattice_grammar::ModalState::Insert;
         app.cursor = pos(0, 3); // between `foo` and `baz`
-        app.config
+        app.editor.config
             .set_typed::<lattice_config::CompletionGhostText>(true)
             .expect("set ghost_text");
         let mut state = lattice_completion::InsertCompletionState::open(

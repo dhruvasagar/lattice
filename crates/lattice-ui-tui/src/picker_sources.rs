@@ -1595,7 +1595,7 @@ mod tests {
     #[test]
     fn first_party_generators_returns_all_built_in_sources() {
         let app = app_with("hi\n", 5);
-        let generators = first_party_generators(app.registry.clone(), app.config.clone());
+        let generators = first_party_generators(app.registry.clone(), app.editor.config.clone());
         let ids: Vec<&'static str> = generators.iter().map(|g| g.spec().id).collect();
         assert_eq!(
             ids,
@@ -1848,7 +1848,7 @@ mod tests {
         let app = app_with("hi\n", 5);
         let snap = app.document.snapshot();
         let ctx = app.build_picker_context(&snap);
-        let source = GrepSource::new(app.config.clone());
+        let source = GrepSource::new(app.editor.config.clone());
         let result = source.init(&ctx, &[]).expect("init must not error on no args");
         match result {
             lattice_picker::PickerInitResult::Inline(pairs) => assert!(pairs.is_empty()),
@@ -1871,7 +1871,7 @@ mod tests {
         let app = app_with("hi\n", 5);
         let snap = app.document.snapshot();
         let ctx = app.build_picker_context(&snap);
-        let source = GrepSource::new(app.config.clone());
+        let source = GrepSource::new(app.editor.config.clone());
         let result = source
             .on_query_changed(&ctx, "")
             .expect("live source returns Some")
@@ -1898,7 +1898,7 @@ mod tests {
     #[test]
     fn grep_source_spec_is_live() {
         let app = app_with("hi\n", 5);
-        let source = GrepSource::new(app.config.clone());
+        let source = GrepSource::new(app.editor.config.clone());
         assert!(source.spec().live, "GrepSource must declare live = true");
     }
 
@@ -1908,12 +1908,12 @@ mod tests {
     #[test]
     fn grep_source_unknown_backend_errors() {
         let app = app_with("hi\n", 5);
-        app.config
+        app.editor.config
             .parse_and_set_command("picker.grep.backend=definitely-not-a-binary")
             .unwrap();
         let snap = app.document.snapshot();
         let ctx = app.build_picker_context(&snap);
-        let source = GrepSource::new(app.config.clone());
+        let source = GrepSource::new(app.editor.config.clone());
         let err = source.init(&ctx, &["TODO".to_string()]).unwrap_err();
         assert!(err.contains("definitely-not-a-binary"), "got {err}");
         assert!(err.contains("not found on PATH"), "got {err}");

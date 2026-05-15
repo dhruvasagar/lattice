@@ -270,7 +270,7 @@ pub fn host_style_to_ratatui(s: host_theme::Style) -> Style {
 /// Adapter: build the ratatui-typed [`Theme`] from the canonical
 /// host [`host_theme::Theme`]. The TUI's `App.theme` cache is
 /// rebuilt via this conversion every time the option cascade
-/// writes `App.host_theme`. Cheap (every field is `Copy`); the
+/// writes `App.editor.host_theme`. Cheap (every field is `Copy`); the
 /// rebuild fires at mode-transition / option-set rate, not per
 /// frame.
 impl From<&host_theme::Theme> for Theme {

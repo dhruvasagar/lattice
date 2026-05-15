@@ -48,7 +48,7 @@ impl App {
         buffer_id: crate::buffers::BufferId,
         root: PathBuf,
     ) {
-        self.buffer_locals
+        self.editor.buffer_locals
             .entry(buffer_id)
             .or_default()
             .insert(crate::modes::FileTreeRoot(root));
@@ -66,7 +66,7 @@ impl App {
     ) {
         let nerd_fonts = self.file_tree_nerd_fonts_for(buffer_id).unwrap_or(false);
         let content = crate::file_tree::render_to_buffer(&entries, nerd_fonts);
-        self.buffer_locals
+        self.editor.buffer_locals
             .entry(buffer_id)
             .or_default()
             .insert(crate::modes::FileTreeEntries(entries));
@@ -81,7 +81,7 @@ impl App {
         buffer_id: crate::buffers::BufferId,
         nerd_fonts: bool,
     ) {
-        self.buffer_locals
+        self.editor.buffer_locals
             .entry(buffer_id)
             .or_default()
             .insert(crate::modes::FileTreeNerdFonts(nerd_fonts));
@@ -96,7 +96,7 @@ impl App {
         &self,
         buffer_id: crate::buffers::BufferId,
     ) -> Option<PathBuf> {
-        self.buffer_locals
+        self.editor.buffer_locals
             .get(&buffer_id)
             .and_then(|l| l.get::<crate::modes::FileTreeRoot>())
             .map(|r| r.0.clone())
@@ -106,7 +106,7 @@ impl App {
         &self,
         buffer_id: crate::buffers::BufferId,
     ) -> Option<Vec<FileTreeEntry>> {
-        self.buffer_locals
+        self.editor.buffer_locals
             .get(&buffer_id)
             .and_then(|l| l.get::<crate::modes::FileTreeEntries>())
             .map(|e| e.0.clone())
@@ -116,7 +116,7 @@ impl App {
         &self,
         buffer_id: crate::buffers::BufferId,
     ) -> Option<bool> {
-        self.buffer_locals
+        self.editor.buffer_locals
             .get(&buffer_id)
             .and_then(|l| l.get::<crate::modes::FileTreeNerdFonts>())
             .map(|n| n.0)

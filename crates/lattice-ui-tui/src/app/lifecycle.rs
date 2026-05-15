@@ -77,26 +77,26 @@ impl App {
             // sync happened, so locals are stale and we leave
             // App.editor.syntax / App.folds untouched.
             let stashed_syntax = self
-                .buffer_locals
+                .editor.buffer_locals
                 .get(&id)
                 .and_then(|l| l.get::<crate::modes::DocumentSyntax>())
                 .and_then(|s| s.0.clone());
             if stashed_syntax.is_some() {
                 self.editor.syntax = stashed_syntax;
                 self.editor.last_parsed_text_version = self
-                    .buffer_locals
+                    .editor.buffer_locals
                     .get(&id)
                     .and_then(|l| l.get::<crate::modes::DocumentLastParsedTextVersion>())
                     .map(|v| v.0)
                     .unwrap_or(0);
                 self.editor.last_synced_syntax_version = self
-                    .buffer_locals
+                    .editor.buffer_locals
                     .get(&id)
                     .and_then(|l| l.get::<crate::modes::DocumentLastSyncedSyntaxVersion>())
                     .map(|v| v.0)
                     .unwrap_or(0);
                 self.folds = self
-                    .buffer_locals
+                    .editor.buffer_locals
                     .get(&id)
                     .and_then(|l| l.get::<crate::modes::DocumentFolds>())
                     .map(|f| f.0.clone())
@@ -121,24 +121,24 @@ impl App {
         // First activation has empty locals; `activate_buffer_state`
         // seeds via the foldmethod / reparse seam.
         self.editor.syntax = self
-            .buffer_locals
+            .editor.buffer_locals
             .get(&id)
             .and_then(|l| l.get::<crate::modes::DocumentSyntax>())
             .and_then(|s| s.0.clone());
         self.editor.last_parsed_text_version = self
-            .buffer_locals
+            .editor.buffer_locals
             .get(&id)
             .and_then(|l| l.get::<crate::modes::DocumentLastParsedTextVersion>())
             .map(|v| v.0)
             .unwrap_or(0);
         self.editor.last_synced_syntax_version = self
-            .buffer_locals
+            .editor.buffer_locals
             .get(&id)
             .and_then(|l| l.get::<crate::modes::DocumentLastSyncedSyntaxVersion>())
             .map(|v| v.0)
             .unwrap_or(0);
         self.folds = self
-            .buffer_locals
+            .editor.buffer_locals
             .get(&id)
             .and_then(|l| l.get::<crate::modes::DocumentFolds>())
             .map(|f| f.0.clone())
@@ -853,7 +853,7 @@ impl App {
                 }
                 BufferKind::FileTree => {
                     let root = self
-                        .buffer_locals
+                        .editor.buffer_locals
                         .get(&id)
                         .and_then(|locals| locals.get::<crate::modes::FileTreeRoot>())
                         .map(|r| r.0.clone())
@@ -873,7 +873,7 @@ impl App {
                 }
                 BufferKind::Oil => {
                     let dir = self
-                        .buffer_locals
+                        .editor.buffer_locals
                         .get(&id)
                         .and_then(|locals| locals.get::<crate::modes::OilDir>())
                         .map(|d| d.0.display().to_string())
@@ -984,7 +984,7 @@ impl App {
         let last_parsed = self.editor.last_parsed_text_version;
         let last_synced = self.editor.last_synced_syntax_version;
         let folds = std::mem::take(&mut self.folds);
-        let locals = self.buffer_locals.entry(id).or_default();
+        let locals = self.editor.buffer_locals.entry(id).or_default();
         locals.insert(crate::modes::DocumentSyntax(syntax));
         locals.insert(crate::modes::DocumentLastParsedTextVersion(last_parsed));
         locals.insert(crate::modes::DocumentLastSyncedSyntaxVersion(last_synced));
@@ -1368,7 +1368,7 @@ impl App {
     /// missing the accessor returns the type's natural default.
     /// Idempotent (replace-on-collision).
     pub(super) fn seed_empty_document_locals(&mut self, buffer_id: BufferId) {
-        let locals = self.buffer_locals.entry(buffer_id).or_default();
+        let locals = self.editor.buffer_locals.entry(buffer_id).or_default();
         locals.insert(crate::modes::DocumentSyntax(None));
         locals.insert(crate::modes::DocumentLastParsedTextVersion(0));
         locals.insert(crate::modes::DocumentLastSyncedSyntaxVersion(0));
@@ -1393,7 +1393,7 @@ impl App {
         let last_parsed = self.editor.last_parsed_text_version;
         let last_synced = self.editor.last_synced_syntax_version;
         let folds = self.folds.clone();
-        let locals = self.buffer_locals.entry(id).or_default();
+        let locals = self.editor.buffer_locals.entry(id).or_default();
         locals.insert(crate::modes::DocumentSyntax(syntax));
         locals.insert(crate::modes::DocumentLastParsedTextVersion(last_parsed));
         locals.insert(crate::modes::DocumentLastSyncedSyntaxVersion(last_synced));
@@ -1421,7 +1421,7 @@ impl App {
         if id == self.document_buffer_id && matches!(self.active_buffer, BufferKind::Document) {
             return self.editor.syntax.as_ref();
         }
-        self.buffer_locals
+        self.editor.buffer_locals
             .get(&id)
             .and_then(|l| l.get::<crate::modes::DocumentSyntax>())
             .and_then(|s| s.0.as_ref())
@@ -1436,7 +1436,7 @@ impl App {
         if id == self.document_buffer_id && matches!(self.active_buffer, BufferKind::Document) {
             return &self.folds;
         }
-        self.buffer_locals
+        self.editor.buffer_locals
             .get(&id)
             .and_then(|l| l.get::<crate::modes::DocumentFolds>())
             .map(|f| f.0.as_slice())
@@ -1449,7 +1449,7 @@ impl App {
         if id == self.document_buffer_id && matches!(self.active_buffer, BufferKind::Document) {
             return self.editor.last_parsed_text_version;
         }
-        self.buffer_locals
+        self.editor.buffer_locals
             .get(&id)
             .and_then(|l| l.get::<crate::modes::DocumentLastParsedTextVersion>())
             .map(|v| v.0)
@@ -1462,7 +1462,7 @@ impl App {
         if id == self.document_buffer_id && matches!(self.active_buffer, BufferKind::Document) {
             return self.editor.last_synced_syntax_version;
         }
-        self.buffer_locals
+        self.editor.buffer_locals
             .get(&id)
             .and_then(|l| l.get::<crate::modes::DocumentLastSyncedSyntaxVersion>())
             .map(|v| v.0)
@@ -2255,9 +2255,9 @@ mod tests {
         let mut a = app_with("", 5);
         // tabstop default is 8; override should land before
         // first frame.
-        assert_eq!(*a.config.get_typed::<lattice_config::Tabstop>().unwrap(), 8);
+        assert_eq!(*a.editor.config.get_typed::<lattice_config::Tabstop>().unwrap(), 8);
         a.load_persistent_config(Some(&ws));
-        assert_eq!(*a.config.get_typed::<lattice_config::Tabstop>().unwrap(), 4);
+        assert_eq!(*a.editor.config.get_typed::<lattice_config::Tabstop>().unwrap(), 4);
     }
 
     #[test]
@@ -2469,7 +2469,7 @@ mod tests {
         );
         let help_id = a.open_help_in_pane(help);
         let locals = a
-            .buffer_locals
+            .editor.buffer_locals
             .get(&help_id)
             .expect("buffer_locals should be populated for help buffer");
         // Links parsed from `[ex:write](command:ex:write)`.
@@ -2500,7 +2500,7 @@ mod tests {
         let mut a = app_with("hi", 5);
         a.do_open_file_tree(Some(tmp.clone()));
         let tree_id = a.active_pane_buffer_id();
-        let locals = a.buffer_locals.get(&tree_id).unwrap();
+        let locals = a.editor.buffer_locals.get(&tree_id).unwrap();
         // file-tree-mode-owned locals (root / entries /
         // nerd-fonts). Other locals (e.g.
         // `ActiveCompletionSources` from CSM.3) may coexist on
@@ -2533,7 +2533,7 @@ mod tests {
         let a = app_with("hello", 10);
         let id = a.document_buffer_id;
         let locals = a
-            .buffer_locals
+            .editor.buffer_locals
             .get(&id)
             .expect("initial document has buffer_locals");
         assert!(
@@ -2578,7 +2578,7 @@ mod tests {
         a.editor.last_synced_syntax_version = 41;
         a.snapshot_active_document();
         let locals = a
-            .buffer_locals
+            .editor.buffer_locals
             .get(&active_id)
             .expect("locals exist for active id");
         let parsed = locals
@@ -2716,7 +2716,7 @@ mod tests {
     fn document_locals_carry_owner_metadata() {
         let a = app_with("hi", 10);
         let id = a.document_buffer_id;
-        let locals = a.buffer_locals.get(&id).unwrap();
+        let locals = a.editor.buffer_locals.get(&id).unwrap();
         let descriptors: Vec<_> = locals.iter_descriptors().collect();
         for d in descriptors
             .iter()
@@ -2789,7 +2789,7 @@ mod tests {
         a.do_open_oil(Some(tmp.join("nested")));
         let oil_id = a.active_pane_buffer_id();
         assert_eq!(
-            a.buffer_locals
+            a.editor.buffer_locals
                 .get(&oil_id)
                 .and_then(|l| l.get::<crate::modes::OilDir>())
                 .map(|d| d.0.clone())
@@ -2919,7 +2919,7 @@ mod tests {
         let oil_id = a.active_pane_buffer_id();
         // Verify initial OilDir mirror.
         assert_eq!(
-            a.buffer_locals
+            a.editor.buffer_locals
                 .get(&oil_id)
                 .and_then(|l| l.get::<crate::modes::OilDir>())
                 .map(|d| d.0.clone())
@@ -3214,7 +3214,7 @@ mod tests {
 
         // The buffer-locals dir reflects the new location.
         let dir = a
-            .buffer_locals
+            .editor.buffer_locals
             .get(&oil_id)
             .and_then(|l| l.get::<crate::modes::OilDir>())
             .map(|d| d.0.clone())
@@ -3233,7 +3233,7 @@ mod tests {
         a.do_open_oil(Some(tmp.clone()));
         let oil_id = a.active_pane_buffer_id();
 
-        let locals = a.buffer_locals.get(&oil_id).expect("oil locals seeded");
+        let locals = a.editor.buffer_locals.get(&oil_id).expect("oil locals seeded");
         let dir = locals
             .get::<crate::modes::OilDir>()
             .expect("OilDir local present");

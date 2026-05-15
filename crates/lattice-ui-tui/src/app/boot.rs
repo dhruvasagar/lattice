@@ -31,7 +31,6 @@ use std::sync::Arc;
 
 use super::{
     App, BufferData, BufferEntry, BufferFlags, BufferId, BufferKind, DocumentEntry, EchoLevel,
-    OptionCache,
 };
 use crate::pane::{PaneState, PaneTree};
 
@@ -260,7 +259,7 @@ impl App {
         // attaches more subscribers to the same bus.
         // Subscribe the App's own cascade-handler channel to
         // `OptionChanged` events on the bus. The receiver lives
-        // on `App.option_change_rx`; `App::drain_option_changes`
+        // on `App.editor.option_change_rx`; `App::drain_option_changes`
         // pulls from it (called from the main loop + at the end
         // of `do_set`). This decouples cascades from the publish
         // path: any consumer that calls `config.set` -- the
@@ -638,12 +637,26 @@ impl App {
             editor: lattice_host::editor::Editor {
                 messages: messages_ring.clone(),
                 pending_message_event_rx: Some(message_event_rx),
+                option_change_rx: Some(option_change_rx),
                 lang_registry: lang_registry.clone(),
                 syntax,
                 last_parsed_text_version,
                 picker_registry: picker_registry.clone(),
                 picker_mru,
                 picker_mru_path,
+                config,
+                mode_registry,
+                services: {
+                    let mut s = lattice_mode::ServiceRegistry::new();
+                    s.register(lsp.clone());
+                    let store: std::sync::Arc<dyn lattice_mode::BufferStore> =
+                        std::sync::Arc::new(buffers_for_services);
+                    s.register(lattice_mode::BufferStoreHandle::new(store));
+                    s.register(lsp_logger.clone());
+                    std::sync::Arc::new(s)
+                },
+                buffer_locals,
+                help_topics,
                 ..lattice_host::editor::Editor::default()
             },
             document,
@@ -661,7 +674,6 @@ impl App {
             partial_chord: Vec::new(),
             registry,
             event_bus: event_bus.clone(),
-            option_change_rx: Some(option_change_rx),
             pending_hover_rx: None,
             pending_hover_token: None,
             pending_definition_rx: None,
@@ -704,45 +716,8 @@ impl App {
             snippet_layer: None,
             visible_highlights_key: None,
             folds: Vec::new(),
-            config,
-            // Default placeholder; rebuilt from config below before
-            // the App is returned. The placeholder lets the struct
-            // literal type-check; the rebuild is the canonical
-            // initial population.
-            option_cache: OptionCache::default(),
-            // M.2.1: per-buffer mode-resolved options cache.
-            // Empty until the first `recompute_options_for_buffer`
-            // call after registration / mode activation.
-            // M.3.0: register every built-in major mode at App
-            // boot. The registry is created mutably, populated,
-            // then wrapped in Arc -- after which it's immutable
-            // for the App's lifetime (plugin-driven dynamic
-            // registration is M.10 territory and uses a
-            // different surface).
-            mode_registry,
-            services: {
-                // Phase 3: typed service map for subsystem
-                // handles modes need from their lifecycle
-                // hooks. M-async.1: `Arc<ServiceRegistry>` so
-                // `ModeContext` can clone the handle when
-                // building the owned ctx per activation.
-                let mut s = lattice_mode::ServiceRegistry::new();
-                s.register(lsp.clone());
-                let store: std::sync::Arc<dyn lattice_mode::BufferStore> =
-                    std::sync::Arc::new(buffers_for_services);
-                s.register(lattice_mode::BufferStoreHandle::new(store));
-                s.register(lsp_logger.clone());
-                std::sync::Arc::new(s)
-            },
-            mode_guards: lattice_mode::GuardStoreHandle::new(),
             pane_render_registry: crate::render::build_pane_render_registry(),
-            active_modes: std::collections::HashMap::new(),
-            buffer_locals,
-            resolved_options: std::collections::HashMap::new(),
-            buffer_local_overrides: std::collections::HashMap::new(),
-            help_topics,
             theme: crate::theme::Theme::default(),
-            host_theme: lattice_host::ui::theme::Theme::default(),
             popup_back_stack: Vec::new(),
             completion_registry,
             completion_state: None,
@@ -941,29 +916,29 @@ impl App {
         let buffer_id = self.document_buffer_id;
         let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
         let mode_id = lattice_mode::CompletionPopupMode::mode_id();
-        let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
+        let mut active = self.editor.active_modes.remove(&buffer_id).unwrap_or_default();
         let currently = active.has_minor(mode_id);
         if want_popup && !currently {
-            let _ = self.mode_registry.activate_minor(
+            let _ = self.editor.mode_registry.activate_minor(
                 &mut active,
-                &self.mode_guards,
-                &self.config,
+                &self.editor.mode_guards,
+                &self.editor.config,
                 &self.event_bus,
-                &self.services,
+                &self.editor.services,
                 proto_id,
                 mode_id,
                 lattice_mode::CapabilitySet::empty(),
             );
         } else if !want_popup && currently {
-            let _ = self.mode_registry.deactivate_minor(
+            let _ = self.editor.mode_registry.deactivate_minor(
                 &mut active,
-                &self.mode_guards,
+                &self.editor.mode_guards,
                 &self.event_bus,
                 proto_id,
                 mode_id,
             );
         }
-        self.active_modes.insert(buffer_id, active);
+        self.editor.active_modes.insert(buffer_id, active);
         // CSM.3: a transition into / out of completion-popup-mode
         // is a mode-set change for the buffer -- recompute the
         // active-sources cache so the engine reads a coherent
@@ -985,59 +960,59 @@ impl App {
             UiStatuslineInactiveFg,
         };
         use lattice_host::ui::theme as host_theme;
-        // Phase 5.3: write `self.host_theme` first (the
+        // Phase 5.3: write `self.editor.host_theme` first (the
         // canonical neutral state); then rebuild `self.theme`
         // from it via the From<&host::Theme> adapter. Every
         // user-tweakable field flows through host first so a
         // future GPUI renderer that reads from `host_theme`
         // sees the same values the TUI cache derives from.
         let dim_inactive = *self
-            .config
+            .editor.config
             .get_typed::<UiDimInactive>()
             .expect("UiDimInactive");
-        let nerd_fonts = *self.config.get_typed::<UiNerdFonts>().expect("UiNerdFonts");
-        let sep = self.config.get_typed::<UiSeparator>().expect("UiSeparator");
+        let nerd_fonts = *self.editor.config.get_typed::<UiNerdFonts>().expect("UiNerdFonts");
+        let sep = self.editor.config.get_typed::<UiSeparator>().expect("UiSeparator");
         let sep_char = sep.chars().next().unwrap_or('│');
-        self.host_theme.dim_inactive_panes = dim_inactive;
-        self.host_theme.nerd_fonts = nerd_fonts;
-        self.host_theme.pane_separator_vertical = sep_char;
+        self.editor.host_theme.dim_inactive_panes = dim_inactive;
+        self.editor.host_theme.nerd_fonts = nerd_fonts;
+        self.editor.host_theme.pane_separator_vertical = sep_char;
         // ui.separator_color -- color name; host parser returned
         // Ok during validate so unwrap-via-fallback is safe.
         let sep_color = self
-            .config
+            .editor.config
             .get_typed::<UiSeparatorColor>()
             .expect("UiSeparatorColor");
         if let Ok(c) = host_theme::parse_color(&sep_color) {
-            self.host_theme.pane_separator = host_theme::Style::empty().fg(c);
+            self.editor.host_theme.pane_separator = host_theme::Style::empty().fg(c);
         }
         // ui.statusline_active_fg / _inactive_fg -- foreground
         // only; preserve modifiers / background by chaining `.fg(c)`
         // on the current host style (which itself preserves the
         // host-side modifier set).
         let active_fg = self
-            .config
+            .editor.config
             .get_typed::<UiStatuslineActiveFg>()
             .expect("UiStatuslineActiveFg");
         if let Ok(c) = host_theme::parse_color(&active_fg) {
-            self.host_theme.pane_status_active.fg = Some(c);
+            self.editor.host_theme.pane_status_active.fg = Some(c);
         }
         let inactive_fg = self
-            .config
+            .editor.config
             .get_typed::<UiStatuslineInactiveFg>()
             .expect("UiStatuslineInactiveFg");
         if let Ok(c) = host_theme::parse_color(&inactive_fg) {
-            self.host_theme.pane_status_inactive.fg = Some(c);
+            self.editor.host_theme.pane_status_inactive.fg = Some(c);
         }
         // Rebuild the cached TUI-typed adapter. Cheap (every
         // field is Copy); the rebuild fires only on option
         // cascade, not per frame.
-        self.theme = crate::theme::Theme::from(&self.host_theme);
+        self.theme = crate::theme::Theme::from(&self.editor.host_theme);
     }
 
-    /// Load `~/.config/lattice/lattice.toml` (user) and
+    /// Load `~/.editor.config/lattice/lattice.toml` (user) and
     /// `<workspace_root>/.lattice/config.toml` (project) in
     /// precedence order, applying scalar overrides to
-    /// `self.config` and bucketing structural sub-tables (per-
+    /// `self.editor.config` and bucketing structural sub-tables (per-
     /// language overrides, plugin sections) into
     /// `self.pending_config_structural_sections` for their
     /// owners to drain.
@@ -1045,7 +1020,7 @@ impl App {
     /// Called once by the runtime startup before the main loop
     /// (so the first frame already reflects user overrides).
     /// NOT called from `App::new` -- tests stay isolated from
-    /// the user's real `~/.config/lattice/`. Test fixtures that
+    /// the user's real `~/.editor.config/lattice/`. Test fixtures that
     /// want to exercise the load path can call this directly
     /// with a synthesized workspace root.
     ///
@@ -1064,7 +1039,7 @@ impl App {
         // server-namespaced keys (the cached raw_tree carries
         // the values; `workspace/configuration` walks it).
         let prefixes = ["completion.per-language", "plugin", "lsp"];
-        let outcome = lattice_config::load_default_paths(&self.config, workspace_root, &prefixes);
+        let outcome = lattice_config::load_default_paths(&self.editor.config, workspace_root, &prefixes);
         // Re-derive theme + hot-path option cache after the
         // loader's writes. ui.* and the cached options may have
         // changed; missing this would leave the first frame

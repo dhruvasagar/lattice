@@ -118,7 +118,7 @@ impl App {
     /// M.5.2 (auto-activation hook), M.5.3 (lifecycle), and
     /// M.5.4+ (gates) have a single accessor to consume.
     pub fn lsp_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        self.active_modes
+        self.editor.active_modes
             .get(&buffer_id)
             .map(|modes| modes.has_minor(lattice_lsp::modes::LspMode::mode_id()))
             .unwrap_or(false)
@@ -129,7 +129,7 @@ impl App {
     /// returns `false` when no entry exists for `buffer_id` --
     /// matches the umbrella accessor's shape.
     fn minor_mode_enabled_for(&self, buffer_id: BufferId, mode_id: lattice_mode::ModeId) -> bool {
-        self.active_modes
+        self.editor.active_modes
             .get(&buffer_id)
             .map(|modes| modes.has_minor(mode_id))
             .unwrap_or(false)
@@ -794,7 +794,7 @@ impl App {
         let anchor = state.anchor;
         let query = state.query.clone();
         let source = self
-            .buffer_locals
+            .editor.buffer_locals
             .get(&self.document_buffer_id)
             .and_then(|locals| locals.get::<lattice_mode::ActiveCompletionSources>())
             .and_then(|s| {
@@ -1041,7 +1041,7 @@ impl App {
             .collect();
         let ranker = lattice_completion::InsertRanker::new();
         let freq = &self.completion_accept_freq;
-        let config = &self.config;
+        let config = &self.editor.config;
         ranker.rank_with_bonus(&mut scored, |raw| {
             let priority = match raw.source.as_ref().map(|s| s.as_str()) {
                 Some("gen:lsp-completion") => *config
@@ -6843,20 +6843,20 @@ mod tests {
         let mut a = app_with("fn main() {}", 5);
         let id = a.pane_tree.active().buffer_id;
         let proto_id = lattice_protocol::ids::BufferId::new(id.0 as u64);
-        let mut active = a.active_modes.remove(&id).unwrap_or_default();
-        a.mode_registry
+        let mut active = a.editor.active_modes.remove(&id).unwrap_or_default();
+        a.editor.mode_registry
             .activate_minor(
                 &mut active,
-                &a.mode_guards,
-                &a.config,
+                &a.editor.mode_guards,
+                &a.editor.config,
                 &a.event_bus,
-                &a.services,
+                &a.editor.services,
                 proto_id,
                 lattice_lsp::modes::LspMode::mode_id(),
                 lattice_mode::CapabilitySet::empty(),
             )
             .expect("activate lsp-mode");
-        a.active_modes.insert(id, active);
+        a.editor.active_modes.insert(id, active);
         assert!(a.lsp_mode_enabled_for(id));
     }
 
@@ -9459,7 +9459,7 @@ mod tests {
         );
         // After setting to "debug" at runtime, the same
         // record passes.
-        app.config
+        app.editor.config
             .parse_and_set_command("lsp.log_level=debug")
             .unwrap();
         // The runtime path:

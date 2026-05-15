@@ -55,7 +55,7 @@ impl App {
     /// recovery work.
     pub(super) fn do_open_help_topic(&mut self, topic: Option<&str>) {
         let name = topic.unwrap_or("index").to_string();
-        let registry = self.help_topics.clone();
+        let registry = self.editor.help_topics.clone();
         let Some(t) = registry.lookup(&name) else {
             self.set_message(EchoLevel::Error, format!("no help topic: {name}"));
             return;
@@ -117,7 +117,7 @@ impl App {
         // `:describe-command operator:fold-create` jump to the
         // `folding` topic via `<CR>` on the link.
         let topics: Vec<String> = self
-            .help_topics
+            .editor.help_topics
             .topics_for_command(&spec.name)
             .map(|t| crate::help::topic_link(&t.name))
             .collect();
@@ -183,7 +183,7 @@ impl App {
         // `<C-o>` walks back to this view.
         lines.push(String::new());
         lines.push("## Active modes".to_string());
-        let active = self.active_modes.get(&self.document_buffer_id);
+        let active = self.editor.active_modes.get(&self.document_buffer_id);
         let major = active.and_then(|a| a.major());
         let minors: Vec<_> = active.map(|a| a.minors().to_vec()).unwrap_or_default();
         if let Some(major) = major {
@@ -502,7 +502,7 @@ impl App {
     pub(super) fn do_list_modes(&mut self) {
         let mut majors: Vec<lattice_mode::ModeId> = Vec::new();
         let mut minors: Vec<lattice_mode::ModeId> = Vec::new();
-        for (id, kind) in self.mode_registry.iter_meta() {
+        for (id, kind) in self.editor.mode_registry.iter_meta() {
             match kind {
                 lattice_mode::ModeKind::Major => majors.push(id),
                 lattice_mode::ModeKind::Minor => minors.push(id),
@@ -512,7 +512,7 @@ impl App {
         minors.sort_by_key(|m| m.as_str().to_string());
 
         let buffer_id = self.document_buffer_id;
-        let active = self.active_modes.get(&buffer_id);
+        let active = self.editor.active_modes.get(&buffer_id);
         let active_major = active.and_then(|a| a.major());
         let is_minor_active =
             |id: lattice_mode::ModeId| -> bool { active.map(|a| a.has_minor(id)).unwrap_or(false) };
@@ -562,7 +562,7 @@ impl App {
     /// of `:describe-option`.
     pub(super) fn do_describe_mode(&mut self, name: &str) {
         let mode_id = lattice_mode::ModeId::new(name);
-        let Some(mode) = self.mode_registry.get(mode_id) else {
+        let Some(mode) = self.editor.mode_registry.get(mode_id) else {
             self.set_message(EchoLevel::Error, format!("no mode named `{name}`"));
             return;
         };
@@ -578,7 +578,7 @@ impl App {
                 .collect();
 
         let buffer_id = self.document_buffer_id;
-        let active = self.active_modes.get(&buffer_id);
+        let active = self.editor.active_modes.get(&buffer_id);
         let is_active = match mode.kind() {
             lattice_mode::ModeKind::Major => active.and_then(|a| a.major()) == Some(mode_id),
             lattice_mode::ModeKind::Minor => active.map(|a| a.has_minor(mode_id)).unwrap_or(false),
@@ -641,7 +641,7 @@ impl App {
     /// or vice versa. The mode-architecture §6.1 layer model
     /// translated to a per-option introspection view.
     pub(super) fn do_describe_option_resolution(&mut self, name: &str) {
-        let Some(spec) = self.config.lookup(name) else {
+        let Some(spec) = self.editor.config.lookup(name) else {
             self.set_message(EchoLevel::Error, format!("E518: Unknown option: {name}"));
             return;
         };
@@ -660,11 +660,11 @@ impl App {
 
         let buffer_id = self.document_buffer_id;
         let modes_snapshot = self
-            .active_modes
+            .editor.active_modes
             .get(&buffer_id)
             .cloned()
             .unwrap_or_default();
-        let buffer_local = self.buffer_local_overrides.get(&buffer_id);
+        let buffer_local = self.editor.buffer_local_overrides.get(&buffer_id);
 
         let mut lines: Vec<String> = Vec::new();
         lines.push(format!("# option resolution :: {}", name));
@@ -708,7 +708,7 @@ impl App {
         } else {
             let mut any_contributes = false;
             for minor_id in &minors {
-                let Some(minor) = self.mode_registry.get(*minor_id) else {
+                let Some(minor) = self.editor.mode_registry.get(*minor_id) else {
                     continue;
                 };
                 let opts = minor.options();
@@ -731,7 +731,7 @@ impl App {
 
         // Layer 4: major.
         match modes_snapshot.major() {
-            Some(major_id) => match self.mode_registry.get(major_id) {
+            Some(major_id) => match self.editor.mode_registry.get(major_id) {
                 Some(major) => {
                     let opts = major.options();
                     let contributes = opts.iter().any(|o| o.option_type_id == target_type_id);
@@ -817,8 +817,8 @@ impl App {
                 .map(|d| (d.type_id)())
                 .collect();
         let mut customisable_modes: Vec<lattice_mode::ModeId> = Vec::new();
-        for (mode_id, _kind) in self.mode_registry.iter_meta() {
-            if let Some(mode) = self.mode_registry.get(mode_id) {
+        for (mode_id, _kind) in self.editor.mode_registry.iter_meta() {
+            if let Some(mode) = self.editor.mode_registry.get(mode_id) {
                 let opts = mode.options();
                 if opts
                     .iter()
@@ -934,7 +934,7 @@ impl App {
     /// shadow a `:set` write of a different value).
     fn do_customize_mode(&mut self, mode_name: &str) {
         let mode_id = lattice_mode::ModeId::new(mode_name);
-        let Some(mode) = self.mode_registry.get(mode_id) else {
+        let Some(mode) = self.editor.mode_registry.get(mode_id) else {
             self.set_message(EchoLevel::Error, format!("no mode named `{mode_name}`"));
             return;
         };
@@ -950,7 +950,7 @@ impl App {
             .collect();
 
         let buffer_id = self.document_buffer_id;
-        let active = self.active_modes.get(&buffer_id);
+        let active = self.editor.active_modes.get(&buffer_id);
         let mode_active_here = match mode.kind() {
             lattice_mode::ModeKind::Major => active.and_then(|a| a.major()) == Some(mode_id),
             lattice_mode::ModeKind::Minor => active.map(|a| a.has_minor(mode_id)).unwrap_or(false),
@@ -1025,7 +1025,7 @@ impl App {
         lines: &mut Vec<String>,
         meta: &lattice_config::OptionDeclMetadata,
     ) {
-        let spec = self.config.lookup(meta.name);
+        let spec = self.editor.config.lookup(meta.name);
         let aliases = spec
             .as_ref()
             .map(|s| s.aliases())
@@ -1079,7 +1079,7 @@ impl App {
     /// first place, but a stale link from a prior render
     /// shouldn't crash. Echoes an info message.
     fn do_customize_edit(&mut self, name: &str) {
-        let Some(spec) = self.config.lookup(name) else {
+        let Some(spec) = self.editor.config.lookup(name) else {
             self.set_message(EchoLevel::Error, format!("E518: Unknown option: {name}"));
             return;
         };
@@ -1205,7 +1205,7 @@ impl App {
             .editor.popup_buffer
             .unwrap_or_else(|| self.pane_tree.active().buffer_id);
         let Some(link) = self
-            .buffer_locals
+            .editor.buffer_locals
             .get(&active_help_id)
             .and_then(|locals| locals.get::<crate::modes::HelpLinks>())
             .and_then(|hl| {
@@ -1220,7 +1220,7 @@ impl App {
                 if pane_id == active_help_id {
                     return None;
                 }
-                self.buffer_locals
+                self.editor.buffer_locals
                     .get(&pane_id)
                     .and_then(|locals| locals.get::<crate::modes::HelpLinks>())
                     .and_then(|hl| {
@@ -1293,11 +1293,11 @@ impl App {
                 let popup_id = self.editor.popup_buffer;
                 let pane_id = self.pane_tree.active().buffer_id;
                 let target_line = popup_id
-                    .and_then(|id| self.buffer_locals.get(&id))
+                    .and_then(|id| self.editor.buffer_locals.get(&id))
                     .and_then(|locals| locals.get::<crate::modes::HelpAnchors>())
                     .and_then(|anchors| anchors.0.iter().find(|a| a.name == slug).map(|a| a.line))
                     .or_else(|| {
-                        self.buffer_locals
+                        self.editor.buffer_locals
                             .get(&pane_id)
                             .and_then(|locals| locals.get::<crate::modes::HelpAnchors>())
                             .and_then(|anchors| {
@@ -2205,7 +2205,7 @@ mod tests {
         let help = crate::help::HelpContent::from_lines("test", vec!["line one".to_string()]);
         let help_id = a.open_help_in_pane(help);
         let active = a
-            .active_modes
+            .editor.active_modes
             .get(&help_id)
             .expect("active_modes populated for help");
         assert_eq!(
@@ -2224,7 +2224,7 @@ mod tests {
         let mut a = app_with("hi", 5);
         let help = crate::help::HelpContent::from_lines("t", vec!["body".into()]);
         let help_id = a.open_help_in_pane(help);
-        let locals = a.buffer_locals.get(&help_id).unwrap();
+        let locals = a.editor.buffer_locals.get(&help_id).unwrap();
         // Help-mode-owned locals (links / anchors / highlights)
         // all live under the help-mode namespace. Other locals
         // (e.g. `ActiveCompletionSources` owned by
@@ -2453,7 +2453,7 @@ mod tests {
         a.apply(Action::CommandLineSubmit);
         let popup_id = a.editor.popup_buffer.expect("picker open");
         let editor_link = a
-            .buffer_locals
+            .editor.buffer_locals
             .get(&popup_id)
             .and_then(|locals| locals.get::<crate::modes::HelpLinks>())
             .and_then(|hl| {
@@ -2494,7 +2494,7 @@ mod tests {
         let popup_id = a.editor.popup_buffer.expect("customize editor open");
         // Find the customize-edit link for `tabstop`.
         let edit_link = a
-            .buffer_locals
+            .editor.buffer_locals
             .get(&popup_id)
             .and_then(|locals| locals.get::<crate::modes::HelpLinks>())
             .and_then(|hl| {
@@ -2529,7 +2529,7 @@ mod tests {
         a.apply(Action::CommandLineSubmit);
         let popup_id = a.editor.popup_buffer.expect("editor view open");
         let link = a
-            .buffer_locals
+            .editor.buffer_locals
             .get(&popup_id)
             .and_then(|locals| locals.get::<crate::modes::HelpLinks>())
             .and_then(|hl| {

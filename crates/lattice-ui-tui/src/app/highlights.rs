@@ -436,7 +436,7 @@ impl App {
                 syntax.request_reparse(last_synced, tv, snap.buffer.clone(), Vec::new());
                 // M.3.2.c.5: write the new baseline back into
                 // buffer_locals so subsequent reads see it.
-                let locals = self.buffer_locals.entry(doc_id).or_default();
+                let locals = self.editor.buffer_locals.entry(doc_id).or_default();
                 locals.insert(crate::modes::DocumentLastParsedTextVersion(tv));
                 locals.insert(crate::modes::DocumentLastSyncedSyntaxVersion(tv));
             }

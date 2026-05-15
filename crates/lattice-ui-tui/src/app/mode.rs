@@ -80,7 +80,7 @@ impl App {
         // Either way, still run the auto-LSP hook so `lsp-mode`
         // propagates per-buffer; the hook is itself no-op-when-
         // already-active and no-op-when-no-server-for-path.
-        if self.active_modes.get(&buffer_id).and_then(|m| m.major()).is_some() {
+        if self.editor.active_modes.get(&buffer_id).and_then(|m| m.major()).is_some() {
             if matches!(kind, BufferKind::Document) {
                 self.maybe_auto_activate_lsp_mode(buffer_id);
             }
@@ -100,13 +100,13 @@ impl App {
         };
         let major_id = crate::modes::resolve_major_mode(kind, lang);
         let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
-        let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
-        match self.mode_registry.activate_major(
+        let mut active = self.editor.active_modes.remove(&buffer_id).unwrap_or_default();
+        match self.editor.mode_registry.activate_major(
             &mut active,
-            &self.mode_guards,
-            &self.config,
+            &self.editor.mode_guards,
+            &self.editor.config,
             &self.event_bus,
-            &self.services,
+            &self.editor.services,
             proto_id,
             major_id,
             lattice_mode::CapabilitySet::empty(),
@@ -123,12 +123,12 @@ impl App {
             }
         }
         if let Some(minor_id) = crate::modes::default_minor_mode_id_for_buffer_kind(kind)
-            && let Err(e) = self.mode_registry.activate_minor(
+            && let Err(e) = self.editor.mode_registry.activate_minor(
                 &mut active,
-                &self.mode_guards,
-                &self.config,
+                &self.editor.mode_guards,
+                &self.editor.config,
                 &self.event_bus,
-                &self.services,
+                &self.editor.services,
                 proto_id,
                 minor_id,
                 lattice_mode::CapabilitySet::empty(),
@@ -143,12 +143,12 @@ impl App {
             );
         }
         for minor_id in crate::modes::auto_activated_minors_for_buffer_kind(kind) {
-            if let Err(e) = self.mode_registry.activate_minor(
+            if let Err(e) = self.editor.mode_registry.activate_minor(
                 &mut active,
-                &self.mode_guards,
-                &self.config,
+                &self.editor.mode_guards,
+                &self.editor.config,
                 &self.event_bus,
-                &self.services,
+                &self.editor.services,
                 proto_id,
                 minor_id,
                 lattice_mode::CapabilitySet::empty(),
@@ -162,7 +162,7 @@ impl App {
                 );
             }
         }
-        self.active_modes.insert(buffer_id, active);
+        self.editor.active_modes.insert(buffer_id, active);
         self.recompute_options_for_buffer(buffer_id);
         // CSM.3: keep `ActiveCompletionSources` in lockstep with
         // the active-modes set. Empty in practice until CSM.4
@@ -229,9 +229,9 @@ impl App {
     ///
     /// On failure, surfaces an `EchoLevel::Warn` and returns
     /// without mutating state. Callers that need to know the
-    /// outcome can read `self.active_modes[buffer_id]` after.
+    /// outcome can read `self.editor.active_modes[buffer_id]` after.
     pub fn activate_mode_by_id(&mut self, buffer_id: BufferId, mode_id: ModeId) {
-        let Some(mode) = self.mode_registry.get(mode_id) else {
+        let Some(mode) = self.editor.mode_registry.get(mode_id) else {
             self.set_message(
                 EchoLevel::Warn,
                 format!("mode: `{mode_id}` is not registered"),
@@ -240,24 +240,24 @@ impl App {
         };
         let kind = mode.kind();
         let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
-        let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
+        let mut active = self.editor.active_modes.remove(&buffer_id).unwrap_or_default();
         let result = match kind {
-            ModeKind::Major => self.mode_registry.activate_major(
+            ModeKind::Major => self.editor.mode_registry.activate_major(
                 &mut active,
-                &self.mode_guards,
-                &self.config,
+                &self.editor.mode_guards,
+                &self.editor.config,
                 &self.event_bus,
-                &self.services,
+                &self.editor.services,
                 proto_id,
                 mode_id,
                 CapabilitySet::empty(),
             ),
-            ModeKind::Minor => self.mode_registry.activate_minor(
+            ModeKind::Minor => self.editor.mode_registry.activate_minor(
                 &mut active,
-                &self.mode_guards,
-                &self.config,
+                &self.editor.mode_guards,
+                &self.editor.config,
                 &self.event_bus,
-                &self.services,
+                &self.editor.services,
                 proto_id,
                 mode_id,
                 CapabilitySet::empty(),
@@ -272,7 +272,7 @@ impl App {
                 ),
             );
         }
-        self.active_modes.insert(buffer_id, active);
+        self.editor.active_modes.insert(buffer_id, active);
         self.recompute_options_for_buffer(buffer_id);
         self.recompute_active_completion_sources_for(buffer_id);
         // M.5.2: when a major activates (whether by direct call,
@@ -307,7 +307,7 @@ impl App {
     /// through the toggle command which performs swap rather
     /// than a bare deactivate.
     pub fn deactivate_mode_by_id(&mut self, buffer_id: BufferId, mode_id: ModeId) {
-        let Some(mode) = self.mode_registry.get(mode_id) else {
+        let Some(mode) = self.editor.mode_registry.get(mode_id) else {
             self.set_message(
                 EchoLevel::Warn,
                 format!("mode: `{mode_id}` is not registered"),
@@ -315,17 +315,17 @@ impl App {
             return;
         };
         let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
-        let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
+        let mut active = self.editor.active_modes.remove(&buffer_id).unwrap_or_default();
         let result = match mode.kind() {
-            ModeKind::Major => self.mode_registry.deactivate_major(
+            ModeKind::Major => self.editor.mode_registry.deactivate_major(
                 &mut active,
-                &self.mode_guards,
+                &self.editor.mode_guards,
                 &self.event_bus,
                 proto_id,
             ),
-            ModeKind::Minor => self.mode_registry.deactivate_minor(
+            ModeKind::Minor => self.editor.mode_registry.deactivate_minor(
                 &mut active,
-                &self.mode_guards,
+                &self.editor.mode_guards,
                 &self.event_bus,
                 proto_id,
                 mode_id,
@@ -340,7 +340,7 @@ impl App {
                 ),
             );
         }
-        self.active_modes.insert(buffer_id, active);
+        self.editor.active_modes.insert(buffer_id, active);
         self.recompute_options_for_buffer(buffer_id);
         self.recompute_active_completion_sources_for(buffer_id);
         // Phase 3 + follow-up: `lsp-mode` deactivate side-
@@ -389,7 +389,7 @@ impl App {
     // `lattice-lsp`. The mode owns its work; the App is just
     // the orchestrator. `drain_option_changes()` in the
     // activate/deactivate call sites picks up the option
-    // mutation the mode emits via `ctx.config()`.
+    // mutation the mode emits via `ctx.editor.config()`.
 
     // Phase 3 removed `activate_lsp_sub_modes_for` /
     // `deactivate_lsp_sub_modes_for`. The sub-mode cascade
@@ -420,7 +420,7 @@ impl App {
     pub fn toggle_mode_by_name(&mut self, name: &str) {
         let mode_id = ModeId::new(name);
         let buffer_id = self.active_pane_buffer_id();
-        let Some(mode) = self.mode_registry.get(mode_id) else {
+        let Some(mode) = self.editor.mode_registry.get(mode_id) else {
             self.set_message(
                 EchoLevel::Error,
                 format!("mode: `{name}` is not a registered mode"),
@@ -428,7 +428,7 @@ impl App {
             return;
         };
         let active_now = self
-            .active_modes
+            .editor.active_modes
             .get(&buffer_id)
             .map(|m| m.is_active(mode_id))
             .unwrap_or(false);
@@ -627,21 +627,21 @@ mod tests {
         // pre-activated. Verify by explicit set.
         a.do_set("nonumber");
         assert!(
-            !a.active_modes
+            !a.editor.active_modes
                 .get(&id)
                 .unwrap()
                 .has_minor(lattice_mode::modes::LineNumbersMode::mode_id())
         );
         a.do_set("number");
         assert!(
-            a.active_modes
+            a.editor.active_modes
                 .get(&id)
                 .unwrap()
                 .has_minor(lattice_mode::modes::LineNumbersMode::mode_id())
         );
         a.do_set("nonumber");
         assert!(
-            !a.active_modes
+            !a.editor.active_modes
                 .get(&id)
                 .unwrap()
                 .has_minor(lattice_mode::modes::LineNumbersMode::mode_id())
@@ -654,9 +654,9 @@ mod tests {
         let id = a.pane_tree.active().buffer_id;
         let wrap_id = lattice_mode::modes::WrapMode::mode_id();
         a.do_set("wrap");
-        assert!(a.active_modes.get(&id).unwrap().has_minor(wrap_id));
+        assert!(a.editor.active_modes.get(&id).unwrap().has_minor(wrap_id));
         a.do_set("nowrap");
-        assert!(!a.active_modes.get(&id).unwrap().has_minor(wrap_id));
+        assert!(!a.editor.active_modes.get(&id).unwrap().has_minor(wrap_id));
     }
 
     #[test]
@@ -668,9 +668,9 @@ mod tests {
         let id = a.pane_tree.active().buffer_id;
         let mode_id = lattice_mode::modes::WhitespaceShowMode::mode_id();
         a.do_set("list");
-        assert!(a.active_modes.get(&id).unwrap().has_minor(mode_id));
+        assert!(a.editor.active_modes.get(&id).unwrap().has_minor(mode_id));
         a.do_set("nolist");
-        assert!(!a.active_modes.get(&id).unwrap().has_minor(mode_id));
+        assert!(!a.editor.active_modes.get(&id).unwrap().has_minor(mode_id));
     }
 
     #[test]
@@ -681,9 +681,9 @@ mod tests {
         let id = a.pane_tree.active().buffer_id;
         let mode_id = lattice_mode::modes::CurrentLineHighlightMode::mode_id();
         a.do_set("cursorline");
-        assert!(a.active_modes.get(&id).unwrap().has_minor(mode_id));
+        assert!(a.editor.active_modes.get(&id).unwrap().has_minor(mode_id));
         a.do_set("nocursorline");
-        assert!(!a.active_modes.get(&id).unwrap().has_minor(mode_id));
+        assert!(!a.editor.active_modes.get(&id).unwrap().has_minor(mode_id));
     }
 
     #[test]
@@ -709,7 +709,7 @@ mod tests {
         a.do_set("number");
         assert!(a.show_line_numbers());
         assert!(
-            a.active_modes
+            a.editor.active_modes
                 .get(&id)
                 .unwrap()
                 .has_minor(lattice_mode::modes::LineNumbersMode::mode_id())
@@ -742,7 +742,7 @@ mod tests {
         assert!(!a.lsp_mode_enabled_for(id));
         a.toggle_mode_by_name("lsp-mode");
         assert!(a.lsp_mode_enabled_for(id));
-        assert!(a.active_modes.get(&id).unwrap().has_minor(lsp_mode));
+        assert!(a.editor.active_modes.get(&id).unwrap().has_minor(lsp_mode));
         a.toggle_mode_by_name("lsp-mode");
         assert!(!a.lsp_mode_enabled_for(id));
     }
@@ -868,7 +868,7 @@ mod tests {
         let mut a = app_with("hi", 5);
         let id = a.pane_tree.active().buffer_id;
         let before_minors_len = a
-            .active_modes
+            .editor.active_modes
             .get(&id)
             .map(|m| m.minors().len())
             .unwrap_or(0);
@@ -876,7 +876,7 @@ mod tests {
         let msg = a.editor.last_message.as_ref().expect("error echo");
         assert!(msg.text.contains("not a registered mode"));
         let after_minors_len = a
-            .active_modes
+            .editor.active_modes
             .get(&id)
             .map(|m| m.minors().len())
             .unwrap_or(0);
@@ -896,7 +896,7 @@ mod tests {
         assert!(a.lsp_mode_enabled_for(id));
         // Swap major.
         a.toggle_mode_by_name("markdown-mode");
-        let modes = a.active_modes.get(&id).expect("modes for buffer");
+        let modes = a.editor.active_modes.get(&id).expect("modes for buffer");
         assert_eq!(modes.major(), Some(lattice_syntax::MarkdownMode::mode_id()));
         // Minor unaffected by major swap (M.5 design).
         assert!(modes.has_minor(lattice_lsp::modes::LspMode::mode_id()));
@@ -1162,7 +1162,7 @@ mod tests {
         let a = app_with("hi", 5);
         // Every registered mode should have a corresponding
         // ex-command keyword in the registry.
-        for (mode_id, _kind) in a.mode_registry.iter_meta() {
+        for (mode_id, _kind) in a.editor.mode_registry.iter_meta() {
             let name = mode_id.to_string();
             assert!(
                 a.registry.id_by_name(&name).is_some(),

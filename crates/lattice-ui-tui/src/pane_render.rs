@@ -81,7 +81,7 @@ impl App {
     /// when nothing is registered, in which case the renderer
     /// uses its default document path.
     pub fn pane_render_provider(&self, buffer_id: BufferId) -> Option<&PaneRenderProvider> {
-        let modes = self.active_modes.get(&buffer_id)?;
+        let modes = self.editor.active_modes.get(&buffer_id)?;
         for &minor_id in modes.minors().iter().rev() {
             if let Some(p) = self.pane_render_registry.get(minor_id) {
                 return Some(p);
@@ -121,7 +121,7 @@ mod tests {
         let help = crate::help::HelpContent::from_lines("test", vec!["line one".to_string()]);
         let help_id = a.open_help_in_pane(help);
         let modes = a
-            .active_modes
+            .editor.active_modes
             .get(&help_id)
             .expect("in-pane help has modes");
         assert_eq!(modes.major(), Some(lattice_syntax::MarkdownMode.id()));

@@ -51,7 +51,7 @@ impl App {
     /// elsewhere. (M.3.2.c.5: buffer-locals are canonical
     /// per-buffer mode-owned state; no struct mirror.)
     pub(super) fn set_oil_dir(&mut self, buffer_id: crate::buffers::BufferId, dir: PathBuf) {
-        self.buffer_locals
+        self.editor.buffer_locals
             .entry(buffer_id)
             .or_default()
             .insert(crate::modes::OilDir(dir));
@@ -63,7 +63,7 @@ impl App {
     /// seeded (shouldn't happen in practice -- every oil
     /// buffer's creation path calls [`Self::set_oil_dir`]).
     pub(super) fn oil_dir_for(&self, buffer_id: crate::buffers::BufferId) -> Option<PathBuf> {
-        self.buffer_locals
+        self.editor.buffer_locals
             .get(&buffer_id)
             .and_then(|locals| locals.get::<crate::modes::OilDir>())
             .map(|d| d.0.clone())

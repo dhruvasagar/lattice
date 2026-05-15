@@ -83,7 +83,6 @@ use lattice_grammar::builtins::Builtins;
 pub use lattice_grammar::command::CommandInvocation;
 use lattice_grammar::register::Register;
 use lattice_lsp::{DiagnosticsLayer, LspLogger, LspSupervisorHandle};
-use lattice_protocol::Event;
 use lattice_protocol::position::Position;
 #[cfg(test)]
 use lattice_protocol::selection::{Selection, SelectionSet};
@@ -500,7 +499,8 @@ pub struct App {
     /// `Option` only because the field needs to be `take`-able so
     /// the drain method can borrow `&mut self` for cascade work
     /// while iterating the receiver. Always `Some` between calls.
-    pub option_change_rx: Option<tokio::sync::mpsc::UnboundedReceiver<Event>>,
+    // Phase 5.B.14: `option_change_rx` moved to
+    // `editor.editor.option_change_rx`.
     /// Shared language registry for tree-sitter highlighting. One
     /// `Arc<LangRegistry>` services the document buffer's `Syntax`
     /// AND every `HelpBuffer` constructed by `:describe-*` /
@@ -620,7 +620,7 @@ pub struct App {
     /// the `linkme`-aggregated `OPTION_DECLS` slice; this
     /// renderer's own options register via the `linkme` slice in
     /// `crate::tui_options`.
-    pub config: std::sync::Arc<lattice_config::ConfigRegistry>,
+    // Phase 5.B.14: `config` moved to `editor.editor.config`.
     /// Hot-path read cache for the option values. Populated at
     /// [`Self::new`] time; refreshed inside the
     /// `Event::OptionChanged` cascade so writes through any path
@@ -633,7 +633,8 @@ pub struct App {
     /// difference is measurable on the 60-line / 120-line frame
     /// benchmarks. Single source of truth stays in
     /// [`Self::config`]; this struct is a derived projection.
-    pub option_cache: OptionCache,
+    // Phase 5.B.14: `option_cache` moved to
+    // `editor.editor.option_cache`.
     // M.2.0c: TUI-specific options self-register via the
     // linkme slice. No `tui_options` field needed -- callers
     // read directly via `config.get_typed::<UiDimInactive>()`
@@ -642,7 +643,8 @@ pub struct App {
     /// modes; activation / deactivation routes through here.
     /// One process-shared registry; all Documents share the
     /// same mode definitions.
-    pub mode_registry: std::sync::Arc<lattice_mode::ModeRegistry>,
+    // Phase 5.B.14: `mode_registry` moved to
+    // `editor.editor.mode_registry`.
     /// Phase 3: typed service map subsystems hand off to modes
     /// so the mode's `Mode::on_activate` can pull subsystem
     /// handles via `ctx.service::<T>()`. Populated at boot (LSP
@@ -653,7 +655,7 @@ pub struct App {
     /// `ServiceRegistry`) because `ModeContext` owns its handles
     /// by Arc clone -- the dispatcher does `services.clone()`
     /// per activation to build the owned ctx.
-    pub services: std::sync::Arc<lattice_mode::ServiceRegistry>,
+    // Phase 5.B.14: `services` moved to `editor.editor.services`.
     /// M-async.1/2: per-`(buffer, mode)` Guard storage. Modes
     /// return an owned [`Mode::Guard`](lattice_mode::Mode::Guard)
     /// from `on_activate`; the dispatcher stashes it here keyed
@@ -666,7 +668,8 @@ pub struct App {
     /// because the spawned lifecycle task locks + inserts on
     /// `on_activate` resolve from a tokio worker thread; the App
     /// thread locks + removes on deactivate.
-    pub mode_guards: lattice_mode::GuardStoreHandle,
+    // Phase 5.B.14: `mode_guards` moved to
+    // `editor.editor.mode_guards`.
     /// Mode-keyed pane render dispatch (M.4 follow-up). Populated
     /// at boot; lookup walks active minors then the major to find
     /// the per-buffer renderer + status formatter, with the
@@ -683,8 +686,8 @@ pub struct App {
     /// pull mode contributions. `Document.modes` and this map
     /// converge in M.4 when `ActiveModes` joins
     /// `DocumentSnapshot`.
-    pub active_modes:
-        std::collections::HashMap<crate::buffers::BufferId, lattice_mode::ActiveModes>,
+    // Phase 5.B.14: `active_modes` moved to
+    // `editor.editor.active_modes`.
     /// Per-buffer mode-owned local state (M.3.2.a). Modes
     /// populate locals via the `BufferLocal` typed-map during
     /// `on_activate`; the App routes
@@ -695,8 +698,8 @@ pub struct App {
     /// to thread through the new activation API and to back
     /// `:describe-buffer`'s inspection (no entries until
     /// M.3.2.b).
-    pub buffer_locals:
-        std::collections::HashMap<crate::buffers::BufferId, lattice_mode::BufferLocals>,
+    // Phase 5.B.14: `buffer_locals` moved to
+    // `editor.editor.buffer_locals`.
     /// Per-buffer mode-resolved options cache (M.2.1, see
     /// `mode-architecture.md` §6.3 / §9.4 — note: the doc shows
     /// this on `Document`, but lattice-core cannot depend on
@@ -706,20 +709,21 @@ pub struct App {
     /// `lattice_protocol::BufferId`). Refreshed eagerly on mode
     /// toggle and option write per §6.3.1. Reads via type-keyed
     /// access against the cached snapshot are O(1).
-    pub resolved_options:
-        std::collections::HashMap<crate::buffers::BufferId, lattice_config::ResolvedOptions>,
+    // Phase 5.B.14: `resolved_options` moved to
+    // `editor.editor.resolved_options`.
     /// Buffer-local explicit overrides (`:setlocal foo=bar`)
     /// per buffer. Inputs to resolution; the resolver chains
     /// these with mode contributions before writing
     /// [`Self::resolved_options`]. Empty for buffers the user
     /// has never run `:setlocal` against.
-    pub buffer_local_overrides:
-        std::collections::HashMap<crate::buffers::BufferId, lattice_config::OptionOverrideSet>,
+    // Phase 5.B.14: `buffer_local_overrides` moved to
+    // `editor.editor.buffer_local_overrides`.
     /// Free-form help topic registry (DESIGN.md §5.11). `:help`
     /// reads from this; built-ins are sourced from `docs/user/*.md`
     /// at build time. Plugins / future LSP integrations register
     /// additional topics through the same registry.
-    pub help_topics: std::sync::Arc<crate::help_topics::HelpTopicRegistry>,
+    // Phase 5.B.14: `help_topics` moved to
+    // `editor.editor.help_topics`.
     /// UI styling knobs (DESIGN.md §5.6). Carries per-pane status
     /// line colors, the inactive-pane dim overlay, separator
     /// characters, etc. Customizable via `:set ui.*` options.
@@ -738,7 +742,8 @@ pub struct App {
     /// rebuilt from it. Future renderers (GPUI) read from this
     /// field and maintain their own cached view -- the host owns
     /// the canonical neutral state.
-    pub host_theme: lattice_host::ui::theme::Theme,
+    // Phase 5.B.14: `host_theme` moved to
+    // `editor.editor.host_theme`.
     /// Per-frame snapshot of inactive panes' visible-window syntax
     /// highlights, keyed by pane index. Refreshed by
     /// [`Self::refresh_pane_highlights`] before each draw so the
@@ -905,7 +910,7 @@ pub struct App {
     /// language id (e.g. `rust.json` -> language `"rust"`,
     /// `_global.json` -> the all-language `*` slot). Tests
     /// seed this with a tempdir; production reads from
-    /// `~/.config/lattice/snippets/` (wired in startup -- see
+    /// `~/.editor.config/lattice/snippets/` (wired in startup -- see
     /// `App::default_snippet_dirs`).
     pub snippet_dirs: Vec<std::path::PathBuf>,
     /// Active vertico-style picker (DESIGN.md §5.9.7, §5.9.10).
@@ -1178,7 +1183,7 @@ pub struct App {
     // `lattice_lsp::folding_sync`). Modes own their own
     // lifecycle state; the App is just the orchestrator.
     // `completion.auto_insert_single` lives on the typed-options
-    // registry (`self.config` type-keyed by
+    // registry (`self.editor.config` type-keyed by
     // `lattice_config::CompletionAutoInsertSingle`). Read via
     // [`Self::completion_auto_insert_single`].
     // Phase 5.B.11: `auto_submit_after_chord` moved to
@@ -3452,7 +3457,7 @@ mod tests {
         // Plain document with no path ⇒ Lang::Plain ⇒ text-mode.
         let a = app_with("hi", 5);
         let buf = a.document_buffer_id;
-        let active = a.active_modes.get(&buf).expect("active_modes populated");
+        let active = a.editor.active_modes.get(&buf).expect("active_modes populated");
         assert_eq!(active.major(), Some(lattice_mode::TextMode::mode_id()));
     }
 
@@ -3480,14 +3485,14 @@ mod tests {
             ),
             target: crate::help::HelpLinkTarget::Unresolved("synthetic".into()),
         }]);
-        a.buffer_locals
+        a.editor.buffer_locals
             .get_mut(&help_id)
             .expect("locals seeded")
             .insert(synthetic);
 
         let _ = a.popup_help().expect("popup_buffer set");
         let locals = a
-            .buffer_locals
+            .editor.buffer_locals
             .get(&help_id)
             .expect("locals seeded by open_help_in_pane");
         let from_locals = locals.get::<crate::modes::HelpLinks>().unwrap();
@@ -4072,13 +4077,13 @@ mod tests {
             h.cursor = lattice_protocol::Position::ZERO;
         });
         let mut existing_links = a
-            .buffer_locals
+            .editor.buffer_locals
             .get(&buf_id)
             .and_then(|l| l.get::<crate::modes::HelpLinks>())
             .map(|l| l.0.clone())
             .unwrap_or_default();
         existing_links.push(link);
-        a.buffer_locals
+        a.editor.buffer_locals
             .entry(buf_id)
             .or_default()
             .insert(crate::modes::HelpLinks(existing_links));
@@ -4131,13 +4136,13 @@ mod tests {
             h.cursor = lattice_protocol::Position::ZERO;
         });
         let mut existing_links = a
-            .buffer_locals
+            .editor.buffer_locals
             .get(&buf_id)
             .and_then(|l| l.get::<crate::modes::HelpLinks>())
             .map(|l| l.0.clone())
             .unwrap_or_default();
         existing_links.push(link);
-        a.buffer_locals
+        a.editor.buffer_locals
             .entry(buf_id)
             .or_default()
             .insert(crate::modes::HelpLinks(existing_links));
@@ -4283,50 +4288,50 @@ mod tests {
         let a = app_with("hi", 5);
         // Foundation
         assert!(
-            a.mode_registry
+            a.editor.mode_registry
                 .is_registered(lattice_mode::TextMode::mode_id())
         );
         // Languages (lattice-syntax)
         assert!(
-            a.mode_registry
+            a.editor.mode_registry
                 .is_registered(lattice_syntax::RustMode::mode_id())
         );
         assert!(
-            a.mode_registry
+            a.editor.mode_registry
                 .is_registered(lattice_syntax::PythonMode::mode_id())
         );
         assert!(
-            a.mode_registry
+            a.editor.mode_registry
                 .is_registered(lattice_syntax::JavascriptMode::mode_id())
         );
         assert!(
-            a.mode_registry
+            a.editor.mode_registry
                 .is_registered(lattice_syntax::MarkdownMode::mode_id())
         );
         // Buffer-kind majors (lattice-ui-tui)
         assert!(
-            a.mode_registry
+            a.editor.mode_registry
                 .is_registered(crate::modes::HelpMode::mode_id())
         );
         assert!(
-            a.mode_registry
+            a.editor.mode_registry
                 .is_registered(crate::modes::FileTreeMode::mode_id())
         );
         assert!(
-            a.mode_registry
+            a.editor.mode_registry
                 .is_registered(crate::modes::OilMode::mode_id())
         );
         // LSP log majors (lattice-lsp)
         assert!(
-            a.mode_registry
+            a.editor.mode_registry
                 .is_registered(lattice_lsp::modes::LspLogMode::mode_id())
         );
         assert!(
-            a.mode_registry
+            a.editor.mode_registry
                 .is_registered(lattice_lsp::modes::LspTraceLogMode::mode_id())
         );
         assert!(
-            a.mode_registry
+            a.editor.mode_registry
                 .is_registered(lattice_lsp::modes::LspServerLogMode::mode_id())
         );
     }
@@ -4349,7 +4354,7 @@ mod tests {
         let tree_id = a.active_pane_buffer_id();
 
         let locals = a
-            .buffer_locals
+            .editor.buffer_locals
             .get(&tree_id)
             .expect("file-tree locals seeded");
         let root = locals
@@ -4449,7 +4454,7 @@ mod tests {
             ),
             target: crate::help::HelpLinkTarget::Topic("synthetic-topic".into()),
         }]);
-        a.buffer_locals
+        a.editor.buffer_locals
             .get_mut(&help_id)
             .expect("locals seeded")
             .insert(synthetic);

@@ -186,7 +186,7 @@ impl App {
         // -- the second clause stays as the State-A discriminator.
         let popup_has_hover_mode = self
             .editor.popup_buffer
-            .and_then(|id| self.active_modes.get(&id))
+            .and_then(|id| self.editor.active_modes.get(&id))
             .map(|modes| modes.minors().contains(&crate::modes::HoverMode::mode_id()))
             .unwrap_or(false);
         let popup_in_state_a = popup_has_hover_mode && pre_active == BufferKind::Document;
@@ -433,7 +433,7 @@ impl App {
                 // subsequent reads in this same `apply` call (and
                 // before the next frame draws).
                 let cur = self.foldenable();
-                let _ = self.config.set_typed::<lattice_config::FoldEnable>(!cur);
+                let _ = self.editor.config.set_typed::<lattice_config::FoldEnable>(!cur);
                 self.drain_option_changes();
             }
             Action::LspHoverRequest => self.do_lsp_hover_request(),
@@ -2530,20 +2530,20 @@ mod tests {
         // lifecycle future is spawned. Yield to the runtime so
         // the spawned task runs and stashes the Guard.
         let mut a = app_with("hi", 5);
-        let registry = std::sync::Arc::make_mut(&mut a.mode_registry);
+        let registry = std::sync::Arc::make_mut(&mut a.editor.mode_registry);
         let test_mode = TestLocalsMode::new();
         let counter = test_mode.counter.clone();
         let mode_id = registry.register(test_mode).expect("register");
 
         let mut active = lattice_mode::ActiveModes::new();
         let guards = lattice_mode::GuardStoreHandle::new();
-        a.mode_registry
+        a.editor.mode_registry
             .activate_minor(
                 &mut active,
                 &guards,
-                &a.config,
+                &a.editor.config,
                 &a.event_bus,
-                &a.services,
+                &a.editor.services,
                 lattice_protocol::ids::BufferId::new(0),
                 mode_id,
                 lattice_mode::CapabilitySet::empty(),
@@ -2576,20 +2576,20 @@ mod tests {
         // M-async.2: activate spawns; yield to let the Guard land,
         // then deactivate synchronously and observe Drop fired.
         let mut a = app_with("hi", 5);
-        let registry = std::sync::Arc::make_mut(&mut a.mode_registry);
+        let registry = std::sync::Arc::make_mut(&mut a.editor.mode_registry);
         let test_mode = TestLocalsMode::new();
         let counter = test_mode.counter.clone();
         let mode_id = registry.register(test_mode).expect("register");
 
         let mut active = lattice_mode::ActiveModes::new();
         let guards = lattice_mode::GuardStoreHandle::new();
-        a.mode_registry
+        a.editor.mode_registry
             .activate_minor(
                 &mut active,
                 &guards,
-                &a.config,
+                &a.editor.config,
                 &a.event_bus,
-                &a.services,
+                &a.editor.services,
                 lattice_protocol::ids::BufferId::new(0),
                 mode_id,
                 lattice_mode::CapabilitySet::empty(),
@@ -2603,7 +2603,7 @@ mod tests {
         }
         assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 42);
 
-        a.mode_registry
+        a.editor.mode_registry
             .deactivate_minor(
                 &mut active,
                 &guards,

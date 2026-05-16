@@ -43,6 +43,7 @@ pub mod help;
 pub mod help_topics;
 pub mod host_generators;
 pub mod highlights;
+pub mod input;
 pub mod keymap;
 pub mod keymap_insert;
 pub mod keymap_normal;

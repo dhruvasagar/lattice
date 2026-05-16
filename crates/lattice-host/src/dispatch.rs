@@ -487,6 +487,21 @@ pub(crate) fn handle_action(
             editor.active_snippet = None;
             editor.modal = ModalState::Normal;
         }
+        // 5.5.G.2: pure-editor visual + mark arms. Bodies migrated
+        // to [`Editor`] alongside the existing `do_enter_visual` /
+        // `do_exit_visual` / `do_reselect_visual` cluster.
+        Action::EnterVisual(kind) => editor.do_enter_visual(kind),
+        Action::ExitVisual => editor.do_exit_visual(),
+        Action::ReselectLastVisual => editor.do_reselect_visual(),
+        Action::SetMark(name) => {
+            if name.is_ascii_alphabetic() || name.is_ascii_digit() {
+                editor.marks.insert(name, editor.cursor);
+                let cur = editor.cursor;
+                editor.push_position_history(cur, PositionSource::NamedMark(name));
+            } else {
+                editor.set_message(EchoLevel::Error, format!("invalid mark: {name}"));
+            }
+        }
         // Catch-all: any Action variant not yet migrated from
         // App::apply. Sub-slices 5.5.D+ extend the match upward as
         // helpers move.
@@ -2508,6 +2523,66 @@ fn outermost_fold_idx<F: Fn(&lattice_core::Fold) -> bool>(
         .filter(|(_, f)| pred(f) && line >= f.start_line && line <= f.end_line)
         .min_by_key(|(_, f)| (f.start_line, std::cmp::Reverse(f.end_line)))
         .map(|(i, _)| i)
+}
+
+/// 5.5.G.2: pure-editor visual-mode helpers.
+impl Editor {
+    /// `v` / `V` / `<C-v>` from Normal -- enter Visual mode at the
+    /// current cursor, seeding `document.selections` with a
+    /// zero-width anchor=head selection so `Range::Selection`
+    /// dispatch picks up the cursor immediately.
+    pub fn do_enter_visual(&mut self, kind: lattice_grammar::VisualKind) {
+        self.modal = ModalState::Visual(kind);
+        self.visual_anchor = Some(self.cursor);
+        let sel = lattice_protocol::selection::Selection {
+            anchor: self.cursor,
+            head: self.cursor,
+            visual: Some(visual_kind_to_mode(kind)),
+        };
+        self.set_selections_blocking(lattice_protocol::selection::SelectionSet::single(sel));
+    }
+
+    /// `<Esc>` from Visual (and the post-operator-on-selection path)
+    /// -- capture the current selection as `last_visual` so `gv`
+    /// can restore it, then collapse the selection to a cursor at
+    /// the current head and drop to Normal.
+    pub fn do_exit_visual(&mut self) {
+        if let ModalState::Visual(kind) = self.modal {
+            let sels = self.document.selections();
+            let sel = sels.primary();
+            self.last_visual = Some(crate::state::LastVisual {
+                anchor: sel.anchor,
+                head: sel.head,
+                kind,
+            });
+        }
+        self.modal = ModalState::Normal;
+        self.visual_anchor = None;
+        self.set_selections_blocking(lattice_protocol::selection::SelectionSet::single(
+            lattice_protocol::selection::Selection::cursor(self.cursor),
+        ));
+    }
+
+    /// `gv` -- restore the prior selection captured by `do_exit_visual`,
+    /// or echo an error if there's no captured visual to reselect.
+    pub fn do_reselect_visual(&mut self) {
+        let Some(last) = self.last_visual else {
+            self.set_message(
+                EchoLevel::Error,
+                "no previous visual selection".to_string(),
+            );
+            return;
+        };
+        self.modal = ModalState::Visual(last.kind);
+        self.visual_anchor = Some(last.anchor);
+        self.cursor = last.head;
+        let sel = lattice_protocol::selection::Selection {
+            anchor: last.anchor,
+            head: last.head,
+            visual: Some(visual_kind_to_mode(last.kind)),
+        };
+        self.set_selections_blocking(lattice_protocol::selection::SelectionSet::single(sel));
+    }
 }
 
 /// Phase 5.5.E.6: host-side option-cascade infrastructure. These

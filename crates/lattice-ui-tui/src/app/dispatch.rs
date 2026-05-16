@@ -45,10 +45,7 @@ use lattice_grammar::effect::Effect;
 use lattice_host::dispatch::RendererSignal;
 use lattice_runtime::{CancellationToken, RuntimeError, block_on};
 
-use super::{
-    Action, App, BufferKind, EchoLevel, FindKind, LastFind, LspNavKind, PositionSource,
-    is_valid_mark_name,
-};
+use super::{Action, App, BufferKind, EchoLevel, FindKind, LastFind, LspNavKind, PositionSource};
 use crate::excommand;
 use crate::pane::SplitOrientation;
 
@@ -164,7 +161,13 @@ impl App {
             | Action::GotoPrevFold
             | Action::StartMacroRecord(_)
             | Action::StopMacroRecord
-            | Action::SnippetLeave => {}
+            | Action::SnippetLeave
+            // 5.5.G.2: pure-editor visual + mark arms migrated to
+            // `Editor::dispatch`.
+            | Action::EnterVisual(_)
+            | Action::ExitVisual
+            | Action::ReselectLastVisual
+            | Action::SetMark(_) => {}
             Action::Invoke(inv) => self.run_invocation(inv),
             Action::Insert(s) => self.do_insert_text(&s),
             Action::DeleteCharBackward => self.do_delete_char_backward(),
@@ -303,9 +306,9 @@ impl App {
             Action::PickerAccept => self.do_picker_accept(),
             Action::PickerDismiss => self.do_picker_dismiss(),
 
-            Action::EnterVisual(kind) => self.do_enter_visual(kind),
-            Action::ExitVisual => self.do_exit_visual(),
-            Action::ReselectLastVisual => self.do_reselect_visual(),
+            // 5.5.G.2: `EnterVisual` / `ExitVisual` / `ReselectLastVisual`
+            // migrated to `Editor::dispatch`; routed through the
+            // grouped no-op above.
             Action::SearchWordUnderCursor(direction) => self.do_search_word_under_cursor(direction),
             Action::MatchBracket => self.do_match_bracket(),
             Action::ToggleCaseAtCursor => self.do_toggle_case_at_cursor(),
@@ -394,17 +397,7 @@ impl App {
             Action::ScrollLineUp => self.do_scroll_line(false),
             Action::ScrollLineDown => self.do_scroll_line(true),
 
-            Action::SetMark(name) => {
-                if is_valid_mark_name(name) {
-                    self.editor.marks.insert(name, self.editor.cursor);
-                    // Also fold into the unified position history so
-                    // `g;` / `g,` can walk through marks chronologically.
-                    let cur = self.editor.cursor;
-                    self.push_position_history(cur, PositionSource::NamedMark(name));
-                } else {
-                    self.set_message(EchoLevel::Error, format!("invalid mark: {name}"));
-                }
-            }
+            // 5.5.G.2: `SetMark` migrated to `Editor::dispatch`.
             Action::JumpToMarkLine(name) => self.do_jump_mark(name, false),
             Action::JumpToMarkExact(name) => self.do_jump_mark(name, true),
 

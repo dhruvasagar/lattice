@@ -17,61 +17,21 @@
 //!   selections; moves with the block-visual + operators
 //!   group later.
 
-use lattice_grammar::{ModalState, VisualKind};
-use lattice_protocol::selection::{Selection, SelectionSet};
-
-use super::{App, EchoLevel, LastVisual};
+use super::App;
 
 impl App {
-    pub(super) fn do_enter_visual(&mut self, kind: VisualKind) {
-        self.editor.modal = ModalState::Visual(kind);
-        self.editor.visual_anchor = Some(self.editor.cursor);
-        // Seed document.selections so Range::Selection picks up the
-        // anchor=head=cursor selection immediately.
-        let sel = Selection {
-            anchor: self.editor.cursor,
-            head: self.editor.cursor,
-            visual: Some(lattice_host::dispatch::visual_kind_to_mode(kind)),
-        };
-        self.editor.set_selections_blocking(SelectionSet::single(sel));
-    }
-
+    // 5.5.G.2: `do_enter_visual` + `do_reselect_visual` migrated to
+    // [`lattice_host::dispatch::Editor`] (the `Action::EnterVisual` /
+    // `Action::ReselectLastVisual` arms in `Editor::dispatch` call
+    // them directly; no remaining App callers).
+    //
+    // `do_exit_visual` stays as a 1-line delegate because App-side
+    // helpers (`run_oil_invocation`, the post-operator-on-selection
+    // path in `App::run_document_invocation`, `do_create_fold_from_visual`,
+    // an LSP rename path) still call it. The delegate retires when
+    // those helpers migrate host-side.
     pub(super) fn do_exit_visual(&mut self) {
-        // Capture the selection extents BEFORE collapsing, so `gv` can
-        // restore them. We want the kind from `self.editor.modal` (Visual carries
-        // it) and the anchor / head from the document selection.
-        if let ModalState::Visual(kind) = self.editor.modal {
-            let sels = self.editor.document.selections();
-            let sel = sels.primary();
-            self.editor.last_visual = Some(LastVisual {
-                anchor: sel.anchor,
-                head: sel.head,
-                kind,
-            });
-        }
-        self.editor.modal = ModalState::Normal;
-        self.editor.visual_anchor = None;
-        // Collapse selection to a cursor at the current head.
-        self.editor
-            .set_selections_blocking(SelectionSet::single(Selection::cursor(self.editor.cursor)));
-    }
-
-    pub(super) fn do_reselect_visual(&mut self) {
-        let Some(last) = self.editor.last_visual else {
-            self.set_message(EchoLevel::Error, "no previous visual selection".to_string());
-            return;
-        };
-        // Restore the selection: cursor lands at `head`, anchor at `anchor`,
-        // visual mode is the saved kind.
-        self.editor.modal = ModalState::Visual(last.kind);
-        self.editor.visual_anchor = Some(last.anchor);
-        self.editor.cursor = last.head;
-        let sel = Selection {
-            anchor: last.anchor,
-            head: last.head,
-            visual: Some(lattice_host::dispatch::visual_kind_to_mode(last.kind)),
-        };
-        self.editor.set_selections_blocking(SelectionSet::single(sel));
+        self.editor.do_exit_visual();
     }
 }
 

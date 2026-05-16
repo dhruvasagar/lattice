@@ -240,13 +240,7 @@ impl App {
     /// accumulate stale entries) and by [`Self::dismiss_popup`]
     /// when the popup closes. No-op when no popup is set.
     pub(super) fn dismiss_stale_popup_registry(&mut self) {
-        let Some(prev) = self.editor.popup_buffer else {
-            return;
-        };
-        self.editor.buffers.remove(prev);
-        self.editor.active_modes.remove(&prev);
-        self.editor.buffer_locals.remove(&prev);
-        self.editor.resolved_options.remove(&prev);
+        self.editor.dismiss_stale_popup_registry();
     }
 
     /// M.4 (b): resolve the popup's `HelpBuffer` through the
@@ -256,8 +250,7 @@ impl App {
     /// cloned snapshot (the rope is cheap-to-clone); `None` when no
     /// popup is open or the registry entry has been torn down.
     pub fn popup_help(&self) -> Option<crate::help::HelpBuffer> {
-        let id = self.editor.popup_buffer?;
-        self.editor.buffers.with_help(id, |h| h.clone())
+        self.editor.popup_help()
     }
 
     /// Mutable counterpart to [`Self::popup_help`]. The closure
@@ -449,25 +442,7 @@ impl App {
     /// was captured at open. Idempotent: closing when no popup
     /// is open is a no-op.
     pub(crate) fn dismiss_popup(&mut self) {
-        self.dismiss_stale_popup_registry();
-        self.editor.popup_buffer = None;
-        self.editor.popup_back_stack.clear();
-        self.editor.popup_placement = PopupPlacement::default();
-        // Restore pre-popup state if focus had moved into it
-        // (State B for hover; in-pane mode for `:lsp-log` etc.).
-        // State A (popup shown but never focused) leaves
-        // `prev_pane_for_help` as `None` -- nothing to restore;
-        // active was never flipped to Help.
-        if let Some(prev) = self.editor.prev_pane_for_help.take() {
-            self.editor.cursor = prev.cursor;
-            self.editor.scroll = prev.scroll;
-            let pane = self.editor.pane_tree.active_mut();
-            pane.buffer = prev.buffer;
-            pane.buffer_id = prev.buffer_id;
-            self.editor.active_buffer = prev.buffer;
-        } else {
-            self.editor.active_buffer = BufferKind::Document;
-        }
+        self.editor.dismiss_popup();
     }
 }
 

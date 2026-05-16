@@ -24,52 +24,11 @@
 use super::App;
 
 impl App {
-    /// Request a reparse if the document's text has changed
-    /// since the last request. Idempotent and cheap when nothing
-    /// changed; the actual parse runs on the syntax handle's
-    /// worker task off the UI thread (audit slice 3 / paramount
-    /// goal #1: "UI thread does no … parsing").
+    /// 5.5.D: reparse-trigger logic moved to
+    /// [`lattice_host::editor::Editor::maybe_reparse_syntax`].
+    /// Renderer call sites keep this thin wrapper until 5.5.G
+    /// collapses App's match entirely.
     pub(super) fn maybe_reparse_syntax(&mut self) {
-        let tv = self.editor.document.text_version();
-        if tv == self.editor.last_parsed_text_version {
-            return;
-        }
-        // M.3.2.c.4: route through the locals-backed accessor.
-        // Clone the handle (cheap Arc bump) to release the
-        // immutable `self` borrow before we mutably borrow
-        // `self.editor.pending_syntax_edits` below.
-        let syntax = self.document_syntax_for(self.editor.document_buffer_id).cloned();
-        if let Some(syntax) = syntax {
-            // Slice B.2 part 2: ship the accumulated EditDeltas
-            // to the worker. Worker applies them via tree.edit()
-            // before running incremental Parser::parse, falling
-            // back to full reparse on any inconsistency
-            // (from_version mismatch, byte-length mismatch, no
-            // cached tree, empty edits).
-            //
-            // Slice B.5: pass the Buffer (clones in O(1) via
-            // ropey's internal Arc) instead of materializing the
-            // full text here. Worker calls buffer.as_string() on
-            // its thread, so the O(n) alloc + memcpy stays off
-            // the input thread.
-            let edits = std::mem::take(&mut self.editor.pending_syntax_edits);
-            let buffer = self.editor.document.snapshot().buffer.clone();
-            syntax.request_reparse(self.editor.last_synced_syntax_version, tv, buffer, edits);
-        }
-        self.editor.last_parsed_text_version = tv;
-        // Worker WILL be at this version after the request
-        // completes. If a request gets dropped (worker panicked),
-        // the next request's from_version mismatch triggers a
-        // full reparse and self-corrects.
-        self.editor.last_synced_syntax_version = tv;
-        // Recompute computed folds in lockstep with the syntax
-        // reparse request so `foldmethod=indent` stays in sync.
-        // Manual foldmethod skips the recompute (the user's `zf`
-        // ranges are authoritative). Folds read the latest
-        // available snapshot; if the worker is mid-parse the
-        // computed folds reflect the prior text version --
-        // self-corrects on the next refresh once the new
-        // snapshot publishes.
-        self.recompute_folds();
+        self.editor.maybe_reparse_syntax();
     }
 }

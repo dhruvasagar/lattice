@@ -303,41 +303,29 @@ impl App {
         }
     }
 
+    /// 5.5.D: cursor clamp moved to
+    /// [`lattice_host::editor::Editor::clamp_cursor_to_active_buffer`].
+    /// Renderer call sites keep the thin wrapper for now; 5.5.G
+    /// removes it when App's match collapses.
     pub(super) fn clamp_cursor_to_buffer(&mut self) {
-        self.clamp_cursor_to_active_buffer();
+        self.editor.clamp_cursor_to_active_buffer();
     }
 
-    /// Clamp `self.editor.cursor` to the active buffer's bounds. Same as
-    /// `clamp_cursor_to_buffer` but reads from `active_text()` so
-    /// it works for help / file-tree / document uniformly.
+    /// 5.5.D: see [`Self::clamp_cursor_to_buffer`]. Delegates to the
+    /// host-side implementation.
     pub(super) fn clamp_cursor_to_active_buffer(&mut self) {
-        let buffer = self.active_text();
-        let last_line = last_addressable_line(&buffer);
-        if self.editor.cursor.line > last_line {
-            self.editor.cursor.line = last_line;
-        }
-        let len = line_byte_len(&buffer, self.editor.cursor.line);
-        if self.editor.cursor.byte > len {
-            self.editor.cursor.byte = len;
-        }
+        self.editor.clamp_cursor_to_active_buffer();
     }
 
+    /// 5.5.D: viewport-scroll-to-cursor logic moved to
+    /// [`lattice_host::editor::Editor::ensure_cursor_visible`].
     pub(super) fn ensure_cursor_visible(&mut self) {
-        if self.editor.viewport_height == 0 {
-            return;
-        }
-        if self.editor.cursor.line < self.editor.scroll {
-            self.editor.scroll = self.editor.cursor.line;
-        }
-        let bottom = self.editor.scroll + self.editor.viewport_height - 1;
-        if self.editor.cursor.line > bottom {
-            self.editor.scroll = self.editor.cursor.line + 1 - self.editor.viewport_height;
-        }
+        self.editor.ensure_cursor_visible();
     }
 
     pub fn set_viewport_height(&mut self, height: u32) {
         self.editor.viewport_height = height.max(1);
-        self.ensure_cursor_visible();
+        self.editor.ensure_cursor_visible();
     }
 
     /// Compute the active pane's *content* height inside a buffer
@@ -632,57 +620,17 @@ impl App {
     /// overlay; while help is active we return its id, otherwise
     /// the active pane's id.
     pub fn active_buffer_id(&self) -> BufferId {
-        match self.editor.active_buffer {
-            BufferKind::Help => self.editor.popup_buffer.unwrap_or(self.editor.document_buffer_id),
-            BufferKind::Document | BufferKind::FileTree | BufferKind::Oil => {
-                self.editor.pane_tree.active().buffer_id
-            }
-        }
+        self.editor.active_buffer_id()
     }
 
-    /// Cursor of the currently active buffer. Reads `App::cursor`
-    /// when the document is active or the popup help buffer's
-    /// cursor (via `popup_help()`) when a help overlay holds
-    /// focus. Used by code that records jump
-    /// origins (where `<C-o>` would land if pressed right now)
-    /// without needing to know which buffer kind that origin came
-    /// from.
+    /// 5.5.D: see [`lattice_host::editor::Editor::active_cursor`].
     pub fn active_cursor(&self) -> Position {
-        match self.editor.active_buffer {
-            BufferKind::Document => self.editor.cursor,
-            BufferKind::Help => self.popup_help().map(|h| h.cursor).unwrap_or(self.editor.cursor),
-            BufferKind::FileTree => self
-                .editor.buffers
-                .with_file_tree(self.active_pane_buffer_id(), |t| t.cursor)
-                .unwrap_or(self.editor.cursor),
-            BufferKind::Oil => self
-                .editor.buffers
-                .with_oil(self.active_pane_buffer_id(), |o| o.cursor)
-                .unwrap_or(self.editor.cursor),
-        }
+        self.editor.active_cursor()
     }
 
-    /// The active buffer's text -- a `Buffer` clone (rope is O(1)).
-    /// Document, help, file-tree all flow through this, so motion /
-    /// scroll / search code can read text without branching on
-    /// `BufferKind`. `self.editor.cursor` / `self.editor.scroll` are the live
-    /// position into this buffer.
+    /// 5.5.D: see [`lattice_host::editor::Editor::active_text`].
     pub fn active_text(&self) -> Buffer {
-        match self.editor.active_buffer {
-            BufferKind::Help => self
-                .popup_help()
-                .map(|h| h.content.clone())
-                .unwrap_or_else(|| self.editor.document.snapshot().buffer.clone()),
-            BufferKind::FileTree => self
-                .editor.buffers
-                .with_file_tree(self.active_pane_buffer_id(), |t| t.content.clone())
-                .unwrap_or_else(|| self.editor.document.snapshot().buffer.clone()),
-            BufferKind::Document => self.editor.document.snapshot().buffer.clone(),
-            BufferKind::Oil => self
-                .editor.buffers
-                .with_oil(self.active_pane_buffer_id(), |o| o.content.clone())
-                .unwrap_or_else(|| self.editor.document.snapshot().buffer.clone()),
-        }
+        self.editor.active_text()
     }
 }
 

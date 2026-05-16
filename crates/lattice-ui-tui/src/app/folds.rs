@@ -32,9 +32,7 @@
 use lattice_grammar::ModalState;
 use lattice_protocol::position::Position;
 
-use super::{
-    App, EchoLevel, Fold, FoldMethod, is_blank_line, last_addressable_line, line_byte_len,
-};
+use super::{App, EchoLevel, Fold, is_blank_line, last_addressable_line, line_byte_len};
 
 impl App {
     /// Refresh [`Self::folds`] from the active [`FoldMethod`].
@@ -52,102 +50,13 @@ impl App {
     /// markdown / indent providers based on the file extension --
     /// so `:set foldmethod=syntax` is useful even on a plain-text
     /// buffer.
+    /// 5.5.D: full fold recompute moved to
+    /// [`lattice_host::editor::Editor::recompute_folds`] alongside
+    /// `recompute_syntax_folds` / `recompute_lsp_folds`. Renderer
+    /// call sites keep this thin wrapper until 5.5.G collapses
+    /// App's match entirely.
     pub fn recompute_folds(&mut self) {
-        let fm = self.foldmethod();
-        if matches!(fm, FoldMethod::Manual) {
-            return;
-        }
-        let snapshot = self.editor.document.snapshot();
-        let mut next = match fm {
-            FoldMethod::Manual => return,
-            FoldMethod::Indent => crate::folds::compute_indent_folds(&snapshot.buffer),
-            FoldMethod::Markdown => crate::folds::compute_markdown_folds(&snapshot.buffer),
-            FoldMethod::Syntax => self.recompute_syntax_folds(&snapshot.buffer),
-            FoldMethod::Lsp => self.recompute_lsp_folds(&snapshot.buffer),
-        };
-        // Carry over closed-state. Identity hash (heading text +
-        // depth) is the primary key so that adding a line to one
-        // section doesn't reopen the closed section above. Falls
-        // back to (start_line, end_line) when identity is missing.
-        for nf in next.iter_mut() {
-            let prev = nf
-                .identity
-                .and_then(|id| self.editor.folds.iter().find(|f| f.identity == Some(id)))
-                .or_else(|| {
-                    self.editor
-                        .folds
-                        .iter()
-                        .find(|f| f.start_line == nf.start_line && f.end_line == nf.end_line)
-                });
-            if let Some(prev) = prev {
-                nf.closed = prev.closed;
-            }
-        }
-        // Manual folds (identity = None) coexist with computed
-        // folds; recomputed providers don't produce them, so carry
-        // them over verbatim.
-        for prev in &self.editor.folds {
-            if prev.identity.is_none() {
-                next.push(*prev);
-            }
-        }
-        next.sort_by(|a, b| {
-            a.start_line
-                .cmp(&b.start_line)
-                .then_with(|| b.end_line.cmp(&a.end_line))
-        });
-        self.editor.folds = next;
-    }
-
-    /// Run the tree-sitter folds.scm provider against the live
-    /// `Syntax`, falling back to markdown / indent when the syntax
-    /// provider returns `None` (no `folds.scm` for this language,
-    /// or no parse tree yet). Reads the latest snapshot from the
-    /// async syntax handle (wait-free).
-    fn recompute_syntax_folds(&self, buffer: &lattice_core::Buffer) -> Vec<Fold> {
-        // M.3.2.c.4: route through the locals-backed accessor.
-        if let Some(syntax) = self.document_syntax_for(self.editor.document_buffer_id) {
-            let snap = syntax.snapshot();
-            if let Some(folds) = crate::folds::compute_syntax_folds(&snap) {
-                return folds;
-            }
-        }
-        // Cascade: markdown for `.md`, indent otherwise.
-        let is_md = self
-            .editor.document
-            .path()
-            .map(|p| {
-                p.extension()
-                    .and_then(|e| e.to_str())
-                    .map(|ext| ext.eq_ignore_ascii_case("md"))
-                    .unwrap_or(false)
-            })
-            .unwrap_or(false);
-        if is_md {
-            crate::folds::compute_markdown_folds(buffer)
-        } else {
-            crate::folds::compute_indent_folds(buffer)
-        }
-    }
-
-    /// 4.4.f: read the LSP fold cache for the active buffer.
-    /// When the cache is empty (request still in-flight, no
-    /// server attached, or sub-mode disabled), cascade to the
-    /// syntax provider so the user sees *some* folds rather
-    /// than an empty list. The cache is refilled async by
-    /// [`Self::maybe_request_folding_range`], invoked from the
-    /// per-tick runtime drain.
-    fn recompute_lsp_folds(&self, buffer: &lattice_core::Buffer) -> Vec<Fold> {
-        if self.lsp_folding_mode_enabled_for(self.editor.document_buffer_id)
-            && let Some(cache) = self.editor.lsp_folds_cache.get(&self.editor.document_buffer_id)
-            && !cache.folds.is_empty()
-        {
-            return cache.folds.clone();
-        }
-        // Cascade: identical to `Syntax`'s fall-through so users
-        // don't see an empty fold list when the server is slow
-        // or doesn't advertise the capability.
-        self.recompute_syntax_folds(buffer)
+        self.editor.recompute_folds();
     }
 
     /// Vim's `zf`: create a fold over the current Visual selection's

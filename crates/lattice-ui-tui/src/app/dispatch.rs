@@ -70,68 +70,11 @@ fn delete_trailing_word(s: &mut String) {
     s.truncate(cut_to);
 }
 
-/// Whether an action would mutate the document buffer (or the
-/// document's mode / selection / undo state). The help-buffer guard
-/// in [`App::apply`] short-circuits these when active_buffer ==
-/// Help so a stray `i` / `p` / `u` / `dd` while reading help
-/// doesn't fall through onto the underlying document.
-///
-/// Motions and scroll-class actions are NOT in this set -- they
-/// operate on whichever buffer is active (document or help) per the
-/// per-action active-buffer routing.
-fn action_is_document_mutation(action: &Action) -> bool {
-    matches!(
-        action,
-        Action::Insert(_)
-            | Action::DeleteCharBackward
-            | Action::EnterMode(ModalState::Insert)
-            | Action::EnterMode(ModalState::Replace)
-            | Action::EnterAppend
-            | Action::EnterBlockVisualInsert
-            | Action::EnterBlockVisualAppend
-            | Action::OpenLineBelow
-            | Action::OpenLineAbove
-            | Action::Undo
-            | Action::Redo
-            | Action::OverwriteChar(_)
-            | Action::ReplaceUndoLast
-            | Action::PasteAfter
-            | Action::PasteBefore
-            | Action::PasteText(_)
-            | Action::EnterVisual(_)
-            | Action::ExitVisual
-            | Action::ReselectLastVisual
-            | Action::JoinLines { .. }
-            | Action::ToggleCaseAtCursor
-            | Action::CreateFoldFromVisual
-            | Action::OpenFoldAtCursor
-            | Action::CloseFoldAtCursor
-            | Action::ToggleFoldAtCursor
-            | Action::OpenAllFolds
-            | Action::CloseAllFolds
-            | Action::DeleteFoldAtCursor
-            | Action::RepeatLastChange
-            | Action::StartMacroRecord(_)
-            | Action::StopMacroRecord
-            | Action::PlayMacro(_)
-            | Action::PlayLastMacro
-            // `*` / `#` -- search-word-under-cursor reads the
-            // *document* word and is fold-aware. Defer until
-            // it's generalised through `active_text()`. The
-            // regular `/` and friends are NOT mutations and run
-            // on any buffer kind.
-            | Action::SearchWordUnderCursor(_)
-            | Action::MatchBracket
-            | Action::FindRepeat { .. }
-            | Action::SetMark(_)
-            | Action::JumpToMarkLine(_)
-            | Action::JumpToMarkExact(_)
-            | Action::WalkMarkHistoryBack
-            | Action::WalkMarkHistoryForward
-            | Action::GotoNextFold
-            | Action::GotoPrevFold
-    )
-}
+// 5.5.D: `action_is_document_mutation` lives in
+// [`lattice_host::dispatch::action_is_document_mutation`] alongside
+// the read-only-help guard that consults it. Any ui-tui-side reader
+// would import it from the host crate; today nothing else in this
+// module needs it.
 
 fn echo_level_from_grammar(level: lattice_grammar::EchoLevel) -> EchoLevel {
     match level {
@@ -165,12 +108,17 @@ impl App {
     }
 
     pub fn apply(&mut self, action: Action) {
-        // Phase 5.5.B: macro-recording capture and partial-chord
-        // lifecycle have moved to `Editor::dispatch`'s preamble.
-        // The clone is intentional intermediate-state churn while
-        // the rest of `apply` still owns the action below; it goes
-        // away when 5.5.G collapses this function entirely.
-        let _outcome = self.editor.dispatch(action.clone());
+        // Phase 5.5.B–D: macro-recording capture, partial-chord
+        // lifecycle, and the read-only-help guard live in
+        // `Editor::dispatch`'s preamble. When `outcome.consumed` is
+        // set the host already surfaced the relevant echo + cleanup
+        // (read-only-help today); App's match below must bail.
+        // `consumed` disappears in 5.5.G once App's match collapses
+        // entirely.
+        let outcome = self.editor.dispatch(action.clone());
+        if outcome.consumed {
+            return;
+        }
         // Snapshot pre-dispatch state for the State-A hover
         // auto-dismiss hook below: while a hover popup is shown
         // and focus is still on the main buffer, any motion that
@@ -195,21 +143,6 @@ impl App {
             .map(|modes| modes.minors().contains(&crate::modes::HoverMode::mode_id()))
             .unwrap_or(false);
         let popup_in_state_a = popup_has_hover_mode && pre_active == BufferKind::Document;
-        // Read-only guard for help: when a help buffer holds focus
-        // (DESIGN.md §5.9 active-buffer routing), buffer-mutating
-        // actions (Insert / Delete / Paste / Undo / Redo / fold ops
-        // / etc.) silently no-op with a "read-only" echo. Motion-
-        // and scroll-class actions, the universal escape hatches
-        // (Quit, EnterCommandLine, HelpDismiss), and command-line
-        // editing actions all keep working -- the read-only set is
-        // narrow and explicit, so additions to `Action` default to
-        // working in help unless they're added to this list.
-        if matches!(self.editor.active_buffer, BufferKind::Help) && action_is_document_mutation(&action) {
-            self.set_message(EchoLevel::Info, "buffer is read-only".to_string());
-            self.ensure_cursor_visible();
-            self.maybe_reparse_syntax();
-            return;
-        }
         match action {
             // Phase 5.5.C: helper-free arms moved to
             // `Editor::dispatch`'s match. Grouped no-op here keeps

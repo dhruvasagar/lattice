@@ -1064,7 +1064,7 @@ impl App {
     /// stepping. The active pane's buffer_id is the source of
     /// truth (the active pane is what the user sees).
     pub(super) fn active_pane_buffer_id(&self) -> BufferId {
-        self.editor.pane_tree.active().buffer_id
+        self.editor.active_pane_buffer_id()
     }
 
     /// Copy the App's hot-path cursor / scroll into the active
@@ -1418,13 +1418,7 @@ impl App {
         &self,
         id: BufferId,
     ) -> Option<&lattice_syntax::SyntaxHandle> {
-        if id == self.editor.document_buffer_id && matches!(self.editor.active_buffer, BufferKind::Document) {
-            return self.editor.syntax.as_ref();
-        }
-        self.editor.buffer_locals
-            .get(&id)
-            .and_then(|l| l.get::<crate::modes::DocumentSyntax>())
-            .and_then(|s| s.0.as_ref())
+        self.editor.document_syntax_for(id)
     }
 
     /// Mode-owned fold list for `id`. Same active / inactive

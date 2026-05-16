@@ -129,10 +129,7 @@ impl App {
     /// returns `false` when no entry exists for `buffer_id` --
     /// matches the umbrella accessor's shape.
     fn minor_mode_enabled_for(&self, buffer_id: BufferId, mode_id: lattice_mode::ModeId) -> bool {
-        self.editor.active_modes
-            .get(&buffer_id)
-            .map(|modes| modes.has_minor(mode_id))
-            .unwrap_or(false)
+        self.editor.minor_mode_enabled_for(buffer_id, mode_id)
     }
 
     /// CSM.K1: is `completion-mode` (the persistent gate)

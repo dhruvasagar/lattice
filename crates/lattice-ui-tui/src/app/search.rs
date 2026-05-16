@@ -31,7 +31,6 @@ use lattice_core::Buffer;
 use lattice_core::search::SearchHit;
 use lattice_grammar::CommandInvocation;
 use lattice_grammar::SearchDirection;
-use lattice_protocol::edit::Edit;
 use lattice_protocol::position::{Position, Range as ProtoRange};
 use lattice_runtime::CancellationToken;
 
@@ -333,11 +332,8 @@ impl App {
         }
     }
 
-    /// Vim's `:s/pattern/replacement/[g]` (and `:%s/...` for whole-buffer
-    /// scope). Replacement template syntax follows fancy-regex /
-    /// `regex` crate: `$1`, `${name}`, `$0` (whole match), `$$` for a
-    /// literal `$`. NOT vim's `\1`/`&` -- modern syntax. Returns count
-    /// of replacements via the echo area.
+    /// 5.5.E.7.5: see [`lattice_host::dispatch::Editor::do_substitute`].
+    #[allow(dead_code)]
     pub(super) fn do_substitute(
         &mut self,
         scope: lattice_grammar::SubstituteScope,
@@ -345,75 +341,7 @@ impl App {
         replacement: &str,
         global: bool,
     ) {
-        if pattern.is_empty() {
-            self.set_message(EchoLevel::Error, "empty pattern".to_string());
-            return;
-        }
-        // Compile once. Surface compile errors to the user.
-        let regex = match compile_search_pattern(pattern) {
-            Ok(r) => r,
-            Err(msg) => {
-                self.set_message(EchoLevel::Error, format!("regex: {msg}"));
-                return;
-            }
-        };
-        // Determine the line range.
-        let (first_line, last_line) = match scope {
-            lattice_grammar::SubstituteScope::CurrentLine => (self.editor.cursor.line, self.editor.cursor.line),
-            lattice_grammar::SubstituteScope::Whole => {
-                let last = last_addressable_line(&self.editor.document.snapshot().buffer);
-                (0, last)
-            }
-        };
-        let mut total = 0usize;
-        // Apply per line, top-down. fancy-regex's `replace_all` /
-        // `replace` does the heavy lifting: SIMD literal prefilter
-        // for backref-free patterns, NFA fallback when needed,
-        // template substitution with $1/${name}.
-        for line in first_line..=last_line {
-            let line_text = self
-                .editor.document
-                .snapshot()
-                .buffer
-                .line(line)
-                .unwrap_or_default();
-            let new_line = if global {
-                regex.replace_all(&line_text, replacement)
-            } else {
-                regex.replace(&line_text, replacement)
-            };
-            // If nothing changed on this line, skip the edit.
-            if new_line == line_text {
-                continue;
-            }
-            // Count substitutions: cheap to tally via find_iter.
-            let count_on_line = if global {
-                let mut c = 0usize;
-                for m in regex.find_iter(&line_text) {
-                    if m.is_ok() {
-                        c += 1;
-                    }
-                }
-                c
-            } else {
-                1
-            };
-            let line_len = line_text.len() as u32;
-            let r = ProtoRange::new(Position::new(line, 0), Position::new(line, line_len));
-            let _ = self.apply_edit_blocking(Edit::replace(r, new_line.into_owned()));
-            total += count_on_line;
-        }
-        if total == 0 {
-            self.set_message(
-                EchoLevel::Error,
-                format!("E486: Pattern not found: {pattern}"),
-            );
-        } else {
-            self.set_message(
-                EchoLevel::Info,
-                format!("{total} substitution{}", if total == 1 { "" } else { "s" }),
-            );
-        }
+        self.editor.do_substitute(scope, pattern, replacement, global);
     }
 
     /// Vim's `;` / `,`: repeat the last f/F/t/T find on the current

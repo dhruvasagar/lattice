@@ -946,6 +946,7 @@ name = "lattice-host"
 version = "0.1.0"
 dependencies = [
  "arc-swap",
+ "fancy-regex",
  "lattice-completion",
  "lattice-config",
  "lattice-core",

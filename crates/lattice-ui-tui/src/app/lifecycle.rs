@@ -28,7 +28,6 @@
 //! - `set_viewport_height`, `pending_redraw` handling,
 //!   per-loop-iteration state hooks.
 
-use lattice_core::buffer::AppliedEdit;
 use lattice_core::{CoreError, Document};
 use lattice_protocol::Event;
 use lattice_protocol::position::Position;
@@ -545,15 +544,12 @@ impl App {
         self.editor.snapshot_active_pane();
     }
 
-    /// 5.5.E.7.2: see [`lattice_host::dispatch::Editor::publish_document_changed`].
-    /// Wrapper retained because four prod call sites
-    /// (`apply_edit_blocking`, `apply_edit_batch_blocking`,
-    /// `undo_blocking`, `redo_blocking`, plus the `handle_edits`
-    /// chokepoint) still live App-side across the migration window;
-    /// E.7.3 collapses them.
-    pub(super) fn publish_document_changed(&mut self, applied: &[AppliedEdit]) {
-        self.editor.publish_document_changed(applied);
-    }
+    // 5.5.E.7.7: `publish_document_changed` wrapper retired -- all
+    // four prod call sites collapsed: `apply_edit_blocking` /
+    // `apply_edit_batch_blocking` / `undo_blocking` / `redo_blocking`
+    // now live on `Editor` (E.7.3), and the `handle_edits` chokepoint
+    // routes through `Editor::handle_edits` via the `Effect::Edits`
+    // arm. See [`lattice_host::dispatch::Editor::publish_document_changed`].
 
     // 5.5.E.4: `publish_selections_changed` moved to
     // [`lattice_host::dispatch::Editor::publish_selections_changed`]

@@ -39,7 +39,6 @@
 //! match arms call. Those live in their feature modules; this
 //! is the routing layer over them.
 
-use lattice_core::buffer::AppliedEdit;
 use lattice_grammar::ModalState;
 use lattice_grammar::command::CommandInvocation;
 use lattice_grammar::effect::Effect;
@@ -974,8 +973,14 @@ impl App {
             | Effect::ListModes
             | Effect::DescribeMode { .. }
             | Effect::Customize { .. }
-            | Effect::ListDiagnostics => {}
-            Effect::Edits(edits) => self.handle_edits(&edits),
+            | Effect::ListDiagnostics
+            | Effect::DeleteCurrentLine
+            | Effect::Substitute { .. }
+            | Effect::Edits(_) => {}
+            // 5.5.E.7.7: `Edits` migrated to `Editor::handle_effect`;
+            // routed through the grouped no-op above. `handle_edits`
+            // and `publish_document_changed` wrappers retired in the
+            // same slice.
             Effect::EnterMode(mode) => {
                 // Operators that flip mode (`c` -> Insert) come through
                 // the same `enter_mode` helper as direct Action::EnterMode
@@ -990,18 +995,17 @@ impl App {
             Effect::SaveBuffer { path } => self.do_write(path),
             Effect::QuitEditor { force } => self.do_quit(force),
             Effect::OpenBuffer { path, force } => self.do_edit(path, force),
-            Effect::Substitute {
-                scope,
-                pattern,
-                replacement,
-                global,
-            } => self.do_substitute(scope, &pattern, &replacement, global),
+            // 5.5.E.7.5: `Substitute` migrated to
+            // `Editor::handle_effect`; routed through the grouped
+            // no-op above.
             Effect::Global {
                 pattern,
                 inverted,
                 body,
             } => self.do_global(&pattern, inverted, body.as_ref()),
-            Effect::DeleteCurrentLine => self.do_delete_line(),
+            // 5.5.E.7.4: `DeleteCurrentLine` migrated to
+            // `Editor::handle_effect`; routed through the grouped
+            // no-op above.
             // 5.5.F.2: `DescribeCommand` / `Apropos` / `DescribeKey`
             // / `ListKeymap` migrated to `Editor::handle_effect`;
             // the renderer-coupled tail flows back through
@@ -1285,35 +1289,10 @@ impl App {
         }
     }
 
-    fn handle_edits(&mut self, edits: &[AppliedEdit]) {
-        // After a delete, the cursor sits at the start of the deleted range
-        // (which is now the position of whatever followed). Vim's behavior.
-        if let Some(first) = edits.first() {
-            self.editor.cursor = first.original_range.start;
-        }
-        // Slice C.5: grammar-driven edits (operators like `>>`,
-        // `dd`, `c`, `y`) reach this path with `Effect::Edits`
-        // -- the actor already applied them to the document.
-        // They bypass the `apply_edit_blocking` chokepoint that
-        // does `publish_document_changed`. Without manual
-        // wiring here, the LSP `didChange` fan-out, the
-        // `pending_syntax_edits` accumulation, and the
-        // `shift_highlights_for_edit` byte-shift all SKIP these
-        // edits -- which is what produced the user-reported
-        // flicker on `>>` and `dd`: spans never shifted on the
-        // input thread, so when the worker eventually published
-        // the recompute landed as a visible repaint.
-        //
-        // Route them through the same chokepoint so:
-        // - LSP servers see the didChange.
-        // - Syntax worker sees the EditDeltas (incremental
-        //   reparse instead of falling back to full).
-        // - visible_highlights stays line- and byte-aligned via
-        //   shift_highlights_for_edit.
-        if !edits.is_empty() {
-            self.publish_document_changed(edits);
-        }
-    }
+    // 5.5.E.7.7: `handle_edits` retired -- body moved to
+    // `lattice_host::dispatch::Editor::handle_edits`, called via the
+    // `Effect::Edits` arm in `Editor::handle_effect`. The grouped
+    // no-op above keeps the App-side match exhaustive.
 }
 
 /// True if the Effect indicates an operator-class action (the buffer

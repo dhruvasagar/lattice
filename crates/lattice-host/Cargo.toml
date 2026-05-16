@@ -69,6 +69,10 @@ tokio = { workspace = true, features = ["sync"] }
 lsp-types = { workspace = true }
 toml = { workspace = true }
 notify = { workspace = true }
+# 5.5.E.7.5: `Editor::do_substitute` compiles `:s/pat/repl/`
+# patterns host-side via the same fancy-regex engine that backs
+# `/` and `?` in `lattice-core::search`.
+fancy-regex = { workspace = true }
 
 [dev-dependencies]
 

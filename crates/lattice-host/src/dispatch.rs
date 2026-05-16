@@ -757,6 +757,30 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             // `RendererSignal` is required.
             editor.do_list_diagnostics();
         }
+        Effect::DeleteCurrentLine => {
+            // 5.5.E.7.4: `:d` (or `:g/.../d`) -- delete the cursor's
+            // whole line including its trailing newline. Pure
+            // editor.* mutation through `apply_edit_blocking`.
+            editor.do_delete_line();
+        }
+        Effect::Substitute {
+            scope,
+            pattern,
+            replacement,
+            global,
+        } => {
+            // 5.5.E.7.5: `:s/pat/repl/[g]` and `:%s/...`. Pure
+            // editor.* mutation through `apply_edit_blocking`; the
+            // replacement-count echo lands via `set_message`.
+            editor.do_substitute(scope, &pattern, &replacement, global);
+        }
+        Effect::Edits(edits) => {
+            // 5.5.E.7.7: grammar-driven edits (`>>`, `dd`, `c`, `y`)
+            // -- the document actor has already applied them. Route
+            // through the chokepoint so LSP `didChange`, syntax
+            // reparse, and highlight byte-shifts all see the deltas.
+            editor.handle_edits(&edits);
+        }
         Effect::Customize { name } => {
             // 5.5.F.6: `:customize [name]` (M.9.0). Three resolution
             // paths: no arg → picker; `<name>` ending in `-mode` →
@@ -1737,6 +1761,220 @@ impl Editor {
             self.publish_document_changed(applied);
         }
         result
+    }
+
+    /// 5.5.E.7.4: delete the cursor's whole line including its
+    /// trailing newline (vim's `:d`). The standard delete operator's
+    /// `CurrentLine` range preserves the newline, which leaves an
+    /// empty line behind -- that's fine for `dd` (cursor stays put on
+    /// a now-empty line) but wrong for `:d` and `:g/.../d`. Here we
+    /// explicitly include the newline.
+    pub fn do_delete_line(&mut self) {
+        let line = self.cursor.line;
+        let last = last_addressable_line(&self.document.snapshot().buffer);
+        let len = self.document.snapshot().buffer.line_byte_len(line);
+        let r = if line < last {
+            // Include the trailing newline by extending into the next line.
+            lattice_protocol::position::Range::new(
+                lattice_protocol::position::Position::new(line, 0),
+                lattice_protocol::position::Position::new(line + 1, 0),
+            )
+        } else if line > 0 {
+            // Last line: include the previous line's newline by reaching
+            // back to the end of `line - 1`.
+            let prev = line - 1;
+            let prev_len = self.document.snapshot().buffer.line_byte_len(prev);
+            lattice_protocol::position::Range::new(
+                lattice_protocol::position::Position::new(prev, prev_len),
+                lattice_protocol::position::Position::new(line, len),
+            )
+        } else {
+            // Single-line buffer: just delete the content.
+            lattice_protocol::position::Range::new(
+                lattice_protocol::position::Position::new(line, 0),
+                lattice_protocol::position::Position::new(line, len),
+            )
+        };
+        if self
+            .apply_edit_blocking(lattice_protocol::edit::Edit::delete(r))
+            .is_ok()
+        {
+            self.cursor = lattice_protocol::position::Position::new(
+                line.min(last_addressable_line(&self.document.snapshot().buffer)),
+                0,
+            );
+        }
+    }
+
+    /// 5.5.E.7.5: vim's `:s/pattern/replacement/[g]` (and `:%s/...`
+    /// for whole-buffer scope). Replacement template syntax follows
+    /// fancy-regex / `regex` crate: `$1`, `${name}`, `$0` (whole
+    /// match), `$$` for a literal `$`. NOT vim's `\1`/`&` — modern
+    /// syntax. Reports the replacement count via the echo area.
+    pub fn do_substitute(
+        &mut self,
+        scope: lattice_grammar::SubstituteScope,
+        pattern: &str,
+        replacement: &str,
+        global: bool,
+    ) {
+        if pattern.is_empty() {
+            self.set_message(EchoLevel::Error, "empty pattern".to_string());
+            return;
+        }
+        // Compile once. Surface compile errors to the user.
+        let regex = match fancy_regex::Regex::new(pattern) {
+            Ok(r) => r,
+            Err(e) => {
+                self.set_message(EchoLevel::Error, format!("regex: {e}"));
+                return;
+            }
+        };
+        // Determine the line range.
+        let (first_line, last_line) = match scope {
+            lattice_grammar::SubstituteScope::CurrentLine => (self.cursor.line, self.cursor.line),
+            lattice_grammar::SubstituteScope::Whole => {
+                let last = last_addressable_line(&self.document.snapshot().buffer);
+                (0, last)
+            }
+        };
+        let mut total = 0usize;
+        // Apply per line, top-down. fancy-regex's `replace_all` /
+        // `replace` does the heavy lifting: SIMD literal prefilter
+        // for backref-free patterns, NFA fallback when needed,
+        // template substitution with $1/${name}.
+        for line in first_line..=last_line {
+            let line_text = self
+                .document
+                .snapshot()
+                .buffer
+                .line(line)
+                .unwrap_or_default();
+            let new_line = if global {
+                regex.replace_all(&line_text, replacement)
+            } else {
+                regex.replace(&line_text, replacement)
+            };
+            // If nothing changed on this line, skip the edit.
+            if new_line == line_text {
+                continue;
+            }
+            // Count substitutions: cheap to tally via find_iter.
+            let count_on_line = if global {
+                let mut c = 0usize;
+                for m in regex.find_iter(&line_text) {
+                    if m.is_ok() {
+                        c += 1;
+                    }
+                }
+                c
+            } else {
+                1
+            };
+            let line_len = line_text.len() as u32;
+            let r = lattice_protocol::position::Range::new(
+                lattice_protocol::position::Position::new(line, 0),
+                lattice_protocol::position::Position::new(line, line_len),
+            );
+            let _ = self.apply_edit_blocking(lattice_protocol::edit::Edit::replace(
+                r,
+                new_line.into_owned(),
+            ));
+            total += count_on_line;
+        }
+        if total == 0 {
+            self.set_message(
+                EchoLevel::Error,
+                format!("E486: Pattern not found: {pattern}"),
+            );
+        } else {
+            self.set_message(
+                EchoLevel::Info,
+                format!("{total} substitution{}", if total == 1 { "" } else { "s" }),
+            );
+        }
+    }
+
+    /// 5.5.E.7.7: route grammar-driven edits (operators like `>>`,
+    /// `dd`, `c`, `y`) through the same chokepoint as
+    /// `apply_edit_blocking`. The actor has already applied the
+    /// edits to the document; without this routing the LSP
+    /// `didChange` fan-out, the `pending_syntax_edits` accumulation,
+    /// and the synchronous `shift_highlights_for_edit` byte-shift
+    /// all SKIP the edits — which produced the user-reported flicker
+    /// on `>>` and `dd`: spans never shifted on the input thread, so
+    /// when the worker eventually published the recompute landed as
+    /// a visible repaint.
+    ///
+    /// After the cursor settles on the start of the deleted range
+    /// (vim's behavior after a delete), the edits flow through
+    /// [`Self::publish_document_changed`] so:
+    /// - LSP servers see the didChange.
+    /// - Syntax worker sees the `EditDelta`s (incremental reparse
+    ///   instead of falling back to full).
+    /// - `visible_highlights` stays line- and byte-aligned via
+    ///   `shift_highlights_for_edit`.
+    pub fn handle_edits(&mut self, edits: &[lattice_core::buffer::AppliedEdit]) {
+        if let Some(first) = edits.first() {
+            self.cursor = first.original_range.start;
+        }
+        if !edits.is_empty() {
+            self.publish_document_changed(edits);
+        }
+    }
+
+    /// 5.5.E.7.6 (planner): vim's `:g/pat/body` and `:v/pat/body`
+    /// target-list builder. Validates the pattern, scans every
+    /// addressable line, and collects line numbers where match-vs-
+    /// pattern equals `inverted` (so `:g` keeps matching lines and
+    /// `:v` keeps non-matching ones). On empty pattern or zero
+    /// matches, pushes an echo and returns `None` so the caller can
+    /// bail without driving the body loop.
+    ///
+    /// The body-replay loop stays App-side until the Effect router
+    /// finishes migrating: not every `Effect` arm is in
+    /// [`handle_effect`] yet, and silently dropping a not-yet-
+    /// migrated body effect (e.g. a `:g/foo/p` that produces an
+    /// unhandled echo path) would be a behaviour regression. Once
+    /// G.x retires `App::apply_effect`, the loop joins the planner
+    /// here.
+    pub fn build_global_targets(
+        &mut self,
+        pattern: &str,
+        inverted: bool,
+    ) -> Option<Vec<u32>> {
+        if pattern.is_empty() {
+            self.set_message(EchoLevel::Error, "empty pattern".to_string());
+            return None;
+        }
+        let last = last_addressable_line(&self.document.snapshot().buffer);
+        // Build the list of target line numbers from the current snapshot
+        // (so subsequent edits don't shift our intent).
+        let mut targets = Vec::new();
+        {
+            let text = self.document.text();
+            for (i, line) in text.split_inclusive('\n').enumerate() {
+                if i as u32 > last {
+                    break;
+                }
+                let stripped = line.trim_end_matches('\n');
+                let matches = stripped.contains(pattern);
+                if matches != inverted {
+                    targets.push(i as u32);
+                }
+            }
+        }
+        if targets.is_empty() {
+            self.set_message(
+                EchoLevel::Error,
+                format!(
+                    "no lines {} pattern: {pattern}",
+                    if inverted { "lacking" } else { "matching" }
+                ),
+            );
+            return None;
+        }
+        Some(targets)
     }
 
     /// 5.5.E.7.2: build + publish [`Event::DocumentChanged`] from

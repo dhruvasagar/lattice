@@ -41,12 +41,11 @@ use lattice_core::buffer::AppliedEdit;
 use lattice_grammar::ModalState;
 use lattice_grammar::command::CommandInvocation;
 use lattice_grammar::effect::Effect;
-use lattice_protocol::Event;
 use lattice_protocol::selection::{Selection, SelectionSet};
 use lattice_runtime::{CancellationToken, RuntimeError, block_on};
 
 use super::{
-    Action, App, BufferKind, EchoLevel, FindKind, LastFind, LspNavKind, PositionSource, SearchLine,
+    Action, App, BufferKind, EchoLevel, FindKind, LastFind, LspNavKind, PositionSource,
     is_valid_mark_name, visual,
 };
 use crate::excommand;
@@ -212,20 +211,23 @@ impl App {
             return;
         }
         match action {
-            Action::None => {}
-            Action::Quit => {
-                self.editor.event_bus.publish(Event::BeforeQuit);
-                self.editor.should_quit = true;
-            }
+            // Phase 5.5.C: helper-free arms moved to
+            // `Editor::dispatch`'s match. Grouped no-op here keeps
+            // the exhaustiveness check satisfied without splitting
+            // App's match logic. 5.5.G eventually collapses this
+            // whole function; until then the grouped pattern is the
+            // seam.
+            Action::None
+            | Action::Quit
+            | Action::AbsorbPartialChord(_)
+            | Action::PushDigit(_)
+            | Action::Echo(_)
+            | Action::CommandLineCancel
+            | Action::SelectRegister(_)
+            | Action::CommandLineDeleteChord
+            | Action::CommandLineDismissCompletion
+            | Action::EnterSearch(_) => {}
             Action::Invoke(inv) => self.run_invocation(inv),
-            Action::AbsorbPartialChord(chord) => {
-                // Slice 8.i.4.a: the trie returned `Partial`; the
-                // input layer wrapped the captured chord in this
-                // signal. Append to `partial_chord` and otherwise
-                // no-op -- the next keystroke runs through
-                // `dispatch_normal` with this stack as prefix.
-                self.editor.partial_chord.push(chord);
-            }
             Action::Insert(s) => self.do_insert_text(&s),
             Action::DeleteCharBackward => self.do_delete_char_backward(),
             Action::EnterMode(state) => self.enter_mode(state),
@@ -330,21 +332,8 @@ impl App {
                     self.execute_ex_line(&line);
                 }
             }
-            Action::CommandLineCancel => {
-                if matches!(self.editor.modal, ModalState::Command) {
-                    self.editor.command_line.clear();
-                    self.editor.command_history_cursor = None;
-                    self.editor.command_history_pending = None;
-                    self.editor.modal = ModalState::Normal;
-                    self.editor.auto_submit_after_chord = false;
-                    self.editor.substitute_preview = None;
-                }
-            }
             Action::CommandLineHistoryPrev => self.do_command_history_step(true),
             Action::CommandLineHistoryNext => self.do_command_history_step(false),
-            Action::Echo(message) => {
-                self.editor.last_message = Some(message);
-            }
 
             Action::CloseHover => self.do_close_hover(),
             Action::PickerAppend(c) => {
@@ -375,15 +364,6 @@ impl App {
             }
             Action::PickerAccept => self.do_picker_accept(),
             Action::PickerDismiss => self.do_picker_dismiss(),
-
-            Action::PushDigit(d) => {
-                // Accumulate one decimal digit into the pending count.
-                // Saturating math prevents overflow on absurd inputs.
-                self.editor.pending_count = self
-                    .editor.pending_count
-                    .saturating_mul(10)
-                    .saturating_add(d.into());
-            }
 
             Action::EnterVisual(kind) => self.do_enter_visual(kind),
             Action::ExitVisual => self.do_exit_visual(),
@@ -451,9 +431,6 @@ impl App {
             }
             Action::LspDocumentSymbolRequest => self.do_lsp_document_symbol_request(),
             Action::LspWorkspaceSymbolRequest(q) => self.do_lsp_workspace_symbol_request(&q),
-            Action::SelectRegister(reg) => {
-                self.editor.pending_register = Some(reg);
-            }
             Action::JumpHistoryBack => self.do_jump_history(-1),
             Action::JumpHistoryForward => self.do_jump_history(1),
             Action::RedrawScreen => self.do_redraw_screen(),
@@ -561,26 +538,9 @@ impl App {
                     }
                 }
             }
-            Action::CommandLineDeleteChord => {
-                if matches!(self.editor.modal, ModalState::Command) {
-                    let n = crate::chord::last_chord_token_byte_len(&self.editor.command_line);
-                    if n == 0 {
-                        // Empty buffer + delete -> exit Command modal,
-                        // matching plain `<BS>` semantics.
-                        self.editor.modal = ModalState::Normal;
-                        self.editor.completion_state = None;
-                    } else {
-                        let new_len = self.editor.command_line.len() - n;
-                        self.editor.command_line.truncate(new_len);
-                    }
-                }
-            }
             Action::CommandLineCompleteOrAdvance => self.do_command_line_complete_or_advance(),
             Action::CommandLineCompletePrev => self.do_command_line_complete_prev(),
             Action::CommandLineAcceptCompletion => self.do_command_line_accept_completion(),
-            Action::CommandLineDismissCompletion => {
-                self.editor.completion_state = None;
-            }
 
             Action::HelpDismiss => match self.editor.active_buffer {
                 BufferKind::Help => self.dismiss_popup(),
@@ -608,16 +568,6 @@ impl App {
                 self.activate_pane(target);
             }
 
-            Action::EnterSearch(direction) => {
-                self.editor.search_line = Some(SearchLine {
-                    direction,
-                    pattern: String::new(),
-                    origin: self.editor.cursor,
-                });
-                self.editor.modal = ModalState::Search(direction);
-                self.editor.last_message = None;
-                self.editor.current_match = None;
-            }
             Action::SearchAppend(c) => {
                 if let Some(line) = self.editor.search_line.as_mut() {
                     line.pattern.push(c);
@@ -1523,6 +1473,7 @@ mod tests {
     use crate::app::word_under_cursor;
     use crate::app::*;
     use crate::help::HelpContent;
+    use lattice_protocol::Event;
     use lattice_protocol::edit::Edit;
 
     /// Test Guard: drop-counter so tests can verify the

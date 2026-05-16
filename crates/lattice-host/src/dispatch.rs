@@ -41,8 +41,12 @@
 //! Focused design doc:
 //! `docs/dev/architecture/phase-5-dispatch-extraction.md`.
 
+use lattice_grammar::ModalState;
+use lattice_protocol::Event;
+
 use crate::action::Action;
 use crate::editor::Editor;
+use crate::state::SearchLine;
 
 /// Result of [`Editor::dispatch`]. Carries the renderer-side
 /// side-effects the caller must surface after the host-side state
@@ -162,8 +166,91 @@ pub(crate) fn handle_action(
     if !matches!(action, Action::AbsorbPartialChord(_) | Action::PushDigit(_)) {
         editor.partial_chord.clear();
     }
-    // 5.5.C+ adds the `match action { ... }` arms here.
-    let _ = action; // suppress unused; later slices consume.
+    // 5.5.C: helper-free match arms. Each arm here is a body that
+    // mutates only `editor` fields with no `self.do_*` /
+    // `self.refresh_*` / `self.dismiss_*` call. Arms whose bodies
+    // call App helpers stay in `lattice-ui-tui::app::dispatch::apply`'s
+    // match until 5.5.D moves the helpers to `Editor` and 5.5.E+
+    // moves the arms that call them.
+    //
+    // Sub-slices populate this match downward as helpers migrate.
+    // The catch-all `_ => {}` is the seam: anything not yet moved
+    // is still handled by App's match (which runs after this
+    // function returns).
+    match action {
+        Action::None => {}
+        Action::Quit => {
+            editor.event_bus.publish(Event::BeforeQuit);
+            editor.should_quit = true;
+            // First emission of `RendererSignal::Quit`. `should_quit`
+            // is also set for back-compat with renderers that poll
+            // per-tick (the TUI's `runtime.rs` reads it).
+            _out.renderer_signals.push(RendererSignal::Quit);
+        }
+        Action::AbsorbPartialChord(chord) => {
+            // Slice 8.i.4.a: the trie returned `Partial`; the input
+            // layer wrapped the captured chord in this signal.
+            // Append to `partial_chord` and otherwise no-op -- the
+            // next keystroke runs through `dispatch_normal` with
+            // this stack as prefix.
+            editor.partial_chord.push(chord);
+        }
+        Action::PushDigit(d) => {
+            // Accumulate one decimal digit into the pending count.
+            // Saturating math prevents overflow on absurd inputs.
+            editor.pending_count = editor
+                .pending_count
+                .saturating_mul(10)
+                .saturating_add(d.into());
+        }
+        Action::Echo(message) => {
+            editor.last_message = Some(message);
+        }
+        Action::CommandLineCancel => {
+            if matches!(editor.modal, ModalState::Command) {
+                editor.command_line.clear();
+                editor.command_history_cursor = None;
+                editor.command_history_pending = None;
+                editor.modal = ModalState::Normal;
+                editor.auto_submit_after_chord = false;
+                editor.substitute_preview = None;
+            }
+        }
+        Action::SelectRegister(reg) => {
+            editor.pending_register = Some(reg);
+        }
+        Action::CommandLineDeleteChord => {
+            if matches!(editor.modal, ModalState::Command) {
+                let n = crate::chord::last_chord_token_byte_len(&editor.command_line);
+                if n == 0 {
+                    // Empty buffer + delete -> exit Command modal,
+                    // matching plain `<BS>` semantics.
+                    editor.modal = ModalState::Normal;
+                    editor.completion_state = None;
+                } else {
+                    let new_len = editor.command_line.len() - n;
+                    editor.command_line.truncate(new_len);
+                }
+            }
+        }
+        Action::CommandLineDismissCompletion => {
+            editor.completion_state = None;
+        }
+        Action::EnterSearch(direction) => {
+            editor.search_line = Some(SearchLine {
+                direction,
+                pattern: String::new(),
+                origin: editor.cursor,
+            });
+            editor.modal = ModalState::Search(direction);
+            editor.last_message = None;
+            editor.current_match = None;
+        }
+        // Catch-all: any Action variant not yet migrated from
+        // App::apply. Sub-slices 5.5.D+ extend the match upward as
+        // helpers move.
+        _ => {}
+    }
 }
 
 #[cfg(test)]

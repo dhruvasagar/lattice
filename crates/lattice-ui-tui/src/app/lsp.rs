@@ -6138,7 +6138,7 @@ impl App {
             head,
             visual: Some(VisualMode::Charwise),
         };
-        self.set_selections_blocking(SelectionSet::single(sel));
+        self.editor.set_selections_blocking(SelectionSet::single(sel));
     }
 
     fn issue_selection_range_request(&mut self, step: super::SelectionRangeStep) {

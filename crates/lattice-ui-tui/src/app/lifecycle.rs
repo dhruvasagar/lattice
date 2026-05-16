@@ -1142,18 +1142,11 @@ impl App {
         }
     }
 
-    /// Build + publish [`Event::SelectionsChanged`] from the current
-    /// snapshot. Called whenever the App's view of selections
-    /// rotates (visual extension, dispatcher SelectionChange effect,
-    /// `gv` reselect, etc.).
-    pub(super) fn publish_selections_changed(&self) {
-        let snap = self.editor.document.snapshot();
-        self.editor.event_bus.publish(Event::SelectionsChanged {
-            id: snap.id,
-            version: snap.version,
-            selections: (*snap.selections).clone(),
-        });
-    }
+    // 5.5.E.4: `publish_selections_changed` moved to
+    // [`lattice_host::dispatch::Editor::publish_selections_changed`]
+    // — it sat alongside `set_selections_blocking` (its only caller),
+    // which migrated host-side in the same slice.
+
 
     /// Total area available to pane content in screen-cell units.
     /// Currently the buffer area = full terminal minus the mode

@@ -37,10 +37,13 @@
 //!   [`Editor::do_list_marks`], `Effect::EchoRegisters` ->
 //!   [`Editor::do_list_registers`]) and co-moves the
 //!   [`preview_register`] free fn; 5.5.E.3 migrates `store_yank`
-//!   to [`Editor::store_yank`], unlocking [`Effect::Yank`].
-//!   Subsequent E.* sub-slices land the remaining helper-bearing
-//!   arms as their `do_*` bodies move host-side; the `apply_edit_blocking`
-//!   / `handle_edits` cluster is gated on the render-coupled
+//!   to [`Editor::store_yank`], unlocking [`Effect::Yank`]; 5.5.E.4
+//!   migrates `set_selections_blocking` + `publish_selections_changed`
+//!   to [`Editor`] and [`visual_kind_to_mode`] to a host-side free
+//!   fn, unlocking [`Effect::SelectionChange`]. Subsequent E.*
+//!   sub-slices land the remaining helper-bearing arms as their
+//!   `do_*` bodies move host-side; the `apply_edit_blocking` /
+//!   `handle_edits` cluster is gated on the render-coupled
 //!   `shift_highlights_for_edit` cache and follows the
 //!   visible-highlights slice (out of scope per 5.5 design doc).
 //! - **5.5.F** -- mode-lifecycle helpers
@@ -55,11 +58,13 @@
 
 use lattice_core::{BufferKind, Fold, FoldMethod};
 use lattice_grammar::ModalState;
+use lattice_grammar::VisualKind;
 use lattice_grammar::YankKind;
 use lattice_grammar::effect::Effect;
 use lattice_grammar::register::Register;
 use lattice_protocol::Event;
-use lattice_runtime::MessagePushed;
+use lattice_protocol::selection::{Selection, SelectionSet, VisualMode};
+use lattice_runtime::{MessagePushed, block_on};
 
 use crate::action::{Action, EchoLevel};
 use crate::buffers::BufferId;
@@ -463,8 +468,27 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, _out: &mut Disp
             // `registers`); no renderer-side side-effects.
             editor.store_yank(register, content, kind);
         }
+        Effect::SelectionChange(set) => {
+            // 5.5.E.4: motion / selection-class effects emit a
+            // SelectionSet; the host syncs `editor.cursor` to the
+            // primary head. In Visual mode, the dispatcher's
+            // `replace_primary(Selection::cursor(...))` would
+            // collapse the selection -- refresh the actor's
+            // selection set with the preserved anchor so the
+            // extension survives.
+            let new_head = set.primary().head;
+            editor.cursor = new_head;
+            if let ModalState::Visual(kind) = editor.modal {
+                let sel = Selection {
+                    anchor: editor.visual_anchor.unwrap_or(new_head),
+                    head: new_head,
+                    visual: Some(visual_kind_to_mode(kind)),
+                };
+                editor.set_selections_blocking(SelectionSet::single(sel));
+            }
+        }
         // Catch-all: any Effect variant not yet migrated from
-        // `App::apply_effect`. Sub-slices 5.5.E.4+ extend the match
+        // `App::apply_effect`. Sub-slices 5.5.E.5+ extend the match
         // upward as helpers move.
         _ => {}
     }
@@ -931,6 +955,56 @@ impl Editor {
                 self.registers.insert(other, entry);
             }
         }
+    }
+
+    /// Replace the document actor's [`SelectionSet`] and publish
+    /// [`Event::SelectionsChanged`] so subscribers (LSP fan-in,
+    /// renderer, plugins) see the new selection state.
+    ///
+    /// Moved here from `lattice-ui-tui::app::visual` in 5.5.E.4
+    /// alongside the [`Effect::SelectionChange`] arm. The
+    /// `block_on` is renderer-neutral: it parks the input thread
+    /// on the actor's selection set channel, which the actor
+    /// drains synchronously (no other thread can flip the
+    /// selection set while we wait). After 5.5.E.4 every caller
+    /// — Visual-mode extension, the dispatcher's
+    /// SelectionChange effect, `gv` reselect, LSP location jumps
+    /// — invokes `self.editor.set_selections_blocking(...)`.
+    pub fn set_selections_blocking(&self, selections: SelectionSet) {
+        // `SetSelections` only fails on actor-gone; ignore the
+        // `Result` (post-shutdown nothing meaningful to do).
+        let _ = block_on(self.document.set_selections(selections));
+        self.publish_selections_changed();
+    }
+
+    /// Build + publish [`Event::SelectionsChanged`] from the
+    /// current snapshot. Called whenever the editor's view of
+    /// selections rotates (visual extension, dispatcher
+    /// SelectionChange effect, `gv` reselect, etc.). Moved here
+    /// from `lattice-ui-tui::app::lifecycle` in 5.5.E.4 as the
+    /// only caller — [`Self::set_selections_blocking`] — moved
+    /// alongside.
+    pub fn publish_selections_changed(&self) {
+        let snap = self.document.snapshot();
+        self.event_bus.publish(Event::SelectionsChanged {
+            id: snap.id,
+            version: snap.version,
+            selections: (*snap.selections).clone(),
+        });
+    }
+}
+
+/// Project a grammar [`VisualKind`] onto the protocol-side
+/// [`VisualMode`]. Used when constructing a [`Selection`] from a
+/// modal-state visual mode so the document actor's selection set
+/// carries the visual flavour. Moved here from
+/// `lattice-ui-tui::app::visual` in 5.5.E.4 alongside the
+/// [`Effect::SelectionChange`] arm.
+pub fn visual_kind_to_mode(kind: VisualKind) -> VisualMode {
+    match kind {
+        VisualKind::Charwise => VisualMode::Charwise,
+        VisualKind::Linewise => VisualMode::Linewise,
+        VisualKind::Blockwise => VisualMode::Blockwise,
     }
 }
 

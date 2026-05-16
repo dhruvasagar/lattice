@@ -4726,7 +4726,7 @@ mod tests {
             head: pos(0, 2),
             visual: Some(VisualMode::Charwise),
         };
-        app.set_selections_blocking(SelectionSet::single(sel));
+        app.editor.set_selections_blocking(SelectionSet::single(sel));
         let r = visual_selection_range(&app).expect("range");
         assert_eq!(r.start, pos(0, 0));
         // Charwise includes head: end byte = head.byte + 1.
@@ -4742,7 +4742,7 @@ mod tests {
             head: pos(2, 1),
             visual: Some(VisualMode::Linewise),
         };
-        app.set_selections_blocking(SelectionSet::single(sel));
+        app.editor.set_selections_blocking(SelectionSet::single(sel));
         let r = visual_selection_range(&app).expect("range");
         assert_eq!(r.start, pos(0, 0));
         // Linewise end byte is u32::MAX so per-line clamping picks line_len.
@@ -4759,7 +4759,7 @@ mod tests {
             head: pos(0, 1),
             visual: Some(VisualMode::Charwise),
         };
-        app.set_selections_blocking(SelectionSet::single(sel));
+        app.editor.set_selections_blocking(SelectionSet::single(sel));
         let r = visual_selection_range(&app).expect("range");
         assert_eq!(r.start, pos(0, 1));
         assert_eq!(r.end, pos(0, 5));
@@ -4780,7 +4780,7 @@ mod tests {
             head: pos(0, 2),
             visual: Some(VisualMode::Blockwise),
         };
-        app.set_selections_blocking(SelectionSet::single(sel));
+        app.editor.set_selections_blocking(SelectionSet::single(sel));
         let b = visual_block_extents(&app).unwrap();
         assert_eq!(b.start_line, 0);
         assert_eq!(b.end_line, 2);
@@ -4797,7 +4797,7 @@ mod tests {
             head: pos(0, 4),
             visual: Some(VisualMode::Charwise),
         };
-        app.set_selections_blocking(SelectionSet::single(sel));
+        app.editor.set_selections_blocking(SelectionSet::single(sel));
         let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 1, 80);
         let dump = format!("{:?}", lines[0]);
         // The selected "hello" should appear as its own span(s); we just
@@ -5004,7 +5004,7 @@ mod tests {
             head: pos(0, 0),
             visual: Some(VisualMode::Linewise),
         };
-        app.set_selections_blocking(SelectionSet::single(sel));
+        app.editor.set_selections_blocking(SelectionSet::single(sel));
         let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
         let visual_bg = visual_style().bg;
         let row0 = &lines[0];
@@ -5034,7 +5034,7 @@ mod tests {
             head: pos(1, 0),
             visual: Some(VisualMode::Linewise),
         };
-        app.set_selections_blocking(SelectionSet::single(sel));
+        app.editor.set_selections_blocking(SelectionSet::single(sel));
         let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
         // Verify the second visible line ("beta") has at least one
         // span styled with the visual color.

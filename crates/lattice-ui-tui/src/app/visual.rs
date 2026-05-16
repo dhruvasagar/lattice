@@ -18,8 +18,7 @@
 //!   group later.
 
 use lattice_grammar::{ModalState, VisualKind};
-use lattice_protocol::selection::{Selection, SelectionSet, VisualMode};
-use lattice_runtime::block_on;
+use lattice_protocol::selection::{Selection, SelectionSet};
 
 use super::{App, EchoLevel, LastVisual};
 
@@ -32,9 +31,9 @@ impl App {
         let sel = Selection {
             anchor: self.editor.cursor,
             head: self.editor.cursor,
-            visual: Some(visual_kind_to_mode(kind)),
+            visual: Some(lattice_host::dispatch::visual_kind_to_mode(kind)),
         };
-        self.set_selections_blocking(SelectionSet::single(sel));
+        self.editor.set_selections_blocking(SelectionSet::single(sel));
     }
 
     pub(super) fn do_exit_visual(&mut self) {
@@ -53,7 +52,8 @@ impl App {
         self.editor.modal = ModalState::Normal;
         self.editor.visual_anchor = None;
         // Collapse selection to a cursor at the current head.
-        self.set_selections_blocking(SelectionSet::single(Selection::cursor(self.editor.cursor)));
+        self.editor
+            .set_selections_blocking(SelectionSet::single(Selection::cursor(self.editor.cursor)));
     }
 
     pub(super) fn do_reselect_visual(&mut self) {
@@ -69,26 +69,19 @@ impl App {
         let sel = Selection {
             anchor: last.anchor,
             head: last.head,
-            visual: Some(visual_kind_to_mode(last.kind)),
+            visual: Some(lattice_host::dispatch::visual_kind_to_mode(last.kind)),
         };
-        self.set_selections_blocking(SelectionSet::single(sel));
-    }
-
-    pub fn set_selections_blocking(&self, selections: SelectionSet) {
-        // SetSelections only fails on actor-gone; ignore the
-        // Result (post-shutdown nothing meaningful to do).
-        let _ = block_on(self.editor.document.set_selections(selections));
-        self.publish_selections_changed();
+        self.editor.set_selections_blocking(SelectionSet::single(sel));
     }
 }
 
-pub(super) fn visual_kind_to_mode(kind: VisualKind) -> VisualMode {
-    match kind {
-        VisualKind::Charwise => VisualMode::Charwise,
-        VisualKind::Linewise => VisualMode::Linewise,
-        VisualKind::Blockwise => VisualMode::Blockwise,
-    }
-}
+// 5.5.E.4: `set_selections_blocking` moved to
+// [`lattice_host::dispatch::Editor::set_selections_blocking`];
+// `visual_kind_to_mode` moved to
+// [`lattice_host::dispatch::visual_kind_to_mode`]. Both sit alongside
+// the [`Effect::SelectionChange`] arm so the renderer-neutral host
+// owns the selection-set actor handshake plus the grammar->protocol
+// visual-flavour translator.
 
 #[cfg(test)]
 mod tests {

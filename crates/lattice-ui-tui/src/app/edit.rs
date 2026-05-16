@@ -1295,7 +1295,7 @@ mod tests {
             head,
             visual: Some(VisualMode::Blockwise),
         };
-        a.set_selections_blocking(SelectionSet::single(sel));
+        a.editor.set_selections_blocking(SelectionSet::single(sel));
         a
     }
 

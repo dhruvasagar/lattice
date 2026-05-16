@@ -43,6 +43,7 @@ use lattice_core::buffer::AppliedEdit;
 use lattice_grammar::ModalState;
 use lattice_grammar::command::CommandInvocation;
 use lattice_grammar::effect::Effect;
+use lattice_host::dispatch::RendererSignal;
 use lattice_runtime::{CancellationToken, RuntimeError, block_on};
 
 use super::{
@@ -933,14 +934,18 @@ impl App {
     pub(super) fn apply_effect(&mut self, effect: Effect) {
         // Phase 5.5.E.1: route every Effect through `Editor::handle_effect`
         // first so the host owns its migrated arms (today:
-        // `Effect::None`, `Effect::ClearSearchHighlight`, `Effect::Echo`).
-        // The grouped no-op below keeps the exhaustiveness check
-        // satisfied without splitting App's match logic, mirroring the
-        // 5.5.C seam pattern for `App::apply`. `RendererSignal`s are
-        // currently empty for every migrated arm; when E.* slices light
-        // them up (e.g. `ThemeChanged` from `Effect::SetOption`),
-        // outcome handling lands alongside.
-        let _outcome = self.editor.handle_effect(effect.clone());
+        // `Effect::None`, `Effect::ClearSearchHighlight`, `Effect::Echo`,
+        // `Effect::EchoMarks`, `Effect::EchoRegisters`, `Effect::Yank`,
+        // `Effect::SelectionChange`).
+        //
+        // Phase 5.5.E.5: the returned `DispatchOutcome` is now consumed --
+        // any `RendererSignal`s the host queued (e.g. `ThemeChanged` from
+        // a future `Effect::SetOption` migration) drain through
+        // [`Self::handle_renderer_signal`] AFTER the post-effect match
+        // below runs. Today no migrated arm pushes a signal, so the loop
+        // is a no-op; the pipe is wired so subsequent E.* slices that
+        // emit signals don't need to rewire the call site.
+        let outcome = self.editor.handle_effect(effect.clone());
         match effect {
             // Phase 5.5.E.1–E.4: migrated arms. Bodies live in
             // `lattice_host::dispatch::handle_effect`.
@@ -1051,6 +1056,36 @@ impl App {
                 for e in many {
                     self.apply_effect(e);
                 }
+            }
+        }
+        // 5.5.E.5: drain renderer-side signals the host queued. Each
+        // signal maps to renderer-specific work the host cannot do
+        // itself (rebuild the TUI Style cache on `ThemeChanged`,
+        // begin window-close on `Quit`, etc.). Drained after the
+        // post-effect match so renderer-coupled callees in the match
+        // (`do_*` helpers that still touch App state) run BEFORE the
+        // signal handler -- avoids a partial-state visible to the
+        // signal-driven rebuild.
+        for signal in outcome.renderer_signals {
+            self.handle_renderer_signal(signal);
+        }
+    }
+
+    /// Renderer-side side-effect dispatcher. Receives every
+    /// [`RendererSignal`] the host emits during a dispatch and runs
+    /// the TUI-specific follow-up: `ThemeChanged` rebuilds the
+    /// TUI `Style` cache from `editor.host_theme`; `Quit` is a
+    /// no-op (already set on `editor.should_quit`, which
+    /// `runtime::main_loop` reads each tick). A future GPUI renderer
+    /// implements its own equivalent on `lattice-ui-gpui::App`.
+    fn handle_renderer_signal(&mut self, signal: RendererSignal) {
+        match signal {
+            RendererSignal::ThemeChanged => self.rebuild_tui_theme(),
+            RendererSignal::Quit => {
+                // `editor.should_quit` was set alongside the signal
+                // emission (see `Action::Quit` in `Editor::dispatch`);
+                // the runtime loop polls it. Keep the arm for shape
+                // — a future GPUI renderer wires window-close here.
             }
         }
     }

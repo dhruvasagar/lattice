@@ -921,9 +921,24 @@ impl App {
         if let Ok(c) = host_theme::parse_color(&inactive_fg) {
             self.editor.host_theme.pane_status_inactive.fg = Some(c);
         }
-        // Rebuild the cached TUI-typed adapter. Cheap (every
-        // field is Copy); the rebuild fires only on option
-        // cascade, not per frame.
+        // 5.5.E.5: rebuild the cached TUI-typed adapter through
+        // the dedicated wrapper. Splitting it out lets the
+        // `RendererSignal::ThemeChanged` handler call only the
+        // renderer-specific tail without re-running the
+        // host_theme writes above (which a future E.6
+        // `Effect::SetOption` migration will run host-side and
+        // signal back through `DispatchOutcome`).
+        self.rebuild_tui_theme();
+    }
+
+    /// Rebuild the cached TUI-typed [`crate::theme::Theme`] from
+    /// the renderer-neutral [`lattice_host::ui::theme::Theme`].
+    /// Cheap (every field is `Copy`); the rebuild fires only on
+    /// option cascade or on a host-emitted
+    /// [`lattice_host::dispatch::RendererSignal::ThemeChanged`],
+    /// never per frame. A future GPUI renderer implements an
+    /// equivalent `rebuild_gpui_theme` on its own `App`.
+    pub fn rebuild_tui_theme(&mut self) {
         self.theme = crate::theme::Theme::from(&self.editor.host_theme);
     }
 

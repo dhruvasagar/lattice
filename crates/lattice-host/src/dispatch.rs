@@ -727,6 +727,50 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
                 out.renderer_signals.extend(editor.activate_buffer_state());
             }
         }
+        Effect::ListModes => {
+            // 5.5.F.6: `:list-modes` (M.8). Infallible — always
+            // produces a buffer. Routed through the DisplayBuffer
+            // pipe; renderer dispatches via the existing
+            // `display_buffer` machinery.
+            let content = editor.build_list_modes_content();
+            out.renderer_signals
+                .push(RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
+                    content,
+                    category: lattice_core::ui::display::BufferDisplayCategory::HelpList,
+                })));
+        }
+        Effect::DescribeMode { name } => {
+            // 5.5.F.6: `:describe-mode <name>` (M.8). Fallible —
+            // unknown name pushes an echo + skips the signal.
+            if let Some(content) = editor.build_describe_mode_content(&name) {
+                out.renderer_signals
+                    .push(RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
+                        content,
+                        category: lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
+                    })));
+            }
+        }
+        Effect::Customize { name } => {
+            // 5.5.F.6: `:customize [name]` (M.9.0). Three resolution
+            // paths: no arg → picker; `<name>` ending in `-mode` →
+            // mode view; otherwise → group view. The mode + group
+            // builders are fallible (unknown name routes echo);
+            // picker is infallible.
+            let content_opt = match name.as_deref() {
+                None => Some(editor.build_customize_picker_content()),
+                Some(n) if lattice_config::ends_with_mode_suffix(n) => {
+                    editor.build_customize_mode_content(n)
+                }
+                Some(n) => editor.build_customize_group_content(n),
+            };
+            if let Some(content) = content_opt {
+                out.renderer_signals
+                    .push(RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
+                        content,
+                        category: lattice_core::ui::display::BufferDisplayCategory::HelpList,
+                    })));
+            }
+        }
         // Catch-all: any Effect variant not yet migrated from
         // `App::apply_effect`. Sub-slices 5.5.E.7+ extend the match
         // upward as helpers move.
@@ -3323,6 +3367,400 @@ impl Editor {
             lattice_help::HelpContent::from_lines(format!("describe-event {name}"), lines)
                 .with_markdown_syntax(self.lang_registry.clone()),
         )
+    }
+
+    /// 5.5.F.6: `:list-modes` (M.8) content builder — render every
+    /// registered mode as a help buffer. Groups by kind (Major /
+    /// Minor); each row shows the mode's id and `*` if currently
+    /// active on the active document buffer. Mode counterpart of
+    /// `:options`.
+    pub fn build_list_modes_content(&self) -> lattice_help::HelpContent {
+        let mut majors: Vec<lattice_mode::ModeId> = Vec::new();
+        let mut minors: Vec<lattice_mode::ModeId> = Vec::new();
+        for (id, kind) in self.mode_registry.iter_meta() {
+            match kind {
+                lattice_mode::ModeKind::Major => majors.push(id),
+                lattice_mode::ModeKind::Minor => minors.push(id),
+            }
+        }
+        majors.sort_by_key(|m| m.as_str().to_string());
+        minors.sort_by_key(|m| m.as_str().to_string());
+
+        let buffer_id = self.document_buffer_id;
+        let active = self.active_modes.get(&buffer_id);
+        let active_major = active.and_then(|a| a.major());
+        let is_minor_active =
+            |id: lattice_mode::ModeId| -> bool { active.map(|a| a.has_minor(id)).unwrap_or(false) };
+
+        let mut lines: Vec<String> = Vec::new();
+        lines.push(format!(
+            "# Modes ({} registered)",
+            majors.len() + minors.len(),
+        ));
+        lines.push(String::new());
+        lines.push(
+            "Mark `*` indicates the mode is active on the currently \
+             focused buffer. For per-mode detail run \
+             `:describe-mode <name>`. Toggle a mode with \
+             `:<mode-name>` (e.g. `:lsp-mode`)."
+                .into(),
+        );
+        lines.push(String::new());
+
+        lines.push(format!("## majors ({})", majors.len()));
+        lines.push(String::new());
+        for id in &majors {
+            let marker = if Some(*id) == active_major { "*" } else { " " };
+            lines.push(format!("- {marker} [{id}](mode:{id})"));
+        }
+        lines.push(String::new());
+
+        lines.push(format!("## minors ({})", minors.len()));
+        lines.push(String::new());
+        for id in &minors {
+            let marker = if is_minor_active(*id) { "*" } else { " " };
+            lines.push(format!("- {marker} [{id}](mode:{id})"));
+        }
+
+        lattice_help::HelpContent::from_lines("list-modes", lines)
+            .with_markdown_syntax(self.lang_registry.clone())
+    }
+
+    /// 5.5.F.6: `:describe-mode <name>` (M.8) content builder —
+    /// render one mode's metadata: id, kind, contributed option
+    /// overrides (mapping each `TypeId` back to the option's display
+    /// name via `OPTION_DECLS`), required capabilities, and current
+    /// activation state on the active buffer. Mode counterpart of
+    /// `:describe-option`. Fallible: pushes echo + returns None on
+    /// unknown name.
+    pub fn build_describe_mode_content(
+        &mut self,
+        name: &str,
+    ) -> Option<lattice_help::HelpContent> {
+        let mode_id = lattice_mode::ModeId::new(name);
+        let Some(mode) = self.mode_registry.get(mode_id) else {
+            self.set_message(EchoLevel::Error, format!("no mode named `{name}`"));
+            return None;
+        };
+
+        // TypeId → option name lookup. Walk OPTION_DECLS to render
+        // the mode's contributed overrides as readable names instead
+        // of opaque TypeIds.
+        let type_id_to_name: std::collections::HashMap<std::any::TypeId, &'static str> =
+            lattice_config::OPTION_DECLS
+                .iter()
+                .map(|d| ((d.type_id)(), d.name))
+                .collect();
+
+        let buffer_id = self.document_buffer_id;
+        let active = self.active_modes.get(&buffer_id);
+        let is_active = match mode.kind() {
+            lattice_mode::ModeKind::Major => active.and_then(|a| a.major()) == Some(mode_id),
+            lattice_mode::ModeKind::Minor => active.map(|a| a.has_minor(mode_id)).unwrap_or(false),
+        };
+        let kind_label = match mode.kind() {
+            lattice_mode::ModeKind::Major => "major",
+            lattice_mode::ModeKind::Minor => "minor",
+        };
+
+        let mut lines: Vec<String> = Vec::new();
+        lines.push(format!("# mode :: {mode_id}"));
+        lines.push(String::new());
+        lines.push(format!("- kind: `{kind_label}`"));
+        lines.push(format!(
+            "- active on current buffer: {}",
+            if is_active { "yes" } else { "no" }
+        ));
+
+        // Option contributions.
+        let opts = mode.options();
+        if opts.is_empty() {
+            lines.push("- contributed options: (none)".into());
+        } else {
+            lines.push(format!("- contributed options ({}):", opts.iter().count()));
+            for ovr in opts.iter() {
+                let name = type_id_to_name
+                    .get(&ovr.option_type_id)
+                    .copied()
+                    .unwrap_or("(unknown option)");
+                lines.push(format!("    - `{name}`"));
+            }
+        }
+
+        // Capabilities.
+        let caps = mode.required_capabilities();
+        if caps == lattice_mode::CapabilitySet::empty() {
+            lines.push("- required capabilities: (none)".into());
+        } else {
+            lines.push(format!("- required capabilities: `{caps:?}`"));
+        }
+
+        lines.push(String::new());
+        lines.push(format!(
+            "Toggle with `:{mode_id}`. For options the mode contributes, \
+             see `:describe-option <name>`.",
+        ));
+
+        Some(
+            lattice_help::HelpContent::from_lines(format!("describe-mode {name}"), lines)
+                .with_markdown_syntax(self.lang_registry.clone()),
+        )
+    }
+
+    /// 5.5.F.6: `:customize` (no args) (M.9.0) content builder —
+    /// picker view: every group + every registered mode that
+    /// contributes at least one customizable option. Each row is
+    /// a `[label](customize:name)` link.
+    pub fn build_customize_picker_content(&self) -> lattice_help::HelpContent {
+        // Modes that contribute at least one customizable option.
+        let customizable_type_ids: std::collections::HashSet<std::any::TypeId> =
+            lattice_config::OPTION_DECLS
+                .iter()
+                .filter(|d| d.customizable)
+                .map(|d| (d.type_id)())
+                .collect();
+        let mut customisable_modes: Vec<lattice_mode::ModeId> = Vec::new();
+        for (mode_id, _kind) in self.mode_registry.iter_meta() {
+            if let Some(mode) = self.mode_registry.get(mode_id) {
+                let opts = mode.options();
+                if opts
+                    .iter()
+                    .any(|o| customizable_type_ids.contains(&o.option_type_id))
+                {
+                    customisable_modes.push(mode_id);
+                }
+            }
+        }
+        customisable_modes.sort_by_key(|m| m.as_str().to_string());
+
+        // Groups: every registered OptionGroup plus its option count.
+        let mut group_counts: std::collections::BTreeMap<&'static str, (usize, &'static str)> =
+            std::collections::BTreeMap::new();
+        for g in lattice_config::GROUP_DECLS.iter() {
+            group_counts.insert(g.name, (0, g.doc));
+        }
+        for d in lattice_config::OPTION_DECLS.iter() {
+            if !d.customizable {
+                continue;
+            }
+            if let Some(entry) = group_counts.get_mut(d.group_name) {
+                entry.0 += 1;
+            }
+        }
+
+        let mut lines: Vec<String> = Vec::new();
+        lines.push("# Customize".into());
+        lines.push(String::new());
+        lines.push(
+            "Pick a group to browse options across modes, or a mode \
+             to see what it contributes. `:customize <name>` opens \
+             the focused view; this picker is just navigation."
+                .into(),
+        );
+        lines.push(String::new());
+
+        lines.push(format!("## groups ({})", group_counts.len()));
+        lines.push(String::new());
+        for (name, (count, doc)) in &group_counts {
+            lines.push(format!("- [{name}](customize:{name}) ({count}) -- {doc}"));
+        }
+        lines.push(String::new());
+
+        lines.push(format!("## modes ({})", customisable_modes.len()));
+        lines.push(String::new());
+        for id in &customisable_modes {
+            lines.push(format!("- [{id}](customize:{id})"));
+        }
+
+        lattice_help::HelpContent::from_lines("customize", lines)
+            .with_markdown_syntax(self.lang_registry.clone())
+    }
+
+    /// 5.5.F.6: `:customize <group>` content builder — every
+    /// customizable option in `<group>`. Each row shows the option's
+    /// canonical name + aliases, type, current value, default (when
+    /// it differs), and the doc string. Fallible: pushes echo +
+    /// returns None on unknown group.
+    pub fn build_customize_group_content(
+        &mut self,
+        group_name: &str,
+    ) -> Option<lattice_help::HelpContent> {
+        let group_doc = lattice_config::GROUP_DECLS
+            .iter()
+            .find(|g| g.name == group_name)
+            .map(|g| g.doc);
+        let Some(doc) = group_doc else {
+            self.set_message(EchoLevel::Error, format!("no group named `{group_name}`"));
+            return None;
+        };
+
+        let mut entries: Vec<&'static lattice_config::OptionDeclMetadata> =
+            lattice_config::OPTION_DECLS
+                .iter()
+                .filter(|d| d.customizable && d.group_name == group_name)
+                .copied()
+                .collect();
+        entries.sort_by_key(|d| d.name);
+
+        let mut lines: Vec<String> = Vec::new();
+        lines.push(format!("# customize :: {group_name}"));
+        lines.push(String::new());
+        lines.push(doc.to_string());
+        lines.push(String::new());
+        if entries.is_empty() {
+            lines.push("(no customizable options in this group)".into());
+        } else {
+            lines.push(format!("{} option(s):", entries.len()));
+            lines.push(String::new());
+            for meta in &entries {
+                self.append_customize_row(&mut lines, meta);
+            }
+        }
+        lines.push(String::new());
+        lines.push(
+            "To edit any option above run `:set NAME=VALUE` from \
+             the cmdline. Per-row edit affordances land in M.9.1."
+                .into(),
+        );
+        Some(
+            lattice_help::HelpContent::from_lines(format!("customize {group_name}"), lines)
+                .with_markdown_syntax(self.lang_registry.clone()),
+        )
+    }
+
+    /// 5.5.F.6: `:customize <mode-name>` content builder — every
+    /// option the mode contributes via `Mode::options()`. Each row
+    /// shows the same metadata as the group view, plus a
+    /// `[mode-shadow]` indicator when the contribution is active on
+    /// the active buffer. Fallible: pushes echo + returns None on
+    /// unknown mode.
+    pub fn build_customize_mode_content(
+        &mut self,
+        mode_name: &str,
+    ) -> Option<lattice_help::HelpContent> {
+        let mode_id = lattice_mode::ModeId::new(mode_name);
+        let Some(mode) = self.mode_registry.get(mode_id) else {
+            self.set_message(EchoLevel::Error, format!("no mode named `{mode_name}`"));
+            return None;
+        };
+
+        let by_type_id: std::collections::HashMap<
+            std::any::TypeId,
+            &'static lattice_config::OptionDeclMetadata,
+        > = lattice_config::OPTION_DECLS
+            .iter()
+            .map(|d| ((d.type_id)(), *d))
+            .collect();
+
+        let buffer_id = self.document_buffer_id;
+        let active = self.active_modes.get(&buffer_id);
+        let mode_active_here = match mode.kind() {
+            lattice_mode::ModeKind::Major => active.and_then(|a| a.major()) == Some(mode_id),
+            lattice_mode::ModeKind::Minor => active.map(|a| a.has_minor(mode_id)).unwrap_or(false),
+        };
+
+        let mut entries: Vec<&'static lattice_config::OptionDeclMetadata> = Vec::new();
+        for ovr in mode.options().iter() {
+            if let Some(meta) = by_type_id.get(&ovr.option_type_id)
+                && meta.customizable
+            {
+                entries.push(meta);
+            }
+        }
+        entries.sort_by_key(|d| d.name);
+        entries.dedup_by_key(|d| d.name);
+
+        let mut lines: Vec<String> = Vec::new();
+        lines.push(format!("# customize :: {mode_id}"));
+        lines.push(String::new());
+        lines.push(format!(
+            "Mode kind: `{}`. {} on the active buffer.",
+            match mode.kind() {
+                lattice_mode::ModeKind::Major => "major",
+                lattice_mode::ModeKind::Minor => "minor",
+            },
+            if mode_active_here {
+                "Active"
+            } else {
+                "Inactive"
+            },
+        ));
+        lines.push(String::new());
+        if entries.is_empty() {
+            lines.push("(this mode contributes no customizable options)".into());
+        } else {
+            lines.push(format!("Contributes {} option(s):", entries.len()));
+            lines.push(String::new());
+            for meta in &entries {
+                self.append_customize_row(&mut lines, meta);
+                if mode_active_here {
+                    lines.push(
+                        "    [mode-shadow] this mode's contribution is \
+                         active on the active buffer; a `:set` write \
+                         here will be overridden by the mode-contribution \
+                         layer until the mode deactivates."
+                            .into(),
+                    );
+                }
+            }
+        }
+        lines.push(String::new());
+        lines.push(
+            "To edit any option above run `:set NAME=VALUE` from \
+             the cmdline. Per-row edit affordances land in M.9.1."
+                .into(),
+        );
+        Some(
+            lattice_help::HelpContent::from_lines(format!("customize {mode_name}"), lines)
+                .with_markdown_syntax(self.lang_registry.clone()),
+        )
+    }
+
+    /// 5.5.F.6: shared row formatter for the customize views.
+    /// Renders one option's metadata in the `:options`-listing-
+    /// compatible shape. Wraps the option name in a
+    /// `[NAME](customize-edit:NAME)` link so `<CR>` on the row
+    /// prefills the cmdline with `:set NAME=current` for inline
+    /// editing (M.9.2).
+    fn append_customize_row(
+        &self,
+        lines: &mut Vec<String>,
+        meta: &lattice_config::OptionDeclMetadata,
+    ) {
+        let spec = self.config.lookup(meta.name);
+        let aliases = spec
+            .as_ref()
+            .map(|s| s.aliases())
+            .filter(|a| !a.is_empty())
+            .map(|a| format!(" [{}]", a.join(", ")))
+            .unwrap_or_default();
+        let type_label = (meta.type_label)();
+        let default = (meta.default_formatted)();
+        let current = spec
+            .as_ref()
+            .map(|s| s.get_formatted())
+            .unwrap_or_else(|| "?".into());
+        let name_link = format!("[{0}](customize-edit:{0})", meta.name);
+        let header = if current == default {
+            format!(
+                "- **{name_link}**{aliases} : {type_label} = {current}"
+            )
+        } else {
+            format!(
+                "- **{name_link}**{aliases} : {type_label} = {current} (default: {default})"
+            )
+        };
+        lines.push(header);
+        for doc_line in meta.doc.lines() {
+            let trimmed = doc_line.trim();
+            if !trimmed.is_empty() {
+                lines.push(format!("    {trimmed}"));
+            }
+        }
+        if let Some(values) = spec.as_ref().and_then(|s| s.enumerate_values()) {
+            lines.push(format!("    values: {}", values.join(", ")));
+        }
+        lines.push(String::new());
     }
 }
 

@@ -970,7 +970,10 @@ impl App {
             | Effect::DescribeEvent { .. }
             | Effect::BufferNext
             | Effect::BufferPrev
-            | Effect::BufferDelete { .. } => {}
+            | Effect::BufferDelete { .. }
+            | Effect::ListModes
+            | Effect::DescribeMode { .. }
+            | Effect::Customize { .. } => {}
             Effect::Edits(edits) => self.handle_edits(&edits),
             Effect::EnterMode(mode) => {
                 // Operators that flip mode (`c` -> Insert) come through
@@ -1065,9 +1068,9 @@ impl App {
             // `DescribeOptionResolution` migrated to
             // `Editor::handle_effect`; routed through the grouped
             // no-op above.
-            Effect::ListModes => self.do_list_modes(),
-            Effect::DescribeMode { name } => self.do_describe_mode(&name),
-            Effect::Customize { name } => self.do_customize(name.as_deref()),
+            // 5.5.F.6: `ListModes` / `DescribeMode` / `Customize`
+            // migrated to `Editor::handle_effect`; routed through
+            // the grouped no-op below.
             Effect::Tutor { lesson } => self.do_tutor(lesson),
             Effect::AppAction(app) => self.apply_app_effect(app),
             Effect::Many(many) => {

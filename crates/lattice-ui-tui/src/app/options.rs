@@ -226,53 +226,12 @@ impl App {
         }
     }
 
-    /// M.7.1 (Phase 1.5): drive the declarative
-    /// `Mode::mirrors_option` cascade. Walks every registered
-    /// mode and, for each that declares it mirrors
-    /// `canonical_name`, toggles the mode's active state on the
-    /// current buffer to match the option's `bool` value.
-    ///
-    /// Reads through `ConfigRegistry::get_bool_by_name` (the
-    /// typed-option layer) rather than the resolved-options
-    /// view -- the user's explicit `:set` gesture is the
-    /// authority for the mode's active state, not the layered
-    /// resolution. Non-bool options short-circuit at the
-    /// `get_bool_by_name` step; the loop is a no-op.
-    pub(super) fn mirror_option_to_modes(&mut self, canonical_name: &str) {
-        let Some(on) = self.editor.config.get_bool_by_name(canonical_name) else {
-            return;
-        };
-        // Collect mode ids first so the activate/deactivate
-        // calls (which take `&mut self`) don't conflict with the
-        // registry borrow inside `iter_meta`.
-        let mirror_ids: Vec<lattice_mode::ModeId> = {
-            let registry = &self.editor.mode_registry;
-            registry
-                .iter_meta()
-                .filter_map(|(id, _kind)| {
-                    let mode = registry.get(id)?;
-                    if mode.mirrors_option() == Some(canonical_name) {
-                        Some(id)
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        };
-        let buffer_id = self.editor.document_buffer_id;
-        for mode_id in mirror_ids {
-            let currently_active = self
-                .editor.active_modes
-                .get(&buffer_id)
-                .map(|modes| modes.has_minor(mode_id))
-                .unwrap_or(false);
-            if on && !currently_active {
-                self.activate_mode_by_id(buffer_id, mode_id);
-            } else if !on && currently_active {
-                self.deactivate_mode_by_id(buffer_id, mode_id);
-            }
-        }
-    }
+    // 5.5.F.5.4: `mirror_option_to_modes` relocated to
+    // [`lattice_host::dispatch::Editor::mirror_option_to_modes`].
+    // The App-side wrapper deletes entirely — the cascade now runs
+    // synchronously inside `Editor::apply_option_cascade`, and the
+    // App-side `RendererSignal::MirrorOptionToModes` handler retired
+    // alongside.
 
     // 5.5.F.3: `:describe-option` / `:options` content builders
     // relocated to

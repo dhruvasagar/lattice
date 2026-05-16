@@ -142,14 +142,12 @@ pub enum RendererSignal {
     /// renderers that don't track file-tree state can ignore it
     /// without missing the theme rebuild.
     NerdFontsToggled,
-    /// 5.5.E.6: the option-cascade just touched a `bool` option
-    /// whose canonical name is mirrored by one or more registered
-    /// modes (`Mode::mirrors_option == Some(name)`). The renderer
-    /// runs the activate/deactivate cascade for those modes on
-    /// the current buffer -- a host-only walk would otherwise need
-    /// to reach into the renderer's `activate_mode_by_id` path
-    /// (mode-lifecycle still lives renderer-side until 5.5.F).
-    MirrorOptionToModes(String),
+    // 5.5.F.5.4: `MirrorOptionToModes(String)` retired. The
+    // declarative mode-mirror cascade now runs synchronously
+    // host-side inside `apply_option_cascade` via
+    // `Editor::mirror_option_to_modes`; cascading mode-lifecycle
+    // signals stream back through the same `Vec<RendererSignal>`
+    // the parent cascade already drains.
     /// 5.5.E.6: the option-cascade just touched an
     /// `lsp.<server_id>.*` key. The renderer fans out a
     /// `workspace/didChangeConfiguration` to every actor matching
@@ -1333,6 +1331,59 @@ impl Editor {
         signals
     }
 
+    /// 5.5.F.5.4 (M.7.1 Phase 1.5): drive the declarative
+    /// `Mode::mirrors_option` cascade. Walks every registered mode
+    /// and, for each that declares it mirrors `canonical_name`,
+    /// toggles the mode's active state on the active document buffer
+    /// to match the option's `bool` value.
+    ///
+    /// Reads through `ConfigRegistry::get_bool_by_name` (the typed-
+    /// option layer) rather than the resolved-options view — the
+    /// user's explicit `:set` gesture is the authority for the mode's
+    /// active state, not the layered resolution. Non-bool options
+    /// short-circuit at the `get_bool_by_name` step.
+    ///
+    /// Returns the `RendererSignal` list every cascading
+    /// activate/deactivate enqueued.
+    #[must_use]
+    pub fn mirror_option_to_modes(&mut self, canonical_name: &str) -> Vec<RendererSignal> {
+        let Some(on) = self.config.get_bool_by_name(canonical_name) else {
+            return Vec::new();
+        };
+        // Collect mode ids first so the activate/deactivate calls
+        // (which take `&mut self`) don't conflict with the registry
+        // borrow inside `iter_meta`.
+        let mirror_ids: Vec<lattice_mode::ModeId> = {
+            let registry = &self.mode_registry;
+            registry
+                .iter_meta()
+                .filter_map(|(id, _kind)| {
+                    let mode = registry.get(id)?;
+                    if mode.mirrors_option() == Some(canonical_name) {
+                        Some(id)
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        };
+        let buffer_id = self.document_buffer_id;
+        let mut signals = Vec::new();
+        for mode_id in mirror_ids {
+            let currently_active = self
+                .active_modes
+                .get(&buffer_id)
+                .map(|modes| modes.has_minor(mode_id))
+                .unwrap_or(false);
+            if on && !currently_active {
+                signals.extend(self.activate_mode_by_id(buffer_id, mode_id));
+            } else if !on && currently_active {
+                signals.extend(self.deactivate_mode_by_id(buffer_id, mode_id));
+            }
+        }
+        signals
+    }
+
     /// 5.5.F.5.2 (M.5.1): toggle a mode by name on the active pane's
     /// buffer. Apply-fn target for the auto-generated `:<mode-name>`
     /// ex-commands (mode-architecture §9.6.1).
@@ -1891,13 +1942,13 @@ impl Editor {
         // `rebuild_option_cache` when `buffer == active`; this
         // belt-and-braces call covers the bootstrap window.
         self.rebuild_option_cache();
-        // M.7.1: declarative mode-mirror cascade. Mode lifecycle
-        // (`activate_mode_by_id` / `deactivate_mode_by_id`) still
-        // lives renderer-side through 5.5.F, so we signal out and
-        // let the renderer run the mirror walk on its `App`. Each
-        // emitted signal also acts as a debug breadcrumb that the
-        // cascade did consider this option for mode mirroring.
-        signals.push(RendererSignal::MirrorOptionToModes(canonical_name.to_string()));
+        // M.7.1: declarative mode-mirror cascade. 5.5.F.5.4 brought
+        // `mirror_option_to_modes` host-side alongside the mode-
+        // lifecycle methods it dispatches to — the cascade now runs
+        // synchronously inside the cascade body, returning its own
+        // signal list (from any cascading mode-activated typed-option
+        // writes) which we splice into the parent cascade's stream.
+        signals.extend(self.mirror_option_to_modes(canonical_name));
         match canonical_name {
             "relativenumber" => {
                 // Vim cascade: `:set rnu` implies `:set nu` so the
@@ -3300,22 +3351,21 @@ mod tests {
     /// `RendererSignal` is `Clone` so the renderer can fan signals
     /// out without consuming the host's `Vec<RendererSignal>` (and
     /// so unit tests can splat representative variants without
-    /// caring about Drop semantics). 5.5.E.6 dropped `Copy`
-    /// because `MirrorOptionToModes` / `LspConfigChanged` carry an
-    /// owned `String`; 5.5.F.1 dropped `PartialEq` / `Eq` because
-    /// `DisplayBuffer(Box<DisplayBufferRequest>)` carries a
-    /// `lattice_help::HelpContent` that isn't value-equatable
-    /// (the syntax-highlight cache is renderer-neutral but not
-    /// `PartialEq`). Signals are produced at `:` / Effect-arm
-    /// rate, not per-frame, so neither `String` cloning nor the
-    /// `Box` allocation lands anywhere near the perf gate.
+    /// caring about Drop semantics). 5.5.E.6 dropped `Copy` because
+    /// `LspConfigChanged` (and the now-retired `MirrorOptionToModes`)
+    /// carry an owned `String`; 5.5.F.1 dropped `PartialEq` / `Eq`
+    /// because `DisplayBuffer(Box<DisplayBufferRequest>)` carries a
+    /// `lattice_help::HelpContent` that isn't value-equatable (the
+    /// syntax-highlight cache is renderer-neutral but not
+    /// `PartialEq`). Signals are produced at `:` / Effect-arm rate,
+    /// not per-frame, so neither `String` cloning nor the `Box`
+    /// allocation lands anywhere near the perf gate.
     #[test]
     fn renderer_signal_is_clone() {
         fn assert_clone<T: Clone>(_: T) {}
         assert_clone(RendererSignal::ThemeChanged);
         assert_clone(RendererSignal::Quit);
         assert_clone(RendererSignal::NerdFontsToggled);
-        assert_clone(RendererSignal::MirrorOptionToModes("number".into()));
         assert_clone(RendererSignal::LspConfigChanged("rust-analyzer".into()));
         assert_clone(RendererSignal::DisplayBuffer(Box::new(
             DisplayBufferRequest {

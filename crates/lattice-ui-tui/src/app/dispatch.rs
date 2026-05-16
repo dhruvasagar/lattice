@@ -1116,13 +1116,12 @@ impl App {
                     self.set_file_tree_nerd_fonts(id, nerd_fonts);
                 }
             }
-            // 5.5.E.6: option-cascade told us a mirrored option
-            // changed. Run the existing renderer-side walk that
-            // toggles every mode declaring
-            // `mirrors_option == Some(canonical_name)`.
-            RendererSignal::MirrorOptionToModes(canonical_name) => {
-                self.mirror_option_to_modes(&canonical_name);
-            }
+            // 5.5.F.5.4: `MirrorOptionToModes` retired. The cascade
+            // now runs synchronously host-side inside
+            // `apply_option_cascade` via `Editor::mirror_option_to_modes`;
+            // any cascading mode-lifecycle signals stream back through
+            // the same `Vec<RendererSignal>` the parent cascade already
+            // drains, so the App-side handler is no longer reachable.
             // 5.5.E.6: `lsp.<server>.*` cascade -- fan out
             // `workspace/didChangeConfiguration` to every actor
             // matching `server_id` with the freshly merged subtree.

@@ -956,7 +956,9 @@ impl App {
             | Effect::EchoRegisters
             | Effect::Yank { .. }
             | Effect::SelectionChange(_)
-            | Effect::SetOption { .. } => {}
+            | Effect::SetOption { .. }
+            | Effect::ListBuffers
+            | Effect::DescribeBuffer => {}
             Effect::Edits(edits) => self.handle_edits(&edits),
             Effect::EnterMode(mode) => {
                 // Operators that flip mode (`c` -> Insert) come through
@@ -987,13 +989,11 @@ impl App {
             Effect::DescribeCommand { name, anchor } => {
                 self.do_describe_command(&name, anchor.as_deref())
             }
-            Effect::DescribeBuffer => self.do_describe_buffer(),
             Effect::Apropos { pattern } => self.do_apropos(&pattern),
             Effect::DescribeKey { chord } => self.do_describe_key(&chord),
             Effect::ListKeymap => self.do_list_keymap(),
             Effect::BufferNext => self.do_buffer_next(),
             Effect::BufferPrev => self.do_buffer_prev(),
-            Effect::ListBuffers => self.do_list_buffers(),
             Effect::OpenBufferPicker => self.open_buffer_picker(),
             Effect::OpenPicker { source, args } => self.open_picker(source, args),
             Effect::BufferDelete { force } => self.do_buffer_delete(force),
@@ -1110,6 +1110,20 @@ impl App {
             // matching `server_id` with the freshly merged subtree.
             RendererSignal::LspConfigChanged(server_id) => {
                 self.fan_out_did_change_configuration(&server_id);
+            }
+            // 5.5.F.1: a host-side `do_*` arm built a HelpContent
+            // and wants the renderer to surface it under a given
+            // category. Route through `display_buffer` (the
+            // renderer's existing dispatch: resolve category to a
+            // `BufferDisplay` preference, then route popup / pane
+            // / split). `display_buffer` returns the registered
+            // BufferId for `ActivePane` / `Split` displays so
+            // future host slices can mirror it back through a
+            // dedicated signal; today's callers (ListBuffers,
+            // DescribeBuffer) don't need the id back so we discard.
+            RendererSignal::DisplayBuffer(req) => {
+                let lattice_host::dispatch::DisplayBufferRequest { content, category } = *req;
+                self.display_buffer(content, category);
             }
         }
     }

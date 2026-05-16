@@ -119,7 +119,7 @@ pub struct DispatchOutcome {
 /// and 5.5.E ([`Self::ThemeChanged`]); the variants exist from
 /// 5.5.A so the type surface is fixed before any consumer composes
 /// against it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum RendererSignal {
     /// The host's neutral [`crate::ui::theme::Theme`] changed
     /// (typically via a `:set ui.*` cascade). The renderer should
@@ -153,6 +153,49 @@ pub enum RendererSignal {
     /// can't drive this without owning the LSP actor pool, which
     /// stays renderer-side through 5.5.
     LspConfigChanged(String),
+    /// 5.5.F.1: a host-side `do_*` arm built a [`lattice_help::HelpContent`]
+    /// and wants the renderer to display it under a given category
+    /// (e.g. `Effect::ListBuffers` → `HelpList`,
+    /// `Effect::DescribeBuffer` → `HelpDescribe`). The renderer
+    /// runs its existing `display_buffer` dispatch: resolve the
+    /// category to a [`lattice_core::ui::display::BufferDisplay`]
+    /// preference, then route into the matching surface (popup,
+    /// active-pane swap, split). Boxed because [`lattice_help::HelpContent`]
+    /// is ~6 fields including a parsed markdown highlight cache,
+    /// and most signals don't carry one — keeping the variant
+    /// small keeps the common-case `Vec<RendererSignal>` cheap.
+    /// `PartialEq` / `Eq` derives drop on `RendererSignal` because
+    /// [`lattice_help::HelpContent`] doesn't implement them (the
+    /// syntax-highlight cache is renderer-neutral but not value-
+    /// equatable). Signals are produced at `:` / Effect-arm rate,
+    /// not per-frame, so the `Box` allocation is well below any
+    /// perf gate.
+    DisplayBuffer(Box<DisplayBufferRequest>),
+}
+
+/// 5.5.F.1: payload for [`RendererSignal::DisplayBuffer`]. Carries
+/// the [`lattice_help::HelpContent`] the host built + the category
+/// the renderer should dispatch it under. The renderer resolves
+/// the category to a [`lattice_core::ui::display::BufferDisplay`]
+/// (via its existing `resolve_display`) and routes through the
+/// matching surface. Why a struct instead of inline variant
+/// fields: keeps the [`RendererSignal`] variant size constant
+/// when more host-side `do_*` arms migrate over and want to
+/// attach side-channel data (e.g. a buffer-id token the renderer
+/// should mirror into its registry on completion); subsequent
+/// slices can add fields here without churning every
+/// `RendererSignal` match arm in every renderer.
+#[derive(Debug, Clone)]
+pub struct DisplayBufferRequest {
+    /// The help-style content the renderer should surface. Built
+    /// host-side from `editor.*` reads; never includes renderer-
+    /// specific data.
+    pub content: lattice_help::HelpContent,
+    /// The category the renderer dispatches under. The renderer's
+    /// `resolve_display(category)` reads the per-category typed
+    /// option (`:set <category>.display = ...`) to pick the
+    /// concrete surface.
+    pub category: lattice_core::ui::display::BufferDisplayCategory,
 }
 
 impl Editor {
@@ -519,6 +562,30 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             // back through `RendererSignal`s the cascade enqueued.
             let signals = editor.do_set(&spec);
             out.renderer_signals.extend(signals);
+        }
+        Effect::ListBuffers => {
+            // 5.5.F.1: `:ls` / `:buffers` -- build the help-style
+            // listing host-side from `editor.buffers` + per-kind
+            // metadata, then signal the renderer to display it
+            // under the `HelpList` category.
+            let content = editor.build_list_buffers_content();
+            out.renderer_signals
+                .push(RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
+                    content,
+                    category: lattice_core::ui::display::BufferDisplayCategory::HelpList,
+                })));
+        }
+        Effect::DescribeBuffer => {
+            // 5.5.F.1: `:describe-buffer` -- snapshot the active
+            // document's editor state (path, language, cursor,
+            // modes, ...) into a help buffer; signal the renderer
+            // under `HelpDescribe`.
+            let content = editor.build_describe_buffer_content();
+            out.renderer_signals
+                .push(RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
+                    content,
+                    category: lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
+                })));
         }
         // Catch-all: any Effect variant not yet migrated from
         // `App::apply_effect`. Sub-slices 5.5.E.7+ extend the match
@@ -1342,6 +1409,192 @@ impl Editor {
     }
 }
 
+/// 5.5.F.1: host-side helpers for the `:ls` / `:describe-buffer`
+/// Effect arms. Each builds a [`lattice_help::HelpContent`] from
+/// `editor.*` state and lives next to the cascade so the
+/// `do_*`-style content builders cluster in one module rather than
+/// fanning out into per-command files.
+impl Editor {
+    /// 5.5.F.1: build the `:ls` / `:buffers` listing content.
+    /// Mirrors the registry-walk + per-kind formatting that App's
+    /// `do_list_buffers` used; reads `lattice_file_tree::modes::FileTreeRoot`
+    /// and `lattice_oil::modes::OilDir` from `buffer_locals` so
+    /// file-tree / oil rows show their root paths.
+    pub fn build_list_buffers_content(&self) -> lattice_help::HelpContent {
+        use crate::buffer_registry::BufferData;
+        use lattice_core::BufferKind;
+        let ids = self.buffers.sorted_ids();
+        let active_id = self.active_pane_buffer_id();
+        let doc_count = self.buffers.document_ids_sorted().len();
+        let tree_count = self.buffers.file_tree_ids_sorted().len();
+        let help_count = self.buffers.help_ids_sorted().len();
+        let mut lines: Vec<String> = Vec::new();
+        lines.push(format!(
+            "{} open buffer(s) ({} document, {} tree, {} help):",
+            ids.len(),
+            doc_count,
+            tree_count,
+            help_count,
+        ));
+        lines.push(String::new());
+        // Snapshot every entry under one lock acquire. Per-line
+        // rendering reads `buffer_locals` (Editor-side) so we do it
+        // outside the closure.
+        struct EntryRow {
+            id: BufferId,
+            kind: BufferKind,
+            listed: bool,
+            name: Option<String>,
+            doc_path: Option<std::path::PathBuf>,
+            doc_dirty: bool,
+            help_title: Option<String>,
+        }
+        let mut rows: Vec<EntryRow> = Vec::with_capacity(ids.len());
+        self.buffers.for_each(|entry| {
+            let (doc_path, doc_dirty) = match &entry.data {
+                BufferData::Document(d) => (d.handle.path(), d.handle.dirty()),
+                _ => (None, false),
+            };
+            let help_title = match &entry.data {
+                BufferData::Help(h) => Some(h.title.clone()),
+                _ => None,
+            };
+            rows.push(EntryRow {
+                id: entry.id,
+                kind: entry.kind(),
+                listed: entry.flags.listed,
+                name: entry.name.clone(),
+                doc_path,
+                doc_dirty,
+                help_title,
+            });
+        });
+        rows.sort_by_key(|r| r.id);
+        for row in rows {
+            let id = row.id;
+            let active_marker = if id == active_id { "%" } else { " " };
+            let listed_marker = if row.listed { " " } else { "u" };
+            match row.kind {
+                BufferKind::Document => {
+                    let label = row
+                        .doc_path
+                        .as_ref()
+                        .map(|p| p.display().to_string())
+                        .or_else(|| row.name.clone())
+                        .unwrap_or_else(|| "(no file)".to_string());
+                    let dirty = if row.name.is_none() && row.doc_dirty {
+                        "[+]"
+                    } else {
+                        "   "
+                    };
+                    lines.push(format!(
+                        "  {active_marker}{listed_marker} #{:<3} doc  {dirty} {label}",
+                        id.0
+                    ));
+                }
+                BufferKind::FileTree => {
+                    let root = self
+                        .buffer_locals
+                        .get(&id)
+                        .and_then(|locals| locals.get::<lattice_file_tree::modes::FileTreeRoot>())
+                        .map(|r| r.0.clone())
+                        .unwrap_or_default();
+                    lines.push(format!(
+                        "  {active_marker}{listed_marker} #{:<3} tree     {}",
+                        id.0,
+                        root.display()
+                    ));
+                }
+                BufferKind::Help => {
+                    let title = row.help_title.unwrap_or_default();
+                    lines.push(format!(
+                        "  {active_marker}{listed_marker} #{:<3} help     {title}",
+                        id.0,
+                    ));
+                }
+                BufferKind::Oil => {
+                    let dir = self
+                        .buffer_locals
+                        .get(&id)
+                        .and_then(|locals| locals.get::<lattice_oil::modes::OilDir>())
+                        .map(|d| d.0.display().to_string())
+                        .unwrap_or_default();
+                    lines.push(format!(
+                        "  {active_marker}{listed_marker} #{:<3} oil      {}",
+                        id.0, dir
+                    ));
+                }
+            }
+        }
+        lattice_help::HelpContent::from_lines("buffers", lines)
+            .with_markdown_syntax(self.lang_registry.clone())
+    }
+
+    /// 5.5.F.1: build the `:describe-buffer` content. Mirrors App's
+    /// `do_describe_buffer`; every field read goes through
+    /// `editor.*`. The active-mode lines render as
+    /// `[name](mode:name)` markdown links so follow-link routes to
+    /// `:describe-mode <name>` via the help buffer's link table.
+    pub fn build_describe_buffer_content(&self) -> lattice_help::HelpContent {
+        let mut lines: Vec<String> = Vec::new();
+        let snap = self.document.snapshot();
+        let path = snap
+            .path()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "(no file)".to_string());
+        let lang = lattice_syntax::Lang::detect_from_path(snap.path());
+        let line_count = snap.buffer.line_count();
+        let byte_count = snap.buffer.as_string().len();
+        let dirty = if self.document.dirty() { "yes" } else { "no" };
+        lines.push(format!("path:           {path}"));
+        lines.push(format!("language:       {lang:?}"));
+        lines.push(format!("modal state:    {:?}", self.modal));
+        lines.push(format!(
+            "cursor:         line {}, col {}",
+            self.cursor.line + 1,
+            self.cursor.byte
+        ));
+        lines.push(format!("dirty:          {dirty}"));
+        lines.push(format!("line count:     {line_count}"));
+        lines.push(format!("byte count:     {byte_count}"));
+        lines.push(format!("registers set:  {}", self.registers.len()));
+        lines.push(format!("marks set:      {}", self.marks.len()));
+        lines.push(format!(
+            "position-history depth: {}",
+            self.position_history.len()
+        ));
+        lines.push(format!("macros stored:  {}", self.macros.len()));
+        lines.push(format!("folds:          {}", self.folds.len()));
+        lines.push(format!(
+            "options:        number={}  relativenumber={}",
+            self.option_cache.show_line_numbers,
+            self.option_cache.relative_line_numbers,
+        ));
+        // Active modes on the document buffer. Each mode name is a
+        // clickable `[name](mode:name)` link.
+        lines.push(String::new());
+        lines.push("## Active modes".to_string());
+        let active = self.active_modes.get(&self.document_buffer_id);
+        let major = active.and_then(|a| a.major());
+        let minors: Vec<_> = active.map(|a| a.minors().to_vec()).unwrap_or_default();
+        if let Some(major) = major {
+            lines.push(format!("- major: {}", lattice_help::mode_link(major.as_str())));
+        } else {
+            lines.push("- major: (none)".to_string());
+        }
+        if minors.is_empty() {
+            lines.push("- minors: (none)".to_string());
+        } else {
+            lines.push(format!("- minors ({}):", minors.len()));
+            for id in minors {
+                lines.push(format!("    - {}", lattice_help::mode_link(id.as_str())));
+            }
+        }
+        lattice_help::HelpContent::from_lines("describe-buffer", lines)
+            .with_markdown_syntax(self.lang_registry.clone())
+    }
+}
+
 /// 4.4.k: returns `Some(server_id)` when `canonical_name` names a
 /// server-scoped config key (`lsp.<server_id>.<...>`), `None`
 /// otherwise. Used by [`Editor::apply_option_cascade`] to decide
@@ -1414,32 +1667,32 @@ fn last_addressable_line(buf: &lattice_core::Buffer) -> u32 {
 mod tests {
     use super::*;
 
-    /// `RendererSignal` is `Clone + Eq` so renderers can compare
-    /// emitted signals against a known set during tests and clone
-    /// them when fanning out. 5.5.E.6 dropped `Copy` because the
-    /// new `MirrorOptionToModes` / `LspConfigChanged` variants
-    /// carry an owned `String` payload (the canonical option name
-    /// and the LSP server id respectively). Signals are produced at
-    /// option-cascade rate (`:set ...`), not per-frame, so the
-    /// `String` clone is well below any perf gate.
+    /// `RendererSignal` is `Clone` so the renderer can fan signals
+    /// out without consuming the host's `Vec<RendererSignal>` (and
+    /// so unit tests can splat representative variants without
+    /// caring about Drop semantics). 5.5.E.6 dropped `Copy`
+    /// because `MirrorOptionToModes` / `LspConfigChanged` carry an
+    /// owned `String`; 5.5.F.1 dropped `PartialEq` / `Eq` because
+    /// `DisplayBuffer(Box<DisplayBufferRequest>)` carries a
+    /// `lattice_help::HelpContent` that isn't value-equatable
+    /// (the syntax-highlight cache is renderer-neutral but not
+    /// `PartialEq`). Signals are produced at `:` / Effect-arm
+    /// rate, not per-frame, so neither `String` cloning nor the
+    /// `Box` allocation lands anywhere near the perf gate.
     #[test]
-    fn renderer_signal_is_clone_eq() {
-        fn assert_clone_eq<T: Clone + Eq>(_: T) {}
-        assert_clone_eq(RendererSignal::ThemeChanged);
-        assert_clone_eq(RendererSignal::Quit);
-        assert_clone_eq(RendererSignal::NerdFontsToggled);
-        assert_clone_eq(RendererSignal::MirrorOptionToModes("number".into()));
-        assert_clone_eq(RendererSignal::LspConfigChanged("rust-analyzer".into()));
-        assert_eq!(RendererSignal::Quit, RendererSignal::Quit);
-        assert_ne!(RendererSignal::Quit, RendererSignal::ThemeChanged);
-        assert_eq!(
-            RendererSignal::LspConfigChanged("a".into()),
-            RendererSignal::LspConfigChanged("a".into()),
-        );
-        assert_ne!(
-            RendererSignal::LspConfigChanged("a".into()),
-            RendererSignal::LspConfigChanged("b".into()),
-        );
+    fn renderer_signal_is_clone() {
+        fn assert_clone<T: Clone>(_: T) {}
+        assert_clone(RendererSignal::ThemeChanged);
+        assert_clone(RendererSignal::Quit);
+        assert_clone(RendererSignal::NerdFontsToggled);
+        assert_clone(RendererSignal::MirrorOptionToModes("number".into()));
+        assert_clone(RendererSignal::LspConfigChanged("rust-analyzer".into()));
+        assert_clone(RendererSignal::DisplayBuffer(Box::new(
+            DisplayBufferRequest {
+                content: lattice_help::HelpContent::from_lines("test", vec!["x".into()]),
+                category: lattice_core::ui::display::BufferDisplayCategory::HelpList,
+            },
+        )));
     }
 
     /// 4.4.k: `lsp.<server>.<key>` returns the server-id; anything

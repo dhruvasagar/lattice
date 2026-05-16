@@ -776,120 +776,12 @@ impl App {
         }
     }
 
-    /// `:ls` / `:buffers` -- render every open buffer (regardless
-    /// of kind) in a help-style view. The `%` marker points at
-    /// whichever buffer the active pane is currently showing.
-    pub(super) fn do_list_buffers(&mut self) {
-        let ids = self.editor.buffers.sorted_ids();
-        let active_id = self.active_pane_buffer_id();
-        let doc_count = self.editor.buffers.document_ids_sorted().len();
-        let tree_count = self.editor.buffers.file_tree_ids_sorted().len();
-        let help_count = self.editor.buffers.help_ids_sorted().len();
-        let mut lines: Vec<String> = Vec::new();
-        lines.push(format!(
-            "{} open buffer(s) ({} document, {} tree, {} help):",
-            ids.len(),
-            doc_count,
-            tree_count,
-            help_count,
-        ));
-        lines.push(String::new());
-        // Snapshot every entry under one lock acquire. Per-line
-        // rendering reads `buffer_locals` (App-side, not the
-        // registry) so we can do it outside the closure.
-        struct EntryRow {
-            id: BufferId,
-            kind: BufferKind,
-            listed: bool,
-            name: Option<String>,
-            // Kind-specific fields snapshotted out of the entry.
-            doc_path: Option<std::path::PathBuf>,
-            doc_dirty: bool,
-            help_title: Option<String>,
-        }
-        let mut rows: Vec<EntryRow> = Vec::with_capacity(ids.len());
-        self.editor.buffers.for_each(|entry| {
-            let (doc_path, doc_dirty) = match &entry.data {
-                BufferData::Document(d) => (d.handle.path(), d.handle.dirty()),
-                _ => (None, false),
-            };
-            let help_title = match &entry.data {
-                BufferData::Help(h) => Some(h.title.clone()),
-                _ => None,
-            };
-            rows.push(EntryRow {
-                id: entry.id,
-                kind: entry.kind(),
-                listed: entry.flags.listed,
-                name: entry.name.clone(),
-                doc_path,
-                doc_dirty,
-                help_title,
-            });
-        });
-        rows.sort_by_key(|r| r.id);
-        for row in rows {
-            let id = row.id;
-            let active_marker = if id == active_id { "%" } else { " " };
-            let listed_marker = if row.listed { " " } else { "u" };
-            match row.kind {
-                BufferKind::Document => {
-                    let label = row
-                        .doc_path
-                        .as_ref()
-                        .map(|p| p.display().to_string())
-                        .or_else(|| row.name.clone())
-                        .unwrap_or_else(|| "(no file)".to_string());
-                    let dirty = if row.name.is_none() && row.doc_dirty {
-                        "[+]"
-                    } else {
-                        "   "
-                    };
-                    lines.push(format!(
-                        "  {active_marker}{listed_marker} #{:<3} doc  {dirty} {label}",
-                        id.0
-                    ));
-                }
-                BufferKind::FileTree => {
-                    let root = self
-                        .editor.buffer_locals
-                        .get(&id)
-                        .and_then(|locals| locals.get::<crate::modes::FileTreeRoot>())
-                        .map(|r| r.0.clone())
-                        .unwrap_or_default();
-                    lines.push(format!(
-                        "  {active_marker}{listed_marker} #{:<3} tree     {}",
-                        id.0,
-                        root.display()
-                    ));
-                }
-                BufferKind::Help => {
-                    let title = row.help_title.unwrap_or_default();
-                    lines.push(format!(
-                        "  {active_marker}{listed_marker} #{:<3} help     {title}",
-                        id.0,
-                    ));
-                }
-                BufferKind::Oil => {
-                    let dir = self
-                        .editor.buffer_locals
-                        .get(&id)
-                        .and_then(|locals| locals.get::<crate::modes::OilDir>())
-                        .map(|d| d.0.display().to_string())
-                        .unwrap_or_default();
-                    lines.push(format!(
-                        "  {active_marker}{listed_marker} #{:<3} oil      {}",
-                        id.0, dir
-                    ));
-                }
-            }
-        }
-        self.display_buffer(
-            HelpContent::from_lines("buffers", lines)
-                .with_markdown_syntax(self.editor.lang_registry.clone()),
-            lattice_core::ui::display::BufferDisplayCategory::HelpList,
-        );
-    }
+    // 5.5.F.1: `:ls` / `:buffers` content builder relocated to
+    // [`lattice_host::dispatch::Editor::build_list_buffers_content`]
+    // and the `Effect::ListBuffers` arm now lives in
+    // `Editor::handle_effect`. The renderer-coupled tail
+    // (`display_buffer` dispatch) runs via
+    // `RendererSignal::DisplayBuffer` -> `App::handle_renderer_signal`.
 
     // 5.5.E.2: `do_list_registers` / `do_list_marks` moved to
     // [`lattice_host::dispatch::Editor::do_list_registers`] /

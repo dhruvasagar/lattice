@@ -219,9 +219,12 @@ impl App {
     /// renderer fans them out through [`Self::handle_renderer_signal`].
     /// The grammar's `Effect::SetOption` arm now routes through
     /// [`lattice_host::dispatch::handle_effect`] directly; this
-    /// wrapper exists for `App::activate_mode_by_id` /
-    /// `App::deactivate_mode_by_id` which still call into it as part
-    /// of mode-lifecycle (deferred to 5.5.F).
+    /// wrapper is retained for the App-level integration tests that
+    /// exercise the cascade through `a.do_set("...")` (`mode.rs`,
+    /// `completion.rs`, `options.rs` test modules) -- production no
+    /// longer calls it, so `#[allow(dead_code)]` covers the non-test
+    /// build's lint.
+    #[allow(dead_code)]
     pub(super) fn do_set(&mut self, option: &str) {
         let signals = self.editor.do_set(option);
         for sig in signals {

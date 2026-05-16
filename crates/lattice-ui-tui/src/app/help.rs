@@ -43,7 +43,7 @@ use super::{
     App, BufferKind, EchoLevel, PositionSource, PrevPaneState, line_byte_len,
     resolve_command_name_or_alias,
 };
-use crate::help::{HelpContent, command_link, key_link, mode_link};
+use crate::help::{HelpContent, command_link, key_link};
 
 impl App {
     /// `:help [topic]` (DESIGN.md §5.11). With no topic the index
@@ -142,69 +142,11 @@ impl App {
         );
     }
 
-    pub(super) fn do_describe_buffer(&mut self) {
-        let mut lines: Vec<String> = Vec::new();
-        let snap = self.editor.document.snapshot();
-        let path = snap
-            .path()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "(no file)".to_string());
-        let lang = lattice_syntax::Lang::detect_from_path(snap.path());
-        let line_count = snap.buffer.line_count();
-        let byte_count = snap.buffer.as_string().len();
-        let dirty = if self.editor.document.dirty() { "yes" } else { "no" };
-        lines.push(format!("path:           {path}"));
-        lines.push(format!("language:       {lang:?}"));
-        lines.push(format!("modal state:    {:?}", self.editor.modal));
-        lines.push(format!(
-            "cursor:         line {}, col {}",
-            self.editor.cursor.line + 1,
-            self.editor.cursor.byte
-        ));
-        lines.push(format!("dirty:          {dirty}"));
-        lines.push(format!("line count:     {line_count}"));
-        lines.push(format!("byte count:     {byte_count}"));
-        lines.push(format!("registers set:  {}", self.editor.registers.len()));
-        lines.push(format!("marks set:      {}", self.editor.marks.len()));
-        lines.push(format!(
-            "position-history depth: {}",
-            self.editor.position_history.len()
-        ));
-        lines.push(format!("macros stored:  {}", self.editor.macros.len()));
-        lines.push(format!("folds:          {}", self.editor.folds.len()));
-        lines.push(format!(
-            "options:        number={}  relativenumber={}",
-            self.show_line_numbers(),
-            self.relative_line_numbers()
-        ));
-        // Active modes on the document buffer. Each mode name is a
-        // clickable `[name](mode:name)` link -- follow-link routes to
-        // `:describe-mode <name>` and pushes position history so
-        // `<C-o>` walks back to this view.
-        lines.push(String::new());
-        lines.push("## Active modes".to_string());
-        let active = self.editor.active_modes.get(&self.editor.document_buffer_id);
-        let major = active.and_then(|a| a.major());
-        let minors: Vec<_> = active.map(|a| a.minors().to_vec()).unwrap_or_default();
-        if let Some(major) = major {
-            lines.push(format!("- major: {}", mode_link(major.as_str())));
-        } else {
-            lines.push("- major: (none)".to_string());
-        }
-        if minors.is_empty() {
-            lines.push("- minors: (none)".to_string());
-        } else {
-            lines.push(format!("- minors ({}):", minors.len()));
-            for id in minors {
-                lines.push(format!("    - {}", mode_link(id.as_str())));
-            }
-        }
-        self.display_buffer(
-            HelpContent::from_lines("describe-buffer", lines)
-                .with_markdown_syntax(self.editor.lang_registry.clone()),
-            lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
-        );
-    }
+    // 5.5.F.1: `:describe-buffer` content builder relocated to
+    // [`lattice_host::dispatch::Editor::build_describe_buffer_content`]
+    // and the `Effect::DescribeBuffer` arm now lives in
+    // `Editor::handle_effect`. The renderer-coupled tail flows back
+    // through `RendererSignal::DisplayBuffer`.
 
     pub(super) fn do_apropos(&mut self, pattern: &str) {
         if pattern.is_empty() {

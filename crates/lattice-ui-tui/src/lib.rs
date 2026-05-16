@@ -54,7 +54,14 @@ pub mod picker_sources;
 pub mod render;
 pub mod runtime;
 pub mod theme;
-pub mod tui_options;
+// Phase 5.5.E.6: the renderer-neutral typed-option declarations
+// previously in `tui_options` (ui.dim_inactive, ui.separator,
+// ui.separator_color, ui.statusline_*_fg, ui.nerd_fonts) relocated
+// to `lattice_host::ui::theme_options` so the host can read the
+// values directly when synchronising `host_theme` from config
+// (`Editor::sync_host_theme_from_config`). `linkme` self-registers
+// the entries regardless of which crate emitted them, so the boot
+// path's `init_from_linkme()` picks them up unchanged.
 
 pub use app::{Action, App, EchoLevel, EchoMessage};
 

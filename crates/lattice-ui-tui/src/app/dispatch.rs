@@ -955,7 +955,8 @@ impl App {
             | Effect::EchoMarks
             | Effect::EchoRegisters
             | Effect::Yank { .. }
-            | Effect::SelectionChange(_) => {}
+            | Effect::SelectionChange(_)
+            | Effect::SetOption { .. } => {}
             Effect::Edits(edits) => self.handle_edits(&edits),
             Effect::EnterMode(mode) => {
                 // Operators that flip mode (`c` -> Insert) come through
@@ -971,7 +972,6 @@ impl App {
             Effect::SaveBuffer { path } => self.do_write(path),
             Effect::QuitEditor { force } => self.do_quit(force),
             Effect::OpenBuffer { path, force } => self.do_edit(path, force),
-            Effect::SetOption { spec } => self.do_set(&spec),
             Effect::Substitute {
                 scope,
                 pattern,
@@ -1078,7 +1078,7 @@ impl App {
     /// no-op (already set on `editor.should_quit`, which
     /// `runtime::main_loop` reads each tick). A future GPUI renderer
     /// implements its own equivalent on `lattice-ui-gpui::App`.
-    fn handle_renderer_signal(&mut self, signal: RendererSignal) {
+    pub(super) fn handle_renderer_signal(&mut self, signal: RendererSignal) {
         match signal {
             RendererSignal::ThemeChanged => self.rebuild_tui_theme(),
             RendererSignal::Quit => {
@@ -1086,6 +1086,30 @@ impl App {
                 // emission (see `Action::Quit` in `Editor::dispatch`);
                 // the runtime loop polls it. Keep the arm for shape
                 // — a future GPUI renderer wires window-close here.
+            }
+            // 5.5.E.6: `ui.nerd_fonts` cascade -- the host already
+            // updated `editor.host_theme.nerd_fonts`; the renderer
+            // walks every file-tree buffer and refreshes its rope
+            // so the icon-glyph cells re-render. Oil reads the
+            // toggle each frame and needs no rope work.
+            RendererSignal::NerdFontsToggled => {
+                let nerd_fonts = self.editor.host_theme.nerd_fonts;
+                for id in self.editor.buffers.file_tree_ids() {
+                    self.set_file_tree_nerd_fonts(id, nerd_fonts);
+                }
+            }
+            // 5.5.E.6: option-cascade told us a mirrored option
+            // changed. Run the existing renderer-side walk that
+            // toggles every mode declaring
+            // `mirrors_option == Some(canonical_name)`.
+            RendererSignal::MirrorOptionToModes(canonical_name) => {
+                self.mirror_option_to_modes(&canonical_name);
+            }
+            // 5.5.E.6: `lsp.<server>.*` cascade -- fan out
+            // `workspace/didChangeConfiguration` to every actor
+            // matching `server_id` with the freshly merged subtree.
+            RendererSignal::LspConfigChanged(server_id) => {
+                self.fan_out_did_change_configuration(&server_id);
             }
         }
     }

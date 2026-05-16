@@ -119,7 +119,7 @@ pub struct DispatchOutcome {
 /// and 5.5.E ([`Self::ThemeChanged`]); the variants exist from
 /// 5.5.A so the type surface is fixed before any consumer composes
 /// against it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RendererSignal {
     /// The host's neutral [`crate::ui::theme::Theme`] changed
     /// (typically via a `:set ui.*` cascade). The renderer should
@@ -129,6 +129,30 @@ pub enum RendererSignal {
     /// sequence. `editor.should_quit` is also set for back-compat
     /// with renderers that poll per-tick.
     Quit,
+    /// 5.5.E.6: the `ui.nerd_fonts` cascade flipped the
+    /// nerd-fonts toggle. The TUI's file-tree rope embeds the
+    /// icon glyphs, so a palette flip needs a per-file-tree-buffer
+    /// rope refresh on the renderer side; oil's renderer reads the
+    /// toggle each frame and needs no rope-side work. The host
+    /// emits this *in addition to* [`Self::ThemeChanged`] so
+    /// renderers that don't track file-tree state can ignore it
+    /// without missing the theme rebuild.
+    NerdFontsToggled,
+    /// 5.5.E.6: the option-cascade just touched a `bool` option
+    /// whose canonical name is mirrored by one or more registered
+    /// modes (`Mode::mirrors_option == Some(name)`). The renderer
+    /// runs the activate/deactivate cascade for those modes on
+    /// the current buffer -- a host-only walk would otherwise need
+    /// to reach into the renderer's `activate_mode_by_id` path
+    /// (mode-lifecycle still lives renderer-side until 5.5.F).
+    MirrorOptionToModes(String),
+    /// 5.5.E.6: the option-cascade just touched an
+    /// `lsp.<server_id>.*` key. The renderer fans out a
+    /// `workspace/didChangeConfiguration` to every actor matching
+    /// `server_id` with the freshly merged subtree. The host
+    /// can't drive this without owning the LSP actor pool, which
+    /// stays renderer-side through 5.5.
+    LspConfigChanged(String),
 }
 
 impl Editor {
@@ -431,7 +455,7 @@ fn echo_level_from_grammar(level: lattice_grammar::EchoLevel) -> EchoLevel {
 /// `_ => {}` lets every other variant fall through to App's still-
 /// resident match. Sub-slices E.2+ extend this match upward as
 /// `do_*` helpers move onto [`Editor`].
-pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, _out: &mut DispatchOutcome) {
+pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut DispatchOutcome) {
     match effect {
         Effect::None => {}
         Effect::ClearSearchHighlight => {
@@ -487,8 +511,17 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, _out: &mut Disp
                 editor.set_selections_blocking(SelectionSet::single(sel));
             }
         }
+        Effect::SetOption { spec } => {
+            // 5.5.E.6: `:set foo=bar` -- the canonical cmdline
+            // path. The host owns parse + cascade + cache rebuild;
+            // any renderer-coupled side effects (theme rebuild,
+            // file-tree refresh, mode mirroring, LSP fan-out) flow
+            // back through `RendererSignal`s the cascade enqueued.
+            let signals = editor.do_set(&spec);
+            out.renderer_signals.extend(signals);
+        }
         // Catch-all: any Effect variant not yet migrated from
-        // `App::apply_effect`. Sub-slices 5.5.E.5+ extend the match
+        // `App::apply_effect`. Sub-slices 5.5.E.7+ extend the match
         // upward as helpers move.
         _ => {}
     }
@@ -994,6 +1027,341 @@ impl Editor {
     }
 }
 
+/// Phase 5.5.E.6: host-side option-cascade infrastructure. These
+/// methods move the pure-editor half of `:set` (config write +
+/// cache rebuild + cascade dispatch) under [`Editor`]; the renderer
+/// keeps the renderer-coupled tail wired through
+/// [`RendererSignal`] (theme rebuild, file-tree rope refresh, mode
+/// mirror activate / deactivate, LSP `didChangeConfiguration`
+/// fan-out).
+impl Editor {
+    /// Sync the host-side renderer-neutral [`crate::ui::theme::Theme`]
+    /// (`editor.host_theme`) from the typed `ui.*` options in
+    /// [`Self::config`]. Called by the option-cascade for any
+    /// `ui.*` key and at App-init time. The renderer half (TUI's
+    /// cached `Theme` mirror rebuild) runs after this returns,
+    /// driven by [`RendererSignal::ThemeChanged`].
+    pub fn sync_host_theme_from_config(&mut self) {
+        use crate::ui::theme as host_theme;
+        use crate::ui::theme_options::{
+            UiDimInactive, UiNerdFonts, UiSeparator, UiSeparatorColor, UiStatuslineActiveFg,
+            UiStatuslineInactiveFg,
+        };
+        let dim_inactive = *self.config.get_typed::<UiDimInactive>().expect("UiDimInactive");
+        let nerd_fonts = *self.config.get_typed::<UiNerdFonts>().expect("UiNerdFonts");
+        let sep = self.config.get_typed::<UiSeparator>().expect("UiSeparator");
+        let sep_char = sep.chars().next().unwrap_or('│');
+        self.host_theme.dim_inactive_panes = dim_inactive;
+        self.host_theme.nerd_fonts = nerd_fonts;
+        self.host_theme.pane_separator_vertical = sep_char;
+        // ui.separator_color -- color name; host parser returned
+        // Ok during validate so unwrap-via-fallback is safe.
+        let sep_color = self
+            .config
+            .get_typed::<UiSeparatorColor>()
+            .expect("UiSeparatorColor");
+        if let Ok(c) = host_theme::parse_color(&sep_color) {
+            self.host_theme.pane_separator = host_theme::Style::empty().fg(c);
+        }
+        // ui.statusline_active_fg / _inactive_fg -- foreground
+        // only; preserve modifiers / background by chaining `.fg(c)`
+        // on the current host style.
+        let active_fg = self
+            .config
+            .get_typed::<UiStatuslineActiveFg>()
+            .expect("UiStatuslineActiveFg");
+        if let Ok(c) = host_theme::parse_color(&active_fg) {
+            self.host_theme.pane_status_active.fg = Some(c);
+        }
+        let inactive_fg = self
+            .config
+            .get_typed::<UiStatuslineInactiveFg>()
+            .expect("UiStatuslineInactiveFg");
+        if let Ok(c) = host_theme::parse_color(&inactive_fg) {
+            self.host_theme.pane_status_inactive.fg = Some(c);
+        }
+    }
+
+    /// Refresh [`Self::option_cache`] from the active buffer's
+    /// resolved values. Falls back to the registry's current value
+    /// when `resolved_options` doesn't yet have a cache entry for
+    /// the active buffer (transient state during boot before the
+    /// first [`Self::recompute_options_for_buffer`]). Cheap: 9
+    /// typed reads.
+    pub fn rebuild_option_cache(&mut self) {
+        use lattice_config::{
+            CompletionAutoInsertSingle, CursorLine, FoldEnable, FoldMethodOption, IgnoreCase,
+            Number, RelativeNumber, Scrolloff, Tabstop, Whitespace, WhitespaceEol,
+            WhitespaceLeading, WhitespaceSpace, WhitespaceTab, WhitespaceTrailing, Wrap,
+        };
+        let buffer = self.document_buffer_id;
+        // M.7.3.a: parse a typed-option `String` into a single
+        // glyph. Empty string ⇒ category is not decorated.
+        let glyph = |s: &str| -> Option<char> { s.chars().next() };
+        self.option_cache = crate::state::OptionCache {
+            show_line_numbers: *self.resolved_option::<Number>(buffer),
+            relative_line_numbers: *self.resolved_option::<RelativeNumber>(buffer),
+            wrap_lines: *self.resolved_option::<Wrap>(buffer),
+            ignorecase: *self.resolved_option::<IgnoreCase>(buffer),
+            tabstop: *self.resolved_option::<Tabstop>(buffer) as u32,
+            foldenable: *self.resolved_option::<FoldEnable>(buffer),
+            foldmethod: *self.resolved_option::<FoldMethodOption>(buffer),
+            scrolloff: *self.resolved_option::<Scrolloff>(buffer) as u32,
+            completion_auto_insert_single: *self
+                .resolved_option::<CompletionAutoInsertSingle>(buffer),
+            show_whitespace: *self.resolved_option::<Whitespace>(buffer),
+            current_line_highlight: *self.resolved_option::<CursorLine>(buffer),
+            whitespace_tab: glyph(&self.resolved_option::<WhitespaceTab>(buffer)),
+            whitespace_trailing: glyph(&self.resolved_option::<WhitespaceTrailing>(buffer)),
+            whitespace_leading: glyph(&self.resolved_option::<WhitespaceLeading>(buffer)),
+            whitespace_space: glyph(&self.resolved_option::<WhitespaceSpace>(buffer)),
+            whitespace_eol: glyph(&self.resolved_option::<WhitespaceEol>(buffer)),
+        };
+    }
+
+    /// Recompute the resolved-options cache for `buffer` by
+    /// stitching every layer of the resolution stack
+    /// (`mode-architecture.md` §6.1) and writing the result into
+    /// [`Self::resolved_options`].
+    ///
+    /// Eager whole-cache recompute (§6.3.1). Called whenever any
+    /// resolution layer for `buffer` changes: mode toggle, buffer-
+    /// local set, modal-state transition, or option write (the
+    /// cascade in [`Self::drain_option_changes`] propagates global
+    /// `:set` writes to every buffer's cache).
+    pub fn recompute_options_for_buffer(&mut self, buffer: BufferId) {
+        let mut resolved = lattice_config::ResolvedOptions::new();
+        // Layer 5/6: bootstrap with current registry values.
+        self.config.bootstrap_resolved_with_current_values(&mut resolved);
+
+        // Active modes (layers 4 + 3): walk in activation order
+        // for minors, prepend major.
+        let modes_snapshot = self.active_modes.get(&buffer).cloned().unwrap_or_default();
+        let mut mode_contributions: Vec<lattice_config::OptionOverrideSet> =
+            Vec::with_capacity(modes_snapshot.minors().len() + 1);
+        if let Some(major_id) = modes_snapshot.major()
+            && let Some(major) = self.mode_registry.get(major_id)
+        {
+            mode_contributions.push(major.options());
+        }
+        for &minor_id in modes_snapshot.minors() {
+            if let Some(minor) = self.mode_registry.get(minor_id) {
+                mode_contributions.push(minor.options());
+            }
+        }
+
+        // Buffer-local overrides (layer 2).
+        let buffer_local = self
+            .buffer_local_overrides
+            .get(&buffer)
+            .cloned()
+            .unwrap_or_default();
+
+        // Modal-state layer (1) is empty for now; M.7 wires it.
+        let modal_layer = lattice_config::OptionOverrideSet::new();
+
+        let mut layered: Vec<&lattice_config::OptionOverrideSet> = Vec::new();
+        layered.push(&modal_layer);
+        layered.push(&buffer_local);
+        for set in mode_contributions.iter().rev() {
+            layered.push(set);
+        }
+
+        let resolver = lattice_config::Resolver::new();
+        resolver.resolve_into(layered, &mut resolved);
+
+        self.resolved_options.insert(buffer, resolved);
+        // M.4: keep `option_cache` in lockstep with the active
+        // buffer's resolved options.
+        if buffer == self.document_buffer_id {
+            self.rebuild_option_cache();
+        }
+    }
+
+    /// Read a resolved option's value for `buffer`. Returns the
+    /// option's bootstrap default if the cache for `buffer` hasn't
+    /// been recomputed yet (transient state during boot before the
+    /// first [`Self::recompute_options_for_buffer`]).
+    ///
+    /// Hot-path read; O(1) `TypeId` lookup on the cached
+    /// [`lattice_config::ResolvedOptions`].
+    pub fn resolved_option<D: lattice_config::OptionDecl>(
+        &self,
+        buffer: BufferId,
+    ) -> std::sync::Arc<D::Value>
+    where
+        D::Value: Clone + Send + Sync + 'static,
+    {
+        if let Some(cache) = self.resolved_options.get(&buffer)
+            && let Some(v) = cache.get::<D>()
+        {
+            return v;
+        }
+        self.config.get_typed::<D>().expect("option not registered")
+    }
+
+    /// Body of `:set foo=bar`. Parses + applies the spec via the
+    /// canonical [`lattice_config::ConfigRegistry`] cmdline path,
+    /// drains the cascade so user-visible side effects (recompute
+    /// folds, theme refresh, ...) land before the caller observes
+    /// the post-set state, and echoes the result. Returns the
+    /// signal list the cascade enqueued so the renderer can fan
+    /// out its half (`RendererSignal::ThemeChanged` etc.).
+    pub fn do_set(&mut self, option: &str) -> Vec<RendererSignal> {
+        let echo = match self.config.parse_and_set_command(option) {
+            Ok(echo) => echo,
+            Err(err) => {
+                self.set_message(EchoLevel::Error, err.to_string());
+                return Vec::new();
+            }
+        };
+        // Drain any cascade events the set just enqueued so the user
+        // sees the side effects (recompute folds, theme refresh, ...)
+        // before the next frame draws. The runtime's main_loop also
+        // drains once per iteration as a backstop for writes that
+        // originate outside the keystroke path (plugin tasks, future
+        // LSP-driven config writes).
+        let signals = self.drain_option_changes();
+        self.set_message(EchoLevel::Info, echo);
+        signals
+    }
+
+    /// Drain queued [`Event::OptionChanged`] events from the typed-
+    /// options bus and apply per-option cascades. Returns the
+    /// accumulated [`RendererSignal`]s so renderer-coupled side
+    /// effects can fan out after every set call.
+    ///
+    /// Cascades re-entrant on themselves: a cascade that writes
+    /// another typed option (e.g. `relativenumber=true` implies
+    /// `number=true`) queues a new event, and the `while let Ok`
+    /// loop picks it up on the next iteration before exiting.
+    pub fn drain_option_changes(&mut self) -> Vec<RendererSignal> {
+        let mut signals = Vec::new();
+        // Take the receiver to dodge the borrow checker (we mutate
+        // `self` for cascades while reading from the rx). Always
+        // restored after the loop.
+        let mut rx = match self.option_change_rx.take() {
+            Some(rx) => rx,
+            None => return signals,
+        };
+        while let Ok(event) = rx.try_recv() {
+            if let Event::OptionChanged { name, .. } = event {
+                self.apply_option_cascade(&name, &mut signals);
+            }
+        }
+        self.option_change_rx = Some(rx);
+        signals
+    }
+
+    /// Per-option cascade body. Pushes [`RendererSignal`]s into
+    /// `signals` for the renderer-coupled side effects; runs the
+    /// pure-editor side effects (resolver recompute, cache rebuild,
+    /// implied-option writes, fold recompute, messages-filter
+    /// reload) inline.
+    fn apply_option_cascade(&mut self, canonical_name: &str, signals: &mut Vec<RendererSignal>) {
+        // M.4: a global `:set` updates the config layer (lowest-
+        // priority resolver layer). Re-resolve the active buffer
+        // so its `ResolvedOptions` reflects the new value;
+        // otherwise the cache rebuild below would read stale
+        // resolved data.
+        let active_id = self.document_buffer_id;
+        self.recompute_options_for_buffer(active_id);
+        // Refresh the hot-path cache so subsequent reads see the
+        // new value. `recompute_options_for_buffer` already calls
+        // `rebuild_option_cache` when `buffer == active`; this
+        // belt-and-braces call covers the bootstrap window.
+        self.rebuild_option_cache();
+        // M.7.1: declarative mode-mirror cascade. Mode lifecycle
+        // (`activate_mode_by_id` / `deactivate_mode_by_id`) still
+        // lives renderer-side through 5.5.F, so we signal out and
+        // let the renderer run the mirror walk on its `App`. Each
+        // emitted signal also acts as a debug breadcrumb that the
+        // cascade did consider this option for mode mirroring.
+        signals.push(RendererSignal::MirrorOptionToModes(canonical_name.to_string()));
+        match canonical_name {
+            "relativenumber" => {
+                // Vim cascade: `:set rnu` implies `:set nu` so the
+                // gutter renders at all. The reverse (`:set nornu`)
+                // does NOT clear `nu` -- preserves user intent.
+                if self.option_cache.relative_line_numbers {
+                    let _ = self.config.set_typed::<lattice_config::Number>(true);
+                }
+            }
+            "foldmethod" => {
+                // Recompute folds against the new method. Idempotent
+                // and cheap when method is `Manual` (the recompute
+                // returns immediately).
+                self.recompute_folds();
+            }
+            "messages.filter" => {
+                // msg-mode.2: live-reload the `MessagesLayer`'s
+                // `EnvFilter` directive. Validator already rejected
+                // unparseable specs at `:set` time; the only way to
+                // hit `Err` is the test path where
+                // `install_messages_subscriber` wasn't called.
+                let spec = self
+                    .config
+                    .get_typed::<lattice_config::MessagesFilter>()
+                    .map(|v| (*v).clone())
+                    .unwrap_or_else(|| String::from("info"));
+                if let Err(e) = lattice_runtime::reload_messages_filter(&spec) {
+                    self.set_message(
+                        EchoLevel::Warn,
+                        format!("messages.filter reload skipped: {e}"),
+                    );
+                }
+            }
+            n if n.starts_with("ui.") => {
+                // Sync the host-side neutral theme first, then
+                // signal the renderer to rebuild its typed mirror.
+                self.sync_host_theme_from_config();
+                signals.push(RendererSignal::ThemeChanged);
+                if n == "ui.nerd_fonts" {
+                    // File-tree rope embeds the icon glyphs, so a
+                    // palette flip must re-render every existing
+                    // tree. Renderer owns the file-tree buffers
+                    // through 5.5.F; signal out and let it run the
+                    // walk.
+                    signals.push(RendererSignal::NerdFontsToggled);
+                }
+            }
+            // 4.4.k: any change under `lsp.<server-id>.*` is a
+            // server-scoped config edit -- fan out
+            // `workspace/didChangeConfiguration` to every actor
+            // matching that server-id. The LSP actor pool still
+            // lives renderer-side, so signal out. `lsp.<host-knob>`
+            // keys (one dot after `lsp`, e.g. `lsp.log_level`)
+            // configure the host, not any server, and shouldn't
+            // page server actors.
+            n => {
+                if let Some(server_id) = lsp_server_scope(n) {
+                    signals.push(RendererSignal::LspConfigChanged(server_id.to_string()));
+                }
+            }
+        }
+    }
+}
+
+/// 4.4.k: returns `Some(server_id)` when `canonical_name` names a
+/// server-scoped config key (`lsp.<server_id>.<...>`), `None`
+/// otherwise. Used by [`Editor::apply_option_cascade`] to decide
+/// whether an option change should fan out
+/// `workspace/didChangeConfiguration` to a language server.
+///
+/// Single-dot `lsp.foo` keys (e.g. `lsp.log_level`,
+/// `lsp.log_capacity`) are host-side host-knob options; the spec
+/// is that we never page servers for host-side knob changes.
+pub(crate) fn lsp_server_scope(canonical_name: &str) -> Option<&str> {
+    let rest = canonical_name.strip_prefix("lsp.")?;
+    let dot = rest.find('.')?;
+    let server_id = &rest[..dot];
+    if server_id.is_empty() {
+        None
+    } else {
+        Some(server_id)
+    }
+}
+
 /// Project a grammar [`VisualKind`] onto the protocol-side
 /// [`VisualMode`]. Used when constructing a [`Selection`] from a
 /// modal-state visual mode so the document actor's selection set
@@ -1046,17 +1414,59 @@ fn last_addressable_line(buf: &lattice_core::Buffer) -> u32 {
 mod tests {
     use super::*;
 
-    /// `RendererSignal` is `Copy + Eq` so renderers can match on it
-    /// without cloning and dedupe a signal list cheaply. Pinning the
-    /// derives now keeps a future contributor from adding a non-Copy
-    /// variant without thinking about hot-path call sites.
+    /// `RendererSignal` is `Clone + Eq` so renderers can compare
+    /// emitted signals against a known set during tests and clone
+    /// them when fanning out. 5.5.E.6 dropped `Copy` because the
+    /// new `MirrorOptionToModes` / `LspConfigChanged` variants
+    /// carry an owned `String` payload (the canonical option name
+    /// and the LSP server id respectively). Signals are produced at
+    /// option-cascade rate (`:set ...`), not per-frame, so the
+    /// `String` clone is well below any perf gate.
     #[test]
-    fn renderer_signal_is_copy_eq() {
-        fn assert_copy_eq<T: Copy + Eq>(_: T) {}
-        assert_copy_eq(RendererSignal::ThemeChanged);
-        assert_copy_eq(RendererSignal::Quit);
+    fn renderer_signal_is_clone_eq() {
+        fn assert_clone_eq<T: Clone + Eq>(_: T) {}
+        assert_clone_eq(RendererSignal::ThemeChanged);
+        assert_clone_eq(RendererSignal::Quit);
+        assert_clone_eq(RendererSignal::NerdFontsToggled);
+        assert_clone_eq(RendererSignal::MirrorOptionToModes("number".into()));
+        assert_clone_eq(RendererSignal::LspConfigChanged("rust-analyzer".into()));
         assert_eq!(RendererSignal::Quit, RendererSignal::Quit);
         assert_ne!(RendererSignal::Quit, RendererSignal::ThemeChanged);
+        assert_eq!(
+            RendererSignal::LspConfigChanged("a".into()),
+            RendererSignal::LspConfigChanged("a".into()),
+        );
+        assert_ne!(
+            RendererSignal::LspConfigChanged("a".into()),
+            RendererSignal::LspConfigChanged("b".into()),
+        );
+    }
+
+    /// 4.4.k: `lsp.<server>.<key>` returns the server-id; anything
+    /// shallower (`lsp.<host-knob>`) is host-side and returns None.
+    /// The host-side knobs (e.g. `lsp.log_level`) must NOT trigger
+    /// `workspace/didChangeConfiguration`, since they configure the
+    /// host's behaviour, not the server's. Phase 5.5.E.6 relocated
+    /// this helper alongside the migrated `apply_option_cascade`.
+    #[test]
+    fn lsp_server_scope_picks_server_id_segment() {
+        assert_eq!(
+            lsp_server_scope("lsp.rust-analyzer.checkOnSave"),
+            Some("rust-analyzer")
+        );
+        assert_eq!(
+            lsp_server_scope("lsp.gopls.completeUnimported"),
+            Some("gopls")
+        );
+        // Single-dot under lsp.* -> host knob, NOT a fan-out target.
+        assert_eq!(lsp_server_scope("lsp.log_level"), None);
+        assert_eq!(lsp_server_scope("lsp.log_capacity"), None);
+        // Non-lsp options are unaffected.
+        assert_eq!(lsp_server_scope("tabstop"), None);
+        assert_eq!(lsp_server_scope("ui.theme"), None);
+        // Empty server-id (`lsp..foo`) is rejected -- malformed config
+        // should never page a phantom server.
+        assert_eq!(lsp_server_scope("lsp..foo"), None);
     }
 
     /// 5.5.A acceptance shape: [`DispatchOutcome::default()`]

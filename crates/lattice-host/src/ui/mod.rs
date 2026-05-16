@@ -16,3 +16,4 @@
 //! GPUI lands and render code reads from a renderer-cached view.
 
 pub mod theme;
+pub mod theme_options;

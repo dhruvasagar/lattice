@@ -873,61 +873,14 @@ impl App {
     /// ui.*` so the cached theme stays in lockstep with the
     /// canonical primitives in config.
     pub fn sync_theme_from_config(&mut self) {
-        use crate::tui_options::{
-            UiDimInactive, UiNerdFonts, UiSeparator, UiSeparatorColor, UiStatuslineActiveFg,
-            UiStatuslineInactiveFg,
-        };
-        use lattice_host::ui::theme as host_theme;
-        // Phase 5.3: write `self.editor.host_theme` first (the
-        // canonical neutral state); then rebuild `self.theme`
-        // from it via the From<&host::Theme> adapter. Every
-        // user-tweakable field flows through host first so a
-        // future GPUI renderer that reads from `host_theme`
-        // sees the same values the TUI cache derives from.
-        let dim_inactive = *self
-            .editor.config
-            .get_typed::<UiDimInactive>()
-            .expect("UiDimInactive");
-        let nerd_fonts = *self.editor.config.get_typed::<UiNerdFonts>().expect("UiNerdFonts");
-        let sep = self.editor.config.get_typed::<UiSeparator>().expect("UiSeparator");
-        let sep_char = sep.chars().next().unwrap_or('│');
-        self.editor.host_theme.dim_inactive_panes = dim_inactive;
-        self.editor.host_theme.nerd_fonts = nerd_fonts;
-        self.editor.host_theme.pane_separator_vertical = sep_char;
-        // ui.separator_color -- color name; host parser returned
-        // Ok during validate so unwrap-via-fallback is safe.
-        let sep_color = self
-            .editor.config
-            .get_typed::<UiSeparatorColor>()
-            .expect("UiSeparatorColor");
-        if let Ok(c) = host_theme::parse_color(&sep_color) {
-            self.editor.host_theme.pane_separator = host_theme::Style::empty().fg(c);
-        }
-        // ui.statusline_active_fg / _inactive_fg -- foreground
-        // only; preserve modifiers / background by chaining `.fg(c)`
-        // on the current host style (which itself preserves the
-        // host-side modifier set).
-        let active_fg = self
-            .editor.config
-            .get_typed::<UiStatuslineActiveFg>()
-            .expect("UiStatuslineActiveFg");
-        if let Ok(c) = host_theme::parse_color(&active_fg) {
-            self.editor.host_theme.pane_status_active.fg = Some(c);
-        }
-        let inactive_fg = self
-            .editor.config
-            .get_typed::<UiStatuslineInactiveFg>()
-            .expect("UiStatuslineInactiveFg");
-        if let Ok(c) = host_theme::parse_color(&inactive_fg) {
-            self.editor.host_theme.pane_status_inactive.fg = Some(c);
-        }
-        // 5.5.E.5: rebuild the cached TUI-typed adapter through
-        // the dedicated wrapper. Splitting it out lets the
-        // `RendererSignal::ThemeChanged` handler call only the
-        // renderer-specific tail without re-running the
-        // host_theme writes above (which a future E.6
-        // `Effect::SetOption` migration will run host-side and
-        // signal back through `DispatchOutcome`).
+        // Phase 5.5.E.6: the renderer-neutral half (read typed
+        // options + write `editor.host_theme`) lives on the host
+        // as `Editor::sync_host_theme_from_config`. Splitting the
+        // function lets the option-cascade in `Editor::apply_option_cascade`
+        // run the host half directly and emit `RendererSignal::ThemeChanged`;
+        // the renderer (here) only owns the cached TUI-typed
+        // mirror rebuild.
+        self.editor.sync_host_theme_from_config();
         self.rebuild_tui_theme();
     }
 

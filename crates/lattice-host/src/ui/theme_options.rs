@@ -5,29 +5,29 @@
 // `lattice-config`'s `option_decl.rs` etc.
 #![allow(unsafe_code)]
 
-//! Renderer-specific options for the TUI front-end. M.2.0c
-//! migrates these from the imperative `Option::builder()` form to
-//! the proc-macro form (Design B + D from
-//! `mode-architecture.md`'s discussion). Self-registration via
-//! `linkme` -- the registry's `init_from_linkme` walks the slice
-//! at App boot and registers each option.
+//! Renderer-neutral UI / theme options.
 //!
-//! What lives here vs. in `lattice_config::core_options`: an
-//! option belongs here only if it's meaningless to a non-TUI
-//! renderer (e.g. `ui.separator_color` -- a future GPU renderer
-//! wouldn't draw an ASCII separator at all). Renderer-agnostic
-//! options (`number`, `tabstop`, `foldmethod`, ...) live in
-//! `lattice_config::core_options` and any renderer respects
-//! them.
+//! Phase 5.5.E.6: relocated from `lattice-ui-tui::tui_options` so
+//! the host can read these values directly when synchronising
+//! [`crate::ui::theme::Theme`] from config. Every option here
+//! drives the renderer-neutral [`crate::ui::theme::Theme`]; the
+//! adapter into a renderer's native style type lives in that
+//! renderer's crate.
+//!
+//! Self-registration via `linkme` -- the registry's
+//! `init_from_linkme()` walks the slice at App boot regardless of
+//! which crate emitted the entries, so linking the host crate
+//! into any renderer picks these up automatically.
 //!
 //! Storage shape: every option stores its current *primitive*
-//! value (`bool` for the toggle, `String` for the color name
-//! and the separator glyph) in the config. The derived
-//! [`crate::theme::Theme`] `Style` values are kept on
-//! `App.theme` as a cached projection and synced from config
-//! after every `:set` (see `App::sync_theme_from_config`).
+//! value (`bool` for the toggle, `String` for the color name and
+//! the separator glyph) in the config. The renderer-specific
+//! derived style table (TUI's [`ratatui::style::Style`], GPUI's
+//! `Hsla`, ...) is kept as a cached projection on the renderer
+//! and refreshed after every `:set` cascade via the
+//! `RendererSignal::ThemeChanged` signal.
 
-use crate::theme::parse_color;
+use crate::ui::theme::parse_color;
 
 // Validators referenced by `#[validate(...)]` attributes below.
 fn validate_separator(s: &String) -> Result<(), String> {
@@ -148,7 +148,7 @@ mod tests {
             .parse_and_set_command("ui.separator_color=puce")
             .unwrap_err();
         let msg = format!("{err}");
-        // theme::parse_color's error wording: "unknown color: puce".
+        // host theme parser's error wording: "unknown color: puce".
         assert!(msg.contains("puce"), "got `{msg}`");
     }
 }

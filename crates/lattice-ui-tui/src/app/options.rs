@@ -20,9 +20,8 @@
 //! in `app.rs` next to the App field).
 
 use lattice_core::FoldMethod;
-use lattice_protocol::Event;
 
-use super::{App, EchoLevel, OptionCache};
+use super::{App, EchoLevel};
 use crate::help::HelpContent;
 
 impl App {
@@ -141,141 +140,21 @@ impl App {
         self.drain_option_changes();
     }
 
-    /// Repopulate [`Self::option_cache`] from the *active buffer's*
-    /// resolved values (M.4: renderer through `ResolvedOptions`).
-    /// Falls back to the registry's current value when
-    /// `resolved_options` doesn't yet have a cache entry for the
-    /// active buffer (transient state during boot before the first
-    /// `recompute_options_for_buffer`). Called at App-init time, on
-    /// every `Event::OptionChanged` cascade, and -- post-M.4 -- on
-    /// active-buffer switch so the cache always tracks the active
-    /// buffer's resolved settings (mode contributions included).
-    /// Cheap: 9 typed reads.
+    /// Delegate to [`lattice_host::editor::Editor::rebuild_option_cache`].
+    /// Phase 5.5.E.6 moved the body host-side; this wrapper exists
+    /// only so the existing App / test call sites keep compiling
+    /// unchanged. Future slices can drop the wrapper once those sites
+    /// migrate to `app.editor.rebuild_option_cache()`.
     pub(super) fn rebuild_option_cache(&mut self) {
-        use lattice_config::{
-            CompletionAutoInsertSingle, CursorLine, FoldEnable, FoldMethodOption, IgnoreCase,
-            Number, RelativeNumber, Scrolloff, Tabstop, Whitespace, WhitespaceEol,
-            WhitespaceLeading, WhitespaceSpace, WhitespaceTab, WhitespaceTrailing, Wrap,
-        };
-        let buffer = self.editor.document_buffer_id;
-        // M.7.3.a: parse a typed-option String into a single
-        // glyph. Empty string ⇒ category is not decorated.
-        // First-char semantics keeps v1 simple; future combining
-        // sequences land without an option-shape change because
-        // the cache layer can grow into something richer (e.g.
-        // `SmallString`) without changing the boundary.
-        let glyph = |s: &str| -> Option<char> { s.chars().next() };
-        self.editor.option_cache = OptionCache {
-            show_line_numbers: *self.resolved_option::<Number>(buffer),
-            relative_line_numbers: *self.resolved_option::<RelativeNumber>(buffer),
-            wrap_lines: *self.resolved_option::<Wrap>(buffer),
-            ignorecase: *self.resolved_option::<IgnoreCase>(buffer),
-            tabstop: *self.resolved_option::<Tabstop>(buffer) as u32,
-            foldenable: *self.resolved_option::<FoldEnable>(buffer),
-            foldmethod: *self.resolved_option::<FoldMethodOption>(buffer),
-            scrolloff: *self.resolved_option::<Scrolloff>(buffer) as u32,
-            completion_auto_insert_single: *self
-                .resolved_option::<CompletionAutoInsertSingle>(buffer),
-            show_whitespace: *self.resolved_option::<Whitespace>(buffer),
-            current_line_highlight: *self.resolved_option::<CursorLine>(buffer),
-            whitespace_tab: glyph(&self.resolved_option::<WhitespaceTab>(buffer)),
-            whitespace_trailing: glyph(&self.resolved_option::<WhitespaceTrailing>(buffer)),
-            whitespace_leading: glyph(&self.resolved_option::<WhitespaceLeading>(buffer)),
-            whitespace_space: glyph(&self.resolved_option::<WhitespaceSpace>(buffer)),
-            whitespace_eol: glyph(&self.resolved_option::<WhitespaceEol>(buffer)),
-        };
+        self.editor.rebuild_option_cache();
     }
 
-    /// Recompute the resolved-options cache for `buffer` by
-    /// stitching every layer of the resolution stack
-    /// (`mode-architecture.md` §6.1) and writing the result
-    /// into [`Self::resolved_options`].
-    ///
-    /// Layer ordering (highest priority first):
-    /// 1. Modal-state override -- M.7+ when modal-state-keyed
-    ///    options exist; today the layer is empty.
-    /// 2. Buffer-local explicit set
-    ///    ([`Self::buffer_local_overrides`] for this buffer).
-    /// 3. Active minor modes' contributions, in activation order.
-    /// 4. Active major mode's contributions.
-    /// 5. Global registry value (the canonical
-    ///    [`Self::config`] current value -- bootstrap layer).
-    /// 6. Built-in default (implicitly the registry's initial
-    ///    value before any `:set`).
-    ///
-    /// Eager whole-cache recompute (§6.3.1). For a buffer with
-    /// 10 active minor modes and ~30 options, the call is
-    /// ~3µs end-to-end. Within the §6.3.2 perf gate.
-    ///
-    /// Called whenever any resolution layer for `buffer`
-    /// changes: mode toggle (via `activate_*` /
-    /// `deactivate_*`), buffer-local set, modal-state
-    /// transition for modal-keyed options, or option write
-    /// (the cascade in `drain_option_changes` propagates global
-    /// `:set` writes to every buffer's cache).
+    /// Delegate to
+    /// [`lattice_host::editor::Editor::recompute_options_for_buffer`].
+    /// Phase 5.5.E.6 moved the body host-side; layer ordering and the
+    /// resolver walk are documented on the host method.
     pub fn recompute_options_for_buffer(&mut self, buffer: crate::buffers::BufferId) {
-        let mut resolved = lattice_config::ResolvedOptions::new();
-        // Layer 5/6: bootstrap with current registry values.
-        self.editor.config
-            .bootstrap_resolved_with_current_values(&mut resolved);
-
-        // Active modes (layers 4 + 3): walk in activation order
-        // for minors, prepend major. Pulled from
-        // `self.editor.active_modes[buffer]`; absent ⇒ empty (no major,
-        // no minors). M.3 lands the per-kind majors that
-        // populate this map at buffer creation.
-        let modes_snapshot = self.editor.active_modes.get(&buffer).cloned().unwrap_or_default();
-
-        let mut mode_contributions: Vec<lattice_config::OptionOverrideSet> =
-            Vec::with_capacity(modes_snapshot.minors().len() + 1);
-        // Major first (lower priority than minors per §6.1).
-        if let Some(major_id) = modes_snapshot.major()
-            && let Some(major) = self.editor.mode_registry.get(major_id)
-        {
-            mode_contributions.push(major.options());
-        }
-        // Minors in activation order.
-        for &minor_id in modes_snapshot.minors() {
-            if let Some(minor) = self.editor.mode_registry.get(minor_id) {
-                mode_contributions.push(minor.options());
-            }
-        }
-
-        // Buffer-local overrides (layer 2).
-        let buffer_local = self
-            .editor.buffer_local_overrides
-            .get(&buffer)
-            .cloned()
-            .unwrap_or_default();
-
-        // Layer order for the resolver: highest priority first.
-        // Modal-state layer (1) is empty for now; M.7 wires it.
-        let modal_layer = lattice_config::OptionOverrideSet::new();
-
-        // Build the layer iter. The resolver pulls in
-        // declaration order (highest first); we put modal
-        // first, then buffer-local, then the *reversed* mode
-        // contributions so the last-activated minor is highest
-        // in the layered walk (per §6.2 last-activated-wins
-        // for ties).
-        let mut layered: Vec<&lattice_config::OptionOverrideSet> = Vec::new();
-        layered.push(&modal_layer);
-        layered.push(&buffer_local);
-        for set in mode_contributions.iter().rev() {
-            layered.push(set);
-        }
-
-        let resolver = lattice_config::Resolver::new();
-        resolver.resolve_into(layered, &mut resolved);
-
-        self.editor.resolved_options.insert(buffer, resolved);
-        // M.4: keep `option_cache` in lockstep with the active
-        // buffer's resolved options so the renderer's hot-path
-        // accessors (`app.show_line_numbers()` etc.) reflect mode
-        // contributions for the buffer the user is looking at.
-        if buffer == self.editor.document_buffer_id {
-            self.rebuild_option_cache();
-        }
+        self.editor.recompute_options_for_buffer(buffer);
     }
 
     /// CSM.3 (insert-completion.md §12.4): recompute the
@@ -320,15 +199,10 @@ impl App {
             .insert(lattice_mode::ActiveCompletionSources(merged));
     }
 
-    /// Read a resolved option's value for `buffer`. Returns the
-    /// option's bootstrap default if the cache for `buffer`
-    /// hasn't been recomputed yet (transient state during boot
-    /// before the first `recompute_options_for_buffer`).
-    ///
-    /// Hot-path read; O(1) `TypeId` lookup on the cached
-    /// `ResolvedOptions`. The fallback to the registry's
-    /// current value covers the buffer-creation race window
-    /// before mode activation has triggered a recompute.
+    /// Delegate to [`lattice_host::editor::Editor::resolved_option`].
+    /// Phase 5.5.E.6 moved the body host-side; this wrapper keeps the
+    /// existing hot-path call sites (`app.show_line_numbers_for` etc.)
+    /// compiling against `&App` without a per-site rewrite.
     pub fn resolved_option<D: lattice_config::OptionDecl>(
         &self,
         buffer: crate::buffers::BufferId,
@@ -336,175 +210,39 @@ impl App {
     where
         D::Value: Clone + Send + Sync + 'static,
     {
-        if let Some(cache) = self.editor.resolved_options.get(&buffer)
-            && let Some(v) = cache.get::<D>()
-        {
-            return v;
-        }
-        self.editor.config.get_typed::<D>().expect("option not registered")
+        self.editor.resolved_option::<D>(buffer)
     }
 
+    /// Delegate to [`lattice_host::editor::Editor::do_set`]. Phase
+    /// 5.5.E.6 moved the cmdline-set body host-side; the host returns
+    /// the [`RendererSignal`] list its cascade enqueued and the
+    /// renderer fans them out through [`Self::handle_renderer_signal`].
+    /// The grammar's `Effect::SetOption` arm now routes through
+    /// [`lattice_host::dispatch::handle_effect`] directly; this
+    /// wrapper exists for `App::activate_mode_by_id` /
+    /// `App::deactivate_mode_by_id` which still call into it as part
+    /// of mode-lifecycle (deferred to 5.5.F).
     pub(super) fn do_set(&mut self, option: &str) {
-        let echo = match self.editor.config.parse_and_set_command(option) {
-            Ok(echo) => echo,
-            Err(err) => {
-                self.set_message(EchoLevel::Error, err.to_string());
-                return;
-            }
-        };
-        // Drain any cascade events the set just enqueued so the
-        // user sees the side effects (recompute folds, theme
-        // refresh, ...) before the next frame draws. The runtime's
-        // main_loop also drains once per iteration as a backstop
-        // for writes that originate outside the keystroke path
-        // (plugin tasks, future LSP-driven config writes).
-        self.drain_option_changes();
-        self.set_message(EchoLevel::Info, echo);
+        let signals = self.editor.do_set(option);
+        for sig in signals {
+            self.handle_renderer_signal(sig);
+        }
     }
 
-    /// Drain queued [`Event::OptionChanged`] events from the App's
-    /// own bus subscription and apply per-option cascades on the
-    /// App's main thread.
-    ///
+    /// Delegate to
+    /// [`lattice_host::editor::Editor::drain_option_changes`]. Phase
+    /// 5.5.E.6 moved the cascade body host-side; the host returns the
+    /// [`RendererSignal`] list its cascade enqueued and the renderer
+    /// fans them out through [`Self::handle_renderer_signal`].
     /// Why a channel and not a callback: typed-option writes can
     /// originate from anywhere -- the cmdline, plugin tasks
     /// (Phase 7), the customize buffer view (post-1.0), or future
-    /// LSP-driven config writes. The publisher closure on the
-    /// registry runs *on the calling thread*, which may not be
-    /// the App's. Routing every cascade through this channel
-    /// gives us:
-    ///
-    /// - **No re-entrancy on the registry mutex**: the cascade
-    ///   runs after the publish path drops every lock. A cascade
-    ///   that itself calls `config.set` (e.g. `relativenumber=true`
-    ///   ⇒ `number=true`) just queues another event -- the
-    ///   `while let Ok` loop picks it up on the next iteration.
-    /// - **No render-thread blocking**: drains happen at known
-    ///   points (top of main_loop iteration, end of `do_set`).
-    ///   Plugins doing heavy work in their own subscriptions
-    ///   never delay a keystroke.
-    /// - **One source of truth for the cascade logic**: any
-    ///   typed-option write goes through this hook regardless of
-    ///   how the write was triggered. Pre-bus the cascade lived
-    ///   on the cmdline path only and direct `config.set` calls
-    ///   silently skipped it.
-    ///
-    /// `Manual` foldmethod, no-op cascades, and unmatched options
-    /// all return early so the drain is cheap when nothing
-    /// substantive needs to happen.
+    /// LSP-driven config writes. Routing every cascade through this
+    /// channel keeps the per-option cascade off the publish thread.
     pub fn drain_option_changes(&mut self) {
-        // Take the receiver to dodge the borrow checker (we want
-        // to mutate `self` for cascades while reading from the rx).
-        // Always restored after the loop; the `Option` is purely a
-        // borrow gymnastic, never observed in any other state.
-        let mut rx = match self.editor.option_change_rx.take() {
-            Some(rx) => rx,
-            None => return,
-        };
-        while let Ok(event) = rx.try_recv() {
-            if let Event::OptionChanged { name, .. } = event {
-                self.apply_option_cascade(&name);
-            }
-        }
-        self.editor.option_change_rx = Some(rx);
-    }
-
-    /// Run the per-option cascade for `canonical_name` (already
-    /// resolved by `Event::OptionChanged.name`, which is always
-    /// the canonical name regardless of which alias the user
-    /// typed).
-    fn apply_option_cascade(&mut self, canonical_name: &str) {
-        // M.4: a global `:set` write updates the config layer
-        // (the lowest-priority resolver layer). Re-resolve the
-        // active buffer so its `ResolvedOptions` reflects the new
-        // value -- otherwise the cache rebuild below reads stale
-        // resolved data and the user-visible option doesn't
-        // change. Inactive buffers re-resolve lazily on their
-        // next `recompute_options_for_buffer` (mode toggle, etc.).
-        let active_id = self.editor.document_buffer_id;
-        self.recompute_options_for_buffer(active_id);
-        // Refresh the hot-path cache so subsequent reads from
-        // `app.show_line_numbers()` etc. see the new value.
-        // Cheap (~300ns total for all 9 options); only runs when
-        // an option actually changed, never on every frame.
-        // Note: `recompute_options_for_buffer` already calls
-        // `rebuild_option_cache` when `buffer == active`; this
-        // belt-and-braces call covers the bootstrap window.
-        self.rebuild_option_cache();
-        // M.7.1: declarative mode-mirror cascade. Each
-        // registered mode that declares `mirrors_option ==
-        // Some(canonical_name)` gets its active state synced to
-        // the option's new value. Replaces the hardcoded
-        // per-mode `match` branches that used to live here --
-        // adding a new display mode no longer requires touching
-        // this method.
-        self.mirror_option_to_modes(canonical_name);
-        match canonical_name {
-            "relativenumber" => {
-                // Vim cascade: `:set rnu` implies `:set nu` so the
-                // gutter renders at all. The reverse (`:set nornu`)
-                // does NOT clear `nu` -- preserves user intent.
-                if self.relative_line_numbers() {
-                    let _ = self.editor.config.set_typed::<lattice_config::Number>(true);
-                }
-            }
-            "foldmethod" => {
-                // Recompute folds against the new method. Idempotent
-                // and cheap when method is `Manual` (the recompute
-                // returns immediately).
-                self.recompute_folds();
-            }
-            "messages.filter" => {
-                // msg-mode.2: live-reload the `MessagesLayer`'s
-                // `EnvFilter` directive. Validator already
-                // rejected unparseable specs at `:set` time, so
-                // the typed value here is known good; the only
-                // way to hit `Err` is the test path where
-                // `install_messages_subscriber` wasn't called
-                // (no global subscriber to reload). Surface as
-                // a warn so users see the failure without
-                // panicking the editor.
-                let spec = self
-                    .editor.config
-                    .get_typed::<lattice_config::MessagesFilter>()
-                    .map(|v| (*v).clone())
-                    .unwrap_or_else(|| String::from("info"));
-                if let Err(e) = lattice_runtime::reload_messages_filter(&spec) {
-                    self.set_message(
-                        EchoLevel::Warn,
-                        format!("messages.filter reload skipped: {e}"),
-                    );
-                }
-            }
-            n if n.starts_with("ui.") => {
-                self.sync_theme_from_config();
-                if n == "ui.nerd_fonts" {
-                    // The file-tree rope embeds the icon glyphs, so
-                    // a palette flip must re-render every existing
-                    // tree. Oil rebuilds its rope without icons; its
-                    // renderer reads the toggle each frame and needs
-                    // no rope-side refresh.
-                    let nerd_fonts = self.theme.nerd_fonts;
-                    for id in self.editor.buffers.file_tree_ids() {
-                        self.set_file_tree_nerd_fonts(id, nerd_fonts);
-                    }
-                }
-            }
-            // 4.4.k: any change under `lsp.<server-id>.*` is a
-            // server-scoped config edit -- fan out
-            // `workspace/didChangeConfiguration` to every actor
-            // matching that server-id with the freshly merged
-            // `lsp.<server-id>` subtree. `lsp.<host-knob>` keys
-            // (e.g. `lsp.log_level`, `lsp.log_capacity`) have
-            // only one dot after `lsp` and stop here -- they
-            // configure the host, not any server, and shouldn't
-            // page every attached language server.
-            n => {
-                if let Some(server_id) = lsp_server_scope(n) {
-                    let server_id = server_id.to_string();
-                    self.fan_out_did_change_configuration(&server_id);
-                }
-            }
+        let signals = self.editor.drain_option_changes();
+        for sig in signals {
+            self.handle_renderer_signal(sig);
         }
     }
 
@@ -520,7 +258,7 @@ impl App {
     /// authority for the mode's active state, not the layered
     /// resolution. Non-bool options short-circuit at the
     /// `get_bool_by_name` step; the loop is a no-op.
-    fn mirror_option_to_modes(&mut self, canonical_name: &str) {
+    pub(super) fn mirror_option_to_modes(&mut self, canonical_name: &str) {
         let Some(on) = self.editor.config.get_bool_by_name(canonical_name) else {
             return;
         };
@@ -759,25 +497,9 @@ impl App {
     }
 }
 
-/// 4.4.k: returns `Some(server_id)` when `canonical_name`
-/// names a server-scoped config key (`lsp.<server_id>.<...>`),
-/// `None` otherwise. Used by [`App::apply_option_cascade`] to
-/// decide whether an option change should fan out
-/// `workspace/didChangeConfiguration` to a language server.
-///
-/// Single-dot `lsp.foo` keys are host-side (the `log_level` /
-/// `log_capacity` family); the spec is that we never page
-/// servers for host-side knob changes.
-pub(crate) fn lsp_server_scope(canonical_name: &str) -> Option<&str> {
-    let rest = canonical_name.strip_prefix("lsp.")?;
-    let dot = rest.find('.')?;
-    let server_id = &rest[..dot];
-    if server_id.is_empty() {
-        None
-    } else {
-        Some(server_id)
-    }
-}
+// Phase 5.5.E.6: 4.4.k `lsp_server_scope` relocated to
+// `lattice_host::dispatch::lsp_server_scope` alongside the migrated
+// `apply_option_cascade`. No App-side caller remains.
 
 /// Parse a `[completion.per-language.<lang>]` TOML sub-table
 /// into [`PerLanguageOverrides`]. Unknown keys + wrong-typed
@@ -844,35 +566,12 @@ mod tests {
     use lattice_grammar::ModalState;
     use lattice_protocol::Event;
 
-    // ---- 4.4.k: lsp_server_scope ----
-
-    /// 4.4.k: `lsp.<server>.<key>` returns the server-id;
-    /// anything shallower (`lsp.<host-knob>`) is host-side and
-    /// returns None. The host-side knobs (e.g. `lsp.log_level`)
-    /// must NOT trigger workspace/didChangeConfiguration, since
-    /// they configure the host's behaviour, not the server's.
-    #[test]
-    fn lsp_server_scope_picks_server_id_segment() {
-        use super::lsp_server_scope;
-        assert_eq!(
-            lsp_server_scope("lsp.rust-analyzer.checkOnSave"),
-            Some("rust-analyzer")
-        );
-        assert_eq!(
-            lsp_server_scope("lsp.gopls.completeUnimported"),
-            Some("gopls")
-        );
-        // Single-dot under lsp.* -> host knob, NOT a fan-out
-        // target.
-        assert_eq!(lsp_server_scope("lsp.log_level"), None);
-        assert_eq!(lsp_server_scope("lsp.log_capacity"), None);
-        // Non-lsp options are unaffected.
-        assert_eq!(lsp_server_scope("tabstop"), None);
-        assert_eq!(lsp_server_scope("ui.theme"), None);
-        // Empty server-id (`lsp..foo`) is rejected -- malformed
-        // config should never page a phantom server.
-        assert_eq!(lsp_server_scope("lsp..foo"), None);
-    }
+    // 4.4.k `lsp_server_scope` and its standalone unit test moved
+    // alongside the cascade in 5.5.E.6; coverage lives at
+    // `lattice_host::dispatch` (host-side scope) plus the end-to-end
+    // `fan_out_did_change_configuration` integration tests below
+    // (which exercise the lsp.<server>.* cascade through the
+    // RendererSignal::LspConfigChanged signal).
 
     // ---- Event::OptionChanged (DESIGN.md §5.10 + §5.12) ----
 
@@ -1003,7 +702,7 @@ mod tests {
     fn drain_option_changes_runs_ui_theme_sync_for_direct_writes() {
         let mut a = app_with("xx", 10);
         a.editor.config
-            .set_typed::<crate::tui_options::UiDimInactive>(false)
+            .set_typed::<lattice_host::ui::theme_options::UiDimInactive>(false)
             .unwrap();
         a.drain_option_changes();
         assert!(
@@ -1024,28 +723,28 @@ mod tests {
         let mut a = app_with("xx", 10);
         // Flip dim_inactive false.
         a.editor.config
-            .set_typed::<crate::tui_options::UiDimInactive>(false)
+            .set_typed::<lattice_host::ui::theme_options::UiDimInactive>(false)
             .unwrap();
         a.drain_option_changes();
         assert!(!a.editor.host_theme.dim_inactive_panes, "host: dim_inactive flipped");
         assert!(!a.theme.dim_inactive_panes, "tui: dim_inactive flipped");
         // Flip nerd_fonts on.
         a.editor.config
-            .set_typed::<crate::tui_options::UiNerdFonts>(true)
+            .set_typed::<lattice_host::ui::theme_options::UiNerdFonts>(true)
             .unwrap();
         a.drain_option_changes();
         assert!(a.editor.host_theme.nerd_fonts);
         assert!(a.theme.nerd_fonts);
         // Change separator glyph.
         a.editor.config
-            .set_typed::<crate::tui_options::UiSeparator>("┃".to_string())
+            .set_typed::<lattice_host::ui::theme_options::UiSeparator>("┃".to_string())
             .unwrap();
         a.drain_option_changes();
         assert_eq!(a.editor.host_theme.pane_separator_vertical, '┃');
         assert_eq!(a.theme.pane_separator_vertical, '┃');
         // Change separator color (named).
         a.editor.config
-            .set_typed::<crate::tui_options::UiSeparatorColor>("red".to_string())
+            .set_typed::<lattice_host::ui::theme_options::UiSeparatorColor>("red".to_string())
             .unwrap();
         a.drain_option_changes();
         use lattice_host::ui::theme as ht;

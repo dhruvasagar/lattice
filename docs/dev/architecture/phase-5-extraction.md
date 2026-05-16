@@ -307,18 +307,13 @@ This pattern -- "host owns the canonical neutral state; each renderer owns a cac
 | 5.B.C4b/c | `db31aeb` | `document` + `snapshot_cache` → `Editor`. Removed duplicate `CompletionState` in `host::state`; dropped `Editor::Default` panic placeholder; fields initialised in `boot`. |
 | 5.B.C4 final | `c57346c` | `folds` → `Editor`; render/highlights updated; popup construction begins consuming host `PopupSnapshot`. |
 | 5.B.C5 | `e51b4ed` + `2e3af79` + `be5c1d0` + `3465f6f` + `9401d4e` | `LspFileWatcher` type moved to host; ui-tui holds the optional host watcher; refresh/drain wired through host impl. Workspace green; final LSP/document/folds redirects landed. |
+| 5.B.20 | `f99af23` | **Completion cluster tail + popup back-stack.** `insert_completion`, `snippet_registry`, `insert_completion_snippet_meta`, `completion_accept_freq`, `per_language_completion`, `completion_in_path_context`, `active_snippet`, `snippet_dirs`, `popup_back_stack`, and `pending_config_structural_sections` move to `Editor`. `SnippetCandidateMeta` moves from `lattice-ui-tui::app` to `lattice-host::state`; ui-tui re-exports. **5.B endpoint reached:** `App` now holds `{editor, pane_render_registry, theme, lsp_file_watcher}` — four fields. 1424 ui-tui + 177 host + 180 lsp = 1781 tests, identical to the pre-5.B baseline. |
 
-**Total moved from `lattice-ui-tui`:** ~24k LoC (post-5.B). `App` is now 4,151 LoC (down from ~6k pre-5.B); `lattice_host::editor::Editor` is 738 LoC and growing. **Test count:** workspace green throughout 5.B; per-crate counts not re-baselined post-C5 — capture before closing out 5.B properly.
+**Total moved from `lattice-ui-tui`:** ~24k LoC (post-5.B). `App` is now 4,040 LoC (down from ~6k pre-5.B); `lattice_host::editor::Editor` is 822 LoC. **Test count:** 1424 ui-tui + 177 host + 180 lsp = 1781 passing; workspace green throughout 5.B.
 
 ## Remaining work
 
-**5.B is substantively complete in code** (composition migration, clusters 1–12 from [`phase-5b-app-design.md`](phase-5b-app-design.md)). What still keeps it from being closed out:
-
-- **Completion cluster (#8) — partial.** `CompletionState` and `completion_registry` migrated in C1, but `insert_completion`, `snippet_registry`, `insert_completion_snippet_meta`, `completion_accept_freq`, `per_language_completion`, `completion_in_path_context`, `active_snippet`, and `snippet_dirs` still live on `App`. They are renderer-agnostic and belong on `Editor`.
-- **Popup cluster (#7) — final tail.** `popup_back_stack` still on `App` (the "3 of 4" caveat from 5.B.10 + C3); `PopupSnapshot` is now host-typed, so the move is mechanical.
-- **Stragglers.** `pending_config_structural_sections` (config-cluster late arrival) is on `App`; should migrate alongside the completion finish.
-
-After those land, `App`'s field set reduces to: `editor`, `theme`, `pane_render_registry`, `lsp_file_watcher` (the optional renderer-side watcher wrapper around the host type). The first three are genuinely renderer-specific; the fourth is the host-typed watcher held by name on the renderer struct (revisit if it should fully migrate during 5.5).
+**5.B is done** ([`phase-5b-app-design.md`](phase-5b-app-design.md) Option-E composition migration). Clusters 1–12 plus the C-wave landed in 5.B.4 → 5.B.19 + C1–C5, and the final tail (completion cluster #8 remainder + popup back-stack + `pending_config_structural_sections`) closed out in 5.B.20. `App` is now four fields: `editor`, `pane_render_registry`, `theme`, `lsp_file_watcher`. The first three are the renderer-specific shape this doc committed to; the fourth wraps a host-typed watcher (revisit during 5.5 if it should disappear behind the renderer trait).
 
 **Approach: composition (Option E from [`phase-5b-app-design.md`](phase-5b-app-design.md)).** Option D (`App<R: Renderer>` parametrised over a host-side trait) was attempted in 5.B.2 and reverted in 5.B.3 once the Rust orphan rule made every renderer-specific method either (a) require a single mega-commit moving 35k LoC, or (b) require lifelong extension-trait machinery. Option E (composition) achieves the same separation more cleanly:
 

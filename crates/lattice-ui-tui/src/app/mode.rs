@@ -32,7 +32,7 @@
 //! `crate::modes`.
 
 use lattice_grammar::ModalState;
-use lattice_mode::{CapabilitySet, ModeEvent, ModeId, ModeKind};
+use lattice_mode::{ModeEvent, ModeId};
 use lattice_protocol::Event;
 
 use super::{App, BufferId, BufferKind, EchoLevel};
@@ -192,29 +192,20 @@ impl App {
     /// local variables" footgun is what we're avoiding. If a
     /// user wants `lsp-mode` off after a major change, they run
     /// `:lsp-mode` to toggle.
+    /// 5.5.F.5.2: see [`lattice_host::dispatch::Editor::maybe_auto_activate_lsp_mode`].
+    /// Wrapper fans host-returned `RendererSignal`s through
+    /// [`Self::handle_renderer_signal`].
     pub(super) fn maybe_auto_activate_lsp_mode(&mut self, buffer_id: BufferId) {
-        if self.editor.lsp_mode_enabled_for(buffer_id) {
-            return;
+        let signals = self.editor.maybe_auto_activate_lsp_mode(buffer_id);
+        for sig in signals {
+            self.handle_renderer_signal(sig);
         }
-        let path = match self.editor.path_for_buffer(buffer_id) {
-            Some(p) => p,
-            // Scratch buffers with no path can still host LSP
-            // (standalone-server scenarios), but only when the
-            // user explicitly runs `:lsp-mode`. Auto-activation
-            // is path-driven.
-            None => return,
-        };
-        if !self.editor.lsp.has_server_for_path(&path) {
-            return;
-        }
-        self.activate_mode_by_id(buffer_id, lattice_lsp::modes::LspMode::mode_id());
     }
 
-    /// 5.5.F.5.1: see [`lattice_host::dispatch::Editor::path_for_buffer`].
-    #[allow(dead_code)]
-    fn path_for_buffer(&self, buffer_id: BufferId) -> Option<std::path::PathBuf> {
-        self.editor.path_for_buffer(buffer_id)
-    }
+    // 5.5.F.5.1/F.5.2: `path_for_buffer` relocated to
+    // [`lattice_host::dispatch::Editor::path_for_buffer`]; the App-
+    // side wrapper deletes entirely because the sole prod caller
+    // (`maybe_auto_activate_lsp_mode`) migrated host-side in F.5.2.
 
     /// M.5.1: programmatic activation of `mode_id` on `buffer_id`.
     /// Used by hooks (auto-activation on `MajorEntered` etc.) and
@@ -226,74 +217,14 @@ impl App {
     /// On failure, surfaces an `EchoLevel::Warn` and returns
     /// without mutating state. Callers that need to know the
     /// outcome can read `self.editor.active_modes[buffer_id]` after.
+    /// 5.5.F.5.2: see [`lattice_host::dispatch::Editor::activate_mode_by_id`].
+    /// Wrapper fans host-returned `RendererSignal`s through
+    /// [`Self::handle_renderer_signal`].
     pub fn activate_mode_by_id(&mut self, buffer_id: BufferId, mode_id: ModeId) {
-        let Some(mode) = self.editor.mode_registry.get(mode_id) else {
-            self.set_message(
-                EchoLevel::Warn,
-                format!("mode: `{mode_id}` is not registered"),
-            );
-            return;
-        };
-        let kind = mode.kind();
-        let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
-        let mut active = self.editor.active_modes.remove(&buffer_id).unwrap_or_default();
-        let result = match kind {
-            ModeKind::Major => self.editor.mode_registry.activate_major(
-                &mut active,
-                &self.editor.mode_guards,
-                &self.editor.config,
-                &self.editor.event_bus,
-                &self.editor.services,
-                proto_id,
-                mode_id,
-                CapabilitySet::empty(),
-            ),
-            ModeKind::Minor => self.editor.mode_registry.activate_minor(
-                &mut active,
-                &self.editor.mode_guards,
-                &self.editor.config,
-                &self.editor.event_bus,
-                &self.editor.services,
-                proto_id,
-                mode_id,
-                CapabilitySet::empty(),
-            ),
-        };
-        if let Err(e) = result {
-            self.set_message(
-                EchoLevel::Warn,
-                format!(
-                    "mode: activate({mode_id}) for buffer {} failed: {e}",
-                    buffer_id.0
-                ),
-            );
+        let signals = self.editor.activate_mode_by_id(buffer_id, mode_id);
+        for sig in signals {
+            self.handle_renderer_signal(sig);
         }
-        self.editor.active_modes.insert(buffer_id, active);
-        self.recompute_options_for_buffer(buffer_id);
-        self.recompute_active_completion_sources_for(buffer_id);
-        // M.5.2: when a major activates (whether by direct call,
-        // `:<major-name>` toggle, or buffer-creation path), run
-        // the LSP auto-activation hook. Skipped for minor
-        // activations -- if `lsp-mode` is the one being
-        // activated, the hook would just no-op (already-active
-        // short-circuit).
-        if matches!(kind, ModeKind::Major) {
-            self.maybe_auto_activate_lsp_mode(buffer_id);
-        }
-        // Phase 3: the `lsp-mode` activate side-effects --
-        // `LspBufferAttached` event publication (Phase 2)
-        // and sub-mode cascade (Phase 3 -- now driven by
-        // `Mode::implies()` so the registry handles it) --
-        // are owned by the mode. No App-side hook here.
-        // Modes that mutated options in their `on_activate`
-        // (e.g. `lsp-folding-mode` swapping `foldmethod=lsp`)
-        // have already published `OptionChanged` events into
-        // the typed-options channel. Drain here so the
-        // side-effect cascade (option cache recompute,
-        // `recompute_folds` for foldmethod, theme refresh for
-        // `ui.*`, ...) runs synchronously before the caller
-        // observes the post-activation state.
-        self.drain_option_changes();
     }
 
     /// M.5.1: programmatic deactivation of `mode_id` on
@@ -302,57 +233,14 @@ impl App {
     /// until the next activation; user-facing flows usually flow
     /// through the toggle command which performs swap rather
     /// than a bare deactivate.
+    /// 5.5.F.5.2: see [`lattice_host::dispatch::Editor::deactivate_mode_by_id`].
+    /// Wrapper fans host-returned `RendererSignal`s through
+    /// [`Self::handle_renderer_signal`].
     pub fn deactivate_mode_by_id(&mut self, buffer_id: BufferId, mode_id: ModeId) {
-        let Some(mode) = self.editor.mode_registry.get(mode_id) else {
-            self.set_message(
-                EchoLevel::Warn,
-                format!("mode: `{mode_id}` is not registered"),
-            );
-            return;
-        };
-        let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
-        let mut active = self.editor.active_modes.remove(&buffer_id).unwrap_or_default();
-        let result = match mode.kind() {
-            ModeKind::Major => self.editor.mode_registry.deactivate_major(
-                &mut active,
-                &self.editor.mode_guards,
-                &self.editor.event_bus,
-                proto_id,
-            ),
-            ModeKind::Minor => self.editor.mode_registry.deactivate_minor(
-                &mut active,
-                &self.editor.mode_guards,
-                &self.editor.event_bus,
-                proto_id,
-                mode_id,
-            ),
-        };
-        if let Err(e) = result {
-            self.set_message(
-                EchoLevel::Warn,
-                format!(
-                    "mode: deactivate({mode_id}) for buffer {} failed: {e}",
-                    buffer_id.0
-                ),
-            );
+        let signals = self.editor.deactivate_mode_by_id(buffer_id, mode_id);
+        for sig in signals {
+            self.handle_renderer_signal(sig);
         }
-        self.editor.active_modes.insert(buffer_id, active);
-        self.recompute_options_for_buffer(buffer_id);
-        self.recompute_active_completion_sources_for(buffer_id);
-        // Phase 3 + follow-up: `lsp-mode` deactivate side-
-        // effects are fully owned by the mode. `LspBufferDetached`
-        // is published from `LspMode::on_deactivate` via
-        // `ctx.events()` (Phase 2); the App's per-tick drain
-        // (`drain_lsp_detach_events`, wired in `runtime.rs`)
-        // subscribes to that event at boot and calls
-        // `lsp_close_buffer` for each detach. No App-side
-        // hook here.
-        // Symmetric to `activate_mode_by_id`: drain option
-        // mutations the mode emitted in its `on_deactivate`
-        // (e.g. `lsp-folding-mode` restoring the prior
-        // `foldmethod`) so the side-effect cascade runs
-        // before the caller observes the state.
-        self.drain_option_changes();
     }
 
     /// M.5.3: lsp-mode activated on `buffer_id`. Emits
@@ -413,28 +301,13 @@ impl App {
     /// untouched across the swap (their state lives in
     /// type-keyed `BufferLocals` owned per-mode; no
     /// `kill-all-local-variables` semantics).
+    /// 5.5.F.5.2: see [`lattice_host::dispatch::Editor::toggle_mode_by_name`].
+    /// Wrapper fans host-returned `RendererSignal`s through
+    /// [`Self::handle_renderer_signal`].
     pub fn toggle_mode_by_name(&mut self, name: &str) {
-        let mode_id = ModeId::new(name);
-        let buffer_id = self.active_pane_buffer_id();
-        let Some(mode) = self.editor.mode_registry.get(mode_id) else {
-            self.set_message(
-                EchoLevel::Error,
-                format!("mode: `{name}` is not a registered mode"),
-            );
-            return;
-        };
-        let active_now = self
-            .editor.active_modes
-            .get(&buffer_id)
-            .map(|m| m.is_active(mode_id))
-            .unwrap_or(false);
-        match (mode.kind(), active_now) {
-            (ModeKind::Minor, true) => self.deactivate_mode_by_id(buffer_id, mode_id),
-            (ModeKind::Minor, false) => self.activate_mode_by_id(buffer_id, mode_id),
-            // Major: activating an inactive major swaps it in;
-            // re-activating the current major reloads (registry
-            // contract). Either way the call is the same.
-            (ModeKind::Major, _) => self.activate_mode_by_id(buffer_id, mode_id),
+        let signals = self.editor.toggle_mode_by_name(name);
+        for sig in signals {
+            self.handle_renderer_signal(sig);
         }
     }
 

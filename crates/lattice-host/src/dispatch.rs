@@ -1021,6 +1021,210 @@ impl Editor {
         self.buffers.document_path(buffer_id)
     }
 
+    /// 5.5.F.5.2 (M.5.1): programmatic activation of `mode_id` on
+    /// `buffer_id`. Used by hooks (auto-activation on `MajorEntered`
+    /// etc.) and by the auto-generated `:<mode-name>` toggle command.
+    /// The registry decides Major-vs-Minor and runs the appropriate
+    /// activation; for majors the previous major is deactivated first.
+    ///
+    /// On failure, surfaces an `EchoLevel::Warn` and returns without
+    /// mutating state.
+    ///
+    /// Returns the `RendererSignal` list its option-cascade drain
+    /// enqueued (a typed-option write inside the mode's `on_activate`
+    /// hook can fan out a renderer-coupled tail; e.g. `lsp-folding-mode`
+    /// swapping `foldmethod=lsp`). Callers fan via the renderer
+    /// signal-pipe.
+    #[must_use]
+    pub fn activate_mode_by_id(
+        &mut self,
+        buffer_id: BufferId,
+        mode_id: lattice_mode::ModeId,
+    ) -> Vec<RendererSignal> {
+        let Some(mode) = self.mode_registry.get(mode_id) else {
+            self.set_message(
+                EchoLevel::Warn,
+                format!("mode: `{mode_id}` is not registered"),
+            );
+            return Vec::new();
+        };
+        let kind = mode.kind();
+        let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
+        let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
+        let result = match kind {
+            lattice_mode::ModeKind::Major => self.mode_registry.activate_major(
+                &mut active,
+                &self.mode_guards,
+                &self.config,
+                &self.event_bus,
+                &self.services,
+                proto_id,
+                mode_id,
+                lattice_mode::CapabilitySet::empty(),
+            ),
+            lattice_mode::ModeKind::Minor => self.mode_registry.activate_minor(
+                &mut active,
+                &self.mode_guards,
+                &self.config,
+                &self.event_bus,
+                &self.services,
+                proto_id,
+                mode_id,
+                lattice_mode::CapabilitySet::empty(),
+            ),
+        };
+        if let Err(e) = result {
+            self.set_message(
+                EchoLevel::Warn,
+                format!(
+                    "mode: activate({mode_id}) for buffer {} failed: {e}",
+                    buffer_id.0
+                ),
+            );
+        }
+        self.active_modes.insert(buffer_id, active);
+        self.recompute_options_for_buffer(buffer_id);
+        self.recompute_active_completion_sources_for(buffer_id);
+        // M.5.2: when a major activates (whether by direct call,
+        // `:<major-name>` toggle, or buffer-creation path), run the
+        // LSP auto-activation hook. Skipped for minor activations --
+        // if `lsp-mode` is the one being activated, the hook would
+        // just no-op (already-active short-circuit).
+        let auto_lsp_signals = if matches!(kind, lattice_mode::ModeKind::Major) {
+            self.maybe_auto_activate_lsp_mode(buffer_id)
+        } else {
+            Vec::new()
+        };
+        // Drain any option mutations the mode emitted in its
+        // `on_activate` so the side-effect cascade (option cache
+        // recompute, `recompute_folds` for foldmethod, theme refresh
+        // for `ui.*`, ...) runs synchronously before the caller
+        // observes the post-activation state.
+        let mut signals = self.drain_option_changes();
+        signals.extend(auto_lsp_signals);
+        signals
+    }
+
+    /// 5.5.F.5.2 (M.5.1): programmatic deactivation of `mode_id` on
+    /// `buffer_id`. Symmetric to [`Self::activate_mode_by_id`]; same
+    /// signal-return shape.
+    #[must_use]
+    pub fn deactivate_mode_by_id(
+        &mut self,
+        buffer_id: BufferId,
+        mode_id: lattice_mode::ModeId,
+    ) -> Vec<RendererSignal> {
+        let Some(mode) = self.mode_registry.get(mode_id) else {
+            self.set_message(
+                EchoLevel::Warn,
+                format!("mode: `{mode_id}` is not registered"),
+            );
+            return Vec::new();
+        };
+        let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
+        let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
+        let result = match mode.kind() {
+            lattice_mode::ModeKind::Major => self.mode_registry.deactivate_major(
+                &mut active,
+                &self.mode_guards,
+                &self.event_bus,
+                proto_id,
+            ),
+            lattice_mode::ModeKind::Minor => self.mode_registry.deactivate_minor(
+                &mut active,
+                &self.mode_guards,
+                &self.event_bus,
+                proto_id,
+                mode_id,
+            ),
+        };
+        if let Err(e) = result {
+            self.set_message(
+                EchoLevel::Warn,
+                format!(
+                    "mode: deactivate({mode_id}) for buffer {} failed: {e}",
+                    buffer_id.0
+                ),
+            );
+        }
+        self.active_modes.insert(buffer_id, active);
+        self.recompute_options_for_buffer(buffer_id);
+        self.recompute_active_completion_sources_for(buffer_id);
+        // Symmetric to `activate_mode_by_id`: drain option mutations
+        // the mode emitted in its `on_deactivate` (e.g.
+        // `lsp-folding-mode` restoring the prior `foldmethod`) so
+        // the side-effect cascade runs before the caller observes
+        // the state.
+        self.drain_option_changes()
+    }
+
+    /// 5.5.F.5.2 (M.5.2): language-mode auto-activation hook for
+    /// `lsp-mode`. Runs after a major activates; when the active
+    /// buffer's path has a server configured in the LSP registry and
+    /// `lsp-mode` isn't already active, activate it.
+    ///
+    /// **Asymmetry by design (mode-architecture §M.5):** there is no
+    /// auto-deactivation hook on `MajorExited`. Active minors stay
+    /// across major-mode swaps -- emacs's "kill all local variables"
+    /// footgun is what we're avoiding.
+    #[must_use]
+    pub fn maybe_auto_activate_lsp_mode(&mut self, buffer_id: BufferId) -> Vec<RendererSignal> {
+        if self.lsp_mode_enabled_for(buffer_id) {
+            return Vec::new();
+        }
+        let Some(path) = self.path_for_buffer(buffer_id) else {
+            // Scratch buffers with no path can still host LSP
+            // (standalone-server scenarios), but only when the user
+            // explicitly runs `:lsp-mode`. Auto-activation is
+            // path-driven.
+            return Vec::new();
+        };
+        if !self.lsp.has_server_for_path(&path) {
+            return Vec::new();
+        }
+        self.activate_mode_by_id(buffer_id, lattice_lsp::modes::LspMode::mode_id())
+    }
+
+    /// 5.5.F.5.2 (M.5.1): toggle a mode by name on the active pane's
+    /// buffer. Apply-fn target for the auto-generated `:<mode-name>`
+    /// ex-commands (mode-architecture §9.6.1).
+    ///
+    /// - **Minor**: deactivate if active; activate if inactive.
+    /// - **Major**: activate if not currently the major; if it's
+    ///   already the active major, the registry treats this as a
+    ///   *reload* (deactivate then re-activate, per §9.6).
+    #[must_use]
+    pub fn toggle_mode_by_name(&mut self, name: &str) -> Vec<RendererSignal> {
+        let mode_id = lattice_mode::ModeId::new(name);
+        let buffer_id = self.active_pane_buffer_id();
+        let Some(mode) = self.mode_registry.get(mode_id) else {
+            self.set_message(
+                EchoLevel::Error,
+                format!("mode: `{name}` is not a registered mode"),
+            );
+            return Vec::new();
+        };
+        let active_now = self
+            .active_modes
+            .get(&buffer_id)
+            .map(|m| m.is_active(mode_id))
+            .unwrap_or(false);
+        match (mode.kind(), active_now) {
+            (lattice_mode::ModeKind::Minor, true) => {
+                self.deactivate_mode_by_id(buffer_id, mode_id)
+            }
+            (lattice_mode::ModeKind::Minor, false) => {
+                self.activate_mode_by_id(buffer_id, mode_id)
+            }
+            // Major: activating an inactive major swaps it in;
+            // re-activating the current major reloads (registry
+            // contract). Either way the call is the same.
+            (lattice_mode::ModeKind::Major, _) => {
+                self.activate_mode_by_id(buffer_id, mode_id)
+            }
+        }
+    }
+
     /// `:set foldmethod=...` -- the option-cache hot-path read.
     pub fn foldmethod(&self) -> FoldMethod {
         self.option_cache.foldmethod

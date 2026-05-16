@@ -179,7 +179,17 @@ impl App {
             | Action::OpenLineAbove
             | Action::OverwriteChar(_)
             | Action::ReplaceUndoLast
-            | Action::DeleteCharBackward => {}
+            | Action::DeleteCharBackward
+            // 5.5.G.4: pure-editor scroll / viewport / page / bracket
+            // / redraw arms migrated to `Editor::dispatch`.
+            | Action::JumpViewport(_)
+            | Action::ScrollCursorTo(_)
+            | Action::PageDown
+            | Action::PageUp
+            | Action::ScrollLineUp
+            | Action::ScrollLineDown
+            | Action::MatchBracket
+            | Action::RedrawScreen => {}
             Action::Invoke(inv) => self.run_invocation(inv),
             Action::Insert(s) => self.do_insert_text(&s),
             // 5.5.G.3: `DeleteCharBackward`, `EnterAppend`,
@@ -314,7 +324,7 @@ impl App {
             // migrated to `Editor::dispatch`; routed through the
             // grouped no-op above.
             Action::SearchWordUnderCursor(direction) => self.do_search_word_under_cursor(direction),
-            Action::MatchBracket => self.do_match_bracket(),
+            // 5.5.G.4: `MatchBracket` migrated to `Editor::dispatch`.
             // 5.5.G.3: `ToggleCaseAtCursor` / `JoinLines` migrated
             // to `Editor::dispatch`.
             Action::FindRepeat { reverse } => self.do_find_repeat(reverse),
@@ -373,7 +383,7 @@ impl App {
             Action::LspWorkspaceSymbolRequest(q) => self.do_lsp_workspace_symbol_request(&q),
             Action::JumpHistoryBack => self.do_jump_history(-1),
             Action::JumpHistoryForward => self.do_jump_history(1),
-            Action::RedrawScreen => self.do_redraw_screen(),
+            // 5.5.G.4: `RedrawScreen` migrated to `Editor::dispatch`.
             Action::WalkMarkHistoryBack => self.do_mark_history(-1),
             Action::WalkMarkHistoryForward => self.do_mark_history(1),
 
@@ -393,12 +403,8 @@ impl App {
 
             // 5.5.G.3: `OverwriteChar` / `ReplaceUndoLast` migrated
             // to `Editor::dispatch`.
-            Action::JumpViewport(vp) => self.do_jump_viewport(vp),
-            Action::ScrollCursorTo(sp) => self.do_scroll_cursor_to(sp),
-            Action::PageDown => self.do_page(true),
-            Action::PageUp => self.do_page(false),
-            Action::ScrollLineUp => self.do_scroll_line(false),
-            Action::ScrollLineDown => self.do_scroll_line(true),
+            // 5.5.G.4: `JumpViewport` / `ScrollCursorTo` / `PageDown`
+            // / `PageUp` / `ScrollLineUp` / `ScrollLineDown` migrated.
 
             // 5.5.G.2: `SetMark` migrated to `Editor::dispatch`.
             Action::JumpToMarkLine(name) => self.do_jump_mark(name, false),

@@ -171,20 +171,13 @@ impl App {
         self.editor.cursor = Position::new(snapped, byte);
     }
 
-    /// Open every closed fold whose range contains the current cursor
-    /// line. Called by jump-class motions (search hits, gg / G,
-    /// marks, Ctrl-O / Ctrl-I, `%`) so the cursor never lands inside
-    /// a hidden region.
+    /// 5.5.G.4: body migrated to
+    /// [`lattice_host::dispatch::Editor::auto_open_folds_at_cursor`].
+    /// Retained as a delegate because 7 ui-tui call sites
+    /// (search.rs, motions.rs, dispatch.rs) still invoke it; the
+    /// delegate retires when those call sites migrate.
     pub fn auto_open_folds_at_cursor(&mut self) {
-        if !self.foldenable() {
-            return;
-        }
-        let line = self.editor.cursor.line;
-        for fold in self.editor.folds.iter_mut() {
-            if fold.closed && line >= fold.start_line && line <= fold.end_line {
-                fold.closed = false;
-            }
-        }
+        self.editor.auto_open_folds_at_cursor();
     }
 }
 

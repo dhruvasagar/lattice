@@ -522,6 +522,16 @@ pub(crate) fn handle_action(
         Action::OverwriteChar(c) => editor.do_overwrite_char(c),
         Action::ReplaceUndoLast => editor.do_replace_undo_last(),
         Action::DeleteCharBackward => editor.do_delete_char_backward(),
+        // 5.5.G.4: pure-editor scroll / viewport / page / bracket
+        // / redraw arms. Bodies migrated to [`Editor`].
+        Action::JumpViewport(vp) => editor.do_jump_viewport(vp),
+        Action::ScrollCursorTo(sp) => editor.do_scroll_cursor_to(sp),
+        Action::PageDown => editor.do_page(true),
+        Action::PageUp => editor.do_page(false),
+        Action::ScrollLineUp => editor.do_scroll_line(false),
+        Action::ScrollLineDown => editor.do_scroll_line(true),
+        Action::MatchBracket => editor.do_match_bracket(),
+        Action::RedrawScreen => editor.do_redraw_screen(),
         // Catch-all: any Action variant not yet migrated from
         // App::apply. Sub-slices 5.5.D+ extend the match upward as
         // helpers move.
@@ -2763,6 +2773,217 @@ fn previous_position(
         lattice_protocol::position::Position::new(prev_line, buf.line_byte_len(prev_line))
     } else {
         p
+    }
+}
+
+/// 5.5.G.4: pure-editor scroll / page / viewport / bracket /
+/// redraw helpers.
+impl Editor {
+    /// Open every closed fold whose range contains the current
+    /// cursor line. Called by jump-class motions so the cursor
+    /// never lands inside a hidden region.
+    pub fn auto_open_folds_at_cursor(&mut self) {
+        if !self.option_cache.foldenable {
+            return;
+        }
+        let line = self.cursor.line;
+        for fold in self.folds.iter_mut() {
+            if fold.closed && line >= fold.start_line && line <= fold.end_line {
+                fold.closed = false;
+            }
+        }
+    }
+
+    /// Vim's `H` (Top) / `M` (Middle) / `L` (Bottom) -- jump the
+    /// cursor to a viewport-relative line.
+    pub fn do_jump_viewport(&mut self, vpos: lattice_grammar::ViewportPos) {
+        let height = self.viewport_height.max(1);
+        let line = match vpos {
+            lattice_grammar::ViewportPos::Top => self.scroll,
+            lattice_grammar::ViewportPos::Middle => self.scroll + height / 2,
+            lattice_grammar::ViewportPos::Bottom => {
+                self.scroll + height.saturating_sub(1)
+            }
+        };
+        let buffer = self.active_text();
+        let last = last_addressable_line(&buffer);
+        let line = line.min(last);
+        let len = buffer.line_byte_len(line);
+        let byte = self.cursor.byte.min(len);
+        self.cursor = lattice_protocol::position::Position::new(line, byte);
+        if matches!(self.active_buffer, BufferKind::Document) {
+            self.auto_open_folds_at_cursor();
+        }
+    }
+
+    /// Vim's `zt` / `zz` / `zb` -- adjust scroll so the cursor
+    /// lands at the requested viewport row; cursor doesn't move.
+    pub fn do_scroll_cursor_to(&mut self, spos: lattice_grammar::ScrollPos) {
+        let height = self.viewport_height.max(1);
+        self.scroll = match spos {
+            lattice_grammar::ScrollPos::Top => self.cursor.line,
+            lattice_grammar::ScrollPos::Center => {
+                self.cursor.line.saturating_sub(height / 2)
+            }
+            lattice_grammar::ScrollPos::Bottom => self
+                .cursor
+                .line
+                .saturating_sub(height.saturating_sub(1)),
+        };
+    }
+
+    /// Vim's `<C-f>` (down) / `<C-b>` (up) -- step cursor by
+    /// viewport_height-2 lines with a 1-line overlap; scroll is
+    /// reconciled by `ensure_cursor_visible` at the tail of apply.
+    pub fn do_page(&mut self, down: bool) {
+        let height = self.viewport_height.max(1);
+        let step = height.saturating_sub(2).max(1);
+        let buffer = self.active_text();
+        let last = last_addressable_line(&buffer);
+        let new_line = if down {
+            self.cursor.line.saturating_add(step).min(last)
+        } else {
+            self.cursor.line.saturating_sub(step)
+        };
+        let len = buffer.line_byte_len(new_line);
+        let byte = self.cursor.byte.min(len);
+        self.cursor = lattice_protocol::position::Position::new(new_line, byte);
+    }
+
+    /// Vim's `<C-e>` (down) / `<C-y>` (up) -- scroll one line.
+    /// Cursor follows so it stays on-screen.
+    pub fn do_scroll_line(&mut self, down: bool) {
+        let height = self.viewport_height.max(1);
+        let buffer = self.active_text();
+        if down {
+            let last = last_addressable_line(&buffer);
+            self.scroll = self.scroll.saturating_add(1).min(last);
+            if self.cursor.line < self.scroll {
+                self.cursor.line = self.scroll;
+            }
+        } else {
+            self.scroll = self.scroll.saturating_sub(1);
+            let bottom = self.scroll + height.saturating_sub(1);
+            if self.cursor.line > bottom {
+                self.cursor.line = bottom;
+            }
+        }
+        let len = buffer.line_byte_len(self.cursor.line);
+        if self.cursor.byte > len {
+            self.cursor.byte = len;
+        }
+    }
+
+    /// Vim's `%` -- jump to the matching bracket. Scans the
+    /// current line from `cursor.byte` for the first
+    /// `()[]{}` and jumps to its match.
+    pub fn do_match_bracket(&mut self) {
+        let text = self.document.text();
+        let bytes = text.as_bytes();
+        let cursor_byte = match self
+            .document
+            .snapshot()
+            .buffer
+            .position_to_byte(self.cursor)
+        {
+            Ok(b) => b,
+            Err(_) => return,
+        };
+        let mut idx = cursor_byte;
+        let mut bracket = None;
+        while idx < bytes.len() && bytes[idx] != b'\n' {
+            if matches!(bytes[idx], b'(' | b')' | b'[' | b']' | b'{' | b'}') {
+                bracket = Some((idx, bytes[idx]));
+                break;
+            }
+            idx += 1;
+        }
+        let Some((start, b)) = bracket else {
+            self.set_message(EchoLevel::Error, "no bracket on this line".to_string());
+            return;
+        };
+        let (open, close, forward) = match b {
+            b'(' => (b'(', b')', true),
+            b')' => (b'(', b')', false),
+            b'[' => (b'[', b']', true),
+            b']' => (b'[', b']', false),
+            b'{' => (b'{', b'}', true),
+            b'}' => (b'{', b'}', false),
+            _ => return,
+        };
+        let pre_jump = self.cursor;
+        let target = if forward {
+            scan_forward_for_match(bytes, start, open, close)
+        } else {
+            scan_backward_for_match(bytes, start, open, close)
+        };
+        match target {
+            Some(t) => {
+                if let Ok(pos) = self.document.snapshot().buffer.byte_to_position(t) {
+                    self.push_position_history(pre_jump, PositionSource::AutoJump);
+                    self.cursor = pos;
+                    self.auto_open_folds_at_cursor();
+                }
+            }
+            None => {
+                self.set_message(EchoLevel::Error, "unmatched bracket".to_string());
+            }
+        }
+    }
+
+    /// Vim's `<C-l>` -- force a syntax reparse, drop the highlight
+    /// cache, recompute folds, and signal the runtime to clear
+    /// the terminal on next frame.
+    pub fn do_redraw_screen(&mut self) {
+        self.last_parsed_text_version = u64::MAX;
+        self.visible_highlights.clear();
+        self.visible_highlights_key = None;
+        self.pane_highlights.clear();
+        self.recompute_folds();
+        self.pending_redraw = true;
+        self.set_message(EchoLevel::Info, "redraw".to_string());
+    }
+}
+
+/// 5.5.G.4: bracket-match scan helpers — co-moved from
+/// `lattice_ui_tui::app::motions` alongside `do_match_bracket`.
+fn scan_forward_for_match(bytes: &[u8], from: usize, open: u8, close: u8) -> Option<usize> {
+    let mut depth = 0i32;
+    let mut i = from;
+    loop {
+        if i >= bytes.len() {
+            return None;
+        }
+        let b = bytes[i];
+        if b == open {
+            depth += 1;
+        } else if b == close {
+            depth -= 1;
+            if depth == 0 {
+                return Some(i);
+            }
+        }
+        i += 1;
+    }
+}
+
+fn scan_backward_for_match(bytes: &[u8], from: usize, open: u8, close: u8) -> Option<usize> {
+    let mut depth = 0i32;
+    let mut i = from;
+    loop {
+        let b = bytes[i];
+        if b == close {
+            depth += 1;
+        } else if b == open {
+            depth -= 1;
+            if depth == 0 {
+                return Some(i);
+            }
+        }
+        if i == 0 {
+            return None;
+        }
+        i -= 1;
     }
 }
 

@@ -26,7 +26,6 @@
 //! than the grammar provides.
 
 use lattice_core::Buffer;
-use lattice_grammar::{ScrollPos, ViewportPos};
 use lattice_protocol::position::Position;
 
 use super::{
@@ -43,103 +42,9 @@ use super::{
 // `Editor::push_position_history`. No App-side consumer remains.
 
 impl App {
-    /// Vim's `%`: jump to the matching `()[]{}`. Behavior: scan
-    /// the current line from `cursor.byte` for the first bracket
-    /// char; that bracket and its match define the jump. If the
-    /// cursor is past every bracket on the line, do nothing.
-    pub(super) fn do_match_bracket(&mut self) {
-        let text = self.editor.document.text();
-        let bytes = text.as_bytes();
-        let cursor_byte = match self
-            .editor.document
-            .snapshot()
-            .buffer
-            .position_to_byte(self.editor.cursor)
-        {
-            Ok(b) => b,
-            Err(_) => return,
-        };
-        let mut idx = cursor_byte;
-        let mut bracket = None;
-        while idx < bytes.len() && bytes[idx] != b'\n' {
-            if matches!(bytes[idx], b'(' | b')' | b'[' | b']' | b'{' | b'}') {
-                bracket = Some((idx, bytes[idx]));
-                break;
-            }
-            idx += 1;
-        }
-        let Some((start, b)) = bracket else {
-            self.set_message(EchoLevel::Error, "no bracket on this line".to_string());
-            return;
-        };
-        let (open, close, forward) = match b {
-            b'(' => (b'(', b')', true),
-            b')' => (b'(', b')', false),
-            b'[' => (b'[', b']', true),
-            b']' => (b'[', b']', false),
-            b'{' => (b'{', b'}', true),
-            b'}' => (b'{', b'}', false),
-            _ => return,
-        };
-        let pre_jump = self.editor.cursor;
-        let target = if forward {
-            scan_forward_for_match(bytes, start, open, close)
-        } else {
-            scan_backward_for_match(bytes, start, open, close)
-        };
-        match target {
-            Some(t) => {
-                if let Ok(pos) = self.editor.document.snapshot().buffer.byte_to_position(t) {
-                    self.push_position_history(pre_jump, PositionSource::AutoJump);
-                    self.editor.cursor = pos;
-                    self.auto_open_folds_at_cursor();
-                }
-            }
-            None => {
-                self.set_message(EchoLevel::Error, "unmatched bracket".to_string());
-            }
-        }
-    }
-}
-
-fn scan_forward_for_match(bytes: &[u8], from: usize, open: u8, close: u8) -> Option<usize> {
-    let mut depth = 0i32;
-    let mut i = from;
-    loop {
-        if i >= bytes.len() {
-            return None;
-        }
-        let b = bytes[i];
-        if b == open {
-            depth += 1;
-        } else if b == close {
-            depth -= 1;
-            if depth == 0 {
-                return Some(i);
-            }
-        }
-        i += 1;
-    }
-}
-
-fn scan_backward_for_match(bytes: &[u8], from: usize, open: u8, close: u8) -> Option<usize> {
-    let mut depth = 0i32;
-    let mut i = from;
-    loop {
-        let b = bytes[i];
-        if b == close {
-            depth += 1;
-        } else if b == open {
-            depth -= 1;
-            if depth == 0 {
-                return Some(i);
-            }
-        }
-        if i == 0 {
-            return None;
-        }
-        i -= 1;
-    }
+    // 5.5.G.4: `do_match_bracket` (+ private `scan_forward_for_match`
+    // / `scan_backward_for_match` helpers) migrated to
+    // [`lattice_host::dispatch::Editor`].
 }
 
 impl App {
@@ -422,81 +327,8 @@ impl App {
     /// Jump the cursor to a viewport-relative line. `H` -> top of view,
     /// `M` -> middle, `L` -> bottom. Column is preserved (clamped to the
     /// destination line's length).
-    pub(super) fn do_jump_viewport(&mut self, vpos: ViewportPos) {
-        let height = self.editor.viewport_height.max(1);
-        let line = match vpos {
-            ViewportPos::Top => self.editor.scroll,
-            ViewportPos::Middle => self.editor.scroll + height / 2,
-            ViewportPos::Bottom => self.editor.scroll + height.saturating_sub(1),
-        };
-        let buffer = self.active_text();
-        let last = last_addressable_line(&buffer);
-        let line = line.min(last);
-        let len = line_byte_len(&buffer, line);
-        let byte = self.editor.cursor.byte.min(len);
-        self.editor.cursor = Position::new(line, byte);
-        // Folds only apply to documents.
-        if matches!(self.editor.active_buffer, BufferKind::Document) {
-            self.auto_open_folds_at_cursor();
-        }
-    }
-
-    /// Adjust scroll so the cursor lands at the requested viewport row.
-    /// Cursor itself doesn't move (vim's `zt`/`zz`/`zb`).
-    pub(super) fn do_scroll_cursor_to(&mut self, spos: ScrollPos) {
-        let height = self.editor.viewport_height.max(1);
-        self.editor.scroll = match spos {
-            ScrollPos::Top => self.editor.cursor.line,
-            ScrollPos::Center => self.editor.cursor.line.saturating_sub(height / 2),
-            ScrollPos::Bottom => self.editor.cursor.line.saturating_sub(height.saturating_sub(1)),
-        };
-    }
-
-    /// Move cursor by one viewport-height (vim's Ctrl-F / Ctrl-B). Vim
-    /// leaves a 1-line overlap; we mirror that by stepping
-    /// `viewport_height - 2` lines and letting `ensure_cursor_visible`
-    /// handle the scroll.
-    pub(super) fn do_page(&mut self, down: bool) {
-        let height = self.editor.viewport_height.max(1);
-        let step = height.saturating_sub(2).max(1);
-        let buffer = self.active_text();
-        let last = last_addressable_line(&buffer);
-        let new_line = if down {
-            self.editor.cursor.line.saturating_add(step).min(last)
-        } else {
-            self.editor.cursor.line.saturating_sub(step)
-        };
-        let len = line_byte_len(&buffer, new_line);
-        let byte = self.editor.cursor.byte.min(len);
-        self.editor.cursor = Position::new(new_line, byte);
-    }
-
-    /// Scroll one line. `down = true` -> Ctrl-E (scroll content up,
-    /// pulling the next line into view); `down = false` -> Ctrl-Y.
-    /// Cursor follows so it stays on-screen.
-    pub(super) fn do_scroll_line(&mut self, down: bool) {
-        let height = self.editor.viewport_height.max(1);
-        let buffer = self.active_text();
-        if down {
-            let last = last_addressable_line(&buffer);
-            self.editor.scroll = self.editor.scroll.saturating_add(1).min(last);
-            // Pull cursor down if it's now off the top of the viewport.
-            if self.editor.cursor.line < self.editor.scroll {
-                self.editor.cursor.line = self.editor.scroll;
-            }
-        } else {
-            self.editor.scroll = self.editor.scroll.saturating_sub(1);
-            // Push cursor up if it's now off the bottom.
-            let bottom = self.editor.scroll + height.saturating_sub(1);
-            if self.editor.cursor.line > bottom {
-                self.editor.cursor.line = bottom;
-            }
-        }
-        let len = line_byte_len(&buffer, self.editor.cursor.line);
-        if self.editor.cursor.byte > len {
-            self.editor.cursor.byte = len;
-        }
-    }
+    // 5.5.G.4: `do_jump_viewport`, `do_scroll_cursor_to`, `do_page`,
+    // `do_scroll_line` migrated to [`lattice_host::dispatch::Editor`].
 
     /// `<C-t>` -- pop the tag stack (vim's `:pop`). LIFO walk
     /// back through the chain of `gd` / `gD` / `gy` / `gI`

@@ -175,6 +175,23 @@ pub enum RendererSignal {
     /// not per-frame, so the `Box` allocation is well below any
     /// perf gate.
     DisplayBuffer(Box<DisplayBufferRequest>),
+    /// 5.5.F.4.3: a document buffer was activated via the host-side
+    /// `activate_buffer` / `activate_document` path, and the
+    /// post-activation tail (`activate_buffer_state` — mode/syntax
+    /// re-init + visible-highlights cache clear) still lives App-
+    /// side. The renderer runs the tail.
+    ///
+    /// **Transient — deletes in F.5.** Mode lifecycle (`activate_major_for_buffer_kind`)
+    /// and the syntax cluster (`maybe_reparse_syntax`) are the two
+    /// pieces of `activate_buffer_state` that keep it on App. Once
+    /// they migrate host-side, the renderer-neutral tail runs
+    /// inside `Editor::activate_document` directly; what's left of
+    /// the App-side tail will be the per-frame `visible_highlights` /
+    /// `pane_highlights` cache clear (genuinely TUI-specific —
+    /// Bucket A in the post-F.3 scope review), which will either
+    /// keep this variant under a renamed identity or fold into a
+    /// more general cache-invalidation signal.
+    BufferActivated,
 }
 
 /// 5.5.F.1: payload for [`RendererSignal::DisplayBuffer`]. Carries
@@ -695,6 +712,22 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
                         content,
                         category: lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
                     })));
+            }
+        }
+        Effect::BufferNext => {
+            // 5.5.F.4.3: `:bn` / `:bnext` -- cycle to next listed
+            // buffer. Emits `BufferActivated` when the activation
+            // went through the full document-activation path, so
+            // App runs the `activate_buffer_state` tail.
+            if editor.do_buffer_next() {
+                out.renderer_signals.push(RendererSignal::BufferActivated);
+            }
+        }
+        Effect::BufferPrev => {
+            // 5.5.F.4.3: `:bp` / `:bprev` -- cycle to previous
+            // listed buffer. Same signal shape as `BufferNext`.
+            if editor.do_buffer_prev() {
+                out.renderer_signals.push(RendererSignal::BufferActivated);
             }
         }
         // Catch-all: any Effect variant not yet migrated from
@@ -2505,6 +2538,62 @@ impl Editor {
         );
         // Full-activation path: caller must run activate_buffer_state.
         true
+    }
+
+    /// 5.5.F.4.3: listed buffer ids in ascending order across kinds.
+    /// `:bn` / `:bp` cycle through this; unlisted buffers (vim's
+    /// `nobuflisted`) are filtered out.
+    fn listed_buffer_ids_sorted(&self) -> Vec<BufferId> {
+        self.buffers.listed_ids_sorted()
+    }
+
+    /// 5.5.F.4.3: next listed buffer id from the active pane's, in
+    /// cyclical sorted order. `None` if there's only one listed
+    /// buffer (no other valid target).
+    pub fn next_listed_buffer_id(&self) -> Option<BufferId> {
+        let ids = self.listed_buffer_ids_sorted();
+        if ids.len() <= 1 {
+            return None;
+        }
+        let cur = self.active_pane_buffer_id();
+        let pos = ids.iter().position(|id| *id == cur)?;
+        Some(ids[(pos + 1) % ids.len()])
+    }
+
+    /// 5.5.F.4.3: previous listed buffer id from the active pane's,
+    /// in cyclical sorted order.
+    pub fn prev_listed_buffer_id(&self) -> Option<BufferId> {
+        let ids = self.listed_buffer_ids_sorted();
+        if ids.len() <= 1 {
+            return None;
+        }
+        let cur = self.active_pane_buffer_id();
+        let pos = ids.iter().position(|id| *id == cur)?;
+        Some(ids[if pos == 0 { ids.len() - 1 } else { pos - 1 }])
+    }
+
+    /// 5.5.F.4.3: `:bnext` / `:bn` — cycle to the next listed
+    /// buffer. Returns `true` when the activation went through the
+    /// full `activate_document` path; caller must run
+    /// `activate_buffer_state` (or fan that via
+    /// [`RendererSignal::BufferActivated`] when called from
+    /// `handle_effect`).
+    pub fn do_buffer_next(&mut self) -> bool {
+        let Some(target) = self.next_listed_buffer_id() else {
+            self.set_message(EchoLevel::Info, "only one listed buffer".to_string());
+            return false;
+        };
+        self.activate_buffer(target)
+    }
+
+    /// 5.5.F.4.3: `:bprev` / `:bp` — cycle to the previous listed
+    /// buffer. Same return-shape as [`Self::do_buffer_next`].
+    pub fn do_buffer_prev(&mut self) -> bool {
+        let Some(target) = self.prev_listed_buffer_id() else {
+            self.set_message(EchoLevel::Info, "only one listed buffer".to_string());
+            return false;
+        };
+        self.activate_buffer(target)
     }
 
     /// 5.5.F.4.2: switch the active pane to the file-tree buffer

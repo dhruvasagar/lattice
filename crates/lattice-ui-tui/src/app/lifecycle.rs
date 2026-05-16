@@ -95,25 +95,18 @@ impl App {
         self.editor.activate_help_in_pane(id);
     }
 
-    /// `:bnext` / `:bn` -- cycle to the next listed buffer in id
-    /// order, regardless of kind. Skips unlisted buffers; if every
-    /// other buffer is unlisted, no-op.
-    pub(super) fn do_buffer_next(&mut self) {
-        let Some(target) = self.next_listed_buffer_id() else {
-            self.set_message(EchoLevel::Info, "only one listed buffer".to_string());
-            return;
-        };
-        self.activate_buffer(target);
-    }
-
-    /// `:bprev` / `:bp` -- cycle to the previous listed buffer.
-    pub(super) fn do_buffer_prev(&mut self) {
-        let Some(target) = self.prev_listed_buffer_id() else {
-            self.set_message(EchoLevel::Info, "only one listed buffer".to_string());
-            return;
-        };
-        self.activate_buffer(target);
-    }
+    // 5.5.F.4.3: `do_buffer_next` / `do_buffer_prev` relocated to
+    // [`lattice_host::dispatch::Editor::do_buffer_next`] /
+    // [`lattice_host::dispatch::Editor::do_buffer_prev`]; the
+    // corresponding `Effect::BufferNext` / `Effect::BufferPrev`
+    // arms now run inside `Editor::handle_effect` and emit
+    // `RendererSignal::BufferActivated` for the App-side
+    // `activate_buffer_state` tail.
+    //
+    // `next_listed_buffer_id` / `prev_listed_buffer_id` co-moved
+    // (the Editor helpers they relied on are all host-side); the
+    // App-side definitions delete entirely (Effect-only path; no
+    // direct callers).
 
     /// `:bd[elete]` -- close the active buffer (whichever the
     /// active pane shows). v1 picks any other buffer to activate;
@@ -180,32 +173,10 @@ impl App {
         self.set_message(EchoLevel::Info, format!("buffer #{} deleted", to_remove.0));
     }
 
-    /// Listed buffer ids in ascending order across kinds. `:bn` /
-    /// `:bp` cycle through this; unlisted buffers (vim
-    /// `nobuflisted`) are filtered out.
-    fn listed_buffer_ids_sorted(&self) -> Vec<BufferId> {
-        self.editor.buffers.listed_ids_sorted()
-    }
-
-    fn next_listed_buffer_id(&self) -> Option<BufferId> {
-        let ids = self.listed_buffer_ids_sorted();
-        if ids.len() <= 1 {
-            return None;
-        }
-        let cur = self.active_pane_buffer_id();
-        let pos = ids.iter().position(|id| *id == cur)?;
-        Some(ids[(pos + 1) % ids.len()])
-    }
-
-    fn prev_listed_buffer_id(&self) -> Option<BufferId> {
-        let ids = self.listed_buffer_ids_sorted();
-        if ids.len() <= 1 {
-            return None;
-        }
-        let cur = self.active_pane_buffer_id();
-        let pos = ids.iter().position(|id| *id == cur)?;
-        Some(ids[if pos == 0 { ids.len() - 1 } else { pos - 1 }])
-    }
+    // 5.5.F.4.3: `listed_buffer_ids_sorted` / `next_listed_buffer_id` /
+    // `prev_listed_buffer_id` relocated to
+    // [`lattice_host::dispatch::Editor`]; the only App-side callers
+    // were `do_buffer_next` / `do_buffer_prev`, which co-migrated.
 
     /// `:e[dit] FILE` (DESIGN.md §5.9 multi-buffer). If a buffer
     /// for `path` is already open, switch to it; otherwise spawn

@@ -967,7 +967,9 @@ impl App {
             | Effect::ListOptions
             | Effect::DescribeOptionResolution { .. }
             | Effect::DescribeEvents
-            | Effect::DescribeEvent { .. } => {}
+            | Effect::DescribeEvent { .. }
+            | Effect::BufferNext
+            | Effect::BufferPrev => {}
             Effect::Edits(edits) => self.handle_edits(&edits),
             Effect::EnterMode(mode) => {
                 // Operators that flip mode (`c` -> Insert) come through
@@ -1000,8 +1002,10 @@ impl App {
             // the renderer-coupled tail flows back through
             // `RendererSignal::DisplayBuffer`. Listed above in the
             // grouped no-op.
-            Effect::BufferNext => self.do_buffer_next(),
-            Effect::BufferPrev => self.do_buffer_prev(),
+            // 5.5.F.4.3: `BufferNext` / `BufferPrev` migrated to
+            // `Editor::handle_effect`; emit `BufferActivated` for
+            // the post-activation tail. Routed through the grouped
+            // no-op above.
             Effect::OpenBufferPicker => self.open_buffer_picker(),
             Effect::OpenPicker { source, args } => self.open_picker(source, args),
             Effect::BufferDelete { force } => self.do_buffer_delete(force),
@@ -1134,6 +1138,16 @@ impl App {
             RendererSignal::DisplayBuffer(req) => {
                 let lattice_host::dispatch::DisplayBufferRequest { content, category } = *req;
                 self.display_buffer(content, category);
+            }
+            RendererSignal::BufferActivated => {
+                // 5.5.F.4.3: emitted by `Editor::handle_effect`
+                // when `Effect::BufferNext` / `BufferPrev` (and
+                // future buffer-nav arms) trigger a full document
+                // activation. Runs the App-side
+                // `activate_buffer_state` tail (mode/syntax/option
+                // re-init + visible-highlights cache clear) that's
+                // still on App until F.5 lands mode lifecycle.
+                self.activate_buffer_state();
             }
         }
     }

@@ -35,6 +35,7 @@ pub mod actions;
 pub mod buffer_registry;
 pub mod buffers;
 pub mod chord;
+pub mod dispatch;
 pub mod editor;
 pub mod excommand;
 pub mod file_tree;

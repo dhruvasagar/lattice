@@ -166,6 +166,12 @@ impl App {
     }
 
     pub fn apply(&mut self, action: Action) {
+        // Phase 5.5.B: macro-recording capture and partial-chord
+        // lifecycle have moved to `Editor::dispatch`'s preamble.
+        // The clone is intentional intermediate-state churn while
+        // the rest of `apply` still owns the action below; it goes
+        // away when 5.5.G collapses this function entirely.
+        let _outcome = self.editor.dispatch(action.clone());
         // Snapshot pre-dispatch state for the State-A hover
         // auto-dismiss hook below: while a hover popup is shown
         // and focus is still on the main buffer, any motion that
@@ -190,35 +196,6 @@ impl App {
             .map(|modes| modes.minors().contains(&crate::modes::HoverMode::mode_id()))
             .unwrap_or(false);
         let popup_in_state_a = popup_has_hover_mode && pre_active == BufferKind::Document;
-        // While a macro recording is in flight, capture every Action
-        // EXCEPT the recording-management ones themselves (otherwise the
-        // recording would include "stop recording" or recurse on play).
-        if let Some(rec) = self.editor.macro_recording.as_mut()
-            && !matches!(
-                action,
-                Action::StartMacroRecord(_)
-                    | Action::StopMacroRecord
-                    | Action::PlayMacro(_)
-                    | Action::PlayLastMacro
-            )
-        {
-            rec.actions.push(action.clone());
-        }
-        // Slice 8.i.4 partial-chord lifecycle: any action that
-        // *isn't* `AbsorbPartialChord(_)` (or accumulating count
-        // via `PushDigit`) resolves or aborts the in-flight
-        // multi-key sequence, so the chord stack must clear.
-        // Without this an unbound second key (e.g. `g!` after
-        // `g`) would leak `[g]` into the next keystroke's prefix
-        // lookup and mis-route it as `gd` / `gv` / etc.
-        //
-        // Slice 8.i.4.f: `PushDigit` is also exempt -- vim's
-        // motion-count-after-operator (`d2w`, `2d3w`, `5gg`)
-        // accumulates count chars BETWEEN chord steps. The
-        // operator-pending stack must survive the digit input.
-        if !matches!(action, Action::AbsorbPartialChord(_) | Action::PushDigit(_)) {
-            self.editor.partial_chord.clear();
-        }
         // Read-only guard for help: when a help buffer holds focus
         // (DESIGN.md §5.9 active-buffer routing), buffer-mutating
         // actions (Insert / Delete / Paste / Undo / Redo / fold ops

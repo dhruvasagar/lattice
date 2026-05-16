@@ -125,17 +125,45 @@ impl Editor {
 }
 
 /// Internal action handler -- the destination 5.5.B+ migrates the
-/// `App::apply` body into. Today an empty stub.
+/// `App::apply` body into.
 ///
 /// The signature stays stable as sub-slices fill the body: per-arm
 /// moves mutate `editor` directly and push into `out.renderer_signals`.
 pub(crate) fn handle_action(
-    _editor: &mut Editor,
-    _action: Action,
+    editor: &mut Editor,
+    action: Action,
     _out: &mut DispatchOutcome,
 ) {
-    // 5.5.A: intentionally empty. Subsequent sub-slices populate
-    // this from `lattice-ui-tui::app::dispatch::apply`'s body.
+    // 5.5.B: macro-recording capture. While a macro recording is in
+    // flight, capture every Action EXCEPT the recording-management
+    // ones themselves (otherwise the recording would include "stop
+    // recording" or recurse on play).
+    if let Some(rec) = editor.macro_recording.as_mut()
+        && !matches!(
+            action,
+            Action::StartMacroRecord(_)
+                | Action::StopMacroRecord
+                | Action::PlayMacro(_)
+                | Action::PlayLastMacro
+        )
+    {
+        rec.actions.push(action.clone());
+    }
+    // 5.5.B: partial-chord lifecycle. Slice 8.i.4: any action that
+    // *isn't* `AbsorbPartialChord(_)` (or accumulating count via
+    // `PushDigit`) resolves or aborts the in-flight multi-key
+    // sequence, so the chord stack must clear. Without this an
+    // unbound second key (e.g. `g!` after `g`) would leak `[g]` into
+    // the next keystroke's prefix lookup and mis-route it as `gd` /
+    // `gv` / etc. Slice 8.i.4.f: `PushDigit` is also exempt -- vim's
+    // motion-count-after-operator (`d2w`, `2d3w`, `5gg`) accumulates
+    // count chars BETWEEN chord steps. The operator-pending stack
+    // must survive the digit input.
+    if !matches!(action, Action::AbsorbPartialChord(_) | Action::PushDigit(_)) {
+        editor.partial_chord.clear();
+    }
+    // 5.5.C+ adds the `match action { ... }` arms here.
+    let _ = action; // suppress unused; later slices consume.
 }
 
 #[cfg(test)]

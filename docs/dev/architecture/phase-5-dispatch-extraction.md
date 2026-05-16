@@ -202,11 +202,13 @@ For the v1 of `RendererSignal` I'd start with **just `ThemeChanged` and `Quit`**
 
 **5.5.A — Foundational scaffolding.** Define `Editor::dispatch(action) -> DispatchOutcome` as a stub that calls into a free function `lattice_host::action_handlers::handle(editor, action)`. The free function is initially empty (returns `DispatchOutcome::default()`). `App::apply` keeps its full body. Tests pass — no behaviour change. (~50 LoC.)
 
-**5.5.B — Move pre-match host-state mutations.** The macro-recording capture, partial-chord clear, read-only-help guard. These read `editor` and mutate `editor`. Move into the host-side handler. `App::apply`'s preamble shrinks. (~100 LoC moved, structural.)
+**5.5.B — Move pre-match host-state mutations (clean subset).** The macro-recording capture and partial-chord clear. Pure `editor` reads and writes; no helper calls. `App::apply` starts calling `editor.dispatch(action.clone())` at the top before its own match. (~30 LoC moved, structural.)
+
+The **read-only-help guard** (originally listed in 5.5.B) moves with 5.5.D instead — its body calls `set_message` / `ensure_cursor_visible` / `maybe_reparse_syntax`, all `App` helpers that 5.5.D relocates to `Editor`. Pulling the guard forward would force either inlining those helper bodies into the host-side guard or inventing a `consumed: bool` coordination field on `DispatchOutcome`. Both vanish if the guard lands with its helpers.
 
 **5.5.C — Move the simplest match arms first.** `Action::None`, `Action::Quit`, `Action::AbsorbPartialChord`, `Action::PushDigit`, `Action::EnterMode`, `Action::EnterCommandLine`, `Action::CommandLineAppend/Backspace/Submit/Cancel`, the search-mode actions — all things that mutate `editor` fields directly with no helper call. (~300 LoC moved.)
 
-**5.5.D — Move helpers, batch 1: pure-editor mutations.** `clamp_cursor_to_buffer`, `ensure_cursor_visible`, `dismiss_popup`, `recompute_folds`, `set_message`, `enter_mode`, `do_insert_text`, `do_delete_char_backward`, the open/close-line family. These all live on `App` today but their bodies mutate `editor` only. Move to `impl Editor`. (~500 LoC moved.)
+**5.5.D — Move helpers, batch 1: pure-editor mutations.** `clamp_cursor_to_buffer`, `ensure_cursor_visible`, `dismiss_popup`, `recompute_folds`, `set_message`, `enter_mode`, `do_insert_text`, `do_delete_char_backward`, the open/close-line family. These all live on `App` today but their bodies mutate `editor` only. Move to `impl Editor`. Also move the **read-only-help guard** (deferred from 5.5.B) — its post-effect helpers (`ensure_cursor_visible`, `maybe_reparse_syntax`) now live alongside it on `Editor`, so the guard becomes a clean self-contained host-side block. (~500 LoC moved.)
 
 **5.5.E — Move helpers, batch 2: ex-command effect handlers.** The big `apply_effect` table moves to `Editor::handle_effect`. Most `do_*` functions move with it. The LSP request senders, file ops, picker openers, format requests, snippet expansion — all of `app/lsp.rs`, most of `app/cmdline.rs`. (~3,000 LoC moved across multiple sub-slices; biggest cluster of the slice.)
 

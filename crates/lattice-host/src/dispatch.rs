@@ -69,7 +69,9 @@ use lattice_runtime::{MessagePushed, block_on};
 use crate::action::{Action, EchoLevel};
 use crate::buffers::BufferId;
 use crate::editor::Editor;
-use crate::state::{PositionEntry, PositionSource, PrevPaneState, SearchLine, UnnamedRegister};
+use crate::state::{
+    MacroRecording, PositionEntry, PositionSource, PrevPaneState, SearchLine, UnnamedRegister,
+};
 
 /// 5.5.F.4.2: position-history ring cap, co-located with
 /// [`Editor::push_position_history`].
@@ -463,6 +465,27 @@ pub(crate) fn handle_action(
             editor.modal = ModalState::Search(direction);
             editor.last_message = None;
             editor.current_match = None;
+        }
+        // 5.5.G.1: pure-editor fold / macro / snippet arms. Bodies
+        // mutate only `editor.*` state; helpers (`do_set_fold_*`,
+        // `do_set_all_folds`, `do_goto_fold`, `do_delete_fold_*`,
+        // `do_start_macro_record`, `do_stop_macro_record`) live on
+        // [`Editor`].
+        Action::OpenFoldAtCursor => editor.do_set_fold_state_at_cursor(Some(false)),
+        Action::CloseFoldAtCursor => editor.do_set_fold_state_at_cursor(Some(true)),
+        Action::ToggleFoldAtCursor => editor.do_set_fold_state_at_cursor(None),
+        Action::OpenAllFolds => editor.do_set_all_folds(false),
+        Action::CloseAllFolds => editor.do_set_all_folds(true),
+        Action::DeleteFoldAtCursor => editor.do_delete_fold_at_cursor(),
+        Action::GotoNextFold => editor.do_goto_fold(true),
+        Action::GotoPrevFold => editor.do_goto_fold(false),
+        Action::StartMacroRecord(reg) => editor.do_start_macro_record(reg),
+        Action::StopMacroRecord => editor.do_stop_macro_record(),
+        Action::SnippetLeave => {
+            // Snippet body has no host-side helper -- the App arm
+            // was literally these two field writes.
+            editor.active_snippet = None;
+            editor.modal = ModalState::Normal;
         }
         // Catch-all: any Action variant not yet migrated from
         // App::apply. Sub-slices 5.5.D+ extend the match upward as
@@ -2313,6 +2336,178 @@ impl Editor {
             selections: (*snap.selections).clone(),
         });
     }
+
+    /// 5.5.G.1: vim's `zo` / `zc` / `za` -- toggle, open, or close
+    /// the fold at the cursor. `Some(true)` = `zc` close,
+    /// `Some(false)` = `zo` open, `None` = `za` toggle. Selection
+    /// rules mirror the App-side helper retired in this slice.
+    pub fn do_set_fold_state_at_cursor(&mut self, state: Option<bool>) {
+        let line = self.cursor.line;
+        let target = match state {
+            Some(true) => fold_to_close_at(&self.folds, line),
+            Some(false) => outermost_fold_idx(&self.folds, line, |f| f.closed),
+            None => {
+                let any_closed = self
+                    .folds
+                    .iter()
+                    .any(|f| f.closed && line >= f.start_line && line <= f.end_line);
+                if any_closed {
+                    outermost_fold_idx(&self.folds, line, |f| f.closed)
+                } else {
+                    fold_to_close_at(&self.folds, line)
+                }
+            }
+        };
+        let Some(idx) = target else {
+            self.set_message(EchoLevel::Error, "E490: No fold found".to_string());
+            return;
+        };
+        self.folds[idx].closed = match state {
+            None => !self.folds[idx].closed,
+            Some(s) => s,
+        };
+    }
+
+    /// 5.5.G.1: vim's `zR` (`closed = false`) / `zM` (`closed =
+    /// true`) -- bulk open / close every fold in the buffer.
+    pub fn do_set_all_folds(&mut self, closed: bool) {
+        for fold in self.folds.iter_mut() {
+            fold.closed = closed;
+        }
+    }
+
+    /// 5.5.G.1: vim's `zj` (forward) / `zk` (backward) -- jump
+    /// the cursor to the next / previous fold edge.
+    pub fn do_goto_fold(&mut self, forward: bool) {
+        let line = self.cursor.line;
+        let target = if forward {
+            self.folds
+                .iter()
+                .filter(|f| f.start_line > line)
+                .map(|f| f.start_line)
+                .min()
+        } else {
+            self.folds
+                .iter()
+                .filter(|f| f.end_line < line)
+                .map(|f| f.end_line)
+                .max()
+        };
+        if let Some(t) = target {
+            self.cursor = lattice_protocol::position::Position::new(t, 0);
+        } else {
+            self.set_message(EchoLevel::Error, "no more folds".to_string());
+        }
+    }
+
+    /// 5.5.G.1: vim's `zd` -- delete the innermost fold containing
+    /// the cursor. E490 when the cursor isn't inside any fold.
+    pub fn do_delete_fold_at_cursor(&mut self) {
+        let line = self.cursor.line;
+        if let Some(idx) = innermost_fold_idx(&self.folds, line, |_| true) {
+            self.folds.remove(idx);
+        } else {
+            self.set_message(EchoLevel::Error, "E490: No fold found".to_string());
+        }
+    }
+
+    /// 5.5.G.1: vim's `q{reg}` -- begin recording subsequent actions
+    /// into register `reg`. No-op if a recording is already in
+    /// flight (matches vim).
+    pub fn do_start_macro_record(&mut self, register: char) {
+        if !is_valid_macro_register(register) {
+            self.set_message(
+                EchoLevel::Error,
+                format!("invalid macro register: {register}"),
+            );
+            return;
+        }
+        if self.macro_recording.is_some() {
+            return;
+        }
+        self.macro_recording = Some(MacroRecording {
+            register,
+            actions: Vec::new(),
+        });
+        self.set_message(EchoLevel::Info, format!("recording @{register}"));
+    }
+
+    /// 5.5.G.1: vim's `q` (terminate recording) -- commit the
+    /// pending recording into [`Self::macros`] keyed by its
+    /// register, then clear the in-flight slot.
+    pub fn do_stop_macro_record(&mut self) {
+        let Some(rec) = self.macro_recording.take() else {
+            return;
+        };
+        let label = rec.register;
+        self.macros.insert(rec.register, rec.actions);
+        self.set_message(EchoLevel::Info, format!("recorded @{label}"));
+    }
+}
+
+/// 5.5.G.1: shared with `Editor::do_start_macro_record`. The
+/// canonical `is_valid_mark_name` lives App-side (`Action::SetMark`
+/// path); the host-side macro path duplicates the one-line check
+/// rather than introducing a cross-crate dep just for it.
+fn is_valid_macro_register(c: char) -> bool {
+    c.is_ascii_alphabetic() || c.is_ascii_digit()
+}
+
+/// 5.5.G.1: index of the *innermost* fold containing `line` that
+/// satisfies `pred`. Innermost = max start_line, then min end_line
+/// on ties. Used by `zc` (close innermost open) and `za`'s close
+/// branch, and `zd` (delete innermost).
+fn innermost_fold_idx<F: Fn(&lattice_core::Fold) -> bool>(
+    folds: &[lattice_core::Fold],
+    line: u32,
+    pred: F,
+) -> Option<usize> {
+    folds
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| pred(f) && line >= f.start_line && line <= f.end_line)
+        .max_by_key(|(_, f)| (f.start_line, std::cmp::Reverse(f.end_line)))
+        .map(|(i, _)| i)
+}
+
+/// 5.5.G.1: pick the fold that `zc` (or `za`'s close branch) should
+/// target when the cursor is on `line`. If any open fold *starts*
+/// at `line`, close the outermost (largest end_line) — the "fold
+/// the entire form" reading. Otherwise pick the innermost open
+/// fold containing the cursor.
+fn fold_to_close_at(folds: &[lattice_core::Fold], line: u32) -> Option<usize> {
+    let starts_here = folds
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| !f.closed && f.start_line == line)
+        .max_by_key(|(_, f)| f.end_line)
+        .map(|(i, _)| i);
+    if starts_here.is_some() {
+        return starts_here;
+    }
+    folds
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| !f.closed && line > f.start_line && line <= f.end_line)
+        .max_by_key(|(_, f)| (f.start_line, std::cmp::Reverse(f.end_line)))
+        .map(|(i, _)| i)
+}
+
+/// 5.5.G.1: index of the *outermost* fold containing `line` that
+/// satisfies `pred`. Outermost = min start_line, then max end_line
+/// on ties. Used by `zo` (open outermost closed) and `za`'s open
+/// branch.
+fn outermost_fold_idx<F: Fn(&lattice_core::Fold) -> bool>(
+    folds: &[lattice_core::Fold],
+    line: u32,
+    pred: F,
+) -> Option<usize> {
+    folds
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| pred(f) && line >= f.start_line && line <= f.end_line)
+        .min_by_key(|(_, f)| (f.start_line, std::cmp::Reverse(f.end_line)))
+        .map(|(i, _)| i)
 }
 
 /// Phase 5.5.E.6: host-side option-cascade infrastructure. These

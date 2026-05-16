@@ -86,77 +86,12 @@ impl App {
         self.do_exit_visual();
     }
 
-    /// Toggle / open / close the fold containing the cursor.
-    /// `Some(true)` = `zc` close, `Some(false)` = `zo` open,
-    /// `None` = `za` toggle. Selection rules:
-    /// - `zc`: outermost open at start_line if any, else
-    ///   innermost open containing cursor.
-    /// - `zo`: outermost closed containing cursor.
-    /// - `za`: zo if any closed contains cursor, else zc.
-    pub(super) fn do_set_fold_state_at_cursor(&mut self, state: Option<bool>) {
-        let line = self.editor.cursor.line;
-        let target = match state {
-            Some(true) => fold_to_close_at(&self.editor.folds, line),
-            Some(false) => outermost_fold_idx(&self.editor.folds, line, |f| f.closed),
-            None => {
-                let any_closed = self
-                    .editor
-                    .folds
-                    .iter()
-                    .any(|f| f.closed && line >= f.start_line && line <= f.end_line);
-                if any_closed {
-                    outermost_fold_idx(&self.editor.folds, line, |f| f.closed)
-                } else {
-                    fold_to_close_at(&self.editor.folds, line)
-                }
-            }
-        };
-        let Some(idx) = target else {
-            self.set_message(EchoLevel::Error, "E490: No fold found".to_string());
-            return;
-        };
-        self.editor.folds[idx].closed = match state {
-            None => !self.editor.folds[idx].closed,
-            Some(s) => s,
-        };
-    }
-
-    pub(super) fn do_set_all_folds(&mut self, closed: bool) {
-        for fold in self.editor.folds.iter_mut() {
-            fold.closed = closed;
-        }
-    }
-
-    pub(super) fn do_goto_fold(&mut self, forward: bool) {
-        let line = self.editor.cursor.line;
-        let target = if forward {
-            self.editor.folds
-                .iter()
-                .filter(|f| f.start_line > line)
-                .map(|f| f.start_line)
-                .min()
-        } else {
-            self.editor.folds
-                .iter()
-                .filter(|f| f.end_line < line)
-                .map(|f| f.end_line)
-                .max()
-        };
-        if let Some(t) = target {
-            self.editor.cursor = Position::new(t, 0);
-        } else {
-            self.set_message(EchoLevel::Error, "no more folds".to_string());
-        }
-    }
-
-    pub(super) fn do_delete_fold_at_cursor(&mut self) {
-        let line = self.editor.cursor.line;
-        if let Some(idx) = innermost_fold_idx(&self.editor.folds, line, |_| true) {
-            self.editor.folds.remove(idx);
-        } else {
-            self.set_message(EchoLevel::Error, "E490: No fold found".to_string());
-        }
-    }
+    // 5.5.G.1: `do_set_fold_state_at_cursor` / `do_set_all_folds`
+    // / `do_goto_fold` / `do_delete_fold_at_cursor` all migrated
+    // to [`lattice_host::dispatch::Editor`] (the `Action::*Fold*`
+    // arms in `Editor::dispatch` call them directly). The private
+    // selection-rule helpers `innermost_fold_idx`, `fold_to_close_at`,
+    // and `outermost_fold_idx` co-moved.
 
     /// Returns true if `line` is inside a closed fold (and not the fold
     /// start). The renderer uses this to skip lines. When `foldenable`
@@ -270,59 +205,10 @@ pub(super) fn compute_fold_hash(folds: &[Fold]) -> u64 {
     h.finish()
 }
 
-/// Index of the *innermost* fold containing `line` that satisfies
-/// `pred`. Innermost = max start_line, then min end_line on ties.
-/// Used by `zc` (close innermost open) and `za`'s close branch.
-fn innermost_fold_idx<F: Fn(&Fold) -> bool>(folds: &[Fold], line: u32, pred: F) -> Option<usize> {
-    folds
-        .iter()
-        .enumerate()
-        .filter(|(_, f)| pred(f) && line >= f.start_line && line <= f.end_line)
-        .max_by_key(|(_, f)| (f.start_line, std::cmp::Reverse(f.end_line)))
-        .map(|(i, _)| i)
-}
-
-/// Pick the fold that `zc` (or `za`'s close branch) should target
-/// when the cursor is on `line`.
-///
-/// If any open fold *starts* at `line`, the user is positioned on
-/// the line that opens one or more folds. Their natural intent is
-/// to fold the *largest* of those constructs in one step (the
-/// "fold the entire form" reading of `zc`). Pick the outermost
-/// (largest end_line) among the open folds whose start_line equals
-/// the cursor.
-///
-/// Otherwise the cursor is in a fold's body and the inverse rule
-/// applies: pick the innermost open fold containing the cursor.
-fn fold_to_close_at(folds: &[Fold], line: u32) -> Option<usize> {
-    let starts_here = folds
-        .iter()
-        .enumerate()
-        .filter(|(_, f)| !f.closed && f.start_line == line)
-        .max_by_key(|(_, f)| f.end_line)
-        .map(|(i, _)| i);
-    if starts_here.is_some() {
-        return starts_here;
-    }
-    folds
-        .iter()
-        .enumerate()
-        .filter(|(_, f)| !f.closed && line > f.start_line && line <= f.end_line)
-        .max_by_key(|(_, f)| (f.start_line, std::cmp::Reverse(f.end_line)))
-        .map(|(i, _)| i)
-}
-
-/// Index of the *outermost* fold containing `line` that satisfies
-/// `pred`. Outermost = min start_line, then max end_line on ties.
-/// Used by `zo` (open outermost closed) and `za`'s open branch.
-fn outermost_fold_idx<F: Fn(&Fold) -> bool>(folds: &[Fold], line: u32, pred: F) -> Option<usize> {
-    folds
-        .iter()
-        .enumerate()
-        .filter(|(_, f)| pred(f) && line >= f.start_line && line <= f.end_line)
-        .min_by_key(|(_, f)| (f.start_line, std::cmp::Reverse(f.end_line)))
-        .map(|(i, _)| i)
-}
+// 5.5.G.1: private selection-rule helpers (`innermost_fold_idx`,
+// `fold_to_close_at`, `outermost_fold_idx`) migrated to
+// `lattice_host::dispatch` alongside the `do_*` arms that called
+// them.
 
 #[cfg(test)]
 mod tests {

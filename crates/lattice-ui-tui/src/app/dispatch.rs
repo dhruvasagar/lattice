@@ -150,7 +150,21 @@ impl App {
             | Action::SelectRegister(_)
             | Action::CommandLineDeleteChord
             | Action::CommandLineDismissCompletion
-            | Action::EnterSearch(_) => {}
+            | Action::EnterSearch(_)
+            // 5.5.G.1: pure-editor fold / macro / snippet arms.
+            // Bodies migrated to `Editor::dispatch`; this match
+            // routes them through the grouped no-op above.
+            | Action::OpenFoldAtCursor
+            | Action::CloseFoldAtCursor
+            | Action::ToggleFoldAtCursor
+            | Action::OpenAllFolds
+            | Action::CloseAllFolds
+            | Action::DeleteFoldAtCursor
+            | Action::GotoNextFold
+            | Action::GotoPrevFold
+            | Action::StartMacroRecord(_)
+            | Action::StopMacroRecord
+            | Action::SnippetLeave => {}
             Action::Invoke(inv) => self.run_invocation(inv),
             Action::Insert(s) => self.do_insert_text(&s),
             Action::DeleteCharBackward => self.do_delete_char_backward(),
@@ -299,14 +313,11 @@ impl App {
             Action::FindRepeat { reverse } => self.do_find_repeat(reverse),
 
             Action::CreateFoldFromVisual => self.do_create_fold_from_visual(),
-            Action::OpenFoldAtCursor => self.do_set_fold_state_at_cursor(Some(false)),
-            Action::CloseFoldAtCursor => self.do_set_fold_state_at_cursor(Some(true)),
-            Action::ToggleFoldAtCursor => self.do_set_fold_state_at_cursor(None),
-            Action::OpenAllFolds => self.do_set_all_folds(false),
-            Action::CloseAllFolds => self.do_set_all_folds(true),
-            Action::DeleteFoldAtCursor => self.do_delete_fold_at_cursor(),
-            Action::GotoNextFold => self.do_goto_fold(true),
-            Action::GotoPrevFold => self.do_goto_fold(false),
+            // 5.5.G.1: `OpenFoldAtCursor` / `CloseFoldAtCursor` /
+            // `ToggleFoldAtCursor` / `OpenAllFolds` / `CloseAllFolds`
+            // / `DeleteFoldAtCursor` / `GotoNextFold` / `GotoPrevFold`
+            // migrated to `Editor::dispatch`; routed through the
+            // grouped no-op above.
             Action::ToggleFoldEnable => {
                 // `zi` toggle path. The set() publishes through
                 // the bus; drain immediately so the cascade
@@ -349,10 +360,8 @@ impl App {
             Action::SnippetExpand => self.do_snippet_expand_at_cursor(),
             Action::SnippetNextPlaceholder => self.do_snippet_next_placeholder(),
             Action::SnippetPrevPlaceholder => self.do_snippet_prev_placeholder(),
-            Action::SnippetLeave => {
-                self.editor.active_snippet = None;
-                self.editor.modal = ModalState::Normal;
-            }
+            // 5.5.G.1: `SnippetLeave` migrated to `Editor::dispatch`;
+            // routed through the grouped no-op above.
             Action::LspDocumentSymbolRequest => self.do_lsp_document_symbol_request(),
             Action::LspWorkspaceSymbolRequest(q) => self.do_lsp_workspace_symbol_request(&q),
             Action::JumpHistoryBack => self.do_jump_history(-1),
@@ -361,8 +370,11 @@ impl App {
             Action::WalkMarkHistoryBack => self.do_mark_history(-1),
             Action::WalkMarkHistoryForward => self.do_mark_history(1),
 
-            Action::StartMacroRecord(reg) => self.do_start_macro_record(reg),
-            Action::StopMacroRecord => self.do_stop_macro_record(),
+            // 5.5.G.1: `StartMacroRecord` / `StopMacroRecord`
+            // migrated to `Editor::dispatch`. `PlayMacro` /
+            // `PlayLastMacro` stay App-side until `do_play_macro`
+            // (which recurses through `self.apply`) lands a host
+            // path.
             Action::PlayMacro(reg) => self.do_play_macro(reg),
             Action::PlayLastMacro => {
                 if let Some(reg) = self.editor.last_played_macro {

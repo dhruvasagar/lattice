@@ -12,36 +12,14 @@
 //! `App` field), or `recording_insert` (insert-mode
 //! keystroke recording, distinct from `q`-macros).
 
-use super::{App, EchoLevel, MacroRecording, is_valid_mark_name};
+use super::{App, EchoLevel, is_valid_mark_name};
 
 impl App {
-    pub(super) fn do_start_macro_record(&mut self, register: char) {
-        if !is_valid_mark_name(register) {
-            self.set_message(
-                EchoLevel::Error,
-                format!("invalid macro register: {register}"),
-            );
-            return;
-        }
-        if self.editor.macro_recording.is_some() {
-            // Already recording -- ignore (vim treats this as a no-op).
-            return;
-        }
-        self.editor.macro_recording = Some(MacroRecording {
-            register,
-            actions: Vec::new(),
-        });
-        self.set_message(EchoLevel::Info, format!("recording @{register}"));
-    }
-
-    pub(super) fn do_stop_macro_record(&mut self) {
-        let Some(rec) = self.editor.macro_recording.take() else {
-            return;
-        };
-        let label = rec.register;
-        self.editor.macros.insert(rec.register, rec.actions);
-        self.set_message(EchoLevel::Info, format!("recorded @{label}"));
-    }
+    // 5.5.G.1: `do_start_macro_record` / `do_stop_macro_record`
+    // migrated to `lattice_host::dispatch::Editor`. `do_play_macro`
+    // stays here because its body recurses through `self.apply`
+    // (App-side dispatch loop); it joins the host once Editor owns
+    // the full `apply` loop.
 
     pub(super) fn do_play_macro(&mut self, register: char) {
         if !is_valid_mark_name(register) {

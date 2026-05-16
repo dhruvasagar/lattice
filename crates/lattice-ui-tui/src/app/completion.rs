@@ -300,7 +300,7 @@ impl App {
         // source joins relative segments onto this; absolute
         // partial paths bypass it.
         let buffer_dir_owned: Option<std::path::PathBuf> = {
-            let snap = self.document.snapshot();
+            let snap = self.editor.document.snapshot();
             snap.path
                 .as_ref()
                 .and_then(|p| p.parent().map(|p| p.to_path_buf()))
@@ -317,7 +317,7 @@ impl App {
             .get(&self.editor.document_buffer_id)
             .map(|u| u.as_str().to_string());
         let lsp_position_pair: Option<(u32, u32)> = {
-            let snap = self.document.snapshot();
+            let snap = self.editor.document.snapshot();
             crate::app::app_to_lsp_position(&snap.buffer, self.editor.cursor)
                 .map(|p| (p.line, p.character))
         };
@@ -922,7 +922,7 @@ impl App {
             return;
         }
         // Re-derive query.
-        let snap_buf = self.document.snapshot().buffer.clone();
+        let snap_buf = self.editor.document.snapshot().buffer.clone();
         let line_text = snap_buf.line(state.anchor.line).unwrap_or_default();
         let start = state.anchor.byte as usize;
         let end = (self.editor.cursor.byte as usize).min(line_text.len());
@@ -1101,7 +1101,7 @@ impl App {
     /// `$TM_FILENAME`, `$TM_CURRENT_LINE`, etc.
     pub(super) fn snippet_variable_context(&self) -> lattice_snippet::VariableContext {
         let mut ctx = lattice_snippet::VariableContext::default();
-        let snap = self.document.snapshot();
+        let snap = self.editor.document.snapshot();
         if let Some(path) = snap.path.as_ref() {
             ctx.filepath = Some(path.display().to_string());
             ctx.filename = path
@@ -1191,7 +1191,7 @@ impl App {
         let main_range = lattice_protocol::position::Range::new(anchor, self.editor.cursor);
         let main_edit = Edit::replace(main_range, rendered.text.clone());
         // Convert `additionalTextEdits` to lattice Edits.
-        let snap = self.document.snapshot();
+        let snap = self.editor.document.snapshot();
         let mut all_edits: Vec<Edit> = Vec::with_capacity(additional.len() + 1);
         for te in &additional {
             let start_byte = lsp_position_to_app_byte(
@@ -1232,7 +1232,7 @@ impl App {
             .get(main_idx)
             .ok_or_else(|| "main edit missing from applied batch".to_string())?;
         let origin = self
-            .document
+            .editor.document
             .snapshot()
             .buffer
             .position_to_byte(main_applied.inserted_range.start)
@@ -1242,7 +1242,7 @@ impl App {
             if let Some(group) = active.focus_first()
                 && let Some(first) = group.ranges.first()
                 && let Ok(pos) = self
-                    .document
+                    .editor.document
                     .snapshot()
                     .buffer
                     .byte_to_position(first.start)
@@ -1276,7 +1276,7 @@ impl App {
         // returned the inserted_range, we recompute the
         // origin from the buffer's positional API.
         let origin = self
-            .document
+            .editor.document
             .snapshot()
             .buffer
             .position_to_byte(applied.inserted_range.start)
@@ -1287,7 +1287,7 @@ impl App {
             if let Some(group) = active.focus_first()
                 && let Some(first) = group.ranges.first()
                 && let Ok(pos) = self
-                    .document
+                    .editor.document
                     .snapshot()
                     .buffer
                     .byte_to_position(first.start)
@@ -1307,7 +1307,7 @@ impl App {
     /// Falls back to the empty string when no path is set
     /// (the registry's `"*"` any-language pack still applies).
     pub(super) fn active_language_id(&self) -> String {
-        let snap = self.document.snapshot();
+        let snap = self.editor.document.snapshot();
         let Some(path) = snap.path.as_ref() else {
             return String::new();
         };
@@ -1381,7 +1381,7 @@ mod tests {
         assert!(a.completion_auto_insert_single(), "default should be on");
         a.apply(Action::CommandLineCompleteOrAdvance);
         assert!(
-            a.completion_state.is_none(),
+            a.editor.completion_state.is_none(),
             "popup must not open when the only candidate auto-inserts"
         );
         assert_eq!(a.editor.command_line, "set foldmethod=indent");
@@ -1394,7 +1394,7 @@ mod tests {
         a.set_completion_auto_insert_single_for_test(false);
         a.apply(Action::CommandLineCompleteOrAdvance);
         let state = a
-            .completion_state
+            .editor.completion_state
             .as_ref()
             .expect("popup should open when option is off");
         assert_eq!(state.candidates.len(), 1);
@@ -1411,7 +1411,7 @@ mod tests {
         let mut a = app_in_command_mode("descri");
         a.apply(Action::CommandLineCompleteOrAdvance);
         let state = a
-            .completion_state
+            .editor.completion_state
             .as_ref()
             .expect("popup should open with multiple candidates");
         assert!(
@@ -1434,7 +1434,7 @@ mod tests {
         let mut a = app_in_command_mode("set foldmethod=");
         a.apply(Action::CommandLineCompleteOrAdvance);
         let initial = a
-            .completion_state
+            .editor.completion_state
             .as_ref()
             .expect("popup should open for the value list");
         assert!(initial.candidates.len() >= 2);
@@ -1446,7 +1446,7 @@ mod tests {
         // match -- auto-insert only fires at popup-open, not on
         // refilter-while-open.
         assert!(
-            a.completion_state.is_some(),
+            a.editor.completion_state.is_some(),
             "popup must stay open when narrowed mid-typing"
         );
         assert_eq!(a.editor.command_line, "set foldmethod=ind");
@@ -1495,7 +1495,7 @@ mod tests {
         );
         a.do_snippet_expand_at_cursor();
         // Buffer text should be the rendered snippet.
-        let text = a.document.snapshot().buffer.as_string();
+        let text = a.editor.document.snapshot().buffer.as_string();
         assert_eq!(text, "for i in iter {  }");
         // Active snippet present, focused on $1.
         let active = a.active_snippet.as_ref().expect("snippet active");
@@ -1550,7 +1550,7 @@ mod tests {
         a.do_snippet_expand_at_cursor();
         assert!(a.active_snippet.is_none());
         // Buffer unchanged.
-        assert_eq!(a.document.snapshot().buffer.as_string(), "xyz");
+        assert_eq!(a.editor.document.snapshot().buffer.as_string(), "xyz");
     }
 
     #[test]
@@ -1561,7 +1561,7 @@ mod tests {
         install_snippet(&mut a, "*", "for-loop", "for", "for $1 {}");
         a.do_snippet_expand_at_cursor();
         assert!(a.active_snippet.is_none());
-        assert_eq!(a.document.snapshot().buffer.as_string(), "for");
+        assert_eq!(a.editor.document.snapshot().buffer.as_string(), "for");
     }
 
     #[test]
@@ -1615,7 +1615,7 @@ mod tests {
         assert!(a.insert_completion.is_none());
         let active = a.active_snippet.as_ref().expect("active snippet");
         assert_eq!(active.current_index(), Some(1));
-        let text = a.document.snapshot().buffer.as_string();
+        let text = a.editor.document.snapshot().buffer.as_string();
         assert_eq!(text, "for i in iter {}");
     }
 

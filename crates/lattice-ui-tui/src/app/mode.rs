@@ -568,7 +568,7 @@ mod tests {
         // re-enable just for this buffer via the mode layer.
         // The resolved value reflects the mode contribution.
         let mut a = app_with("hi", 5);
-        let id = a.pane_tree.active().buffer_id;
+        let id = a.editor.pane_tree.active().buffer_id;
         // Flip the typed-option layer to false globally.
         a.do_set("nonumber");
         assert!(!a.show_line_numbers(), "set nonumber should flip cache");
@@ -595,7 +595,7 @@ mod tests {
         // contribution so users who never touch
         // `:line-numbers-mode` still get a visible gutter).
         let mut a = app_with("hi", 5);
-        let id = a.pane_tree.active().buffer_id;
+        let id = a.editor.pane_tree.active().buffer_id;
         a.toggle_mode_by_name("relative-line-numbers-mode");
         assert!(*a.resolved_option::<lattice_config::RelativeNumber>(id));
         assert!(*a.resolved_option::<lattice_config::Number>(id));
@@ -604,7 +604,7 @@ mod tests {
     #[test]
     fn wrap_mode_toggle_flips_wrap_lines() {
         let mut a = app_with("hi", 5);
-        let id = a.pane_tree.active().buffer_id;
+        let id = a.editor.pane_tree.active().buffer_id;
         assert!(!a.wrap_lines());
         a.toggle_mode_by_name("wrap-mode");
         assert!(*a.resolved_option::<lattice_config::Wrap>(id));
@@ -619,7 +619,7 @@ mod tests {
         // nonumber` deactivates it. The two surfaces stay in
         // sync.
         let mut a = app_with("hi", 5);
-        let id = a.pane_tree.active().buffer_id;
+        let id = a.editor.pane_tree.active().buffer_id;
         // Default Number=true; M.7.1 means the mode should
         // already be active on the active buffer (initial cascade
         // when typed-option is true at startup). But initial
@@ -651,7 +651,7 @@ mod tests {
     #[test]
     fn set_wrap_converges_with_wrap_mode() {
         let mut a = app_with("hi", 5);
-        let id = a.pane_tree.active().buffer_id;
+        let id = a.editor.pane_tree.active().buffer_id;
         let wrap_id = lattice_mode::modes::WrapMode::mode_id();
         a.do_set("wrap");
         assert!(a.editor.active_modes.get(&id).unwrap().has_minor(wrap_id));
@@ -665,7 +665,7 @@ mod tests {
         // activates `whitespace-show-mode`; `:set nolist`
         // deactivates.
         let mut a = app_with("hi", 5);
-        let id = a.pane_tree.active().buffer_id;
+        let id = a.editor.pane_tree.active().buffer_id;
         let mode_id = lattice_mode::modes::WhitespaceShowMode::mode_id();
         a.do_set("list");
         assert!(a.editor.active_modes.get(&id).unwrap().has_minor(mode_id));
@@ -678,7 +678,7 @@ mod tests {
         // M.7.2: `:set cursorline` (vim alias) ↔
         // `:current-line-highlight-mode`.
         let mut a = app_with("hi", 5);
-        let id = a.pane_tree.active().buffer_id;
+        let id = a.editor.pane_tree.active().buffer_id;
         let mode_id = lattice_mode::modes::CurrentLineHighlightMode::mode_id();
         a.do_set("cursorline");
         assert!(a.editor.active_modes.get(&id).unwrap().has_minor(mode_id));
@@ -695,7 +695,7 @@ mod tests {
         // refinement -- but the resolved-option view converges
         // because the mode contribution wins regardless.)
         let mut a = app_with("hi", 5);
-        let id = a.pane_tree.active().buffer_id;
+        let id = a.editor.pane_tree.active().buffer_id;
         a.do_set("nonumber");
         assert!(!a.show_line_numbers());
         // Mode activation flips the mode-contribution layer.
@@ -723,7 +723,7 @@ mod tests {
         // `customizable = false` (no `:set` surface); this is
         // the user-typed pathway.
         let mut a = app_with("hi", 5);
-        let id = a.pane_tree.active().buffer_id;
+        let id = a.editor.pane_tree.active().buffer_id;
         assert!(!*a.resolved_option::<lattice_config::ReadOnly>(id));
         a.toggle_mode_by_name("read-only-mode");
         assert!(*a.resolved_option::<lattice_config::ReadOnly>(id));
@@ -737,7 +737,7 @@ mod tests {
         // call activates, second deactivates. The mode is
         // registered at boot so name lookup succeeds.
         let mut a = app_with("hi", 5);
-        let id = a.pane_tree.active().buffer_id;
+        let id = a.editor.pane_tree.active().buffer_id;
         let lsp_mode = lattice_lsp::modes::LspMode::mode_id();
         assert!(!a.lsp_mode_enabled_for(id));
         a.toggle_mode_by_name("lsp-mode");
@@ -754,7 +754,7 @@ mod tests {
         // the sub-modes are user-controllable disable switches
         // that default to "track the umbrella".
         let mut a = app_with("hi", 5);
-        let id = a.pane_tree.active().buffer_id;
+        let id = a.editor.pane_tree.active().buffer_id;
         a.toggle_mode_by_name("lsp-mode");
         assert!(a.lsp_mode_enabled_for(id));
         // All nine sub-modes flipped on.
@@ -774,7 +774,7 @@ mod tests {
         // M.6.1 cascade-off: toggling `:lsp-mode` off deactivates
         // every sub-mode atomically.
         let mut a = app_with("hi", 5);
-        let id = a.pane_tree.active().buffer_id;
+        let id = a.editor.pane_tree.active().buffer_id;
         a.toggle_mode_by_name("lsp-mode");
         assert!(a.lsp_hover_mode_enabled_for(id));
         a.toggle_mode_by_name("lsp-mode");
@@ -798,7 +798,7 @@ mod tests {
         // others stay on. This is the "disable LSP completion
         // but keep diagnostics" use case from §4.2.1.
         let mut a = app_with("hi", 5);
-        let id = a.pane_tree.active().buffer_id;
+        let id = a.editor.pane_tree.active().buffer_id;
         a.toggle_mode_by_name("lsp-mode");
         // Independently disable `lsp-completion-mode`.
         a.toggle_mode_by_name("lsp-completion-mode");
@@ -819,7 +819,7 @@ mod tests {
         // (Toggling the umbrella is the user's "reset to defaults"
         // gesture.)
         let mut a = app_with("hi", 5);
-        let id = a.pane_tree.active().buffer_id;
+        let id = a.editor.pane_tree.active().buffer_id;
         a.toggle_mode_by_name("lsp-mode");
         a.toggle_mode_by_name("lsp-hover-mode");
         assert!(!a.lsp_hover_mode_enabled_for(id));
@@ -839,7 +839,7 @@ mod tests {
         // user wants a sub-mode active independently of the
         // umbrella's auto-activation logic.)
         let mut a = app_with("hi", 5);
-        let id = a.pane_tree.active().buffer_id;
+        let id = a.editor.pane_tree.active().buffer_id;
         // All nine sub-modes start off.
         assert!(!a.lsp_completion_mode_enabled_for(id));
         assert!(!a.lsp_diagnostics_mode_enabled_for(id));
@@ -866,7 +866,7 @@ mod tests {
     fn toggle_unknown_mode_name_emits_error_echo() {
         // Unknown name → error message; no state change.
         let mut a = app_with("hi", 5);
-        let id = a.pane_tree.active().buffer_id;
+        let id = a.editor.pane_tree.active().buffer_id;
         let before_minors_len = a
             .editor.active_modes
             .get(&id)
@@ -890,7 +890,7 @@ mod tests {
         // to `markdown-mode` deactivates text-mode and activates
         // markdown-mode. Active minors stay untouched.
         let mut a = app_with("# heading", 5);
-        let id = a.pane_tree.active().buffer_id;
+        let id = a.editor.pane_tree.active().buffer_id;
         // Activate a minor first so we can verify it survives.
         a.toggle_mode_by_name("lsp-mode");
         assert!(a.lsp_mode_enabled_for(id));
@@ -909,7 +909,7 @@ mod tests {
         // bundled rust-analyzer config matches `*.rs`.
         use crate::app::test_helpers::app_with_path;
         let a = app_with_path("fn main() {}", 5, std::path::PathBuf::from("foo.rs"));
-        let id = a.pane_tree.active().buffer_id;
+        let id = a.editor.pane_tree.active().buffer_id;
         assert!(
             a.lsp_mode_enabled_for(id),
             "lsp-mode should auto-activate on a *.rs buffer with rust-analyzer configured"
@@ -926,7 +926,7 @@ mod tests {
             5,
             std::path::PathBuf::from("notes.unknown_ext"),
         );
-        let id = a.pane_tree.active().buffer_id;
+        let id = a.editor.pane_tree.active().buffer_id;
         assert!(
             !a.lsp_mode_enabled_for(id),
             "lsp-mode shouldn't auto-activate when no server config matches"
@@ -939,7 +939,7 @@ mod tests {
         // (path-driven check). Standalone-server use cases require
         // explicit `:lsp-mode`.
         let a = app_with("fn main() {}", 5);
-        let id = a.pane_tree.active().buffer_id;
+        let id = a.editor.pane_tree.active().buffer_id;
         assert!(!a.lsp_mode_enabled_for(id));
     }
 
@@ -972,7 +972,7 @@ mod tests {
         // no Drop fires synchronously).
         use crate::app::test_helpers::app_with_path;
         let mut a = app_with_path("fn main() {}", 5, std::path::PathBuf::from("foo.rs"));
-        let id = a.pane_tree.active().buffer_id;
+        let id = a.editor.pane_tree.active().buffer_id;
         // Sync prefix mutated active_modes for lsp-mode; the
         // spawn task is still in flight (open_buffer.await
         // round-trips the supervisor mailbox).
@@ -1010,7 +1010,7 @@ mod tests {
         // event + clears `buffer_uris`).
         use crate::app::test_helpers::app_with_path;
         let mut a = app_with_path("fn main() {}", 5, std::path::PathBuf::from("foo.rs"));
-        let id = a.pane_tree.active().buffer_id;
+        let id = a.editor.pane_tree.active().buffer_id;
         assert!(a.buffer_uri(id).is_some());
         a.toggle_mode_by_name("lsp-mode");
         // Wait for the detach event to land on the bus.
@@ -1042,7 +1042,7 @@ mod tests {
         // configured.
         use crate::app::test_helpers::{app_with_path, write_temp_file};
         let mut a = app_with_path("fn first() {}", 5, std::path::PathBuf::from("first.rs"));
-        let first_id = a.pane_tree.active().buffer_id;
+        let first_id = a.editor.pane_tree.active().buffer_id;
         // Boot path's lsp-mode activation is async since
         // M-async.5 -- wait for it to settle.
         let first_attached = wait_for(
@@ -1089,7 +1089,7 @@ mod tests {
         // lsp-mode stays active. User runs `:lsp-mode` to flip off.
         use crate::app::test_helpers::app_with_path;
         let mut a = app_with_path("fn main() {}", 5, std::path::PathBuf::from("foo.rs"));
-        let id = a.pane_tree.active().buffer_id;
+        let id = a.editor.pane_tree.active().buffer_id;
         assert!(a.lsp_mode_enabled_for(id));
         a.toggle_mode_by_name("text-mode");
         assert!(

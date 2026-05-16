@@ -372,7 +372,7 @@ impl App {
         // template substitution with $1/${name}.
         for line in first_line..=last_line {
             let line_text = self
-                .document
+                .editor.document
                 .snapshot()
                 .buffer
                 .line(line)
@@ -458,7 +458,7 @@ impl App {
         let text = self.editor.document.text();
         let bytes = text.as_bytes();
         let cursor_byte = match self
-            .document
+            .editor.document
             .snapshot()
             .buffer
             .position_to_byte(self.editor.cursor)
@@ -854,21 +854,21 @@ mod tests {
     fn substitute_first_match_on_current_line() {
         let mut a = app_with("foo bar foo", 10);
         submit_ex(&mut a, "s/foo/baz/");
-        assert_eq!(a.document.text(), "baz bar foo");
+        assert_eq!(a.editor.document.text(), "baz bar foo");
     }
 
     #[test]
     fn substitute_global_replaces_all_on_line() {
         let mut a = app_with("foo bar foo", 10);
         submit_ex(&mut a, "s/foo/baz/g");
-        assert_eq!(a.document.text(), "baz bar baz");
+        assert_eq!(a.editor.document.text(), "baz bar baz");
     }
 
     #[test]
     fn substitute_whole_buffer_with_g_flag() {
         let mut a = app_with("foo\nbar foo\nfoo", 10);
         submit_ex(&mut a, "%s/foo/X/g");
-        assert_eq!(a.document.text(), "X\nbar X\nX");
+        assert_eq!(a.editor.document.text(), "X\nbar X\nX");
     }
 
     #[test]
@@ -878,14 +878,14 @@ mod tests {
         let msg = a.editor.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Error);
         assert!(msg.text.contains("Pattern not found"));
-        assert_eq!(a.document.text(), "hello");
+        assert_eq!(a.editor.document.text(), "hello");
     }
 
     #[test]
     fn substitute_empty_replacement_deletes_pattern() {
         let mut a = app_with("hello world hello", 10);
         submit_ex(&mut a, "s/hello //g");
-        assert_eq!(a.document.text(), "world hello");
+        assert_eq!(a.editor.document.text(), "world hello");
     }
 
     #[test]
@@ -902,7 +902,7 @@ mod tests {
         let mut a = app_with("foo\nfoo\nfoo", 10);
         a.editor.cursor = Position::new(1, 0);
         submit_ex(&mut a, "s/foo/X/");
-        assert_eq!(a.document.text(), "foo\nX\nfoo");
+        assert_eq!(a.editor.document.text(), "foo\nX\nfoo");
     }
 
     // ---- Find-repeat (; / ,) ----
@@ -971,11 +971,11 @@ mod tests {
         a.set_foldmethod_for_test(FoldMethod::Markdown);
         a.recompute_folds();
         let idx = a
-            .folds
+            .editor.folds
             .iter()
             .position(|f| f.start_line == 0)
             .expect("H1 fold");
-        a.folds[idx].closed = true;
+        a.editor.folds[idx].closed = true;
         // Submit a forward search from the top of the buffer.
         a.editor.search_line = Some(SearchLine {
             origin: Position::ZERO,
@@ -986,7 +986,7 @@ mod tests {
         a.apply(Action::SearchSubmit);
         // The fold containing `body one` should now be open.
         let fold = a
-            .folds
+            .editor.folds
             .iter()
             .find(|f| f.start_line == 0)
             .expect("H1 fold still present");

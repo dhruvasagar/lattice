@@ -55,111 +55,8 @@ use notify::{
 };
 
 use crate::app::App;
-use lattice_lsp::{LogLevel, LogSource, WatcherSubscriptions};
-
-/// One server's subscription snapshot + the fingerprint used to
-/// detect changes. Keyed in [`LspFileWatcher`] by `server_id` so
-/// fan-out can route batched `FileEvent`s back to the right
-/// `ServerHandle`.
-struct CachedSubscription {
-    fingerprint: u64,
-    subs: WatcherSubscriptions,
-}
-
-/// App-side file-watcher service. One per App instance; created
-/// lazily on first use so apps that never run an LSP server pay
-/// no cost.
-pub struct LspFileWatcher {
-    /// One recursive watch per unique workspace root across
-    /// running actors. Kept on the struct so it doesn't drop;
-    /// dropping the watcher tears down its background thread.
-    watcher: Option<lattice_host::lsp_watcher::LspFileWatcher>,
-}
-
-impl LspFileWatcher {
-    pub fn new() -> Self {
-        Self { watcher: None }
-    }
-
-    /// Sync the watcher's subscribed roots to match `target`.
-    /// Adds new ones via `watch(..., RecursiveMode::Recursive)`
-    /// and unwatches paths no longer in `target`. Failures on
-    /// either side log + skip; the rest of the diff still
-    /// applies.
-    fn sync_watched_roots(&mut self, target: &HashSet<PathBuf>, logger: &lattice_lsp::LspLogger) {
-        if let Some(inner) = self.watcher.as_mut() {
-            inner.sync_watched_roots(target, logger);
-        }
-    }
-
-    pub fn watched_roots(&self) -> &HashSet<PathBuf> {
-        if let Some(inner) = self.watcher.as_ref() { return inner.watched_roots(); }
-        static EMPTY: once_cell::sync::Lazy<HashSet<PathBuf>> = once_cell::sync::Lazy::new(HashSet::new);
-        &EMPTY
-    }
-
-    fn drain_pending(&mut self) -> Vec<NotifyEvent> {
-        if let Some(inner) = self.watcher.as_mut() { return inner.drain_pending(); }
-        Vec::new()
-        // Unwatch paths that fell out of scope.
-        let stale: Vec<PathBuf> = self
-            .watched_roots
-            .iter()
-            .filter(|p| !target.contains(*p))
-            .cloned()
-            .collect();
-        for p in stale {
-            if let Err(e) = self.watcher.unwatch(&p) {
-                logger.log(
-                    None,
-                    LogLevel::Warn,
-                    LogSource::Client,
-                    format!("file-watcher unwatch {} failed: {e}", p.display()),
-                );
-            }
-            self.watched_roots.remove(&p);
-        }
-        // Add new paths.
-        let new: Vec<PathBuf> = target
-            .iter()
-            .filter(|p| !self.watched_roots.contains(*p))
-            .cloned()
-            .collect();
-        for p in new {
-            match self.watcher.watch(&p, RecursiveMode::Recursive) {
-                Ok(()) => {
-                    self.watched_roots.insert(p);
-                }
-                Err(e) => {
-                    logger.log(
-                        None,
-                        LogLevel::Warn,
-                        LogSource::Client,
-                        format!("file-watcher watch {} failed: {e}", p.display()),
-                    );
-                }
-            }
-        }
-    }
-
-    /// Borrow the set of paths the watcher is currently
-    /// subscribed to. Used by tests; production code goes
-    /// through [`Self::sync_watched_roots`].
-    pub fn watched_roots(&self) -> &HashSet<PathBuf> {
-        &self.watched_roots
-    }
-
-    /// Drain queued fs events into a vec. Used by tests; the
-    /// production drain (`App::drain_lsp_fs_events`) consumes the
-    /// same path inline.
-    fn drain_pending(&mut self) -> Vec<NotifyEvent> {
-        let mut out: Vec<NotifyEvent> = Vec::new();
-        while let Ok(ev) = self.rx.try_recv() {
-            out.push(ev);
-        }
-        out
-    }
-}
+use lattice_lsp::{LogLevel, LogSource};
+use lattice_host::lsp_watcher::CachedSubscription;
 
 /// Translate one `notify::Event` into an LSP `FileChangeType` per
 /// path. Notify lumps a wide range of fs ops into broad kinds;
@@ -233,18 +130,18 @@ impl App {
         }
         // Spawn lazily.
         if self.lsp_file_watcher.is_none() {
-            let mut w = LspFileWatcher::new();
-            w.watcher = lattice_host::lsp_watcher::LspFileWatcher::new().ok();
-            if w.watcher.is_none() {
-                self.editor.lsp_logger.log(
-                    None,
-                    LogLevel::Warn,
-                    LogSource::Client,
-                    "file watcher init failed".to_string(),
-                );
-                return;
+            match lattice_host::lsp_watcher::LspFileWatcher::new() {
+                Ok(w) => self.lsp_file_watcher = Some(w),
+                Err(_) => {
+                    self.editor.lsp_logger.log(
+                        None,
+                        LogLevel::Warn,
+                        LogSource::Client,
+                        "file watcher init failed".to_string(),
+                    );
+                    return;
+                }
             }
-            self.lsp_file_watcher = Some(w);
         }
         let watcher = match self.lsp_file_watcher.as_mut() {
             Some(w) => w,

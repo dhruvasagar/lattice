@@ -147,7 +147,7 @@ fn echo_level_from_grammar(level: lattice_grammar::EchoLevel) -> EchoLevel {
 impl App {
     /// Block_on a grammar dispatch through the actor (DESIGN.md
     /// §5.2.1). Replaces direct `lattice_grammar::execute(&self.editor.registry,
-    /// &mut self.document, ...)` calls; the actor holds the only
+    /// &mut self.editor.document, ...)` calls; the actor holds the only
     /// `&mut Document` and runs `execute` inside its task.
     ///
     /// v1 passes a `CancellationToken::never()` -- the input loop
@@ -623,11 +623,11 @@ impl App {
             Action::ClosePane => self.do_close_pane(),
             Action::NavigatePane(dir) => self.do_navigate_pane(dir),
             Action::NextPane => {
-                let target = self.pane_tree.next_pane();
+                let target = self.editor.pane_tree.next_pane();
                 self.activate_pane(target);
             }
             Action::PrevPane => {
-                let target = self.pane_tree.prev_pane();
+                let target = self.editor.pane_tree.prev_pane();
                 self.activate_pane(target);
             }
 
@@ -767,7 +767,7 @@ impl App {
 
     /// Dispatch a `CommandInvocation` against the active oil
     /// buffer's rope. Oil's content lives in `oil.content` (a
-    /// `Buffer`), separate from `self.document` (the actor-
+    /// `Buffer`), separate from `self.editor.document` (the actor-
     /// backed document buffer). The grammar dispatcher only
     /// knows about `Document`, so we synthesise a temporary
     /// `Document` from oil's rope, dispatch through it, and
@@ -1625,7 +1625,7 @@ mod tests {
     fn key_harness_dw_deletes_first_word() {
         let mut a = app_with("one two three", 10);
         press_chars(&mut a, "dw");
-        assert_eq!(a.document.text(), "two three");
+        assert_eq!(a.editor.document.text(), "two three");
     }
 
     #[test]
@@ -1639,21 +1639,21 @@ mod tests {
     fn key_harness_count_before_operator_dd_deletes_n_lines() {
         let mut a = app_with("a\nb\nc\nd\ne", 10);
         press_chars(&mut a, "3dd");
-        assert_eq!(a.document.text(), "d\ne");
+        assert_eq!(a.editor.document.text(), "d\ne");
     }
 
     #[test]
     fn key_harness_count_after_operator_d2w_deletes_two_words() {
         let mut a = app_with("one two three four", 10);
         press_chars(&mut a, "d2w");
-        assert_eq!(a.document.text(), "three four");
+        assert_eq!(a.editor.document.text(), "three four");
     }
 
     #[test]
     fn key_harness_counts_multiply_on_both_sides() {
         let mut a = app_with("a b c d e f g", 10);
         press_chars(&mut a, "2d2w");
-        assert_eq!(a.document.text(), "e f g");
+        assert_eq!(a.editor.document.text(), "e f g");
     }
 
     #[test]
@@ -1678,7 +1678,7 @@ mod tests {
     fn key_harness_df_delim_deletes_up_to_match() {
         let mut a = app_with("alpha, beta, gamma", 10);
         press_chars(&mut a, "df,");
-        assert_eq!(a.document.text(), ", beta, gamma");
+        assert_eq!(a.editor.document.text(), ", beta, gamma");
     }
 
     #[test]
@@ -1690,7 +1690,7 @@ mod tests {
             KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
         );
         press_chars(&mut a, "v");
-        assert_eq!(a.pane_tree.len(), 2);
+        assert_eq!(a.editor.pane_tree.len(), 2);
     }
 
     #[test]
@@ -1699,7 +1699,7 @@ mod tests {
         let mut a = app_with("", 10);
         press_chars(&mut a, "ihi");
         press(&mut a, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert_eq!(a.document.text(), "hi");
+        assert_eq!(a.editor.document.text(), "hi");
         assert_eq!(a.editor.modal, ModalState::Normal);
     }
 
@@ -1908,12 +1908,12 @@ mod tests {
             .with_range(lattice_grammar::Range::CurrentLine);
         a.apply(Action::Invoke(inv));
         // Slice 8.i.4.g: `dd` consumes BBB + its trailing newline.
-        assert_eq!(a.document.text(), "aaa\nccc\nddd");
+        assert_eq!(a.editor.document.text(), "aaa\nccc\nddd");
         // Cursor is now on what used to be `ccc` (line 1). `.`
         // repeats the linewise delete -- removes that line + its
         // trailing newline.
         a.apply(Action::RepeatLastChange);
-        assert_eq!(a.document.text(), "aaa\nddd");
+        assert_eq!(a.editor.document.text(), "aaa\nddd");
     }
 
     #[test]
@@ -1928,7 +1928,7 @@ mod tests {
         a.apply(Action::Invoke(inv));
         a.apply(Action::Insert("X".into()));
         a.apply(Action::EnterMode(ModalState::Normal));
-        assert_eq!(a.document.text(), "Xbeta gamma");
+        assert_eq!(a.editor.document.text(), "Xbeta gamma");
         // Move to "beta" (cursor is now on 'X' / position 0; let's go to 'b'
         // at byte 1).
         a.editor.cursor = Position::new(0, 1);
@@ -1937,7 +1937,7 @@ mod tests {
         // cw replays: deletes "beta " and inserts "X" -> "XXgamma".
         // (Note: our cw includes the trailing space; vim's cw is implicitly
         // ce, a deferred refinement.)
-        assert_eq!(a.document.text(), "XXgamma");
+        assert_eq!(a.editor.document.text(), "XXgamma");
         assert_eq!(a.editor.modal, ModalState::Normal);
     }
 
@@ -1952,7 +1952,7 @@ mod tests {
         // dw deletes "alpha "; then `.` deletes another word (no insert).
         a.apply(Action::RepeatLastChange);
         // Two dws: "alpha " then "beta " -> "gamma".
-        assert_eq!(a.document.text(), "gamma");
+        assert_eq!(a.editor.document.text(), "gamma");
     }
 
     #[test]
@@ -1987,7 +1987,7 @@ mod tests {
             .with_count(lattice_grammar::command::Count(2));
         a.apply(Action::Invoke(inv));
         // 2dw: deletes "one two " leaving "three four five".
-        assert_eq!(a.document.text(), "three four five");
+        assert_eq!(a.editor.document.text(), "three four five");
         assert_eq!(a.editor.op_count, 0);
     }
 
@@ -2004,7 +2004,7 @@ mod tests {
             .with_count(lattice_grammar::command::Count(6));
         a.apply(Action::Invoke(inv));
         // 6 words deleted from "a b c d e f g h i j" leaves "g h i j".
-        assert_eq!(a.document.text(), "g h i j");
+        assert_eq!(a.editor.document.text(), "g h i j");
     }
 
     #[test]
@@ -2017,7 +2017,7 @@ mod tests {
         let reg = a.editor.unnamed_register.as_ref().unwrap();
         assert_eq!(reg.content, "BBB\n");
         assert_eq!(reg.kind, YankKind::Linewise);
-        assert_eq!(a.document.text(), "aaa\nBBB\nccc");
+        assert_eq!(a.editor.document.text(), "aaa\nBBB\nccc");
     }
 
     #[test]
@@ -2044,16 +2044,16 @@ mod tests {
         a.recompute_folds();
         // Close the H1 fold (lines 0..=2).
         let idx = a
-            .folds
+            .editor.folds
             .iter()
             .position(|f| f.start_line == 0)
             .expect("H1 fold");
-        a.folds[idx].closed = true;
+        a.editor.folds[idx].closed = true;
         a.editor.cursor = Position::new(0, 0);
         let inv = CommandInvocation::of(a.editor.builtins.delete.0)
             .with_range(lattice_grammar::Range::CurrentLine);
         a.apply(Action::Invoke(inv));
-        let text = a.document.text();
+        let text = a.editor.document.text();
         assert!(!text.contains("# H1"), "H1 not deleted: {text:?}");
         assert!(!text.contains("body one"), "body one not deleted: {text:?}");
         assert!(!text.contains("body two"), "body two not deleted: {text:?}");
@@ -2068,11 +2068,11 @@ mod tests {
         a.set_foldmethod_for_test(FoldMethod::Markdown);
         a.recompute_folds();
         let idx = a
-            .folds
+            .editor.folds
             .iter()
             .position(|f| f.start_line == 0)
             .expect("H1 fold");
-        a.folds[idx].closed = true;
+        a.editor.folds[idx].closed = true;
         a.editor.cursor = Position::new(0, 0);
         let inv = CommandInvocation::of(a.editor.builtins.yank.0)
             .with_range(lattice_grammar::Range::CurrentLine);
@@ -2115,7 +2115,7 @@ mod tests {
         let inv = CommandInvocation::of(a.editor.builtins.delete.0)
             .with_range(lattice_grammar::Range::CurrentLine);
         a.apply(Action::Invoke(inv));
-        let text = a.document.text();
+        let text = a.editor.document.text();
         assert!(!text.contains("# H1"), "heading should be gone: {text:?}");
         assert!(
             text.contains("body one"),
@@ -2147,9 +2147,9 @@ mod tests {
     fn second_tab_advances_selected_candidate() {
         let mut a = app_in_command_mode("descri");
         a.apply(Action::CommandLineCompleteOrAdvance);
-        let first = a.completion_state.as_ref().unwrap().selected;
+        let first = a.editor.completion_state.as_ref().unwrap().selected;
         a.apply(Action::CommandLineCompleteOrAdvance);
-        let second = a.completion_state.as_ref().unwrap().selected;
+        let second = a.editor.completion_state.as_ref().unwrap().selected;
         assert_eq!(first, 0);
         assert_eq!(second, 1);
     }
@@ -2176,7 +2176,7 @@ mod tests {
         a.apply(Action::CommandLineCompleteOrAdvance);
         a.apply(Action::CommandLineClear);
         assert_eq!(a.editor.command_line, "");
-        assert!(a.completion_state.is_none());
+        assert!(a.editor.completion_state.is_none());
     }
 
     #[test]
@@ -2229,14 +2229,14 @@ mod tests {
     #[test]
     fn entering_command_line_dismisses_open_completion() {
         let mut a = app_with("xx", 10);
-        a.completion_state = Some(CompletionState {
+        a.editor.completion_state = Some(CompletionState {
             candidates: Vec::new(),
             selected: 0,
             replace_start: 0,
             original_line: String::new(),
         });
         a.apply(Action::EnterCommandLine);
-        assert!(a.completion_state.is_none());
+        assert!(a.editor.completion_state.is_none());
     }
 
     #[test]
@@ -2266,7 +2266,7 @@ mod tests {
         // already-fresh tree.
         assert_eq!(
             a.editor.last_parsed_text_version,
-            a.document.text_version(),
+            a.editor.document.text_version(),
             "post-apply reparse must have synced the version mirror"
         );
         let msg = a.editor.last_message.as_ref().expect("info echo");
@@ -2305,11 +2305,11 @@ mod tests {
         let initial_id = a.editor.document_buffer_id;
         // Close the first fold (line 0) on the initial buffer.
         let first_idx = a
-            .folds
+            .editor.folds
             .iter()
             .position(|f| f.start_line == 0)
             .expect("fold");
-        a.folds[first_idx].closed = true;
+        a.editor.folds[first_idx].closed = true;
         // Open + activate the new buffer.
         a.editor.command_line = format!("e {}", path.display());
         a.editor.modal = ModalState::Command;
@@ -2321,9 +2321,9 @@ mod tests {
         assert_eq!(a.editor.document_buffer_id, initial_id);
         // Closed state survived the round-trip.
         assert!(
-            a.folds.iter().any(|f| f.start_line == 0 && f.closed),
+            a.editor.folds.iter().any(|f| f.start_line == 0 && f.closed),
             "expected fold@0 to remain closed after switch-away-and-back: {:?}",
-            a.folds
+            a.editor.folds
         );
         let _ = std::fs::remove_file(path);
     }
@@ -2343,7 +2343,7 @@ mod tests {
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let id_target = a.editor.document_buffer_id;
-        assert!(a.folds.is_empty(), "manual leaves folds empty");
+        assert!(a.editor.folds.is_empty(), "manual leaves folds empty");
         // Switch back to the original buffer.
         let original_id = a
             .editor.buffers
@@ -2359,9 +2359,9 @@ mod tests {
         a.activate_document(id_target);
         assert_eq!(a.editor.document_buffer_id, id_target);
         assert!(
-            !a.folds.is_empty(),
+            !a.editor.folds.is_empty(),
             "expected activation hook to seed folds on first visit under indent: {:?}",
-            a.folds
+            a.editor.folds
         );
         let _ = std::fs::remove_file(path);
     }
@@ -2370,7 +2370,7 @@ mod tests {
     fn word_under_cursor_returns_alphanumeric_run() {
         let mut a = app_with("hello world", 10);
         a.editor.cursor = Position::new(0, 0);
-        let snap = a.document.snapshot();
+        let snap = a.editor.document.snapshot();
         assert_eq!(
             word_under_cursor(&snap.buffer, a.editor.cursor),
             Some("hello".to_string())
@@ -2385,7 +2385,7 @@ mod tests {
     #[test]
     fn word_under_cursor_returns_none_off_word() {
         let a = app_with("foo bar", 10);
-        let snap = a.document.snapshot();
+        let snap = a.editor.document.snapshot();
         // Cursor on the space.
         let p = Position::new(0, 3);
         assert_eq!(word_under_cursor(&snap.buffer, p), None);

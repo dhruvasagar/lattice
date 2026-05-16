@@ -58,7 +58,7 @@ impl App {
         }
         self.snapshot_active_pane();
         // Same-document fast path: returning to the document
-        // buffer that `self.document` still points at (e.g. from
+        // buffer that `self.editor.document` still points at (e.g. from
         // a help-in-pane overlay or a file-tree pane).
         // Help overlay leaves `entry.editor.syntax` as None (no stash);
         // file-tree leaves it as Some (stashed via
@@ -66,7 +66,7 @@ impl App {
         // check is `entry.editor.syntax.is_some()`; folds piggyback.
         if id == self.editor.document_buffer_id {
             self.editor.active_buffer = BufferKind::Document;
-            let pane = self.pane_tree.active_mut();
+            let pane = self.editor.pane_tree.active_mut();
             pane.buffer = BufferKind::Document;
             pane.buffer_id = id;
             // M.3.2.c.5: pull stashed mode-state out of buffer_locals
@@ -144,7 +144,7 @@ impl App {
             .map(|f| f.0.clone())
             .unwrap_or_default();
         self.editor.document_buffer_id = id;
-        let pane = self.pane_tree.active_mut();
+        let pane = self.editor.pane_tree.active_mut();
         pane.buffer = BufferKind::Document;
         pane.buffer_id = id;
         // Per-document transient state resets.
@@ -162,7 +162,7 @@ impl App {
             format!(
                 "switched to buffer #{} {}",
                 id.0,
-                self.document
+                self.editor.document
                     .path()
                     .map(|p| format!("\"{}\"", p.display()))
                     .unwrap_or_else(|| "(no file)".into())
@@ -220,7 +220,7 @@ impl App {
         self.editor.cursor = stash_cursor;
         self.editor.scroll = stash_scroll;
         self.editor.active_buffer = BufferKind::FileTree;
-        let pane = self.pane_tree.active_mut();
+        let pane = self.editor.pane_tree.active_mut();
         pane.buffer = BufferKind::FileTree;
         pane.buffer_id = id;
         pane.cursor = stash_cursor;
@@ -234,7 +234,7 @@ impl App {
             return;
         };
         self.editor.active_buffer = BufferKind::Oil;
-        let pane = self.pane_tree.active_mut();
+        let pane = self.editor.pane_tree.active_mut();
         pane.buffer = BufferKind::Oil;
         pane.buffer_id = id;
         pane.cursor = oil_cursor;
@@ -271,7 +271,7 @@ impl App {
         // buffer; help-to-help transitions (link follows etc.)
         // preserve the original origin.
         if !matches!(self.editor.active_buffer, BufferKind::Help) {
-            let active = self.pane_tree.active();
+            let active = self.editor.pane_tree.active();
             self.editor.prev_pane_for_help = Some(PrevPaneState {
                 buffer: active.buffer,
                 buffer_id: active.buffer_id,
@@ -302,7 +302,7 @@ impl App {
         self.editor.cursor = stash_cursor;
         self.editor.scroll = stash_scroll;
         self.editor.active_buffer = BufferKind::Help;
-        let pane = self.pane_tree.active_mut();
+        let pane = self.editor.pane_tree.active_mut();
         pane.buffer = BufferKind::Help;
         pane.buffer_id = id;
         pane.cursor = stash_cursor;
@@ -385,7 +385,7 @@ impl App {
         // Re-point any pane still referencing the removed buffer.
         let new_id = self.active_pane_buffer_id();
         let new_kind = self.editor.active_buffer;
-        for pane in self.pane_tree.leaves_mut() {
+        for pane in self.editor.pane_tree.leaves_mut() {
             if pane.buffer_id == to_remove {
                 pane.buffer_id = new_id;
                 pane.buffer = new_kind;
@@ -430,7 +430,7 @@ impl App {
     pub(super) fn do_edit(&mut self, path: Option<std::path::PathBuf>, force: bool) {
         let target = match path {
             Some(p) => p,
-            None => match self.document.path() {
+            None => match self.editor.document.path() {
                 Some(p) => p,
                 None => {
                     self.set_message(EchoLevel::Error, "no file name".to_string());
@@ -457,7 +457,7 @@ impl App {
         if let Some(existing_id) = self.find_document_by_path(&target) {
             if existing_id == self.editor.document_buffer_id {
                 // Re-edit current: reload from disk (vim's `:e`).
-                if !force && self.document.dirty() {
+                if !force && self.editor.document.dirty() {
                     self.set_message(
                         EchoLevel::Error,
                         "no write since last change (add ! to override)".to_string(),
@@ -563,7 +563,7 @@ impl App {
         self.editor.document = new_handle;
         self.editor.snapshot_cache = self.editor.document.snapshot_cache();
         self.editor.syntax = syntax;
-        self.editor.last_parsed_text_version = self.document.text_version();
+        self.editor.last_parsed_text_version = self.editor.document.text_version();
         self.editor.cursor = Position::ZERO;
         self.editor.scroll = 0;
         self.editor.current_match = None;
@@ -579,8 +579,8 @@ impl App {
         // Position history follows the active buffer.
         self.editor.position_history.clear();
         self.editor.position_history_cursor = 0;
-        self.pane_tree.active_mut().buffer = BufferKind::Document;
-        self.pane_tree.active_mut().buffer_id = new_id;
+        self.editor.pane_tree.active_mut().buffer = BufferKind::Document;
+        self.editor.pane_tree.active_mut().buffer_id = new_id;
         self.activate_buffer_state();
         // Event-driven LSP attach.
         self.publish_document_opened_for_active();
@@ -660,7 +660,7 @@ impl App {
     /// bypasses the dirty guard. Publishes `Event::BeforeQuit`
     /// for observability when the editor actually quits.
     pub(super) fn do_quit(&mut self, force: bool) {
-        if self.pane_tree.len() > 1 {
+        if self.editor.pane_tree.len() > 1 {
             self.do_close_pane();
             return;
         }
@@ -695,7 +695,7 @@ impl App {
         // Save the App's hot-path cursor/scroll into the active
         // pane's stash so the new sibling clones a fresh snapshot.
         self.snapshot_active_pane();
-        let _new_idx = self.pane_tree.split_active(orientation);
+        let _new_idx = self.editor.pane_tree.split_active(orientation);
     }
 
     /// Close the active pane. The first surviving pane becomes
@@ -704,12 +704,12 @@ impl App {
     /// Singleton transient buffers (file tree) get garbage-collected
     /// if no surviving pane references them.
     pub(super) fn do_close_pane(&mut self) {
-        if self.pane_tree.len() <= 1 {
+        if self.editor.pane_tree.len() <= 1 {
             self.set_message(EchoLevel::Warn, "Already only one pane".to_string());
             return;
         }
         self.snapshot_active_pane();
-        if !self.pane_tree.close_active() {
+        if !self.editor.pane_tree.close_active() {
             return;
         }
         self.load_active_pane();
@@ -731,7 +731,7 @@ impl App {
     /// matches what the renderer drew.
     pub(super) fn do_navigate_pane(&mut self, direction: PaneDirection) {
         let area = self.buffer_area_rect();
-        let Some(target) = self.pane_tree.navigate(direction, area) else {
+        let Some(target) = self.editor.pane_tree.navigate(direction, area) else {
             return;
         };
         self.activate_pane(target);
@@ -740,11 +740,11 @@ impl App {
     /// Make pane `idx` the active one, swapping the App's hot-path
     /// cursor / scroll with the target pane's stash.
     pub(super) fn activate_pane(&mut self, idx: usize) {
-        if idx == self.pane_tree.active_index() {
+        if idx == self.editor.pane_tree.active_index() {
             return;
         }
         self.snapshot_active_pane();
-        if !self.pane_tree.set_active(idx) {
+        if !self.editor.pane_tree.set_active(idx) {
             return;
         }
         self.load_active_pane();
@@ -762,7 +762,7 @@ impl App {
     /// archival-correct, but the *live* cursor is `self.editor.cursor`
     /// for every motion / scroll / search / render path.
     pub(super) fn load_active_pane(&mut self) {
-        let pane = *self.pane_tree.active();
+        let pane = *self.editor.pane_tree.active();
         self.editor.active_buffer = pane.buffer;
         self.editor.cursor = pane.cursor;
         self.editor.scroll = pane.scroll;
@@ -947,7 +947,7 @@ impl App {
     /// path`. The actor swaps state in place and republishes the
     /// snapshot.
     pub(super) fn replace_document_blocking(&self, document: Document) {
-        let _ = block_on(self.document.replace(document));
+        let _ = block_on(self.editor.document.replace(document));
     }
 
     /// Look up a buffer by file path. Used by `:e FILE` to detect
@@ -1018,7 +1018,7 @@ impl App {
         // `has_server_for_path`) is the "is this a language
         // we support?" predicate, so the list of LSP-eligible
         // languages grows automatically as servers register.
-        let active_id = self.pane_tree.active().buffer_id;
+        let active_id = self.editor.pane_tree.active().buffer_id;
         self.activate_major_for_buffer_kind(active_id, BufferKind::Document);
         // Re-resolve the buffer's options against the *current*
         // global typed-option layer. `apply_option_cascade` only
@@ -1064,7 +1064,7 @@ impl App {
     /// stepping. The active pane's buffer_id is the source of
     /// truth (the active pane is what the user sees).
     pub(super) fn active_pane_buffer_id(&self) -> BufferId {
-        self.pane_tree.active().buffer_id
+        self.editor.pane_tree.active().buffer_id
     }
 
     /// Copy the App's hot-path cursor / scroll into the active
@@ -1080,7 +1080,7 @@ impl App {
     pub(super) fn snapshot_active_pane(&mut self) {
         let cursor = self.editor.cursor;
         let scroll = self.editor.scroll;
-        let pane_id = self.pane_tree.active().buffer_id;
+        let pane_id = self.editor.pane_tree.active().buffer_id;
         // Mirror live state into the buffer-specific stash + the
         // registry record for archival / cross-pane round-trips.
         match self.editor.active_buffer {
@@ -1111,7 +1111,7 @@ impl App {
             }
             BufferKind::Document => {}
         }
-        let active = self.pane_tree.active_mut();
+        let active = self.editor.pane_tree.active_mut();
         active.cursor = cursor;
         active.scroll = scroll;
     }
@@ -1271,7 +1271,7 @@ impl App {
         // Push pre-jump cursor before any state mutates.
         self.push_position_history(self.editor.cursor, PositionSource::PluginPush);
 
-        let same_buffer = self.document.path().map(|p| p == path).unwrap_or(false);
+        let same_buffer = self.editor.document.path().map(|p| p == path).unwrap_or(false);
         if !same_buffer {
             self.do_edit(Some(path.to_path_buf()), false);
         }
@@ -1500,7 +1500,7 @@ impl App {
         // Bounded by a 500ms timeout so a buggy server can't
         // hang the save.
         self.run_will_save_wait_until_blocking();
-        let result = block_on(self.document.save());
+        let result = block_on(self.editor.document.save());
         if let Ok(path) = result.as_ref() {
             self.editor.event_bus.publish(Event::DocumentSaved {
                 id: snap.id,
@@ -1701,7 +1701,7 @@ impl App {
             id: snap.id,
             path: path.clone(),
         });
-        let result = block_on(self.document.save_as(path.clone()));
+        let result = block_on(self.editor.document.save_as(path.clone()));
         if result.is_ok() {
             self.editor.event_bus
                 .publish(Event::DocumentSaved { id: snap.id, path });
@@ -1777,7 +1777,7 @@ mod tests {
         // Version baseline advanced -- next request will use
         // this as `from_version`.
         assert!(a.editor.last_synced_syntax_version > initial_synced);
-        assert_eq!(a.editor.last_synced_syntax_version, a.document.text_version());
+        assert_eq!(a.editor.last_synced_syntax_version, a.editor.document.text_version());
     }
 
     #[test]
@@ -1788,7 +1788,7 @@ mod tests {
         let mut a = app_with("original", 10);
         let cmd = format!("e {}", path.display());
         submit_ex(&mut a, &cmd);
-        assert_eq!(a.document.text(), "loaded contents\nsecond line");
+        assert_eq!(a.editor.document.text(), "loaded contents\nsecond line");
         assert_eq!(a.editor.cursor, Position::ZERO);
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -1799,12 +1799,12 @@ mod tests {
         a.apply(Action::EnterMode(ModalState::Insert));
         a.apply(Action::Insert("X".into()));
         a.apply(Action::EnterMode(ModalState::Normal));
-        assert!(a.document.dirty());
+        assert!(a.editor.document.dirty());
         submit_ex(&mut a, "e /nonexistent");
         let msg = a.editor.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Error);
         // Document unchanged.
-        assert_eq!(a.document.text(), "Xmodified");
+        assert_eq!(a.editor.document.text(), "Xmodified");
     }
 
     #[test]
@@ -1818,7 +1818,7 @@ mod tests {
         a.apply(Action::EnterMode(ModalState::Normal));
         let cmd = format!("e! {}", path.display());
         submit_ex(&mut a, &cmd);
-        assert_eq!(a.document.text(), "loaded");
+        assert_eq!(a.editor.document.text(), "loaded");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -1864,23 +1864,23 @@ mod tests {
         let msg = a.editor.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Error);
         // Buffer unchanged.
-        assert_eq!(a.document.text(), "hello");
+        assert_eq!(a.editor.document.text(), "hello");
     }
 
     #[test]
     fn split_pane_horizontal_creates_second_pane() {
         let mut a = app_with("xx", 10);
         a.apply(Action::SplitPaneHorizontal);
-        assert_eq!(a.pane_tree.len(), 2);
+        assert_eq!(a.editor.pane_tree.len(), 2);
         // Active stays on original.
-        assert_eq!(a.pane_tree.active_index(), 0);
+        assert_eq!(a.editor.pane_tree.active_index(), 0);
     }
 
     #[test]
     fn split_pane_vertical_creates_second_pane() {
         let mut a = app_with("xx", 10);
         a.apply(Action::SplitPaneVertical);
-        assert_eq!(a.pane_tree.len(), 2);
+        assert_eq!(a.editor.pane_tree.len(), 2);
     }
 
     #[test]
@@ -1888,17 +1888,17 @@ mod tests {
         let mut a = app_with("xx", 10);
         a.apply(Action::SplitPaneVertical);
         a.apply(Action::ClosePane);
-        assert_eq!(a.pane_tree.len(), 1);
+        assert_eq!(a.editor.pane_tree.len(), 1);
     }
 
     #[test]
     fn quit_with_multiple_panes_closes_active_pane() {
         let mut a = app_with("xx", 10);
         a.apply(Action::SplitPaneVertical);
-        assert_eq!(a.pane_tree.len(), 2);
+        assert_eq!(a.editor.pane_tree.len(), 2);
         a.do_quit(false);
         assert!(!a.editor.should_quit, "extra pane: :q must not exit the editor");
-        assert_eq!(a.pane_tree.len(), 1);
+        assert_eq!(a.editor.pane_tree.len(), 1);
     }
 
     #[test]
@@ -1908,10 +1908,10 @@ mod tests {
         a.apply(Action::EnterMode(ModalState::Insert));
         a.apply(Action::Insert("z".into()));
         a.apply(Action::EnterMode(ModalState::Normal));
-        assert!(a.document.dirty());
+        assert!(a.editor.document.dirty());
         a.do_quit(false);
         assert!(!a.editor.should_quit);
-        assert_eq!(a.pane_tree.len(), 1);
+        assert_eq!(a.editor.pane_tree.len(), 1);
     }
 
     #[test]
@@ -1964,7 +1964,7 @@ mod tests {
         // After open_help, active is Help but the active pane
         // still shows the doc -- pane.cursor must reflect where
         // the doc was, not the help buffer's (0,0).
-        let pane = a.pane_tree.active();
+        let pane = a.editor.pane_tree.active();
         assert_eq!(
             pane.cursor,
             Position::new(3, 2),
@@ -1980,7 +1980,7 @@ mod tests {
         a.editor.scroll = 1;
         a.apply(Action::SplitPaneVertical);
         // Both panes should have (line=2, scroll=1) initially.
-        let panes = a.pane_tree.leaves();
+        let panes = a.editor.pane_tree.leaves();
         assert_eq!(panes[0].cursor.line, 2);
         assert_eq!(panes[0].scroll, 1);
         assert_eq!(panes[1].cursor.line, 2);
@@ -1999,7 +1999,7 @@ mod tests {
         // `*lsp*` buffer is unlisted and filtered out here.
         assert_eq!(a.editor.buffers.listed_ids_sorted().len(), 2);
         assert_ne!(a.editor.document_buffer_id, initial_id);
-        assert_eq!(a.document.text(), "alpha\n");
+        assert_eq!(a.editor.document.text(), "alpha\n");
         let _ = std::fs::remove_file(path);
     }
 
@@ -2092,7 +2092,7 @@ mod tests {
         // tree stays in the registry (reachable via :bn / :b).
         assert_eq!(a.editor.active_buffer, BufferKind::Document);
         assert_eq!(a.editor.buffers.file_tree_ids_sorted().len(), 1);
-        assert_eq!(a.document.text(), "hello");
+        assert_eq!(a.editor.document.text(), "hello");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -2135,7 +2135,7 @@ mod tests {
         assert_eq!(app.active_pane_content_height(20), 20);
         // Horizontal split -> two panes, each ~half the buffer
         // height; minus the per-pane status row.
-        app.pane_tree
+        app.editor.pane_tree
             .split_active(crate::pane::SplitOrientation::Horizontal);
         let content = app.active_pane_content_height(20);
         // 20 / 2 = 10; minus status row = 9.
@@ -2568,7 +2568,7 @@ mod tests {
         let active_id = a.editor.document_buffer_id;
         // Force a non-default fold so the mirror has something
         // to observe.
-        a.folds.push(crate::app::Fold {
+        a.editor.folds.push(crate::app::Fold {
             start_line: 0,
             end_line: 1,
             closed: false,
@@ -2687,7 +2687,7 @@ mod tests {
         // locals to validate the accessor path. Real `:e <new>`
         // does this through `do_edit`.
         let inactive_id = BufferId::next();
-        let doc_handle = a.document.clone();
+        let doc_handle = a.editor.document.clone();
         a.editor.buffers.insert(BufferEntry {
             id: inactive_id,
             flags: BufferFlags::default(),
@@ -2960,7 +2960,7 @@ mod tests {
             .expect("a.txt in listing");
         a.editor.cursor.line = a_txt_row as u32;
         a.do_oil_follow();
-        let opened = a.document.path().map(|p| p.to_path_buf());
+        let opened = a.editor.document.path().map(|p| p.to_path_buf());
         assert_eq!(opened, Some(tmp.join("a.txt")));
 
         let _ = std::fs::remove_dir_all(&tmp);
@@ -3089,7 +3089,7 @@ mod tests {
             .expect("inside.txt in listing");
         a.editor.cursor.line = inside_row as u32;
         a.do_oil_follow();
-        let opened = a.document.path().map(|p| p.to_path_buf());
+        let opened = a.editor.document.path().map(|p| p.to_path_buf());
         assert_eq!(opened, Some(tmp.join("sub/inside.txt")));
 
         let _ = std::fs::remove_dir_all(&tmp);
@@ -3149,7 +3149,7 @@ mod tests {
         // opens the file as a Document. The active buffer's
         // path should be gamma.txt, not alpha.txt.
         assert_eq!(a.editor.active_buffer, BufferKind::Document);
-        let active_path = a.document.path().map(|p| p.to_path_buf());
+        let active_path = a.editor.document.path().map(|p| p.to_path_buf());
         assert_eq!(
             active_path,
             Some(tmp.join("gamma.txt")),
@@ -3262,7 +3262,7 @@ mod tests {
         // carrying a synthetic name. Reuse the same DocumentHandle
         // because the test fixture's `app_with` already produces an
         // unsaved buffer (`handle.path()` is None).
-        let handle = a.document.clone();
+        let handle = a.editor.document.clone();
         a.editor.buffers.remove(active);
         a.editor.buffers.insert(BufferEntry {
             id: active,
@@ -3270,7 +3270,7 @@ mod tests {
             data: BufferData::Document(DocumentEntry { id: active, handle }),
             name: Some("*lsp*".to_string()),
         });
-        let pane = a.pane_tree.active().clone();
+        let pane = a.editor.pane_tree.active().clone();
         let label = a.pane_status_label(&pane);
         assert!(
             label.contains("*lsp*"),
@@ -3342,7 +3342,7 @@ mod tests {
         // modeline must suppress the `[+]` marker for these.
         let a = app_with("hi", 5);
         let active = a.active_pane_buffer_id();
-        let handle = a.document.clone();
+        let handle = a.editor.document.clone();
         a.editor.buffers.remove(active);
         a.editor.buffers.insert(BufferEntry {
             id: active,
@@ -3364,7 +3364,7 @@ mod tests {
             handle.apply_edit_batch(vec![lattice_protocol::edit::Edit::insert(pos, "x")]),
         );
         assert!(handle.dirty(), "fixture must produce a dirty Document");
-        let pane = a.pane_tree.active().clone();
+        let pane = a.editor.pane_tree.active().clone();
         let label = a.pane_status_label(&pane);
         assert!(
             label.contains("*lsp*"),

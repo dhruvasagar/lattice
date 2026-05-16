@@ -49,7 +49,7 @@ impl App {
         let text = self.editor.document.text();
         let bytes = text.as_bytes();
         let cursor_byte = match self
-            .document
+            .editor.document
             .snapshot()
             .buffer
             .position_to_byte(self.editor.cursor)
@@ -87,7 +87,7 @@ impl App {
         };
         match target {
             Some(t) => {
-                if let Ok(pos) = self.document.snapshot().buffer.byte_to_position(t) {
+                if let Ok(pos) = self.editor.document.snapshot().buffer.byte_to_position(t) {
                     self.push_position_history(pre_jump, PositionSource::AutoJump);
                     self.editor.cursor = pos;
                     self.auto_open_folds_at_cursor();
@@ -277,8 +277,8 @@ impl App {
                     || self.editor.popup_buffer == Some(entry.buffer_id);
                 if buffer_present {
                     self.editor.cursor = entry.position;
-                    self.pane_tree.active_mut().buffer = BufferKind::Help;
-                    self.pane_tree.active_mut().buffer_id = entry.buffer_id;
+                    self.editor.pane_tree.active_mut().buffer = BufferKind::Help;
+                    self.editor.pane_tree.active_mut().buffer_id = entry.buffer_id;
                     self.clamp_cursor_to_active_buffer();
                 }
             }
@@ -286,8 +286,8 @@ impl App {
                 if self.editor.buffers.contains_file_tree(entry.buffer_id) {
                     self.editor.active_buffer = BufferKind::FileTree;
                     self.editor.cursor = entry.position;
-                    self.pane_tree.active_mut().buffer = BufferKind::FileTree;
-                    self.pane_tree.active_mut().buffer_id = entry.buffer_id;
+                    self.editor.pane_tree.active_mut().buffer = BufferKind::FileTree;
+                    self.editor.pane_tree.active_mut().buffer_id = entry.buffer_id;
                     self.clamp_cursor_to_active_buffer();
                 }
             }
@@ -295,8 +295,8 @@ impl App {
                 if self.editor.buffers.contains_oil(entry.buffer_id) {
                     self.editor.active_buffer = BufferKind::Oil;
                     self.editor.cursor = entry.position;
-                    self.pane_tree.active_mut().buffer = BufferKind::Oil;
-                    self.pane_tree.active_mut().buffer_id = entry.buffer_id;
+                    self.editor.pane_tree.active_mut().buffer = BufferKind::Oil;
+                    self.editor.pane_tree.active_mut().buffer_id = entry.buffer_id;
                     self.clamp_cursor_to_active_buffer();
                 }
             }
@@ -378,8 +378,8 @@ impl App {
             width: 1,
             height: buffer_height as u16,
         };
-        let rects = self.pane_tree.compute_rects(area);
-        let active_idx = self.pane_tree.active_index();
+        let rects = self.editor.pane_tree.compute_rects(area);
+        let active_idx = self.editor.pane_tree.active_index();
         let multi = rects.len() > 1;
         let pane_h = rects
             .iter()
@@ -408,7 +408,7 @@ impl App {
         if !matches!(self.editor.active_buffer, BufferKind::Help) {
             return None;
         }
-        if self.pane_tree.active().buffer == BufferKind::Help {
+        if self.editor.pane_tree.active().buffer == BufferKind::Help {
             return None;
         }
         let help = self.popup_help()?;
@@ -635,7 +635,7 @@ impl App {
         match self.editor.active_buffer {
             BufferKind::Help => self.editor.popup_buffer.unwrap_or(self.editor.document_buffer_id),
             BufferKind::Document | BufferKind::FileTree | BufferKind::Oil => {
-                self.pane_tree.active().buffer_id
+                self.editor.pane_tree.active().buffer_id
             }
         }
     }
@@ -1176,7 +1176,7 @@ mod tests {
             .with_count(lattice_grammar::command::Count(2));
         a.apply(Action::Invoke(inv));
         // Lines 0 and 1 ("one" and "two") deleted; line 2 ("three") survives.
-        let text = a.document.text();
+        let text = a.editor.document.text();
         assert!(!text.contains("one"));
         assert!(!text.contains("two"));
         assert!(text.contains("three"));
@@ -1184,7 +1184,7 @@ mod tests {
 
         // One undo should fully restore.
         let _ = a.undo_blocking();
-        assert_eq!(a.document.text(), "one\ntwo\nthree\nfour");
+        assert_eq!(a.editor.document.text(), "one\ntwo\nthree\nfour");
     }
 
     #[test]
@@ -1200,10 +1200,10 @@ mod tests {
             .with_range(lattice_grammar::Range::CurrentLine)
             .with_count(lattice_grammar::command::Count(2));
         a.apply(Action::Invoke(inv));
-        assert_eq!(a.document.text(), "    one\n    two\nthree\nfour");
+        assert_eq!(a.editor.document.text(), "    one\n    two\nthree\nfour");
         // Single undo restores the original buffer.
         let _ = a.undo_blocking();
-        assert_eq!(a.document.text(), "one\ntwo\nthree\nfour");
+        assert_eq!(a.editor.document.text(), "one\ntwo\nthree\nfour");
     }
 
     #[test]
@@ -1215,9 +1215,9 @@ mod tests {
             .with_range(lattice_grammar::Range::CurrentLine)
             .with_count(lattice_grammar::command::Count(2));
         a.apply(Action::Invoke(inv));
-        assert_eq!(a.document.text(), "one\ntwo\nthree\nfour");
+        assert_eq!(a.editor.document.text(), "one\ntwo\nthree\nfour");
         let _ = a.undo_blocking();
-        assert_eq!(a.document.text(), "    one\n    two\nthree\nfour");
+        assert_eq!(a.editor.document.text(), "    one\n    two\nthree\nfour");
     }
 
     #[test]
@@ -1238,12 +1238,12 @@ mod tests {
         // Move cursor in the active pane.
         a.editor.cursor = Position::new(0, 0);
         a.apply(Action::NextPane);
-        assert_eq!(a.pane_tree.active_index(), 1);
+        assert_eq!(a.editor.pane_tree.active_index(), 1);
         // Pane 1 should still hold its stashed cursor (2, 0).
         assert_eq!(a.editor.cursor, Position::new(2, 0));
         // Cycle back -- pane 0 holds (0, 0) per the in-active mutation.
         a.apply(Action::NextPane);
-        assert_eq!(a.pane_tree.active_index(), 0);
+        assert_eq!(a.editor.pane_tree.active_index(), 0);
         assert_eq!(a.editor.cursor, Position::new(0, 0));
     }
 
@@ -1254,10 +1254,10 @@ mod tests {
         a.apply(Action::SplitPaneVertical);
         // Active=0 (left). Navigate Right -> active=1.
         a.apply(Action::NavigatePane(PaneDirection::Right));
-        assert_eq!(a.pane_tree.active_index(), 1);
+        assert_eq!(a.editor.pane_tree.active_index(), 1);
         // Navigate Left -> active=0.
         a.apply(Action::NavigatePane(PaneDirection::Left));
-        assert_eq!(a.pane_tree.active_index(), 0);
+        assert_eq!(a.editor.pane_tree.active_index(), 0);
     }
 
     #[test]
@@ -1284,13 +1284,13 @@ mod tests {
             crate::help::HelpContent::from_lines("regression", vec!["help body".to_string()]);
         a.open_help_in_pane(help);
         assert_eq!(a.editor.active_buffer, BufferKind::Help);
-        let active_pane = a.pane_tree.active();
+        let active_pane = a.editor.pane_tree.active();
         assert_eq!(active_pane.buffer, BufferKind::Help);
         assert_ne!(active_pane.buffer_id, doc_id);
         // <C-o> walks back to the AutoJump entry pointing at the doc.
         a.apply(Action::JumpHistoryBack);
         assert_eq!(a.editor.active_buffer, BufferKind::Document);
-        let active_pane = a.pane_tree.active();
+        let active_pane = a.editor.pane_tree.active();
         assert_eq!(
             active_pane.buffer,
             BufferKind::Document,

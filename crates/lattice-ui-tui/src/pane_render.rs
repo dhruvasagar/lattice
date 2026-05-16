@@ -106,7 +106,7 @@ mod tests {
         // provider; the renderer must fall through to its default
         // document path.
         let a = app_with("hello", 10);
-        let active_id = a.pane_tree.active().buffer_id;
+        let active_id = a.editor.pane_tree.active().buffer_id;
         assert!(a.pane_render_provider(active_id).is_none());
     }
 

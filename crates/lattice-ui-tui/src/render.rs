@@ -51,7 +51,7 @@ use crate::app::{App, EchoLevel, Fold};
 ///   render pass even under multi-thread rendering. Read
 ///   directly through this borrowed reference.
 /// - `folds: Arc<[Fold]>` -- frozen snapshot. Replaces direct
-///   `app.folds.iter()` reads.
+///   `app.editor.folds.iter()` reads.
 /// - `visible_highlights: Arc<[Vec<StyledSpan>]>` -- frozen
 ///   viewport highlight grid. Replaces direct
 ///   `app.editor.visible_highlights[...]` reads.
@@ -115,7 +115,7 @@ impl<'a> FrameView<'a> {
     }
 
     /// Mirror of [`App::fold_start_at_any`] but reads from the
-    /// frozen `view.folds` snapshot instead of `app.folds`.
+    /// frozen `view.folds` snapshot instead of `app.editor.folds`.
     /// Used by the gutter glyph provider so the renderer's view
     /// of folds can't go out of sync with the snapshot it took
     /// at chain entry.
@@ -236,7 +236,7 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) {
     //   Document): second `K` moved focus into the popup; popup
     //   paints with a visible cursor at `app.editor.cursor`; doc paints
     //   as inactive (frozen at `pane.cursor`) below.
-    let active_pane_kind = app.pane_tree.active().buffer;
+    let active_pane_kind = app.editor.pane_tree.active().buffer;
     if app.editor.popup_buffer.is_some() && active_pane_kind != crate::buffers::BufferKind::Help {
         draw_help_overlay(frame, chunks[0], app, snap);
     }
@@ -1272,7 +1272,7 @@ fn position_help_popup(
     let (cursor, scroll) = match app.editor.active_buffer {
         crate::buffers::BufferKind::Document => (app.editor.cursor, app.editor.scroll),
         _ => {
-            let pane = app.pane_tree.active();
+            let pane = app.editor.pane_tree.active();
             (pane.cursor, pane.scroll)
         }
     };
@@ -1319,8 +1319,8 @@ fn active_pane_content_rect(app: &App, buffer_area: Rect) -> Option<Rect> {
         width: buffer_area.width,
         height: buffer_area.height,
     };
-    let rects = app.pane_tree.compute_rects(pane_area);
-    let active_idx = app.pane_tree.active_index();
+    let rects = app.editor.pane_tree.compute_rects(pane_area);
+    let active_idx = app.editor.pane_tree.active_index();
     let multi = rects.len() > 1;
     let prect = rects
         .iter()
@@ -1351,7 +1351,7 @@ fn active_pane_content_rect(app: &App, buffer_area: Rect) -> Option<Rect> {
 /// the active pane shows a Document but motions go to the help
 /// popup's buffer.
 fn pane_buffer_matches_active(app: &App, idx: usize) -> bool {
-    app.pane_tree
+    app.editor.pane_tree
         .leaves()
         .get(idx)
         .map(|p| p.buffer == app.editor.active_buffer)
@@ -1379,7 +1379,7 @@ fn draw_help_in_pane(frame: &mut Frame, area: Rect, app: &App) {
     // pane's `buffer_id`) intentionally differ for in-pane help;
     // locals are keyed by the registered id. See the comment in
     // `App::open_help_in_pane`.
-    let render_id = app.pane_tree.active().buffer_id;
+    let render_id = app.editor.pane_tree.active().buffer_id;
     let (highlights, links) = help_render_data(app, render_id, &help);
     let visible: Vec<Line> = lines
         .iter()
@@ -1489,8 +1489,8 @@ fn draw_panes(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot)
         width: area.width,
         height: area.height,
     };
-    let rects = app.pane_tree.compute_rects(pane_area);
-    let active = app.pane_tree.active_index();
+    let rects = app.editor.pane_tree.compute_rects(pane_area);
+    let active = app.editor.pane_tree.active_index();
     let multi = rects.len() > 1;
     for (idx, prect) in rects.iter().copied() {
         let rect = Rect {
@@ -1529,7 +1529,7 @@ fn draw_panes(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot)
         } else {
             (rect, None)
         };
-        let panes = app.pane_tree.leaves();
+        let panes = app.editor.pane_tree.leaves();
         let Some(pane) = panes.get(idx) else {
             continue;
         };
@@ -2345,7 +2345,7 @@ fn compose_visible_lines_inner(
     // bypassed because the level styles aren't expressible as
     // `lattice_syntax::Style` enum variants (which is the
     // unit the spans pipeline carries).
-    let active_buffer = app.pane_tree.active().buffer_id;
+    let active_buffer = app.editor.pane_tree.active().buffer_id;
     let is_messages_buffer = app
         .editor.active_modes
         .get(&active_buffer)
@@ -2770,7 +2770,7 @@ fn visual_block_extents(app: &App) -> Option<BlockExtents> {
     ) {
         return None;
     }
-    let sels = app.document.selections();
+    let sels = app.editor.document.selections();
     let sel = sels.primary();
     let start_line = sel.anchor.line.min(sel.head.line);
     let end_line = sel.anchor.line.max(sel.head.line);
@@ -2800,7 +2800,7 @@ fn visual_selection_range(app: &App) -> Option<ProtoRange> {
     if !matches!(app.editor.modal, ModalState::Visual(_)) {
         return None;
     }
-    let sels = app.document.selections();
+    let sels = app.editor.document.selections();
     let sel = sels.primary();
     let (a, b) = if sel.anchor <= sel.head {
         (sel.anchor, sel.head)
@@ -4042,7 +4042,7 @@ mod tests {
         // Default state: the option is off ⇒ cursor row has no
         // bg from the highlight pass.
         let app = app_with("hello\nworld\n", 5);
-        let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);
+        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
         for line in &lines {
             assert!(
                 span_with_bg(line, Color::Indexed(236)).is_none(),
@@ -4058,7 +4058,7 @@ mod tests {
         let mut app = app_with("hello\nworld\n", 5);
         app.toggle_mode_by_name("current-line-highlight-mode");
         // Cursor starts on line 0; verify its row has the bg.
-        let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);
+        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
         let cursor_row = &lines[0];
         assert!(
             span_with_bg(cursor_row, Color::Indexed(236)).is_some(),
@@ -4079,7 +4079,7 @@ mod tests {
         // with bg-only style.
         let mut app = app_with("hi\n", 5);
         app.toggle_mode_by_name("current-line-highlight-mode");
-        let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);
+        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
         let cursor_row = &lines[0];
         // Find any pad span: bg = cursor_line_bg, content all
         // spaces.
@@ -4097,7 +4097,7 @@ mod tests {
         // `option_cache.show_whitespace == false` ⇒ pre-pass
         // is skipped ⇒ rendered body shows raw text.
         let app = app_with("hello   \n", 5);
-        let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);
+        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
         let row0 = line_text(&lines[0]);
         assert!(!row0.contains('·'), "no dots when ws-mode off: {row0:?}");
     }
@@ -4109,7 +4109,7 @@ mod tests {
         // through the cache and pre-pass kicks in.
         let mut app = app_with("hello   \n", 5);
         app.toggle_mode_by_name("whitespace-show-mode");
-        let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);
+        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
         let row0 = line_text(&lines[0]);
         assert!(
             row0.contains("hello") && row0.contains('·'),
@@ -4196,7 +4196,7 @@ mod tests {
     #[test]
     fn compose_visible_lines_returns_height_lines_padded_with_marker() {
         let app = app_with("a\nb", 5);
-        let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);
+        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
         assert_eq!(lines.len(), 5);
         // Past EOF lines start with the `~` marker.
         let past_eof = format!("{:?}", lines[3]);
@@ -4207,7 +4207,7 @@ mod tests {
     fn compose_visible_lines_starts_at_scroll_offset() {
         let mut app = app_with("0\n1\n2\n3\n4", 2);
         app.editor.scroll = 2;
-        let lines = compose_visible_lines(&app, &app.document.snapshot(), 2, 80);
+        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 2, 80);
         // Line index 2 is "2"; expect that text in the rendered first line.
         let l0 = format!("{:?}", lines[0]);
         assert!(
@@ -4222,7 +4222,7 @@ mod tests {
         app.editor.cursor.byte = 3;
         let area = Rect::new(0, 0, 80, 5);
         let pos =
-            cursor_screen_position(&FrameView::from_app(&app), &app.document.snapshot(), area)
+            cursor_screen_position(&FrameView::from_app(&app), &app.editor.document.snapshot(), area)
                 .unwrap();
         // severity_cell (1) + gutter_width(1)=4 + 3 = 8.
         assert_eq!(pos.0, 8);
@@ -4240,7 +4240,7 @@ mod tests {
         app.editor.cursor.byte = 6;
         let area = Rect::new(0, 0, 80, 5);
         let pos =
-            cursor_screen_position(&FrameView::from_app(&app), &app.document.snapshot(), area)
+            cursor_screen_position(&FrameView::from_app(&app), &app.editor.document.snapshot(), area)
                 .unwrap();
         // severity_cell (1) + gutter_w (4) + 5 display cells = 10.
         assert_eq!(pos.0, 10);
@@ -4255,7 +4255,7 @@ mod tests {
         app.editor.cursor.byte = 6; // past the 3-byte CJK char
         let area = Rect::new(0, 0, 80, 5);
         let pos =
-            cursor_screen_position(&FrameView::from_app(&app), &app.document.snapshot(), area)
+            cursor_screen_position(&FrameView::from_app(&app), &app.editor.document.snapshot(), area)
                 .unwrap();
         // severity_cell (1) + gutter_w (4) + 5 display cells = 10.
         assert_eq!(pos.0, 10);
@@ -4268,7 +4268,7 @@ mod tests {
         app.editor.cursor.line = 4; // not in viewport [0,1]
         let area = Rect::new(0, 0, 80, 2);
         assert!(
-            cursor_screen_position(&FrameView::from_app(&app), &app.document.snapshot(), area)
+            cursor_screen_position(&FrameView::from_app(&app), &app.editor.document.snapshot(), area)
                 .is_none()
         );
     }
@@ -4285,7 +4285,7 @@ mod tests {
         app.editor.cursor.line = 3; // hidden by fold
         app.editor.cursor.byte = 0;
         // Push a closed fold over lines 2..=4.
-        app.folds.push(crate::app::Fold {
+        app.editor.folds.push(crate::app::Fold {
             start_line: 2,
             end_line: 4,
             closed: true,
@@ -4293,7 +4293,7 @@ mod tests {
         });
         let area = Rect::new(0, 0, 80, 7);
         let pos =
-            cursor_screen_position(&FrameView::from_app(&app), &app.document.snapshot(), area)
+            cursor_screen_position(&FrameView::from_app(&app), &app.editor.document.snapshot(), area)
                 .expect("cursor visible");
         // Visible rows: 0=line0, 1=line1, 2=line2 (heading + summary),
         // 3=line5, 4=line6. Cursor at hidden line 3 → screen row 2
@@ -4633,7 +4633,7 @@ mod tests {
             ));
         app.insert_completion = Some(state);
 
-        let lines = compose_visible_lines(&app, &app.document.snapshot(), 1, 80);
+        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 1, 80);
         let composed = line_text(&lines[0]);
         // The line should contain BOTH the buffer text `foo`
         // AND the ghost suffix `bar`.
@@ -4683,7 +4683,7 @@ mod tests {
                 },
             ));
         app.insert_completion = Some(state);
-        let lines = compose_visible_lines(&app, &app.document.snapshot(), 1, 80);
+        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 1, 80);
         let composed = line_text(&lines[0]);
         // `foobaz` from the buffer is fine; `foobar` (ghost)
         // mustn't sneak in.
@@ -4698,7 +4698,7 @@ mod tests {
     fn compose_visible_lines_applies_match_overlay() {
         let mut app = app_with("hello world", 1);
         app.editor.current_match = Some(ProtoRange::new(pos(0, 6), pos(0, 11)));
-        let lines = compose_visible_lines(&app, &app.document.snapshot(), 1, 80);
+        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 1, 80);
         let dump = format!("{:?}", lines[0]);
         // Spans should be split so "world" is its own span; we look for the
         // match style's signature in the debug dump.
@@ -4798,7 +4798,7 @@ mod tests {
             visual: Some(VisualMode::Charwise),
         };
         app.set_selections_blocking(SelectionSet::single(sel));
-        let lines = compose_visible_lines(&app, &app.document.snapshot(), 1, 80);
+        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 1, 80);
         let dump = format!("{:?}", lines[0]);
         // The selected "hello" should appear as its own span(s); we just
         // verify the line still contains the original text after overlay.
@@ -4815,12 +4815,12 @@ mod tests {
         app.recompute_folds();
         // Close the heading fold.
         let idx = app
-            .folds
+            .editor.folds
             .iter()
             .position(|f| f.start_line == 0)
             .expect("heading fold");
-        app.folds[idx].closed = true;
-        let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);
+        app.editor.folds[idx].closed = true;
+        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
         let row0 = line_text(&lines[0]);
         // Heading text is preserved.
         assert!(row0.contains("# Heading"), "row0 = {row0:?}");
@@ -4834,12 +4834,12 @@ mod tests {
         app.set_foldmethod_for_test(crate::app::FoldMethod::Markdown);
         app.recompute_folds();
         let idx = app
-            .folds
+            .editor.folds
             .iter()
             .position(|f| f.start_line == 0)
             .expect("heading fold");
-        app.folds[idx].closed = true;
-        let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);
+        app.editor.folds[idx].closed = true;
+        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
         let blob: String = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
         assert!(!blob.contains("hidden1"), "interior leaked: {blob}");
         assert!(!blob.contains("hidden2"), "interior leaked: {blob}");
@@ -4854,19 +4854,19 @@ mod tests {
         // the first fold). Visually the user collapses 5 buffer
         // lines onto one row; the summary should report 5, not 3.
         let mut app = app_with("a\nb\nc\nd\ne\nf\ng\n", 7);
-        app.folds.push(crate::app::Fold {
+        app.editor.folds.push(crate::app::Fold {
             start_line: 1,
             end_line: 3,
             closed: true,
             identity: None,
         });
-        app.folds.push(crate::app::Fold {
+        app.editor.folds.push(crate::app::Fold {
             start_line: 3,
             end_line: 5,
             closed: true,
             identity: None,
         });
-        let lines = compose_visible_lines(&app, &app.document.snapshot(), 7, 80);
+        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 7, 80);
         // Find the row that summarises the chained folds (line 1's
         // heading row).
         let row1_text = line_text(&lines[1]);
@@ -4882,7 +4882,7 @@ mod tests {
         app.set_foldmethod_for_test(crate::app::FoldMethod::Markdown);
         app.recompute_folds();
         // Leave the fold open (default).
-        let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);
+        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
         let row0 = line_text(&lines[0]);
         assert!(row0.contains("# H"), "row0 = {row0:?}");
         assert!(
@@ -4898,7 +4898,7 @@ mod tests {
         let mut app = app_with("# H\nbody\n", 5);
         app.set_foldmethod_for_test(crate::app::FoldMethod::Markdown);
         app.recompute_folds();
-        let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);
+        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
         let row0 = line_text(&lines[0]);
         assert!(
             row0.contains('▾'),
@@ -4913,12 +4913,12 @@ mod tests {
         app.set_foldmethod_for_test(crate::app::FoldMethod::Markdown);
         app.recompute_folds();
         let idx = app
-            .folds
+            .editor.folds
             .iter()
             .position(|f| f.start_line == 0)
             .expect("heading fold");
-        app.folds[idx].closed = true;
-        let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);
+        app.editor.folds[idx].closed = true;
+        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
         let row0 = line_text(&lines[0]);
         assert!(
             row0.contains('▸'),
@@ -4944,12 +4944,12 @@ mod tests {
         app.set_foldmethod_for_test(crate::app::FoldMethod::Indent);
         app.recompute_folds();
         let idx = app
-            .folds
+            .editor.folds
             .iter()
             .position(|f| f.start_line == 0)
             .expect("struct fold");
-        app.folds[idx].closed = true;
-        let lines = compose_visible_lines(&app, &app.document.snapshot(), 4, 80);
+        app.editor.folds[idx].closed = true;
+        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 4, 80);
         // Row 0: heading + " ┄ N lines folded".
         // Row 1: the post-fold statement -- correct content, not
         //        leaking interior spans.
@@ -4976,7 +4976,7 @@ mod tests {
         let mut app = app_with(src, 5);
         app.set_foldmethod_for_test(crate::app::FoldMethod::Indent);
         app.recompute_folds();
-        let f = app.folds.iter().find(|f| f.start_line == 0).expect("fold");
+        let f = app.editor.folds.iter().find(|f| f.start_line == 0).expect("fold");
         assert_eq!(f.end_line, 2, "expected `}}` swallowed: {f:?}");
     }
 
@@ -4992,11 +4992,11 @@ mod tests {
         app.set_foldmethod_for_test(crate::app::FoldMethod::Indent);
         app.recompute_folds();
         let idx = app
-            .folds
+            .editor.folds
             .iter()
             .position(|f| f.start_line == 0)
             .expect("fold");
-        app.folds[idx].closed = true;
+        app.editor.folds[idx].closed = true;
         app.editor.cursor = lattice_protocol::position::Position::new(0, 0);
         app.apply(crate::app::Action::EnterVisual(VisualKind::Linewise));
         let sel = Selection {
@@ -5005,7 +5005,7 @@ mod tests {
             visual: Some(VisualMode::Linewise),
         };
         app.set_selections_blocking(SelectionSet::single(sel));
-        let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);
+        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
         let visual_bg = visual_style().bg;
         let row0 = &lines[0];
         let has_visual_span = row0.spans.iter().any(|s| s.style.bg == visual_bg);
@@ -5035,7 +5035,7 @@ mod tests {
             visual: Some(VisualMode::Linewise),
         };
         app.set_selections_blocking(SelectionSet::single(sel));
-        let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);
+        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
         // Verify the second visible line ("beta") has at least one
         // span styled with the visual color.
         let visual_bg = visual_style().bg;
@@ -5052,7 +5052,7 @@ mod tests {
         let mut app = app_with("# H\nbody one\nbody two\nafter\n", 5);
         app.set_foldmethod_for_test(crate::app::FoldMethod::Markdown);
         app.recompute_folds();
-        let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);
+        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
         // Row 1 (body one) is inside the fold, not a fold start.
         let row1 = line_text(&lines[1]);
         assert!(!row1.contains('▸'), "row1: {row1:?}");
@@ -5136,7 +5136,7 @@ mod tests {
         // Toggle lsp-mode OFF; the diagnostic glyph should
         // disappear from the rendered gutter.
         app.toggle_mode_by_name("lsp-mode");
-        let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);
+        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
         let row0 = line_text(&lines[0]);
         assert!(
             !row0.contains('■'),
@@ -5171,7 +5171,7 @@ mod tests {
         assert!(app.lsp_mode_enabled_for(app.editor.document_buffer_id));
         assert!(!app.lsp_diagnostics_mode_enabled_for(app.editor.document_buffer_id));
         // Glyph suppressed.
-        let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);
+        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
         let row0 = line_text(&lines[0]);
         assert!(
             !row0.contains('■'),
@@ -5232,7 +5232,7 @@ mod tests {
                 },
             ],
         });
-        let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);
+        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
         // Walk the spans on row 0; expect at least one span
         // with the read tint (rgb(20,50,25)) and one with the
         // write tint (rgb(60,20,20)). Span splitting depends on
@@ -5271,7 +5271,7 @@ mod tests {
         app.editor.lsp_inlay_hints_cache.insert(
             app.editor.document_buffer_id,
             crate::app::LspInlayHintCache {
-                document_version: app.document.snapshot().version,
+                document_version: app.editor.document.snapshot().version,
                 hints: vec![lsp_types::InlayHint {
                     position: lsp_types::Position {
                         line: 0,
@@ -5289,7 +5289,7 @@ mod tests {
                 requested_last_line: u32::MAX,
             },
         );
-        let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);
+        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
         let row0 = &lines[0];
         let mut found = false;
         for span in &row0.spans {
@@ -5320,7 +5320,7 @@ mod tests {
         app.editor.lsp_semantic_tokens_cache.insert(
             app.editor.document_buffer_id,
             crate::app::LspSemanticTokensCache {
-                document_version: app.document.snapshot().version,
+                document_version: app.editor.document.snapshot().version,
                 result_id: None,
                 raw_data: Vec::new(),
                 tokens: vec![
@@ -5341,7 +5341,7 @@ mod tests {
                 ],
             },
         );
-        let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);
+        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
         let row0 = &lines[0];
         // Magenta = keyword, Yellow = function. Find at least
         // one span of each in the row.
@@ -5378,7 +5378,7 @@ mod tests {
         app.editor.lsp_semantic_tokens_cache.insert(
             app.editor.document_buffer_id,
             crate::app::LspSemanticTokensCache {
-                document_version: app.document.snapshot().version,
+                document_version: app.editor.document.snapshot().version,
                 result_id: None,
                 raw_data: Vec::new(),
                 tokens: vec![crate::app::DecodedSemanticToken {
@@ -5390,7 +5390,7 @@ mod tests {
                 }],
             },
         );
-        let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);
+        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
         let row0 = &lines[0];
         // No magenta fg should appear on the "fn" span.
         for span in &row0.spans {
@@ -5422,7 +5422,7 @@ mod tests {
         app.editor.lsp_inlay_hints_cache.insert(
             app.editor.document_buffer_id,
             crate::app::LspInlayHintCache {
-                document_version: app.document.snapshot().version,
+                document_version: app.editor.document.snapshot().version,
                 hints: vec![lsp_types::InlayHint {
                     position: lsp_types::Position {
                         line: 0,
@@ -5440,7 +5440,7 @@ mod tests {
                 requested_last_line: u32::MAX,
             },
         );
-        let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);
+        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
         let row0 = &lines[0];
         for span in &row0.spans {
             assert!(
@@ -5484,7 +5484,7 @@ mod tests {
                 kind: None,
             }],
         });
-        let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);
+        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
         let row0 = &lines[0];
         for span in &row0.spans {
             // No DH-tinted span should appear.
@@ -5506,7 +5506,7 @@ mod tests {
             lattice_lsp::DiagnosticSeverity::ERROR,
             "boom",
         );
-        let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);
+        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
         // Row 0 has the error; expect the ■ glyph somewhere in
         // the rendered first span (the severity cell).
         let row0 = line_text(&lines[0]);
@@ -5532,7 +5532,7 @@ mod tests {
             lattice_lsp::DiagnosticSeverity::WARNING,
             "warn",
         );
-        let lines = compose_visible_lines(&app, &app.document.snapshot(), 3, 80);
+        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 3, 80);
         let row0 = line_text(&lines[0]);
         assert!(row0.contains('▲'), "expected warning glyph; got {row0:?}");
     }
@@ -5548,7 +5548,7 @@ mod tests {
             lattice_lsp::DiagnosticSeverity::HINT,
             "hint",
         );
-        let lines = compose_visible_lines(&app, &app.document.snapshot(), 3, 80);
+        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 3, 80);
         let row0 = line_text(&lines[0]);
         assert!(row0.contains('·'), "expected hint glyph; got {row0:?}");
     }
@@ -5572,7 +5572,7 @@ mod tests {
             lattice_lsp::DiagnosticSeverity::ERROR,
             "err",
         );
-        let lines = compose_visible_lines(&app, &app.document.snapshot(), 3, 80);
+        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 3, 80);
         let row0 = line_text(&lines[0]);
         // Error wins over warning on the same line for the
         // gutter glyph (most-severe semantics).
@@ -5609,7 +5609,7 @@ mod tests {
         // Activate *lsp* (created at boot via slice B).
         let lsp_id = app.editor.buffers.by_name("*lsp*").expect("*lsp* present");
         app.activate_buffer(lsp_id);
-        let snap = app.document.snapshot();
+        let snap = app.editor.document.snapshot();
         let label = modeline_label(&app, &snap);
         assert!(
             label.contains("*lsp*"),
@@ -5622,7 +5622,7 @@ mod tests {
     #[test]
     fn modeline_label_falls_back_to_no_name_when_path_and_name_absent() {
         let app = App::new(Document::from_text("hi"));
-        let snap = app.document.snapshot();
+        let snap = app.editor.document.snapshot();
         // Initial buffer has no path and no synthetic name.
         let label = modeline_label(&app, &snap);
         assert_eq!(label, "[no name]");
@@ -5633,7 +5633,7 @@ mod tests {
     fn no_lsp_attachment_no_severity_glyph() {
         let app = app_with("hello\n", 3);
         // No buffer_uri mapping -> no diagnostics queryable.
-        let lines = compose_visible_lines(&app, &app.document.snapshot(), 3, 80);
+        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 3, 80);
         let row0 = line_text(&lines[0]);
         assert!(!row0.contains('■'), "no LSP -> no error glyph: {row0:?}");
         assert!(!row0.contains('▲'), "no LSP -> no warn glyph: {row0:?}");
@@ -5651,7 +5651,7 @@ mod tests {
             lattice_lsp::DiagnosticSeverity::ERROR,
             "err",
         );
-        let lines = compose_visible_lines(&app, &app.document.snapshot(), 3, 80);
+        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 3, 80);
         // Walk every span on row 0; at least one span covering
         // bytes 6..11 must have UNDERLINED set.
         let mut found_underline = false;
@@ -5692,7 +5692,7 @@ mod tests {
             lattice_lsp::DiagnosticSeverity::WARNING,
             "unused",
         );
-        let lines = compose_visible_lines(&app, &app.document.snapshot(), 5, 80);
+        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
         for (row, line) in lines.iter().enumerate() {
             for (i, span) in line.spans.iter().enumerate() {
                 assert!(

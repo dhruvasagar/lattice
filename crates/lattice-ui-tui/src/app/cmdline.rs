@@ -684,7 +684,7 @@ mod tests {
         a.apply(Action::EnterMode(ModalState::Insert));
         a.apply(Action::Insert("X".into()));
         a.apply(Action::EnterMode(ModalState::Normal));
-        assert!(a.document.dirty());
+        assert!(a.editor.document.dirty());
 
         a.apply(Action::EnterCommandLine);
         a.apply(Action::CommandLineAppend('q'));
@@ -731,7 +731,7 @@ mod tests {
         a.apply(Action::EnterMode(ModalState::Insert));
         a.apply(Action::Insert("!".into()));
         a.apply(Action::EnterMode(ModalState::Normal));
-        assert!(a.document.dirty());
+        assert!(a.editor.document.dirty());
 
         a.apply(Action::EnterCommandLine);
         for c in format!("w {}", path.display()).chars() {
@@ -739,7 +739,7 @@ mod tests {
         }
         a.apply(Action::CommandLineSubmit);
 
-        assert!(!a.document.dirty());
+        assert!(!a.editor.document.dirty());
         let msg = a.editor.last_message.as_ref().unwrap();
         assert_eq!(msg.level, EchoLevel::Info);
         assert!(msg.text.contains("written"));
@@ -867,7 +867,7 @@ mod tests {
     fn tab_in_command_mode_opens_completion_popup() {
         let mut a = app_in_command_mode("descri");
         a.apply(Action::CommandLineCompleteOrAdvance);
-        let state = a.completion_state.as_ref().expect("popup should open");
+        let state = a.editor.completion_state.as_ref().expect("popup should open");
         // Candidates use the user-facing alias form, not the
         // canonical `ex:*` registry name. Both `:describe-command`
         // and `:ex:describe-command` parse correctly via the
@@ -895,7 +895,7 @@ mod tests {
         a.apply(Action::CommandLineCompleteOrAdvance);
         a.apply(Action::CommandLineCompleteOrAdvance);
         a.apply(Action::CommandLineCompletePrev);
-        assert_eq!(a.completion_state.as_ref().unwrap().selected, 1);
+        assert_eq!(a.editor.completion_state.as_ref().unwrap().selected, 1);
     }
 
     #[test]
@@ -1064,7 +1064,7 @@ mod tests {
         // not appearing; pin the wiring with a regression test.
         let mut a = app_in_command_mode("lsp-");
         a.apply(Action::CommandLineCompleteOrAdvance);
-        let state = a.completion_state.as_ref().expect("popup should open");
+        let state = a.editor.completion_state.as_ref().expect("popup should open");
         let texts: Vec<&str> = state
             .candidates
             .iter()

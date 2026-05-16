@@ -83,12 +83,9 @@ use lattice_grammar::register::Register;
 use lattice_protocol::position::Position;
 #[cfg(test)]
 use lattice_protocol::selection::{Selection, SelectionSet};
-use lattice_runtime::{DocumentHandle, SnapshotCache};
-
 use crate::buffer_registry::{BufferData, BufferEntry, BufferRegistry, DocumentEntry};
 use crate::buffers::{BufferFlags, BufferId, BufferKind};
 
-use crate::pane::PaneTree;
 // Re-export PaneDirection so `super::*` in the tests module
 // resolves it. The `Action::NavigatePane(PaneDirection)` variant
 // now lives in `lattice_host::action::Action`; this re-export
@@ -441,7 +438,8 @@ pub struct App {
     ///
     /// Steady-state hit rate: ~100% (cursor blinking, no edit).
     /// Drops cleanly to 0% during edits/scroll/fold-toggle.
-    visible_highlights_key: Option<lattice_host::highlights::VisibleHighlightsKey>,
+    // 5.B C5 cleanup: `visible_highlights_key` moved to
+    // `editor.visible_highlights_key`.
     // Phase 5.B.7: `search_line`, `last_search`,
     // `current_match`, `all_matches`, `substitute_preview`
     // moved to `editor.search_line` / `editor.last_search`
@@ -2249,7 +2247,7 @@ mod tests {
         // dispatcher uses [start, end) range; find_char_forward returns the
         // position of the comma (byte 5), so [0, 5) = "hello" is deleted.
         // The trailing comma stays in place.
-        assert_eq!(a.document.text(), ", world");
+        assert_eq!(a.editor.document.text(), ", world");
     }
 
     #[test]
@@ -2278,7 +2276,7 @@ mod tests {
         assert_eq!(reg.content, "hello ");
         assert_eq!(reg.kind, YankKind::Charwise);
         // Buffer untouched by yank.
-        assert_eq!(a.document.text(), "hello world");
+        assert_eq!(a.editor.document.text(), "hello world");
     }
 
     #[test]
@@ -2288,17 +2286,17 @@ mod tests {
         a.set_foldmethod_for_test(FoldMethod::Markdown);
         a.recompute_folds();
         let idx = a
-            .folds
+            .editor.folds
             .iter()
             .position(|f| f.start_line == 0)
             .expect("H1 fold");
-        a.folds[idx].closed = true;
+        a.editor.folds[idx].closed = true;
         // Move cursor away first (so gg is a non-trivial jump).
         a.editor.cursor = Position::new(4, 0);
         let inv = CommandInvocation::of(a.editor.builtins.goto_first_line.0);
         a.apply(Action::Invoke(inv));
         let fold = a
-            .folds
+            .editor.folds
             .iter()
             .find(|f| f.start_line == 0)
             .expect("H1 fold still present");
@@ -2311,11 +2309,11 @@ mod tests {
         a.set_foldmethod_for_test(FoldMethod::Markdown);
         a.recompute_folds();
         let idx = a
-            .folds
+            .editor.folds
             .iter()
             .position(|f| f.start_line == 0)
             .expect("H1 fold");
-        a.folds[idx].closed = true;
+        a.editor.folds[idx].closed = true;
         // Sanity: the fold is closed and visible to the renderer.
         assert!(a.line_inside_closed_fold(1));
         assert!(a.fold_start_at(0).is_some());
@@ -2339,18 +2337,18 @@ mod tests {
         a.set_foldmethod_for_test(FoldMethod::Markdown);
         a.recompute_folds();
         let idx = a
-            .folds
+            .editor.folds
             .iter()
             .position(|f| f.start_line == 0)
             .expect("H1 fold");
-        a.folds[idx].closed = true;
+        a.editor.folds[idx].closed = true;
         a.set_foldenable_for_test(false);
         a.editor.cursor = Position::new(0, 0);
         let inv = CommandInvocation::of(a.editor.builtins.delete.0)
             .with_range(lattice_grammar::Range::CurrentLine);
         a.apply(Action::Invoke(inv));
         // With foldenable=false, dd should affect just one line.
-        let text = a.document.text();
+        let text = a.editor.document.text();
         assert!(
             !text.contains("# H1"),
             "heading should be deleted: {text:?}"
@@ -2373,15 +2371,15 @@ mod tests {
         a.set_foldmethod_for_test(FoldMethod::Markdown);
         a.recompute_folds();
         let idx = a
-            .folds
+            .editor.folds
             .iter()
             .position(|f| f.start_line == 0)
             .expect("H1 fold");
-        a.folds[idx].closed = true;
+        a.editor.folds[idx].closed = true;
         // Direct cursor move (not via auto-open path).
         a.editor.cursor = Position::new(1, 0);
         let still_closed = a
-            .folds
+            .editor.folds
             .iter()
             .find(|f| f.start_line == 0)
             .expect("H1 fold still present");
@@ -2415,7 +2413,7 @@ mod tests {
             "expected user-facing alias, got `{}`",
             a.editor.command_line
         );
-        assert!(a.completion_state.is_none());
+        assert!(a.editor.completion_state.is_none());
     }
 
     // ---- Chord-capture (DESIGN.md §B.1, ArgKind::Chord) ----
@@ -2438,7 +2436,7 @@ mod tests {
         // motion:* commands.
         let mut a = app_in_command_mode("describe-command moti");
         a.apply(Action::CommandLineCompleteOrAdvance);
-        let state = a.completion_state.as_ref().expect("popup");
+        let state = a.editor.completion_state.as_ref().expect("popup");
         assert!(
             state
                 .candidates
@@ -2606,9 +2604,9 @@ mod tests {
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert!(
-            a.folds.is_empty(),
+            a.editor.folds.is_empty(),
             "manual foldmethod should not auto-seed folds: {:?}",
-            a.folds
+            a.editor.folds
         );
         let _ = std::fs::remove_file(path);
     }
@@ -2823,7 +2821,7 @@ mod tests {
         a.apply(Action::Invoke(inv));
         assert_eq!(a.editor.modal, ModalState::Insert);
         a.apply(Action::Insert("HEY ".into()));
-        assert_eq!(a.document.text(), "HEY world");
+        assert_eq!(a.editor.document.text(), "HEY world");
     }
 
     // ---- LSP wiring tests (Phase 4.1.i) ---------------------
@@ -2965,7 +2963,7 @@ mod tests {
         anchor: Position,
     ) {
         let cursor = a.editor.cursor;
-        let snap = a.document.snapshot();
+        let snap = a.editor.document.snapshot();
         let line = snap.buffer.line(cursor.line).unwrap_or_default();
         let query = line
             .get(anchor.byte as usize..cursor.byte as usize)
@@ -3021,7 +3019,7 @@ mod tests {
         // Popup closed; accept replaced the partial with the
         // full LSP insert, then `.` was appended.
         assert!(a.insert_completion.is_none(), "popup closed on commit");
-        assert_eq!(a.document.snapshot().buffer.as_string(), "foo.");
+        assert_eq!(a.editor.document.snapshot().buffer.as_string(), "foo.");
     }
 
     #[test]
@@ -3036,7 +3034,7 @@ mod tests {
         // refresh hook closes the popup because the new
         // query "fooa" no longer matches the candidate
         // "foo" prefix-wise (matcher returns no rows).
-        assert_eq!(a.document.snapshot().buffer.as_string(), "fooa");
+        assert_eq!(a.editor.document.snapshot().buffer.as_string(), "fooa");
     }
 
     #[test]
@@ -3050,7 +3048,7 @@ mod tests {
         a.do_set("completion.extra_commit_chars=,");
         a.do_completion_accept_then_insert(',');
         assert!(a.insert_completion.is_none());
-        assert_eq!(a.document.snapshot().buffer.as_string(), "foo,");
+        assert_eq!(a.editor.document.snapshot().buffer.as_string(), "foo,");
     }
 
     #[test]
@@ -3076,7 +3074,7 @@ mod tests {
         a.do_completion_accept_then_insert(';');
         // Popup closed; `alpha` inserted then `;`.
         assert!(a.insert_completion.is_none());
-        let text = a.document.snapshot().buffer.as_string();
+        let text = a.editor.document.snapshot().buffer.as_string();
         assert!(text.ends_with("alpha;"), "got `{text}`");
     }
 
@@ -3221,7 +3219,7 @@ mod tests {
         let mut a = app_with("foo\nbar\nfoo\nbaz", 10);
         submit_ex(&mut a, "g/foo/d");
         // Both "foo" lines deleted; "bar" and "baz" remain.
-        assert_eq!(a.document.text(), "bar\nbaz");
+        assert_eq!(a.editor.document.text(), "bar\nbaz");
     }
 
     #[test]
@@ -3229,7 +3227,7 @@ mod tests {
         let mut a = app_with("foo\nbar\nfoo\nbaz", 10);
         submit_ex(&mut a, "v/foo/d");
         // Only "foo" lines remain.
-        assert_eq!(a.document.text(), "foo\nfoo");
+        assert_eq!(a.editor.document.text(), "foo\nfoo");
     }
 
     #[test]
@@ -3237,7 +3235,7 @@ mod tests {
         let mut a = app_with("foo\nbaz\nfoo", 10);
         submit_ex(&mut a, "g/foo/s/foo/X/");
         // Both "foo" lines get substituted.
-        assert_eq!(a.document.text(), "X\nbaz\nX");
+        assert_eq!(a.editor.document.text(), "X\nbaz\nX");
     }
 
     #[test]
@@ -3338,18 +3336,18 @@ mod tests {
         a.apply(Action::CommandLineCompleteOrAdvance);
         a.apply(Action::CommandLineDismissCompletion);
         assert_eq!(a.editor.command_line, "descri");
-        assert!(a.completion_state.is_none());
+        assert!(a.editor.completion_state.is_none());
     }
 
     #[test]
     fn clear_with_open_popup_widens_to_all_commands() {
         let mut a = app_in_command_mode("descri");
         a.apply(Action::CommandLineCompleteOrAdvance);
-        let narrow_count = a.completion_state.as_ref().unwrap().candidates.len();
+        let narrow_count = a.editor.completion_state.as_ref().unwrap().candidates.len();
         a.apply(Action::CommandLineClear);
-        assert!(a.completion_state.is_some());
+        assert!(a.editor.completion_state.is_some());
         assert_eq!(a.editor.command_line, "");
-        let widened = a.completion_state.as_ref().unwrap().candidates.len();
+        let widened = a.editor.completion_state.as_ref().unwrap().candidates.len();
         assert!(widened >= narrow_count);
     }
 
@@ -3374,7 +3372,7 @@ mod tests {
     fn close_last_pane_is_a_noop_with_warning() {
         let mut a = app_with("xx", 10);
         a.apply(Action::ClosePane);
-        assert_eq!(a.pane_tree.len(), 1);
+        assert_eq!(a.editor.pane_tree.len(), 1);
         let msg = a.editor.last_message.as_ref().expect("warn echo");
         assert!(msg.text.contains("only one pane"));
     }
@@ -3549,13 +3547,13 @@ mod tests {
         a.apply(Action::CommandLineSubmit);
         // The new buffer should have folds without `<C-l>`.
         assert!(
-            !a.folds.is_empty(),
+            !a.editor.folds.is_empty(),
             "expected folds to be seeded on activation, got empty"
         );
         assert!(
-            a.folds.iter().any(|f| f.start_line == 0),
+            a.editor.folds.iter().any(|f| f.start_line == 0),
             "expected a fold starting at line 0: {:?}",
-            a.folds
+            a.editor.folds
         );
         let _ = std::fs::remove_file(path);
     }
@@ -3759,7 +3757,7 @@ mod tests {
         a.apply(Action::FollowLink);
         // The file should now be the active document.
         assert_eq!(a.editor.active_buffer, BufferKind::Document);
-        let opened = a.document.path().expect("active doc has a path");
+        let opened = a.editor.document.path().expect("active doc has a path");
         assert_eq!(opened, path);
         // Cursor at line index 2 (1-based 3 → 0-based 2).
         assert_eq!(a.editor.cursor.line, 2);
@@ -3818,7 +3816,7 @@ mod tests {
         a.apply(Action::FollowLink);
         // Out-of-range line should clamp to the last valid line,
         // not panic and not echo a confusing error.
-        let last_line = a.document.snapshot().buffer.line_count().saturating_sub(1);
+        let last_line = a.editor.document.snapshot().buffer.line_count().saturating_sub(1);
         assert_eq!(a.editor.cursor.line, last_line);
         let _ = std::fs::remove_file(path);
     }
@@ -3833,7 +3831,7 @@ mod tests {
         // Move cursor to end of buffer.
         a.editor.cursor = Position::new(0, 11);
         a.apply(Action::PasteAfter);
-        assert_eq!(a.document.text(), "hello worldhello ");
+        assert_eq!(a.editor.document.text(), "hello worldhello ");
     }
 
     #[tokio::test(flavor = "multi_thread")]

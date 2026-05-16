@@ -117,7 +117,7 @@ impl App {
         // Capture pre-popup state so dismiss restores cleanly.
         // Mirrors `activate_help_in_pane` / `focus_help_popup`.
         if !matches!(self.editor.active_buffer, BufferKind::Help) {
-            let active = self.pane_tree.active();
+            let active = self.editor.pane_tree.active();
             self.editor.prev_pane_for_help = Some(PrevPaneState {
                 buffer: active.buffer,
                 buffer_id: active.buffer_id,
@@ -461,7 +461,7 @@ impl App {
         if let Some(prev) = self.editor.prev_pane_for_help.take() {
             self.editor.cursor = prev.cursor;
             self.editor.scroll = prev.scroll;
-            let pane = self.pane_tree.active_mut();
+            let pane = self.editor.pane_tree.active_mut();
             pane.buffer = prev.buffer;
             pane.buffer_id = prev.buffer_id;
             self.editor.active_buffer = prev.buffer;

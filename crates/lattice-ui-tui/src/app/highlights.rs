@@ -41,8 +41,6 @@ use super::{App, BufferId, BufferKind, folds};
 /// QueryCursor walk only fires when this key changes. So
 /// the cursor blinks but nothing else changes, so the key stays
 /// equal across frames and we never re-run the QueryCursor walk.
-use lattice_host::highlights::VisibleHighlightsKey;
-
 impl App {
     /// Slice C.3: keep `visible_highlights` line-aligned with the
     /// current document immediately after an edit, before the
@@ -356,7 +354,7 @@ impl App {
     /// single parse covers both panes.
     pub fn refresh_pane_highlights(&mut self) {
         self.editor.pane_highlights.clear();
-        let active_idx = self.pane_tree.active_index();
+        let active_idx = self.editor.pane_tree.active_index();
         let active_doc_id = if matches!(self.editor.active_buffer, BufferKind::Document) {
             Some(self.editor.document_buffer_id)
         } else {
@@ -366,7 +364,7 @@ impl App {
         // inactive Document pane that doesn't share doc with the
         // active pane.
         let pending: Vec<(usize, BufferId, u32, u32)> = self
-            .pane_tree
+            .editor.pane_tree
             .leaves()
             .iter()
             .enumerate()
@@ -475,9 +473,9 @@ mod tests {
     fn refresh_highlights_caches_on_first_call() {
         let mut a = app_with("fn main() {}", 5);
         attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
-        assert!(a.visible_highlights_key.is_none());
+        assert!(a.editor.visible_highlights_key.is_none());
         a.refresh_highlights();
-        assert!(a.visible_highlights_key.is_some());
+        assert!(a.editor.visible_highlights_key.is_some());
     }
 
     #[test]
@@ -487,7 +485,7 @@ mod tests {
         // recompute.
         let mut a = app_with("fn main() {}", 5);
         a.refresh_highlights();
-        assert!(a.visible_highlights_key.is_none());
+        assert!(a.editor.visible_highlights_key.is_none());
         assert!(a.editor.visible_highlights.is_empty());
     }
 
@@ -501,9 +499,9 @@ mod tests {
         let mut a = app_with("fn main() {}", 5);
         attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
         a.refresh_highlights();
-        let key1 = a.visible_highlights_key;
+        let key1 = a.editor.visible_highlights_key;
         a.refresh_highlights();
-        let key2 = a.visible_highlights_key;
+        let key2 = a.editor.visible_highlights_key;
         assert_eq!(key1, key2);
     }
 
@@ -512,10 +510,10 @@ mod tests {
         let mut a = app_with("fn a() {}\nfn b() {}\nfn c() {}\nfn d() {}", 2);
         attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
         a.refresh_highlights();
-        let key1 = a.visible_highlights_key;
+        let key1 = a.editor.visible_highlights_key;
         a.editor.scroll = 2;
         a.refresh_highlights();
-        let key2 = a.visible_highlights_key;
+        let key2 = a.editor.visible_highlights_key;
         assert_ne!(key1, key2, "scroll change must invalidate cache");
     }
 
@@ -524,10 +522,10 @@ mod tests {
         let mut a = app_with("fn main() {}", 5);
         attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
         a.refresh_highlights();
-        let key1 = a.visible_highlights_key;
+        let key1 = a.editor.visible_highlights_key;
         a.set_viewport_height(20);
         a.refresh_highlights();
-        let key2 = a.visible_highlights_key;
+        let key2 = a.editor.visible_highlights_key;
         assert_ne!(key1, key2, "viewport resize must invalidate cache");
     }
 
@@ -603,7 +601,7 @@ mod tests {
             "<C-l> should clear visible_highlights synchronously"
         );
         assert!(
-            a.visible_highlights_key.is_none(),
+            a.editor.visible_highlights_key.is_none(),
             "<C-l> must clear the cache key too -- otherwise the next refresh hits cache"
         );
         // Next refresh must recompute, not hit cache and return

@@ -143,8 +143,8 @@ impl App {
         match display {
             BufferDisplay::Split(orientation) => {
                 self.snapshot_active_pane();
-                let new_idx = self.pane_tree.split_active(orientation);
-                self.pane_tree.set_active(new_idx);
+                let new_idx = self.editor.pane_tree.split_active(orientation);
+                self.editor.pane_tree.set_active(new_idx);
                 self.load_active_pane();
             }
             BufferDisplay::ActivePane
@@ -174,13 +174,13 @@ impl App {
         // cursor + scroll into the new sibling; without the
         // snapshot the snapshot would be stale.)
         self.snapshot_active_pane();
-        let new_idx = self.pane_tree.split_active(orientation);
+        let new_idx = self.editor.pane_tree.split_active(orientation);
         // Focus the new pane before adopting the help buffer so
         // `activate_help_in_pane` swaps the right pane's content.
         // `set_active` is a no-op if `new_idx` is already active,
         // which `split_active` doesn't promise (the active pane
         // stays the original by default, matching `do_split_pane`).
-        self.pane_tree.set_active(new_idx);
+        self.editor.pane_tree.set_active(new_idx);
         // From here the in-pane path handles registry adoption,
         // mode activation, locals seeding, and the popup hot-
         // path slot mirror.
@@ -217,8 +217,8 @@ mod tests {
         // -- the popup *slot* is reused; what matters here is the
         // pane state.)
         assert_eq!(a.editor.active_buffer, BufferKind::Help);
-        assert_eq!(a.pane_tree.active().buffer_id, id);
-        assert_eq!(a.pane_tree.active().buffer, BufferKind::Help);
+        assert_eq!(a.editor.pane_tree.active().buffer_id, id);
+        assert_eq!(a.editor.pane_tree.active().buffer, BufferKind::Help);
     }
 
     #[test]
@@ -264,9 +264,9 @@ mod tests {
         // Default for PickerResult is ActivePane, so calling
         // `prepare_pane_for_picker_result` should not split.
         let mut a = app_with("hi", 5);
-        let initial = a.pane_tree.len();
+        let initial = a.editor.pane_tree.len();
         a.prepare_pane_for_picker_result();
-        assert_eq!(a.pane_tree.len(), initial);
+        assert_eq!(a.editor.pane_tree.len(), initial);
     }
 
     #[test]
@@ -276,12 +276,12 @@ mod tests {
         // resolver via a synthesized override (we don't expose a
         // category whose default is Split yet).
         let mut a = app_with("hi", 5);
-        let initial_pane_count = a.pane_tree.len();
+        let initial_pane_count = a.editor.pane_tree.len();
         let content = HelpContent::from_lines("help-split", vec!["x".into()]);
         let id = a.open_help_in_split(content, SplitOrientation::Horizontal);
-        assert_eq!(a.pane_tree.len(), initial_pane_count + 1);
+        assert_eq!(a.editor.pane_tree.len(), initial_pane_count + 1);
         // The active pane after the split holds the help buffer.
-        assert_eq!(a.pane_tree.active().buffer_id, id);
+        assert_eq!(a.editor.pane_tree.active().buffer_id, id);
         assert_eq!(a.editor.active_buffer, BufferKind::Help);
     }
 }

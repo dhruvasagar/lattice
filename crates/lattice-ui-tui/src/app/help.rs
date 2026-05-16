@@ -326,7 +326,7 @@ impl App {
         let stash_cursor = help.cursor;
         let stash_scroll = help.scroll as u32;
         // Capture pre-State-B state so dismiss restores cleanly.
-        let active = self.pane_tree.active();
+        let active = self.editor.pane_tree.active();
         self.editor.prev_pane_for_help = Some(PrevPaneState {
             buffer: active.buffer,
             buffer_id: active.buffer_id,
@@ -1203,7 +1203,7 @@ impl App {
         // was swapped to the registered help id).
         let active_help_id = self
             .editor.popup_buffer
-            .unwrap_or_else(|| self.pane_tree.active().buffer_id);
+            .unwrap_or_else(|| self.editor.pane_tree.active().buffer_id);
         let Some(link) = self
             .editor.buffer_locals
             .get(&active_help_id)
@@ -1216,7 +1216,7 @@ impl App {
             .or_else(|| {
                 // For in-pane help where popup_buffer != pane.buffer_id,
                 // try the pane's id too.
-                let pane_id = self.pane_tree.active().buffer_id;
+                let pane_id = self.editor.pane_tree.active().buffer_id;
                 if pane_id == active_help_id {
                     return None;
                 }
@@ -1291,7 +1291,7 @@ impl App {
                 // pane.buffer_id is the doc behind the popup),
                 // then fall back to the pane's id (in-pane case).
                 let popup_id = self.editor.popup_buffer;
-                let pane_id = self.pane_tree.active().buffer_id;
+                let pane_id = self.editor.pane_tree.active().buffer_id;
                 let target_line = popup_id
                     .and_then(|id| self.editor.buffer_locals.get(&id))
                     .and_then(|locals| locals.get::<crate::modes::HelpAnchors>())
@@ -2060,7 +2060,7 @@ mod tests {
         // height path applies. No overlay sizing.
         let mut a = app_with("xx", 60);
         let id = a.open_help_in_pane(HelpContent::from_lines("log", vec!["a".into(); 8]));
-        assert_eq!(a.pane_tree.active().buffer_id, id);
+        assert_eq!(a.editor.pane_tree.active().buffer_id, id);
         assert_eq!(a.help_popup_inner_height(60), None);
     }
 
@@ -2186,10 +2186,10 @@ mod tests {
         // actions so a stray Action::Insert while help is active
         // doesn't fall through onto the document.
         let mut a = app_with("xx", 10);
-        let original = a.document.text();
+        let original = a.editor.document.text();
         install_help(&mut a, HelpContent::from_lines("ro", vec!["abc".into()]));
         a.apply(Action::Insert("PWNED".into()));
-        assert_eq!(a.document.text(), original);
+        assert_eq!(a.editor.document.text(), original);
         let msg = a.editor.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("read-only"), "got: {msg:?}");
     }

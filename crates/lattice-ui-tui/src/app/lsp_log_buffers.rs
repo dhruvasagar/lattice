@@ -221,7 +221,7 @@ mod tests {
         let mut a = app_with("hi", 5);
         let id = a.editor.buffers.by_name(LSP_SUBSYSTEM_LOG_NAME).unwrap();
         a.activate_buffer(id);
-        let pane = a.pane_tree.active().clone();
+        let pane = a.editor.pane_tree.active().clone();
         let label = a.pane_status_label(&pane);
         assert!(
             label.contains("*lsp*"),
@@ -278,7 +278,7 @@ mod tests {
             lsp_buf,
             "no-arg :lsp-log must activate *lsp*"
         );
-        let pane = a.pane_tree.active().clone();
+        let pane = a.editor.pane_tree.active().clone();
         let label = a.pane_status_label(&pane);
         assert!(
             label.contains("*lsp*"),
@@ -319,7 +319,7 @@ mod tests {
             .by_name(&expected)
             .expect("per-instance log buffer registered");
         assert_eq!(a.active_pane_buffer_id(), log_id);
-        let pane = a.pane_tree.active().clone();
+        let pane = a.editor.pane_tree.active().clone();
         let label = a.pane_status_label(&pane);
         assert!(
             label.contains(&expected),
@@ -339,7 +339,7 @@ mod tests {
             .by_name(&expected)
             .expect("per-instance trace buffer registered");
         assert_eq!(a.active_pane_buffer_id(), trace_id);
-        let pane = a.pane_tree.active().clone();
+        let pane = a.editor.pane_tree.active().clone();
         let label = a.pane_status_label(&pane);
         assert!(
             label.contains(&expected),

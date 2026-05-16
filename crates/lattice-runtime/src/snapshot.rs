@@ -44,7 +44,7 @@ use lattice_protocol::selection::SelectionSet;
 /// `Buffer` wraps a `ropey::Rope` whose interior is a B-tree of
 /// `Arc`s, so cloning is `O(log n)` with no heap allocation in the
 /// common case).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct DocumentSnapshot {
     pub id: DocumentId,
     /// Bumps on any commit (edits, undo, redo, set_path, mark_clean).
@@ -186,6 +186,21 @@ impl PublishedSnapshot {
 /// renderer reading multiple times per frame between edits.
 pub struct SnapshotCache {
     cache: arc_swap::Cache<Arc<ArcSwap<DocumentSnapshot>>, Arc<DocumentSnapshot>>,
+}
+
+/// Placeholder cache for `Editor::default()` headless / test
+/// scaffolding. Backed by a fresh `ArcSwap<DocumentSnapshot>`
+/// cell carrying a default snapshot. Real construction goes
+/// through [`SnapshotCache::new`] from the document's
+/// `PublishedSnapshot::cell_arc()`; `Editor::new(...)`
+/// overwrites this before the first frame.
+impl Default for SnapshotCache {
+    fn default() -> Self {
+        let cell = Arc::new(ArcSwap::from_pointee(DocumentSnapshot::default()));
+        Self {
+            cache: arc_swap::Cache::new(cell),
+        }
+    }
 }
 
 impl SnapshotCache {

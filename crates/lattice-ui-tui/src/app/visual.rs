@@ -138,7 +138,7 @@ mod tests {
         // gv:
         a.apply(Action::ReselectLastVisual);
         assert_eq!(a.editor.modal, ModalState::Visual(VisualKind::Charwise));
-        let sels = a.document.selections();
+        let sels = a.editor.document.selections();
         let sel = sels.primary();
         assert_eq!(sel.anchor, Position::ZERO);
         assert_eq!(sel.head, Position::new(0, 6));
@@ -157,7 +157,7 @@ mod tests {
         assert_eq!(a.editor.modal, ModalState::Normal);
         a.apply(Action::ReselectLastVisual);
         assert_eq!(a.editor.modal, ModalState::Visual(VisualKind::Charwise));
-        let sels = a.document.selections();
+        let sels = a.editor.document.selections();
         let sel = sels.primary();
         assert_eq!(sel.head, Position::new(0, 6));
     }
@@ -181,7 +181,7 @@ mod tests {
         a.apply(Action::EnterVisual(VisualKind::Charwise));
         assert_eq!(a.editor.modal, ModalState::Visual(VisualKind::Charwise));
         assert_eq!(a.editor.visual_anchor, Some(Position::new(0, 1)));
-        let sels = a.document.selections();
+        let sels = a.editor.document.selections();
         let sel = sels.primary();
         assert_eq!(sel.anchor, Position::new(0, 1));
         assert_eq!(sel.head, Position::new(0, 1));
@@ -193,7 +193,7 @@ mod tests {
         let mut a = app_with("hello world", 10);
         a.apply(Action::EnterVisual(VisualKind::Charwise));
         a.apply(invoke_motion(a.editor.builtins.word_forward));
-        let sels = a.document.selections();
+        let sels = a.editor.document.selections();
         let sel = sels.primary();
         assert_eq!(sel.anchor, Position::ZERO);
         assert_eq!(sel.head, Position::new(0, 6));
@@ -222,7 +222,7 @@ mod tests {
         // INCLUSIVE -> visual range covers 0..=3 = 4 bytes "hell").
         let inv = CommandInvocation::of(a.editor.builtins.delete.0).with_range(GrammarRange::Selection);
         a.apply(Action::Invoke(inv));
-        assert_eq!(a.document.text(), "o world");
+        assert_eq!(a.editor.document.text(), "o world");
         assert_eq!(a.editor.modal, ModalState::Normal);
     }
 
@@ -236,7 +236,7 @@ mod tests {
         let reg = a.editor.unnamed_register.as_ref().unwrap();
         assert_eq!(reg.kind, YankKind::Charwise);
         // Document text untouched.
-        assert_eq!(a.document.text(), "hello world");
+        assert_eq!(a.editor.document.text(), "hello world");
         // Visual mode exited.
         assert_eq!(a.editor.modal, ModalState::Normal);
     }
@@ -293,7 +293,7 @@ mod tests {
         a.apply(Action::Invoke(
             CommandInvocation::of(a.editor.builtins.word_forward.0).with_count(Count(2)),
         ));
-        let sels = a.document.selections();
+        let sels = a.editor.document.selections();
         let sel = sels.primary();
         assert_eq!(sel.anchor, Position::ZERO);
         // 2w from origin advances 2 word starts: "ONE two THREE" -> byte 8.

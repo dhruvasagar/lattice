@@ -179,7 +179,7 @@ impl App {
                     self.prepare_pane_for_picker_result();
                     self.activate_buffer(id);
                 }
-                let snap = self.document.snapshot();
+                let snap = self.editor.document.snapshot();
                 let line = line.min(super::last_addressable_line(&snap.buffer));
                 let len = super::line_byte_len(&snap.buffer, line);
                 let col = col.min(len);
@@ -530,7 +530,7 @@ impl App {
 
         // Sync prelude: build the context against a fresh
         // snapshot, call init, drop the borrow.
-        let snap = self.document.snapshot();
+        let snap = self.editor.document.snapshot();
         let ctx = self.build_picker_context(&snap);
         let init_result = match generator.init(&ctx, &args) {
             Ok(r) => r,
@@ -732,7 +732,7 @@ impl App {
             Some(p) => p.query.clone(),
             None => return,
         };
-        let snap = self.document.snapshot();
+        let snap = self.editor.document.snapshot();
         let ctx = self.build_picker_context(&snap);
         let res = generator.on_query_changed(&ctx, &query);
         drop(ctx);
@@ -1126,7 +1126,7 @@ impl App {
             && let Some(generator) = self.editor.picker_registry.generator(source_id).cloned()
         {
             let source_id_owned = source_id.to_string();
-            let snap = self.document.snapshot();
+            let snap = self.editor.document.snapshot();
             let ctx = self.build_picker_context(&snap);
             let outcome = match generator.accept(&ctx, &routing) {
                 Ok(o) => o,
@@ -1841,7 +1841,7 @@ mod tests {
             .editor.completion_registry
             .generator_by_name("gen:picker-sources")
             .expect("gen:picker-sources must be registered at boot");
-        let snap = app.document.snapshot();
+        let snap = app.editor.document.snapshot();
         let ctx = lattice_completion::GenerateContext {
             prefix: "",
             buffer: &snap.buffer,
@@ -1892,7 +1892,7 @@ mod tests {
         // Build a minimal GenerateContext via an App fixture --
         // we just need a real Buffer + CommandRegistry.
         let app = app_with("hi\n", 5);
-        let snap = app.document.snapshot();
+        let snap = app.editor.document.snapshot();
         let ctx = lattice_completion::GenerateContext {
             prefix: "",
             buffer: &snap.buffer,

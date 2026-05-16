@@ -140,7 +140,7 @@ impl App {
         let root = match root {
             Some(p) => p,
             None => match self
-                .document
+                .editor.document
                 .path()
                 .and_then(|p| p.parent().map(Into::into))
             {
@@ -199,7 +199,7 @@ impl App {
         self.snapshot_active_pane();
         self.snapshot_active_document();
         self.editor.active_buffer = BufferKind::FileTree;
-        let pane = self.pane_tree.active_mut();
+        let pane = self.editor.pane_tree.active_mut();
         pane.buffer = BufferKind::FileTree;
         pane.buffer_id = new_id;
         pane.cursor = Position::ZERO;
@@ -225,7 +225,7 @@ impl App {
         self.editor.buffers.remove(tree_id);
         let new_kind = self.editor.active_buffer;
         let new_id = self.active_pane_buffer_id();
-        for pane in self.pane_tree.leaves_mut() {
+        for pane in self.editor.pane_tree.leaves_mut() {
             if pane.buffer_id == tree_id {
                 pane.buffer = new_kind;
                 pane.buffer_id = new_id;

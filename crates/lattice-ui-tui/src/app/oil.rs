@@ -88,7 +88,7 @@ impl App {
         let dir = match dir {
             Some(p) => p,
             None => match self
-                .document
+                .editor.document
                 .path()
                 .and_then(|p| p.parent().map(Into::into))
                 // `Path::parent()` returns `Some("")` for a
@@ -154,7 +154,7 @@ impl App {
         self.snapshot_active_pane();
         self.snapshot_active_document();
         self.editor.active_buffer = BufferKind::Oil;
-        let pane = self.pane_tree.active_mut();
+        let pane = self.editor.pane_tree.active_mut();
         pane.buffer = BufferKind::Oil;
         pane.buffer_id = new_id;
         pane.cursor = Position::ZERO;
@@ -261,7 +261,7 @@ impl App {
             }
             _ => {
                 let dir = self
-                    .document
+                    .editor.document
                     .path()
                     .and_then(|p| p.parent().map(Into::into));
                 self.do_open_oil(dir);

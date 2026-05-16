@@ -43,7 +43,7 @@ fn build_app(corpus: &str, viewport: u32) -> App {
     // wrap it in a `SyntaxHandle::seeded` so the bench sees an
     // already-populated snapshot from the first frame.
     let mut syn = Syntax::for_language(Lang::Rust).unwrap().unwrap();
-    syn.parse(&a.document.text());
+    syn.parse(&a.editor.document.text());
     a.editor.syntax = Some(lattice_syntax::SyntaxHandle::seeded(syn));
     a.refresh_highlights();
     a
@@ -53,16 +53,16 @@ fn build_app(corpus: &str, viewport: u32) -> App {
 /// per-frame `snapshot_cache.load_arc()`. Re-loading inside `iter`
 /// would dominate the measurement and isn't representative of the
 /// real frame path (one load amortised across the whole compose).
-fn pinned_snapshot(app: &App) -> Arc<DocumentSnapshot> {
-    app.editor.snapshot_cache.load()
+fn pinned_snapshot(app: &mut App) -> Arc<DocumentSnapshot> {
+    app.editor.snapshot_cache.load().clone()
 }
 
 fn frame_render_24(c: &mut Criterion) {
     let mut g = c.benchmark_group("render::frame_24_lines");
     for n in [10usize, 200, 2000] {
         let corpus = rust_corpus(n);
-        let app = build_app(&corpus, 24);
-        let snap = pinned_snapshot(&app);
+        let mut app = build_app(&corpus, 24);
+        let snap = pinned_snapshot(&mut app);
         g.bench_with_input(
             BenchmarkId::from_parameter(n),
             &(app, snap),
@@ -81,8 +81,8 @@ fn frame_render_60(c: &mut Criterion) {
     let mut g = c.benchmark_group("render::frame_60_lines");
     for n in [10usize, 200, 2000] {
         let corpus = rust_corpus(n);
-        let app = build_app(&corpus, 60);
-        let snap = pinned_snapshot(&app);
+        let mut app = build_app(&corpus, 60);
+        let snap = pinned_snapshot(&mut app);
         g.bench_with_input(
             BenchmarkId::from_parameter(n),
             &(app, snap),
@@ -101,8 +101,8 @@ fn frame_render_120(c: &mut Criterion) {
     let mut g = c.benchmark_group("render::frame_120_lines");
     for n in [10usize, 200, 2000] {
         let corpus = rust_corpus(n);
-        let app = build_app(&corpus, 120);
-        let snap = pinned_snapshot(&app);
+        let mut app = build_app(&corpus, 120);
+        let snap = pinned_snapshot(&mut app);
         g.bench_with_input(
             BenchmarkId::from_parameter(n),
             &(app, snap),

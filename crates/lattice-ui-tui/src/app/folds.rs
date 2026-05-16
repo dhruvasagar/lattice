@@ -114,7 +114,7 @@ impl App {
         }
         // Cascade: markdown for `.md`, indent otherwise.
         let is_md = self
-            .document
+            .editor.document
             .path()
             .map(|p| {
                 p.extension()
@@ -213,7 +213,7 @@ impl App {
     }
 
     pub(super) fn do_set_all_folds(&mut self, closed: bool) {
-        for fold in self.folds.iter_mut() {
+        for fold in self.editor.folds.iter_mut() {
             fold.closed = closed;
         }
     }
@@ -221,13 +221,13 @@ impl App {
     pub(super) fn do_goto_fold(&mut self, forward: bool) {
         let line = self.editor.cursor.line;
         let target = if forward {
-            self.folds
+            self.editor.folds
                 .iter()
                 .filter(|f| f.start_line > line)
                 .map(|f| f.start_line)
                 .min()
         } else {
-            self.folds
+            self.editor.folds
                 .iter()
                 .filter(|f| f.end_line < line)
                 .map(|f| f.end_line)
@@ -336,7 +336,7 @@ impl App {
             return;
         }
         let line = self.editor.cursor.line;
-        for fold in self.folds.iter_mut() {
+        for fold in self.editor.folds.iter_mut() {
             if fold.closed && line >= fold.start_line && line <= fold.end_line {
                 fold.closed = false;
             }
@@ -433,15 +433,15 @@ mod tests {
         let mut a = app_with("fn a() {\n    1;\n}\nfn b() {}", 5);
         attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
         a.refresh_highlights();
-        let key1 = a.visible_highlights_key;
-        a.folds.push(Fold {
+        let key1 = a.editor.visible_highlights_key;
+        a.editor.folds.push(Fold {
             start_line: 0,
             end_line: 2,
             closed: true,
             identity: None,
         });
         a.refresh_highlights();
-        let key2 = a.visible_highlights_key;
+        let key2 = a.editor.visible_highlights_key;
         assert_ne!(key1, key2, "fold push must invalidate cache");
     }
 
@@ -449,17 +449,17 @@ mod tests {
     fn refresh_highlights_cache_invalidates_on_fold_toggle() {
         let mut a = app_with("fn a() {\n    1;\n}\nfn b() {}", 5);
         attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
-        a.folds.push(Fold {
+        a.editor.folds.push(Fold {
             start_line: 0,
             end_line: 2,
             closed: false,
             identity: None,
         });
         a.refresh_highlights();
-        let key1 = a.visible_highlights_key;
-        a.folds[0].closed = true;
+        let key1 = a.editor.visible_highlights_key;
+        a.editor.folds[0].closed = true;
         a.refresh_highlights();
-        let key2 = a.visible_highlights_key;
+        let key2 = a.editor.visible_highlights_key;
         assert_ne!(key1, key2, "fold open->closed must invalidate cache");
     }
 
@@ -472,7 +472,7 @@ mod tests {
         let mut a = app_with("fn main() {}", 5);
         attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
         a.refresh_highlights();
-        let key1 = a.visible_highlights_key;
+        let key1 = a.editor.visible_highlights_key;
         // Edit + reparse seam (mirrors what App::apply does at
         // the end of an Action).
         a.apply_edit_blocking(Edit::insert(Position::new(0, 11), "\nfn b() {}"))
@@ -487,8 +487,8 @@ mod tests {
             // Re-seed via the test helper: parses the current
             // text synchronously, replaces the handle. Mirrors
             // the worker's effect.
-            let new_text = a.document.text();
-            let new_tv = a.document.text_version();
+            let new_text = a.editor.document.text();
+            let new_tv = a.editor.document.text_version();
             let mut s = lattice_syntax::Syntax::for_language(syntax.lang())
                 .unwrap()
                 .expect("syntax registered for lang");
@@ -497,7 +497,7 @@ mod tests {
             a.editor.last_synced_syntax_version = new_tv;
         }
         a.refresh_highlights();
-        let key2 = a.visible_highlights_key;
+        let key2 = a.editor.visible_highlights_key;
         assert_ne!(key1, key2, "edit must invalidate cache");
     }
 
@@ -566,8 +566,8 @@ mod tests {
         a.apply(invoke_motion(a.editor.builtins.line_down));
         // Selection now spans lines 0..2.
         a.apply(Action::CreateFoldFromVisual);
-        assert_eq!(a.folds.len(), 1);
-        let fold = &a.folds[0];
+        assert_eq!(a.editor.folds.len(), 1);
+        let fold = &a.editor.folds[0];
         assert_eq!(fold.start_line, 0);
         assert_eq!(fold.end_line, 2);
         assert!(fold.closed);
@@ -586,86 +586,86 @@ mod tests {
     #[test]
     fn zo_opens_fold_at_cursor() {
         let mut a = app_with("a\nb\nc", 10);
-        a.folds.push(Fold {
+        a.editor.folds.push(Fold {
             start_line: 0,
             end_line: 2,
             closed: true,
             identity: None,
         });
         a.apply(Action::OpenFoldAtCursor);
-        assert!(!a.folds[0].closed);
+        assert!(!a.editor.folds[0].closed);
     }
 
     #[test]
     fn zc_closes_fold_at_cursor() {
         let mut a = app_with("a\nb\nc", 10);
-        a.folds.push(Fold {
+        a.editor.folds.push(Fold {
             start_line: 0,
             end_line: 2,
             closed: false,
             identity: None,
         });
         a.apply(Action::CloseFoldAtCursor);
-        assert!(a.folds[0].closed);
+        assert!(a.editor.folds[0].closed);
     }
 
     #[test]
     fn za_toggles_fold_at_cursor() {
         let mut a = app_with("a\nb\nc", 10);
-        a.folds.push(Fold {
+        a.editor.folds.push(Fold {
             start_line: 0,
             end_line: 2,
             closed: false,
             identity: None,
         });
         a.apply(Action::ToggleFoldAtCursor);
-        assert!(a.folds[0].closed);
+        assert!(a.editor.folds[0].closed);
         a.apply(Action::ToggleFoldAtCursor);
-        assert!(!a.folds[0].closed);
+        assert!(!a.editor.folds[0].closed);
     }
 
     #[test]
     fn capital_zr_opens_all_folds() {
         let mut a = app_with("a\nb\nc\nd", 10);
-        a.folds.push(Fold {
+        a.editor.folds.push(Fold {
             start_line: 0,
             end_line: 1,
             closed: true,
             identity: None,
         });
-        a.folds.push(Fold {
+        a.editor.folds.push(Fold {
             start_line: 2,
             end_line: 3,
             closed: true,
             identity: None,
         });
         a.apply(Action::OpenAllFolds);
-        assert!(a.folds.iter().all(|f| !f.closed));
+        assert!(a.editor.folds.iter().all(|f| !f.closed));
     }
 
     #[test]
     fn capital_zm_closes_all_folds() {
         let mut a = app_with("a\nb\nc\nd", 10);
-        a.folds.push(Fold {
+        a.editor.folds.push(Fold {
             start_line: 0,
             end_line: 1,
             closed: false,
             identity: None,
         });
-        a.folds.push(Fold {
+        a.editor.folds.push(Fold {
             start_line: 2,
             end_line: 3,
             closed: false,
             identity: None,
         });
         a.apply(Action::CloseAllFolds);
-        assert!(a.folds.iter().all(|f| f.closed));
+        assert!(a.editor.folds.iter().all(|f| f.closed));
     }
 
     #[test]
     fn zd_deletes_fold_at_cursor() {
         let mut a = app_with("a\nb\nc\nd", 10);
-        a.folds.push(Fold {
+        a.editor.folds.push(Fold {
             start_line: 0,
             end_line: 2,
             closed: true,
@@ -673,7 +673,7 @@ mod tests {
         });
         a.editor.cursor = Position::new(1, 0);
         a.apply(Action::DeleteFoldAtCursor);
-        assert!(a.folds.is_empty());
+        assert!(a.editor.folds.is_empty());
     }
 
     // --- Nested-fold semantics (`zc` / `zo` / `za` / `zd`) -----
@@ -682,13 +682,13 @@ mod tests {
         // Two nested open folds: outer covers lines 0..=10, inner
         // covers 2..=8. Cursor sits inside both at line 4.
         let mut a = app_with(&"x\n".repeat(12), 10);
-        a.folds.push(Fold {
+        a.editor.folds.push(Fold {
             start_line: 0,
             end_line: 10,
             closed: false,
             identity: None,
         });
-        a.folds.push(Fold {
+        a.editor.folds.push(Fold {
             start_line: 2,
             end_line: 8,
             closed: false,
@@ -702,8 +702,8 @@ mod tests {
     fn zc_closes_innermost_open_fold_first() {
         let mut a = nested_folds_app();
         a.apply(Action::CloseFoldAtCursor);
-        let inner = a.folds.iter().find(|f| f.start_line == 2).unwrap();
-        let outer = a.folds.iter().find(|f| f.start_line == 0).unwrap();
+        let inner = a.editor.folds.iter().find(|f| f.start_line == 2).unwrap();
+        let outer = a.editor.folds.iter().find(|f| f.start_line == 0).unwrap();
         assert!(inner.closed, "inner should close first");
         assert!(!outer.closed, "outer should remain open until next zc");
     }
@@ -713,8 +713,8 @@ mod tests {
         let mut a = nested_folds_app();
         a.apply(Action::CloseFoldAtCursor); // closes inner
         a.apply(Action::CloseFoldAtCursor); // should close outer
-        let inner = a.folds.iter().find(|f| f.start_line == 2).unwrap();
-        let outer = a.folds.iter().find(|f| f.start_line == 0).unwrap();
+        let inner = a.editor.folds.iter().find(|f| f.start_line == 2).unwrap();
+        let outer = a.editor.folds.iter().find(|f| f.start_line == 0).unwrap();
         assert!(inner.closed);
         assert!(outer.closed);
     }
@@ -723,12 +723,12 @@ mod tests {
     fn zo_opens_outermost_closed_fold_first() {
         let mut a = nested_folds_app();
         // Both folds closed.
-        for f in a.folds.iter_mut() {
+        for f in a.editor.folds.iter_mut() {
             f.closed = true;
         }
         a.apply(Action::OpenFoldAtCursor);
-        let outer = a.folds.iter().find(|f| f.start_line == 0).unwrap();
-        let inner = a.folds.iter().find(|f| f.start_line == 2).unwrap();
+        let outer = a.editor.folds.iter().find(|f| f.start_line == 0).unwrap();
+        let inner = a.editor.folds.iter().find(|f| f.start_line == 2).unwrap();
         assert!(!outer.closed, "outer should open first");
         assert!(inner.closed, "inner should remain closed until next zo");
     }
@@ -737,17 +737,17 @@ mod tests {
     fn za_toggles_to_open_when_any_fold_closed_then_close_when_all_open() {
         let mut a = nested_folds_app();
         // Close outer only.
-        a.folds[0].closed = true;
+        a.editor.folds[0].closed = true;
         // za with the outer closed => open the outermost closed (the outer).
         a.apply(Action::ToggleFoldAtCursor);
-        let outer = a.folds.iter().find(|f| f.start_line == 0).unwrap();
-        let inner = a.folds.iter().find(|f| f.start_line == 2).unwrap();
+        let outer = a.editor.folds.iter().find(|f| f.start_line == 0).unwrap();
+        let inner = a.editor.folds.iter().find(|f| f.start_line == 2).unwrap();
         assert!(!outer.closed);
         assert!(!inner.closed);
         // Now both open: za should close the innermost.
         a.apply(Action::ToggleFoldAtCursor);
-        let inner = a.folds.iter().find(|f| f.start_line == 2).unwrap();
-        let outer = a.folds.iter().find(|f| f.start_line == 0).unwrap();
+        let inner = a.editor.folds.iter().find(|f| f.start_line == 2).unwrap();
+        let outer = a.editor.folds.iter().find(|f| f.start_line == 0).unwrap();
         assert!(inner.closed);
         assert!(!outer.closed);
     }
@@ -755,12 +755,12 @@ mod tests {
     #[test]
     fn zc_with_all_folds_closed_emits_e490() {
         let mut a = nested_folds_app();
-        for f in a.folds.iter_mut() {
+        for f in a.editor.folds.iter_mut() {
             f.closed = true;
         }
         a.apply(Action::CloseFoldAtCursor);
         // No state change; both still closed.
-        assert!(a.folds.iter().all(|f| f.closed));
+        assert!(a.editor.folds.iter().all(|f| f.closed));
         // E490 echoed.
         let msg = a.editor.last_message.as_ref().expect("message").text.clone();
         assert!(msg.contains("E490"), "expected E490, got {msg:?}");
@@ -771,8 +771,8 @@ mod tests {
         let mut a = nested_folds_app();
         a.apply(Action::DeleteFoldAtCursor);
         // The inner (start=2) fold is gone; outer remains.
-        assert!(a.folds.iter().any(|f| f.start_line == 0));
-        assert!(!a.folds.iter().any(|f| f.start_line == 2));
+        assert!(a.editor.folds.iter().any(|f| f.start_line == 0));
+        assert!(!a.editor.folds.iter().any(|f| f.start_line == 2));
     }
 
     // --- Linear j/k skip closed folds (`docs/user/folding.md`) ---
@@ -782,7 +782,7 @@ mod tests {
         // 12-line buffer with a closed fold spanning lines 1..=4.
         // From line 1 (heading), `j` should land on line 5, not 2.
         let mut a = app_with(&"x\n".repeat(12), 10);
-        a.folds.push(Fold {
+        a.editor.folds.push(Fold {
             start_line: 1,
             end_line: 4,
             closed: true,
@@ -801,7 +801,7 @@ mod tests {
         // From line 5, `k` lands on 4 -- inside a closed fold (1..=4).
         // Snap to fold.start_line (1).
         let mut a = app_with(&"x\n".repeat(12), 10);
-        a.folds.push(Fold {
+        a.editor.folds.push(Fold {
             start_line: 1,
             end_line: 4,
             closed: true,
@@ -819,7 +819,7 @@ mod tests {
     fn linear_j_into_open_fold_does_not_skip() {
         // Open folds don't hide content; j moves one line as usual.
         let mut a = app_with(&"x\n".repeat(12), 10);
-        a.folds.push(Fold {
+        a.editor.folds.push(Fold {
             start_line: 1,
             end_line: 4,
             closed: false,
@@ -835,7 +835,7 @@ mod tests {
         // `:set nofoldenable` / `zi` should make every line visible
         // for navigation, including closed-fold interiors.
         let mut a = app_with(&"x\n".repeat(12), 10);
-        a.folds.push(Fold {
+        a.editor.folds.push(Fold {
             start_line: 1,
             end_line: 4,
             closed: true,
@@ -855,19 +855,19 @@ mod tests {
         //   line 4 (fold B heading) --j--> line 7 (fold C heading)
         //   line 7 (fold C heading) --j--> line 10 (after fold C)
         let mut a = app_with(&"x\n".repeat(12), 10);
-        a.folds.push(Fold {
+        a.editor.folds.push(Fold {
             start_line: 1,
             end_line: 3,
             closed: true,
             identity: None,
         });
-        a.folds.push(Fold {
+        a.editor.folds.push(Fold {
             start_line: 4,
             end_line: 6,
             closed: true,
             identity: None,
         });
-        a.folds.push(Fold {
+        a.editor.folds.push(Fold {
             start_line: 7,
             end_line: 9,
             closed: true,
@@ -901,7 +901,7 @@ mod tests {
         // visible line so subsequent `zc` resolves correctly.
         let src = "alpha bravo\n    charlie delta\n    echo foxtrot\nafter golf hotel\n";
         let mut a = app_with(src, 10);
-        a.folds.push(Fold {
+        a.editor.folds.push(Fold {
             start_line: 0,
             end_line: 2,
             closed: true,
@@ -939,7 +939,7 @@ mod tests {
         // onto one row). With a 5-row viewport that means `fn b`
         // (line 6) and its body (lines 7, 8) all sit in the visible
         // region.
-        a.folds.push(Fold {
+        a.editor.folds.push(Fold {
             start_line: 0,
             end_line: 5,
             closed: true,
@@ -975,7 +975,7 @@ mod tests {
         // Dump for diagnosis -- show the fold ranges at the live
         // tree's current state.
         eprintln!("FOLDS (indented let-if-else inside fn):");
-        for f in &a.folds {
+        for f in &a.editor.folds {
             eprintln!(
                 "  ({}, {}) span={} lines",
                 f.start_line,
@@ -996,7 +996,7 @@ mod tests {
         assert_eq!(
             count, 5,
             "indented if/else fold must span 5 lines (got {count}; fold = {fold:?}; all = {:?})",
-            a.folds
+            a.editor.folds
         );
     }
 
@@ -1033,7 +1033,7 @@ mod tests {
         // cursor on a hidden paragraph break. Snap must apply.
         let src = "alpha\n\n    body line one\n    body line two\n\nafter\n";
         let mut a = app_with(src, 10);
-        a.folds.push(Fold {
+        a.editor.folds.push(Fold {
             start_line: 0,
             end_line: 4,
             closed: true,
@@ -1073,25 +1073,25 @@ mod tests {
             "impl B {\n    fn a() {\n    }\n\n    fn b() {\n    }\n\n    fn c() {\n    }\n}\n";
         let mut a = app_with(src, 20);
         // Outer impl + three function folds (skip blank-line 3 / 6).
-        a.folds.push(Fold {
+        a.editor.folds.push(Fold {
             start_line: 0,
             end_line: 9,
             closed: false,
             identity: None,
         });
-        a.folds.push(Fold {
+        a.editor.folds.push(Fold {
             start_line: 1,
             end_line: 2,
             closed: true,
             identity: None,
         });
-        a.folds.push(Fold {
+        a.editor.folds.push(Fold {
             start_line: 4,
             end_line: 5,
             closed: false,
             identity: None,
         });
-        a.folds.push(Fold {
+        a.editor.folds.push(Fold {
             start_line: 7,
             end_line: 8,
             closed: false,
@@ -1107,7 +1107,7 @@ mod tests {
         );
         // Close fn b, j again, land on fn c's heading (line 7).
         a.apply(Action::CloseFoldAtCursor);
-        let fnb = a.folds.iter().find(|f| f.start_line == 4).unwrap();
+        let fnb = a.editor.folds.iter().find(|f| f.start_line == 4).unwrap();
         assert!(fnb.closed, "zc on fn b heading closes fn b");
         a.apply(invoke_motion(a.editor.builtins.line_down));
         assert_eq!(
@@ -1116,8 +1116,8 @@ mod tests {
         );
         // Close fn c. The outer impl must remain open.
         a.apply(Action::CloseFoldAtCursor);
-        let fnc = a.folds.iter().find(|f| f.start_line == 7).unwrap();
-        let outer = a.folds.iter().find(|f| f.start_line == 0).unwrap();
+        let fnc = a.editor.folds.iter().find(|f| f.start_line == 7).unwrap();
+        let outer = a.editor.folds.iter().find(|f| f.start_line == 0).unwrap();
         assert!(fnc.closed, "zc on fn c heading closes fn c, not outer");
         assert!(
             !outer.closed,
@@ -1132,19 +1132,19 @@ mod tests {
         // (line 5), not inside the closed fold's body. Then `zc`
         // on the sibling closes the sibling -- not the outer.
         let mut a = app_with(&"x\n".repeat(12), 10);
-        a.folds.push(Fold {
+        a.editor.folds.push(Fold {
             start_line: 0,
             end_line: 10,
             closed: false,
             identity: None,
         });
-        a.folds.push(Fold {
+        a.editor.folds.push(Fold {
             start_line: 1,
             end_line: 4,
             closed: true,
             identity: None,
         });
-        a.folds.push(Fold {
+        a.editor.folds.push(Fold {
             start_line: 5,
             end_line: 9,
             closed: false,
@@ -1159,8 +1159,8 @@ mod tests {
         );
         // Close the sibling.
         a.apply(Action::CloseFoldAtCursor);
-        let sibling = a.folds.iter().find(|f| f.start_line == 5).unwrap();
-        let outer = a.folds.iter().find(|f| f.start_line == 0).unwrap();
+        let sibling = a.editor.folds.iter().find(|f| f.start_line == 5).unwrap();
+        let outer = a.editor.folds.iter().find(|f| f.start_line == 0).unwrap();
         assert!(sibling.closed, "sibling should close, not the outer");
         assert!(!outer.closed, "outer must remain open");
     }
@@ -1168,13 +1168,13 @@ mod tests {
     #[test]
     fn zj_jumps_to_next_fold_start() {
         let mut a = app_with("a\nb\nc\nd\ne\nf", 10);
-        a.folds.push(Fold {
+        a.editor.folds.push(Fold {
             start_line: 2,
             end_line: 3,
             closed: false,
             identity: None,
         });
-        a.folds.push(Fold {
+        a.editor.folds.push(Fold {
             start_line: 5,
             end_line: 5,
             closed: false,
@@ -1188,7 +1188,7 @@ mod tests {
     #[test]
     fn zk_jumps_to_previous_fold_end() {
         let mut a = app_with("a\nb\nc\nd\ne\nf", 10);
-        a.folds.push(Fold {
+        a.editor.folds.push(Fold {
             start_line: 1,
             end_line: 2,
             closed: false,
@@ -1210,7 +1210,7 @@ mod tests {
     #[test]
     fn line_inside_closed_fold_returns_true_for_interior() {
         let mut a = app_with("a\nb\nc\nd", 10);
-        a.folds.push(Fold {
+        a.editor.folds.push(Fold {
             start_line: 1,
             end_line: 3,
             closed: true,
@@ -1234,8 +1234,8 @@ mod tests {
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.foldmethod(), FoldMethod::Indent);
-        assert!(!a.folds.is_empty());
-        let f = a.folds.iter().find(|f| f.start_line == 0).expect("fold");
+        assert!(!a.editor.folds.is_empty());
+        let f = a.editor.folds.iter().find(|f| f.start_line == 0).expect("fold");
         assert_eq!(f.end_line, 2);
     }
 
@@ -1244,19 +1244,19 @@ mod tests {
         let mut a = app_with("a:\n    b\n    c\n", 10);
         a.set_foldmethod_for_test(FoldMethod::Indent);
         a.recompute_folds();
-        assert_eq!(a.folds.len(), 1);
+        assert_eq!(a.editor.folds.len(), 1);
         // Close the fold.
-        a.folds[0].closed = true;
+        a.editor.folds[0].closed = true;
         // Recompute should preserve closed state (same range).
         a.recompute_folds();
-        assert!(a.folds[0].closed);
+        assert!(a.editor.folds[0].closed);
     }
 
     #[test]
     fn foldmethod_manual_default_does_not_recompute() {
         let mut a = app_with("def f():\n    pass\n", 10);
         a.recompute_folds();
-        assert!(a.folds.is_empty());
+        assert!(a.editor.folds.is_empty());
     }
 
     #[test]
@@ -1266,8 +1266,8 @@ mod tests {
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.foldmethod(), FoldMethod::Markdown);
-        assert!(!a.folds.is_empty());
-        let f = a.folds.iter().find(|f| f.start_line == 0).expect("fold");
+        assert!(!a.editor.folds.is_empty());
+        let f = a.editor.folds.iter().find(|f| f.start_line == 0).expect("fold");
         assert!(f.end_line >= 2);
     }
 
@@ -1280,7 +1280,7 @@ mod tests {
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.foldmethod(), FoldMethod::Syntax);
-        assert!(a.folds.iter().any(|f| f.start_line == 0 && f.end_line == 2));
+        assert!(a.editor.folds.iter().any(|f| f.start_line == 0 && f.end_line == 2));
     }
 
     #[test]
@@ -1301,15 +1301,15 @@ mod tests {
         assert_eq!(a.foldmethod(), FoldMethod::Syntax);
         // Tree-sitter fold for the struct (lines 0..=2).
         assert!(
-            a.folds.iter().any(|f| f.start_line == 0 && f.end_line >= 2),
+            a.editor.folds.iter().any(|f| f.start_line == 0 && f.end_line >= 2),
             "expected struct fold from tree-sitter: {:?}",
-            a.folds
+            a.editor.folds
         );
         // Tree-sitter fold for the impl (starts at line 4).
         assert!(
-            a.folds.iter().any(|f| f.start_line == 4),
+            a.editor.folds.iter().any(|f| f.start_line == 4),
             "expected impl fold from tree-sitter: {:?}",
-            a.folds
+            a.editor.folds
         );
     }
 
@@ -1326,11 +1326,11 @@ mod tests {
         a.recompute_folds();
         // Find and close the `second:` fold.
         let second_idx = a
-            .folds
+            .editor.folds
             .iter()
             .position(|f| f.start_line == 3)
             .expect("second: fold exists");
-        a.folds[second_idx].closed = true;
+        a.editor.folds[second_idx].closed = true;
         // Insert a new line inside the first function (between `a` and `b`).
         a.apply_edit_blocking(Edit::insert(Position::new(2, 0), "    extra\n"))
             .unwrap();
@@ -1338,7 +1338,7 @@ mod tests {
         // The recomputed `second:` fold has start_line = 4 now, but
         // its identity (heading text "second:" + indent 0) matches.
         let new_second = a
-            .folds
+            .editor.folds
             .iter()
             .find(|f| f.start_line == 4)
             .expect("second: fold survived insertion");

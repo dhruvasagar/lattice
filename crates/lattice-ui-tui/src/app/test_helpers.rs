@@ -69,7 +69,7 @@ pub(super) fn invoke_motion(id: MotionId) -> Action {
 /// test paths call this instead of building the handle by
 /// hand.
 pub(super) fn attach_test_syntax(a: &mut App, lang: lattice_syntax::Lang) {
-    let snap = a.document.snapshot();
+    let snap = a.editor.document.snapshot();
     let text = snap.buffer.as_string();
     let tv = snap.version;
     let mut s = lattice_syntax::Syntax::for_language(lang)

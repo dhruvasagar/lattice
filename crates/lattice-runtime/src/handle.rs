@@ -57,6 +57,24 @@ pub struct DocumentHandle {
     snapshot_cell: Arc<PublishedSnapshot>,
 }
 
+/// Placeholder handle for `Editor::default()` headless / test
+/// scaffolding. The receiver is dropped immediately, so any
+/// message sent through this handle silently fails (the
+/// caller's reply oneshot drops without being completed,
+/// reported as "actor gone" by the typed wrappers).
+/// Production handles come from
+/// [`spawn_document`]; `Editor::new(...)` overwrites this
+/// slot before any traffic flows.
+impl Default for DocumentHandle {
+    fn default() -> Self {
+        let (sender, _rx) = mpsc::unbounded_channel();
+        Self {
+            sender,
+            snapshot_cell: Arc::new(PublishedSnapshot::new(DocumentSnapshot::default())),
+        }
+    }
+}
+
 /// Spawn a fresh document actor on the shared runtime and return
 /// the handle. Calling this is the *only* way to obtain a
 /// `DocumentHandle`. Document moves into the actor; once spawned

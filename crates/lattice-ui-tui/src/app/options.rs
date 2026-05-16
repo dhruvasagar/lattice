@@ -1359,7 +1359,7 @@ mod tests {
         let active = a.editor.document_buffer_id;
         // Manufacture a second document buffer.
         let other = BufferId::next();
-        let handle = a.document.clone();
+        let handle = a.editor.document.clone();
         a.editor.buffers.insert(BufferEntry {
             id: other,
             flags: BufferFlags::default(),
@@ -1491,9 +1491,9 @@ mod tests {
     #[test]
     fn fresh_app_has_one_document_pane() {
         let a = app_with("xx", 10);
-        assert_eq!(a.pane_tree.len(), 1);
+        assert_eq!(a.editor.pane_tree.len(), 1);
         assert_eq!(a.editor.active_buffer, BufferKind::Document);
-        let active = a.pane_tree.active();
+        let active = a.editor.pane_tree.active();
         assert_eq!(active.buffer, BufferKind::Document);
         assert_eq!(active.buffer_id, a.editor.document_buffer_id);
     }

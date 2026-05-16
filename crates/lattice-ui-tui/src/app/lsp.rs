@@ -379,7 +379,7 @@ impl App {
 
         // Build the LSP-side cursor position. App's cursor is
         // (line, col_byte) in utf-8; LSP wants utf-16 columns.
-        let snapshot = self.document.snapshot();
+        let snapshot = self.editor.document.snapshot();
         let lsp_position = match app_to_lsp_position(&snapshot.buffer, self.editor.cursor) {
             Some(p) => p,
             None => {
@@ -547,7 +547,7 @@ impl App {
                     line: anchor.line,
                     character: lattice_lsp::position::utf8_byte_to_utf16_column(
                         &self
-                            .document
+                            .editor.document
                             .snapshot()
                             .buffer
                             .line(anchor.line)
@@ -559,7 +559,7 @@ impl App {
                     line: self.editor.cursor.line,
                     character: lattice_lsp::position::utf8_byte_to_utf16_column(
                         &self
-                            .document
+                            .editor.document
                             .snapshot()
                             .buffer
                             .line(self.editor.cursor.line)
@@ -590,7 +590,7 @@ impl App {
                 main_range.start.line,
                 lattice_lsp::position::utf16_column_to_utf8_byte(
                     &self
-                        .document
+                        .editor.document
                         .snapshot()
                         .buffer
                         .line(main_range.start.line)
@@ -764,7 +764,7 @@ impl App {
             // popup; just skip the LSP request silently.
             return;
         };
-        let snapshot = self.document.snapshot();
+        let snapshot = self.editor.document.snapshot();
         let lsp_position = match app_to_lsp_position(&snapshot.buffer, self.editor.cursor) {
             Some(p) => p,
             None => return,
@@ -1416,7 +1416,7 @@ impl App {
         // active document's encoding before moving. Best-
         // effort: if the line is out of buffer, leave the
         // cursor where `do_edit` put it.
-        let snapshot = self.document.snapshot();
+        let snapshot = self.editor.document.snapshot();
         let byte = crate::app::lsp_position_to_app_byte(
             &snapshot.buffer,
             position.line,
@@ -1682,7 +1682,7 @@ impl App {
             };
             let edit_count = edits.len();
             if self
-                .document
+                .editor.document
                 .path()
                 .map(|p| p == target_path)
                 .unwrap_or(false)
@@ -1757,7 +1757,7 @@ impl App {
     /// URI is a no-op because `LspSupervisorHandle::open_buffer`
     /// short-circuits already-attached URIs.
     pub(super) fn publish_document_opened_for_active(&mut self) {
-        let snap = self.document.snapshot();
+        let snap = self.editor.document.snapshot();
         let path_opt = snap.path().map(std::path::Path::to_path_buf);
         let version = snap.text_version;
         let text = snap.buffer.as_string();
@@ -1908,7 +1908,7 @@ impl App {
                 .cmp(&a.range.start.line)
                 .then_with(|| b.range.start.character.cmp(&a.range.start.character))
         });
-        let snap = self.document.snapshot();
+        let snap = self.editor.document.snapshot();
         let mut lattice_edits: Vec<Edit> = Vec::with_capacity(edits.len());
         for te in edits {
             let start_line = te.range.start.line;
@@ -1977,7 +1977,7 @@ impl App {
         let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
             return;
         };
-        let snapshot = self.document.snapshot();
+        let snapshot = self.editor.document.snapshot();
         let pos = match app_to_lsp_position(&snapshot.buffer, self.editor.cursor) {
             Some(p) => p,
             None => return,
@@ -2059,7 +2059,7 @@ impl App {
             );
             return;
         };
-        let snapshot = self.document.snapshot();
+        let snapshot = self.editor.document.snapshot();
         let lsp_position = match app_to_lsp_position(&snapshot.buffer, self.editor.cursor) {
             Some(p) => p,
             None => {
@@ -2194,7 +2194,7 @@ impl App {
             };
             let edit_count = edits.len();
             if self
-                .document
+                .editor.document
                 .path()
                 .map(|p| p == target_path)
                 .unwrap_or(false)
@@ -2411,7 +2411,7 @@ impl App {
             );
             return;
         };
-        let snapshot = self.document.snapshot();
+        let snapshot = self.editor.document.snapshot();
         let range = self.code_action_range(&snapshot.buffer);
         let context = lsp_types::CodeActionContext {
             diagnostics: self.diagnostics_for_range(&uri, &range),
@@ -2622,7 +2622,7 @@ impl App {
             );
             return;
         };
-        let snapshot = self.document.snapshot();
+        let snapshot = self.editor.document.snapshot();
         let lsp_position = match app_to_lsp_position(&snapshot.buffer, self.editor.cursor) {
             Some(p) => p,
             None => return,
@@ -2790,7 +2790,7 @@ impl App {
             );
             return;
         };
-        let snapshot = self.document.snapshot();
+        let snapshot = self.editor.document.snapshot();
         let last_line = last_addressable_line(&snapshot.buffer);
         // Range resolution.
         let range_lines: Option<(u32, u32)> = if is_range {
@@ -3165,7 +3165,7 @@ impl App {
         // Tag-stack: a call-hierarchy drill-down is a
         // navigation intent; push the pre-jump cursor so
         // `<C-t>` pops it cleanly.
-        let snapshot_for_label = self.document.snapshot();
+        let snapshot_for_label = self.editor.document.snapshot();
         let label = word_under_cursor(&snapshot_for_label.buffer, self.editor.cursor).unwrap_or_default();
         self.editor.pending_tag_origin = Some(TagStackEntry {
             buffer: self.editor.active_buffer,
@@ -3180,7 +3180,7 @@ impl App {
             );
             return;
         };
-        let snapshot = self.document.snapshot();
+        let snapshot = self.editor.document.snapshot();
         let lsp_position = match app_to_lsp_position(&snapshot.buffer, self.editor.cursor) {
             Some(p) => p,
             None => {
@@ -3299,7 +3299,7 @@ impl App {
         if let Some(token) = self.editor.pending_symbols_token.take() {
             token.cancel();
         }
-        let snapshot_for_label = self.document.snapshot();
+        let snapshot_for_label = self.editor.document.snapshot();
         let label = word_under_cursor(&snapshot_for_label.buffer, self.editor.cursor).unwrap_or_default();
         self.editor.pending_tag_origin = Some(TagStackEntry {
             buffer: self.editor.active_buffer,
@@ -3314,7 +3314,7 @@ impl App {
             );
             return;
         };
-        let snapshot = self.document.snapshot();
+        let snapshot = self.editor.document.snapshot();
         let lsp_position = match app_to_lsp_position(&snapshot.buffer, self.editor.cursor) {
             Some(p) => p,
             None => {
@@ -3418,7 +3418,7 @@ impl App {
             );
             return;
         };
-        let snapshot = self.document.snapshot();
+        let snapshot = self.editor.document.snapshot();
         let lsp_position = match app_to_lsp_position(&snapshot.buffer, self.editor.cursor) {
             Some(p) => p,
             None => {
@@ -3514,7 +3514,7 @@ impl App {
             );
             return;
         };
-        let snapshot = self.document.snapshot();
+        let snapshot = self.editor.document.snapshot();
         let lsp_position = match app_to_lsp_position(&snapshot.buffer, self.editor.cursor) {
             Some(p) => p,
             None => return,
@@ -3619,7 +3619,7 @@ impl App {
             );
             return;
         };
-        let snapshot = self.document.snapshot();
+        let snapshot = self.editor.document.snapshot();
         let lsp_position = match app_to_lsp_position(&snapshot.buffer, self.editor.cursor) {
             Some(p) => p,
             None => {
@@ -3816,7 +3816,7 @@ impl App {
             );
             return;
         };
-        let snapshot = self.document.snapshot();
+        let snapshot = self.editor.document.snapshot();
         let lsp_position = match app_to_lsp_position(&snapshot.buffer, self.editor.cursor) {
             Some(p) => p,
             None => {
@@ -3953,7 +3953,7 @@ impl App {
 
         // Same buffer? Just update the cursor.
         let same_buffer = self
-            .document
+            .editor.document
             .path()
             .map(|p| p == target_path)
             .unwrap_or(false);
@@ -3961,7 +3961,7 @@ impl App {
             self.do_edit(Some(target_path), false);
         }
         // Convert LSP target position back to App (line, byte).
-        let snap = self.document.snapshot();
+        let snap = self.editor.document.snapshot();
         let line_text = snap.buffer.line(loc.range.start.line).unwrap_or_default();
         // utf-16 -> utf-8 byte.
         let byte =
@@ -4343,7 +4343,7 @@ impl App {
         if !self.lsp_folding_mode_enabled_for(self.editor.document_buffer_id) {
             return;
         }
-        let snapshot = self.document.snapshot();
+        let snapshot = self.editor.document.snapshot();
         let version = snapshot.version;
         if let Some(cache) = self.editor.lsp_folds_cache.get(&self.editor.document_buffer_id)
             && cache.document_version == version
@@ -4468,7 +4468,7 @@ impl App {
         if !self.lsp_semantic_tokens_mode_enabled_for(self.editor.document_buffer_id) {
             return;
         }
-        let snapshot = self.document.snapshot();
+        let snapshot = self.editor.document.snapshot();
         let version = snapshot.version;
         // 4.4.i: pull the prior result_id (if any) before the
         // version-equal early-return. The delta path uses the
@@ -4721,7 +4721,7 @@ impl App {
         if !self.lsp_diagnostics_mode_enabled_for(self.editor.document_buffer_id) {
             return;
         }
-        let snapshot = self.document.snapshot();
+        let snapshot = self.editor.document.snapshot();
         let version = snapshot.version;
         let prior = self
             .editor.lsp_pull_diagnostics_cache
@@ -4925,7 +4925,7 @@ impl App {
         if !self.lsp_inlay_hint_mode_enabled_for(self.editor.document_buffer_id) {
             return;
         }
-        let snapshot = self.document.snapshot();
+        let snapshot = self.editor.document.snapshot();
         let version = snapshot.version;
         // 4.4.g viewport polish: pick the line range to fetch.
         // Visible viewport ± overscan margin, clamped to the
@@ -5168,7 +5168,7 @@ impl App {
         let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
             return;
         };
-        let snapshot = self.document.snapshot();
+        let snapshot = self.editor.document.snapshot();
         let version = snapshot.version;
         if let Some(cache) = self.editor.lsp_document_links_cache.get(&self.editor.document_buffer_id)
             && cache.document_version == version
@@ -5282,7 +5282,7 @@ impl App {
     /// following. Echoes `(no link at cursor)` when the cache
     /// is empty or the cursor sits outside every cached range.
     pub fn do_lsp_follow_link_at_cursor(&mut self) {
-        let snapshot = self.document.snapshot();
+        let snapshot = self.editor.document.snapshot();
         let Some(pos) = app_to_lsp_position(&snapshot.buffer, self.editor.cursor) else {
             return;
         };
@@ -5390,7 +5390,7 @@ impl App {
         let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
             return;
         };
-        let snapshot = self.document.snapshot();
+        let snapshot = self.editor.document.snapshot();
         let version = snapshot.version;
         if let Some(cache) = self.editor.lsp_code_lens_cache.get(&self.editor.document_buffer_id)
             && cache.document_version == version
@@ -5636,7 +5636,7 @@ impl App {
         let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
             return;
         };
-        let snapshot = self.document.snapshot();
+        let snapshot = self.editor.document.snapshot();
         let version = snapshot.version;
         if let Some(cache) = self.editor.lsp_document_color_cache.get(&self.editor.document_buffer_id)
             && cache.document_version == version
@@ -5751,7 +5751,7 @@ impl App {
     /// `ColorPresentation.text_edit` (or `label` fallback) at
     /// the literal's range.
     pub(super) fn do_lsp_color_presentation(&mut self) {
-        let snapshot = self.document.snapshot();
+        let snapshot = self.editor.document.snapshot();
         let Some(pos) = app_to_lsp_position(&snapshot.buffer, self.editor.cursor) else {
             return;
         };
@@ -5933,7 +5933,7 @@ impl App {
         let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
             return;
         };
-        let snapshot = self.document.snapshot();
+        let snapshot = self.editor.document.snapshot();
         let Some(position) = crate::app::app_to_lsp_position(&snapshot.buffer, self.editor.cursor) else {
             return;
         };
@@ -6110,7 +6110,7 @@ impl App {
         let Some(range) = chain.ranges.get(self.editor.lsp_selection_chain_index).cloned() else {
             return;
         };
-        let snapshot = self.document.snapshot();
+        let snapshot = self.editor.document.snapshot();
         let anchor = lattice_protocol::Position {
             line: range.start.line,
             byte: crate::app::lsp_position_to_app_byte(
@@ -6164,7 +6164,7 @@ impl App {
             );
             return;
         };
-        let snapshot = self.document.snapshot();
+        let snapshot = self.editor.document.snapshot();
         let position = match crate::app::app_to_lsp_position(&snapshot.buffer, self.editor.cursor) {
             Some(p) => p,
             None => {
@@ -6670,7 +6670,7 @@ mod tests {
         // prefix.
         use crate::app::test_helpers::app_with_path;
         let mut a = app_with_path("fn main() {}", 5, std::path::PathBuf::from("foo.rs"));
-        let id = a.pane_tree.active().buffer_id;
+        let id = a.editor.pane_tree.active().buffer_id;
         assert!(a.lsp_mode_enabled_for(id), "M.5.2 auto-activation");
 
         let (detach_tx, mut detach_rx) =
@@ -6830,7 +6830,7 @@ mod tests {
         // `MajorEntered` event hook; until then the accessor is
         // false everywhere.
         let a = app_with("fn main() {}", 5);
-        let id = a.pane_tree.active().buffer_id;
+        let id = a.editor.pane_tree.active().buffer_id;
         assert!(!a.lsp_mode_enabled_for(id));
     }
 
@@ -6841,7 +6841,7 @@ mod tests {
         // `:lsp-mode` toggle / auto-activation flow; for now
         // we drive the registry directly.
         let mut a = app_with("fn main() {}", 5);
-        let id = a.pane_tree.active().buffer_id;
+        let id = a.editor.pane_tree.active().buffer_id;
         let proto_id = lattice_protocol::ids::BufferId::new(id.0 as u64);
         let mut active = a.editor.active_modes.remove(&id).unwrap_or_default();
         a.editor.mode_registry
@@ -7709,7 +7709,7 @@ mod tests {
         app.editor.lsp_inlay_hints_cache.insert(
             app.editor.document_buffer_id,
             crate::app::LspInlayHintCache {
-                document_version: app.document.snapshot().version,
+                document_version: app.editor.document.snapshot().version,
                 hints: Vec::new(),
                 requested_first_line: 0,
                 requested_last_line: 1000,
@@ -7746,7 +7746,7 @@ mod tests {
         app.editor.lsp_inlay_hints_cache.insert(
             app.editor.document_buffer_id,
             crate::app::LspInlayHintCache {
-                document_version: app.document.snapshot().version,
+                document_version: app.editor.document.snapshot().version,
                 hints: Vec::new(),
                 requested_first_line: 0,
                 requested_last_line: 200,
@@ -7784,7 +7784,7 @@ mod tests {
         app.editor.lsp_inlay_hints_cache.insert(
             app.editor.document_buffer_id,
             crate::app::LspInlayHintCache {
-                document_version: app.document.snapshot().version,
+                document_version: app.editor.document.snapshot().version,
                 hints: Vec::new(),
                 requested_first_line: 100,
                 requested_last_line: 400,
@@ -7879,7 +7879,7 @@ mod tests {
         app.editor.lsp_folds_cache.insert(
             app.editor.document_buffer_id,
             crate::app::LspFoldsCache {
-                document_version: app.document.snapshot().version,
+                document_version: app.editor.document.snapshot().version,
                 folds: vec![fold],
             },
         );
@@ -7891,11 +7891,11 @@ mod tests {
         }
         app.recompute_folds();
         assert!(
-            app.folds
+            app.editor.folds
                 .iter()
                 .any(|f| f.start_line == 0 && f.end_line == 1),
             "expected LSP fold from cache; got {:?}",
-            app.folds,
+            app.editor.folds,
         );
     }
 
@@ -8552,13 +8552,13 @@ mod tests {
         })
         .unwrap();
         a.drain_pending_rename();
-        let body = a.document.snapshot().buffer.as_string();
+        let body = a.editor.document.snapshot().buffer.as_string();
         assert!(body.contains("let bar = 1;"));
         assert!(body.contains("let x = bar + 2;"));
         // One undo restores the pre-rename buffer (apply_lsp_text_edits
         // commits via apply_edit_batch_blocking which is one undo unit).
         let _ = a.undo_blocking();
-        let restored = a.document.snapshot().buffer.as_string();
+        let restored = a.editor.document.snapshot().buffer.as_string();
         assert!(restored.contains("let foo = 1;"));
         let _ = std::fs::remove_file(path);
     }
@@ -10096,7 +10096,7 @@ mod tests {
             "edit applied: {:?}",
             outcome.failure_reason,
         );
-        let after = a.document.snapshot().buffer.as_string();
+        let after = a.editor.document.snapshot().buffer.as_string();
         assert_eq!(after, "fn xyz() {}\n");
     }
 
@@ -10312,7 +10312,7 @@ mod tests {
         // an extra newline; existing line 0 was empty so the
         // buffer is now: line 0 = "use std::iter;", line 1 = "",
         // line 2 = "", line 3 = "for i in iter {}").
-        let after_accept = a.document.snapshot().buffer.as_string();
+        let after_accept = a.editor.document.snapshot().buffer.as_string();
         assert!(
             after_accept.contains("use std::iter;"),
             "auto-import applied: `{after_accept}`"
@@ -10326,7 +10326,7 @@ mod tests {
         // Undo ONCE -> both the auto-import AND the snippet
         // expansion revert.
         a.undo_blocking().expect("undo");
-        let after_undo = a.document.snapshot().buffer.as_string();
+        let after_undo = a.editor.document.snapshot().buffer.as_string();
         assert_eq!(
             after_undo, "\n\nfor",
             "single undo reverted both auto-import and snippet (`{after_undo}`)",

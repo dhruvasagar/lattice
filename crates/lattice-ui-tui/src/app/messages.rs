@@ -262,7 +262,7 @@ mod tests {
             .expect("*messages* present");
         assert_ne!(initial, msgs_id);
         assert_eq!(app.active_pane_buffer_id(), msgs_id);
-        let pane = app.pane_tree.active().clone();
+        let pane = app.editor.pane_tree.active().clone();
         let label = app.pane_status_label(&pane);
         assert!(
             label.contains("*messages*"),

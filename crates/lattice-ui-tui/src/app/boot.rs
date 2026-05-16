@@ -599,7 +599,7 @@ impl App {
         };
         let pane_tree = PaneTree::single(initial_pane);
         // Seed the buffer registry with the initial document. The
-        // hot-path `self.document` / `self.syntax` /
+        // hot-path `self.editor.document` / `self.syntax` /
         // `self.last_parsed_text_version` mirror what's stored
         // here for the active buffer; switching buffers swaps
         // them.
@@ -693,10 +693,8 @@ impl App {
                 pending_semantic_tokens_refresh_rx: Some(lsp_semantic_tokens_refresh_rx),
                 pending_code_lens_refresh_rx: Some(lsp_code_lens_refresh_rx),
                 pending_diagnostic_refresh_rx: Some(lsp_diagnostic_refresh_rx),
-                // no Default: all required fields initialised above
+                ..lattice_host::editor::Editor::default()
             },
-            visible_highlights_key: None,
-            folds: Vec::new(),
             pane_render_registry: crate::render::build_pane_render_registry(),
             theme: crate::theme::Theme::default(),
             popup_back_stack: Vec::new(),

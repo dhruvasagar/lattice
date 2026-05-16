@@ -70,7 +70,7 @@ use crate::state::{
     OptionCache, PendingBlockInsert, PendingPickerInit, PositionEntry, PrevPaneState, ReplaceEntry,
     SearchLine, SubstitutePreview, TagStackEntry, UnnamedRegister,
 };
-use lattice_core::{BufferKind, Fold};
+use lattice_core::BufferKind;
 use lattice_protocol::position::Position as ProtoPosition;
 use crate::ui::theme::Theme as HostTheme;
 
@@ -195,7 +195,7 @@ use crate::ui::theme::Theme as HostTheme;
 ///   duplicate declarations from `App`. Completion cluster
 ///   (`completion_registry`, `completion_state`,
 ///   `insert_completion`, etc.) stays on App -- next slice.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Editor {
     /// Completed macro recordings keyed by register name.
     /// Replays go through the dispatch layer's `PlayMacro`

@@ -128,10 +128,10 @@ mod tests {
         a.apply(Action::Invoke(inv));
         a.apply(Action::StopMacroRecord);
         // After dw: "bar".
-        assert_eq!(a.document.text(), "bar");
+        assert_eq!(a.editor.document.text(), "bar");
         // Replay -> deletes another word.
         a.apply(Action::PlayMacro('a'));
-        assert_eq!(a.document.text(), "");
+        assert_eq!(a.editor.document.text(), "");
     }
 
     #[test]
@@ -155,7 +155,7 @@ mod tests {
         // @@ now repeats.
         a.apply(Action::PlayLastMacro);
         // After three dws total: "qux".
-        assert_eq!(a.document.text(), "qux");
+        assert_eq!(a.editor.document.text(), "qux");
     }
 
     #[test]

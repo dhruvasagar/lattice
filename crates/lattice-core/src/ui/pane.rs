@@ -31,7 +31,7 @@ use crate::{BufferId, BufferKind};
 /// Process-monotonic pane id. Distinct from [`BufferId`]: a pane
 /// holds a buffer + viewport, but two panes can show the same
 /// buffer. Allocated by [`PaneId::next`] at split time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct PaneId(pub u32);
 
 impl PaneId {
@@ -46,7 +46,7 @@ impl PaneId {
 /// for its content buffer; switching the active pane swaps these
 /// fields with `App::cursor` / `App::scroll` so motion code
 /// stays unchanged.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct PaneState {
     pub id: PaneId,
     pub buffer: BufferKind,
@@ -79,6 +79,15 @@ pub enum PaneNode {
         left: Box<PaneNode>,
         right: Box<PaneNode>,
     },
+}
+
+/// Manual `Default` (tuple variants can't use `#[default]`).
+/// Default = `Leaf(0)`, matching the `PaneTree::single`
+/// shape for the trivial one-pane tree.
+impl Default for PaneNode {
+    fn default() -> Self {
+        PaneNode::Leaf(0)
+    }
 }
 
 impl PaneNode {
@@ -208,6 +217,16 @@ pub struct PaneTree {
     root: PaneNode,
     /// Index into `leaves` of the currently active pane.
     active: usize,
+}
+
+/// `Default` builds a single-pane tree with a placeholder
+/// `PaneState`. Used by `Editor::default()` for headless /
+/// test scaffolding; production paths construct via
+/// [`PaneTree::single`] with a real pane.
+impl Default for PaneTree {
+    fn default() -> Self {
+        PaneTree::single(PaneState::default())
+    }
 }
 
 impl PaneTree {

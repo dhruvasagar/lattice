@@ -31,7 +31,6 @@
 //! (`Snapshot::highlight_lines`), the folds the extent
 //! helper consults (those live in `app/folds.rs`).
 
-use lattice_protocol::edit::EditDelta;
 use lattice_syntax::StyledSpan;
 
 use super::{App, BufferId, BufferKind, folds};
@@ -65,14 +64,11 @@ impl App {
     ///
     /// Pure ns-fast: a Vec drain or insert of a few elements.
     /// Only mutates the cache; doesn't touch the snapshot.
-    /// 5.5.E.7.1: see [`lattice_host::dispatch::Editor::shift_highlights_for_edit`].
-    /// Wrapper retained so the existing call site in
-    /// `publish_document_changed` compiles unchanged across the
-    /// migration window (E.7.2 will migrate `publish_document_changed`
-    /// itself).
-    pub(super) fn shift_highlights_for_edit(&mut self, delta: &EditDelta) {
-        self.editor.shift_highlights_for_edit(delta);
-    }
+    // 5.5.E.7.2: `App::shift_highlights_for_edit` deletes — sole
+    // prod caller (`App::publish_document_changed`) migrated host-
+    // side in E.7.2, so the App-side wrapper has zero remaining
+    // callers. Host body lives at
+    // [`lattice_host::dispatch::Editor::shift_highlights_for_edit`].
 
     // 5.5.E.7.1: `shift_spans_within_line` relocated to
     // [`lattice_host::dispatch::Editor::shift_spans_within_line`]

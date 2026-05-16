@@ -1637,6 +1637,68 @@ impl Editor {
         self.recompute_syntax_folds(buffer)
     }
 
+    /// 5.5.E.7.2: build + publish [`Event::DocumentChanged`] from
+    /// the current snapshot and the edits that were just applied.
+    /// Called from every path that mutates the buffer (apply_edit /
+    /// batch / undo / redo). The applied edits ride on the event so
+    /// downstream subscribers (notably the per-server LSP fan-in)
+    /// can sync without re-walking the buffer or holding the
+    /// supervisor lock.
+    pub fn publish_document_changed(
+        &mut self,
+        applied: &[lattice_core::buffer::AppliedEdit],
+    ) {
+        let snap = self.document.snapshot();
+        let path = snap.path().map(|p| p.to_path_buf());
+        let edits: Vec<lattice_protocol::event::AppliedEdit> = applied
+            .iter()
+            .map(|a| lattice_protocol::event::AppliedEdit {
+                original_range: a.original_range,
+                inserted_range: a.inserted_range,
+                replaced_text: a.replaced_text.clone(),
+                inserted_text: a.inserted_text.clone(),
+            })
+            .collect();
+        // Always publish the generic editor event — non-LSP
+        // subscribers (renderer, future plugins) see every edit
+        // regardless of `lsp-mode`.
+        self.event_bus.publish(Event::DocumentChanged {
+            id: snap.id,
+            path: path.clone(),
+            version: snap.version,
+            edits: edits.clone(),
+        });
+        // M.5.5: gate the LSP fan-in at the publish site. Only emit
+        // `LspDocumentChanged` (the typed event the per-actor fan-in
+        // subscribes to) when `lsp-mode` is active for the active
+        // document. With the gate off no didChange goes to any
+        // server.
+        if self.lsp_mode_enabled_for(self.document_buffer_id) {
+            self.event_bus
+                .publish_typed(lattice_lsp::LspDocumentChanged {
+                    id: snap.id,
+                    path,
+                    version: snap.version,
+                    edits,
+                });
+        }
+        // Slice B.2 part 2: accumulate tree-sitter-shaped edit
+        // deltas for the next syntax reparse request.
+        // `maybe_reparse_syntax` drains this and ships them to the
+        // worker. Slice C.3: also shift `visible_highlights`
+        // synchronously so line indices track the post-edit content
+        // even before the worker publishes a fresh snapshot. (See
+        // [`Self::shift_highlights_for_edit`] for the flicker-
+        // elimination rationale.)
+        if self.syntax.is_some() {
+            self.pending_syntax_edits
+                .extend(applied.iter().map(|a| a.delta));
+            for a in applied {
+                self.shift_highlights_for_edit(&a.delta);
+            }
+        }
+    }
+
     /// 5.5.E.7.1 (Slice C.3): keep `visible_highlights` line-aligned
     /// with the current document immediately after an edit, before
     /// the syntax worker publishes a fresh snapshot.

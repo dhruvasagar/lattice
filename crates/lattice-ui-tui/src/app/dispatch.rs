@@ -28,9 +28,11 @@
 //!   and the Visual-mode auto-exit gate.
 //! - `delete_trailing_word` (`<C-w>` cmdline word delete).
 //! - `action_is_document_mutation` (the help-buffer
-//!   read-only guard's allow-list inversion).
+//!   read-only guard's allow-list inversion). Lives in
+//!   `lattice_host::dispatch` since 5.5.D.
 //! - `echo_level_from_grammar` (grammar-level → host-level
-//!   echo-level translator).
+//!   echo-level translator). Lives in `lattice_host::dispatch`
+//!   since 5.5.E.1, beside its sole caller (`Effect::Echo`).
 //! - `COMMAND_HISTORY_CAP` (the `:`-history capacity).
 //!
 //! What does NOT live here: the per-feature `do_*` methods the
@@ -75,16 +77,6 @@ fn delete_trailing_word(s: &mut String) {
 // the read-only-help guard that consults it. Any ui-tui-side reader
 // would import it from the host crate; today nothing else in this
 // module needs it.
-
-fn echo_level_from_grammar(level: lattice_grammar::EchoLevel) -> EchoLevel {
-    match level {
-        lattice_grammar::EchoLevel::Trace => EchoLevel::Trace,
-        lattice_grammar::EchoLevel::Debug => EchoLevel::Debug,
-        lattice_grammar::EchoLevel::Info => EchoLevel::Info,
-        lattice_grammar::EchoLevel::Warn => EchoLevel::Warn,
-        lattice_grammar::EchoLevel::Error => EchoLevel::Error,
-    }
-}
 
 impl App {
     /// Block_on a grammar dispatch through the actor (DESIGN.md
@@ -936,8 +928,20 @@ impl App {
     }
 
     pub(super) fn apply_effect(&mut self, effect: Effect) {
+        // Phase 5.5.E.1: route every Effect through `Editor::handle_effect`
+        // first so the host owns its migrated arms (today:
+        // `Effect::None`, `Effect::ClearSearchHighlight`, `Effect::Echo`).
+        // The grouped no-op below keeps the exhaustiveness check
+        // satisfied without splitting App's match logic, mirroring the
+        // 5.5.C seam pattern for `App::apply`. `RendererSignal`s are
+        // currently empty for every migrated arm; when E.* slices light
+        // them up (e.g. `ThemeChanged` from `Effect::SetOption`),
+        // outcome handling lands alongside.
+        let _outcome = self.editor.handle_effect(effect.clone());
         match effect {
-            Effect::None => {}
+            // Phase 5.5.E.1: migrated arms. Bodies live in
+            // `lattice_host::dispatch::handle_effect`.
+            Effect::None | Effect::ClearSearchHighlight | Effect::Echo { .. } => {}
             Effect::Edits(edits) => self.handle_edits(&edits),
             Effect::SelectionChange(set) => {
                 let new_head = set.primary().head;
@@ -975,11 +979,6 @@ impl App {
             Effect::QuitEditor { force } => self.do_quit(force),
             Effect::OpenBuffer { path, force } => self.do_edit(path, force),
             Effect::SetOption { spec } => self.do_set(&spec),
-            Effect::ClearSearchHighlight => {
-                self.editor.current_match = None;
-                self.editor.all_matches.clear();
-            }
-            Effect::Echo { level, text } => self.set_message(echo_level_from_grammar(level), text),
             Effect::EchoRegisters => self.do_list_registers(),
             Effect::EchoMarks => self.do_list_marks(),
             Effect::Substitute {

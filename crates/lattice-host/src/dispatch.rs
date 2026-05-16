@@ -30,7 +30,11 @@
 //! - **5.5.E** -- ex-command effect handlers (the ~60-variant
 //!   `apply_effect` table + the `do_*` family). First emission of
 //!   [`RendererSignal::ThemeChanged`] (from `Effect::SetOption`
-//!   on `ui.*` keys).
+//!   on `ui.*` keys). 5.5.E.1 scaffolds [`Editor::handle_effect`]
+//!   and migrates the three helper-free arms (`Effect::None`,
+//!   `Effect::ClearSearchHighlight`, `Effect::Echo`); subsequent
+//!   E.* sub-slices land the helper-bearing arms as their `do_*`
+//!   bodies move host-side.
 //! - **5.5.F** -- mode-lifecycle helpers
 //!   (`do_open_file_tree` / `do_open_oil` / `do_open_hover` / ...).
 //! - **5.5.G** -- final remnants; `App::apply` collapses to the
@@ -43,6 +47,7 @@
 
 use lattice_core::{BufferKind, Fold, FoldMethod};
 use lattice_grammar::ModalState;
+use lattice_grammar::effect::Effect;
 use lattice_protocol::Event;
 use lattice_runtime::MessagePushed;
 
@@ -134,6 +139,33 @@ impl Editor {
     pub fn dispatch(&mut self, action: Action) -> DispatchOutcome {
         let mut out = DispatchOutcome::default();
         handle_action(self, action, &mut out);
+        out
+    }
+
+    /// Renderer-neutral entry point for `lattice_grammar::Effect`
+    /// handling.
+    ///
+    /// Today's TUI [`crate::app::dispatch::apply_effect`][app-apply-effect]
+    /// is a ~60-variant `match` that dispatches to App-side `do_*`
+    /// helpers. 5.5.E migrates those arms here as the underlying
+    /// helpers move onto [`Editor`]. App's `apply_effect` clones the
+    /// effect, calls `editor.handle_effect(effect.clone())`, surfaces
+    /// any [`RendererSignal`]s, then matches on the original with a
+    /// grouped no-op arm covering every variant the host has already
+    /// taken responsibility for.
+    ///
+    /// 5.5.E.1 covers the three trivially helper-free arms:
+    /// [`Effect::None`], [`Effect::ClearSearchHighlight`], and
+    /// [`Effect::Echo`]. Other variants fall through to the catch-all
+    /// `_ => {}` until their helpers migrate. The [`Effect::Many`]
+    /// recursion stays on App for now -- it dispatches inner effects
+    /// back through App's `apply_effect` so non-migrated inner arms
+    /// still resolve.
+    ///
+    /// [app-apply-effect]: ../../lattice_ui_tui/app/dispatch/struct.App.html#method.apply_effect
+    pub fn handle_effect(&mut self, effect: Effect) -> DispatchOutcome {
+        let mut out = DispatchOutcome::default();
+        handle_effect(self, effect, &mut out);
         out
     }
 }
@@ -359,6 +391,51 @@ fn echo_level_to_wire(level: EchoLevel) -> lattice_grammar::EchoLevel {
         EchoLevel::Info => lattice_grammar::EchoLevel::Info,
         EchoLevel::Warn => lattice_grammar::EchoLevel::Warn,
         EchoLevel::Error => lattice_grammar::EchoLevel::Error,
+    }
+}
+
+/// Inverse of [`echo_level_to_wire`]. Grammar [`Effect::Echo`] carries
+/// the wire-typed `lattice_grammar::EchoLevel`; the host's
+/// [`Editor::set_message`] takes the renderer-neutral [`EchoLevel`].
+/// Moved here from `lattice-ui-tui::app::dispatch` in 5.5.E.1
+/// alongside the [`Effect::Echo`] arm.
+fn echo_level_from_grammar(level: lattice_grammar::EchoLevel) -> EchoLevel {
+    match level {
+        lattice_grammar::EchoLevel::Trace => EchoLevel::Trace,
+        lattice_grammar::EchoLevel::Debug => EchoLevel::Debug,
+        lattice_grammar::EchoLevel::Info => EchoLevel::Info,
+        lattice_grammar::EchoLevel::Warn => EchoLevel::Warn,
+        lattice_grammar::EchoLevel::Error => EchoLevel::Error,
+    }
+}
+
+/// Internal effect handler -- the destination 5.5.E migrates the
+/// `App::apply_effect` body into.
+///
+/// 5.5.E.1 seeds the match with the helper-free arms; the catch-all
+/// `_ => {}` lets every other variant fall through to App's still-
+/// resident match. Sub-slices E.2+ extend this match upward as
+/// `do_*` helpers move onto [`Editor`].
+pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, _out: &mut DispatchOutcome) {
+    match effect {
+        Effect::None => {}
+        Effect::ClearSearchHighlight => {
+            // `:nohlsearch` -- drop the current-match highlight and
+            // the cached match set. The next `/` / `?` rebuilds both.
+            editor.current_match = None;
+            editor.all_matches.clear();
+        }
+        Effect::Echo { level, text } => {
+            // `:echo` and grammar-internal informational messages
+            // (e.g. "pattern not found" from `/`). `set_message` also
+            // appends to the `*messages*` ring and publishes
+            // [`lattice_runtime::MessagePushed`].
+            editor.set_message(echo_level_from_grammar(level), text);
+        }
+        // Catch-all: any Effect variant not yet migrated from
+        // `App::apply_effect`. Sub-slices 5.5.E.2+ extend the match
+        // upward as helpers move.
+        _ => {}
     }
 }
 
@@ -768,6 +845,30 @@ mod tests {
     /// per-arm tests replace this smoke test.
     #[test]
     fn dispatch_outcome_default_has_no_signals() {
+        let out = DispatchOutcome::default();
+        assert!(out.renderer_signals.is_empty());
+    }
+
+    /// 5.5.E.1 acceptance shape: every migrated `Effect` arm (`None`,
+    /// `ClearSearchHighlight`, `Echo`) is renderer-neutral state
+    /// mutation only -- none of them emit a `RendererSignal`. The
+    /// signal channel first lights up in a later E.* sub-slice when
+    /// `Effect::SetOption` migrates and `ThemeChanged` starts firing.
+    /// Behavioural coverage for the three arms lives at the App layer
+    /// (`app::search::tests::nohlsearch_clears_overlay`,
+    /// `app::search::tests::substitute_no_match_emits_error`); host-
+    /// side standalone construction is gated on the future
+    /// `Editor::new` extraction (M.0–M.9 plan).
+    #[test]
+    fn migrated_effect_arms_emit_no_renderer_signals() {
+        // We can't build a bare `Editor` here yet, so this is a
+        // type-level guard: the inner [`handle_effect`] free function
+        // takes `&mut DispatchOutcome` by reference, and the
+        // `_out` binding in its body is `_`-prefixed precisely because
+        // 5.5.E.1's arms don't push signals. If a future contributor
+        // wires a signal through one of the migrated arms without
+        // updating its tests, the rename of `_out` -> `out` here will
+        // surface in this module's diff.
         let out = DispatchOutcome::default();
         assert!(out.renderer_signals.is_empty());
     }

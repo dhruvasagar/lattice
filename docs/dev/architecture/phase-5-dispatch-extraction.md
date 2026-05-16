@@ -212,13 +212,16 @@ The **read-only-help guard** (originally listed in 5.5.B) moves with 5.5.D inste
 
 **5.5.E — Move helpers, batch 2: ex-command effect handlers.** The big `apply_effect` table moves to `Editor::handle_effect`. Most `do_*` functions move with it. The LSP request senders, file ops, picker openers, format requests, snippet expansion — all of `app/lsp.rs`, most of `app/cmdline.rs`. (~3,000 LoC moved across multiple sub-slices; biggest cluster of the slice.)
 
+  - **5.5.E.1 ✅** scaffolds `Editor::handle_effect(effect: Effect) -> DispatchOutcome` next to `Editor::dispatch`, plus a private free function `handle_effect(editor, effect, out)` carrying the host-side match. Migrates the three trivially helper-free arms — `Effect::None`, `Effect::ClearSearchHighlight` (`:noh`), and `Effect::Echo { level, text }` — and relocates the `echo_level_from_grammar` translator into `lattice_host::dispatch` next to its sole caller. `App::apply_effect` clones the effect, calls `editor.handle_effect`, and the three migrated variants collapse into a grouped no-op arm (the 5.5.C seam pattern). `RendererSignal` is unchanged — none of the migrated arms emit signals. Behavioural coverage stays at the App layer (`app::search::tests::nohlsearch_clears_overlay`, `app::search::tests::substitute_no_match_emits_error`); host-side tests are limited to the type-level shape guard until `Editor::new` extraction lands.
+  - 5.5.E.2+ pick up the helper-bearing arms in graduated batches: simpler ones first (`EchoRegisters`, `EchoMarks`, `DescribeBuffer`, `BufferNext` / `BufferPrev`, `ListBuffers`, `DeleteCurrentLine`), then the picker / describe-* / option-introspection cluster, then the LSP request senders, snippet ops, and finally `Effect::Many` (recursion through host) once enough inner arms have migrated. `Effect::SetOption` lands with `RendererSignal::ThemeChanged`'s first emission site; the call-site outcome plumbing through `apply_effect` upgrades from the discarded `_outcome` to a threaded `&mut DispatchOutcome` at that point.
+
 **5.5.F — Move helpers, batch 3: mode lifecycle.** `do_open_file_tree`, `do_open_oil`, `do_open_hover`, `do_open_help_topic`, `do_open_lsp_log`. Mostly buffer-registry + mode-activation logic; pure host. (~500 LoC moved.)
 
 **5.5.G — Move the final remnants + collapse `App::apply`.** Anything still on `App`. `apply` reduces to the dispatch call + signal handling. (~200 LoC removed from ui-tui; ~50 LoC added to ui-tui's signal handler.)
 
 **5.5.H — Render-coupled cleanup.** Remove the now-vestigial `App` methods that just forwarded to Editor. Tighten `App`'s public surface. (~100 LoC removed.)
 
-Each sub-slice lands green: workspace builds, 1424 ui-tui + 177 host + 180 lsp tests pass. The order is mechanical — by the time 5.5.G runs, `apply`'s body is mostly empty and the collapse is trivial.
+Each sub-slice lands green: workspace builds, 1424 ui-tui + 180 host + 180 lsp tests pass (5.5.E.1 baseline; was 1424 + 177 + 180 at the start of 5.5). The order is mechanical — by the time 5.5.G runs, `apply`'s body is mostly empty and the collapse is trivial.
 
 ### Where the tests move
 

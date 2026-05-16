@@ -469,7 +469,7 @@ impl App {
             Action::SnippetNextPlaceholder => self.do_snippet_next_placeholder(),
             Action::SnippetPrevPlaceholder => self.do_snippet_prev_placeholder(),
             Action::SnippetLeave => {
-                self.active_snippet = None;
+                self.editor.active_snippet = None;
                 self.editor.modal = ModalState::Normal;
             }
             Action::LspDocumentSymbolRequest => self.do_lsp_document_symbol_request(),

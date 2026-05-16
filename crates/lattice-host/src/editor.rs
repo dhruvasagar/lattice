@@ -195,6 +195,21 @@ use crate::ui::theme::Theme as HostTheme;
 ///   duplicate declarations from `App`. Completion cluster
 ///   (`completion_registry`, `completion_state`,
 ///   `insert_completion`, etc.) stays on App -- next slice.
+/// - 5.B.20 -- completion cluster tail + popup back-stack
+///   + pending config bucket. `insert_completion`,
+///   `snippet_registry`, `insert_completion_snippet_meta`,
+///   `completion_accept_freq`, `per_language_completion`,
+///   `completion_in_path_context`, `active_snippet`,
+///   `snippet_dirs`, `popup_back_stack` (popup #7 tail), and
+///   `pending_config_structural_sections` move from `App`
+///   to `Editor`. `SnippetCandidateMeta` moved from
+///   `lattice-ui-tui::app` to `lattice-host::state` so
+///   the sidecar type lives next to the field that owns it;
+///   `lattice-ui-tui::app` re-exports the type for
+///   compatibility. After this slice the only fields left on
+///   `App` are the renderer-specific caches (`theme`,
+///   `pane_render_registry`) plus the `LspFileWatcher`
+///   wrapper -- `App` becomes a thin renderer wrapper.
 #[derive(Debug, Default)]
 pub struct Editor {
     /// Completed macro recordings keyed by register name.
@@ -575,6 +590,75 @@ pub struct Editor {
     pub completion_registry: lattice_completion::CompletionRegistry,
     /// Active command-line completion popup state (for `:` line).
     pub completion_state: Option<CompletionState>,
+    /// Active **Insert-mode** completion popup (Phase 4.2.g).
+    /// Distinct from `completion_state` (which drives the `:` line
+    /// completion popup): this one floats over the buffer, shows
+    /// candidates from sources (LSP / snippets / buffer-words /
+    /// path / tree-sitter / plugin), and the host's keystroke
+    /// dispatcher routes through a "completion-popup minor mode"
+    /// keymap layer while it's `Some`. Behavioural spec lives in
+    /// [`docs/dev/architecture/insert-completion.md`].
+    pub insert_completion: Option<lattice_completion::InsertCompletionState>,
+    /// Per-language snippet registry (Phase 4.2.g.4). Loaded
+    /// at startup from bundled / user / project paths via
+    /// `lattice-snippet::load`; the `gen:snippet` source
+    /// consults it per-popup-trigger.
+    /// CSM.5: held as `Arc<ArcSwap<...>>` so the mode-captured
+    /// handle stays valid across `:reload-snippets`. Source reads
+    /// load the current snapshot via `.load()` (wait-free); the
+    /// reload path swaps the inner via `.store()` so the mode's
+    /// next produce sees the fresh data.
+    pub snippet_registry: Arc<arc_swap::ArcSwap<lattice_snippet::SnippetRegistry>>,
+    /// Sidecar metadata for snippet candidates in the active
+    /// insert-completion popup.
+    /// CSM.5: retired. Snippet candidates now carry their stable
+    /// `name` in the `Extension::payload` field; the accept path
+    /// re-resolves the body via `Editor.snippet_registry.by_name`.
+    /// Field kept as an empty Vec for one slice so callers that
+    /// haven't migrated still compile; field deletion in a
+    /// follow-up cleanup slice.
+    pub insert_completion_snippet_meta: Vec<crate::state::SnippetCandidateMeta>,
+    /// Per-session accept-count map for the insert-mode
+    /// completion popup (Phase 4.2.g.5). Each accepted candidate
+    /// bumps the counter for its `(text, kind)` pair; the ranker
+    /// reads this map and adds a bounded bonus
+    /// (`InsertRanker::FREQUENCY_BONUS_CAP`) so recently-accepted
+    /// items bubble above tied peers next time.
+    pub completion_accept_freq:
+        HashMap<(String, lattice_completion::CandidateKind), u32>,
+    /// TOML structural sections collected by the config loader at
+    /// startup but not yet routed to their owners. Keyed by full
+    /// dotted path (e.g. `"completion.per-language.markdown"`,
+    /// `"plugin.rust-analyzer"`); value is the sub-table verbatim.
+    /// Phase 4.2.g.5 (3b/3) drains the `completion.per-language.*`
+    /// entries into `per_language_completion`; the plugin host
+    /// (Phase 7) will drain `plugin.*`.
+    pub pending_config_structural_sections:
+        std::collections::BTreeMap<String, toml::Table>,
+    /// Per-language insert-completion overrides (Phase 4.2.g.5
+    /// (3b/3); spec at `docs/dev/architecture/insert-completion.md` §9).
+    pub per_language_completion:
+        HashMap<String, lattice_completion::PerLanguageOverrides>,
+    /// `true` while the active insert-completion popup is in
+    /// path-completion mode (Phase 4.2.g.6 (2/2)).
+    pub completion_in_path_context: bool,
+    /// Live snippet expansion. `Some` while a snippet is
+    /// active and `<Tab>` / `<S-Tab>` navigate placeholders.
+    /// Dropped on `$0` consumption / `<Esc>` / cursor moving
+    /// outside the snippet's tabstop ranges.
+    pub active_snippet: Option<lattice_snippet::ActiveSnippet>,
+    /// Per-language directories from which snippet packs are
+    /// loaded on startup / `:reload-snippets` (Phase 4.2.g.4).
+    pub snippet_dirs: Vec<PathBuf>,
+    /// LIFO stack of snapshots taken every time the popup's content
+    /// gets swapped in place by a help -> help link follow (e.g.
+    /// `:describe-buffer` -> click `[text-mode](mode:text-mode)` ->
+    /// `:describe-mode text-mode`). One popup buffer is reused
+    /// across the navigation so jump-list / marks / search /
+    /// register state stay coherent; this stack records what was
+    /// in the buffer before each swap so `<C-o>` from inside the
+    /// popup can restore the prior frame without leaving Help.
+    pub popup_back_stack: Vec<crate::popup::PopupSnapshot>,
     /// Active buffer's cursor (DESIGN.md §5.1.1). Updated
     /// in lockstep with the active pane's stash so cross-
     /// pane jumps restore the right position.

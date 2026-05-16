@@ -396,7 +396,7 @@ pub struct App {
     /// `LayerId` of the active completion-popup minor-mode
     /// layer when the popup is open; `None` otherwise. Pushed /
     /// popped by [`Self::sync_keymap_overlays`] in lockstep with
-    /// `self.insert_completion`. Slice 8.f.
+    /// `self.editor.insert_completion`. Slice 8.f.
     // Phase 5.B.15: `completion_popup_layer` moved to
     // `editor.editor.completion_popup_layer`.
     /// `LayerId` of the active-snippet minor-mode layer when a
@@ -637,129 +637,19 @@ pub struct App {
     /// callers route through the private `display_buffer` helper.
     // Phase 5.B.10: `popup_buffer` moved to
     // `editor.popup_buffer`.
-    /// LIFO stack of snapshots taken every time the popup's content
-    /// gets swapped in place by a help → help link follow (e.g.
-    /// `:describe-buffer` → click `[text-mode](mode:text-mode)` →
-    /// `:describe-mode text-mode`). One popup buffer is reused
-    /// across the navigation so jump-list / marks / search /
-    /// register state stay coherent; this stack records what was
-    /// in the buffer before each swap so `<C-o>` from inside the
-    /// popup can restore the prior frame without leaving Help.
-    /// Drained on `dismiss_popup`; reset whenever a fresh top-
-    /// level popup opens from outside Help.
-    pub popup_back_stack: Vec<lattice_host::popup::PopupSnapshot>,
-    /// Pane state captured before activating help -- used by
-    /// `dismiss_popup` to restore the user to whatever buffer +
-    /// cursor + scroll they came from. Set by both display
-    /// paths (in-pane via `activate_help_in_pane`, popup via
-    /// `open_help_popup_overlay`); cleared by dismiss. v1 single-
-    /// pane scope -- multi-pane help dismissal will key by pane
-    /// id when that scenario surfaces.
+    // Phase 5.B.20: `popup_back_stack` moved to
+    // `editor.popup_back_stack`.
     // Phase 5.B.10: `prev_pane_for_help` moved to
     // `editor.prev_pane_for_help`.
-    /// Where the popup overlay sits on screen when one is open.
-    /// Carried on App (not on the buffer) because the popup is a
-    /// generic rectangular surface inside which any buffer kind
-    /// renders -- placement is a property of the popup, not of
-    /// whatever buffer happens to be its content. Cursor-anchored
-    /// popups (hover / signature help) set this when they open;
-    /// the default (centred) covers `:lsp-status`, `:describe-*`,
-    /// `:apropos`, `:help`, `:keymap`, `:options`, `:ls`, ...
     // Phase 5.B.10: `popup_placement` moved to
     // `editor.popup_placement`.
-
-    /// Active **Insert-mode** completion popup (Phase 4.2.g).
-    /// Distinct from `completion_state` (which drives the `:` line
-    /// completion popup): this one floats over the buffer, shows
-    /// candidates from sources (LSP / snippets / buffer-words /
-    /// path / tree-sitter / plugin), and the host's keystroke
-    /// dispatcher routes through a "completion-popup minor mode"
-    /// keymap layer while it's `Some`. Behavioural spec lives in
-    /// [`docs/dev/architecture/insert-completion.md`](../../docs/dev/architecture/insert-completion.md).
-    pub insert_completion: Option<lattice_completion::InsertCompletionState>,
     // Phase 5.B.19: `pending_insert_completion_lsp_rx/token`,
     // `pending_completion_resolve_rx/token` moved to `editor.*`.
-    /// Per-language snippet registry (Phase 4.2.g.4). Loaded
-    /// at startup from bundled / user / project paths via
-    /// `lattice-snippet::load`; the `gen:snippet` source
-    /// consults it per-popup-trigger.
-    /// CSM.5: held as `Arc<ArcSwap<...>>` so the mode-captured
-    /// handle stays valid across `:reload-snippets`. Source reads
-    /// load the current snapshot via `.load()` (wait-free); the
-    /// reload path swaps the inner via `.store()` so the mode's
-    /// next produce sees the fresh data.
-    pub snippet_registry: std::sync::Arc<arc_swap::ArcSwap<lattice_snippet::SnippetRegistry>>,
-    /// Sidecar metadata for snippet candidates in the active
-    /// insert-completion popup. Indexed by the candidate's
-    /// `CandidateData::Extension { payload }` (u32 LE) --
-    /// same shape as `insert_completion_lsp_meta` for the
-    /// LSP source.
-    /// CSM.5: retired. Snippet candidates now carry their stable
-    /// `name` in the `Extension::payload` field; the accept path
-    /// re-resolves the body via `App.snippet_registry.by_name`.
-    /// Field kept as an empty Vec for one slice so callers that
-    /// haven't migrated still compile; field deletion in a
-    /// follow-up cleanup slice.
-    pub insert_completion_snippet_meta: Vec<SnippetCandidateMeta>,
-    /// Per-session accept-count map for the insert-mode
-    /// completion popup (Phase 4.2.g.5). Each accepted candidate
-    /// bumps the counter for its `(text, kind)` pair; the ranker
-    /// reads this map and adds a bounded bonus
-    /// (`InsertRanker::FREQUENCY_BONUS_CAP`) so recently-accepted
-    /// items bubble above tied peers next time. In-memory only
-    /// in v1 -- cleared on process exit; persistence with a
-    /// privacy story lands later (Phase 4.2.g.7 polish queue per
-    /// `docs/dev/architecture/insert-completion.md` §11).
-    pub completion_accept_freq:
-        std::collections::HashMap<(String, lattice_completion::CandidateKind), u32>,
-    /// TOML structural sections collected by the config loader at
-    /// startup but not yet routed to their owners. Keyed by full
-    /// dotted path (e.g. `"completion.per-language.markdown"`,
-    /// `"plugin.rust-analyzer"`); value is the sub-table verbatim.
-    /// Phase 4.2.g.5 (3b/3) drains the `completion.per-language.*`
-    /// entries into `per_language_completion`; the plugin host
-    /// (Phase 7) will drain `plugin.*`. v1's bucket means a user
-    /// who writes `[plugin.X]` optimistically doesn't lose the
-    /// content -- it's preserved here for the plugin host to pick
-    /// up when it registers.
-    pub pending_config_structural_sections: std::collections::BTreeMap<String, toml::Table>,
-    /// Per-language insert-completion overrides (Phase 4.2.g.5
-    /// (3b/3); spec at `docs/dev/architecture/insert-completion.md` §9). Seeded
-    /// at App init from
-    /// [`lattice_completion::per_language_defaults`] (markdown
-    /// drops LSP, rust enables auto-fire, etc.); user TOML in
-    /// `[completion.per-language.<lang>]` sections layers on top
-    /// via [`Self::apply_per_language_toml_overrides`]. Read by
-    /// the private `effective_completion_for` which walks
-    /// per-language -> global option -> hardcoded fallback for
-    /// each effective field.
-    pub per_language_completion:
-        std::collections::HashMap<String, lattice_completion::PerLanguageOverrides>,
-    /// `true` while the active insert-completion popup is in
-    /// path-completion mode (Phase 4.2.g.6 (2/2)). Set at
-    /// popup-trigger time when the cursor sits inside a string
-    /// literal AND `gen:path` is enabled for the active
-    /// language; cleared on popup dismiss / accept. Drives
-    /// path-aware anchor resolution in `do_completion_trigger`
-    /// and source-set selection in
-    /// `populate_insert_completion_sync` (path source only;
-    /// other sync sources skip).
-    pub completion_in_path_context: bool,
-    /// Live snippet expansion. `Some` while a snippet is
-    /// active and `<Tab>` / `<S-Tab>` navigate placeholders.
-    /// Dropped on `$0` consumption / `<Esc>` / cursor moving
-    /// outside the snippet's tabstop ranges.
-    pub active_snippet: Option<lattice_snippet::ActiveSnippet>,
-    /// Per-language directories from which snippet packs are
-    /// loaded on startup / `:reload-snippets` (Phase 4.2.g.4).
-    /// Each entry is a directory of `*.json` files in
-    /// friendly-snippets format; the file's stem is the
-    /// language id (e.g. `rust.json` -> language `"rust"`,
-    /// `_global.json` -> the all-language `*` slot). Tests
-    /// seed this with a tempdir; production reads from
-    /// `~/.editor.config/lattice/snippets/` (wired in startup -- see
-    /// `App::default_snippet_dirs`).
-    pub snippet_dirs: Vec<std::path::PathBuf>,
+    // Phase 5.B.20: completion cluster tail moved to `editor.*`:
+    // `insert_completion`, `snippet_registry`,
+    // `insert_completion_snippet_meta`, `completion_accept_freq`,
+    // `pending_config_structural_sections`, `per_language_completion`,
+    // `completion_in_path_context`, `active_snippet`, `snippet_dirs`.
     /// Active vertico-style picker (DESIGN.md §5.9.7, §5.9.10).
     /// `Some` while a picker is open over a buffer / LSP instance
     /// / future generator. Input routes here in
@@ -1005,13 +895,12 @@ pub const SNIPPET_COMPLETION_KIND_ID: u32 = 2;
 /// host renders the snippet body on accept and starts an
 /// `ActiveSnippet`; this struct carries the parsed body +
 /// the display fields the popup row uses.
-#[derive(Debug, Clone)]
-pub struct SnippetCandidateMeta {
-    pub name: String,
-    pub prefix: String,
-    pub description: Option<String>,
-    pub body: lattice_snippet::SnippetBody,
-}
+///
+/// Phase 5.B.20: definition moved to
+/// [`lattice_host::state::SnippetCandidateMeta`] alongside the
+/// `editor.insert_completion_snippet_meta` field that owns it.
+/// Re-exported here so existing callers keep compiling.
+pub use lattice_host::state::SnippetCandidateMeta;
 
 
 // Phase 5.2: OptionCache, LastFind, MacroRecording, TagStackEntry,
@@ -3006,7 +2895,7 @@ mod tests {
         };
         state.raw.push(raw);
         a.refilter_insert_completion(&mut state);
-        a.insert_completion = Some(state);
+        a.editor.insert_completion = Some(state);
     }
 
     #[test]
@@ -3018,7 +2907,7 @@ mod tests {
         a.do_completion_accept_then_insert('.');
         // Popup closed; accept replaced the partial with the
         // full LSP insert, then `.` was appended.
-        assert!(a.insert_completion.is_none(), "popup closed on commit");
+        assert!(a.editor.insert_completion.is_none(), "popup closed on commit");
         assert_eq!(a.editor.document.snapshot().buffer.as_string(), "foo.");
     }
 
@@ -3047,7 +2936,7 @@ mod tests {
         install_lsp_candidate_with_commit_chars(&mut a, "foo", Vec::new(), Position::new(0, 0));
         a.do_set("completion.extra_commit_chars=,");
         a.do_completion_accept_then_insert(',');
-        assert!(a.insert_completion.is_none());
+        assert!(a.editor.insert_completion.is_none());
         assert_eq!(a.editor.document.snapshot().buffer.as_string(), "foo,");
     }
 
@@ -3064,7 +2953,7 @@ mod tests {
         // set the global extras to include `;`.
         a.do_set("completion.extra_commit_chars=;");
         // Focus the `alpha` candidate (insert at cursor).
-        if let Some(state) = a.insert_completion.as_mut() {
+        if let Some(state) = a.editor.insert_completion.as_mut() {
             state.selected = state
                 .rendered
                 .iter()
@@ -3073,7 +2962,7 @@ mod tests {
         }
         a.do_completion_accept_then_insert(';');
         // Popup closed; `alpha` inserted then `;`.
-        assert!(a.insert_completion.is_none());
+        assert!(a.editor.insert_completion.is_none());
         let text = a.editor.document.snapshot().buffer.as_string();
         assert!(text.ends_with("alpha;"), "got `{text}`");
     }
@@ -3090,7 +2979,7 @@ mod tests {
         // the `rust` slot. (Test buffer has no path so
         // active_language_id() returns ""; insert that as the
         // key directly to land the override.)
-        a.per_language_completion.insert(
+        a.editor.per_language_completion.insert(
             String::new(),
             lattice_completion::PerLanguageOverrides {
                 sources: Some(vec![lattice_completion::SourceId::new(
@@ -3102,7 +2991,7 @@ mod tests {
         a.do_completion_trigger();
         // Popup either closed (no candidates) or has only
         // snippet items. Buffer-words mustn't appear.
-        if let Some(state) = a.insert_completion.as_ref() {
+        if let Some(state) = a.editor.insert_completion.as_ref() {
             for cand in &state.rendered {
                 let src = cand.raw.source.as_ref().map(|s| s.as_str()).unwrap_or("");
                 assert_ne!(
@@ -3609,9 +3498,9 @@ mod tests {
             .push(lattice_completion::RenderedCandidate::from_scored(scored));
         // CSM.8b.5: candidate payload IS the meta -- no sidecar push.
         let _ = meta;
-        a.insert_completion = Some(state);
+        a.editor.insert_completion = Some(state);
         a.do_completion_toggle_docs();
-        let body = a
+        let body = a.editor
             .insert_completion
             .as_ref()
             .and_then(|s| s.doc_popup.as_ref())
@@ -3626,7 +3515,7 @@ mod tests {
         let mut a = app_with("xx", 10);
         a.editor.modal = ModalState::Insert;
         a.editor.cursor = Position::ZERO;
-        a.insert_completion = Some(lattice_completion::InsertCompletionState::open(
+        a.editor.insert_completion = Some(lattice_completion::InsertCompletionState::open(
             lattice_completion::CompletionTrigger::Manual,
             Position::ZERO,
             Position::ZERO,
@@ -3635,14 +3524,14 @@ mod tests {
         a.do_completion_toggle_docs();
         // Even with no candidate, the popup opens with an
         // empty body slot. Toggling again closes it.
-        let was_open = a
+        let was_open = a.editor
             .insert_completion
             .as_ref()
             .map(|s| s.doc_popup.is_some())
             .unwrap_or(false);
         assert!(was_open);
         a.do_completion_toggle_docs();
-        let now_closed = a
+        let now_closed = a.editor
             .insert_completion
             .as_ref()
             .map(|s| s.doc_popup.is_none())
@@ -3655,7 +3544,7 @@ mod tests {
         let mut a = app_with("xx", 10);
         a.editor.modal = ModalState::Insert;
         a.editor.cursor = Position::ZERO;
-        a.insert_completion = Some(lattice_completion::InsertCompletionState::open(
+        a.editor.insert_completion = Some(lattice_completion::InsertCompletionState::open(
             lattice_completion::CompletionTrigger::Manual,
             Position::ZERO,
             Position::ZERO,
@@ -3664,7 +3553,7 @@ mod tests {
         a.do_completion_toggle_docs();
         // Default scroll is 0; up clamps at 0.
         assert_eq!(
-            a.insert_completion
+            a.editor.insert_completion
                 .as_ref()
                 .and_then(|s| s.doc_popup.as_ref())
                 .map(|d| d.scroll),
@@ -3672,7 +3561,7 @@ mod tests {
         );
         a.apply(Action::CompletionDocsScrollUp);
         assert_eq!(
-            a.insert_completion
+            a.editor.insert_completion
                 .as_ref()
                 .and_then(|s| s.doc_popup.as_ref())
                 .map(|d| d.scroll),
@@ -3680,7 +3569,7 @@ mod tests {
         );
         a.apply(Action::CompletionDocsScrollDown);
         assert_eq!(
-            a.insert_completion
+            a.editor.insert_completion
                 .as_ref()
                 .and_then(|s| s.doc_popup.as_ref())
                 .map(|d| d.scroll),
@@ -3688,7 +3577,7 @@ mod tests {
         );
         a.apply(Action::CompletionDocsScrollDown);
         assert_eq!(
-            a.insert_completion
+            a.editor.insert_completion
                 .as_ref()
                 .and_then(|s| s.doc_popup.as_ref())
                 .map(|d| d.scroll),
@@ -3696,7 +3585,7 @@ mod tests {
         );
         a.apply(Action::CompletionDocsScrollUp);
         assert_eq!(
-            a.insert_completion
+            a.editor.insert_completion
                 .as_ref()
                 .and_then(|s| s.doc_popup.as_ref())
                 .map(|d| d.scroll),

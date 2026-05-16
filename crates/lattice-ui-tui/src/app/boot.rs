@@ -693,20 +693,20 @@ impl App {
                 pending_semantic_tokens_refresh_rx: Some(lsp_semantic_tokens_refresh_rx),
                 pending_code_lens_refresh_rx: Some(lsp_code_lens_refresh_rx),
                 pending_diagnostic_refresh_rx: Some(lsp_diagnostic_refresh_rx),
+                popup_back_stack: Vec::new(),
+                insert_completion: None,
+                snippet_registry: snippet_registry_handle,
+                insert_completion_snippet_meta: Vec::new(),
+                completion_accept_freq: std::collections::HashMap::new(),
+                pending_config_structural_sections: std::collections::BTreeMap::new(),
+                per_language_completion: lattice_completion::per_language_defaults(),
+                completion_in_path_context: false,
+                active_snippet: None,
+                snippet_dirs: Vec::new(),
                 ..lattice_host::editor::Editor::default()
             },
             pane_render_registry: crate::render::build_pane_render_registry(),
             theme: crate::theme::Theme::default(),
-            popup_back_stack: Vec::new(),
-            insert_completion: None,
-            snippet_registry: snippet_registry_handle,
-            insert_completion_snippet_meta: Vec::new(),
-            completion_accept_freq: std::collections::HashMap::new(),
-            pending_config_structural_sections: std::collections::BTreeMap::new(),
-            per_language_completion: lattice_completion::per_language_defaults(),
-            completion_in_path_context: false,
-            active_snippet: None,
-            snippet_dirs: Vec::new(),
             lsp_file_watcher: None,
         };
         // Sync derived theme styles from the freshly-registered
@@ -777,8 +777,8 @@ impl App {
     ///
     /// Slice 8.f.
     pub fn sync_keymap_overlays(&mut self) {
-        let want_popup = self.insert_completion.is_some();
-        let want_snippet = self.active_snippet.is_some();
+        let want_popup = self.editor.insert_completion.is_some();
+        let want_snippet = self.editor.active_snippet.is_some();
         let have_popup = self.editor.completion_popup_layer.is_some();
         let have_snippet = self.editor.snippet_layer.is_some();
         // CSM.K1: `completion-popup-mode` minor reflects popup
@@ -822,7 +822,7 @@ impl App {
     /// on the active document buffer in line with `want_popup`.
     /// Called from `sync_keymap_overlays` so the transient
     /// popup-mode tracks the popup open / close transitions
-    /// without each `self.insert_completion = ...` site having
+    /// without each `self.editor.insert_completion = ...` site having
     /// to know about it.
     ///
     /// Per-buffer scope: the popup belongs to the document the
@@ -932,7 +932,7 @@ impl App {
     /// precedence order, applying scalar overrides to
     /// `self.editor.config` and bucketing structural sub-tables (per-
     /// language overrides, plugin sections) into
-    /// `self.pending_config_structural_sections` for their
+    /// `self.editor.pending_config_structural_sections` for their
     /// owners to drain.
     ///
     /// Called once by the runtime startup before the main loop
@@ -968,7 +968,7 @@ impl App {
         // them. Subsequent slices drain via
         // `take_pending_structural_section(prefix)`.
         for (k, v) in outcome.structural {
-            self.pending_config_structural_sections.insert(k, v);
+            self.editor.pending_config_structural_sections.insert(k, v);
         }
         // Cache the merged TOML tree so
         // `workspace/configuration` can walk server-namespaced

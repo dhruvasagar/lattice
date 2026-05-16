@@ -629,7 +629,7 @@ impl App {
             // with the popup state field. The refresh check
             // genuinely wants "is there popup state to refresh,"
             // which is exactly what the field tracks.
-            if self.insert_completion.is_some() {
+            if self.editor.insert_completion.is_some() {
                 self.maybe_refresh_insert_completion_after_edit();
             }
             // SignatureHelp trigger autopilot (Phase 4.3). When
@@ -1644,7 +1644,7 @@ mod tests {
         let mut a = app_with("foo bar baz", 10);
         // Normal mode by default -- trigger should no-op.
         a.do_completion_trigger();
-        assert!(a.insert_completion.is_none());
+        assert!(a.editor.insert_completion.is_none());
     }
 
     #[test]
@@ -1658,7 +1658,7 @@ mod tests {
         // "no completions" echo.
         a.editor.cursor = Position::new(0, 5);
         a.do_completion_trigger();
-        assert!(a.insert_completion.is_none());
+        assert!(a.editor.insert_completion.is_none());
         let msg = a.editor.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("no completions"));
     }
@@ -1677,7 +1677,7 @@ mod tests {
         let _ = a.apply_edit_blocking(Edit::insert(Position::new(0, 28), "\nhel"));
         a.editor.cursor = Position::new(1, 3);
         a.do_completion_trigger();
-        let state = a.insert_completion.as_ref().expect("popup opened");
+        let state = a.editor.insert_completion.as_ref().expect("popup opened");
         assert_eq!(state.query, "hel");
         // hello / helper / helmet all start with "hel" -- prefix
         // tier (score 800) matches. Order may vary by stable
@@ -1698,15 +1698,15 @@ mod tests {
         let _ = a.apply_edit_blocking(Edit::insert(Position::new(0, 24), "\nal"));
         a.editor.cursor = Position::new(1, 2);
         a.do_completion_trigger();
-        let total = a.insert_completion.as_ref().expect("popup").rendered.len();
+        let total = a.editor.insert_completion.as_ref().expect("popup").rendered.len();
         assert!(total >= 2, "need ≥ 2 candidates for wrap test");
-        assert_eq!(a.insert_completion.as_ref().unwrap().selected, 0);
+        assert_eq!(a.editor.insert_completion.as_ref().unwrap().selected, 0);
         a.do_completion_next();
-        assert_eq!(a.insert_completion.as_ref().unwrap().selected, 1);
+        assert_eq!(a.editor.insert_completion.as_ref().unwrap().selected, 1);
         // Wrap to last via prev from 1 -> 0 -> total-1.
         a.do_completion_prev();
         a.do_completion_prev();
-        assert_eq!(a.insert_completion.as_ref().unwrap().selected, total - 1);
+        assert_eq!(a.editor.insert_completion.as_ref().unwrap().selected, total - 1);
     }
 
     #[test]
@@ -1716,14 +1716,14 @@ mod tests {
         a.editor.cursor = Position::new(1, 2);
         a.do_completion_trigger();
         // Pick the first candidate.
-        let first_text = a
+        let first_text = a.editor
             .insert_completion
             .as_ref()
             .and_then(|s| s.selected_candidate())
             .map(|c| c.raw.text.clone())
             .expect("at least one candidate");
         a.do_completion_accept();
-        assert!(a.insert_completion.is_none());
+        assert!(a.editor.insert_completion.is_none());
         // Buffer line 1 should now be the chosen word.
         let snap = a.editor.document.snapshot();
         let line1 = snap.buffer.line(1).unwrap_or_default();
@@ -1736,9 +1736,9 @@ mod tests {
         a.editor.modal = ModalState::Insert;
         a.editor.cursor = Position::new(1, 2);
         a.do_completion_trigger();
-        assert!(a.insert_completion.is_some());
+        assert!(a.editor.insert_completion.is_some());
         a.do_completion_cancel();
-        assert!(a.insert_completion.is_none());
+        assert!(a.editor.insert_completion.is_none());
         // Modal stays Insert.
         assert!(matches!(a.editor.modal, ModalState::Insert));
     }
@@ -1749,9 +1749,9 @@ mod tests {
         a.editor.modal = ModalState::Insert;
         a.editor.cursor = Position::new(1, 2);
         a.do_completion_trigger();
-        assert!(a.insert_completion.is_some());
+        assert!(a.editor.insert_completion.is_some());
         a.apply(Action::CompletionCancelAndExitInsert);
-        assert!(a.insert_completion.is_none());
+        assert!(a.editor.insert_completion.is_none());
         assert!(matches!(a.editor.modal, ModalState::Normal));
     }
 
@@ -1762,15 +1762,15 @@ mod tests {
         a.editor.cursor = Position::new(1, 2);
         a.do_completion_trigger();
         assert!(
-            a.insert_completion
+            a.editor.insert_completion
                 .as_ref()
                 .map(|s| s.doc_popup.is_none())
                 .unwrap_or(false)
         );
         a.do_completion_toggle_docs();
-        assert!(a.insert_completion.as_ref().unwrap().doc_popup.is_some());
+        assert!(a.editor.insert_completion.as_ref().unwrap().doc_popup.is_some());
         a.do_completion_toggle_docs();
-        assert!(a.insert_completion.as_ref().unwrap().doc_popup.is_none());
+        assert!(a.editor.insert_completion.as_ref().unwrap().doc_popup.is_none());
     }
 
     #[test]
@@ -1779,11 +1779,11 @@ mod tests {
         a.editor.modal = ModalState::Insert;
         a.editor.cursor = Position::new(1, 2);
         a.do_completion_trigger();
-        let pre_count = a.insert_completion.as_ref().expect("popup").rendered.len();
+        let pre_count = a.editor.insert_completion.as_ref().expect("popup").rendered.len();
         // Type 'p' -- query becomes "alp"; only "alpha" /
         // "alphabet" survive (alligator drops out).
         a.apply(Action::Insert("p".into()));
-        let state = a.insert_completion.as_ref().expect("popup still open");
+        let state = a.editor.insert_completion.as_ref().expect("popup still open");
         assert_eq!(state.query, "alp");
         let labels: Vec<String> = state.rendered.iter().map(|c| c.raw.text.clone()).collect();
         assert!(labels.contains(&"alpha".to_string()));
@@ -1798,10 +1798,10 @@ mod tests {
         a.editor.modal = ModalState::Insert;
         a.editor.cursor = Position::new(1, 2);
         a.do_completion_trigger();
-        assert!(a.insert_completion.is_some());
+        assert!(a.editor.insert_completion.is_some());
         // Type a space -- pushes the cursor past the word.
         a.apply(Action::Insert(" ".into()));
-        assert!(a.insert_completion.is_none());
+        assert!(a.editor.insert_completion.is_none());
     }
 
     #[test]

@@ -82,12 +82,12 @@ impl App {
         //   popup.
         if matches!(self.editor.active_buffer, BufferKind::Help) && self.editor.popup_buffer.is_some() {
             if let Some(snap) = self.snapshot_current_popup() {
-                self.popup_back_stack.push(snap);
+                self.editor.popup_back_stack.push(snap);
             }
             self.swap_popup_content(content, placement);
             return;
         }
-        self.popup_back_stack.clear();
+        self.editor.popup_back_stack.clear();
         let HelpContent { buffer, metadata } = content;
         let buffer_id = buffer.id;
         // Drop any previous popup buffer cleanly before adopting
@@ -413,7 +413,7 @@ impl App {
     /// applied; `false` when the stack was empty (caller falls
     /// through to whatever default `<C-o>` behaviour applies).
     pub(crate) fn pop_popup_back(&mut self) -> bool {
-        let Some(snap) = self.popup_back_stack.pop() else {
+        let Some(snap) = self.editor.popup_back_stack.pop() else {
             return false;
         };
         let Some(id) = self.editor.popup_buffer else {
@@ -451,7 +451,7 @@ impl App {
     pub(crate) fn dismiss_popup(&mut self) {
         self.dismiss_stale_popup_registry();
         self.editor.popup_buffer = None;
-        self.popup_back_stack.clear();
+        self.editor.popup_back_stack.clear();
         self.editor.popup_placement = PopupPlacement::default();
         // Restore pre-popup state if focus had moved into it
         // (State B for hover; in-pane mode for `:lsp-log` etc.).
@@ -589,7 +589,7 @@ mod tests {
         );
         // The prior frame is recorded on the back-stack so `<C-o>`
         // can restore it.
-        assert_eq!(a.popup_back_stack.len(), 1);
+        assert_eq!(a.editor.popup_back_stack.len(), 1);
     }
 
     #[test]

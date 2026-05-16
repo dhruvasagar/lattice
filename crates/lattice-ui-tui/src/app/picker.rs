@@ -248,7 +248,7 @@ impl App {
                 // path so tab-stop tracking + mark plumbing
                 // match `:snippet-expand` and the `<C-x><C-s>`
                 // chord.
-                let snippet = self.snippet_registry.load().by_name(&id).cloned();
+                let snippet = self.editor.snippet_registry.load().by_name(&id).cloned();
                 let Some(snippet) = snippet else {
                     self.set_message(EchoLevel::Error, format!("picker: no snippet named `{id}`"));
                     return;

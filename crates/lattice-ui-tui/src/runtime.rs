@@ -459,7 +459,7 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
                         chord_capture: app.chord_capture_active(),
                         picker_open: app.editor.picker.is_some(),
                         insert_completion_open: app.completion_popup_active(),
-                        snippet_active: app.active_snippet.is_some(),
+                        snippet_active: app.editor.active_snippet.is_some(),
                         keymap: &app.editor.keymap,
                         partial_chord: &app.editor.partial_chord,
                     };

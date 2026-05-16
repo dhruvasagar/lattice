@@ -48,7 +48,7 @@ pub(super) fn press(app: &mut App, event: crossterm::event::KeyEvent) {
         chord_capture: app.chord_capture_active(),
         picker_open: app.editor.picker.is_some(),
         insert_completion_open: app.completion_popup_active(),
-        snippet_active: app.active_snippet.is_some(),
+        snippet_active: app.editor.active_snippet.is_some(),
         keymap: &app.editor.keymap,
         partial_chord: &app.editor.partial_chord,
     };
@@ -290,7 +290,7 @@ pub(super) fn open_popup_with_top_text(a: &mut App, query: &str, top_text: &str)
                 match_ranges: Vec::new(),
             },
         ));
-    a.insert_completion = Some(state);
+    a.editor.insert_completion = Some(state);
 }
 
 /// Insert a snippet into the App's per-language snippet
@@ -300,7 +300,7 @@ pub(super) fn install_snippet(a: &mut App, language: &str, name: &str, prefix: &
     // CSM.5: snippet_registry is `Arc<ArcSwap<...>>`. Clone the
     // current snapshot, mutate the copy, store. Cheap for test
     // scale; production reload swaps the inner the same way.
-    let mut next = (**a.snippet_registry.load()).clone();
+    let mut next = (**a.editor.snippet_registry.load()).clone();
     next.insert(
         language,
         lattice_snippet::Snippet {
@@ -311,7 +311,7 @@ pub(super) fn install_snippet(a: &mut App, language: &str, name: &str, prefix: &
             scope: String::new(),
         },
     );
-    a.snippet_registry.store(std::sync::Arc::new(next));
+    a.editor.snippet_registry.store(std::sync::Arc::new(next));
 }
 
 /// Build a unique temp directory for tests that touch the

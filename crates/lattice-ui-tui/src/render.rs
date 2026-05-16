@@ -257,7 +257,7 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) {
         // rendered when the user has flipped it on with
         // `<C-d>`. Anchored right of the candidate popup
         // when there's room; below otherwise.
-        if let Some(state) = app.insert_completion.as_ref()
+        if let Some(state) = app.editor.insert_completion.as_ref()
             && state.doc_popup.is_some()
         {
             draw_insert_completion_docs_popup(frame, chunks[0], app, snap);
@@ -291,7 +291,7 @@ fn draw_insert_completion_popup(
     app: &App,
     snap: &DocumentSnapshot,
 ) {
-    let Some(state) = app.insert_completion.as_ref() else {
+    let Some(state) = app.editor.insert_completion.as_ref() else {
         return;
     };
     if state.rendered.is_empty() {
@@ -471,7 +471,7 @@ fn draw_insert_completion_docs_popup(
     app: &App,
     snap: &DocumentSnapshot,
 ) {
-    let Some(state) = app.insert_completion.as_ref() else {
+    let Some(state) = app.editor.insert_completion.as_ref() else {
         return;
     };
     let Some(doc_popup) = state.doc_popup.as_ref() else {
@@ -4631,7 +4631,7 @@ mod tests {
                     match_ranges: Vec::new(),
                 },
             ));
-        app.insert_completion = Some(state);
+        app.editor.insert_completion = Some(state);
 
         let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 1, 80);
         let composed = line_text(&lines[0]);
@@ -4682,7 +4682,7 @@ mod tests {
                     match_ranges: Vec::new(),
                 },
             ));
-        app.insert_completion = Some(state);
+        app.editor.insert_completion = Some(state);
         let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 1, 80);
         let composed = line_text(&lines[0]);
         // `foobaz` from the buffer is fine; `foobar` (ghost)

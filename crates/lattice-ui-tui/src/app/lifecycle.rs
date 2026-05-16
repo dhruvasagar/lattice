@@ -2332,7 +2332,7 @@ mod tests {
         // anything for prefix mismatch.
         a.editor.cursor = Position::new(2, 1);
         a.do_completion_trigger();
-        let state = a.insert_completion.as_ref().expect("popup");
+        let state = a.editor.insert_completion.as_ref().expect("popup");
         let tree_sitter_id = lattice_completion::TREE_SITTER_SYMBOL_SOURCE_ID;
         let ts_texts: Vec<&str> = state
             .raw
@@ -2357,7 +2357,7 @@ mod tests {
         a.editor.cursor = Position::new(2, 1);
         // Override the active language (test buffer has no
         // path -> language id is "") to exclude tree-sitter.
-        a.per_language_completion.insert(
+        a.editor.per_language_completion.insert(
             String::new(),
             lattice_completion::PerLanguageOverrides {
                 sources: Some(vec![lattice_completion::SourceId::new(
@@ -2367,7 +2367,7 @@ mod tests {
             },
         );
         a.do_completion_trigger();
-        let state = a.insert_completion.as_ref().expect("popup");
+        let state = a.editor.insert_completion.as_ref().expect("popup");
         let tree_sitter_id = lattice_completion::TREE_SITTER_SYMBOL_SOURCE_ID;
         for cand in &state.raw {
             let src = cand.source.as_ref().map(|s| s.as_str()).unwrap_or("");
@@ -2395,7 +2395,7 @@ mod tests {
         a.editor.modal = ModalState::Insert;
         a.editor.cursor = Position::new(2, 1);
         a.do_completion_trigger();
-        let state = a.insert_completion.as_ref().expect("popup");
+        let state = a.editor.insert_completion.as_ref().expect("popup");
         let raw_sources: Vec<&str> = state
             .raw
             .iter()
@@ -2433,7 +2433,7 @@ mod tests {
         a.editor.modal = ModalState::Insert;
         a.editor.cursor = Position::new(0, 19);
         a.do_completion_trigger();
-        if let Some(state) = a.insert_completion.as_ref() {
+        if let Some(state) = a.editor.insert_completion.as_ref() {
             let tree_sitter_id = lattice_completion::TREE_SITTER_SYMBOL_SOURCE_ID;
             for cand in &state.raw {
                 assert_ne!(

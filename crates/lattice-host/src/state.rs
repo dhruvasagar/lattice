@@ -330,3 +330,18 @@ impl std::fmt::Debug for InFlightLiveQuery {
 /// picker primitive is renderer- and timer-agnostic.
 pub const LIVE_PICKER_DEBOUNCE: std::time::Duration =
     std::time::Duration::from_millis(150);
+
+/// Sidecar metadata for snippet candidates in the active
+/// insert-completion popup. Indexed by the candidate's
+/// `CandidateData::Extension { payload }` (u32 LE) -- same
+/// shape as the LSP source's sidecar. The host renders the
+/// snippet body on accept and starts an `ActiveSnippet`; this
+/// struct carries the parsed body plus the display fields the
+/// popup row uses.
+#[derive(Debug, Clone)]
+pub struct SnippetCandidateMeta {
+    pub name: String,
+    pub prefix: String,
+    pub description: Option<String>,
+    pub body: lattice_snippet::SnippetBody,
+}

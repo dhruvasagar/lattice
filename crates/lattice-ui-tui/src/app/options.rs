@@ -698,7 +698,7 @@ impl App {
         &mut self,
         full_path: &str,
     ) -> Option<toml::Table> {
-        self.pending_config_structural_sections.remove(full_path)
+        self.editor.pending_config_structural_sections.remove(full_path)
     }
 
     /// Iterate the dotted paths of every pending structural
@@ -709,7 +709,7 @@ impl App {
     /// `take_pending_structural_section(full)` mutating the map.
     pub(super) fn pending_structural_section_paths(&self, namespace: &str) -> Vec<String> {
         let prefix = format!("{namespace}.");
-        self.pending_config_structural_sections
+        self.editor.pending_config_structural_sections
             .keys()
             .filter(|k| k.starts_with(&prefix))
             .cloned()
@@ -718,7 +718,7 @@ impl App {
 
     /// Drain every `completion.per-language.<lang>` structural
     /// section the loader bucketed and merge each into
-    /// `self.per_language_completion`. Per-key TOML wins over
+    /// `self.editor.per_language_completion`. Per-key TOML wins over
     /// the spec defaults seeded at `App::new`; unset keys leave
     /// the default in place.
     ///
@@ -739,7 +739,7 @@ impl App {
                 continue;
             };
             let parsed = parse_per_language_overrides_table(&path, &table, &mut warnings);
-            self.per_language_completion
+            self.editor.per_language_completion
                 .entry(lang)
                 .or_default()
                 .merge(parsed);
@@ -1557,7 +1557,7 @@ mod tests {
         let mut a = app_with("", 10);
         a.do_reload_snippets();
         // Idle; registry stays empty. Message echoed at Info.
-        assert_eq!(a.snippet_registry.load().len(), 0);
+        assert_eq!(a.editor.snippet_registry.load().len(), 0);
     }
 
     #[test]
@@ -1579,18 +1579,18 @@ mod tests {
         )
         .unwrap();
         let mut a = app_with("", 10);
-        a.snippet_dirs.push(dir.clone());
+        a.editor.snippet_dirs.push(dir.clone());
         a.do_reload_snippets();
         // 2 snippets registered total (one per language).
-        assert_eq!(a.snippet_registry.load().len(), 2);
-        assert!(!a.snippet_registry.load().lookup("rust", "for").is_empty());
-        assert!(!a.snippet_registry.load().lookup("*", "any").is_empty());
+        assert_eq!(a.editor.snippet_registry.load().len(), 2);
+        assert!(!a.editor.snippet_registry.load().lookup("rust", "for").is_empty());
+        assert!(!a.editor.snippet_registry.load().lookup("*", "any").is_empty());
         // Global snippets are visible from any language --
         // `lookup` walks the per-language slot then `*`.
-        assert!(!a.snippet_registry.load().lookup("rust", "any").is_empty());
+        assert!(!a.editor.snippet_registry.load().lookup("rust", "any").is_empty());
         // A rust-only snippet should NOT be visible from a
         // different language slot.
-        assert!(a.snippet_registry.load().lookup("python", "for").is_empty());
+        assert!(a.editor.snippet_registry.load().lookup("python", "for").is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

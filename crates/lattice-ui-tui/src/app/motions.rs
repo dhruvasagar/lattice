@@ -155,7 +155,7 @@ impl App {
         if delta < 0
             && matches!(self.editor.active_buffer, BufferKind::Help)
             && self.editor.popup_buffer.is_some()
-            && !self.popup_back_stack.is_empty()
+            && !self.editor.popup_back_stack.is_empty()
             && self.pop_popup_back()
         {
             return;

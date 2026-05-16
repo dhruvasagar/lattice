@@ -635,7 +635,7 @@ impl App {
         if let Some(token) = self.editor.pending_completion_resolve_token.take() {
             token.cancel();
         }
-        let Some(state) = self.insert_completion.as_ref() else {
+        let Some(state) = self.editor.insert_completion.as_ref() else {
             return;
         };
         let Some(cand) = state.rendered.get(state.selected) else {
@@ -659,7 +659,7 @@ impl App {
             lattice_completion::CandidateData::Extension { payload, .. } => payload.clone(),
             _ => return,
         };
-        let Some(state_ref) = self.insert_completion.as_ref() else {
+        let Some(state_ref) = self.editor.insert_completion.as_ref() else {
             return;
         };
         let Some(meta_index) = state_ref
@@ -748,7 +748,7 @@ impl App {
         }
         // Path-completion mode (4.2.g.6 (2/2)) suppresses LSP
         // completion -- the popup is showing filesystem entries.
-        if self.completion_in_path_context {
+        if self.editor.completion_in_path_context {
             return;
         }
         // Per-language sources filter (Phase 4.2.g.5 (3b/3)).
@@ -786,7 +786,7 @@ impl App {
         // payload encode; this method just gates, builds the
         // snapshot, and bridges the sink output onto the
         // existing channel.
-        let Some(state) = self.insert_completion.as_ref() else {
+        let Some(state) = self.editor.insert_completion.as_ref() else {
             return;
         };
         let trigger = state.trigger.clone();
@@ -861,7 +861,7 @@ impl App {
             return;
         };
         self.editor.pending_completion_resolve_token = None;
-        let Some(state) = self.insert_completion.as_mut() else {
+        let Some(state) = self.editor.insert_completion.as_mut() else {
             return;
         };
         // Find the n-th LSP row in state.raw (n = outcome.meta_index).
@@ -980,7 +980,7 @@ impl App {
             None => return,
         };
         self.editor.pending_insert_completion_lsp_token = None;
-        let Some(state) = self.insert_completion.as_mut() else {
+        let Some(state) = self.editor.insert_completion.as_mut() else {
             // Popup closed before the response arrived; drop it.
             return;
         };
@@ -1040,7 +1040,7 @@ impl App {
             })
             .collect();
         let ranker = lattice_completion::InsertRanker::new();
-        let freq = &self.completion_accept_freq;
+        let freq = &self.editor.completion_accept_freq;
         let config = &self.editor.config;
         ranker.rank_with_bonus(&mut scored, |raw| {
             let priority = match raw.source.as_ref().map(|s| s.as_str()) {
@@ -1073,7 +1073,7 @@ impl App {
         }
         if state.rendered.is_empty() {
             // No matches after merge -- close the popup.
-            self.insert_completion = None;
+            self.editor.insert_completion = None;
         }
     }
 
@@ -8582,7 +8582,7 @@ mod tests {
             .unwrap();
         a.drain_pending_insert_completion_lsp();
         // Popup still open from sync sources.
-        assert!(a.insert_completion.is_some());
+        assert!(a.editor.insert_completion.is_some());
     }
 
     #[test]
@@ -8594,7 +8594,7 @@ mod tests {
         // so the test doesn't depend on sync sources producing
         // matches first. The drain merges LSP items into
         // whatever raw set is present.
-        a.insert_completion = Some(lattice_completion::InsertCompletionState::open(
+        a.editor.insert_completion = Some(lattice_completion::InsertCompletionState::open(
             lattice_completion::CompletionTrigger::Manual,
             Position::new(1, 0),
             Position::new(1, 2),
@@ -8648,7 +8648,7 @@ mod tests {
         })
         .unwrap();
         a.drain_pending_insert_completion_lsp();
-        let state = a.insert_completion.as_ref().expect("popup open");
+        let state = a.editor.insert_completion.as_ref().expect("popup open");
         // Both items render; "foo" prefix matches both.
         let labels: Vec<String> = state
             .rendered
@@ -8660,7 +8660,7 @@ mod tests {
         // CSM.8b.5: state.raw is the source of truth. Two LSP
         // rows present, each carrying their own payload-encoded
         // meta.
-        let state = a.insert_completion.as_ref().expect("popup");
+        let state = a.editor.insert_completion.as_ref().expect("popup");
         let lsp_rows = state
             .raw
             .iter()
@@ -8684,7 +8684,7 @@ mod tests {
         let mut a = app_with("xx", 10);
         a.editor.modal = ModalState::Insert;
         a.editor.cursor = Position::ZERO;
-        a.insert_completion = Some(lattice_completion::InsertCompletionState::open(
+        a.editor.insert_completion = Some(lattice_completion::InsertCompletionState::open(
             lattice_completion::CompletionTrigger::Manual,
             Position::ZERO,
             Position::ZERO,
@@ -8723,7 +8723,7 @@ mod tests {
         })
         .unwrap();
         a.drain_pending_insert_completion_lsp();
-        let pre = a
+        let pre = a.editor
             .insert_completion
             .as_ref()
             .map(|s| s.raw.len())
@@ -8741,7 +8741,7 @@ mod tests {
         })
         .unwrap();
         a.drain_pending_insert_completion_lsp();
-        let state = a.insert_completion.as_ref().expect("popup");
+        let state = a.editor.insert_completion.as_ref().expect("popup");
         let lsp_rows: Vec<_> = state
             .raw
             .iter()
@@ -8831,7 +8831,7 @@ mod tests {
         });
         // CSM.8b.5: meta lives in candidate payload already.
         let _ = meta;
-        a.insert_completion = Some(state);
+        a.editor.insert_completion = Some(state);
         // Push a resolve outcome that fills documentation.
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::CompletionResolveOutcome>();
         a.editor.pending_completion_resolve_rx = Some(rx);
@@ -8848,7 +8848,7 @@ mod tests {
         a.drain_pending_completion_resolve();
         // CSM.8b.5: candidate payload (the source of truth) is
         // re-encoded in place with the resolved fields.
-        let state = a.insert_completion.as_ref().expect("popup");
+        let state = a.editor.insert_completion.as_ref().expect("popup");
         let payload = match &state.raw[0].data {
             lattice_completion::CandidateData::Extension { payload, .. } => payload.clone(),
             _ => panic!("expected Extension payload"),
@@ -8928,7 +8928,7 @@ mod tests {
             body: Some("for c1".into()),
             scroll: 0,
         });
-        a.insert_completion = Some(state);
+        a.editor.insert_completion = Some(state);
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::CompletionResolveOutcome>();
         a.editor.pending_completion_resolve_rx = Some(rx);
         a.editor.pending_completion_resolve_token = Some(lattice_protocol::CancellationToken::new());
@@ -8942,7 +8942,7 @@ mod tests {
         .unwrap();
         a.drain_pending_completion_resolve();
         // c0's payload updated.
-        let state = a.insert_completion.as_ref().expect("popup");
+        let state = a.editor.insert_completion.as_ref().expect("popup");
         let c0_payload = match &state.raw[0].data {
             lattice_completion::CandidateData::Extension { payload, .. } => payload.clone(),
             _ => panic!("expected Extension"),
@@ -10304,7 +10304,7 @@ mod tests {
             ));
         // CSM.8b.5: meta lives in candidate payload already.
         let _ = meta;
-        a.insert_completion = Some(state);
+        a.editor.insert_completion = Some(state);
         a.do_completion_accept();
         // After accept: line 0 has the auto-import, line 2
         // (now line 3 after the import inserted a newline,
@@ -10322,7 +10322,7 @@ mod tests {
             "snippet expanded: `{after_accept}`"
         );
         // Active snippet focused on $1 ("i").
-        assert!(a.active_snippet.is_some(), "active snippet started");
+        assert!(a.editor.active_snippet.is_some(), "active snippet started");
         // Undo ONCE -> both the auto-import AND the snippet
         // expansion revert.
         a.undo_blocking().expect("undo");

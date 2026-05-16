@@ -1142,16 +1142,13 @@ impl App {
                 let lattice_host::dispatch::DisplayBufferRequest { content, category } = *req;
                 self.display_buffer(content, category);
             }
-            RendererSignal::BufferActivated => {
-                // 5.5.F.4.3: emitted by `Editor::handle_effect`
-                // when `Effect::BufferNext` / `BufferPrev` (and
-                // future buffer-nav arms) trigger a full document
-                // activation. Runs the App-side
-                // `activate_buffer_state` tail (mode/syntax/option
-                // re-init + visible-highlights cache clear) that's
-                // still on App until F.5 lands mode lifecycle.
-                self.activate_buffer_state();
-            }
+            // 5.5.F.5.5: `BufferActivated` retired. The Bucket-A
+            // `visible_highlights` / `pane_highlights` cache clear
+            // lives on `Editor` as plain field writes, so the
+            // post-activation tail (`activate_buffer_state`) runs
+            // entirely host-side; cascading mode-lifecycle signals
+            // stream into the `handle_effect` outcome and fan out
+            // through this same match.
         }
     }
 

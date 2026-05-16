@@ -29,7 +29,7 @@
 //!   per-loop-iteration state hooks.
 
 use lattice_core::buffer::AppliedEdit;
-use lattice_core::{CoreError, Document, FoldMethod};
+use lattice_core::{CoreError, Document};
 use lattice_protocol::Event;
 use lattice_protocol::position::Position;
 use lattice_runtime::{RuntimeError, block_on, spawn_document};
@@ -510,73 +510,14 @@ impl App {
         self.editor.snapshot_active_document();
     }
 
-    /// Lifecycle hook fired after a document buffer becomes the
-    /// active buffer (either via [`Self::activate_document`] or
-    /// after `:e <path>` opens a fresh file). Refreshes anything
-    /// that "lives with the buffer until it closes" so the user
-    /// sees consistent state without having to reach for `<C-l>`.
-    ///
-    /// New buffer-level state plugs in here: keep the path
-    /// principled instead of sprinkling per-option fixups across
-    /// every entry point that changes the active buffer.
+    /// 5.5.F.5.5: see [`lattice_host::dispatch::Editor::activate_buffer_state`].
+    /// Wrapper fans host-returned `RendererSignal`s through
+    /// [`Self::handle_renderer_signal`].
     pub(super) fn activate_buffer_state(&mut self) {
-        // Ensure the buffer's major mode is wired up before the
-        // option-cache rebuild reads mode contributions. On first
-        // visit (new buffer from `:e foo.rs`), this activates the
-        // language major (e.g. `rust-mode`) and -- via the
-        // existing `maybe_auto_activate_lsp_mode` hook in
-        // `activate_major_for_buffer_kind` -- auto-activates
-        // `lsp-mode` if a server is configured for the path.
-        // On re-visits, the idempotency guard inside the helper
-        // turns this into a cheap "already active" no-op + a
-        // single auto-LSP hook re-run (which is itself
-        // no-op-when-already-active). This is what makes
-        // `lsp-mode` follow the user across buffer switches
-        // without each opening path having to remember to call
-        // it -- the existing classifier (LSP supervisor's
-        // `has_server_for_path`) is the "is this a language
-        // we support?" predicate, so the list of LSP-eligible
-        // languages grows automatically as servers register.
-        let active_id = self.editor.pane_tree.active().buffer_id;
-        self.activate_major_for_buffer_kind(active_id, BufferKind::Document);
-        // Re-resolve the buffer's options against the *current*
-        // global typed-option layer. `apply_option_cascade` only
-        // refreshes the ACTIVE buffer's `resolved_options` entry
-        // on each `:set`, so a global option write that happened
-        // while a different buffer was active leaves this
-        // buffer's entry stale. Calling
-        // `recompute_options_for_buffer` here closes that gap
-        // before `rebuild_option_cache` reads from it. (Modes,
-        // buffer-local overrides, and registry values are all
-        // re-stitched -- it's the same path the option cascade
-        // takes, just scoped to the buffer we're activating
-        // rather than every buffer.)
-        self.recompute_options_for_buffer(active_id);
-        // M.4: refresh the renderer's hot-path option cache from
-        // the just-activated buffer's resolved options. Without
-        // this, `app.show_line_numbers()` etc. would still reflect
-        // the previously-active buffer's mode contributions.
-        self.rebuild_option_cache();
-        // Make sure the syntax tree matches the current text. If
-        // the entry stashed a parse for the document's current
-        // version this no-ops; otherwise it parses + recomputes
-        // folds in lockstep via the seam in `maybe_reparse_syntax`.
-        self.maybe_reparse_syntax();
-        // First-activation case: a freshly-opened file (or one we
-        // never visited before) has an empty fold list and the
-        // reparse seam may have been a no-op (text version already
-        // matched the entry's stashed parse). Seed the fold list
-        // from the active foldmethod so the gutter shows ▸ markers
-        // and `za` works without a manual `<C-l>`. `Manual` skips
-        // the seed (the user's `zf` ranges are authoritative).
-        if self.editor.folds.is_empty() && !matches!(self.foldmethod(), FoldMethod::Manual) {
-            self.recompute_folds();
+        let signals = self.editor.activate_buffer_state();
+        for sig in signals {
+            self.handle_renderer_signal(sig);
         }
-        // Drop frame-level highlight caches so the next
-        // `refresh_highlights` repopulates against the activated
-        // buffer's content rather than the previous buffer's.
-        self.editor.visible_highlights.clear();
-        self.editor.pane_highlights.clear();
     }
 
     /// What `:bn` / `:bp` consider the "current" buffer for

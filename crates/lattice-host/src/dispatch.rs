@@ -173,23 +173,12 @@ pub enum RendererSignal {
     /// not per-frame, so the `Box` allocation is well below any
     /// perf gate.
     DisplayBuffer(Box<DisplayBufferRequest>),
-    /// 5.5.F.4.3: a document buffer was activated via the host-side
-    /// `activate_buffer` / `activate_document` path, and the
-    /// post-activation tail (`activate_buffer_state` — mode/syntax
-    /// re-init + visible-highlights cache clear) still lives App-
-    /// side. The renderer runs the tail.
-    ///
-    /// **Transient — deletes in F.5.** Mode lifecycle (`activate_major_for_buffer_kind`)
-    /// and the syntax cluster (`maybe_reparse_syntax`) are the two
-    /// pieces of `activate_buffer_state` that keep it on App. Once
-    /// they migrate host-side, the renderer-neutral tail runs
-    /// inside `Editor::activate_document` directly; what's left of
-    /// the App-side tail will be the per-frame `visible_highlights` /
-    /// `pane_highlights` cache clear (genuinely TUI-specific —
-    /// Bucket A in the post-F.3 scope review), which will either
-    /// keep this variant under a renamed identity or fold into a
-    /// more general cache-invalidation signal.
-    BufferActivated,
+    // 5.5.F.5.5: `BufferActivated` retired. The Bucket-A
+    // `visible_highlights` / `pane_highlights` cache clear lives on
+    // `Editor` as plain field writes, so the post-activation tail
+    // (`activate_buffer_state`) runs entirely host-side; cascading
+    // mode-lifecycle signals stream back through the same
+    // `Vec<RendererSignal>` the `handle_effect` arm already returns.
 }
 
 /// 5.5.F.1: payload for [`RendererSignal::DisplayBuffer`]. Carries
@@ -714,28 +703,28 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
         }
         Effect::BufferNext => {
             // 5.5.F.4.3: `:bn` / `:bnext` -- cycle to next listed
-            // buffer. Emits `BufferActivated` when the activation
-            // went through the full document-activation path, so
-            // App runs the `activate_buffer_state` tail.
+            // buffer. 5.5.F.5.5 brought `activate_buffer_state`
+            // host-side; the full-activation tail runs inline and
+            // its cascading signals stream into the outcome.
             if editor.do_buffer_next() {
-                out.renderer_signals.push(RendererSignal::BufferActivated);
+                out.renderer_signals.extend(editor.activate_buffer_state());
             }
         }
         Effect::BufferPrev => {
             // 5.5.F.4.3: `:bp` / `:bprev` -- cycle to previous
-            // listed buffer. Same signal shape as `BufferNext`.
+            // listed buffer. Same host-side tail shape as
+            // `BufferNext`.
             if editor.do_buffer_prev() {
-                out.renderer_signals.push(RendererSignal::BufferActivated);
+                out.renderer_signals.extend(editor.activate_buffer_state());
             }
         }
         Effect::BufferDelete { force } => {
             // 5.5.F.4.4: `:bd[elete]` -- close the active buffer. The
             // host-side path handles successor selection, LSP detach,
-            // and pane re-pointing; the `BufferActivated` signal
-            // covers the App-side `activate_buffer_state` tail when
-            // the successor went through the full document path.
+            // pane re-pointing, AND (since F.5.5) the post-activation
+            // tail. Cascading signals stream into the outcome.
             if editor.do_buffer_delete(force) {
-                out.renderer_signals.push(RendererSignal::BufferActivated);
+                out.renderer_signals.extend(editor.activate_buffer_state());
             }
         }
         // Catch-all: any Effect variant not yet migrated from
@@ -1328,6 +1317,69 @@ impl Editor {
         for (buffer_id, mode_id) in to_rollback {
             signals.extend(self.deactivate_mode_by_id(buffer_id, mode_id));
         }
+        signals
+    }
+
+    /// 5.5.F.5.5: lifecycle hook fired after a document buffer
+    /// becomes the active buffer (via [`Self::activate_document`],
+    /// after `:e <path>` opens a fresh file, or after `:bd` /
+    /// `:bn` / `:bp` switches the active pane). Refreshes
+    /// everything that "lives with the buffer until it closes":
+    /// major + auto-LSP mode wiring, the resolved-options cache,
+    /// the syntax parse + fold seam, and the frame-level highlight
+    /// caches.
+    ///
+    /// Returns `Vec<RendererSignal>` because
+    /// [`Self::activate_major_for_buffer_kind`] fans signals from
+    /// the inner mode-lifecycle cascade (e.g. `lsp-folding-mode`
+    /// writing `foldmethod=lsp` in its `on_activate`).
+    #[must_use]
+    pub fn activate_buffer_state(&mut self) -> Vec<RendererSignal> {
+        // Wire up the buffer's major mode before the option-cache
+        // rebuild reads mode contributions. On first visit this
+        // activates the language major (e.g. `rust-mode`) and --
+        // via the `maybe_auto_activate_lsp_mode` hook inside
+        // `activate_major_for_buffer_kind` -- auto-activates
+        // `lsp-mode` if a server is configured for the path. On
+        // re-visits, the idempotency guard turns this into a cheap
+        // "already active" no-op + a single auto-LSP hook re-run
+        // (itself no-op-when-already-active). This is what makes
+        // `lsp-mode` follow the user across buffer switches.
+        let active_id = self.pane_tree.active().buffer_id;
+        let signals = self.activate_major_for_buffer_kind(active_id, BufferKind::Document);
+        // Re-resolve the buffer's options against the *current*
+        // global typed-option layer. `apply_option_cascade` only
+        // refreshes the ACTIVE buffer's `resolved_options` entry on
+        // each `:set`, so a global write that happened while a
+        // different buffer was active leaves this buffer's entry
+        // stale.
+        self.recompute_options_for_buffer(active_id);
+        // M.4: refresh the renderer's hot-path option cache from
+        // the just-activated buffer's resolved options.
+        self.rebuild_option_cache();
+        // Make sure the syntax tree matches the current text. If
+        // the entry stashed a parse for the document's current
+        // version this no-ops; otherwise it parses + recomputes
+        // folds in lockstep via the seam in `maybe_reparse_syntax`.
+        self.maybe_reparse_syntax();
+        // First-activation case: a freshly-opened file has an empty
+        // fold list and the reparse seam may have been a no-op
+        // (text version matched the entry's stashed parse). Seed
+        // the fold list from the active foldmethod so the gutter
+        // shows ▸ markers and `za` works without a manual `<C-l>`.
+        // `Manual` skips the seed (the user's `zf` ranges are
+        // authoritative).
+        if self.folds.is_empty() && !matches!(self.foldmethod(), FoldMethod::Manual) {
+            self.recompute_folds();
+        }
+        // Drop frame-level highlight caches so the next
+        // `refresh_highlights` repopulates against the activated
+        // buffer's content rather than the previous buffer's.
+        // These two fields are renderer-coupled (Bucket A in the
+        // post-F.3 review) but live on `Editor`, so the clear runs
+        // host-side; no signal needed.
+        self.visible_highlights.clear();
+        self.pane_highlights.clear();
         signals
     }
 
@@ -3036,9 +3088,8 @@ impl Editor {
     /// 5.5.F.4.3: `:bnext` / `:bn` — cycle to the next listed
     /// buffer. Returns `true` when the activation went through the
     /// full `activate_document` path; caller must run
-    /// `activate_buffer_state` (or fan that via
-    /// [`RendererSignal::BufferActivated`] when called from
-    /// `handle_effect`).
+    /// [`Self::activate_buffer_state`] (the `handle_effect` arm
+    /// does this inline as of F.5.5).
     pub fn do_buffer_next(&mut self) -> bool {
         let Some(target) = self.next_listed_buffer_id() else {
             self.set_message(EchoLevel::Info, "only one listed buffer".to_string());
@@ -3075,9 +3126,8 @@ impl Editor {
     ///
     /// Returns `true` when the successor activation went through
     /// the full `activate_document` path; caller must run
-    /// `activate_buffer_state` (or fan that via
-    /// [`RendererSignal::BufferActivated`] when called from
-    /// `handle_effect`).
+    /// [`Self::activate_buffer_state`] (the `handle_effect` arm
+    /// does this inline as of F.5.5).
     pub fn do_buffer_delete(&mut self, force: bool) -> bool {
         let to_remove = self.active_pane_buffer_id();
         // "Only buffer" check uses the *listed* count — unlisted

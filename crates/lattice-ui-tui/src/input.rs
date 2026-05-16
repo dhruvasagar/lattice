@@ -6,7 +6,7 @@
 //! described in DESIGN.md §5.2.3 -- the *shape* matches (chord -> typed
 //! invocation) so swapping in a real keymap layer later is mechanical.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::KeyEvent;
 
 use lattice_grammar::ModalState;
 use lattice_grammar::builtins::Builtins;
@@ -100,16 +100,27 @@ pub struct TranslateContext<'a> {
 }
 
 pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
+    // Slice 5.4 (slice 2): convert the raw crossterm event into a
+    // canonical, renderer-neutral `KeyChord` at the top of
+    // dispatch. Events that don't have a chord representation
+    // (release events on terminals that emit them, modifier-only
+    // presses) are swallowed -- matches the prior leaf-level
+    // behaviour where each translator returned `Action::None` on
+    // unrecognised input. After this point only `chord` is used
+    // by the renderer-neutral paths; `event` survives only for
+    // the three dispatch_* helpers that haven't migrated yet
+    // (slice 4).
+    let Some(chord) = crate::chord::from_event(&event) else {
+        return Action::None;
+    };
+
     // Picker overlay precedes everything (DESIGN.md §5.9.7): the
     // user is in a focused "type to filter, Enter to act" state;
     // modal handlers never see these keys until the picker is
     // dismissed. `<C-c>` still drops the picker rather than the
     // app so an open picker isn't a foot-gun.
     if ctx.picker_open {
-        return match crate::chord::from_event(&event) {
-            Some(chord) => translate_picker(chord),
-            None => Action::None,
-        };
+        return translate_picker(chord);
     }
 
     // Slice 8.f: the completion-popup and active-snippet minor
@@ -129,14 +140,11 @@ pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
     // `:describe-key <C-c>` is a legitimate user need. The overlay
     // reserves Esc as the abort path, so the user is never stuck.
     if matches!(ctx.modal, ModalState::Command) && ctx.chord_capture {
-        return match crate::chord::from_event(&event) {
-            Some(chord) => translate_command_chord_capture(chord),
-            None => Action::None,
-        };
+        return translate_command_chord_capture(chord);
     }
 
     // Universal escape hatch.
-    if event.modifiers.contains(KeyModifiers::CONTROL) && matches!(event.code, KeyCode::Char('c')) {
+    if chord == KeyChord::ctrl('c') {
         return Action::Quit;
     }
 
@@ -159,10 +167,10 @@ pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
         // explicit close paths are Esc here, `:bd`, and
         // `Action::HelpDismiss` triggered by the State-A auto-
         // dismiss in App::apply.
-        match event.code {
-            KeyCode::Esc => return Action::HelpDismiss,
-            KeyCode::Enter => return Action::FollowLink,
-            KeyCode::Char('-') => return Action::OilNavigateUp,
+        match chord.key {
+            KeyKind::Special(SpecialKey::Esc) => return Action::HelpDismiss,
+            KeyKind::Special(SpecialKey::Enter) => return Action::FollowLink,
+            KeyKind::Char('-') => return Action::OilNavigateUp,
             _ => {}
         }
     }
@@ -171,9 +179,9 @@ pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
         && matches!(ctx.modal, ModalState::Normal)
         && ctx.partial_chord.is_empty()
     {
-        match event.code {
-            KeyCode::Enter => return Action::FollowLink,
-            KeyCode::Char('-') => return Action::OilNavigateUp,
+        match chord.key {
+            KeyKind::Special(SpecialKey::Enter) => return Action::FollowLink,
+            KeyKind::Char('-') => return Action::OilNavigateUp,
             _ => {}
         }
     }
@@ -188,7 +196,7 @@ pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
         // `keymap_insert::tests` is the regression net.
         ModalState::Insert => dispatch_insert(ctx.keymap, &event, ctx.partial_chord),
         ModalState::Normal => translate_normal(
-            event,
+            chord,
             ctx.builtins,
             ctx.pending_count,
             ctx.op_count,
@@ -196,14 +204,8 @@ pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
             ctx.keymap,
             ctx.partial_chord,
         ),
-        ModalState::Command => match crate::chord::from_event(&event) {
-            Some(chord) => translate_command(chord, ctx.completion_open, ctx.chord_capture),
-            None => Action::None,
-        },
-        ModalState::Search(_) => match crate::chord::from_event(&event) {
-            Some(chord) => translate_search(chord),
-            None => Action::None,
-        },
+        ModalState::Command => translate_command(chord, ctx.completion_open, ctx.chord_capture),
+        ModalState::Search(_) => translate_search(chord),
         // Slice 8.e: Visual mode dispatches through the layered
         // registry. The hand-rolled match table moved to
         // `keymap_visual::register_visual_bindings`; the
@@ -338,13 +340,13 @@ fn translate_picker(chord: KeyChord) -> Action {
 }
 
 fn translate_normal(
-    event: KeyEvent,
+    chord: KeyChord,
     builtins: &Builtins,
     pending_count: u32,
     op_count: u32,
     recording_macro: bool,
     keymap: &KeymapHandle,
-    partial_chord: &[crate::chord::KeyChord],
+    partial_chord: &[KeyChord],
 ) -> Action {
     // Slice 8.g.iv: every Normal-mode action flows through
     // `attach_count` so motion / operator counts are baked into
@@ -355,7 +357,7 @@ fn translate_normal(
     // *expansion* stays App-side because it depends on the
     // active fold model.
     let action = compute_normal_action(
-        event,
+        chord,
         builtins,
         pending_count,
         recording_macro,
@@ -366,12 +368,12 @@ fn translate_normal(
 }
 
 fn compute_normal_action(
-    event: KeyEvent,
+    chord: KeyChord,
     builtins: &Builtins,
     pending_count: u32,
     recording_macro: bool,
     keymap: &KeymapHandle,
-    partial_chord: &[crate::chord::KeyChord],
+    partial_chord: &[KeyChord],
 ) -> Action {
     let _ = builtins;
     // Numeric prefix: `1`-`9` always start (or extend) a count;
@@ -390,7 +392,7 @@ fn compute_normal_action(
     // wants `[X, digit]` chords the rule grows to "digit handler
     // unless `[partial_chord, digit]` is bound" -- the registry
     // already has the data needed.
-    if let KeyCode::Char(c) = event.code
+    if let KeyKind::Char(c) = chord.key
         && let Some(digit) = c.to_digit(10)
         && (digit > 0 || pending_count > 0)
     {
@@ -406,7 +408,7 @@ fn compute_normal_action(
     // `Action::None` (which `App::apply` turns into a
     // partial_chord clear).
     if !partial_chord.is_empty() {
-        return crate::keymap_normal::lookup_normal_with_prefix(keymap, partial_chord, &event);
+        return crate::keymap_normal::lookup_normal_with_prefix(keymap, partial_chord, &chord);
     }
 
     // `q` while a macro is recording stops the recording. The
@@ -415,7 +417,7 @@ fn compute_normal_action(
     // the App-side `recording_macro` state determines which
     // path to take, and the trie is stateless. Short-circuit
     // here so `lookup_normal` doesn't see the `q`.
-    if recording_macro && matches!(event.code, KeyCode::Char('q')) {
+    if recording_macro && matches!(chord.key, KeyKind::Char('q')) {
         return Action::StopMacroRecord;
     }
 
@@ -427,13 +429,14 @@ fn compute_normal_action(
     // -> trie lookup. `lookup_normal` returns `Some(action)` for
     // any matched chord; on `None` we fall through to
     // `Action::None`.
-    crate::keymap_normal::lookup_normal(keymap, &event).unwrap_or(Action::None)
+    crate::keymap_normal::lookup_normal(keymap, &chord).unwrap_or(Action::None)
 }
 
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
+    use crossterm::event::{KeyCode, KeyModifiers};
     use lattice_grammar::CommandRegistry;
     use lattice_grammar::SearchDirection;
     use lattice_grammar::Target;

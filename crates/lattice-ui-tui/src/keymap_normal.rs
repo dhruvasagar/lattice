@@ -71,7 +71,7 @@
 
 use std::sync::Arc;
 
-use crossterm::event::{KeyEvent, KeyModifiers};
+use crossterm::event::KeyModifiers;
 use lattice_grammar::SourceLocation;
 use lattice_grammar::Target;
 use lattice_grammar::args::Args;
@@ -1344,11 +1344,8 @@ fn register_text_object_resolutions(
 /// AfterZ))` so the dispatcher arms the second-key resolver.
 /// Other partial paths still return `None` (no caller produces
 /// them today; future sub-slices can extend this match arm).
-pub fn lookup_normal(handle: &KeymapHandle, event: &KeyEvent) -> Option<Action> {
-    let Some(raw_chord) = crate::chord::from_event(event) else {
-        return None;
-    };
-    let chord = normalize_for_normal_lookup(raw_chord);
+pub fn lookup_normal(handle: &KeymapHandle, chord: &KeyChord) -> Option<Action> {
+    let chord = normalize_for_normal_lookup(*chord);
     match handle.lookup(BindingMode::Normal, &[chord]) {
         LookupResult::Bound { command, captured } => {
             Some(action_from_bound_with_capture(&command, &captured))
@@ -1395,12 +1392,9 @@ pub fn lookup_normal(handle: &KeymapHandle, event: &KeyEvent) -> Option<Action> 
 pub fn lookup_normal_with_prefix(
     handle: &KeymapHandle,
     prefix: &[KeyChord],
-    event: &KeyEvent,
+    chord: &KeyChord,
 ) -> Action {
-    let Some(raw_chord) = crate::chord::from_event(event) else {
-        return Action::None;
-    };
-    let chord = normalize_for_normal_lookup(raw_chord);
+    let chord = normalize_for_normal_lookup(*chord);
     let mut path: Vec<KeyChord> = prefix.to_vec();
     path.push(chord);
     match handle.lookup(BindingMode::Normal, &path) {
@@ -1580,16 +1574,23 @@ fn _assert_modifiers_used(_m: KeyModifiers) {}
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
-    use crossterm::event::{KeyCode, KeyEventKind, KeyEventState};
+    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState};
     use lattice_grammar::CommandRegistry;
 
-    fn ev(code: KeyCode, mods: KeyModifiers) -> KeyEvent {
-        KeyEvent {
+    /// Build a canonical `KeyChord` from crossterm pieces. Slice
+    /// 5.4 made `lookup_normal*` take `&KeyChord` directly; the
+    /// test helper keeps its old `(KeyCode, KeyModifiers)` shape
+    /// so test bodies don't churn -- the conversion routes
+    /// through the same `chord::from_event` adapter the runtime
+    /// uses.
+    fn ev(code: KeyCode, mods: KeyModifiers) -> KeyChord {
+        let raw = KeyEvent {
             code,
             modifiers: mods,
             kind: KeyEventKind::Press,
             state: KeyEventState::NONE,
-        }
+        };
+        crate::chord::from_event(&raw).expect("test event converts to a chord")
     }
 
     fn fixture() -> (CommandRegistry, Builtins, ActionIds) {

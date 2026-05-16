@@ -13,6 +13,7 @@ use lattice_grammar::builtins::Builtins;
 
 use crate::app::Action;
 use crate::buffers::BufferKind;
+use crate::chord::{KeyChord, KeyKind, SpecialKey};
 use crate::keymap_insert::dispatch_insert;
 use crate::keymap_registry::KeymapHandle;
 use crate::keymap_replace::dispatch_replace;
@@ -105,7 +106,10 @@ pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
     // dismissed. `<C-c>` still drops the picker rather than the
     // app so an open picker isn't a foot-gun.
     if ctx.picker_open {
-        return translate_picker(event);
+        return match crate::chord::from_event(&event) {
+            Some(chord) => translate_picker(chord),
+            None => Action::None,
+        };
     }
 
     // Slice 8.f: the completion-popup and active-snippet minor
@@ -125,7 +129,10 @@ pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
     // `:describe-key <C-c>` is a legitimate user need. The overlay
     // reserves Esc as the abort path, so the user is never stuck.
     if matches!(ctx.modal, ModalState::Command) && ctx.chord_capture {
-        return translate_command_chord_capture(event);
+        return match crate::chord::from_event(&event) {
+            Some(chord) => translate_command_chord_capture(chord),
+            None => Action::None,
+        };
     }
 
     // Universal escape hatch.
@@ -189,8 +196,14 @@ pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
             ctx.keymap,
             ctx.partial_chord,
         ),
-        ModalState::Command => translate_command(event, ctx.completion_open, ctx.chord_capture),
-        ModalState::Search(_) => translate_search(event),
+        ModalState::Command => match crate::chord::from_event(&event) {
+            Some(chord) => translate_command(chord, ctx.completion_open, ctx.chord_capture),
+            None => Action::None,
+        },
+        ModalState::Search(_) => match crate::chord::from_event(&event) {
+            Some(chord) => translate_search(chord),
+            None => Action::None,
+        },
         // Slice 8.e: Visual mode dispatches through the layered
         // registry. The hand-rolled match table moved to
         // `keymap_visual::register_visual_bindings`; the
@@ -212,19 +225,17 @@ pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
     }
 }
 
-fn translate_search(event: KeyEvent) -> Action {
-    match event.code {
-        KeyCode::Esc => Action::SearchCancel,
-        KeyCode::Enter => Action::SearchSubmit,
-        KeyCode::Backspace => Action::SearchBackspace,
-        KeyCode::Char(c) if !event.modifiers.contains(KeyModifiers::CONTROL) => {
-            Action::SearchAppend(c)
-        }
+fn translate_search(chord: KeyChord) -> Action {
+    match chord.key {
+        KeyKind::Special(SpecialKey::Esc) => Action::SearchCancel,
+        KeyKind::Special(SpecialKey::Enter) => Action::SearchSubmit,
+        KeyKind::Special(SpecialKey::Backspace) => Action::SearchBackspace,
+        KeyKind::Char(c) if !chord.mods.ctrl() => Action::SearchAppend(c),
         _ => Action::None,
     }
 }
 
-fn translate_command(event: KeyEvent, completion_open: bool, _chord_capture: bool) -> Action {
+fn translate_command(chord: KeyChord, completion_open: bool, _chord_capture: bool) -> Action {
     // Note: chord-capture is dispatched at the top-level
     // `translate()` (so it precedes the universal Ctrl-C quit).
     // This signature still takes the bit so call sites stay
@@ -237,89 +248,91 @@ fn translate_command(event: KeyEvent, completion_open: bool, _chord_capture: boo
     // implicitly dismisses the popup (the App handler clears
     // `completion_state` on every typed char).
     if completion_open {
-        match event.code {
-            KeyCode::Tab => return Action::CommandLineCompleteOrAdvance,
-            KeyCode::BackTab => return Action::CommandLineCompletePrev,
-            KeyCode::Enter => return Action::CommandLineAcceptCompletion,
-            KeyCode::Esc => return Action::CommandLineDismissCompletion,
+        match chord.key {
+            KeyKind::Special(SpecialKey::Tab) => {
+                return if chord.mods.shift() {
+                    Action::CommandLineCompletePrev
+                } else {
+                    Action::CommandLineCompleteOrAdvance
+                };
+            }
+            KeyKind::Special(SpecialKey::Enter) => return Action::CommandLineAcceptCompletion,
+            KeyKind::Special(SpecialKey::Esc) => return Action::CommandLineDismissCompletion,
             _ => {}
         }
     }
 
-    if event.modifiers.contains(KeyModifiers::CONTROL) {
-        return match event.code {
-            KeyCode::Char('h') => Action::CommandLineDescribeUnderCursor,
-            KeyCode::Char('u') => Action::CommandLineClear,
-            KeyCode::Char('w') => Action::CommandLineDeleteWordBackward,
+    if chord.mods.ctrl() {
+        return match chord.key {
+            KeyKind::Char('h') => Action::CommandLineDescribeUnderCursor,
+            KeyKind::Char('u') => Action::CommandLineClear,
+            KeyKind::Char('w') => Action::CommandLineDeleteWordBackward,
             _ => Action::None,
         };
     }
 
-    match event.code {
-        KeyCode::Esc => Action::CommandLineCancel,
-        KeyCode::Enter => Action::CommandLineSubmit,
-        KeyCode::Backspace => Action::CommandLineBackspace,
-        KeyCode::Tab => Action::CommandLineCompleteOrAdvance,
-        KeyCode::BackTab => Action::CommandLineCompletePrev,
-        KeyCode::Up => Action::CommandLineHistoryPrev,
-        KeyCode::Down => Action::CommandLineHistoryNext,
-        KeyCode::Char(c) if !event.modifiers.contains(KeyModifiers::CONTROL) => {
-            Action::CommandLineAppend(c)
+    match chord.key {
+        KeyKind::Special(SpecialKey::Esc) => Action::CommandLineCancel,
+        KeyKind::Special(SpecialKey::Enter) => Action::CommandLineSubmit,
+        KeyKind::Special(SpecialKey::Backspace) => Action::CommandLineBackspace,
+        KeyKind::Special(SpecialKey::Tab) if !chord.mods.shift() => {
+            Action::CommandLineCompleteOrAdvance
         }
+        KeyKind::Special(SpecialKey::Tab) if chord.mods.shift() => {
+            Action::CommandLineCompletePrev
+        }
+        KeyKind::Special(SpecialKey::Up) => Action::CommandLineHistoryPrev,
+        KeyKind::Special(SpecialKey::Down) => Action::CommandLineHistoryNext,
+        KeyKind::Char(c) if !chord.mods.ctrl() => Action::CommandLineAppend(c),
         _ => Action::None,
     }
 }
 
 /// Cmdline chord-capture overlay. Reserves the three minimal
-/// edits (Esc/CR/BS); everything else flows through
-/// `format_chord` and becomes one chord token in the cmdline.
-fn translate_command_chord_capture(event: KeyEvent) -> Action {
+/// edits (Esc/CR/BS); everything else stringifies through
+/// `KeyChord::Display` and becomes one chord token in the cmdline.
+fn translate_command_chord_capture(chord: KeyChord) -> Action {
     // Reserved keys -- these never become chord tokens because
     // they're how the user finishes / aborts / corrects. To look
     // up `<Esc>` / `<CR>` themselves, use the missing-arg prompt
     // path (`:describe-key<CR>` with no arg) which captures the
     // very next event.
-    match event.code {
-        KeyCode::Esc => return Action::CommandLineCancel,
-        KeyCode::Enter => return Action::CommandLineSubmit,
-        KeyCode::Backspace => return Action::CommandLineDeleteChord,
+    match chord.key {
+        KeyKind::Special(SpecialKey::Esc) => return Action::CommandLineCancel,
+        KeyKind::Special(SpecialKey::Enter) => return Action::CommandLineSubmit,
+        KeyKind::Special(SpecialKey::Backspace) => return Action::CommandLineDeleteChord,
         _ => {}
     }
-    match crate::chord::format_chord(&event) {
-        Some(token) => Action::CommandLineAppendChord(token),
-        // Release events / modifier-only presses don't have a
-        // chord representation -- swallow them silently.
-        None => Action::None,
-    }
+    Action::CommandLineAppendChord(chord.to_string())
 }
 
 /// Picker-overlay key router. See [`lattice_picker::Picker`] for
 /// the data shape. Reserved keys (Esc / CR / BS / arrows /
 /// Ctrl-{n,p,c}) drive the picker's intrinsic actions; printable
 /// chars append to the query; everything else is swallowed.
-fn translate_picker(event: KeyEvent) -> Action {
-    if event.modifiers.contains(KeyModifiers::CONTROL) {
-        return match event.code {
+fn translate_picker(chord: KeyChord) -> Action {
+    if chord.mods.ctrl() {
+        return match chord.key {
             // C-c dismisses the picker (not the app) so the user
             // can always abort.
-            KeyCode::Char('c') => Action::PickerDismiss,
-            KeyCode::Char('n') => Action::PickerSelectNext,
-            KeyCode::Char('p') => Action::PickerSelectPrev,
+            KeyKind::Char('c') => Action::PickerDismiss,
+            KeyKind::Char('n') => Action::PickerSelectNext,
+            KeyKind::Char('p') => Action::PickerSelectPrev,
             // C-u clears the query in one stroke (vim's cmdline
             // shortcut, applied here for consistency).
-            KeyCode::Char('u') => Action::PickerBackspace, // approximate; per-char today
+            KeyKind::Char('u') => Action::PickerBackspace, // approximate; per-char today
             _ => Action::None,
         };
     }
-    match event.code {
-        KeyCode::Esc => Action::PickerDismiss,
-        KeyCode::Enter => Action::PickerAccept,
-        KeyCode::Backspace => Action::PickerBackspace,
-        KeyCode::Up => Action::PickerSelectPrev,
-        KeyCode::Down => Action::PickerSelectNext,
-        KeyCode::Tab => Action::PickerSelectNext,
-        KeyCode::BackTab => Action::PickerSelectPrev,
-        KeyCode::Char(c) => Action::PickerAppend(c),
+    match chord.key {
+        KeyKind::Special(SpecialKey::Esc) => Action::PickerDismiss,
+        KeyKind::Special(SpecialKey::Enter) => Action::PickerAccept,
+        KeyKind::Special(SpecialKey::Backspace) => Action::PickerBackspace,
+        KeyKind::Special(SpecialKey::Up) => Action::PickerSelectPrev,
+        KeyKind::Special(SpecialKey::Down) => Action::PickerSelectNext,
+        KeyKind::Special(SpecialKey::Tab) if !chord.mods.shift() => Action::PickerSelectNext,
+        KeyKind::Special(SpecialKey::Tab) if chord.mods.shift() => Action::PickerSelectPrev,
+        KeyKind::Char(c) if !chord.mods.ctrl() => Action::PickerAppend(c),
         _ => Action::None,
     }
 }

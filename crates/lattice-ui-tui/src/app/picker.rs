@@ -98,12 +98,12 @@ impl App {
         // Registers: unnamed + named, both as (name, preview).
         let mut registers: Vec<(String, String)> = Vec::new();
         if let Some(r) = &self.editor.unnamed_register {
-            registers.push(("\"".into(), super::preview_register(&r.content)));
+            registers.push(("\"".into(), lattice_host::dispatch::preview_register(&r.content)));
         }
         let mut named: Vec<(super::Register, String)> = self
             .editor.registers
             .iter()
-            .map(|(k, v)| (*k, super::preview_register(&v.content)))
+            .map(|(k, v)| (*k, lattice_host::dispatch::preview_register(&v.content)))
             .collect();
         named.sort_by_key(|(k, _)| match k {
             super::Register::Named(c) => format!("a{c}"),

@@ -30,14 +30,13 @@
 
 use lattice_core::buffer::AppliedEdit;
 use lattice_core::{CoreError, Document, FoldMethod};
-use lattice_grammar::register::Register;
 use lattice_protocol::Event;
 use lattice_protocol::position::Position;
 use lattice_runtime::{RuntimeError, block_on, spawn_document};
 use lattice_syntax::{Lang, Syntax};
 use std::time::Duration;
 
-use super::{App, BufferId, EchoLevel, PositionSource, PrevPaneState, preview_register};
+use super::{App, BufferId, EchoLevel, PositionSource, PrevPaneState};
 use crate::buffer_registry::{BufferData, BufferEntry, DocumentEntry};
 use crate::buffers::{BufferFlags, BufferKind};
 use crate::help::HelpContent;
@@ -892,56 +891,10 @@ impl App {
         );
     }
 
-    /// Vim's `:reg` -- list every register's contents in the echo area.
-    /// v1 shows the unnamed `""`, the numbered `"0`, and the named
-    /// alphabetic registers in alphabetical order.
-    pub(super) fn do_list_registers(&mut self) {
-        let mut lines: Vec<String> = Vec::new();
-        if let Some(reg) = &self.editor.unnamed_register {
-            lines.push(format!("\"\"  {}", preview_register(&reg.content)));
-        }
-        let mut keys: Vec<Register> = self.editor.registers.keys().copied().collect();
-        keys.sort_by_key(|k| match k {
-            Register::Named(c) => format!("a{c}"),
-            Register::Numbered(n) => format!("b{n}"),
-            Register::System => "z+".into(),
-            _ => "z".into(),
-        });
-        for k in keys {
-            // The keys came from `self.editor.registers.keys()`, so the lookup
-            // can't fail unless someone races us -- which we don't.
-            let Some(entry) = self.editor.registers.get(&k) else {
-                continue;
-            };
-            let label = match k {
-                Register::Named(c) => format!("\"{c}"),
-                Register::Numbered(n) => format!("\"{n}"),
-                Register::System => "\"+".into(),
-                _ => "?".into(),
-            };
-            lines.push(format!("{label}  {}", preview_register(&entry.content)));
-        }
-        if lines.is_empty() {
-            self.set_message(EchoLevel::Info, "no registers set".to_string());
-        } else {
-            self.set_message(EchoLevel::Info, lines.join("  |  "));
-        }
-    }
-
-    /// Vim's `:marks` -- list every set mark's name + position.
-    pub(super) fn do_list_marks(&mut self) {
-        let mut entries: Vec<(char, Position)> = self.editor.marks.iter().map(|(c, p)| (*c, *p)).collect();
-        entries.sort_by_key(|(c, _)| *c);
-        if entries.is_empty() {
-            self.set_message(EchoLevel::Info, "no marks set".to_string());
-            return;
-        }
-        let parts: Vec<String> = entries
-            .into_iter()
-            .map(|(c, p)| format!("{c}={}:{}", p.line + 1, p.byte))
-            .collect();
-        self.set_message(EchoLevel::Info, parts.join("  "));
-    }
+    // 5.5.E.2: `do_list_registers` / `do_list_marks` moved to
+    // [`lattice_host::dispatch::Editor::do_list_registers`] /
+    // [`lattice_host::dispatch::Editor::do_list_marks`] alongside
+    // the [`Effect::EchoRegisters`] / [`Effect::EchoMarks`] arms.
 
     /// Replace the actor's document outright. Used by `:edit
     /// path`. The actor swaps state in place and republishes the

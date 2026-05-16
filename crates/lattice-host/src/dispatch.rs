@@ -30,11 +30,15 @@
 //! - **5.5.E** -- ex-command effect handlers (the ~60-variant
 //!   `apply_effect` table + the `do_*` family). First emission of
 //!   [`RendererSignal::ThemeChanged`] (from `Effect::SetOption`
-//!   on `ui.*` keys). 5.5.E.1 scaffolds [`Editor::handle_effect`]
-//!   and migrates the three helper-free arms (`Effect::None`,
-//!   `Effect::ClearSearchHighlight`, `Effect::Echo`); subsequent
-//!   E.* sub-slices land the helper-bearing arms as their `do_*`
-//!   bodies move host-side.
+//!   on `ui.*` keys). 5.5.E.1 scaffolded [`Editor::handle_effect`]
+//!   and migrated the three helper-free arms (`Effect::None`,
+//!   `Effect::ClearSearchHighlight`, `Effect::Echo`); 5.5.E.2 adds
+//!   the echo-only ex-command listers (`Effect::EchoMarks` ->
+//!   [`Editor::do_list_marks`], `Effect::EchoRegisters` ->
+//!   [`Editor::do_list_registers`]) and co-moves the
+//!   [`preview_register`] free fn. Subsequent E.* sub-slices land
+//!   the remaining helper-bearing arms as their `do_*` bodies move
+//!   host-side (the `display_buffer`-bearing ones defer to 5.5.F).
 //! - **5.5.F** -- mode-lifecycle helpers
 //!   (`do_open_file_tree` / `do_open_oil` / `do_open_hover` / ...).
 //! - **5.5.G** -- final remnants; `App::apply` collapses to the
@@ -48,6 +52,7 @@
 use lattice_core::{BufferKind, Fold, FoldMethod};
 use lattice_grammar::ModalState;
 use lattice_grammar::effect::Effect;
+use lattice_grammar::register::Register;
 use lattice_protocol::Event;
 use lattice_runtime::MessagePushed;
 
@@ -432,8 +437,19 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, _out: &mut Disp
             // [`lattice_runtime::MessagePushed`].
             editor.set_message(echo_level_from_grammar(level), text);
         }
+        Effect::EchoMarks => {
+            // 5.5.E.2: `:marks` -- list every set mark in the echo
+            // area. Pure editor.* read + `set_message`.
+            editor.do_list_marks();
+        }
+        Effect::EchoRegisters => {
+            // 5.5.E.2: `:reg` / `:registers` -- list register
+            // previews in the echo area. Pure editor.* read +
+            // `set_message`; uses the host-side `preview_register`.
+            editor.do_list_registers();
+        }
         // Catch-all: any Effect variant not yet migrated from
-        // `App::apply_effect`. Sub-slices 5.5.E.2+ extend the match
+        // `App::apply_effect`. Sub-slices 5.5.E.3+ extend the match
         // upward as helpers move.
         _ => {}
     }
@@ -803,6 +819,82 @@ impl Editor {
         // reparse and self-corrects.
         self.last_synced_syntax_version = tv;
         self.recompute_folds();
+    }
+
+    /// Vim's `:marks` -- list every set mark's name + position in
+    /// the echo area, sorted by mark name. Reads `self.marks`
+    /// (host) and surfaces the result via [`Self::set_message`].
+    /// Moved here from `lattice-ui-tui::app::lifecycle` in 5.5.E.2
+    /// alongside the [`Effect::EchoMarks`] arm.
+    pub fn do_list_marks(&mut self) {
+        let mut entries: Vec<(char, lattice_protocol::position::Position)> =
+            self.marks.iter().map(|(c, p)| (*c, *p)).collect();
+        entries.sort_by_key(|(c, _)| *c);
+        if entries.is_empty() {
+            self.set_message(EchoLevel::Info, "no marks set".to_string());
+            return;
+        }
+        let parts: Vec<String> = entries
+            .into_iter()
+            .map(|(c, p)| format!("{c}={}:{}", p.line + 1, p.byte))
+            .collect();
+        self.set_message(EchoLevel::Info, parts.join("  "));
+    }
+
+    /// Vim's `:reg` -- list every register's contents in the echo
+    /// area. v1 shows the unnamed `""`, the numbered `"0`, and the
+    /// named alphabetic registers in alphabetical order. Moved
+    /// here from `lattice-ui-tui::app::lifecycle` in 5.5.E.2
+    /// alongside the [`Effect::EchoRegisters`] arm.
+    pub fn do_list_registers(&mut self) {
+        let mut lines: Vec<String> = Vec::new();
+        if let Some(reg) = &self.unnamed_register {
+            lines.push(format!("\"\"  {}", preview_register(&reg.content)));
+        }
+        let mut keys: Vec<Register> = self.registers.keys().copied().collect();
+        keys.sort_by_key(|k| match k {
+            Register::Named(c) => format!("a{c}"),
+            Register::Numbered(n) => format!("b{n}"),
+            Register::System => "z+".into(),
+            _ => "z".into(),
+        });
+        for k in keys {
+            // The keys came from `self.registers.keys()`, so the lookup
+            // can't fail unless someone races us -- which we don't.
+            let Some(entry) = self.registers.get(&k) else {
+                continue;
+            };
+            let label = match k {
+                Register::Named(c) => format!("\"{c}"),
+                Register::Numbered(n) => format!("\"{n}"),
+                Register::System => "\"+".into(),
+                _ => "?".into(),
+            };
+            lines.push(format!("{label}  {}", preview_register(&entry.content)));
+        }
+        if lines.is_empty() {
+            self.set_message(EchoLevel::Info, "no registers set".to_string());
+        } else {
+            self.set_message(EchoLevel::Info, lines.join("  |  "));
+        }
+    }
+}
+
+/// Render a register's content into a one-line preview (truncated
+/// and with newlines escaped). Used by [`Editor::do_list_registers`]
+/// (`:reg`) and the picker-source register listing. Moved here from
+/// `lattice-ui-tui::app` in 5.5.E.2.
+pub fn preview_register(s: &str) -> String {
+    const MAX: usize = 40;
+    let escaped: String = s
+        .chars()
+        .map(|c| if c == '\n' { '\u{21B5}' } else { c })
+        .collect();
+    if escaped.chars().count() <= MAX {
+        escaped
+    } else {
+        let trimmed: String = escaped.chars().take(MAX).collect();
+        format!("{trimmed}…")
     }
 }
 

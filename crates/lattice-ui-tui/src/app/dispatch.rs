@@ -939,9 +939,13 @@ impl App {
         // outcome handling lands alongside.
         let _outcome = self.editor.handle_effect(effect.clone());
         match effect {
-            // Phase 5.5.E.1: migrated arms. Bodies live in
+            // Phase 5.5.E.1 + E.2: migrated arms. Bodies live in
             // `lattice_host::dispatch::handle_effect`.
-            Effect::None | Effect::ClearSearchHighlight | Effect::Echo { .. } => {}
+            Effect::None
+            | Effect::ClearSearchHighlight
+            | Effect::Echo { .. }
+            | Effect::EchoMarks
+            | Effect::EchoRegisters => {}
             Effect::Edits(edits) => self.handle_edits(&edits),
             Effect::SelectionChange(set) => {
                 let new_head = set.primary().head;
@@ -979,8 +983,6 @@ impl App {
             Effect::QuitEditor { force } => self.do_quit(force),
             Effect::OpenBuffer { path, force } => self.do_edit(path, force),
             Effect::SetOption { spec } => self.do_set(&spec),
-            Effect::EchoRegisters => self.do_list_registers(),
-            Effect::EchoMarks => self.do_list_marks(),
             Effect::Substitute {
                 scope,
                 pattern,

@@ -975,21 +975,10 @@ pub(super) fn is_valid_mark_name(c: char) -> bool {
     c.is_ascii_alphabetic() || c.is_ascii_digit()
 }
 
-/// Render a register's content into a one-line preview (truncated and
-/// with newlines escaped). Used by `:reg`.
-pub(super) fn preview_register(s: &str) -> String {
-    const MAX: usize = 40;
-    let escaped: String = s
-        .chars()
-        .map(|c| if c == '\n' { '\u{21B5}' } else { c })
-        .collect();
-    if escaped.chars().count() <= MAX {
-        escaped
-    } else {
-        let trimmed: String = escaped.chars().take(MAX).collect();
-        format!("{trimmed}…")
-    }
-}
+// 5.5.E.2: `preview_register` moved to
+// [`lattice_host::dispatch::preview_register`] alongside its
+// primary caller [`Editor::do_list_registers`]. The picker source
+// import sites now route through the host crate directly.
 
 pub(super) fn is_word_char_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'

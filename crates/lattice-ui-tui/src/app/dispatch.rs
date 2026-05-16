@@ -697,7 +697,11 @@ impl App {
                 content,
                 kind,
             } => {
-                self.store_yank(*register, content.clone(), *kind);
+                // 5.5.E.3: register stash lives on Editor now.
+                // The oil-buffer narrow re-implementation still
+                // routes Yanks directly (it intentionally bypasses
+                // the document actor + `handle_edits`).
+                self.editor.store_yank(*register, content.clone(), *kind);
                 should_exit_visual = true;
             }
             Effect::EnterMode(modal) => {
@@ -939,13 +943,14 @@ impl App {
         // outcome handling lands alongside.
         let _outcome = self.editor.handle_effect(effect.clone());
         match effect {
-            // Phase 5.5.E.1 + E.2: migrated arms. Bodies live in
+            // Phase 5.5.E.1–E.3: migrated arms. Bodies live in
             // `lattice_host::dispatch::handle_effect`.
             Effect::None
             | Effect::ClearSearchHighlight
             | Effect::Echo { .. }
             | Effect::EchoMarks
-            | Effect::EchoRegisters => {}
+            | Effect::EchoRegisters
+            | Effect::Yank { .. } => {}
             Effect::Edits(edits) => self.handle_edits(&edits),
             Effect::SelectionChange(set) => {
                 let new_head = set.primary().head;
@@ -963,11 +968,6 @@ impl App {
                     self.set_selections_blocking(SelectionSet::single(sel));
                 }
             }
-            Effect::Yank {
-                content,
-                kind,
-                register,
-            } => self.store_yank(register, content, kind),
             Effect::EnterMode(mode) => {
                 // Operators that flip mode (`c` -> Insert) come through
                 // the same `enter_mode` helper as direct Action::EnterMode

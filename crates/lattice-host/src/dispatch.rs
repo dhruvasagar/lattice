@@ -36,9 +36,13 @@
 //!   the echo-only ex-command listers (`Effect::EchoMarks` ->
 //!   [`Editor::do_list_marks`], `Effect::EchoRegisters` ->
 //!   [`Editor::do_list_registers`]) and co-moves the
-//!   [`preview_register`] free fn. Subsequent E.* sub-slices land
-//!   the remaining helper-bearing arms as their `do_*` bodies move
-//!   host-side (the `display_buffer`-bearing ones defer to 5.5.F).
+//!   [`preview_register`] free fn; 5.5.E.3 migrates `store_yank`
+//!   to [`Editor::store_yank`], unlocking [`Effect::Yank`].
+//!   Subsequent E.* sub-slices land the remaining helper-bearing
+//!   arms as their `do_*` bodies move host-side; the `apply_edit_blocking`
+//!   / `handle_edits` cluster is gated on the render-coupled
+//!   `shift_highlights_for_edit` cache and follows the
+//!   visible-highlights slice (out of scope per 5.5 design doc).
 //! - **5.5.F** -- mode-lifecycle helpers
 //!   (`do_open_file_tree` / `do_open_oil` / `do_open_hover` / ...).
 //! - **5.5.G** -- final remnants; `App::apply` collapses to the
@@ -51,6 +55,7 @@
 
 use lattice_core::{BufferKind, Fold, FoldMethod};
 use lattice_grammar::ModalState;
+use lattice_grammar::YankKind;
 use lattice_grammar::effect::Effect;
 use lattice_grammar::register::Register;
 use lattice_protocol::Event;
@@ -59,7 +64,7 @@ use lattice_runtime::MessagePushed;
 use crate::action::{Action, EchoLevel};
 use crate::buffers::BufferId;
 use crate::editor::Editor;
-use crate::state::SearchLine;
+use crate::state::{SearchLine, UnnamedRegister};
 
 /// Result of [`Editor::dispatch`]. Carries the renderer-side
 /// side-effects the caller must surface after the host-side state
@@ -448,8 +453,18 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, _out: &mut Disp
             // `set_message`; uses the host-side `preview_register`.
             editor.do_list_registers();
         }
+        Effect::Yank {
+            content,
+            kind,
+            register,
+        } => {
+            // 5.5.E.3: stash the operator payload into the register
+            // slots. Pure editor.* mutation (`unnamed_register` +
+            // `registers`); no renderer-side side-effects.
+            editor.store_yank(register, content, kind);
+        }
         // Catch-all: any Effect variant not yet migrated from
-        // `App::apply_effect`. Sub-slices 5.5.E.3+ extend the match
+        // `App::apply_effect`. Sub-slices 5.5.E.4+ extend the match
         // upward as helpers move.
         _ => {}
     }
@@ -876,6 +891,45 @@ impl Editor {
             self.set_message(EchoLevel::Info, "no registers set".to_string());
         } else {
             self.set_message(EchoLevel::Info, lines.join("  |  "));
+        }
+    }
+
+    /// Stash a yank / delete payload into the register slots. The
+    /// dispatcher emits [`Effect::Yank`] with the resolved
+    /// [`Register`] selector (either explicit `"<a>`-style or the
+    /// `Register::Unnamed` default); operator semantics:
+    ///
+    /// - `Register::BlackHole` -> drop on the floor, no slot touched.
+    /// - Any other explicit register -> store there AND in `""`
+    ///   (the unnamed register, vim's default paste source).
+    /// - `Register::Unnamed` -> store in `""` only.
+    ///
+    /// Yanks (vs deletes) also populate `"0`. v1 approximates vim's
+    /// distinction by treating every grammar [`Effect::Yank`] as
+    /// also writing `"0`; deletes don't (they would hit `"1`+ in
+    /// vim, which v1 doesn't model).
+    ///
+    /// Moved here from `lattice-ui-tui::app::edit` in 5.5.E.3
+    /// alongside the [`Effect::Yank`] arm. Vim's append-to-uppercase
+    /// semantics (`"A` appends to `"a`) remains a v1 simplification:
+    /// `A-Z` replaces lowercase rather than appending.
+    pub fn store_yank(&mut self, register: Register, content: String, kind: YankKind) {
+        if matches!(register, Register::BlackHole) {
+            return;
+        }
+        let entry = UnnamedRegister {
+            content: content.clone(),
+            kind,
+        };
+        // Always update unnamed.
+        self.unnamed_register = Some(entry.clone());
+        // If a named / numbered / system register was explicitly
+        // chosen, store there too.
+        match register {
+            Register::Unnamed | Register::BlackHole => {}
+            other => {
+                self.registers.insert(other, entry);
+            }
         }
     }
 }

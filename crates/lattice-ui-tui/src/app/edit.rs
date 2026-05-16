@@ -679,38 +679,11 @@ impl App {
         }
     }
 
-    /// Store a yank into the appropriate register slot. Vim's behavior:
-    ///
-    /// - `Register::BlackHole` -> drop on the floor, no storage.
-    /// - Any explicit register -> store there AND in `""` (unnamed).
-    /// - `Register::Unnamed` -> store in `""`.
-    /// - Yanks (vs deletes) also populate `"0`. We approximate vim's
-    ///   distinction by treating any `Effect::Yank` from a yank operator
-    ///   as also writing `"0`; deletes don't (they hit `"1`+ in vim,
-    ///   which we don't model in v1).
-    pub(super) fn store_yank(&mut self, register: Register, content: String, kind: YankKind) {
-        if matches!(register, Register::BlackHole) {
-            return;
-        }
-        let entry = UnnamedRegister {
-            content: content.clone(),
-            kind,
-        };
-        // Always update unnamed.
-        self.editor.unnamed_register = Some(entry.clone());
-        // If a named / numbered / system register was explicitly chosen,
-        // store there too.
-        match register {
-            Register::Unnamed | Register::BlackHole => {}
-            other => {
-                self.editor.registers.insert(other, entry.clone());
-            }
-        }
-        // For uppercase named registers, vim *appends* to the lowercase
-        // version. v1 simplification: A-Z replaces lowercase too (so
-        // both "a and "A end up with the same content). The append
-        // semantics is logged for follow-up.
-    }
+    // 5.5.E.3: `store_yank` moved to
+    // [`lattice_host::dispatch::Editor::store_yank`] alongside the
+    // [`Effect::Yank`] arm. Renderer-side call sites (the oil-buffer
+    // narrow re-implementation of `apply_effect`) now invoke
+    // `self.editor.store_yank(...)` directly.
 
     /// Read the register slot for paste / inspection. Falls back to
     /// `unnamed_register`.

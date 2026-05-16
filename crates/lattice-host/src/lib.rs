@@ -44,6 +44,7 @@ pub mod help_topics;
 pub mod host_generators;
 pub mod highlights;
 pub mod keymap;
+pub mod keymap_normal;
 pub mod keymap_registry;
 pub mod keymap_trie;
 pub mod modes;

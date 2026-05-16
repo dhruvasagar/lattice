@@ -45,7 +45,7 @@ use lattice_grammar::YankKind;
 use lattice_grammar::register::Register;
 use lattice_protocol::edit::Edit;
 use lattice_protocol::position::{Position, Range as ProtoRange};
-use lattice_runtime::{RuntimeError, block_on};
+use lattice_runtime::RuntimeError;
 
 use super::{
     App, EchoLevel, PendingBlockInsert, ReplaceEntry, UnnamedRegister, last_addressable_line,
@@ -82,77 +82,32 @@ impl App {
     /// against a snapshot and translate into filesystem
     /// operations. LSP `didChange` is intentionally not fired
     /// for oil edits (oil isn't an LSP-tracked buffer).
+    /// 5.5.E.7.3: see [`lattice_host::dispatch::Editor::apply_edit_blocking`].
     pub(super) fn apply_edit_blocking(&mut self, edit: Edit) -> Result<AppliedEdit, RuntimeError> {
-        if matches!(self.editor.active_buffer, super::BufferKind::Oil) {
-            return self.apply_edit_to_oil(edit);
-        }
-        let result = block_on(self.editor.document.apply_edit(edit));
-        if let Ok(applied) = result.as_ref() {
-            self.publish_document_changed(std::slice::from_ref(applied));
-        }
-        result
+        self.editor.apply_edit_blocking(edit)
     }
 
-    /// Block_on `apply_edit_batch`. The batch lands as one undo
-    /// unit on the document's undo stack. Each edit in the
-    /// batch is also fed to the LSP supervisor in order
-    /// (Phase 4.1.i.2).
-    ///
-    /// Oil-buffer routing matches `apply_edit_blocking`: when
-    /// `active_buffer == Oil` the batch lands on `oil.content`
-    /// edit-by-edit. The "one undo unit" semantics are weaker
-    /// for oil (its content has no undo stack); v1 oil falls
-    /// back to `:e!` reload for "undo all my changes."
+    /// 5.5.E.7.3: see [`lattice_host::dispatch::Editor::apply_edit_batch_blocking`].
     pub(super) fn apply_edit_batch_blocking(
         &mut self,
         edits: Vec<Edit>,
     ) -> Result<Vec<AppliedEdit>, RuntimeError> {
-        if matches!(self.editor.active_buffer, super::BufferKind::Oil) {
-            let mut applied = Vec::with_capacity(edits.len());
-            for edit in edits {
-                applied.push(self.apply_edit_to_oil(edit)?);
-            }
-            return Ok(applied);
-        }
-        let result = block_on(self.editor.document.apply_edit_batch(edits));
-        if let Ok(applied) = result.as_ref() {
-            self.publish_document_changed(applied);
-        }
-        result
+        self.editor.apply_edit_batch_blocking(edits)
     }
 
-    /// Apply a single `Edit` to the active oil buffer's rope
-    /// (`oil.content`). Returns the `AppliedEdit` with the
-    /// inserted-range / removed-text fields populated, same
-    /// shape as the document path. Used by
-    /// `apply_edit_blocking` and `apply_edit_batch_blocking`'s
-    /// oil routing.
-    fn apply_edit_to_oil(&mut self, edit: Edit) -> Result<AppliedEdit, RuntimeError> {
-        let oil_id = self.active_pane_buffer_id();
-        // Use the callback variant so the registry lock is held
-        // only for the apply_edit call. The closure runs the
-        // mutation; the outer Option unwraps to either the
-        // inner Result or the "no oil entry" Cancelled error.
-        self.editor.buffers
-            .with_oil_mut(oil_id, |oil| oil.content.apply_edit(&edit))
-            .ok_or(RuntimeError::Core(lattice_core::CoreError::Cancelled))?
-            .map_err(RuntimeError::Core)
-    }
+    // 5.5.E.7.3: `apply_edit_to_oil` relocated to
+    // [`lattice_host::dispatch::Editor::apply_edit_to_oil`] (private
+    // host helper called only by the apply_edit_* methods); App-side
+    // deleted entirely.
 
+    /// 5.5.E.7.3: see [`lattice_host::dispatch::Editor::undo_blocking`].
     pub(super) fn undo_blocking(&mut self) -> Result<Vec<AppliedEdit>, RuntimeError> {
-        let result = block_on(self.editor.document.undo());
-        if let Ok(applied) = result.as_ref() {
-            self.publish_document_changed(applied);
-        }
-        result
+        self.editor.undo_blocking()
     }
 
+    /// 5.5.E.7.3: see [`lattice_host::dispatch::Editor::redo_blocking`].
     pub(super) fn redo_blocking(&mut self) -> Result<Vec<AppliedEdit>, RuntimeError> {
-        let result = block_on(self.editor.document.redo());
-        if let Ok(applied) = result.as_ref() {
-            self.publish_document_changed(applied);
-        }
-        result
+        self.editor.redo_blocking()
     }
 
     /// Vim's `J` / `gJ`: join the current line with the next. With

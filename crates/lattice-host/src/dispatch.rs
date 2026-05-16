@@ -1637,6 +1637,108 @@ impl Editor {
         self.recompute_syntax_folds(buffer)
     }
 
+    /// 5.5.E.7.3: apply a single [`Edit`] to the active buffer as
+    /// one undo unit. Routes between the document actor and the oil
+    /// rope based on [`Self::active_buffer`]. On success, publishes
+    /// [`Event::DocumentChanged`] via [`Self::publish_document_changed`]
+    /// so the LSP fan-in + syntax worker + highlight shifter see
+    /// the new state.
+    ///
+    /// **Oil-buffer routing.** When `active_buffer == Oil` the edit
+    /// lands on `oil.content` (the in-memory rope owned by the
+    /// `OilBuffer`) instead of the document actor's rope. The
+    /// document actor is the wrong destination for oil edits — oil's
+    /// content is intentionally separate so `:w` can diff against a
+    /// snapshot and translate into filesystem operations. LSP
+    /// `didChange` is intentionally not fired for oil edits.
+    pub fn apply_edit_blocking(
+        &mut self,
+        edit: lattice_protocol::edit::Edit,
+    ) -> Result<lattice_core::buffer::AppliedEdit, lattice_runtime::RuntimeError> {
+        if matches!(self.active_buffer, BufferKind::Oil) {
+            return self.apply_edit_to_oil(edit);
+        }
+        let result = block_on(self.document.apply_edit(edit));
+        if let Ok(applied) = result.as_ref() {
+            self.publish_document_changed(std::slice::from_ref(applied));
+        }
+        result
+    }
+
+    /// 5.5.E.7.3: block_on `apply_edit_batch`. The batch lands as
+    /// one undo unit on the document's undo stack. Each edit in the
+    /// batch is also fed to the LSP supervisor in order via
+    /// [`Self::publish_document_changed`].
+    ///
+    /// Oil-buffer routing matches [`Self::apply_edit_blocking`]:
+    /// when `active_buffer == Oil` the batch lands on `oil.content`
+    /// edit-by-edit. The "one undo unit" semantics are weaker for
+    /// oil (its content has no undo stack); v1 oil falls back to
+    /// `:e!` reload for "undo all my changes."
+    pub fn apply_edit_batch_blocking(
+        &mut self,
+        edits: Vec<lattice_protocol::edit::Edit>,
+    ) -> Result<Vec<lattice_core::buffer::AppliedEdit>, lattice_runtime::RuntimeError> {
+        if matches!(self.active_buffer, BufferKind::Oil) {
+            let mut applied = Vec::with_capacity(edits.len());
+            for edit in edits {
+                applied.push(self.apply_edit_to_oil(edit)?);
+            }
+            return Ok(applied);
+        }
+        let result = block_on(self.document.apply_edit_batch(edits));
+        if let Ok(applied) = result.as_ref() {
+            self.publish_document_changed(applied);
+        }
+        result
+    }
+
+    /// 5.5.E.7.3: apply a single [`Edit`] to the active oil
+    /// buffer's rope (`oil.content`). Returns the `AppliedEdit` with
+    /// the inserted-range / removed-text fields populated, same
+    /// shape as the document path.
+    fn apply_edit_to_oil(
+        &mut self,
+        edit: lattice_protocol::edit::Edit,
+    ) -> Result<lattice_core::buffer::AppliedEdit, lattice_runtime::RuntimeError> {
+        let oil_id = self.active_pane_buffer_id();
+        // Use the callback variant so the registry lock is held
+        // only for the apply_edit call. The closure runs the
+        // mutation; the outer Option unwraps to either the inner
+        // Result or the "no oil entry" Cancelled error.
+        self.buffers
+            .with_oil_mut(oil_id, |oil| oil.content.apply_edit(&edit))
+            .ok_or(lattice_runtime::RuntimeError::Core(
+                lattice_core::CoreError::Cancelled,
+            ))?
+            .map_err(lattice_runtime::RuntimeError::Core)
+    }
+
+    /// 5.5.E.7.3: undo one step on the document actor; publishes a
+    /// `DocumentChanged` for the inverse edits so the LSP fan-in +
+    /// syntax worker + highlight shifter stay in sync.
+    pub fn undo_blocking(
+        &mut self,
+    ) -> Result<Vec<lattice_core::buffer::AppliedEdit>, lattice_runtime::RuntimeError> {
+        let result = block_on(self.document.undo());
+        if let Ok(applied) = result.as_ref() {
+            self.publish_document_changed(applied);
+        }
+        result
+    }
+
+    /// 5.5.E.7.3: redo one step on the document actor; symmetric
+    /// to [`Self::undo_blocking`].
+    pub fn redo_blocking(
+        &mut self,
+    ) -> Result<Vec<lattice_core::buffer::AppliedEdit>, lattice_runtime::RuntimeError> {
+        let result = block_on(self.document.redo());
+        if let Ok(applied) = result.as_ref() {
+            self.publish_document_changed(applied);
+        }
+        result
+    }
+
     /// 5.5.E.7.2: build + publish [`Event::DocumentChanged`] from
     /// the current snapshot and the edits that were just applied.
     /// Called from every path that mutates the buffer (apply_edit /

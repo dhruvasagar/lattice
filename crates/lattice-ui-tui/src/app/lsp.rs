@@ -1820,15 +1820,13 @@ impl App {
         self.editor.lsp.flush(uri);
     }
 
-    /// Detach a buffer from every attached LSP server. Called
-    /// from the bdelete path. Sends `didClose` per server +
-    /// clears the URI's diagnostics. Fire-and-forget against
-    /// the supervisor mailbox.
+    /// 5.5.F.4.4: see [`lattice_host::dispatch::Editor::lsp_close_buffer`].
+    /// App-side wrapper kept as a thin delegate because
+    /// `drain_lsp_detach_events` (App tick path) still calls it; tests
+    /// in this module call it directly. Deletes when the tick-event
+    /// drain moves host-side.
     pub fn lsp_close_buffer(&mut self, buffer_id: BufferId) {
-        let Some(uri) = self.editor.buffer_uris.remove(&buffer_id) else {
-            return;
-        };
-        self.editor.lsp.close_buffer(uri);
+        self.editor.lsp_close_buffer(buffer_id);
     }
 
     /// Apply editor-side LSP options that the user configured

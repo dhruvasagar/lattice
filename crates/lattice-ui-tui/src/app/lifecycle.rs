@@ -108,70 +108,12 @@ impl App {
     // App-side definitions delete entirely (Effect-only path; no
     // direct callers).
 
-    /// `:bd[elete]` -- close the active buffer (whichever the
-    /// active pane shows). v1 picks any other buffer to activate;
-    /// if no others remain, the close is rejected. For document
-    /// buffers `!` bypasses the dirty check; tree buffers are
-    /// always read-only and skip the dirty guard.
-    pub(super) fn do_buffer_delete(&mut self, force: bool) {
-        let to_remove = self.active_pane_buffer_id();
-        // "Only buffer" check uses the *listed* count -- unlisted
-        // synthetic buffers (`*lsp*`, `*lsp:<server>*`, ...) don't
-        // count as switch destinations. Without this, `:bd` would
-        // happily activate `*lsp*` as the successor and leave the
-        // user staring at a read-only log buffer with no document
-        // to return to.
-        let listed = self.editor.buffers.listed_ids_sorted();
-        let to_remove_is_listed = self
-            .editor.buffers
-            .flags_of(to_remove)
-            .map(|f| f.listed)
-            .unwrap_or(false);
-        if to_remove_is_listed && listed.len() <= 1 {
-            self.set_message(
-                EchoLevel::Error,
-                "Cannot delete the only buffer".to_string(),
-            );
-            return;
-        }
-        // Dirty check applies to documents only.
-        if !force && self.editor.buffers.document_dirty(to_remove) {
-            self.set_message(
-                EchoLevel::Error,
-                "no write since last change (add ! to override)".to_string(),
-            );
-            return;
-        }
-        // Successor preference: another *listed* buffer if any,
-        // else any other buffer (including unlisted synthetics).
-        let mut successor = listed.iter().copied().find(|id| *id != to_remove);
-        if successor.is_none() {
-            successor = self
-                .editor.buffers
-                .sorted_ids()
-                .into_iter()
-                .find(|id| *id != to_remove);
-        }
-        let Some(successor) = successor else {
-            return;
-        };
-        self.activate_buffer(successor);
-        // Detach from LSP before dropping the buffer registry
-        // entry so the supervisor sees the URI go away while the
-        // BufferId is still mapped.
-        self.lsp_close_buffer(to_remove);
-        self.editor.buffers.remove(to_remove);
-        // Re-point any pane still referencing the removed buffer.
-        let new_id = self.active_pane_buffer_id();
-        let new_kind = self.editor.active_buffer;
-        for pane in self.editor.pane_tree.leaves_mut() {
-            if pane.buffer_id == to_remove {
-                pane.buffer_id = new_id;
-                pane.buffer = new_kind;
-            }
-        }
-        self.set_message(EchoLevel::Info, format!("buffer #{} deleted", to_remove.0));
-    }
+    // 5.5.F.4.4: `do_buffer_delete` relocated to
+    // [`lattice_host::dispatch::Editor::do_buffer_delete`]; the
+    // corresponding `Effect::BufferDelete` arm now runs inside
+    // `Editor::handle_effect` and emits `RendererSignal::BufferActivated`
+    // for the App-side `activate_buffer_state` tail. The App-side
+    // wrapper deletes entirely (Effect-only path; no direct callers).
 
     // 5.5.F.4.3: `listed_buffer_ids_sorted` / `next_listed_buffer_id` /
     // `prev_listed_buffer_id` relocated to

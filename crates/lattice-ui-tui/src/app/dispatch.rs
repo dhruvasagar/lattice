@@ -969,7 +969,8 @@ impl App {
             | Effect::DescribeEvents
             | Effect::DescribeEvent { .. }
             | Effect::BufferNext
-            | Effect::BufferPrev => {}
+            | Effect::BufferPrev
+            | Effect::BufferDelete { .. } => {}
             Effect::Edits(edits) => self.handle_edits(&edits),
             Effect::EnterMode(mode) => {
                 // Operators that flip mode (`c` -> Insert) come through
@@ -1008,7 +1009,10 @@ impl App {
             // no-op above.
             Effect::OpenBufferPicker => self.open_buffer_picker(),
             Effect::OpenPicker { source, args } => self.open_picker(source, args),
-            Effect::BufferDelete { force } => self.do_buffer_delete(force),
+            // 5.5.F.4.4: `BufferDelete` migrated to
+            // `Editor::handle_effect`; emits `BufferActivated` for the
+            // post-activation tail. Routed through the grouped no-op
+            // below.
             Effect::OpenFileTree { root } => self.do_open_file_tree(root),
             Effect::CloseFileTree => self.dismiss_file_tree(),
             Effect::OpenOil { dir } => self.do_open_oil(dir),

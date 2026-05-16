@@ -38,7 +38,9 @@ use super::{
 /// (`push_position_history`) drops the oldest entry when this
 /// is exceeded; the walkers (`do_walk_history` etc.) clamp
 /// against the live length.
-const POSITION_HISTORY_CAP: usize = 100;
+// 5.5.F.4.2: `POSITION_HISTORY_CAP` relocated to
+// `lattice_host::dispatch::POSITION_HISTORY_CAP` alongside
+// `Editor::push_position_history`. No App-side consumer remains.
 
 impl App {
     /// Vim's `%`: jump to the matching `()[]{}`. Behavior: scan
@@ -579,38 +581,12 @@ impl App {
         self.auto_open_folds_at_cursor();
     }
 
-    /// Push a tagged entry onto the history ring. If the history-cursor
-    /// is not at the end (the user has been walking back), truncate
-    /// forward entries before pushing -- standard "modify-from-middle"
-    /// semantics. Capped at POSITION_HISTORY_CAP entries; oldest dropped.
-    /// Adjacent same-position-and-source duplicates are coalesced.
+    /// 5.5.F.4.2: body relocated to
+    /// [`lattice_host::dispatch::Editor::push_position_history`].
+    /// Delegate retained so the ~30 ui-tui call sites compile
+    /// unchanged across the wider `motions.rs` migration window.
     pub(super) fn push_position_history(&mut self, pos: Position, source: PositionSource) {
-        let buffer = self.editor.active_buffer;
-        let buffer_id = self.active_buffer_id();
-        if let Some(last) = self.editor.position_history.last()
-            && last.position == pos
-            && last.source == source
-            && last.buffer == buffer
-            && last.buffer_id == buffer_id
-        {
-            return;
-        }
-        if self.editor.position_history_cursor < self.editor.position_history.len() {
-            self.editor.position_history.truncate(self.editor.position_history_cursor);
-        }
-        self.editor.position_history.push(PositionEntry {
-            position: pos,
-            source,
-            buffer,
-            buffer_id,
-        });
-        if self.editor.position_history.len() > POSITION_HISTORY_CAP {
-            self.editor.position_history.remove(0);
-            // Truncating from the front shifts the cursor too; clamp
-            // before we re-anchor it.
-            self.editor.position_history_cursor = self.editor.position_history_cursor.saturating_sub(1);
-        }
-        self.editor.position_history_cursor = self.editor.position_history.len();
+        self.editor.push_position_history(pos, source);
     }
 
     /// Id of whichever buffer is currently active. The active

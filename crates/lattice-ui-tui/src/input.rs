@@ -194,7 +194,7 @@ pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
         // `KeymapLayer::MinorMode` layers managed by
         // `App::sync_keymap_overlays`. The drift test in
         // `keymap_insert::tests` is the regression net.
-        ModalState::Insert => dispatch_insert(ctx.keymap, &event, ctx.partial_chord),
+        ModalState::Insert => dispatch_insert(ctx.keymap, &chord, ctx.partial_chord),
         ModalState::Normal => translate_normal(
             chord,
             ctx.builtins,
@@ -213,14 +213,14 @@ pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
         // pre-lookup in `dispatch_visual` until the architecture's
         // minor-mode-on-Visual layer push lands. The drift test
         // in `keymap_visual::tests` is the regression net.
-        ModalState::Visual(kind) => dispatch_visual(ctx.keymap, &event, kind),
+        ModalState::Visual(kind) => dispatch_visual(ctx.keymap, &chord, kind),
         // Slice 8.d: Replace mode dispatches through the
         // layered registry. `translate_replace`'s legacy match
         // table moved to `keymap_replace::register_replace_bindings`
         // + the `dispatch_replace` adapter; the drift test in
         // `keymap_replace::tests` keeps both honest until 8.i
         // retires the legacy reference.
-        ModalState::Replace => dispatch_replace(ctx.keymap, &event),
+        ModalState::Replace => dispatch_replace(ctx.keymap, &chord),
         // OperatorPending routes to no-op (it's a transient resolution
         // state inside translate_normal, not a top-level reachable state).
         _ => Action::None,

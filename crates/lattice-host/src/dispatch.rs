@@ -633,6 +633,66 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
                     category: lattice_core::ui::display::BufferDisplayCategory::HelpList,
                 })));
         }
+        Effect::DescribeOption { name } => {
+            // 5.5.F.3: `:describe-option <name>` -- config.lookup
+            // + metadata format. Unknown name routes E518 to the
+            // echo ring; dispatcher skips the signal.
+            if let Some(content) = editor.build_describe_option_content(&name) {
+                out.renderer_signals
+                    .push(RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
+                        content,
+                        category: lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
+                    })));
+            }
+        }
+        Effect::ListOptions => {
+            // 5.5.F.3: `:options` -- walks `OPTION_DECLS` /
+            // `GROUP_DECLS` linkme slices + per-option
+            // config.lookup; infallible.
+            let content = editor.build_list_options_content();
+            out.renderer_signals
+                .push(RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
+                    content,
+                    category: lattice_core::ui::display::BufferDisplayCategory::HelpList,
+                })));
+        }
+        Effect::DescribeOptionResolution { name } => {
+            // 5.5.F.3: `:describe-option-resolution <name>` --
+            // walks the §6.1 layer model (modal-state / buffer-
+            // local / minors / major / typed-option / default)
+            // and marks each contributing layer with ⭐. Unknown
+            // name routes E518; dispatcher skips.
+            if let Some(content) = editor.build_describe_option_resolution_content(&name) {
+                out.renderer_signals
+                    .push(RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
+                        content,
+                        category: lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
+                    })));
+            }
+        }
+        Effect::DescribeEvents => {
+            // 5.5.F.3: `:describe-events` -- walks the
+            // `EVENT_DESCRIPTORS` linkme slice, groups by source
+            // crate. Infallible.
+            let content = editor.build_describe_events_content();
+            out.renderer_signals
+                .push(RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
+                    content,
+                    category: lattice_core::ui::display::BufferDisplayCategory::HelpList,
+                })));
+        }
+        Effect::DescribeEvent { name } => {
+            // 5.5.F.3: `:describe-event <name>` -- descriptor
+            // lookup. Unknown name routes error; dispatcher
+            // skips.
+            if let Some(content) = editor.build_describe_event_content(&name) {
+                out.renderer_signals
+                    .push(RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
+                        content,
+                        category: lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
+                    })));
+            }
+        }
         // Catch-all: any Effect variant not yet migrated from
         // `App::apply_effect`. Sub-slices 5.5.E.7+ extend the match
         // upward as helpers move.
@@ -1844,6 +1904,333 @@ impl Editor {
         }
         lattice_help::HelpContent::from_lines("keymap", lines)
             .with_markdown_syntax(self.lang_registry.clone())
+    }
+
+    /// 5.5.F.3: build the `:describe-option <name>` content.
+    /// Renders the option's metadata (canonical name, aliases,
+    /// type, default, current value, enumerated values) + doc.
+    /// Unknown name routes a vim-style `E518` error to the echo
+    /// ring and returns `None` so the dispatcher skips the signal.
+    pub fn build_describe_option_content(
+        &mut self,
+        name: &str,
+    ) -> Option<lattice_help::HelpContent> {
+        let Some(spec) = self.config.lookup(name) else {
+            self.set_message(EchoLevel::Error, format!("E518: Unknown option: {name}"));
+            return None;
+        };
+        let mut lines: Vec<String> = Vec::new();
+        lines.push(format!("# {}", spec.name()));
+        if !spec.aliases().is_empty() {
+            lines.push(format!("aliases: {}", spec.aliases().join(", ")));
+        }
+        lines.push(format!("type:    {}", spec.type_label()));
+        lines.push(format!("default: {}", spec.default_formatted()));
+        lines.push(format!("current: {}", spec.get_formatted()));
+        if let Some(values) = spec.enumerate_values() {
+            lines.push(format!("values:  {}", values.join(", ")));
+        }
+        lines.push(String::new());
+        lines.push(spec.doc().to_string());
+        Some(
+            lattice_help::HelpContent::from_lines(format!("describe-option {name}"), lines)
+                .with_markdown_syntax(self.lang_registry.clone()),
+        )
+    }
+
+    /// 5.5.F.3: build the `:options` content. Live reference of
+    /// every registered customizable option, grouped by
+    /// [`lattice_config::OptionGroup`]. Self-updating: walks the
+    /// [`lattice_config::OPTION_DECLS`] linkme slice, so a new
+    /// `options! { ... }` declaration lights up here at the next
+    /// build with no extra wiring.
+    pub fn build_list_options_content(&self) -> lattice_help::HelpContent {
+        use lattice_config::{GROUP_DECLS, OPTION_DECLS};
+        use std::collections::BTreeMap;
+
+        let mut by_group: BTreeMap<&'static str, Vec<&'static lattice_config::OptionDeclMetadata>> =
+            BTreeMap::new();
+        for meta in OPTION_DECLS.iter() {
+            if !meta.customizable {
+                continue;
+            }
+            by_group.entry(meta.group_name).or_default().push(*meta);
+        }
+        for v in by_group.values_mut() {
+            v.sort_by_key(|m| m.name);
+        }
+
+        let group_doc: BTreeMap<&'static str, &'static str> =
+            GROUP_DECLS.iter().map(|g| (g.name, g.doc)).collect();
+
+        let total: usize = by_group.values().map(|v| v.len()).sum();
+        let mut lines: Vec<String> = Vec::new();
+        lines.push(format!("# Options ({total} customisable)"));
+        lines.push(String::new());
+        lines.push(
+            "Live reference of every registered option, grouped by group. \
+             For per-option detail run `:describe-option <name>`. For \
+             concepts (`:set` syntax, layered resolution, TOML, plugin \
+             options) read `:help options`."
+                .into(),
+        );
+        lines.push(String::new());
+
+        for (group, options) in &by_group {
+            lines.push(format!("## {} ({})", group, options.len()));
+            if let Some(doc) = group_doc.get(group) {
+                lines.push(String::new());
+                lines.push((*doc).to_string());
+            }
+            lines.push(String::new());
+            for meta in options {
+                let spec = self.config.lookup(meta.name);
+                let aliases = spec
+                    .as_ref()
+                    .map(|s| s.aliases())
+                    .filter(|a| !a.is_empty())
+                    .map(|a| format!(" [{}]", a.join(", ")))
+                    .unwrap_or_default();
+                let type_label = (meta.type_label)();
+                let default = (meta.default_formatted)();
+                let current = spec
+                    .as_ref()
+                    .map(|s| s.get_formatted())
+                    .unwrap_or_else(|| "?".into());
+                let header = if current == default {
+                    format!(
+                        "- **{}**{} : {} = {}",
+                        meta.name, aliases, type_label, current
+                    )
+                } else {
+                    format!(
+                        "- **{}**{} : {} = {} (default: {})",
+                        meta.name, aliases, type_label, current, default,
+                    )
+                };
+                lines.push(header);
+                for doc_line in meta.doc.lines() {
+                    let trimmed = doc_line.trim();
+                    if !trimmed.is_empty() {
+                        lines.push(format!("  {trimmed}"));
+                    }
+                }
+                if let Some(values) = spec.as_ref().and_then(|s| s.enumerate_values()) {
+                    lines.push(format!("  values: {}", values.join(", ")));
+                }
+                lines.push(String::new());
+            }
+        }
+
+        lattice_help::HelpContent::from_lines("options", lines)
+            .with_markdown_syntax(self.lang_registry.clone())
+    }
+
+    /// 5.5.F.3: build the `:describe-option-resolution <name>`
+    /// content. Walks the §6.1 layer model (modal-state, buffer-
+    /// local, minors, major, typed-option, default) for the
+    /// active buffer and marks each layer that contributes the
+    /// resolved value. Helps debug surprising values where a mode
+    /// contribution shadows a `:set` write or vice versa.
+    pub fn build_describe_option_resolution_content(
+        &mut self,
+        name: &str,
+    ) -> Option<lattice_help::HelpContent> {
+        let Some(spec) = self.config.lookup(name) else {
+            self.set_message(EchoLevel::Error, format!("E518: Unknown option: {name}"));
+            return None;
+        };
+        let canonical_name = spec.name();
+        let target_type_id = lattice_config::OPTION_DECLS
+            .iter()
+            .find(|d| d.name == canonical_name)
+            .map(|d| (d.type_id)())
+            .expect("registered option must have OPTION_DECLS entry");
+
+        let buffer_id = self.document_buffer_id;
+        let modes_snapshot = self
+            .active_modes
+            .get(&buffer_id)
+            .cloned()
+            .unwrap_or_default();
+        let buffer_local = self.buffer_local_overrides.get(&buffer_id);
+
+        let mut lines: Vec<String> = Vec::new();
+        lines.push(format!("# option resolution :: {}", name));
+        lines.push(String::new());
+        lines.push(format!("- type:                 `{}`", spec.type_label()));
+        lines.push(format!(
+            "- resolved value:       `{}`",
+            spec.get_formatted()
+        ));
+        lines.push(format!(
+            "- typed-option (`:set`): `{}`",
+            spec.get_formatted()
+        ));
+        lines.push(format!(
+            "- default:              `{}`",
+            spec.default_formatted()
+        ));
+        lines.push(String::new());
+        lines.push("Layered contributions for this buffer (highest → lowest):".into());
+        lines.push(String::new());
+
+        lines.push("- modal-state: (empty -- v1 wires no modal-overrides)".into());
+
+        let local_has = buffer_local
+            .map(|set| set.iter().any(|o| o.option_type_id == target_type_id))
+            .unwrap_or(false);
+        if local_has {
+            lines.push("- buffer-local (`:setlocal`): contributes ⭐".into());
+        } else {
+            lines.push("- buffer-local (`:setlocal`): (no override)".into());
+        }
+
+        let minors: Vec<lattice_mode::ModeId> =
+            modes_snapshot.minors().iter().copied().rev().collect();
+        if minors.is_empty() {
+            lines.push("- minors: (none active)".into());
+        } else {
+            let mut any_contributes = false;
+            for minor_id in &minors {
+                let Some(minor) = self.mode_registry.get(*minor_id) else {
+                    continue;
+                };
+                let opts = minor.options();
+                let contributes = opts.iter().any(|o| o.option_type_id == target_type_id);
+                if contributes {
+                    if !any_contributes {
+                        lines.push("- minors:".into());
+                        any_contributes = true;
+                    }
+                    lines.push(format!("    - `{minor_id}` ⭐"));
+                }
+            }
+            if !any_contributes {
+                lines.push(format!(
+                    "- minors: {} active, none contribute this option",
+                    minors.len(),
+                ));
+            }
+        }
+
+        match modes_snapshot.major() {
+            Some(major_id) => match self.mode_registry.get(major_id) {
+                Some(major) => {
+                    let opts = major.options();
+                    let contributes = opts.iter().any(|o| o.option_type_id == target_type_id);
+                    if contributes {
+                        lines.push(format!("- major: `{major_id}` contributes ⭐"));
+                    } else {
+                        lines.push(format!("- major: `{major_id}` (no contribution)",));
+                    }
+                }
+                None => {
+                    lines.push(format!("- major: `{major_id}` (mode missing)"));
+                }
+            },
+            None => {
+                lines.push("- major: (none active)".into());
+            }
+        }
+
+        lines.push(format!("- typed-option layer: `{}`", spec.get_formatted(),));
+        lines.push(format!(
+            "- built-in default:   `{}`",
+            spec.default_formatted(),
+        ));
+
+        lines.push(String::new());
+        lines.push(
+            "⭐ marks layers contributing this option. The highest \
+             marked layer wins. Mode-architecture §6.1 explains the \
+             layer priority order in detail."
+                .into(),
+        );
+
+        Some(
+            lattice_help::HelpContent::from_lines(
+                format!("describe-option-resolution {name}"),
+                lines,
+            )
+            .with_markdown_syntax(self.lang_registry.clone()),
+        )
+    }
+
+    /// 5.5.F.3: build the `:describe-events` content. Walks
+    /// [`lattice_protocol::event_registry::EVENT_DESCRIPTORS`]
+    /// (the `linkme` distributed slice every `register_event!`
+    /// invocation pushes into); groups rows by source crate so
+    /// the catalogue is easy to scan.
+    pub fn build_describe_events_content(&self) -> lattice_help::HelpContent {
+        use lattice_protocol::event_registry::registered_events;
+        let mut by_crate: std::collections::BTreeMap<
+            &'static str,
+            Vec<&'static lattice_protocol::event_registry::EventDescriptor>,
+        > = std::collections::BTreeMap::new();
+        for d in registered_events() {
+            by_crate.entry(d.source_crate).or_default().push(d);
+        }
+        let mut total = 0usize;
+        let mut lines: Vec<String> = Vec::new();
+        lines.push("# Registered events".into());
+        lines.push(String::new());
+        if by_crate.is_empty() {
+            lines.push("(none)".into());
+        }
+        for (source_crate, mut entries) in by_crate {
+            entries.sort_by_key(|d| d.name);
+            total += entries.len();
+            lines.push(format!("## {source_crate} ({})", entries.len()));
+            lines.push(String::new());
+            for d in entries {
+                lines.push(format!("- [{}](event:{})  {}", d.name, d.name, d.doc));
+            }
+            lines.push(String::new());
+        }
+        if total > 0 {
+            lines.insert(
+                1,
+                format!(
+                    "({total} registered event(s) across {} crate(s))",
+                    lines.iter().filter(|l| l.starts_with("## ")).count()
+                ),
+            );
+        }
+        lattice_help::HelpContent::from_lines("describe-events", lines)
+            .with_markdown_syntax(self.lang_registry.clone())
+    }
+
+    /// 5.5.F.3: build the `:describe-event <name>` content.
+    /// Renders the descriptor for one registered event. Mirrors
+    /// `:describe-command` / `:describe-option`'s shape. Unknown
+    /// name routes an error to the echo ring; dispatcher skips.
+    pub fn build_describe_event_content(
+        &mut self,
+        name: &str,
+    ) -> Option<lattice_help::HelpContent> {
+        use lattice_protocol::event_registry::descriptor_by_name;
+        let Some(d) = descriptor_by_name(name) else {
+            self.set_message(EchoLevel::Error, format!("no event named `{name}`"));
+            return None;
+        };
+        let mut lines: Vec<String> = Vec::new();
+        lines.push(format!("# event :: {}", d.name));
+        lines.push(String::new());
+        lines.push(format!("- source crate: `{}`", d.source_crate));
+        lines.push(format!("- type-id name: `{}`", d.name));
+        lines.push(String::new());
+        lines.push(d.doc.to_string());
+        lines.push(String::new());
+        lines.push(
+            "Subscribe via `EventBus::subscribe_typed::<T>(tx)` where `T` \
+             is the concrete event struct exported by the source crate."
+                .into(),
+        );
+        Some(
+            lattice_help::HelpContent::from_lines(format!("describe-event {name}"), lines)
+                .with_markdown_syntax(self.lang_registry.clone()),
+        )
     }
 }
 

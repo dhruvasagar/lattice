@@ -962,7 +962,12 @@ impl App {
             | Effect::DescribeCommand { .. }
             | Effect::Apropos { .. }
             | Effect::DescribeKey { .. }
-            | Effect::ListKeymap => {}
+            | Effect::ListKeymap
+            | Effect::DescribeOption { .. }
+            | Effect::ListOptions
+            | Effect::DescribeOptionResolution { .. }
+            | Effect::DescribeEvents
+            | Effect::DescribeEvent { .. } => {}
             Effect::Edits(edits) => self.handle_edits(&edits),
             Effect::EnterMode(mode) => {
                 // Operators that flip mode (`c` -> Insert) come through
@@ -1003,8 +1008,9 @@ impl App {
             Effect::OpenFileTree { root } => self.do_open_file_tree(root),
             Effect::CloseFileTree => self.dismiss_file_tree(),
             Effect::OpenOil { dir } => self.do_open_oil(dir),
-            Effect::DescribeOption { name } => self.do_describe_option(&name),
-            Effect::ListOptions => self.do_list_options(),
+            // 5.5.F.3: `DescribeOption` / `ListOptions` migrated
+            // to `Editor::handle_effect`; routed through the
+            // grouped no-op above.
             Effect::OpenHover { markdown } => self.do_open_hover(&markdown),
             Effect::CloseHover => self.do_close_hover(),
             Effect::OpenHelpTopic { topic } => self.do_open_help_topic(topic.as_deref()),
@@ -1047,11 +1053,12 @@ impl App {
             Effect::SnippetExpand => self.do_snippet_expand_at_cursor(),
             Effect::ReloadSnippets => self.do_reload_snippets(),
             Effect::ToggleMode { mode_name } => self.toggle_mode_by_name(&mode_name),
-            Effect::DescribeEvents => self.do_describe_events(),
-            Effect::DescribeEvent { name } => self.do_describe_event(&name),
+            // 5.5.F.3: `DescribeEvents` / `DescribeEvent` /
+            // `DescribeOptionResolution` migrated to
+            // `Editor::handle_effect`; routed through the grouped
+            // no-op above.
             Effect::ListModes => self.do_list_modes(),
             Effect::DescribeMode { name } => self.do_describe_mode(&name),
-            Effect::DescribeOptionResolution { name } => self.do_describe_option_resolution(&name),
             Effect::Customize { name } => self.do_customize(name.as_deref()),
             Effect::Tutor { lesson } => self.do_tutor(lesson),
             Effect::AppAction(app) => self.apply_app_effect(app),

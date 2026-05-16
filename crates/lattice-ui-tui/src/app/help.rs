@@ -183,86 +183,40 @@ impl App {
     // above. Builder lives at
     // [`lattice_host::dispatch::Editor::build_list_keymap_content`].
 
-    /// `:describe-events` (M.5.3.c) -- render every registered
-    /// event's descriptor as a help buffer. Walks
-    /// [`lattice_protocol::event_registry::EVENT_DESCRIPTORS`]
-    /// (the `linkme` distributed slice every `register_event!`
-    /// invocation pushes into); groups rows by source crate so
-    /// the catalogue is easy to scan. Routes through
-    /// [`Self::display_buffer`] with `HelpList` so the user's
-    /// `:set help.list.display = ...` override applies.
+    // 5.5.F.3: `:describe-events` / `:describe-event` content
+    // builders relocated to
+    // [`lattice_host::dispatch::Editor::build_describe_events_content`]
+    // and [`build_describe_event_content`]; the corresponding
+    // `Effect::*` arms now run inside `Editor::handle_effect` and
+    // emit `RendererSignal::DisplayBuffer`. The thin wrappers
+    // below remain App-side because integration tests in
+    // `app/mode.rs` invoke them directly; both share the same
+    // host content builder with the Effect-driven path.
+
+    /// `:describe-events` direct-call wrapper for test-mode
+    /// callers (asserting renderer-side display routing). Effect-
+    /// path callers route through `Editor::handle_effect` +
+    /// `RendererSignal::DisplayBuffer`.
+    #[allow(dead_code)] // 5.5.F.3: prod path is Effect-driven; tests in `app/mode.rs` call this directly.
     pub(super) fn do_describe_events(&mut self) {
-        use lattice_protocol::event_registry::registered_events;
-        // Group + sort: by source crate, then by name within
-        // each group. Stable presentation across runs (linkme
-        // iteration order is link-determined).
-        let mut by_crate: std::collections::BTreeMap<
-            &'static str,
-            Vec<&'static lattice_protocol::event_registry::EventDescriptor>,
-        > = std::collections::BTreeMap::new();
-        for d in registered_events() {
-            by_crate.entry(d.source_crate).or_default().push(d);
-        }
-        let mut total = 0usize;
-        let mut lines: Vec<String> = Vec::new();
-        lines.push("# Registered events".into());
-        lines.push(String::new());
-        if by_crate.is_empty() {
-            lines.push("(none)".into());
-        }
-        for (source_crate, mut entries) in by_crate {
-            entries.sort_by_key(|d| d.name);
-            total += entries.len();
-            lines.push(format!("## {source_crate} ({})", entries.len()));
-            lines.push(String::new());
-            for d in entries {
-                lines.push(format!("- [{}](event:{})  {}", d.name, d.name, d.doc));
-            }
-            lines.push(String::new());
-        }
-        if total > 0 {
-            lines.insert(
-                1,
-                format!(
-                    "({total} registered event(s) across {} crate(s))",
-                    lines.iter().filter(|l| l.starts_with("## ")).count()
-                ),
-            );
-        }
+        let content = self.editor.build_describe_events_content();
         self.display_buffer(
-            HelpContent::from_lines("describe-events", lines)
-                .with_markdown_syntax(self.editor.lang_registry.clone()),
+            content,
             lattice_core::ui::display::BufferDisplayCategory::HelpList,
         );
     }
 
-    /// `:describe-event <name>` (M.5.3.c) -- render the
-    /// descriptor for one registered event. Mirrors
-    /// `:describe-command` / `:describe-option`'s shape.
+    /// `:describe-event <name>` direct-call wrapper for test-mode
+    /// callers. Effect-path callers route through
+    /// `Editor::handle_effect`.
+    #[allow(dead_code)] // 5.5.F.3: prod path is Effect-driven; tests in `app/mode.rs` call this directly.
     pub(super) fn do_describe_event(&mut self, name: &str) {
-        use lattice_protocol::event_registry::descriptor_by_name;
-        let Some(d) = descriptor_by_name(name) else {
-            self.set_message(EchoLevel::Error, format!("no event named `{name}`"));
-            return;
-        };
-        let mut lines: Vec<String> = Vec::new();
-        lines.push(format!("# event :: {}", d.name));
-        lines.push(String::new());
-        lines.push(format!("- source crate: `{}`", d.source_crate));
-        lines.push(format!("- type-id name: `{}`", d.name));
-        lines.push(String::new());
-        lines.push(d.doc.to_string());
-        lines.push(String::new());
-        lines.push(
-            "Subscribe via `EventBus::subscribe_typed::<T>(tx)` where `T` \
-             is the concrete event struct exported by the source crate."
-                .into(),
-        );
-        self.display_buffer(
-            HelpContent::from_lines(format!("describe-event {name}"), lines)
-                .with_markdown_syntax(self.editor.lang_registry.clone()),
-            lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
-        );
+        if let Some(content) = self.editor.build_describe_event_content(name) {
+            self.display_buffer(
+                content,
+                lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
+            );
+        }
     }
 
     /// `:list-modes` (M.8) -- render every registered mode as a
@@ -404,144 +358,13 @@ impl App {
         );
     }
 
-    /// `:describe-option-resolution <name>` (M.8) -- show
-    /// which resolver layer provides the resolved value for
-    /// `<name>` on the active buffer. Helps debug surprising
-    /// values where a mode contribution shadows a `:set` write
-    /// or vice versa. The mode-architecture §6.1 layer model
-    /// translated to a per-option introspection view.
-    pub(super) fn do_describe_option_resolution(&mut self, name: &str) {
-        let Some(spec) = self.editor.config.lookup(name) else {
-            self.set_message(EchoLevel::Error, format!("E518: Unknown option: {name}"));
-            return;
-        };
-        // Derive TypeId from the canonical name by walking
-        // OPTION_DECLS (the linkme slice every `options!` macro
-        // invocation pushes into). The spec we just looked up
-        // gives us `spec.name()` (canonical even if the user
-        // typed an alias). If the option has aliases, we may
-        // miss; fall back to a name-prefix scan if needed.
-        let canonical_name = spec.name();
-        let target_type_id = lattice_config::OPTION_DECLS
-            .iter()
-            .find(|d| d.name == canonical_name)
-            .map(|d| (d.type_id)())
-            .expect("registered option must have OPTION_DECLS entry");
-
-        let buffer_id = self.editor.document_buffer_id;
-        let modes_snapshot = self
-            .editor.active_modes
-            .get(&buffer_id)
-            .cloned()
-            .unwrap_or_default();
-        let buffer_local = self.editor.buffer_local_overrides.get(&buffer_id);
-
-        let mut lines: Vec<String> = Vec::new();
-        lines.push(format!("# option resolution :: {}", name));
-        lines.push(String::new());
-        lines.push(format!("- type:                 `{}`", spec.type_label()));
-        lines.push(format!(
-            "- resolved value:       `{}`",
-            spec.get_formatted()
-        ));
-        lines.push(format!(
-            "- typed-option (`:set`): `{}`",
-            spec.get_formatted()
-        ));
-        lines.push(format!(
-            "- default:              `{}`",
-            spec.default_formatted()
-        ));
-        lines.push(String::new());
-        lines.push("Layered contributions for this buffer (highest → lowest):".into());
-        lines.push(String::new());
-
-        // Layer 1: modal-state (always empty in v1).
-        lines.push("- modal-state: (empty -- v1 wires no modal-overrides)".into());
-
-        // Layer 2: buffer-local.
-        let local_has = buffer_local
-            .map(|set| set.iter().any(|o| o.option_type_id == target_type_id))
-            .unwrap_or(false);
-        if local_has {
-            lines.push("- buffer-local (`:setlocal`): contributes ⭐".into());
-        } else {
-            lines.push("- buffer-local (`:setlocal`): (no override)".into());
-        }
-
-        // Layer 3: minors (in reverse activation order — last
-        // activated has highest priority among modes).
-        let minors: Vec<lattice_mode::ModeId> =
-            modes_snapshot.minors().iter().copied().rev().collect();
-        if minors.is_empty() {
-            lines.push("- minors: (none active)".into());
-        } else {
-            let mut any_contributes = false;
-            for minor_id in &minors {
-                let Some(minor) = self.editor.mode_registry.get(*minor_id) else {
-                    continue;
-                };
-                let opts = minor.options();
-                let contributes = opts.iter().any(|o| o.option_type_id == target_type_id);
-                if contributes {
-                    if !any_contributes {
-                        lines.push("- minors:".into());
-                        any_contributes = true;
-                    }
-                    lines.push(format!("    - `{minor_id}` ⭐"));
-                }
-            }
-            if !any_contributes {
-                lines.push(format!(
-                    "- minors: {} active, none contribute this option",
-                    minors.len(),
-                ));
-            }
-        }
-
-        // Layer 4: major.
-        match modes_snapshot.major() {
-            Some(major_id) => match self.editor.mode_registry.get(major_id) {
-                Some(major) => {
-                    let opts = major.options();
-                    let contributes = opts.iter().any(|o| o.option_type_id == target_type_id);
-                    if contributes {
-                        lines.push(format!("- major: `{major_id}` contributes ⭐"));
-                    } else {
-                        lines.push(format!("- major: `{major_id}` (no contribution)",));
-                    }
-                }
-                None => {
-                    lines.push(format!("- major: `{major_id}` (mode missing)"));
-                }
-            },
-            None => {
-                lines.push("- major: (none active)".into());
-            }
-        }
-
-        // Layers 5/6: typed-option + built-in default.
-        lines.push(format!("- typed-option layer: `{}`", spec.get_formatted(),));
-        lines.push(format!(
-            "- built-in default:   `{}`",
-            spec.default_formatted(),
-        ));
-
-        lines.push(String::new());
-        lines.push(
-            "⭐ marks layers contributing this option. The highest \
-             marked layer wins. Mode-architecture §6.1 explains the \
-             layer priority order in detail."
-                .into(),
-        );
-
-        self.display_buffer(
-            HelpContent::from_lines(format!("describe-option-resolution {name}"), lines)
-                .with_markdown_syntax(self.editor.lang_registry.clone()),
-            lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
-        );
-    }
-
+    // 5.5.F.3: `:describe-option-resolution` content builder
+    // relocated to
+    // [`lattice_host::dispatch::Editor::build_describe_option_resolution_content`];
+    // the `Effect::DescribeOptionResolution` arm now runs inside
+    // `Editor::handle_effect` and emits
+    // `RendererSignal::DisplayBuffer`. Effect-only path; no
+    // wrapper retained App-side.
     /// `:customize [name]` (M.9.0) -- open the customize
     /// buffer. Three resolution paths:
     ///

@@ -195,7 +195,10 @@ impl App {
             | Action::ClosePane
             | Action::NavigatePane(_)
             | Action::NextPane
-            | Action::PrevPane => {}
+            | Action::PrevPane
+            // 5.5.G.6: pure-editor mark-history arms migrated.
+            | Action::WalkMarkHistoryBack
+            | Action::WalkMarkHistoryForward => {}
             Action::Invoke(inv) => self.run_invocation(inv),
             Action::Insert(s) => self.do_insert_text(&s),
             // 5.5.G.3: `DeleteCharBackward`, `EnterAppend`,
@@ -390,8 +393,8 @@ impl App {
             Action::JumpHistoryBack => self.do_jump_history(-1),
             Action::JumpHistoryForward => self.do_jump_history(1),
             // 5.5.G.4: `RedrawScreen` migrated to `Editor::dispatch`.
-            Action::WalkMarkHistoryBack => self.do_mark_history(-1),
-            Action::WalkMarkHistoryForward => self.do_mark_history(1),
+            // 5.5.G.6: `WalkMarkHistoryBack` / `WalkMarkHistoryForward`
+            // migrated to `Editor::dispatch`.
 
             // 5.5.G.1: `StartMacroRecord` / `StopMacroRecord`
             // migrated to `Editor::dispatch`. `PlayMacro` /

@@ -549,6 +549,11 @@ pub(crate) fn handle_action(
             let target = editor.pane_tree.prev_pane();
             editor.activate_pane(target);
         }
+        // 5.5.G.6: pure-editor mark-history arms. Jump-history
+        // (`<C-o>`/`<C-i>`) stays App-side until `pop_popup_back`
+        // migrates.
+        Action::WalkMarkHistoryBack => editor.do_mark_history(-1),
+        Action::WalkMarkHistoryForward => editor.do_mark_history(1),
         // Catch-all: any Action variant not yet migrated from
         // App::apply. Sub-slices 5.5.D+ extend the match upward as
         // helpers move.
@@ -2959,6 +2964,110 @@ impl Editor {
         self.recompute_folds();
         self.pending_redraw = true;
         self.set_message(EchoLevel::Info, "redraw".to_string());
+    }
+}
+
+/// 5.5.G.6: pure-editor `g;` / `g,` mark-history walk.
+/// `<C-o>` / `<C-i>` jump-history walk stays App-side until
+/// `pop_popup_back` (App) migrates.
+impl Editor {
+    /// `g;` / `g,` per §5.1.1 -- step through `NamedMark` entries
+    /// in the position-history ring. No "snapshot current pos"
+    /// pre-step: mark navigation is exploratory and shouldn't
+    /// pollute the jump list with `AutoJump` entries.
+    pub fn do_mark_history(&mut self, delta: i32) {
+        self.do_walk_history(delta, |e| e.is_named_mark(), "marks", "mark history");
+    }
+
+    /// Generic walk over the unified position-history ring filtered
+    /// by `pred`. Used by both `:do_jump_history` (App, via
+    /// `<C-o>` / `<C-i>` — filters `e.is_jump()`) and
+    /// `:do_mark_history` (host, via `g;` / `g,` — filters
+    /// `e.is_named_mark()`).
+    pub fn do_walk_history<F: Fn(&PositionEntry) -> bool>(
+        &mut self,
+        delta: i32,
+        pred: F,
+        empty_label: &str,
+        bound_label: &str,
+    ) {
+        if !self.position_history.iter().any(&pred) {
+            self.set_message(EchoLevel::Error, format!("no {empty_label}"));
+            return;
+        }
+        let popup_help_id = self.popup_buffer;
+        let reachable = |e: &PositionEntry| -> bool {
+            match e.buffer {
+                BufferKind::Document | BufferKind::FileTree => {
+                    self.buffers.contains(e.buffer_id)
+                }
+                BufferKind::Help => {
+                    self.buffers.contains_help(e.buffer_id) || popup_help_id == Some(e.buffer_id)
+                }
+                BufferKind::Oil => self.buffers.contains(e.buffer_id),
+            }
+        };
+        let combined = |e: &PositionEntry| pred(e) && reachable(e);
+        let target_idx = if delta < 0 {
+            self.position_history[..self.position_history_cursor]
+                .iter()
+                .rposition(&combined)
+        } else {
+            let from = self
+                .position_history_cursor
+                .saturating_add(1)
+                .min(self.position_history.len());
+            self.position_history[from..]
+                .iter()
+                .position(&combined)
+                .map(|i| i + from)
+        };
+        let Some(idx) = target_idx else {
+            let bound = if delta < 0 { "start" } else { "end" };
+            self.set_message(EchoLevel::Error, format!("at {bound} of {bound_label}"));
+            return;
+        };
+        self.position_history_cursor = idx;
+        let entry = self.position_history[idx];
+        match entry.buffer {
+            BufferKind::Document => {
+                if self.buffers.contains_document(entry.buffer_id) {
+                    let _ = self.activate_document(entry.buffer_id);
+                    self.cursor = entry.position;
+                    self.clamp_cursor_to_active_buffer();
+                    self.auto_open_folds_at_cursor();
+                }
+            }
+            BufferKind::Help => {
+                self.active_buffer = BufferKind::Help;
+                let buffer_present = self.buffers.contains_help(entry.buffer_id)
+                    || self.popup_buffer == Some(entry.buffer_id);
+                if buffer_present {
+                    self.cursor = entry.position;
+                    self.pane_tree.active_mut().buffer = BufferKind::Help;
+                    self.pane_tree.active_mut().buffer_id = entry.buffer_id;
+                    self.clamp_cursor_to_active_buffer();
+                }
+            }
+            BufferKind::FileTree => {
+                if self.buffers.contains_file_tree(entry.buffer_id) {
+                    self.active_buffer = BufferKind::FileTree;
+                    self.cursor = entry.position;
+                    self.pane_tree.active_mut().buffer = BufferKind::FileTree;
+                    self.pane_tree.active_mut().buffer_id = entry.buffer_id;
+                    self.clamp_cursor_to_active_buffer();
+                }
+            }
+            BufferKind::Oil => {
+                if self.buffers.contains_oil(entry.buffer_id) {
+                    self.active_buffer = BufferKind::Oil;
+                    self.cursor = entry.position;
+                    self.pane_tree.active_mut().buffer = BufferKind::Oil;
+                    self.pane_tree.active_mut().buffer_id = entry.buffer_id;
+                    self.clamp_cursor_to_active_buffer();
+                }
+            }
+        }
     }
 }
 

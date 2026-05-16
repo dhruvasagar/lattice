@@ -88,28 +88,16 @@ impl App {
         self.do_walk_history(delta, |e| e.is_jump(), "jumps", "jump list");
     }
 
-    /// Step through named-mark entries -- vim's `g;` (back) / `g,`
-    /// (forward) per §5.1.1's interpretation. No "snapshot current
-    /// pos" pre-step: mark navigation is exploratory and shouldn't
-    /// pollute the jump-list ring.
-    pub(super) fn do_mark_history(&mut self, delta: i32) {
-        self.do_walk_history(delta, |e| e.is_named_mark(), "marks", "mark history");
-    }
+    /// 5.5.G.6: body migrated to
+    /// [`lattice_host::dispatch::Editor::do_mark_history`]. App
+    /// callers (none today; `Action::WalkMark*` arms now route
+    /// host-side) eliminated.
 
-    /// Generic walk over the unified ring filtered by `pred`. Mirrors
-    /// vim's "save current pos on first step back so the forward step
-    /// can return to it" behavior, but only when the current position
-    /// itself qualifies for the filter (so jumping back over named
-    /// marks doesn't pollute the ring with AutoJump entries and vice
-    /// versa).
-    ///
-    /// When the target entry was recorded in a different buffer
-    /// (e.g. the user pressed `<C-o>` from a help overlay back to a
-    /// document position), the walk also flips
-    /// [`Self::active_buffer`] and lands the cursor on the correct
-    /// buffer. Stale entries pointing at a closed Help buffer
-    /// (matching kind but different id) are skipped -- the history
-    /// outlives any one Help session.
+    /// 5.5.G.6: body migrated to
+    /// [`lattice_host::dispatch::Editor::do_walk_history`]. Kept
+    /// as a delegate because App's `do_jump_history` still calls
+    /// it (the jump-history wrapper stays App-side until
+    /// `pop_popup_back` migrates host-side).
     pub(super) fn do_walk_history<F: Fn(&PositionEntry) -> bool>(
         &mut self,
         delta: i32,
@@ -117,97 +105,7 @@ impl App {
         empty_label: &str,
         bound_label: &str,
     ) {
-        if !self.editor.position_history.iter().any(&pred) {
-            self.set_message(EchoLevel::Error, format!("no {empty_label}"));
-            return;
-        }
-        // Reachable: the registry still holds an entry for the
-        // recorded buffer id (in-pane Help / Document / FileTree
-        // all live in `self.editor.buffers`); the transient popup-mode
-        // Help overlay's id is checked separately.
-        let popup_help_id = self.editor.popup_buffer;
-        let reachable = |e: &PositionEntry| -> bool {
-            match e.buffer {
-                BufferKind::Document | BufferKind::FileTree => self.editor.buffers.contains(e.buffer_id),
-                BufferKind::Help => {
-                    self.editor.buffers.contains_help(e.buffer_id) || popup_help_id == Some(e.buffer_id)
-                }
-                BufferKind::Oil => self.editor.buffers.contains(e.buffer_id),
-            }
-        };
-        let combined = |e: &PositionEntry| pred(e) && reachable(e);
-        let target_idx = if delta < 0 {
-            self.editor.position_history[..self.editor.position_history_cursor]
-                .iter()
-                .rposition(&combined)
-        } else {
-            let from = self
-                .editor.position_history_cursor
-                .saturating_add(1)
-                .min(self.editor.position_history.len());
-            self.editor.position_history[from..]
-                .iter()
-                .position(&combined)
-                .map(|i| i + from)
-        };
-        let Some(idx) = target_idx else {
-            let bound = if delta < 0 { "start" } else { "end" };
-            self.set_message(EchoLevel::Error, format!("at {bound} of {bound_label}"));
-            return;
-        };
-        self.editor.position_history_cursor = idx;
-        let entry = self.editor.position_history[idx];
-        // Cross-buffer landing: switch active_buffer and write the
-        // cursor onto the right buffer's tracking field.
-        match entry.buffer {
-            BufferKind::Document => {
-                // Pane + document state must follow the entry. Cross-buffer
-                // walks (Help/FileTree/Oil -> Document) need `pane.buffer_id`
-                // updated so the renderer + modeline read the right buffer;
-                // cross-document walks need the document handle swapped via
-                // `activate_document` so motion / search / save target the
-                // recorded buffer. The reachable check above already verified
-                // the registry entry; activate_document re-checks for safety.
-                if self.editor.buffers.contains_document(entry.buffer_id) {
-                    self.activate_document(entry.buffer_id);
-                    self.editor.cursor = entry.position;
-                    self.clamp_cursor_to_buffer();
-                    self.auto_open_folds_at_cursor();
-                }
-            }
-            BufferKind::Help => {
-                self.editor.active_buffer = BufferKind::Help;
-                // Prefer an in-pane help buffer with the recorded id;
-                // fall back to the transient popup. Either way the
-                // live cursor lands on `self.editor.cursor` (unified).
-                let buffer_present = self.editor.buffers.contains_help(entry.buffer_id)
-                    || self.editor.popup_buffer == Some(entry.buffer_id);
-                if buffer_present {
-                    self.editor.cursor = entry.position;
-                    self.editor.pane_tree.active_mut().buffer = BufferKind::Help;
-                    self.editor.pane_tree.active_mut().buffer_id = entry.buffer_id;
-                    self.clamp_cursor_to_active_buffer();
-                }
-            }
-            BufferKind::FileTree => {
-                if self.editor.buffers.contains_file_tree(entry.buffer_id) {
-                    self.editor.active_buffer = BufferKind::FileTree;
-                    self.editor.cursor = entry.position;
-                    self.editor.pane_tree.active_mut().buffer = BufferKind::FileTree;
-                    self.editor.pane_tree.active_mut().buffer_id = entry.buffer_id;
-                    self.clamp_cursor_to_active_buffer();
-                }
-            }
-            BufferKind::Oil => {
-                if self.editor.buffers.contains_oil(entry.buffer_id) {
-                    self.editor.active_buffer = BufferKind::Oil;
-                    self.editor.cursor = entry.position;
-                    self.editor.pane_tree.active_mut().buffer = BufferKind::Oil;
-                    self.editor.pane_tree.active_mut().buffer_id = entry.buffer_id;
-                    self.clamp_cursor_to_active_buffer();
-                }
-            }
-        }
+        self.editor.do_walk_history(delta, pred, empty_label, bound_label);
     }
 
     /// 5.5.D: cursor clamp moved to

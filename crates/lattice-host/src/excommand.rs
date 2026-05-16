@@ -485,6 +485,25 @@ pub fn aliases() -> HashMap<&'static str, &'static str> {
     ALIAS_TABLE.iter().copied().collect()
 }
 
+/// Resolve a user-typed command spelling against the registry,
+/// trying the canonical form first then falling back to the alias
+/// table. Mirrors [`parse`]'s two-stage resolution so introspection
+/// (`:describe-command`, `:apropos`) accepts both forms a user can
+/// type at `:` (canonical `ex:write` or alias `w` / `write`).
+///
+/// Relocated to `lattice-host` in 5.5.F.2 alongside the
+/// `:describe-command` builder that depends on it.
+pub fn resolve_command_name_or_alias(
+    registry: &lattice_grammar::CommandRegistry,
+    name: &str,
+) -> Option<lattice_grammar::CommandId> {
+    if let Some(id) = registry.id_by_name(name) {
+        return Some(id);
+    }
+    let canonical = aliases().get(name).copied()?;
+    registry.id_by_name(canonical)
+}
+
 /// Reverse map of the alias table: for each canonical name, the
 /// preferred user-facing alias (the longest one). Used by completion
 /// to rewrite raw `gen:commands` output (which produces canonical

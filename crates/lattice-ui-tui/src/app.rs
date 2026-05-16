@@ -220,16 +220,10 @@ pub(crate) fn echo_level_from_wire(level: lattice_grammar::EchoLevel) -> EchoLev
 /// (`write`, `w`). Used by App handlers that take a command name
 /// from user input -- mirrors the two-stage logic in
 /// `excommand::parse_invocation`.
-pub(super) fn resolve_command_name_or_alias(
-    registry: &lattice_grammar::CommandRegistry,
-    name: &str,
-) -> Option<lattice_grammar::CommandId> {
-    if let Some(id) = registry.id_by_name(name) {
-        return Some(id);
-    }
-    let canonical = crate::excommand::aliases().get(name).copied()?;
-    registry.id_by_name(canonical)
-}
+// 5.5.F.2: `resolve_command_name_or_alias` relocated to
+// `lattice_host::excommand::resolve_command_name_or_alias` alongside
+// `aliases()`. The in-module test now imports it directly through the
+// fully-qualified path.
 
 
 // Phase 5.2: `SearchLine`, `LastSearch`, `UnnamedRegister`,
@@ -2320,16 +2314,16 @@ mod tests {
         let _ = lattice_grammar::builtins::populate(&mut registry);
         let _ = lattice_grammar::ex_commands::populate(&mut registry);
         // Canonical hits.
-        assert!(resolve_command_name_or_alias(&registry, "ex:write").is_some());
-        assert!(resolve_command_name_or_alias(&registry, "ex:apropos").is_some());
-        assert!(resolve_command_name_or_alias(&registry, "motion:line-down").is_some());
+        assert!(lattice_host::excommand::resolve_command_name_or_alias(&registry, "ex:write").is_some());
+        assert!(lattice_host::excommand::resolve_command_name_or_alias(&registry, "ex:apropos").is_some());
+        assert!(lattice_host::excommand::resolve_command_name_or_alias(&registry, "motion:line-down").is_some());
         // Alias hits.
-        assert!(resolve_command_name_or_alias(&registry, "w").is_some());
-        assert!(resolve_command_name_or_alias(&registry, "apropos").is_some());
-        assert!(resolve_command_name_or_alias(&registry, "describe-command").is_some());
+        assert!(lattice_host::excommand::resolve_command_name_or_alias(&registry, "w").is_some());
+        assert!(lattice_host::excommand::resolve_command_name_or_alias(&registry, "apropos").is_some());
+        assert!(lattice_host::excommand::resolve_command_name_or_alias(&registry, "describe-command").is_some());
         // Misses.
-        assert!(resolve_command_name_or_alias(&registry, "nope").is_none());
-        assert!(resolve_command_name_or_alias(&registry, "").is_none());
+        assert!(lattice_host::excommand::resolve_command_name_or_alias(&registry, "nope").is_none());
+        assert!(lattice_host::excommand::resolve_command_name_or_alias(&registry, "").is_none());
     }
 
     #[test]

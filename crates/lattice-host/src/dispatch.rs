@@ -587,6 +587,52 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
                     category: lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
                 })));
         }
+        Effect::DescribeCommand { name, anchor } => {
+            // 5.5.F.2: `:describe-command <name>` -- resolve `name`
+            // through canonical-then-alias; emit DisplayBuffer on
+            // success, set_message on error (skip the signal).
+            if let Some(content) =
+                editor.build_describe_command_content(&name, anchor.as_deref())
+            {
+                out.renderer_signals
+                    .push(RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
+                        content,
+                        category: lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
+                    })));
+            }
+        }
+        Effect::Apropos { pattern } => {
+            // 5.5.F.2: `:apropos <pattern>` -- registry scan +
+            // 3-column listing host-side. Empty pattern routes an
+            // error to the echo ring and skips the signal.
+            if let Some(content) = editor.build_apropos_content(&pattern) {
+                out.renderer_signals
+                    .push(RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
+                        content,
+                        category: lattice_core::ui::display::BufferDisplayCategory::HelpApropos,
+                    })));
+            }
+        }
+        Effect::DescribeKey { chord } => {
+            // 5.5.F.2: `:describe-key <chord>` -- keymap lookup
+            // (infallible: unbound chords render as text).
+            let content = editor.build_describe_key_content(&chord);
+            out.renderer_signals
+                .push(RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
+                    content,
+                    category: lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
+                })));
+        }
+        Effect::ListKeymap => {
+            // 5.5.F.2: `:list-keymap` -- group every registered
+            // binding by mode (fixed order), render host-side.
+            let content = editor.build_list_keymap_content();
+            out.renderer_signals
+                .push(RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
+                    content,
+                    category: lattice_core::ui::display::BufferDisplayCategory::HelpList,
+                })));
+        }
         // Catch-all: any Effect variant not yet migrated from
         // `App::apply_effect`. Sub-slices 5.5.E.7+ extend the match
         // upward as helpers move.
@@ -1591,6 +1637,212 @@ impl Editor {
             }
         }
         lattice_help::HelpContent::from_lines("describe-buffer", lines)
+            .with_markdown_syntax(self.lang_registry.clone())
+    }
+
+    /// 5.5.F.2: build the `:describe-command` content.
+    ///
+    /// Two-stage name resolution
+    /// ([`crate::excommand::resolve_command_name_or_alias`]) so both
+    /// canonical (`ex:write`) and alias (`w`, `write`) spellings
+    /// resolve to the same spec. Pushes a one-line error message
+    /// onto the echo ring (and returns `None`) for unknown names;
+    /// the caller skips the [`RendererSignal::DisplayBuffer`] emit.
+    ///
+    /// Cross-link tail: append `See also: [topic](help:topic)` rows
+    /// for every help topic whose `related_command_patterns`
+    /// matches this command. Lets a reader of
+    /// `:describe-command operator:fold-create` jump to the
+    /// `folding` topic via `<CR>` on the link.
+    pub fn build_describe_command_content(
+        &mut self,
+        name: &str,
+        anchor: Option<&str>,
+    ) -> Option<lattice_help::HelpContent> {
+        let Some(id) = crate::excommand::resolve_command_name_or_alias(&self.registry, name)
+        else {
+            self.set_message(EchoLevel::Error, format!("no command named `{name}`"));
+            return None;
+        };
+        let Some(spec) = self.registry.lookup(id) else {
+            self.set_message(EchoLevel::Error, format!("no command named `{name}`"));
+            return None;
+        };
+        let rendered = lattice_grammar::render_introspection(spec);
+        let anchors: Vec<lattice_help::HelpAnchor> = rendered
+            .anchors
+            .into_iter()
+            .map(|a| lattice_help::HelpAnchor {
+                name: a.name,
+                line: a.line,
+            })
+            .collect();
+        let mut lines = rendered.lines;
+        let topics: Vec<String> = self
+            .help_topics
+            .topics_for_command(&spec.name)
+            .map(|t| lattice_help::topic_link(&t.name))
+            .collect();
+        if !topics.is_empty() {
+            lines.push(String::new());
+            lines.push(format!("See also: {}", topics.join(", ")));
+        }
+        let mut content = lattice_help::HelpContent::from_lines_and_anchors(
+            format!("describe-command {name}"),
+            lines,
+            anchors,
+        )
+        .with_markdown_syntax(self.lang_registry.clone());
+        if let Some(a) = anchor
+            && let Some(line) = lattice_help::anchor_line(&content.metadata.anchors, a)
+        {
+            content.buffer.scroll = line as usize;
+        }
+        Some(content)
+    }
+
+    /// 5.5.F.2: build the `:apropos <pattern>` content. Walks every
+    /// registered command, matches `pattern` (case-insensitive)
+    /// against the canonical name and the doc body, renders a
+    /// 3-column listing (`name  kind  first-line-of-doc`) with
+    /// `command_link` wrapping the name for `<CR>` follow.
+    /// Empty pattern routes an error to the echo ring and returns
+    /// `None` so the renderer skips the display signal.
+    pub fn build_apropos_content(&mut self, pattern: &str) -> Option<lattice_help::HelpContent> {
+        if pattern.is_empty() {
+            self.set_message(EchoLevel::Error, "empty pattern".to_string());
+            return None;
+        }
+        let needle = pattern.to_ascii_lowercase();
+        let mut hits: Vec<(String, &'static str, String)> = Vec::new();
+        for name in self.registry.names() {
+            let id = match self.registry.id_by_name(name) {
+                Some(id) => id,
+                None => continue,
+            };
+            let Some(spec) = self.registry.lookup(id) else {
+                continue;
+            };
+            let name_match = spec.name.to_ascii_lowercase().contains(&needle);
+            let doc_match = spec.doc.to_ascii_lowercase().contains(&needle);
+            if name_match || doc_match {
+                let first = spec.doc.lines().next().unwrap_or("").to_string();
+                hits.push((spec.name.clone(), spec.kind.label(), first));
+            }
+        }
+        hits.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut lines: Vec<String> = Vec::new();
+        if hits.is_empty() {
+            lines.push(format!("no matches for `{pattern}`"));
+        } else {
+            lines.push(format!("{} match(es) for `{pattern}`:", hits.len()));
+            lines.push(String::new());
+            let name_w = hits.iter().map(|(n, _, _)| n.len()).max().unwrap_or(0);
+            let kind_w = hits.iter().map(|(_, k, _)| k.len()).max().unwrap_or(0);
+            for (name, kind, first) in hits {
+                let pad_n = name_w.saturating_sub(name.len());
+                let pad_k = kind_w.saturating_sub(kind.len());
+                lines.push(format!(
+                    "  {}{}  {}{}  {}",
+                    lattice_help::command_link(&name),
+                    " ".repeat(pad_n),
+                    kind,
+                    " ".repeat(pad_k),
+                    first
+                ));
+            }
+        }
+        Some(
+            lattice_help::HelpContent::from_lines(format!("apropos {pattern}"), lines)
+                .with_markdown_syntax(self.lang_registry.clone()),
+        )
+    }
+
+    /// 5.5.F.2: build the `:describe-key <chord>` content. Looks up
+    /// every binding of `chord` across all modes
+    /// ([`crate::keymap::lookup`]) and renders each entry through
+    /// the unified `render_introspection_lines` surface. Infallible
+    /// — an unbound chord renders as "`{chord}` is not bound in any
+    /// mode."
+    pub fn build_describe_key_content(&self, chord: &str) -> lattice_help::HelpContent {
+        let hits = crate::keymap::lookup(chord);
+        let mut lines: Vec<String> = Vec::new();
+        if hits.is_empty() {
+            lines.push(format!("`{chord}` is not bound in any mode."));
+        } else {
+            lines.push(format!(
+                "{} -- {} binding(s):",
+                lattice_help::key_link(chord),
+                hits.len()
+            ));
+            for entry in hits {
+                lines.push(String::new());
+                for l in lattice_grammar::render_introspection_lines(entry) {
+                    lines.push(l);
+                }
+            }
+        }
+        lattice_help::HelpContent::from_lines(format!("describe-key {chord}"), lines)
+            .with_markdown_syntax(self.lang_registry.clone())
+    }
+
+    /// 5.5.F.2: build the `:list-keymap` content. Groups every
+    /// registered binding ([`crate::keymap::entries`]) by mode in a
+    /// fixed order so the rendered output reads top-down, wraps
+    /// each chord in a `key_link` for `<CR>` follow.
+    pub fn build_list_keymap_content(&self) -> lattice_help::HelpContent {
+        use crate::keymap::{BindingMode, entries};
+        let mut by_mode: std::collections::BTreeMap<&str, Vec<&crate::keymap::KeymapEntry>> =
+            std::collections::BTreeMap::new();
+        let mode_order = [
+            BindingMode::Normal,
+            BindingMode::Visual,
+            BindingMode::OperatorPending,
+            BindingMode::AfterG,
+            BindingMode::AfterZ,
+            BindingMode::AfterMark,
+            BindingMode::AfterJumpMarkLine,
+            BindingMode::AfterJumpMarkExact,
+            BindingMode::AfterRegister,
+            BindingMode::AfterMacroStart,
+            BindingMode::AfterMacroPlay,
+            BindingMode::AfterFindChar,
+            BindingMode::AfterTextObject,
+            BindingMode::Insert,
+            BindingMode::Replace,
+            BindingMode::Command,
+            BindingMode::Search,
+            BindingMode::Help,
+        ];
+        for entry in entries() {
+            by_mode.entry(entry.mode.label()).or_default().push(entry);
+        }
+        let mut lines: Vec<String> = Vec::new();
+        lines.push(format!(
+            "Default keymap: {} bindings across {} modes",
+            entries().len(),
+            mode_order.len()
+        ));
+        lines.push(String::new());
+        for mode in mode_order {
+            let label = mode.label();
+            let Some(group) = by_mode.get(label) else {
+                continue;
+            };
+            lines.push(format!("[{label}]"));
+            let chord_w = group.iter().map(|e| e.chord.len()).max().unwrap_or(0);
+            for entry in group {
+                let pad = chord_w.saturating_sub(entry.chord.len());
+                lines.push(format!(
+                    "  {}{}  {}",
+                    lattice_help::key_link(entry.chord),
+                    " ".repeat(pad),
+                    entry.doc
+                ));
+            }
+            lines.push(String::new());
+        }
+        lattice_help::HelpContent::from_lines("keymap", lines)
             .with_markdown_syntax(self.lang_registry.clone())
     }
 }

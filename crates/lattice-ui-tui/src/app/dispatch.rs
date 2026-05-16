@@ -958,7 +958,11 @@ impl App {
             | Effect::SelectionChange(_)
             | Effect::SetOption { .. }
             | Effect::ListBuffers
-            | Effect::DescribeBuffer => {}
+            | Effect::DescribeBuffer
+            | Effect::DescribeCommand { .. }
+            | Effect::Apropos { .. }
+            | Effect::DescribeKey { .. }
+            | Effect::ListKeymap => {}
             Effect::Edits(edits) => self.handle_edits(&edits),
             Effect::EnterMode(mode) => {
                 // Operators that flip mode (`c` -> Insert) come through
@@ -986,12 +990,11 @@ impl App {
                 body,
             } => self.do_global(&pattern, inverted, body.as_ref()),
             Effect::DeleteCurrentLine => self.do_delete_line(),
-            Effect::DescribeCommand { name, anchor } => {
-                self.do_describe_command(&name, anchor.as_deref())
-            }
-            Effect::Apropos { pattern } => self.do_apropos(&pattern),
-            Effect::DescribeKey { chord } => self.do_describe_key(&chord),
-            Effect::ListKeymap => self.do_list_keymap(),
+            // 5.5.F.2: `DescribeCommand` / `Apropos` / `DescribeKey`
+            // / `ListKeymap` migrated to `Editor::handle_effect`;
+            // the renderer-coupled tail flows back through
+            // `RendererSignal::DisplayBuffer`. Listed above in the
+            // grouped no-op.
             Effect::BufferNext => self.do_buffer_next(),
             Effect::BufferPrev => self.do_buffer_prev(),
             Effect::OpenBufferPicker => self.open_buffer_picker(),

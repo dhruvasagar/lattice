@@ -39,11 +39,8 @@
 
 use lattice_protocol::position::Position;
 
-use super::{
-    App, BufferKind, EchoLevel, PositionSource, PrevPaneState, line_byte_len,
-    resolve_command_name_or_alias,
-};
-use crate::help::{HelpContent, command_link, key_link};
+use super::{App, BufferKind, EchoLevel, PositionSource, PrevPaneState, line_byte_len};
+use crate::help::HelpContent;
 
 impl App {
     /// `:help [topic]` (DESIGN.md §5.11). With no topic the index
@@ -78,155 +75,46 @@ impl App {
         );
     }
 
-    /// `:describe-command <name>` -- render via the unified
-    /// `Introspectable` surface so every `:describe-*` formatter
-    /// lands in `lattice_grammar::render_introspection`. Adding a
-    /// new section to command help (e.g. example invocations) means
-    /// extending `impl Introspectable for CommandSpec`, not editing
-    /// the host.
-    ///
-    /// `anchor` (optional) scrolls the help buffer to a named
-    /// anchor after rendering. Used by the cmdline's arg-aware
-    /// `<C-h>` to jump to `arg:<name>`.
-    pub(super) fn do_describe_command(&mut self, name: &str, anchor: Option<&str>) {
-        // Two-stage resolution mirrors `excommand::parse_invocation`:
-        // try the typed text as a registry name first (canonical
-        // forms like `ex:write`), then fall back to alias expansion
-        // (`write` -> `ex:write`). Lets users type either form.
-        let Some(id) = resolve_command_name_or_alias(&self.editor.registry, name) else {
-            self.set_message(EchoLevel::Error, format!("no command named `{name}`"));
-            return;
-        };
-        let Some(spec) = self.editor.registry.lookup(id) else {
-            self.set_message(EchoLevel::Error, format!("no command named `{name}`"));
-            return;
-        };
-        let rendered = lattice_grammar::render_introspection(spec);
-        let anchors: Vec<crate::help::HelpAnchor> = rendered
-            .anchors
-            .into_iter()
-            .map(|a| crate::help::HelpAnchor {
-                name: a.name,
-                line: a.line,
-            })
-            .collect();
-        let mut lines = rendered.lines;
-        // Cross-link: append `See also: [topic](help:topic)` for
-        // every help topic whose `related_command_patterns`
-        // matches this command's name. Lets a user reading
-        // `:describe-command operator:fold-create` jump to the
-        // `folding` topic via `<CR>` on the link.
-        let topics: Vec<String> = self
-            .editor.help_topics
-            .topics_for_command(&spec.name)
-            .map(|t| crate::help::topic_link(&t.name))
-            .collect();
-        if !topics.is_empty() {
-            lines.push(String::new());
-            lines.push(format!("See also: {}", topics.join(", ")));
-        }
-        let mut content =
-            HelpContent::from_lines_and_anchors(format!("describe-command {name}"), lines, anchors)
-                .with_markdown_syntax(self.editor.lang_registry.clone());
-        // M.3.2.c.5: scroll-to-anchor was a method on `HelpBuffer`
-        // that read `self.anchors`. With anchors retired off the
-        // struct, look them up on the metadata directly.
-        if let Some(a) = anchor
-            && let Some(line) = crate::help::anchor_line(&content.metadata.anchors, a)
-        {
-            content.buffer.scroll = line as usize;
-        }
-        self.display_buffer(
-            content,
-            lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
-        );
-    }
-
     // 5.5.F.1: `:describe-buffer` content builder relocated to
     // [`lattice_host::dispatch::Editor::build_describe_buffer_content`]
     // and the `Effect::DescribeBuffer` arm now lives in
     // `Editor::handle_effect`. The renderer-coupled tail flows back
     // through `RendererSignal::DisplayBuffer`.
+    //
+    // 5.5.F.2: `:describe-command` / `:apropos` / `:describe-key` /
+    // `:list-keymap` content builders co-migrated through the same
+    // pipe; builders live alongside `build_describe_buffer_content`
+    // host-side
+    // ([`lattice_host::dispatch::Editor::build_describe_command_content`]
+    // et al.) and the corresponding `Effect::*` arms now run inside
+    // `Editor::handle_effect`. The thin `do_describe_command` /
+    // `do_describe_key` wrappers below remain App-side because
+    // help-link follow handlers (`HelpLinkTarget::Command` /
+    // `HelpLinkTarget::Chord`) and the cmdline's `<C-h>` invoke them
+    // directly without going through an `Effect`; they fan the
+    // host-built `HelpContent` through `display_buffer` (the same
+    // routing the `RendererSignal::DisplayBuffer` arm uses).
 
-    pub(super) fn do_apropos(&mut self, pattern: &str) {
-        if pattern.is_empty() {
-            self.set_message(EchoLevel::Error, "empty pattern".to_string());
-            return;
+    /// `:describe-command <name>` direct-call wrapper for
+    /// renderer-side callers (help-link follow, cmdline `<C-h>`).
+    /// Effect-path callers route through `Editor::handle_effect`
+    /// + `RendererSignal::DisplayBuffer`.
+    pub(super) fn do_describe_command(&mut self, name: &str, anchor: Option<&str>) {
+        if let Some(content) = self.editor.build_describe_command_content(name, anchor) {
+            self.display_buffer(
+                content,
+                lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
+            );
         }
-        let needle = pattern.to_ascii_lowercase();
-        // Collect (name, kind, first_line_of_doc) for every spec whose
-        // name or doc contains `needle` (case-insensitive).
-        let mut hits: Vec<(String, &'static str, String)> = Vec::new();
-        for name in self.editor.registry.names() {
-            let id = match self.editor.registry.id_by_name(name) {
-                Some(id) => id,
-                None => continue,
-            };
-            let Some(spec) = self.editor.registry.lookup(id) else {
-                continue;
-            };
-            let name_match = spec.name.to_ascii_lowercase().contains(&needle);
-            let doc_match = spec.doc.to_ascii_lowercase().contains(&needle);
-            if name_match || doc_match {
-                let first = spec.doc.lines().next().unwrap_or("").to_string();
-                hits.push((spec.name.clone(), spec.kind.label(), first));
-            }
-        }
-        hits.sort_by(|a, b| a.0.cmp(&b.0));
-        let mut lines: Vec<String> = Vec::new();
-        if hits.is_empty() {
-            lines.push(format!("no matches for `{pattern}`"));
-        } else {
-            lines.push(format!("{} match(es) for `{pattern}`:", hits.len()));
-            lines.push(String::new());
-            // Compute alignment width once. We measure pre-link
-            // wrapping so the visible text stays aligned even after
-            // the renderer eventually styles the link markup.
-            let name_w = hits.iter().map(|(n, _, _)| n.len()).max().unwrap_or(0);
-            let kind_w = hits.iter().map(|(_, k, _)| k.len()).max().unwrap_or(0);
-            for (name, kind, first) in hits {
-                let pad_n = name_w.saturating_sub(name.len());
-                let pad_k = kind_w.saturating_sub(kind.len());
-                lines.push(format!(
-                    "  {}{}  {}{}  {}",
-                    command_link(&name),
-                    " ".repeat(pad_n),
-                    kind,
-                    " ".repeat(pad_k),
-                    first
-                ));
-            }
-        }
-        self.display_buffer(
-            HelpContent::from_lines(format!("apropos {pattern}"), lines)
-                .with_markdown_syntax(self.editor.lang_registry.clone()),
-            lattice_core::ui::display::BufferDisplayCategory::HelpApropos,
-        );
     }
 
-    /// Format `:describe-key <chord>` (DESIGN.md §5.11). A chord may
-    /// have entries in multiple modes (e.g. `j` is "line down" in
-    /// Normal and Visual, "scroll" in Help). Each entry renders
-    /// through the unified `Introspectable` surface so the source
-    /// link + Action section come out uniformly with the other
-    /// `:describe-*` commands.
+    /// `:describe-key <chord>` direct-call wrapper for renderer-side
+    /// callers (help-link follow on `HelpLinkTarget::Chord`).
+    /// Effect-path callers route through `Editor::handle_effect`.
     pub(super) fn do_describe_key(&mut self, chord: &str) {
-        let hits = crate::keymap::lookup(chord);
-        let mut lines: Vec<String> = Vec::new();
-        if hits.is_empty() {
-            lines.push(format!("`{chord}` is not bound in any mode."));
-        } else {
-            lines.push(format!("{} -- {} binding(s):", key_link(chord), hits.len()));
-            for entry in hits {
-                lines.push(String::new());
-                for l in lattice_grammar::render_introspection_lines(entry) {
-                    lines.push(l);
-                }
-            }
-        }
+        let content = self.editor.build_describe_key_content(chord);
         self.display_buffer(
-            HelpContent::from_lines(format!("describe-key {chord}"), lines)
-                .with_markdown_syntax(self.editor.lang_registry.clone()),
+            content,
             lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
         );
     }
@@ -291,69 +179,9 @@ impl App {
         self.dismiss_popup();
     }
 
-    pub(super) fn do_list_keymap(&mut self) {
-        use crate::keymap::{BindingMode, entries};
-        let mut by_mode: std::collections::BTreeMap<&str, Vec<&crate::keymap::KeymapEntry>> =
-            std::collections::BTreeMap::new();
-        // Stable iteration order: enumerate modes in a fixed order so
-        // the rendered output reads top-down.
-        let mode_order = [
-            BindingMode::Normal,
-            BindingMode::Visual,
-            BindingMode::OperatorPending,
-            BindingMode::AfterG,
-            BindingMode::AfterZ,
-            BindingMode::AfterMark,
-            BindingMode::AfterJumpMarkLine,
-            BindingMode::AfterJumpMarkExact,
-            BindingMode::AfterRegister,
-            BindingMode::AfterMacroStart,
-            BindingMode::AfterMacroPlay,
-            BindingMode::AfterFindChar,
-            BindingMode::AfterTextObject,
-            BindingMode::Insert,
-            BindingMode::Replace,
-            BindingMode::Command,
-            BindingMode::Search,
-            BindingMode::Help,
-        ];
-        for entry in entries() {
-            by_mode.entry(entry.mode.label()).or_default().push(entry);
-        }
-        let mut lines: Vec<String> = Vec::new();
-        lines.push(format!(
-            "Default keymap: {} bindings across {} modes",
-            entries().len(),
-            mode_order.len()
-        ));
-        lines.push(String::new());
-        for mode in mode_order {
-            let label = mode.label();
-            let Some(group) = by_mode.get(label) else {
-                continue;
-            };
-            lines.push(format!("[{label}]"));
-            // Compute alignment width on the unwrapped chord string;
-            // pad after the link wrapper so the visible text stays
-            // column-aligned once the renderer styles links.
-            let chord_w = group.iter().map(|e| e.chord.len()).max().unwrap_or(0);
-            for entry in group {
-                let pad = chord_w.saturating_sub(entry.chord.len());
-                lines.push(format!(
-                    "  {}{}  {}",
-                    key_link(entry.chord),
-                    " ".repeat(pad),
-                    entry.doc
-                ));
-            }
-            lines.push(String::new());
-        }
-        self.display_buffer(
-            HelpContent::from_lines("keymap", lines)
-                .with_markdown_syntax(self.editor.lang_registry.clone()),
-            lattice_core::ui::display::BufferDisplayCategory::HelpList,
-        );
-    }
+    // 5.5.F.2: `do_list_keymap` relocated -- see pointer block
+    // above. Builder lives at
+    // [`lattice_host::dispatch::Editor::build_list_keymap_content`].
 
     /// `:describe-events` (M.5.3.c) -- render every registered
     /// event's descriptor as a help buffer. Walks

@@ -204,6 +204,45 @@ For the v1 of `RendererSignal` I'd start with **just `ThemeChanged` and `Quit`**
 
 **Updated post-5.5.F.3.** Still no new `RendererSignal` variant — the pipe holds for the option- and event-introspection batch. Five Effect arms (`Effect::DescribeOption`, `Effect::ListOptions`, `Effect::DescribeOptionResolution`, `Effect::DescribeEvents`, `Effect::DescribeEvent`) migrate. The Option-returning shape extends naturally: `build_describe_option_content`, `build_describe_option_resolution_content`, and `build_describe_event_content` return `Option<HelpContent>` (E518 on unknown name / unknown option / unknown event); the infallible pair (`build_list_options_content`, `build_describe_events_content`) stays `&self -> HelpContent`. `describe-option-resolution` is the first builder to read `editor.mode_registry` + `editor.active_modes` + `editor.buffer_local_overrides` from host code — confirms the §6.1 layer-model state is all reachable from the renderer-neutral side. Three of five App-side `do_*` bodies delete entirely (Effect-only — no direct in-App callers); two (`do_describe_events` / `do_describe_event`) survive as `#[allow(dead_code)]` thin wrappers because `app/mode.rs` integration tests invoke them directly to assert renderer-side display routing. After F.3 the rest of the describe-* family is mostly mode-/diagnostics-coupled (`describe-mode`, `list-modes`, `list-diagnostics`, `customize`); those touch `mode_registry` walks + LSP state and may need new signal variants or per-arm decisions, unlike the mechanical batch F.2/F.3 closed.
 
+### Scope review — deferred-items GPUI audit (post-5.5.F.3)
+
+After three F.* slices proved out the `RendererSignal::DisplayBuffer` pipe pattern, several items the original scope deferred can — and should — be pulled forward. The pipe gives us a clean signal-emit shape for the renderer-coupled tails that originally justified deferral. Without this rescope, `lattice-ui-gpui` would hit the exact wall this document opened by warning against: depending on `lattice-ui-tui` (wrong), duplicating ~600+ LoC of renderer-neutral logic (also wrong), or reaching into `Editor` and reinventing dispatch (worst).
+
+Three buckets emerged from the audit:
+
+**Bucket A — correctly deferred (stay renderer-side, no GPUI conflict).**
+
+- `visible_highlights` viewport-row cache + `refresh_highlights` / `shift_highlights_for_edit` / `refresh_pane_highlights`. The cache is keyed by `(viewport_row, scroll, viewport_height)` — a TUI viewport-shape concept. GPUI paints from `Snapshot::highlight_lines(line_range)` per frame or builds its own per-line cache; the TUI cache shape is genuinely TUI-specific.
+- Runtime loop (`runtime.rs`). Crossterm `poll(timeout)` + per-tick repaint loop. GPUI ships its own frame loop wired to its event source.
+- `lattice_host::Renderer` trait (currently unused). Predates the F.* signal pipe; may be redundant. Reassess after 5.7 GPUI scaffold tells us whether it's useful, simplified, or deletable.
+
+These three are the right call — the original framing holds.
+
+**Bucket B — misclassified as deferred, actually renderer-neutral.** These bite under GPUI if left as-is. The F.* signal-pipe pattern makes them tractable now in ways they weren't when the original scope was written.
+
+- **`apply_edit_blocking` + edit-cluster Effects** (`Effect::Edits`, `DeleteCurrentLine`, `Substitute`, `Global`). The applier body is `block_on(self.editor.document.apply_edit(edit))` + `publish_document_changed`. Both renderer-neutral. The only render coupling is the *caller-side* `shift_highlights_for_edit` tail, which becomes a signal — `RendererSignal::EditsApplied(Vec<EditDelta>)`. TUI fans out to its viewport-cache shifter; GPUI ignores or fans to its equivalent. Same shape as F.1's `DisplayBuffer`. **Resurrected as 5.5.E.7.**
+- **`activate_buffer` + buffer-nav Effects** (`Effect::BufferNext` / `BufferPrev` / `BufferDelete`). The `activate_buffer` body reads/writes `editor.pane_tree`, `editor.cursor`, `editor.scroll`, `editor.prev_pane_for_help`, `editor.document_buffer_id`, `editor.buffer_locals`, `editor.syntax`, `editor.folds` — all already on `Editor`. GPUI cannot reimplement buffer switching without duplicating pane-state mutation. **Lands as 5.5.F.4.**
+- **Mode lifecycle on App** (`mirror_option_to_modes`, `activate_mode_by_id`, `deactivate_mode_by_id`). The `MirrorOptionToModes(canonical_name)` signal E.6 added was the right intermediate, but the long-term home is host. `mode_registry`, `active_modes`, and `buffer_local_overrides` are all on `Editor`; F.3's `build_describe_option_resolution_content` already reads all three. Mode lifecycle is the central buffer-locality mechanism — GPUI cannot reimplement it. **Lands as 5.5.F.5;** the `MirrorOptionToModes` variant deletes once the walk runs host-side.
+- **Remaining describe-* / list-* family**: `:describe-mode`, `:list-modes`, `:customize` (mode-coupled, fit DisplayBuffer pipe once mode lifecycle is host-side); `:list-diagnostics` (LSP state read, mechanical with current `editor.lsp_*` accessors). **Lands as 5.5.F.6 (mode-related) and 5.5.F.7 (diagnostics)** after F.5.
+
+**Bucket C — thin wrappers retained on App.** F.1-F.3 left ~5 `pub(super) fn do_*` thunks on App (3-line: call host builder + `display_buffer`):
+
+- `do_describe_command`, `do_describe_key` — invoked from `app/cmdline.rs` `<C-h>` + `app/help.rs` link-follow. Each renderer will have its own cmdline + help-link surfaces calling the same host builder. **Correctly App-local; no conflict.**
+- `do_describe_events`, `do_describe_event` — `#[allow(dead_code)]` test-only; tests in `app/mode.rs` assert renderer-side display routing. **Test-portability is shaky** (GPUI's render fan-out differs); split at 5.5.H — host-builder assertions are portable, App-routing assertions stay TUI-specific.
+- `do_set` — App-level cascade integration tests. Same shape as the events pair.
+
+### Revised slice plan (post-F.3)
+
+- **5.5.E.7** *(resurrected)*: `apply_edit_blocking` + `apply_edit_batch_blocking` → `Editor`. Migrate `Effect::Edits` / `DeleteCurrentLine` / `Substitute` / `Global` to `Editor::handle_effect`. Introduce `RendererSignal::EditsApplied(Vec<EditDelta>)`. App's signal handler fans out to `shift_highlights_for_edit` per delta.
+- **5.5.F.4**: `activate_buffer` + `activate_document` / `activate_file_tree` / `activate_help_in_pane` / `activate_oil` → `Editor`, alongside `snapshot_active_pane` / `snapshot_active_document` / `load_active_pane` / `activate_buffer_state`. Migrate `Effect::BufferNext` / `BufferPrev` / `BufferDelete` to `Editor::handle_effect`. If a renderer-specific tail emerges (TUI focus-restore, GPUI window-list), emit `RendererSignal::BufferActivated(BufferId)`.
+- **5.5.F.5**: mode lifecycle — `mirror_option_to_modes`, `activate_mode_by_id`, `deactivate_mode_by_id` → `Editor`. `RendererSignal::MirrorOptionToModes` deletes.
+- **5.5.F.6**: `:describe-mode` / `:list-modes` / `:customize` content builders → `Editor`; Effect arms route through `DisplayBuffer` pipe.
+- **5.5.F.7**: `:list-diagnostics` → `Editor`; Effect arm routes through `DisplayBuffer` pipe.
+- **5.5.G**: collapse `App::apply` — by this point the body is just the dispatch call + signal-handling drain.
+- **5.5.H**: vestigial cleanup; reorganize tests where App-routing assertions and host-builder assertions are entangled.
+
+The original "5.5.F — mode lifecycle (~500 LoC moved)" entry below is superseded by F.4–F.7 above.
+
 ### Slicing strategy
 
 `apply` is 2,625 LoC; moving it in one commit would be unreviewable. Slice plan:
@@ -290,11 +329,22 @@ There's a temptation to collapse both into one enum. Resist it: they have differ
 
 ## Out of scope (deferred)
 
-- Visible-highlights cache (`refresh_highlights`) — stays in ui-tui; render-coupled by design (per-frame paint cache).
-- The `lattice_host::Renderer` trait (currently unused) — leave alone in 5.5. After 5.7 GPUI scaffold lands we can revisit whether the trait should be deleted, simplified, or used.
-- `lattice-render` crate — dropped from the plan (see [`phase-5-extraction.md`](phase-5-extraction.md)'s revised roadmap).
-- Pane-provider lookup move — that's slice 5.6 (separate, small, mechanical).
-- Runtime loop split — TUI's `runtime.rs` stays TUI-specific; GPUI ships its own. No shared `run()` driver in Phase 5.
+Revised post-F.3 scope review (see "Scope review — deferred-items GPUI audit" above). What remains genuinely out of scope:
+
+- **Visible-highlights cache (`refresh_highlights` / `shift_highlights_for_edit` / `refresh_pane_highlights`)** — stays in ui-tui; render-coupled by design (per-frame paint cache keyed by viewport row). The *caller side* of `shift_highlights_for_edit` (which fires after `apply_edit_blocking`) becomes a `RendererSignal::EditsApplied` consumer in E.7; the cache itself stays renderer-side.
+- **The `lattice_host::Renderer` trait** (currently unused) — leave alone in 5.5. After 5.7 GPUI scaffold lands we can revisit whether the trait should be deleted, simplified, or used.
+- **`lattice-render` crate** — dropped from the plan (see [`phase-5-extraction.md`](phase-5-extraction.md)'s revised roadmap).
+- **Pane-provider lookup move** — that's slice 5.6 (separate, small, mechanical).
+- **Runtime loop split** — TUI's `runtime.rs` stays TUI-specific; GPUI ships its own. No shared `run()` driver in Phase 5.
+
+What the original scope deferred but the F.3 review pulls back in (was deferred → now in-scope as E.7 / F.4 / F.5 / F.6 / F.7):
+
+- `apply_edit_blocking` + the edit-cluster Effects (`Effect::Edits` / `DeleteCurrentLine` / `Substitute` / `Global`).
+- `activate_buffer` + buffer-nav Effects.
+- Mode lifecycle (`mirror_option_to_modes`, `activate_mode_by_id`, `deactivate_mode_by_id`).
+- Remaining describe-* / list-* arms (`:describe-mode`, `:list-modes`, `:customize`, `:list-diagnostics`).
+
+The original framing ("E.7 is gated on the highlights cache") was correct *before* the signal-pipe pattern proved out in F.1. Post-F.3, the cache-shift problem reduces to: emit `EditsApplied(delta)`, renderer shifts its own per-frame cache. Same shape as `DisplayBuffer`. The cache itself stays renderer-side; only the *trigger* crosses the host/renderer boundary.
 
 ## Acceptance criteria
 

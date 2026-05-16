@@ -2201,6 +2201,102 @@ impl Editor {
             .with_markdown_syntax(self.lang_registry.clone())
     }
 
+    /// 5.5.F.4.1: copy the Editor's hot-path cursor / scroll into the
+    /// active pane's stash. Called before any operation that flips
+    /// which pane is active.
+    ///
+    /// **Unified hot-path**: `self.cursor` and `self.scroll` are the
+    /// active buffer's regardless of kind, so the snapshot reads
+    /// from there uniformly. Help / file-tree / oil records are
+    /// also synced into their kind-specific cursor / scroll fields
+    /// (and the registry copy for help) so the archival state stays
+    /// current; live state always lives on the hot-path slots.
+    pub fn snapshot_active_pane(&mut self) {
+        let cursor = self.cursor;
+        let scroll = self.scroll;
+        let pane_id = self.pane_tree.active().buffer_id;
+        match self.active_buffer {
+            BufferKind::Help => {
+                // M.4 (b): the popup buffer lives in the registry;
+                // mutate it in place there. The hot-path slot is
+                // just an id, so there's nothing to mirror back.
+                if let Some(id) = self.popup_buffer
+                    && id == pane_id
+                {
+                    self.buffers.with_help_mut(pane_id, |reg| {
+                        reg.cursor = cursor;
+                        reg.scroll = scroll as usize;
+                    });
+                }
+            }
+            BufferKind::FileTree => {
+                self.buffers.with_file_tree_mut(pane_id, |t| {
+                    t.cursor = cursor;
+                    t.scroll = scroll as usize;
+                });
+            }
+            BufferKind::Oil => {
+                self.buffers.with_oil_mut(pane_id, |o| {
+                    o.cursor = cursor;
+                    o.scroll = scroll as usize;
+                });
+            }
+            BufferKind::Document => {}
+        }
+        let active = self.pane_tree.active_mut();
+        active.cursor = cursor;
+        active.scroll = scroll;
+    }
+
+    /// 5.5.F.4.1: stash the active document's hot-path mode-state
+    /// (`syntax`, `last_parsed_text_version`, `last_synced_syntax_version`,
+    /// `folds`) into `buffer_locals` so a subsequent `activate_document`
+    /// (same or different id) can restore it. Guarded by
+    /// `active_buffer == Document` — when active is file-tree or
+    /// help, the document's syntax was already moved into locals on
+    /// the *previous* transition; a second snapshot would `take()`
+    /// an already-None value and overwrite the entry's stashed
+    /// syntax, dropping highlight state.
+    pub fn snapshot_active_document(&mut self) {
+        if !matches!(self.active_buffer, BufferKind::Document) {
+            return;
+        }
+        // M.3.2.c.5: stash mode-state into buffer_locals (the
+        // canonical home post-DocumentEntry-field-retirement).
+        // Round-tripping every field — including
+        // `last_synced_syntax_version` — preserves the syntax
+        // worker baseline across a switch-away-and-back so an
+        // out-of-order reparse race can't slip through.
+        let id = self.document_buffer_id;
+        let syntax = self.syntax.take();
+        let last_parsed = self.last_parsed_text_version;
+        let last_synced = self.last_synced_syntax_version;
+        let folds = std::mem::take(&mut self.folds);
+        let locals = self.buffer_locals.entry(id).or_default();
+        locals.insert(crate::modes::DocumentSyntax(syntax));
+        locals.insert(crate::modes::DocumentLastParsedTextVersion(last_parsed));
+        locals.insert(crate::modes::DocumentLastSyncedSyntaxVersion(last_synced));
+        locals.insert(crate::modes::DocumentFolds(folds));
+    }
+
+    /// 5.5.F.4.1: load the active pane's stashed cursor / scroll
+    /// into the hot-path slots. Inverse of [`Self::snapshot_active_pane`].
+    /// Also restores the help-popup mirror when the active pane is
+    /// a help buffer pointing at a different popup than the one
+    /// currently mirrored.
+    pub fn load_active_pane(&mut self) {
+        let pane = *self.pane_tree.active();
+        self.active_buffer = pane.buffer;
+        self.cursor = pane.cursor;
+        self.scroll = pane.scroll;
+        if matches!(pane.buffer, BufferKind::Help)
+            && self.popup_buffer != Some(pane.buffer_id)
+            && self.buffers.contains_help(pane.buffer_id)
+        {
+            self.popup_buffer = Some(pane.buffer_id);
+        }
+    }
+
     /// 5.5.F.3: build the `:describe-event <name>` content.
     /// Renders the descriptor for one registered event. Mirrors
     /// `:describe-command` / `:describe-option`'s shape. Unknown

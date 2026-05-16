@@ -761,19 +761,9 @@ impl App {
     /// archival-correct, but the *live* cursor is `self.editor.cursor`
     /// for every motion / scroll / search / render path.
     pub(super) fn load_active_pane(&mut self) {
-        let pane = *self.editor.pane_tree.active();
-        self.editor.active_buffer = pane.buffer;
-        self.editor.cursor = pane.cursor;
-        self.editor.scroll = pane.scroll;
-        // Help: restore the registry copy into the hot-path slot
-        // if the active pane points at a different help buffer
-        // than the one currently mirrored.
-        if matches!(pane.buffer, BufferKind::Help)
-            && self.editor.popup_buffer != Some(pane.buffer_id)
-            && self.editor.buffers.contains_help(pane.buffer_id)
-        {
-            self.editor.popup_buffer = Some(pane.buffer_id);
-        }
+        // 5.5.F.4.1: body relocated to
+        // [`lattice_host::dispatch::Editor::load_active_pane`].
+        self.editor.load_active_pane();
     }
 
     // 5.5.F.1: `:ls` / `:buffers` content builder relocated to
@@ -815,25 +805,9 @@ impl App {
     /// (the visible symptom: opening `:Tree` and pressing `q`
     /// returned to the document with no syntax colours).
     pub(super) fn snapshot_active_document(&mut self) {
-        if !matches!(self.editor.active_buffer, BufferKind::Document) {
-            return;
-        }
-        // M.3.2.c.5: stash mode-state into buffer_locals (the
-        // canonical home post-DocumentEntry-field-retirement).
-        // Round-tripping every field — including
-        // `last_synced_syntax_version` — preserves the syntax
-        // worker baseline across a switch-away-and-back so an
-        // out-of-order reparse race can't slip through.
-        let id = self.editor.document_buffer_id;
-        let syntax = self.editor.syntax.take();
-        let last_parsed = self.editor.last_parsed_text_version;
-        let last_synced = self.editor.last_synced_syntax_version;
-        let folds = std::mem::take(&mut self.editor.folds);
-        let locals = self.editor.buffer_locals.entry(id).or_default();
-        locals.insert(crate::modes::DocumentSyntax(syntax));
-        locals.insert(crate::modes::DocumentLastParsedTextVersion(last_parsed));
-        locals.insert(crate::modes::DocumentLastSyncedSyntaxVersion(last_synced));
-        locals.insert(crate::modes::DocumentFolds(folds));
+        // 5.5.F.4.1: body relocated to
+        // [`lattice_host::dispatch::Editor::snapshot_active_document`].
+        self.editor.snapshot_active_document();
     }
 
     /// Lifecycle hook fired after a document buffer becomes the
@@ -923,42 +897,11 @@ impl App {
     /// (and the registry copy for help) so the archival state stays
     /// current; live state always lives on `self`.
     pub(super) fn snapshot_active_pane(&mut self) {
-        let cursor = self.editor.cursor;
-        let scroll = self.editor.scroll;
-        let pane_id = self.editor.pane_tree.active().buffer_id;
-        // Mirror live state into the buffer-specific stash + the
-        // registry record for archival / cross-pane round-trips.
-        match self.editor.active_buffer {
-            BufferKind::Help => {
-                // M.4 (b): the popup buffer lives in the registry;
-                // mutate it in place there. The hot-path slot is
-                // just an id, so there's nothing to mirror back.
-                if let Some(id) = self.editor.popup_buffer
-                    && id == pane_id
-                {
-                    self.editor.buffers.with_help_mut(pane_id, |reg| {
-                        reg.cursor = cursor;
-                        reg.scroll = scroll as usize;
-                    });
-                }
-            }
-            BufferKind::FileTree => {
-                self.editor.buffers.with_file_tree_mut(pane_id, |t| {
-                    t.cursor = cursor;
-                    t.scroll = scroll as usize;
-                });
-            }
-            BufferKind::Oil => {
-                self.editor.buffers.with_oil_mut(pane_id, |o| {
-                    o.cursor = cursor;
-                    o.scroll = scroll as usize;
-                });
-            }
-            BufferKind::Document => {}
-        }
-        let active = self.editor.pane_tree.active_mut();
-        active.cursor = cursor;
-        active.scroll = scroll;
+        // 5.5.F.4.1: body relocated to
+        // [`lattice_host::dispatch::Editor::snapshot_active_pane`].
+        // Delegate retained so the ~12 ui-tui call sites compile
+        // unchanged across the migration window.
+        self.editor.snapshot_active_pane();
     }
 
     /// Build + publish [`Event::DocumentChanged`] from the current

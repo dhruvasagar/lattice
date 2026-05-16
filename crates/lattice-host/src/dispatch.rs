@@ -973,6 +973,54 @@ impl Editor {
         )
     }
 
+    /// 5.5.F.5.1: is `lsp-mode` active on `buffer_id`? Pure-editor
+    /// read used by the mode-lifecycle auto-activation hook
+    /// ([`Self::maybe_auto_activate_lsp_mode`], F.5.2) and by
+    /// `:describe-buffer` / the LSP capability gates.
+    pub fn lsp_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
+        self.minor_mode_enabled_for(buffer_id, lattice_lsp::modes::LspMode::mode_id())
+    }
+
+    /// 5.5.F.5.1: rebuild the buffer-local `ActiveCompletionSources`
+    /// snapshot from the buffer's currently-active major + minors.
+    /// Called after every mode-lifecycle transition so the
+    /// completion popup walks an up-to-date contribution list.
+    pub fn recompute_active_completion_sources_for(&mut self, buffer: BufferId) {
+        let mut merged: Vec<lattice_completion::CompletionSourceContribution> = Vec::new();
+        if let Some(modes_snapshot) = self.active_modes.get(&buffer).cloned() {
+            if let Some(major_id) = modes_snapshot.major()
+                && let Some(major) = self.mode_registry.get(major_id)
+            {
+                merged.extend(major.completion_sources());
+            }
+            for &minor_id in modes_snapshot.minors() {
+                if let Some(minor) = self.mode_registry.get(minor_id) {
+                    merged.extend(minor.completion_sources());
+                }
+            }
+        }
+        // Always seed -- empty is meaningful ("this buffer has zero
+        // contributed sources"). Absent vs empty would be equivalent
+        // to the reader, but the always-seed shape keeps
+        // `:describe-buffer` honest.
+        self.buffer_locals
+            .entry(buffer)
+            .or_default()
+            .insert(lattice_mode::ActiveCompletionSources(merged));
+    }
+
+    /// 5.5.F.5.1: best-effort path lookup for `buffer_id`. Returns
+    /// the document's path for Document buffers (the active one
+    /// reads from `self.document`, the rest from the buffer
+    /// registry), `None` otherwise. Used by the LSP auto-activation
+    /// hook in F.5.2.
+    pub fn path_for_buffer(&self, buffer_id: BufferId) -> Option<std::path::PathBuf> {
+        if buffer_id == self.document_buffer_id {
+            return self.document.path().map(|p| p.to_path_buf());
+        }
+        self.buffers.document_path(buffer_id)
+    }
+
     /// `:set foldmethod=...` -- the option-cache hot-path read.
     pub fn foldmethod(&self) -> FoldMethod {
         self.option_cache.foldmethod

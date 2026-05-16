@@ -193,10 +193,10 @@ impl App {
     /// user wants `lsp-mode` off after a major change, they run
     /// `:lsp-mode` to toggle.
     pub(super) fn maybe_auto_activate_lsp_mode(&mut self, buffer_id: BufferId) {
-        if self.lsp_mode_enabled_for(buffer_id) {
+        if self.editor.lsp_mode_enabled_for(buffer_id) {
             return;
         }
-        let path = match self.path_for_buffer(buffer_id) {
+        let path = match self.editor.path_for_buffer(buffer_id) {
             Some(p) => p,
             // Scratch buffers with no path can still host LSP
             // (standalone-server scenarios), but only when the
@@ -210,14 +210,10 @@ impl App {
         self.activate_mode_by_id(buffer_id, lattice_lsp::modes::LspMode::mode_id());
     }
 
-    /// Best-effort path lookup for `buffer_id`. Returns the
-    /// document's path for Document buffers, `None` otherwise.
-    /// Used by the LSP auto-activation hook above.
+    /// 5.5.F.5.1: see [`lattice_host::dispatch::Editor::path_for_buffer`].
+    #[allow(dead_code)]
     fn path_for_buffer(&self, buffer_id: BufferId) -> Option<std::path::PathBuf> {
-        if buffer_id == self.editor.document_buffer_id {
-            return self.editor.document.path().map(|p| p.to_path_buf());
-        }
-        self.editor.buffers.document_path(buffer_id)
+        self.editor.path_for_buffer(buffer_id)
     }
 
     /// M.5.1: programmatic activation of `mode_id` on `buffer_id`.

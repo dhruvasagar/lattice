@@ -117,11 +117,9 @@ impl App {
     /// In M.5.0 nothing reads this -- the surface is here so
     /// M.5.2 (auto-activation hook), M.5.3 (lifecycle), and
     /// M.5.4+ (gates) have a single accessor to consume.
+    /// 5.5.F.5.1: see [`lattice_host::dispatch::Editor::lsp_mode_enabled_for`].
     pub fn lsp_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        self.editor.active_modes
-            .get(&buffer_id)
-            .map(|modes| modes.has_minor(lattice_lsp::modes::LspMode::mode_id()))
-            .unwrap_or(false)
+        self.editor.lsp_mode_enabled_for(buffer_id)
     }
 
     /// M.6.0: is `mode_id` active on `buffer_id`? Generic minor-

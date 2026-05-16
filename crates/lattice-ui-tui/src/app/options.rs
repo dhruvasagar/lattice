@@ -171,31 +171,9 @@ impl App {
     /// finds it empty, and falls through to the v1 hardcoded
     /// calls -- proving the read path works without changing
     /// behaviour.
+    /// 5.5.F.5.1: see [`lattice_host::dispatch::Editor::recompute_active_completion_sources_for`].
     pub fn recompute_active_completion_sources_for(&mut self, buffer: crate::buffers::BufferId) {
-        let mut merged: Vec<lattice_completion::CompletionSourceContribution> = Vec::new();
-        if let Some(modes_snapshot) = self.editor.active_modes.get(&buffer).cloned() {
-            if let Some(major_id) = modes_snapshot.major()
-                && let Some(major) = self.editor.mode_registry.get(major_id)
-            {
-                merged.extend(major.completion_sources());
-            }
-            for &minor_id in modes_snapshot.minors() {
-                if let Some(minor) = self.editor.mode_registry.get(minor_id) {
-                    merged.extend(minor.completion_sources());
-                }
-            }
-        }
-        // Always seed -- empty is meaningful ("this buffer has
-        // zero contributed sources"). Absent vs empty would be
-        // equivalent to the reader, but the always-seed shape
-        // keeps `:describe-buffer` honest: a buffer where the
-        // popup *could* open but doesn't have any active sources
-        // shows up with a count of 0, rather than just looking
-        // like the cache hasn't run yet.
-        self.editor.buffer_locals
-            .entry(buffer)
-            .or_default()
-            .insert(lattice_mode::ActiveCompletionSources(merged));
+        self.editor.recompute_active_completion_sources_for(buffer);
     }
 
     /// Delegate to [`lattice_host::editor::Editor::resolved_option`].

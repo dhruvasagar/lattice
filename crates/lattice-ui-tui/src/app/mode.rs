@@ -32,180 +32,27 @@
 //! `crate::modes`.
 
 use lattice_grammar::ModalState;
-use lattice_mode::{ModeEvent, ModeId};
+use lattice_mode::ModeId;
 use lattice_protocol::Event;
 
-use super::{App, BufferId, BufferKind, EchoLevel};
+use super::{App, BufferId, BufferKind};
 
 impl App {
-    /// Activate the resolved major mode for `buffer_id` based
-    /// on its `kind` (and, for Document buffers, the detected
-    /// language) and refresh the resolved-options cache. M.3.1.
-    ///
-    /// Lang detection happens inside
-    /// `lattice_syntax::Lang::detect_from_path`; for buffers
-    /// without a path (scratch documents) the resolver falls
-    /// through to `text-mode` per `mode-architecture.md` §4.1.
-    /// Help / FileTree / Oil are kind-driven (no language
-    /// dimension); the `lang` argument is ignored for those
-    /// kinds.
-    ///
-    /// On activation failure (mode not registered, capability
-    /// missing, conflict with active major), the buffer ends
-    /// up with no active major and the resolved options
-    /// reflect only the registry defaults. Failure is logged;
-    /// it isn't a fatal startup error because the design
-    /// commits to "every buffer has a major mode" but the
-    /// implementation tolerates the bootstrap window where the
-    /// registration hasn't completed.
-    pub fn activate_major_for_buffer_kind(&mut self, buffer_id: BufferId, kind: BufferKind) {
-        // Idempotency / preserve-intent: if the buffer already has
-        // any major active, don't preempt it. Three cases this
-        // covers cleanly:
-        //   1. Re-call on the same buffer (buffer-switch path
-        //      re-running through `activate_buffer_state`): the
-        //      resolved major is already active -- skip the
-        //      registry reload (would otherwise deactivate +
-        //      re-activate the implies cascade).
-        //   2. Synthetic Document buffers (`*lsp:rust*`,
-        //      `*messages*`, ...) whose creator activated a
-        //      specific major via `activate_major_by_id`. They
-        //      have no path; kind/lang resolution would pick
-        //      `text-mode` and clobber the log/messages major
-        //      (dropping its subscription Guard with it).
-        //   3. User-driven `:toggle-mode <name>` swaps (e.g. the
-        //      `lsp_mode_survives_major_swap` test path). The
-        //      user's choice must survive subsequent buffer
-        //      switches.
-        // Either way, still run the auto-LSP hook so `lsp-mode`
-        // propagates per-buffer; the hook is itself no-op-when-
-        // already-active and no-op-when-no-server-for-path.
-        if self.editor.active_modes.get(&buffer_id).and_then(|m| m.major()).is_some() {
-            if matches!(kind, BufferKind::Document) {
-                self.maybe_auto_activate_lsp_mode(buffer_id);
-            }
-            return;
-        }
-        // No major yet: resolve from kind + lang. Document
-        // buffers consult `Lang::detect_from_path`; other kinds
-        // have a fixed mode regardless of content.
-        let lang = match kind {
-            BufferKind::Document => {
-                let snap = self.editor.document.snapshot();
-                let path_owned = snap.path.as_ref().map(|p| (**p).clone());
-                let path_ref = path_owned.as_deref();
-                lattice_syntax::Lang::detect_from_path(path_ref)
-            }
-            _ => lattice_syntax::Lang::Plain,
-        };
-        let major_id = crate::modes::resolve_major_mode(kind, lang);
-        let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
-        let mut active = self.editor.active_modes.remove(&buffer_id).unwrap_or_default();
-        match self.editor.mode_registry.activate_major(
-            &mut active,
-            &self.editor.mode_guards,
-            &self.editor.config,
-            &self.editor.event_bus,
-            &self.editor.services,
-            proto_id,
-            major_id,
-            lattice_mode::CapabilitySet::empty(),
-        ) {
-            Ok(_events) => {}
-            Err(e) => {
-                self.set_message(
-                    EchoLevel::Warn,
-                    format!(
-                        "mode: activate_major({}) for buffer {} failed: {}",
-                        major_id, buffer_id.0, e,
-                    ),
-                );
-            }
-        }
-        if let Some(minor_id) = crate::modes::default_minor_mode_id_for_buffer_kind(kind)
-            && let Err(e) = self.editor.mode_registry.activate_minor(
-                &mut active,
-                &self.editor.mode_guards,
-                &self.editor.config,
-                &self.editor.event_bus,
-                &self.editor.services,
-                proto_id,
-                minor_id,
-                lattice_mode::CapabilitySet::empty(),
-            )
-        {
-            self.set_message(
-                EchoLevel::Warn,
-                format!(
-                    "mode: activate_minor({}) for buffer {} failed: {}",
-                    minor_id, buffer_id.0, e,
-                ),
-            );
-        }
-        for minor_id in crate::modes::auto_activated_minors_for_buffer_kind(kind) {
-            if let Err(e) = self.editor.mode_registry.activate_minor(
-                &mut active,
-                &self.editor.mode_guards,
-                &self.editor.config,
-                &self.editor.event_bus,
-                &self.editor.services,
-                proto_id,
-                minor_id,
-                lattice_mode::CapabilitySet::empty(),
-            ) {
-                self.set_message(
-                    EchoLevel::Warn,
-                    format!(
-                        "mode: activate_minor({}) for buffer {} failed: {}",
-                        minor_id, buffer_id.0, e,
-                    ),
-                );
-            }
-        }
-        self.editor.active_modes.insert(buffer_id, active);
-        self.recompute_options_for_buffer(buffer_id);
-        // CSM.3: keep `ActiveCompletionSources` in lockstep with
-        // the active-modes set. Empty in practice until CSM.4
-        // ships the first source-contributing mode.
-        self.recompute_active_completion_sources_for(buffer_id);
-        // M.5.2: post-activation hook -- if the buffer is now on a
-        // language major with a configured LSP server, auto-
-        // activate `lsp-mode`. Modelled as a synchronous hook
-        // here; converting to an event-bus subscription on
-        // `MajorEntered` is a follow-up once the broader
-        // subscriber API for App-level handlers lands.
-        self.maybe_auto_activate_lsp_mode(buffer_id);
-    }
-
-    /// M.5.2: language-mode auto-activation hook for
-    /// `lsp-mode`. Runs after a major activates; when the active
-    /// buffer's path has a server configured in the LSP registry
-    /// and `lsp-mode` isn't already active, activate it.
-    ///
-    /// Lifecycle for `lsp-mode` (didOpen / didClose) lands in
-    /// M.5.3; for now activation is a state flip (the gate is
-    /// observable but no LSP traffic flows yet).
-    ///
-    /// **Asymmetry by design (mode-architecture §M.5):** there
-    /// is no auto-deactivation hook on `MajorExited`. Active
-    /// minors stay across major-mode swaps -- emacs's "kill all
-    /// local variables" footgun is what we're avoiding. If a
-    /// user wants `lsp-mode` off after a major change, they run
-    /// `:lsp-mode` to toggle.
-    /// 5.5.F.5.2: see [`lattice_host::dispatch::Editor::maybe_auto_activate_lsp_mode`].
+    /// 5.5.F.5.3: see [`lattice_host::dispatch::Editor::activate_major_for_buffer_kind`].
     /// Wrapper fans host-returned `RendererSignal`s through
     /// [`Self::handle_renderer_signal`].
-    pub(super) fn maybe_auto_activate_lsp_mode(&mut self, buffer_id: BufferId) {
-        let signals = self.editor.maybe_auto_activate_lsp_mode(buffer_id);
+    pub fn activate_major_for_buffer_kind(&mut self, buffer_id: BufferId, kind: BufferKind) {
+        let signals = self.editor.activate_major_for_buffer_kind(buffer_id, kind);
         for sig in signals {
             self.handle_renderer_signal(sig);
         }
     }
 
-    // 5.5.F.5.1/F.5.2: `path_for_buffer` relocated to
-    // [`lattice_host::dispatch::Editor::path_for_buffer`]; the App-
-    // side wrapper deletes entirely because the sole prod caller
-    // (`maybe_auto_activate_lsp_mode`) migrated host-side in F.5.2.
+    // 5.5.F.5.2/F.5.3: `maybe_auto_activate_lsp_mode` +
+    // `path_for_buffer` relocated to
+    // [`lattice_host::dispatch::Editor`]; the App-side wrappers
+    // delete entirely because their callers (`activate_major_for_buffer_kind`
+    // and the activate/deactivate trio) all migrated host-side.
 
     /// M.5.1: programmatic activation of `mode_id` on `buffer_id`.
     /// Used by hooks (auto-activation on `MajorEntered` etc.) and
@@ -311,42 +158,13 @@ impl App {
         }
     }
 
-    /// M-async.3 rollback drain. The mode dispatcher's spawned
-    /// lifecycle task publishes `ModeEvent` variants through the
-    /// typed event bus; this drain reads them off `pending_mode_
-    /// lifecycle_rx` and acts on `ModeActivationFailed` only.
-    ///
-    /// On a failed activation: walk the registry, look up the
-    /// mode's kind, then call `deactivate_mode_by_id`. That
-    /// idempotently clears `active_modes` (handling the implies
-    /// cascade on the way), drops any Guard that managed to
-    /// land, and publishes `MinorDeactivated` / `MajorExiting`
-    /// for the cleanup.
-    ///
-    /// Cheap when no events arrived (single `try_recv` →
-    /// `Empty`). Called once per main-loop tick by
-    /// `runtime.rs`.
+    /// 5.5.F.5.3: see [`lattice_host::dispatch::Editor::drain_mode_lifecycle_events`].
+    /// Wrapper fans host-returned `RendererSignal`s through
+    /// [`Self::handle_renderer_signal`].
     pub fn drain_mode_lifecycle_events(&mut self) {
-        let Some(mut rx) = self.editor.pending_mode_lifecycle_rx.take() else {
-            return;
-        };
-        // Collect first so the subsequent `deactivate_mode_by_id`
-        // / state-mutation calls don't conflict with the
-        // receiver borrow.
-        let mut to_rollback: Vec<(BufferId, ModeId)> = Vec::new();
-        while let Ok(evt) = rx.try_recv() {
-            if let ModeEvent::ModeActivationFailed { buffer, mode, .. } = evt {
-                to_rollback.push((BufferId(buffer.raw() as u32), mode));
-            }
-        }
-        self.editor.pending_mode_lifecycle_rx = Some(rx);
-        for (buffer_id, mode_id) in to_rollback {
-            // Idempotent: if the mode wasn't in `active_modes`,
-            // `deactivate_mode_by_id` no-ops. Surfacing the
-            // failure as an echo is a follow-up; today we
-            // silently roll back so the buffer doesn't get
-            // stuck in a half-active state.
-            self.deactivate_mode_by_id(buffer_id, mode_id);
+        let signals = self.editor.drain_mode_lifecycle_events();
+        for sig in signals {
+            self.handle_renderer_signal(sig);
         }
     }
 

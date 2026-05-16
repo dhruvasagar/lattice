@@ -1185,6 +1185,154 @@ impl Editor {
         self.activate_mode_by_id(buffer_id, lattice_lsp::modes::LspMode::mode_id())
     }
 
+    /// 5.5.F.5.3 (M.3.1): activate the resolved major mode for
+    /// `buffer_id` based on its `kind` (and, for Document buffers,
+    /// the detected language) and refresh the resolved-options cache.
+    ///
+    /// Idempotency / preserve-intent: if the buffer already has any
+    /// major active, don't preempt it (covers re-call on same buffer,
+    /// synthetic Document buffers with a creator-chosen major, and
+    /// user-driven `:toggle-mode <name>` swaps). Still runs the
+    /// auto-LSP hook unconditionally so `lsp-mode` propagates per-
+    /// buffer; the hook is itself no-op-when-already-active and
+    /// no-op-when-no-server-for-path.
+    ///
+    /// Returns `Vec<RendererSignal>` for the same reason as
+    /// [`Self::activate_mode_by_id`] — mode `on_activate` hooks can
+    /// mutate typed options whose cascade emits renderer-coupled
+    /// signals.
+    #[must_use]
+    pub fn activate_major_for_buffer_kind(
+        &mut self,
+        buffer_id: BufferId,
+        kind: BufferKind,
+    ) -> Vec<RendererSignal> {
+        // Idempotency / preserve-intent: covered in detail in the
+        // doc-comment above.
+        if self.active_modes.get(&buffer_id).and_then(|m| m.major()).is_some() {
+            if matches!(kind, BufferKind::Document) {
+                return self.maybe_auto_activate_lsp_mode(buffer_id);
+            }
+            return Vec::new();
+        }
+        // No major yet: resolve from kind + lang. Document buffers
+        // consult `Lang::detect_from_path`; other kinds have a fixed
+        // mode regardless of content.
+        let lang = match kind {
+            BufferKind::Document => {
+                let snap = self.document.snapshot();
+                let path_owned = snap.path.as_ref().map(|p| (**p).clone());
+                let path_ref = path_owned.as_deref();
+                lattice_syntax::Lang::detect_from_path(path_ref)
+            }
+            _ => lattice_syntax::Lang::Plain,
+        };
+        let major_id = crate::modes::resolve_major_mode(kind, lang);
+        let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
+        let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
+        match self.mode_registry.activate_major(
+            &mut active,
+            &self.mode_guards,
+            &self.config,
+            &self.event_bus,
+            &self.services,
+            proto_id,
+            major_id,
+            lattice_mode::CapabilitySet::empty(),
+        ) {
+            Ok(_events) => {}
+            Err(e) => {
+                self.set_message(
+                    EchoLevel::Warn,
+                    format!(
+                        "mode: activate_major({major_id}) for buffer {} failed: {e}",
+                        buffer_id.0,
+                    ),
+                );
+            }
+        }
+        if let Some(minor_id) = crate::modes::default_minor_mode_id_for_buffer_kind(kind)
+            && let Err(e) = self.mode_registry.activate_minor(
+                &mut active,
+                &self.mode_guards,
+                &self.config,
+                &self.event_bus,
+                &self.services,
+                proto_id,
+                minor_id,
+                lattice_mode::CapabilitySet::empty(),
+            )
+        {
+            self.set_message(
+                EchoLevel::Warn,
+                format!(
+                    "mode: activate_minor({minor_id}) for buffer {} failed: {e}",
+                    buffer_id.0,
+                ),
+            );
+        }
+        for minor_id in crate::modes::auto_activated_minors_for_buffer_kind(kind) {
+            if let Err(e) = self.mode_registry.activate_minor(
+                &mut active,
+                &self.mode_guards,
+                &self.config,
+                &self.event_bus,
+                &self.services,
+                proto_id,
+                minor_id,
+                lattice_mode::CapabilitySet::empty(),
+            ) {
+                self.set_message(
+                    EchoLevel::Warn,
+                    format!(
+                        "mode: activate_minor({minor_id}) for buffer {} failed: {e}",
+                        buffer_id.0,
+                    ),
+                );
+            }
+        }
+        self.active_modes.insert(buffer_id, active);
+        self.recompute_options_for_buffer(buffer_id);
+        // CSM.3: keep `ActiveCompletionSources` in lockstep with the
+        // active-modes set.
+        self.recompute_active_completion_sources_for(buffer_id);
+        // M.5.2: post-activation hook -- if the buffer is now on a
+        // language major with a configured LSP server, auto-activate
+        // `lsp-mode`. Modelled as a synchronous hook here.
+        self.maybe_auto_activate_lsp_mode(buffer_id)
+    }
+
+    /// 5.5.F.5.3 (M-async.3): rollback drain for the mode dispatcher's
+    /// spawned lifecycle task. Reads `ModeEvent` variants off
+    /// `pending_mode_lifecycle_rx` and acts on `ModeActivationFailed`
+    /// only — walk the registry, look up the mode's kind, then call
+    /// `deactivate_mode_by_id`. Idempotent: if the mode wasn't in
+    /// `active_modes`, the deactivate no-ops.
+    ///
+    /// Cheap when no events arrived (single `try_recv` → `Empty`).
+    /// Called once per main-loop tick by `runtime.rs`. Returns the
+    /// `RendererSignal` list every rolled-back deactivation enqueued.
+    #[must_use]
+    pub fn drain_mode_lifecycle_events(&mut self) -> Vec<RendererSignal> {
+        let Some(mut rx) = self.pending_mode_lifecycle_rx.take() else {
+            return Vec::new();
+        };
+        // Collect first so the subsequent `deactivate_mode_by_id`
+        // calls don't conflict with the receiver borrow.
+        let mut to_rollback: Vec<(BufferId, lattice_mode::ModeId)> = Vec::new();
+        while let Ok(evt) = rx.try_recv() {
+            if let lattice_mode::ModeEvent::ModeActivationFailed { buffer, mode, .. } = evt {
+                to_rollback.push((BufferId(buffer.raw() as u32), mode));
+            }
+        }
+        self.pending_mode_lifecycle_rx = Some(rx);
+        let mut signals = Vec::new();
+        for (buffer_id, mode_id) in to_rollback {
+            signals.extend(self.deactivate_mode_by_id(buffer_id, mode_id));
+        }
+        signals
+    }
+
     /// 5.5.F.5.2 (M.5.1): toggle a mode by name on the active pane's
     /// buffer. Apply-fn target for the auto-generated `:<mode-name>`
     /// ex-commands (mode-architecture §9.6.1).

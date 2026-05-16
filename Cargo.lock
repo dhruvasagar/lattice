@@ -961,6 +961,7 @@ dependencies = [
  "lattice-snippet",
  "lattice-syntax",
  "lsp-types",
+ "notify",
  "streaming-iterator",
  "thiserror 2.0.18",
  "tokio",

@@ -3,22 +3,22 @@ impl Default for Editor {
         panic!("Editor::default() is not supported after C4; use Editor::new from the renderer boot path");
     }
 }
-//! The renderer-agnostic editor state.
+// The renderer-agnostic editor state.
 //!
-//! Phase 5.B.3 introduces [`Editor`] as the destination for
-//! the per-cluster field migration from
-//! `lattice-ui-tui::App`. See
-//! [`docs/dev/architecture/phase-5b-app-design.md`] for the
-//! Option-D → Option-E pivot that this struct realises:
+// Phase 5.B.3 introduces [`Editor`] as the destination for
+// the per-cluster field migration from
+// `lattice-ui-tui::App`. See
+// [`docs/dev/architecture/phase-5b-app-design.md`] for the
+// Option-D → Option-E pivot that this struct realises:
 //!
-//! - The host owns the editor's state and logic in `Editor`.
-//! - Each renderer crate composes `Editor` into its own
-//!   concrete `App` wrapper alongside its renderer-specific
-//!   caches (`theme`, `pane_render_registry`, ...).
+// - The host owns the editor's state and logic in `Editor`.
+// - Each renderer crate composes `Editor` into its own
+//   concrete `App` wrapper alongside its renderer-specific
+//   caches (`theme`, `pane_render_registry`, ...).
 //!
-//! Subsequent slices (5.B.4 onwards) relocate field clusters
-//! one at a time from `App` into `Editor`, moving the methods
-//! that touch only those fields into `impl Editor` here. Each
+// Subsequent slices (5.B.4 onwards) relocate field clusters
+// one at a time from `App` into `Editor`, moving the methods
+// that touch only those fields into `impl Editor` here. Each
 //! per-cluster commit ships green: methods that still live in
 //! `impl App` access migrated fields via `self.editor.foo`;
 //! methods that have moved access them via `self.foo` (now an

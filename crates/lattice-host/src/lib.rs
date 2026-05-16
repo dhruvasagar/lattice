@@ -53,6 +53,7 @@ pub mod popup;
 pub mod renderer;
 pub mod state;
 pub mod ui;
+pub mod lsp_watcher;
 
 // Re-export the host-side Renderer trait at the crate root for
 // the conventional `lattice_host::Renderer` path renderer

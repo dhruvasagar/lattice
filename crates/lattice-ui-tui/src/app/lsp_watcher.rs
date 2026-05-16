@@ -50,7 +50,7 @@ use std::sync::Arc;
 
 use lsp_types::{FileChangeType, FileEvent};
 use notify::{
-    Event as NotifyEvent, EventKind as NotifyEventKind, RecommendedWatcher, RecursiveMode, Watcher,
+    Event as NotifyEvent, EventKind as NotifyEventKind,
     event::{CreateKind, ModifyKind, RemoveKind},
 };
 
@@ -73,49 +73,12 @@ pub struct LspFileWatcher {
     /// One recursive watch per unique workspace root across
     /// running actors. Kept on the struct so it doesn't drop;
     /// dropping the watcher tears down its background thread.
-    watcher: RecommendedWatcher,
-    /// Set of paths the watcher is currently watching. Refresh
-    /// adds new roots / unwatches removed roots based on the
-    /// running-actor set.
-    watched_roots: HashSet<PathBuf>,
-    /// Tokio mpsc the watcher thread sends into; the App drains
-    /// from the App side. `try_recv` is non-blocking so the
-    /// main loop never parks here.
-    rx: tokio::sync::mpsc::UnboundedReceiver<NotifyEvent>,
-    /// Per-server `WatcherSubscriptions` cache. `refresh` rebuilds
-    /// only entries whose fingerprint changed; unchanged servers
-    /// reuse their cached compile.
-    by_server: HashMap<String, CachedSubscription>,
+    watcher: Option<lattice_host::lsp_watcher::LspFileWatcher>,
 }
 
 impl LspFileWatcher {
-    /// Create a watcher with no roots attached yet. Callers use
-    /// [`Self::sync_watched_roots`] to subscribe to the union of
-    /// active workspace roots; `new()` only spawns the
-    /// `RecommendedWatcher` itself (cheap -- one background
-    /// thread).
-    ///
-    /// Returns `Err` if the OS refuses to construct the watcher
-    /// (inotify-create failure on Linux, FSEvents init failure
-    /// on macOS). Caller surfaces failures through the LSP
-    /// logger and treats the service as absent until next
-    /// attempt.
-    pub fn new() -> Result<Self, notify::Error> {
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<NotifyEvent>();
-        let watcher = RecommendedWatcher::new(
-            move |res: notify::Result<NotifyEvent>| {
-                if let Ok(ev) = res {
-                    let _ = tx.send(ev);
-                }
-            },
-            notify::Config::default(),
-        )?;
-        Ok(Self {
-            watcher,
-            watched_roots: HashSet::new(),
-            rx,
-            by_server: HashMap::new(),
-        })
+    pub fn new() -> Self {
+        Self { watcher: None }
     }
 
     /// Sync the watcher's subscribed roots to match `target`.
@@ -124,6 +87,20 @@ impl LspFileWatcher {
     /// either side log + skip; the rest of the diff still
     /// applies.
     fn sync_watched_roots(&mut self, target: &HashSet<PathBuf>, logger: &lattice_lsp::LspLogger) {
+        if let Some(inner) = self.watcher.as_mut() {
+            inner.sync_watched_roots(target, logger);
+        }
+    }
+
+    pub fn watched_roots(&self) -> &HashSet<PathBuf> {
+        if let Some(inner) = self.watcher.as_ref() { return inner.watched_roots(); }
+        static EMPTY: once_cell::sync::Lazy<HashSet<PathBuf>> = once_cell::sync::Lazy::new(HashSet::new);
+        &EMPTY
+    }
+
+    fn drain_pending(&mut self) -> Vec<NotifyEvent> {
+        if let Some(inner) = self.watcher.as_mut() { return inner.drain_pending(); }
+        Vec::new()
         // Unwatch paths that fell out of scope.
         let stale: Vec<PathBuf> = self
             .watched_roots
@@ -256,18 +233,18 @@ impl App {
         }
         // Spawn lazily.
         if self.lsp_file_watcher.is_none() {
-            match LspFileWatcher::new() {
-                Ok(w) => self.lsp_file_watcher = Some(w),
-                Err(e) => {
-                    self.editor.lsp_logger.log(
-                        None,
-                        LogLevel::Warn,
-                        LogSource::Client,
-                        format!("file watcher init failed: {e}"),
-                    );
-                    return;
-                }
+            let mut w = LspFileWatcher::new();
+            w.watcher = lattice_host::lsp_watcher::LspFileWatcher::new().ok();
+            if w.watcher.is_none() {
+                self.editor.lsp_logger.log(
+                    None,
+                    LogLevel::Warn,
+                    LogSource::Client,
+                    "file watcher init failed".to_string(),
+                );
+                return;
             }
+            self.lsp_file_watcher = Some(w);
         }
         let watcher = match self.lsp_file_watcher.as_mut() {
             Some(w) => w,

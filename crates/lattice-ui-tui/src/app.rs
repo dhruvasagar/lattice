@@ -954,11 +954,9 @@ pub struct App {
     // 5.B.18b: `lsp`, `lsp_diagnostics`, `lsp_logger`
     // moved to `editor.{lsp, lsp_diagnostics, lsp_logger}`.
     /// 4.4.l.2: file-watcher service backing
-    /// `workspace/didChangeWatchedFiles`. Held on App for now;
-    /// migrates when its inner type
-    /// (`crate::app::lsp_watcher::LspFileWatcher`) relocates to
-    /// a host module.
-    pub lsp_file_watcher: Option<crate::app::lsp_watcher::LspFileWatcher>,
+    /// `workspace/didChangeWatchedFiles`. Now lives on host; App
+    /// holds the handle for renderer’s drain path.
+    pub lsp_file_watcher: Option<lattice_host::lsp_watcher::LspFileWatcher>,
     // 5.B.18b: `pending_apply_edit_rx`,
     // `pending_configuration_rx`,
     // `pending_show_document_rx`,

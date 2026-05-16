@@ -19,16 +19,16 @@ impl Default for Editor {
 // Subsequent slices (5.B.4 onwards) relocate field clusters
 // one at a time from `App` into `Editor`, moving the methods
 // that touch only those fields into `impl Editor` here. Each
-//! per-cluster commit ships green: methods that still live in
-//! `impl App` access migrated fields via `self.editor.foo`;
-//! methods that have moved access them via `self.foo` (now an
-//! inherent method on `Editor`).
+// per-cluster commit ships green: methods that still live in
+// `impl App` access migrated fields via `self.editor.foo`;
+// methods that have moved access them via `self.foo` (now an
+// inherent method on `Editor`).
 //!
-//! The empty-now/grows-later shape is intentional: it lets
-//! the wrapper field `editor: Editor` get added to `App`
-//! before any field actually moves, giving every subsequent
-//! migration a target that already exists in the type
-//! system.
+// The empty-now/grows-later shape is intentional: it lets
+// the wrapper field `editor: Editor` get added to `App`
+// before any field actually moves, giving every subsequent
+// migration a target that already exists in the type
+// system.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -449,8 +449,6 @@ pub struct Editor {
     pub picker: Option<Picker>,
     /// Manual folds. v1 supports non-nested folds defined by line range.
     pub folds: Vec<lattice_core::Fold>,
-    /// Manual folds. v1 supports non-nested folds defined by line range.
-    pub folds: Vec<Fold>,
     /// Picker source registry -- `:picker` source kinds.
     pub picker_registry: Arc<PickerRegistry>,
     /// Per-source MRU index that biases the picker's initial

@@ -369,7 +369,7 @@ impl App {
                 .map(|h| h.0.clone())
                 .unwrap_or_default(),
         };
-        Some(PopupSnapshot {
+        Some(lattice_host::popup::PopupSnapshot {
             title,
             content,
             cursor: self.editor.cursor,

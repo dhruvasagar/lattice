@@ -480,7 +480,7 @@ pub struct App {
     // Phase 5.B.8: `last_find` moved to `editor.last_find`.
     /// Manual folds. v1 supports non-nested folds defined by line range.
     /// `closed=true` means the fold's interior is skipped during render.
-    pub folds: Vec<Fold>,
+    // Moved to editor.folds.
     // Phase 5.B.9: `last_insert`, `pending_block_insert`,
     // `recording_insert` moved to `editor.{last_insert,
     // pending_block_insert, recording_insert}`.

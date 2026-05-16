@@ -91,7 +91,7 @@ impl<'a> FrameView<'a> {
     pub fn from_app(app: &'a App) -> Self {
         Self {
             app,
-            folds: Arc::from(app.folds.clone().into_boxed_slice()),
+            folds: Arc::from(app.editor.folds.clone().into_boxed_slice()),
             visible_highlights: Arc::from(app.editor.visible_highlights.clone().into_boxed_slice()),
             show_line_numbers: app.show_line_numbers(),
             relative_line_numbers: app.relative_line_numbers(),
@@ -107,7 +107,7 @@ impl<'a> FrameView<'a> {
     pub fn for_buffer(app: &'a App, buffer_id: crate::buffers::BufferId) -> Self {
         Self {
             app,
-            folds: Arc::from(app.folds.clone().into_boxed_slice()),
+            folds: Arc::from(app.editor.folds.clone().into_boxed_slice()),
             visible_highlights: Arc::from(app.editor.visible_highlights.clone().into_boxed_slice()),
             show_line_numbers: app.show_line_numbers_for(buffer_id),
             relative_line_numbers: app.relative_line_numbers_for(buffer_id),

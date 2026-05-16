@@ -72,9 +72,10 @@ impl App {
         for nf in next.iter_mut() {
             let prev = nf
                 .identity
-                .and_then(|id| self.folds.iter().find(|f| f.identity == Some(id)))
+                .and_then(|id| self.editor.folds.iter().find(|f| f.identity == Some(id)))
                 .or_else(|| {
-                    self.folds
+                    self.editor
+                        .folds
                         .iter()
                         .find(|f| f.start_line == nf.start_line && f.end_line == nf.end_line)
                 });
@@ -85,7 +86,7 @@ impl App {
         // Manual folds (identity = None) coexist with computed
         // folds; recomputed providers don't produce them, so carry
         // them over verbatim.
-        for prev in &self.folds {
+        for prev in &self.editor.folds {
             if prev.identity.is_none() {
                 next.push(*prev);
             }
@@ -95,7 +96,7 @@ impl App {
                 .cmp(&b.start_line)
                 .then_with(|| b.end_line.cmp(&a.end_line))
         });
-        self.folds = next;
+        self.editor.folds = next;
     }
 
     /// Run the tree-sitter folds.scm provider against the live
@@ -166,7 +167,7 @@ impl App {
         if start_line == end_line {
             return;
         }
-        self.folds.push(Fold {
+        self.editor.folds.push(Fold {
             start_line,
             end_line,
             closed: true,
@@ -186,17 +187,18 @@ impl App {
     pub(super) fn do_set_fold_state_at_cursor(&mut self, state: Option<bool>) {
         let line = self.editor.cursor.line;
         let target = match state {
-            Some(true) => fold_to_close_at(&self.folds, line),
-            Some(false) => outermost_fold_idx(&self.folds, line, |f| f.closed),
+            Some(true) => fold_to_close_at(&self.editor.folds, line),
+            Some(false) => outermost_fold_idx(&self.editor.folds, line, |f| f.closed),
             None => {
                 let any_closed = self
+                    .editor
                     .folds
                     .iter()
                     .any(|f| f.closed && line >= f.start_line && line <= f.end_line);
                 if any_closed {
-                    outermost_fold_idx(&self.folds, line, |f| f.closed)
+                    outermost_fold_idx(&self.editor.folds, line, |f| f.closed)
                 } else {
-                    fold_to_close_at(&self.folds, line)
+                    fold_to_close_at(&self.editor.folds, line)
                 }
             }
         };
@@ -204,8 +206,8 @@ impl App {
             self.set_message(EchoLevel::Error, "E490: No fold found".to_string());
             return;
         };
-        self.folds[idx].closed = match state {
-            None => !self.folds[idx].closed,
+        self.editor.folds[idx].closed = match state {
+            None => !self.editor.folds[idx].closed,
             Some(s) => s,
         };
     }
@@ -240,8 +242,8 @@ impl App {
 
     pub(super) fn do_delete_fold_at_cursor(&mut self) {
         let line = self.editor.cursor.line;
-        if let Some(idx) = innermost_fold_idx(&self.folds, line, |_| true) {
-            self.folds.remove(idx);
+        if let Some(idx) = innermost_fold_idx(&self.editor.folds, line, |_| true) {
+            self.editor.folds.remove(idx);
         } else {
             self.set_message(EchoLevel::Error, "E490: No fold found".to_string());
         }
@@ -254,7 +256,7 @@ impl App {
         if !self.foldenable() {
             return false;
         }
-        self.folds
+        self.editor.folds
             .iter()
             .any(|f| f.closed && line > f.start_line && line <= f.end_line)
     }
@@ -265,7 +267,7 @@ impl App {
         if !self.foldenable() {
             return None;
         }
-        self.folds.iter().find(|f| f.closed && f.start_line == line)
+        self.editor.folds.iter().find(|f| f.closed && f.start_line == line)
     }
 
     /// Returns Some(fold) if `line` is the start of any fold (open or
@@ -274,7 +276,7 @@ impl App {
         if !self.foldenable() {
             return None;
         }
-        self.folds.iter().find(|f| f.start_line == line)
+        self.editor.folds.iter().find(|f| f.start_line == line)
     }
 
     /// Move the cursor out of any closed fold's hidden body to the
@@ -296,6 +298,7 @@ impl App {
         let mut exited_a_fold = false;
         loop {
             let in_closed = self
+                .editor
                 .folds
                 .iter()
                 .find(|f| f.closed && snapped > f.start_line && snapped <= f.end_line)

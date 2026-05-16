@@ -75,7 +75,7 @@ use crate::state::{
     OptionCache, PendingBlockInsert, PendingPickerInit, PositionEntry, PrevPaneState, ReplaceEntry,
     SearchLine, SubstitutePreview, TagStackEntry, UnnamedRegister,
 };
-use lattice_core::BufferKind;
+use lattice_core::{BufferKind, Fold};
 use lattice_protocol::position::Position as ProtoPosition;
 use crate::ui::theme::Theme as HostTheme;
 
@@ -447,6 +447,10 @@ pub struct Editor {
     pub pane_highlights: std::collections::HashMap<usize, Vec<Vec<StyledSpan>>>,
     /// Active picker overlay. `None` outside picker mode.
     pub picker: Option<Picker>,
+    /// Manual folds. v1 supports non-nested folds defined by line range.
+    pub folds: Vec<lattice_core::Fold>,
+    /// Manual folds. v1 supports non-nested folds defined by line range.
+    pub folds: Vec<Fold>,
     /// Picker source registry -- `:picker` source kinds.
     pub picker_registry: Arc<PickerRegistry>,
     /// Per-source MRU index that biases the picker's initial

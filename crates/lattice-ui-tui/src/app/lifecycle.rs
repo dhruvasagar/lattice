@@ -95,7 +95,7 @@ impl App {
                     .and_then(|l| l.get::<crate::modes::DocumentLastSyncedSyntaxVersion>())
                     .map(|v| v.0)
                     .unwrap_or(0);
-                self.folds = self
+                self.editor.folds = self
                     .editor.buffer_locals
                     .get(&id)
                     .and_then(|l| l.get::<crate::modes::DocumentFolds>())
@@ -137,7 +137,7 @@ impl App {
             .and_then(|l| l.get::<crate::modes::DocumentLastSyncedSyntaxVersion>())
             .map(|v| v.0)
             .unwrap_or(0);
-        self.folds = self
+        self.editor.folds = self
             .editor.buffer_locals
             .get(&id)
             .and_then(|l| l.get::<crate::modes::DocumentFolds>())
@@ -284,7 +284,7 @@ impl App {
         // is rendered as a popup overlay over the underlying
         // document; the pane's per-frame paint draws the active
         // document via draw_buffer(snap) which reads from
-        // self.editor.syntax / self.folds for highlights + fold overlays.
+        // self.editor.syntax / self.editor.folds for highlights + fold overlays.
         // Stashing those onto the document entry would leave
         // self.editor.syntax = None for the duration of the help session,
         // so the document underneath the popup paints
@@ -501,7 +501,7 @@ impl App {
                 self.editor.replace_history.clear();
                 self.editor.position_history.clear();
                 self.editor.position_history_cursor = 0;
-                self.folds.clear();
+                self.editor.folds.clear();
                 self.set_message(
                     EchoLevel::Info,
                     format!("\"{}\" reloaded", target.display()),
@@ -575,7 +575,7 @@ impl App {
         self.editor.last_visual = None;
         self.editor.visual_anchor = None;
         self.editor.replace_history.clear();
-        self.folds.clear();
+        self.editor.folds.clear();
         // Position history follows the active buffer.
         self.editor.position_history.clear();
         self.editor.position_history_cursor = 0;
@@ -983,7 +983,7 @@ impl App {
         let syntax = self.editor.syntax.take();
         let last_parsed = self.editor.last_parsed_text_version;
         let last_synced = self.editor.last_synced_syntax_version;
-        let folds = std::mem::take(&mut self.folds);
+        let folds = std::mem::take(&mut self.editor.folds);
         let locals = self.editor.buffer_locals.entry(id).or_default();
         locals.insert(crate::modes::DocumentSyntax(syntax));
         locals.insert(crate::modes::DocumentLastParsedTextVersion(last_parsed));
@@ -1050,7 +1050,7 @@ impl App {
         // from the active foldmethod so the gutter shows ▸ markers
         // and `za` works without a manual `<C-l>`. `Manual` skips
         // the seed (the user's `zf` ranges are authoritative).
-        if self.folds.is_empty() && !matches!(self.foldmethod(), FoldMethod::Manual) {
+        if self.editor.folds.is_empty() && !matches!(self.foldmethod(), FoldMethod::Manual) {
             self.recompute_folds();
         }
         // Drop frame-level highlight caches so the next
@@ -1392,7 +1392,7 @@ impl App {
         let syntax = self.editor.syntax.clone();
         let last_parsed = self.editor.last_parsed_text_version;
         let last_synced = self.editor.last_synced_syntax_version;
-        let folds = self.folds.clone();
+        let folds = self.editor.folds.clone();
         let locals = self.editor.buffer_locals.entry(id).or_default();
         locals.insert(crate::modes::DocumentSyntax(syntax));
         locals.insert(crate::modes::DocumentLastParsedTextVersion(last_parsed));
@@ -1434,7 +1434,7 @@ impl App {
     #[allow(dead_code)]
     pub(crate) fn document_folds_for(&self, id: BufferId) -> &[crate::app::Fold] {
         if id == self.editor.document_buffer_id && matches!(self.editor.active_buffer, BufferKind::Document) {
-            return &self.folds;
+            return &self.editor.folds;
         }
         self.editor.buffer_locals
             .get(&id)

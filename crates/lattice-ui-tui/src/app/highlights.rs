@@ -263,7 +263,7 @@ impl App {
             syntax_text_version: snap.text_version(),
             scroll: self.editor.scroll,
             viewport_height: self.editor.viewport_height,
-            fold_hash: folds::compute_fold_hash(&self.folds),
+            fold_hash: folds::compute_fold_hash(&self.editor.folds),
         };
         if self.editor.visible_highlights_key == Some(key) {
             // Cache hit -- existing visible_highlights is valid.

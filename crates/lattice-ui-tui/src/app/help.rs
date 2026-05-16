@@ -171,7 +171,7 @@ impl App {
             self.editor.position_history.len()
         ));
         lines.push(format!("macros stored:  {}", self.editor.macros.len()));
-        lines.push(format!("folds:          {}", self.folds.len()));
+        lines.push(format!("folds:          {}", self.editor.folds.len()));
         lines.push(format!(
             "options:        number={}  relativenumber={}",
             self.show_line_numbers(),

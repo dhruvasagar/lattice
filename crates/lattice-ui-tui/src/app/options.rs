@@ -934,7 +934,7 @@ mod tests {
         a.drain_option_changes();
         assert_eq!(a.foldmethod(), FoldMethod::Indent);
         assert!(
-            !a.folds.is_empty(),
+            !a.editor.folds.is_empty(),
             "drain_option_changes should run the foldmethod cascade and recompute folds"
         );
     }

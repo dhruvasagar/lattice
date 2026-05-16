@@ -65,146 +65,19 @@ impl App {
     ///
     /// Pure ns-fast: a Vec drain or insert of a few elements.
     /// Only mutates the cache; doesn't touch the snapshot.
+    /// 5.5.E.7.1: see [`lattice_host::dispatch::Editor::shift_highlights_for_edit`].
+    /// Wrapper retained so the existing call site in
+    /// `publish_document_changed` compiles unchanged across the
+    /// migration window (E.7.2 will migrate `publish_document_changed`
+    /// itself).
     pub(super) fn shift_highlights_for_edit(&mut self, delta: &EditDelta) {
-        let edit_start = delta.start_position.line;
-        let scroll = self.editor.scroll;
-        if edit_start < scroll {
-            // Edit started above the visible viewport. Bail and
-            // let the worker's publish drive a normal recompute.
-            return;
-        }
-        let viewport_idx = (edit_start - scroll) as usize;
-        if viewport_idx >= self.editor.visible_highlights.len() {
-            // Edit started below the visible viewport. Nothing
-            // visible changes.
-            return;
-        }
-        let old_end = delta.old_end_position.line;
-        let new_end = delta.new_end_position.line;
-        let old_lines = old_end.saturating_sub(edit_start) as usize;
-        let new_lines = new_end.saturating_sub(edit_start) as usize;
-        if old_lines == new_lines {
-            // In-line edit (line count unchanged). Shift spans
-            // on the affected line by the byte delta within the
-            // line so the held spans stay byte-aligned with the
-            // new content. Without this, e.g. `>>` (insert "    "
-            // at byte 0) leaves spans pointing at OLD byte
-            // positions: the renderer paints "Keyword" color on
-            // the new whitespace bytes 0..3 and leaves the
-            // shifted "let" bytes 4..7 unstyled. When the worker
-            // publishes the corrected spans on the next frame,
-            // the bytes transition from "Keyword color on
-            // whitespace" to "default color on whitespace" --
-            // the "default color" reads as the visible flicker
-            // the user reported.
-            //
-            // Slice C.4: shift each span by the byte delta:
-            // - Entirely before the edit: unchanged.
-            // - Entirely after the edit: both endpoints shifted.
-            // - Crossing the edit point: extend (or contract) the
-            //   end by the byte delta to keep the span covering
-            //   the (now-resized) content. The start stays
-            //   because the prefix bytes are preserved.
-            self.shift_spans_within_line(viewport_idx, delta);
-            return;
-        }
-        // Decide where to apply the shift. If the edit starts at
-        // the very beginning of `start.line` (byte 0), then
-        // `start.line`'s pre-edit content has moved -- it's now
-        // located further down (for inserts) or has been
-        // consumed (for deletes). The shift point IS
-        // `viewport_idx`. If the edit starts mid-line or at
-        // line-end (byte > 0), then `start.line`'s content (or
-        // prefix) is preserved at `viewport_idx`; the shift
-        // applies to the line AFTER it.
-        //
-        // Concrete impact:
-        // - `O` (newline at line start, byte 0): insert at
-        //   viewport_idx; original line spans move down.
-        // - `o` (newline at line end, byte > 0): insert at
-        //   viewport_idx + 1; original line spans preserved.
-        // - `dd` (delete whole line, start byte 0):
-        //   drain at viewport_idx; the deleted line's spans go.
-        // - Backspace joining lines (delete \n at line end,
-        //   start byte > 0): drain at viewport_idx + 1; the
-        //   joined-into line's spans preserved.
-        let action_idx = if delta.start_position.byte == 0 {
-            viewport_idx
-        } else {
-            (viewport_idx + 1).min(self.editor.visible_highlights.len())
-        };
-        if old_lines > new_lines {
-            let to_remove = old_lines - new_lines;
-            let drain_end = (action_idx + to_remove).min(self.editor.visible_highlights.len());
-            if action_idx < drain_end {
-                self.editor.visible_highlights.drain(action_idx..drain_end);
-            }
-        } else {
-            let to_insert = new_lines - old_lines;
-            for _ in 0..to_insert {
-                self.editor.visible_highlights.insert(action_idx, Vec::new());
-            }
-        }
+        self.editor.shift_highlights_for_edit(delta);
     }
 
-    /// Slice C.4: shift the spans on a single visible-line entry
-    /// by the byte-delta of an in-line edit, so the held spans
-    /// stay byte-aligned with the post-edit content during the
-    /// brief window before the syntax worker publishes corrected
-    /// spans. Eliminates the "spans paint on shifted bytes →
-    /// recompute → bytes transition to default color" flicker
-    /// that `>>` indents and other in-line edits produced.
-    ///
-    /// Three cases per span:
-    /// 1. Entirely before the edit (`span.end <= edit_byte`):
-    ///    unchanged.
-    /// 2. Entirely after the edit (`span.start >= old_end_byte`):
-    ///    both endpoints shift by `byte_delta`.
-    /// 3. Crossing the edit (overlaps the edited range): the
-    ///    prefix bytes [`span.start`, `edit_byte`) are unchanged,
-    ///    so the span's start stays put. The end extends (or
-    ///    contracts) by `byte_delta` to keep the span covering
-    ///    its now-resized content. If the span collapses to
-    ///    empty (delete consumed all of it), drop it.
-    fn shift_spans_within_line(&mut self, viewport_idx: usize, delta: &EditDelta) {
-        let edit_byte = delta.start_position.byte as usize;
-        let old_end_byte = delta.old_end_position.byte as usize;
-        let new_end_byte = delta.new_end_position.byte as usize;
-        let byte_delta: i64 = new_end_byte as i64 - old_end_byte as i64;
-        if edit_byte == old_end_byte && byte_delta == 0 {
-            // No-op edit: empty range replaced with empty text.
-            return;
-        }
-        let Some(line_spans) = self.editor.visible_highlights.get_mut(viewport_idx) else {
-            return;
-        };
-        line_spans.retain_mut(|span| {
-            if span.end <= edit_byte {
-                // Entirely before the edit; unchanged.
-                true
-            } else if span.start >= old_end_byte {
-                // Entirely after the edit; shift both endpoints.
-                let new_start = (span.start as i64) + byte_delta;
-                let new_end = (span.end as i64) + byte_delta;
-                span.start = new_start.max(0) as usize;
-                span.end = new_end.max(0) as usize;
-                true
-            } else {
-                // Span crosses the edit. Extend / contract end by
-                // byte_delta to track the resized content; start
-                // stays put (the prefix is preserved bytes).
-                let extended_end = (span.end as i64) + byte_delta;
-                if extended_end <= span.start as i64 {
-                    // Span collapsed entirely (e.g. a multi-byte
-                    // delete consumed the whole span). Drop.
-                    false
-                } else {
-                    span.end = extended_end as usize;
-                    true
-                }
-            }
-        });
-    }
+    // 5.5.E.7.1: `shift_spans_within_line` relocated to
+    // [`lattice_host::dispatch::Editor::shift_spans_within_line`]
+    // (private host helper called only by
+    // `Editor::shift_highlights_for_edit`); App-side deleted entirely.
 
     /// Refresh the active-pane visible-spans cache. Wraps the
     /// `Snapshot::highlight_lines` walk with a content-keyed

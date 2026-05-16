@@ -973,7 +973,8 @@ impl App {
             | Effect::BufferDelete { .. }
             | Effect::ListModes
             | Effect::DescribeMode { .. }
-            | Effect::Customize { .. } => {}
+            | Effect::Customize { .. }
+            | Effect::ListDiagnostics => {}
             Effect::Edits(edits) => self.handle_edits(&edits),
             Effect::EnterMode(mode) => {
                 // Operators that flip mode (`c` -> Insert) come through
@@ -1025,7 +1026,9 @@ impl App {
             Effect::OpenHover { markdown } => self.do_open_hover(&markdown),
             Effect::CloseHover => self.do_close_hover(),
             Effect::OpenHelpTopic { topic } => self.do_open_help_topic(topic.as_deref()),
-            Effect::ListDiagnostics => self.do_list_diagnostics(),
+            // 5.5.F.7: `ListDiagnostics` migrated to
+            // `Editor::handle_effect`; routed through the grouped
+            // no-op below.
             Effect::NextDiagnostic => self.do_next_diagnostic(),
             Effect::PrevDiagnostic => self.do_prev_diagnostic(),
             Effect::OpenLspLog { server_id } => self.do_open_lsp_log(server_id.as_deref()),

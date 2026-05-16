@@ -3962,56 +3962,13 @@ impl App {
         self.editor.cursor = lattice_protocol::position::Position::new(loc.range.start.line, byte);
     }
 
-    /// `:diagnostics` -- open every published diagnostic across
-    /// every attached server in a vertico-style picker. Severity
-    /// glyph in the marginalia (`[E]` / `[W]` / `[I]` / `[H]`)
-    /// and the diagnostic message as the preview text.
+    /// 5.5.F.7: see [`lattice_host::dispatch::Editor::do_list_diagnostics`].
+    /// App-side wrapper retained because three tests
+    /// (`app.rs::tests`, `lsp.rs::tests`) call it directly outside
+    /// the Effect-arm dispatch path.
+    #[allow(dead_code)]
     pub fn do_list_diagnostics(&mut self) {
-        // `:diagnostics` is a browse-style picker, not a tag-
-        // intent drill-down -- clear any stale nav origin so a
-        // later JumpToLspLocation accept doesn't push a phantom
-        // tag stack entry.
-        self.editor.pending_tag_origin = None;
-        let snapshot = self.editor.lsp_diagnostics.snapshot();
-        if snapshot.is_empty() {
-            self.set_message(EchoLevel::Info, "no diagnostics".to_string());
-            return;
-        }
-        let mut rows: Vec<lattice_picker::LspLocationRow> = Vec::new();
-        for (uri, diags) in snapshot {
-            let path = match lattice_lsp::actor::uri_to_path(&uri) {
-                Some(p) => p,
-                None => continue,
-            };
-            for d in diags {
-                let sev = match d.severity {
-                    Some(lattice_lsp::DiagnosticSeverity::ERROR) => "[E]",
-                    Some(lattice_lsp::DiagnosticSeverity::WARNING) => "[W]",
-                    Some(lattice_lsp::DiagnosticSeverity::INFORMATION) => "[I]",
-                    Some(lattice_lsp::DiagnosticSeverity::HINT) => "[H]",
-                    _ => "[?]",
-                };
-                rows.push(lattice_picker::LspLocationRow {
-                    path: path.clone(),
-                    line: d.range.start.line,
-                    col: d.range.start.character,
-                    preview: crate::help::one_line(&d.message),
-                    marginalia: sev.to_string(),
-                });
-            }
-        }
-        if rows.is_empty() {
-            self.set_message(EchoLevel::Info, "no diagnostics".to_string());
-            return;
-        }
-        let total = rows.len();
-        let mut p = lattice_picker::Picker::new(
-            format!("diagnostics ({total})"),
-            lattice_picker::PickerSource::LspLocations,
-            lattice_picker::PickerAction::JumpToLspLocation,
-        );
-        p.set_lsp_locations(rows);
-        self.editor.picker = Some(p);
+        self.editor.do_list_diagnostics();
     }
 
     /// `]d` / `:diag-next` / `:cnext` -- move the cursor to the

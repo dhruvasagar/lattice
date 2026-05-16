@@ -750,6 +750,13 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
                     })));
             }
         }
+        Effect::ListDiagnostics => {
+            // 5.5.F.7: `:diagnostics` -- open every published
+            // diagnostic in a picker. The picker lives on `Editor`
+            // (`self.picker`) and is renderer-neutral, so no
+            // `RendererSignal` is required.
+            editor.do_list_diagnostics();
+        }
         Effect::Customize { name } => {
             // 5.5.F.6: `:customize [name]` (M.9.0). Three resolution
             // paths: no arg → picker; `<name>` ending in `-mode` →
@@ -3714,6 +3721,63 @@ impl Editor {
             lattice_help::HelpContent::from_lines(format!("customize {mode_name}"), lines)
                 .with_markdown_syntax(self.lang_registry.clone()),
         )
+    }
+
+    /// 5.5.F.7: `:diagnostics` — open every published diagnostic
+    /// across every attached server in a vertico-style picker.
+    /// Severity glyph in the marginalia (`[E]` / `[W]` / `[I]` /
+    /// `[H]`) and the diagnostic message as the preview text. Empty
+    /// snapshot or empty rows route an info echo.
+    ///
+    /// Sets `self.picker` directly — pickers are a renderer-neutral
+    /// `Editor` field, so no `RendererSignal` is required (the
+    /// renderer reads the picker each frame).
+    pub fn do_list_diagnostics(&mut self) {
+        // `:diagnostics` is a browse-style picker, not a tag-intent
+        // drill-down — clear any stale nav origin so a later
+        // JumpToLspLocation accept doesn't push a phantom tag stack
+        // entry.
+        self.pending_tag_origin = None;
+        let snapshot = self.lsp_diagnostics.snapshot();
+        if snapshot.is_empty() {
+            self.set_message(EchoLevel::Info, "no diagnostics".to_string());
+            return;
+        }
+        let mut rows: Vec<lattice_picker::LspLocationRow> = Vec::new();
+        for (uri, diags) in snapshot {
+            let path = match lattice_lsp::actor::uri_to_path(&uri) {
+                Some(p) => p,
+                None => continue,
+            };
+            for d in diags {
+                let sev = match d.severity {
+                    Some(lattice_lsp::DiagnosticSeverity::ERROR) => "[E]",
+                    Some(lattice_lsp::DiagnosticSeverity::WARNING) => "[W]",
+                    Some(lattice_lsp::DiagnosticSeverity::INFORMATION) => "[I]",
+                    Some(lattice_lsp::DiagnosticSeverity::HINT) => "[H]",
+                    _ => "[?]",
+                };
+                rows.push(lattice_picker::LspLocationRow {
+                    path: path.clone(),
+                    line: d.range.start.line,
+                    col: d.range.start.character,
+                    preview: lattice_help::one_line(&d.message),
+                    marginalia: sev.to_string(),
+                });
+            }
+        }
+        if rows.is_empty() {
+            self.set_message(EchoLevel::Info, "no diagnostics".to_string());
+            return;
+        }
+        let total = rows.len();
+        let mut p = lattice_picker::Picker::new(
+            format!("diagnostics ({total})"),
+            lattice_picker::PickerSource::LspLocations,
+            lattice_picker::PickerAction::JumpToLspLocation,
+        );
+        p.set_lsp_locations(rows);
+        self.picker = Some(p);
     }
 
     /// 5.5.F.6: shared row formatter for the customize views.

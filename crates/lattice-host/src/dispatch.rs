@@ -532,6 +532,23 @@ pub(crate) fn handle_action(
         Action::ScrollLineDown => editor.do_scroll_line(true),
         Action::MatchBracket => editor.do_match_bracket(),
         Action::RedrawScreen => editor.do_redraw_screen(),
+        // 5.5.G.5: pure-editor pane-navigation arms.
+        Action::SplitPaneHorizontal => {
+            editor.do_split_pane(lattice_core::ui::pane::SplitOrientation::Horizontal)
+        }
+        Action::SplitPaneVertical => {
+            editor.do_split_pane(lattice_core::ui::pane::SplitOrientation::Vertical)
+        }
+        Action::ClosePane => editor.do_close_pane(),
+        Action::NavigatePane(dir) => editor.do_navigate_pane(dir),
+        Action::NextPane => {
+            let target = editor.pane_tree.next_pane();
+            editor.activate_pane(target);
+        }
+        Action::PrevPane => {
+            let target = editor.pane_tree.prev_pane();
+            editor.activate_pane(target);
+        }
         // Catch-all: any Action variant not yet migrated from
         // App::apply. Sub-slices 5.5.D+ extend the match upward as
         // helpers move.
@@ -2942,6 +2959,74 @@ impl Editor {
         self.recompute_folds();
         self.pending_redraw = true;
         self.set_message(EchoLevel::Info, "redraw".to_string());
+    }
+}
+
+/// 5.5.G.5: pure-editor pane navigation. `Action::SplitPaneHorizontal`
+/// / `SplitPaneVertical` / `ClosePane` / `NavigatePane` / `NextPane`
+/// / `PrevPane`. Bodies were already 100% `editor.pane_tree` +
+/// `snapshot_active_pane` / `load_active_pane` (host-side since
+/// F.4.1) reads/writes.
+impl Editor {
+    /// `<C-w>s` (horizontal) / `<C-w>v` (vertical) -- split the
+    /// active pane; the new sibling inherits cursor + scroll.
+    pub fn do_split_pane(
+        &mut self,
+        orientation: lattice_core::ui::pane::SplitOrientation,
+    ) {
+        self.snapshot_active_pane();
+        let _new_idx = self.pane_tree.split_active(orientation);
+    }
+
+    /// `<C-w>c` -- close the active pane; the first surviving
+    /// pane becomes active. No-op when only one pane is open.
+    pub fn do_close_pane(&mut self) {
+        if self.pane_tree.len() <= 1 {
+            self.set_message(EchoLevel::Warn, "Already only one pane".to_string());
+            return;
+        }
+        self.snapshot_active_pane();
+        if !self.pane_tree.close_active() {
+            return;
+        }
+        self.load_active_pane();
+    }
+
+    /// Cardinal neighbour walk (`<C-w>h/j/k/l`).
+    pub fn do_navigate_pane(
+        &mut self,
+        direction: lattice_core::ui::pane::PaneDirection,
+    ) {
+        let area = self.buffer_area_rect();
+        let Some(target) = self.pane_tree.navigate(direction, area) else {
+            return;
+        };
+        self.activate_pane(target);
+    }
+
+    /// Build the buffer-area rectangle from terminal_width +
+    /// viewport_height. Mirrors the App-side helper retired in
+    /// this slice.
+    pub fn buffer_area_rect(&self) -> lattice_core::ui::pane::PaneRect {
+        lattice_core::ui::pane::PaneRect {
+            x: 0,
+            y: 0,
+            width: self.terminal_width.unwrap_or(120),
+            height: self.viewport_height as u16,
+        }
+    }
+
+    /// Make pane `idx` active, swapping pane stash <-> hot-path
+    /// cursor / scroll.
+    pub fn activate_pane(&mut self, idx: usize) {
+        if idx == self.pane_tree.active_index() {
+            return;
+        }
+        self.snapshot_active_pane();
+        if !self.pane_tree.set_active(idx) {
+            return;
+        }
+        self.load_active_pane();
     }
 }
 

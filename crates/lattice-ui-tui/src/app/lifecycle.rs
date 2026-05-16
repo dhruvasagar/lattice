@@ -385,32 +385,19 @@ impl App {
         self.editor.should_quit = true;
     }
 
-    /// Split the active pane along `orientation`. The new sibling
-    /// inherits the active pane's content + cursor + scroll (so a
-    /// fresh `<C-w>s` shows the same view in both panes, vim's
-    /// default). Active stays on the original pane.
+    /// 5.5.G.5: body migrated to
+    /// [`lattice_host::dispatch::Editor::do_split_pane`].
+    #[allow(dead_code)]
     pub(super) fn do_split_pane(&mut self, orientation: SplitOrientation) {
-        // Save the App's hot-path cursor/scroll into the active
-        // pane's stash so the new sibling clones a fresh snapshot.
-        self.snapshot_active_pane();
-        let _new_idx = self.editor.pane_tree.split_active(orientation);
+        self.editor.do_split_pane(orientation);
     }
 
-    /// Close the active pane. The first surviving pane becomes
-    /// active. No-op when only one pane is open (vim leaves the
-    /// last window alone; closing it would mean closing the editor).
-    /// Singleton transient buffers (file tree) get garbage-collected
-    /// if no surviving pane references them.
+    /// 5.5.G.5: body migrated to
+    /// [`lattice_host::dispatch::Editor::do_close_pane`]. Kept as
+    /// a delegate because `App::do_quit` still calls it when the
+    /// editor has >1 panes (quit-just-closes-pane semantics).
     pub(super) fn do_close_pane(&mut self) {
-        if self.editor.pane_tree.len() <= 1 {
-            self.set_message(EchoLevel::Warn, "Already only one pane".to_string());
-            return;
-        }
-        self.snapshot_active_pane();
-        if !self.editor.pane_tree.close_active() {
-            return;
-        }
-        self.load_active_pane();
+        self.editor.do_close_pane();
         self.gc_unreferenced_panel_buffers();
     }
 
@@ -427,25 +414,18 @@ impl App {
     /// Step cardinally to the spatial neighbour of the active pane.
     /// Geometry comes from `PaneTree::compute_rects` so the walk
     /// matches what the renderer drew.
+    /// 5.5.G.5: body migrated to
+    /// [`lattice_host::dispatch::Editor::do_navigate_pane`].
+    #[allow(dead_code)]
     pub(super) fn do_navigate_pane(&mut self, direction: PaneDirection) {
-        let area = self.buffer_area_rect();
-        let Some(target) = self.editor.pane_tree.navigate(direction, area) else {
-            return;
-        };
-        self.activate_pane(target);
+        self.editor.do_navigate_pane(direction);
     }
 
-    /// Make pane `idx` the active one, swapping the App's hot-path
-    /// cursor / scroll with the target pane's stash.
+    /// 5.5.G.5: body migrated to
+    /// [`lattice_host::dispatch::Editor::activate_pane`]. Delegate
+    /// retained because App-side helpers still call it.
     pub(super) fn activate_pane(&mut self, idx: usize) {
-        if idx == self.editor.pane_tree.active_index() {
-            return;
-        }
-        self.snapshot_active_pane();
-        if !self.editor.pane_tree.set_active(idx) {
-            return;
-        }
-        self.load_active_pane();
+        self.editor.activate_pane(idx);
     }
 
     /// Inverse of `snapshot_active_pane`: pull the freshly
@@ -565,13 +545,10 @@ impl App {
     /// width that the renderer overrides with the real terminal
     /// width before navigation. Good enough until B.1.c has the
     /// per-frame terminal size cached on App.
+    /// 5.5.G.5: body migrated to
+    /// [`lattice_host::dispatch::Editor::buffer_area_rect`].
     pub(super) fn buffer_area_rect(&self) -> crate::pane::PaneRect {
-        crate::pane::PaneRect {
-            x: 0,
-            y: 0,
-            width: self.editor.terminal_width.unwrap_or(120),
-            height: self.editor.viewport_height as u16,
-        }
+        self.editor.buffer_area_rect()
     }
 
     /// M.4: status-line label for a pane. Dispatches through

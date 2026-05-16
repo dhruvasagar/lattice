@@ -47,7 +47,6 @@ use lattice_runtime::{CancellationToken, RuntimeError, block_on};
 
 use super::{Action, App, BufferKind, EchoLevel, FindKind, LastFind, LspNavKind, PositionSource};
 use crate::excommand;
-use crate::pane::SplitOrientation;
 
 const COMMAND_HISTORY_CAP: usize = 100;
 
@@ -189,7 +188,14 @@ impl App {
             | Action::ScrollLineUp
             | Action::ScrollLineDown
             | Action::MatchBracket
-            | Action::RedrawScreen => {}
+            | Action::RedrawScreen
+            // 5.5.G.5: pure-editor pane-navigation arms migrated.
+            | Action::SplitPaneHorizontal
+            | Action::SplitPaneVertical
+            | Action::ClosePane
+            | Action::NavigatePane(_)
+            | Action::NextPane
+            | Action::PrevPane => {}
             Action::Invoke(inv) => self.run_invocation(inv),
             Action::Insert(s) => self.do_insert_text(&s),
             // 5.5.G.3: `DeleteCharBackward`, `EnterAppend`,
@@ -493,18 +499,9 @@ impl App {
             },
             Action::OilNavigateUp => self.do_oil_navigate_up(),
 
-            Action::SplitPaneHorizontal => self.do_split_pane(SplitOrientation::Horizontal),
-            Action::SplitPaneVertical => self.do_split_pane(SplitOrientation::Vertical),
-            Action::ClosePane => self.do_close_pane(),
-            Action::NavigatePane(dir) => self.do_navigate_pane(dir),
-            Action::NextPane => {
-                let target = self.editor.pane_tree.next_pane();
-                self.activate_pane(target);
-            }
-            Action::PrevPane => {
-                let target = self.editor.pane_tree.prev_pane();
-                self.activate_pane(target);
-            }
+            // 5.5.G.5: `SplitPaneHorizontal` / `SplitPaneVertical` /
+            // `ClosePane` / `NavigatePane` / `NextPane` / `PrevPane`
+            // migrated to `Editor::dispatch`.
 
             Action::SearchAppend(c) => {
                 if let Some(line) = self.editor.search_line.as_mut() {

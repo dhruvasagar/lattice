@@ -282,21 +282,45 @@ This pattern -- "host owns the canonical neutral state; each renderer owns a cac
 | 5.B.1 | `6f651a4` | `lattice_host::Renderer` trait + `MinimalRenderer` headless impl |
 | 5.B.2 | `3649c18` | `App<R: Renderer = TuiRenderer>` parametrisation (subsequently reverted in 5.B.3 -- see Option-E pivot below) |
 | 5.B (design) | (this commit) | [`phase-5b-app-design.md`](phase-5b-app-design.md) -- Option D → Option E pivot. Composition replaces generic parametrisation. |
-| 5.B.3 | (this commit) | Reverted 5.B.2's `App<R>` generics; defined empty `lattice_host::editor::Editor` and added `editor: Editor` field on `App`. Per-cluster field migration begins from 5.B.4. |
+| 5.B.3 | `3e0db86` | Reverted 5.B.2's `App<R>` generics; defined empty `lattice_host::editor::Editor` and added `editor: Editor` field on `App`. Per-cluster field migration begins from 5.B.4. |
+| 5.B.4 | `8fc1d5b` | Macros cluster → `Editor` (macro recording / replay state + helpers). |
+| 5.B.5 | `58fb496` | Marks + registers cluster → `Editor` (named marks, unnamed register, numbered + named registers). |
+| 5.B.6 | `cedbaca` | Position history + tag stack cluster → `Editor` (unified jump/mark ring backing storage). |
+| 5.B.7 | `7a9fb4d` | Search state → `Editor` (search_line, last_search, hlsearch toggles, substitute preview). |
+| 5.B.8 | `1944035` | Vim repeat (`.`) + visual state → `Editor` (last_change, last_visual, pending block insert). |
+| 5.B.9 | `0879473` | Replace + insert state → `Editor` (replace overstrike stack, insert anchors). |
+| 5.B.10 | `4c7bd1e` | Popup cluster (3 of 4) → `Editor` (popup buffer + active popup; back-stack stayed on `App` pending C2/C3). |
+| 5.B.11 | `49bbe15` | Cmdline + echo cluster → `Editor` (command_line, last_message, messages, command_history). |
+| 5.B.12 | `e9203e1` | Syntax cluster → `Editor` (lang_registry, syntax, pending_syntax_edits). |
+| 5.B.13 | `f3d0652` | Picker cluster → `Editor` (picker, picker_registry, picker_mru, live-picker query state). |
+| 5.B.14 | `2eb61ad` | Config + modes cluster → `Editor` (config, option_cache, mode_registry, services). |
+| 5.B.15 | `37b4dbd` | Modal + dispatch cluster → `Editor` (modal, partial_chord, action_ids, builtins, keymap handle). |
+| 5.B.16 | `94dcebb` | Active-pane state subset → `Editor` (cursor, scroll, viewport plumbing; pane_tree deferred to C4a). |
+| 5.B.17 | `acf5b2a` | LSP per-buffer caches → `Editor` (~12 `lsp_*_cache` fields). |
+| 5.B.18a | `d00b4d9` | LSP field scaffolding on `Editor` (subsystem handle + diagnostics + watcher slots, no behaviour change). |
+| 5.B.18b | `f1ba0f9` | LSP subsystem + server channels → `Editor`. |
+| 5.B.19 | `d5b5b82` | LSP request channel call sites migrated to `Editor` (~40 pending_*_rx / pending_*_token redirects). |
+| 5.B.C1 | `0d84c6f` | Cmdline `CompletionState` + `completion_registry` → `Editor`. `CompletionState` re-exported from host. |
+| 5.B.C2 | `bb4911e` + `e51db26` | `VisibleHighlightsKey` promoted to host; visible_highlights cache key storage → `Editor`. |
+| 5.B.C3 | `bb4911e` | `PopupSnapshot` promoted to host; ui-tui consumes host type. |
+| 5.B.C4a | `ed8c4ec` | `pane_tree` → `Editor`. |
+| 5.B.C4b/c | `db31aeb` | `document` + `snapshot_cache` → `Editor`. Removed duplicate `CompletionState` in `host::state`; dropped `Editor::Default` panic placeholder; fields initialised in `boot`. |
+| 5.B.C4 final | `c57346c` | `folds` → `Editor`; render/highlights updated; popup construction begins consuming host `PopupSnapshot`. |
+| 5.B.C5 | `e51b4ed` + `2e3af79` + `be5c1d0` + `3465f6f` + `9401d4e` | `LspFileWatcher` type moved to host; ui-tui holds the optional host watcher; refresh/drain wired through host impl. Workspace green; final LSP/document/folds redirects landed. |
 
-**Total moved from `lattice-ui-tui`:** ~17.5k LoC. **Test count:** 1781 throughout (1424 ui-tui + 177 host + 180 lsp at session end).
+**Total moved from `lattice-ui-tui`:** ~24k LoC (post-5.B). `App` is now 4,151 LoC (down from ~6k pre-5.B); `lattice_host::editor::Editor` is 738 LoC and growing. **Test count:** workspace green throughout 5.B; per-crate counts not re-baselined post-C5 — capture before closing out 5.B properly.
 
 ## Remaining work
 
-The slices that haven't landed gate on **the App keystone migration**. App lives in `lattice-ui-tui/src/app.rs` (~4.6k LoC after extractions) and is referenced by:
+**5.B is substantively complete in code** (composition migration, clusters 1–12 from [`phase-5b-app-design.md`](phase-5b-app-design.md)). What still keeps it from being closed out:
 
-- Every `app/*.rs` submodule (~35k LoC of method impls)
-- `picker_sources.rs` (tests use `app_with`)
-- `render.rs`, `runtime.rs` (TUI-coupled but read App fields)
-- The keymap catalog files (import `crate::app::Action` -- still resolves via lattice-host re-export)
-- The pane render registry (Hard Case §2 -- references `&App`)
+- **Completion cluster (#8) — partial.** `CompletionState` and `completion_registry` migrated in C1, but `insert_completion`, `snippet_registry`, `insert_completion_snippet_meta`, `completion_accept_freq`, `per_language_completion`, `completion_in_path_context`, `active_snippet`, and `snippet_dirs` still live on `App`. They are renderer-agnostic and belong on `Editor`.
+- **Popup cluster (#7) — final tail.** `popup_back_stack` still on `App` (the "3 of 4" caveat from 5.B.10 + C3); `PopupSnapshot` is now host-typed, so the move is mechanical.
+- **Stragglers.** `pending_config_structural_sections` (config-cluster late arrival) is on `App`; should migrate alongside the completion finish.
 
-**Approach: composition, not generic parametrisation.** See [`phase-5b-app-design.md`](phase-5b-app-design.md) for the analysis. Option D (`App<R: Renderer>` parametrised over a host-side trait) was attempted in 5.B.2 and reverted in 5.B.3 once the Rust orphan rule made every renderer-specific method either (a) require a single mega-commit moving 35k LoC, or (b) require lifelong extension-trait machinery. Option E (composition) achieves the same separation more cleanly:
+After those land, `App`'s field set reduces to: `editor`, `theme`, `pane_render_registry`, `lsp_file_watcher` (the optional renderer-side watcher wrapper around the host type). The first three are genuinely renderer-specific; the fourth is the host-typed watcher held by name on the renderer struct (revisit if it should fully migrate during 5.5).
+
+**Approach: composition (Option E from [`phase-5b-app-design.md`](phase-5b-app-design.md)).** Option D (`App<R: Renderer>` parametrised over a host-side trait) was attempted in 5.B.2 and reverted in 5.B.3 once the Rust orphan rule made every renderer-specific method either (a) require a single mega-commit moving 35k LoC, or (b) require lifelong extension-trait machinery. Option E (composition) achieves the same separation more cleanly:
 
 1. `lattice_host::editor::Editor` holds the renderer-agnostic editor state.
 2. Each renderer crate's `App` struct composes `editor: Editor` alongside its renderer-specific caches (`theme`, `pane_render_registry`).
@@ -304,6 +328,8 @@ The slices that haven't landed gate on **the App keystone migration**. App lives
 4. `App`'s remaining inherent impl surface ends up genuinely TUI-only.
 
 Every per-cluster commit ships green: methods that still live in `impl App` access migrated fields via `self.editor.foo`; methods that have moved to `impl Editor` use `self.foo` directly. The discipline that broke under Option D is preserved under Option E.
+
+**Beyond 5.B**, slices 5.5 (pane render trait), 5.6 (`lattice-render` crate), 5.7 (`--tui` flag), 5.8+ (GPUI scaffold) remain — plus the deferred 5.4 piece (`input.rs` crossterm-shim split) and the deferred 5.2 keymap-catalog migration (blocked on the same dispatch refactor as `input.rs`).
 
 ## Slice ordering
 

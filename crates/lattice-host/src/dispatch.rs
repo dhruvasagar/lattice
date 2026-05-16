@@ -502,6 +502,26 @@ pub(crate) fn handle_action(
                 editor.set_message(EchoLevel::Error, format!("invalid mark: {name}"));
             }
         }
+        // 5.5.G.3: pure-editor edit-cluster arms. Bodies migrated
+        // to [`Editor`]; LSP-coupled `do_insert_text`,
+        // `do_paste*`, and `do_enter_block_visual_insert` stay on
+        // App until their helpers move.
+        Action::Undo => {
+            let _ = editor.undo_blocking();
+            editor.clamp_cursor_to_buffer();
+        }
+        Action::Redo => {
+            let _ = editor.redo_blocking();
+            editor.clamp_cursor_to_buffer();
+        }
+        Action::JoinLines { with_space } => editor.do_join_lines(with_space),
+        Action::ToggleCaseAtCursor => editor.do_toggle_case_at_cursor(),
+        Action::EnterAppend => editor.do_enter_append(),
+        Action::OpenLineBelow => editor.do_open_line_below(),
+        Action::OpenLineAbove => editor.do_open_line_above(),
+        Action::OverwriteChar(c) => editor.do_overwrite_char(c),
+        Action::ReplaceUndoLast => editor.do_replace_undo_last(),
+        Action::DeleteCharBackward => editor.do_delete_char_backward(),
         // Catch-all: any Action variant not yet migrated from
         // App::apply. Sub-slices 5.5.D+ extend the match upward as
         // helpers move.
@@ -2523,6 +2543,227 @@ fn outermost_fold_idx<F: Fn(&lattice_core::Fold) -> bool>(
         .filter(|(_, f)| pred(f) && line >= f.start_line && line <= f.end_line)
         .min_by_key(|(_, f)| (f.start_line, std::cmp::Reverse(f.end_line)))
         .map(|(i, _)| i)
+}
+
+/// 5.5.G.3: pure-editor edit-cluster helpers (line operations,
+/// case toggle, open / append / overwrite, undo/redo glue,
+/// backspace). Each body either was already 100% `editor.*` reads
+/// + writes or only used [`Self::apply_edit_blocking`] /
+/// [`Self::active_text`] / host-side primitives.
+impl Editor {
+    /// Vim's `J` (`with_space = true`) and `gJ` (`false`) -- splice
+    /// the current line's newline (+ leading whitespace, for `J`)
+    /// with `" "` (or `""` for `gJ`). Cursor lands on the join
+    /// point.
+    pub fn do_join_lines(&mut self, with_space: bool) {
+        let last = last_addressable_line(&self.document.snapshot().buffer);
+        if self.cursor.line >= last {
+            return;
+        }
+        let line = self.cursor.line;
+        let next_line = line + 1;
+        let cur_len = self.document.snapshot().buffer.line_byte_len(line);
+        let trim = if with_space {
+            let text = self.document.text();
+            let next_text = text
+                .split_inclusive('\n')
+                .nth(next_line as usize)
+                .map(|l| l.trim_end_matches('\n'))
+                .unwrap_or("");
+            let mut t = 0usize;
+            let bytes = next_text.as_bytes();
+            while t < bytes.len() && (bytes[t] == b' ' || bytes[t] == b'\t') {
+                t += 1;
+            }
+            t as u32
+        } else {
+            0
+        };
+        let range = lattice_protocol::position::Range::new(
+            lattice_protocol::position::Position::new(line, cur_len),
+            lattice_protocol::position::Position::new(next_line, trim),
+        );
+        let replacement = if with_space { " " } else { "" };
+        if let Ok(applied) =
+            self.apply_edit_blocking(lattice_protocol::edit::Edit::replace(range, replacement))
+        {
+            self.cursor = applied.original_range.start;
+        }
+    }
+
+    /// Vim's `~` -- toggle the case of the byte at the cursor and
+    /// advance. Non-letter bytes are unchanged; the cursor still
+    /// advances. At EOL the cursor stops (no wrap).
+    pub fn do_toggle_case_at_cursor(&mut self) {
+        let line_len = self.document.snapshot().buffer.line_byte_len(self.cursor.line);
+        if self.cursor.byte >= line_len {
+            return;
+        }
+        let r = lattice_protocol::position::Range::new(
+            self.cursor,
+            lattice_protocol::position::Position::new(self.cursor.line, self.cursor.byte + 1),
+        );
+        let original = match self.document.snapshot().buffer.slice(r) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        let toggled: String = original
+            .as_bytes()
+            .iter()
+            .map(|&b| match b {
+                b'a'..=b'z' => (b - 32) as char,
+                b'A'..=b'Z' => (b + 32) as char,
+                other => other as char,
+            })
+            .collect();
+        if let Ok(applied) =
+            self.apply_edit_blocking(lattice_protocol::edit::Edit::replace(r, &toggled))
+        {
+            self.cursor = applied.inserted_range.end;
+        }
+    }
+
+    /// Vim's `a` -- step the cursor one byte to the right (clamped
+    /// to EOL) and switch to Insert. Does NOT route through the
+    /// canonical `enter_mode` lifecycle (the App-side `EnterMode`
+    /// arm does that with recording_insert plumbing). The semantics
+    /// here mirror the App-side helper retired in this slice: pure
+    /// field writes.
+    pub fn do_enter_append(&mut self) {
+        let len = self.document.snapshot().buffer.line_byte_len(self.cursor.line);
+        if self.cursor.byte < len {
+            self.cursor.byte += 1;
+        }
+        self.modal = ModalState::Insert;
+    }
+
+    /// Vim's `o` -- splice `\n` at EOL, drop cursor on the new
+    /// blank line, switch to Insert. Uses [`Self::active_text`] so
+    /// the path works uniformly across Document / Oil / etc.
+    pub fn do_open_line_below(&mut self) {
+        let buf = self.active_text();
+        let len = buf.line_byte_len(self.cursor.line);
+        let eol = lattice_protocol::position::Position::new(self.cursor.line, len);
+        if self
+            .apply_edit_blocking(lattice_protocol::edit::Edit::insert(eol, "\n"))
+            .is_ok()
+        {
+            self.cursor = lattice_protocol::position::Position::new(self.cursor.line + 1, 0);
+        }
+        self.modal = ModalState::Insert;
+    }
+
+    /// Vim's `O` -- mirror of [`Self::do_open_line_below`] but
+    /// inserts `\n` at BOL and keeps the cursor on the inserted
+    /// (now upper) row.
+    pub fn do_open_line_above(&mut self) {
+        let bol = lattice_protocol::position::Position::new(self.cursor.line, 0);
+        if self
+            .apply_edit_blocking(lattice_protocol::edit::Edit::insert(bol, "\n"))
+            .is_ok()
+        {
+            self.cursor = bol;
+        }
+        self.modal = ModalState::Insert;
+    }
+
+    /// Vim's Replace mode (`R`) overstrike -- if the cursor is
+    /// mid-line, replace `[cursor, cursor+1)` with `c`; if past
+    /// EOL, extend with an insert. Either way the cursor advances
+    /// by one byte and the original byte (or `None` for the
+    /// extend case) is recorded on `replace_history` so backspace
+    /// can restore it.
+    pub fn do_overwrite_char(&mut self, c: char) {
+        let len = self.document.snapshot().buffer.line_byte_len(self.cursor.line);
+        let s = c.to_string();
+        let entry_pos = self.cursor;
+        if self.cursor.byte < len {
+            let r = lattice_protocol::position::Range::new(
+                self.cursor,
+                lattice_protocol::position::Position::new(self.cursor.line, self.cursor.byte + 1),
+            );
+            let original = self.document.snapshot().buffer.slice(r).ok();
+            if let Ok(applied) =
+                self.apply_edit_blocking(lattice_protocol::edit::Edit::replace(r, &s))
+            {
+                self.cursor = applied.inserted_range.end;
+                self.replace_history.push(crate::state::ReplaceEntry {
+                    at: entry_pos,
+                    original,
+                });
+            }
+        } else if let Ok(applied) = self.apply_edit_blocking(lattice_protocol::edit::Edit::insert(
+            self.cursor,
+            &s,
+        )) {
+            self.cursor = applied.inserted_range.end;
+            self.replace_history.push(crate::state::ReplaceEntry {
+                at: entry_pos,
+                original: None,
+            });
+        }
+    }
+
+    /// Pop the latest `replace_history` entry and restore. If the
+    /// entry recorded an original byte, replace; otherwise the
+    /// extend-case path deletes the byte. Cursor returns to the
+    /// entry's position.
+    pub fn do_replace_undo_last(&mut self) {
+        let Some(entry) = self.replace_history.pop() else {
+            return;
+        };
+        let after = lattice_protocol::position::Position::new(entry.at.line, entry.at.byte + 1);
+        let r = lattice_protocol::position::Range::new(entry.at, after);
+        match entry.original {
+            Some(orig) => {
+                let _ = self.apply_edit_blocking(lattice_protocol::edit::Edit::replace(r, &orig));
+            }
+            None => {
+                let _ = self.apply_edit_blocking(lattice_protocol::edit::Edit::delete(r));
+            }
+        }
+        self.cursor = entry.at;
+    }
+
+    /// Vim's `<BS>` in Insert / Replace -- delete the byte before
+    /// the cursor (Unicode-aware step via `previous_position`).
+    /// No-op at the start of the buffer. Bumps the block-visual
+    /// `I` / `A` live-edit counter so the Esc replay accounts for
+    /// the deletion.
+    pub fn do_delete_char_backward(&mut self) {
+        let prev = previous_position(&self.document.snapshot().buffer, self.cursor);
+        if prev == self.cursor {
+            return;
+        }
+        let range = lattice_protocol::position::Range::new(prev, self.cursor);
+        if self
+            .apply_edit_blocking(lattice_protocol::edit::Edit::delete(range))
+            .is_ok()
+        {
+            self.cursor = prev;
+            if let Some(spec) = self.pending_block_insert.as_mut() {
+                spec.live_edits = spec.live_edits.saturating_add(1);
+            }
+        }
+    }
+}
+
+/// 5.5.G.3: unicode-aware backward step. Mirrors
+/// `lattice_ui_tui::app::previous_position`; duplicated here so
+/// the host-side `do_delete_char_backward` doesn't reach across
+/// the crate boundary.
+fn previous_position(
+    buf: &lattice_core::Buffer,
+    p: lattice_protocol::position::Position,
+) -> lattice_protocol::position::Position {
+    if p.byte > 0 {
+        lattice_protocol::position::Position::new(p.line, p.byte - 1)
+    } else if p.line > 0 {
+        let prev_line = p.line - 1;
+        lattice_protocol::position::Position::new(prev_line, buf.line_byte_len(prev_line))
+    } else {
+        p
+    }
 }
 
 /// 5.5.G.2: pure-editor visual-mode helpers.

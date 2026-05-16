@@ -44,13 +44,10 @@ use lattice_grammar::VisualKind;
 use lattice_grammar::YankKind;
 use lattice_grammar::register::Register;
 use lattice_protocol::edit::Edit;
-use lattice_protocol::position::{Position, Range as ProtoRange};
+use lattice_protocol::position::Position;
 use lattice_runtime::RuntimeError;
 
-use super::{
-    App, EchoLevel, PendingBlockInsert, ReplaceEntry, UnnamedRegister, last_addressable_line,
-    line_byte_len, previous_position,
-};
+use super::{App, EchoLevel, PendingBlockInsert, UnnamedRegister, line_byte_len};
 
 impl App {
     // ---- Blocking bridges to the document actor ----
@@ -106,6 +103,10 @@ impl App {
     }
 
     /// 5.5.E.7.3: see [`lattice_host::dispatch::Editor::redo_blocking`].
+    /// 5.5.G.3 dropped App's `Action::Redo` caller; kept as
+    /// `#[allow(dead_code)]` for symmetry with `undo_blocking`
+    /// until tests / scripts that call it directly migrate.
+    #[allow(dead_code)]
     pub(super) fn redo_blocking(&mut self) -> Result<Vec<AppliedEdit>, RuntimeError> {
         self.editor.redo_blocking()
     }
@@ -114,71 +115,8 @@ impl App {
     /// `with_space = true` (J), the joining newline becomes one space
     /// (and any leading whitespace on the next line is trimmed). With
     /// `with_space = false` (gJ), no replacement -- pure concat.
-    pub(super) fn do_join_lines(&mut self, with_space: bool) {
-        let last = last_addressable_line(&self.editor.document.snapshot().buffer);
-        if self.editor.cursor.line >= last {
-            return;
-        }
-        let line = self.editor.cursor.line;
-        let next_line = line + 1;
-        let cur_len = line_byte_len(&self.editor.document.snapshot().buffer, line);
-        // Compute how many leading whitespace bytes to trim from the
-        // next line's content (only for J, not gJ).
-        let trim = if with_space {
-            let text = self.editor.document.text();
-            let next_text = text
-                .split_inclusive('\n')
-                .nth(next_line as usize)
-                .map(|l| l.trim_end_matches('\n'))
-                .unwrap_or("");
-            let mut t = 0usize;
-            let bytes = next_text.as_bytes();
-            while t < bytes.len() && (bytes[t] == b' ' || bytes[t] == b'\t') {
-                t += 1;
-            }
-            t as u32
-        } else {
-            0
-        };
-        // Range to replace covers `\n` + (optional) leading whitespace.
-        let range = ProtoRange::new(Position::new(line, cur_len), Position::new(next_line, trim));
-        let replacement = if with_space { " " } else { "" };
-        if let Ok(applied) = self.apply_edit_blocking(Edit::replace(range, replacement)) {
-            // Cursor lands at the end of the original first line (vim's
-            // standard J behavior puts cursor on the first space).
-            self.editor.cursor = applied.original_range.start;
-        }
-    }
-
-    /// Vim's `~`: toggle the case of the char at cursor and advance.
-    /// Non-letter chars are unchanged; cursor still advances. At EOL
-    /// the cursor stops (no wrap).
-    pub(super) fn do_toggle_case_at_cursor(&mut self) {
-        let line_len = line_byte_len(&self.editor.document.snapshot().buffer, self.editor.cursor.line);
-        if self.editor.cursor.byte >= line_len {
-            return;
-        }
-        let r = ProtoRange::new(
-            self.editor.cursor,
-            Position::new(self.editor.cursor.line, self.editor.cursor.byte + 1),
-        );
-        let original = match self.editor.document.snapshot().buffer.slice(r) {
-            Ok(s) => s,
-            Err(_) => return,
-        };
-        let toggled: String = original
-            .as_bytes()
-            .iter()
-            .map(|&b| match b {
-                b'a'..=b'z' => (b - 32) as char,
-                b'A'..=b'Z' => (b + 32) as char,
-                other => other as char,
-            })
-            .collect();
-        if let Ok(applied) = self.apply_edit_blocking(Edit::replace(r, &toggled)) {
-            self.editor.cursor = applied.inserted_range.end;
-        }
-    }
+    // 5.5.G.3: `do_join_lines` + `do_toggle_case_at_cursor`
+    // migrated to [`lattice_host::dispatch::Editor`].
 
     /// Bracketed-paste handler. Routes the payload to the right target
     /// based on the current modal state -- cursor for editing modes,
@@ -332,13 +270,8 @@ impl App {
 
     /// Vim's `a` -- step the cursor one byte forward (clamped to
     /// EOL) and switch to Insert.
-    pub(super) fn do_enter_append(&mut self) {
-        let len = line_byte_len(&self.editor.document.snapshot().buffer, self.editor.cursor.line);
-        if self.editor.cursor.byte < len {
-            self.editor.cursor.byte += 1;
-        }
-        self.editor.modal = ModalState::Insert;
-    }
+    // 5.5.G.3: `do_enter_append` migrated to
+    // [`lattice_host::dispatch::Editor`].
 
     /// Vim's blockwise-visual `I` (`append=false`) and `A`
     /// (`append=true`). Captures the block extents from the active
@@ -389,26 +322,8 @@ impl App {
     /// uniformly across Document / Oil / etc. -- without that,
     /// `o` in an oil buffer reads the wrong (document) rope's
     /// line length and inserts mid-row.
-    pub(super) fn do_open_line_below(&mut self) {
-        let buf = self.active_text();
-        let len = line_byte_len(&buf, self.editor.cursor.line);
-        let eol = Position::new(self.editor.cursor.line, len);
-        if self.apply_edit_blocking(Edit::insert(eol, "\n")).is_ok() {
-            self.editor.cursor = Position::new(self.editor.cursor.line + 1, 0);
-        }
-        self.editor.modal = ModalState::Insert;
-    }
-
-    /// Vim's `O` -- open a new line above the cursor; mirror of
-    /// `do_open_line_below` but inserts at start-of-line and
-    /// keeps the cursor on the inserted (now upper) row.
-    pub(super) fn do_open_line_above(&mut self) {
-        let bol = Position::new(self.editor.cursor.line, 0);
-        if self.apply_edit_blocking(Edit::insert(bol, "\n")).is_ok() {
-            self.editor.cursor = bol;
-        }
-        self.editor.modal = ModalState::Insert;
-    }
+    // 5.5.G.3: `do_open_line_below` + `do_open_line_above`
+    // migrated to [`lattice_host::dispatch::Editor`].
 
     /// 5.5.E.7.4: see [`lattice_host::dispatch::Editor::do_delete_line`].
     #[allow(dead_code)]
@@ -453,57 +368,8 @@ impl App {
     /// (vim's R extends the line). Either way the cursor advances by
     /// one byte. The original byte (or `None` if past EOL) is pushed
     /// onto `replace_history` so backspace can restore it.
-    pub(super) fn do_overwrite_char(&mut self, c: char) {
-        let len = line_byte_len(&self.editor.document.snapshot().buffer, self.editor.cursor.line);
-        let s = c.to_string();
-        let entry_pos = self.editor.cursor;
-        if self.editor.cursor.byte < len {
-            let r = ProtoRange::new(
-                self.editor.cursor,
-                Position::new(self.editor.cursor.line, self.editor.cursor.byte + 1),
-            );
-            // Capture the original byte before the replace lands.
-            let original = self.editor.document.snapshot().buffer.slice(r).ok();
-            if let Ok(applied) = self.apply_edit_blocking(Edit::replace(r, &s)) {
-                self.editor.cursor = applied.inserted_range.end;
-                self.editor.replace_history.push(ReplaceEntry {
-                    at: entry_pos,
-                    original,
-                });
-            }
-        } else {
-            // Past end of line: extend. Original is None.
-            if let Ok(applied) = self.apply_edit_blocking(Edit::insert(self.editor.cursor, &s)) {
-                self.editor.cursor = applied.inserted_range.end;
-                self.editor.replace_history.push(ReplaceEntry {
-                    at: entry_pos,
-                    original: None,
-                });
-            }
-        }
-    }
-
-    /// Pop the latest replace_history entry and restore. If the entry
-    /// recorded an original byte, replace the byte at the entry's
-    /// position with it. If it didn't (line-extension case), delete
-    /// the byte. Either way the cursor moves back to the entry's
-    /// position.
-    pub(super) fn do_replace_undo_last(&mut self) {
-        let Some(entry) = self.editor.replace_history.pop() else {
-            return;
-        };
-        let after = Position::new(entry.at.line, entry.at.byte + 1);
-        let r = ProtoRange::new(entry.at, after);
-        match entry.original {
-            Some(orig) => {
-                let _ = self.apply_edit_blocking(Edit::replace(r, &orig));
-            }
-            None => {
-                let _ = self.apply_edit_blocking(Edit::delete(r));
-            }
-        }
-        self.editor.cursor = entry.at;
-    }
+    // 5.5.G.3: `do_overwrite_char` + `do_replace_undo_last`
+    // migrated to [`lattice_host::dispatch::Editor`].
 
     /// Splice `s` at the cursor as the canonical Insert-mode insertion
     /// path: applies the edit, advances the cursor, captures the text
@@ -575,19 +441,8 @@ impl App {
     /// cursor (Unicode-aware step via previous_position). No-op at the
     /// start of the buffer. Bumps the block-visual `I` / `A`
     /// live-edit counter so the Esc replay accounts for the deletion.
-    pub(super) fn do_delete_char_backward(&mut self) {
-        let prev = previous_position(&self.editor.document.snapshot().buffer, self.editor.cursor);
-        if prev == self.editor.cursor {
-            return;
-        }
-        let range = ProtoRange::new(prev, self.editor.cursor);
-        if self.apply_edit_blocking(Edit::delete(range)).is_ok() {
-            self.editor.cursor = prev;
-            if let Some(spec) = self.editor.pending_block_insert.as_mut() {
-                spec.live_edits = spec.live_edits.saturating_add(1);
-            }
-        }
-    }
+    // 5.5.G.3: `do_delete_char_backward` migrated to
+    // [`lattice_host::dispatch::Editor`].
 
     // 5.5.E.3: `store_yank` moved to
     // [`lattice_host::dispatch::Editor::store_yank`] alongside the

@@ -167,24 +167,28 @@ impl App {
             | Action::EnterVisual(_)
             | Action::ExitVisual
             | Action::ReselectLastVisual
-            | Action::SetMark(_) => {}
+            | Action::SetMark(_)
+            // 5.5.G.3: pure-editor edit-cluster arms migrated to
+            // `Editor::dispatch`.
+            | Action::Undo
+            | Action::Redo
+            | Action::JoinLines { .. }
+            | Action::ToggleCaseAtCursor
+            | Action::EnterAppend
+            | Action::OpenLineBelow
+            | Action::OpenLineAbove
+            | Action::OverwriteChar(_)
+            | Action::ReplaceUndoLast
+            | Action::DeleteCharBackward => {}
             Action::Invoke(inv) => self.run_invocation(inv),
             Action::Insert(s) => self.do_insert_text(&s),
-            Action::DeleteCharBackward => self.do_delete_char_backward(),
+            // 5.5.G.3: `DeleteCharBackward`, `EnterAppend`,
+            // `OpenLineBelow`, `OpenLineAbove`, `Undo`, `Redo`
+            // migrated to `Editor::dispatch`; routed through the
+            // grouped no-op above.
             Action::EnterMode(state) => self.enter_mode(state),
-            Action::EnterAppend => self.do_enter_append(),
             Action::EnterBlockVisualInsert => self.do_enter_block_visual_insert(false),
             Action::EnterBlockVisualAppend => self.do_enter_block_visual_insert(true),
-            Action::OpenLineBelow => self.do_open_line_below(),
-            Action::OpenLineAbove => self.do_open_line_above(),
-            Action::Undo => {
-                let _ = self.undo_blocking();
-                self.clamp_cursor_to_buffer();
-            }
-            Action::Redo => {
-                let _ = self.redo_blocking();
-                self.clamp_cursor_to_buffer();
-            }
 
             Action::EnterCommandLine => {
                 self.editor.command_line.clear();
@@ -311,8 +315,8 @@ impl App {
             // grouped no-op above.
             Action::SearchWordUnderCursor(direction) => self.do_search_word_under_cursor(direction),
             Action::MatchBracket => self.do_match_bracket(),
-            Action::ToggleCaseAtCursor => self.do_toggle_case_at_cursor(),
-            Action::JoinLines { with_space } => self.do_join_lines(with_space),
+            // 5.5.G.3: `ToggleCaseAtCursor` / `JoinLines` migrated
+            // to `Editor::dispatch`.
             Action::FindRepeat { reverse } => self.do_find_repeat(reverse),
 
             Action::CreateFoldFromVisual => self.do_create_fold_from_visual(),
@@ -387,9 +391,8 @@ impl App {
                 }
             }
 
-            Action::OverwriteChar(c) => self.do_overwrite_char(c),
-            Action::ReplaceUndoLast => self.do_replace_undo_last(),
-
+            // 5.5.G.3: `OverwriteChar` / `ReplaceUndoLast` migrated
+            // to `Editor::dispatch`.
             Action::JumpViewport(vp) => self.do_jump_viewport(vp),
             Action::ScrollCursorTo(sp) => self.do_scroll_cursor_to(sp),
             Action::PageDown => self.do_page(true),

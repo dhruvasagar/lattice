@@ -29,9 +29,7 @@
 //! struct (lives in `app.rs`), tree-sitter query plumbing
 //! (`crate::syntax`).
 
-use lattice_protocol::position::Position;
-
-use super::{App, Fold, is_blank_line, last_addressable_line, line_byte_len};
+use super::{App, Fold};
 
 impl App {
     /// Refresh [`Self::folds`] from the active [`FoldMethod`].
@@ -80,70 +78,31 @@ impl App {
             .any(|f| f.closed && line > f.start_line && line <= f.end_line)
     }
 
-    /// Returns Some(fold) if `line` is the start of a closed fold; the
-    /// renderer renders the summary header instead of the line content.
+    /// 5.5.G.23: body migrated to
+    /// [`lattice_host::dispatch::Editor::fold_start_at`]. Retained
+    /// as a delegate because the renderer's per-frame gutter pass
+    /// (search.rs, motions.rs, render.rs) and the host-side
+    /// `run_document_invocation` both still call it before the
+    /// helper deletion sweep.
     pub fn fold_start_at(&self, line: u32) -> Option<&Fold> {
-        if !self.foldenable() {
-            return None;
-        }
-        self.editor.folds.iter().find(|f| f.closed && f.start_line == line)
+        self.editor.fold_start_at(line)
     }
 
-    /// Returns Some(fold) if `line` is the start of any fold (open or
-    /// closed). Used by the renderer for the gutter glyph.
+    /// 5.5.G.23: body migrated to
+    /// [`lattice_host::dispatch::Editor::fold_start_at_any`]. Retained
+    /// as a 1-line delegate; renderer call sites retire on the same
+    /// sweep as `fold_start_at`.
     pub fn fold_start_at_any(&self, line: u32) -> Option<&Fold> {
-        if !self.foldenable() {
-            return None;
-        }
-        self.editor.folds.iter().find(|f| f.start_line == line)
+        self.editor.fold_start_at_any(line)
     }
 
-    /// Move the cursor out of any closed fold's hidden body to the
-    /// nearest visible line. Called after every non-jump motion so
-    /// the cursor's logical position never lands in a hidden region.
-    /// `foldenable = false` suppresses entirely.
+    /// 5.5.G.23: body migrated to
+    /// [`lattice_host::dispatch::Editor::snap_cursor_past_closed_folds`].
+    /// Retained as a 1-line delegate because the renderer's
+    /// search-result + motions paths still drive it; deletion
+    /// follows once those callers go host-side.
     pub(super) fn snap_cursor_past_closed_folds(&mut self, prev_line: u32) {
-        if !self.foldenable() {
-            return;
-        }
-        let new_line = self.editor.cursor.line;
-        if new_line == prev_line {
-            return;
-        }
-        let going_down = new_line > prev_line;
-        let snap = self.editor.document.snapshot();
-        let last = last_addressable_line(&snap.buffer);
-        let mut snapped = new_line;
-        let mut exited_a_fold = false;
-        loop {
-            let in_closed = self
-                .editor
-                .folds
-                .iter()
-                .find(|f| f.closed && snapped > f.start_line && snapped <= f.end_line)
-                .copied();
-            if let Some(fold) = in_closed {
-                snapped = if going_down {
-                    (fold.end_line + 1).min(last)
-                } else {
-                    fold.start_line
-                };
-                exited_a_fold = true;
-                continue;
-            }
-            if exited_a_fold && going_down && snapped < last && is_blank_line(&snap.buffer, snapped)
-            {
-                snapped += 1;
-                continue;
-            }
-            break;
-        }
-        if snapped == new_line {
-            return;
-        }
-        let len = line_byte_len(&snap.buffer, snapped);
-        let byte = self.editor.cursor.byte.min(len);
-        self.editor.cursor = Position::new(snapped, byte);
+        self.editor.snap_cursor_past_closed_folds(prev_line);
     }
 
     /// 5.5.G.4: body migrated to

@@ -100,6 +100,21 @@ pub struct DispatchOutcome {
     /// App's match entirely; until then it's the coordination channel
     /// that keeps the two halves in lockstep.
     pub consumed: bool,
+    /// 5.5.G.23: deferred effects the host produced (typically from
+    /// `Action::Invoke` -> `Editor::run_invocation` host-side) that the
+    /// renderer still needs to apply through its App-side effect tail
+    /// (e.g. `Effect::OpenBuffer` -> `do_edit`, `Effect::SaveBuffer`
+    /// -> `do_write`). The host has *already* called
+    /// `editor.handle_effect(effect.clone())` for every effect in this
+    /// list, so the App-side consumer must NOT re-run `handle_effect`
+    /// when draining; it should only run its renderer-coupled match
+    /// arms (i.e. call `apply_effect_app_arms`).
+    ///
+    /// Empty for the vast majority of dispatches (host-only arms emit
+    /// no effects). The `Vec` shape lets nested host helpers
+    /// (`run_oil_invocation`, etc.) append without threading the
+    /// outcome up the call stack.
+    pub effects: Vec<lattice_grammar::Effect>,
 }
 
 /// Host-to-renderer side-effect signal.
@@ -2747,6 +2762,23 @@ impl Editor {
         self.recompute_syntax_folds(buffer)
     }
 
+    /// 5.5.G.23: blocking grammar-dispatch entry. Drives every
+    /// `CommandInvocation` through the document actor's
+    /// `dispatch_with_cancel` channel. Today's TUI parks the
+    /// thread via `block_on`; a future tokio-driven runtime can
+    /// flip the cancellation token on Esc without changing this
+    /// signature.
+    pub fn dispatch_blocking(
+        &self,
+        invocation: lattice_grammar::CommandInvocation,
+    ) -> Result<lattice_grammar::Effect, lattice_runtime::RuntimeError> {
+        lattice_runtime::block_on(self.document.dispatch_with_cancel(
+            invocation,
+            self.cursor,
+            lattice_protocol::CancellationToken::never(),
+        ))
+    }
+
     /// 5.5.E.7.3: apply a single [`Edit`] to the active buffer as
     /// one undo unit. Routes between the document actor and the oil
     /// rope based on [`Self::active_buffer`]. On success, publishes
@@ -3792,6 +3824,95 @@ fn previous_position(
     } else {
         p
     }
+}
+
+/// 5.5.G.23: fold-aware predicates + cursor snap. Migrated host-side
+/// alongside the `run_invocation` family that consumes them. App-side
+/// `foldenable` / `fold_start_at` / `snap_cursor_past_closed_folds`
+/// retire to 1-line delegators until every caller migrates.
+impl Editor {
+    /// `:set foldenable` / `:set nofoldenable` (`zi`). Default `true`.
+    /// Reads through `option_cache` so the hot-path access is a single
+    /// bool load with no option-tree traversal.
+    pub fn foldenable(&self) -> bool {
+        self.option_cache.foldenable
+    }
+
+    /// Returns Some(fold) if `line` is the start of a closed fold; the
+    /// renderer renders the summary header instead of the line content.
+    pub fn fold_start_at(&self, line: u32) -> Option<&lattice_core::Fold> {
+        if !self.foldenable() {
+            return None;
+        }
+        self.folds.iter().find(|f| f.closed && f.start_line == line)
+    }
+
+    /// Returns Some(fold) if `line` is the start of any fold (open or
+    /// closed). Used by the renderer for the gutter glyph.
+    pub fn fold_start_at_any(&self, line: u32) -> Option<&lattice_core::Fold> {
+        if !self.foldenable() {
+            return None;
+        }
+        self.folds.iter().find(|f| f.start_line == line)
+    }
+
+    /// Move the cursor out of any closed fold's hidden body to the
+    /// nearest visible line. Called after every non-jump motion so
+    /// the cursor's logical position never lands in a hidden region.
+    /// `foldenable = false` suppresses entirely.
+    pub fn snap_cursor_past_closed_folds(&mut self, prev_line: u32) {
+        if !self.foldenable() {
+            return;
+        }
+        let new_line = self.cursor.line;
+        if new_line == prev_line {
+            return;
+        }
+        let going_down = new_line > prev_line;
+        let snap = self.document.snapshot();
+        let last = last_addressable_line(&snap.buffer);
+        let mut snapped = new_line;
+        let mut exited_a_fold = false;
+        loop {
+            let in_closed = self
+                .folds
+                .iter()
+                .find(|f| f.closed && snapped > f.start_line && snapped <= f.end_line)
+                .copied();
+            if let Some(fold) = in_closed {
+                snapped = if going_down {
+                    (fold.end_line + 1).min(last)
+                } else {
+                    fold.start_line
+                };
+                exited_a_fold = true;
+                continue;
+            }
+            if exited_a_fold && going_down && snapped < last && is_blank_line(&snap.buffer, snapped)
+            {
+                snapped += 1;
+                continue;
+            }
+            break;
+        }
+        if snapped == new_line {
+            return;
+        }
+        let len = snap.buffer.line_byte_len(snapped);
+        let byte = self.cursor.byte.min(len);
+        self.cursor = lattice_protocol::position::Position::new(snapped, byte);
+    }
+}
+
+/// True if `line_idx` is empty or whitespace-only. Used by the
+/// fold-aware j/k snap to swallow trailing blanks between sibling
+/// folds (so `j` from a closed fold's heading lands on the next
+/// sibling's heading, not on the blank between them).
+fn is_blank_line(buffer: &lattice_core::Buffer, line_idx: u32) -> bool {
+    buffer
+        .line(line_idx)
+        .map(|s| s.trim().is_empty())
+        .unwrap_or(true)
 }
 
 /// 5.5.G.4: pure-editor scroll / page / viewport / bracket /
@@ -7528,6 +7649,175 @@ pub fn preview_register(s: &str) -> String {
     } else {
         let trimmed: String = escaped.chars().take(MAX).collect();
         format!("{trimmed}…")
+    }
+}
+
+/// 5.5.G.23: True if the Effect indicates an operator-class action
+/// (the buffer changed or content was yanked). Used by Visual mode to
+/// decide whether to auto-exit after the dispatch — motions in Visual
+/// should not exit; d / y / c should.
+pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
+    use lattice_grammar::Effect;
+    match effect {
+        Effect::Edits(_) | Effect::Yank { .. } => true,
+        // Ex-effects that the host turns into edits / yanks at apply time.
+        Effect::Substitute { .. } | Effect::Global { .. } | Effect::DeleteCurrentLine => true,
+        Effect::Many(parts) => parts.iter().any(effect_mutates_or_yanks),
+        Effect::None
+        | Effect::SelectionChange(_)
+        | Effect::EnterMode(_)
+        | Effect::SaveBuffer { .. }
+        | Effect::QuitEditor { .. }
+        | Effect::OpenBuffer { .. }
+        | Effect::SetOption { .. }
+        | Effect::ClearSearchHighlight
+        | Effect::Echo { .. }
+        | Effect::EchoRegisters
+        | Effect::EchoMarks
+        | Effect::DescribeCommand { .. }
+        | Effect::DescribeBuffer
+        | Effect::Apropos { .. }
+        | Effect::DescribeKey { .. }
+        | Effect::ListKeymap
+        | Effect::BufferNext
+        | Effect::BufferPrev
+        | Effect::ListBuffers
+        | Effect::OpenBufferPicker
+        | Effect::OpenPicker { .. }
+        | Effect::BufferDelete { .. }
+        | Effect::OpenFileTree { .. }
+        | Effect::CloseFileTree
+        | Effect::OpenOil { .. }
+        | Effect::DescribeOption { .. }
+        | Effect::ListOptions
+        | Effect::OpenHover { .. }
+        | Effect::CloseHover
+        | Effect::OpenHelpTopic { .. }
+        | Effect::ListDiagnostics
+        | Effect::NextDiagnostic
+        | Effect::PrevDiagnostic
+        | Effect::OpenLspLog { .. }
+        | Effect::OpenMessages
+        | Effect::ToggleLspTrace { .. }
+        | Effect::OpenLspTraceLog { .. }
+        | Effect::LspStatus
+        | Effect::LspServerLogListing
+        | Effect::LspRestart { .. }
+        | Effect::LspProgressCancel { .. }
+        | Effect::LspExpandRegion
+        | Effect::LspShrinkRegion
+        | Effect::SetLspLogLevel { .. }
+        | Effect::LspLogClear { .. }
+        | Effect::LspDocumentSymbol
+        | Effect::LspWorkspaceSymbol { .. }
+        | Effect::LspIncomingCalls
+        | Effect::LspOutgoingCalls
+        | Effect::LspSupertypes
+        | Effect::LspSubtypes
+        | Effect::LspMoniker
+        | Effect::LspCodeLens
+        | Effect::LspColorPresentation
+        | Effect::LspFormat
+        | Effect::LspFormatRange
+        | Effect::LspSignatureHelp
+        | Effect::LspComplete
+        | Effect::LspRename { .. }
+        | Effect::LspCodeAction
+        | Effect::SnippetExpand
+        | Effect::ReloadSnippets
+        | Effect::ToggleMode { .. }
+        | Effect::DescribeEvents
+        | Effect::DescribeEvent { .. }
+        | Effect::ListModes
+        | Effect::DescribeMode { .. }
+        | Effect::DescribeOptionResolution { .. }
+        | Effect::Customize { .. }
+        | Effect::Tutor { .. }
+        | Effect::AppAction(_) => false,
+    }
+}
+
+/// 5.5.G.23: True if the Effect produced a buffer mutation. Used by
+/// dot-repeat to decide whether to record the invocation — yank-only
+/// invocations (vim's `y`) are NOT eligible for `.`, only changes.
+pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
+    use lattice_grammar::Effect;
+    match effect {
+        Effect::Edits(_) => true,
+        Effect::Substitute { .. } | Effect::Global { .. } | Effect::DeleteCurrentLine => true,
+        Effect::Many(parts) => parts.iter().any(effect_mutates),
+        Effect::None
+        | Effect::SelectionChange(_)
+        | Effect::Yank { .. }
+        | Effect::EnterMode(_)
+        | Effect::SaveBuffer { .. }
+        | Effect::QuitEditor { .. }
+        | Effect::OpenBuffer { .. }
+        | Effect::SetOption { .. }
+        | Effect::ClearSearchHighlight
+        | Effect::Echo { .. }
+        | Effect::EchoRegisters
+        | Effect::EchoMarks
+        | Effect::DescribeCommand { .. }
+        | Effect::DescribeBuffer
+        | Effect::Apropos { .. }
+        | Effect::DescribeKey { .. }
+        | Effect::ListKeymap
+        | Effect::BufferNext
+        | Effect::BufferPrev
+        | Effect::ListBuffers
+        | Effect::OpenBufferPicker
+        | Effect::OpenPicker { .. }
+        | Effect::BufferDelete { .. }
+        | Effect::OpenFileTree { .. }
+        | Effect::CloseFileTree
+        | Effect::OpenOil { .. }
+        | Effect::DescribeOption { .. }
+        | Effect::ListOptions
+        | Effect::OpenHover { .. }
+        | Effect::CloseHover
+        | Effect::OpenHelpTopic { .. }
+        | Effect::ListDiagnostics
+        | Effect::NextDiagnostic
+        | Effect::PrevDiagnostic
+        | Effect::OpenLspLog { .. }
+        | Effect::OpenMessages
+        | Effect::ToggleLspTrace { .. }
+        | Effect::OpenLspTraceLog { .. }
+        | Effect::LspStatus
+        | Effect::LspServerLogListing
+        | Effect::LspRestart { .. }
+        | Effect::LspProgressCancel { .. }
+        | Effect::LspExpandRegion
+        | Effect::LspShrinkRegion
+        | Effect::SetLspLogLevel { .. }
+        | Effect::LspLogClear { .. }
+        | Effect::LspDocumentSymbol
+        | Effect::LspWorkspaceSymbol { .. }
+        | Effect::LspIncomingCalls
+        | Effect::LspOutgoingCalls
+        | Effect::LspSupertypes
+        | Effect::LspSubtypes
+        | Effect::LspMoniker
+        | Effect::LspCodeLens
+        | Effect::LspColorPresentation
+        | Effect::LspFormat
+        | Effect::LspFormatRange
+        | Effect::LspSignatureHelp
+        | Effect::LspComplete
+        | Effect::LspRename { .. }
+        | Effect::LspCodeAction
+        | Effect::SnippetExpand
+        | Effect::ReloadSnippets
+        | Effect::ToggleMode { .. }
+        | Effect::DescribeEvents
+        | Effect::DescribeEvent { .. }
+        | Effect::ListModes
+        | Effect::DescribeMode { .. }
+        | Effect::DescribeOptionResolution { .. }
+        | Effect::Customize { .. }
+        | Effect::Tutor { .. }
+        | Effect::AppAction(_) => false,
     }
 }
 

@@ -93,9 +93,12 @@ impl App {
         self.editor.option_cache.foldmethod
     }
 
-    /// `:set foldenable` / `:set nofoldenable` (`zi`). Default `true`.
+    /// 5.5.G.23: body migrated to
+    /// [`lattice_host::dispatch::Editor::foldenable`]. Retained as a
+    /// 1-line delegate while the renderer's gutter + motions still
+    /// reach the App surface.
     pub fn foldenable(&self) -> bool {
-        self.editor.option_cache.foldenable
+        self.editor.foldenable()
     }
 
     /// `:set completion.auto_insert_single`. Default `true`.

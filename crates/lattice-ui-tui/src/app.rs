@@ -1060,16 +1060,11 @@ fn expand_tilde(path: &std::path::Path) -> std::path::PathBuf {
     path.to_path_buf()
 }
 
-/// True if `line_idx` is empty or whitespace-only. Used by the
-/// fold-aware j/k snap to swallow trailing blanks between sibling
-/// folds (so `j` from a closed fold's heading lands on the next
-/// sibling's heading, not on the blank between them).
-pub(super) fn is_blank_line(buffer: &lattice_core::Buffer, line_idx: u32) -> bool {
-    buffer
-        .line(line_idx)
-        .map(|s| s.trim().is_empty())
-        .unwrap_or(true)
-}
+// 5.5.G.23: `is_blank_line` migrated to
+// `lattice_host::dispatch` (private helper colocated with
+// `Editor::snap_cursor_past_closed_folds`). Zero remaining App
+// callers after `snap_cursor_past_closed_folds` and `fold_start_at`
+// retire to delegators.
 
 /// Phase 4.2 features (hover, definition, references, completion)
 /// all need this; later we'll thread the per-server negotiated

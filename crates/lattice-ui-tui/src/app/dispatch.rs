@@ -43,7 +43,7 @@ use lattice_grammar::ModalState;
 use lattice_grammar::command::CommandInvocation;
 use lattice_grammar::effect::Effect;
 use lattice_host::dispatch::RendererSignal;
-use lattice_runtime::{CancellationToken, RuntimeError, block_on};
+use lattice_runtime::RuntimeError;
 
 use super::{Action, App, BufferKind, EchoLevel, FindKind, LastFind, PositionSource};
 use crate::excommand;
@@ -86,12 +86,13 @@ impl App {
     /// future runtime that reads input on a separate task and flips
     /// the dispatch token on Esc; see `dispatch_with_cancel` on
     /// `DocumentHandle`.
+    /// 5.5.G.23: body migrated to
+    /// [`lattice_host::dispatch::Editor::dispatch_blocking`]. Retained
+    /// as a 1-line delegate while App-side helpers
+    /// (`run_oil_invocation` / `run_read_only_motion` /
+    /// `run_document_invocation`) are still hosted here.
     pub fn dispatch_blocking(&self, invocation: CommandInvocation) -> Result<Effect, RuntimeError> {
-        block_on(self.editor.document.dispatch_with_cancel(
-            invocation,
-            self.editor.cursor,
-            CancellationToken::never(),
-        ))
+        self.editor.dispatch_blocking(invocation)
     }
 
     pub fn apply(&mut self, action: Action) {

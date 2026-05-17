@@ -219,7 +219,13 @@ impl App {
             | Action::SearchCancel
             | Action::SearchNext
             | Action::SearchPrevious
-            | Action::SearchWordUnderCursor(_) => {}
+            | Action::SearchWordUnderCursor(_)
+            // 5.5.G.11: picker append/backspace/select + close-hover.
+            | Action::PickerAppend(_)
+            | Action::PickerBackspace
+            | Action::PickerSelectNext
+            | Action::PickerSelectPrev
+            | Action::CloseHover => {}
             Action::Invoke(inv) => self.run_invocation(inv),
             Action::Insert(s) => self.do_insert_text(&s),
             // 5.5.G.3: `DeleteCharBackward`, `EnterAppend`,
@@ -320,33 +326,9 @@ impl App {
             Action::CommandLineHistoryPrev => self.do_command_history_step(true),
             Action::CommandLineHistoryNext => self.do_command_history_step(false),
 
-            Action::CloseHover => self.do_close_hover(),
-            Action::PickerAppend(c) => {
-                if let Some(p) = self.editor.picker.as_mut() {
-                    p.append_query(c);
-                }
-                self.bump_live_picker_debounce();
-                self.preview_picker_selection();
-            }
-            Action::PickerBackspace => {
-                if let Some(p) = self.editor.picker.as_mut() {
-                    p.backspace_query();
-                }
-                self.bump_live_picker_debounce();
-                self.preview_picker_selection();
-            }
-            Action::PickerSelectNext => {
-                if let Some(p) = self.editor.picker.as_mut() {
-                    p.select_next();
-                }
-                self.preview_picker_selection();
-            }
-            Action::PickerSelectPrev => {
-                if let Some(p) = self.editor.picker.as_mut() {
-                    p.select_prev();
-                }
-                self.preview_picker_selection();
-            }
+            // 5.5.G.11: `CloseHover` / `PickerAppend` /
+            // `PickerBackspace` / `PickerSelectNext` /
+            // `PickerSelectPrev` migrated to `Editor::dispatch`.
             Action::PickerAccept => self.do_picker_accept(),
             Action::PickerDismiss => self.do_picker_dismiss(),
 

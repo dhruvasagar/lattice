@@ -597,6 +597,39 @@ pub(crate) fn handle_action(
         Action::SearchWordUnderCursor(direction) => {
             editor.do_search_word_under_cursor(direction);
         }
+        // 5.5.G.11: picker append/backspace/select + CloseHover.
+        // Accept/Dismiss stay App-side (file-open / SMR / preview).
+        Action::PickerAppend(c) => {
+            if let Some(p) = editor.picker.as_mut() {
+                p.append_query(c);
+            }
+            editor.bump_live_picker_debounce();
+            _out.renderer_signals
+                .extend(editor.preview_picker_selection());
+        }
+        Action::PickerBackspace => {
+            if let Some(p) = editor.picker.as_mut() {
+                p.backspace_query();
+            }
+            editor.bump_live_picker_debounce();
+            _out.renderer_signals
+                .extend(editor.preview_picker_selection());
+        }
+        Action::PickerSelectNext => {
+            if let Some(p) = editor.picker.as_mut() {
+                p.select_next();
+            }
+            _out.renderer_signals
+                .extend(editor.preview_picker_selection());
+        }
+        Action::PickerSelectPrev => {
+            if let Some(p) = editor.picker.as_mut() {
+                p.select_prev();
+            }
+            _out.renderer_signals
+                .extend(editor.preview_picker_selection());
+        }
+        Action::CloseHover => editor.dismiss_popup(),
         // Catch-all: any Action variant not yet migrated from
         // App::apply. Sub-slices 5.5.D+ extend the match upward as
         // helpers move.
@@ -3007,6 +3040,57 @@ impl Editor {
         self.recompute_folds();
         self.pending_redraw = true;
         self.set_message(EchoLevel::Info, "redraw".to_string());
+    }
+}
+
+/// 5.5.G.11: simple picker-state helpers + close-hover.
+impl Editor {
+    /// Slice 2: live-picker debounce. Bump deadline by `now +
+    /// LIVE_PICKER_DEBOUNCE`. No-op when no live-query state is in
+    /// flight.
+    pub fn bump_live_picker_debounce(&mut self) {
+        let Some(state) = self.live_picker_query.as_mut() else {
+            return;
+        };
+        state.debounce_until =
+            Some(std::time::Instant::now() + crate::state::LIVE_PICKER_DEBOUNCE);
+    }
+
+    /// If the picker is open and its action is
+    /// `PickerAction::SwitchToBuffer`, preview-activate the
+    /// selected candidate's buffer in the active pane. No
+    /// position-history push, no commit. Returns any signals
+    /// emitted by the underlying activate_buffer_state tail.
+    pub fn preview_picker_selection(&mut self) -> Vec<RendererSignal> {
+        let Some(picker) = self.picker.as_ref() else {
+            return Vec::new();
+        };
+        if !matches!(
+            picker.on_accept,
+            lattice_picker::PickerAction::SwitchToBuffer
+        ) {
+            return Vec::new();
+        }
+        let Some(c) = picker.selected_candidate() else {
+            return Vec::new();
+        };
+        let Some(lattice_picker::RoutingPayload::Buffer { id: raw_id }) =
+            picker.routing_for(c)
+        else {
+            return Vec::new();
+        };
+        let id = BufferId(*raw_id);
+        if id == self.active_pane_buffer_id() {
+            return Vec::new();
+        }
+        self.previewing = true;
+        let needs_state = self.activate_buffer(id);
+        self.previewing = false;
+        if needs_state {
+            self.activate_buffer_state()
+        } else {
+            Vec::new()
+        }
     }
 }
 

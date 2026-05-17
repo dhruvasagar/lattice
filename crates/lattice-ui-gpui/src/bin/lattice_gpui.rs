@@ -55,7 +55,57 @@ use gpui::{
 };
 use lattice_core::Document;
 use lattice_grammar::ModalState;
+use lattice_syntax::Style as SyntaxStyle;
 use lattice_ui_gpui::GpuiApp;
+
+/// Map a `lattice_syntax::Style` to a Catppuccin Mocha hex
+/// palette value. Phase 5.8.A: keeps the palette inline so
+/// the binary can color highlighted spans without depending on
+/// any host-side palette plumbing yet. A future slice promotes
+/// this to `editor.host_theme` so `:set ui.highlight.*` paths
+/// can override.
+fn syntax_color(style: SyntaxStyle) -> u32 {
+    match style {
+        SyntaxStyle::Default => 0xcdd6f4,                            // text
+        SyntaxStyle::Comment | SyntaxStyle::LineComment => 0x6c7086, // overlay0
+        SyntaxStyle::String => 0xa6e3a1,                             // green
+        SyntaxStyle::Keyword => 0xcba6f7,                            // mauve
+        SyntaxStyle::Type => 0xf9e2af,                               // yellow
+        SyntaxStyle::Number => 0xfab387,                             // peach
+        SyntaxStyle::Function => 0x89b4fa,                           // blue
+        SyntaxStyle::Constant => 0xfab387,                           // peach
+        SyntaxStyle::Variable => 0xcdd6f4,                           // text
+        SyntaxStyle::Operator => 0x94e2d5,                           // teal
+        SyntaxStyle::Punctuation => 0x9399b2,                        // overlay2
+        SyntaxStyle::Attribute => 0xf38ba8,                          // red
+        // Markup styles (markdown rendering).
+        SyntaxStyle::Heading1 => 0xf38ba8,  // red
+        SyntaxStyle::Heading2 => 0xfab387,  // peach
+        SyntaxStyle::Heading3 => 0xf9e2af,  // yellow
+        SyntaxStyle::Heading4 => 0xa6e3a1,  // green
+        SyntaxStyle::Heading5 => 0x89b4fa,  // blue
+        SyntaxStyle::Heading6 => 0xcba6f7,  // mauve
+        SyntaxStyle::Bold => 0xeba0ac,      // maroon (Catppuccin bold-emphasis)
+        SyntaxStyle::Italic => 0xf5c2e7,    // pink (Catppuccin italic-emphasis)
+        SyntaxStyle::Link => 0x89b4fa,      // blue (link label)
+        SyntaxStyle::Url => 0x74c7ec,       // sapphire (link URL)
+        SyntaxStyle::MarkupRaw => 0x6c7086, // overlay0 (matches comments)
+        SyntaxStyle::Markup => 0x9399b2,    // overlay2 (matches punctuation)
+    }
+}
+
+/// Walk `lines` (one entry per line) and find the `Style` that
+/// covers `byte`. Spans are non-overlapping (the highlighter
+/// emits one per text range), so a linear scan is fine and
+/// matches what the TUI peer does for the same lookup.
+fn style_at(spans: &[lattice_syntax::StyledSpan], byte: usize) -> SyntaxStyle {
+    for span in spans {
+        if byte >= span.start && byte < span.end {
+            return span.style;
+        }
+    }
+    SyntaxStyle::Default
+}
 
 /// Vim-style cursor shape derived from [`ModalState`].
 ///
@@ -227,6 +277,26 @@ impl Render for EditorView {
         let raw_lines: Vec<&str> = text.split('\n').collect();
         let cursor_past_last_line = cursor_line >= raw_lines.len();
 
+        // 5.8.A: per-line syntax highlights from the editor's
+        // tree-sitter handle. `None` for plain / unparsed
+        // documents -- the render path falls through to using
+        // the default text color uniformly. For non-trivial
+        // costs (multi-second-scale highlighting), the host's
+        // `App::refresh_highlights` cache short-circuits steady-
+        // state frames. The GPUI peer doesn't have that cache
+        // wired yet, so this `highlight_lines` call runs each
+        // frame; acceptable for the scaffold's typical doc
+        // sizes (under a few thousand lines) but a follow-up
+        // slice should migrate the cache host-side and reuse
+        // it here.
+        let highlights: Option<Vec<Vec<lattice_syntax::StyledSpan>>> =
+            self.app.editor.syntax.as_ref().and_then(|syntax| {
+                syntax
+                    .snapshot()
+                    .highlight_lines(0, raw_lines.len() as u32)
+                    .ok()
+            });
+
         // Style a cursor cell with the current shape (closure
         // so EOL trailing + past-last-line trailing share the
         // logic with the in-line cursor cell).
@@ -244,6 +314,11 @@ impl Render for EditorView {
             .enumerate()
             .map(|(line_idx, line)| {
                 let is_cursor_line = line_idx == cursor_line;
+                let line_spans: &[lattice_syntax::StyledSpan] = highlights
+                    .as_ref()
+                    .and_then(|h| h.get(line_idx))
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
                 let mut cells: Vec<gpui::Div> = line
                     .char_indices()
                     .map(|(byte_idx, c)| {
@@ -251,7 +326,13 @@ impl Render for EditorView {
                         if is_cursor {
                             style_cursor_cell(&c.to_string())
                         } else {
-                            div().child(c.to_string())
+                            // 5.8.A: pick the highlighter style
+                            // for this byte position; color the
+                            // char accordingly.
+                            let span_style = style_at(line_spans, byte_idx);
+                            div()
+                                .text_color(rgb(syntax_color(span_style)))
+                                .child(c.to_string())
                         }
                     })
                     .collect();
@@ -453,14 +534,34 @@ fn main() {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .try_init();
-    Application::new().run(|cx| {
+
+    // 5.8.A: opt-in file open via the first positional CLI arg.
+    // Without an arg the binary boots with an empty scratch
+    // document (5.7 scaffold behaviour). With an arg, opens the
+    // file via `Document::open` so syntax highlights have
+    // real content to color. The 5.9 phase wires this through
+    // `lattice-cli` proper with `--gpu <file>` flag semantics.
+    let document = std::env::args().nth(1).map_or_else(Document::empty, |path| {
+        match Document::open(&path) {
+            Ok(doc) => {
+                tracing::info!("lattice-gpui: opened {path}");
+                doc
+            }
+            Err(e) => {
+                tracing::warn!(error = ?e, "lattice-gpui: failed to open {path}; using empty buffer");
+                Document::empty()
+            }
+        }
+    });
+
+    Application::new().run(move |cx| {
         let bounds = Bounds::centered(None, size(px(720.0), px(480.0)), cx);
         let window = cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 ..Default::default()
             },
-            |_window, cx| cx.new(|cx| EditorView::new(Document::empty(), cx)),
+            move |_window, cx| cx.new(|cx| EditorView::new(document, cx)),
         );
         let window = match window {
             Ok(w) => w,

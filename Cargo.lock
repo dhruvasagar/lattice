@@ -3542,6 +3542,7 @@ dependencies = [
  "lattice-help",
  "lattice-host",
  "lattice-mode",
+ "lattice-syntax",
  "tracing",
  "tracing-subscriber",
 ]

@@ -27,6 +27,10 @@ lattice-grammar = { path = "../lattice-grammar" }
 # `lattice_help::HelpContent`; the GPUI peer renders its text
 # in a popup overlay, so naming the type requires this dep.
 lattice-help = { path = "../lattice-help" }
+# 5.8.A: binary renders syntax highlights by calling
+# `Syntax::highlight_lines` and mapping `lattice_syntax::Style`
+# variants to a Catppuccin palette.
+lattice-syntax = { path = "../lattice-syntax" }
 
 # Zed's GPU-accelerated UI framework. Gated behind the `window`
 # feature so the scaffold types + tests build on every host

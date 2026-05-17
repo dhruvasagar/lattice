@@ -237,12 +237,43 @@ impl Render for EditorView {
             ModalState::Search(_) => "SEARCH",
             ModalState::Replace => "REPLACE",
         };
-        // 5.7.B.4: cursor coordinates are 1-based for display
-        // (vim convention) so users reading the status line see
-        // the same numbers `:set ruler` shows in the TUI peer.
+        // 5.7.B.4 / 5.8.B: cursor coordinates are 1-based for
+        // display (vim convention) so users reading the status
+        // line see the same numbers `:set ruler` shows in the
+        // TUI peer. 5.8.B adds the file path + dirty marker so
+        // the user can tell at a glance which file is open and
+        // whether it has unsaved changes.
+        let path_label = match snapshot.path() {
+            Some(p) => {
+                // Render relative to CWD if possible; falls back
+                // to the absolute path otherwise. Keeps the
+                // status-line readable for paths nested under
+                // the working directory.
+                let display = match std::env::current_dir()
+                    .ok()
+                    .and_then(|cwd| p.strip_prefix(&cwd).ok().map(|s| s.to_path_buf()))
+                {
+                    Some(rel) => rel.display().to_string(),
+                    None => p.display().to_string(),
+                };
+                if snapshot.dirty {
+                    format!("{display} [+]")
+                } else {
+                    display
+                }
+            }
+            None => {
+                if snapshot.dirty {
+                    "[scratch][+]".to_string()
+                } else {
+                    "[scratch]".to_string()
+                }
+            }
+        };
         let status = format!(
-            "  {}   L:{}  C:{}",
+            "  {}   {}   L:{}  C:{}",
             modal_label,
+            path_label,
             cursor.line + 1,
             cursor.byte,
         );

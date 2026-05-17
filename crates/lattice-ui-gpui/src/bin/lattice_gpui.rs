@@ -484,6 +484,67 @@ impl Render for EditorView {
         // stack on top of it via `relative` positioning.
         let document_area = div().flex_grow().p_3().flex().flex_col().children(rows);
 
+        // 5.8.F: insert-mode completion popup. When
+        // `editor.insert_completion` is `Some`, an inline
+        // completion list is open. Renderer paints the top N
+        // candidates with the selected one highlighted; host's
+        // translate path already routes `<C-n>` / `<C-p>` /
+        // `<Tab>` / `<CR>` / `<C-e>` / `<Esc>` through the
+        // completion dispatcher (`insert_completion_open: true`
+        // in `TranslateContext`). The popup pins to the top-
+        // right of the document area for now -- anchoring to
+        // the cursor position requires glyph-metric work that
+        // the per-char-div layout doesn't expose.
+        let completion_overlay: Option<gpui::Div> = self
+            .app
+            .editor
+            .insert_completion
+            .as_ref()
+            .filter(|ic| !ic.rendered.is_empty())
+            .map(|ic| {
+                let max_visible = 10usize;
+                let total = ic.rendered.len();
+                let window_start = ic
+                    .selected
+                    .saturating_sub(max_visible / 2)
+                    .min(total.saturating_sub(max_visible.min(total)));
+                let window_end = (window_start + max_visible).min(total);
+                let visible: Vec<gpui::Div> = ic.rendered[window_start..window_end]
+                    .iter()
+                    .enumerate()
+                    .map(|(i, cand)| {
+                        let abs_idx = window_start + i;
+                        let row = div().child(cand.raw.display.clone());
+                        if abs_idx == ic.selected {
+                            row.bg(rgb(theme.status_background))
+                                .text_color(rgb(theme.status_foreground))
+                        } else {
+                            row
+                        }
+                    })
+                    .collect();
+                div()
+                    .flex()
+                    .flex_col()
+                    .max_w(px(360.0))
+                    .p_2()
+                    .bg(rgb(theme.popup_background))
+                    .text_color(rgb(theme.foreground))
+                    .border_2()
+                    .border_color(rgb(theme.popup_border))
+                    .children(visible)
+                    .child(
+                        div()
+                            .pt_1()
+                            .text_color(rgb(theme.popup_border))
+                            .child(format!(
+                                " {} of {}  ·  <C-n>/<C-p> · <Tab>/<CR> accept · <Esc> cancel ",
+                                if total == 0 { 0 } else { ic.selected + 1 },
+                                total,
+                            )),
+                    )
+            });
+
         // 5.8.E: picker overlay. When `editor.picker` is `Some`,
         // an interactive picker is open -- typing filters the
         // candidates, `<C-n>` / `<C-p>` (or Down/Up) navigate,
@@ -671,6 +732,13 @@ impl Render for EditorView {
                     .items_center()
                     .child(overlay),
             );
+        }
+        // 5.8.F: completion popup -- paints in the top-right
+        // corner of the window. Doesn't conflict with picker
+        // (insert-mode only) or help popup (no insert action
+        // surfaces while help is open).
+        if let Some(overlay) = completion_overlay {
+            root = root.child(div().absolute().top_8().right_4().child(overlay));
         }
         if let Some(overlay) = popup_overlay {
             // Center the overlay across the window. The simplest

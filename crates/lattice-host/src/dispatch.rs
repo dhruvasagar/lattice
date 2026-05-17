@@ -639,6 +639,32 @@ pub(crate) fn handle_action(
             }
             BufferKind::Document | BufferKind::Oil => {}
         },
+        // 5.5.G.13: pure-editor command-line arms. `EnterCommandLine`
+        // opens the `:` line, clears any in-flight completion popup,
+        // and auto-dismisses a State-A help popup (so the user's
+        // doc cursor isn't visually anchored to a stale hover). The
+        // history-step arms walk `command_history` cursor and
+        // restore the pending unfinished line on the lower bound.
+        Action::EnterCommandLine => {
+            editor.command_line.clear();
+            editor.modal = ModalState::Command;
+            editor.last_message = None;
+            // Q16: opening the cmdline dismisses STATE A help
+            // popups (hover overlay still anchored to doc cursor).
+            // State B help buffers (`:lsp-log`, `:lsp-trace-log`,
+            // `:describe-*` opened in a pane) are first-class
+            // buffers per the everything-is-a-buffer model -- the
+            // user expects to run `:bd`, `:diagnostics`, etc.
+            // without losing their log view. Only auto-dismiss when
+            // active_buffer is Document, which is the State A
+            // shape.
+            if matches!(editor.active_buffer, BufferKind::Document) {
+                editor.dismiss_popup();
+            }
+            editor.completion_state = None;
+        }
+        Action::CommandLineHistoryPrev => editor.do_command_history_step(true),
+        Action::CommandLineHistoryNext => editor.do_command_history_step(false),
         // Catch-all: any Action variant not yet migrated from
         // App::apply. Sub-slices 5.5.D+ extend the match upward as
         // helpers move.
@@ -3086,6 +3112,46 @@ impl Editor {
             }
         }
         signals
+    }
+}
+
+/// 5.5.G.13: pure-editor command-line history walk. Migrated
+/// from `lattice-ui-tui::app::cmdline`; touches only editor-
+/// owned cmdline + history state.
+impl Editor {
+    /// Walk through `:` command history in Command modal.
+    /// `back = true` goes to older entries (Up); `false` goes
+    /// newer (Down). The first Up snapshots the user's in-flight
+    /// line into `command_history_pending` so the bottom-of-history
+    /// Down can restore it.
+    pub fn do_command_history_step(&mut self, back: bool) {
+        if !matches!(self.modal, ModalState::Command) {
+            return;
+        }
+        if self.command_history.is_empty() {
+            return;
+        }
+        let new_cursor = match (self.command_history_cursor, back) {
+            (None, true) => {
+                self.command_history_pending = Some(self.command_line.clone());
+                Some(self.command_history.len() - 1)
+            }
+            (None, false) => return,
+            (Some(0), true) => return,
+            (Some(i), true) => Some(i - 1),
+            (Some(i), false) if i + 1 >= self.command_history.len() => {
+                if let Some(pending) = self.command_history_pending.take() {
+                    self.command_line = pending;
+                }
+                self.command_history_cursor = None;
+                return;
+            }
+            (Some(i), false) => Some(i + 1),
+        };
+        if let Some(idx) = new_cursor {
+            self.command_line = self.command_history[idx].clone();
+            self.command_history_cursor = Some(idx);
+        }
     }
 }
 

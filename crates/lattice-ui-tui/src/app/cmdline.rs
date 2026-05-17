@@ -169,37 +169,8 @@ impl App {
         );
     }
 
-    /// Walk through `:` command history in Command modal. `back = true`
-    /// goes to older entries (Up); `false` goes newer (Down).
-    pub(super) fn do_command_history_step(&mut self, back: bool) {
-        if !matches!(self.editor.modal, ModalState::Command) {
-            return;
-        }
-        if self.editor.command_history.is_empty() {
-            return;
-        }
-        let new_cursor = match (self.editor.command_history_cursor, back) {
-            (None, true) => {
-                self.editor.command_history_pending = Some(self.editor.command_line.clone());
-                Some(self.editor.command_history.len() - 1)
-            }
-            (None, false) => return,
-            (Some(0), true) => return,
-            (Some(i), true) => Some(i - 1),
-            (Some(i), false) if i + 1 >= self.editor.command_history.len() => {
-                if let Some(pending) = self.editor.command_history_pending.take() {
-                    self.editor.command_line = pending;
-                }
-                self.editor.command_history_cursor = None;
-                return;
-            }
-            (Some(i), false) => Some(i + 1),
-        };
-        if let Some(idx) = new_cursor {
-            self.editor.command_line = self.editor.command_history[idx].clone();
-            self.editor.command_history_cursor = Some(idx);
-        }
-    }
+    // 5.5.G.13: body migrated to
+    // [`lattice_host::dispatch::Editor::do_command_history_step`].
 
     /// On `Action::CommandLineSubmit`, decide whether the line is
     /// an empty-arg invocation of a command whose first required

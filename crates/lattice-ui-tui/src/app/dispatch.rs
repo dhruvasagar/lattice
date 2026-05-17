@@ -227,7 +227,11 @@ impl App {
             | Action::PickerSelectPrev
             | Action::CloseHover
             // 5.5.G.12: HelpDismiss migrated to Editor::dispatch.
-            | Action::HelpDismiss => {}
+            | Action::HelpDismiss
+            // 5.5.G.13: pure-editor cmdline arms.
+            | Action::EnterCommandLine
+            | Action::CommandLineHistoryPrev
+            | Action::CommandLineHistoryNext => {}
             Action::Invoke(inv) => self.run_invocation(inv),
             Action::Insert(s) => self.do_insert_text(&s),
             // 5.5.G.3: `DeleteCharBackward`, `EnterAppend`,
@@ -238,25 +242,7 @@ impl App {
             Action::EnterBlockVisualInsert => self.do_enter_block_visual_insert(false),
             Action::EnterBlockVisualAppend => self.do_enter_block_visual_insert(true),
 
-            Action::EnterCommandLine => {
-                self.editor.command_line.clear();
-                self.editor.modal = ModalState::Command;
-                self.editor.last_message = None;
-                // Q16: opening the cmdline dismisses STATE A
-                // help popups (hover overlay still anchored to
-                // doc cursor). State B help buffers (`:lsp-log`,
-                // `:lsp-trace-log`, `:describe-*` opened in a
-                // pane) are first-class buffers per the
-                // everything-is-a-buffer model -- the user
-                // expects to run `:bd`, `:diagnostics`, etc.
-                // without losing their log view. Only auto-
-                // dismiss when active_buffer is Document, which
-                // is the State A shape.
-                if matches!(self.editor.active_buffer, BufferKind::Document) {
-                    self.dismiss_popup();
-                }
-                self.editor.completion_state = None;
-            }
+            // 5.5.G.13: `EnterCommandLine` migrated to `Editor::dispatch`.
             Action::CommandLineAppend(c) => {
                 if matches!(self.editor.modal, ModalState::Command) {
                     self.editor.command_line.push(c);
@@ -325,8 +311,8 @@ impl App {
                     self.execute_ex_line(&line);
                 }
             }
-            Action::CommandLineHistoryPrev => self.do_command_history_step(true),
-            Action::CommandLineHistoryNext => self.do_command_history_step(false),
+            // 5.5.G.13: `CommandLineHistoryPrev` / `CommandLineHistoryNext`
+            // migrated to `Editor::dispatch`.
 
             // 5.5.G.11: `CloseHover` / `PickerAppend` /
             // `PickerBackspace` / `PickerSelectNext` /

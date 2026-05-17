@@ -37,6 +37,11 @@ gpui = { version = "0.2.2", optional = true }
 
 anyhow.workspace = true
 tracing.workspace = true
+# 5.7.B.4: the binary installs a `fmt` subscriber at startup so
+# `tracing::debug!` / `tracing::info!` from `on_key_down` and
+# the focus / activation paths land on stderr. Run with e.g.
+# `RUST_LOG=lattice_gpui=debug` to see per-keystroke traces.
+tracing-subscriber = { workspace = true }
 
 [features]
 default = []

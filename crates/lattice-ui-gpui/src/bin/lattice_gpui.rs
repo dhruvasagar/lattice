@@ -270,13 +270,41 @@ impl Render for EditorView {
                 }
             }
         };
-        let status = format!(
-            "  {}   {}   L:{}  C:{}",
-            modal_label,
-            path_label,
-            cursor.line + 1,
-            cursor.byte,
-        );
+        // 5.8.C: build the bottom-row content. When Command or
+        // Search modes are active, show the minibuffer (`:` or
+        // `/` / `?` prefix + the in-progress query) so the user
+        // can see what they're typing. Otherwise show the
+        // regular status line.
+        let bottom_row: String = match modal {
+            ModalState::Command => {
+                format!(":{}", self.app.editor.command_line)
+            }
+            ModalState::Search(dir) => {
+                let prefix = match dir {
+                    lattice_grammar::SearchDirection::Forward => '/',
+                    lattice_grammar::SearchDirection::Backward => '?',
+                };
+                let pattern = self
+                    .app
+                    .editor
+                    .search_line
+                    .as_ref()
+                    .map(|s| s.pattern.as_str())
+                    .unwrap_or("");
+                format!("{prefix}{pattern}")
+            }
+            _ => format!(
+                "  {}   {}   L:{}  C:{}",
+                modal_label,
+                path_label,
+                cursor.line + 1,
+                cursor.byte,
+            ),
+        };
+        // Mark whether the bottom row is the active minibuffer
+        // (drives the bar-cursor suffix below) versus the
+        // passive status line.
+        let bottom_is_minibuffer = matches!(modal, ModalState::Command | ModalState::Search(_));
 
         // 5.7.B.8/11: vim-style mode-aware cursor on monospace
         // text. Each character renders as its own div under a
@@ -457,14 +485,32 @@ impl Render for EditorView {
             // whatever monospace gpui's font system registered.
             .font_family("DejaVu Sans Mono")
             .child(document_area)
-            .child(
-                div()
+            .child({
+                let row = div()
                     .bg(rgb(theme.status_background))
                     .text_color(rgb(theme.status_foreground))
                     .px_2()
                     .py_1()
-                    .child(status),
-            );
+                    .flex()
+                    .flex_row()
+                    .child(div().child(bottom_row));
+                // 5.8.C: append a bar cursor at the end of the
+                // minibuffer so the user sees where their next
+                // keystroke will land. Status-line view (Normal /
+                // Insert / Visual / ...) renders no cursor here
+                // since the action is happening in the document
+                // area.
+                if bottom_is_minibuffer {
+                    row.child(
+                        div()
+                            .border_l_2()
+                            .border_color(rgb(theme.cursor_background))
+                            .child(" "),
+                    )
+                } else {
+                    row
+                }
+            });
 
         if let Some(overlay) = popup_overlay {
             // Center the overlay across the window. The simplest

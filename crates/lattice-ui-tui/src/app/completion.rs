@@ -838,121 +838,16 @@ impl App {
     /// has moved outside the popup's anchor range, dismiss
     /// the popup (the user typed something that took them
     /// past the word boundary).
+    /// 5.5.G.23.insert: body migrated to
+    /// [`lattice_host::dispatch::Editor::maybe_refresh_insert_completion_after_edit`].
+    /// Retained as a delegate; LSP `isIncomplete` re-fires flow through
+    /// `outcome.next_actions` via the App-side `apply` loop.
     pub(crate) fn maybe_refresh_insert_completion_after_edit(&mut self) {
-        let Some(state) = self.editor.insert_completion.as_mut() else {
-            return;
-        };
-        // Cursor must still be on the anchor's line and at /
-        // past the anchor.
-        if self.editor.cursor.line != state.anchor.line || self.editor.cursor.byte < state.anchor.byte {
-            self.editor.insert_completion = None;
-            return;
-        }
-        // Re-derive query.
-        let snap_buf = self.editor.document.snapshot().buffer.clone();
-        let line_text = snap_buf.line(state.anchor.line).unwrap_or_default();
-        let start = state.anchor.byte as usize;
-        let end = (self.editor.cursor.byte as usize).min(line_text.len());
-        if end < start {
-            self.editor.insert_completion = None;
-            return;
-        }
-        let query = line_text.get(start..end).unwrap_or("").to_string();
-        // If the user typed past the word (e.g. inserted a
-        // space), close the popup.
-        if query.as_bytes().iter().any(|b| !is_word_char_byte(*b)) {
-            self.editor.insert_completion = None;
-            return;
-        }
-        state.query = query;
-        state.cursor = self.editor.cursor;
-        let was_incomplete = state.lsp_incomplete;
-        // Refilter against the current raw set. We hold a
-        // mutable borrow on `state` here so calling the helper
-        // would re-borrow self -- pull the freq map by direct
-        // field reference (disjoint from `self.editor.insert_completion`)
-        // and feed it into the ranker's closure.
-        let ranker = lattice_completion::InsertRanker::new();
-        let matcher = lattice_completion::FuzzyInsertMatcher::new();
-        // CSM.K2: honour the active source filter here too --
-        // this is the LSP-aware refilter path that runs on
-        // async-response drains; it must agree with
-        // `refilter_insert_completion`'s filter logic so the
-        // popup stays consistent when LSP candidates arrive
-        // mid-filter.
-        let source_filter = state.source_filter.clone();
-        let mut scored: Vec<lattice_completion::ScoredCandidate> = state
-            .raw
-            .iter()
-            .filter(|raw| match source_filter.as_ref() {
-                Some(id) => raw.source.as_ref() == Some(id),
-                None => true,
-            })
-            .filter_map(|raw| {
-                lattice_completion::CandidateMatcher::matches(&matcher, &state.query, raw).map(
-                    |(score, ranges)| lattice_completion::ScoredCandidate {
-                        raw: raw.clone(),
-                        score,
-                        match_ranges: ranges,
-                    },
-                )
-            })
-            .collect();
-        // Disjoint-field borrows: `state` aliases
-        // `self.editor.insert_completion` mutably, so the bonus closure
-        // captures `freq` / `config` through direct field refs
-        // (mirrors `completion_total_bonus`, which can't be
-        // called here without re-borrowing self). Type-keyed
-        // reads via `config.get_typed::<T>()` -- same TypeId
-        // lookup the priority_for_source helper uses.
-        let freq = &self.editor.completion_accept_freq;
-        let config = &self.editor.config;
-        ranker.rank_with_bonus(&mut scored, |raw| {
-            let priority = match raw.source.as_ref().map(|s| s.as_str()) {
-                Some("gen:lsp-completion") => *config
-                    .get_typed::<lattice_config::CompletionSourceLspPriority>()
-                    .expect("CompletionSourceLspPriority"),
-                Some("gen:snippet") => *config
-                    .get_typed::<lattice_config::CompletionSourceSnippetPriority>()
-                    .expect("CompletionSourceSnippetPriority"),
-                Some("gen:buffer-words") => *config
-                    .get_typed::<lattice_config::CompletionSourceBufferWordsPriority>()
-                    .expect("CompletionSourceBufferWordsPriority"),
-                _ => 0,
-            }
-            .clamp(0, u32::MAX as i64) as u32;
-            let freq_bonus = freq
-                .get(&(raw.text.clone(), raw.kind))
-                .copied()
-                .unwrap_or(0)
-                .min(lattice_completion::InsertRanker::FREQUENCY_BONUS_CAP);
-            priority.saturating_add(freq_bonus)
-        });
-        state.rendered = scored
-            .into_iter()
-            .map(lattice_completion::RenderedCandidate::from_scored)
-            .collect();
-        dedup_rendered_by_text(&mut state.rendered);
-        if state.selected >= state.rendered.len() {
-            state.selected = state.rendered.len().saturating_sub(1);
-        }
-        // If nothing matches, close the popup -- unless the
-        // last LSP response said `isIncomplete`, in which
-        // case we re-fire LSP and let the response arrive.
-        if state.rendered.is_empty() && !was_incomplete {
-            self.editor.insert_completion = None;
-            return;
-        }
-        // isIncomplete refresh: re-fire LSP on every keystroke
-        // that mutates the query so the server's freshest set
-        // shows up.
-        if was_incomplete {
-            // Mark the trigger as IncompleteRefresh so the
-            // LSP request reports the right `triggerKind`.
-            if let Some(state) = self.editor.insert_completion.as_mut() {
-                state.trigger = lattice_completion::CompletionTrigger::IncompleteRefresh;
-            }
-            self.do_lsp_insert_completion_request();
+        let mut out = lattice_host::dispatch::DispatchOutcome::default();
+        self.editor
+            .maybe_refresh_insert_completion_after_edit(&mut out);
+        for follow_up in std::mem::take(&mut out.next_actions) {
+            self.apply(follow_up);
         }
     }
 

@@ -769,6 +769,11 @@ pub(crate) fn handle_action(
         // runs through `App::apply_effect_app_arms` (drained by the
         // dispatch wrapper after `editor.dispatch` returns).
         Action::Invoke(inv) => editor.run_invocation(inv, _out),
+        // 5.5.G.23.insert: Insert-mode text input. Host applies the
+        // edit + drives insert-completion / sigHelp / onTypeFormatting
+        // autopilots; LSP follow-ups defer through `out.next_actions`
+        // so the renderer's `apply` loop fires the async paths.
+        Action::Insert(s) => editor.do_insert_text(&s, _out),
         // Catch-all: any Action variant not yet migrated from
         // App::apply. Sub-slices 5.5.D+ extend the match upward as
         // helpers move.
@@ -1442,6 +1447,185 @@ impl Editor {
 
     /// 5.5.LSP.4: signature help (Insert-mode auto-trigger).
     /// Sends `textDocument/signatureHelp` to every attached server
+    /// 5.5.G.23.insert: host-side text insertion at the cursor (the
+    /// Insert-mode keystroke path). Drives `apply_edit_blocking`,
+    /// updates the dot-repeat insert recording, bumps the block-
+    /// visual live-edit counter, and runs the insert-completion
+    /// live-refresh + SignatureHelp / OnTypeFormatting trigger
+    /// autopilots.
+    ///
+    /// The LSP autopilots emit `Action::LspOnTypeFormattingRequest` /
+    /// `Action::LspInsertCompletionRequest` via `out.next_actions` so
+    /// the renderer can drive the async LSP plumbing (still
+    /// App-resident: `spawn_on_lsp_runtime` + `BatchingSink` +
+    /// `pending_insert_completion_lsp_*` channels). The host fires
+    /// `signature_help_request` directly since that's already
+    /// host-resident.
+    pub fn do_insert_text(&mut self, s: &str, out: &mut DispatchOutcome) {
+        if s.is_empty() {
+            return;
+        }
+        let Ok(applied) =
+            self.apply_edit_blocking(lattice_protocol::edit::Edit::insert(self.cursor, s))
+        else {
+            return;
+        };
+        self.cursor = applied.inserted_range.end;
+        // Capture into the in-flight Insert recording for dot-repeat.
+        if let Some(rec) = self.recording_insert.as_mut() {
+            rec.push_str(s);
+        }
+        // Block-visual I/A: count this edit so the Esc handler can
+        // rewind the whole session and re-emit it as a single
+        // batched undo unit.
+        if let Some(spec) = self.pending_block_insert.as_mut() {
+            spec.live_edits = spec.live_edits.saturating_add(1);
+        }
+        // Insert-mode completion live-refresh.
+        if self.insert_completion.is_some() {
+            self.maybe_refresh_insert_completion_after_edit(out);
+        }
+        // SignatureHelp + OnTypeFormatting trigger autopilots fire
+        // only for single-character inserts in Insert mode. Paste /
+        // snippet expansion / multi-char inserts land via different
+        // paths.
+        if matches!(self.modal, ModalState::Insert) && s.chars().count() == 1 {
+            let inserted_char = s.chars().next().unwrap_or('\0');
+            if self.signature_help_trigger_chars().contains(&inserted_char) {
+                // Host-resident already (5.5.LSP.4).
+                self.lsp_signature_help_request();
+            }
+            if self
+                .on_type_formatting_trigger_chars()
+                .contains(&inserted_char)
+            {
+                out.next_actions
+                    .push(crate::action::Action::LspOnTypeFormattingRequest(
+                        inserted_char,
+                    ));
+            }
+        }
+    }
+
+    /// 5.5.G.23.insert: host-side insert-completion popup refresh
+    /// after a buffer edit lands on the document. Called by
+    /// `do_insert_text` immediately after the edit; refilters the
+    /// candidate set against the new query and dismisses the popup
+    /// when the cursor moves past the anchor (e.g. inserted
+    /// whitespace), or when the resulting query has zero matches
+    /// and the last LSP response wasn't `isIncomplete`.
+    ///
+    /// On `isIncomplete`, emits `Action::LspInsertCompletionRequest`
+    /// via `out.next_actions` so the App-side handler can re-fire the
+    /// async LSP request (the request itself stays App-side because
+    /// it reaches for `spawn_on_lsp_runtime` + `BatchingSink` + the
+    /// `pending_insert_completion_lsp_*` channels).
+    pub fn maybe_refresh_insert_completion_after_edit(
+        &mut self,
+        out: &mut DispatchOutcome,
+    ) {
+        let Some(state) = self.insert_completion.as_mut() else {
+            return;
+        };
+        // Cursor must still be on the anchor's line and at/past the anchor.
+        if self.cursor.line != state.anchor.line
+            || self.cursor.byte < state.anchor.byte
+        {
+            self.insert_completion = None;
+            return;
+        }
+        let snap_buf = self.document.snapshot().buffer.clone();
+        let line_text = snap_buf.line(state.anchor.line).unwrap_or_default();
+        let start = state.anchor.byte as usize;
+        let end = (self.cursor.byte as usize).min(line_text.len());
+        if end < start {
+            self.insert_completion = None;
+            return;
+        }
+        let query = line_text.get(start..end).unwrap_or("").to_string();
+        // If the user typed past the word (e.g. inserted a space),
+        // close the popup.
+        if query.as_bytes().iter().any(|b| !is_word_char_byte(*b)) {
+            self.insert_completion = None;
+            return;
+        }
+        state.query = query;
+        state.cursor = self.cursor;
+        let was_incomplete = state.lsp_incomplete;
+        let ranker = lattice_completion::InsertRanker::new();
+        let matcher = lattice_completion::FuzzyInsertMatcher::new();
+        let source_filter = state.source_filter.clone();
+        let mut scored: Vec<lattice_completion::ScoredCandidate> = state
+            .raw
+            .iter()
+            .filter(|raw| match source_filter.as_ref() {
+                Some(id) => raw.source.as_ref() == Some(id),
+                None => true,
+            })
+            .filter_map(|raw| {
+                lattice_completion::CandidateMatcher::matches(&matcher, &state.query, raw).map(
+                    |(score, ranges)| lattice_completion::ScoredCandidate {
+                        raw: raw.clone(),
+                        score,
+                        match_ranges: ranges,
+                    },
+                )
+            })
+            .collect();
+        // Disjoint-field borrows: `state` aliases
+        // `self.insert_completion` mutably, so the bonus closure
+        // captures `freq` / `config` through direct field refs.
+        let freq = &self.completion_accept_freq;
+        let config = &self.config;
+        ranker.rank_with_bonus(&mut scored, |raw| {
+            let priority = match raw.source.as_ref().map(|s| s.as_str()) {
+                Some("gen:lsp-completion") => *config
+                    .get_typed::<lattice_config::CompletionSourceLspPriority>()
+                    .expect("CompletionSourceLspPriority"),
+                Some("gen:snippet") => *config
+                    .get_typed::<lattice_config::CompletionSourceSnippetPriority>()
+                    .expect("CompletionSourceSnippetPriority"),
+                Some("gen:buffer-words") => *config
+                    .get_typed::<lattice_config::CompletionSourceBufferWordsPriority>()
+                    .expect("CompletionSourceBufferWordsPriority"),
+                _ => 0,
+            }
+            .clamp(0, u32::MAX as i64) as u32;
+            let freq_bonus = freq
+                .get(&(raw.text.clone(), raw.kind))
+                .copied()
+                .unwrap_or(0)
+                .min(lattice_completion::InsertRanker::FREQUENCY_BONUS_CAP);
+            priority.saturating_add(freq_bonus)
+        });
+        state.rendered = scored
+            .into_iter()
+            .map(lattice_completion::RenderedCandidate::from_scored)
+            .collect();
+        dedup_rendered_by_text(&mut state.rendered);
+        if state.selected >= state.rendered.len() {
+            state.selected = state.rendered.len().saturating_sub(1);
+        }
+        // If nothing matches, close the popup -- unless the last LSP
+        // response said `isIncomplete`, in which case we re-fire LSP.
+        if state.rendered.is_empty() && !was_incomplete {
+            self.insert_completion = None;
+            return;
+        }
+        // isIncomplete refresh: re-fire LSP on every keystroke that
+        // mutates the query.
+        if was_incomplete {
+            if let Some(state) = self.insert_completion.as_mut() {
+                state.trigger = lattice_completion::CompletionTrigger::IncompleteRefresh;
+            }
+            // App-side `do_lsp_insert_completion_request` owns the
+            // async fan-out + sink. Defer via `next_actions` so the
+            // renderer drains through its full `apply` loop.
+            out.next_actions
+                .push(crate::action::Action::LspInsertCompletionRequest);
+        }
+    }
+
     /// 5.5.G.23.insert-prep: union of `signatureHelp` trigger
     /// characters across every LSP server attached to the active
     /// document. Empty when no server advertises the provider. Used

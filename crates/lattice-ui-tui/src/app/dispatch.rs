@@ -315,7 +315,12 @@ impl App {
             // ran). The `_` binding can't sit in the grouped no-op
             // band because of the inner `CommandInvocation` payload.
             Action::Invoke(_) => {}
-            Action::Insert(s) => self.do_insert_text(&s),
+            // 5.5.G.23.insert: Insert(s) is host-handled via
+            // `editor.do_insert_text`; the host queues LSP autopilot
+            // follow-ups (`LspOnTypeFormattingRequest`,
+            // `LspInsertCompletionRequest`) through `out.next_actions`
+            // which the dispatch wrapper already drained.
+            Action::Insert(_) => {}
             // 5.5.G.23.insert: LSP autopilot follow-ups host-emitted
             // by `Editor::do_insert_text` (forthcoming). The handlers
             // live App-side because they reach for `spawn_on_lsp_runtime`

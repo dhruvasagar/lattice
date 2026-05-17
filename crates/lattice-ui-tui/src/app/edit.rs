@@ -39,7 +39,6 @@
 
 use lattice_core::buffer::AppliedEdit;
 use lattice_grammar::CommandInvocation;
-use lattice_grammar::ModalState;
 use lattice_protocol::edit::Edit;
 use lattice_protocol::position::Position;
 use lattice_runtime::RuntimeError;
@@ -186,63 +185,28 @@ impl App {
     /// open completion popup, and fires the LSP signature-help /
     /// on-type-formatting trigger autopilot when a single-char insert
     /// matches a server-advertised trigger char.
+    /// 5.5.G.23.insert: body migrated to
+    /// [`lattice_host::dispatch::Editor::do_insert_text`]. Retained as
+    /// a thin App-side wrapper because internal App callers (the
+    /// `RepeatLastChange` replay path, snippet expansion
+    /// `expand_snippet`, the `do_completion_accept_then_insert` tail,
+    /// the `paste-mode` guard, multi-char insert paths) still drive
+    /// it directly. The wrapper drives a private `DispatchOutcome`,
+    /// applies any host-emitted effects + signals, and drains
+    /// `next_actions` via `self.apply` so LSP autopilot follow-ups
+    /// (`LspOnTypeFormattingRequest`, `LspInsertCompletionRequest`)
+    /// fire from the same dispatch loop.
     pub(super) fn do_insert_text(&mut self, s: &str) {
-        if s.is_empty() {
-            return;
+        let mut out = lattice_host::dispatch::DispatchOutcome::default();
+        self.editor.do_insert_text(s, &mut out);
+        for effect in std::mem::take(&mut out.effects) {
+            self.apply_effect_app_arms(effect);
         }
-        if let Ok(applied) = self.apply_edit_blocking(Edit::insert(self.editor.cursor, s)) {
-            self.editor.cursor = applied.inserted_range.end;
-            // Capture into the in-flight Insert recording for dot-repeat.
-            if let Some(rec) = self.editor.recording_insert.as_mut() {
-                rec.push_str(s);
-            }
-            // Block-visual I/A: count this edit so the Esc handler
-            // can rewind the whole session and re-emit it as a
-            // single batched undo unit.
-            if let Some(spec) = self.editor.pending_block_insert.as_mut() {
-                spec.live_edits = spec.live_edits.saturating_add(1);
-            }
-            // Insert-mode completion live-refresh (Phase 4.2.g.1).
-            // While the popup is open, every keystroke either
-            // refilters the candidate set against the new query
-            // or dismisses the popup (if the user moved past the
-            // word boundary).
-            // State-content read (not a gate read): we're inside
-            // an `apply` body; `sync_keymap_overlays` runs at the
-            // tail, so the mode-active state isn't yet in sync
-            // with the popup state field. The refresh check
-            // genuinely wants "is there popup state to refresh,"
-            // which is exactly what the field tracks.
-            if self.editor.insert_completion.is_some() {
-                self.maybe_refresh_insert_completion_after_edit();
-            }
-            // SignatureHelp trigger autopilot (Phase 4.3). When
-            // the user types a server-advertised trigger char in
-            // Insert mode, fire `textDocument/signatureHelp`
-            // automatically. Common triggers: `(` (call site),
-            // `,` (next argument). Skipped silently when no
-            // attached server advertises any triggers, and when
-            // the inserted text is multi-character (paste, snippet
-            // expansion -- those land via different paths).
-            if matches!(self.editor.modal, ModalState::Insert) && s.chars().count() == 1 {
-                let inserted_char = s.chars().next().unwrap_or('\0');
-                if self.signature_help_trigger_chars().contains(&inserted_char) {
-                    // 5.5.LSP.4: helper now lives on `Editor`.
-                    self.editor.lsp_signature_help_request();
-                }
-                // OnTypeFormatting trigger autopilot (Phase
-                // 4.3). C-family servers commonly advertise
-                // `;` / `}` / `\n`; the server returns small
-                // text edits adjusting the surrounding
-                // indentation. Skipped when no server
-                // advertises any triggers.
-                if self
-                    .on_type_formatting_trigger_chars()
-                    .contains(&inserted_char)
-                {
-                    self.do_lsp_on_type_formatting_request(inserted_char);
-                }
-            }
+        for signal in std::mem::take(&mut out.renderer_signals) {
+            self.handle_renderer_signal(signal);
+        }
+        for follow_up in std::mem::take(&mut out.next_actions) {
+            self.apply(follow_up);
         }
     }
 

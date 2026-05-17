@@ -207,7 +207,11 @@ impl App {
             | Action::JumpHistoryForward
             // 5.5.G.8: snippet placeholder navigation arms.
             | Action::SnippetNextPlaceholder
-            | Action::SnippetPrevPlaceholder => {}
+            | Action::SnippetPrevPlaceholder
+            // 5.5.G.9: paste cluster arms.
+            | Action::PasteAfter
+            | Action::PasteBefore
+            | Action::PasteText(_) => {}
             Action::Invoke(inv) => self.run_invocation(inv),
             Action::Insert(s) => self.do_insert_text(&s),
             // 5.5.G.3: `DeleteCharBackward`, `EnterAppend`,
@@ -448,9 +452,8 @@ impl App {
                 }
             }
 
-            Action::PasteAfter => self.do_paste(false),
-            Action::PasteBefore => self.do_paste(true),
-            Action::PasteText(text) => self.do_paste_text(&text),
+            // 5.5.G.9: `PasteAfter` / `PasteBefore` / `PasteText`
+            // migrated to `Editor::dispatch`.
 
             // ---- Command-line editing + completion ----
             Action::CommandLineClear => {

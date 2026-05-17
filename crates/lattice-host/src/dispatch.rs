@@ -563,6 +563,10 @@ pub(crate) fn handle_action(
         // 5.5.G.8: snippet placeholder navigation.
         Action::SnippetNextPlaceholder => editor.do_snippet_next_placeholder(),
         Action::SnippetPrevPlaceholder => editor.do_snippet_prev_placeholder(),
+        // 5.5.G.9: paste cluster (`p` / `P` / bracketed-paste).
+        Action::PasteAfter => editor.do_paste(false),
+        Action::PasteBefore => editor.do_paste(true),
+        Action::PasteText(text) => editor.do_paste_text(&text),
         // Catch-all: any Action variant not yet migrated from
         // App::apply. Sub-slices 5.5.D+ extend the match upward as
         // helpers move.
@@ -2973,6 +2977,172 @@ impl Editor {
         self.recompute_folds();
         self.pending_redraw = true;
         self.set_message(EchoLevel::Info, "redraw".to_string());
+    }
+}
+
+/// 5.5.G.9: pure-editor paste cluster (`p` / `P` / bracketed-paste).
+impl Editor {
+    /// Bracketed-paste handler. Routes the payload to cursor /
+    /// command line / search line based on the current modal.
+    pub fn do_paste_text(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        match self.modal {
+            ModalState::Command => {
+                self.command_line.push_str(text);
+                self.command_history_cursor = None;
+            }
+            ModalState::Search(_) => {
+                if let Some(line) = self.search_line.as_mut() {
+                    line.pattern.push_str(text);
+                }
+            }
+            _ => {
+                if let Ok(applied) = self.apply_edit_blocking(
+                    lattice_protocol::edit::Edit::insert(self.cursor, text),
+                ) {
+                    self.cursor = applied.inserted_range.end;
+                    if matches!(self.modal, ModalState::Insert)
+                        && let Some(rec) = self.recording_insert.as_mut()
+                    {
+                        rec.push_str(text);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Vim's `p` / `P` -- paste from the chosen register
+    /// (`pending_register` if set, else unnamed). Charwise splices
+    /// at cursor; linewise inserts a fresh line; blockwise paints
+    /// columns down consecutive lines.
+    pub fn do_paste(&mut self, before: bool) {
+        let chosen = self.pending_register.take();
+        let Some(reg) = self.read_register(chosen) else {
+            self.set_message(EchoLevel::Error, "register empty".to_string());
+            return;
+        };
+        match reg.kind {
+            lattice_grammar::YankKind::Charwise => {
+                let line_len = self
+                    .document
+                    .snapshot()
+                    .buffer
+                    .line_byte_len(self.cursor.line);
+                let insert_at = if before {
+                    self.cursor
+                } else if self.cursor.byte < line_len {
+                    lattice_protocol::position::Position::new(
+                        self.cursor.line,
+                        self.cursor.byte + 1,
+                    )
+                } else {
+                    self.cursor
+                };
+                if let Ok(applied) = self.apply_edit_blocking(
+                    lattice_protocol::edit::Edit::insert(insert_at, &reg.content),
+                ) {
+                    let end = applied.inserted_range.end;
+                    self.cursor = if end.byte > 0 {
+                        lattice_protocol::position::Position::new(end.line, end.byte - 1)
+                    } else {
+                        end
+                    };
+                }
+            }
+            lattice_grammar::YankKind::Linewise => {
+                let mut payload = reg.content.clone();
+                if !payload.ends_with('\n') {
+                    payload.push('\n');
+                }
+                let insert_at = if before {
+                    lattice_protocol::position::Position::new(self.cursor.line, 0)
+                } else {
+                    let len = self
+                        .document
+                        .snapshot()
+                        .buffer
+                        .line_byte_len(self.cursor.line);
+                    if self.cursor.line + 1 < self.document.snapshot().buffer.line_count()
+                    {
+                        lattice_protocol::position::Position::new(self.cursor.line + 1, 0)
+                    } else {
+                        let _ = self.apply_edit_blocking(
+                            lattice_protocol::edit::Edit::insert(
+                                lattice_protocol::position::Position::new(self.cursor.line, len),
+                                "\n",
+                            ),
+                        );
+                        lattice_protocol::position::Position::new(self.cursor.line + 1, 0)
+                    }
+                };
+                if let Ok(applied) = self.apply_edit_blocking(
+                    lattice_protocol::edit::Edit::insert(insert_at, &payload),
+                ) {
+                    self.cursor = applied.inserted_range.start;
+                }
+            }
+            lattice_grammar::YankKind::Blockwise => {
+                self.do_paste_blockwise(&reg.content, before)
+            }
+        }
+    }
+
+    /// Vim's blockwise paste: each `\n`-separated row inserted on
+    /// consecutive lines at the same column. Rows below the
+    /// buffer extend it with new lines.
+    pub fn do_paste_blockwise(&mut self, content: &str, before: bool) {
+        if content.is_empty() {
+            return;
+        }
+        let rows: Vec<&str> = content.split('\n').collect();
+        let start_line = self.cursor.line;
+        let line_len = self.document.snapshot().buffer.line_byte_len(start_line);
+        let start_col = if before {
+            self.cursor.byte
+        } else if self.cursor.byte < line_len {
+            self.cursor.byte + 1
+        } else {
+            self.cursor.byte
+        };
+        for (i, row) in rows.iter().enumerate() {
+            let target_line = start_line + i as u32;
+            let total_lines = self.document.snapshot().buffer.line_count();
+            if target_line >= total_lines {
+                let last = total_lines.saturating_sub(1);
+                let last_len = self.document.snapshot().buffer.line_byte_len(last);
+                let _ = self.apply_edit_blocking(lattice_protocol::edit::Edit::insert(
+                    lattice_protocol::position::Position::new(last, last_len),
+                    "\n",
+                ));
+            }
+            let target_len = self.document.snapshot().buffer.line_byte_len(target_line);
+            let insert_col = start_col.min(target_len);
+            let pos = lattice_protocol::position::Position::new(target_line, insert_col);
+            let _ = self
+                .apply_edit_blocking(lattice_protocol::edit::Edit::insert(pos, *row));
+        }
+        self.cursor = lattice_protocol::position::Position::new(start_line, start_col);
+    }
+
+    /// Read the register slot for paste / inspection. Falls back
+    /// to `unnamed_register`.
+    pub fn read_register(
+        &self,
+        register: Option<lattice_grammar::register::Register>,
+    ) -> Option<UnnamedRegister> {
+        match register {
+            None | Some(lattice_grammar::register::Register::Unnamed) => {
+                self.unnamed_register.clone()
+            }
+            Some(lattice_grammar::register::Register::BlackHole) => None,
+            Some(r) => self
+                .registers
+                .get(&r)
+                .cloned()
+                .or_else(|| self.unnamed_register.clone()),
+        }
     }
 }
 

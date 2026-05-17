@@ -7890,6 +7890,23 @@ fn last_addressable_line(buf: &lattice_core::Buffer) -> u32 {
     }
 }
 
+/// 5.5.G.23.insert-prep: cross-source visual dedup for the
+/// insert-completion popup (Phase 4.2.g.7 polish). Keeps the FIRST
+/// occurrence of each `raw.text`; subsequent rows with the same text
+/// drop out. Called after the ranker has sorted descending by score,
+/// so the surviving row is the highest-ranked entry per text — the
+/// buffer-words copy of `outer` outranks the tree-sitter copy at the
+/// spec's 100/80 priority split, so the popup row for `outer`
+/// carries the buffer-words tag.
+///
+/// Selection / navigation / accept all index into the deduped vec
+/// naturally; this is the only place we coalesce rows across sources,
+/// and it runs before the popup paints.
+pub fn dedup_rendered_by_text(rendered: &mut Vec<lattice_completion::RenderedCandidate>) {
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    rendered.retain(|cand| seen.insert(cand.raw.text.clone()));
+}
+
 /// 5.5.G.23: host-side recursive effect flush. Walks any
 /// `Effect::Many` tree into its leaves; for every non-`Many` leaf,
 /// calls the migrated-arm dispatcher [`handle_effect`] (so the

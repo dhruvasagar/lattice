@@ -57,6 +57,32 @@ use lattice_core::Document;
 use lattice_grammar::ModalState;
 use lattice_ui_gpui::GpuiApp;
 
+/// Vim-style cursor shape derived from [`ModalState`].
+///
+/// Phase 5.7.B.11: lets the GPUI peer render the same three
+/// cursor flavours users expect from the TUI peer / canonical
+/// vim — block in Normal/Visual/OperatorPending, bar in
+/// Insert/Command/Search, underline in Replace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CursorShape {
+    /// Full inverted-cell block (Normal, Visual, OperatorPending).
+    Block,
+    /// Thin left-side vertical bar (Insert, Command, Search).
+    Bar,
+    /// Thin bottom-side horizontal underline (Replace).
+    Underline,
+}
+
+impl CursorShape {
+    fn for_mode(modal: ModalState) -> Self {
+        match modal {
+            ModalState::Insert | ModalState::Command | ModalState::Search(_) => Self::Bar,
+            ModalState::Replace => Self::Underline,
+            ModalState::Normal | ModalState::Visual(_) | ModalState::OperatorPending => Self::Block,
+        }
+    }
+}
+
 /// The renderer-side composition root rendered as a GPUI
 /// `Entity`. Holds the [`GpuiApp`] + a [`FocusHandle`] so the
 /// window's key events actually route to our dispatcher.
@@ -157,27 +183,43 @@ impl Render for EditorView {
             cursor.byte,
         );
 
-        // 5.7.B.8: real cursor block on monospace text. Each
-        // character renders as its own div under a `flex_row`
-        // line; the cursor character has inverted bg/fg, giving
-        // a vim-style block cursor aligned to glyph metrics.
-        // Setting `font_family("monospace")` on the outer
-        // container makes every cell the same width so the
-        // block stacks predictably across rows.
+        // 5.7.B.8/11: vim-style mode-aware cursor on monospace
+        // text. Each character renders as its own div under a
+        // `flex_row` line. The cursor cell is styled three
+        // different ways depending on `modal`:
         //
-        // Tabs / CRLF / wide-glyph alignment are TODO -- the
-        // approach handles ASCII + most BMP glyphs correctly via
-        // `char_indices()` (byte-indexed; matches `cursor.byte`).
-        // A future slice swaps this for a proper `Element` impl
+        //   - Normal / Visual / OperatorPending: block (full
+        //     cell inverted bg/fg). The classic vim block cursor.
+        //   - Insert / Command / Search: left bar (a 2px left
+        //     border colored as the cursor). The vim Insert
+        //     convention -- the cursor sits BEFORE the next
+        //     character.
+        //   - Replace: underline (a 2px bottom border). Signals
+        //     overwrite mode.
+        //
+        // Tabs / CRLF / wide-glyph alignment are still TODO; a
+        // future slice swaps this for a proper `Element` impl
         // using `window.text_system().shape_line` so the cursor
-        // can sit on a sub-character glyph position and tabs
-        // expand to their configured width.
+        // can sit on sub-character glyph positions.
         let cursor_line = cursor.line as usize;
         let cursor_byte = cursor.byte as usize;
         let cursor_fg = rgb(0x1e1e2e);
         let cursor_bg = rgb(0xcdd6f4);
+        let cursor_shape = CursorShape::for_mode(modal);
         let raw_lines: Vec<&str> = text.split('\n').collect();
         let cursor_past_last_line = cursor_line >= raw_lines.len();
+
+        // Style a cursor cell with the current shape (closure
+        // so EOL trailing + past-last-line trailing share the
+        // logic with the in-line cursor cell).
+        let style_cursor_cell = |c: &str| -> gpui::Div {
+            let cell = div().child(c.to_string());
+            match cursor_shape {
+                CursorShape::Block => cell.bg(cursor_bg).text_color(cursor_fg),
+                CursorShape::Bar => cell.border_l_2().border_color(cursor_bg),
+                CursorShape::Underline => cell.border_b_2().border_color(cursor_bg),
+            }
+        };
 
         let mut rows: Vec<gpui::Div> = raw_lines
             .iter()
@@ -189,22 +231,19 @@ impl Render for EditorView {
                     .map(|(byte_idx, c)| {
                         let is_cursor = is_cursor_line && byte_idx == cursor_byte;
                         if is_cursor {
-                            div()
-                                .bg(cursor_bg)
-                                .text_color(cursor_fg)
-                                .child(c.to_string())
+                            style_cursor_cell(&c.to_string())
                         } else {
                             div().child(c.to_string())
                         }
                     })
                     .collect();
-                // Trailing block: cursor at EOL (`cursor_byte ==
+                // Trailing cursor: cursor at EOL (`cursor_byte ==
                 // line.len()`) or on an empty line (`line.len() ==
-                // 0`). The block falls on a synthetic space so
+                // 0`). The cursor falls on a synthetic space so
                 // there's a visible cell where the next insert
                 // will land.
                 if is_cursor_line && cursor_byte >= line.len() {
-                    cells.push(div().bg(cursor_bg).text_color(cursor_fg).child(" "));
+                    cells.push(style_cursor_cell(" "));
                 }
                 div().flex().flex_row().children(cells)
             })
@@ -213,14 +252,9 @@ impl Render for EditorView {
         if cursor_past_last_line {
             // Cursor sits on a row beyond the document's last
             // line (e.g. a doc ending in `\n` with cursor on the
-            // synthetic post-newline row). Append a marker-only
+            // synthetic post-newline row). Append a cursor-only
             // row so the user can see the target.
-            rows.push(
-                div()
-                    .flex()
-                    .flex_row()
-                    .child(div().bg(cursor_bg).text_color(cursor_fg).child(" ")),
-            );
+            rows.push(div().flex().flex_row().child(style_cursor_cell(" ")));
         }
 
         div()
@@ -247,6 +281,74 @@ impl Render for EditorView {
                     .py_1()
                     .child(status),
             )
+    }
+}
+
+#[cfg(test)]
+mod cursor_shape_tests {
+    use super::CursorShape;
+    use lattice_grammar::{ModalState, SearchDirection, VisualKind};
+
+    #[test]
+    fn normal_uses_block() {
+        assert_eq!(
+            CursorShape::for_mode(ModalState::Normal),
+            CursorShape::Block
+        );
+    }
+
+    #[test]
+    fn visual_uses_block() {
+        assert_eq!(
+            CursorShape::for_mode(ModalState::Visual(VisualKind::Charwise)),
+            CursorShape::Block
+        );
+        assert_eq!(
+            CursorShape::for_mode(ModalState::Visual(VisualKind::Linewise)),
+            CursorShape::Block
+        );
+        assert_eq!(
+            CursorShape::for_mode(ModalState::Visual(VisualKind::Blockwise)),
+            CursorShape::Block
+        );
+    }
+
+    #[test]
+    fn operator_pending_uses_block() {
+        assert_eq!(
+            CursorShape::for_mode(ModalState::OperatorPending),
+            CursorShape::Block
+        );
+    }
+
+    #[test]
+    fn insert_uses_bar() {
+        assert_eq!(CursorShape::for_mode(ModalState::Insert), CursorShape::Bar);
+    }
+
+    #[test]
+    fn command_uses_bar() {
+        assert_eq!(CursorShape::for_mode(ModalState::Command), CursorShape::Bar);
+    }
+
+    #[test]
+    fn search_uses_bar() {
+        assert_eq!(
+            CursorShape::for_mode(ModalState::Search(SearchDirection::Forward)),
+            CursorShape::Bar
+        );
+        assert_eq!(
+            CursorShape::for_mode(ModalState::Search(SearchDirection::Backward)),
+            CursorShape::Bar
+        );
+    }
+
+    #[test]
+    fn replace_uses_underline() {
+        assert_eq!(
+            CursorShape::for_mode(ModalState::Replace),
+            CursorShape::Underline
+        );
     }
 }
 

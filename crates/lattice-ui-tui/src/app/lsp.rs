@@ -43,8 +43,6 @@ use lattice_protocol::position::Position;
 
 use lattice_grammar::ModalState;
 
-use lattice_protocol::Event;
-
 use super::{
     App, CodeActionOutcome, CodeActionRow, CompletionItemRow, CompletionOutcome,
     CompletionResolveOutcome, EchoLevel, FormatOutcome, HoverOutcome, InsertCompletionLspOutcome,
@@ -1651,25 +1649,14 @@ impl App {
     /// Idempotent against the supervisor: re-publishing the same
     /// URI is a no-op because `LspSupervisorHandle::open_buffer`
     /// short-circuits already-attached URIs.
+    /// Thin wrapper around
+    /// [`lattice_host::editor::Editor::publish_document_opened_for_active`]
+    /// (Phase 5.7.B.6 migration). The TUI peer's `App::new` calls
+    /// this name historically; keeping the wrapper avoids
+    /// churning the call site while the body lives host-side so
+    /// the GPUI peer can call it through `editor.publish_document_opened_for_active()`.
     pub(super) fn publish_document_opened_for_active(&mut self) {
-        let snap = self.editor.document.snapshot();
-        let path_opt = snap.path().map(std::path::Path::to_path_buf);
-        let version = snap.text_version;
-        let text = snap.buffer.as_string();
-        let buffer_id = self.editor.document_buffer_id;
-        drop(snap);
-
-        if let Some(ref path) = path_opt {
-            let uri = lattice_lsp::actor::uri_from_path(path);
-            self.editor.buffer_uris.insert(buffer_id, uri);
-        }
-
-        self.editor.event_bus.publish(Event::DocumentOpened {
-            id: lattice_protocol::ids::DocumentId::new(buffer_id.0 as u64),
-            path: path_opt,
-            version,
-            text,
-        });
+        self.editor.publish_document_opened_for_active();
     }
 
     /// Decode the LSP metadata directly from a candidate's

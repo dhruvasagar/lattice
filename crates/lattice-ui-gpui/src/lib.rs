@@ -62,7 +62,7 @@
 //! `Action` -> `editor.dispatch`; paint reads `editor.document`
 //! snapshot + cursor) follows in 5.7.B.3 / 5.7.B.4.
 
-use lattice_core::Document;
+use lattice_core::{BufferKind, Document};
 use lattice_host::Renderer;
 use lattice_host::action::Action;
 use lattice_host::chord::KeyChord;
@@ -143,11 +143,51 @@ impl GpuiApp {
     /// this peer will call the same methods via its own renderer-
     /// signal handler.
     pub fn new(document: Document) -> Self {
-        Self {
+        let mut app = Self {
             editor: Editor::boot(document),
             theme: GpuiTheme::default(),
             pane_render_registry: GpuiPaneRenderRegistry::default(),
-        }
+        };
+        app.finalize_boot();
+        app
+    }
+
+    /// Run the renderer-side post-boot helpers the TUI peer
+    /// runs at the tail of `App::new`. Phase 5.7.B.6 brings the
+    /// GPUI peer to the same boot end-state as the TUI peer
+    /// (without the synthetic-buffer seeding -- `*lsp*` and
+    /// `*messages*` will be lazy-created on first use until
+    /// `ensure_named_synthetic_document` /
+    /// `ensure_messages_buffer` migrate from `impl App` (TUI) to
+    /// `impl Editor`).
+    ///
+    /// What this currently does:
+    ///
+    /// 1. `editor.rebuild_option_cache()` — populate the hot-
+    ///    path option cache from the freshly-`init_from_linkme()`'d
+    ///    registry.
+    /// 2. `editor.activate_major_for_buffer_kind(document_buffer_id,
+    ///    Document)` — resolve + activate the appropriate major
+    ///    mode for the initial buffer (text-mode for plain,
+    ///    rust-mode / python-mode / ... for typed languages).
+    ///    This is what makes mode-contributed bindings reachable
+    ///    + option contributions visible.
+    /// 3. `editor.publish_document_opened_for_active()` — emit
+    ///    [`Event::DocumentOpened`] so LSP attach / project
+    ///    watcher / completion warmer subscribers see the
+    ///    buffer.
+    ///
+    /// `activate_major_for_buffer_kind` returns
+    /// `Vec<RendererSignal>` (`#[must_use]`); 5.7.B.6 discards
+    /// them. The signal handler is the 5.7.B.7 slice -- once it
+    /// lands, theme cascades + option cascades + structural
+    /// renderer notifications all propagate to GPUI caches.
+    fn finalize_boot(&mut self) {
+        self.editor.rebuild_option_cache();
+        let _signals = self
+            .editor
+            .activate_major_for_buffer_kind(self.editor.document_buffer_id, BufferKind::Document);
+        self.editor.publish_document_opened_for_active();
     }
 
     /// Convenience entry point for GPUI's key-down event handler:
@@ -273,15 +313,20 @@ mod tests {
     #[test]
     fn scaffold_constructs_without_ui_tui() {
         let app = GpuiApp::new(Document::empty());
-        // `Editor::boot` populates the mode registry but does not
-        // *activate* any modes on the initial buffer -- that's a
-        // renderer-side post-boot helper. The active-modes map
-        // stays empty until the GPUI peer runs the equivalent of
-        // TUI's `activate_major_for_buffer_kind`.
-        assert!(app.editor.active_modes.is_empty());
-        // `Editor::boot` wired the mode registry; the entry count
-        // is nonzero so the host's mode-registration path ran.
+        // `Editor::boot` populates the mode registry; the entry
+        // count is nonzero so the host's mode-registration path
+        // ran.
         assert!(app.editor.mode_registry.iter_meta().next().is_some());
+        // 5.7.B.6: `GpuiApp::new` now also runs `finalize_boot`
+        // which calls `activate_major_for_buffer_kind` for the
+        // initial document buffer. The active-modes map should
+        // therefore contain an entry for `document_buffer_id`.
+        assert!(
+            app.editor
+                .active_modes
+                .contains_key(&app.editor.document_buffer_id),
+            "finalize_boot should activate a major mode for the initial document buffer"
+        );
         // ProviderLookup is implemented on the registry; the
         // empty stub answers `false` for every mode id.
         let probe: &dyn ProviderLookup = &app.pane_render_registry;

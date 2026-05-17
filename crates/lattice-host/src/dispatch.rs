@@ -3532,6 +3532,45 @@ impl Editor {
         self.maybe_auto_activate_lsp_mode(buffer_id)
     }
 
+    /// Boot-time + post-open helper: publish [`Event::DocumentOpened`]
+    /// for the active document buffer.
+    ///
+    /// Path-bearing buffers register their URI eagerly (the URI
+    /// is a deterministic `uri_from_path`; LSP attach is async and
+    /// doesn't gate the mapping). Path-less scratch buffers publish
+    /// nothing (no LSP work to drive); the `buffer_uris` entry stays
+    /// absent.
+    ///
+    /// Phase 5.7.B.6: migrated from
+    /// `lattice-ui-tui::app::lsp::App::publish_document_opened_for_active`
+    /// so both renderer peers (TUI + GPUI) run the same boot
+    /// sequence. The body touches only renderer-neutral editor
+    /// state (`document`, `buffer_uris`, `event_bus`); the TUI
+    /// peer keeps a thin wrapper for back-compat with the
+    /// `app.publish_document_opened_for_active()` call site in
+    /// `App::new`.
+    pub fn publish_document_opened_for_active(&mut self) {
+        let snap = self.document.snapshot();
+        let path_opt = snap.path().map(std::path::Path::to_path_buf);
+        let version = snap.text_version;
+        let text = snap.buffer.as_string();
+        let buffer_id = self.document_buffer_id;
+        drop(snap);
+
+        if let Some(ref path) = path_opt {
+            let uri = lattice_lsp::actor::uri_from_path(path);
+            self.buffer_uris.insert(buffer_id, uri);
+        }
+
+        self.event_bus
+            .publish(lattice_protocol::Event::DocumentOpened {
+                id: lattice_protocol::ids::DocumentId::new(buffer_id.0 as u64),
+                path: path_opt,
+                version,
+                text,
+            });
+    }
+
     /// 5.5.F.5.3 (M-async.3): rollback drain for the mode dispatcher's
     /// spawned lifecycle task. Reads `ModeEvent` variants off
     /// `pending_mode_lifecycle_rx` and acts on `ModeActivationFailed`

@@ -1629,16 +1629,9 @@ pub(crate) fn hover_contents_to_markdown(contents: &lsp_types::HoverContents) ->
     }
 }
 
-pub(super) fn previous_position(buf: &Buffer, p: Position) -> Position {
-    if p.byte > 0 {
-        Position::new(p.line, p.byte - 1)
-    } else if p.line > 0 {
-        let prev_line = p.line - 1;
-        Position::new(prev_line, line_byte_len(buf, prev_line))
-    } else {
-        p
-    }
-}
+// 5.5.H: `previous_position` retired (its sole caller was the
+// search-side `step_byte`, also retired). Host's
+// `lattice_host::dispatch::previous_position` is the live copy.
 
 #[cfg(test)]
 mod tests {

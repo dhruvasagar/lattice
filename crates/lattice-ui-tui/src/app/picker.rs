@@ -669,6 +669,12 @@ impl App {
     /// No-op when no live picker is active. Each keystroke
     /// pushes the deadline to `now + LIVE_PICKER_DEBOUNCE`; the
     /// drain fires when `now >= deadline`.
+    /// 5.5.H: kept as `#[allow(dead_code)]` -- prod path was
+    /// inlined into the App-side picker keystroke arm by G.11
+    /// (the host returns a `RendererSignal` that the App matches
+    /// on), but two test sites in `app/picker.rs` still poke the
+    /// debounce directly to fast-forward time-driven assertions.
+    #[allow(dead_code)]
     pub(crate) fn bump_live_picker_debounce(&mut self) {
         let Some(state) = self.editor.live_picker_query.as_mut() else {
             return;

@@ -395,15 +395,9 @@ impl App {
         self.seed_help_metadata_locals(id, metadata);
     }
 
-    /// Restore the most recent snapshot from `popup_back_stack` into
-    /// the active popup. Returns `true` if a frame was popped and
-    /// applied; `false` when the stack was empty (caller falls
-    /// through to whatever default `<C-o>` behaviour applies).
-    /// 5.5.G.7: body migrated to
-    /// [`lattice_host::dispatch::Editor::pop_popup_back`].
-    pub(crate) fn pop_popup_back(&mut self) -> bool {
-        self.editor.pop_popup_back()
-    }
+    // 5.5.H: `pop_popup_back` App-side delegate retired (zero
+    // callers; host copy at
+    // [`lattice_host::dispatch::Editor::pop_popup_back`]).
 
     /// Read-side accessor for the renderer: the active popup's
     /// placement, or `None` when no popup is open.

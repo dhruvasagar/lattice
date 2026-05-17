@@ -98,6 +98,12 @@ impl App {
     // deleted entirely.
 
     /// 5.5.E.7.3: see [`lattice_host::dispatch::Editor::undo_blocking`].
+    /// 5.5.H: kept as `#[allow(dead_code)]` -- no prod caller
+    /// (Action::Undo routes through `Editor::dispatch` host-side),
+    /// but several test modules in `app/edit.rs`, `app/motions.rs`,
+    /// etc. construct an App, mutate it, and call `a.undo_blocking()`
+    /// directly for tighter assertions than `Action::Undo` permits.
+    #[allow(dead_code)]
     pub(super) fn undo_blocking(&mut self) -> Result<Vec<AppliedEdit>, RuntimeError> {
         self.editor.undo_blocking()
     }
@@ -122,52 +128,16 @@ impl App {
     // `read_register` all migrated to
     // [`lattice_host::dispatch::Editor`]. `do_paste` retained as a
     // 1-line delegate below because `app/picker.rs:235` (paste-
-    // picker accept) still calls it. `do_paste_text` retained as a
-    // delegate for the bracketed-paste runtime hook.
+    // picker accept) still calls it; `do_paste_text` retired in
+    // 5.5.H -- bracketed-paste routes via `Action::PasteText`
+    // through `Editor::dispatch`, no direct App caller remains.
     pub(super) fn do_paste(&mut self, before: bool) {
         self.editor.do_paste(before);
     }
 
-    pub(super) fn do_paste_text(&mut self, text: &str) {
-        self.editor.do_paste_text(text);
-    }
-
-    /// Vim's `a` -- step the cursor one byte forward (clamped to
-    /// EOL) and switch to Insert.
-    // 5.5.G.3: `do_enter_append` migrated to
-    // [`lattice_host::dispatch::Editor`].
-
-    /// Vim's blockwise-visual `I` (`append=false`) and `A`
-    /// (`append=true`). Captures the block extents from the active
-    /// selection, parks them in `pending_block_insert`, moves the
-    /// cursor to the top-row insert column, and switches to Insert.
-    /// The replication onto rows 2..N happens when Insert exits.
-    ///
-    /// No-op if the modal is not blockwise visual; called only
-    /// from translate_visual which guards on the mode.
-    /// 5.5.G.17: body migrated to
-    /// [`lattice_host::dispatch::Editor::do_enter_block_visual_insert`].
-    #[allow(dead_code)]
-    pub(super) fn do_enter_block_visual_insert(&mut self, append: bool) {
-        self.editor.do_enter_block_visual_insert(append);
-    }
-
-    /// Vim's `o` -- open a new line below the cursor, splice a
-    /// newline at end-of-line, drop the cursor on the new empty
-    /// line, switch to Insert.
-    ///
-    /// Reads line length from `active_text()` so the path works
-    /// uniformly across Document / Oil / etc. -- without that,
-    /// `o` in an oil buffer reads the wrong (document) rope's
-    /// line length and inserts mid-row.
-    // 5.5.G.3: `do_open_line_below` + `do_open_line_above`
-    // migrated to [`lattice_host::dispatch::Editor`].
-
-    /// 5.5.E.7.4: see [`lattice_host::dispatch::Editor::do_delete_line`].
-    #[allow(dead_code)]
-    pub(super) fn do_delete_line(&mut self) {
-        self.editor.do_delete_line();
-    }
+    // 5.5.H: `do_paste_text`, `do_enter_block_visual_insert`,
+    // `do_delete_line` delegates retired (zero callers; host
+    // copies live in `lattice_host::dispatch::Editor`).
 
     /// Vim's :g / :v -- execute `body` on every line matching (or NOT
     /// matching, when inverted) the literal pattern. Operates bottom-up

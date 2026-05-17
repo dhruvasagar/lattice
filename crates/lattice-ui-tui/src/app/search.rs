@@ -8,14 +8,14 @@
 //! - Word-under-cursor (`*` / `#`):
 //!   `do_search_word_under_cursor`.
 //! - Find-repeat (`;` / `,`): `do_find_repeat`.
-//! - Substitute: `do_substitute` (the `:s` body) plus
-//!   `refresh_substitute_preview` and
+//! - Substitute: `refresh_substitute_preview` and
 //!   `collect_substitute_matches_for_line` (the live
 //!   preview pipeline driven from cmdline keystrokes).
+//!   `do_substitute` itself (the `:s` body) lives host-side
+//!   in [`lattice_host::dispatch::Editor::do_substitute`].
 //! - Free fns: `compile_search_pattern` (the regex compile
 //!   wrapper used everywhere a pattern enters the search
-//!   engine) and `step_byte` (one-byte cursor advance for
-//!   `n` / `N` to skip the current match).
+//!   engine).
 //!
 //! What does NOT live here:
 //! - The fancy-regex / lattice_core::search engines
@@ -29,13 +29,9 @@
 use fancy_regex::Regex;
 use lattice_core::Buffer;
 use lattice_grammar::CommandInvocation;
-use lattice_grammar::SearchDirection;
 use lattice_protocol::position::{Position, Range as ProtoRange};
 
-use super::{
-    App, EchoLevel, FindKind, SubstitutePreview, last_addressable_line, line_byte_len,
-    previous_position,
-};
+use super::{App, EchoLevel, FindKind, SubstitutePreview, last_addressable_line};
 
 impl App {
     // 5.5.G.10: `preview_search`, `submit_search`, `cancel_search`,
@@ -141,17 +137,9 @@ impl App {
         }
     }
 
-    /// 5.5.E.7.5: see [`lattice_host::dispatch::Editor::do_substitute`].
-    #[allow(dead_code)]
-    pub(super) fn do_substitute(
-        &mut self,
-        scope: lattice_grammar::SubstituteScope,
-        pattern: &str,
-        replacement: &str,
-        global: bool,
-    ) {
-        self.editor.do_substitute(scope, pattern, replacement, global);
-    }
+    // 5.5.H: `do_substitute` App-side delegate retired (zero
+    // callers; host copy lives at
+    // [`lattice_host::dispatch::Editor::do_substitute`]).
 
     /// Vim's `;` / `,`: repeat the last f/F/t/T find on the current
     /// line. `reverse = false` keeps the original direction; `true`
@@ -205,28 +193,9 @@ fn compile_search_pattern(pattern: &str) -> Result<Regex, String> {
     Regex::new(pattern).map_err(|e| e.to_string())
 }
 
-/// One byte forward or backward, wrapping across newlines. Caller for
-/// search-repeat: skip the current match by advancing one byte before
-/// calling the engine. At buffer extremes we return the original
-/// position; the engine then handles wrap.
-fn step_byte(buf: &Buffer, p: Position, dir: SearchDirection) -> Position {
-    match dir {
-        SearchDirection::Forward => {
-            let len = line_byte_len(buf, p.line);
-            if p.byte < len {
-                Position::new(p.line, p.byte + 1)
-            } else {
-                let last = last_addressable_line(buf);
-                if p.line < last {
-                    Position::new(p.line + 1, 0)
-                } else {
-                    p
-                }
-            }
-        }
-        SearchDirection::Backward => previous_position(buf, p),
-    }
-}
+// 5.5.H: `step_byte` retired (zero callers; host's
+// `lattice_host::dispatch::step_byte` is the live copy used by
+// the host-side search repeat).
 
 #[cfg(test)]
 mod tests {

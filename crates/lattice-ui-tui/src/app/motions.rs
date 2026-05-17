@@ -28,7 +28,7 @@
 use lattice_core::Buffer;
 use lattice_protocol::position::Position;
 
-use super::{App, BufferId, BufferKind, PositionEntry, PositionSource};
+use super::{App, BufferId, BufferKind, PositionSource};
 
 /// Cap on entries in the position-history ring. The write side
 /// (`push_position_history`) drops the oldest entry when this
@@ -54,20 +54,10 @@ impl App {
     /// callers (none today; `Action::WalkMark*` arms now route
     /// host-side) eliminated.
 
-    /// 5.5.G.6: body migrated to
-    /// [`lattice_host::dispatch::Editor::do_walk_history`]. Kept
-    /// as a delegate because App's `do_jump_history` still calls
-    /// it (the jump-history wrapper stays App-side until
-    /// `pop_popup_back` migrates host-side).
-    pub(super) fn do_walk_history<F: Fn(&PositionEntry) -> bool>(
-        &mut self,
-        delta: i32,
-        pred: F,
-        empty_label: &str,
-        bound_label: &str,
-    ) {
-        self.editor.do_walk_history(delta, pred, empty_label, bound_label);
-    }
+    // 5.5.H: `do_walk_history` App-side delegate retired (zero
+    // callers; `pop_popup_back` + `do_jump_history` migrated
+    // host-side in 5.5.G.7, removing the last App caller). Host
+    // copy at [`lattice_host::dispatch::Editor::do_walk_history`].
 
     /// 5.5.D: cursor clamp moved to
     /// [`lattice_host::editor::Editor::clamp_cursor_to_active_buffer`].

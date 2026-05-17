@@ -39,7 +39,10 @@ use super::{App, BufferId, EchoLevel, PositionSource};
 use crate::buffer_registry::{BufferData, BufferEntry, DocumentEntry};
 use crate::buffers::{BufferFlags, BufferKind};
 use crate::help::HelpContent;
-use crate::pane::{PaneDirection, SplitOrientation};
+// 5.5.H: PaneDirection / SplitOrientation imports retired
+// alongside the `do_navigate_pane` / `do_split_pane` App-side
+// delegates. Test-only `SplitOrientation` reference at line 1401+
+// uses the full path.
 
 impl App {
     /// Switch the active document to `id`. Snapshots the current
@@ -385,12 +388,9 @@ impl App {
         self.editor.should_quit = true;
     }
 
-    /// 5.5.G.5: body migrated to
-    /// [`lattice_host::dispatch::Editor::do_split_pane`].
-    #[allow(dead_code)]
-    pub(super) fn do_split_pane(&mut self, orientation: SplitOrientation) {
-        self.editor.do_split_pane(orientation);
-    }
+    // 5.5.H: `do_split_pane` App-side delegate retired (zero
+    // callers; host copy at
+    // [`lattice_host::dispatch::Editor::do_split_pane`]).
 
     /// 5.5.G.5: body migrated to
     /// [`lattice_host::dispatch::Editor::do_close_pane`]. Kept as
@@ -411,22 +411,10 @@ impl App {
     /// actually drop a tree buffer.
     pub(super) fn gc_unreferenced_panel_buffers(&mut self) {}
 
-    /// Step cardinally to the spatial neighbour of the active pane.
-    /// Geometry comes from `PaneTree::compute_rects` so the walk
-    /// matches what the renderer drew.
-    /// 5.5.G.5: body migrated to
-    /// [`lattice_host::dispatch::Editor::do_navigate_pane`].
-    #[allow(dead_code)]
-    pub(super) fn do_navigate_pane(&mut self, direction: PaneDirection) {
-        self.editor.do_navigate_pane(direction);
-    }
-
-    /// 5.5.G.5: body migrated to
-    /// [`lattice_host::dispatch::Editor::activate_pane`]. Delegate
-    /// retained because App-side helpers still call it.
-    pub(super) fn activate_pane(&mut self, idx: usize) {
-        self.editor.activate_pane(idx);
-    }
+    // 5.5.H: `do_navigate_pane` + `activate_pane` App-side
+    // delegates retired (zero callers; host copies at
+    // [`lattice_host::dispatch::Editor::do_navigate_pane`] /
+    // `Editor::activate_pane`).
 
     /// Inverse of `snapshot_active_pane`: pull the freshly
     /// activated pane's stashed cursor / scroll back into the App's
@@ -545,11 +533,9 @@ impl App {
     /// width that the renderer overrides with the real terminal
     /// width before navigation. Good enough until B.1.c has the
     /// per-frame terminal size cached on App.
-    /// 5.5.G.5: body migrated to
-    /// [`lattice_host::dispatch::Editor::buffer_area_rect`].
-    pub(super) fn buffer_area_rect(&self) -> crate::pane::PaneRect {
-        self.editor.buffer_area_rect()
-    }
+    // 5.5.H: `buffer_area_rect` App-side delegate retired (zero
+    // callers; host copy at
+    // [`lattice_host::dispatch::Editor::buffer_area_rect`]).
 
     /// M.4: status-line label for a pane. Dispatches through
     /// `pane_render_provider` (walks active minors then major) so
@@ -715,22 +701,11 @@ impl App {
     /// (M.3.2.c.4 follow-up + retirement) can resolve mode-owned
     /// state through `buffer_locals` uniformly across active /
     /// inactive buffers.
-    #[allow(dead_code)]
-    pub(super) fn seed_active_document_locals(&mut self) {
-        if !matches!(self.editor.active_buffer, BufferKind::Document) {
-            return;
-        }
-        let id = self.editor.document_buffer_id;
-        let syntax = self.editor.syntax.clone();
-        let last_parsed = self.editor.last_parsed_text_version;
-        let last_synced = self.editor.last_synced_syntax_version;
-        let folds = self.editor.folds.clone();
-        let locals = self.editor.buffer_locals.entry(id).or_default();
-        locals.insert(crate::modes::DocumentSyntax(syntax));
-        locals.insert(crate::modes::DocumentLastParsedTextVersion(last_parsed));
-        locals.insert(crate::modes::DocumentLastSyncedSyntaxVersion(last_synced));
-        locals.insert(crate::modes::DocumentFolds(folds));
-    }
+    // 5.5.H: `seed_active_document_locals` retired (zero callers
+    // anywhere in the workspace). M.3.2.c.4's reader-side
+    // resolution through `buffer_locals` is now driven by the
+    // deactivation hook in the buffer-switch path, not an explicit
+    // seed call from App.
 
     // ---- M.3.2.c.4 reader accessors ----
     //

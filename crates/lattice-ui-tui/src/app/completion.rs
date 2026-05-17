@@ -214,17 +214,9 @@ impl App {
         }
     }
 
-    /// Helper: move the cursor to the start of the first range in
-    /// a tabstop group.
-    fn move_cursor_to_snippet_group(&mut self, group: &lattice_snippet::TabstopGroup) {
-        let Some(first) = group.ranges.first() else {
-            return;
-        };
-        let snap = self.editor.document.snapshot();
-        if let Ok(pos) = snap.buffer.byte_to_position(first.start) {
-            self.editor.cursor = pos;
-        }
-    }
+    // 5.5.H: `move_cursor_to_snippet_group` retired (zero
+    // callers; `Editor::move_cursor_to_snippet_group` host-side
+    // is the live copy used by the migrated snippet-nav arms).
 }
 
 impl App {

@@ -51,7 +51,7 @@
 use gpui::{
     App, AppContext, Application, Bounds, Context, FocusHandle, Focusable, InteractiveElement,
     IntoElement, KeyDownEvent, ParentElement, Render, Styled, Window, WindowBounds, WindowOptions,
-    div, px, rgb, size,
+    div, px, size,
 };
 use lattice_core::Document;
 use lattice_grammar::ModalState;
@@ -203,8 +203,11 @@ impl Render for EditorView {
         // can sit on sub-character glyph positions.
         let cursor_line = cursor.line as usize;
         let cursor_byte = cursor.byte as usize;
-        let cursor_fg = rgb(0x1e1e2e);
-        let cursor_bg = rgb(0xcdd6f4);
+        // 5.7.B.12: cursor colors come from the cached GpuiTheme
+        // so theme cascades propagate without binary-side
+        // changes.
+        let cursor_fg = self.app.theme.cursor_foreground;
+        let cursor_bg = self.app.theme.cursor_background;
         let cursor_shape = CursorShape::for_mode(modal);
         let raw_lines: Vec<&str> = text.split('\n').collect();
         let cursor_past_last_line = cursor_line >= raw_lines.len();
@@ -257,14 +260,17 @@ impl Render for EditorView {
             rows.push(div().flex().flex_row().child(style_cursor_cell(" ")));
         }
 
+        // 5.7.B.12: surface colors come from the cached
+        // GpuiTheme so theme cascades propagate.
+        let theme = self.app.theme;
         div()
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::on_key_down))
             .flex()
             .flex_col()
             .size_full()
-            .bg(rgb(0x1e1e2e))
-            .text_color(rgb(0xcdd6f4))
+            .bg(theme.background)
+            .text_color(theme.foreground)
             .text_sm()
             // Monospace family: gpui falls through to the next
             // available font if the named family doesn't match.
@@ -275,8 +281,8 @@ impl Render for EditorView {
             .child(div().flex_grow().p_3().flex().flex_col().children(rows))
             .child(
                 div()
-                    .bg(rgb(0x313244))
-                    .text_color(rgb(0xa6e3a1))
+                    .bg(theme.status_background)
+                    .text_color(theme.status_foreground)
                     .px_2()
                     .py_1()
                     .child(status),

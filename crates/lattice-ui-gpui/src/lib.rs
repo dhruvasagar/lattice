@@ -74,15 +74,66 @@ use lattice_mode::ModeId;
 
 pub mod gpui_chord;
 
-/// Stub GPUI theme cache. The TUI peer caches pre-computed
-/// `ratatui::style::Style` primitives so the frame-hot path is a
-/// direct read; the GPUI peer will cache native `gpui::Hsla` /
-/// `gpui::TextStyle` / variable-font selections in the same shape.
-/// Empty for now — fields land per parity slice (which is also when
-/// this type starts depending on the gpui crate).
-#[derive(Default)]
+/// GPUI peer's typed theme cache.
+///
+/// Phase 5.7.B.12: real fields land for the surfaces the
+/// binary currently paints (background, foreground, status
+/// line, cursor inversion). Stored as `Rgba` so the render
+/// hot path is a direct `.bg(self.theme.background)` etc. --
+/// no per-frame conversion.
+///
+/// The defaults match the Catppuccin Mocha-ish palette the
+/// binary's render used inline pre-5.7.B.12. Future host-side
+/// slices will grow `host_theme` to carry window bg / fg /
+/// status / cursor fields; once that lands,
+/// [`GpuiApp::rebuild_gpui_theme`] reads from there and
+/// `RendererSignal::ThemeChanged` will visibly recolor the
+/// window on every `:set ui.*`. For now the rebuild is a
+/// shape-only no-op -- the wiring is what this slice unblocks.
+///
+/// Why `Rgba` and not `Hsla`: gpui's `rgb(0x...) -> Rgba`
+/// builder is the natural literal form; `.bg(Rgba)` /
+/// `.text_color(Rgba)` accept it directly via `Into<Background>`
+/// / `Into<Hsla>` blanket impls. Sticking with `Rgba` keeps the
+/// theme literal-friendly + the binary's render free of
+/// conversion boilerplate.
+#[derive(Debug, Clone, Copy)]
 pub struct GpuiTheme {
-    _placeholder: (),
+    /// Main document background.
+    pub background: gpui::Rgba,
+    /// Main document foreground (text + non-cursor chars).
+    pub foreground: gpui::Rgba,
+    /// Status-line background.
+    pub status_background: gpui::Rgba,
+    /// Status-line foreground.
+    pub status_foreground: gpui::Rgba,
+    /// Cursor block background (Block shape) + bar / underline
+    /// border color (Bar / Underline shapes).
+    pub cursor_background: gpui::Rgba,
+    /// Cursor block foreground -- the character color when the
+    /// block inverts (Normal/Visual mode cursor cell). Unused
+    /// by Bar / Underline since the underlying char text stays
+    /// the document foreground.
+    pub cursor_foreground: gpui::Rgba,
+}
+
+impl Default for GpuiTheme {
+    fn default() -> Self {
+        Self {
+            // Catppuccin Mocha base.
+            background: gpui::rgb(0x1e1e2e),
+            // Catppuccin Mocha text.
+            foreground: gpui::rgb(0xcdd6f4),
+            // Catppuccin Mocha surface0.
+            status_background: gpui::rgb(0x313244),
+            // Catppuccin Mocha green.
+            status_foreground: gpui::rgb(0xa6e3a1),
+            // Catppuccin Mocha text (matches block-cursor "highlight").
+            cursor_background: gpui::rgb(0xcdd6f4),
+            // Catppuccin Mocha base (inverted, for block-cursor char).
+            cursor_foreground: gpui::rgb(0x1e1e2e),
+        }
+    }
 }
 
 /// Stub GPUI pane-render registry. Implements [`ProviderLookup`] so
@@ -183,6 +234,10 @@ impl GpuiApp {
     /// lands, theme cascades + option cascades + structural
     /// renderer notifications all propagate to GPUI caches.
     fn finalize_boot(&mut self) {
+        // 5.7.B.12: rebuild the GPUI-typed theme cache from
+        // `editor.host_theme`. Body is currently a stub but
+        // wiring is in place for the `ThemeChanged` cascade.
+        self.rebuild_gpui_theme();
         self.editor.rebuild_option_cache();
         let signals = self
             .editor
@@ -214,14 +269,20 @@ impl GpuiApp {
     /// is on the other side; both peers see the same enum.
     pub fn handle_renderer_signal(&mut self, signal: RendererSignal) {
         match signal {
-            // GpuiTheme is currently a placeholder (`_placeholder:
-            // ()`); when it grows GPUI-native style primitives
-            // (`Hsla`, `TextStyle`, variable-font selections)
-            // this arm rebuilds the cache from `editor.host_theme`.
-            // The corresponding `rebuild_gpui_theme()` lands
-            // alongside the first real theme field.
+            // 5.7.B.12: the cache holds real `Rgba` fields now,
+            // and the binary's render reads from `self.theme.*`
+            // instead of inline rgb literals. Rebuilding from
+            // `editor.host_theme` still needs window-bg / -fg /
+            // -cursor mappings on the host side, so this arm
+            // calls `rebuild_gpui_theme()` but the body is
+            // currently a shape-only no-op. Once those host
+            // mappings land, a `:set ui.bg=...` cascade will
+            // visibly recolor the window on the next frame.
             RendererSignal::ThemeChanged => {
-                tracing::debug!("ThemeChanged signal: GpuiTheme rebuild pending (cache is empty)");
+                self.rebuild_gpui_theme();
+                tracing::debug!(
+                    "ThemeChanged signal: rebuild_gpui_theme called (host_theme→GpuiTheme mapping is a stub for now)"
+                );
             }
             // `editor.should_quit` was set alongside the signal
             // emission (see `Action::Quit` in `Editor::dispatch`).
@@ -329,6 +390,29 @@ impl GpuiApp {
             lattice_host::input::translate(ctx, chord)
         };
         self.dispatch_action(action)
+    }
+
+    /// Rebuild the cached [`GpuiTheme`] from
+    /// [`editor.host_theme`](lattice_host::editor::Editor).
+    /// Mirrors the TUI peer's `App::rebuild_tui_theme`. Called
+    /// at boot (inside `finalize_boot`) and on every
+    /// [`RendererSignal::ThemeChanged`] so theme cascades
+    /// propagate to the GPUI cache without the binary having
+    /// to re-read `host_theme` per frame.
+    ///
+    /// Phase 5.7.B.12: the body is currently a shape-only
+    /// no-op -- `host_theme` doesn't yet carry direct window-bg
+    /// / fg / status / cursor fields the GPUI peer can map. The
+    /// next iteration grows `host_theme` (or adds a GPUI-typed
+    /// theme overlay in `lattice-host::ui::theme`) and this
+    /// method translates each into `Rgba`. Until then the cache
+    /// keeps its `Default` palette; the wiring is what this
+    /// slice unblocks.
+    pub fn rebuild_gpui_theme(&mut self) {
+        // Touch the field so a typo in a later iteration is
+        // caught immediately. Body left empty until host_theme
+        // grows window-level color fields.
+        let _ = &self.editor.host_theme;
     }
 
     /// Dispatch a single [`Action`] through `editor.dispatch` and

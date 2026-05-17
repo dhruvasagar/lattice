@@ -298,9 +298,11 @@ impl App {
 pub(super) use lattice_host::dispatch::CompletionComputeError;
 
 // 5.5.G.23.cmdline: `prefer_aliases_for_command_candidates` migrated
-// to `lattice_host::dispatch`. Re-exported here so the in-file test
-// module (`prefer_aliases_*`) continues calling it unchanged.
-pub(super) use lattice_host::dispatch::prefer_aliases_for_command_candidates;
+// to `lattice_host::dispatch`. Test-only re-export so the in-file
+// test module (`prefer_aliases_*` tests) keeps calling it unchanged
+// without leaking the symbol into the non-test build.
+#[cfg(test)]
+use lattice_host::dispatch::prefer_aliases_for_command_candidates;
 
 // 5.5.G.23.cmdline: `subsequence_match_ranges` retired (zero
 // remaining App callers; lives as a private host fn alongside

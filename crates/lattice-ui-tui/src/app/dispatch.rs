@@ -39,7 +39,6 @@
 //! match arms call. Those live in their feature modules; this
 //! is the routing layer over them.
 
-use lattice_grammar::ModalState;
 use lattice_grammar::command::CommandInvocation;
 use lattice_grammar::effect::Effect;
 use lattice_host::dispatch::RendererSignal;
@@ -348,74 +347,13 @@ impl App {
 
 
             // 5.5.G.13: `EnterCommandLine` migrated to `Editor::dispatch`.
-            Action::CommandLineAppend(c) => {
-                if matches!(self.editor.modal, ModalState::Command) {
-                    self.editor.command_line.push(c);
-                    // Vertico-style live filtering: if the popup is
-                    // open, re-run the pipeline against the new
-                    // prefix. The user can keep typing to drill
-                    // down without losing the popup.
-                    if self.editor.completion_state.is_some() {
-                        self.refresh_completion_popup();
-                    }
-                    self.refresh_substitute_preview();
-                }
-            }
-            Action::CommandLineBackspace => {
-                if matches!(self.editor.modal, ModalState::Command) {
-                    if self.editor.command_line.pop().is_none() {
-                        // Empty buffer + backspace -> exit Command modal.
-                        self.editor.modal = ModalState::Normal;
-                        self.editor.completion_state = None;
-                        self.editor.substitute_preview = None;
-                    } else {
-                        if self.editor.completion_state.is_some() {
-                            // Popup live-refilters against the shorter
-                            // prefix (vertico-style).
-                            self.refresh_completion_popup();
-                        }
-                        self.refresh_substitute_preview();
-                    }
-                }
-            }
-            Action::CommandLineSubmit => {
-                if matches!(self.editor.modal, ModalState::Command) {
-                    // Missing-arg prompt path (DESIGN.md §B.1):
-                    // if the user submitted with a required first
-                    // arg empty (`:describe-key<CR>`, `:write<CR>`,
-                    // `:edit<CR>`, ...), don't fail -- prefill the
-                    // cmdline with the command word + space, set
-                    // the cursor in the arg slot, and surface the
-                    // schema's prompt in the echo area. For Chord
-                    // args we additionally arm a one-shot auto-
-                    // submit so the very next captured chord runs
-                    // the lookup with no second <CR>; for other
-                    // kinds the user types and submits normally.
-                    if let Some(info) = self.try_resolve_missing_arg_prompt() {
-                        let is_chord = info.kind == lattice_grammar::ArgKind::Chord;
-                        self.editor.command_line = info.prefill;
-                        self.editor.auto_submit_after_chord = is_chord;
-                        self.set_message(EchoLevel::Info, info.prompt);
-                        return;
-                    }
-                    let line = std::mem::take(&mut self.editor.command_line);
-                    self.editor.modal = ModalState::Normal;
-                    self.editor.command_history_cursor = None;
-                    self.editor.command_history_pending = None;
-                    self.editor.auto_submit_after_chord = false;
-                    self.editor.substitute_preview = None;
-                    if !line.trim().is_empty() {
-                        // De-duplicate consecutive identical entries.
-                        if self.editor.command_history.last() != Some(&line) {
-                            self.editor.command_history.push(line.clone());
-                            if self.editor.command_history.len() > COMMAND_HISTORY_CAP {
-                                self.editor.command_history.remove(0);
-                            }
-                        }
-                    }
-                    self.execute_ex_line(&line);
-                }
-            }
+            // 5.5.G.23.cmdline: Append / Backspace host-handled via
+            // `editor.do_command_line_{append,backspace}`.
+            Action::CommandLineAppend(_) | Action::CommandLineBackspace => {}
+            // 5.5.G.23.cmdline: Submit host-handled via
+            // `editor.do_command_line_submit` (missing-arg prompt +
+            // execute_ex_line + history push + state reset).
+            Action::CommandLineSubmit => {}
             // 5.5.G.13: `CommandLineHistoryPrev` / `CommandLineHistoryNext`
             // migrated to `Editor::dispatch`.
 
@@ -523,48 +461,16 @@ impl App {
             // 5.5.G.9: `PasteAfter` / `PasteBefore` / `PasteText`
             // migrated to `Editor::dispatch`.
 
-            // ---- Command-line editing + completion ----
-            Action::CommandLineClear => {
-                if matches!(self.editor.modal, ModalState::Command) {
-                    self.editor.command_line.clear();
-                    if self.editor.completion_state.is_some() {
-                        // Empty cmdline -> slot becomes Empty, which
-                        // surfaces every command. Same live-refilter
-                        // contract as the other edit actions.
-                        self.refresh_completion_popup();
-                    }
-                }
-            }
-            Action::CommandLineDeleteWordBackward => {
-                if matches!(self.editor.modal, ModalState::Command) {
-                    delete_trailing_word(&mut self.editor.command_line);
-                    if self.editor.completion_state.is_some() {
-                        // Same live-refilter contract as Append /
-                        // Backspace.
-                        self.refresh_completion_popup();
-                    }
-                }
-            }
-            Action::CommandLineDescribeUnderCursor => self.do_command_line_describe_under_cursor(),
-            Action::CommandLineAppendChord(token) => {
-                if matches!(self.editor.modal, ModalState::Command) {
-                    self.editor.command_line.push_str(&token);
-                    // Chord-capture suppresses the completion popup
-                    // (no useful candidates for chord input). If
-                    // somehow open, drop it to keep the screen clean.
-                    self.editor.completion_state = None;
-                    // One-shot auto-submit: when the cmdline was
-                    // armed by a missing-arg prompt, the very next
-                    // chord token also fires submit. Recursive
-                    // re-entry into apply() is fine -- Submit
-                    // resets the flag before doing anything else.
-                    if self.editor.auto_submit_after_chord {
-                        self.editor.auto_submit_after_chord = false;
-                        self.apply(Action::CommandLineSubmit);
-                    }
-                }
-            }
-            Action::CommandLineCompleteOrAdvance => self.do_command_line_complete_or_advance(),
+            // 5.5.G.23.cmdline: Clear / DeleteWordBackward /
+            // DescribeUnderCursor / AppendChord / CompleteOrAdvance
+            // all host-handled. AppendChord's auto-submit-on-chord
+            // semantic threads through host's
+            // `do_command_line_append_chord` -> `do_command_line_submit`.
+            Action::CommandLineClear
+            | Action::CommandLineDeleteWordBackward
+            | Action::CommandLineDescribeUnderCursor
+            | Action::CommandLineCompleteOrAdvance => {}
+            Action::CommandLineAppendChord(_) => {}
             // 5.5.G.15: `CommandLineCompletePrev` /
             // `CommandLineAcceptCompletion` migrated to `Editor::dispatch`.
 

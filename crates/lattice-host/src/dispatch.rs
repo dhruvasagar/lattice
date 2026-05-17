@@ -785,6 +785,26 @@ pub(crate) fn handle_action(
         Action::PlayLastMacro => editor.do_play_last_macro(_out),
         Action::RepeatLastChange => editor.do_repeat_last_change(_out),
         Action::FindRepeat { reverse } => editor.do_find_repeat(reverse, _out),
+        // 5.5.G.23.cmdline: 8-arm `:`-line cluster. Append /
+        // Backspace / Clear / DeleteWordBackward / AppendChord push
+        // characters / pop / refresh completion + substitute preview;
+        // CompleteOrAdvance opens / advances the popup;
+        // DescribeUnderCursor emits a `DisplayBuffer` signal for
+        // `:describe-command`; Submit runs the missing-arg prompt or
+        // dispatches through `execute_ex_line` (effects flow into
+        // `out.effects` for the App-side renderer-coupled tail).
+        Action::CommandLineAppend(c) => editor.do_command_line_append(c),
+        Action::CommandLineBackspace => editor.do_command_line_backspace(),
+        Action::CommandLineSubmit => editor.do_command_line_submit(_out),
+        Action::CommandLineClear => editor.do_command_line_clear(),
+        Action::CommandLineDeleteWordBackward => editor.do_command_line_delete_word_backward(),
+        Action::CommandLineDescribeUnderCursor => {
+            editor.do_command_line_describe_under_cursor(_out)
+        }
+        Action::CommandLineAppendChord(token) => {
+            editor.do_command_line_append_chord(token, _out)
+        }
+        Action::CommandLineCompleteOrAdvance => editor.do_command_line_complete_or_advance(),
         // Catch-all: any Action variant not yet migrated from
         // App::apply. Sub-slices 5.5.D+ extend the match upward as
         // helpers move.
@@ -1472,6 +1492,294 @@ impl Editor {
 
     /// 5.5.LSP.4: signature help (Insert-mode auto-trigger).
     /// Sends `textDocument/signatureHelp` to every attached server
+    /// 5.5.G.23.cmdline: handle a `:`-line submit. Resolves the
+    /// missing-arg prompt (DESIGN.md §B.1) — if the user submitted a
+    /// bare command with a required first arg empty, prefill the
+    /// cmdline + return without executing. Otherwise consume the
+    /// line, push to history, exit Command modal, and dispatch
+    /// through `execute_ex_line` (which feeds effects into
+    /// `out.effects` for the App-side renderer-coupled tail).
+    pub fn do_command_line_submit(&mut self, out: &mut DispatchOutcome) {
+        if !matches!(self.modal, ModalState::Command) {
+            return;
+        }
+        if let Some(info) = self.try_resolve_missing_arg_prompt() {
+            let is_chord = info.kind == lattice_grammar::ArgKind::Chord;
+            self.command_line = info.prefill;
+            self.auto_submit_after_chord = is_chord;
+            self.set_message(EchoLevel::Info, info.prompt);
+            return;
+        }
+        let line = std::mem::take(&mut self.command_line);
+        self.modal = ModalState::Normal;
+        self.command_history_cursor = None;
+        self.command_history_pending = None;
+        // Reset chord auto-submit flag on every submit so a prior
+        // arming (from an earlier missing-arg prompt) doesn't leak.
+        self.auto_submit_after_chord = false;
+        self.substitute_preview = None;
+        self.completion_state = None;
+        if !line.trim().is_empty() {
+            if self.command_history.last() != Some(&line) {
+                self.command_history.push(line.clone());
+                if self.command_history.len() > COMMAND_HISTORY_CAP {
+                    self.command_history.remove(0);
+                }
+            }
+        }
+        self.execute_ex_line(&line, out);
+    }
+
+    /// 5.5.G.23.cmdline: append a character to the command line; if
+    /// a completion popup is open it refilters; live substitute
+    /// preview always refreshes.
+    pub fn do_command_line_append(&mut self, c: char) {
+        if !matches!(self.modal, ModalState::Command) {
+            return;
+        }
+        self.command_line.push(c);
+        if self.completion_state.is_some() {
+            self.refresh_completion_popup();
+        }
+        self.refresh_substitute_preview();
+    }
+
+    /// 5.5.G.23.cmdline: pop a character from the command line; on
+    /// empty buffer + backspace, exit Command modal (vim parity).
+    pub fn do_command_line_backspace(&mut self) {
+        if !matches!(self.modal, ModalState::Command) {
+            return;
+        }
+        if self.command_line.pop().is_none() {
+            self.modal = ModalState::Normal;
+            self.completion_state = None;
+            self.substitute_preview = None;
+        } else {
+            if self.completion_state.is_some() {
+                self.refresh_completion_popup();
+            }
+            self.refresh_substitute_preview();
+        }
+    }
+
+    /// 5.5.G.23.cmdline: `<C-u>` — clear the command line. Keeps the
+    /// popup alive (refilters against an empty prefix, which lists
+    /// every command). The substitute preview drops because an empty
+    /// line doesn't parse as `:s/.../.../`.
+    pub fn do_command_line_clear(&mut self) {
+        if !matches!(self.modal, ModalState::Command) {
+            return;
+        }
+        self.command_line.clear();
+        if self.completion_state.is_some() {
+            self.refresh_completion_popup();
+        }
+        self.refresh_substitute_preview();
+    }
+
+    /// 5.5.G.23.cmdline: `<C-w>` — delete the word before the cursor.
+    /// v1 cursor is always at end-of-line; strip trailing whitespace
+    /// + the trailing word.
+    pub fn do_command_line_delete_word_backward(&mut self) {
+        if !matches!(self.modal, ModalState::Command) {
+            return;
+        }
+        delete_trailing_word(&mut self.command_line);
+        if self.completion_state.is_some() {
+            self.refresh_completion_popup();
+        }
+        self.refresh_substitute_preview();
+    }
+
+    /// 5.5.G.23.cmdline: append a chord token to the command line.
+    /// Chord capture suppresses the completion popup (no useful
+    /// candidates for chord input). When the cmdline was armed by a
+    /// missing-arg prompt, the very next chord token also fires
+    /// submit (one-shot auto-submit).
+    pub fn do_command_line_append_chord(&mut self, token: String, out: &mut DispatchOutcome) {
+        if !matches!(self.modal, ModalState::Command) {
+            return;
+        }
+        self.command_line.push_str(&token);
+        self.completion_state = None;
+        if self.auto_submit_after_chord {
+            self.auto_submit_after_chord = false;
+            self.do_command_line_submit(out);
+        }
+    }
+
+    /// 5.5.G.23.cmdline: `<Tab>` — open the popup if closed, advance
+    /// the selection if open.
+    pub fn do_command_line_complete_or_advance(&mut self) {
+        if !matches!(self.modal, ModalState::Command) {
+            return;
+        }
+        if let Some(state) = self.completion_state.as_mut() {
+            if !state.candidates.is_empty() {
+                state.selected = (state.selected + 1) % state.candidates.len();
+            }
+            return;
+        }
+        self.open_completion_popup();
+    }
+
+    /// 5.5.G.23.cmdline: `<C-h>` (DESIGN.md §5.11.3 Q11). Walk the
+    /// `:` line up to the cursor, identify the word under the cursor:
+    /// (1) word resolves to a registered command — describe THAT;
+    /// (2) slot is an arg of a known command — describe the parent
+    /// scrolled to `arg:<name>`; (3) otherwise echo a status hint.
+    pub fn do_command_line_describe_under_cursor(&mut self, out: &mut DispatchOutcome) {
+        if !matches!(self.modal, ModalState::Command) {
+            return;
+        }
+        let line = self.command_line.clone();
+        let cursor = line.len();
+        let alias_resolver = |short: &str| {
+            crate::excommand::aliases()
+                .get(short)
+                .map(|s| (*s).to_string())
+        };
+        let slot =
+            lattice_completion::current_slot(&line, cursor, &self.registry, &alias_resolver);
+        let word = slot.prefix();
+        let canonical = if word.is_empty() {
+            None
+        } else {
+            alias_resolver(word)
+                .or_else(|| self.registry.id_by_name(word).and(Some(word.to_string())))
+        };
+        if let Some(name) = canonical
+            && self.registry.id_by_name(&name).is_some()
+        {
+            if let Some(content) = self.build_describe_command_content(&name, None) {
+                out.renderer_signals
+                    .push(RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
+                        content,
+                        category: lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
+                    })));
+            }
+            return;
+        }
+        match &slot {
+            lattice_completion::CommandLineSlot::Arg {
+                command_name,
+                arg_spec,
+                ..
+            } => {
+                let anchor = format!("arg:{}", arg_spec.name);
+                if let Some(content) =
+                    self.build_describe_command_content(command_name, Some(&anchor))
+                {
+                    out.renderer_signals
+                        .push(RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
+                            content,
+                            category: lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
+                        })));
+                }
+            }
+            lattice_completion::CommandLineSlot::CommandName { prefix, .. } => {
+                if prefix.is_empty() {
+                    self.set_message(
+                        EchoLevel::Info,
+                        "type a command name then C-h for its help".to_string(),
+                    );
+                } else {
+                    self.set_message(EchoLevel::Error, format!("no command named `{prefix}`"));
+                }
+            }
+            _ => {
+                self.set_message(
+                    EchoLevel::Info,
+                    "no command-line context for `C-h`".to_string(),
+                );
+            }
+        }
+    }
+
+    /// 5.5.G.23.cmdline: detect a missing required first arg. When
+    /// the user submits a bare command with a required first arg
+    /// empty, returns the prefill string + arg kind + prompt so the
+    /// caller can transition into a chord-capture or arg-input mode.
+    pub fn try_resolve_missing_arg_prompt(&self) -> Option<crate::state::MissingArgPrompt> {
+        let line = self.command_line.trim();
+        if line.is_empty() {
+            return None;
+        }
+        let (raw_cmd, rest) = match line.find(char::is_whitespace) {
+            Some(i) => (&line[..i], line[i..].trim()),
+            None => (line, ""),
+        };
+        if !rest.is_empty() {
+            return None;
+        }
+        let cmd = raw_cmd.strip_suffix('!').unwrap_or(raw_cmd);
+        let canonical = self.registry.id_by_name(cmd).or_else(|| {
+            crate::excommand::aliases()
+                .get(cmd)
+                .copied()
+                .and_then(|c| self.registry.id_by_name(c))
+        })?;
+        let spec = self.registry.ex_command_spec(canonical)?;
+        if matches!(
+            spec.surface_form,
+            lattice_grammar::SurfaceForm::Delimiter { .. }
+        ) {
+            return None;
+        }
+        let first = spec.args_schema.first()?;
+        if !matches!(first.default, lattice_grammar::ArgDefault::Required) {
+            return None;
+        }
+        let prompt = if first.prompt.is_empty() {
+            format!("{}:", first.name)
+        } else {
+            first.prompt.to_string()
+        };
+        Some(crate::state::MissingArgPrompt {
+            prefill: format!("{raw_cmd} "),
+            kind: first.kind,
+            prompt,
+        })
+    }
+
+    /// 5.5.G.23.cmdline: true when the cmdline cursor sits on an
+    /// `ArgKind::Chord` arg slot. Drives the input layer's
+    /// chord-capture overlay.
+    pub fn chord_capture_active(&self) -> bool {
+        if !matches!(self.modal, ModalState::Command) {
+            return false;
+        }
+        let line = &self.command_line;
+        let alias_resolver = |short: &str| {
+            crate::excommand::aliases()
+                .get(short)
+                .map(|s| (*s).to_string())
+        };
+        let slot =
+            lattice_completion::current_slot(line, line.len(), &self.registry, &alias_resolver);
+        matches!(
+            &slot,
+            lattice_completion::CommandLineSlot::Arg { arg_spec, .. }
+                if arg_spec.kind == lattice_grammar::ArgKind::Chord
+        )
+    }
+
+    /// 5.5.G.23.cmdline: parse + dispatch a `:`-line. Errors echo via
+    /// `set_message`; successful dispatch routes the resulting effect
+    /// through `apply_effect_host` (host migrated-arm pass + push to
+    /// `out.effects` for the renderer-coupled tail).
+    pub fn execute_ex_line(&mut self, line: &str, out: &mut DispatchOutcome) {
+        match crate::excommand::parse(line, &self.registry) {
+            Ok(inv) => match self.dispatch_blocking(inv) {
+                Ok(eff) => apply_effect_host(self, eff, out),
+                Err(e) => self.set_message(EchoLevel::Error, e.to_string()),
+            },
+            Err(err) => {
+                self.set_message(EchoLevel::Error, err.to_string());
+            }
+        }
+    }
+
     /// 5.5.G.23.cmdline: compute the `:` completion popup state from
     /// the current command line. Reads the cursor-position slot
     /// (command-name / arg / empty) via
@@ -1543,6 +1851,72 @@ impl Editor {
             replace_start,
             original_line: line,
         })
+    }
+
+    /// 5.5.G.23.cmdline: refresh the `:s/.../.../` live substitute
+    /// preview from the current command-line buffer. Called after
+    /// every cmdline edit (append / backspace / delete-word). When
+    /// the cmdline doesn't parse as a substitute, clears the preview.
+    /// Mid-typing patterns that don't compile yet preserve the last
+    /// preview rather than flickering.
+    pub fn refresh_substitute_preview(&mut self) {
+        let parsed = match crate::excommand::try_parse_substitute_partial(&self.command_line) {
+            Some(p) => p,
+            None => {
+                self.substitute_preview = None;
+                return;
+            }
+        };
+        if parsed.pattern.is_empty() {
+            self.substitute_preview = None;
+            return;
+        }
+        let regex = match compile_search_pattern(&parsed.pattern) {
+            Ok(r) => r,
+            Err(_) => {
+                // Pattern doesn't compile yet (mid-typing). Keep the
+                // last preview rather than flickering — but if we
+                // never had one, drop quietly.
+                return;
+            }
+        };
+        let global = parsed
+            .flags
+            .as_ref()
+            .map(|f| f.contains('g'))
+            .unwrap_or(false);
+
+        let buffer = self.document.snapshot().buffer.clone();
+        let mut matches: Vec<lattice_protocol::position::Range> = Vec::new();
+        match parsed.scope {
+            crate::excommand::SubstitutePartialScope::CurrentLine => {
+                collect_substitute_matches_for_line(
+                    &buffer,
+                    &regex,
+                    self.cursor.line,
+                    global,
+                    &mut matches,
+                );
+            }
+            crate::excommand::SubstitutePartialScope::Whole => {
+                let last = last_addressable_line(&buffer);
+                for line in 0..=last {
+                    collect_substitute_matches_for_line(
+                        &buffer,
+                        &regex,
+                        line,
+                        global,
+                        &mut matches,
+                    );
+                }
+            }
+        }
+
+        self.substitute_preview = Some(crate::state::SubstitutePreview {
+            matches,
+            replacement: parsed.replacement,
+            global,
+        });
     }
 
     /// 5.5.G.23.cmdline: open the `:` completion popup, or inline a
@@ -8359,6 +8733,55 @@ fn last_addressable_line(buf: &lattice_core::Buffer) -> u32 {
         last_idx - 1
     } else {
         last_idx
+    }
+}
+
+/// 5.5.G.23.cmdline: `:`-history capacity. Submit pushes the line
+/// (with same-as-last dedup); over-cap entries drain from the front.
+const COMMAND_HISTORY_CAP: usize = 100;
+
+/// 5.5.G.23.cmdline: `<C-w>` — strip trailing whitespace from `s`,
+/// then strip the trailing non-whitespace run. v1 cursor is always
+/// at end-of-line; if mid-line editing lands later this should take
+/// a cursor offset and operate to the left of it.
+fn delete_trailing_word(s: &mut String) {
+    let trimmed = s.trim_end_matches(char::is_whitespace);
+    if trimmed.len() < s.len() {
+        s.truncate(trimmed.len());
+    }
+    let last_ws = s.rfind(char::is_whitespace);
+    let cut_to = last_ws.map(|i| i + 1).unwrap_or(0);
+    s.truncate(cut_to);
+}
+
+/// 5.5.G.23.cmdline: collect `:s/pat/repl/[g]` match ranges on one
+/// line and append them to `out`. `global=false` collects only the
+/// leftmost match per line (vim's default `:s` without `g`).
+fn collect_substitute_matches_for_line(
+    buffer: &lattice_core::Buffer,
+    regex: &fancy_regex::Regex,
+    line: u32,
+    global: bool,
+    out: &mut Vec<lattice_protocol::position::Range>,
+) {
+    let line_text = match buffer.line(line) {
+        Some(s) => s,
+        None => return,
+    };
+    if line_text.is_empty() {
+        return;
+    }
+    for m in regex.find_iter(&line_text) {
+        let m = match m {
+            Ok(m) => m,
+            Err(_) => break,
+        };
+        let start = lattice_protocol::position::Position::new(line, m.start() as u32);
+        let end = lattice_protocol::position::Position::new(line, m.end() as u32);
+        out.push(lattice_protocol::position::Range::new(start, end));
+        if !global {
+            break;
+        }
     }
 }
 

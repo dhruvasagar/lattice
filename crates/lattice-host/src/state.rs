@@ -219,6 +219,24 @@ pub struct SubstitutePreview {
     pub global: bool,
 }
 
+/// 5.5.G.23.cmdline: result of resolving a missing required first
+/// arg on `:`-submit. Built by `Editor::try_resolve_missing_arg_prompt`
+/// and consumed by `do_command_line_submit`.
+#[derive(Debug, Clone)]
+pub struct MissingArgPrompt {
+    /// New value for `command_line`. Already contains the command
+    /// word + bang + a trailing space; the cursor lands at end-of-
+    /// line, in the first arg slot.
+    pub prefill: String,
+    /// Kind of the first arg. Drives whether the host arms the
+    /// chord-capture overlay (kind == Chord) or just leaves the
+    /// cmdline open for typed input.
+    pub kind: lattice_grammar::ArgKind,
+    /// Prompt text for the echo area, taken from the schema's
+    /// `prompt` field (or `"<name>:"` when empty).
+    pub prompt: String,
+}
+
 /// In-flight blockwise-visual insert (`I` or `A`).
 ///
 /// When the user enters `I` from blockwise visual, the typed

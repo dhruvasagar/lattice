@@ -1,7 +1,7 @@
-//! `lattice-gpui` — placeholder GPUI window binary for the 5.7
-//! scaffold slice. Behind the `window` Cargo feature so the
-//! scaffold's lib + tests build everywhere; this binary is opt-in
-//! for hosts with display libs installed:
+//! `lattice-gpui` — GPUI window binary for the 5.7.B phase
+//! progression. Behind the `window` Cargo feature so the
+//! scaffold's lib + tests build everywhere; this binary is
+//! opt-in for hosts with display libs installed:
 //!
 //! ```text
 //! # Debian / Ubuntu / WSL2:
@@ -9,40 +9,155 @@
 //! cargo run --features window -p lattice-ui-gpui --bin lattice-gpui
 //! ```
 //!
-//! Opens a 720×480 native window with "Lattice (GPUI) — 5.7
-//! scaffold" centred text. The purpose is end-to-end validation:
-//! if the binary builds and runs, the host substrate
-//! (`lattice-host`) is provably reusable from a non-TUI renderer
-//! and Zed's GPUI links + initialises against it. Real dispatch +
-//! paint wiring is the 5.8+ work; this is the smoke test before
-//! that begins.
+//! On WSLg (WSL2 GUI host) gpui-0.2.2's bundled Wayland
+//! compositor stack panics on protocol-version negotiation
+//! (it requires `xdg_wm_base v2+`; WSLg ships v1). Force the
+//! X11 backend by unsetting `WAYLAND_DISPLAY` before running:
+//!
+//! ```text
+//! unset WAYLAND_DISPLAY
+//! cargo run --features window -p lattice-ui-gpui --bin lattice-gpui
+//! ```
+//!
+//! ## What this binary does today (5.7.B.4)
+//!
+//! Opens a 720×480 native window with a minimal editor surface:
+//!
+//! - **Top region**: the active document's text. Today the
+//!   binary boots an empty scratch document and a placeholder
+//!   line of instructions; the 5.9 CLI path (`lattice --gpu
+//!   <file>`) wires user-supplied files in.
+//!
+//! - **Bottom region**: a status line showing the current
+//!   `ModalState` (Normal / Insert / Visual / ...) and the
+//!   `(line, byte)` cursor position. Read live from
+//!   `editor.modal` + `editor.cursor` each frame.
+//!
+//! - **Key events**: every keystroke flows through
+//!   [`GpuiApp::dispatch_keystroke`] (Phase 5.7.B.3) so
+//!   `i` → Insert, `Esc` → Normal, `j` / `k` move the cursor,
+//!   etc. Tested today against `editor.modal` transitions; the
+//!   visible cursor and document mutations land as soon as
+//!   paint-side text-shaping support lands (post-5.7.B.4
+//!   refinements).
+//!
+//! What's missing vs. the TUI peer: text shaping with proper
+//! cursor overlay, per-frame syntax highlights, status-line
+//! widgets (LSP / mode hints / diagnostics counts), pane
+//! splits, picker overlay, command-line minibuffer. Each lands
+//! in its own slice once paint helpers stabilise on the host
+//! side.
 
 use gpui::{
-    AppContext, Application, Bounds, Context, IntoElement, ParentElement, Render, Styled, Window,
-    WindowBounds, WindowOptions, div, px, rgb, size,
+    App, AppContext, Application, Bounds, Context, FocusHandle, Focusable, InteractiveElement,
+    IntoElement, KeyDownEvent, ParentElement, Render, Styled, Window, WindowBounds, WindowOptions,
+    div, px, rgb, size,
 };
 use lattice_core::Document;
+use lattice_grammar::ModalState;
 use lattice_ui_gpui::GpuiApp;
 
-/// Minimal root view. Holds the [`GpuiApp`] composition root so the
-/// editor + theme + registry remain reachable from inside the GPUI
-/// event loop, even though no field is read yet. The 5.8+ paint
-/// wiring will thread `&self.app.editor` through the render call.
-struct PlaceholderView {
-    _app: GpuiApp,
+/// The renderer-side composition root rendered as a GPUI
+/// `Entity`. Holds the [`GpuiApp`] + a [`FocusHandle`] so the
+/// window's key events actually route to our dispatcher.
+struct EditorView {
+    app: GpuiApp,
+    focus_handle: FocusHandle,
 }
 
-impl Render for PlaceholderView {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+impl EditorView {
+    fn new(document: Document, cx: &mut Context<Self>) -> Self {
+        Self {
+            app: GpuiApp::new(document),
+            focus_handle: cx.focus_handle(),
+        }
+    }
+
+    /// Key-event handler. Destructures GPUI's `Keystroke` into
+    /// the primitive shape [`GpuiApp::dispatch_keystroke`] takes
+    /// (so the lib doesn't have to link gpui), then ticks the
+    /// host pipeline. `cx.notify()` schedules a repaint so the
+    /// status line + (future) document view re-reads the
+    /// post-dispatch editor state.
+    ///
+    /// `cx.stop_propagation()` prevents gpui's own keybinding
+    /// system from claiming the key after us — we want every
+    /// chord to flow through `lattice_host::input::translate`,
+    /// not through the platform's default action map.
+    fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        let ks = &event.keystroke;
+        let _ = self.app.dispatch_keystroke(
+            &ks.key,
+            ks.modifiers.control,
+            ks.modifiers.alt,
+            ks.modifiers.shift,
+            ks.modifiers.platform,
+        );
+        cx.stop_propagation();
+        cx.notify();
+    }
+}
+
+impl Focusable for EditorView {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl Render for EditorView {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Read editor state for this frame. `snapshot()` is
+        // wait-free (`ArcSwap::load`); the buffer is a ropey
+        // rope that re-renders cheaply.
+        let snapshot = self.app.editor.document.snapshot();
+        let text = snapshot.text();
+        let cursor = self.app.editor.cursor;
+        let modal = self.app.editor.modal;
+
+        let modal_label = match modal {
+            ModalState::Normal => "NORMAL",
+            ModalState::Insert => "INSERT",
+            ModalState::Visual(_) => "VISUAL",
+            ModalState::OperatorPending => "PENDING",
+            ModalState::Command => "COMMAND",
+            ModalState::Search(_) => "SEARCH",
+            ModalState::Replace => "REPLACE",
+        };
+        // 5.7.B.4: cursor coordinates are 1-based for display
+        // (vim convention) so users reading the status line see
+        // the same numbers `:set ruler` shows in the TUI peer.
+        let status = format!(
+            "  {}   L:{}  C:{}   (host dispatch live — paint-side cursor overlay pending)",
+            modal_label,
+            cursor.line + 1,
+            cursor.byte,
+        );
+
+        let body = if text.is_empty() {
+            "(empty buffer — try: i to enter Insert, Esc to return to Normal, j/k to move)"
+                .to_string()
+        } else {
+            text
+        };
+
         div()
+            .track_focus(&self.focus_handle)
+            .on_key_down(cx.listener(Self::on_key_down))
             .flex()
-            .items_center()
-            .justify_center()
+            .flex_col()
             .size_full()
             .bg(rgb(0x1e1e2e))
             .text_color(rgb(0xcdd6f4))
-            .text_xl()
-            .child("Lattice (GPUI) — 5.7 scaffold")
+            .text_sm()
+            .child(div().flex_grow().p_3().whitespace_nowrap().child(body))
+            .child(
+                div()
+                    .bg(rgb(0x313244))
+                    .text_color(rgb(0xa6e3a1))
+                    .px_2()
+                    .py_1()
+                    .child(status),
+            )
     }
 }
 
@@ -54,20 +169,19 @@ fn main() {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 ..Default::default()
             },
-            |_window, cx| {
-                cx.new(|_cx| PlaceholderView {
-                    // 5.7.B.2: `GpuiApp::new` now goes through
-                    // `Editor::boot`. The placeholder binary
-                    // boots an empty scratch document; the real
-                    // CLI path (Phase 5.9) will route through
-                    // `lattice-cli` and pass the user-supplied
-                    // file.
-                    _app: GpuiApp::new(Document::empty()),
-                })
+            |window, cx| {
+                let entity = cx.new(|cx| EditorView::new(Document::empty(), cx));
+                // Focus the editor view so key events route to
+                // our on_key_down handler from t=0. Without this
+                // the user must click the window to grant focus
+                // before any key registers.
+                let handle = entity.read(cx).focus_handle.clone();
+                window.focus(&handle);
+                entity
             },
         );
         if let Err(e) = window_result {
-            tracing::error!(error = ?e, "lattice-gpui: failed to open placeholder window");
+            tracing::error!(error = ?e, "lattice-gpui: failed to open editor window");
         }
         cx.activate(true);
     });

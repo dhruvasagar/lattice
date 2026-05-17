@@ -16,6 +16,13 @@ description = "Peer GPUI renderer for lattice — host-neutral substrate driving
 lattice-host = { path = "../lattice-host" }
 lattice-core = { path = "../lattice-core" }
 lattice-mode = { path = "../lattice-mode" }
+# 5.7.B.4: the binary's status-line renders `ModalState::*`
+# labels (Normal / Insert / Visual / ...). The type lives in
+# `lattice-grammar`; host doesn't re-export it (grammar is the
+# canonical owner). The lib doesn't use this dep directly --
+# field-typed Editor fields name the type internally and don't
+# require it in scope. Stays minimal: one type, named once.
+lattice-grammar = { path = "../lattice-grammar" }
 
 # Zed's GPU-accelerated UI framework. Gated behind the `window`
 # feature so the scaffold types + tests build on every host
@@ -30,14 +37,6 @@ gpui = { version = "0.2.2", optional = true }
 
 anyhow.workspace = true
 tracing.workspace = true
-
-[dev-dependencies]
-# 5.7.B.3: dispatch-pipeline integration tests assert that
-# `editor.modal` lands on the expected `ModalState::*` after a
-# keystroke. The type lives in `lattice-grammar`; the host
-# doesn't re-export it (and shouldn't -- grammar is the canonical
-# owner). Tests-only dep keeps the lib's link surface untouched.
-lattice-grammar = { path = "../lattice-grammar" }
 
 [features]
 default = []

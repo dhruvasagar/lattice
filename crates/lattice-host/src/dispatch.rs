@@ -567,6 +567,36 @@ pub(crate) fn handle_action(
         Action::PasteAfter => editor.do_paste(false),
         Action::PasteBefore => editor.do_paste(true),
         Action::PasteText(text) => editor.do_paste_text(&text),
+        // 5.5.G.10: search-state cluster.
+        Action::SearchAppend(c) => {
+            if let Some(line) = editor.search_line.as_mut() {
+                line.pattern.push(c);
+                editor.preview_search();
+            }
+        }
+        Action::SearchBackspace => {
+            let leave = match editor.search_line.as_mut() {
+                Some(line) => {
+                    if line.pattern.pop().is_none() {
+                        true
+                    } else {
+                        editor.preview_search();
+                        false
+                    }
+                }
+                None => false,
+            };
+            if leave {
+                editor.cancel_search();
+            }
+        }
+        Action::SearchSubmit => editor.submit_search(),
+        Action::SearchCancel => editor.cancel_search(),
+        Action::SearchNext => editor.repeat_search(false),
+        Action::SearchPrevious => editor.repeat_search(true),
+        Action::SearchWordUnderCursor(direction) => {
+            editor.do_search_word_under_cursor(direction);
+        }
         // Catch-all: any Action variant not yet migrated from
         // App::apply. Sub-slices 5.5.D+ extend the match upward as
         // helpers move.
@@ -2978,6 +3008,351 @@ impl Editor {
         self.pending_redraw = true;
         self.set_message(EchoLevel::Info, "redraw".to_string());
     }
+}
+
+/// 5.5.G.10: pure-editor search-state cluster (`/`, `?`, `n`, `N`,
+/// `*`, `#`). `do_find_repeat` stays App-side (calls
+/// `run_invocation`); the substitute preview path stays App-side
+/// (called from the cmdline flow).
+impl Editor {
+    /// Live-preview the in-progress search pattern from origin.
+    /// Tolerates compile errors silently while the user is typing.
+    pub fn preview_search(&mut self) {
+        let Some(line) = self.search_line.as_ref() else {
+            return;
+        };
+        if line.pattern.is_empty() {
+            self.current_match = None;
+            self.all_matches.clear();
+            return;
+        }
+        let Ok(regex) = compile_search_pattern(&line.pattern) else {
+            self.current_match = None;
+            self.all_matches.clear();
+            return;
+        };
+        let dir = match line.direction {
+            lattice_grammar::SearchDirection::Forward => lattice_core::search::Direction::Forward,
+            lattice_grammar::SearchDirection::Backward => lattice_core::search::Direction::Backward,
+        };
+        let buffer = self.active_text();
+        match lattice_core::search::find(
+            &buffer,
+            &regex,
+            line.origin,
+            dir,
+            &lattice_runtime::CancellationToken::never(),
+        ) {
+            Ok(Some(lattice_core::search::SearchHit { range, .. })) => {
+                self.current_match = Some(range)
+            }
+            _ => self.current_match = None,
+        }
+        self.all_matches = lattice_core::search::find_all(
+            &buffer,
+            &regex,
+            &lattice_runtime::CancellationToken::never(),
+        )
+        .unwrap_or_default();
+    }
+
+    /// Commit the search pattern -- jump the cursor to the first
+    /// match, record `last_search`, populate `all_matches` for
+    /// hlsearch. On empty submit, replay `last_search` (vim `<CR>`
+    /// behaviour).
+    pub fn submit_search(&mut self) {
+        let Some(line) = self.search_line.take() else {
+            return;
+        };
+        self.modal = ModalState::Normal;
+        if line.pattern.is_empty() {
+            if self.last_search.is_some() {
+                self.repeat_search(false);
+            }
+            return;
+        }
+        let cur = line.origin;
+        self.push_position_history(cur, PositionSource::AutoJump);
+        let regex = match compile_search_pattern(&line.pattern) {
+            Ok(r) => r,
+            Err(msg) => {
+                self.set_message(EchoLevel::Error, format!("regex: {msg}"));
+                self.current_match = None;
+                self.all_matches.clear();
+                return;
+            }
+        };
+        let dir = match line.direction {
+            lattice_grammar::SearchDirection::Forward => lattice_core::search::Direction::Forward,
+            lattice_grammar::SearchDirection::Backward => lattice_core::search::Direction::Backward,
+        };
+        let buffer = self.active_text();
+        match lattice_core::search::find(
+            &buffer,
+            &regex,
+            line.origin,
+            dir,
+            &lattice_runtime::CancellationToken::never(),
+        ) {
+            Ok(Some(hit)) => {
+                self.cursor = hit.range.start;
+                self.current_match = Some(hit.range);
+                self.all_matches = lattice_core::search::find_all(
+                    &buffer,
+                    &regex,
+                    &lattice_runtime::CancellationToken::never(),
+                )
+                .unwrap_or_default();
+                if hit.wrapped {
+                    let level = EchoLevel::Warn;
+                    let text = match line.direction {
+                        lattice_grammar::SearchDirection::Forward => {
+                            "search hit BOTTOM, continuing at TOP"
+                        }
+                        lattice_grammar::SearchDirection::Backward => {
+                            "search hit TOP, continuing at BOTTOM"
+                        }
+                    };
+                    self.set_message(level, text.to_string());
+                }
+                self.last_search = Some(crate::state::LastSearch {
+                    pattern: line.pattern,
+                    direction: line.direction,
+                });
+                if matches!(self.active_buffer, BufferKind::Document) {
+                    self.auto_open_folds_at_cursor();
+                }
+            }
+            Ok(None) => {
+                self.current_match = None;
+                self.all_matches.clear();
+                self.set_message(
+                    EchoLevel::Error,
+                    format!("E486: Pattern not found: {}", line.pattern),
+                );
+                self.last_search = Some(crate::state::LastSearch {
+                    pattern: line.pattern,
+                    direction: line.direction,
+                });
+            }
+            Err(_) => {
+                self.current_match = None;
+                self.all_matches.clear();
+            }
+        }
+    }
+
+    /// `<Esc>` from the search line -- restore the pre-search
+    /// cursor and clear match decorations.
+    pub fn cancel_search(&mut self) {
+        if let Some(line) = self.search_line.take() {
+            self.cursor = line.origin;
+        }
+        self.current_match = None;
+        self.all_matches.clear();
+        self.modal = ModalState::Normal;
+    }
+
+    /// `n` / `N` -- replay `last_search`. `reverse = false` keeps
+    /// the direction; `reverse = true` flips it.
+    pub fn repeat_search(&mut self, reverse: bool) {
+        let Some(last) = self.last_search.clone() else {
+            self.set_message(
+                EchoLevel::Error,
+                "E35: no previous regular expression".to_string(),
+            );
+            return;
+        };
+        let cur = self.cursor;
+        self.push_position_history(cur, PositionSource::AutoJump);
+        let direction = match (last.direction, reverse) {
+            (lattice_grammar::SearchDirection::Forward, false)
+            | (lattice_grammar::SearchDirection::Backward, true) => {
+                lattice_grammar::SearchDirection::Forward
+            }
+            (lattice_grammar::SearchDirection::Backward, false)
+            | (lattice_grammar::SearchDirection::Forward, true) => {
+                lattice_grammar::SearchDirection::Backward
+            }
+        };
+        let dir = match direction {
+            lattice_grammar::SearchDirection::Forward => lattice_core::search::Direction::Forward,
+            lattice_grammar::SearchDirection::Backward => lattice_core::search::Direction::Backward,
+        };
+        let buffer = self.active_text();
+        let from = step_byte(&buffer, self.cursor, direction);
+        let regex = match compile_search_pattern(&last.pattern) {
+            Ok(r) => r,
+            Err(msg) => {
+                self.set_message(EchoLevel::Error, format!("regex: {msg}"));
+                self.current_match = None;
+                return;
+            }
+        };
+        match lattice_core::search::find(
+            &buffer,
+            &regex,
+            from,
+            dir,
+            &lattice_runtime::CancellationToken::never(),
+        ) {
+            Ok(Some(hit)) => {
+                self.cursor = hit.range.start;
+                self.current_match = Some(hit.range);
+                if hit.wrapped {
+                    let text = match direction {
+                        lattice_grammar::SearchDirection::Forward => {
+                            "search hit BOTTOM, continuing at TOP"
+                        }
+                        lattice_grammar::SearchDirection::Backward => {
+                            "search hit TOP, continuing at BOTTOM"
+                        }
+                    };
+                    self.set_message(EchoLevel::Warn, text.to_string());
+                }
+                if matches!(self.active_buffer, BufferKind::Document) {
+                    self.auto_open_folds_at_cursor();
+                }
+            }
+            Ok(None) => {
+                self.current_match = None;
+                self.set_message(
+                    EchoLevel::Error,
+                    format!("E486: Pattern not found: {}", last.pattern),
+                );
+            }
+            Err(_) => {
+                self.current_match = None;
+            }
+        }
+    }
+
+    /// `*` / `#` -- extract the word at the cursor, store as
+    /// `last_search`, jump to the next (or previous) occurrence.
+    pub fn do_search_word_under_cursor(
+        &mut self,
+        direction: lattice_grammar::SearchDirection,
+    ) {
+        let pre_jump = self.cursor;
+        let text = self.document.text();
+        let bytes = text.as_bytes();
+        let cursor_byte = match self
+            .document
+            .snapshot()
+            .buffer
+            .position_to_byte(self.cursor)
+        {
+            Ok(b) => b,
+            Err(_) => return,
+        };
+        let mut start = cursor_byte;
+        if start >= bytes.len() || !is_word_char_byte(bytes[start]) {
+            while start < bytes.len()
+                && bytes[start] != b'\n'
+                && !is_word_char_byte(bytes[start])
+            {
+                start += 1;
+            }
+            if start >= bytes.len() || bytes[start] == b'\n' {
+                self.set_message(EchoLevel::Error, "no word under cursor".to_string());
+                return;
+            }
+        }
+        while start > 0 && is_word_char_byte(bytes[start - 1]) {
+            start -= 1;
+        }
+        let mut end = start;
+        while end < bytes.len() && is_word_char_byte(bytes[end]) {
+            end += 1;
+        }
+        let word = String::from_utf8_lossy(&bytes[start..end]).into_owned();
+        if word.is_empty() {
+            self.set_message(EchoLevel::Error, "no word under cursor".to_string());
+            return;
+        }
+        let dir = match direction {
+            lattice_grammar::SearchDirection::Forward => lattice_core::search::Direction::Forward,
+            lattice_grammar::SearchDirection::Backward => lattice_core::search::Direction::Backward,
+        };
+        let from = step_byte(&self.document.snapshot().buffer, self.cursor, direction);
+        let escaped = fancy_regex::escape(&word).into_owned();
+        let regex = match compile_search_pattern(&escaped) {
+            Ok(r) => r,
+            Err(_) => {
+                self.set_message(EchoLevel::Error, "regex compile failed".to_string());
+                return;
+            }
+        };
+        match lattice_core::search::find(
+            &self.document.snapshot().buffer,
+            &regex,
+            from,
+            dir,
+            &lattice_runtime::CancellationToken::never(),
+        ) {
+            Ok(Some(hit)) => {
+                self.push_position_history(pre_jump, PositionSource::AutoJump);
+                self.cursor = hit.range.start;
+                self.current_match = Some(hit.range);
+                self.all_matches = lattice_core::search::find_all(
+                    &self.document.snapshot().buffer,
+                    &regex,
+                    &lattice_runtime::CancellationToken::never(),
+                )
+                .unwrap_or_default();
+                self.last_search = Some(crate::state::LastSearch {
+                    pattern: escaped,
+                    direction,
+                });
+                if matches!(self.active_buffer, BufferKind::Document) {
+                    self.auto_open_folds_at_cursor();
+                }
+            }
+            Ok(None) => {
+                self.set_message(
+                    EchoLevel::Error,
+                    format!("E486: Pattern not found: {word}"),
+                );
+            }
+            Err(_) => {}
+        }
+    }
+}
+
+/// 5.5.G.10: pure regex compile wrapper. Mirrors the App-side
+/// helper retired in this slice.
+fn compile_search_pattern(pattern: &str) -> Result<fancy_regex::Regex, String> {
+    fancy_regex::Regex::new(pattern).map_err(|e| e.to_string())
+}
+
+/// 5.5.G.10: one-byte cursor step in the given search direction
+/// for `n` / `N` skip-current-match.
+fn step_byte(
+    buf: &lattice_core::Buffer,
+    p: lattice_protocol::position::Position,
+    dir: lattice_grammar::SearchDirection,
+) -> lattice_protocol::position::Position {
+    match dir {
+        lattice_grammar::SearchDirection::Forward => {
+            let len = buf.line_byte_len(p.line);
+            if p.byte < len {
+                lattice_protocol::position::Position::new(p.line, p.byte + 1)
+            } else {
+                let last = last_addressable_line(buf);
+                if p.line < last {
+                    lattice_protocol::position::Position::new(p.line + 1, 0)
+                } else {
+                    p
+                }
+            }
+        }
+        lattice_grammar::SearchDirection::Backward => previous_position(buf, p),
+    }
+}
+
+/// 5.5.G.10: word-byte predicate used by `*` / `#`.
+fn is_word_char_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
 }
 
 /// 5.5.G.9: pure-editor paste cluster (`p` / `P` / bracketed-paste).

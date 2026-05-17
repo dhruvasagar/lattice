@@ -211,7 +211,15 @@ impl App {
             // 5.5.G.9: paste cluster arms.
             | Action::PasteAfter
             | Action::PasteBefore
-            | Action::PasteText(_) => {}
+            | Action::PasteText(_)
+            // 5.5.G.10: search-state arms migrated to Editor::dispatch.
+            | Action::SearchAppend(_)
+            | Action::SearchBackspace
+            | Action::SearchSubmit
+            | Action::SearchCancel
+            | Action::SearchNext
+            | Action::SearchPrevious
+            | Action::SearchWordUnderCursor(_) => {}
             Action::Invoke(inv) => self.run_invocation(inv),
             Action::Insert(s) => self.do_insert_text(&s),
             // 5.5.G.3: `DeleteCharBackward`, `EnterAppend`,
@@ -345,10 +353,9 @@ impl App {
             // 5.5.G.2: `EnterVisual` / `ExitVisual` / `ReselectLastVisual`
             // migrated to `Editor::dispatch`; routed through the
             // grouped no-op above.
-            Action::SearchWordUnderCursor(direction) => self.do_search_word_under_cursor(direction),
+            // 5.5.G.10: `SearchWordUnderCursor` migrated.
             // 5.5.G.4: `MatchBracket` migrated to `Editor::dispatch`.
-            // 5.5.G.3: `ToggleCaseAtCursor` / `JoinLines` migrated
-            // to `Editor::dispatch`.
+            // 5.5.G.3: `ToggleCaseAtCursor` / `JoinLines` migrated.
             Action::FindRepeat { reverse } => self.do_find_repeat(reverse),
 
             Action::CreateFoldFromVisual => self.do_create_fold_from_visual(),
@@ -517,32 +524,8 @@ impl App {
             // `ClosePane` / `NavigatePane` / `NextPane` / `PrevPane`
             // migrated to `Editor::dispatch`.
 
-            Action::SearchAppend(c) => {
-                if let Some(line) = self.editor.search_line.as_mut() {
-                    line.pattern.push(c);
-                    self.preview_search();
-                }
-            }
-            Action::SearchBackspace => {
-                let leave = match self.editor.search_line.as_mut() {
-                    Some(line) => {
-                        if line.pattern.pop().is_none() {
-                            true
-                        } else {
-                            self.preview_search();
-                            false
-                        }
-                    }
-                    None => false,
-                };
-                if leave {
-                    self.cancel_search();
-                }
-            }
-            Action::SearchSubmit => self.submit_search(),
-            Action::SearchCancel => self.cancel_search(),
-            Action::SearchNext => self.repeat_search(false),
-            Action::SearchPrevious => self.repeat_search(true),
+            // 5.5.G.10: SearchAppend / Backspace / Submit / Cancel /
+            // Next / Previous migrated to `Editor::dispatch`.
         }
         // Skip ensure_cursor_visible when the popup just dismissed
         // back to the document. `app.editor.viewport_height` is still the

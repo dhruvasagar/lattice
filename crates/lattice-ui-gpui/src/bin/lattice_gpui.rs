@@ -56,6 +56,13 @@
 //!   `<C-n>`/`<C-p>` navigate, `<CR>` accepts, `<Esc>` cancels;
 //!   all routed through the host's picker dispatcher.
 //!
+//! - **Insert-mode completion popup** (5.8.F): when
+//!   `editor.insert_completion` is `Some` and has candidates, a
+//!   top-right-anchored panel shows the top 10 candidates with
+//!   the selected one highlighted. `<C-n>`/`<C-p>` navigate,
+//!   `<Tab>`/`<CR>` accept, `<Esc>` cancels; routed through the
+//!   completion-popup minor-mode keymap layer.
+//!
 //! - **Key events**: every keystroke flows through
 //!   [`GpuiApp::dispatch_keystroke`] (5.7.B.3) so `i` → Insert,
 //!   `Esc` → Normal, `j` / `k` move the cursor, `:` enters
@@ -68,12 +75,12 @@
 //!   `--gpu <file>` flag plumbing is the 5.9 slice.
 //!
 //! What's still missing vs. the TUI peer: pane splits,
-//! completion popup, sub-glyph cursor positioning (current
-//! per-char-div approach works for ASCII + most BMP but doesn't
-//! shape tabs / wide glyphs correctly), live theme cascade
-//! through GpuiTheme (the rebuild stub is wired but `host_theme`
-//! doesn't yet carry window-level color fields). Each is a
-//! future slice.
+//! sub-glyph cursor positioning (current per-char-div approach
+//! works for ASCII + most BMP but doesn't shape tabs / wide
+//! glyphs correctly), live theme cascade through GpuiTheme
+//! (the rebuild stub is wired but `host_theme` doesn't yet
+//! carry window-level color fields), LSP diagnostics gutter +
+//! inlay hints. Each is a future slice.
 
 use gpui::{
     App, AppContext, Application, Bounds, Context, FocusHandle, Focusable, InteractiveElement,

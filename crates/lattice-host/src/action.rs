@@ -493,6 +493,22 @@ pub enum Action {
     /// • Oil buffer → `oil.navigate_up()`
     OilNavigateUp,
 
+    // ---- 5.5.G.23.insert: host→App LSP autopilot follow-ups ----
+    /// 5.5.G.23.insert: emitted by host-side `Editor::do_insert_text`
+    /// after a typed character matches the active document's
+    /// `onTypeFormatting` trigger-char set. App-side handler fires
+    /// `textDocument/onTypeFormatting` against the highest-priority
+    /// server advertising the trigger and applies the returned edits
+    /// as one undo unit.
+    LspOnTypeFormattingRequest(char),
+    /// 5.5.G.23.insert: emitted by host-side
+    /// `Editor::maybe_refresh_insert_completion_after_edit` when the
+    /// last LSP completion response was `isIncomplete` and the popup
+    /// just refiltered against the new query. App-side handler
+    /// dispatches `textDocument/completion` through the
+    /// `LspCompletionSource`'s async fan-out.
+    LspInsertCompletionRequest,
+
     // ---- Search (`/`, `?`, `n`, `N`) ----
     /// Pressed `/` (Forward) or `?` (Backward) -- enter Search modal with
     /// empty pattern, remembering origin so cancel restores cursor.

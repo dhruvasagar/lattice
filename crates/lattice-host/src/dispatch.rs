@@ -115,6 +115,21 @@ pub struct DispatchOutcome {
     /// (`run_oil_invocation`, etc.) append without threading the
     /// outcome up the call stack.
     pub effects: Vec<lattice_grammar::Effect>,
+    /// 5.5.G.23.insert: deferred Actions the host wants the renderer
+    /// to re-dispatch through its full `apply` loop. Used when the
+    /// host-side handler for an Action needs to fire follow-up Actions
+    /// whose handlers still live App-side (typically LSP autopilots
+    /// like `LspOnTypeFormattingRequest` / `LspInsertCompletionRequest`
+    /// that depend on `spawn_on_lsp_runtime` + `BatchingSink` +
+    /// `InsertCompletionLspOutcome` — App-resident plumbing). The
+    /// renderer drains this list via `self.apply(action)`, so each
+    /// follow-up runs through the same dispatch loop (macro-recording
+    /// capture, partial-chord clear, etc.) as user-driven actions.
+    ///
+    /// Empty for every host arm that doesn't need an App-side
+    /// follow-up. The `Vec` shape lets host helpers append without
+    /// threading the outcome up the call stack.
+    pub next_actions: Vec<crate::action::Action>,
 }
 
 /// Host-to-renderer side-effect signal.

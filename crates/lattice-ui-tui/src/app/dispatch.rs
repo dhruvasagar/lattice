@@ -138,6 +138,15 @@ impl App {
         for signal in std::mem::take(&mut outcome.renderer_signals) {
             self.handle_renderer_signal(signal);
         }
+        // 5.5.G.23.insert: drain follow-up Actions the host queued
+        // (LSP autopilots like `LspOnTypeFormattingRequest` /
+        // `LspInsertCompletionRequest` that need `spawn_on_lsp_runtime`
+        // App-side). Each runs through the full `apply` loop so it
+        // sees the same macro-recording / partial-chord lifecycle as
+        // user-driven actions.
+        for follow_up in std::mem::take(&mut outcome.next_actions) {
+            self.apply(follow_up);
+        }
         if outcome.consumed {
             return;
         }
@@ -307,6 +316,17 @@ impl App {
             // band because of the inner `CommandInvocation` payload.
             Action::Invoke(_) => {}
             Action::Insert(s) => self.do_insert_text(&s),
+            // 5.5.G.23.insert: LSP autopilot follow-ups host-emitted
+            // by `Editor::do_insert_text` (forthcoming). The handlers
+            // live App-side because they reach for `spawn_on_lsp_runtime`
+            // + `BatchingSink` + the `pending_insert_completion_lsp_*`
+            // channels.
+            Action::LspOnTypeFormattingRequest(c) => {
+                self.do_lsp_on_type_formatting_request(c)
+            }
+            Action::LspInsertCompletionRequest => {
+                self.do_lsp_insert_completion_request()
+            }
             // 5.5.G.3: `DeleteCharBackward`, `EnterAppend`,
             // `OpenLineBelow`, `OpenLineAbove`, `Undo`, `Redo`
             // migrated to `Editor::dispatch`; routed through the

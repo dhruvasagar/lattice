@@ -49,15 +49,20 @@
 //! everywhere while the binary is opt-in for environments with
 //! display libs installed.
 //!
-//! The boot logic that today lives in `lattice-ui-tui::app::boot.rs`
-//! (LSP subsystem, command registry, mode registry, snippet registry,
-//! event bus) is renderer-neutral and slated to migrate to
-//! `lattice-host::editor::Editor::boot` in a future slice. Until
-//! that lands, [`GpuiApp::new`] uses [`Editor::default`] — adequate
-//! for the scaffold's "host crate is reusable" smoke test, but the
-//! resulting editor has no commands / modes / LSP wired. Real
-//! functionality follows the boot-extraction slice.
+//! Phase 5.7.B.1 landed [`lattice_host::editor::Editor::boot`]:
+//! the renderer-neutral construction body (LSP subsystem,
+//! command registry, mode registry, snippet registry, event
+//! bus, completion / picker / config registries, syntax +
+//! buffer registry seeding) lives on the host substrate. Phase
+//! 5.7.B.2 (this slice) wires [`GpuiApp::new`] to call it:
+//! `GpuiApp::new(document)` mirrors `lattice-ui-tui::App::new`'s
+//! shape — the renderer-neutral half goes through `Editor::boot`,
+//! the renderer-side wrapper holds the theme + pane-render
+//! registry. Real dispatch + paint wiring (key events ->
+//! `Action` -> `editor.dispatch`; paint reads `editor.document`
+//! snapshot + cursor) follows in 5.7.B.3 / 5.7.B.4.
 
+use lattice_core::Document;
 use lattice_host::Renderer;
 use lattice_host::editor::Editor;
 use lattice_host::pane_render::ProviderLookup;
@@ -112,26 +117,31 @@ pub struct GpuiApp {
 }
 
 impl GpuiApp {
-    /// Scaffold-grade constructor. Builds an empty editor + empty
-    /// theme + empty registry. The TUI peer's `App::new` does
-    /// considerably more (LSP subsystem boot, command-registry
-    /// populate, mode-registry populate, snippet-registry handle,
-    /// event bus); that boot logic is renderer-neutral and migrates
-    /// to `Editor::boot` in a future slice. Until then this
-    /// constructor is honest about its limits: enough to construct a
-    /// `GpuiApp`, not enough to dispatch real commands.
-    pub fn new() -> Self {
+    /// Build the GPUI peer's composition root from an initial
+    /// [`Document`]. Mirrors `lattice-ui-tui::app::App::new`:
+    /// delegates the renderer-neutral construction to
+    /// [`Editor::boot`] (LSP subsystem, command / mode /
+    /// completion / picker / config registries, snippet handle,
+    /// event bus, syntax, buffer registry) and supplies the
+    /// renderer-side caches alongside.
+    ///
+    /// Real dispatch (key events -> `Action` -> `editor.dispatch`)
+    /// + paint (read `editor.document` snapshot + cursor) wire in
+    /// 5.7.B.3 / 5.7.B.4. The renderer-side post-boot helpers
+    /// the TUI peer runs after `Editor::boot`
+    /// (`activate_major_for_buffer_kind`,
+    /// `publish_document_opened_for_active`,
+    /// `ensure_named_synthetic_document`,
+    /// `ensure_messages_buffer`) plug in as the corresponding
+    /// GPUI wiring lands -- their bodies are host-resident, so
+    /// this peer will call the same methods via its own renderer-
+    /// signal handler.
+    pub fn new(document: Document) -> Self {
         Self {
-            editor: Editor::default(),
+            editor: Editor::boot(document),
             theme: GpuiTheme::default(),
             pane_render_registry: GpuiPaneRenderRegistry::default(),
         }
-    }
-}
-
-impl Default for GpuiApp {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -143,10 +153,23 @@ mod tests {
     /// constructs from the host substrate alone. If this builds, the
     /// host crate has no transitive ratatui / crossterm dep — that's
     /// the entire point of the slice.
+    ///
+    /// 5.7.B.2: `GpuiApp::new(document)` goes through
+    /// `Editor::boot`, so this test also exercises that the host's
+    /// boot path is callable without `lattice-ui-tui` in the dep
+    /// tree (no transitive ratatui / crossterm pull-in).
     #[test]
     fn scaffold_constructs_without_ui_tui() {
-        let app = GpuiApp::new();
+        let app = GpuiApp::new(Document::empty());
+        // `Editor::boot` populates the mode registry but does not
+        // *activate* any modes on the initial buffer -- that's a
+        // renderer-side post-boot helper. The active-modes map
+        // stays empty until the GPUI peer runs the equivalent of
+        // TUI's `activate_major_for_buffer_kind`.
         assert!(app.editor.active_modes.is_empty());
+        // `Editor::boot` wired the mode registry; the entry count
+        // is nonzero so the host's mode-registration path ran.
+        assert!(app.editor.mode_registry.iter_meta().next().is_some());
         // ProviderLookup is implemented on the registry; the
         // empty stub answers `false` for every mode id.
         let probe: &dyn ProviderLookup = &app.pane_render_registry;

@@ -21,6 +21,7 @@ use gpui::{
     AppContext, Application, Bounds, Context, IntoElement, ParentElement, Render, Styled, Window,
     WindowBounds, WindowOptions, div, px, rgb, size,
 };
+use lattice_core::Document;
 use lattice_ui_gpui::GpuiApp;
 
 /// Minimal root view. Holds the [`GpuiApp`] composition root so the
@@ -55,7 +56,13 @@ fn main() {
             },
             |_window, cx| {
                 cx.new(|_cx| PlaceholderView {
-                    _app: GpuiApp::new(),
+                    // 5.7.B.2: `GpuiApp::new` now goes through
+                    // `Editor::boot`. The placeholder binary
+                    // boots an empty scratch document; the real
+                    // CLI path (Phase 5.9) will route through
+                    // `lattice-cli` and pass the user-supplied
+                    // file.
+                    _app: GpuiApp::new(Document::empty()),
                 })
             },
         );

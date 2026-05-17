@@ -100,8 +100,16 @@ impl App {
         // `Editor::dispatch`'s preamble. When `outcome.consumed` is
         // set the host already surfaced the relevant echo + cleanup
         // (read-only-help today); App's match below must bail.
-        // `consumed` disappears in 5.5.G once App's match collapses
-        // entirely.
+        //
+        // 5.5.G.final: 78 Action arms now resolve host-side via the
+        // grouped `_ => {}` no-op below. The remaining explicit arms
+        // are subsystem-coupled (LSP host, completion orchestrator,
+        // picker SMR queue, oil/file-tree state, snippet engine,
+        // command-line parser & alias rewriter, AppEffect router) —
+        // each retires mechanically when its subsystem migrates
+        // host-side. `consumed` collapses once the last subsystem
+        // lands; until then the seam below is the architectural
+        // boundary, not a deferred TODO.
         let outcome = self.editor.dispatch(action.clone());
         if outcome.consumed {
             return;

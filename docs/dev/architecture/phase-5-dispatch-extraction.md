@@ -298,7 +298,20 @@ These three are the right call — the original framing holds.
   - **OilNavigateUp**: Oil arm pure-editor-ish (uses `OilBuffer::reload` from `lattice-oil`), but FileTree and Document arms call `do_open_oil` which is App-side.
   - **FindRepeat**: recurses through `run_invocation`.
   - **CreateFoldFromVisual** ✅ done in G.16 (was deferred earlier).
-- **5.5.H**: vestigial cleanup; reorganize tests where App-routing assertions and host-builder assertions are entangled.
+
+  - **G.final** ✅ *(architectural milestone, no code)*. With G.17 landed, every `App::apply` arm that *can* be migrated host-side without first migrating an App-owned subsystem **has been**. The remaining ~165 LoC of explicit App-side arms each gate on a specific App-owned subsystem migration — none of them is a pure-editor extraction. The host/app boundary in `App::apply` is now the natural architectural seam: arms above the deferred-cluster list are pure-editor (host-side via the grouped no-op fallthrough); arms below depend on subsystems whose own migration is its own phase of work (LSP host, completion orchestrator, picker SMR queue, oil/file-tree state, snippet engine, command-line parser & alias rewriter, AppEffect router). Per CLAUDE.md heuristic 1 ("best long-term fit beats easy implementation"), the dispatch extraction stops here rather than introducing renderer-side shims to artificially collapse arms whose helpers genuinely require renderer ownership. Subsystem migration continues post-Phase-5 as each subsystem hits a milestone (LSP-host hosting, completion-orchestrator hosting, picker-state hosting, AppEffect-router hosting). When that work lands, the corresponding G.x cluster collapses mechanically — at that point `App::apply` becomes a single-line `self.editor.dispatch(action)` + signal-fan, and 5.5.H (vestigial cleanup) runs to retire the dead delegates.
+
+    **What G.final does NOT mean:**
+    - It does NOT mean `App::apply` is fully collapsed. The 165-LoC explicit-arm seam remains until subsystem hosting lands.
+    - It does NOT mean `App::apply` is forever bounded above by ~165 LoC. The line count drops further every time a subsystem migrates and unblocks its cluster.
+    - It does NOT mean the deferred clusters are wontfix. They're queued; each is its own phase-shaped slice (Insert + LSP-trigger autopilot lands with LSP hosting; Completion lands with completion-orchestrator hosting; Picker lands with SMR queue + activate_buffer hosting; etc.).
+
+    **What G.final DOES mean:**
+    - `lattice-ui-gpui` (when 5.7 lands) can `use lattice_host::editor::Editor;` and call `editor.dispatch(action)` directly; for every Action variant that has a host-side implementation, that call is correct. For the App-side variants, GPUI's `App` analogue will need its own implementations of the App-side helpers (or, post-subsystem-migration, those arms become host-side too).
+    - The 5.5 acceptance criteria ("`App::apply` body ≤200 LoC, all do_* mutating only editor live in lattice-host, GPUI can call `editor.dispatch` with zero `lattice-ui-tui` dependency for host-side arms") is met. The original 200-LoC target included subsystem-coupled arms; in practice we beat it slightly (~165 LoC).
+    - The "G.x sub-slice" cadence ends. Future host-side migrations restart numbering under their parent subsystem's phase (e.g., "LSP-host hosting slice 3 migrates `LspHoverRequest` to `Editor::dispatch`" rather than "G.18").
+
+- **5.5.H**: vestigial cleanup; reorganize tests where App-routing assertions and host-builder assertions are entangled. **Gated on G.final** — runs once the dispatch-extraction sequence is formally closed (it is, as of G.final). H sweeps the `#[allow(dead_code)]` App-side delegates whose remaining call sites have themselves moved host-side in the interim; in the current snapshot most delegates still have App-side callers (Effect router, motion helpers, picker accept/dismiss, etc.), so H runs incrementally as those subsystems migrate.
 
 The original "5.5.F — mode lifecycle (~500 LoC moved)" entry below is superseded by F.4–F.7 above.
 

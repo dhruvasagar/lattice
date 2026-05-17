@@ -727,6 +727,8 @@ pub(crate) fn handle_action(
         // stay App-side (picker machinery still resident there).
         Action::LspDocumentSymbolRequest => editor.lsp_document_symbol_request(),
         Action::LspWorkspaceSymbolRequest(query) => editor.lsp_workspace_symbol_request(&query),
+        // 5.5.SNIPPET.1: `<C-x><C-s>` -- direct snippet expansion.
+        Action::SnippetExpand => editor.do_snippet_expand_at_cursor(),
         // Catch-all: any Action variant not yet migrated from
         // App::apply. Sub-slices 5.5.D+ extend the match upward as
         // helpers move.
@@ -4840,9 +4842,10 @@ impl Editor {
     }
 }
 
-/// 5.5.G.8: pure-editor snippet placeholder navigation.
-/// `do_snippet_expand_at_cursor` stays App-side until
-/// `active_language_id` and `is_word_char_byte` migrate.
+/// 5.5.G.8 + 5.5.SNIPPET.1: pure-editor snippet placeholder
+/// navigation and snippet expansion. With `active_language_id`
+/// and `is_word_char_byte` now host-side, `do_snippet_expand_at_cursor`
+/// migrates here too.
 impl Editor {
     /// `<Tab>` while a snippet is active -- step to the next
     /// placeholder group; close the session if we've walked off
@@ -4880,6 +4883,153 @@ impl Editor {
         if let Ok(pos) = snap.buffer.byte_to_position(first.start) {
             self.cursor = pos;
         }
+    }
+
+    /// Active buffer's snippet language id. Maps the active
+    /// document's filename extension to a language string the
+    /// snippet registry indexes by (e.g. `"rs"` -> `"rust"`).
+    /// Falls back to the empty string when no path is set
+    /// (the registry's `"*"` any-language pack still applies).
+    pub fn active_language_id(&self) -> String {
+        let snap = self.document.snapshot();
+        let Some(path) = snap.path.as_ref() else {
+            return String::new();
+        };
+        match path.extension().and_then(|e| e.to_str()) {
+            Some("rs") => "rust".into(),
+            Some("py") => "python".into(),
+            Some("go") => "go".into(),
+            Some("js") | Some("jsx") | Some("mjs") | Some("cjs") => "javascript".into(),
+            Some("ts") | Some("tsx") => "typescript".into(),
+            Some("c") | Some("h") => "c".into(),
+            Some("cc") | Some("cpp") | Some("cxx") | Some("hpp") | Some("hxx") => "cpp".into(),
+            Some("md") => "markdown".into(),
+            Some("toml") => "toml".into(),
+            Some("yaml") | Some("yml") => "yaml".into(),
+            Some("json") => "json".into(),
+            Some("sh") => "shellscript".into(),
+            Some("lua") => "lua".into(),
+            Some(other) => other.to_string(),
+            None => String::new(),
+        }
+    }
+
+    /// Build a `VariableContext` for snippet expansion from
+    /// the active buffer / cursor / clipboard / etc. Powers
+    /// `$TM_FILENAME`, `$TM_CURRENT_LINE`, etc.
+    pub fn snippet_variable_context(&self) -> lattice_snippet::VariableContext {
+        let mut ctx = lattice_snippet::VariableContext::default();
+        let snap = self.document.snapshot();
+        if let Some(path) = snap.path.as_ref() {
+            ctx.filepath = Some(path.display().to_string());
+            ctx.filename = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_string());
+            ctx.directory = path.parent().map(|p| p.display().to_string());
+        }
+        ctx.line_index = Some(self.cursor.line);
+        if let Some(line) = snap.buffer.line(self.cursor.line) {
+            ctx.current_line = Some(line);
+        }
+        if let Some(word) = crate::lsp_helpers::word_under_cursor(&snap.buffer, self.cursor) {
+            ctx.current_word = Some(word);
+        }
+        // CLIPBOARD via the system register.
+        if let Some(reg) = self.registers.get(&Register::System) {
+            ctx.clipboard = Some(reg.content.clone());
+        }
+        ctx
+    }
+
+    /// Expand a parsed snippet body at the popup's anchor.
+    /// Renders the body (variables resolved against the active
+    /// buffer's context), splices the resulting text over
+    /// `[anchor, cursor]`, sets up an `ActiveSnippet`, and moves
+    /// the cursor to the first tabstop's range. Pure-literal
+    /// snippets (no tabstops) skip the active-snippet step and
+    /// just leave the cursor at end-of-insert.
+    pub fn expand_snippet(
+        &mut self,
+        body: &lattice_snippet::SnippetBody,
+        anchor: lattice_protocol::position::Position,
+    ) {
+        let vars = self.snippet_variable_context();
+        let rendered = lattice_snippet::render::render(body, &vars);
+        let range = lattice_protocol::position::Range::new(anchor, self.cursor);
+        let edit = lattice_protocol::edit::Edit::replace(range, rendered.text.clone());
+        let applied = match self.apply_edit_blocking(edit) {
+            Ok(a) => a,
+            Err(e) => {
+                self.set_message(EchoLevel::Error, format!("snippet: apply failed: {e:?}"));
+                return;
+            }
+        };
+        let origin = self
+            .document
+            .snapshot()
+            .buffer
+            .position_to_byte(applied.inserted_range.start)
+            .unwrap_or_default();
+        if !rendered.tabstops.is_empty() {
+            let mut active = lattice_snippet::ActiveSnippet::from_render(&rendered, origin);
+            if let Some(group) = active.focus_first()
+                && let Some(first) = group.ranges.first()
+                && let Ok(pos) = self
+                    .document
+                    .snapshot()
+                    .buffer
+                    .byte_to_position(first.start)
+            {
+                self.cursor = pos;
+            }
+            self.active_snippet = Some(active);
+            self.modal = ModalState::Insert;
+        } else {
+            self.cursor = applied.inserted_range.end;
+        }
+    }
+
+    /// `<C-x><C-s>` -- direct snippet expansion (Phase 4.2.g.4).
+    /// Looks up the word at the cursor in the per-language snippet
+    /// registry; expands the matching snippet directly without
+    /// surfacing the popup.
+    pub fn do_snippet_expand_at_cursor(&mut self) {
+        if !matches!(self.modal, ModalState::Insert) {
+            return;
+        }
+        let snap = self.document.snapshot();
+        let line_text = snap.buffer.line(self.cursor.line).unwrap_or_default();
+        let bytes = line_text.as_bytes();
+        let cursor_byte = self.cursor.byte as usize;
+        let mut start = cursor_byte;
+        while start > 0 && start <= bytes.len() && is_word_char_byte(bytes[start - 1]) {
+            start -= 1;
+        }
+        let anchor = lattice_protocol::position::Position::new(self.cursor.line, start as u32);
+        let prefix: String = line_text
+            .get(start..cursor_byte.min(line_text.len()))
+            .unwrap_or("")
+            .to_string();
+        if prefix.is_empty() {
+            self.set_message(EchoLevel::Info, "no snippet prefix at cursor");
+            return;
+        }
+        let language = self.active_language_id();
+        let snippet = {
+            let registry = self.snippet_registry.load();
+            registry
+                .lookup(&language, &prefix)
+                .first()
+                .copied()
+                .or_else(|| registry.lookup("*", &prefix).first().copied())
+                .cloned()
+        };
+        let Some(snippet) = snippet else {
+            self.set_message(EchoLevel::Info, format!("no snippet for prefix `{prefix}`"));
+            return;
+        };
+        self.expand_snippet(&snippet.body, anchor);
     }
 }
 

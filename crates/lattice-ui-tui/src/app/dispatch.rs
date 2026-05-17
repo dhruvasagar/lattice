@@ -275,7 +275,9 @@ impl App {
             // (`LspWorkspaceSymbolRequest` carries a `String`
             // payload, so it lives in its own ignore-binding arm
             // below.)
-            | Action::LspDocumentSymbolRequest => {}
+            | Action::LspDocumentSymbolRequest
+            // 5.5.SNIPPET.1: `<C-x><C-s>` snippet expand migrated.
+            | Action::SnippetExpand => {}
             // 5.5.LSP.5: workspace-symbol request migrated to
             // `Editor::dispatch`. Action carries the query string;
             // a data-bearing variant can't sit in the grouped
@@ -419,7 +421,9 @@ impl App {
             Action::CompletionAcceptThenInsert(c) => {
                 self.do_completion_accept_then_insert(c);
             }
-            Action::SnippetExpand => self.do_snippet_expand_at_cursor(),
+            // 5.5.SNIPPET.1: `Action::SnippetExpand` migrated to
+            // `Editor::dispatch`; routed through the grouped no-op
+            // above.
             // 5.5.G.8: `SnippetNextPlaceholder` / `SnippetPrevPlaceholder`
             // migrated to `Editor::dispatch`.
             // 5.5.G.1: `SnippetLeave` migrated to `Editor::dispatch`;
@@ -1098,7 +1102,7 @@ impl App {
             Effect::LspComplete => self.editor.lsp_completion_request(),
             Effect::LspRename { new_name } => self.do_lsp_rename_request(&new_name),
             Effect::LspCodeAction => self.do_lsp_code_action_request(),
-            Effect::SnippetExpand => self.do_snippet_expand_at_cursor(),
+            Effect::SnippetExpand => self.editor.do_snippet_expand_at_cursor(),
             Effect::ReloadSnippets => self.do_reload_snippets(),
             Effect::ToggleMode { mode_name } => self.toggle_mode_by_name(&mode_name),
             // 5.5.F.3: `DescribeEvents` / `DescribeEvent` /

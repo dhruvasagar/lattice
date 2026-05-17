@@ -35,13 +35,12 @@
 
 use lattice_core::Buffer;
 use lattice_grammar::ModalState;
-use lattice_grammar::register::Register;
 use lattice_protocol::edit::Edit;
 use lattice_protocol::position::{Position, Range as ProtoRange};
 
 use super::{
     App, EchoLevel, SNIPPET_COMPLETION_KIND_ID, SnippetCandidateMeta, dedup_rendered_by_text,
-    is_path_byte, is_word_char_byte, lsp_position_to_app_byte, word_under_cursor,
+    is_path_byte, is_word_char_byte, lsp_position_to_app_byte,
 };
 
 /// Effective insert-completion config for a given language.
@@ -79,47 +78,12 @@ impl EffectiveCompletionConfig {
 
 impl App {
     /// `<C-x><C-s>` -- direct snippet expansion (Phase 4.2.g.4).
-    /// Looks up the word at the cursor in the per-language
-    /// snippet registry; expands the matching snippet directly
-    /// without surfacing the popup.
+    /// 5.5.SNIPPET.1: body migrated to
+    /// [`lattice_host::dispatch::Editor::do_snippet_expand_at_cursor`].
+    /// Delegate retained for direct test callers in this file and
+    /// for the `Effect::SnippetExpand` route through `App::apply`.
     pub fn do_snippet_expand_at_cursor(&mut self) {
-        if !matches!(self.editor.modal, ModalState::Insert) {
-            return;
-        }
-        let snap = self.editor.document.snapshot();
-        // Walk back from cursor over word chars to compute the
-        // prefix. Same heuristic as `do_completion_trigger`.
-        let line_text = snap.buffer.line(self.editor.cursor.line).unwrap_or_default();
-        let bytes = line_text.as_bytes();
-        let cursor_byte = self.editor.cursor.byte as usize;
-        let mut start = cursor_byte;
-        while start > 0 && start <= bytes.len() && is_word_char_byte(bytes[start - 1]) {
-            start -= 1;
-        }
-        let anchor = Position::new(self.editor.cursor.line, start as u32);
-        let prefix: String = line_text
-            .get(start..cursor_byte.min(line_text.len()))
-            .unwrap_or("")
-            .to_string();
-        if prefix.is_empty() {
-            self.set_message(EchoLevel::Info, "no snippet prefix at cursor");
-            return;
-        }
-        let language = self.active_language_id();
-        let snippet = {
-            let registry = self.editor.snippet_registry.load();
-            registry
-                .lookup(&language, &prefix)
-                .first()
-                .copied()
-                .or_else(|| registry.lookup("*", &prefix).first().copied())
-                .cloned()
-        };
-        let Some(snippet) = snippet else {
-            self.set_message(EchoLevel::Info, format!("no snippet for prefix `{prefix}`"));
-            return;
-        };
-        self.expand_snippet(&snippet.body, anchor);
+        self.editor.do_snippet_expand_at_cursor();
     }
 
     /// `<Tab>` while a snippet is active -- jump to the next
@@ -1065,31 +1029,11 @@ impl App {
     }
 
     /// Build a `VariableContext` for snippet expansion from
-    /// the active buffer / cursor / clipboard / etc. Powers
-    /// `$TM_FILENAME`, `$TM_CURRENT_LINE`, etc.
+    /// the active buffer / cursor / clipboard / etc. 5.5.SNIPPET.1:
+    /// body migrated to
+    /// [`lattice_host::dispatch::Editor::snippet_variable_context`].
     pub(super) fn snippet_variable_context(&self) -> lattice_snippet::VariableContext {
-        let mut ctx = lattice_snippet::VariableContext::default();
-        let snap = self.editor.document.snapshot();
-        if let Some(path) = snap.path.as_ref() {
-            ctx.filepath = Some(path.display().to_string());
-            ctx.filename = path
-                .file_name()
-                .and_then(|s| s.to_str())
-                .map(|s| s.to_string());
-            ctx.directory = path.parent().map(|p| p.display().to_string());
-        }
-        ctx.line_index = Some(self.editor.cursor.line);
-        if let Some(line) = snap.buffer.line(self.editor.cursor.line) {
-            ctx.current_line = Some(line);
-        }
-        if let Some(word) = word_under_cursor(&snap.buffer, self.editor.cursor) {
-            ctx.current_word = Some(word);
-        }
-        // CLIPBOARD via the system register.
-        if let Some(reg) = self.editor.registers.get(&Register::System) {
-            ctx.clipboard = Some(reg.content.clone());
-        }
-        ctx
+        self.editor.snippet_variable_context()
     }
 
     /// CSM.5: resolve a candidate's snippet metadata by decoding
@@ -1225,77 +1169,20 @@ impl App {
         Ok(())
     }
 
+    /// 5.5.SNIPPET.1: body migrated to
+    /// [`lattice_host::dispatch::Editor::expand_snippet`]. Delegate
+    /// retained for App-side callers (`expand_snippet_with_lsp_edits`,
+    /// snippet picker accept, completion accept).
     pub(super) fn expand_snippet(&mut self, body: &lattice_snippet::SnippetBody, anchor: Position) {
-        let vars = self.snippet_variable_context();
-        let rendered = lattice_snippet::render::render(body, &vars);
-        // Splice the rendered text over `[anchor, cursor]`.
-        let range = lattice_protocol::position::Range::new(anchor, self.editor.cursor);
-        let edit = Edit::replace(range, rendered.text.clone());
-        let applied = match self.apply_edit_blocking(edit) {
-            Ok(a) => a,
-            Err(e) => {
-                self.set_message(EchoLevel::Error, format!("snippet: apply failed: {e:?}"));
-                return;
-            }
-        };
-        // The host's offset of the snippet origin = anchor
-        // converted to a buffer byte offset. ActiveSnippet
-        // tracks ranges in buffer bytes; since our rope edit
-        // returned the inserted_range, we recompute the
-        // origin from the buffer's positional API.
-        let origin = self
-            .editor.document
-            .snapshot()
-            .buffer
-            .position_to_byte(applied.inserted_range.start)
-            .unwrap_or_default();
-        if !rendered.tabstops.is_empty() {
-            let mut active = lattice_snippet::ActiveSnippet::from_render(&rendered, origin);
-            // Focus the first tabstop and move the cursor.
-            if let Some(group) = active.focus_first()
-                && let Some(first) = group.ranges.first()
-                && let Ok(pos) = self
-                    .editor.document
-                    .snapshot()
-                    .buffer
-                    .byte_to_position(first.start)
-            {
-                self.editor.cursor = pos;
-            }
-            self.editor.active_snippet = Some(active);
-            self.editor.modal = ModalState::Insert;
-        } else {
-            self.editor.cursor = applied.inserted_range.end;
-        }
+        self.editor.expand_snippet(body, anchor);
     }
 
-    /// Active buffer's snippet language id. Maps the active
-    /// document's filename extension to a language string the
-    /// snippet registry indexes by (e.g. `"rs"` -> `"rust"`).
-    /// Falls back to the empty string when no path is set
-    /// (the registry's `"*"` any-language pack still applies).
+    /// Active buffer's snippet language id. 5.5.SNIPPET.1: body
+    /// migrated to
+    /// [`lattice_host::dispatch::Editor::active_language_id`].
+    /// Delegate retained for App-side completion / LSP callers.
     pub(super) fn active_language_id(&self) -> String {
-        let snap = self.editor.document.snapshot();
-        let Some(path) = snap.path.as_ref() else {
-            return String::new();
-        };
-        match path.extension().and_then(|e| e.to_str()) {
-            Some("rs") => "rust".into(),
-            Some("py") => "python".into(),
-            Some("go") => "go".into(),
-            Some("js") | Some("jsx") | Some("mjs") | Some("cjs") => "javascript".into(),
-            Some("ts") | Some("tsx") => "typescript".into(),
-            Some("c") | Some("h") => "c".into(),
-            Some("cc") | Some("cpp") | Some("cxx") | Some("hpp") | Some("hxx") => "cpp".into(),
-            Some("md") => "markdown".into(),
-            Some("toml") => "toml".into(),
-            Some("yaml") | Some("yml") => "yaml".into(),
-            Some("json") => "json".into(),
-            Some("sh") => "shellscript".into(),
-            Some("lua") => "lua".into(),
-            Some(other) => other.to_string(),
-            None => String::new(),
-        }
+        self.editor.active_language_id()
     }
 
     /// Effective completion config for `language` -- per-language

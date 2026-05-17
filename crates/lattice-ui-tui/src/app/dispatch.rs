@@ -264,7 +264,9 @@ impl App {
             | Action::LspDefinitionRequest
             | Action::LspDeclarationRequest
             | Action::LspTypeDefinitionRequest
-            | Action::LspImplementationRequest => {}
+            | Action::LspImplementationRequest
+            // 5.5.LSP.3: `gr` -- references migrated to `Editor::dispatch`.
+            | Action::LspReferencesRequest => {}
             Action::Invoke(inv) => self.run_invocation(inv),
             Action::Insert(s) => self.do_insert_text(&s),
             // 5.5.G.3: `DeleteCharBackward`, `EnterAppend`,
@@ -378,7 +380,10 @@ impl App {
             // `Editor::lsp_nav_request(LspNavKind)`); the App arms
             // here are gone -- all four fall through to the grouped
             // no-op below.
-            Action::LspReferencesRequest => self.do_lsp_references_request(),
+            // 5.5.LSP.3: `LspReferencesRequest` migrated to
+            // `Editor::dispatch` (host-side
+            // `Editor::lsp_references_request`); falls through to
+            // the grouped no-op below.
             Action::LspFollowLinkAtCursor => self.do_lsp_follow_link_at_cursor(),
             Action::LspSignatureHelpRequest => self.do_lsp_signature_help_request(),
             Action::LspCompletionRequest => self.do_lsp_completion_request(),

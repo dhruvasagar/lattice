@@ -716,6 +716,9 @@ pub(crate) fn handle_action(
         Action::LspImplementationRequest => {
             editor.lsp_nav_request(lattice_lsp::cache::LspNavKind::Implementation)
         }
+        // 5.5.LSP.3: `gr` -- LSP references. Drain still App-side
+        // (still uses `open_lsp_locations_picker`).
+        Action::LspReferencesRequest => editor.lsp_references_request(),
         // Catch-all: any Action variant not yet migrated from
         // App::apply. Sub-slices 5.5.D+ extend the match upward as
         // helpers move.
@@ -1378,6 +1381,101 @@ impl Editor {
         self.cursor = stash_cursor;
         self.scroll = stash_scroll;
         self.active_buffer = BufferKind::Help;
+    }
+
+    /// 5.5.LSP.3: `gr` (Phase 4.2.d) -- send
+    /// `textDocument/references` to every attached LSP server with
+    /// `include_declaration: true` (vim convention -- `gr` includes
+    /// the symbol's own declaration in the list). Spawn the per-
+    /// server walk on the LSP runtime; the merged + deduped result
+    /// flows back through `pending_references_rx`. App-side
+    /// `drain_pending_references` renders the list into a buffer-
+    /// backed `*lsp:references*` view (drain stays App-resident
+    /// until its dependencies migrate).
+    ///
+    /// Browse-style, not a tag-intent drill-down: clears
+    /// `pending_tag_origin` so `<C-t>` doesn't see a stale entry.
+    pub fn lsp_references_request(&mut self) {
+        if let Some(token) = self.pending_references_token.take() {
+            token.cancel();
+        }
+        // Browse-style; not a tag-intent drill-down.
+        self.pending_tag_origin = None;
+        // M.6.2: lsp-nav-mode gate (after cancel-stale-work).
+        // `gr` is part of the nav family.
+        if !self.check_lsp_sub_mode_gate(
+            lattice_lsp::modes::LspNavMode::mode_id(),
+            "lsp-nav-mode",
+        ) {
+            return;
+        }
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
+            self.set_message(
+                EchoLevel::Info,
+                "no LSP server attached to current buffer".to_string(),
+            );
+            return;
+        };
+        let snapshot = self.document.snapshot();
+        let lsp_position =
+            match crate::lsp_helpers::app_to_lsp_position(&snapshot.buffer, self.cursor) {
+                Some(p) => p,
+                None => {
+                    self.set_message(
+                        EchoLevel::Error,
+                        "references: cursor out of buffer".to_string(),
+                    );
+                    return;
+                }
+            };
+        let symbol =
+            crate::lsp_helpers::word_under_cursor(&snapshot.buffer, self.cursor).unwrap_or_default();
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<lattice_lsp::cache::ReferencesOutcome>();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_references_rx = Some(rx);
+        self.pending_references_token = Some(token.clone());
+        let lsp = self.lsp.clone();
+        lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
+            let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
+            if handles.is_empty() {
+                let _ = tx.send(lattice_lsp::cache::ReferencesOutcome::NoServers);
+                return;
+            }
+            let mut all: Vec<lsp_types::Location> = Vec::new();
+            for handle in handles {
+                if token.is_cancelled() {
+                    return;
+                }
+                let params = lsp_types::ReferenceParams {
+                    text_document_position: lsp_types::TextDocumentPositionParams {
+                        text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                        position: lsp_position,
+                    },
+                    work_done_progress_params: Default::default(),
+                    partial_result_params: Default::default(),
+                    context: lsp_types::ReferenceContext {
+                        include_declaration: true,
+                    },
+                };
+                if let Ok(Some(locs)) = handle.references(params, token.clone()).await {
+                    all.extend(locs);
+                }
+            }
+            // Sort + dedup by (uri, range.start).
+            all.sort_by(|a, b| {
+                let au = a.uri.as_str();
+                let bu = b.uri.as_str();
+                au.cmp(bu)
+                    .then_with(|| a.range.start.line.cmp(&b.range.start.line))
+                    .then_with(|| a.range.start.character.cmp(&b.range.start.character))
+            });
+            all.dedup_by(|a, b| a.uri.as_str() == b.uri.as_str() && a.range.start == b.range.start);
+            let _ = tx.send(lattice_lsp::cache::ReferencesOutcome::Found {
+                symbol,
+                locations: all,
+            });
+        });
     }
 
     /// 5.5.LSP.2: `gd` / `gD` / `gy` / `gI` -- LSP navigation

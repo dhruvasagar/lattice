@@ -3518,83 +3518,12 @@ impl App {
     /// declaration in the list). Spawn the per-server walk on
     /// the LSP runtime; drain on the next frame opens a buffer-
     /// backed `*lsp:references*` view in the active pane.
-    pub(super) fn do_lsp_references_request(&mut self) {
-        if let Some(token) = self.editor.pending_references_token.take() {
-            token.cancel();
-        }
-        // Browse-style; not a tag-intent drill-down.
-        self.editor.pending_tag_origin = None;
-        // M.6.2: lsp-nav-mode gate (after cancel-stale-work).
-        // `gr` is part of the nav family.
-        if !self.check_lsp_sub_mode_gate(lattice_lsp::modes::LspNavMode::mode_id(), "lsp-nav-mode")
-        {
-            return;
-        }
-        let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
-            self.set_message(
-                EchoLevel::Info,
-                "no LSP server attached to current buffer".to_string(),
-            );
-            return;
-        };
-        let snapshot = self.editor.document.snapshot();
-        let lsp_position = match app_to_lsp_position(&snapshot.buffer, self.editor.cursor) {
-            Some(p) => p,
-            None => {
-                self.set_message(
-                    EchoLevel::Error,
-                    "references: cursor out of buffer".to_string(),
-                );
-                return;
-            }
-        };
-        let symbol = word_under_cursor(&snapshot.buffer, self.editor.cursor).unwrap_or_default();
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<ReferencesOutcome>();
-        let token = lattice_protocol::CancellationToken::new();
-        self.editor.pending_references_rx = Some(rx);
-        self.editor.pending_references_token = Some(token.clone());
-        let lsp = self.editor.lsp.clone();
-        crate::runtime::spawn_on_lsp_runtime(async move {
-            let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
-            if handles.is_empty() {
-                let _ = tx.send(ReferencesOutcome::NoServers);
-                return;
-            }
-            let mut all: Vec<lsp_types::Location> = Vec::new();
-            for handle in handles {
-                if token.is_cancelled() {
-                    return;
-                }
-                let params = lsp_types::ReferenceParams {
-                    text_document_position: lsp_types::TextDocumentPositionParams {
-                        text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
-                        position: lsp_position,
-                    },
-                    work_done_progress_params: Default::default(),
-                    partial_result_params: Default::default(),
-                    context: lsp_types::ReferenceContext {
-                        include_declaration: true,
-                    },
-                };
-                if let Ok(Some(locs)) = handle.references(params, token.clone()).await {
-                    all.extend(locs);
-                }
-            }
-            // Sort + dedup by (uri, range.start).
-            all.sort_by(|a, b| {
-                let au = a.uri.as_str();
-                let bu = b.uri.as_str();
-                au.cmp(bu)
-                    .then_with(|| a.range.start.line.cmp(&b.range.start.line))
-                    .then_with(|| a.range.start.character.cmp(&b.range.start.character))
-            });
-            all.dedup_by(|a, b| a.uri.as_str() == b.uri.as_str() && a.range.start == b.range.start);
-            let _ = tx.send(ReferencesOutcome::Found {
-                symbol,
-                locations: all,
-            });
-        });
-    }
+    // 5.5.LSP.3: `do_lsp_references_request` relocated to
+    // [`lattice_host::dispatch::Editor::lsp_references_request`].
+    // Identical body shape to the nav helper (same gate, same
+    // per-server walk, same dedup) but with a `ReferencesOutcome`
+    // carrier (no tag-stack push -- `gr` is browse-style). Drain
+    // (`drain_pending_references`) stays App-resident.
 
     /// Drain queued references results. The merged list is
     /// rendered as a `*lsp:references*` help buffer and opened

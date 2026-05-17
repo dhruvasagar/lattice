@@ -270,20 +270,14 @@ impl App {
     /// help registry uses the registry id; the popup uses the
     /// buffer's construction id) -- callers seed under both as
     /// needed.
+    /// 5.5.G.7: body migrated to
+    /// [`lattice_host::dispatch::Editor::seed_help_metadata_locals`].
     pub(crate) fn seed_help_metadata_locals(
         &mut self,
         buffer_id: crate::buffers::BufferId,
         metadata: HelpMetadata,
     ) {
-        let HelpMetadata {
-            links,
-            anchors,
-            highlights,
-        } = metadata;
-        let locals = self.editor.buffer_locals.entry(buffer_id).or_default();
-        locals.insert(crate::modes::HelpLinks(links));
-        locals.insert(crate::modes::HelpAnchors(anchors));
-        locals.insert(crate::modes::HelpHighlights(highlights));
+        self.editor.seed_help_metadata_locals(buffer_id, metadata);
     }
 
     /// M.3.2.c.5: read the parsed `[label](url)` links seeded into
@@ -405,24 +399,10 @@ impl App {
     /// the active popup. Returns `true` if a frame was popped and
     /// applied; `false` when the stack was empty (caller falls
     /// through to whatever default `<C-o>` behaviour applies).
+    /// 5.5.G.7: body migrated to
+    /// [`lattice_host::dispatch::Editor::pop_popup_back`].
     pub(crate) fn pop_popup_back(&mut self) -> bool {
-        let Some(snap) = self.editor.popup_back_stack.pop() else {
-            return false;
-        };
-        let Some(id) = self.editor.popup_buffer else {
-            return false;
-        };
-        self.editor.buffers.with_help_mut(id, |existing| {
-            existing.title = snap.title;
-            existing.content = snap.content;
-            existing.scroll = snap.scroll as usize;
-            existing.cursor = snap.cursor;
-        });
-        self.editor.cursor = snap.cursor;
-        self.editor.scroll = snap.scroll;
-        self.editor.popup_placement = snap.placement;
-        self.seed_help_metadata_locals(id, snap.metadata);
-        true
+        self.editor.pop_popup_back()
     }
 
     /// Read-side accessor for the renderer: the active popup's

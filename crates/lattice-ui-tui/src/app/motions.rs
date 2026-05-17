@@ -28,10 +28,7 @@
 use lattice_core::Buffer;
 use lattice_protocol::position::Position;
 
-use super::{
-    App, BufferId, BufferKind, EchoLevel, PositionEntry, PositionSource, is_valid_mark_name,
-    last_addressable_line, line_byte_len,
-};
+use super::{App, BufferId, BufferKind, PositionEntry, PositionSource};
 
 /// Cap on entries in the position-history ring. The write side
 /// (`push_position_history`) drops the oldest entry when this
@@ -48,45 +45,9 @@ impl App {
 }
 
 impl App {
-    /// Step through the position history filtered to jump-class entries
-    /// (AutoJump | PluginPush). `delta = -1` for Ctrl-O, `+1` for Ctrl-I.
-    /// On the first Ctrl-O from end-of-ring, also snapshot the current
-    /// cursor as AutoJump so a subsequent Ctrl-I can return to it.
-    pub(super) fn do_jump_history(&mut self, delta: i32) {
-        // In-popup `<C-o>` first walks the popup's back-stack so the
-        // user stays within the popup chain (`:describe-buffer` →
-        // mode link → `:describe-mode foo` → `<C-o>` returns to
-        // `:describe-buffer` without flipping out of Help). Only
-        // after the back-stack is empty does `<C-o>` fall through
-        // to the outer position-history walk.
-        if delta < 0
-            && matches!(self.editor.active_buffer, BufferKind::Help)
-            && self.editor.popup_buffer.is_some()
-            && !self.editor.popup_back_stack.is_empty()
-            && self.pop_popup_back()
-        {
-            return;
-        }
-        if delta < 0
-            && self.editor.position_history_cursor == self.editor.position_history.len()
-            && self.editor.position_history.iter().any(|e| e.is_jump())
-        {
-            let cur = self.active_cursor();
-            let already_there = self
-                .editor.position_history
-                .last()
-                .map(|e| e.position == cur && e.buffer == self.editor.active_buffer)
-                .unwrap_or(false);
-            if !already_there {
-                self.push_position_history(cur, PositionSource::AutoJump);
-                // After push the cursor==len. Step it one back so the
-                // walk finds the entry preceding our snapshot rather
-                // than the snapshot itself.
-                self.editor.position_history_cursor = self.editor.position_history.len().saturating_sub(1);
-            }
-        }
-        self.do_walk_history(delta, |e| e.is_jump(), "jumps", "jump list");
-    }
+    // 5.5.G.7: `do_jump_history` migrated to
+    // [`lattice_host::dispatch::Editor::do_jump_history`] (zero
+    // App callers; deleted).
 
     /// 5.5.G.6: body migrated to
     /// [`lattice_host::dispatch::Editor::do_mark_history`]. App
@@ -236,79 +197,16 @@ impl App {
     /// position-history ring (PluginPush) so `<C-o>` continues
     /// to walk the chronological jump record after a `<C-t>`
     /// step.
-    pub(super) fn do_tag_stack_pop(&mut self) {
-        let Some(entry) = self.editor.tag_stack.pop() else {
-            self.set_message(EchoLevel::Info, "tag stack empty".to_string());
-            return;
-        };
-        // Push the *current* cursor onto the jump list before
-        // walking back so `<C-i>` returns to the post-pop spot.
-        self.push_position_history(self.editor.cursor, PositionSource::PluginPush);
-        // If the recorded buffer differs from the active one,
-        // switch to it. The match is structural: prefer the
-        // exact `buffer_id` if it still exists in the registry,
-        // else any buffer of the recorded `buffer` kind.
-        let active_id = self.active_pane_buffer_id();
-        if entry.buffer_id != active_id {
-            // Best-effort activate; if the original buffer is
-            // gone (closed) the cursor still moves on whatever
-            // buffer is active. Acceptable v1 behaviour --
-            // future passes can echo "tag origin buffer gone"
-            // or hop to the alternate of the same kind.
-            if self.editor.buffers.contains(entry.buffer_id) {
-                self.activate_buffer(entry.buffer_id);
-            }
-        }
-        // Clamp to current buffer extents in case the doc was
-        // edited after the tag-stack push.
-        let buffer = self.active_text();
-        let last = last_addressable_line(&buffer);
-        let line = entry.position.line.min(last);
-        let len = line_byte_len(&buffer, line);
-        let col = entry.position.byte.min(len);
-        self.editor.cursor = Position::new(line, col);
-        let label = if entry.label.is_empty() {
-            format!("tag pop -> ({},{})", line + 1, col + 1)
-        } else {
-            format!("tag pop -> {} ({},{})", entry.label, line + 1, col + 1)
-        };
-        self.set_message(EchoLevel::Info, label);
-    }
+    // 5.5.G.7: `do_tag_stack_pop` migrated to
+    // [`lattice_host::dispatch::Editor::do_tag_stack_pop`] (zero
+    // App callers; deleted).
 
-    /// Jump to a recorded mark. `exact = true` puts the cursor at the
-    /// stored byte; `exact = false` jumps to the line and column = first
-    /// non-blank (vim's `'<letter>` semantics).
+    /// 5.5.G.7: body migrated to
+    /// [`lattice_host::dispatch::Editor::do_jump_mark`]. Delegate
+    /// retained because `app/picker.rs` mark-picker accept still
+    /// calls it.
     pub(super) fn do_jump_mark(&mut self, name: char, exact: bool) {
-        if !is_valid_mark_name(name) {
-            self.set_message(EchoLevel::Error, format!("invalid mark: {name}"));
-            return;
-        }
-        let Some(&pos) = self.editor.marks.get(&name) else {
-            self.set_message(EchoLevel::Error, format!("mark not set: {name}"));
-            return;
-        };
-        // Push pre-jump position so Ctrl-O can return.
-        let cur = self.editor.cursor;
-        self.push_position_history(cur, PositionSource::AutoJump);
-        if exact {
-            self.editor.cursor = pos;
-        } else {
-            // Line-only jump: snap byte to first non-blank on that line.
-            let text = self.editor.document.text();
-            let line_text = text
-                .split_inclusive('\n')
-                .nth(pos.line as usize)
-                .map(|l| l.trim_end_matches('\n'))
-                .unwrap_or("");
-            let bytes = line_text.as_bytes();
-            let mut col = 0usize;
-            while col < bytes.len() && (bytes[col] == b' ' || bytes[col] == b'\t') {
-                col += 1;
-            }
-            self.editor.cursor = Position::new(pos.line, col as u32);
-        }
-        self.clamp_cursor_to_buffer();
-        self.auto_open_folds_at_cursor();
+        self.editor.do_jump_mark(name, exact);
     }
 
     /// 5.5.F.4.2: body relocated to

@@ -198,7 +198,13 @@ impl App {
             | Action::PrevPane
             // 5.5.G.6: pure-editor mark-history arms migrated.
             | Action::WalkMarkHistoryBack
-            | Action::WalkMarkHistoryForward => {}
+            | Action::WalkMarkHistoryForward
+            // 5.5.G.7: tag-stack / mark-jump / jump-history arms.
+            | Action::TagStackPop
+            | Action::JumpToMarkLine(_)
+            | Action::JumpToMarkExact(_)
+            | Action::JumpHistoryBack
+            | Action::JumpHistoryForward => {}
             Action::Invoke(inv) => self.run_invocation(inv),
             Action::Insert(s) => self.do_insert_text(&s),
             // 5.5.G.3: `DeleteCharBackward`, `EnterAppend`,
@@ -363,7 +369,7 @@ impl App {
             Action::LspFollowLinkAtCursor => self.do_lsp_follow_link_at_cursor(),
             Action::LspSignatureHelpRequest => self.do_lsp_signature_help_request(),
             Action::LspCompletionRequest => self.do_lsp_completion_request(),
-            Action::TagStackPop => self.do_tag_stack_pop(),
+            // 5.5.G.7: `TagStackPop` migrated to `Editor::dispatch`.
             Action::CompletionTrigger => self.do_completion_trigger(),
             Action::CompletionNext => self.do_completion_next(),
             Action::CompletionPrev => self.do_completion_prev(),
@@ -390,8 +396,8 @@ impl App {
             // routed through the grouped no-op above.
             Action::LspDocumentSymbolRequest => self.do_lsp_document_symbol_request(),
             Action::LspWorkspaceSymbolRequest(q) => self.do_lsp_workspace_symbol_request(&q),
-            Action::JumpHistoryBack => self.do_jump_history(-1),
-            Action::JumpHistoryForward => self.do_jump_history(1),
+            // 5.5.G.7: `JumpHistoryBack` / `JumpHistoryForward`
+            // migrated to `Editor::dispatch`.
             // 5.5.G.4: `RedrawScreen` migrated to `Editor::dispatch`.
             // 5.5.G.6: `WalkMarkHistoryBack` / `WalkMarkHistoryForward`
             // migrated to `Editor::dispatch`.
@@ -416,8 +422,7 @@ impl App {
             // / `PageUp` / `ScrollLineUp` / `ScrollLineDown` migrated.
 
             // 5.5.G.2: `SetMark` migrated to `Editor::dispatch`.
-            Action::JumpToMarkLine(name) => self.do_jump_mark(name, false),
-            Action::JumpToMarkExact(name) => self.do_jump_mark(name, true),
+            // 5.5.G.7: `JumpToMarkLine` / `JumpToMarkExact` migrated.
 
             Action::RepeatLastChange => {
                 if let Some(inv) = self.editor.last_change.clone() {

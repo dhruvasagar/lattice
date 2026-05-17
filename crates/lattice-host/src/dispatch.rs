@@ -554,6 +554,12 @@ pub(crate) fn handle_action(
         // migrates.
         Action::WalkMarkHistoryBack => editor.do_mark_history(-1),
         Action::WalkMarkHistoryForward => editor.do_mark_history(1),
+        // 5.5.G.7: tag-stack pop, mark jumps, jump-history walk.
+        Action::TagStackPop => editor.do_tag_stack_pop(),
+        Action::JumpToMarkLine(name) => editor.do_jump_mark(name, false),
+        Action::JumpToMarkExact(name) => editor.do_jump_mark(name, true),
+        Action::JumpHistoryBack => editor.do_jump_history(-1),
+        Action::JumpHistoryForward => editor.do_jump_history(1),
         // Catch-all: any Action variant not yet migrated from
         // App::apply. Sub-slices 5.5.D+ extend the match upward as
         // helpers move.
@@ -2964,6 +2970,151 @@ impl Editor {
         self.recompute_folds();
         self.pending_redraw = true;
         self.set_message(EchoLevel::Info, "redraw".to_string());
+    }
+}
+
+/// 5.5.G.7: pure-editor tag-stack / mark-jump / popup-back-stack /
+/// jump-history cluster. With `seed_help_metadata_locals` and
+/// `pop_popup_back` migrated, the entire jump-history walk runs
+/// host-side.
+impl Editor {
+    /// Seed parsed link / anchor / highlight metadata into the
+    /// help buffer's locals. Used by `pop_popup_back` to restore a
+    /// snapshot's metadata; also used at popup-open time so
+    /// link-follow / search-anchor lookups read the right tables.
+    pub fn seed_help_metadata_locals(
+        &mut self,
+        buffer_id: BufferId,
+        metadata: lattice_help::HelpMetadata,
+    ) {
+        let lattice_help::HelpMetadata {
+            links,
+            anchors,
+            highlights,
+        } = metadata;
+        let locals = self.buffer_locals.entry(buffer_id).or_default();
+        locals.insert(crate::modes::HelpLinks(links));
+        locals.insert(crate::modes::HelpAnchors(anchors));
+        locals.insert(crate::modes::HelpHighlights(highlights));
+    }
+
+    /// Restore the most recent snapshot from `popup_back_stack`
+    /// into the active popup. Returns `true` if a frame was
+    /// popped and applied; `false` when the stack was empty.
+    pub fn pop_popup_back(&mut self) -> bool {
+        let Some(snap) = self.popup_back_stack.pop() else {
+            return false;
+        };
+        let Some(id) = self.popup_buffer else {
+            return false;
+        };
+        self.buffers.with_help_mut(id, |existing| {
+            existing.title = snap.title;
+            existing.content = snap.content;
+            existing.scroll = snap.scroll as usize;
+            existing.cursor = snap.cursor;
+        });
+        self.cursor = snap.cursor;
+        self.scroll = snap.scroll;
+        self.popup_placement = snap.placement;
+        self.seed_help_metadata_locals(id, snap.metadata);
+        true
+    }
+
+    /// `<C-t>` -- pop the tag stack (vim's `:pop`). LIFO walk
+    /// back through the chain of `gd` / `gD` / `gy` / `gI`
+    /// drill-downs.
+    pub fn do_tag_stack_pop(&mut self) {
+        let Some(entry) = self.tag_stack.pop() else {
+            self.set_message(EchoLevel::Info, "tag stack empty".to_string());
+            return;
+        };
+        let cursor = self.cursor;
+        self.push_position_history(cursor, PositionSource::PluginPush);
+        let active_id = self.active_pane_buffer_id();
+        if entry.buffer_id != active_id && self.buffers.contains(entry.buffer_id) {
+            let _ = self.activate_buffer(entry.buffer_id);
+        }
+        let buffer = self.active_text();
+        let last = last_addressable_line(&buffer);
+        let line = entry.position.line.min(last);
+        let len = buffer.line_byte_len(line);
+        let col = entry.position.byte.min(len);
+        self.cursor = lattice_protocol::position::Position::new(line, col);
+        let label = if entry.label.is_empty() {
+            format!("tag pop -> ({},{})", line + 1, col + 1)
+        } else {
+            format!("tag pop -> {} ({},{})", entry.label, line + 1, col + 1)
+        };
+        self.set_message(EchoLevel::Info, label);
+    }
+
+    /// Jump to a recorded mark (`'<letter>` / `` `<letter> ``).
+    /// `exact = true` puts the cursor at the stored byte;
+    /// `exact = false` jumps to the line and column = first
+    /// non-blank.
+    pub fn do_jump_mark(&mut self, name: char, exact: bool) {
+        if !(name.is_ascii_alphabetic() || name.is_ascii_digit()) {
+            self.set_message(EchoLevel::Error, format!("invalid mark: {name}"));
+            return;
+        }
+        let Some(&pos) = self.marks.get(&name) else {
+            self.set_message(EchoLevel::Error, format!("mark not set: {name}"));
+            return;
+        };
+        let cur = self.cursor;
+        self.push_position_history(cur, PositionSource::AutoJump);
+        if exact {
+            self.cursor = pos;
+        } else {
+            let text = self.document.text();
+            let line_text = text
+                .split_inclusive('\n')
+                .nth(pos.line as usize)
+                .map(|l| l.trim_end_matches('\n'))
+                .unwrap_or("");
+            let bytes = line_text.as_bytes();
+            let mut col = 0usize;
+            while col < bytes.len() && (bytes[col] == b' ' || bytes[col] == b'\t') {
+                col += 1;
+            }
+            self.cursor = lattice_protocol::position::Position::new(pos.line, col as u32);
+        }
+        self.clamp_cursor_to_active_buffer();
+        self.auto_open_folds_at_cursor();
+    }
+
+    /// `<C-o>` / `<C-i>` -- walk the jump-history ring filtered
+    /// to jump-class entries. In a help-popup that has its own
+    /// back-stack, the first `<C-o>` pops the popup back-stack
+    /// (popup-internal walk); only after the stack is empty does
+    /// it fall through to the position-history walk.
+    pub fn do_jump_history(&mut self, delta: i32) {
+        if delta < 0
+            && matches!(self.active_buffer, BufferKind::Help)
+            && self.popup_buffer.is_some()
+            && !self.popup_back_stack.is_empty()
+            && self.pop_popup_back()
+        {
+            return;
+        }
+        if delta < 0
+            && self.position_history_cursor == self.position_history.len()
+            && self.position_history.iter().any(|e| e.is_jump())
+        {
+            let cur = self.active_cursor();
+            let already_there = self
+                .position_history
+                .last()
+                .map(|e| e.position == cur && e.buffer == self.active_buffer)
+                .unwrap_or(false);
+            if !already_there {
+                self.push_position_history(cur, PositionSource::AutoJump);
+                self.position_history_cursor =
+                    self.position_history.len().saturating_sub(1);
+            }
+        }
+        self.do_walk_history(delta, |e| e.is_jump(), "jumps", "jump list");
     }
 }
 

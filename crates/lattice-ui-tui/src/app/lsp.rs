@@ -50,21 +50,19 @@ use super::{
     CompletionResolveOutcome, EchoLevel, FormatOutcome, HoverOutcome, InsertCompletionLspOutcome,
     LSP_COMPLETION_KIND_ID, LspCompletionMeta, LspNavKind, ReferencesOutcome, RenameOutcome,
     SignatureHelpOutcome, SymbolRow, SymbolsOutcome, TagStackEntry, app_to_lsp_position,
-    call_hierarchy_to_row, code_action_kind_glyph, dedup_rendered_by_text,
-    flatten_document_symbol_response, flatten_workspace_edit, last_addressable_line, line_byte_len,
-    lsp_position_to_app_byte, prepare_rename_placeholder, range_covers, symbol_information_to_row,
-    type_hierarchy_to_row, word_under_cursor, workspace_symbol_to_row,
+    call_hierarchy_to_row, code_action_kind_glyph, dedup_rendered_by_text, flatten_workspace_edit,
+    last_addressable_line, line_byte_len, lsp_position_to_app_byte, prepare_rename_placeholder,
+    range_covers, type_hierarchy_to_row, word_under_cursor,
 };
-// 5.5.LSP.1 / LSP.2 / LSP.4: `hover_contents_to_markdown`,
-// `definition_response_to_locations`, and
-// `signature_help_to_markdown` are test-only in this module after
-// the corresponding request-side migrations; tests reach them via
-// `super::<fn>(...)` so they need to live in the `mod lsp` scope,
-// but `cfg(test)` keeps them out of release builds (where
+// 5.5.LSP.1 / LSP.2 / LSP.4 / LSP.5: test-only utility imports
+// after the corresponding request-side migrations. Tests reach
+// them via `super::<fn>(...)` so they need to live in the `mod lsp`
+// scope, but `cfg(test)` keeps them out of release builds (where
 // `deny(unused_imports)` would flag them).
 #[cfg(test)]
 use super::{
-    definition_response_to_locations, hover_contents_to_markdown, signature_help_to_markdown,
+    definition_response_to_locations, flatten_document_symbol_response, hover_contents_to_markdown,
+    signature_help_to_markdown,
 };
 use crate::buffers::BufferId;
 use lattice_protocol::edit::Edit;
@@ -2704,156 +2702,13 @@ impl App {
     /// `textDocument/documentSymbol` to every attached server;
     /// flatten the hierarchy + merge across servers; drain on
     /// the next frame opens a picker.
-    pub(super) fn do_lsp_document_symbol_request(&mut self) {
-        if let Some(token) = self.editor.pending_symbols_token.take() {
-            token.cancel();
-        }
-        // Outline browse; not a tag-intent drill-down.
-        self.editor.pending_tag_origin = None;
-        // M.6.2: lsp-symbols-mode gate (after cancel-stale-work).
-        if !self.check_lsp_sub_mode_gate(
-            lattice_lsp::modes::LspSymbolsMode::mode_id(),
-            "lsp-symbols-mode",
-        ) {
-            return;
-        }
-        let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
-            self.set_message(
-                EchoLevel::Info,
-                "no LSP server attached to current buffer".to_string(),
-            );
-            return;
-        };
-        let path = match lattice_lsp::actor::uri_to_path(&uri) {
-            Some(p) => p,
-            None => {
-                self.set_message(
-                    EchoLevel::Error,
-                    "documentSymbol: buffer URI is not a file".to_string(),
-                );
-                return;
-            }
-        };
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<SymbolsOutcome>();
-        let token = lattice_protocol::CancellationToken::new();
-        self.editor.pending_symbols_rx = Some(rx);
-        self.editor.pending_symbols_token = Some(token.clone());
-        let lsp = self.editor.lsp.clone();
-        crate::runtime::spawn_on_lsp_runtime(async move {
-            let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
-            if handles.is_empty() {
-                let _ = tx.send(SymbolsOutcome::NoServers);
-                return;
-            }
-            let mut all: Vec<SymbolRow> = Vec::new();
-            for handle in handles {
-                if token.is_cancelled() {
-                    return;
-                }
-                let params = lsp_types::DocumentSymbolParams {
-                    text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
-                    work_done_progress_params: Default::default(),
-                    partial_result_params: Default::default(),
-                };
-                if let Ok(Some(resp)) = handle.document_symbol(params, token.clone()).await {
-                    flatten_document_symbol_response(resp, &path, &mut all);
-                }
-            }
-            // Dedup by (path, line, col, name).
-            all.sort_by(|a, b| {
-                a.path
-                    .cmp(&b.path)
-                    .then_with(|| a.line.cmp(&b.line))
-                    .then_with(|| a.col.cmp(&b.col))
-                    .then_with(|| a.name.cmp(&b.name))
-            });
-            all.dedup_by(|a, b| {
-                a.path == b.path && a.line == b.line && a.col == b.col && a.name == b.name
-            });
-            let title = format!("symbols ({})", all.len());
-            let _ = tx.send(SymbolsOutcome::Found { title, rows: all });
-        });
-    }
-
-    /// `:lsp-workspace-symbol [query]` (Phase 4.2.f).
-    pub(super) fn do_lsp_workspace_symbol_request(&mut self, query: &str) {
-        if let Some(token) = self.editor.pending_symbols_token.take() {
-            token.cancel();
-        }
-        // Workspace search browse; not a tag-intent drill-down.
-        self.editor.pending_tag_origin = None;
-        // M.6.2: lsp-symbols-mode gate (after cancel-stale-work).
-        if !self.check_lsp_sub_mode_gate(
-            lattice_lsp::modes::LspSymbolsMode::mode_id(),
-            "lsp-symbols-mode",
-        ) {
-            return;
-        }
-        // Workspace symbol is workspace-scoped, so we fan out
-        // over EVERY server the supervisor has running -- not
-        // just servers attached to the current buffer.
-        let lsp = self.editor.lsp.clone();
-        let query = query.to_string();
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<SymbolsOutcome>();
-        let token = lattice_protocol::CancellationToken::new();
-        self.editor.pending_symbols_rx = Some(rx);
-        self.editor.pending_symbols_token = Some(token.clone());
-        crate::runtime::spawn_on_lsp_runtime(async move {
-            let handles: Vec<lattice_lsp::ServerHandle> = lsp.all_running_handles();
-            if handles.is_empty() {
-                let _ = tx.send(SymbolsOutcome::NoServers);
-                return;
-            }
-            let mut all: Vec<SymbolRow> = Vec::new();
-            for handle in handles {
-                if token.is_cancelled() {
-                    return;
-                }
-                let params = lsp_types::WorkspaceSymbolParams {
-                    query: query.clone(),
-                    work_done_progress_params: Default::default(),
-                    partial_result_params: Default::default(),
-                };
-                let Ok(Some(resp)) = handle.workspace_symbol(params, token.clone()).await else {
-                    continue;
-                };
-                match resp {
-                    // Legacy `Vec<SymbolInformation>` shape.
-                    lsp_types::WorkspaceSymbolResponse::Flat(syms) => {
-                        for sym in syms {
-                            if let Some(row) = symbol_information_to_row(&sym) {
-                                all.push(row);
-                            }
-                        }
-                    }
-                    // Modern `Vec<WorkspaceSymbol>` shape (LSP 3.17+).
-                    lsp_types::WorkspaceSymbolResponse::Nested(syms) => {
-                        for sym in syms {
-                            if let Some(row) = workspace_symbol_to_row(&handle, sym, &token).await {
-                                all.push(row);
-                            }
-                        }
-                    }
-                }
-            }
-            all.sort_by(|a, b| {
-                a.path
-                    .cmp(&b.path)
-                    .then_with(|| a.line.cmp(&b.line))
-                    .then_with(|| a.col.cmp(&b.col))
-                    .then_with(|| a.name.cmp(&b.name))
-            });
-            all.dedup_by(|a, b| {
-                a.path == b.path && a.line == b.line && a.col == b.col && a.name == b.name
-            });
-            let title = if query.is_empty() {
-                format!("workspace-symbols ({})", all.len())
-            } else {
-                format!("workspace-symbols {query:?} ({})", all.len())
-            };
-            let _ = tx.send(SymbolsOutcome::Found { title, rows: all });
-        });
-    }
+    // 5.5.LSP.5: `do_lsp_document_symbol_request` and
+    // `do_lsp_workspace_symbol_request` relocated to
+    // [`lattice_host::dispatch::Editor::lsp_document_symbol_request`]
+    // and [`Editor::lsp_workspace_symbol_request`]. Both bodies
+    // are identical (gate, URI / path resolve for document, fan-
+    // out for workspace, flatten + dedup). Drain
+    // (`drain_pending_symbols`) stays App-resident.
 
     /// Drain queued document-symbol / workspace-symbol responses
     /// and open the picker.

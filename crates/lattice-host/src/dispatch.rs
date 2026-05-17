@@ -723,6 +723,10 @@ pub(crate) fn handle_action(
         // Drains stay App-side.
         Action::LspSignatureHelpRequest => editor.lsp_signature_help_request(),
         Action::LspCompletionRequest => editor.lsp_completion_request(),
+        // 5.5.LSP.5: document symbol + workspace symbol. Drains
+        // stay App-side (picker machinery still resident there).
+        Action::LspDocumentSymbolRequest => editor.lsp_document_symbol_request(),
+        Action::LspWorkspaceSymbolRequest(query) => editor.lsp_workspace_symbol_request(&query),
         // Catch-all: any Action variant not yet migrated from
         // App::apply. Sub-slices 5.5.D+ extend the match upward as
         // helpers move.
@@ -1570,6 +1574,164 @@ impl Editor {
             });
             all.dedup_by(|a, b| a.label == b.label && a.kind_glyph == b.kind_glyph);
             let _ = tx.send(lattice_lsp::cache::CompletionOutcome::Items(all));
+        });
+    }
+
+    /// 5.5.LSP.5: `:lsp-symbols` (Phase 4.2.e) -- send
+    /// `textDocument/documentSymbol` to every attached server;
+    /// flatten the hierarchy + merge across servers. Drain
+    /// (`drain_pending_symbols`, App-side) opens a picker.
+    pub fn lsp_document_symbol_request(&mut self) {
+        if let Some(token) = self.pending_symbols_token.take() {
+            token.cancel();
+        }
+        // Outline browse; not a tag-intent drill-down.
+        self.pending_tag_origin = None;
+        // M.6.2: lsp-symbols-mode gate (after cancel-stale-work).
+        if !self.check_lsp_sub_mode_gate(
+            lattice_lsp::modes::LspSymbolsMode::mode_id(),
+            "lsp-symbols-mode",
+        ) {
+            return;
+        }
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
+            self.set_message(
+                EchoLevel::Info,
+                "no LSP server attached to current buffer".to_string(),
+            );
+            return;
+        };
+        let path = match lattice_lsp::actor::uri_to_path(&uri) {
+            Some(p) => p,
+            None => {
+                self.set_message(
+                    EchoLevel::Error,
+                    "documentSymbol: buffer URI is not a file".to_string(),
+                );
+                return;
+            }
+        };
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<lattice_lsp::cache::SymbolsOutcome>();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_symbols_rx = Some(rx);
+        self.pending_symbols_token = Some(token.clone());
+        let lsp = self.lsp.clone();
+        lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
+            let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
+            if handles.is_empty() {
+                let _ = tx.send(lattice_lsp::cache::SymbolsOutcome::NoServers);
+                return;
+            }
+            let mut all: Vec<lattice_lsp::cache::SymbolRow> = Vec::new();
+            for handle in handles {
+                if token.is_cancelled() {
+                    return;
+                }
+                let params = lsp_types::DocumentSymbolParams {
+                    text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                    work_done_progress_params: Default::default(),
+                    partial_result_params: Default::default(),
+                };
+                if let Ok(Some(resp)) = handle.document_symbol(params, token.clone()).await {
+                    crate::lsp_helpers::flatten_document_symbol_response(resp, &path, &mut all);
+                }
+            }
+            // Dedup by (path, line, col, name).
+            all.sort_by(|a, b| {
+                a.path
+                    .cmp(&b.path)
+                    .then_with(|| a.line.cmp(&b.line))
+                    .then_with(|| a.col.cmp(&b.col))
+                    .then_with(|| a.name.cmp(&b.name))
+            });
+            all.dedup_by(|a, b| {
+                a.path == b.path && a.line == b.line && a.col == b.col && a.name == b.name
+            });
+            let title = format!("symbols ({})", all.len());
+            let _ = tx.send(lattice_lsp::cache::SymbolsOutcome::Found { title, rows: all });
+        });
+    }
+
+    /// 5.5.LSP.5: `:lsp-workspace-symbol [query]` (Phase 4.2.f).
+    /// Workspace-scoped: fans out over every running LSP server,
+    /// not just servers attached to the current buffer.
+    pub fn lsp_workspace_symbol_request(&mut self, query: &str) {
+        if let Some(token) = self.pending_symbols_token.take() {
+            token.cancel();
+        }
+        // Workspace search browse; not a tag-intent drill-down.
+        self.pending_tag_origin = None;
+        // M.6.2: lsp-symbols-mode gate (after cancel-stale-work).
+        if !self.check_lsp_sub_mode_gate(
+            lattice_lsp::modes::LspSymbolsMode::mode_id(),
+            "lsp-symbols-mode",
+        ) {
+            return;
+        }
+        let lsp = self.lsp.clone();
+        let query = query.to_string();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<lattice_lsp::cache::SymbolsOutcome>();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_symbols_rx = Some(rx);
+        self.pending_symbols_token = Some(token.clone());
+        lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
+            let handles: Vec<lattice_lsp::ServerHandle> = lsp.all_running_handles();
+            if handles.is_empty() {
+                let _ = tx.send(lattice_lsp::cache::SymbolsOutcome::NoServers);
+                return;
+            }
+            let mut all: Vec<lattice_lsp::cache::SymbolRow> = Vec::new();
+            for handle in handles {
+                if token.is_cancelled() {
+                    return;
+                }
+                let params = lsp_types::WorkspaceSymbolParams {
+                    query: query.clone(),
+                    work_done_progress_params: Default::default(),
+                    partial_result_params: Default::default(),
+                };
+                let Ok(Some(resp)) = handle.workspace_symbol(params, token.clone()).await else {
+                    continue;
+                };
+                match resp {
+                    // Legacy `Vec<SymbolInformation>` shape.
+                    lsp_types::WorkspaceSymbolResponse::Flat(syms) => {
+                        for sym in syms {
+                            if let Some(row) = crate::lsp_helpers::symbol_information_to_row(&sym) {
+                                all.push(row);
+                            }
+                        }
+                    }
+                    // Modern `Vec<WorkspaceSymbol>` shape (LSP 3.17+).
+                    lsp_types::WorkspaceSymbolResponse::Nested(syms) => {
+                        for sym in syms {
+                            if let Some(row) = crate::lsp_helpers::workspace_symbol_to_row(
+                                &handle, sym, &token,
+                            )
+                            .await
+                            {
+                                all.push(row);
+                            }
+                        }
+                    }
+                }
+            }
+            all.sort_by(|a, b| {
+                a.path
+                    .cmp(&b.path)
+                    .then_with(|| a.line.cmp(&b.line))
+                    .then_with(|| a.col.cmp(&b.col))
+                    .then_with(|| a.name.cmp(&b.name))
+            });
+            all.dedup_by(|a, b| {
+                a.path == b.path && a.line == b.line && a.col == b.col && a.name == b.name
+            });
+            let title = if query.is_empty() {
+                format!("workspace-symbols ({})", all.len())
+            } else {
+                format!("workspace-symbols {query:?} ({})", all.len())
+            };
+            let _ = tx.send(lattice_lsp::cache::SymbolsOutcome::Found { title, rows: all });
         });
     }
 

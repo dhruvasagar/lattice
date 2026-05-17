@@ -1152,131 +1152,13 @@ pub(crate) fn flatten_selection_range_chain(
 // up sweep alongside the helpers themselves.
 pub(crate) use lattice_host::lsp_helpers::app_to_lsp_position;
 
-/// Flatten a `DocumentSymbolResponse` into our pre-rendered
-/// `SymbolRow` shape. The legacy `Flat(Vec<SymbolInformation>)`
-/// variant is one row per symbol with no nesting; the modern
-/// `Nested(Vec<DocumentSymbol>)` variant carries
-/// `children: Vec<DocumentSymbol>`, walked depth-first to
-/// preserve outline ordering.
-pub(crate) fn flatten_document_symbol_response(
-    resp: lsp_types::DocumentSymbolResponse,
-    path: &std::path::Path,
-    out: &mut Vec<SymbolRow>,
-) {
-    match resp {
-        lsp_types::DocumentSymbolResponse::Flat(syms) => {
-            for sym in syms {
-                if let Some(row) = symbol_information_to_row(&sym) {
-                    out.push(row);
-                }
-            }
-        }
-        lsp_types::DocumentSymbolResponse::Nested(syms) => {
-            fn walk(
-                syms: Vec<lsp_types::DocumentSymbol>,
-                path: &std::path::Path,
-                depth: u32,
-                out: &mut Vec<SymbolRow>,
-            ) {
-                for sym in syms {
-                    out.push(SymbolRow {
-                        name: sym.name.clone(),
-                        kind_glyph: symbol_kind_glyph(sym.kind),
-                        container: None,
-                        depth,
-                        path: path.to_path_buf(),
-                        line: sym.selection_range.start.line,
-                        col: sym.selection_range.start.character,
-                    });
-                    if let Some(children) = sym.children {
-                        walk(children, path, depth + 1, out);
-                    }
-                }
-            }
-            walk(syms, path, 0, out);
-        }
-    }
-}
-
-/// Map a flat `SymbolInformation` (legacy outline + workspace
-/// symbol shape) into our row type. Returns `None` when the
-/// location's URI doesn't resolve to a path.
-/// Convert a modern (LSP 3.17+) `WorkspaceSymbol` into a
-/// `SymbolRow` (Phase 4.2 follow-up). When the symbol's
-/// `location` came back as the `WorkspaceLocation` (URI-only)
-/// variant, fires `workspaceSymbol/resolve` against the
-/// originating server to upgrade to a real `Location` with
-/// `range`. Returns `None` when:
-/// - The URI doesn't map to a path.
-/// - Resolve fails (server doesn't actually advertise it,
-///   or returns a still-unresolved shape).
-/// - Cancellation fires while we're awaiting resolve.
-pub(crate) async fn workspace_symbol_to_row(
-    handle: &lattice_lsp::ServerHandle,
-    sym: lsp_types::WorkspaceSymbol,
-    token: &lattice_protocol::CancellationToken,
-) -> Option<SymbolRow> {
-    use lsp_types::OneOf;
-    let (path, line, col) = match &sym.location {
-        OneOf::Left(loc) => (
-            lattice_lsp::actor::uri_to_path(&loc.uri)?,
-            loc.range.start.line,
-            loc.range.start.character,
-        ),
-        OneOf::Right(wsl) => {
-            let path = lattice_lsp::actor::uri_to_path(&wsl.uri)?;
-            // Server's resolveProvider absent -> no point firing.
-            // Fall back to (0, 0); the user can still navigate
-            // to the file.
-            if !handle.capabilities().workspace_symbol_resolve_provider() {
-                (path, 0, 0)
-            } else {
-                match handle
-                    .workspace_symbol_resolve(sym.clone(), token.clone())
-                    .await
-                {
-                    Ok(resolved) => match resolved.location {
-                        OneOf::Left(loc) => (
-                            lattice_lsp::actor::uri_to_path(&loc.uri).unwrap_or(path),
-                            loc.range.start.line,
-                            loc.range.start.character,
-                        ),
-                        // Server replied without populating range
-                        // -- spec violation, but defensive: fall
-                        // back to (0, 0) instead of dropping.
-                        OneOf::Right(_) => (path, 0, 0),
-                    },
-                    // Resolve failed -- log via the symbol's
-                    // path-only fallback. Caller still gets a
-                    // navigable row.
-                    Err(_) => (path, 0, 0),
-                }
-            }
-        }
-    };
-    Some(SymbolRow {
-        name: sym.name,
-        kind_glyph: symbol_kind_glyph(sym.kind),
-        container: sym.container_name,
-        depth: 0,
-        path,
-        line,
-        col,
-    })
-}
-
-pub(crate) fn symbol_information_to_row(sym: &lsp_types::SymbolInformation) -> Option<SymbolRow> {
-    let path = lattice_lsp::actor::uri_to_path(&sym.location.uri)?;
-    Some(SymbolRow {
-        name: sym.name.clone(),
-        kind_glyph: symbol_kind_glyph(sym.kind),
-        container: sym.container_name.clone(),
-        depth: 0,
-        path,
-        line: sym.location.range.start.line,
-        col: sym.location.range.start.character,
-    })
-}
+// 5.5.LSP.5: `flatten_document_symbol_response`,
+// `symbol_information_to_row`, and `workspace_symbol_to_row`
+// relocated to `lattice_host::lsp_helpers`. `flatten` has test
+// callers in `mod lsp::tests`; the other two have none, so only
+// `flatten` gets a re-export.
+#[cfg(test)]
+pub(crate) use lattice_host::lsp_helpers::flatten_document_symbol_response;
 
 /// 4.5.a: render one `CallHierarchyItem` (the caller in an
 /// `IncomingCall.from` or the callee in an

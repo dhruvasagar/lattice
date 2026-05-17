@@ -270,7 +270,17 @@ impl App {
             // 5.5.LSP.4: signature help + completion request migrated
             // to `Editor::dispatch`.
             | Action::LspSignatureHelpRequest
-            | Action::LspCompletionRequest => {}
+            | Action::LspCompletionRequest
+            // 5.5.LSP.5: document symbol request migrated.
+            // (`LspWorkspaceSymbolRequest` carries a `String`
+            // payload, so it lives in its own ignore-binding arm
+            // below.)
+            | Action::LspDocumentSymbolRequest => {}
+            // 5.5.LSP.5: workspace-symbol request migrated to
+            // `Editor::dispatch`. Action carries the query string;
+            // a data-bearing variant can't sit in the grouped
+            // `_ => {}` band (binding mismatch).
+            Action::LspWorkspaceSymbolRequest(_) => {}
             Action::Invoke(inv) => self.run_invocation(inv),
             Action::Insert(s) => self.do_insert_text(&s),
             // 5.5.G.3: `DeleteCharBackward`, `EnterAppend`,
@@ -414,8 +424,11 @@ impl App {
             // migrated to `Editor::dispatch`.
             // 5.5.G.1: `SnippetLeave` migrated to `Editor::dispatch`;
             // routed through the grouped no-op above.
-            Action::LspDocumentSymbolRequest => self.do_lsp_document_symbol_request(),
-            Action::LspWorkspaceSymbolRequest(q) => self.do_lsp_workspace_symbol_request(&q),
+            // 5.5.LSP.5: `LspDocumentSymbolRequest` /
+            // `LspWorkspaceSymbolRequest(query)` migrated to
+            // `Editor::dispatch`; fall through to the grouped no-op
+            // below. (LspWorkspaceSymbolRequest carries data, so
+            // it lives in its own grouped arm.)
             // 5.5.G.7: `JumpHistoryBack` / `JumpHistoryForward`
             // migrated to `Editor::dispatch`.
             // 5.5.G.4: `RedrawScreen` migrated to `Editor::dispatch`.
@@ -1063,8 +1076,11 @@ impl App {
                 self.do_set_lsp_log_level(server_id.as_deref(), &level)
             }
             Effect::LspLogClear { server_id } => self.do_lsp_log_clear(server_id.as_deref()),
-            Effect::LspDocumentSymbol => self.do_lsp_document_symbol_request(),
-            Effect::LspWorkspaceSymbol { query } => self.do_lsp_workspace_symbol_request(&query),
+            // 5.5.LSP.5: symbol helpers live on `Editor`.
+            Effect::LspDocumentSymbol => self.editor.lsp_document_symbol_request(),
+            Effect::LspWorkspaceSymbol { query } => {
+                self.editor.lsp_workspace_symbol_request(&query)
+            }
             Effect::LspIncomingCalls => self.do_lsp_call_hierarchy_request(false),
             Effect::LspOutgoingCalls => self.do_lsp_call_hierarchy_request(true),
             Effect::LspSupertypes => self.do_lsp_type_hierarchy_request(false),

@@ -560,6 +560,9 @@ pub(crate) fn handle_action(
         Action::JumpToMarkExact(name) => editor.do_jump_mark(name, true),
         Action::JumpHistoryBack => editor.do_jump_history(-1),
         Action::JumpHistoryForward => editor.do_jump_history(1),
+        // 5.5.G.8: snippet placeholder navigation.
+        Action::SnippetNextPlaceholder => editor.do_snippet_next_placeholder(),
+        Action::SnippetPrevPlaceholder => editor.do_snippet_prev_placeholder(),
         // Catch-all: any Action variant not yet migrated from
         // App::apply. Sub-slices 5.5.D+ extend the match upward as
         // helpers move.
@@ -2970,6 +2973,49 @@ impl Editor {
         self.recompute_folds();
         self.pending_redraw = true;
         self.set_message(EchoLevel::Info, "redraw".to_string());
+    }
+}
+
+/// 5.5.G.8: pure-editor snippet placeholder navigation.
+/// `do_snippet_expand_at_cursor` stays App-side until
+/// `active_language_id` and `is_word_char_byte` migrate.
+impl Editor {
+    /// `<Tab>` while a snippet is active -- step to the next
+    /// placeholder group; close the session if we've walked off
+    /// the end.
+    pub fn do_snippet_next_placeholder(&mut self) {
+        let Some(active) = self.active_snippet.as_mut() else {
+            return;
+        };
+        let next = active.next().cloned();
+        match next {
+            Some(group) => self.move_cursor_to_snippet_group(&group),
+            None => self.active_snippet = None,
+        }
+    }
+
+    /// `<S-Tab>` -- step to the previous placeholder.
+    pub fn do_snippet_prev_placeholder(&mut self) {
+        let Some(active) = self.active_snippet.as_mut() else {
+            return;
+        };
+        if let Some(group) = active.prev().cloned() {
+            self.move_cursor_to_snippet_group(&group);
+        }
+    }
+
+    /// Move the cursor to the start of `group.ranges.first()`.
+    fn move_cursor_to_snippet_group(
+        &mut self,
+        group: &lattice_snippet::TabstopGroup,
+    ) {
+        let Some(first) = group.ranges.first() else {
+            return;
+        };
+        let snap = self.document.snapshot();
+        if let Ok(pos) = snap.buffer.byte_to_position(first.start) {
+            self.cursor = pos;
+        }
     }
 }
 

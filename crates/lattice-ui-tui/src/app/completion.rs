@@ -124,29 +124,17 @@ impl App {
 
     /// `<Tab>` while a snippet is active -- jump to the next
     /// placeholder. Exits the snippet on `$0`.
+    /// 5.5.G.8: body migrated to
+    /// [`lattice_host::dispatch::Editor::do_snippet_next_placeholder`].
+    /// Delegate retained for direct test callers in this file.
     pub fn do_snippet_next_placeholder(&mut self) {
-        let Some(active) = self.editor.active_snippet.as_mut() else {
-            return;
-        };
-        let next = active.next().cloned();
-        match next {
-            Some(group) => {
-                self.move_cursor_to_snippet_group(&group);
-            }
-            None => {
-                self.editor.active_snippet = None;
-            }
-        }
+        self.editor.do_snippet_next_placeholder();
     }
 
-    /// `<S-Tab>` -- jump to the previous placeholder.
+    /// 5.5.G.8: body migrated to
+    /// [`lattice_host::dispatch::Editor::do_snippet_prev_placeholder`].
     pub fn do_snippet_prev_placeholder(&mut self) {
-        let Some(active) = self.editor.active_snippet.as_mut() else {
-            return;
-        };
-        if let Some(group) = active.prev().cloned() {
-            self.move_cursor_to_snippet_group(&group);
-        }
+        self.editor.do_snippet_prev_placeholder();
     }
 
     /// `:reload-snippets` (Phase 4.2.g.4) -- re-read every

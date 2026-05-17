@@ -204,7 +204,10 @@ impl App {
             | Action::JumpToMarkLine(_)
             | Action::JumpToMarkExact(_)
             | Action::JumpHistoryBack
-            | Action::JumpHistoryForward => {}
+            | Action::JumpHistoryForward
+            // 5.5.G.8: snippet placeholder navigation arms.
+            | Action::SnippetNextPlaceholder
+            | Action::SnippetPrevPlaceholder => {}
             Action::Invoke(inv) => self.run_invocation(inv),
             Action::Insert(s) => self.do_insert_text(&s),
             // 5.5.G.3: `DeleteCharBackward`, `EnterAppend`,
@@ -390,8 +393,8 @@ impl App {
                 self.do_completion_accept_then_insert(c);
             }
             Action::SnippetExpand => self.do_snippet_expand_at_cursor(),
-            Action::SnippetNextPlaceholder => self.do_snippet_next_placeholder(),
-            Action::SnippetPrevPlaceholder => self.do_snippet_prev_placeholder(),
+            // 5.5.G.8: `SnippetNextPlaceholder` / `SnippetPrevPlaceholder`
+            // migrated to `Editor::dispatch`.
             // 5.5.G.1: `SnippetLeave` migrated to `Editor::dispatch`;
             // routed through the grouped no-op above.
             Action::LspDocumentSymbolRequest => self.do_lsp_document_symbol_request(),

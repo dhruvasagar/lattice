@@ -27,10 +27,11 @@
 //!
 //! - **Top region**: the active document's text. Per-character
 //!   cells laid out under a `flex_row` line + `flex_col` column
-//!   on a monospace font. Syntax highlights (5.8.A) color each
-//!   span via the Catppuccin Mocha palette when an
-//!   `editor.syntax` handle exists. The 9-character vim-style
-//!   cursor renders three ways based on `editor.modal`
+//!   on a monospace font, with a left-side line-number gutter
+//!   (5.8.D) sized to `log10(line_count)` digits. Syntax
+//!   highlights (5.8.A) color each span via the Catppuccin
+//!   Mocha palette when an `editor.syntax` handle exists. The
+//!   vim-style cursor renders three ways based on `editor.modal`
 //!   (5.7.B.11): inverted block in Normal/Visual/OperatorPending,
 //!   left bar in Insert/Command/Search, bottom underline in
 //!   Replace.
@@ -48,6 +49,13 @@
 //!   `:describe-buffer`), a centered bordered popup shows the
 //!   help content. Press `Esc` to dismiss.
 //!
+//! - **Picker overlay** (5.8.E): when `editor.picker` is `Some`
+//!   (e.g. `:picker files`, `:picker commands`), a centered
+//!   overlay shows the title, the query line with a bar cursor,
+//!   and up to 20 candidates windowed around the selection.
+//!   `<C-n>`/`<C-p>` navigate, `<CR>` accepts, `<Esc>` cancels;
+//!   all routed through the host's picker dispatcher.
+//!
 //! - **Key events**: every keystroke flows through
 //!   [`GpuiApp::dispatch_keystroke`] (5.7.B.3) so `i` → Insert,
 //!   `Esc` → Normal, `j` / `k` move the cursor, `:` enters
@@ -59,13 +67,13 @@
 //!   arg → empty scratch document. The full lattice-cli
 //!   `--gpu <file>` flag plumbing is the 5.9 slice.
 //!
-//! What's still missing vs. the TUI peer: pane splits, picker
-//! overlay (file picker + grep picker), completion popup,
-//! sub-glyph cursor positioning (current per-char-div approach
-//! works for ASCII + most BMP but doesn't shape tabs / wide
-//! glyphs correctly), live theme cascade through GpuiTheme
-//! (the rebuild stub is wired but `host_theme` doesn't yet
-//! carry window-level color fields). Each is a future slice.
+//! What's still missing vs. the TUI peer: pane splits,
+//! completion popup, sub-glyph cursor positioning (current
+//! per-char-div approach works for ASCII + most BMP but doesn't
+//! shape tabs / wide glyphs correctly), live theme cascade
+//! through GpuiTheme (the rebuild stub is wired but `host_theme`
+//! doesn't yet carry window-level color fields). Each is a
+//! future slice.
 
 use gpui::{
     App, AppContext, Application, Bounds, Context, FocusHandle, Focusable, InteractiveElement,

@@ -49,6 +49,92 @@ pub fn word_under_cursor(buffer: &Buffer, cursor: Position) -> Option<String> {
     Some(String::from_utf8_lossy(&bytes[start..end]).into_owned())
 }
 
+/// 5.5.LSP.4: render an LSP `SignatureHelp` payload to a markdown
+/// string the popup renderer can display. Picks the active
+/// signature (server-supplied `active_signature` index, default
+/// 0) and inlines the active parameter's documentation when
+/// present. Returns the empty string when the response carries no
+/// signatures -- the caller surfaces "no signature info".
+pub fn signature_help_to_markdown(sh: &lsp_types::SignatureHelp) -> String {
+    if sh.signatures.is_empty() {
+        return String::new();
+    }
+    let active_sig_idx = sh.active_signature.unwrap_or(0) as usize;
+    let sig = sh
+        .signatures
+        .get(active_sig_idx)
+        .or_else(|| sh.signatures.first())
+        .expect("non-empty checked above");
+    let mut out = String::new();
+    // Active signature's call form -- fenced code block so the
+    // popup's markdown highlighter picks up syntax highlighting.
+    out.push_str("```text\n");
+    out.push_str(&sig.label);
+    out.push_str("\n```\n");
+    // Parameter highlight: append a short note pointing at the
+    // active parameter's name.
+    if let Some(active_param_idx) = sig.active_parameter.or(sh.active_parameter)
+        && let Some(params) = sig.parameters.as_ref()
+        && let Some(param) = params.get(active_param_idx as usize)
+    {
+        let label_str = match &param.label {
+            lsp_types::ParameterLabel::Simple(s) => s.clone(),
+            lsp_types::ParameterLabel::LabelOffsets(_) => String::new(),
+        };
+        if !label_str.is_empty() {
+            out.push_str(&format!("\n**param:** `{label_str}`\n"));
+        }
+        if let Some(doc) = param.documentation.as_ref() {
+            let doc_str = match doc {
+                lsp_types::Documentation::String(s) => s.clone(),
+                lsp_types::Documentation::MarkupContent(mc) => mc.value.clone(),
+            };
+            if !doc_str.is_empty() {
+                out.push('\n');
+                out.push_str(&doc_str);
+                out.push('\n');
+            }
+        }
+    }
+    // Signature-level documentation when present.
+    if let Some(doc) = sig.documentation.as_ref() {
+        let doc_str = match doc {
+            lsp_types::Documentation::String(s) => s.clone(),
+            lsp_types::Documentation::MarkupContent(mc) => mc.value.clone(),
+        };
+        if !doc_str.is_empty() {
+            out.push('\n');
+            out.push_str(&doc_str);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// 5.5.LSP.4: single-character glyph for an LSP
+/// `CompletionItemKind`. Same shape as `symbol_kind_glyph` but
+/// maps the completion-item kind enum (which is wider -- snippets,
+/// keywords, folders, etc.). Used by the LSP completion picker /
+/// insert-completion overlay row marginalia.
+pub fn completion_kind_glyph(kind: Option<lsp_types::CompletionItemKind>) -> &'static str {
+    use lsp_types::CompletionItemKind as K;
+    match kind {
+        Some(K::FUNCTION) | Some(K::METHOD) | Some(K::CONSTRUCTOR) => "ƒ",
+        Some(K::VARIABLE) | Some(K::FIELD) | Some(K::PROPERTY) => "v",
+        Some(K::CONSTANT) => "K",
+        Some(K::CLASS) | Some(K::INTERFACE) => "🅒",
+        Some(K::STRUCT) => "🅢",
+        Some(K::ENUM) | Some(K::ENUM_MEMBER) => "🅔",
+        Some(K::MODULE) => "📦",
+        Some(K::FILE) | Some(K::FOLDER) => "📄",
+        Some(K::SNIPPET) => "✂",
+        Some(K::KEYWORD) => "K",
+        Some(K::TEXT) => "≡",
+        Some(K::REFERENCE) => "→",
+        _ => "?",
+    }
+}
+
 /// 5.5.LSP.2: flatten an LSP `GotoDefinitionResponse` (Scalar /
 /// Array / Link) into a uniform `Vec<Location>`. The `Link` shape
 /// carries richer per-result info (origin selection range used to

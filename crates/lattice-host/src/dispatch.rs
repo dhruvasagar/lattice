@@ -719,6 +719,10 @@ pub(crate) fn handle_action(
         // 5.5.LSP.3: `gr` -- LSP references. Drain still App-side
         // (still uses `open_lsp_locations_picker`).
         Action::LspReferencesRequest => editor.lsp_references_request(),
+        // 5.5.LSP.4: signature help + completion request.
+        // Drains stay App-side.
+        Action::LspSignatureHelpRequest => editor.lsp_signature_help_request(),
+        Action::LspCompletionRequest => editor.lsp_completion_request(),
         // Catch-all: any Action variant not yet migrated from
         // App::apply. Sub-slices 5.5.D+ extend the match upward as
         // helpers move.
@@ -1304,6 +1308,13 @@ impl Editor {
         self.minor_mode_enabled_for(buffer_id, lattice_lsp::modes::LspHoverMode::mode_id())
     }
 
+    /// 5.5.LSP.4: is `lsp-signature-mode` active on `buffer_id`?
+    /// Gates `lsp_signature_help_request` -- silent gate (Insert-
+    /// mode auto-trigger).
+    pub fn lsp_signature_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
+        self.minor_mode_enabled_for(buffer_id, lattice_lsp::modes::LspSignatureMode::mode_id())
+    }
+
     /// 5.5.LSP.1: shared gate for every LSP request entry point
     /// (hover / definition / completion / format / rename /
     /// code-action / symbols / signature / references). Returns
@@ -1381,6 +1392,185 @@ impl Editor {
         self.cursor = stash_cursor;
         self.scroll = stash_scroll;
         self.active_buffer = BufferKind::Help;
+    }
+
+    /// 5.5.LSP.4: signature help (Insert-mode auto-trigger).
+    /// Sends `textDocument/signatureHelp` to every attached server
+    /// with `supports_signature_help`. First non-empty markdown
+    /// body wins; the popup pipeline draws it via
+    /// `drain_pending_signature_help` (still App-side).
+    ///
+    /// **Silent gate**: matches insert-completion / on-type-format
+    /// -- a typed character that doesn't fire is not a moment to
+    /// surface mode state.
+    pub fn lsp_signature_help_request(&mut self) {
+        if let Some(token) = self.pending_signature_help_token.take() {
+            token.cancel();
+        }
+        // M.6.2: lsp-signature-mode gate (silent; insert-mode auto-
+        // trigger).
+        if !self.lsp_signature_mode_enabled_for(self.document_buffer_id) {
+            return;
+        }
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
+            self.set_message(
+                EchoLevel::Info,
+                "no LSP server attached to current buffer".to_string(),
+            );
+            return;
+        };
+        let snapshot = self.document.snapshot();
+        let lsp_position =
+            match crate::lsp_helpers::app_to_lsp_position(&snapshot.buffer, self.cursor) {
+                Some(p) => p,
+                None => return,
+            };
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<lattice_lsp::cache::SignatureHelpOutcome>();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_signature_help_rx = Some(rx);
+        self.pending_signature_help_token = Some(token.clone());
+        let lsp = self.lsp.clone();
+        lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
+            let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
+            if handles.is_empty() {
+                let _ = tx.send(lattice_lsp::cache::SignatureHelpOutcome::NoServers);
+                return;
+            }
+            for handle in handles {
+                if token.is_cancelled() {
+                    return;
+                }
+                if !handle.capabilities().supports_signature_help() {
+                    continue;
+                }
+                let params = lsp_types::SignatureHelpParams {
+                    text_document_position_params: lsp_types::TextDocumentPositionParams {
+                        text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                        position: lsp_position,
+                    },
+                    work_done_progress_params: Default::default(),
+                    context: None,
+                };
+                if let Ok(Some(sh)) = handle.signature_help(params, token.clone()).await {
+                    let body = crate::lsp_helpers::signature_help_to_markdown(&sh);
+                    if !body.is_empty() {
+                        let _ = tx.send(lattice_lsp::cache::SignatureHelpOutcome::Body(body));
+                        return;
+                    }
+                }
+            }
+            let _ = tx.send(lattice_lsp::cache::SignatureHelpOutcome::Body(String::new()));
+        });
+    }
+
+    /// 5.5.LSP.4: LSP completion request (the `:lsp-complete`
+    /// command's wire side; also fires from the insert-completion
+    /// engine when `lsp-completion-mode` is on). Walks back over
+    /// word characters to determine the prefix replace range, then
+    /// dispatches `textDocument/completion` to every attached
+    /// server with `supports_completion`. Merged + deduped results
+    /// flow back as `CompletionOutcome`. Drain
+    /// (`drain_pending_completion`) stays App-side.
+    pub fn lsp_completion_request(&mut self) {
+        if let Some(token) = self.pending_completion_token.take() {
+            token.cancel();
+        }
+        // Browse-style; not a tag-intent drill-down.
+        self.pending_tag_origin = None;
+        // M.6.2: lsp-completion-mode gate (after cancel-stale-work).
+        if !self.check_lsp_sub_mode_gate(
+            lattice_lsp::modes::LspCompletionMode::mode_id(),
+            "lsp-completion-mode",
+        ) {
+            return;
+        }
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
+            self.set_message(
+                EchoLevel::Info,
+                "no LSP server attached to current buffer".to_string(),
+            );
+            return;
+        };
+        let snapshot = self.document.snapshot();
+        let lsp_position =
+            match crate::lsp_helpers::app_to_lsp_position(&snapshot.buffer, self.cursor) {
+                Some(p) => p,
+                None => return,
+            };
+        // Compute the prefix replace range: walk back from the
+        // cursor over word characters. The server may override via
+        // `text_edit` per-item; this is the fallback.
+        let line_text = snapshot.buffer.line(self.cursor.line).unwrap_or_default();
+        let cursor_byte = self.cursor.byte as usize;
+        let mut start = cursor_byte;
+        let bytes = line_text.as_bytes();
+        while start > 0 && start <= bytes.len() && is_word_char_byte(bytes[start - 1]) {
+            start -= 1;
+        }
+        let prefix_start = start as u32;
+        let cursor_line = self.cursor.line;
+        let cursor_col = self.cursor.byte;
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<lattice_lsp::cache::CompletionOutcome>();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_completion_rx = Some(rx);
+        self.pending_completion_token = Some(token.clone());
+        let lsp = self.lsp.clone();
+        lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
+            let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
+            if handles.is_empty() {
+                let _ = tx.send(lattice_lsp::cache::CompletionOutcome::NoServers);
+                return;
+            }
+            let mut all: Vec<lattice_lsp::cache::CompletionItemRow> = Vec::new();
+            for handle in handles {
+                if token.is_cancelled() {
+                    return;
+                }
+                if !handle.capabilities().supports_completion() {
+                    continue;
+                }
+                let params = lsp_types::CompletionParams {
+                    text_document_position: lsp_types::TextDocumentPositionParams {
+                        text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                        position: lsp_position,
+                    },
+                    work_done_progress_params: Default::default(),
+                    partial_result_params: Default::default(),
+                    context: None,
+                };
+                if let Ok(Some(resp)) = handle.completion(params, token.clone()).await {
+                    let items = match resp {
+                        lsp_types::CompletionResponse::Array(items) => items,
+                        lsp_types::CompletionResponse::List(list) => list.items,
+                    };
+                    for ci in items {
+                        let label = ci.label;
+                        let kind_glyph = crate::lsp_helpers::completion_kind_glyph(ci.kind);
+                        let detail = ci.detail.clone();
+                        let insert_text =
+                            ci.insert_text.clone().unwrap_or_else(|| label.clone());
+                        all.push(lattice_lsp::cache::CompletionItemRow {
+                            label,
+                            kind_glyph,
+                            detail,
+                            insert_text,
+                            replace_range: (prefix_start, cursor_col),
+                            line: cursor_line,
+                        });
+                    }
+                }
+            }
+            // Dedup by (label, kind glyph) -- two servers may emit
+            // the same name twice.
+            all.sort_by(|a, b| {
+                a.label
+                    .cmp(&b.label)
+                    .then_with(|| a.kind_glyph.cmp(b.kind_glyph))
+            });
+            all.dedup_by(|a, b| a.label == b.label && a.kind_glyph == b.kind_glyph);
+            let _ = tx.send(lattice_lsp::cache::CompletionOutcome::Items(all));
+        });
     }
 
     /// 5.5.LSP.3: `gr` (Phase 4.2.d) -- send

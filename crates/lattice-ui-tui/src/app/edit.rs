@@ -227,7 +227,8 @@ impl App {
             if matches!(self.editor.modal, ModalState::Insert) && s.chars().count() == 1 {
                 let inserted_char = s.chars().next().unwrap_or('\0');
                 if self.signature_help_trigger_chars().contains(&inserted_char) {
-                    self.do_lsp_signature_help_request();
+                    // 5.5.LSP.4: helper now lives on `Editor`.
+                    self.editor.lsp_signature_help_request();
                 }
                 // OnTypeFormatting trigger autopilot (Phase
                 // 4.3). C-family servers commonly advertise

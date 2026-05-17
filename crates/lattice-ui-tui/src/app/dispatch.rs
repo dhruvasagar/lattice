@@ -266,7 +266,11 @@ impl App {
             | Action::LspTypeDefinitionRequest
             | Action::LspImplementationRequest
             // 5.5.LSP.3: `gr` -- references migrated to `Editor::dispatch`.
-            | Action::LspReferencesRequest => {}
+            | Action::LspReferencesRequest
+            // 5.5.LSP.4: signature help + completion request migrated
+            // to `Editor::dispatch`.
+            | Action::LspSignatureHelpRequest
+            | Action::LspCompletionRequest => {}
             Action::Invoke(inv) => self.run_invocation(inv),
             Action::Insert(s) => self.do_insert_text(&s),
             // 5.5.G.3: `DeleteCharBackward`, `EnterAppend`,
@@ -385,8 +389,9 @@ impl App {
             // `Editor::lsp_references_request`); falls through to
             // the grouped no-op below.
             Action::LspFollowLinkAtCursor => self.do_lsp_follow_link_at_cursor(),
-            Action::LspSignatureHelpRequest => self.do_lsp_signature_help_request(),
-            Action::LspCompletionRequest => self.do_lsp_completion_request(),
+            // 5.5.LSP.4: `LspSignatureHelpRequest` /
+            // `LspCompletionRequest` migrated to `Editor::dispatch`;
+            // fall through to the grouped no-op below.
             // 5.5.G.7: `TagStackPop` migrated to `Editor::dispatch`.
             Action::CompletionTrigger => self.do_completion_trigger(),
             Action::CompletionNext => self.do_completion_next(),
@@ -1069,8 +1074,12 @@ impl App {
             Effect::LspColorPresentation => self.do_lsp_color_presentation(),
             Effect::LspFormat => self.do_lsp_format_request(false),
             Effect::LspFormatRange => self.do_lsp_format_request(true),
-            Effect::LspSignatureHelp => self.do_lsp_signature_help_request(),
-            Effect::LspComplete => self.do_lsp_completion_request(),
+            // 5.5.LSP.4: signature help + completion request now
+            // live on `Editor`. The Effect routes here continue to
+            // dispatch via `self.editor.<fn>()` until the Effect
+            // table itself migrates.
+            Effect::LspSignatureHelp => self.editor.lsp_signature_help_request(),
+            Effect::LspComplete => self.editor.lsp_completion_request(),
             Effect::LspRename { new_name } => self.do_lsp_rename_request(&new_name),
             Effect::LspCodeAction => self.do_lsp_code_action_request(),
             Effect::SnippetExpand => self.do_snippet_expand_at_cursor(),

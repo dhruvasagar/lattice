@@ -1077,71 +1077,12 @@ pub(super) fn is_blank_line(buffer: &lattice_core::Buffer, line_idx: u32) -> boo
 /// don't pay the utf-16 conversion. For 4.2.b utf-16 is correct
 /// for every server we care about today.
 /// Render an LSP `SignatureHelp` response into a markdown body
-/// the popup renderer can display. Picks the active signature
-/// (server-supplied `active_signature` index, default 0) and
-/// inlines the active parameter's documentation when present.
-/// Returns the empty string when the response carries no
-/// signatures.
-pub(crate) fn signature_help_to_markdown(sh: &lsp_types::SignatureHelp) -> String {
-    if sh.signatures.is_empty() {
-        return String::new();
-    }
-    let active_sig_idx = sh.active_signature.unwrap_or(0) as usize;
-    let sig = sh
-        .signatures
-        .get(active_sig_idx)
-        .or_else(|| sh.signatures.first())
-        .expect("non-empty checked above");
-    let mut out = String::new();
-    // Active signature's call form -- renders as a fenced code
-    // block so the popup's markdown highlighter picks up
-    // syntax highlighting (whatever language the server says
-    // -- we don't know, so default to text).
-    out.push_str("```text\n");
-    out.push_str(&sig.label);
-    out.push_str("\n```\n");
-    // Parameter highlight: append a short note pointing at the
-    // active parameter's name. The popup overlay doesn't yet
-    // do per-character paragraph styling, so this is the
-    // friendliest representation we have without bespoke
-    // rendering.
-    if let Some(active_param_idx) = sig.active_parameter.or(sh.active_parameter)
-        && let Some(params) = sig.parameters.as_ref()
-        && let Some(param) = params.get(active_param_idx as usize)
-    {
-        let label_str = match &param.label {
-            lsp_types::ParameterLabel::Simple(s) => s.clone(),
-            lsp_types::ParameterLabel::LabelOffsets(_) => String::new(),
-        };
-        if !label_str.is_empty() {
-            out.push_str(&format!("\n**param:** `{label_str}`\n"));
-        }
-        if let Some(doc) = param.documentation.as_ref() {
-            let doc_str = match doc {
-                lsp_types::Documentation::String(s) => s.clone(),
-                lsp_types::Documentation::MarkupContent(mc) => mc.value.clone(),
-            };
-            if !doc_str.is_empty() {
-                out.push('\n');
-                out.push_str(&doc_str);
-                out.push('\n');
-            }
-        }
-    }
-    // Signature-level documentation when present.
-    if let Some(doc) = sig.documentation.as_ref() {
-        let doc_str = match doc {
-            lsp_types::Documentation::String(s) => s.clone(),
-            lsp_types::Documentation::MarkupContent(mc) => mc.value.clone(),
-        };
-        if !doc_str.is_empty() {
-            out.push('\n');
-            out.push_str(&doc_str);
-            out.push('\n');
-        }
-    }
-    out
-}
+// 5.5.LSP.4: `signature_help_to_markdown` relocated to
+// `lattice_host::lsp_helpers`. No production App-side caller
+// remains; tests still exercise it through `super::*`, so the
+// re-export stays under `cfg(test)`.
+#[cfg(test)]
+pub(crate) use lattice_host::lsp_helpers::signature_help_to_markdown;
 
 /// Inverse of `app_to_lsp_position` -- LSP utf-16 character
 /// column → utf-8 byte column on the given line. Used by
@@ -1494,29 +1435,13 @@ pub(crate) fn code_action_kind_glyph(kind: Option<&lsp_types::CodeActionKind>) -
 }
 
 /// Single-character glyph for an LSP `CompletionItemKind`.
-/// Same shape as `symbol_kind_glyph` but maps the completion-
-/// item kind enum (which is wider -- snippets, keywords,
-/// folders, etc.). Kept narrow on purpose; richer per-kind
-/// styling lives in the renderer once buffer-level Insert
-/// completion lands.
-pub(crate) fn completion_kind_glyph(kind: Option<lsp_types::CompletionItemKind>) -> &'static str {
-    use lsp_types::CompletionItemKind as K;
-    match kind {
-        Some(K::FUNCTION) | Some(K::METHOD) | Some(K::CONSTRUCTOR) => "ƒ",
-        Some(K::VARIABLE) | Some(K::FIELD) | Some(K::PROPERTY) => "v",
-        Some(K::CONSTANT) => "K",
-        Some(K::CLASS) | Some(K::INTERFACE) => "🅒",
-        Some(K::STRUCT) => "🅢",
-        Some(K::ENUM) | Some(K::ENUM_MEMBER) => "🅔",
-        Some(K::MODULE) => "📦",
-        Some(K::FILE) | Some(K::FOLDER) => "📄",
-        Some(K::SNIPPET) => "✂",
-        Some(K::KEYWORD) => "K",
-        Some(K::TEXT) => "≡",
-        Some(K::REFERENCE) => "→",
-        _ => "?",
-    }
-}
+// 5.5.LSP.4: `completion_kind_glyph` relocated to
+// `lattice_host::lsp_helpers`. Tests in `app/completion.rs` call
+// it as `crate::app::completion_kind_glyph`, so the re-export
+// stays available; no production App-side caller remains, so
+// it's `cfg(test)`-scoped.
+#[cfg(test)]
+pub(crate) use lattice_host::lsp_helpers::completion_kind_glyph;
 
 /// Single-character glyph for an LSP `SymbolKind`. Picked to
 /// fit a fixed-width column in picker rows so the marginalia

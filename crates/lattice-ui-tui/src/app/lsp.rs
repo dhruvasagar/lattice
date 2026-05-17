@@ -51,20 +51,21 @@ use super::{
     LSP_COMPLETION_KIND_ID, LspCompletionMeta, LspNavKind, ReferencesOutcome, RenameOutcome,
     SignatureHelpOutcome, SymbolRow, SymbolsOutcome, TagStackEntry, app_to_lsp_position,
     call_hierarchy_to_row, code_action_kind_glyph, completion_kind_glyph, dedup_rendered_by_text,
-    definition_response_to_locations, flatten_document_symbol_response, flatten_workspace_edit,
-    is_word_char_byte, last_addressable_line, line_byte_len, lsp_position_to_app_byte,
-    prepare_rename_placeholder, range_covers, signature_help_to_markdown,
-    symbol_information_to_row, type_hierarchy_to_row, word_under_cursor, workspace_symbol_to_row,
+    flatten_document_symbol_response, flatten_workspace_edit, is_word_char_byte,
+    last_addressable_line, line_byte_len, lsp_position_to_app_byte, prepare_rename_placeholder,
+    range_covers, signature_help_to_markdown, symbol_information_to_row, type_hierarchy_to_row,
+    word_under_cursor, workspace_symbol_to_row,
 };
-// 5.5.LSP.1: `hover_contents_to_markdown` is test-only in this
-// module after the hover-request migration; tests reach it via
-// `super::hover_contents_to_markdown(...)` so it needs to live in
-// the `mod lsp` scope, but `cfg(test)` keeps it out of release
-// builds (where `deny(unused_imports)` would flag it). `BufferKind`
-// is reached by tests via the separate `use crate::app::*;` block
-// in `mod tests`, so it doesn't need re-import here.
+// 5.5.LSP.1 / LSP.2: `hover_contents_to_markdown` and
+// `definition_response_to_locations` are test-only in this module
+// after the hover-request / nav migration; tests reach them via
+// `super::<fn>(...)` so they need to live in the `mod lsp` scope,
+// but `cfg(test)` keeps them out of release builds (where
+// `deny(unused_imports)` would flag them). `BufferKind` is reached
+// by tests via the separate `use crate::app::*;` block in
+// `mod tests`, so it doesn't need re-import here.
 #[cfg(test)]
-use super::hover_contents_to_markdown;
+use super::{definition_response_to_locations, hover_contents_to_markdown};
 use crate::buffers::BufferId;
 use lattice_protocol::edit::Edit;
 
@@ -3447,154 +3448,17 @@ impl App {
         }
     }
 
-    /// Generic dispatch for the four navigation flavours
-    /// (definition / declaration / typeDefinition / implementation
-    /// -- DESIGN.md §5.4 / docs/dev/notes/lsp-features.md). All share the
-    /// same `Vec<Location>` shape, so dispatch is parameterised
-    /// by `LspNavKind`; the kind selects the LSP method and
-    /// drives the user-facing echo from `drain_pending_definitions`.
-    ///
-    /// Multi-server merge: every server's response is flattened
-    /// to `Vec<Location>`; the union is deduplicated by
-    /// `(uri, range.start)`. A single result jumps; multiple
-    /// results echo a count and open the LSP-locations picker.
-    pub(super) fn do_lsp_nav_request(&mut self, kind: LspNavKind) {
-        if let Some(token) = self.editor.pending_definition_token.take() {
-            token.cancel();
-        }
-        // M.6.2: lsp-nav-mode gate (after cancel-stale-work).
-        // Keymap-driven (`gd` / `gD` / `gy` / `gI`); echo so
-        // users find out why nothing happened when nav is gated.
-        if !self.check_lsp_sub_mode_gate(lattice_lsp::modes::LspNavMode::mode_id(), "lsp-nav-mode")
-        {
-            return;
-        }
-        let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
-            self.set_message(
-                EchoLevel::Info,
-                "no LSP server attached to current buffer".to_string(),
-            );
-            return;
-        };
-        let snapshot = self.editor.document.snapshot();
-        let lsp_position = match app_to_lsp_position(&snapshot.buffer, self.editor.cursor) {
-            Some(p) => p,
-            None => {
-                self.set_message(
-                    EchoLevel::Error,
-                    format!("{}: cursor out of buffer", kind.noun_singular()),
-                );
-                return;
-            }
-        };
-        // Capture the pre-jump origin for the tag stack -- the
-        // gd family is "drill down" navigation, so users expect
-        // <C-t> to walk back even after navigating through a
-        // chain of definitions.
-        let label = word_under_cursor(&snapshot.buffer, self.editor.cursor).unwrap_or_default();
-        self.editor.pending_tag_origin = Some(TagStackEntry {
-            buffer: self.editor.active_buffer,
-            buffer_id: self.active_pane_buffer_id(),
-            position: self.editor.cursor,
-            label,
-        });
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Vec<lsp_types::Location>>();
-        let token = lattice_protocol::CancellationToken::new();
-        self.editor.pending_definition_rx = Some(rx);
-        self.editor.pending_definition_token = Some(token.clone());
-        self.editor.pending_nav_kind = Some(kind);
-        let lsp = self.editor.lsp.clone();
-        crate::runtime::spawn_on_lsp_runtime(async move {
-            let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
-            let mut all: Vec<lsp_types::Location> = Vec::new();
-            for handle in handles {
-                if token.is_cancelled() {
-                    return;
-                }
-                let pos_params = lsp_types::TextDocumentPositionParams {
-                    text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
-                    position: lsp_position,
-                };
-                let resp_locs = match kind {
-                    LspNavKind::Definition => {
-                        let params = lsp_types::GotoDefinitionParams {
-                            text_document_position_params: pos_params,
-                            work_done_progress_params: Default::default(),
-                            partial_result_params: Default::default(),
-                        };
-                        handle
-                            .goto_definition(params, token.clone())
-                            .await
-                            .ok()
-                            .flatten()
-                            .map(definition_response_to_locations)
-                            .unwrap_or_default()
-                    }
-                    LspNavKind::Declaration => {
-                        let params = lsp_types::request::GotoDeclarationParams {
-                            text_document_position_params: pos_params,
-                            work_done_progress_params: Default::default(),
-                            partial_result_params: Default::default(),
-                        };
-                        handle
-                            .goto_declaration(params, token.clone())
-                            .await
-                            .ok()
-                            .flatten()
-                            .map(definition_response_to_locations)
-                            .unwrap_or_default()
-                    }
-                    LspNavKind::TypeDefinition => {
-                        let params = lsp_types::request::GotoTypeDefinitionParams {
-                            text_document_position_params: pos_params,
-                            work_done_progress_params: Default::default(),
-                            partial_result_params: Default::default(),
-                        };
-                        handle
-                            .goto_type_definition(params, token.clone())
-                            .await
-                            .ok()
-                            .flatten()
-                            .map(definition_response_to_locations)
-                            .unwrap_or_default()
-                    }
-                    LspNavKind::Implementation => {
-                        let params = lsp_types::request::GotoImplementationParams {
-                            text_document_position_params: pos_params,
-                            work_done_progress_params: Default::default(),
-                            partial_result_params: Default::default(),
-                        };
-                        handle
-                            .goto_implementation(params, token.clone())
-                            .await
-                            .ok()
-                            .flatten()
-                            .map(definition_response_to_locations)
-                            .unwrap_or_default()
-                    }
-                };
-                all.extend(resp_locs);
-            }
-            // Dedup by (uri, range.start).
-            all.sort_by(|a, b| {
-                let au = a.uri.as_str();
-                let bu = b.uri.as_str();
-                au.cmp(bu)
-                    .then_with(|| a.range.start.line.cmp(&b.range.start.line))
-                    .then_with(|| a.range.start.character.cmp(&b.range.start.character))
-            });
-            all.dedup_by(|a, b| a.uri.as_str() == b.uri.as_str() && a.range.start == b.range.start);
-            let _ = tx.send(all);
-        });
-    }
-
-    /// Backwards-compat wrapper. Tests + plugin contributions may
-    /// reach for the named `do_lsp_definition_request`; this keeps
-    /// the public surface intact while the unified `do_lsp_nav_request`
-    /// handles the actual work.
-    pub fn do_lsp_definition_request(&mut self) {
-        self.do_lsp_nav_request(LspNavKind::Definition)
-    }
+    // 5.5.LSP.2: `do_lsp_nav_request(LspNavKind)` relocated to
+    // [`lattice_host::dispatch::Editor::lsp_nav_request`]. The
+    // host-side body is identical (same gate, same per-server
+    // dispatch over the 4 LSP request shapes, same dedup) and runs
+    // as the four `Action::Lsp{Definition,Declaration,
+    // TypeDefinition,Implementation}Request` arms of
+    // `Editor::dispatch`. The drain side
+    // (`drain_pending_definitions`) stays App-resident until a
+    // later phase migrates it -- it still calls
+    // `jump_to_lsp_location` / `open_lsp_locations_picker`, both
+    // of which remain App-side for now.
 
     /// Drain queued nav (definition / declaration / typeDef /
     /// impl) results and act on them: 0 -> echo, 1 -> jump, N>1
@@ -6603,7 +6467,7 @@ mod tests {
         let mut a = app_with("xx", 10);
         a.toggle_mode_by_name("lsp-mode");
         a.toggle_mode_by_name("lsp-nav-mode");
-        a.do_lsp_definition_request();
+        a.apply(crate::app::Action::LspDefinitionRequest); // 5.5.LSP.2
         let msg = a.editor.last_message.as_ref().expect("nav gate echo");
         assert!(
             msg.text.contains("lsp-nav-mode disabled"),

@@ -45,7 +45,7 @@ use lattice_grammar::effect::Effect;
 use lattice_host::dispatch::RendererSignal;
 use lattice_runtime::{CancellationToken, RuntimeError, block_on};
 
-use super::{Action, App, BufferKind, EchoLevel, FindKind, LastFind, LspNavKind, PositionSource};
+use super::{Action, App, BufferKind, EchoLevel, FindKind, LastFind, PositionSource};
 use crate::excommand;
 
 const COMMAND_HISTORY_CAP: usize = 100;
@@ -258,7 +258,13 @@ impl App {
             | Action::EnterBlockVisualAppend
             // 5.5.LSP.1: `K` -- hover request migrated to
             // `Editor::dispatch`.
-            | Action::LspHoverRequest => {}
+            | Action::LspHoverRequest
+            // 5.5.LSP.2: `gd` / `gD` / `gy` / `gI` -- nav family
+            // migrated to `Editor::dispatch`.
+            | Action::LspDefinitionRequest
+            | Action::LspDeclarationRequest
+            | Action::LspTypeDefinitionRequest
+            | Action::LspImplementationRequest => {}
             Action::Invoke(inv) => self.run_invocation(inv),
             Action::Insert(s) => self.do_insert_text(&s),
             // 5.5.G.3: `DeleteCharBackward`, `EnterAppend`,
@@ -366,10 +372,12 @@ impl App {
             // (host-side `Editor::lsp_hover_request`); the App arm here
             // is gone -- the action falls through to the grouped no-op
             // below.
-            Action::LspDefinitionRequest => self.do_lsp_nav_request(LspNavKind::Definition),
-            Action::LspDeclarationRequest => self.do_lsp_nav_request(LspNavKind::Declaration),
-            Action::LspTypeDefinitionRequest => self.do_lsp_nav_request(LspNavKind::TypeDefinition),
-            Action::LspImplementationRequest => self.do_lsp_nav_request(LspNavKind::Implementation),
+            // 5.5.LSP.2: `LspDefinitionRequest` / `LspDeclarationRequest` /
+            // `LspTypeDefinitionRequest` / `LspImplementationRequest`
+            // migrated to `Editor::dispatch` (host-side
+            // `Editor::lsp_nav_request(LspNavKind)`); the App arms
+            // here are gone -- all four fall through to the grouped
+            // no-op below.
             Action::LspReferencesRequest => self.do_lsp_references_request(),
             Action::LspFollowLinkAtCursor => self.do_lsp_follow_link_at_cursor(),
             Action::LspSignatureHelpRequest => self.do_lsp_signature_help_request(),

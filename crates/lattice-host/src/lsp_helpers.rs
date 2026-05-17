@@ -14,6 +14,69 @@
 use lattice_core::Buffer;
 use lattice_protocol::Position;
 
+/// 5.5.LSP.2: word-class byte predicate -- ASCII alphanumerics
+/// and `_`. Mirrors the existing host-side `is_word_char_byte` in
+/// `dispatch.rs`; kept module-local to `lsp_helpers` for use by
+/// [`word_under_cursor`].
+fn is_word_char_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// 5.5.LSP.2: extract the word-class span straddling `cursor` on
+/// the cursor's line. Returns `None` when the cursor is not on a
+/// word character -- "no symbol under cursor" is preferable to a
+/// label that jumps to a different identifier than the user
+/// pointed at. Used by the LSP nav / references dispatchers to
+/// label the tag-stack entry + the picker title.
+pub fn word_under_cursor(buffer: &Buffer, cursor: Position) -> Option<String> {
+    let line = buffer.line(cursor.line)?;
+    let bytes = line.as_bytes();
+    let byte_idx = cursor.byte as usize;
+    if byte_idx >= bytes.len() || !is_word_char_byte(bytes[byte_idx]) {
+        return None;
+    }
+    let mut start = byte_idx;
+    while start > 0 && is_word_char_byte(bytes[start - 1]) {
+        start -= 1;
+    }
+    let mut end = byte_idx;
+    while end < bytes.len() && is_word_char_byte(bytes[end]) {
+        end += 1;
+    }
+    if start == end {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&bytes[start..end]).into_owned())
+}
+
+/// 5.5.LSP.2: flatten an LSP `GotoDefinitionResponse` (Scalar /
+/// Array / Link) into a uniform `Vec<Location>`. The `Link` shape
+/// carries richer per-result info (origin selection range used to
+/// highlight the symbol the user clicked); we drop it for now and
+/// keep the target location only -- the App's jump path is
+/// position-only. When 4.2.d's picker buffer lands the link
+/// metadata (e.g., `target_selection_range` for narrower jump
+/// destinations) becomes useful and this function gains a richer
+/// sibling.
+pub fn definition_response_to_locations(
+    resp: lsp_types::GotoDefinitionResponse,
+) -> Vec<lsp_types::Location> {
+    match resp {
+        lsp_types::GotoDefinitionResponse::Scalar(loc) => vec![loc],
+        lsp_types::GotoDefinitionResponse::Array(locs) => locs,
+        lsp_types::GotoDefinitionResponse::Link(links) => links
+            .into_iter()
+            .map(|l| lsp_types::Location {
+                uri: l.target_uri,
+                // `target_selection_range` is the narrower symbol
+                // range; `target_range` is the enclosing block.
+                // Picker UX usually wants the narrower one.
+                range: l.target_selection_range,
+            })
+            .collect(),
+    }
+}
+
 /// Convert an editor-side `Position` (line + utf-8 byte column)
 /// into the LSP-side `lsp_types::Position` (line + utf-16 code-
 /// unit column). Returns `None` when the line index is past the

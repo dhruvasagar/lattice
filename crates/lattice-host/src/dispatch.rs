@@ -70,7 +70,8 @@ use crate::action::{Action, EchoLevel};
 use crate::buffers::BufferId;
 use crate::editor::Editor;
 use crate::state::{
-    MacroRecording, PositionEntry, PositionSource, PrevPaneState, SearchLine, UnnamedRegister,
+    MacroRecording, PositionEntry, PositionSource, PrevPaneState, SearchLine, TagStackEntry,
+    UnnamedRegister,
 };
 
 /// 5.5.F.4.2: position-history ring cap, co-located with
@@ -699,6 +700,22 @@ pub(crate) fn handle_action(
         // frame, which is still App-resident (LSP.2+ migrates the
         // drain).
         Action::LspHoverRequest => editor.lsp_hover_request(),
+        // 5.5.LSP.2: `gd` / `gD` / `gy` / `gI` -- LSP navigation
+        // family. All four arms share one host helper; the kind
+        // discriminates which LSP request gets sent. Drain still
+        // App-side until the next phase.
+        Action::LspDefinitionRequest => {
+            editor.lsp_nav_request(lattice_lsp::cache::LspNavKind::Definition)
+        }
+        Action::LspDeclarationRequest => {
+            editor.lsp_nav_request(lattice_lsp::cache::LspNavKind::Declaration)
+        }
+        Action::LspTypeDefinitionRequest => {
+            editor.lsp_nav_request(lattice_lsp::cache::LspNavKind::TypeDefinition)
+        }
+        Action::LspImplementationRequest => {
+            editor.lsp_nav_request(lattice_lsp::cache::LspNavKind::Implementation)
+        }
         // Catch-all: any Action variant not yet migrated from
         // App::apply. Sub-slices 5.5.D+ extend the match upward as
         // helpers move.
@@ -1361,6 +1378,148 @@ impl Editor {
         self.cursor = stash_cursor;
         self.scroll = stash_scroll;
         self.active_buffer = BufferKind::Help;
+    }
+
+    /// 5.5.LSP.2: `gd` / `gD` / `gy` / `gI` -- LSP navigation
+    /// (definition / declaration / typeDefinition / implementation).
+    /// Send the matching request to every attached server in
+    /// parallel; the merged + deduped `Vec<Location>` flows back
+    /// through `pending_definition_rx`. Single-result outcomes
+    /// jump in-place and push the tag stack; multi-result open the
+    /// locations picker (handled by App's `drain_pending_definitions`
+    /// until that drain migrates host-side).
+    ///
+    /// Captures the pre-jump origin in `pending_tag_origin` so
+    /// `<C-t>` can walk back through chained drill-downs.
+    pub fn lsp_nav_request(&mut self, kind: lattice_lsp::cache::LspNavKind) {
+        if let Some(token) = self.pending_definition_token.take() {
+            token.cancel();
+        }
+        // M.6.2: lsp-nav-mode gate (after cancel-stale-work).
+        if !self.check_lsp_sub_mode_gate(
+            lattice_lsp::modes::LspNavMode::mode_id(),
+            "lsp-nav-mode",
+        ) {
+            return;
+        }
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
+            self.set_message(
+                EchoLevel::Info,
+                "no LSP server attached to current buffer".to_string(),
+            );
+            return;
+        };
+        let snapshot = self.document.snapshot();
+        let lsp_position =
+            match crate::lsp_helpers::app_to_lsp_position(&snapshot.buffer, self.cursor) {
+                Some(p) => p,
+                None => {
+                    self.set_message(
+                        EchoLevel::Error,
+                        format!("{}: cursor out of buffer", kind.noun_singular()),
+                    );
+                    return;
+                }
+            };
+        // Capture the pre-jump origin for the tag stack -- the gd
+        // family is "drill down" navigation, so users expect <C-t>
+        // to walk back even after chained navigations.
+        let label =
+            crate::lsp_helpers::word_under_cursor(&snapshot.buffer, self.cursor).unwrap_or_default();
+        self.pending_tag_origin = Some(TagStackEntry {
+            buffer: self.active_buffer,
+            buffer_id: self.active_pane_buffer_id(),
+            position: self.cursor,
+            label,
+        });
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Vec<lsp_types::Location>>();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_definition_rx = Some(rx);
+        self.pending_definition_token = Some(token.clone());
+        self.pending_nav_kind = Some(kind);
+        let lsp = self.lsp.clone();
+        lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
+            let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
+            let mut all: Vec<lsp_types::Location> = Vec::new();
+            for handle in handles {
+                if token.is_cancelled() {
+                    return;
+                }
+                let pos_params = lsp_types::TextDocumentPositionParams {
+                    text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                    position: lsp_position,
+                };
+                let resp_locs = match kind {
+                    lattice_lsp::cache::LspNavKind::Definition => {
+                        let params = lsp_types::GotoDefinitionParams {
+                            text_document_position_params: pos_params,
+                            work_done_progress_params: Default::default(),
+                            partial_result_params: Default::default(),
+                        };
+                        handle
+                            .goto_definition(params, token.clone())
+                            .await
+                            .ok()
+                            .flatten()
+                            .map(crate::lsp_helpers::definition_response_to_locations)
+                            .unwrap_or_default()
+                    }
+                    lattice_lsp::cache::LspNavKind::Declaration => {
+                        let params = lsp_types::request::GotoDeclarationParams {
+                            text_document_position_params: pos_params,
+                            work_done_progress_params: Default::default(),
+                            partial_result_params: Default::default(),
+                        };
+                        handle
+                            .goto_declaration(params, token.clone())
+                            .await
+                            .ok()
+                            .flatten()
+                            .map(crate::lsp_helpers::definition_response_to_locations)
+                            .unwrap_or_default()
+                    }
+                    lattice_lsp::cache::LspNavKind::TypeDefinition => {
+                        let params = lsp_types::request::GotoTypeDefinitionParams {
+                            text_document_position_params: pos_params,
+                            work_done_progress_params: Default::default(),
+                            partial_result_params: Default::default(),
+                        };
+                        handle
+                            .goto_type_definition(params, token.clone())
+                            .await
+                            .ok()
+                            .flatten()
+                            .map(crate::lsp_helpers::definition_response_to_locations)
+                            .unwrap_or_default()
+                    }
+                    lattice_lsp::cache::LspNavKind::Implementation => {
+                        let params = lsp_types::request::GotoImplementationParams {
+                            text_document_position_params: pos_params,
+                            work_done_progress_params: Default::default(),
+                            partial_result_params: Default::default(),
+                        };
+                        handle
+                            .goto_implementation(params, token.clone())
+                            .await
+                            .ok()
+                            .flatten()
+                            .map(crate::lsp_helpers::definition_response_to_locations)
+                            .unwrap_or_default()
+                    }
+                };
+                all.extend(resp_locs);
+            }
+            // Dedup by (uri, range.start).
+            all.sort_by(|a, b| {
+                let au = a.uri.as_str();
+                let bu = b.uri.as_str();
+                au.cmp(bu)
+                    .then_with(|| a.range.start.line.cmp(&b.range.start.line))
+                    .then_with(|| a.range.start.character.cmp(&b.range.start.character))
+            });
+            all.dedup_by(|a, b| a.uri.as_str() == b.uri.as_str() && a.range.start == b.range.start);
+            let _ = tx.send(all);
+        });
     }
 
     /// 5.5.LSP.1: `K` (Phase 4.2.b) -- send `textDocument/hover`

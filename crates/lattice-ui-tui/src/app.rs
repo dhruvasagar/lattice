@@ -1572,33 +1572,13 @@ pub(crate) fn word_under_cursor(buffer: &Buffer, cursor: Position) -> Option<Str
     Some(String::from_utf8_lossy(&bytes[start..end]).into_owned())
 }
 
-/// Flatten an LSP `GotoDefinitionResponse` (Scalar / Array /
-/// Link) into a uniform `Vec<Location>`. The `Link` shape carries
-/// richer per-result info (origin selection range used to
-/// highlight the symbol the user clicked); we drop it for now and
-/// keep the target location only -- the App's jump path is
-/// position-only. When 4.2.d's picker buffer lands the link
-/// metadata (e.g., `target_selection_range` for narrower jump
-/// destinations) becomes useful and this function gains a richer
-/// sibling.
-pub(crate) fn definition_response_to_locations(
-    resp: lsp_types::GotoDefinitionResponse,
-) -> Vec<lsp_types::Location> {
-    match resp {
-        lsp_types::GotoDefinitionResponse::Scalar(loc) => vec![loc],
-        lsp_types::GotoDefinitionResponse::Array(locs) => locs,
-        lsp_types::GotoDefinitionResponse::Link(links) => links
-            .into_iter()
-            .map(|l| lsp_types::Location {
-                uri: l.target_uri,
-                // `target_selection_range` is the narrower symbol
-                // range; `target_range` is the enclosing block.
-                // Picker UX usually wants the narrower one.
-                range: l.target_selection_range,
-            })
-            .collect(),
-    }
-}
+// 5.5.LSP.2: `definition_response_to_locations` relocated to
+// `lattice_host::lsp_helpers`. After the nav migration no
+// production App-side caller remains (only `mod lsp::tests`
+// exercises it through `super::*`), so the re-export is scoped
+// under `cfg(test)` -- same shape as `hover_contents_to_markdown`.
+#[cfg(test)]
+pub(crate) use lattice_host::lsp_helpers::definition_response_to_locations;
 
 // 5.5.LSP.1 step 2: see the re-export block above
 // (`app_to_lsp_position`). The hover-content renderer now lives at

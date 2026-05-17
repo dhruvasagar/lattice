@@ -1602,8 +1602,12 @@ pub(crate) fn definition_response_to_locations(
 
 // 5.5.LSP.1 step 2: see the re-export block above
 // (`app_to_lsp_position`). The hover-content renderer now lives at
-// `lattice_host::lsp_helpers::hover_contents_to_markdown` and is
-// re-exported under its original `crate::app::` path.
+// `lattice_host::lsp_helpers::hover_contents_to_markdown`. After
+// LSP.1's hover-request migration there are no remaining App-side
+// production callers (only the `mod lsp::tests` block exercises
+// it), so the re-export is `cfg(test)`-scoped to satisfy
+// `deny(unused_imports)` in release builds.
+#[cfg(test)]
 pub(crate) use lattice_host::lsp_helpers::hover_contents_to_markdown;
 
 // 5.5.H: `previous_position` retired (its sole caller was the
@@ -2336,7 +2340,7 @@ mod tests {
         // popup.
         let mut a = app_with("fn main() {}\n", 5);
         a.do_open_hover("line 1\nline 2\nline 3");
-        a.do_lsp_hover_request(); // -> State B
+        a.apply(Action::LspHoverRequest); // -> State B (5.5.LSP.1)
         assert!(matches!(a.editor.active_buffer, BufferKind::Help));
         // Move within popup.
         let inv = lattice_grammar::CommandInvocation::of(a.editor.builtins.line_down.0);
@@ -3195,7 +3199,7 @@ mod tests {
         let mut a = app_with("fn main() {}\nlet x = 1;\n", 5);
         a.editor.cursor = lattice_protocol::Position::new(1, 4);
         a.do_open_hover("hover body");
-        a.do_lsp_hover_request(); // -> State B
+        a.apply(Action::LspHoverRequest); // -> State B (5.5.LSP.1)
         // Move inside the popup.
         let inv = lattice_grammar::CommandInvocation::of(a.editor.builtins.line_down.0);
         a.apply(Action::Invoke(inv));

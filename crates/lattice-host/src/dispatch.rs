@@ -692,6 +692,13 @@ pub(crate) fn handle_action(
             let _ = editor.config.set_typed::<lattice_config::FoldEnable>(!cur);
             _out.renderer_signals.extend(editor.drain_option_changes());
         }
+        // 5.5.LSP.1: `K` -- LSP hover request. The helper lives on
+        // `Editor`; App's `apply` arm is gone (falls through to its
+        // grouped `_ => {}` no-op). The popup is opened by the
+        // `drain_pending_hover` tick that follows on the next
+        // frame, which is still App-resident (LSP.2+ migrates the
+        // drain).
+        Action::LspHoverRequest => editor.lsp_hover_request(),
         // Catch-all: any Action variant not yet migrated from
         // App::apply. Sub-slices 5.5.D+ extend the match upward as
         // helpers move.
@@ -1269,6 +1276,246 @@ impl Editor {
     /// `:describe-buffer` / the LSP capability gates.
     pub fn lsp_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
         self.minor_mode_enabled_for(buffer_id, lattice_lsp::modes::LspMode::mode_id())
+    }
+
+    /// 5.5.LSP.1: is `lsp-hover-mode` active on `buffer_id`? Gates
+    /// `do_lsp_hover_request` (the K binding).
+    pub fn lsp_hover_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
+        self.minor_mode_enabled_for(buffer_id, lattice_lsp::modes::LspHoverMode::mode_id())
+    }
+
+    /// 5.5.LSP.1: shared gate for every LSP request entry point
+    /// (hover / definition / completion / format / rename /
+    /// code-action / symbols / signature / references). Returns
+    /// `true` when `lsp-mode` is active on the current document;
+    /// callers early-return on `false`. A single echo surfaces the
+    /// gate state so users discover the mode -- silent gates are a
+    /// documented anti-pattern when editor defaults the user
+    /// expects (`K`, `gd`) suddenly do nothing.
+    ///
+    /// The echo level is `Info` (not `Warn`) -- gated state is
+    /// expected user-controlled, not a misconfiguration.
+    pub fn check_lsp_mode_gate(&mut self) -> bool {
+        if self.lsp_mode_enabled_for(self.document_buffer_id) {
+            return true;
+        }
+        self.set_message(
+            EchoLevel::Info,
+            "lsp-mode disabled for this buffer (`:lsp-mode` to enable)".to_string(),
+        );
+        false
+    }
+
+    /// 5.5.LSP.1: shared gate for a per-feature LSP sub-mode.
+    /// Checks the umbrella first (so the user gets one consistent
+    /// message-source-of-truth: enable `lsp-mode` first, then the
+    /// sub-mode); returns `true` only when both are active.
+    /// Echoes at `Info` matching the umbrella's level.
+    ///
+    /// Used by `lsp_*_request` methods that want a user-discoverable
+    /// bail message. Insert-mode auto-triggers (insert completion,
+    /// signature help, on-type formatting) skip the echo path
+    /// entirely and check the bool directly -- a typed character
+    /// that doesn't fire isn't a moment to surface mode state.
+    pub fn check_lsp_sub_mode_gate(
+        &mut self,
+        sub_mode_id: lattice_mode::ModeId,
+        sub_mode_name: &str,
+    ) -> bool {
+        if !self.check_lsp_mode_gate() {
+            return false;
+        }
+        if self.minor_mode_enabled_for(self.document_buffer_id, sub_mode_id) {
+            return true;
+        }
+        self.set_message(
+            EchoLevel::Info,
+            format!("{sub_mode_name} disabled for this buffer (`:{sub_mode_name}` to enable)"),
+        );
+        false
+    }
+
+    /// 5.5.LSP.1: **State A -> State B** -- focus moves into the
+    /// hover popup. After this, the popup behaves like any other
+    /// buffer (vim grammar, `/` search, `:` ex commands operate on
+    /// the popup's content); the doc behind is frozen. Dismiss with
+    /// `<Esc>` / `q` returns focus to the doc at the cursor it was
+    /// on. No-op when no popup is live.
+    pub fn focus_help_popup(&mut self) {
+        let Some(help) = self.popup_help() else {
+            return;
+        };
+        let stash_cursor = help.cursor;
+        let stash_scroll = help.scroll as u32;
+        // Capture pre-State-B state so dismiss restores cleanly.
+        let active = self.pane_tree.active();
+        self.prev_pane_for_help = Some(PrevPaneState {
+            buffer: active.buffer,
+            buffer_id: active.buffer_id,
+            cursor: self.cursor,
+            scroll: self.scroll,
+        });
+        // Sync active pane's cursor / scroll stash *before*
+        // swapping `active_buffer` to Help.
+        self.snapshot_active_pane();
+        self.cursor = stash_cursor;
+        self.scroll = stash_scroll;
+        self.active_buffer = BufferKind::Help;
+    }
+
+    /// 5.5.LSP.1: `K` (Phase 4.2.b) -- send `textDocument/hover`
+    /// to every LSP server attached to the active document; the
+    /// spawned task awaits the actor's response on the LSP runtime,
+    /// so the keystroke handler returns instantly. The markdown
+    /// body arrives back through `pending_hover_rx` and the next
+    /// frame's `drain_pending_hover` feeds it into the popup.
+    ///
+    /// **Multi-server merge** is "first non-empty wins" for 4.2.b.
+    /// **Cancellation**: any prior in-flight hover's token is
+    /// flipped before the new request fires, so a slow server can't
+    /// drop a stale popup over the new cursor position.
+    pub fn lsp_hover_request(&mut self) {
+        // Already focused into the popup (State B) -- K is a no-op.
+        // To get a fresh hover the user dismisses with Esc / q,
+        // repositions in the doc, then presses K.
+        if matches!(self.active_buffer, BufferKind::Help) {
+            return;
+        }
+        // Popup shown but focus still on main buffer (State A) --
+        // second K transfers focus into the popup. No new LSP
+        // request fires; we just promote.
+        if self.popup_buffer.is_some() {
+            self.focus_help_popup();
+            return;
+        }
+        // First K -- fire a fresh hover request. Cancel any in-
+        // flight first. (Cancel-stale-work runs before the M.5.4
+        // gate so the prior request's relay loop sees the flip
+        // even when the gate is now closed.)
+        if let Some(token) = self.pending_hover_token.take() {
+            token.cancel();
+        }
+        // M.6.2: lsp-hover-mode gate (umbrella check inside).
+        if !self.check_lsp_sub_mode_gate(
+            lattice_lsp::modes::LspHoverMode::mode_id(),
+            "lsp-hover-mode",
+        ) {
+            return;
+        }
+
+        // Resolve the active buffer's URI. No URI = no LSP for this
+        // buffer (e.g. unsaved scratch); echo + bail.
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
+            self.set_message(
+                EchoLevel::Info,
+                "no LSP server attached to current buffer".to_string(),
+            );
+            return;
+        };
+
+        // Build the LSP-side cursor position. App's cursor is
+        // (line, col_byte) in utf-8; LSP wants utf-16 columns.
+        let snapshot = self.document.snapshot();
+        let lsp_position =
+            match crate::lsp_helpers::app_to_lsp_position(&snapshot.buffer, self.cursor) {
+                Some(p) => p,
+                None => {
+                    self.set_message(EchoLevel::Error, "hover: cursor out of buffer".to_string());
+                    return;
+                }
+            };
+
+        // Fresh channel + token for this request.
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<lattice_lsp::cache::HoverOutcome>();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_hover_rx = Some(rx);
+        self.pending_hover_token = Some(token.clone());
+
+        let lsp = self.lsp.clone();
+        let logger = self.lsp_logger.clone();
+        let request_started = std::time::Instant::now();
+        let request_uri = uri.as_str().to_string();
+        lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
+            // Snapshot the attached handles under the supervisor
+            // lock, then drop it before awaiting any per-server
+            // response.
+            let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
+            if handles.is_empty() {
+                let _ = tx.send(lattice_lsp::cache::HoverOutcome::NoServers);
+                return;
+            }
+            let mut tried = 0usize;
+            for handle in handles {
+                if token.is_cancelled() {
+                    return;
+                }
+                tried += 1;
+                let params = lsp_types::HoverParams {
+                    text_document_position_params: lsp_types::TextDocumentPositionParams {
+                        text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                        position: lsp_position,
+                    },
+                    work_done_progress_params: Default::default(),
+                };
+                let instance = handle.instance();
+                logger.log(
+                    Some(&instance),
+                    lattice_lsp::LogLevel::Debug,
+                    lattice_lsp::LogSource::Client,
+                    format!(
+                        "hover requested @ {request_uri} line {} character {}",
+                        lsp_position.line, lsp_position.character
+                    ),
+                );
+                match handle.hover(params, token.clone()).await {
+                    Ok(Some(hover)) => {
+                        let body = crate::lsp_helpers::hover_contents_to_markdown(&hover.contents);
+                        if !body.trim().is_empty() {
+                            logger.log(
+                                Some(&instance),
+                                lattice_lsp::LogLevel::Debug,
+                                lattice_lsp::LogSource::Client,
+                                format!(
+                                    "hover reply: {} bytes after {:?}",
+                                    body.len(),
+                                    request_started.elapsed()
+                                ),
+                            );
+                            let _ = tx.send(lattice_lsp::cache::HoverOutcome::Body(body));
+                            return;
+                        }
+                        // Server replied but the body's empty.
+                        logger.log(
+                            Some(&instance),
+                            lattice_lsp::LogLevel::Debug,
+                            lattice_lsp::LogSource::Client,
+                            "hover reply: empty body (server still indexing?)".to_string(),
+                        );
+                    }
+                    Ok(None) => {
+                        logger.log(
+                            Some(&instance),
+                            lattice_lsp::LogLevel::Debug,
+                            lattice_lsp::LogSource::Client,
+                            "hover reply: null (cursor not on a known symbol, or server still indexing)"
+                                .to_string(),
+                        );
+                    }
+                    Err(e) => {
+                        logger.log(
+                            Some(&instance),
+                            lattice_lsp::LogLevel::Warn,
+                            lattice_lsp::LogSource::Client,
+                            format!("hover error: {e}"),
+                        );
+                    }
+                }
+            }
+            // Walked every server, none had a non-empty body.
+            let _ = tx.send(lattice_lsp::cache::HoverOutcome::NoBody {
+                servers_tried: tried,
+            });
+        });
     }
 
     /// 5.5.F.5.1: rebuild the buffer-local `ActiveCompletionSources`

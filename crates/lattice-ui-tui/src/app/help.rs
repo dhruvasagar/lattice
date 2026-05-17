@@ -39,7 +39,7 @@
 
 use lattice_protocol::position::Position;
 
-use super::{App, BufferKind, EchoLevel, PositionSource, PrevPaneState, line_byte_len};
+use super::{App, EchoLevel, PositionSource, line_byte_len};
 use crate::help::HelpContent;
 
 impl App {
@@ -143,33 +143,13 @@ impl App {
         );
     }
 
-    /// **State A -> State B**: focus moves into the popup. After
-    /// this, the popup behaves like any other buffer -- vim
-    /// grammar (motions, `/` search, `n`/`N`, `gg`/`G`, `:` ex
-    /// commands) operates on the popup's content; the doc behind
-    /// is frozen. Dismiss with `<Esc>` / `q` returns focus to
-    /// the doc at the cursor it was on.
-    pub(super) fn focus_help_popup(&mut self) {
-        let Some(help) = self.popup_help() else {
-            return;
-        };
-        let stash_cursor = help.cursor;
-        let stash_scroll = help.scroll as u32;
-        // Capture pre-State-B state so dismiss restores cleanly.
-        let active = self.editor.pane_tree.active();
-        self.editor.prev_pane_for_help = Some(PrevPaneState {
-            buffer: active.buffer,
-            buffer_id: active.buffer_id,
-            cursor: self.editor.cursor,
-            scroll: self.editor.scroll,
-        });
-        // Sync active pane's cursor / scroll stash *before*
-        // swapping `active_buffer` to Help.
-        self.snapshot_active_pane();
-        self.editor.cursor = stash_cursor;
-        self.editor.scroll = stash_scroll;
-        self.editor.active_buffer = BufferKind::Help;
-    }
+    // 5.5.LSP.1: `focus_help_popup` (State A -> B promote)
+    // relocated to [`lattice_host::dispatch::Editor::focus_help_popup`].
+    // The host method is identical (stashes pane state, swaps
+    // `active_buffer` to Help) and is invoked by `Editor::
+    // lsp_hover_request`. App-side callers (forthcoming LSP.2-5
+    // navigation / references / etc.) will call the host version
+    // once those request helpers migrate alongside their drains.
 
     /// `:HoverClose` -- dismiss the hover popup. Routes through
     /// the unified `dismiss_popup` path so State A and State B

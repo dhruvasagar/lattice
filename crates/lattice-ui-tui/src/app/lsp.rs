@@ -46,16 +46,25 @@ use lattice_grammar::ModalState;
 use lattice_protocol::Event;
 
 use super::{
-    App, BufferKind, CodeActionOutcome, CodeActionRow, CompletionItemRow, CompletionOutcome,
+    App, CodeActionOutcome, CodeActionRow, CompletionItemRow, CompletionOutcome,
     CompletionResolveOutcome, EchoLevel, FormatOutcome, HoverOutcome, InsertCompletionLspOutcome,
     LSP_COMPLETION_KIND_ID, LspCompletionMeta, LspNavKind, ReferencesOutcome, RenameOutcome,
     SignatureHelpOutcome, SymbolRow, SymbolsOutcome, TagStackEntry, app_to_lsp_position,
     call_hierarchy_to_row, code_action_kind_glyph, completion_kind_glyph, dedup_rendered_by_text,
     definition_response_to_locations, flatten_document_symbol_response, flatten_workspace_edit,
-    hover_contents_to_markdown, is_word_char_byte, last_addressable_line, line_byte_len,
-    lsp_position_to_app_byte, prepare_rename_placeholder, range_covers, signature_help_to_markdown,
+    is_word_char_byte, last_addressable_line, line_byte_len, lsp_position_to_app_byte,
+    prepare_rename_placeholder, range_covers, signature_help_to_markdown,
     symbol_information_to_row, type_hierarchy_to_row, word_under_cursor, workspace_symbol_to_row,
 };
+// 5.5.LSP.1: `hover_contents_to_markdown` is test-only in this
+// module after the hover-request migration; tests reach it via
+// `super::hover_contents_to_markdown(...)` so it needs to live in
+// the `mod lsp` scope, but `cfg(test)` keeps it out of release
+// builds (where `deny(unused_imports)` would flag it). `BufferKind`
+// is reached by tests via the separate `use crate::app::*;` block
+// in `mod tests`, so it doesn't need re-import here.
+#[cfg(test)]
+use super::hover_contents_to_markdown;
 use crate::buffers::BufferId;
 use lattice_protocol::edit::Edit;
 
@@ -321,160 +330,15 @@ impl App {
         false
     }
 
-    /// `K` (Phase 4.2.b). Send `textDocument/hover` to every LSP
-    /// server attached to the active document; the spawned task
-    /// awaits the actor's response on the LSP runtime, so the
-    /// keystroke handler returns instantly. The markdown body
-    /// arrives back through `pending_hover_rx` and the next
-    /// frame's `drain_pending_hover` feeds it into the popup.
-    ///
-    /// **Multi-server merge** is "first non-empty wins" for
-    /// 4.2.b. **Cancellation**: any prior in-flight hover's
-    /// token is flipped before the new request fires, so a slow
-    /// server can't drop a stale popup over the new cursor
-    /// position.
-    pub(super) fn do_lsp_hover_request(&mut self) {
-        // Already focused into the popup (State B) -- K is a
-        // no-op. To get a fresh hover the user dismisses with
-        // Esc / q, repositions in the doc, then presses K.
-        if matches!(self.editor.active_buffer, BufferKind::Help) {
-            return;
-        }
-        // Popup shown but focus still on main buffer (State A) --
-        // second K transfers focus into the popup. No new LSP
-        // request fires; we just promote.
-        if self.editor.popup_buffer.is_some() {
-            self.focus_help_popup();
-            return;
-        }
-        // First K -- fire a fresh hover request. Cancel any
-        // in-flight first. (Cancel-stale-work runs before the
-        // M.5.4 gate so the prior request's relay loop sees the
-        // flip even when the gate is now closed.)
-        if let Some(token) = self.editor.pending_hover_token.take() {
-            token.cancel();
-        }
-        // M.6.2: lsp-hover-mode gate (umbrella check inside).
-        if !self.check_lsp_sub_mode_gate(
-            lattice_lsp::modes::LspHoverMode::mode_id(),
-            "lsp-hover-mode",
-        ) {
-            return;
-        }
-
-        // Resolve the active buffer's URI. No URI = no LSP for
-        // this buffer (e.g. unsaved scratch); echo + bail.
-        let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
-            self.set_message(
-                EchoLevel::Info,
-                "no LSP server attached to current buffer".to_string(),
-            );
-            return;
-        };
-
-        // Build the LSP-side cursor position. App's cursor is
-        // (line, col_byte) in utf-8; LSP wants utf-16 columns.
-        let snapshot = self.editor.document.snapshot();
-        let lsp_position = match app_to_lsp_position(&snapshot.buffer, self.editor.cursor) {
-            Some(p) => p,
-            None => {
-                self.set_message(EchoLevel::Error, "hover: cursor out of buffer".to_string());
-                return;
-            }
-        };
-
-        // Fresh channel + token for this request.
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<HoverOutcome>();
-        let token = lattice_protocol::CancellationToken::new();
-        self.editor.pending_hover_rx = Some(rx);
-        self.editor.pending_hover_token = Some(token.clone());
-
-        let lsp = self.editor.lsp.clone();
-        let logger = self.editor.lsp_logger.clone();
-        let request_started = std::time::Instant::now();
-        let request_uri = uri.as_str().to_string();
-        crate::runtime::spawn_on_lsp_runtime(async move {
-            // Snapshot the attached handles under the supervisor
-            // lock, then drop it before awaiting any per-server
-            // response.
-            let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
-            if handles.is_empty() {
-                let _ = tx.send(HoverOutcome::NoServers);
-                return;
-            }
-            let mut tried = 0usize;
-            for handle in handles {
-                if token.is_cancelled() {
-                    return;
-                }
-                tried += 1;
-                let params = lsp_types::HoverParams {
-                    text_document_position_params: lsp_types::TextDocumentPositionParams {
-                        text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
-                        position: lsp_position,
-                    },
-                    work_done_progress_params: Default::default(),
-                };
-                let instance = handle.instance();
-                logger.log(
-                    Some(&instance),
-                    lattice_lsp::LogLevel::Debug,
-                    lattice_lsp::LogSource::Client,
-                    format!(
-                        "hover requested @ {request_uri} line {} character {}",
-                        lsp_position.line, lsp_position.character
-                    ),
-                );
-                match handle.hover(params, token.clone()).await {
-                    Ok(Some(hover)) => {
-                        let body = hover_contents_to_markdown(&hover.contents);
-                        if !body.trim().is_empty() {
-                            logger.log(
-                                Some(&instance),
-                                lattice_lsp::LogLevel::Debug,
-                                lattice_lsp::LogSource::Client,
-                                format!(
-                                    "hover reply: {} bytes after {:?}",
-                                    body.len(),
-                                    request_started.elapsed()
-                                ),
-                            );
-                            let _ = tx.send(HoverOutcome::Body(body));
-                            return;
-                        }
-                        // Server replied but the body's empty.
-                        logger.log(
-                            Some(&instance),
-                            lattice_lsp::LogLevel::Debug,
-                            lattice_lsp::LogSource::Client,
-                            "hover reply: empty body (server still indexing?)".to_string(),
-                        );
-                    }
-                    Ok(None) => {
-                        logger.log(
-                            Some(&instance),
-                            lattice_lsp::LogLevel::Debug,
-                            lattice_lsp::LogSource::Client,
-                            "hover reply: null (cursor not on a known symbol, or server still indexing)"
-                                .to_string(),
-                        );
-                    }
-                    Err(e) => {
-                        logger.log(
-                            Some(&instance),
-                            lattice_lsp::LogLevel::Warn,
-                            lattice_lsp::LogSource::Client,
-                            format!("hover error: {e}"),
-                        );
-                    }
-                }
-            }
-            // Walked every server, none had a non-empty body.
-            let _ = tx.send(HoverOutcome::NoBody {
-                servers_tried: tried,
-            });
-        });
-    }
+    // 5.5.LSP.1: `K` -- `do_lsp_hover_request` relocated to
+    // [`lattice_host::dispatch::Editor::lsp_hover_request`]. The
+    // host-side body is identical (gates + URI lookup + cursor
+    // translation + spawn on the LSP runtime) and runs as the
+    // [`Action::LspHoverRequest`] arm of [`Editor::dispatch`]. App-
+    // side callers (tests in app.rs at lines 2339, 3198 and
+    // dispatch.rs at 2206) route through `apply(Action::Lsp...)`
+    // now. The drain side (`drain_pending_hover`) stays App-
+    // resident until LSP.2+ migrates it.
 
     /// Drain the channel populated by `do_lsp_hover_request` and
     /// act on every pending `HoverOutcome`: open the popup for

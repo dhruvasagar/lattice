@@ -255,7 +255,10 @@ impl App {
             // 5.5.G.17: modal-state pivot + blockwise-Visual I/A.
             | Action::EnterMode(_)
             | Action::EnterBlockVisualInsert
-            | Action::EnterBlockVisualAppend => {}
+            | Action::EnterBlockVisualAppend
+            // 5.5.LSP.1: `K` -- hover request migrated to
+            // `Editor::dispatch`.
+            | Action::LspHoverRequest => {}
             Action::Invoke(inv) => self.run_invocation(inv),
             Action::Insert(s) => self.do_insert_text(&s),
             // 5.5.G.3: `DeleteCharBackward`, `EnterAppend`,
@@ -359,7 +362,10 @@ impl App {
             // migrated to `Editor::dispatch`; routed through the
             // grouped no-op above.
             // 5.5.G.14: `ToggleFoldEnable` migrated to `Editor::dispatch`.
-            Action::LspHoverRequest => self.do_lsp_hover_request(),
+            // 5.5.LSP.1: `LspHoverRequest` migrated to `Editor::dispatch`
+            // (host-side `Editor::lsp_hover_request`); the App arm here
+            // is gone -- the action falls through to the grouped no-op
+            // below.
             Action::LspDefinitionRequest => self.do_lsp_nav_request(LspNavKind::Definition),
             Action::LspDeclarationRequest => self.do_lsp_nav_request(LspNavKind::Declaration),
             Action::LspTypeDefinitionRequest => self.do_lsp_nav_request(LspNavKind::TypeDefinition),
@@ -2200,7 +2206,10 @@ mod tests {
         assert!(matches!(a.editor.active_buffer, BufferKind::Document));
         assert!(a.editor.prev_pane_for_help.is_none());
         // Second K -> focus into popup.
-        a.do_lsp_hover_request();
+        // 5.5.LSP.1: hover request migrated to `Editor::dispatch`;
+        // exercise the State A -> State B promote through the Action
+        // path so the test covers the live dispatch wire too.
+        a.apply(Action::LspHoverRequest);
         assert!(a.editor.popup_buffer.is_some(), "popup stays up after focus");
         assert!(matches!(a.editor.active_buffer, BufferKind::Help));
         let stash = a.editor.prev_pane_for_help.expect("State B captures stash");

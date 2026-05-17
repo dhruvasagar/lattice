@@ -33,6 +33,17 @@
 #    `cargo bench` locally.
 # 6. **Bench baseline (main only).** Records criterion numbers as
 #    a build artifact for future regression tooling to diff against.
+# 7. **GPUI cross-platform build (5.7.A.1).** `cargo build -p
+#    lattice-ui-gpui --features window` on Linux / macOS / Windows.
+#    The `window` feature is opt-in (see `crates/lattice-ui-gpui/Cargo.toml`)
+#    so the main `test` matrix above does not exercise it; this job
+#    specifically validates that the GPUI peer renderer links against
+#    its display-library deps on every supported platform. Linux
+#    installs the X11 + Wayland + xkbcommon + fontconfig system libs
+#    gpui's default features require; macOS + Windows have everything
+#    they need pre-installed on GitHub-hosted runners. We don't run
+#    the binary -- CI runners have no display server -- but compile +
+#    link is the meaningful platform signal.
 #
 # What is NOT gated yet:
 #
@@ -172,3 +183,46 @@ jobs:
           name: criterion-results
           path: target/criterion/
           retention-days: 30
+
+  gpui-window-build:
+    # Phase 5.7.A.1: validate the GPUI peer renderer (`lattice-ui-gpui`)
+    # compiles + links against its display-library deps on every
+    # supported platform. The `window` feature pulls real gpui 0.2.2;
+    # the main `test` job above runs with `window` OFF (the scaffold's
+    # lib + tests build everywhere). This job exists specifically to
+    # catch platform-specific link breakage at PR time, not at release.
+    name: gpui-window-build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          rustflags: ""
+      - uses: Swatinem/rust-cache@v2
+      # Linux: install X11 / Wayland / xkbcommon / fontconfig system
+      # libs gpui's default features require at link time. macOS +
+      # Windows have everything pre-installed on GitHub-hosted runners
+      # (Metal SDK with Xcode CLI tools; DirectX + MSVC Build Tools).
+      - name: Install Linux display libs
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxcb1-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libwayland-dev \
+            libfontconfig1-dev
+      - name: cargo build -p lattice-ui-gpui --features window
+        # Build (not run) the placeholder window binary. The CI runner
+        # has no display server, so executing the binary would hang or
+        # fail with "no display"; compile + link is the meaningful
+        # platform signal for this phase. Running the binary becomes a
+        # follow-on slice once we add an xvfb-shaped harness or a
+        # headless gpui mode.
+        run: cargo build -p lattice-ui-gpui --features window --locked

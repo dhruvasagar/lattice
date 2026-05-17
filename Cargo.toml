@@ -18,6 +18,7 @@ members = [
 	"crates/lattice-lsp",
 	"crates/lattice-host",
 	"crates/lattice-ui-tui",
+	"crates/lattice-ui-gpui",
 	"crates/lattice-cli",
 ]
 

@@ -1,0 +1,48 @@
+[package]
+name = "lattice-ui-gpui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Peer GPUI renderer for lattice — host-neutral substrate driving Zed's GPU-accelerated UI framework."
+
+[dependencies]
+# Renderer-neutral substrate. The whole point of this crate is to
+# prove `lattice-host` is reusable without `lattice-ui-tui` in the
+# dep tree; if a host module starts pulling in ratatui/crossterm via
+# transitive deps, the build below fails and the regression is
+# loud.
+lattice-host = { path = "../lattice-host" }
+lattice-core = { path = "../lattice-core" }
+lattice-mode = { path = "../lattice-mode" }
+
+# Zed's GPU-accelerated UI framework. Gated behind the `window`
+# feature so the scaffold types + tests build on every host
+# (including headless CI / WSL2 without X11). When `window` is on,
+# the `lattice-gpui` binary opens a real GPUI window; default
+# features pull `font-kit` + `wayland` + `x11` + `windows-manifest`
+# which need system libs (`libxcb1-dev` + `libxkbcommon-dev` +
+# `libxkbcommon-x11-dev` on Debian/Ubuntu) at link time. The
+# scaffold's value proposition (host substrate reusable without
+# ui-tui) is provable without the link.
+gpui = { version = "0.2.2", optional = true }
+
+anyhow.workspace = true
+tracing.workspace = true
+
+[features]
+default = []
+# 5.7.B: opens a real GPUI window via the `lattice-gpui` binary.
+# Requires display system libraries at link time (see the gpui dep
+# comment above). Off by default so `cargo test --workspace` works
+# in environments without display deps installed.
+window = ["dep:gpui"]
+
+[[bin]]
+name = "lattice-gpui"
+path = "src/bin/lattice_gpui.rs"
+required-features = ["window"]
+
+[lints]
+workspace = true

@@ -242,26 +242,9 @@ impl App {
         self.refresh_docs_popup_for_selection();
     }
 
-    /// Page the docs popup body forward (`<C-f>` inside the
-    /// completion-popup minor mode). Half-popup-height jump
-    /// per press; clamps at the body's last visible line.
-    pub fn do_completion_docs_scroll_down(&mut self) {
-        if let Some(state) = self.editor.insert_completion.as_mut()
-            && let Some(doc) = state.doc_popup.as_mut()
-        {
-            doc.scroll = doc.scroll.saturating_add(8);
-        }
-    }
-
-    /// Page the docs popup body backward (`<C-b>` inside the
-    /// completion-popup minor mode).
-    pub fn do_completion_docs_scroll_up(&mut self) {
-        if let Some(state) = self.editor.insert_completion.as_mut()
-            && let Some(doc) = state.doc_popup.as_mut()
-        {
-            doc.scroll = doc.scroll.saturating_sub(8);
-        }
-    }
+    // 5.5.G.14: `do_completion_docs_scroll_down` /
+    // `do_completion_docs_scroll_up` migrated to
+    // [`lattice_host::dispatch::Editor`].
 
     /// Run sync sources against the supplied state, populating
     /// `state.raw` and re-running matcher + ranker so
@@ -1017,9 +1000,14 @@ impl App {
         }
     }
 
+    // 5.5.G.14: body migrated to
+    // [`lattice_host::dispatch::Editor::do_completion_cancel`].
+    // Kept as a delegate -- a handful of LSP-side and App-side
+    // paths still call `do_completion_cancel` directly
+    // (`run_invocation` exit, `<Esc>` flush, snippet abort).
+    #[allow(dead_code)]
     pub fn do_completion_cancel(&mut self) {
-        self.editor.insert_completion = None;
-        self.editor.completion_in_path_context = false;
+        self.editor.do_completion_cancel();
     }
 
     /// CSM.K2: restrict the open completion popup to a single

@@ -665,6 +665,24 @@ pub(crate) fn handle_action(
         }
         Action::CommandLineHistoryPrev => editor.do_command_history_step(true),
         Action::CommandLineHistoryNext => editor.do_command_history_step(false),
+        // 5.5.G.14: pure-editor completion-cancel + docs-scroll + foldenable toggle.
+        Action::CompletionCancel => editor.do_completion_cancel(),
+        Action::CompletionCancelAndExitInsert => {
+            editor.do_completion_cancel();
+            editor.modal = ModalState::Normal;
+        }
+        Action::CompletionDocsScrollDown => editor.do_completion_docs_scroll_down(),
+        Action::CompletionDocsScrollUp => editor.do_completion_docs_scroll_up(),
+        Action::ToggleFoldEnable => {
+            // `zi` toggle. `set_typed` publishes through the bus;
+            // drain immediately so the cascade refreshes
+            // `option_cache.foldenable` before any subsequent reads
+            // in this same `dispatch` call (and before the next
+            // frame draws).
+            let cur = editor.option_cache.foldenable;
+            let _ = editor.config.set_typed::<lattice_config::FoldEnable>(!cur);
+            _out.renderer_signals.extend(editor.drain_option_changes());
+        }
         // Catch-all: any Action variant not yet migrated from
         // App::apply. Sub-slices 5.5.D+ extend the match upward as
         // helpers move.
@@ -3112,6 +3130,40 @@ impl Editor {
             }
         }
         signals
+    }
+}
+
+/// 5.5.G.14: pure-editor completion cancel + docs scroll.
+/// Migrated from `lattice-ui-tui::app::completion`; touches only
+/// editor-owned `insert_completion` + `completion_in_path_context`.
+impl Editor {
+    /// Tear down the in-flight insert-completion state. Clears
+    /// the popup and exits any path-context filter mode. Pure-
+    /// editor; the next `Action::CompletionTrigger` rebuilds.
+    pub fn do_completion_cancel(&mut self) {
+        self.insert_completion = None;
+        self.completion_in_path_context = false;
+    }
+
+    /// Page the docs popup body forward (`<C-f>` inside the
+    /// completion-popup minor mode). Half-popup-height jump per
+    /// press; clamps at the body's last visible line.
+    pub fn do_completion_docs_scroll_down(&mut self) {
+        if let Some(state) = self.insert_completion.as_mut()
+            && let Some(doc) = state.doc_popup.as_mut()
+        {
+            doc.scroll = doc.scroll.saturating_add(8);
+        }
+    }
+
+    /// Page the docs popup body backward (`<C-b>` inside the
+    /// completion-popup minor mode).
+    pub fn do_completion_docs_scroll_up(&mut self) {
+        if let Some(state) = self.insert_completion.as_mut()
+            && let Some(doc) = state.doc_popup.as_mut()
+        {
+            doc.scroll = doc.scroll.saturating_sub(8);
+        }
     }
 }
 

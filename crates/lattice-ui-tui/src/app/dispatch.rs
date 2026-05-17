@@ -231,7 +231,14 @@ impl App {
             // 5.5.G.13: pure-editor cmdline arms.
             | Action::EnterCommandLine
             | Action::CommandLineHistoryPrev
-            | Action::CommandLineHistoryNext => {}
+            | Action::CommandLineHistoryNext
+            // 5.5.G.14: completion-cancel cluster + docs scroll +
+            // foldenable toggle.
+            | Action::CompletionCancel
+            | Action::CompletionCancelAndExitInsert
+            | Action::CompletionDocsScrollDown
+            | Action::CompletionDocsScrollUp
+            | Action::ToggleFoldEnable => {}
             Action::Invoke(inv) => self.run_invocation(inv),
             Action::Insert(s) => self.do_insert_text(&s),
             // 5.5.G.3: `DeleteCharBackward`, `EnterAppend`,
@@ -334,16 +341,7 @@ impl App {
             // / `DeleteFoldAtCursor` / `GotoNextFold` / `GotoPrevFold`
             // migrated to `Editor::dispatch`; routed through the
             // grouped no-op above.
-            Action::ToggleFoldEnable => {
-                // `zi` toggle path. The set() publishes through
-                // the bus; drain immediately so the cascade
-                // refreshes `option_cache.foldenable` before any
-                // subsequent reads in this same `apply` call (and
-                // before the next frame draws).
-                let cur = self.foldenable();
-                let _ = self.editor.config.set_typed::<lattice_config::FoldEnable>(!cur);
-                self.drain_option_changes();
-            }
+            // 5.5.G.14: `ToggleFoldEnable` migrated to `Editor::dispatch`.
             Action::LspHoverRequest => self.do_lsp_hover_request(),
             Action::LspDefinitionRequest => self.do_lsp_nav_request(LspNavKind::Definition),
             Action::LspDeclarationRequest => self.do_lsp_nav_request(LspNavKind::Declaration),
@@ -358,14 +356,11 @@ impl App {
             Action::CompletionNext => self.do_completion_next(),
             Action::CompletionPrev => self.do_completion_prev(),
             Action::CompletionAccept => self.do_completion_accept(),
-            Action::CompletionCancel => self.do_completion_cancel(),
-            Action::CompletionCancelAndExitInsert => {
-                self.do_completion_cancel();
-                self.editor.modal = ModalState::Normal;
-            }
+            // 5.5.G.14: `CompletionCancel` /
+            // `CompletionCancelAndExitInsert` /
+            // `CompletionDocsScrollDown` /
+            // `CompletionDocsScrollUp` migrated to `Editor::dispatch`.
             Action::CompletionToggleDocs => self.do_completion_toggle_docs(),
-            Action::CompletionDocsScrollDown => self.do_completion_docs_scroll_down(),
-            Action::CompletionDocsScrollUp => self.do_completion_docs_scroll_up(),
             Action::CompletionFilterToSource(id) => {
                 self.do_completion_filter_to_source(id);
             }

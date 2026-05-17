@@ -1783,41 +1783,20 @@ impl App {
             .map_err(|e| format!("{e:?}"))
     }
 
-    /// Union of onTypeFormatting trigger characters across LSP
-    /// servers attached to the active document.
+    /// 5.5.G.23.insert-prep: body migrated to
+    /// [`lattice_host::dispatch::Editor::on_type_formatting_trigger_chars`].
+    /// Retained as a delegate while `do_insert_text` still lives
+    /// App-side; deletion follows when `do_insert_text` migrates.
     pub(super) fn on_type_formatting_trigger_chars(&self) -> Vec<char> {
-        let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id) else {
-            return Vec::new();
-        };
-        let handles = self.editor.lsp.servers_for(uri);
-        let mut chars: Vec<char> = Vec::new();
-        for h in handles {
-            for c in h.capabilities().on_type_formatting_trigger_chars() {
-                if !chars.contains(&c) {
-                    chars.push(c);
-                }
-            }
-        }
-        chars
+        self.editor.on_type_formatting_trigger_chars()
     }
 
-    /// Union of signature-help trigger characters across every
-    /// LSP server attached to the active document. Empty when
-    /// no server advertises the provider.
+    /// 5.5.G.23.insert-prep: body migrated to
+    /// [`lattice_host::dispatch::Editor::signature_help_trigger_chars`].
+    /// Retained as a delegate while `do_insert_text` still lives
+    /// App-side; deletion follows when `do_insert_text` migrates.
     pub(super) fn signature_help_trigger_chars(&self) -> Vec<char> {
-        let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id) else {
-            return Vec::new();
-        };
-        let handles = self.editor.lsp.servers_for(uri);
-        let mut chars: Vec<char> = Vec::new();
-        for h in handles {
-            for c in h.capabilities().signature_help_trigger_chars() {
-                if !chars.contains(&c) {
-                    chars.push(c);
-                }
-            }
-        }
-        chars
+        self.editor.signature_help_trigger_chars()
     }
 
     /// Fire `textDocument/onTypeFormatting` to the highest-

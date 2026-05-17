@@ -1427,6 +1427,49 @@ impl Editor {
 
     /// 5.5.LSP.4: signature help (Insert-mode auto-trigger).
     /// Sends `textDocument/signatureHelp` to every attached server
+    /// 5.5.G.23.insert-prep: union of `signatureHelp` trigger
+    /// characters across every LSP server attached to the active
+    /// document. Empty when no server advertises the provider. Used
+    /// by the host-side `Editor::do_insert_text` (forthcoming) to
+    /// fire the autopilot signature-help request on the matching
+    /// inserted char.
+    pub fn signature_help_trigger_chars(&self) -> Vec<char> {
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id) else {
+            return Vec::new();
+        };
+        let handles = self.lsp.servers_for(uri);
+        let mut chars: Vec<char> = Vec::new();
+        for h in handles {
+            for c in h.capabilities().signature_help_trigger_chars() {
+                if !chars.contains(&c) {
+                    chars.push(c);
+                }
+            }
+        }
+        chars
+    }
+
+    /// 5.5.G.23.insert-prep: union of `onTypeFormatting` trigger
+    /// characters across LSP servers attached to the active
+    /// document. Used by the host-side `Editor::do_insert_text`
+    /// (forthcoming) to fire `textDocument/onTypeFormatting` after
+    /// a matching inserted char.
+    pub fn on_type_formatting_trigger_chars(&self) -> Vec<char> {
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id) else {
+            return Vec::new();
+        };
+        let handles = self.lsp.servers_for(uri);
+        let mut chars: Vec<char> = Vec::new();
+        for h in handles {
+            for c in h.capabilities().on_type_formatting_trigger_chars() {
+                if !chars.contains(&c) {
+                    chars.push(c);
+                }
+            }
+        }
+        chars
+    }
+
     /// with `supports_signature_help`. First non-empty markdown
     /// body wins; the popup pipeline draws it via
     /// `drain_pending_signature_help` (still App-side).

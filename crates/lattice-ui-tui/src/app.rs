@@ -1201,14 +1201,15 @@ pub(crate) fn flatten_selection_range_chain(
     out
 }
 
-pub(crate) fn app_to_lsp_position(buffer: &Buffer, p: Position) -> Option<lsp_types::Position> {
-    let line_text = buffer.line(p.line)?;
-    let character = lattice_lsp::position::utf8_byte_to_utf16_column(&line_text, p.byte);
-    Some(lsp_types::Position {
-        line: p.line,
-        character,
-    })
-}
+// 5.5.LSP.1 step 2: `app_to_lsp_position` and
+// `hover_contents_to_markdown` (below) relocated to
+// `lattice_host::lsp_helpers`. Re-exported under their original
+// `crate::app::*` paths so the ~21 existing call sites continue
+// to compile unchanged through the rest of the LSP cluster
+// migration. Once every App-side LSP request helper has migrated
+// host-side (LSP.5), the re-exports can be retired in a follow-
+// up sweep alongside the helpers themselves.
+pub(crate) use lattice_host::lsp_helpers::app_to_lsp_position;
 
 /// Flatten a `DocumentSymbolResponse` into our pre-rendered
 /// `SymbolRow` shape. The legacy `Flat(Vec<SymbolInformation>)`
@@ -1599,35 +1600,11 @@ pub(crate) fn definition_response_to_locations(
     }
 }
 
-/// Render an LSP `HoverContents` payload to a markdown string the
-/// renderer's [`crate::hover::HoverPopup`] pipeline can highlight
-/// via the markdown grammar.
-///
-/// `MarkedString::String(s)` keeps `s` verbatim. `MarkedString::LanguageString
-/// { language, value }` wraps `value` in a fenced code block tagged with
-/// `language` so the markdown injection picks it up.
-/// `MarkupContent` arrives pre-rendered as either markdown or plaintext
-/// (we treat plaintext as already-good markdown). `Array` joins each
-/// element with two newlines so blocks separate cleanly.
-pub(crate) fn hover_contents_to_markdown(contents: &lsp_types::HoverContents) -> String {
-    fn marked_to_markdown(m: &lsp_types::MarkedString) -> String {
-        match m {
-            lsp_types::MarkedString::String(s) => s.clone(),
-            lsp_types::MarkedString::LanguageString(ls) => {
-                format!("```{}\n{}\n```", ls.language, ls.value)
-            }
-        }
-    }
-    match contents {
-        lsp_types::HoverContents::Scalar(m) => marked_to_markdown(m),
-        lsp_types::HoverContents::Array(items) => items
-            .iter()
-            .map(marked_to_markdown)
-            .collect::<Vec<_>>()
-            .join("\n\n"),
-        lsp_types::HoverContents::Markup(m) => m.value.clone(),
-    }
-}
+// 5.5.LSP.1 step 2: see the re-export block above
+// (`app_to_lsp_position`). The hover-content renderer now lives at
+// `lattice_host::lsp_helpers::hover_contents_to_markdown` and is
+// re-exported under its original `crate::app::` path.
+pub(crate) use lattice_host::lsp_helpers::hover_contents_to_markdown;
 
 // 5.5.H: `previous_position` retired (its sole caller was the
 // search-side `step_byte`, also retired). Host's

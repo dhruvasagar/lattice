@@ -1,4 +1,4 @@
-//! `lattice-gpui` — GPUI window binary for the 5.7.B phase
+//! `lattice-gpui` — GPUI window binary for the Phase-5.7/5.8
 //! progression. Behind the `window` Cargo feature so the
 //! scaffold's lib + tests build everywhere; this binary is
 //! opt-in for hosts with display libs installed:
@@ -7,6 +7,8 @@
 //! # Debian / Ubuntu / WSL2:
 //! sudo apt install libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
 //! cargo run --features window -p lattice-ui-gpui --bin lattice-gpui
+//! # open a real file (post-5.8.A):
+//! cargo run --features window -p lattice-ui-gpui --bin lattice-gpui -- src/lib.rs
 //! ```
 //!
 //! On WSLg (WSL2 GUI host) gpui-0.2.2's bundled Wayland
@@ -19,34 +21,51 @@
 //! cargo run --features window -p lattice-ui-gpui --bin lattice-gpui
 //! ```
 //!
-//! ## What this binary does today (5.7.B.4)
+//! ## What this binary does today
 //!
-//! Opens a 720×480 native window with a minimal editor surface:
+//! Opens a 720×480 native window with an editor surface:
 //!
-//! - **Top region**: the active document's text. Today the
-//!   binary boots an empty scratch document and a placeholder
-//!   line of instructions; the 5.9 CLI path (`lattice --gpu
-//!   <file>`) wires user-supplied files in.
+//! - **Top region**: the active document's text. Per-character
+//!   cells laid out under a `flex_row` line + `flex_col` column
+//!   on a monospace font. Syntax highlights (5.8.A) color each
+//!   span via the Catppuccin Mocha palette when an
+//!   `editor.syntax` handle exists. The 9-character vim-style
+//!   cursor renders three ways based on `editor.modal`
+//!   (5.7.B.11): inverted block in Normal/Visual/OperatorPending,
+//!   left bar in Insert/Command/Search, bottom underline in
+//!   Replace.
 //!
-//! - **Bottom region**: a status line showing the current
-//!   `ModalState` (Normal / Insert / Visual / ...) and the
-//!   `(line, byte)` cursor position. Read live from
-//!   `editor.modal` + `editor.cursor` each frame.
+//! - **Bottom region**: a status line (5.8.B) showing
+//!   `<MODAL>   <path>[+]   L:<n>  C:<n>` -- modal state, file
+//!   path (relative to CWD when possible) + dirty marker,
+//!   1-based cursor coords. When `editor.modal` is `Command` or
+//!   `Search` (5.8.C), the row instead shows the in-progress
+//!   `:<command>` or `/<pattern>` minibuffer with a bar-cursor
+//!   suffix.
+//!
+//! - **DisplayBuffer popup overlay** (5.7.B.10): when host
+//!   `RendererSignal::DisplayBuffer` fires (e.g. `:ls`,
+//!   `:describe-buffer`), a centered bordered popup shows the
+//!   help content. Press `Esc` to dismiss.
 //!
 //! - **Key events**: every keystroke flows through
-//!   [`GpuiApp::dispatch_keystroke`] (Phase 5.7.B.3) so
-//!   `i` → Insert, `Esc` → Normal, `j` / `k` move the cursor,
-//!   etc. Tested today against `editor.modal` transitions; the
-//!   visible cursor and document mutations land as soon as
-//!   paint-side text-shaping support lands (post-5.7.B.4
-//!   refinements).
+//!   [`GpuiApp::dispatch_keystroke`] (5.7.B.3) so `i` → Insert,
+//!   `Esc` → Normal, `j` / `k` move the cursor, `:` enters
+//!   Command mode, etc. `RendererSignal::Quit` plus
+//!   `editor.should_quit` close the window cleanly on `:q`.
 //!
-//! What's missing vs. the TUI peer: text shaping with proper
-//! cursor overlay, per-frame syntax highlights, status-line
-//! widgets (LSP / mode hints / diagnostics counts), pane
-//! splits, picker overlay, command-line minibuffer. Each lands
-//! in its own slice once paint helpers stabilise on the host
-//! side.
+//! - **CLI file open**: the first positional CLI argument
+//!   opens the file via `Document::open(path)` (5.8.A). No
+//!   arg → empty scratch document. The full lattice-cli
+//!   `--gpu <file>` flag plumbing is the 5.9 slice.
+//!
+//! What's still missing vs. the TUI peer: pane splits, picker
+//! overlay (file picker + grep picker), completion popup,
+//! sub-glyph cursor positioning (current per-char-div approach
+//! works for ASCII + most BMP but doesn't shape tabs / wide
+//! glyphs correctly), live theme cascade through GpuiTheme
+//! (the rebuild stub is wired but `host_theme` doesn't yet
+//! carry window-level color fields). Each is a future slice.
 
 use gpui::{
     App, AppContext, Application, Bounds, Context, FocusHandle, Focusable, InteractiveElement,

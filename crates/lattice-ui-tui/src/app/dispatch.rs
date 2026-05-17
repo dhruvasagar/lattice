@@ -675,190 +675,31 @@ impl App {
     /// and visual selections against oil's rope. The `:w`
     /// path is separate (`do_write` matches on
     /// `BufferKind::Oil` and routes to `OilBuffer::apply`).
+    /// 5.5.G.23: body migrated to
+    /// [`lattice_host::dispatch::Editor::run_oil_invocation`].
+    /// Retained as a 1-line delegate while the App-side outer
+    /// `run_invocation` router still routes here; collapses with
+    /// the router on the keystone wire-up.
     fn run_oil_invocation(&mut self, inv: CommandInvocation) {
-        let oil_id = self.active_pane_buffer_id();
-        let Some(oil_text) = self.editor.buffers.with_oil(oil_id, |o| o.content.as_string()) else {
-            return;
-        };
-        // Mirror the document-side dispatcher's count + register
-        // pre-processing so oil keystrokes feel identical to
-        // document keystrokes.
-        let mut inv = inv;
-        if let Some(reg) = self.editor.pending_register.take()
-            && inv.register.is_none()
-        {
-            inv = inv.with_register(reg);
-        }
-        let effective_count = inv.count.map(|c| c.0).unwrap_or(1);
-        if effective_count > 1 {
-            inv = inv.with_count(lattice_grammar::command::Count(effective_count));
-        }
-        self.editor.pending_count = 0;
-        self.editor.op_count = 0;
-
-        let mut temp_doc = lattice_core::Document::from_text(oil_text);
-        let was_visual = matches!(self.editor.modal, ModalState::Visual(_));
-        let inv_for_repeat = inv.clone();
-        let cursor_before = self.editor.cursor;
-        let result = lattice_grammar::execute(
-            &self.editor.registry,
-            &mut temp_doc,
-            cursor_before,
-            inv,
-            &lattice_protocol::CancellationToken::never(),
-        );
-        let Ok(effect) = result else {
-            return;
-        };
-        // Copy the (possibly mutated) rope back onto the oil
-        // buffer. For motion-only effects this is a no-op (the
-        // grammar's motion path doesn't mutate the document);
-        // for operator effects it carries the change.
-        self.editor.buffers.with_oil_mut(oil_id, |oil| {
-            oil.content = temp_doc.buffer().clone();
-        });
-        // Apply the effect's cursor / mode / register / yank
-        // implications. We re-implement a narrow `apply_effect`
-        // here -- the document-side `handle_edits` would re-
-        // publish through the document actor, which oil
-        // explicitly bypasses.
-        let mut should_exit_visual = false;
-        match &effect {
-            Effect::Edits(edits) => {
-                if let Some(first) = edits.first() {
-                    self.editor.cursor = first.original_range.start;
-                }
-                self.editor.last_change = Some(inv_for_repeat);
-                should_exit_visual = true;
-            }
-            Effect::SelectionChange(set) => {
-                let primary = set.primary();
-                self.editor.cursor = primary.head;
-            }
-            Effect::Yank {
-                register,
-                content,
-                kind,
-            } => {
-                // 5.5.E.3: register stash lives on Editor now.
-                // The oil-buffer narrow re-implementation still
-                // routes Yanks directly (it intentionally bypasses
-                // the document actor + `handle_edits`).
-                self.editor.store_yank(*register, content.clone(), *kind);
-                should_exit_visual = true;
-            }
-            Effect::EnterMode(modal) => {
-                self.editor.modal = *modal;
-            }
-            Effect::None => {}
-            // Ex-command effects + other variants don't apply
-            // to oil's keystroke path; they route through the
-            // ex-command dispatcher (do_write / etc.) and are
-            // never produced by motion / operator / text-object
-            // invocations against an oil buffer.
-            _ => {}
-        }
-        if was_visual && should_exit_visual && matches!(self.editor.modal, ModalState::Visual(_)) {
-            self.do_exit_visual();
-        }
-        self.clamp_cursor_to_buffer();
+        self.editor.run_oil_invocation(inv);
     }
 
-    /// Resolve a motion against the active file tree's content.
-    /// Same shape as [`Self::run_help_invocation`] but mutates
-    /// the tree's cursor instead of the help buffer's.
+    /// 5.5.G.23: body migrated to
+    /// [`lattice_host::dispatch::Editor::run_file_tree_invocation`].
     fn run_file_tree_invocation(&mut self, inv: CommandInvocation) {
-        // File-tree is a read-only buffer; motion is the only
-        // class that runs. Operators / text-objects / etc. fall
-        // through to the read-only echo. Same path as help below.
-        self.run_read_only_motion(inv);
+        self.editor.run_file_tree_invocation(inv);
     }
 
-    /// Resolve a motion-class invocation against the active help
-    /// buffer. Operators / text-objects / ex-commands echo a "read-
-    /// only" message; the dispatcher in
-    /// [`Self::run_document_invocation`] is the only path that
-    /// commits buffer mutations.
-    ///
-    /// Counts compose the same way they do for the document path
-    /// (`pending_count` and `op_count` both fold in), so `5j` /
-    /// `3gg` work in help. Jump-class motions (`gg` / `G`) push to
-    /// the unified position-history ring -- with `active_buffer ==
-    /// Help` recorded on the entry -- so `<C-o>` walks back into
-    /// the document if the help session is shallow.
+    /// 5.5.G.23: body migrated to
+    /// [`lattice_host::dispatch::Editor::run_help_invocation`].
     fn run_help_invocation(&mut self, inv: CommandInvocation) {
-        // Help is a read-only buffer; same dispatcher as
-        // file-tree. The only difference between these and the
-        // document path is the read-only-ness; vim grammar
-        // (motions, search, scroll, etc.) is identical.
-        self.run_read_only_motion(inv);
+        self.editor.run_help_invocation(inv);
     }
 
-    /// Unified motion dispatch for read-only buffer kinds (help /
-    /// file-tree). Reads buffer text via [`Self::active_text`] and
-    /// the live cursor / scroll from `self.editor.cursor` / `self.editor.scroll`
-    /// -- same hot-path the document dispatcher uses, so motion
-    /// semantics (counts, jump-history pushes for `gg` / `G`,
-    /// scroll-aware visibility) are identical. Non-motion command
-    /// classes (operators, text-objects, ex bodies that reach
-    /// here) echo "buffer is read-only" and bail.
+    /// 5.5.G.23: body migrated to
+    /// [`lattice_host::dispatch::Editor::run_read_only_motion`].
     fn run_read_only_motion(&mut self, inv: CommandInvocation) {
-        let Some(spec) = self.editor.registry.lookup(inv.command) else {
-            return;
-        };
-        if !matches!(spec.kind, lattice_grammar::CommandKind::Motion) {
-            self.editor.pending_count = 0;
-            self.editor.op_count = 0;
-            self.editor.pending_register = None;
-            self.set_message(EchoLevel::Info, "buffer is read-only".to_string());
-            return;
-        }
-        // Jump-class motions push history before dispatch so
-        // `<C-o>` can return.
-        if inv.command == self.editor.builtins.goto_first_line.0
-            || inv.command == self.editor.builtins.goto_last_line.0
-        {
-            let cur = self.editor.cursor;
-            self.push_position_history(cur, PositionSource::AutoJump);
-        }
-        // Slice 8.i.4.f: count multiplication lives entirely in
-        // `keymap_normal::attach_count` (input-side). The dispatcher
-        // reads the baked `inv.count` and dispatches with it -- no
-        // `pending_count * op_count` math here. Read-only motions
-        // arriving without a baked count default to 1.
-        self.editor.pending_count = 0;
-        self.editor.op_count = 0;
-        let buffer = self.active_text();
-        let cancel = lattice_runtime::CancellationToken::never();
-        match lattice_grammar::execute_motion_only(
-            &self.editor.registry,
-            &buffer,
-            self.editor.cursor,
-            inv,
-            &cancel,
-        ) {
-            Ok(target) => {
-                self.editor.cursor = target;
-                // ensure_cursor_visible at the end of `apply` does
-                // the scroll math -- self.editor.viewport_height is the
-                // active buffer's visible row count.
-            }
-            Err(_) => {
-                // Same swallow-error contract as the document path:
-                // motion failures (e.g. cancel, blocked) don't
-                // surface to the user yet -- DESIGN.md §5.10 error
-                // notification subsystem will route these.
-            }
-        }
-        // Clamp the line *and* byte to the active buffer's bounds
-        // -- mirrors the `clamp_cursor_to_buffer()` call at the end
-        // of `run_document_invocation`. Without the line clamp,
-        // `j` past the last line would silently advance
-        // `cursor.line` past the buffer (the renderer pins the
-        // visible row, so it looks fine on screen) and a
-        // subsequent `k` would have to "unwind" the phantom
-        // overshoot before it actually moved up.
-        self.clamp_cursor_to_active_buffer();
+        self.editor.run_read_only_motion(inv);
     }
 
     fn run_document_invocation(&mut self, mut inv: CommandInvocation) {

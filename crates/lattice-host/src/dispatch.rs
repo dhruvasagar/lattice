@@ -7837,6 +7837,158 @@ fn last_addressable_line(buf: &lattice_core::Buffer) -> u32 {
     }
 }
 
+/// 5.5.G.23: read-only-motion / oil / help / file-tree dispatch
+/// runners. Migrated from `lattice-ui-tui::app::dispatch` alongside
+/// the keystone `Action::Invoke` slice. Pre- and post-effect work
+/// runs entirely on `Editor` state; effects produced by these runners
+/// are scoped to motion / yank / mode-flip and never touch the
+/// renderer-coupled `Effect::*` arms — so they don't need to thread
+/// through `DispatchOutcome.effects`.
+impl Editor {
+    /// Dispatch a `CommandInvocation` against the active oil
+    /// buffer's rope. Oil's content lives in `oil.content` (a
+    /// `Buffer`), separate from `self.document` (the actor-
+    /// backed document buffer). The grammar dispatcher only
+    /// knows about `Document`, so we synthesise a temporary
+    /// `Document` from oil's rope, dispatch through it, and
+    /// copy the resulting buffer back. Edits + cursor updates
+    /// land on the oil rope without touching the document
+    /// actor.
+    pub fn run_oil_invocation(&mut self, inv: lattice_grammar::CommandInvocation) {
+        use lattice_grammar::Effect;
+        let oil_id = self.active_pane_buffer_id();
+        let Some(oil_text) = self.buffers.with_oil(oil_id, |o| o.content.as_string()) else {
+            return;
+        };
+        let mut inv = inv;
+        if let Some(reg) = self.pending_register.take()
+            && inv.register.is_none()
+        {
+            inv = inv.with_register(reg);
+        }
+        let effective_count = inv.count.map(|c| c.0).unwrap_or(1);
+        if effective_count > 1 {
+            inv = inv.with_count(lattice_grammar::command::Count(effective_count));
+        }
+        self.pending_count = 0;
+        self.op_count = 0;
+
+        let mut temp_doc = lattice_core::Document::from_text(oil_text);
+        let was_visual = matches!(self.modal, ModalState::Visual(_));
+        let inv_for_repeat = inv.clone();
+        let cursor_before = self.cursor;
+        let result = lattice_grammar::execute(
+            &self.registry,
+            &mut temp_doc,
+            cursor_before,
+            inv,
+            &lattice_protocol::CancellationToken::never(),
+        );
+        let Ok(effect) = result else {
+            return;
+        };
+        self.buffers.with_oil_mut(oil_id, |oil| {
+            oil.content = temp_doc.buffer().clone();
+        });
+        let mut should_exit_visual = false;
+        match &effect {
+            Effect::Edits(edits) => {
+                if let Some(first) = edits.first() {
+                    self.cursor = first.original_range.start;
+                }
+                self.last_change = Some(inv_for_repeat);
+                should_exit_visual = true;
+            }
+            Effect::SelectionChange(set) => {
+                let primary = set.primary();
+                self.cursor = primary.head;
+            }
+            Effect::Yank {
+                register,
+                content,
+                kind,
+            } => {
+                self.store_yank(*register, content.clone(), *kind);
+                should_exit_visual = true;
+            }
+            Effect::EnterMode(modal) => {
+                self.modal = *modal;
+            }
+            Effect::None => {}
+            // Ex-command effects + other variants don't apply
+            // to oil's keystroke path; they route through the
+            // ex-command dispatcher (do_write / etc.) and are
+            // never produced by motion / operator / text-object
+            // invocations against an oil buffer.
+            _ => {}
+        }
+        if was_visual && should_exit_visual && matches!(self.modal, ModalState::Visual(_)) {
+            self.do_exit_visual();
+        }
+        self.clamp_cursor_to_buffer();
+    }
+
+    /// Resolve a motion against the active file tree's content.
+    /// Same shape as [`Self::run_help_invocation`] but mutates
+    /// the tree's cursor instead of the help buffer's.
+    pub fn run_file_tree_invocation(&mut self, inv: lattice_grammar::CommandInvocation) {
+        self.run_read_only_motion(inv);
+    }
+
+    /// Resolve a motion-class invocation against the active help
+    /// buffer. Operators / text-objects / ex-commands echo a
+    /// "read-only" message; the dispatcher in
+    /// [`Self::run_document_invocation`] is the only path that
+    /// commits buffer mutations.
+    pub fn run_help_invocation(&mut self, inv: lattice_grammar::CommandInvocation) {
+        self.run_read_only_motion(inv);
+    }
+
+    /// Unified motion dispatch for read-only buffer kinds (help /
+    /// file-tree). Reads buffer text via [`Self::active_text`] and
+    /// the live cursor / scroll from `self.cursor` / `self.scroll`
+    /// — same hot-path the document dispatcher uses, so motion
+    /// semantics (counts, jump-history pushes for `gg` / `G`,
+    /// scroll-aware visibility) are identical. Non-motion command
+    /// classes (operators, text-objects, ex bodies that reach
+    /// here) echo "buffer is read-only" and bail.
+    pub fn run_read_only_motion(&mut self, inv: lattice_grammar::CommandInvocation) {
+        let Some(spec) = self.registry.lookup(inv.command) else {
+            return;
+        };
+        if !matches!(spec.kind, lattice_grammar::CommandKind::Motion) {
+            self.pending_count = 0;
+            self.op_count = 0;
+            self.pending_register = None;
+            self.set_message(EchoLevel::Info, "buffer is read-only".to_string());
+            return;
+        }
+        if inv.command == self.builtins.goto_first_line.0
+            || inv.command == self.builtins.goto_last_line.0
+        {
+            let cur = self.cursor;
+            self.push_position_history(cur, PositionSource::AutoJump);
+        }
+        self.pending_count = 0;
+        self.op_count = 0;
+        let buffer = self.active_text();
+        let cancel = lattice_protocol::CancellationToken::never();
+        match lattice_grammar::execute_motion_only(
+            &self.registry,
+            &buffer,
+            self.cursor,
+            inv,
+            &cancel,
+        ) {
+            Ok(target) => {
+                self.cursor = target;
+            }
+            Err(_) => {}
+        }
+        self.clamp_cursor_to_active_buffer();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

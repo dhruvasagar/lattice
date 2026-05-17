@@ -23,6 +23,10 @@ lattice-mode = { path = "../lattice-mode" }
 # field-typed Editor fields name the type internally and don't
 # require it in scope. Stays minimal: one type, named once.
 lattice-grammar = { path = "../lattice-grammar" }
+# 5.7.B.10: `RendererSignal::DisplayBuffer` carries a
+# `lattice_help::HelpContent`; the GPUI peer renders its text
+# in a popup overlay, so naming the type requires this dep.
+lattice-help = { path = "../lattice-help" }
 
 # Zed's GPU-accelerated UI framework. Gated behind the `window`
 # feature so the scaffold types + tests build on every host

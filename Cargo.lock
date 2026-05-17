@@ -3539,6 +3539,7 @@ dependencies = [
  "gpui",
  "lattice-core",
  "lattice-grammar",
+ "lattice-help",
  "lattice-host",
  "lattice-mode",
  "tracing",

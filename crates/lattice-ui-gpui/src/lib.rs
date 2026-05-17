@@ -97,41 +97,54 @@ pub mod gpui_chord;
 /// / `Into<Hsla>` blanket impls. Sticking with `Rgba` keeps the
 /// theme literal-friendly + the binary's render free of
 /// conversion boilerplate.
+/// Color storage discipline: the lib stores `u32` packed
+/// `0xRRGGBB` hex so it builds without the `window` feature (no
+/// transitive `gpui` link). The binary converts to `gpui::Rgba`
+/// at render time via `gpui::rgb(theme.background)`.
 #[derive(Debug, Clone, Copy)]
 pub struct GpuiTheme {
     /// Main document background.
-    pub background: gpui::Rgba,
+    pub background: u32,
     /// Main document foreground (text + non-cursor chars).
-    pub foreground: gpui::Rgba,
+    pub foreground: u32,
     /// Status-line background.
-    pub status_background: gpui::Rgba,
+    pub status_background: u32,
     /// Status-line foreground.
-    pub status_foreground: gpui::Rgba,
+    pub status_foreground: u32,
     /// Cursor block background (Block shape) + bar / underline
     /// border color (Bar / Underline shapes).
-    pub cursor_background: gpui::Rgba,
+    pub cursor_background: u32,
     /// Cursor block foreground -- the character color when the
     /// block inverts (Normal/Visual mode cursor cell). Unused
     /// by Bar / Underline since the underlying char text stays
     /// the document foreground.
-    pub cursor_foreground: gpui::Rgba,
+    pub cursor_foreground: u32,
+    /// Popup-overlay background (DisplayBuffer help surface).
+    /// Slightly darker than the main bg for visual separation.
+    pub popup_background: u32,
+    /// Popup-overlay border / accent color.
+    pub popup_border: u32,
 }
 
 impl Default for GpuiTheme {
     fn default() -> Self {
         Self {
             // Catppuccin Mocha base.
-            background: gpui::rgb(0x1e1e2e),
+            background: 0x1e1e2e,
             // Catppuccin Mocha text.
-            foreground: gpui::rgb(0xcdd6f4),
+            foreground: 0xcdd6f4,
             // Catppuccin Mocha surface0.
-            status_background: gpui::rgb(0x313244),
+            status_background: 0x313244,
             // Catppuccin Mocha green.
-            status_foreground: gpui::rgb(0xa6e3a1),
+            status_foreground: 0xa6e3a1,
             // Catppuccin Mocha text (matches block-cursor "highlight").
-            cursor_background: gpui::rgb(0xcdd6f4),
+            cursor_background: 0xcdd6f4,
             // Catppuccin Mocha base (inverted, for block-cursor char).
-            cursor_foreground: gpui::rgb(0x1e1e2e),
+            cursor_foreground: 0x1e1e2e,
+            // Catppuccin Mocha mantle (deeper than base).
+            popup_background: 0x181825,
+            // Catppuccin Mocha lavender (accent).
+            popup_border: 0xb4befe,
         }
     }
 }
@@ -164,13 +177,20 @@ impl Renderer for GpuiRenderer {
 }
 
 /// The GPUI-side renderer composition root. Mirrors
-/// `lattice-ui-tui::app::App` in shape: three renderer-side caches
+/// `lattice-ui-tui::app::App` in shape: renderer-side caches
 /// plus the renderer-neutral [`Editor`]. A future `lsp_file_watcher`
 /// field joins when the LSP runtime adapter for GPUI lands.
 pub struct GpuiApp {
     pub editor: Editor,
     pub theme: GpuiTheme,
     pub pane_render_registry: GpuiPaneRenderRegistry,
+    /// 5.7.B.10: active help popup content, set by
+    /// `RendererSignal::DisplayBuffer`. The binary renders it as
+    /// a centered overlay when `Some`; pressing `Esc` dismisses.
+    /// `None` when no popup is showing. Box keeps the
+    /// `GpuiApp` field-size sane (HelpContent is ~6 fields incl.
+    /// a parsed highlight cache).
+    pub popup_content: Option<Box<lattice_help::HelpContent>>,
 }
 
 impl GpuiApp {
@@ -198,9 +218,18 @@ impl GpuiApp {
             editor: Editor::boot(document),
             theme: GpuiTheme::default(),
             pane_render_registry: GpuiPaneRenderRegistry::default(),
+            popup_content: None,
         };
         app.finalize_boot();
         app
+    }
+
+    /// Dismiss any active help popup. Called from the binary's
+    /// `on_key_down` when the user presses `Esc` while a popup
+    /// is showing (pre-empting the chord dispatch so `Esc`
+    /// doesn't also fire a mode transition). Idempotent.
+    pub fn dismiss_popup(&mut self) {
+        self.popup_content = None;
     }
 
     /// Run the renderer-side post-boot helpers the TUI peer
@@ -314,21 +343,25 @@ impl GpuiApp {
             RendererSignal::LspConfigChanged(server_id) => {
                 self.editor.fan_out_did_change_configuration(&server_id);
             }
-            // Host-side `do_*` arms build `HelpContent` and want
-            // the renderer to surface it. The GPUI peer doesn't
-            // have its `display_buffer` dispatch yet (popup +
-            // active-pane swap + split are TUI-only today); when
-            // those land, this arm routes through the same
-            // category -> BufferDisplay resolution the TUI peer
-            // uses. Today's host call sites (`:ls`,
-            // `:describe-buffer`) silently produce no visible
-            // output in the GPUI peer; the host state mutations
-            // already happened before the signal was emitted.
+            // 5.7.B.10: surface the help content as a centered
+            // popup overlay. Renderer-side state is just
+            // `popup_content`; the binary's render reads the
+            // field each frame and draws the overlay when
+            // `Some`. The user dismisses with `Esc` (binary-
+            // side pre-empt before chord dispatch). Future
+            // refinement: resolve the request's `category` to a
+            // typed `BufferDisplay` preference (popup vs
+            // active-pane vs split) -- today's GPUI peer only
+            // implements the popup surface, so every category
+            // collapses to a popup overlay.
             RendererSignal::DisplayBuffer(req) => {
+                let lattice_host::dispatch::DisplayBufferRequest { content, category } = *req;
                 tracing::debug!(
-                    category = ?req.category,
-                    "DisplayBuffer signal: GPUI display dispatch not yet implemented"
+                    category = ?category,
+                    title = %content.buffer.title,
+                    "DisplayBuffer signal: showing as popup overlay"
                 );
+                self.popup_content = Some(Box::new(content));
             }
         }
     }

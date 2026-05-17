@@ -51,7 +51,7 @@
 use gpui::{
     App, AppContext, Application, Bounds, Context, FocusHandle, Focusable, InteractiveElement,
     IntoElement, KeyDownEvent, ParentElement, Render, Styled, Window, WindowBounds, WindowOptions,
-    div, px, size,
+    div, px, rgb, size,
 };
 use lattice_core::Document;
 use lattice_grammar::ModalState;
@@ -120,6 +120,20 @@ impl EditorView {
             platform = ks.modifiers.platform,
             "lattice-gpui: key down"
         );
+        // 5.7.B.10: when a help popup is showing, intercept Esc
+        // for dismissal before the keystroke reaches
+        // `editor.dispatch`. Without this pre-empt, Esc would
+        // also fire its normal Normal-mode-entry behaviour
+        // while the popup stays visible.
+        if self.app.popup_content.is_some()
+            && (ks.key.eq_ignore_ascii_case("escape") || ks.key.eq_ignore_ascii_case("esc"))
+        {
+            tracing::debug!("lattice-gpui: dismissing popup overlay (Esc)");
+            self.app.dismiss_popup();
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
         let outcome = self.app.dispatch_keystroke(
             &ks.key,
             ks.modifiers.control,
@@ -204,10 +218,11 @@ impl Render for EditorView {
         let cursor_line = cursor.line as usize;
         let cursor_byte = cursor.byte as usize;
         // 5.7.B.12: cursor colors come from the cached GpuiTheme
+        // (stored as `0xRRGGBB` u32; convert to gpui Rgba here)
         // so theme cascades propagate without binary-side
         // changes.
-        let cursor_fg = self.app.theme.cursor_foreground;
-        let cursor_bg = self.app.theme.cursor_background;
+        let cursor_fg = rgb(self.app.theme.cursor_foreground);
+        let cursor_bg = rgb(self.app.theme.cursor_background);
         let cursor_shape = CursorShape::for_mode(modal);
         let raw_lines: Vec<&str> = text.split('\n').collect();
         let cursor_past_last_line = cursor_line >= raw_lines.len();
@@ -261,16 +276,67 @@ impl Render for EditorView {
         }
 
         // 5.7.B.12: surface colors come from the cached
-        // GpuiTheme so theme cascades propagate.
+        // GpuiTheme so theme cascades propagate. The theme
+        // stores `0xRRGGBB` u32 packed; `rgb(...)` converts
+        // to `gpui::Rgba` at render time.
         let theme = self.app.theme;
-        div()
+        // 5.7.B.10: build the document area. Wrapped in a
+        // separate variable so the popup overlay (if any) can
+        // stack on top of it via `relative` positioning.
+        let document_area = div().flex_grow().p_3().flex().flex_col().children(rows);
+
+        // 5.7.B.10: when a help popup is showing, render it as
+        // a centered overlay above the document area. The
+        // overlay reads the help buffer's content + title and
+        // displays them in a bordered panel; pressing `Esc`
+        // (binary-side pre-empt in on_key_down) dismisses.
+        let popup_overlay: Option<gpui::Div> = self.app.popup_content.as_ref().map(|content| {
+            let title = content.buffer.title.clone();
+            let body_text = content.buffer.content.as_string();
+            let popup_lines: Vec<gpui::Div> = body_text
+                .split('\n')
+                .map(|line| div().child(line.to_string()))
+                .collect();
+            div()
+                .flex()
+                .flex_col()
+                .max_w(px(640.0))
+                .max_h(px(400.0))
+                .p_4()
+                .bg(rgb(theme.popup_background))
+                .text_color(rgb(theme.foreground))
+                .border_2()
+                .border_color(rgb(theme.popup_border))
+                .child(
+                    div()
+                        .text_color(rgb(theme.popup_border))
+                        .pb_2()
+                        .child(format!(" {title} "))
+                        .child(div().child("───────────────".to_string())),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .overflow_hidden()
+                        .children(popup_lines),
+                )
+                .child(
+                    div()
+                        .pt_2()
+                        .text_color(rgb(theme.popup_border))
+                        .child("[ Esc to dismiss ]".to_string()),
+                )
+        });
+
+        let mut root = div()
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::on_key_down))
             .flex()
             .flex_col()
             .size_full()
-            .bg(theme.background)
-            .text_color(theme.foreground)
+            .bg(rgb(theme.background))
+            .text_color(rgb(theme.foreground))
             .text_sm()
             // Monospace family: gpui falls through to the next
             // available font if the named family doesn't match.
@@ -278,15 +344,33 @@ impl Render for EditorView {
             // by default; if not, the fallback chain picks
             // whatever monospace gpui's font system registered.
             .font_family("DejaVu Sans Mono")
-            .child(div().flex_grow().p_3().flex().flex_col().children(rows))
+            .child(document_area)
             .child(
                 div()
-                    .bg(theme.status_background)
-                    .text_color(theme.status_foreground)
+                    .bg(rgb(theme.status_background))
+                    .text_color(rgb(theme.status_foreground))
                     .px_2()
                     .py_1()
                     .child(status),
-            )
+            );
+
+        if let Some(overlay) = popup_overlay {
+            // Center the overlay across the window. The simplest
+            // gpui pattern is to absolutely-position a wrapping
+            // div that fills the screen + uses flex centering;
+            // gpui-0.2.2 supports `.absolute().inset_0()` +
+            // `.justify_center().items_center()`.
+            root = root.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .justify_center()
+                    .items_center()
+                    .child(overlay),
+            );
+        }
+        root
     }
 }
 

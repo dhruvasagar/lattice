@@ -45,7 +45,7 @@ use lattice_grammar::effect::Effect;
 use lattice_host::dispatch::RendererSignal;
 use lattice_runtime::RuntimeError;
 
-use super::{Action, App, BufferKind, EchoLevel, FindKind, LastFind, PositionSource};
+use super::{Action, App, BufferKind, EchoLevel};
 use crate::excommand;
 
 const COMMAND_HISTORY_CAP: usize = 100;
@@ -111,6 +111,16 @@ impl App {
         // host-side. `consumed` collapses once the last subsystem
         // lands; until then the seam below is the architectural
         // boundary, not a deferred TODO.
+        // 5.5.G.23: snapshot pre-dispatch state BEFORE `editor.dispatch`
+        // so the State-A hover-auto-dismiss hook below sees the true
+        // pre-motion cursor. Before the keystone slice this snapshot
+        // could safely sit after `dispatch` because the migrated arms
+        // didn't move the doc cursor; with `Action::Invoke` now host-
+        // handled (motions resolve inside `editor.run_invocation`),
+        // capturing after dispatch would compare the cursor to itself
+        // and never trigger the dismiss.
+        let pre_active = self.editor.active_buffer;
+        let pre_cursor = self.editor.cursor;
         let mut outcome = self.editor.dispatch(action.clone());
         // 5.5.G.23: drain any effects the host queued (e.g. from
         // host-side `Editor::run_invocation` producing
@@ -131,17 +141,6 @@ impl App {
         if outcome.consumed {
             return;
         }
-        // Snapshot pre-dispatch state for the State-A hover
-        // auto-dismiss hook below: while a hover popup is shown
-        // and focus is still on the main buffer, any motion that
-        // changes the doc cursor closes the popup -- the popup
-        // is anchored to the symbol the user pressed `K` on, so
-        // a cursor motion makes it stale. Once the user has
-        // pressed `K` again to *focus into* the popup (State B,
-        // active_buffer == Help), this auto-dismiss is skipped:
-        // motions there move the popup's cursor, not the doc's.
-        let pre_active = self.editor.active_buffer;
-        let pre_cursor = self.editor.cursor;
         // M.4 hover-popup unification: gate the auto-dismiss-on-
         // doc-cursor-motion behaviour on `hover-mode` being active
         // on the popup buffer, instead of the structural
@@ -300,7 +299,13 @@ impl App {
             // a data-bearing variant can't sit in the grouped
             // `_ => {}` band (binding mismatch).
             Action::LspWorkspaceSymbolRequest(_) => {}
-            Action::Invoke(inv) => self.run_invocation(inv),
+            // 5.5.G.23: keystone — `Invoke` is host-handled now via
+            // `editor.run_invocation` (the host pushes any
+            // renderer-coupled effects into `outcome.effects`, which
+            // the dispatch wrapper above drained before this match
+            // ran). The `_` binding can't sit in the grouped no-op
+            // band because of the inner `CommandInvocation` payload.
+            Action::Invoke(_) => {}
             Action::Insert(s) => self.do_insert_text(&s),
             // 5.5.G.3: `DeleteCharBackward`, `EnterAppend`,
             // `OpenLineBelow`, `OpenLineAbove`, `Undo`, `Redo`
@@ -607,57 +612,22 @@ impl App {
         }
     }
 
+    /// 5.5.G.23: body migrated to
+    /// [`lattice_host::dispatch::Editor::run_invocation`]. Retained as
+    /// a 1-line delegate because the host-side `Action::Invoke` arm
+    /// already routes through `editor.run_invocation` — App-side
+    /// callers that still reach this method (`do_play_macro`,
+    /// `do_find_repeat`, `RepeatLastChange`) collapse on their own
+    /// slice migration.
     pub(super) fn run_invocation(&mut self, inv: CommandInvocation) {
-        // Slice 8.i.4.d: free-form `CommandKind::Action`
-        // invocations (the App-side actions registered in
-        // `crate::actions`) bypass the document path entirely.
-        // They have no count semantics -- pending_count /
-        // op_count must NOT be consumed by these dispatches
-        // (otherwise `2d` would lose the `2` because
-        // `run_document_invocation` resets both counts before
-        // the dispatch returns the
-        // `Effect::AppAction(AbsorbOperatorPrefix(_))` that
-        // wants to latch them). Run `execute()` directly and
-        // apply the resulting effect.
-        if let Some(spec) = self.editor.registry.lookup(inv.command)
-            && matches!(spec.kind, lattice_grammar::CommandKind::Action)
-        {
-            let cancel = lattice_grammar::CancellationToken::never();
-            let pos = self.editor.cursor;
-            // `CommandKind::Action` evaluators don't touch the
-            // document (DESIGN.md §5.2.1 -- Action specs return
-            // an `Effect::AppAction(_)` payload without reading
-            // or mutating the buffer). The dispatcher's signature
-            // still wants a `&mut Document`, so we feed it a
-            // throwaway empty one.
-            let mut scratch = lattice_core::Document::empty();
-            match lattice_grammar::execute(&self.editor.registry, &mut scratch, pos, inv, &cancel) {
-                Ok(effect) => self.apply_effect(effect),
-                Err(e) => {
-                    self.set_message(EchoLevel::Error, format!("action dispatch failed: {e:?}"));
-                }
-            }
-            return;
+        let mut out = lattice_host::dispatch::DispatchOutcome::default();
+        self.editor.run_invocation(inv, &mut out);
+        for effect in std::mem::take(&mut out.effects) {
+            self.apply_effect_app_arms(effect);
         }
-        // Help is read-only; route motions through the help buffer
-        // path and reject operator-class invocations cleanly. Other
-        // CommandKind variants (text-objects, ex-commands) shouldn't
-        // reach Help -- ex-commands route through `execute_ex_line`,
-        // text-objects only resolve via operators -- but if they do
-        // they get the same read-only echo.
-        if matches!(self.editor.active_buffer, BufferKind::Help) {
-            self.run_help_invocation(inv);
-            return;
+        for signal in std::mem::take(&mut out.renderer_signals) {
+            self.handle_renderer_signal(signal);
         }
-        if matches!(self.editor.active_buffer, BufferKind::Oil) {
-            self.run_oil_invocation(inv);
-            return;
-        }
-        if matches!(self.editor.active_buffer, BufferKind::FileTree) {
-            self.run_file_tree_invocation(inv);
-            return;
-        }
-        self.run_document_invocation(inv);
     }
 
     /// Dispatch a `CommandInvocation` against the active oil
@@ -702,117 +672,20 @@ impl App {
         self.editor.run_read_only_motion(inv);
     }
 
-    fn run_document_invocation(&mut self, mut inv: CommandInvocation) {
-        // Attach the pending register (from a `"a` prefix) to the
-        // invocation if not already specified.
-        if let Some(reg) = self.editor.pending_register.take()
-            && inv.register.is_none()
-        {
-            inv = inv.with_register(reg);
+    /// 5.5.G.23: body migrated to
+    /// [`lattice_host::dispatch::Editor::run_document_invocation`].
+    /// Retained as a 1-line delegate; App-side internal callers
+    /// (`do_play_macro`, `do_find_repeat`, etc.) collapse to host
+    /// recursion on their own slice migration.
+    fn run_document_invocation(&mut self, inv: CommandInvocation) {
+        let mut out = lattice_host::dispatch::DispatchOutcome::default();
+        self.editor.run_document_invocation(inv, &mut out);
+        for effect in std::mem::take(&mut out.effects) {
+            self.apply_effect_app_arms(effect);
         }
-        // Jump-class motions (gg, G) push history before dispatch so
-        // Ctrl-O can return.
-        if inv.command == self.editor.builtins.goto_first_line.0
-            || inv.command == self.editor.builtins.goto_last_line.0
-        {
-            let cur = self.editor.cursor;
-            self.push_position_history(cur, PositionSource::AutoJump);
+        for signal in std::mem::take(&mut out.renderer_signals) {
+            self.handle_renderer_signal(signal);
         }
-        // Capture find/till invocations for `;` / `,` repeat.
-        if let lattice_grammar::Args::Char(c) = inv.args {
-            let kind = if inv.command == self.editor.builtins.find_char_forward.0 {
-                Some(FindKind::Forward)
-            } else if inv.command == self.editor.builtins.find_char_backward.0 {
-                Some(FindKind::Backward)
-            } else if inv.command == self.editor.builtins.till_char_forward.0 {
-                Some(FindKind::TillForward)
-            } else if inv.command == self.editor.builtins.till_char_backward.0 {
-                Some(FindKind::TillBackward)
-            } else {
-                None
-            };
-            if let Some(kind) = kind {
-                self.editor.last_find = Some(LastFind { kind, target: c });
-            }
-        }
-        // Slice 8.i.4.f: count multiplication lives entirely in
-        // `keymap_normal::attach_count` (input-side). The dispatcher
-        // reads the baked `inv.count` and dispatches with it -- no
-        // `pending_count * op_count` math here. Bare invocations
-        // arriving without a baked count default to 1.
-        let mut effective_count = inv.count.map(|c| c.0).unwrap_or(1);
-        // Fold-aware operator expansion (`docs/user/folding.md`):
-        // when the cursor sits on the heading line of a closed fold
-        // and the operator's range is `CurrentLine` (the `dd` / `yy`
-        // / `cc` / `>>` family), grow the count so the operator
-        // covers the whole fold. The operator stays a single edit /
-        // single undo unit because the dispatcher composes one
-        // `Effect::Edits` from the expanded range.
-        if self.foldenable()
-            && matches!(inv.range, Some(lattice_grammar::range::Range::CurrentLine))
-            && let Some(fold) = self.fold_start_at(self.editor.cursor.line)
-        {
-            let span = fold.end_line.saturating_sub(fold.start_line) + 1;
-            effective_count = effective_count.max(span);
-        }
-        if effective_count > 1 {
-            inv = inv.with_count(lattice_grammar::command::Count(effective_count));
-        }
-        self.editor.pending_count = 0;
-        self.editor.op_count = 0;
-        let was_visual = matches!(self.editor.modal, ModalState::Visual(_));
-        let mut should_exit_visual = false;
-        let inv_for_repeat = inv.clone();
-        // Vertical-jump motions auto-open folds the cursor lands in
-        // (`docs/user/folding.md`). Linear motions don't -- this set
-        // is intentionally narrow: `gg`, `G`, and counted `numberG`
-        // (the same builtins the jump-list `<C-o>`/`<C-i>` walk
-        // uses).
-        let is_vertical_jump = inv.command == self.editor.builtins.goto_first_line.0
-            || inv.command == self.editor.builtins.goto_last_line.0;
-        // Every motion that goes through the dispatcher and isn't a
-        // jump-class command runs the fold-aware snap so the cursor
-        // never settles inside a closed fold's hidden body. Without
-        // this, motions like `w` / `b` / `e` / `(` / `)` / `{` / `}`
-        // happily landed on hidden lines, and the user's perceived
-        // location diverged from `cursor.line`. The snap is
-        // direction-aware (uses `prev_cursor_line`) and idempotent
-        // when the cursor was already on a visible line.
-        let prev_cursor_line = self.editor.cursor.line;
-        match self.dispatch_blocking(inv) {
-            Ok(effect) => {
-                // Visual exits on any operator-class effect (mutation OR
-                // yank-only); dot-repeat only records buffer mutations.
-                should_exit_visual = effect_mutates_or_yanks(&effect);
-                if effect_mutates(&effect) {
-                    self.editor.last_change = Some(inv_for_repeat);
-                }
-                self.apply_effect(effect);
-                if is_vertical_jump {
-                    // Jump motions auto-open the destination fold so
-                    // the user lands at the actual target line, not on
-                    // the fold heading.
-                    self.auto_open_folds_at_cursor();
-                } else {
-                    // Non-jump motions snap out of any closed fold's
-                    // hidden body to the nearest visible line per
-                    // `docs/user/folding.md`.
-                    self.snap_cursor_past_closed_folds(prev_cursor_line);
-                }
-            }
-            Err(_) => {
-                // TODO(error-surface): publish to a notification once that
-                // subsystem lands.
-            }
-        }
-        // After a Visual-mode operator (d/y/c on selection), vim returns
-        // to Normal. Pure motion in Visual extends the selection -- keep
-        // Visual. The `c` operator already flipped to Insert via
-        // Effect::EnterMode; the post-check would be a no-op there.
-        if was_visual && should_exit_visual && matches!(self.editor.modal, ModalState::Visual(_)) {
-            self.do_exit_visual();
-        }
-        self.clamp_cursor_to_buffer();
     }
 
     pub(super) fn apply_effect(&mut self, effect: Effect) {

@@ -66,12 +66,12 @@ use lattice_protocol::Event;
 use lattice_protocol::selection::{Selection, SelectionSet, VisualMode};
 use lattice_runtime::{MessagePushed, block_on};
 
-use crate::action::{Action, EchoLevel};
+use crate::action::{Action, EchoLevel, FindKind};
 use crate::buffers::BufferId;
 use crate::editor::Editor;
 use crate::state::{
-    MacroRecording, PositionEntry, PositionSource, PrevPaneState, SearchLine, TagStackEntry,
-    UnnamedRegister,
+    LastFind, MacroRecording, PositionEntry, PositionSource, PrevPaneState, SearchLine,
+    TagStackEntry, UnnamedRegister,
 };
 
 /// 5.5.F.4.2: position-history ring cap, co-located with
@@ -744,6 +744,16 @@ pub(crate) fn handle_action(
         Action::LspWorkspaceSymbolRequest(query) => editor.lsp_workspace_symbol_request(&query),
         // 5.5.SNIPPET.1: `<C-x><C-s>` -- direct snippet expansion.
         Action::SnippetExpand => editor.do_snippet_expand_at_cursor(),
+        // 5.5.G.23: keystone — every operator / motion / text-object /
+        // ex-command dispatch flows through here. `run_invocation`
+        // selects the runner (action / oil / help / file-tree /
+        // document), produces an `Effect`, and flushes it through
+        // `apply_effect_host` (recursive `Effect::Many` flatten +
+        // host migrated-arm pass + `out.effects` push for the
+        // renderer-coupled tail). The renderer-coupled tail still
+        // runs through `App::apply_effect_app_arms` (drained by the
+        // dispatch wrapper after `editor.dispatch` returns).
+        Action::Invoke(inv) => editor.run_invocation(inv, _out),
         // Catch-all: any Action variant not yet migrated from
         // App::apply. Sub-slices 5.5.D+ extend the match upward as
         // helpers move.
@@ -7837,6 +7847,39 @@ fn last_addressable_line(buf: &lattice_core::Buffer) -> u32 {
     }
 }
 
+/// 5.5.G.23: host-side recursive effect flush. Walks any
+/// `Effect::Many` tree into its leaves; for every non-`Many` leaf,
+/// calls the migrated-arm dispatcher [`handle_effect`] (so the
+/// cursor / register / option / buffer-list / etc. arms run
+/// synchronously) and pushes the leaf into `out.effects` so the
+/// renderer-coupled tail (`Effect::OpenBuffer` -> `do_edit`,
+/// `Effect::OpenFileTree` -> `do_open_file_tree`, the `do_lsp_*`
+/// family, etc.) can drain through the App-side
+/// `apply_effect_app_arms`.
+///
+/// Why flatten host-side: a compound builtin (e.g. `c` change)
+/// returns `Effect::Many([Edits, SelectionChange, EnterMode(Insert)])`.
+/// The post-effect work in [`Editor::run_document_invocation`]
+/// (`auto_open_folds_at_cursor` / `snap_cursor_past_closed_folds`)
+/// reads `self.cursor` AFTER the effect lands, so the migrated arms
+/// must already have run. Flattening here means each leaf's
+/// `handle_effect` pass commits its state mutation in order, and the
+/// renderer-coupled drain on App side sees a flat sequence — no Many
+/// recursion needed twice.
+fn apply_effect_host(editor: &mut Editor, effect: lattice_grammar::Effect, out: &mut DispatchOutcome) {
+    match effect {
+        lattice_grammar::Effect::Many(parts) => {
+            for p in parts {
+                apply_effect_host(editor, p, out);
+            }
+        }
+        other => {
+            handle_effect(editor, other.clone(), out);
+            out.effects.push(other);
+        }
+    }
+}
+
 /// 5.5.G.23: read-only-motion / oil / help / file-tree dispatch
 /// runners. Migrated from `lattice-ui-tui::app::dispatch` alongside
 /// the keystone `Action::Invoke` slice. Pre- and post-effect work
@@ -7942,6 +7985,151 @@ impl Editor {
     /// commits buffer mutations.
     pub fn run_help_invocation(&mut self, inv: lattice_grammar::CommandInvocation) {
         self.run_read_only_motion(inv);
+    }
+
+    /// 5.5.G.23: top-level command-invocation router. Selects the
+    /// correct runner based on `active_buffer`. `CommandKind::Action`
+    /// invocations bypass the document path and run against a
+    /// throwaway scratch `Document` (DESIGN.md §5.2.1 — Action specs
+    /// return an `Effect::AppAction(_)` without reading or mutating
+    /// the buffer).
+    ///
+    /// Effects produced are flushed through
+    /// [`apply_effect_host`] (recursive `Effect::Many` flatten +
+    /// host migrated-arm pass + push to `out.effects` for the
+    /// renderer-coupled tail).
+    pub fn run_invocation(&mut self, inv: lattice_grammar::CommandInvocation, out: &mut DispatchOutcome) {
+        if let Some(spec) = self.registry.lookup(inv.command)
+            && matches!(spec.kind, lattice_grammar::CommandKind::Action)
+        {
+            let cancel = lattice_protocol::CancellationToken::never();
+            let pos = self.cursor;
+            // `CommandKind::Action` evaluators don't touch the
+            // document (DESIGN.md §5.2.1 — Action specs return
+            // an `Effect::AppAction(_)` payload without reading
+            // or mutating the buffer). The dispatcher's signature
+            // still wants a `&mut Document`, so we feed it a
+            // throwaway empty one.
+            let mut scratch = lattice_core::Document::empty();
+            match lattice_grammar::execute(&self.registry, &mut scratch, pos, inv, &cancel) {
+                Ok(effect) => apply_effect_host(self, effect, out),
+                Err(e) => {
+                    self.set_message(EchoLevel::Error, format!("action dispatch failed: {e:?}"));
+                }
+            }
+            return;
+        }
+        // Help / oil / file-tree are read-only or narrow-effect
+        // buffers; route to their dedicated runners. Document is the
+        // mainline path with full effect application.
+        if matches!(self.active_buffer, BufferKind::Help) {
+            self.run_help_invocation(inv);
+            return;
+        }
+        if matches!(self.active_buffer, BufferKind::Oil) {
+            self.run_oil_invocation(inv);
+            return;
+        }
+        if matches!(self.active_buffer, BufferKind::FileTree) {
+            self.run_file_tree_invocation(inv);
+            return;
+        }
+        self.run_document_invocation(inv, out);
+    }
+
+    /// 5.5.G.23: mainline document-dispatch runner. Reads pending
+    /// register / pending count / op count; folds them into the
+    /// invocation; pushes jump-history for jump-class motions; bakes
+    /// the find/till target for `;` / `,` repeat; expands `dd` / `yy` /
+    /// `cc` / `>>` over a closed fold via the fold-aware count grow.
+    /// Then dispatches through the document actor (`dispatch_blocking`)
+    /// and flushes the resulting effect through [`apply_effect_host`].
+    pub fn run_document_invocation(&mut self, mut inv: lattice_grammar::CommandInvocation, out: &mut DispatchOutcome) {
+        // Attach the pending register (from a `"a` prefix) to the
+        // invocation if not already specified.
+        if let Some(reg) = self.pending_register.take()
+            && inv.register.is_none()
+        {
+            inv = inv.with_register(reg);
+        }
+        // Jump-class motions (gg, G) push history before dispatch so
+        // Ctrl-O can return.
+        if inv.command == self.builtins.goto_first_line.0
+            || inv.command == self.builtins.goto_last_line.0
+        {
+            let cur = self.cursor;
+            self.push_position_history(cur, PositionSource::AutoJump);
+        }
+        // Capture find/till invocations for `;` / `,` repeat.
+        if let lattice_grammar::Args::Char(c) = inv.args {
+            let kind = if inv.command == self.builtins.find_char_forward.0 {
+                Some(FindKind::Forward)
+            } else if inv.command == self.builtins.find_char_backward.0 {
+                Some(FindKind::Backward)
+            } else if inv.command == self.builtins.till_char_forward.0 {
+                Some(FindKind::TillForward)
+            } else if inv.command == self.builtins.till_char_backward.0 {
+                Some(FindKind::TillBackward)
+            } else {
+                None
+            };
+            if let Some(kind) = kind {
+                self.last_find = Some(LastFind { kind, target: c });
+            }
+        }
+        // Slice 8.i.4.f: count multiplication lives entirely in
+        // `keymap_normal::attach_count` (input-side). The dispatcher
+        // reads the baked `inv.count` and dispatches with it.
+        let mut effective_count = inv.count.map(|c| c.0).unwrap_or(1);
+        // Fold-aware operator expansion (`docs/user/folding.md`):
+        // when the cursor sits on the heading line of a closed fold
+        // and the operator's range is `CurrentLine` (the `dd` / `yy`
+        // / `cc` / `>>` family), grow the count so the operator
+        // covers the whole fold. The operator stays a single edit /
+        // single undo unit because the dispatcher composes one
+        // `Effect::Edits` from the expanded range.
+        if self.foldenable()
+            && matches!(inv.range, Some(lattice_grammar::range::Range::CurrentLine))
+            && let Some(fold) = self.fold_start_at(self.cursor.line)
+        {
+            let span = fold.end_line.saturating_sub(fold.start_line) + 1;
+            effective_count = effective_count.max(span);
+        }
+        if effective_count > 1 {
+            inv = inv.with_count(lattice_grammar::command::Count(effective_count));
+        }
+        self.pending_count = 0;
+        self.op_count = 0;
+        let was_visual = matches!(self.modal, ModalState::Visual(_));
+        let mut should_exit_visual = false;
+        let inv_for_repeat = inv.clone();
+        let is_vertical_jump = inv.command == self.builtins.goto_first_line.0
+            || inv.command == self.builtins.goto_last_line.0;
+        let prev_cursor_line = self.cursor.line;
+        match self.dispatch_blocking(inv) {
+            Ok(effect) => {
+                // Visual exits on any operator-class effect (mutation OR
+                // yank-only); dot-repeat only records buffer mutations.
+                should_exit_visual = effect_mutates_or_yanks(&effect);
+                if effect_mutates(&effect) {
+                    self.last_change = Some(inv_for_repeat);
+                }
+                apply_effect_host(self, effect, out);
+                if is_vertical_jump {
+                    self.auto_open_folds_at_cursor();
+                } else {
+                    self.snap_cursor_past_closed_folds(prev_cursor_line);
+                }
+            }
+            Err(_) => {
+                // TODO(error-surface): publish to a notification once
+                // that subsystem lands.
+            }
+        }
+        if was_visual && should_exit_visual && matches!(self.modal, ModalState::Visual(_)) {
+            self.do_exit_visual();
+        }
+        self.clamp_cursor_to_buffer();
     }
 
     /// Unified motion dispatch for read-only buffer kinds (help /

@@ -37,6 +37,9 @@ pub mod buffers;
 pub mod chord;
 pub mod dispatch;
 pub mod editor;
+// Phase 5.7.B.1: Editor::boot extraction from
+// `lattice-ui-tui::app::boot::App::new`.
+mod editor_boot;
 pub mod excommand;
 pub mod file_tree;
 pub mod folds;

@@ -157,16 +157,71 @@ impl Render for EditorView {
             cursor.byte,
         );
 
-        // 5.7.B.5: visible cursor marker. Splits the document
-        // into per-line strings; on the cursor line, inserts
-        // `▌` at `cursor.byte`. Each line renders as its own
-        // div under a `flex_col` parent so gpui stacks them
-        // vertically (a single multi-line string would collapse
-        // newlines unless the container is `whitespace_pre`,
-        // which gpui-0.2.2 doesn't expose). The marker is an
-        // ASCII-art stand-in until proper text shaping +
-        // glyph-position-driven cursor overlay lands.
-        let lines = render_lines_with_cursor(&text, cursor.line, cursor.byte);
+        // 5.7.B.8: real cursor block on monospace text. Each
+        // character renders as its own div under a `flex_row`
+        // line; the cursor character has inverted bg/fg, giving
+        // a vim-style block cursor aligned to glyph metrics.
+        // Setting `font_family("monospace")` on the outer
+        // container makes every cell the same width so the
+        // block stacks predictably across rows.
+        //
+        // Tabs / CRLF / wide-glyph alignment are TODO -- the
+        // approach handles ASCII + most BMP glyphs correctly via
+        // `char_indices()` (byte-indexed; matches `cursor.byte`).
+        // A future slice swaps this for a proper `Element` impl
+        // using `window.text_system().shape_line` so the cursor
+        // can sit on a sub-character glyph position and tabs
+        // expand to their configured width.
+        let cursor_line = cursor.line as usize;
+        let cursor_byte = cursor.byte as usize;
+        let cursor_fg = rgb(0x1e1e2e);
+        let cursor_bg = rgb(0xcdd6f4);
+        let raw_lines: Vec<&str> = text.split('\n').collect();
+        let cursor_past_last_line = cursor_line >= raw_lines.len();
+
+        let mut rows: Vec<gpui::Div> = raw_lines
+            .iter()
+            .enumerate()
+            .map(|(line_idx, line)| {
+                let is_cursor_line = line_idx == cursor_line;
+                let mut cells: Vec<gpui::Div> = line
+                    .char_indices()
+                    .map(|(byte_idx, c)| {
+                        let is_cursor = is_cursor_line && byte_idx == cursor_byte;
+                        if is_cursor {
+                            div()
+                                .bg(cursor_bg)
+                                .text_color(cursor_fg)
+                                .child(c.to_string())
+                        } else {
+                            div().child(c.to_string())
+                        }
+                    })
+                    .collect();
+                // Trailing block: cursor at EOL (`cursor_byte ==
+                // line.len()`) or on an empty line (`line.len() ==
+                // 0`). The block falls on a synthetic space so
+                // there's a visible cell where the next insert
+                // will land.
+                if is_cursor_line && cursor_byte >= line.len() {
+                    cells.push(div().bg(cursor_bg).text_color(cursor_fg).child(" "));
+                }
+                div().flex().flex_row().children(cells)
+            })
+            .collect();
+
+        if cursor_past_last_line {
+            // Cursor sits on a row beyond the document's last
+            // line (e.g. a doc ending in `\n` with cursor on the
+            // synthetic post-newline row). Append a marker-only
+            // row so the user can see the target.
+            rows.push(
+                div()
+                    .flex()
+                    .flex_row()
+                    .child(div().bg(cursor_bg).text_color(cursor_fg).child(" ")),
+            );
+        }
 
         div()
             .track_focus(&self.focus_handle)
@@ -177,14 +232,13 @@ impl Render for EditorView {
             .bg(rgb(0x1e1e2e))
             .text_color(rgb(0xcdd6f4))
             .text_sm()
-            .child(
-                div()
-                    .flex_grow()
-                    .p_3()
-                    .flex()
-                    .flex_col()
-                    .children(lines.into_iter().map(|line| div().child(line))),
-            )
+            // Monospace family: gpui falls through to the next
+            // available font if the named family doesn't match.
+            // "DejaVu Sans Mono" is present on Debian/Ubuntu/WSLg
+            // by default; if not, the fallback chain picks
+            // whatever monospace gpui's font system registered.
+            .font_family("DejaVu Sans Mono")
+            .child(div().flex_grow().p_3().flex().flex_col().children(rows))
             .child(
                 div()
                     .bg(rgb(0x313244))
@@ -193,111 +247,6 @@ impl Render for EditorView {
                     .py_1()
                     .child(status),
             )
-    }
-}
-
-/// Split `text` into per-line strings and insert the cursor
-/// marker (`▌`) at `cursor_byte` on `cursor_line`. Empty
-/// documents render a single line containing just the marker;
-/// cursors past the last real line append a trailing
-/// marker-only line so the user can see where they are.
-///
-/// `cursor_byte` is clamped to the line's length and rounded
-/// down to the nearest UTF-8 char boundary so the split is
-/// always safe.
-fn render_lines_with_cursor(text: &str, cursor_line: u32, cursor_byte: u32) -> Vec<String> {
-    let cursor_line = cursor_line as usize;
-    let cursor_byte = cursor_byte as usize;
-    // `lines()` discards trailing `\n`; `split('\n')` keeps the
-    // (possibly empty) trailing line so the cursor can be
-    // visible past a final newline. Both behave identically on
-    // text without a trailing newline.
-    let raw: Vec<&str> = text.split('\n').collect();
-
-    // Empty document: render the marker alone.
-    if raw.is_empty() || (raw.len() == 1 && raw[0].is_empty() && cursor_line == 0) {
-        return vec!["▌".to_string()];
-    }
-
-    let mut out: Vec<String> = Vec::with_capacity(raw.len() + 1);
-    for (i, line) in raw.iter().enumerate() {
-        if i == cursor_line {
-            let mut byte = cursor_byte.min(line.len());
-            // Round down to char boundary -- vim-style position
-            // tracking is char-aware, but defensive against any
-            // race where cursor was captured mid-edit.
-            while byte > 0 && !line.is_char_boundary(byte) {
-                byte -= 1;
-            }
-            let (before, after) = line.split_at(byte);
-            out.push(format!("{before}▌{after}"));
-        } else {
-            out.push(line.to_string());
-        }
-    }
-
-    // Cursor past the last existing line (e.g. doc has N lines
-    // but cursor.line == N). Append a marker-only line so the
-    // user can see the target row.
-    if cursor_line >= raw.len() {
-        out.push("▌".to_string());
-    }
-
-    out
-}
-
-#[cfg(test)]
-mod cursor_render_tests {
-    use super::render_lines_with_cursor;
-
-    #[test]
-    fn empty_doc_renders_lone_marker() {
-        assert_eq!(render_lines_with_cursor("", 0, 0), vec!["▌"]);
-    }
-
-    #[test]
-    fn cursor_at_start_of_single_line() {
-        assert_eq!(render_lines_with_cursor("hello", 0, 0), vec!["▌hello"]);
-    }
-
-    #[test]
-    fn cursor_in_middle_of_single_line() {
-        assert_eq!(render_lines_with_cursor("hello", 0, 3), vec!["hel▌lo"]);
-    }
-
-    #[test]
-    fn cursor_at_end_of_single_line() {
-        assert_eq!(render_lines_with_cursor("hello", 0, 5), vec!["hello▌"]);
-    }
-
-    #[test]
-    fn cursor_on_second_of_two_lines() {
-        assert_eq!(
-            render_lines_with_cursor("foo\nbar", 1, 2),
-            vec!["foo", "ba▌r"]
-        );
-    }
-
-    #[test]
-    fn cursor_past_trailing_newline_appends_marker_row() {
-        // Doc "foo\n" splits to ["foo", ""]; cursor.line == 1
-        // sits on the empty trailing row.
-        assert_eq!(render_lines_with_cursor("foo\n", 1, 0), vec!["foo", "▌"]);
-    }
-
-    #[test]
-    fn cursor_byte_past_eol_clamps_to_line_length() {
-        // Defensive: motion code may overshoot mid-edit; the
-        // renderer never panics on out-of-range byte.
-        assert_eq!(render_lines_with_cursor("hi", 0, 99), vec!["hi▌"]);
-    }
-
-    #[test]
-    fn cursor_in_multibyte_char_falls_back_to_preceding_boundary() {
-        // `é` is 2 bytes in UTF-8 (0xC3 0xA9). A byte index of 1
-        // is mid-character; the helper must round down to 0
-        // rather than splitting the codepoint.
-        assert_eq!(render_lines_with_cursor("é", 0, 1), vec!["▌é"]);
     }
 }
 

@@ -74,43 +74,15 @@ fn workspace_root_from_cwd() -> Option<std::path::PathBuf> {
     }
 }
 
-/// Shared tokio multi-thread runtime that hosts every LSP
-/// task (supervisor actor + per-server actors + read/write
-/// loops + diagnostic pumps + the debounced flush task).
-/// Survives for the editor's lifetime. `pub(crate)` so
-/// `App::new` can hand the runtime's handle to
-/// `LspSupervisor::spawn` -- the supervisor's command-mailbox
-/// semantics require an explicit runtime affinity, and the
-/// LSP runtime *is* the canonical owner.
-pub(crate) fn lsp_runtime() -> &'static tokio::runtime::Runtime {
-    static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
-    RT.get_or_init(|| {
-        tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .thread_name("lattice-lsp")
-            .build()
-            .expect("LSP tokio runtime should build")
-    })
-}
-
-/// Spawn a fire-and-forget future on the shared LSP runtime
-/// (Phase 4.2). Used by the App's per-feature dispatchers
-/// (hover, definition, references, ...) so the request awaits
-/// the actor's response *off* the main UI thread; the result
-/// flows back through a per-feature mpsc channel that the App
-/// drains before each draw.
-///
-/// Returning a `JoinHandle` lets the caller cancel by dropping
-/// it -- though for LSP cooperative cancellation runs through
-/// the `CancellationToken` plumbed into the typed wrappers,
-/// so the handle is mostly informational.
-pub fn spawn_on_lsp_runtime<F>(future: F) -> tokio::task::JoinHandle<F::Output>
-where
-    F: std::future::Future + Send + 'static,
-    F::Output: Send + 'static,
-{
-    lsp_runtime().spawn(future)
-}
+// Phase 5.5.LSP.1: the shared LSP runtime + spawn helper now
+// live in `lattice_runtime::runtime` so host-side dispatchers
+// can fire LSP requests without taking a back-edge through this
+// (renderer-specific) crate. Re-exported here so the existing
+// `crate::runtime::*` call sites (34 inside `App`) keep
+// compiling unchanged. Both names point at the single
+// `lattice_runtime::LSP_RUNTIME` OnceLock -- no behaviour change.
+pub(crate) use lattice_runtime::runtime::lsp_runtime;
+pub use lattice_runtime::runtime::spawn_on_lsp_runtime;
 
 fn setup() -> Result<Terminal<CrosstermBackend<Stdout>>> {
     enable_raw_mode().context("enable raw mode")?;

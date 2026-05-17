@@ -27,6 +27,18 @@ use tokio::runtime::{Builder, Handle, Runtime};
 
 static SHARED: OnceLock<Runtime> = OnceLock::new();
 
+// Phase 5.5.LSP.1: a second multi-threaded runtime dedicated to
+// LSP supervisor + per-server actors + read/write loops +
+// diagnostic pumps. Kept separate from `SHARED` so a slow LSP
+// server can't starve the document-actor scheduling band. The
+// helper used to live in `lattice_ui_tui::runtime` -- moving it
+// here lets `lattice_host` host-side dispatchers spawn LSP
+// requests without a back-edge through the renderer crate.
+// Consolidating onto a single shared runtime is a deliberate
+// post-1.0 decision; for now the two-runtime topology is
+// preserved verbatim.
+static LSP_RUNTIME: OnceLock<Runtime> = OnceLock::new();
+
 /// Get (or lazily build) the shared runtime's `Handle`. Cheap to
 /// call repeatedly; the underlying `Runtime` is built once and
 /// stays alive for the process lifetime.
@@ -60,6 +72,44 @@ where
     F::Output: Send + 'static,
 {
     shared_runtime().spawn(fut)
+}
+
+/// Phase 5.5.LSP.1: shared LSP runtime accessor. Multi-threaded,
+/// thread-name `lattice-lsp`. Owns the supervisor actor + per-
+/// server actors + read/write loops + diagnostic pumps + the
+/// debounced flush task. Survives for the editor's lifetime.
+///
+/// Used by `App::new` to hand the runtime's handle to
+/// `LspSupervisor::spawn` (the supervisor's command-mailbox
+/// semantics require an explicit runtime affinity) and by every
+/// per-feature dispatcher (hover, definition, references, ...)
+/// that needs to fire a request *off* the UI thread.
+pub fn lsp_runtime() -> &'static Runtime {
+    LSP_RUNTIME.get_or_init(|| {
+        Builder::new_multi_thread()
+            .enable_all()
+            .thread_name("lattice-lsp")
+            .build()
+            .expect("LSP tokio runtime should build")
+    })
+}
+
+/// Phase 5.5.LSP.1: spawn a fire-and-forget future on the shared
+/// LSP runtime. Used by the App's + host's per-feature LSP
+/// dispatchers so the request awaits the actor's response *off*
+/// the main UI thread; the result flows back through a per-
+/// feature mpsc channel that the App drains before each draw.
+///
+/// Returning a `JoinHandle` lets the caller cancel by dropping
+/// it -- though for LSP cooperative cancellation runs through
+/// the `CancellationToken` plumbed into the typed wrappers, so
+/// the handle is mostly informational.
+pub fn spawn_on_lsp_runtime<F>(future: F) -> tokio::task::JoinHandle<F::Output>
+where
+    F: std::future::Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    lsp_runtime().spawn(future)
 }
 
 /// Sync-to-async bridge. Forwards to the shared runtime's

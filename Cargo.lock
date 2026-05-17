@@ -3537,6 +3537,7 @@ dependencies = [
  "anyhow",
  "gpui",
  "lattice-core",
+ "lattice-grammar",
  "lattice-host",
  "lattice-mode",
  "tracing",

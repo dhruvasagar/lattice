@@ -31,6 +31,14 @@ gpui = { version = "0.2.2", optional = true }
 anyhow.workspace = true
 tracing.workspace = true
 
+[dev-dependencies]
+# 5.7.B.3: dispatch-pipeline integration tests assert that
+# `editor.modal` lands on the expected `ModalState::*` after a
+# keystroke. The type lives in `lattice-grammar`; the host
+# doesn't re-export it (and shouldn't -- grammar is the canonical
+# owner). Tests-only dep keeps the lib's link surface untouched.
+lattice-grammar = { path = "../lattice-grammar" }
+
 [features]
 default = []
 # 5.7.B: opens a real GPUI window via the `lattice-gpui` binary.

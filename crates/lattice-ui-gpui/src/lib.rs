@@ -64,9 +64,15 @@
 
 use lattice_core::Document;
 use lattice_host::Renderer;
+use lattice_host::action::Action;
+use lattice_host::chord::KeyChord;
+use lattice_host::dispatch::DispatchOutcome;
 use lattice_host::editor::Editor;
+use lattice_host::input::TranslateContext;
 use lattice_host::pane_render::ProviderLookup;
 use lattice_mode::ModeId;
+
+pub mod gpui_chord;
 
 /// Stub GPUI theme cache. The TUI peer caches pre-computed
 /// `ratatui::style::Style` primitives so the frame-hot path is a
@@ -143,11 +149,117 @@ impl GpuiApp {
             pane_render_registry: GpuiPaneRenderRegistry::default(),
         }
     }
+
+    /// Convenience entry point for GPUI's key-down event handler:
+    /// `dispatch_keystroke(&ev.keystroke.key, mods.control, mods.alt,
+    /// mods.shift, mods.platform)`. Walks the same pipeline as the
+    /// TUI peer (chord normalisation → renderer-neutral `translate`
+    /// → `editor.dispatch`); returns the [`DispatchOutcome`] for
+    /// callers that want to inspect renderer signals (or
+    /// [`None`] if the key string didn't map to a chord).
+    ///
+    /// Phase 5.7.B.3 scope: the outcome's renderer signals are
+    /// returned but not yet fanned out (no GPUI-side equivalent of
+    /// `App::handle_renderer_signal` yet). 5.7.B.4+ adds a signal
+    /// handler so theme changes, option-cache rebuilds, and major-
+    /// mode activations propagate to the renderer caches.
+    pub fn dispatch_keystroke(
+        &mut self,
+        key: &str,
+        control: bool,
+        alt: bool,
+        shift: bool,
+        platform: bool,
+    ) -> Option<DispatchOutcome> {
+        let chord = gpui_chord::from_keystroke(key, control, alt, shift, platform)?;
+        Some(self.dispatch_chord(chord))
+    }
+
+    /// Translate a canonical [`KeyChord`] into an [`Action`] (via
+    /// the renderer-neutral host pipeline) and dispatch it. Used
+    /// by [`Self::dispatch_keystroke`] after the GPUI-shaped event
+    /// has been normalised, and directly by tests that drive the
+    /// editor with synthetic chords.
+    ///
+    /// Builds [`TranslateContext`] from current `Editor` state.
+    /// `chord_capture` is hard-wired to `false` for now: the
+    /// `App`-side `chord_capture_active()` predicate in the TUI
+    /// peer touches a cmdline arg-slot field that has no GPUI
+    /// equivalent yet; when the GPUI peer grows a cmdline this
+    /// reads from the same shared editor state.
+    pub fn dispatch_chord(&mut self, chord: KeyChord) -> DispatchOutcome {
+        let action = {
+            let ctx = TranslateContext {
+                modal: self.editor.modal,
+                builtins: &self.editor.builtins,
+                pending_count: self.editor.pending_count,
+                op_count: self.editor.op_count,
+                recording_macro: self.editor.macro_recording.is_some(),
+                active_buffer: self.editor.active_buffer,
+                completion_open: self.editor.completion_state.is_some(),
+                chord_capture: false,
+                picker_open: self.editor.picker.is_some(),
+                insert_completion_open: self.editor.insert_completion.is_some(),
+                snippet_active: self.editor.active_snippet.is_some(),
+                keymap: &self.editor.keymap,
+                partial_chord: &self.editor.partial_chord,
+            };
+            lattice_host::input::translate(ctx, chord)
+        };
+        self.dispatch_action(action)
+    }
+
+    /// Dispatch a single [`Action`] through `editor.dispatch` and
+    /// drain the deferred-action queue iteratively.
+    ///
+    /// `editor.dispatch` runs ONE action and returns the outcome;
+    /// for many actions (`Action::Invoke` resolving to an
+    /// `AppEffect::EnterMode` / `EnterVisual` / etc.) the host
+    /// emits a follow-up [`Action`] in
+    /// `outcome.next_actions` rather than mutating directly --
+    /// see `Editor::apply_app_effect` in `lattice_host::dispatch`.
+    /// The TUI peer's `App::apply` drains the queue with a
+    /// recursive call; this method does the same shape with an
+    /// explicit FIFO loop so basic state transitions land without
+    /// needing the renderer's full effect / signal fan-out yet
+    /// (5.7.B.4+ work).
+    ///
+    /// `outcome.effects` are aggregated across the chain but NOT
+    /// re-applied -- the host has already called
+    /// `editor.handle_effect(effect.clone())` on each one during
+    /// the inner dispatch (the renderer-coupled match arms remain
+    /// a 5.7.B.4+ follow-up). `renderer_signals` accumulate the
+    /// same way; callers can inspect them once the GPUI peer
+    /// gains a signal handler.
+    pub fn dispatch_action(&mut self, action: Action) -> DispatchOutcome {
+        let mut outcome = self.editor.dispatch(action);
+        let mut pending: std::collections::VecDeque<Action> =
+            outcome.next_actions.drain(..).collect();
+        while let Some(follow_up) = pending.pop_front() {
+            let mut next_out = self.editor.dispatch(follow_up);
+            pending.extend(next_out.next_actions.drain(..));
+            outcome.effects.append(&mut next_out.effects);
+            outcome
+                .renderer_signals
+                .append(&mut next_out.renderer_signals);
+            outcome.consumed |= next_out.consumed;
+            if self.editor.should_quit {
+                // Mirrors `App::apply`'s mid-macro-quit semantic:
+                // a recorded `:q` short-circuits the rest of the
+                // chain so we don't keep firing actions against
+                // an editor that's tearing down.
+                break;
+            }
+        }
+        outcome
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use lattice_grammar::ModalState;
 
     /// The 5.7 scaffold's core claim: a GPUI-side composition root
     /// constructs from the host substrate alone. If this builds, the
@@ -175,5 +287,40 @@ mod tests {
         let probe: &dyn ProviderLookup = &app.pane_render_registry;
         let dummy = lattice_mode::ModeId::new("__scaffold_probe__");
         assert!(!probe.has_provider(dummy));
+    }
+
+    /// End-to-end pipeline assertion: a key string flows through
+    /// the GPUI peer's adapter, the host's `translate` path, and
+    /// `editor.dispatch`, and the editor's modal state actually
+    /// changes. This is the smallest credible "input dispatch
+    /// works" test — it doesn't need GPUI's native event types
+    /// or a window.
+    ///
+    /// `"i"` in Normal mode is canonical vim "enter Insert"; if
+    /// the pipeline is wired correctly the editor's `modal` ends
+    /// up in [`ModalState::Insert`].
+    #[test]
+    fn dispatch_keystroke_routes_i_to_insert_mode() {
+        let mut app = GpuiApp::new(Document::empty());
+        assert_eq!(app.editor.modal, ModalState::Normal);
+        let outcome = app.dispatch_keystroke("i", false, false, false, false);
+        assert!(
+            outcome.is_some(),
+            "`i` should normalise to a chord and dispatch"
+        );
+        assert_eq!(app.editor.modal, ModalState::Insert);
+    }
+
+    /// `dispatch_chord` is the path tests + programmatic drivers
+    /// take. Sanity-check that handing it a canonical chord
+    /// reaches the same state change as the keystroke entry
+    /// point.
+    #[test]
+    fn dispatch_chord_drives_normal_to_insert_transition() {
+        use lattice_host::chord::{KeyChord, KeyKind, KeyMods};
+        let mut app = GpuiApp::new(Document::empty());
+        let chord = KeyChord::new(KeyKind::Char('i'), KeyMods::NONE);
+        app.dispatch_chord(chord);
+        assert_eq!(app.editor.modal, ModalState::Insert);
     }
 }

@@ -387,6 +387,29 @@ impl Render for EditorView {
             }
         };
 
+        // 5.8.D: left-side line-number gutter. Width is sized
+        // to the widest line number in the document (e.g.
+        // 3-digit gutter for 100..999 lines). The cursor row's
+        // number renders in the cursor color so it pops; other
+        // rows use the subdued "punctuation" gray.
+        let total_lines = raw_lines.len().max(1);
+        let gutter_width = total_lines.to_string().len();
+        // 1 extra char for the trailing space separator between
+        // the gutter and the document text.
+        let gutter_pad_len = gutter_width + 1;
+        let gutter_normal = rgb(0x9399b2); // Catppuccin overlay2.
+
+        let make_gutter = |line_idx: usize, is_cursor_line: bool| -> gpui::Div {
+            // 1-based display line numbers (vim convention).
+            let label = format!("{:>width$} ", line_idx + 1, width = gutter_width);
+            let color = if is_cursor_line {
+                rgb(self.app.theme.cursor_background)
+            } else {
+                gutter_normal
+            };
+            div().text_color(color).child(label)
+        };
+
         let mut rows: Vec<gpui::Div> = raw_lines
             .iter()
             .enumerate()
@@ -397,23 +420,23 @@ impl Render for EditorView {
                     .and_then(|h| h.get(line_idx))
                     .map(Vec::as_slice)
                     .unwrap_or(&[]);
-                let mut cells: Vec<gpui::Div> = line
-                    .char_indices()
-                    .map(|(byte_idx, c)| {
-                        let is_cursor = is_cursor_line && byte_idx == cursor_byte;
-                        if is_cursor {
-                            style_cursor_cell(&c.to_string())
-                        } else {
-                            // 5.8.A: pick the highlighter style
-                            // for this byte position; color the
-                            // char accordingly.
-                            let span_style = style_at(line_spans, byte_idx);
-                            div()
-                                .text_color(rgb(syntax_color(span_style)))
-                                .child(c.to_string())
-                        }
-                    })
-                    .collect();
+                let mut cells: Vec<gpui::Div> = Vec::with_capacity(line.len() + 2);
+                // 5.8.D: prepend the gutter cell.
+                cells.push(make_gutter(line_idx, is_cursor_line));
+                cells.extend(line.char_indices().map(|(byte_idx, c)| {
+                    let is_cursor = is_cursor_line && byte_idx == cursor_byte;
+                    if is_cursor {
+                        style_cursor_cell(&c.to_string())
+                    } else {
+                        // 5.8.A: pick the highlighter style
+                        // for this byte position; color the
+                        // char accordingly.
+                        let span_style = style_at(line_spans, byte_idx);
+                        div()
+                            .text_color(rgb(syntax_color(span_style)))
+                            .child(c.to_string())
+                    }
+                }));
                 // Trailing cursor: cursor at EOL (`cursor_byte ==
                 // line.len()`) or on an empty line (`line.len() ==
                 // 0`). The cursor falls on a synthetic space so
@@ -430,8 +453,17 @@ impl Render for EditorView {
             // Cursor sits on a row beyond the document's last
             // line (e.g. a doc ending in `\n` with cursor on the
             // synthetic post-newline row). Append a cursor-only
-            // row so the user can see the target.
-            rows.push(div().flex().flex_row().child(style_cursor_cell(" ")));
+            // row so the user can see the target. Render an
+            // empty gutter cell so the row aligns with the
+            // others above.
+            let blank_gutter = div().child(" ".repeat(gutter_pad_len));
+            rows.push(
+                div()
+                    .flex()
+                    .flex_row()
+                    .child(blank_gutter)
+                    .child(style_cursor_cell(" ")),
+            );
         }
 
         // 5.7.B.12: surface colors come from the cached

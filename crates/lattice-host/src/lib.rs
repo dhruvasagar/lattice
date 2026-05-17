@@ -55,6 +55,7 @@ pub mod keymap_visual;
 pub mod modes;
 pub mod oil;
 pub mod pane;
+pub mod pane_render;
 pub mod popup;
 pub mod renderer;
 pub mod state;

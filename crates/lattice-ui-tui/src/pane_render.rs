@@ -20,6 +20,7 @@
 use std::collections::HashMap;
 
 use lattice_core::BufferId;
+use lattice_host::pane_render::ProviderLookup;
 use lattice_mode::ModeId;
 use lattice_runtime::DocumentSnapshot;
 use ratatui::Frame;
@@ -73,6 +74,18 @@ impl PaneRenderRegistry {
     }
 }
 
+/// Phase 5.6: the host's [`lattice_host::pane_render::resolve_pane_render_mode`]
+/// walks active modes; this impl is the renderer-side probe it
+/// queries to learn which `ModeId` has a TUI-shaped provider
+/// registered. Each renderer ships its own typed registry and its
+/// own `ProviderLookup` impl over it; the walk algorithm itself
+/// stays host-side.
+impl ProviderLookup for PaneRenderRegistry {
+    fn has_provider(&self, mode: ModeId) -> bool {
+        self.map.contains_key(&mode)
+    }
+}
+
 impl App {
     /// Resolve the [`PaneRenderProvider`] for `buffer_id`. Walks
     /// active minors in reverse activation order (most-recently
@@ -80,17 +93,21 @@ impl App {
     /// uses) before falling back to the major. Returns `None`
     /// when nothing is registered, in which case the renderer
     /// uses its default document path.
+    ///
+    /// Phase 5.6: the walk lives host-side in
+    /// [`lattice_host::pane_render::resolve_pane_render_mode`]; this
+    /// method is a thin renderer-side adapter that hands the host the
+    /// active editor + registry and looks up the matched provider
+    /// from the resulting `ModeId`. The two-step shape (resolve id,
+    /// then `registry.get`) keeps the trait minimal: the host never
+    /// sees the renderer-typed `PaneRenderProvider`.
     pub fn pane_render_provider(&self, buffer_id: BufferId) -> Option<&PaneRenderProvider> {
-        let modes = self.editor.active_modes.get(&buffer_id)?;
-        for &minor_id in modes.minors().iter().rev() {
-            if let Some(p) = self.pane_render_registry.get(minor_id) {
-                return Some(p);
-            }
-        }
-        if let Some(major_id) = modes.major() {
-            return self.pane_render_registry.get(major_id);
-        }
-        None
+        let mode = lattice_host::pane_render::resolve_pane_render_mode(
+            &self.editor,
+            buffer_id,
+            &self.pane_render_registry,
+        )?;
+        self.pane_render_registry.get(mode)
     }
 }
 

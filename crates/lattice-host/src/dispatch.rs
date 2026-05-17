@@ -678,6 +678,10 @@ pub(crate) fn handle_action(
         Action::CommandLineAcceptCompletion => editor.do_command_line_accept_completion(),
         // 5.5.G.16: `zf` creates a fold over the Visual selection.
         Action::CreateFoldFromVisual => editor.do_create_fold_from_visual(),
+        // 5.5.G.17: modal-state pivot + blockwise-Visual I/A.
+        Action::EnterMode(state) => editor.enter_mode(state),
+        Action::EnterBlockVisualInsert => editor.do_enter_block_visual_insert(false),
+        Action::EnterBlockVisualAppend => editor.do_enter_block_visual_insert(true),
         Action::ToggleFoldEnable => {
             // `zi` toggle. `set_typed` publishes through the bus;
             // drain immediately so the cascade refreshes
@@ -3135,6 +3139,137 @@ impl Editor {
             }
         }
         signals
+    }
+}
+
+/// 5.5.G.17: modal-state transitions + blockwise-Visual I/A.
+/// `enter_mode` is the canonical modal pivot (the Insert-replay
+/// recording lifecycle, cursor pull-back on `<Esc>`, modal-event
+/// publish all live here). `replicate_block_insert` commits a
+/// blockwise `I`/`A` session as a single batched undo unit.
+/// `do_enter_block_visual_insert` is the Visual-blockwise entry
+/// point.
+///
+/// All three were previously App-side; their deps
+/// (`apply_edit_blocking` / `apply_edit_batch_blocking` /
+/// `undo_blocking` / `event_bus.publish`) all sit on
+/// [`Editor`] already, so the migration is a verbatim move.
+impl Editor {
+    /// Modal-state pivot. Maintains the Insert-replay recording
+    /// lifecycle (start capture on entering Insert/Replace; promote
+    /// captured text into `last_insert` on exit; commit any
+    /// `pending_block_insert` via `replicate_block_insert`), the
+    /// Insert->Normal cursor pull-back, and the `ModalModeChanged`
+    /// event fan-out. Re-entering the same mode is intentional
+    /// (the dot-repeat path bounces through Insert for its
+    /// recording side-effects); we suppress the event publication
+    /// in that case.
+    pub fn enter_mode(&mut self, state: ModalState) {
+        let prior = self.modal;
+        if matches!(state, ModalState::Replace) {
+            self.replace_history.clear();
+        }
+        let was_insert_like = matches!(self.modal, ModalState::Insert | ModalState::Replace);
+        let entering_insert_like = matches!(state, ModalState::Insert | ModalState::Replace);
+        if entering_insert_like && !was_insert_like {
+            self.recording_insert = Some(String::new());
+        }
+        if was_insert_like
+            && !entering_insert_like
+            && let Some(rec) = self.recording_insert.take()
+        {
+            let block_spec = self.pending_block_insert.take();
+            if !rec.is_empty() {
+                self.last_insert = Some(rec.clone());
+            }
+            if let Some(spec) = block_spec
+                && !rec.is_empty()
+            {
+                self.replicate_block_insert(spec, &rec);
+            }
+        } else if was_insert_like && !entering_insert_like {
+            self.pending_block_insert = None;
+        }
+        self.modal = state;
+        if matches!(state, ModalState::Normal) {
+            // Vim's behavior: leaving Insert mode pulls the cursor
+            // back one byte if it's not already at the start of the
+            // line, so the cursor sits on the last inserted char
+            // rather than past it.
+            if self.cursor.byte > 0 {
+                self.cursor.byte -= 1;
+            }
+        }
+        if prior != state {
+            self.event_bus.publish(Event::ModalModeChanged {
+                from: format!("{prior:?}"),
+                to: format!("{state:?}"),
+            });
+        }
+    }
+
+    /// Commit a blockwise-Visual `I` / `A` session as one batched
+    /// undo unit. Rewinds the `live_edits` typed on the top row,
+    /// then builds + applies the multi-row insert batch.
+    pub fn replicate_block_insert(
+        &mut self,
+        spec: crate::state::PendingBlockInsert,
+        text: &str,
+    ) {
+        for _ in 0..spec.live_edits {
+            let _ = self.undo_blocking();
+        }
+        let buffer = self.document.snapshot().buffer.clone();
+        let mut edits =
+            Vec::with_capacity((spec.end_line - spec.start_line + 1) as usize);
+        let top_len = buffer.line_byte_len(spec.start_line);
+        let top_col = spec.insert_col.min(top_len);
+        edits.push(lattice_protocol::edit::Edit::insert(
+            lattice_protocol::position::Position::new(spec.start_line, top_col),
+            text,
+        ));
+        for line in (spec.start_line + 1)..=spec.end_line {
+            let line_len = buffer.line_byte_len(line);
+            if line_len < spec.insert_col {
+                continue;
+            }
+            edits.push(lattice_protocol::edit::Edit::insert(
+                lattice_protocol::position::Position::new(line, spec.insert_col),
+                text,
+            ));
+        }
+        let _ = self.apply_edit_batch_blocking(edits);
+        self.cursor = lattice_protocol::position::Position::new(spec.start_line, top_col);
+    }
+
+    /// Vim blockwise-Visual `I` (`append=false`) / `A`
+    /// (`append=true`). Captures the block extents, parks them in
+    /// `pending_block_insert`, snaps the cursor to the top-row
+    /// insert column, and switches to Insert. The replication onto
+    /// rows 2..N happens via [`Self::replicate_block_insert`] when
+    /// Insert exits.
+    pub fn do_enter_block_visual_insert(&mut self, append: bool) {
+        if !matches!(self.modal, ModalState::Visual(VisualKind::Blockwise)) {
+            return;
+        }
+        let sels = self.document.selections();
+        let sel = sels.primary();
+        let start_line = sel.anchor.line.min(sel.head.line);
+        let end_line = sel.anchor.line.max(sel.head.line);
+        let left_col = sel.anchor.byte.min(sel.head.byte);
+        let right_col = sel.anchor.byte.max(sel.head.byte);
+        let insert_col = if append { right_col + 1 } else { left_col };
+        self.pending_block_insert = Some(crate::state::PendingBlockInsert {
+            start_line,
+            end_line,
+            insert_col,
+            live_edits: 0,
+        });
+        let line_len = self.document.snapshot().buffer.line_byte_len(start_line);
+        let cursor_col = insert_col.min(line_len);
+        self.cursor = lattice_protocol::position::Position::new(start_line, cursor_col);
+        self.visual_anchor = None;
+        self.enter_mode(ModalState::Insert);
     }
 }
 

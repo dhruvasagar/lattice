@@ -33,7 +33,6 @@
 
 use lattice_grammar::ModalState;
 use lattice_mode::ModeId;
-use lattice_protocol::Event;
 
 use super::{App, BufferId, BufferKind};
 
@@ -180,63 +179,15 @@ impl App {
         }
     }
 
+    /// 5.5.G.17: body migrated to
+    /// [`lattice_host::dispatch::Editor::enter_mode`]. Kept as a
+    /// delegate -- a handful of paths still drive modal state
+    /// directly (the `RepeatLastChange` apply arm, the
+    /// `Effect::EnterMode` apply_effect arm, and several
+    /// `do_*` helpers in `edit` / `motions` / `lsp` modules).
+    /// These retire as their callers migrate host-side.
     pub(super) fn enter_mode(&mut self, state: ModalState) {
-        let prior = self.editor.modal;
-        // Reset Replace's history every time we enter (or re-enter) Replace
-        // so backspace-restore is bounded to the current `R` session.
-        if matches!(state, ModalState::Replace) {
-            self.editor.replace_history.clear();
-        }
-        let was_insert_like = matches!(self.editor.modal, ModalState::Insert | ModalState::Replace);
-        let entering_insert_like = matches!(state, ModalState::Insert | ModalState::Replace);
-        // Insert-replay capture:
-        //   - Entering Insert/Replace from anything else: start recording.
-        //   - Leaving Insert/Replace to anything else: promote into last_insert.
-        if entering_insert_like && !was_insert_like {
-            self.editor.recording_insert = Some(String::new());
-        }
-        if was_insert_like
-            && !entering_insert_like
-            && let Some(rec) = self.editor.recording_insert.take()
-        {
-            // Snapshot the recording before consuming the block-
-            // insert spec; we need both to replicate.
-            let block_spec = self.editor.pending_block_insert.take();
-            if !rec.is_empty() {
-                self.editor.last_insert = Some(rec.clone());
-            }
-            if let Some(spec) = block_spec
-                && !rec.is_empty()
-            {
-                self.replicate_block_insert(spec, &rec);
-            }
-        } else if was_insert_like && !entering_insert_like {
-            // Insert exited but recording_insert was already None
-            // (shouldn't happen given enter_mode pairs them, but
-            // belt-and-braces -- still clear any spec so a future
-            // I/A starts clean).
-            self.editor.pending_block_insert = None;
-        }
-        self.editor.modal = state;
-        if matches!(state, ModalState::Normal) {
-            // Vim's behavior: leaving Insert mode pulls the cursor back one
-            // byte if it's not already at the start of the line, so the
-            // cursor sits on the last inserted char rather than past it.
-            if self.editor.cursor.byte > 0 {
-                self.editor.cursor.byte -= 1;
-            }
-        }
-        // Publish ModalModeChanged whenever the modal axis actually
-        // moves. (DESIGN.md §5.10 catalog.) Re-entering the same
-        // mode -- e.g. the dot-repeat path that calls enter_mode
-        // for the side-effect of recording/replay accounting --
-        // doesn't fire the event.
-        if prior != state {
-            self.editor.event_bus.publish(Event::ModalModeChanged {
-                from: format!("{prior:?}"),
-                to: format!("{state:?}"),
-            });
-        }
+        self.editor.enter_mode(state);
     }
 }
 

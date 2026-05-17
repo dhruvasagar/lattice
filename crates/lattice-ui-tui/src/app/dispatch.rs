@@ -243,16 +243,20 @@ impl App {
             | Action::CommandLineCompletePrev
             | Action::CommandLineAcceptCompletion
             // 5.5.G.16: `zf` Visual-selection fold creation.
-            | Action::CreateFoldFromVisual => {}
+            | Action::CreateFoldFromVisual
+            // 5.5.G.17: modal-state pivot + blockwise-Visual I/A.
+            | Action::EnterMode(_)
+            | Action::EnterBlockVisualInsert
+            | Action::EnterBlockVisualAppend => {}
             Action::Invoke(inv) => self.run_invocation(inv),
             Action::Insert(s) => self.do_insert_text(&s),
             // 5.5.G.3: `DeleteCharBackward`, `EnterAppend`,
             // `OpenLineBelow`, `OpenLineAbove`, `Undo`, `Redo`
             // migrated to `Editor::dispatch`; routed through the
             // grouped no-op above.
-            Action::EnterMode(state) => self.enter_mode(state),
-            Action::EnterBlockVisualInsert => self.do_enter_block_visual_insert(false),
-            Action::EnterBlockVisualAppend => self.do_enter_block_visual_insert(true),
+            // 5.5.G.17: `EnterMode` / `EnterBlockVisualInsert` /
+            // `EnterBlockVisualAppend` migrated to `Editor::dispatch`.
+
 
             // 5.5.G.13: `EnterCommandLine` migrated to `Editor::dispatch`.
             Action::CommandLineAppend(c) => {

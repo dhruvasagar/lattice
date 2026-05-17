@@ -40,12 +40,11 @@
 use lattice_core::buffer::AppliedEdit;
 use lattice_grammar::CommandInvocation;
 use lattice_grammar::ModalState;
-use lattice_grammar::VisualKind;
 use lattice_protocol::edit::Edit;
 use lattice_protocol::position::Position;
 use lattice_runtime::RuntimeError;
 
-use super::{App, EchoLevel, PendingBlockInsert, line_byte_len};
+use super::{App, EchoLevel};
 
 #[cfg(test)]
 use lattice_grammar::YankKind;
@@ -146,37 +145,11 @@ impl App {
     ///
     /// No-op if the modal is not blockwise visual; called only
     /// from translate_visual which guards on the mode.
+    /// 5.5.G.17: body migrated to
+    /// [`lattice_host::dispatch::Editor::do_enter_block_visual_insert`].
+    #[allow(dead_code)]
     pub(super) fn do_enter_block_visual_insert(&mut self, append: bool) {
-        if !matches!(self.editor.modal, ModalState::Visual(VisualKind::Blockwise)) {
-            return;
-        }
-        let sels = self.editor.document.selections();
-        let sel = sels.primary();
-        let start_line = sel.anchor.line.min(sel.head.line);
-        let end_line = sel.anchor.line.max(sel.head.line);
-        let left_col = sel.anchor.byte.min(sel.head.byte);
-        let right_col = sel.anchor.byte.max(sel.head.byte);
-        let insert_col = if append { right_col + 1 } else { left_col };
-
-        self.editor.pending_block_insert = Some(PendingBlockInsert {
-            start_line,
-            end_line,
-            insert_col,
-            live_edits: 0,
-        });
-
-        // Move cursor to the top row's insert column. If the line
-        // is shorter than insert_col (e.g. `A` on a short line),
-        // clamp -- the user's edits land at end-of-line and the
-        // replay handles short lines per-row.
-        let line_len = line_byte_len(&self.editor.document.snapshot().buffer, start_line);
-        let cursor_col = insert_col.min(line_len);
-        self.editor.cursor = Position::new(start_line, cursor_col);
-
-        // Drop visual mode and enter Insert. enter_mode handles
-        // recording_insert so the typed prefix is captured.
-        self.editor.visual_anchor = None;
-        self.enter_mode(ModalState::Insert);
+        self.editor.do_enter_block_visual_insert(append);
     }
 
     /// Vim's `o` -- open a new line below the cursor, splice a
@@ -302,12 +275,12 @@ impl App {
         }
     }
 
-    /// Vim's `<BS>` in Insert / Replace -- delete the byte before the
-    /// cursor (Unicode-aware step via previous_position). No-op at the
-    /// start of the buffer. Bumps the block-visual `I` / `A`
-    /// live-edit counter so the Esc replay accounts for the deletion.
     // 5.5.G.3: `do_delete_char_backward` migrated to
-    // [`lattice_host::dispatch::Editor`].
+    // [`lattice_host::dispatch::Editor`]. Vim `<BS>` in
+    // Insert / Replace -- deletes the byte before the
+    // cursor (Unicode-aware) and bumps the block-visual
+    // `I` / `A` live-edit counter so the Esc replay
+    // accounts for the deletion.
 
     // 5.5.E.3: `store_yank` moved to
     // [`lattice_host::dispatch::Editor::store_yank`] alongside the
@@ -319,58 +292,10 @@ impl App {
     // [`lattice_host::dispatch::Editor::read_register`] (zero
     // remaining App callers).
 
-    /// Commit a block-visual `I` / `A` session as a single undo unit.
-    ///
-    /// Vim's behavior: the typed prefix on the top row plus the
-    /// replicated text on the other rows land as one atomic
-    /// change. To honour that without restructuring Insert mode
-    /// to defer edits, we:
-    ///
-    /// 1. Roll back the live-typed edits via `undo_blocking` --
-    ///    `spec.live_edits` counts how many `apply_edit` calls
-    ///    happened on the top row during the Insert session.
-    /// 2. Build a batch: top-row insert at `insert_col` plus an
-    ///    insert at the same column on every line in
-    ///    `start_line+1..=end_line` whose length is at least
-    ///    `insert_col` (lines too short to hold the column are
-    ///    skipped, matching vim's behavior).
-    /// 3. Apply the batch via `apply_edit_batch_blocking` so the
-    ///    whole session is one undo / redo unit.
-    pub(super) fn replicate_block_insert(&mut self, spec: PendingBlockInsert, text: &str) {
-        // Rewind the live-typed edits. Each call decrements the
-        // top-row state by one; after `live_edits` calls the
-        // buffer is back to the pre-Insert state and we can
-        // build the batched edit list against it.
-        for _ in 0..spec.live_edits {
-            let _ = self.undo_blocking();
-        }
-
-        let buffer = self.editor.document.snapshot().buffer.clone();
-        let mut edits = Vec::with_capacity((spec.end_line - spec.start_line + 1) as usize);
-
-        // Top row first. Note: we don't skip the top row even if
-        // its length is below insert_col (the user did type there
-        // live, so the buffer already has at least one valid
-        // insertion point at the line-end position they reached).
-        let top_len = line_byte_len(&buffer, spec.start_line);
-        let top_col = spec.insert_col.min(top_len);
-        edits.push(Edit::insert(Position::new(spec.start_line, top_col), text));
-
-        for line in (spec.start_line + 1)..=spec.end_line {
-            let line_len = line_byte_len(&buffer, line);
-            if line_len < spec.insert_col {
-                continue;
-            }
-            edits.push(Edit::insert(Position::new(line, spec.insert_col), text));
-        }
-
-        let _ = self.apply_edit_batch_blocking(edits);
-        // Cursor settles on the start of the inserted prefix on
-        // the top row -- vim's behavior. The previous cursor pos
-        // (one past the typed text on top row) is no longer
-        // accurate after the rewind.
-        self.editor.cursor = Position::new(spec.start_line, top_col);
-    }
+    // 5.5.G.17: `replicate_block_insert` migrated to
+    // [`lattice_host::dispatch::Editor`]. The only caller was
+    // `enter_mode`'s Insert-exit branch, which also moved
+    // host-side.
 }
 
 #[cfg(test)]
@@ -382,6 +307,7 @@ mod tests {
         app_in_command_mode, app_with, attach_test_syntax, invoke_motion,
     };
     use crate::app::*;
+    use lattice_grammar::VisualKind;
     use lattice_protocol::edit::Edit;
     use lattice_protocol::selection::VisualMode;
 

@@ -476,6 +476,91 @@ impl Render for EditorView {
         // stack on top of it via `relative` positioning.
         let document_area = div().flex_grow().p_3().flex().flex_col().children(rows);
 
+        // 5.8.E: picker overlay. When `editor.picker` is `Some`,
+        // an interactive picker is open -- typing filters the
+        // candidates, `<C-n>` / `<C-p>` (or Down/Up) navigate,
+        // `<CR>` accepts, `<Esc>` dismisses. Translate already
+        // routes these keys through the picker dispatcher
+        // (`picker_open: true` in `TranslateContext`); the
+        // renderer just paints the current picker state. Shows
+        // the title bar, the query line with a bar cursor, and
+        // up to ~20 candidates with the selected one
+        // highlighted.
+        let picker_overlay: Option<gpui::Div> = self.app.editor.picker.as_ref().map(|picker| {
+            let max_visible = 20usize;
+            // Window the visible candidates around the selection
+            // so it stays in view as the user pages through.
+            let total = picker.candidates.len();
+            let window_start = picker
+                .selected
+                .saturating_sub(max_visible / 2)
+                .min(total.saturating_sub(max_visible.min(total)));
+            let window_end = (window_start + max_visible).min(total);
+            let visible_candidates: Vec<gpui::Div> = picker.candidates[window_start..window_end]
+                .iter()
+                .enumerate()
+                .map(|(i, cand)| {
+                    let abs_idx = window_start + i;
+                    let row = div().child(cand.raw.display.clone());
+                    if abs_idx == picker.selected {
+                        row.bg(rgb(theme.status_background))
+                            .text_color(rgb(theme.status_foreground))
+                    } else {
+                        row
+                    }
+                })
+                .collect();
+            div()
+                .flex()
+                .flex_col()
+                .max_w(px(720.0))
+                .max_h(px(440.0))
+                .p_4()
+                .bg(rgb(theme.popup_background))
+                .text_color(rgb(theme.foreground))
+                .border_2()
+                .border_color(rgb(theme.popup_border))
+                .child(
+                    div()
+                        .text_color(rgb(theme.popup_border))
+                        .pb_1()
+                        .child(format!(
+                            " {} ({} / {}) ",
+                            picker.title,
+                            if total == 0 { 0 } else { picker.selected + 1 },
+                            total,
+                        )),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .pb_2()
+                        .child(div().text_color(rgb(theme.cursor_background)).child("> "))
+                        .child(div().child(picker.query.clone()))
+                        .child(
+                            div()
+                                .border_l_2()
+                                .border_color(rgb(theme.cursor_background))
+                                .child(" "),
+                        ),
+                )
+                .child(div().child("───────────────".to_string()))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .overflow_hidden()
+                        .children(visible_candidates),
+                )
+                .child(
+                    div()
+                        .pt_2()
+                        .text_color(rgb(theme.popup_border))
+                        .child("[ <C-n>/<C-p> navigate · <CR> accept · <Esc> cancel ]".to_string()),
+                )
+        });
+
         // 5.7.B.10: when a help popup is showing, render it as
         // a centered overlay above the document area. The
         // overlay reads the help buffer's content + title and
@@ -563,6 +648,22 @@ impl Render for EditorView {
                 }
             });
 
+        // 5.8.E: picker overlay paints first (lower z) so the
+        // help popup (if both somehow active) lands on top.
+        // Empirically only one of the two is active at any
+        // moment given current ex-commands, but the layering
+        // keeps the visible-precedence story coherent.
+        if let Some(overlay) = picker_overlay {
+            root = root.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .justify_center()
+                    .items_center()
+                    .child(overlay),
+            );
+        }
         if let Some(overlay) = popup_overlay {
             // Center the overlay across the window. The simplest
             // gpui pattern is to absolutely-position a wrapping

@@ -142,18 +142,22 @@ impl Render for EditorView {
         // (vim convention) so users reading the status line see
         // the same numbers `:set ruler` shows in the TUI peer.
         let status = format!(
-            "  {}   L:{}  C:{}   (host dispatch live — paint-side cursor overlay pending)",
+            "  {}   L:{}  C:{}",
             modal_label,
             cursor.line + 1,
             cursor.byte,
         );
 
-        let body = if text.is_empty() {
-            "(empty buffer — try: i to enter Insert, Esc to return to Normal, j/k to move)"
-                .to_string()
-        } else {
-            text
-        };
+        // 5.7.B.5: visible cursor marker. Splits the document
+        // into per-line strings; on the cursor line, inserts
+        // `▌` at `cursor.byte`. Each line renders as its own
+        // div under a `flex_col` parent so gpui stacks them
+        // vertically (a single multi-line string would collapse
+        // newlines unless the container is `whitespace_pre`,
+        // which gpui-0.2.2 doesn't expose). The marker is an
+        // ASCII-art stand-in until proper text shaping +
+        // glyph-position-driven cursor overlay lands.
+        let lines = render_lines_with_cursor(&text, cursor.line, cursor.byte);
 
         div()
             .track_focus(&self.focus_handle)
@@ -164,7 +168,14 @@ impl Render for EditorView {
             .bg(rgb(0x1e1e2e))
             .text_color(rgb(0xcdd6f4))
             .text_sm()
-            .child(div().flex_grow().p_3().whitespace_nowrap().child(body))
+            .child(
+                div()
+                    .flex_grow()
+                    .p_3()
+                    .flex()
+                    .flex_col()
+                    .children(lines.into_iter().map(|line| div().child(line))),
+            )
             .child(
                 div()
                     .bg(rgb(0x313244))
@@ -173,6 +184,111 @@ impl Render for EditorView {
                     .py_1()
                     .child(status),
             )
+    }
+}
+
+/// Split `text` into per-line strings and insert the cursor
+/// marker (`▌`) at `cursor_byte` on `cursor_line`. Empty
+/// documents render a single line containing just the marker;
+/// cursors past the last real line append a trailing
+/// marker-only line so the user can see where they are.
+///
+/// `cursor_byte` is clamped to the line's length and rounded
+/// down to the nearest UTF-8 char boundary so the split is
+/// always safe.
+fn render_lines_with_cursor(text: &str, cursor_line: u32, cursor_byte: u32) -> Vec<String> {
+    let cursor_line = cursor_line as usize;
+    let cursor_byte = cursor_byte as usize;
+    // `lines()` discards trailing `\n`; `split('\n')` keeps the
+    // (possibly empty) trailing line so the cursor can be
+    // visible past a final newline. Both behave identically on
+    // text without a trailing newline.
+    let raw: Vec<&str> = text.split('\n').collect();
+
+    // Empty document: render the marker alone.
+    if raw.is_empty() || (raw.len() == 1 && raw[0].is_empty() && cursor_line == 0) {
+        return vec!["▌".to_string()];
+    }
+
+    let mut out: Vec<String> = Vec::with_capacity(raw.len() + 1);
+    for (i, line) in raw.iter().enumerate() {
+        if i == cursor_line {
+            let mut byte = cursor_byte.min(line.len());
+            // Round down to char boundary -- vim-style position
+            // tracking is char-aware, but defensive against any
+            // race where cursor was captured mid-edit.
+            while byte > 0 && !line.is_char_boundary(byte) {
+                byte -= 1;
+            }
+            let (before, after) = line.split_at(byte);
+            out.push(format!("{before}▌{after}"));
+        } else {
+            out.push(line.to_string());
+        }
+    }
+
+    // Cursor past the last existing line (e.g. doc has N lines
+    // but cursor.line == N). Append a marker-only line so the
+    // user can see the target row.
+    if cursor_line >= raw.len() {
+        out.push("▌".to_string());
+    }
+
+    out
+}
+
+#[cfg(test)]
+mod cursor_render_tests {
+    use super::render_lines_with_cursor;
+
+    #[test]
+    fn empty_doc_renders_lone_marker() {
+        assert_eq!(render_lines_with_cursor("", 0, 0), vec!["▌"]);
+    }
+
+    #[test]
+    fn cursor_at_start_of_single_line() {
+        assert_eq!(render_lines_with_cursor("hello", 0, 0), vec!["▌hello"]);
+    }
+
+    #[test]
+    fn cursor_in_middle_of_single_line() {
+        assert_eq!(render_lines_with_cursor("hello", 0, 3), vec!["hel▌lo"]);
+    }
+
+    #[test]
+    fn cursor_at_end_of_single_line() {
+        assert_eq!(render_lines_with_cursor("hello", 0, 5), vec!["hello▌"]);
+    }
+
+    #[test]
+    fn cursor_on_second_of_two_lines() {
+        assert_eq!(
+            render_lines_with_cursor("foo\nbar", 1, 2),
+            vec!["foo", "ba▌r"]
+        );
+    }
+
+    #[test]
+    fn cursor_past_trailing_newline_appends_marker_row() {
+        // Doc "foo\n" splits to ["foo", ""]; cursor.line == 1
+        // sits on the empty trailing row.
+        assert_eq!(render_lines_with_cursor("foo\n", 1, 0), vec!["foo", "▌"]);
+    }
+
+    #[test]
+    fn cursor_byte_past_eol_clamps_to_line_length() {
+        // Defensive: motion code may overshoot mid-edit; the
+        // renderer never panics on out-of-range byte.
+        assert_eq!(render_lines_with_cursor("hi", 0, 99), vec!["hi▌"]);
+    }
+
+    #[test]
+    fn cursor_in_multibyte_char_falls_back_to_preceding_boundary() {
+        // `é` is 2 bytes in UTF-8 (0xC3 0xA9). A byte index of 1
+        // is mid-character; the helper must round down to 0
+        // rather than splitting the codepoint.
+        assert_eq!(render_lines_with_cursor("é", 0, 1), vec!["▌é"]);
     }
 }
 

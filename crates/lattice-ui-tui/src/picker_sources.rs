@@ -167,7 +167,8 @@ mod tests {
     #[test]
     fn first_party_generators_returns_all_built_in_sources() {
         let app = app_with("hi\n", 5);
-        let generators = first_party_generators(app.editor.registry.clone(), app.editor.config.clone());
+        let generators =
+            first_party_generators(app.editor.registry.clone(), app.editor.config.clone());
         let ids: Vec<&'static str> = generators.iter().map(|g| g.spec().id).collect();
         assert_eq!(
             ids,
@@ -373,7 +374,9 @@ mod tests {
         let snap = app.editor.document.snapshot();
         let ctx = app.build_picker_context(&snap);
         let source = GrepSource::new(app.editor.config.clone());
-        let result = source.init(&ctx, &[]).expect("init must not error on no args");
+        let result = source
+            .init(&ctx, &[])
+            .expect("init must not error on no args");
         match result {
             lattice_picker::PickerInitResult::Inline(pairs) => assert!(pairs.is_empty()),
             other => panic!("expected Inline(empty), got {other:?}"),
@@ -432,7 +435,8 @@ mod tests {
     #[test]
     fn grep_source_unknown_backend_errors() {
         let app = app_with("hi\n", 5);
-        app.editor.config
+        app.editor
+            .config
             .parse_and_set_command("picker.grep.backend=definitely-not-a-binary")
             .unwrap();
         let snap = app.editor.document.snapshot();
@@ -519,8 +523,14 @@ mod tests {
         // Fire the picker. Init returns Future; the picker
         // should NOT seat synchronously.
         app.open_picker("delayed-test".into(), Vec::new());
-        assert!(app.editor.picker.is_none(), "picker shouldn't seat sync on Future");
-        assert!(app.editor.pending_picker_init.is_some(), "pending should be set");
+        assert!(
+            app.editor.picker.is_none(),
+            "picker shouldn't seat sync on Future"
+        );
+        assert!(
+            app.editor.pending_picker_init.is_some(),
+            "pending should be set"
+        );
         // Pump the drain. The future needs at least one tokio
         // poll to resolve -- we give the spawned task a
         // chance to land by sleeping briefly.
@@ -532,7 +542,11 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-        let p = app.editor.picker.as_ref().expect("picker seated after drain");
+        let p = app
+            .editor
+            .picker
+            .as_ref()
+            .expect("picker seated after drain");
         assert_eq!(p.candidates.len(), 1);
         assert_eq!(p.source_id.as_deref(), Some("delayed-test"));
     }

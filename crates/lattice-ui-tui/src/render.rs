@@ -182,7 +182,8 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) {
     // (only one is reachable interactively at a time, but the
     // ordering matters for layout sizing).
     let picker_rows = app
-        .editor.picker
+        .editor
+        .picker
         .as_ref()
         .map(|p| popup_height(p.candidates.len().max(1)))
         .unwrap_or(0);
@@ -309,7 +310,8 @@ fn draw_insert_completion_popup(
     // the helper from the hover popup path.
     let pane_rect = active_pane_content_rect(app, buffer_area).unwrap_or(buffer_area);
     let view = FrameView::from_app(app);
-    let anchor_screen = cursor_screen_position_at(&view, snap, pane_rect, app.editor.cursor, app.editor.scroll);
+    let anchor_screen =
+        cursor_screen_position_at(&view, snap, pane_rect, app.editor.cursor, app.editor.scroll);
     let (anchor_x, anchor_y) = anchor_screen.unwrap_or((buffer_area.x, buffer_area.y));
     // Below if there's room, else above.
     let area_bottom = buffer_area.y + buffer_area.height;
@@ -481,7 +483,8 @@ fn draw_insert_completion_docs_popup(
     // active pane rect for placement math.
     let pane_rect = active_pane_content_rect(app, buffer_area).unwrap_or(buffer_area);
     let view = FrameView::from_app(app);
-    let anchor_screen = cursor_screen_position_at(&view, snap, pane_rect, app.editor.cursor, app.editor.scroll);
+    let anchor_screen =
+        cursor_screen_position_at(&view, snap, pane_rect, app.editor.cursor, app.editor.scroll);
     let (anchor_x, anchor_y) = anchor_screen.unwrap_or((buffer_area.x, buffer_area.y));
     // Candidate popup geometry (mirrors `draw_insert_completion_popup`).
     let cand_width: u16 = 60u16.min(buffer_area.width.saturating_sub(2)).max(30);
@@ -1258,7 +1261,10 @@ fn position_help_popup(
             height,
         }
     };
-    if matches!(app.editor.popup_placement, crate::popup::PopupPlacement::Centered) {
+    if matches!(
+        app.editor.popup_placement,
+        crate::popup::PopupPlacement::Centered
+    ) {
         return centered();
     }
     let pane_area = match active_pane_content_rect(app, buffer_area) {
@@ -1351,7 +1357,8 @@ fn active_pane_content_rect(app: &App, buffer_area: Rect) -> Option<Rect> {
 /// the active pane shows a Document but motions go to the help
 /// popup's buffer.
 fn pane_buffer_matches_active(app: &App, idx: usize) -> bool {
-    app.editor.pane_tree
+    app.editor
+        .pane_tree
         .leaves()
         .get(idx)
         .map(|p| p.buffer == app.editor.active_buffer)
@@ -1450,7 +1457,8 @@ fn draw_inactive_help(frame: &mut Frame, area: Rect, app: &App, pane: &crate::pa
     // Look up the help content via the registry id this pane
     // tracks; fall back to the popup slot for the legacy path.
     let Some(help) = app
-        .editor.buffers
+        .editor
+        .buffers
         .with_help(pane.buffer_id, |h| h.clone())
         .or_else(|| app.popup_help())
     else {
@@ -1641,7 +1649,8 @@ fn help_pane_status(app: &App, _pane: &crate::pane::PaneState) -> String {
 
 fn file_tree_pane_status(app: &App, pane: &crate::pane::PaneState) -> String {
     let root = app
-        .editor.buffer_locals
+        .editor
+        .buffer_locals
         .get(&pane.buffer_id)
         .and_then(|locals| locals.get::<crate::modes::FileTreeRoot>())
         .map(|r| r.0.clone());
@@ -1650,13 +1659,17 @@ fn file_tree_pane_status(app: &App, pane: &crate::pane::PaneState) -> String {
 }
 
 fn oil_pane_status(app: &App, pane: &crate::pane::PaneState) -> String {
-    let dirty_opt = app.editor.buffers.with_oil(pane.buffer_id, |o| o.is_dirty());
+    let dirty_opt = app
+        .editor
+        .buffers
+        .with_oil(pane.buffer_id, |o| o.is_dirty());
     let Some(is_dirty) = dirty_opt else {
         return "[oil]".to_string();
     };
     let dirty = if is_dirty { " [+]" } else { "" };
     let dir = app
-        .editor.buffer_locals
+        .editor
+        .buffer_locals
         .get(&pane.buffer_id)
         .and_then(|locals| locals.get::<crate::modes::OilDir>())
         .map(|d| d.0.display().to_string())
@@ -1816,7 +1829,10 @@ fn draw_inactive_document(
     //     (avoids a redundant parse).
     //  3. Empty otherwise -- plain text, no syntax. Acceptable
     //     for the rare same-doc-different-scroll case.
-    let active_doc_id = if matches!(app.editor.active_buffer, crate::buffers::BufferKind::Document) {
+    let active_doc_id = if matches!(
+        app.editor.active_buffer,
+        crate::buffers::BufferKind::Document
+    ) {
         Some(app.editor.document_buffer_id)
     } else {
         None
@@ -1922,7 +1938,8 @@ fn draw_file_tree_pane(
     is_active: bool,
 ) {
     let Some(raw_text) = app
-        .editor.buffers
+        .editor
+        .buffers
         .with_file_tree(pane.buffer_id, |t| t.content.as_string())
     else {
         return;
@@ -1942,7 +1959,8 @@ fn draw_file_tree_pane(
     // M.3.2.c.5: entries live exclusively in the
     // FileTreeEntries buffer-local. Nothing to drift.
     let entries: &[crate::file_tree::FileTreeEntry] = app
-        .editor.buffer_locals
+        .editor
+        .buffer_locals
         .get(&pane.buffer_id)
         .and_then(|locals| locals.get::<crate::modes::FileTreeEntries>())
         .map(|e| e.0.as_slice())
@@ -2003,7 +2021,8 @@ fn draw_oil_pane(
     // M.3.2.c.5: dir lives exclusively in the OilDir
     // buffer-local. No struct fallback; nothing to drift.
     let dir = app
-        .editor.buffer_locals
+        .editor
+        .buffer_locals
         .get(&pane.buffer_id)
         .and_then(|locals| locals.get::<crate::modes::OilDir>())
         .map(|d| d.0.clone())
@@ -2039,8 +2058,8 @@ fn draw_oil_pane(
         let row_off = row_off.min(area.height.saturating_sub(1) as usize);
         // Both nerd-font and BMP fallback glyphs occupy 2 cells.
         let icon_width = 2;
-        let col_off =
-            (app.editor.cursor.byte as usize + icon_width).min(area.width.saturating_sub(1) as usize);
+        let col_off = (app.editor.cursor.byte as usize + icon_width)
+            .min(area.width.saturating_sub(1) as usize);
         frame.set_cursor_position((area.x + col_off as u16, area.y + row_off as u16));
     }
 }
@@ -2052,7 +2071,10 @@ fn draw_buffer(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot
     // Place the buffer-area cursor only when the prompt isn't claiming it.
     // In Command (`:`) and Search (`/`, `?`) modal states the cursor lives
     // in the bottom prompt row -- handled by `draw_command_or_echo`.
-    let prompt_owns_cursor = matches!(app.editor.modal, ModalState::Command | ModalState::Search(_));
+    let prompt_owns_cursor = matches!(
+        app.editor.modal,
+        ModalState::Command | ModalState::Search(_)
+    );
     if !prompt_owns_cursor {
         let view = FrameView::from_app(app);
         if let Some((screen_x, screen_y)) = cursor_screen_position(&view, snap, area) {
@@ -2120,7 +2142,8 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
             SearchDirection::Backward => '?',
         };
         let pattern = app
-            .editor.search_line
+            .editor
+            .search_line
             .as_ref()
             .map(|s| s.pattern.as_str())
             .unwrap_or("");
@@ -2143,9 +2166,7 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
         // threshold and don't normally surface to the echo
         // area; if a record at one of these levels does reach
         // the echo, render dim to match `*messages*` convention.
-        EchoLevel::Trace | EchoLevel::Debug => {
-            TuiStyle::default().add_modifier(Modifier::DIM)
-        }
+        EchoLevel::Trace | EchoLevel::Debug => TuiStyle::default().add_modifier(Modifier::DIM),
         EchoLevel::Info => TuiStyle::default(),
         EchoLevel::Warn => TuiStyle::default().fg(Color::Yellow),
         EchoLevel::Error => TuiStyle::default()
@@ -2263,7 +2284,10 @@ pub(crate) fn modeline_label(app: &App, snap: &DocumentSnapshot) -> String {
 /// the modified marker because the user can't "save" their
 /// streaming state.
 pub(crate) fn modeline_is_synthetic(app: &App) -> bool {
-    app.editor.buffers.name_of(app.editor.document_buffer_id).is_some()
+    app.editor
+        .buffers
+        .name_of(app.editor.document_buffer_id)
+        .is_some()
 }
 
 fn draw_mode_line(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot) {
@@ -2347,7 +2371,8 @@ fn compose_visible_lines_inner(
     // unit the spans pipeline carries).
     let active_buffer = app.editor.pane_tree.active().buffer_id;
     let is_messages_buffer = app
-        .editor.active_modes
+        .editor
+        .active_modes
         .get(&active_buffer)
         .and_then(|m| m.major())
         .map(|m| m == lattice_mode::MessagesMode::mode_id())
@@ -2464,7 +2489,10 @@ fn compose_visible_lines_inner(
         // their bg / underline on top of the LSP-driven fg
         // -- the user's selection and search highlight stay
         // visible over semantic-colored text.
-        if let Some(cache) = app.editor.lsp_semantic_tokens_cache.get(&app.editor.document_buffer_id)
+        if let Some(cache) = app
+            .editor
+            .lsp_semantic_tokens_cache
+            .get(&app.editor.document_buffer_id)
             && app.lsp_semantic_tokens_mode_enabled_for(app.editor.document_buffer_id)
         {
             for tok in cache.tokens.iter().filter(|t| t.line == line_idx) {
@@ -2597,7 +2625,10 @@ fn compose_visible_lines_inner(
         // beside it, not as part of it. Iterate in *reverse*
         // position order so earlier splices don't shift the
         // byte offsets of later ones.
-        if let Some(cache) = app.editor.lsp_inlay_hints_cache.get(&app.editor.document_buffer_id)
+        if let Some(cache) = app
+            .editor
+            .lsp_inlay_hints_cache
+            .get(&app.editor.document_buffer_id)
             && app.lsp_inlay_hint_mode_enabled_for(app.editor.document_buffer_id)
         {
             let mut on_line: Vec<&lsp_types::InlayHint> = cache
@@ -3223,7 +3254,9 @@ pub(crate) fn diagnostics_on_line(
     let Some(uri) = app.buffer_uri(app.editor.document_buffer_id) else {
         return Vec::new();
     };
-    app.editor.lsp_diagnostics.diagnostics_on_line(uri, line_idx)
+    app.editor
+        .lsp_diagnostics
+        .diagnostics_on_line(uri, line_idx)
 }
 
 /// M.7.3.b parameter bundle for the whitespace-decoration
@@ -3394,7 +3427,11 @@ pub(crate) fn apply_whitespace_decoration(
 /// Lines that don't fit the shape (empty rope-tail lines, or
 /// future records produced by a different formatter) fall
 /// through to plain rendering — no panic, no wrong color.
-fn messages_line_spans(line: &str, theme: &crate::theme::Theme, max_width: u32) -> Vec<Span<'static>> {
+fn messages_line_spans(
+    line: &str,
+    theme: &crate::theme::Theme,
+    max_width: u32,
+) -> Vec<Span<'static>> {
     // Strip a single trailing newline so the level scan + the
     // span pushes don't see it. `snap.buffer.line(...)` returns
     // text *with* the trailing `\n` for non-final lines.
@@ -3415,10 +3452,7 @@ fn messages_line_spans(line: &str, theme: &crate::theme::Theme, max_width: u32) 
             // Unknown level token -- treat the whole line as
             // plain. Keeps a misformatted record readable
             // instead of mid-line-colored.
-            return truncate_spans_to_width(
-                vec![Span::raw(trimmed.to_string())],
-                max_width,
-            );
+            return truncate_spans_to_width(vec![Span::raw(trimmed.to_string())], max_width);
         }
     };
     let timestamp = &trimmed[0..12];
@@ -3687,7 +3721,13 @@ fn cursor_screen_position(
     snap: &DocumentSnapshot,
     area: Rect,
 ) -> Option<(u16, u16)> {
-    cursor_screen_position_at(view, snap, area, view.app.editor.cursor, view.app.editor.scroll)
+    cursor_screen_position_at(
+        view,
+        snap,
+        area,
+        view.app.editor.cursor,
+        view.app.editor.scroll,
+    )
 }
 
 /// Same as [`cursor_screen_position`] but with explicit `cursor`
@@ -4221,9 +4261,12 @@ mod tests {
         let mut app = app_with("hello", 5);
         app.editor.cursor.byte = 3;
         let area = Rect::new(0, 0, 80, 5);
-        let pos =
-            cursor_screen_position(&FrameView::from_app(&app), &app.editor.document.snapshot(), area)
-                .unwrap();
+        let pos = cursor_screen_position(
+            &FrameView::from_app(&app),
+            &app.editor.document.snapshot(),
+            area,
+        )
+        .unwrap();
         // severity_cell (1) + gutter_width(1)=4 + 3 = 8.
         assert_eq!(pos.0, 8);
         assert_eq!(pos.1, 0);
@@ -4239,9 +4282,12 @@ mod tests {
         let mut app = app_with("- §8 Performance commitments", 5);
         app.editor.cursor.byte = 6;
         let area = Rect::new(0, 0, 80, 5);
-        let pos =
-            cursor_screen_position(&FrameView::from_app(&app), &app.editor.document.snapshot(), area)
-                .unwrap();
+        let pos = cursor_screen_position(
+            &FrameView::from_app(&app),
+            &app.editor.document.snapshot(),
+            area,
+        )
+        .unwrap();
         // severity_cell (1) + gutter_w (4) + 5 display cells = 10.
         assert_eq!(pos.0, 10);
     }
@@ -4254,9 +4300,12 @@ mod tests {
         let mut app = app_with("abc中 def", 5);
         app.editor.cursor.byte = 6; // past the 3-byte CJK char
         let area = Rect::new(0, 0, 80, 5);
-        let pos =
-            cursor_screen_position(&FrameView::from_app(&app), &app.editor.document.snapshot(), area)
-                .unwrap();
+        let pos = cursor_screen_position(
+            &FrameView::from_app(&app),
+            &app.editor.document.snapshot(),
+            area,
+        )
+        .unwrap();
         // severity_cell (1) + gutter_w (4) + 5 display cells = 10.
         assert_eq!(pos.0, 10);
     }
@@ -4268,8 +4317,12 @@ mod tests {
         app.editor.cursor.line = 4; // not in viewport [0,1]
         let area = Rect::new(0, 0, 80, 2);
         assert!(
-            cursor_screen_position(&FrameView::from_app(&app), &app.editor.document.snapshot(), area)
-                .is_none()
+            cursor_screen_position(
+                &FrameView::from_app(&app),
+                &app.editor.document.snapshot(),
+                area
+            )
+            .is_none()
         );
     }
 
@@ -4292,9 +4345,12 @@ mod tests {
             identity: None,
         });
         let area = Rect::new(0, 0, 80, 7);
-        let pos =
-            cursor_screen_position(&FrameView::from_app(&app), &app.editor.document.snapshot(), area)
-                .expect("cursor visible");
+        let pos = cursor_screen_position(
+            &FrameView::from_app(&app),
+            &app.editor.document.snapshot(),
+            area,
+        )
+        .expect("cursor visible");
         // Visible rows: 0=line0, 1=line1, 2=line2 (heading + summary),
         // 3=line5, 4=line6. Cursor at hidden line 3 → screen row 2
         // (area.y + 2 since area.y is 0).
@@ -4606,7 +4662,8 @@ mod tests {
         let mut app = app_with("foo", 5);
         app.editor.modal = lattice_grammar::ModalState::Insert;
         app.editor.cursor = pos(0, 3);
-        app.editor.config
+        app.editor
+            .config
             .set_typed::<lattice_config::CompletionGhostText>(true)
             .expect("set ghost_text");
         // Install a popup with `foobar` as the top candidate
@@ -4659,7 +4716,8 @@ mod tests {
         let mut app = app_with("foobaz", 5);
         app.editor.modal = lattice_grammar::ModalState::Insert;
         app.editor.cursor = pos(0, 3); // between `foo` and `baz`
-        app.editor.config
+        app.editor
+            .config
             .set_typed::<lattice_config::CompletionGhostText>(true)
             .expect("set ghost_text");
         let mut state = lattice_completion::InsertCompletionState::open(
@@ -4726,7 +4784,8 @@ mod tests {
             head: pos(0, 2),
             visual: Some(VisualMode::Charwise),
         };
-        app.editor.set_selections_blocking(SelectionSet::single(sel));
+        app.editor
+            .set_selections_blocking(SelectionSet::single(sel));
         let r = visual_selection_range(&app).expect("range");
         assert_eq!(r.start, pos(0, 0));
         // Charwise includes head: end byte = head.byte + 1.
@@ -4742,7 +4801,8 @@ mod tests {
             head: pos(2, 1),
             visual: Some(VisualMode::Linewise),
         };
-        app.editor.set_selections_blocking(SelectionSet::single(sel));
+        app.editor
+            .set_selections_blocking(SelectionSet::single(sel));
         let r = visual_selection_range(&app).expect("range");
         assert_eq!(r.start, pos(0, 0));
         // Linewise end byte is u32::MAX so per-line clamping picks line_len.
@@ -4759,7 +4819,8 @@ mod tests {
             head: pos(0, 1),
             visual: Some(VisualMode::Charwise),
         };
-        app.editor.set_selections_blocking(SelectionSet::single(sel));
+        app.editor
+            .set_selections_blocking(SelectionSet::single(sel));
         let r = visual_selection_range(&app).expect("range");
         assert_eq!(r.start, pos(0, 1));
         assert_eq!(r.end, pos(0, 5));
@@ -4780,7 +4841,8 @@ mod tests {
             head: pos(0, 2),
             visual: Some(VisualMode::Blockwise),
         };
-        app.editor.set_selections_blocking(SelectionSet::single(sel));
+        app.editor
+            .set_selections_blocking(SelectionSet::single(sel));
         let b = visual_block_extents(&app).unwrap();
         assert_eq!(b.start_line, 0);
         assert_eq!(b.end_line, 2);
@@ -4797,7 +4859,8 @@ mod tests {
             head: pos(0, 4),
             visual: Some(VisualMode::Charwise),
         };
-        app.editor.set_selections_blocking(SelectionSet::single(sel));
+        app.editor
+            .set_selections_blocking(SelectionSet::single(sel));
         let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 1, 80);
         let dump = format!("{:?}", lines[0]);
         // The selected "hello" should appear as its own span(s); we just
@@ -4815,7 +4878,8 @@ mod tests {
         app.recompute_folds();
         // Close the heading fold.
         let idx = app
-            .editor.folds
+            .editor
+            .folds
             .iter()
             .position(|f| f.start_line == 0)
             .expect("heading fold");
@@ -4834,7 +4898,8 @@ mod tests {
         app.set_foldmethod_for_test(crate::app::FoldMethod::Markdown);
         app.recompute_folds();
         let idx = app
-            .editor.folds
+            .editor
+            .folds
             .iter()
             .position(|f| f.start_line == 0)
             .expect("heading fold");
@@ -4913,7 +4978,8 @@ mod tests {
         app.set_foldmethod_for_test(crate::app::FoldMethod::Markdown);
         app.recompute_folds();
         let idx = app
-            .editor.folds
+            .editor
+            .folds
             .iter()
             .position(|f| f.start_line == 0)
             .expect("heading fold");
@@ -4944,7 +5010,8 @@ mod tests {
         app.set_foldmethod_for_test(crate::app::FoldMethod::Indent);
         app.recompute_folds();
         let idx = app
-            .editor.folds
+            .editor
+            .folds
             .iter()
             .position(|f| f.start_line == 0)
             .expect("struct fold");
@@ -4976,7 +5043,12 @@ mod tests {
         let mut app = app_with(src, 5);
         app.set_foldmethod_for_test(crate::app::FoldMethod::Indent);
         app.recompute_folds();
-        let f = app.editor.folds.iter().find(|f| f.start_line == 0).expect("fold");
+        let f = app
+            .editor
+            .folds
+            .iter()
+            .find(|f| f.start_line == 0)
+            .expect("fold");
         assert_eq!(f.end_line, 2, "expected `}}` swallowed: {f:?}");
     }
 
@@ -4992,7 +5064,8 @@ mod tests {
         app.set_foldmethod_for_test(crate::app::FoldMethod::Indent);
         app.recompute_folds();
         let idx = app
-            .editor.folds
+            .editor
+            .folds
             .iter()
             .position(|f| f.start_line == 0)
             .expect("fold");
@@ -5004,7 +5077,8 @@ mod tests {
             head: pos(0, 0),
             visual: Some(VisualMode::Linewise),
         };
-        app.editor.set_selections_blocking(SelectionSet::single(sel));
+        app.editor
+            .set_selections_blocking(SelectionSet::single(sel));
         let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
         let visual_bg = visual_style().bg;
         let row0 = &lines[0];
@@ -5034,7 +5108,8 @@ mod tests {
             head: pos(1, 0),
             visual: Some(VisualMode::Linewise),
         };
-        app.editor.set_selections_blocking(SelectionSet::single(sel));
+        app.editor
+            .set_selections_blocking(SelectionSet::single(sel));
         let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
         // Verify the second visible line ("beta") has at least one
         // span styled with the visual color.
@@ -5080,7 +5155,9 @@ mod tests {
     ) {
         use std::str::FromStr;
         let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
-        app.editor.buffer_uris.insert(app.editor.document_buffer_id, uri.clone());
+        app.editor
+            .buffer_uris
+            .insert(app.editor.document_buffer_id, uri.clone());
         // Activate lsp-mode so the M.5.6 render gate doesn't
         // suppress what we're about to paint. Idempotent: tests
         // that have already toggled it on no-op here.
@@ -5107,12 +5184,14 @@ mod tests {
             tags: None,
             data: None,
         };
-        app.editor.lsp_diagnostics.apply(lattice_lsp::DiagnosticEvent {
-            server_id: std::sync::Arc::from("rust"),
-            uri,
-            version: None,
-            diagnostics: std::sync::Arc::from(vec![diag].into_boxed_slice()),
-        });
+        app.editor
+            .lsp_diagnostics
+            .apply(lattice_lsp::DiagnosticEvent {
+                server_id: std::sync::Arc::from("rust"),
+                uri,
+                version: None,
+                diagnostics: std::sync::Arc::from(vec![diag].into_boxed_slice()),
+            });
     }
 
     #[test]
@@ -5190,7 +5269,9 @@ mod tests {
         // Seed a URI so the mode gate's URI check passes (the
         // overlay also checks lsp_document_highlight_mode).
         let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
-        app.editor.buffer_uris.insert(app.editor.document_buffer_id, uri);
+        app.editor
+            .buffer_uris
+            .insert(app.editor.document_buffer_id, uri);
         if !app.lsp_mode_enabled_for(app.editor.document_buffer_id) {
             app.toggle_mode_by_name("lsp-mode");
         }
@@ -5260,7 +5341,9 @@ mod tests {
         use std::str::FromStr;
         let mut app = app_with("let x = 1;\n", 5);
         let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
-        app.editor.buffer_uris.insert(app.editor.document_buffer_id, uri);
+        app.editor
+            .buffer_uris
+            .insert(app.editor.document_buffer_id, uri);
         if !app.lsp_mode_enabled_for(app.editor.document_buffer_id) {
             app.toggle_mode_by_name("lsp-mode");
         }
@@ -5308,7 +5391,9 @@ mod tests {
         use std::str::FromStr;
         let mut app = app_with("fn main() {}\n", 5);
         let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
-        app.editor.buffer_uris.insert(app.editor.document_buffer_id, uri);
+        app.editor
+            .buffer_uris
+            .insert(app.editor.document_buffer_id, uri);
         if !app.lsp_mode_enabled_for(app.editor.document_buffer_id) {
             app.toggle_mode_by_name("lsp-mode");
         }
@@ -5368,7 +5453,9 @@ mod tests {
         use std::str::FromStr;
         let mut app = app_with("fn main() {}\n", 5);
         let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
-        app.editor.buffer_uris.insert(app.editor.document_buffer_id, uri);
+        app.editor
+            .buffer_uris
+            .insert(app.editor.document_buffer_id, uri);
         if !app.lsp_mode_enabled_for(app.editor.document_buffer_id) {
             app.toggle_mode_by_name("lsp-mode");
         }
@@ -5411,7 +5498,9 @@ mod tests {
         use std::str::FromStr;
         let mut app = app_with("let x = 1;\n", 5);
         let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
-        app.editor.buffer_uris.insert(app.editor.document_buffer_id, uri);
+        app.editor
+            .buffer_uris
+            .insert(app.editor.document_buffer_id, uri);
         if !app.lsp_mode_enabled_for(app.editor.document_buffer_id) {
             app.toggle_mode_by_name("lsp-mode");
         }
@@ -5458,7 +5547,9 @@ mod tests {
         use std::str::FromStr;
         let mut app = app_with("let x = x;\n", 5);
         let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
-        app.editor.buffer_uris.insert(app.editor.document_buffer_id, uri);
+        app.editor
+            .buffer_uris
+            .insert(app.editor.document_buffer_id, uri);
         if !app.lsp_mode_enabled_for(app.editor.document_buffer_id) {
             app.toggle_mode_by_name("lsp-mode");
         }
@@ -5595,7 +5686,9 @@ mod tests {
         // returns an empty handle list, so the indicator stays empty.
         let fake_uri =
             <lattice_lsp::Uri as std::str::FromStr>::from_str("file:///tmp/x.rs").unwrap();
-        app.editor.buffer_uris.insert(app.editor.document_buffer_id, fake_uri);
+        app.editor
+            .buffer_uris
+            .insert(app.editor.document_buffer_id, fake_uri);
         assert_eq!(active_lsp_segment(&app), "");
     }
 

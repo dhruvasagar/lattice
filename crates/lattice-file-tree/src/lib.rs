@@ -397,7 +397,10 @@ mod tests {
         // Sanity: the row still contains the marker and the dir
         // name, just not a redundant glyph between them.
         let row = body.lines().nth(1).unwrap();
-        assert!(row.contains("▸ "), "collapsed marker should be present: {row:?}");
+        assert!(
+            row.contains("▸ "),
+            "collapsed marker should be present: {row:?}"
+        );
         assert!(row.contains("sub"), "dir name should be present: {row:?}");
         std::fs::remove_dir_all(dir).ok();
     }

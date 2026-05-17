@@ -872,11 +872,7 @@ mod tests {
         // the query. The source (grep, future live LSP) IS
         // the filter -- fuzzy-matching on top would re-rank or
         // drop rows the source said matched.
-        let mut p = Picker::new(
-            "grep",
-            PickerSource::Files,
-            PickerAction::OpenFile,
-        );
+        let mut p = Picker::new("grep", PickerSource::Files, PickerAction::OpenFile);
         p.set_live_source_mode(true);
         p.set_raw_candidates(buffer_fixture());
         // Two candidates, neither matches the query, but both
@@ -885,7 +881,8 @@ mod tests {
         p.append_query('z');
         assert_eq!(p.candidates.len(), 2, "live mode must not drop rows");
         assert_eq!(
-            p.candidates[0].raw.display, buffer_fixture()[0].display,
+            p.candidates[0].raw.display,
+            buffer_fixture()[0].display,
             "live mode must preserve source order"
         );
     }

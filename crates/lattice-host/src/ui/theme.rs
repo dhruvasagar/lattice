@@ -222,9 +222,7 @@ impl Default for Theme {
             whitespace_trailing_style: Style::empty().fg(Color::Named(NamedColor::Red)),
             cursor_line_bg: Color::Indexed(236),
 
-            messages_timestamp_style: Style::empty()
-                .fg(Color::Named(NamedColor::DarkGray))
-                .dim(),
+            messages_timestamp_style: Style::empty().fg(Color::Named(NamedColor::DarkGray)).dim(),
             messages_trace_style: Style::empty().dim(),
             messages_debug_style: Style::empty().fg(Color::Named(NamedColor::Cyan)),
             messages_info_style: Style::empty(),
@@ -273,7 +271,10 @@ mod tests {
     #[test]
     fn parse_color_named() {
         assert_eq!(parse_color("red").unwrap(), Color::Named(NamedColor::Red));
-        assert_eq!(parse_color("DarkGray").unwrap(), Color::Named(NamedColor::DarkGray));
+        assert_eq!(
+            parse_color("DarkGray").unwrap(),
+            Color::Named(NamedColor::DarkGray)
+        );
         assert_eq!(parse_color("default").unwrap(), Color::Default);
     }
 

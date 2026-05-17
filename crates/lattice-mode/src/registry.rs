@@ -182,7 +182,9 @@ impl ModeRegistry {
             kind: ModeKind::Major,
             epoch: guards.bump_epoch(buffer, mode),
         }];
-        if let Err(e) = self.record_implies_cascade(active, &mut plan, &entry, mode, caps, buffer, guards) {
+        if let Err(e) =
+            self.record_implies_cascade(active, &mut plan, &entry, mode, caps, buffer, guards)
+        {
             active.set_major(None);
             for step in plan.iter().skip(1) {
                 active.remove_minor(step.mode);
@@ -190,7 +192,15 @@ impl ModeRegistry {
             return Err(e);
         }
 
-        self.spawn_cascade(plan, guards.clone(), events.clone(), config, events, services, buffer);
+        self.spawn_cascade(
+            plan,
+            guards.clone(),
+            events.clone(),
+            config,
+            events,
+            services,
+            buffer,
+        );
         Ok(())
     }
 
@@ -291,7 +301,9 @@ impl ModeRegistry {
             epoch: guards.bump_epoch(buffer, mode),
         });
 
-        if let Err(e) = self.record_implies_cascade(active, plan, &entry, mode, caps, buffer, guards) {
+        if let Err(e) =
+            self.record_implies_cascade(active, plan, &entry, mode, caps, buffer, guards)
+        {
             active.remove_minor(mode);
             if let Some(pos) = plan.iter().position(|s| s.mode == mode) {
                 for step in plan.drain(pos..) {
@@ -1191,9 +1203,7 @@ mod tests {
         .unwrap();
         let evt = await_event(&mut rx).await;
         match evt {
-            ModeEvent::ModeActivationFailed {
-                mode, reason, ..
-            } => {
+            ModeEvent::ModeActivationFailed { mode, reason, .. } => {
                 assert_eq!(mode, id);
                 assert!(reason.contains("not registered"));
             }
@@ -1383,7 +1393,10 @@ mod tests {
         )
         .unwrap();
         assert!(a.has_minor(id));
-        assert!(!g.contains(buf(), id), "Guard not stashed yet (spawn pending)");
+        assert!(
+            !g.contains(buf(), id),
+            "Guard not stashed yet (spawn pending)"
+        );
 
         // Deactivate immediately. Synchronous: bumps epoch
         // (invalidating in-flight spawn), removes from

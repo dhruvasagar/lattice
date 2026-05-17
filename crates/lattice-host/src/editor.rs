@@ -35,8 +35,10 @@ use std::sync::Arc;
 
 use lattice_config::{ConfigRegistry, OptionOverrideSet, ResolvedOptions};
 use lattice_core::ui::popup::PopupPlacement;
+use lattice_grammar::CommandRegistry;
+use lattice_grammar::ModalState;
+use lattice_grammar::builtins::Builtins;
 use lattice_help::topics::HelpTopicRegistry;
-use lattice_mode::{ActiveModes, BufferLocals, GuardStoreHandle, ModeRegistry, ServiceRegistry};
 use lattice_lsp::cache::{
     CodeActionOutcome, CodeActionRow, CodeLensOutcome, CompletionItemRow, CompletionOutcome,
     CompletionResolveOutcome, DocumentColorOutcome, DocumentHighlightCache,
@@ -48,11 +50,9 @@ use lattice_lsp::cache::{
     SignatureHelpOutcome, SymbolsOutcome,
 };
 use lattice_lsp::{DiagnosticsLayer, LspLogger, LspSupervisorHandle};
-use lattice_protocol::CancellationToken;
+use lattice_mode::{ActiveModes, BufferLocals, GuardStoreHandle, ModeRegistry, ServiceRegistry};
 use lattice_picker::{Picker, PickerMruIndex, PickerRegistry};
-use lattice_grammar::ModalState;
-use lattice_grammar::builtins::Builtins;
-use lattice_grammar::CommandRegistry;
+use lattice_protocol::CancellationToken;
 use lattice_protocol::Event;
 use lattice_protocol::edit::EditDelta;
 use lattice_runtime::{DocumentHandle, EventBus, MessagePushed, MessagesRing, SnapshotCache};
@@ -60,19 +60,19 @@ use lattice_syntax::{LangRegistry, StyledSpan, SyntaxHandle};
 
 use crate::action::{Action, EchoMessage};
 use crate::actions::ActionIds;
-use crate::chord::KeyChord;
-use crate::keymap_registry::{KeymapHandle, LayerId};
 use crate::buffer_registry::BufferRegistry;
 use crate::buffers::BufferId;
+use crate::chord::KeyChord;
+use crate::keymap_registry::{KeymapHandle, LayerId};
 use crate::pane::PaneTree;
 use crate::state::{
     CompletionState, LastFind, LastSearch, LastVisual, LivePickerQueryState, MacroRecording,
     OptionCache, PendingBlockInsert, PendingPickerInit, PositionEntry, PrevPaneState, ReplaceEntry,
     SearchLine, SubstitutePreview, TagStackEntry, UnnamedRegister,
 };
+use crate::ui::theme::Theme as HostTheme;
 use lattice_core::BufferKind;
 use lattice_protocol::position::Position as ProtoPosition;
-use crate::ui::theme::Theme as HostTheme;
 
 /// Renderer-agnostic editor state.
 ///
@@ -380,8 +380,7 @@ pub struct Editor {
     /// published by `set_message`. The runtime's per-tick
     /// drain coalesces bursts and rebuilds the `*messages*`
     /// buffer view once per frame.
-    pub pending_message_event_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<MessagePushed>>,
+    pub pending_message_event_rx: Option<tokio::sync::mpsc::UnboundedReceiver<MessagePushed>>,
     /// Set by `Action::RedrawScreen` (`<C-l>`); the runtime
     /// clears this on its next frame after issuing a full
     /// terminal-clear so any leftover ANSI / stale glyph
@@ -624,8 +623,7 @@ pub struct Editor {
     /// reads this map and adds a bounded bonus
     /// (`InsertRanker::FREQUENCY_BONUS_CAP`) so recently-accepted
     /// items bubble above tied peers next time.
-    pub completion_accept_freq:
-        HashMap<(String, lattice_completion::CandidateKind), u32>,
+    pub completion_accept_freq: HashMap<(String, lattice_completion::CandidateKind), u32>,
     /// TOML structural sections collected by the config loader at
     /// startup but not yet routed to their owners. Keyed by full
     /// dotted path (e.g. `"completion.per-language.markdown"`,
@@ -633,12 +631,10 @@ pub struct Editor {
     /// Phase 4.2.g.5 (3b/3) drains the `completion.per-language.*`
     /// entries into `per_language_completion`; the plugin host
     /// (Phase 7) will drain `plugin.*`.
-    pub pending_config_structural_sections:
-        std::collections::BTreeMap<String, toml::Table>,
+    pub pending_config_structural_sections: std::collections::BTreeMap<String, toml::Table>,
     /// Per-language insert-completion overrides (Phase 4.2.g.5
     /// (3b/3); spec at `docs/dev/architecture/insert-completion.md` §9).
-    pub per_language_completion:
-        HashMap<String, lattice_completion::PerLanguageOverrides>,
+    pub per_language_completion: HashMap<String, lattice_completion::PerLanguageOverrides>,
     /// `true` while the active insert-completion popup is in
     /// path-completion mode (Phase 4.2.g.6 (2/2)).
     pub completion_in_path_context: bool,
@@ -743,8 +739,7 @@ pub struct Editor {
         Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::InboundShowDocument>>,
     pub pending_show_message_request_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::InboundShowMessageRequest>>,
-    pub lsp_pending_show_message_requests:
-        HashMap<u32, lattice_lsp::InboundShowMessageRequest>,
+    pub lsp_pending_show_message_requests: HashMap<u32, lattice_lsp::InboundShowMessageRequest>,
     pub lsp_show_message_request_queue: std::collections::VecDeque<u32>,
     pub lsp_next_show_message_request_id: u32,
     // ---- LSP per-feature request channels (rx + token pairs) ----

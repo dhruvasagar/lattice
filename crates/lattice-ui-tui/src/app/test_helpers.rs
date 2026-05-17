@@ -104,15 +104,17 @@ pub(super) fn install_help(a: &mut App, h: HelpContent) {
     // M.4 (b): popup buffer lives in the registry like every
     // other buffer. Test fixture mirrors the production
     // `open_popup` path with the same unlisted/hidden flags.
-    a.editor.buffers.insert(crate::buffer_registry::BufferEntry {
-        id,
-        flags: crate::buffers::BufferFlags {
-            listed: false,
-            hidden: true,
-        },
-        data: crate::buffer_registry::BufferData::Help(buffer),
-        name: None,
-    });
+    a.editor
+        .buffers
+        .insert(crate::buffer_registry::BufferEntry {
+            id,
+            flags: crate::buffers::BufferFlags {
+                listed: false,
+                hidden: true,
+            },
+            data: crate::buffer_registry::BufferData::Help(buffer),
+            name: None,
+        });
     a.editor.popup_buffer = Some(id);
     a.editor.active_buffer = BufferKind::Help;
     a.seed_help_metadata_locals(id, metadata);
@@ -218,7 +220,9 @@ pub(super) fn write_workspace_config(workspace: &std::path::Path, contents: &str
 pub(super) fn seed_diags_at_lines(app: &mut App, lines: &[u32]) {
     use std::str::FromStr;
     let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
-    app.editor.buffer_uris.insert(app.editor.document_buffer_id, uri.clone());
+    app.editor
+        .buffer_uris
+        .insert(app.editor.document_buffer_id, uri.clone());
     let diags: Vec<lattice_lsp::Diagnostic> = lines
         .iter()
         .map(|line| lattice_lsp::Diagnostic {
@@ -242,12 +246,14 @@ pub(super) fn seed_diags_at_lines(app: &mut App, lines: &[u32]) {
             data: None,
         })
         .collect();
-    app.editor.lsp_diagnostics.apply(lattice_lsp::DiagnosticEvent {
-        server_id: std::sync::Arc::from("rust"),
-        uri,
-        version: None,
-        diagnostics: std::sync::Arc::from(diags.into_boxed_slice()),
-    });
+    app.editor
+        .lsp_diagnostics
+        .apply(lattice_lsp::DiagnosticEvent {
+            server_id: std::sync::Arc::from("rust"),
+            uri,
+            version: None,
+            diagnostics: std::sync::Arc::from(diags.into_boxed_slice()),
+        });
     // M.6.3: navigation (`:diag-next` / `:diag-prev`) and the
     // render gates check `lsp-diagnostics-mode`. Activate the
     // umbrella so the cascade brings every sub-mode up; tests

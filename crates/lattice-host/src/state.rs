@@ -12,12 +12,10 @@ use lattice_core::{BufferId, BufferKind, FoldMethod};
 
 use lattice_grammar::{SearchDirection, VisualKind, YankKind};
 
-
 use lattice_protocol::CancellationToken;
 use lattice_protocol::position::{Position, Range as ProtoRange};
 
 use crate::action::{Action, FindKind};
-
 
 /// In-progress `/` or `?` state. The cursor at entry is preserved
 /// so Esc can restore it.
@@ -180,7 +178,6 @@ pub struct ReplaceEntry {
     pub at: Position,
     pub original: Option<String>,
 }
-
 
 /// Cmdline completion popup state: candidates and selection.
 /// Renderer-agnostic; the renderer reads this via &App.
@@ -346,8 +343,7 @@ impl std::fmt::Debug for InFlightLiveQuery {
 /// without feeling laggy. Constant lives here (not in
 /// `lattice-picker`) because debounce is host policy -- the
 /// picker primitive is renderer- and timer-agnostic.
-pub const LIVE_PICKER_DEBOUNCE: std::time::Duration =
-    std::time::Duration::from_millis(150);
+pub const LIVE_PICKER_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(150);
 
 /// Sidecar metadata for snippet candidates in the active
 /// insert-completion popup. Indexed by the candidate's

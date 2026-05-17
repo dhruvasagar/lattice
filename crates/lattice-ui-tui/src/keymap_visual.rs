@@ -10,12 +10,12 @@ pub use lattice_host::keymap_visual::*;
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic, unused_imports)]
     use super::*;
-    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
-    use lattice_grammar::{CommandRegistry, VisualKind, builtins::Builtins, builtins::populate};
     use crate::actions::ActionIds;
     use crate::app::Action;
     use crate::chord::KeyChord;
     use crate::keymap_registry::KeymapHandle;
+    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+    use lattice_grammar::{CommandRegistry, VisualKind, builtins::Builtins, builtins::populate};
 
     fn ev(code: KeyCode, mods: KeyModifiers) -> KeyChord {
         let raw = KeyEvent {

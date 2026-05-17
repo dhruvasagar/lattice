@@ -75,7 +75,8 @@ impl App {
         // local Vec, then release before formatting +
         // appending (Drop semantics: keep the critical section
         // short).
-        let backlog_records: Vec<lattice_runtime::MessageRecord> = match self.editor.messages.lock() {
+        let backlog_records: Vec<lattice_runtime::MessageRecord> = match self.editor.messages.lock()
+        {
             Ok(ring) => ring.records().iter().cloned().collect(),
             Err(_) => Vec::new(),
         };
@@ -216,7 +217,8 @@ mod tests {
         app.set_message(EchoLevel::Warn, "bravo");
         app.drain_message_events();
         let body = app
-            .editor.buffers
+            .editor
+            .buffers
             .document_handle(buffer_id)
             .expect("*messages* is a Document")
             .text();
@@ -233,7 +235,8 @@ mod tests {
         let id = app.ensure_messages_buffer();
         assert_eq!(app.editor.buffers.by_name(MESSAGES_BUFFER_NAME), Some(id));
         let (is_doc, name, listed) = app
-            .editor.buffers
+            .editor
+            .buffers
             .with_entry(id, |entry| {
                 (
                     matches!(entry.data, crate::buffer_registry::BufferData::Document(_)),
@@ -257,7 +260,8 @@ mod tests {
         let initial = app.active_pane_buffer_id();
         app.do_open_messages();
         let msgs_id = app
-            .editor.buffers
+            .editor
+            .buffers
             .by_name(MESSAGES_BUFFER_NAME)
             .expect("*messages* present");
         assert_ne!(initial, msgs_id);

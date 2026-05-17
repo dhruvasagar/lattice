@@ -12,7 +12,6 @@
 //! `App` field), or `recording_insert` (insert-mode
 //! keystroke recording, distinct from `q`-macros).
 
-
 // 5.5.G.23.macros: `do_play_macro` migrated to
 // [`lattice_host::dispatch::Editor::do_play_macro`]. Recorded actions
 // flow through `out.next_actions`, which the dispatch wrapper drains

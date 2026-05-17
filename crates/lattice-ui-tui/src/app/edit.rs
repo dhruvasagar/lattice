@@ -348,7 +348,10 @@ mod tests {
     fn delete_with_word_forward_target_dw_in_app() {
         let mut a = app_with("hello world", 10);
         let inv = CommandInvocation::of(a.editor.builtins.delete.0).with_target(
-            lattice_grammar::Target::Motion(a.editor.builtins.word_forward, lattice_grammar::Args::None),
+            lattice_grammar::Target::Motion(
+                a.editor.builtins.word_forward,
+                lattice_grammar::Args::None,
+            ),
         );
         a.apply(Action::Invoke(inv));
         assert_eq!(a.editor.document.text(), "world");
@@ -359,7 +362,10 @@ mod tests {
     fn delete_char_under_cursor_x_in_app() {
         let mut a = app_with("abc", 10);
         let inv = CommandInvocation::of(a.editor.builtins.delete.0).with_target(
-            lattice_grammar::Target::Motion(a.editor.builtins.char_right, lattice_grammar::Args::None),
+            lattice_grammar::Target::Motion(
+                a.editor.builtins.char_right,
+                lattice_grammar::Args::None,
+            ),
         );
         a.apply(Action::Invoke(inv));
         assert_eq!(a.editor.document.text(), "bc");
@@ -392,7 +398,10 @@ mod tests {
     fn cw_deletes_word_and_enters_insert_mode() {
         let mut a = app_with("hello world", 10);
         let inv = CommandInvocation::of(a.editor.builtins.change.0).with_target(
-            lattice_grammar::Target::Motion(a.editor.builtins.word_forward, lattice_grammar::Args::None),
+            lattice_grammar::Target::Motion(
+                a.editor.builtins.word_forward,
+                lattice_grammar::Args::None,
+            ),
         );
         a.apply(Action::Invoke(inv));
         assert_eq!(a.editor.document.text(), "world");
@@ -462,14 +471,20 @@ mod tests {
         let mut a = app_with("hello world", 10);
         // First yank into unnamed.
         let yank = CommandInvocation::of(a.editor.builtins.yank.0).with_target(
-            lattice_grammar::Target::Motion(a.editor.builtins.word_forward, lattice_grammar::Args::None),
+            lattice_grammar::Target::Motion(
+                a.editor.builtins.word_forward,
+                lattice_grammar::Args::None,
+            ),
         );
         a.apply(Action::Invoke(yank));
         let pre_delete_unnamed = a.editor.unnamed_register.as_ref().unwrap().content.clone();
         // Now delete into black hole; unnamed should be untouched.
         a.apply(Action::SelectRegister(Register::BlackHole));
         let inv = CommandInvocation::of(a.editor.builtins.delete.0).with_target(
-            lattice_grammar::Target::Motion(a.editor.builtins.word_forward, lattice_grammar::Args::None),
+            lattice_grammar::Target::Motion(
+                a.editor.builtins.word_forward,
+                lattice_grammar::Args::None,
+            ),
         );
         a.apply(Action::Invoke(inv));
         assert_eq!(
@@ -482,7 +497,10 @@ mod tests {
     fn delete_does_not_populate_zero_register() {
         let mut a = app_with("hello world", 10);
         let inv = CommandInvocation::of(a.editor.builtins.delete.0).with_target(
-            lattice_grammar::Target::Motion(a.editor.builtins.word_forward, lattice_grammar::Args::None),
+            lattice_grammar::Target::Motion(
+                a.editor.builtins.word_forward,
+                lattice_grammar::Args::None,
+            ),
         );
         a.apply(Action::Invoke(inv));
         // Delete populates unnamed but NOT "0.
@@ -615,7 +633,10 @@ mod tests {
     fn delete_records_last_change_and_dot_replays_it() {
         let mut a = app_with("foo bar foo bar", 10);
         let inv = CommandInvocation::of(a.editor.builtins.delete.0).with_target(
-            lattice_grammar::Target::Motion(a.editor.builtins.word_forward, lattice_grammar::Args::None),
+            lattice_grammar::Target::Motion(
+                a.editor.builtins.word_forward,
+                lattice_grammar::Args::None,
+            ),
         );
         a.apply(Action::Invoke(inv));
         // After dw: "bar foo bar".
@@ -845,8 +866,8 @@ mod tests {
         // Yank a 3x2 rectangle: cols 1..=2 across three rows of "abcd\n1234\nWXYZ".
         let mut a =
             enter_block_visual("abcd\n1234\nWXYZ", Position::new(0, 1), Position::new(2, 2));
-        let inv =
-            CommandInvocation::of(a.editor.builtins.yank.0).with_range(lattice_grammar::Range::Selection);
+        let inv = CommandInvocation::of(a.editor.builtins.yank.0)
+            .with_range(lattice_grammar::Range::Selection);
         a.apply(Action::Invoke(inv));
         // Document untouched.
         assert_eq!(a.editor.document.text(), "abcd\n1234\nWXYZ");
@@ -862,8 +883,8 @@ mod tests {
         // Middle row "12" partially overlaps the rectangle: cols 1..=2,
         // line len 2, intersection is `[1, 2)` = "2".
         let mut a = enter_block_visual("abcd\n12\nWXYZ", Position::new(0, 1), Position::new(2, 2));
-        let inv =
-            CommandInvocation::of(a.editor.builtins.yank.0).with_range(lattice_grammar::Range::Selection);
+        let inv = CommandInvocation::of(a.editor.builtins.yank.0)
+            .with_range(lattice_grammar::Range::Selection);
         a.apply(Action::Invoke(inv));
         let reg = a.editor.unnamed_register.as_ref().unwrap();
         assert_eq!(reg.content, "bc\n2\nXY");
@@ -875,8 +896,8 @@ mod tests {
         // Middle row is "" (empty). Visual cols 1..=2 fully outside;
         // intersection is empty.
         let mut a = enter_block_visual("abcd\n\nWXYZ", Position::new(0, 1), Position::new(2, 2));
-        let inv =
-            CommandInvocation::of(a.editor.builtins.yank.0).with_range(lattice_grammar::Range::Selection);
+        let inv = CommandInvocation::of(a.editor.builtins.yank.0)
+            .with_range(lattice_grammar::Range::Selection);
         a.apply(Action::Invoke(inv));
         let reg = a.editor.unnamed_register.as_ref().unwrap();
         assert_eq!(reg.content, "bc\n\nXY");
@@ -1032,8 +1053,8 @@ mod tests {
             Position::new(0, 1),
             Position::new(1, 2),
         );
-        let yank =
-            CommandInvocation::of(a.editor.builtins.yank.0).with_range(lattice_grammar::Range::Selection);
+        let yank = CommandInvocation::of(a.editor.builtins.yank.0)
+            .with_range(lattice_grammar::Range::Selection);
         a.apply(Action::Invoke(yank));
         // Exit visual and move to a fresh paste site.
         a.apply(Action::ExitVisual);
@@ -1152,7 +1173,13 @@ mod tests {
         let _ = a.apply_edit_blocking(Edit::insert(Position::new(0, 24), "\nal"));
         a.editor.cursor = Position::new(1, 2);
         a.do_completion_trigger();
-        let total = a.editor.insert_completion.as_ref().expect("popup").rendered.len();
+        let total = a
+            .editor
+            .insert_completion
+            .as_ref()
+            .expect("popup")
+            .rendered
+            .len();
         assert!(total >= 2, "need ≥ 2 candidates for wrap test");
         assert_eq!(a.editor.insert_completion.as_ref().unwrap().selected, 0);
         a.do_completion_next();
@@ -1160,7 +1187,10 @@ mod tests {
         // Wrap to last via prev from 1 -> 0 -> total-1.
         a.do_completion_prev();
         a.do_completion_prev();
-        assert_eq!(a.editor.insert_completion.as_ref().unwrap().selected, total - 1);
+        assert_eq!(
+            a.editor.insert_completion.as_ref().unwrap().selected,
+            total - 1
+        );
     }
 
     #[test]
@@ -1170,7 +1200,8 @@ mod tests {
         a.editor.cursor = Position::new(1, 2);
         a.do_completion_trigger();
         // Pick the first candidate.
-        let first_text = a.editor
+        let first_text = a
+            .editor
             .insert_completion
             .as_ref()
             .and_then(|s| s.selected_candidate())
@@ -1216,15 +1247,30 @@ mod tests {
         a.editor.cursor = Position::new(1, 2);
         a.do_completion_trigger();
         assert!(
-            a.editor.insert_completion
+            a.editor
+                .insert_completion
                 .as_ref()
                 .map(|s| s.doc_popup.is_none())
                 .unwrap_or(false)
         );
         a.do_completion_toggle_docs();
-        assert!(a.editor.insert_completion.as_ref().unwrap().doc_popup.is_some());
+        assert!(
+            a.editor
+                .insert_completion
+                .as_ref()
+                .unwrap()
+                .doc_popup
+                .is_some()
+        );
         a.do_completion_toggle_docs();
-        assert!(a.editor.insert_completion.as_ref().unwrap().doc_popup.is_none());
+        assert!(
+            a.editor
+                .insert_completion
+                .as_ref()
+                .unwrap()
+                .doc_popup
+                .is_none()
+        );
     }
 
     #[test]
@@ -1233,11 +1279,21 @@ mod tests {
         a.editor.modal = ModalState::Insert;
         a.editor.cursor = Position::new(1, 2);
         a.do_completion_trigger();
-        let pre_count = a.editor.insert_completion.as_ref().expect("popup").rendered.len();
+        let pre_count = a
+            .editor
+            .insert_completion
+            .as_ref()
+            .expect("popup")
+            .rendered
+            .len();
         // Type 'p' -- query becomes "alp"; only "alpha" /
         // "alphabet" survive (alligator drops out).
         a.apply(Action::Insert("p".into()));
-        let state = a.editor.insert_completion.as_ref().expect("popup still open");
+        let state = a
+            .editor
+            .insert_completion
+            .as_ref()
+            .expect("popup still open");
         assert_eq!(state.query, "alp");
         let labels: Vec<String> = state.rendered.iter().map(|c| c.raw.text.clone()).collect();
         assert!(labels.contains(&"alpha".to_string()));
@@ -1263,8 +1319,8 @@ mod tests {
         // Yank 2 rows then paste at the bottom -- the missing row is
         // appended as a fresh line.
         let mut a = enter_block_visual("abcd\n1234", Position::new(0, 1), Position::new(1, 2));
-        let yank =
-            CommandInvocation::of(a.editor.builtins.yank.0).with_range(lattice_grammar::Range::Selection);
+        let yank = CommandInvocation::of(a.editor.builtins.yank.0)
+            .with_range(lattice_grammar::Range::Selection);
         a.apply(Action::Invoke(yank));
         a.apply(Action::ExitVisual);
         // Move to last line and paste with `P` (before-cursor) at col 0.
@@ -1281,7 +1337,10 @@ mod tests {
         a.editor.cursor = Position::ZERO;
         // x: delete char-right
         let inv = CommandInvocation::of(a.editor.builtins.delete.0).with_target(
-            lattice_grammar::Target::Motion(a.editor.builtins.char_right, lattice_grammar::Args::None),
+            lattice_grammar::Target::Motion(
+                a.editor.builtins.char_right,
+                lattice_grammar::Args::None,
+            ),
         );
         a.apply(Action::Invoke(inv));
         assert_eq!(a.editor.document.text(), "bc");

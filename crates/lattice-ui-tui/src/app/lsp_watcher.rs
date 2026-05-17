@@ -55,8 +55,8 @@ use notify::{
 };
 
 use crate::app::App;
-use lattice_lsp::{LogLevel, LogSource};
 use lattice_host::lsp_watcher::CachedSubscription;
+use lattice_lsp::{LogLevel, LogSource};
 
 /// Translate one `notify::Event` into an LSP `FileChangeType` per
 /// path. Notify lumps a wide range of fs ops into broad kinds;

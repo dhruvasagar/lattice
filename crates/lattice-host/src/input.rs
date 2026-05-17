@@ -9,7 +9,6 @@
 //! Shape per DESIGN.md §5.2.3: chord → typed `CommandInvocation`,
 //! so swapping in the layered keymap engine later is mechanical.
 
-
 use lattice_grammar::ModalState;
 use lattice_grammar::builtins::Builtins;
 
@@ -276,9 +275,7 @@ fn translate_command(chord: KeyChord, completion_open: bool, _chord_capture: boo
         KeyKind::Special(SpecialKey::Tab) if !chord.mods.shift() => {
             Action::CommandLineCompleteOrAdvance
         }
-        KeyKind::Special(SpecialKey::Tab) if chord.mods.shift() => {
-            Action::CommandLineCompletePrev
-        }
+        KeyKind::Special(SpecialKey::Tab) if chord.mods.shift() => Action::CommandLineCompletePrev,
         KeyKind::Special(SpecialKey::Up) => Action::CommandLineHistoryPrev,
         KeyKind::Special(SpecialKey::Down) => Action::CommandLineHistoryNext,
         KeyKind::Char(c) if !chord.mods.ctrl() => Action::CommandLineAppend(c),
@@ -427,4 +424,3 @@ fn compute_normal_action(
     // `Action::None`.
     crate::keymap_normal::lookup_normal(keymap, &chord).unwrap_or(Action::None)
 }
-

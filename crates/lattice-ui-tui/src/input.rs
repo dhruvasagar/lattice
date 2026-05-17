@@ -33,6 +33,9 @@ pub fn translate(ctx: TranslateContext<'_>, event: KeyEvent) -> Action {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic, unused_imports)]
     use super::*;
+    use crate::buffers::BufferKind;
+    use crate::chord::{KeyChord, KeyKind, KeyMods, SpecialKey};
+    use crate::keymap_registry::KeymapHandle;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use lattice_grammar::CommandRegistry;
     use lattice_grammar::ModalState;
@@ -40,9 +43,6 @@ mod tests {
     use lattice_grammar::Target;
     use lattice_grammar::VisualKind;
     use lattice_grammar::builtins::{Builtins, populate};
-    use crate::buffers::BufferKind;
-    use crate::chord::{KeyChord, KeyKind, KeyMods, SpecialKey};
-    use crate::keymap_registry::KeymapHandle;
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)

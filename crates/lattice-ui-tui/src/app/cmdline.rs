@@ -81,14 +81,19 @@ impl App {
                 .get(short)
                 .map(|s| (*s).to_string())
         };
-        let slot = lattice_completion::current_slot(&line, cursor, &self.editor.registry, &alias_resolver);
+        let slot =
+            lattice_completion::current_slot(&line, cursor, &self.editor.registry, &alias_resolver);
 
         let word = slot.prefix();
         let canonical = if word.is_empty() {
             None
         } else {
-            alias_resolver(word)
-                .or_else(|| self.editor.registry.id_by_name(word).and(Some(word.to_string())))
+            alias_resolver(word).or_else(|| {
+                self.editor
+                    .registry
+                    .id_by_name(word)
+                    .and(Some(word.to_string()))
+            })
         };
 
         if let Some(name) = canonical
@@ -241,8 +246,12 @@ impl App {
                 .get(short)
                 .map(|s| (*s).to_string())
         };
-        let slot =
-            lattice_completion::current_slot(line, line.len(), &self.editor.registry, &alias_resolver);
+        let slot = lattice_completion::current_slot(
+            line,
+            line.len(),
+            &self.editor.registry,
+            &alias_resolver,
+        );
         matches!(
             &slot,
             lattice_completion::CommandLineSlot::Arg { arg_spec, .. }
@@ -625,7 +634,11 @@ mod tests {
     fn tab_in_command_mode_opens_completion_popup() {
         let mut a = app_in_command_mode("descri");
         a.apply(Action::CommandLineCompleteOrAdvance);
-        let state = a.editor.completion_state.as_ref().expect("popup should open");
+        let state = a
+            .editor
+            .completion_state
+            .as_ref()
+            .expect("popup should open");
         // Candidates use the user-facing alias form, not the
         // canonical `ex:*` registry name. Both `:describe-command`
         // and `:ex:describe-command` parse correctly via the
@@ -822,7 +835,11 @@ mod tests {
         // not appearing; pin the wiring with a regression test.
         let mut a = app_in_command_mode("lsp-");
         a.apply(Action::CommandLineCompleteOrAdvance);
-        let state = a.editor.completion_state.as_ref().expect("popup should open");
+        let state = a
+            .editor
+            .completion_state
+            .as_ref()
+            .expect("popup should open");
         let texts: Vec<&str> = state
             .candidates
             .iter()

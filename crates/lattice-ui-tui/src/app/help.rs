@@ -390,10 +390,12 @@ impl App {
         // `pane.buffer_id` for the in-pane case (where the pane
         // was swapped to the registered help id).
         let active_help_id = self
-            .editor.popup_buffer
+            .editor
+            .popup_buffer
             .unwrap_or_else(|| self.editor.pane_tree.active().buffer_id);
         let Some(link) = self
-            .editor.buffer_locals
+            .editor
+            .buffer_locals
             .get(&active_help_id)
             .and_then(|locals| locals.get::<crate::modes::HelpLinks>())
             .and_then(|hl| {
@@ -408,7 +410,8 @@ impl App {
                 if pane_id == active_help_id {
                     return None;
                 }
-                self.editor.buffer_locals
+                self.editor
+                    .buffer_locals
                     .get(&pane_id)
                     .and_then(|locals| locals.get::<crate::modes::HelpLinks>())
                     .and_then(|hl| {
@@ -485,7 +488,8 @@ impl App {
                     .and_then(|locals| locals.get::<crate::modes::HelpAnchors>())
                     .and_then(|anchors| anchors.0.iter().find(|a| a.name == slug).map(|a| a.line))
                     .or_else(|| {
-                        self.editor.buffer_locals
+                        self.editor
+                            .buffer_locals
                             .get(&pane_id)
                             .and_then(|locals| locals.get::<crate::modes::HelpAnchors>())
                             .and_then(|anchors| {
@@ -808,7 +812,8 @@ mod tests {
         );
         // Should NOT be the error path.
         assert!(
-            a.editor.last_message
+            a.editor
+                .last_message
                 .as_ref()
                 .map(|m| m.level != EchoLevel::Error)
                 .unwrap_or(true)
@@ -1393,7 +1398,8 @@ mod tests {
         let help = crate::help::HelpContent::from_lines("test", vec!["line one".to_string()]);
         let help_id = a.open_help_in_pane(help);
         let active = a
-            .editor.active_modes
+            .editor
+            .active_modes
             .get(&help_id)
             .expect("active_modes populated for help");
         assert_eq!(
@@ -1641,7 +1647,8 @@ mod tests {
         a.apply(Action::CommandLineSubmit);
         let popup_id = a.editor.popup_buffer.expect("picker open");
         let editor_link = a
-            .editor.buffer_locals
+            .editor
+            .buffer_locals
             .get(&popup_id)
             .and_then(|locals| locals.get::<crate::modes::HelpLinks>())
             .and_then(|hl| {
@@ -1682,7 +1689,8 @@ mod tests {
         let popup_id = a.editor.popup_buffer.expect("customize editor open");
         // Find the customize-edit link for `tabstop`.
         let edit_link = a
-            .editor.buffer_locals
+            .editor
+            .buffer_locals
             .get(&popup_id)
             .and_then(|locals| locals.get::<crate::modes::HelpLinks>())
             .and_then(|hl| {
@@ -1717,7 +1725,8 @@ mod tests {
         a.apply(Action::CommandLineSubmit);
         let popup_id = a.editor.popup_buffer.expect("editor view open");
         let link = a
-            .editor.buffer_locals
+            .editor
+            .buffer_locals
             .get(&popup_id)
             .and_then(|locals| locals.get::<crate::modes::HelpLinks>())
             .and_then(|hl| {

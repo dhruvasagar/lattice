@@ -42,8 +42,8 @@ pub mod file_tree;
 pub mod folds;
 pub mod help;
 pub mod help_topics;
-pub mod host_generators;
 pub mod highlights;
+pub mod host_generators;
 pub mod input;
 pub mod keymap;
 pub mod keymap_insert;
@@ -52,6 +52,8 @@ pub mod keymap_registry;
 pub mod keymap_replace;
 pub mod keymap_trie;
 pub mod keymap_visual;
+pub mod lsp_helpers;
+pub mod lsp_watcher;
 pub mod modes;
 pub mod oil;
 pub mod pane;
@@ -60,8 +62,6 @@ pub mod popup;
 pub mod renderer;
 pub mod state;
 pub mod ui;
-pub mod lsp_watcher;
-pub mod lsp_helpers;
 
 // Re-export the host-side Renderer trait at the crate root for
 // the conventional `lattice_host::Renderer` path renderer

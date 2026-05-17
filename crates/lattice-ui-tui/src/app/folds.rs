@@ -73,7 +73,8 @@ impl App {
         if !self.foldenable() {
             return false;
         }
-        self.editor.folds
+        self.editor
+            .folds
             .iter()
             .any(|f| f.closed && line > f.start_line && line <= f.end_line)
     }
@@ -484,7 +485,13 @@ mod tests {
         // No state change; both still closed.
         assert!(a.editor.folds.iter().all(|f| f.closed));
         // E490 echoed.
-        let msg = a.editor.last_message.as_ref().expect("message").text.clone();
+        let msg = a
+            .editor
+            .last_message
+            .as_ref()
+            .expect("message")
+            .text
+            .clone();
         assert!(msg.contains("E490"), "expected E490, got {msg:?}");
     }
 
@@ -957,7 +964,12 @@ mod tests {
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.foldmethod(), FoldMethod::Indent);
         assert!(!a.editor.folds.is_empty());
-        let f = a.editor.folds.iter().find(|f| f.start_line == 0).expect("fold");
+        let f = a
+            .editor
+            .folds
+            .iter()
+            .find(|f| f.start_line == 0)
+            .expect("fold");
         assert_eq!(f.end_line, 2);
     }
 
@@ -989,7 +1001,12 @@ mod tests {
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.foldmethod(), FoldMethod::Markdown);
         assert!(!a.editor.folds.is_empty());
-        let f = a.editor.folds.iter().find(|f| f.start_line == 0).expect("fold");
+        let f = a
+            .editor
+            .folds
+            .iter()
+            .find(|f| f.start_line == 0)
+            .expect("fold");
         assert!(f.end_line >= 2);
     }
 
@@ -1002,7 +1019,12 @@ mod tests {
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.foldmethod(), FoldMethod::Syntax);
-        assert!(a.editor.folds.iter().any(|f| f.start_line == 0 && f.end_line == 2));
+        assert!(
+            a.editor
+                .folds
+                .iter()
+                .any(|f| f.start_line == 0 && f.end_line == 2)
+        );
     }
 
     #[test]
@@ -1023,7 +1045,10 @@ mod tests {
         assert_eq!(a.foldmethod(), FoldMethod::Syntax);
         // Tree-sitter fold for the struct (lines 0..=2).
         assert!(
-            a.editor.folds.iter().any(|f| f.start_line == 0 && f.end_line >= 2),
+            a.editor
+                .folds
+                .iter()
+                .any(|f| f.start_line == 0 && f.end_line >= 2),
             "expected struct fold from tree-sitter: {:?}",
             a.editor.folds
         );
@@ -1048,7 +1073,8 @@ mod tests {
         a.recompute_folds();
         // Find and close the `second:` fold.
         let second_idx = a
-            .editor.folds
+            .editor
+            .folds
             .iter()
             .position(|f| f.start_line == 3)
             .expect("second: fold exists");
@@ -1060,7 +1086,8 @@ mod tests {
         // The recomputed `second:` fold has start_line = 4 now, but
         // its identity (heading text "second:" + indent 0) matches.
         let new_second = a
-            .editor.folds
+            .editor
+            .folds
             .iter()
             .find(|f| f.start_line == 4)
             .expect("second: fold survived insertion");

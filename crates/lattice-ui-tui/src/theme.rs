@@ -159,9 +159,7 @@ impl Default for Theme {
             cursor_line_bg: Color::Indexed(236),
             // msg-mode.3: matches the format produced by
             // `crate::app::messages::format_message_record`.
-            messages_timestamp_style: Style::new()
-                .fg(Color::DarkGray)
-                .add_modifier(Modifier::DIM),
+            messages_timestamp_style: Style::new().fg(Color::DarkGray).add_modifier(Modifier::DIM),
             messages_trace_style: Style::new().add_modifier(Modifier::DIM),
             messages_debug_style: Style::new().fg(Color::Cyan),
             messages_info_style: Style::new(),
@@ -347,7 +345,10 @@ mod tests {
         let host: super::host_theme::Theme = super::host_theme::Theme::default();
         let adapted: Theme = (&host).into();
         let tui: Theme = Theme::default();
-        assert_eq!(adapted, tui, "host theme default must adapt to TUI theme default");
+        assert_eq!(
+            adapted, tui,
+            "host theme default must adapt to TUI theme default"
+        );
     }
 
     #[test]

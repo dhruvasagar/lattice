@@ -252,10 +252,8 @@ mod tests {
 
     #[test]
     fn from_event_normalises_ctrl_letter_lowercase() {
-        let lower =
-            from_event(&ev(KeyCode::Char('c'), KeyModifiers::CONTROL)).expect("ctrl-c");
-        let upper =
-            from_event(&ev(KeyCode::Char('C'), KeyModifiers::CONTROL)).expect("ctrl-C");
+        let lower = from_event(&ev(KeyCode::Char('c'), KeyModifiers::CONTROL)).expect("ctrl-c");
+        let upper = from_event(&ev(KeyCode::Char('C'), KeyModifiers::CONTROL)).expect("ctrl-C");
         assert_eq!(lower, upper);
         assert_eq!(lower, KeyChord::ctrl('c'));
     }
@@ -264,8 +262,7 @@ mod tests {
     fn from_event_strips_redundant_shift_on_bare_letter() {
         // Terminal reports `Char('A') + SHIFT`; canonical form
         // is just `Char('A')` (case encodes shift).
-        let chord =
-            from_event(&ev(KeyCode::Char('A'), KeyModifiers::SHIFT)).expect("shift-A");
+        let chord = from_event(&ev(KeyCode::Char('A'), KeyModifiers::SHIFT)).expect("shift-A");
         assert_eq!(chord, KeyChord::char('A'));
         assert!(!chord.mods.shift());
     }

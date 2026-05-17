@@ -103,7 +103,11 @@ impl App {
         major_id: lattice_mode::ModeId,
     ) {
         let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
-        let mut active = self.editor.active_modes.remove(&buffer_id).unwrap_or_default();
+        let mut active = self
+            .editor
+            .active_modes
+            .remove(&buffer_id)
+            .unwrap_or_default();
         if let Err(e) = self.editor.mode_registry.activate_major(
             &mut active,
             &self.editor.mode_guards,
@@ -180,13 +184,15 @@ mod tests {
     fn boot_creates_subsystem_lsp_buffer() {
         let a = app_with("hi", 5);
         let id = a
-            .editor.buffers
+            .editor
+            .buffers
             .by_name(LSP_SUBSYSTEM_LOG_NAME)
             .expect("`*lsp*` buffer present at boot");
         // Must be a Document (slice B requirement) with the
         // synthetic name set.
         let (is_doc, name, listed) = a
-            .editor.buffers
+            .editor
+            .buffers
             .with_entry(id, |entry| {
                 (
                     matches!(entry.data, BufferData::Document(_)),
@@ -315,7 +321,8 @@ mod tests {
         let expected = lsp_server_log_name(&instance);
         a.open_lsp_log_in_pane("rust");
         let log_id = a
-            .editor.buffers
+            .editor
+            .buffers
             .by_name(&expected)
             .expect("per-instance log buffer registered");
         assert_eq!(a.active_pane_buffer_id(), log_id);
@@ -335,7 +342,8 @@ mod tests {
         let expected = lsp_server_trace_log_name(&instance);
         a.open_lsp_trace_log_in_pane("rust");
         let trace_id = a
-            .editor.buffers
+            .editor
+            .buffers
             .by_name(&expected)
             .expect("per-instance trace buffer registered");
         assert_eq!(a.active_pane_buffer_id(), trace_id);

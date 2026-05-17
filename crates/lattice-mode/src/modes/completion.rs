@@ -309,9 +309,7 @@ mod tests {
     fn both_modes_default_completion_sources_is_empty() {
         // Neither mode is a source-contributor.
         assert!(<CompletionMode as Mode>::completion_sources(&CompletionMode).is_empty());
-        assert!(
-            <CompletionPopupMode as Mode>::completion_sources(&CompletionPopupMode).is_empty()
-        );
+        assert!(<CompletionPopupMode as Mode>::completion_sources(&CompletionPopupMode).is_empty());
     }
 
     #[test]

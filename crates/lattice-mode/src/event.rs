@@ -75,11 +75,7 @@ impl ModeEvent {
     /// event payload is `Clone + Eq` (the error variants
     /// contain registry-internal types that aren't worth
     /// threading through every subscriber).
-    pub fn activation_failed(
-        buffer: BufferId,
-        mode: ModeId,
-        err: &ModeActivationError,
-    ) -> Self {
+    pub fn activation_failed(buffer: BufferId, mode: ModeId, err: &ModeActivationError) -> Self {
         Self::ModeActivationFailed {
             buffer,
             mode,

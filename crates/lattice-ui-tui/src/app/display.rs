@@ -76,52 +76,62 @@ impl App {
         use lattice_core::ui::display::BufferDisplayPreference;
         let pref: BufferDisplayPreference = match category {
             BufferDisplayCategory::LspStatus => self
-                .editor.config
+                .editor
+                .config
                 .get_typed::<lattice_config::LspStatusDisplay>()
                 .map(|v| *v)
                 .unwrap_or_default(),
             BufferDisplayCategory::LspLog => self
-                .editor.config
+                .editor
+                .config
                 .get_typed::<lattice_config::LspLogDisplay>()
                 .map(|v| *v)
                 .unwrap_or_default(),
             BufferDisplayCategory::Messages => self
-                .editor.config
+                .editor
+                .config
                 .get_typed::<lattice_config::MessagesDisplay>()
                 .map(|v| *v)
                 .unwrap_or_default(),
             BufferDisplayCategory::HelpTopic => self
-                .editor.config
+                .editor
+                .config
                 .get_typed::<lattice_config::HelpTopicDisplay>()
                 .map(|v| *v)
                 .unwrap_or_default(),
             BufferDisplayCategory::HelpDescribe => self
-                .editor.config
+                .editor
+                .config
                 .get_typed::<lattice_config::HelpDescribeDisplay>()
                 .map(|v| *v)
                 .unwrap_or_default(),
             BufferDisplayCategory::HelpApropos => self
-                .editor.config
+                .editor
+                .config
                 .get_typed::<lattice_config::HelpAproposDisplay>()
                 .map(|v| *v)
                 .unwrap_or_default(),
             BufferDisplayCategory::HelpList => self
-                .editor.config
+                .editor
+                .config
                 .get_typed::<lattice_config::HelpListDisplay>()
                 .map(|v| *v)
                 .unwrap_or_default(),
             BufferDisplayCategory::Hover => self
-                .editor.config
+                .editor
+                .config
                 .get_typed::<lattice_config::HoverDisplay>()
                 .map(|v| *v)
                 .unwrap_or_default(),
             BufferDisplayCategory::Signature => self
-                .editor.config
+                .editor
+                .config
                 .get_typed::<lattice_config::SignatureDisplay>()
                 .map(|v| *v)
                 .unwrap_or_default(),
             BufferDisplayCategory::PickerResult => self
-                .editor.config
+                .editor
+                .config
                 .get_typed::<lattice_config::PickerResultDisplay>()
                 .map(|v| *v)
                 .unwrap_or_default(),
@@ -226,7 +236,10 @@ mod tests {
         let mut a = app_with("hi", 5);
         let content = HelpContent::from_lines("hover", vec!["doc string".into()]);
         a.display_buffer(content, BufferDisplayCategory::Hover);
-        assert_eq!(a.active_popup_placement(), Some(PopupPlacement::CursorAnchored));
+        assert_eq!(
+            a.active_popup_placement(),
+            Some(PopupPlacement::CursorAnchored)
+        );
     }
 
     #[test]

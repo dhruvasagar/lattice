@@ -80,7 +80,9 @@ impl App {
         //   place; snapshot the prior state onto `popup_back_stack`
         //   so `<C-o>` walks back to it without leaving the
         //   popup.
-        if matches!(self.editor.active_buffer, BufferKind::Help) && self.editor.popup_buffer.is_some() {
+        if matches!(self.editor.active_buffer, BufferKind::Help)
+            && self.editor.popup_buffer.is_some()
+        {
             if let Some(snap) = self.snapshot_current_popup() {
                 self.editor.popup_back_stack.push(snap);
             }
@@ -138,15 +140,17 @@ impl App {
         // informational (popups don't have windows of their own).
         // Same shape as [`Self::open_help_in_pane`] uses for
         // `:lsp-log` etc.
-        self.editor.buffers.insert(crate::buffer_registry::BufferEntry {
-            id: buffer_id,
-            flags: crate::buffers::BufferFlags {
-                listed: false,
-                hidden: true,
-            },
-            data: crate::buffer_registry::BufferData::Help(buffer),
-            name: None,
-        });
+        self.editor
+            .buffers
+            .insert(crate::buffer_registry::BufferEntry {
+                id: buffer_id,
+                flags: crate::buffers::BufferFlags {
+                    listed: false,
+                    hidden: true,
+                },
+                data: crate::buffer_registry::BufferData::Help(buffer),
+                name: None,
+            });
         self.editor.popup_buffer = Some(buffer_id);
         self.editor.popup_placement = placement;
         self.editor.cursor = stash_cursor;
@@ -186,15 +190,17 @@ impl App {
         self.dismiss_stale_popup_registry();
         // Popup buffers participate in `app.editor.buffers` like every
         // other buffer (same shape `open_popup` uses).
-        self.editor.buffers.insert(crate::buffer_registry::BufferEntry {
-            id: buffer_id,
-            flags: crate::buffers::BufferFlags {
-                listed: false,
-                hidden: true,
-            },
-            data: crate::buffer_registry::BufferData::Help(buffer),
-            name: None,
-        });
+        self.editor
+            .buffers
+            .insert(crate::buffer_registry::BufferEntry {
+                id: buffer_id,
+                flags: crate::buffers::BufferFlags {
+                    listed: false,
+                    hidden: true,
+                },
+                data: crate::buffer_registry::BufferData::Help(buffer),
+                name: None,
+            });
         self.editor.popup_buffer = Some(buffer_id);
         self.editor.popup_placement = placement;
         self.seed_help_metadata_locals(buffer_id, metadata);
@@ -206,7 +212,11 @@ impl App {
         // markdown that may include fenced code, but its links
         // are typically external URLs we don't follow internally.
         let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
-        let mut active = self.editor.active_modes.remove(&buffer_id).unwrap_or_default();
+        let mut active = self
+            .editor
+            .active_modes
+            .remove(&buffer_id)
+            .unwrap_or_default();
         let _ = self.editor.mode_registry.activate_major(
             &mut active,
             &self.editor.mode_guards,
@@ -285,7 +295,8 @@ impl App {
     /// popup is open or the locals slot was not seeded.
     pub fn popup_help_links(&self) -> Option<&[crate::help::HelpLink]> {
         let id = self.editor.popup_buffer?;
-        self.editor.buffer_locals
+        self.editor
+            .buffer_locals
             .get(&id)
             .and_then(|l| l.get::<crate::modes::HelpLinks>())
             .map(|h| h.0.as_slice())
@@ -297,7 +308,8 @@ impl App {
     /// open or the locals slot was not seeded.
     pub fn popup_help_anchors(&self) -> Option<&[crate::help::HelpAnchor]> {
         let id = self.editor.popup_buffer?;
-        self.editor.buffer_locals
+        self.editor
+            .buffer_locals
             .get(&id)
             .and_then(|l| l.get::<crate::modes::HelpAnchors>())
             .map(|h| h.0.as_slice())
@@ -309,7 +321,8 @@ impl App {
     /// seeded.
     pub fn popup_help_highlights(&self) -> Option<&[Vec<lattice_syntax::StyledSpan>]> {
         let id = self.editor.popup_buffer?;
-        self.editor.buffer_locals
+        self.editor
+            .buffer_locals
             .get(&id)
             .and_then(|l| l.get::<crate::modes::HelpHighlights>())
             .map(|h| h.0.as_slice())
@@ -339,7 +352,8 @@ impl App {
     pub(super) fn snapshot_current_popup(&self) -> Option<PopupSnapshot> {
         let id = self.editor.popup_buffer?;
         let (title, content) = self
-            .editor.buffers
+            .editor
+            .buffers
             .with_help(id, |buf| (buf.title.clone(), buf.content.clone()))?;
         let locals = self.editor.buffer_locals.get(&id)?;
         let metadata = HelpMetadata {
@@ -408,7 +422,9 @@ impl App {
     /// the method's intent (Option-returning gated accessor)
     /// distinct from the raw field.
     pub fn active_popup_placement(&self) -> Option<PopupPlacement> {
-        self.editor.popup_buffer.map(|_| self.editor.popup_placement)
+        self.editor
+            .popup_buffer
+            .map(|_| self.editor.popup_placement)
     }
 
     /// Close the popup. Drops the popup's content slot, resets
@@ -437,7 +453,10 @@ mod tests {
     fn hover_popup_is_cursor_anchored() {
         let mut a = app_with("hello", 10);
         a.do_open_hover("hover body");
-        assert_eq!(a.active_popup_placement(), Some(PopupPlacement::CursorAnchored));
+        assert_eq!(
+            a.active_popup_placement(),
+            Some(PopupPlacement::CursorAnchored)
+        );
     }
 
     #[test]
@@ -449,7 +468,11 @@ mod tests {
         let mut a = app_with("hello", 10);
         a.do_open_hover("hover body");
         let buffer_id = a.editor.popup_buffer.expect("popup open");
-        let modes = a.editor.active_modes.get(&buffer_id).expect("popup has modes");
+        let modes = a
+            .editor
+            .active_modes
+            .get(&buffer_id)
+            .expect("popup has modes");
         assert!(
             modes.minors().contains(&crate::modes::HoverMode::mode_id()),
             "hover popup should activate hover-mode minor; got {:?}",
@@ -462,7 +485,10 @@ mod tests {
         let mut a = app_with("hello", 10);
         let buf = HelpContent::from_lines("test", vec!["body".into()]);
         a.open_popup(buf, PopupPlacement::CursorAnchored);
-        assert_eq!(a.active_popup_placement(), Some(PopupPlacement::CursorAnchored));
+        assert_eq!(
+            a.active_popup_placement(),
+            Some(PopupPlacement::CursorAnchored)
+        );
     }
 
     #[test]
@@ -470,7 +496,10 @@ mod tests {
         let mut a = app_with("hello", 10);
         a.do_lsp_status();
         a.set_popup_placement(PopupPlacement::CursorAnchored);
-        assert_eq!(a.active_popup_placement(), Some(PopupPlacement::CursorAnchored));
+        assert_eq!(
+            a.active_popup_placement(),
+            Some(PopupPlacement::CursorAnchored)
+        );
     }
 
     #[test]
@@ -491,7 +520,8 @@ mod tests {
         a.do_lsp_status();
         let id = a.editor.popup_buffer.expect("popup open");
         let (flags, is_help) = a
-            .editor.buffers
+            .editor
+            .buffers
             .with_entry(id, |entry| (entry.flags, entry.help().is_some()))
             .expect("popup registered");
         assert!(!flags.listed);
@@ -545,7 +575,10 @@ mod tests {
     fn dismiss_popup_clears_placement() {
         let mut a = app_with("hello", 10);
         a.do_open_hover("hover body");
-        assert_eq!(a.active_popup_placement(), Some(PopupPlacement::CursorAnchored));
+        assert_eq!(
+            a.active_popup_placement(),
+            Some(PopupPlacement::CursorAnchored)
+        );
         a.dismiss_popup();
         assert_eq!(a.active_popup_placement(), None);
         assert_eq!(a.editor.popup_placement, PopupPlacement::default());

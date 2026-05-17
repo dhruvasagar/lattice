@@ -53,7 +53,11 @@ fn main() {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 ..Default::default()
             },
-            |_window, cx| cx.new(|_cx| PlaceholderView { _app: GpuiApp::new() }),
+            |_window, cx| {
+                cx.new(|_cx| PlaceholderView {
+                    _app: GpuiApp::new(),
+                })
+            },
         );
         if let Err(e) = window_result {
             tracing::error!(error = ?e, "lattice-gpui: failed to open placeholder window");

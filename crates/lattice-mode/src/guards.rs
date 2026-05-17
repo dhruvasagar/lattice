@@ -363,16 +363,12 @@ mod tests {
         store.insert(
             BufferId::new(1),
             ModeId::new("x-mode"),
-            Box::new(DropCounter {
-                count: old.clone(),
-            }),
+            Box::new(DropCounter { count: old.clone() }),
         );
         store.insert(
             BufferId::new(1),
             ModeId::new("x-mode"),
-            Box::new(DropCounter {
-                count: new.clone(),
-            }),
+            Box::new(DropCounter { count: new.clone() }),
         );
         // Old Guard dropped at replacement time.
         assert_eq!(old.load(Ordering::SeqCst), 1);

@@ -163,7 +163,9 @@ impl App {
                 }
             }
         }
-        self.editor.snippet_registry.store(std::sync::Arc::new(next));
+        self.editor
+            .snippet_registry
+            .store(std::sync::Arc::new(next));
         if errors.is_empty() {
             self.set_message(EchoLevel::Info, format!("reloaded {total} snippets"));
         } else {
@@ -240,7 +242,8 @@ impl App {
         // the cursor's UTF-16 position can't be derived (out-
         // of-range -- shouldn't happen in practice).
         let uri_string: Option<String> = self
-            .editor.buffer_uris
+            .editor
+            .buffer_uris
             .get(&self.editor.document_buffer_id)
             .map(|u| u.as_str().to_string());
         let lsp_position_pair: Option<(u32, u32)> = {
@@ -278,7 +281,8 @@ impl App {
         // each contribution -- the per-language TOML filter
         // applies on top of the mode-contributed set.
         if let Some(active_sources) = self
-            .editor.buffer_locals
+            .editor
+            .buffer_locals
             .get(&self.editor.document_buffer_id)
             .and_then(|locals| locals.get::<lattice_mode::ActiveCompletionSources>())
         {
@@ -379,7 +383,8 @@ impl App {
             .as_ref()
             .map(|s| self.priority_for_source(s))
             .unwrap_or(0);
-        let freq = self.editor
+        let freq = self
+            .editor
             .completion_accept_freq
             .get(&(raw.text.clone(), raw.kind))
             .copied()
@@ -407,23 +412,28 @@ impl App {
         // directly.
         let raw: i64 = match source.as_str() {
             "gen:lsp-completion" => *self
-                .editor.config
+                .editor
+                .config
                 .get_typed::<CompletionSourceLspPriority>()
                 .expect("CompletionSourceLspPriority"),
             "gen:snippet" => *self
-                .editor.config
+                .editor
+                .config
                 .get_typed::<CompletionSourceSnippetPriority>()
                 .expect("CompletionSourceSnippetPriority"),
             "gen:buffer-words" => *self
-                .editor.config
+                .editor
+                .config
                 .get_typed::<CompletionSourceBufferWordsPriority>()
                 .expect("CompletionSourceBufferWordsPriority"),
             "gen:tree-sitter-symbol" => *self
-                .editor.config
+                .editor
+                .config
                 .get_typed::<CompletionSourceTreeSitterPriority>()
                 .expect("CompletionSourceTreeSitterPriority"),
             "gen:path" => *self
-                .editor.config
+                .editor
+                .config
                 .get_typed::<CompletionSourcePathPriority>()
                 .expect("CompletionSourcePathPriority"),
             _ => return 0,
@@ -475,7 +485,8 @@ impl App {
         let path_context = path_source_enabled
             && match buffer.position_to_byte(self.editor.cursor) {
                 Ok(abs) => self
-                    .editor.syntax
+                    .editor
+                    .syntax
                     .as_ref()
                     .map(|s| s.snapshot().cursor_in_string_scope(abs))
                     .unwrap_or(false),
@@ -507,7 +518,8 @@ impl App {
         let trigger = if self.editor.insert_completion.is_some() {
             // Refresh path: keep the original trigger so LSP's
             // `triggerKind` doesn't flip mid-popup.
-            self.editor.insert_completion
+            self.editor
+                .insert_completion
                 .as_ref()
                 .map(|s| s.trigger.clone())
                 .unwrap_or(lattice_completion::CompletionTrigger::Manual)
@@ -552,7 +564,8 @@ impl App {
     /// effective commit-char set; otherwise inserts `ch`
     /// plainly so the popup refilters as usual.
     pub fn do_completion_accept_then_insert(&mut self, ch: char) {
-        let is_commit = self.editor
+        let is_commit = self
+            .editor
             .insert_completion
             .as_ref()
             .and_then(|s| s.selected_candidate())
@@ -584,7 +597,8 @@ impl App {
     ///   would surprise the user).
     pub fn completion_ghost_text_suffix(&self) -> Option<String> {
         if !*self
-            .editor.config
+            .editor
+            .config
             .get_typed::<lattice_config::CompletionGhostText>()
             .expect("CompletionGhostText")
         {
@@ -628,7 +642,8 @@ impl App {
             .map(|meta| meta.commit_characters.clone())
             .unwrap_or_default();
         let extra = self
-            .editor.config
+            .editor
+            .config
             .get_typed::<lattice_config::CompletionExtraCommitChars>()
             .expect("CompletionExtraCommitChars");
         for c in extra.chars() {
@@ -670,7 +685,11 @@ impl App {
         // *intended* to accept this item -- recording that
         // intent matches expected behaviour.
         let freq_key = (item.raw.text.clone(), item.raw.kind);
-        *self.editor.completion_accept_freq.entry(freq_key).or_insert(0) += 1;
+        *self
+            .editor
+            .completion_accept_freq
+            .entry(freq_key)
+            .or_insert(0) += 1;
         // CSM.5: snippet (sync source) path. `snippet_meta_for`
         // now decodes the payload as a snippet name and looks up
         // the body in `App.snippet_registry`; no sidecar to
@@ -896,7 +915,8 @@ impl App {
     /// `selected`, re-derive the body and (when needed) fire
     /// a fresh `completionItem/resolve`.
     fn refresh_docs_popup_for_selection(&mut self) {
-        let docs_open = self.editor
+        let docs_open = self
+            .editor
             .insert_completion
             .as_ref()
             .map(|s| s.doc_popup.is_some())
@@ -904,7 +924,8 @@ impl App {
         if !docs_open {
             return;
         }
-        let new_index = self.editor
+        let new_index = self
+            .editor
             .insert_completion
             .as_ref()
             .map(|s| s.selected)
@@ -1039,7 +1060,8 @@ impl App {
             .get(main_idx)
             .ok_or_else(|| "main edit missing from applied batch".to_string())?;
         let origin = self
-            .editor.document
+            .editor
+            .document
             .snapshot()
             .buffer
             .position_to_byte(main_applied.inserted_range.start)
@@ -1049,7 +1071,8 @@ impl App {
             if let Some(group) = active.focus_first()
                 && let Some(first) = group.ranges.first()
                 && let Ok(pos) = self
-                    .editor.document
+                    .editor
+                    .document
                     .snapshot()
                     .buffer
                     .byte_to_position(first.start)
@@ -1144,7 +1167,8 @@ mod tests {
         a.set_completion_auto_insert_single_for_test(false);
         a.apply(Action::CommandLineCompleteOrAdvance);
         let state = a
-            .editor.completion_state
+            .editor
+            .completion_state
             .as_ref()
             .expect("popup should open when option is off");
         assert_eq!(state.candidates.len(), 1);
@@ -1161,7 +1185,8 @@ mod tests {
         let mut a = app_in_command_mode("descri");
         a.apply(Action::CommandLineCompleteOrAdvance);
         let state = a
-            .editor.completion_state
+            .editor
+            .completion_state
             .as_ref()
             .expect("popup should open with multiple candidates");
         assert!(
@@ -1184,7 +1209,8 @@ mod tests {
         let mut a = app_in_command_mode("set foldmethod=");
         a.apply(Action::CommandLineCompleteOrAdvance);
         let initial = a
-            .editor.completion_state
+            .editor
+            .completion_state
             .as_ref()
             .expect("popup should open for the value list");
         assert!(initial.candidates.len() >= 2);
@@ -1268,12 +1294,21 @@ mod tests {
         );
         a.do_snippet_expand_at_cursor();
         // Now at $1.
-        assert_eq!(a.editor.active_snippet.as_ref().unwrap().current_index(), Some(1));
+        assert_eq!(
+            a.editor.active_snippet.as_ref().unwrap().current_index(),
+            Some(1)
+        );
         a.do_snippet_next_placeholder();
-        assert_eq!(a.editor.active_snippet.as_ref().unwrap().current_index(), Some(2));
+        assert_eq!(
+            a.editor.active_snippet.as_ref().unwrap().current_index(),
+            Some(2)
+        );
         a.do_snippet_next_placeholder();
         // $0 is the exit; at this point we're focused on it.
-        assert_eq!(a.editor.active_snippet.as_ref().unwrap().current_index(), Some(0));
+        assert_eq!(
+            a.editor.active_snippet.as_ref().unwrap().current_index(),
+            Some(0)
+        );
         a.do_snippet_next_placeholder();
         // Past $0 -> snippet dropped.
         assert!(a.editor.active_snippet.is_none());
@@ -1287,9 +1322,15 @@ mod tests {
         install_snippet(&mut a, "*", "for-loop", "for", "for ${1:i} in ${2:iter} {}");
         a.do_snippet_expand_at_cursor();
         a.do_snippet_next_placeholder();
-        assert_eq!(a.editor.active_snippet.as_ref().unwrap().current_index(), Some(2));
+        assert_eq!(
+            a.editor.active_snippet.as_ref().unwrap().current_index(),
+            Some(2)
+        );
         a.do_snippet_prev_placeholder();
-        assert_eq!(a.editor.active_snippet.as_ref().unwrap().current_index(), Some(1));
+        assert_eq!(
+            a.editor.active_snippet.as_ref().unwrap().current_index(),
+            Some(1)
+        );
     }
 
     #[test]
@@ -1936,7 +1977,8 @@ mod tests {
         let mut a = app_with("hi", 5);
         let buffer_id = a.editor.document_buffer_id;
         let pre_ids: Vec<_> = a
-            .editor.buffer_locals
+            .editor
+            .buffer_locals
             .get(&buffer_id)
             .and_then(|locals| locals.get::<lattice_mode::ActiveCompletionSources>())
             .map(|c| c.0.iter().map(|c| c.id.as_str().to_string()).collect())
@@ -1947,7 +1989,8 @@ mod tests {
         );
         a.toggle_mode_by_name("lsp-mode");
         let cache = a
-            .editor.buffer_locals
+            .editor
+            .buffer_locals
             .get(&buffer_id)
             .and_then(|locals| locals.get::<lattice_mode::ActiveCompletionSources>())
             .expect("cache present");
@@ -1974,7 +2017,8 @@ mod tests {
     fn active_completion_sources_seeded_with_default_modes_at_boot() {
         let a = app_with("alpha bravo", 10);
         let cache = a
-            .editor.buffer_locals
+            .editor
+            .buffer_locals
             .get(&a.editor.document_buffer_id)
             .and_then(|locals| locals.get::<lattice_mode::ActiveCompletionSources>())
             .expect("cache should be seeded at boot");
@@ -2092,7 +2136,8 @@ mod tests {
         // `gen:buffer-words` plus the freshly-activated
         // `gen:stub-csm3`.
         let cache = a
-            .editor.buffer_locals
+            .editor
+            .buffer_locals
             .get(&buffer_id)
             .and_then(|locals| locals.get::<lattice_mode::ActiveCompletionSources>())
             .expect("cache present");
@@ -2108,7 +2153,8 @@ mod tests {
 
         a.deactivate_mode_by_id(buffer_id, mode_id);
         let cache = a
-            .editor.buffer_locals
+            .editor
+            .buffer_locals
             .get(&buffer_id)
             .and_then(|locals| locals.get::<lattice_mode::ActiveCompletionSources>())
             .expect("cache present");

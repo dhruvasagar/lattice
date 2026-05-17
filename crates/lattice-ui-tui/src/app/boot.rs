@@ -370,9 +370,8 @@ impl App {
         // ring/bus from the first App), which is fine because
         // tests use the per-test layer constructor for unit
         // coverage rather than relying on the global install.
-        let messages_ring = std::sync::Arc::new(std::sync::Mutex::new(
-            crate::app::MessagesRing::default(),
-        ));
+        let messages_ring =
+            std::sync::Arc::new(std::sync::Mutex::new(crate::app::MessagesRing::default()));
         // msg-mode.2: install with the typed-option's documented
         // default (`"info"`). The user's TOML override (if any)
         // is applied via `reload_messages_filter` from the
@@ -834,7 +833,11 @@ impl App {
         let buffer_id = self.editor.document_buffer_id;
         let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
         let mode_id = lattice_mode::CompletionPopupMode::mode_id();
-        let mut active = self.editor.active_modes.remove(&buffer_id).unwrap_or_default();
+        let mut active = self
+            .editor
+            .active_modes
+            .remove(&buffer_id)
+            .unwrap_or_default();
         let currently = active.has_minor(mode_id);
         if want_popup && !currently {
             let _ = self.editor.mode_registry.activate_minor(
@@ -925,7 +928,8 @@ impl App {
         // server-namespaced keys (the cached raw_tree carries
         // the values; `workspace/configuration` walks it).
         let prefixes = ["completion.per-language", "plugin", "lsp"];
-        let outcome = lattice_config::load_default_paths(&self.editor.config, workspace_root, &prefixes);
+        let outcome =
+            lattice_config::load_default_paths(&self.editor.config, workspace_root, &prefixes);
         // Re-derive theme + hot-path option cache after the
         // loader's writes. ui.* and the cached options may have
         // changed; missing this would leave the first frame

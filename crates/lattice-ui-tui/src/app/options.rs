@@ -122,7 +122,8 @@ impl App {
     /// for the caller -- mirrors what production's `do_set` does
     /// after the cmdline path.
     pub fn set_foldmethod_for_test(&mut self, fm: FoldMethod) {
-        self.editor.config
+        self.editor
+            .config
             .set_typed::<lattice_config::FoldMethodOption>(fm)
             .expect("set foldmethod");
         self.drain_option_changes();
@@ -131,7 +132,10 @@ impl App {
     /// Set `foldenable` directly. Drains the cascade so the cache
     /// reflects the new value before the caller observes it.
     pub fn set_foldenable_for_test(&mut self, on: bool) {
-        let _ = self.editor.config.set_typed::<lattice_config::FoldEnable>(on);
+        let _ = self
+            .editor
+            .config
+            .set_typed::<lattice_config::FoldEnable>(on);
         self.drain_option_changes();
     }
 
@@ -140,7 +144,8 @@ impl App {
     /// caller observes it.
     pub fn set_completion_auto_insert_single_for_test(&mut self, on: bool) {
         let _ = self
-            .editor.config
+            .editor
+            .config
             .set_typed::<lattice_config::CompletionAutoInsertSingle>(on);
         self.drain_option_changes();
     }
@@ -259,7 +264,9 @@ impl App {
         &mut self,
         full_path: &str,
     ) -> Option<toml::Table> {
-        self.editor.pending_config_structural_sections.remove(full_path)
+        self.editor
+            .pending_config_structural_sections
+            .remove(full_path)
     }
 
     /// Iterate the dotted paths of every pending structural
@@ -270,7 +277,8 @@ impl App {
     /// `take_pending_structural_section(full)` mutating the map.
     pub(super) fn pending_structural_section_paths(&self, namespace: &str) -> Vec<String> {
         let prefix = format!("{namespace}.");
-        self.editor.pending_config_structural_sections
+        self.editor
+            .pending_config_structural_sections
             .keys()
             .filter(|k| k.starts_with(&prefix))
             .cloned()
@@ -300,7 +308,8 @@ impl App {
                 continue;
             };
             let parsed = parse_per_language_overrides_table(&path, &table, &mut warnings);
-            self.editor.per_language_completion
+            self.editor
+                .per_language_completion
                 .entry(lang)
                 .or_default()
                 .merge(parsed);
@@ -448,7 +457,8 @@ mod tests {
         // the bus-subscription model fixes that gap.
         let mut a = app_with("def f():\n    pass\n    pass\n", 10);
         // No :set involved -- direct write to the registry.
-        a.editor.config
+        a.editor
+            .config
             .set_typed::<lattice_config::FoldMethodOption>(FoldMethod::Indent)
             .unwrap();
         // Folds should not be populated yet -- the cascade is
@@ -464,10 +474,14 @@ mod tests {
     #[test]
     fn drain_option_changes_runs_relativenumber_to_number_cascade() {
         let mut a = app_with("xx", 10);
-        a.editor.config.set_typed::<lattice_config::Number>(false).unwrap();
+        a.editor
+            .config
+            .set_typed::<lattice_config::Number>(false)
+            .unwrap();
         a.drain_option_changes();
         assert!(!a.show_line_numbers());
-        a.editor.config
+        a.editor
+            .config
             .set_typed::<lattice_config::RelativeNumber>(true)
             .unwrap();
         a.drain_option_changes();
@@ -524,7 +538,8 @@ mod tests {
     #[test]
     fn drain_option_changes_runs_ui_theme_sync_for_direct_writes() {
         let mut a = app_with("xx", 10);
-        a.editor.config
+        a.editor
+            .config
             .set_typed::<lattice_host::ui::theme_options::UiDimInactive>(false)
             .unwrap();
         a.drain_option_changes();
@@ -545,28 +560,35 @@ mod tests {
         // mutation lands in BOTH places.
         let mut a = app_with("xx", 10);
         // Flip dim_inactive false.
-        a.editor.config
+        a.editor
+            .config
             .set_typed::<lattice_host::ui::theme_options::UiDimInactive>(false)
             .unwrap();
         a.drain_option_changes();
-        assert!(!a.editor.host_theme.dim_inactive_panes, "host: dim_inactive flipped");
+        assert!(
+            !a.editor.host_theme.dim_inactive_panes,
+            "host: dim_inactive flipped"
+        );
         assert!(!a.theme.dim_inactive_panes, "tui: dim_inactive flipped");
         // Flip nerd_fonts on.
-        a.editor.config
+        a.editor
+            .config
             .set_typed::<lattice_host::ui::theme_options::UiNerdFonts>(true)
             .unwrap();
         a.drain_option_changes();
         assert!(a.editor.host_theme.nerd_fonts);
         assert!(a.theme.nerd_fonts);
         // Change separator glyph.
-        a.editor.config
+        a.editor
+            .config
             .set_typed::<lattice_host::ui::theme_options::UiSeparator>("┃".to_string())
             .unwrap();
         a.drain_option_changes();
         assert_eq!(a.editor.host_theme.pane_separator_vertical, '┃');
         assert_eq!(a.theme.pane_separator_vertical, '┃');
         // Change separator color (named).
-        a.editor.config
+        a.editor
+            .config
             .set_typed::<lattice_host::ui::theme_options::UiSeparatorColor>("red".to_string())
             .unwrap();
         a.drain_option_changes();
@@ -586,9 +608,13 @@ mod tests {
     #[test]
     fn drain_option_changes_handles_chained_cascade_writes() {
         let mut a = app_with("xx", 10);
-        a.editor.config.set_typed::<lattice_config::Number>(false).unwrap();
+        a.editor
+            .config
+            .set_typed::<lattice_config::Number>(false)
+            .unwrap();
         a.drain_option_changes();
-        a.editor.config
+        a.editor
+            .config
             .set_typed::<lattice_config::RelativeNumber>(true)
             .unwrap();
         a.drain_option_changes();
@@ -799,7 +825,8 @@ mod tests {
             .expect("register");
         let mut active = lattice_mode::ActiveModes::new();
         let guards = lattice_mode::GuardStoreHandle::new();
-        a.editor.mode_registry
+        a.editor
+            .mode_registry
             .activate_minor(
                 &mut active,
                 &guards,
@@ -832,7 +859,8 @@ mod tests {
             .expect("register");
         let mut active = lattice_mode::ActiveModes::new();
         let guards = lattice_mode::GuardStoreHandle::new();
-        a.editor.mode_registry
+        a.editor
+            .mode_registry
             .activate_minor(
                 &mut active,
                 &guards,
@@ -988,7 +1016,8 @@ mod tests {
             a.apply(Action::CommandLineAppend(c));
         }
         let state = a
-            .editor.completion_state
+            .editor
+            .completion_state
             .as_ref()
             .expect("popup must stay open on no-match");
         assert!(state.candidates.is_empty());
@@ -997,7 +1026,14 @@ mod tests {
             a.apply(Action::CommandLineBackspace);
         }
         assert!(a.editor.completion_state.is_some());
-        assert!(!a.editor.completion_state.as_ref().unwrap().candidates.is_empty());
+        assert!(
+            !a.editor
+                .completion_state
+                .as_ref()
+                .unwrap()
+                .candidates
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1026,7 +1062,11 @@ mod tests {
         // Listed-buffer view filters out synthetic LSP / messages
         // buffers, leaving just the user's document.
         assert_eq!(a.editor.buffers.listed_ids_sorted().len(), 1);
-        assert!(a.editor.buffers.contains_document(a.editor.document_buffer_id));
+        assert!(
+            a.editor
+                .buffers
+                .contains_document(a.editor.document_buffer_id)
+        );
     }
 
     #[test]
@@ -1105,14 +1145,38 @@ mod tests {
         a.do_reload_snippets();
         // 2 snippets registered total (one per language).
         assert_eq!(a.editor.snippet_registry.load().len(), 2);
-        assert!(!a.editor.snippet_registry.load().lookup("rust", "for").is_empty());
-        assert!(!a.editor.snippet_registry.load().lookup("*", "any").is_empty());
+        assert!(
+            !a.editor
+                .snippet_registry
+                .load()
+                .lookup("rust", "for")
+                .is_empty()
+        );
+        assert!(
+            !a.editor
+                .snippet_registry
+                .load()
+                .lookup("*", "any")
+                .is_empty()
+        );
         // Global snippets are visible from any language --
         // `lookup` walks the per-language slot then `*`.
-        assert!(!a.editor.snippet_registry.load().lookup("rust", "any").is_empty());
+        assert!(
+            !a.editor
+                .snippet_registry
+                .load()
+                .lookup("rust", "any")
+                .is_empty()
+        );
         // A rust-only snippet should NOT be visible from a
         // different language slot.
-        assert!(a.editor.snippet_registry.load().lookup("python", "for").is_empty());
+        assert!(
+            a.editor
+                .snippet_registry
+                .load()
+                .lookup("python", "for")
+                .is_empty()
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

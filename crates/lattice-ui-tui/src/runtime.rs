@@ -367,12 +367,14 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
         // renderer actually paints.
         let size = terminal.size().context("query terminal size")?;
         let extra_rows = app
-            .editor.picker
+            .editor
+            .picker
             .as_ref()
             .map(|p| popup_height_for(p.candidates.len().max(1)))
             .unwrap_or(0)
             .max(
-                app.editor.completion_state
+                app.editor
+                    .completion_state
                     .as_ref()
                     .map(|s| popup_height_for(s.candidates.len()))
                     .unwrap_or(0),

@@ -63,10 +63,7 @@ impl BufferStore for NullBufferStore {
     fn name_for(&self, _id: lattice_core::BufferId) -> Option<String> {
         None
     }
-    fn handle_for(
-        &self,
-        _id: lattice_core::BufferId,
-    ) -> Option<lattice_runtime::DocumentHandle> {
+    fn handle_for(&self, _id: lattice_core::BufferId) -> Option<lattice_runtime::DocumentHandle> {
         None
     }
 }
@@ -156,29 +153,32 @@ fn activate_deactivate(c: &mut Criterion) {
     });
 
     let services_no_sup = build_services_without_supervisor();
-    c.bench_function("lsp_mode::activate_deactivate::unregistered_supervisor", |b| {
-        b.iter(|| {
-            let mut active = ActiveModes::new();
-            let guards = GuardStoreHandle::new();
-            let buffer = BufferId::new(1);
-            registry
-                .activate_minor(
-                    &mut active,
-                    &guards,
-                    &config,
-                    &events,
-                    &services_no_sup,
-                    buffer,
-                    lsp_mode_id,
-                    CapabilitySet::empty(),
-                )
-                .unwrap();
-            black_box(active.has_minor(lsp_mode_id));
-            registry
-                .deactivate_minor(&mut active, &guards, &events, buffer, lsp_mode_id)
-                .unwrap();
-        });
-    });
+    c.bench_function(
+        "lsp_mode::activate_deactivate::unregistered_supervisor",
+        |b| {
+            b.iter(|| {
+                let mut active = ActiveModes::new();
+                let guards = GuardStoreHandle::new();
+                let buffer = BufferId::new(1);
+                registry
+                    .activate_minor(
+                        &mut active,
+                        &guards,
+                        &config,
+                        &events,
+                        &services_no_sup,
+                        buffer,
+                        lsp_mode_id,
+                        CapabilitySet::empty(),
+                    )
+                    .unwrap();
+                black_box(active.has_minor(lsp_mode_id));
+                registry
+                    .deactivate_minor(&mut active, &guards, &events, buffer, lsp_mode_id)
+                    .unwrap();
+            });
+        },
+    );
 }
 
 criterion_group!(benches, activate_deactivate);

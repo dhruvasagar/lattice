@@ -265,21 +265,24 @@ mod tests {
         // pre-activated. Verify by explicit set.
         a.do_set("nonumber");
         assert!(
-            !a.editor.active_modes
+            !a.editor
+                .active_modes
                 .get(&id)
                 .unwrap()
                 .has_minor(lattice_mode::modes::LineNumbersMode::mode_id())
         );
         a.do_set("number");
         assert!(
-            a.editor.active_modes
+            a.editor
+                .active_modes
                 .get(&id)
                 .unwrap()
                 .has_minor(lattice_mode::modes::LineNumbersMode::mode_id())
         );
         a.do_set("nonumber");
         assert!(
-            !a.editor.active_modes
+            !a.editor
+                .active_modes
                 .get(&id)
                 .unwrap()
                 .has_minor(lattice_mode::modes::LineNumbersMode::mode_id())
@@ -347,7 +350,8 @@ mod tests {
         a.do_set("number");
         assert!(a.show_line_numbers());
         assert!(
-            a.editor.active_modes
+            a.editor
+                .active_modes
                 .get(&id)
                 .unwrap()
                 .has_minor(lattice_mode::modes::LineNumbersMode::mode_id())
@@ -506,7 +510,8 @@ mod tests {
         let mut a = app_with("hi", 5);
         let id = a.editor.pane_tree.active().buffer_id;
         let before_minors_len = a
-            .editor.active_modes
+            .editor
+            .active_modes
             .get(&id)
             .map(|m| m.minors().len())
             .unwrap_or(0);
@@ -514,7 +519,8 @@ mod tests {
         let msg = a.editor.last_message.as_ref().expect("error echo");
         assert!(msg.text.contains("not a registered mode"));
         let after_minors_len = a
-            .editor.active_modes
+            .editor
+            .active_modes
             .get(&id)
             .map(|m| m.minors().len())
             .unwrap_or(0);
@@ -626,11 +632,8 @@ mod tests {
         a.editor.event_bus.subscribe_typed(tx);
         a.toggle_mode_by_name("lsp-mode");
         assert!(!a.lsp_mode_enabled_for(id));
-        let got_detach = wait_for(
-            || rx.try_recv().is_ok(),
-            std::time::Duration::from_secs(2),
-        )
-        .await;
+        let got_detach =
+            wait_for(|| rx.try_recv().is_ok(), std::time::Duration::from_secs(2)).await;
         assert!(
             got_detach,
             "expected LspBufferDetached on bus after `:lsp-mode` toggle off",
@@ -688,7 +691,10 @@ mod tests {
             std::time::Duration::from_secs(2),
         )
         .await;
-        assert!(first_attached, "first rust buffer should auto-attach lsp-mode at boot");
+        assert!(
+            first_attached,
+            "first rust buffer should auto-attach lsp-mode at boot"
+        );
         // Open a second `.rs` file. Pre-fix this was the bug:
         // `do_edit` created the buffer and called
         // `activate_buffer_state` but skipped major activation,
@@ -707,7 +713,10 @@ mod tests {
             "lsp-mode should auto-activate on the second rust buffer after :e (buffer-switch fix)"
         );
         // First buffer's lsp-mode untouched -- per-buffer state.
-        assert!(a.lsp_mode_enabled_for(first_id), "first buffer's lsp-mode should persist after switch");
+        assert!(
+            a.lsp_mode_enabled_for(first_id),
+            "first buffer's lsp-mode should persist after switch"
+        );
         // Switching back via the activate-document path: the
         // idempotency guard inside `activate_major_for_buffer_kind`
         // skips the registry reload, the auto-LSP hook short-

@@ -15,17 +15,17 @@ pub use lattice_host::keymap_normal::*;
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic, unused_imports)]
     use super::*;
-    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
-    use lattice_grammar::CommandRegistry;
-    use lattice_grammar::Target;
-    use lattice_grammar::builtins::Builtins;
-    use lattice_grammar::command::CommandInvocation;
     use crate::actions::ActionIds;
     use crate::app::{Action, FindKind};
     use crate::chord::{KeyChord, KeyKind, KeyMods, SpecialKey};
     use crate::keymap::BindingMode;
     use crate::keymap_registry::KeymapHandle;
     use crate::keymap_trie::{BoundCommand, ChordPattern, KeymapLayer, LookupResult};
+    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+    use lattice_grammar::CommandRegistry;
+    use lattice_grammar::Target;
+    use lattice_grammar::builtins::Builtins;
+    use lattice_grammar::command::CommandInvocation;
 
     /// Build a canonical `KeyChord` from crossterm pieces. Slice
     /// 5.4 made `lookup_normal*` take `&KeyChord` directly; the

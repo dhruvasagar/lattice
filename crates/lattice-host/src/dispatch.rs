@@ -361,11 +361,7 @@ pub fn action_is_document_mutation(action: &Action) -> bool {
 ///
 /// The signature stays stable as sub-slices fill the body: per-arm
 /// moves mutate `editor` directly and push into `out.renderer_signals`.
-pub(crate) fn handle_action(
-    editor: &mut Editor,
-    action: Action,
-    _out: &mut DispatchOutcome,
-) {
+pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut DispatchOutcome) {
     // 5.5.B: macro-recording capture. While a macro recording is in
     // flight, capture every Action EXCEPT the recording-management
     // ones themselves (otherwise the recording would include "stop
@@ -408,9 +404,7 @@ pub(crate) fn handle_action(
     // block. `_out.consumed` short-circuits the renderer's
     // post-dispatch match (App::apply); 5.5.G removes the field once
     // App's match collapses entirely.
-    if matches!(editor.active_buffer, BufferKind::Help)
-        && action_is_document_mutation(&action)
-    {
+    if matches!(editor.active_buffer, BufferKind::Help) && action_is_document_mutation(&action) {
         editor.set_message(EchoLevel::Info, "buffer is read-only".to_string());
         editor.ensure_cursor_visible();
         editor.maybe_reparse_syntax();
@@ -801,9 +795,7 @@ pub(crate) fn handle_action(
         Action::CommandLineDescribeUnderCursor => {
             editor.do_command_line_describe_under_cursor(_out)
         }
-        Action::CommandLineAppendChord(token) => {
-            editor.do_command_line_append_chord(token, _out)
-        }
+        Action::CommandLineAppendChord(token) => editor.do_command_line_append_chord(token, _out),
         Action::CommandLineCompleteOrAdvance => editor.do_command_line_complete_or_advance(),
         // Catch-all: any Action variant not yet migrated from
         // App::apply. Sub-slices 5.5.D+ extend the match upward as
@@ -919,10 +911,12 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             // under the `HelpList` category.
             let content = editor.build_list_buffers_content();
             out.renderer_signals
-                .push(RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
-                    content,
-                    category: lattice_core::ui::display::BufferDisplayCategory::HelpList,
-                })));
+                .push(RendererSignal::DisplayBuffer(Box::new(
+                    DisplayBufferRequest {
+                        content,
+                        category: lattice_core::ui::display::BufferDisplayCategory::HelpList,
+                    },
+                )));
         }
         Effect::DescribeBuffer => {
             // 5.5.F.1: `:describe-buffer` -- snapshot the active
@@ -931,23 +925,26 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             // under `HelpDescribe`.
             let content = editor.build_describe_buffer_content();
             out.renderer_signals
-                .push(RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
-                    content,
-                    category: lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
-                })));
+                .push(RendererSignal::DisplayBuffer(Box::new(
+                    DisplayBufferRequest {
+                        content,
+                        category: lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
+                    },
+                )));
         }
         Effect::DescribeCommand { name, anchor } => {
             // 5.5.F.2: `:describe-command <name>` -- resolve `name`
             // through canonical-then-alias; emit DisplayBuffer on
             // success, set_message on error (skip the signal).
-            if let Some(content) =
-                editor.build_describe_command_content(&name, anchor.as_deref())
-            {
+            if let Some(content) = editor.build_describe_command_content(&name, anchor.as_deref()) {
                 out.renderer_signals
-                    .push(RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
-                        content,
-                        category: lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
-                    })));
+                    .push(RendererSignal::DisplayBuffer(Box::new(
+                        DisplayBufferRequest {
+                            content,
+                            category:
+                                lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
+                        },
+                    )));
             }
         }
         Effect::Apropos { pattern } => {
@@ -956,10 +953,12 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             // error to the echo ring and skips the signal.
             if let Some(content) = editor.build_apropos_content(&pattern) {
                 out.renderer_signals
-                    .push(RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
-                        content,
-                        category: lattice_core::ui::display::BufferDisplayCategory::HelpApropos,
-                    })));
+                    .push(RendererSignal::DisplayBuffer(Box::new(
+                        DisplayBufferRequest {
+                            content,
+                            category: lattice_core::ui::display::BufferDisplayCategory::HelpApropos,
+                        },
+                    )));
             }
         }
         Effect::DescribeKey { chord } => {
@@ -967,20 +966,24 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             // (infallible: unbound chords render as text).
             let content = editor.build_describe_key_content(&chord);
             out.renderer_signals
-                .push(RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
-                    content,
-                    category: lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
-                })));
+                .push(RendererSignal::DisplayBuffer(Box::new(
+                    DisplayBufferRequest {
+                        content,
+                        category: lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
+                    },
+                )));
         }
         Effect::ListKeymap => {
             // 5.5.F.2: `:list-keymap` -- group every registered
             // binding by mode (fixed order), render host-side.
             let content = editor.build_list_keymap_content();
             out.renderer_signals
-                .push(RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
-                    content,
-                    category: lattice_core::ui::display::BufferDisplayCategory::HelpList,
-                })));
+                .push(RendererSignal::DisplayBuffer(Box::new(
+                    DisplayBufferRequest {
+                        content,
+                        category: lattice_core::ui::display::BufferDisplayCategory::HelpList,
+                    },
+                )));
         }
         Effect::DescribeOption { name } => {
             // 5.5.F.3: `:describe-option <name>` -- config.lookup
@@ -988,10 +991,13 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             // echo ring; dispatcher skips the signal.
             if let Some(content) = editor.build_describe_option_content(&name) {
                 out.renderer_signals
-                    .push(RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
-                        content,
-                        category: lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
-                    })));
+                    .push(RendererSignal::DisplayBuffer(Box::new(
+                        DisplayBufferRequest {
+                            content,
+                            category:
+                                lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
+                        },
+                    )));
             }
         }
         Effect::ListOptions => {
@@ -1000,10 +1006,12 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             // config.lookup; infallible.
             let content = editor.build_list_options_content();
             out.renderer_signals
-                .push(RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
-                    content,
-                    category: lattice_core::ui::display::BufferDisplayCategory::HelpList,
-                })));
+                .push(RendererSignal::DisplayBuffer(Box::new(
+                    DisplayBufferRequest {
+                        content,
+                        category: lattice_core::ui::display::BufferDisplayCategory::HelpList,
+                    },
+                )));
         }
         Effect::DescribeOptionResolution { name } => {
             // 5.5.F.3: `:describe-option-resolution <name>` --
@@ -1013,10 +1021,13 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             // name routes E518; dispatcher skips.
             if let Some(content) = editor.build_describe_option_resolution_content(&name) {
                 out.renderer_signals
-                    .push(RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
-                        content,
-                        category: lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
-                    })));
+                    .push(RendererSignal::DisplayBuffer(Box::new(
+                        DisplayBufferRequest {
+                            content,
+                            category:
+                                lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
+                        },
+                    )));
             }
         }
         Effect::DescribeEvents => {
@@ -1025,10 +1036,12 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             // crate. Infallible.
             let content = editor.build_describe_events_content();
             out.renderer_signals
-                .push(RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
-                    content,
-                    category: lattice_core::ui::display::BufferDisplayCategory::HelpList,
-                })));
+                .push(RendererSignal::DisplayBuffer(Box::new(
+                    DisplayBufferRequest {
+                        content,
+                        category: lattice_core::ui::display::BufferDisplayCategory::HelpList,
+                    },
+                )));
         }
         Effect::DescribeEvent { name } => {
             // 5.5.F.3: `:describe-event <name>` -- descriptor
@@ -1036,10 +1049,13 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             // skips.
             if let Some(content) = editor.build_describe_event_content(&name) {
                 out.renderer_signals
-                    .push(RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
-                        content,
-                        category: lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
-                    })));
+                    .push(RendererSignal::DisplayBuffer(Box::new(
+                        DisplayBufferRequest {
+                            content,
+                            category:
+                                lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
+                        },
+                    )));
             }
         }
         Effect::BufferNext => {
@@ -1075,20 +1091,25 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             // `display_buffer` machinery.
             let content = editor.build_list_modes_content();
             out.renderer_signals
-                .push(RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
-                    content,
-                    category: lattice_core::ui::display::BufferDisplayCategory::HelpList,
-                })));
+                .push(RendererSignal::DisplayBuffer(Box::new(
+                    DisplayBufferRequest {
+                        content,
+                        category: lattice_core::ui::display::BufferDisplayCategory::HelpList,
+                    },
+                )));
         }
         Effect::DescribeMode { name } => {
             // 5.5.F.6: `:describe-mode <name>` (M.8). Fallible —
             // unknown name pushes an echo + skips the signal.
             if let Some(content) = editor.build_describe_mode_content(&name) {
                 out.renderer_signals
-                    .push(RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
-                        content,
-                        category: lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
-                    })));
+                    .push(RendererSignal::DisplayBuffer(Box::new(
+                        DisplayBufferRequest {
+                            content,
+                            category:
+                                lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
+                        },
+                    )));
             }
         }
         Effect::ListDiagnostics => {
@@ -1151,10 +1172,12 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             };
             if let Some(content) = content_opt {
                 out.renderer_signals
-                    .push(RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
-                        content,
-                        category: lattice_core::ui::display::BufferDisplayCategory::HelpList,
-                    })));
+                    .push(RendererSignal::DisplayBuffer(Box::new(
+                        DisplayBufferRequest {
+                            content,
+                            category: lattice_core::ui::display::BufferDisplayCategory::HelpList,
+                        },
+                    )));
             }
         }
         // 5.5.G.24: AppEffect router collapse. Every grammar-emitted
@@ -1360,13 +1383,8 @@ impl Editor {
     /// this is the live hot-path slot ([`Self::syntax`]); for
     /// inactive documents it routes through `buffer_locals`. Returns
     /// `None` for plain-language documents and non-document buffers.
-    pub fn document_syntax_for(
-        &self,
-        id: BufferId,
-    ) -> Option<&lattice_syntax::SyntaxHandle> {
-        if id == self.document_buffer_id
-            && matches!(self.active_buffer, BufferKind::Document)
-        {
+    pub fn document_syntax_for(&self, id: BufferId) -> Option<&lattice_syntax::SyntaxHandle> {
+        if id == self.document_buffer_id && matches!(self.active_buffer, BufferKind::Document) {
             return self.syntax.as_ref();
         }
         self.buffer_locals
@@ -1393,10 +1411,7 @@ impl Editor {
     /// `textDocument/foldingRange` issuance and the LSP fold cache
     /// read.
     pub fn lsp_folding_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        self.minor_mode_enabled_for(
-            buffer_id,
-            lattice_lsp::modes::LspFoldingMode::mode_id(),
-        )
+        self.minor_mode_enabled_for(buffer_id, lattice_lsp::modes::LspFoldingMode::mode_id())
     }
 
     /// 5.5.F.5.1: is `lsp-mode` active on `buffer_id`? Pure-editor
@@ -1648,8 +1663,7 @@ impl Editor {
                 .get(short)
                 .map(|s| (*s).to_string())
         };
-        let slot =
-            lattice_completion::current_slot(&line, cursor, &self.registry, &alias_resolver);
+        let slot = lattice_completion::current_slot(&line, cursor, &self.registry, &alias_resolver);
         let word = slot.prefix();
         let canonical = if word.is_empty() {
             None
@@ -1662,10 +1676,13 @@ impl Editor {
         {
             if let Some(content) = self.build_describe_command_content(&name, None) {
                 out.renderer_signals
-                    .push(RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
-                        content,
-                        category: lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
-                    })));
+                    .push(RendererSignal::DisplayBuffer(Box::new(
+                        DisplayBufferRequest {
+                            content,
+                            category:
+                                lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
+                        },
+                    )));
             }
             return;
         }
@@ -1680,10 +1697,13 @@ impl Editor {
                     self.build_describe_command_content(command_name, Some(&anchor))
                 {
                     out.renderer_signals
-                        .push(RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
-                            content,
-                            category: lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
-                        })));
+                        .push(RendererSignal::DisplayBuffer(Box::new(
+                            DisplayBufferRequest {
+                                content,
+                                category:
+                                    lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
+                            },
+                        )));
                 }
             }
             lattice_completion::CommandLineSlot::CommandName { prefix, .. } => {
@@ -1715,46 +1735,30 @@ impl Editor {
     /// mutates editor fields directly host-side -- `pending_count` /
     /// `op_count` / `partial_chord` all live on `Editor`, and
     /// `operator_prefix` is already in `lattice-host::keymap_normal`.
-    pub fn apply_app_effect(
-        &mut self,
-        app: lattice_grammar::AppEffect,
-        out: &mut DispatchOutcome,
-    ) {
+    pub fn apply_app_effect(&mut self, app: lattice_grammar::AppEffect, out: &mut DispatchOutcome) {
         use lattice_grammar::AppEffect;
         match app {
             AppEffect::Quit => out.next_actions.push(Action::Quit),
             AppEffect::MatchBracket => out.next_actions.push(Action::MatchBracket),
-            AppEffect::ToggleCaseAtCursor => {
-                out.next_actions.push(Action::ToggleCaseAtCursor)
-            }
+            AppEffect::ToggleCaseAtCursor => out.next_actions.push(Action::ToggleCaseAtCursor),
             AppEffect::OpenLineBelow => out.next_actions.push(Action::OpenLineBelow),
             AppEffect::OpenLineAbove => out.next_actions.push(Action::OpenLineAbove),
             AppEffect::LspHoverRequest => out.next_actions.push(Action::LspHoverRequest),
             AppEffect::SearchNext => out.next_actions.push(Action::SearchNext),
             AppEffect::SearchPrevious => out.next_actions.push(Action::SearchPrevious),
             AppEffect::JumpHistoryBack => out.next_actions.push(Action::JumpHistoryBack),
-            AppEffect::JumpHistoryForward => {
-                out.next_actions.push(Action::JumpHistoryForward)
-            }
-            AppEffect::WalkMarkHistoryBack => {
-                out.next_actions.push(Action::WalkMarkHistoryBack)
-            }
+            AppEffect::JumpHistoryForward => out.next_actions.push(Action::JumpHistoryForward),
+            AppEffect::WalkMarkHistoryBack => out.next_actions.push(Action::WalkMarkHistoryBack),
             AppEffect::WalkMarkHistoryForward => {
                 out.next_actions.push(Action::WalkMarkHistoryForward)
             }
             AppEffect::TagStackPop => out.next_actions.push(Action::TagStackPop),
             AppEffect::OpenFoldAtCursor => out.next_actions.push(Action::OpenFoldAtCursor),
-            AppEffect::CloseFoldAtCursor => {
-                out.next_actions.push(Action::CloseFoldAtCursor)
-            }
-            AppEffect::ToggleFoldAtCursor => {
-                out.next_actions.push(Action::ToggleFoldAtCursor)
-            }
+            AppEffect::CloseFoldAtCursor => out.next_actions.push(Action::CloseFoldAtCursor),
+            AppEffect::ToggleFoldAtCursor => out.next_actions.push(Action::ToggleFoldAtCursor),
             AppEffect::OpenAllFolds => out.next_actions.push(Action::OpenAllFolds),
             AppEffect::CloseAllFolds => out.next_actions.push(Action::CloseAllFolds),
-            AppEffect::DeleteFoldAtCursor => {
-                out.next_actions.push(Action::DeleteFoldAtCursor)
-            }
+            AppEffect::DeleteFoldAtCursor => out.next_actions.push(Action::DeleteFoldAtCursor),
             AppEffect::GotoNextFold => out.next_actions.push(Action::GotoNextFold),
             AppEffect::GotoPrevFold => out.next_actions.push(Action::GotoPrevFold),
             AppEffect::ToggleFoldEnable => out.next_actions.push(Action::ToggleFoldEnable),
@@ -1768,14 +1772,10 @@ impl Editor {
             AppEffect::RedrawScreen => out.next_actions.push(Action::RedrawScreen),
             AppEffect::EnterCommandLine => out.next_actions.push(Action::EnterCommandLine),
             AppEffect::OilNavigateUp => out.next_actions.push(Action::OilNavigateUp),
-            AppEffect::ReselectLastVisual => {
-                out.next_actions.push(Action::ReselectLastVisual)
-            }
+            AppEffect::ReselectLastVisual => out.next_actions.push(Action::ReselectLastVisual),
             AppEffect::PasteAfter => out.next_actions.push(Action::PasteAfter),
             AppEffect::PasteBefore => out.next_actions.push(Action::PasteBefore),
-            AppEffect::LspDefinitionRequest => {
-                out.next_actions.push(Action::LspDefinitionRequest)
-            }
+            AppEffect::LspDefinitionRequest => out.next_actions.push(Action::LspDefinitionRequest),
             AppEffect::LspDeclarationRequest => {
                 out.next_actions.push(Action::LspDeclarationRequest)
             }
@@ -1785,35 +1785,25 @@ impl Editor {
             AppEffect::LspImplementationRequest => {
                 out.next_actions.push(Action::LspImplementationRequest)
             }
-            AppEffect::LspReferencesRequest => {
-                out.next_actions.push(Action::LspReferencesRequest)
-            }
+            AppEffect::LspReferencesRequest => out.next_actions.push(Action::LspReferencesRequest),
             AppEffect::LspFollowLinkAtCursor => {
                 out.next_actions.push(Action::LspFollowLinkAtCursor)
             }
             AppEffect::EnterAppend => out.next_actions.push(Action::EnterAppend),
-            AppEffect::CreateFoldFromVisual => {
-                out.next_actions.push(Action::CreateFoldFromVisual)
-            }
-            AppEffect::DeleteCharBackward => {
-                out.next_actions.push(Action::DeleteCharBackward)
-            }
+            AppEffect::CreateFoldFromVisual => out.next_actions.push(Action::CreateFoldFromVisual),
+            AppEffect::DeleteCharBackward => out.next_actions.push(Action::DeleteCharBackward),
             AppEffect::CompletionTrigger => out.next_actions.push(Action::CompletionTrigger),
             AppEffect::SnippetExpand => out.next_actions.push(Action::SnippetExpand),
             AppEffect::ExitVisual => out.next_actions.push(Action::ExitVisual),
             AppEffect::ReplaceUndoLast => out.next_actions.push(Action::ReplaceUndoLast),
             AppEffect::EnterMode(state) => out.next_actions.push(Action::EnterMode(state)),
-            AppEffect::EnterVisual(kind) => {
-                out.next_actions.push(Action::EnterVisual(kind))
-            }
+            AppEffect::EnterVisual(kind) => out.next_actions.push(Action::EnterVisual(kind)),
             AppEffect::EnterSearch(dir) => out.next_actions.push(Action::EnterSearch(dir)),
             AppEffect::SearchWordUnderCursor(dir) => {
                 out.next_actions.push(Action::SearchWordUnderCursor(dir))
             }
             AppEffect::JumpViewport(pos) => out.next_actions.push(Action::JumpViewport(pos)),
-            AppEffect::ScrollCursorTo(pos) => {
-                out.next_actions.push(Action::ScrollCursorTo(pos))
-            }
+            AppEffect::ScrollCursorTo(pos) => out.next_actions.push(Action::ScrollCursorTo(pos)),
             AppEffect::JoinLines { with_space } => {
                 out.next_actions.push(Action::JoinLines { with_space })
             }
@@ -1826,12 +1816,8 @@ impl Editor {
             AppEffect::SetMark(c) => out.next_actions.push(Action::SetMark(c)),
             AppEffect::JumpToMarkLine(c) => out.next_actions.push(Action::JumpToMarkLine(c)),
             AppEffect::JumpToMarkExact(c) => out.next_actions.push(Action::JumpToMarkExact(c)),
-            AppEffect::SelectRegister(reg) => {
-                out.next_actions.push(Action::SelectRegister(reg))
-            }
-            AppEffect::StartMacroRecord(c) => {
-                out.next_actions.push(Action::StartMacroRecord(c))
-            }
+            AppEffect::SelectRegister(reg) => out.next_actions.push(Action::SelectRegister(reg)),
+            AppEffect::StartMacroRecord(c) => out.next_actions.push(Action::StartMacroRecord(c)),
             AppEffect::PlayMacro(c) => out.next_actions.push(Action::PlayMacro(c)),
             AppEffect::PlayLastMacro => out.next_actions.push(Action::PlayLastMacro),
             AppEffect::AbsorbOperatorPrefix(op) => {
@@ -1858,12 +1844,8 @@ impl Editor {
                 let prefix = crate::keymap_normal::operator_prefix(op, &self.builtins);
                 self.partial_chord.extend(prefix);
             }
-            AppEffect::SplitPaneHorizontal => {
-                out.next_actions.push(Action::SplitPaneHorizontal)
-            }
-            AppEffect::SplitPaneVertical => {
-                out.next_actions.push(Action::SplitPaneVertical)
-            }
+            AppEffect::SplitPaneHorizontal => out.next_actions.push(Action::SplitPaneHorizontal),
+            AppEffect::SplitPaneVertical => out.next_actions.push(Action::SplitPaneVertical),
             AppEffect::ClosePane => out.next_actions.push(Action::ClosePane),
             AppEffect::NavigatePane(dir) => out.next_actions.push(Action::NavigatePane(dir)),
             AppEffect::NextPane => out.next_actions.push(Action::NextPane),
@@ -1875,9 +1857,7 @@ impl Editor {
             AppEffect::CompletionCancelAndExitInsert => {
                 out.next_actions.push(Action::CompletionCancelAndExitInsert)
             }
-            AppEffect::CompletionToggleDocs => {
-                out.next_actions.push(Action::CompletionToggleDocs)
-            }
+            AppEffect::CompletionToggleDocs => out.next_actions.push(Action::CompletionToggleDocs),
             AppEffect::CompletionDocsScrollDown => {
                 out.next_actions.push(Action::CompletionDocsScrollDown)
             }
@@ -1993,9 +1973,7 @@ impl Editor {
     /// `lattice_completion::current_slot`, resolves the matching
     /// generator, runs the pipeline, and post-processes command
     /// candidates to prefer alias names.
-    pub fn compute_completion_state(
-        &self,
-    ) -> Result<CompletionState, CompletionComputeError> {
+    pub fn compute_completion_state(&self) -> Result<CompletionState, CompletionComputeError> {
         let line = self.command_line.clone();
         let cursor = line.len();
         let alias_resolver = |short: &str| {
@@ -2003,8 +1981,7 @@ impl Editor {
                 .get(short)
                 .map(|s| (*s).to_string())
         };
-        let slot =
-            lattice_completion::current_slot(&line, cursor, &self.registry, &alias_resolver);
+        let slot = lattice_completion::current_slot(&line, cursor, &self.registry, &alias_resolver);
         let (source_name, prefix, replace_start) = match &slot {
             lattice_completion::CommandLineSlot::CommandName {
                 prefix,
@@ -2197,10 +2174,7 @@ impl Editor {
             return;
         }
         let Some(actions) = self.macros.get(&register).cloned() else {
-            self.set_message(
-                EchoLevel::Error,
-                format!("no macro in register {register}"),
-            );
+            self.set_message(EchoLevel::Error, format!("no macro in register {register}"));
             return;
         };
         // Suppress recording-into-current-macro while replaying.
@@ -2366,17 +2340,12 @@ impl Editor {
     /// async LSP request (the request itself stays App-side because
     /// it reaches for `spawn_on_lsp_runtime` + `BatchingSink` + the
     /// `pending_insert_completion_lsp_*` channels).
-    pub fn maybe_refresh_insert_completion_after_edit(
-        &mut self,
-        out: &mut DispatchOutcome,
-    ) {
+    pub fn maybe_refresh_insert_completion_after_edit(&mut self, out: &mut DispatchOutcome) {
         let Some(state) = self.insert_completion.as_mut() else {
             return;
         };
         // Cursor must still be on the anchor's line and at/past the anchor.
-        if self.cursor.line != state.anchor.line
-            || self.cursor.byte < state.anchor.byte
-        {
+        if self.cursor.line != state.anchor.line || self.cursor.byte < state.anchor.byte {
             self.insert_completion = None;
             return;
         }
@@ -2630,7 +2599,8 @@ impl Editor {
         let prefix_start = start as u32;
         let cursor_line = self.cursor.line;
         let cursor_col = self.cursor.byte;
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<lattice_lsp::cache::CompletionOutcome>();
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<lattice_lsp::cache::CompletionOutcome>();
         let token = lattice_protocol::CancellationToken::new();
         self.pending_completion_rx = Some(rx);
         self.pending_completion_token = Some(token.clone());
@@ -2667,8 +2637,7 @@ impl Editor {
                         let label = ci.label;
                         let kind_glyph = crate::lsp_helpers::completion_kind_glyph(ci.kind);
                         let detail = ci.detail.clone();
-                        let insert_text =
-                            ci.insert_text.clone().unwrap_or_else(|| label.clone());
+                        let insert_text = ci.insert_text.clone().unwrap_or_else(|| label.clone());
                         all.push(lattice_lsp::cache::CompletionItemRow {
                             label,
                             kind_glyph,
@@ -2820,10 +2789,9 @@ impl Editor {
                     // Modern `Vec<WorkspaceSymbol>` shape (LSP 3.17+).
                     lsp_types::WorkspaceSymbolResponse::Nested(syms) => {
                         for sym in syms {
-                            if let Some(row) = crate::lsp_helpers::workspace_symbol_to_row(
-                                &handle, sym, &token,
-                            )
-                            .await
+                            if let Some(row) =
+                                crate::lsp_helpers::workspace_symbol_to_row(&handle, sym, &token)
+                                    .await
                             {
                                 all.push(row);
                             }
@@ -2870,10 +2838,8 @@ impl Editor {
         self.pending_tag_origin = None;
         // M.6.2: lsp-nav-mode gate (after cancel-stale-work).
         // `gr` is part of the nav family.
-        if !self.check_lsp_sub_mode_gate(
-            lattice_lsp::modes::LspNavMode::mode_id(),
-            "lsp-nav-mode",
-        ) {
+        if !self.check_lsp_sub_mode_gate(lattice_lsp::modes::LspNavMode::mode_id(), "lsp-nav-mode")
+        {
             return;
         }
         let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
@@ -2895,8 +2861,8 @@ impl Editor {
                     return;
                 }
             };
-        let symbol =
-            crate::lsp_helpers::word_under_cursor(&snapshot.buffer, self.cursor).unwrap_or_default();
+        let symbol = crate::lsp_helpers::word_under_cursor(&snapshot.buffer, self.cursor)
+            .unwrap_or_default();
         let (tx, rx) =
             tokio::sync::mpsc::unbounded_channel::<lattice_lsp::cache::ReferencesOutcome>();
         let token = lattice_protocol::CancellationToken::new();
@@ -2961,10 +2927,8 @@ impl Editor {
             token.cancel();
         }
         // M.6.2: lsp-nav-mode gate (after cancel-stale-work).
-        if !self.check_lsp_sub_mode_gate(
-            lattice_lsp::modes::LspNavMode::mode_id(),
-            "lsp-nav-mode",
-        ) {
+        if !self.check_lsp_sub_mode_gate(lattice_lsp::modes::LspNavMode::mode_id(), "lsp-nav-mode")
+        {
             return;
         }
         let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
@@ -2989,8 +2953,8 @@ impl Editor {
         // Capture the pre-jump origin for the tag stack -- the gd
         // family is "drill down" navigation, so users expect <C-t>
         // to walk back even after chained navigations.
-        let label =
-            crate::lsp_helpers::word_under_cursor(&snapshot.buffer, self.cursor).unwrap_or_default();
+        let label = crate::lsp_helpers::word_under_cursor(&snapshot.buffer, self.cursor)
+            .unwrap_or_default();
         self.pending_tag_origin = Some(TagStackEntry {
             buffer: self.active_buffer,
             buffer_id: self.active_pane_buffer_id(),
@@ -3470,7 +3434,12 @@ impl Editor {
     ) -> Vec<RendererSignal> {
         // Idempotency / preserve-intent: covered in detail in the
         // doc-comment above.
-        if self.active_modes.get(&buffer_id).and_then(|m| m.major()).is_some() {
+        if self
+            .active_modes
+            .get(&buffer_id)
+            .and_then(|m| m.major())
+            .is_some()
+        {
             if matches!(kind, BufferKind::Document) {
                 return self.maybe_auto_activate_lsp_mode(buffer_id);
             }
@@ -3735,18 +3704,12 @@ impl Editor {
             .map(|m| m.is_active(mode_id))
             .unwrap_or(false);
         match (mode.kind(), active_now) {
-            (lattice_mode::ModeKind::Minor, true) => {
-                self.deactivate_mode_by_id(buffer_id, mode_id)
-            }
-            (lattice_mode::ModeKind::Minor, false) => {
-                self.activate_mode_by_id(buffer_id, mode_id)
-            }
+            (lattice_mode::ModeKind::Minor, true) => self.deactivate_mode_by_id(buffer_id, mode_id),
+            (lattice_mode::ModeKind::Minor, false) => self.activate_mode_by_id(buffer_id, mode_id),
             // Major: activating an inactive major swaps it in;
             // re-activating the current major reloads (registry
             // contract). Either way the call is the same.
-            (lattice_mode::ModeKind::Major, _) => {
-                self.activate_mode_by_id(buffer_id, mode_id)
-            }
+            (lattice_mode::ModeKind::Major, _) => self.activate_mode_by_id(buffer_id, mode_id),
         }
     }
 
@@ -4154,11 +4117,7 @@ impl Editor {
     /// unhandled echo path) would be a behaviour regression. Once
     /// G.x retires `App::apply_effect`, the loop joins the planner
     /// here.
-    pub fn build_global_targets(
-        &mut self,
-        pattern: &str,
-        inverted: bool,
-    ) -> Option<Vec<u32>> {
+    pub fn build_global_targets(&mut self, pattern: &str, inverted: bool) -> Option<Vec<u32>> {
         if pattern.is_empty() {
             self.set_message(EchoLevel::Error, "empty pattern".to_string());
             return None;
@@ -4200,10 +4159,7 @@ impl Editor {
     /// downstream subscribers (notably the per-server LSP fan-in)
     /// can sync without re-walking the buffer or holding the
     /// supervisor lock.
-    pub fn publish_document_changed(
-        &mut self,
-        applied: &[lattice_core::buffer::AppliedEdit],
-    ) {
+    pub fn publish_document_changed(&mut self, applied: &[lattice_core::buffer::AppliedEdit]) {
         let snap = self.document.snapshot();
         let path = snap.path().map(|p| p.to_path_buf());
         let edits: Vec<lattice_protocol::event::AppliedEdit> = applied
@@ -4272,10 +4228,7 @@ impl Editor {
     /// apply it to `visible_highlights` as a Vec splice. Pure
     /// ns-fast: a Vec drain or insert of a few elements. Only
     /// mutates the cache; doesn't touch the snapshot.
-    pub fn shift_highlights_for_edit(
-        &mut self,
-        delta: &lattice_protocol::edit::EditDelta,
-    ) {
+    pub fn shift_highlights_for_edit(&mut self, delta: &lattice_protocol::edit::EditDelta) {
         let edit_start = delta.start_position.line;
         let scroll = self.scroll;
         if edit_start < scroll {
@@ -4753,7 +4706,11 @@ impl Editor {
     /// advance. Non-letter bytes are unchanged; the cursor still
     /// advances. At EOL the cursor stops (no wrap).
     pub fn do_toggle_case_at_cursor(&mut self) {
-        let line_len = self.document.snapshot().buffer.line_byte_len(self.cursor.line);
+        let line_len = self
+            .document
+            .snapshot()
+            .buffer
+            .line_byte_len(self.cursor.line);
         if self.cursor.byte >= line_len {
             return;
         }
@@ -4788,7 +4745,11 @@ impl Editor {
     /// here mirror the App-side helper retired in this slice: pure
     /// field writes.
     pub fn do_enter_append(&mut self) {
-        let len = self.document.snapshot().buffer.line_byte_len(self.cursor.line);
+        let len = self
+            .document
+            .snapshot()
+            .buffer
+            .line_byte_len(self.cursor.line);
         if self.cursor.byte < len {
             self.cursor.byte += 1;
         }
@@ -4832,7 +4793,11 @@ impl Editor {
     /// extend case) is recorded on `replace_history` so backspace
     /// can restore it.
     pub fn do_overwrite_char(&mut self, c: char) {
-        let len = self.document.snapshot().buffer.line_byte_len(self.cursor.line);
+        let len = self
+            .document
+            .snapshot()
+            .buffer
+            .line_byte_len(self.cursor.line);
         let s = c.to_string();
         let entry_pos = self.cursor;
         if self.cursor.byte < len {
@@ -4850,10 +4815,9 @@ impl Editor {
                     original,
                 });
             }
-        } else if let Ok(applied) = self.apply_edit_blocking(lattice_protocol::edit::Edit::insert(
-            self.cursor,
-            &s,
-        )) {
+        } else if let Ok(applied) =
+            self.apply_edit_blocking(lattice_protocol::edit::Edit::insert(self.cursor, &s))
+        {
             self.cursor = applied.inserted_range.end;
             self.replace_history.push(crate::state::ReplaceEntry {
                 at: entry_pos,
@@ -5046,9 +5010,7 @@ impl Editor {
         let line = match vpos {
             lattice_grammar::ViewportPos::Top => self.scroll,
             lattice_grammar::ViewportPos::Middle => self.scroll + height / 2,
-            lattice_grammar::ViewportPos::Bottom => {
-                self.scroll + height.saturating_sub(1)
-            }
+            lattice_grammar::ViewportPos::Bottom => self.scroll + height.saturating_sub(1),
         };
         let buffer = self.active_text();
         let last = last_addressable_line(&buffer);
@@ -5067,13 +5029,10 @@ impl Editor {
         let height = self.viewport_height.max(1);
         self.scroll = match spos {
             lattice_grammar::ScrollPos::Top => self.cursor.line,
-            lattice_grammar::ScrollPos::Center => {
-                self.cursor.line.saturating_sub(height / 2)
+            lattice_grammar::ScrollPos::Center => self.cursor.line.saturating_sub(height / 2),
+            lattice_grammar::ScrollPos::Bottom => {
+                self.cursor.line.saturating_sub(height.saturating_sub(1))
             }
-            lattice_grammar::ScrollPos::Bottom => self
-                .cursor
-                .line
-                .saturating_sub(height.saturating_sub(1)),
         };
     }
 
@@ -5296,17 +5255,12 @@ impl Editor {
     /// Commit a blockwise-Visual `I` / `A` session as one batched
     /// undo unit. Rewinds the `live_edits` typed on the top row,
     /// then builds + applies the multi-row insert batch.
-    pub fn replicate_block_insert(
-        &mut self,
-        spec: crate::state::PendingBlockInsert,
-        text: &str,
-    ) {
+    pub fn replicate_block_insert(&mut self, spec: crate::state::PendingBlockInsert, text: &str) {
         for _ in 0..spec.live_edits {
             let _ = self.undo_blocking();
         }
         let buffer = self.document.snapshot().buffer.clone();
-        let mut edits =
-            Vec::with_capacity((spec.end_line - spec.start_line + 1) as usize);
+        let mut edits = Vec::with_capacity((spec.end_line - spec.start_line + 1) as usize);
         let top_len = buffer.line_byte_len(spec.start_line);
         let top_col = spec.insert_col.min(top_len);
         edits.push(lattice_protocol::edit::Edit::insert(
@@ -5516,8 +5470,7 @@ impl Editor {
         let Some(state) = self.live_picker_query.as_mut() else {
             return;
         };
-        state.debounce_until =
-            Some(std::time::Instant::now() + crate::state::LIVE_PICKER_DEBOUNCE);
+        state.debounce_until = Some(std::time::Instant::now() + crate::state::LIVE_PICKER_DEBOUNCE);
     }
 
     /// If the picker is open and its action is
@@ -5538,8 +5491,7 @@ impl Editor {
         let Some(c) = picker.selected_candidate() else {
             return Vec::new();
         };
-        let Some(lattice_picker::RoutingPayload::Buffer { id: raw_id }) =
-            picker.routing_for(c)
+        let Some(lattice_picker::RoutingPayload::Buffer { id: raw_id }) = picker.routing_for(c)
         else {
             return Vec::new();
         };
@@ -5777,10 +5729,7 @@ impl Editor {
 
     /// `*` / `#` -- extract the word at the cursor, store as
     /// `last_search`, jump to the next (or previous) occurrence.
-    pub fn do_search_word_under_cursor(
-        &mut self,
-        direction: lattice_grammar::SearchDirection,
-    ) {
+    pub fn do_search_word_under_cursor(&mut self, direction: lattice_grammar::SearchDirection) {
         let pre_jump = self.cursor;
         let text = self.document.text();
         let bytes = text.as_bytes();
@@ -5795,10 +5744,7 @@ impl Editor {
         };
         let mut start = cursor_byte;
         if start >= bytes.len() || !is_word_char_byte(bytes[start]) {
-            while start < bytes.len()
-                && bytes[start] != b'\n'
-                && !is_word_char_byte(bytes[start])
-            {
+            while start < bytes.len() && bytes[start] != b'\n' && !is_word_char_byte(bytes[start]) {
                 start += 1;
             }
             if start >= bytes.len() || bytes[start] == b'\n' {
@@ -5857,10 +5803,7 @@ impl Editor {
                 }
             }
             Ok(None) => {
-                self.set_message(
-                    EchoLevel::Error,
-                    format!("E486: Pattern not found: {word}"),
-                );
+                self.set_message(EchoLevel::Error, format!("E486: Pattern not found: {word}"));
             }
             Err(_) => {}
         }
@@ -5922,9 +5865,9 @@ impl Editor {
                 }
             }
             _ => {
-                if let Ok(applied) = self.apply_edit_blocking(
-                    lattice_protocol::edit::Edit::insert(self.cursor, text),
-                ) {
+                if let Ok(applied) = self
+                    .apply_edit_blocking(lattice_protocol::edit::Edit::insert(self.cursor, text))
+                {
                     self.cursor = applied.inserted_range.end;
                     if matches!(self.modal, ModalState::Insert)
                         && let Some(rec) = self.recording_insert.as_mut()
@@ -5963,9 +5906,10 @@ impl Editor {
                 } else {
                     self.cursor
                 };
-                if let Ok(applied) = self.apply_edit_blocking(
-                    lattice_protocol::edit::Edit::insert(insert_at, &reg.content),
-                ) {
+                if let Ok(applied) = self.apply_edit_blocking(lattice_protocol::edit::Edit::insert(
+                    insert_at,
+                    &reg.content,
+                )) {
                     let end = applied.inserted_range.end;
                     self.cursor = if end.byte > 0 {
                         lattice_protocol::position::Position::new(end.line, end.byte - 1)
@@ -5987,28 +5931,23 @@ impl Editor {
                         .snapshot()
                         .buffer
                         .line_byte_len(self.cursor.line);
-                    if self.cursor.line + 1 < self.document.snapshot().buffer.line_count()
-                    {
+                    if self.cursor.line + 1 < self.document.snapshot().buffer.line_count() {
                         lattice_protocol::position::Position::new(self.cursor.line + 1, 0)
                     } else {
-                        let _ = self.apply_edit_blocking(
-                            lattice_protocol::edit::Edit::insert(
-                                lattice_protocol::position::Position::new(self.cursor.line, len),
-                                "\n",
-                            ),
-                        );
+                        let _ = self.apply_edit_blocking(lattice_protocol::edit::Edit::insert(
+                            lattice_protocol::position::Position::new(self.cursor.line, len),
+                            "\n",
+                        ));
                         lattice_protocol::position::Position::new(self.cursor.line + 1, 0)
                     }
                 };
-                if let Ok(applied) = self.apply_edit_blocking(
-                    lattice_protocol::edit::Edit::insert(insert_at, &payload),
-                ) {
+                if let Ok(applied) = self
+                    .apply_edit_blocking(lattice_protocol::edit::Edit::insert(insert_at, &payload))
+                {
                     self.cursor = applied.inserted_range.start;
                 }
             }
-            lattice_grammar::YankKind::Blockwise => {
-                self.do_paste_blockwise(&reg.content, before)
-            }
+            lattice_grammar::YankKind::Blockwise => self.do_paste_blockwise(&reg.content, before),
         }
     }
 
@@ -6043,8 +5982,7 @@ impl Editor {
             let target_len = self.document.snapshot().buffer.line_byte_len(target_line);
             let insert_col = start_col.min(target_len);
             let pos = lattice_protocol::position::Position::new(target_line, insert_col);
-            let _ = self
-                .apply_edit_blocking(lattice_protocol::edit::Edit::insert(pos, *row));
+            let _ = self.apply_edit_blocking(lattice_protocol::edit::Edit::insert(pos, *row));
         }
         self.cursor = lattice_protocol::position::Position::new(start_line, start_col);
     }
@@ -6099,10 +6037,7 @@ impl Editor {
     }
 
     /// Move the cursor to the start of `group.ranges.first()`.
-    fn move_cursor_to_snippet_group(
-        &mut self,
-        group: &lattice_snippet::TabstopGroup,
-    ) {
+    fn move_cursor_to_snippet_group(&mut self, group: &lattice_snippet::TabstopGroup) {
         let Some(first) = group.ranges.first() else {
             return;
         };
@@ -6397,8 +6332,7 @@ impl Editor {
                 .unwrap_or(false);
             if !already_there {
                 self.push_position_history(cur, PositionSource::AutoJump);
-                self.position_history_cursor =
-                    self.position_history.len().saturating_sub(1);
+                self.position_history_cursor = self.position_history.len().saturating_sub(1);
             }
         }
         self.do_walk_history(delta, |e| e.is_jump(), "jumps", "jump list");
@@ -6436,9 +6370,7 @@ impl Editor {
         let popup_help_id = self.popup_buffer;
         let reachable = |e: &PositionEntry| -> bool {
             match e.buffer {
-                BufferKind::Document | BufferKind::FileTree => {
-                    self.buffers.contains(e.buffer_id)
-                }
+                BufferKind::Document | BufferKind::FileTree => self.buffers.contains(e.buffer_id),
                 BufferKind::Help => {
                     self.buffers.contains_help(e.buffer_id) || popup_help_id == Some(e.buffer_id)
                 }
@@ -6517,10 +6449,7 @@ impl Editor {
 impl Editor {
     /// `<C-w>s` (horizontal) / `<C-w>v` (vertical) -- split the
     /// active pane; the new sibling inherits cursor + scroll.
-    pub fn do_split_pane(
-        &mut self,
-        orientation: lattice_core::ui::pane::SplitOrientation,
-    ) {
+    pub fn do_split_pane(&mut self, orientation: lattice_core::ui::pane::SplitOrientation) {
         self.snapshot_active_pane();
         let _new_idx = self.pane_tree.split_active(orientation);
     }
@@ -6540,10 +6469,7 @@ impl Editor {
     }
 
     /// Cardinal neighbour walk (`<C-w>h/j/k/l`).
-    pub fn do_navigate_pane(
-        &mut self,
-        direction: lattice_core::ui::pane::PaneDirection,
-    ) {
+    pub fn do_navigate_pane(&mut self, direction: lattice_core::ui::pane::PaneDirection) {
         let area = self.buffer_area_rect();
         let Some(target) = self.pane_tree.navigate(direction, area) else {
             return;
@@ -6661,10 +6587,7 @@ impl Editor {
     /// or echo an error if there's no captured visual to reselect.
     pub fn do_reselect_visual(&mut self) {
         let Some(last) = self.last_visual else {
-            self.set_message(
-                EchoLevel::Error,
-                "no previous visual selection".to_string(),
-            );
+            self.set_message(EchoLevel::Error, "no previous visual selection".to_string());
             return;
         };
         self.modal = ModalState::Visual(last.kind);
@@ -6699,7 +6622,10 @@ impl Editor {
             UiDimInactive, UiNerdFonts, UiSeparator, UiSeparatorColor, UiStatuslineActiveFg,
             UiStatuslineInactiveFg,
         };
-        let dim_inactive = *self.config.get_typed::<UiDimInactive>().expect("UiDimInactive");
+        let dim_inactive = *self
+            .config
+            .get_typed::<UiDimInactive>()
+            .expect("UiDimInactive");
         let nerd_fonts = *self.config.get_typed::<UiNerdFonts>().expect("UiNerdFonts");
         let sep = self.config.get_typed::<UiSeparator>().expect("UiSeparator");
         let sep_char = sep.chars().next().unwrap_or('│');
@@ -6784,7 +6710,8 @@ impl Editor {
     pub fn recompute_options_for_buffer(&mut self, buffer: BufferId) {
         let mut resolved = lattice_config::ResolvedOptions::new();
         // Layer 5/6: bootstrap with current registry values.
-        self.config.bootstrap_resolved_with_current_values(&mut resolved);
+        self.config
+            .bootstrap_resolved_with_current_values(&mut resolved);
 
         // Active modes (layers 4 + 3): walk in activation order
         // for minors, prepend major.
@@ -7152,8 +7079,7 @@ impl Editor {
         lines.push(format!("folds:          {}", self.folds.len()));
         lines.push(format!(
             "options:        number={}  relativenumber={}",
-            self.option_cache.show_line_numbers,
-            self.option_cache.relative_line_numbers,
+            self.option_cache.show_line_numbers, self.option_cache.relative_line_numbers,
         ));
         // Active modes on the document buffer. Each mode name is a
         // clickable `[name](mode:name)` link.
@@ -7163,7 +7089,10 @@ impl Editor {
         let major = active.and_then(|a| a.major());
         let minors: Vec<_> = active.map(|a| a.minors().to_vec()).unwrap_or_default();
         if let Some(major) = major {
-            lines.push(format!("- major: {}", lattice_help::mode_link(major.as_str())));
+            lines.push(format!(
+                "- major: {}",
+                lattice_help::mode_link(major.as_str())
+            ));
         } else {
             lines.push("- major: (none)".to_string());
         }
@@ -7198,8 +7127,7 @@ impl Editor {
         name: &str,
         anchor: Option<&str>,
     ) -> Option<lattice_help::HelpContent> {
-        let Some(id) = crate::excommand::resolve_command_name_or_alias(&self.registry, name)
-        else {
+        let Some(id) = crate::excommand::resolve_command_name_or_alias(&self.registry, name) else {
             self.set_message(EchoLevel::Error, format!("no command named `{name}`"));
             return None;
         };
@@ -7785,7 +7713,11 @@ impl Editor {
     /// alongside `activate_buffer` (its only renderer-neutral
     /// caller cluster); other position-history call sites stay on
     /// App via the delegate until the wider `motions.rs` migration.
-    pub fn push_position_history(&mut self, pos: lattice_protocol::position::Position, source: PositionSource) {
+    pub fn push_position_history(
+        &mut self,
+        pos: lattice_protocol::position::Position,
+        source: PositionSource,
+    ) {
         let buffer = self.active_buffer;
         let buffer_id = self.active_buffer_id();
         if let Some(last) = self.position_history.last()
@@ -8318,10 +8250,7 @@ impl Editor {
     /// activation state on the active buffer. Mode counterpart of
     /// `:describe-option`. Fallible: pushes echo + returns None on
     /// unknown name.
-    pub fn build_describe_mode_content(
-        &mut self,
-        name: &str,
-    ) -> Option<lattice_help::HelpContent> {
+    pub fn build_describe_mode_content(&mut self, name: &str) -> Option<lattice_help::HelpContent> {
         let mode_id = lattice_mode::ModeId::new(name);
         let Some(mode) = self.mode_registry.get(mode_id) else {
             self.set_message(EchoLevel::Error, format!("no mode named `{name}`"));
@@ -8684,13 +8613,9 @@ impl Editor {
             .unwrap_or_else(|| "?".into());
         let name_link = format!("[{0}](customize-edit:{0})", meta.name);
         let header = if current == default {
-            format!(
-                "- **{name_link}**{aliases} : {type_label} = {current}"
-            )
+            format!("- **{name_link}**{aliases} : {type_label} = {current}")
         } else {
-            format!(
-                "- **{name_link}**{aliases} : {type_label} = {current} (default: {default})"
-            )
+            format!("- **{name_link}**{aliases} : {type_label} = {current} (default: {default})")
         };
         lines.push(header);
         for doc_line in meta.doc.lines() {
@@ -9015,9 +8940,7 @@ impl CompletionComputeError {
             Self::NoCompletionForArg(name) => {
                 (EchoLevel::Info, format!("no completion for arg `{name}`"))
             }
-            Self::NoCompletionAtCursor => {
-                (EchoLevel::Info, "no completion at cursor".to_string())
-            }
+            Self::NoCompletionAtCursor => (EchoLevel::Info, "no completion at cursor".to_string()),
             Self::MissingSource(name) => (
                 EchoLevel::Error,
                 format!("completion source `{name}` not registered"),
@@ -9054,11 +8977,7 @@ fn subsequence_match_ranges(needle_lower: &str, haystack: &str) -> Vec<std::ops:
             ni += 1;
         }
     }
-    if ni < n.len() {
-        Vec::new()
-    } else {
-        ranges
-    }
+    if ni < n.len() { Vec::new() } else { ranges }
 }
 
 /// 5.5.G.23.cmdline: rewrite command candidates from canonical names
@@ -9120,7 +9039,11 @@ pub fn dedup_rendered_by_text(rendered: &mut Vec<lattice_completion::RenderedCan
 /// `handle_effect` pass commits its state mutation in order, and the
 /// renderer-coupled drain on App side sees a flat sequence — no Many
 /// recursion needed twice.
-fn apply_effect_host(editor: &mut Editor, effect: lattice_grammar::Effect, out: &mut DispatchOutcome) {
+fn apply_effect_host(
+    editor: &mut Editor,
+    effect: lattice_grammar::Effect,
+    out: &mut DispatchOutcome,
+) {
     match effect {
         lattice_grammar::Effect::Many(parts) => {
             for p in parts {
@@ -9252,7 +9175,11 @@ impl Editor {
     /// [`apply_effect_host`] (recursive `Effect::Many` flatten +
     /// host migrated-arm pass + push to `out.effects` for the
     /// renderer-coupled tail).
-    pub fn run_invocation(&mut self, inv: lattice_grammar::CommandInvocation, out: &mut DispatchOutcome) {
+    pub fn run_invocation(
+        &mut self,
+        inv: lattice_grammar::CommandInvocation,
+        out: &mut DispatchOutcome,
+    ) {
         if let Some(spec) = self.registry.lookup(inv.command)
             && matches!(spec.kind, lattice_grammar::CommandKind::Action)
         {
@@ -9298,7 +9225,11 @@ impl Editor {
     /// `cc` / `>>` over a closed fold via the fold-aware count grow.
     /// Then dispatches through the document actor (`dispatch_blocking`)
     /// and flushes the resulting effect through [`apply_effect_host`].
-    pub fn run_document_invocation(&mut self, mut inv: lattice_grammar::CommandInvocation, out: &mut DispatchOutcome) {
+    pub fn run_document_invocation(
+        &mut self,
+        mut inv: lattice_grammar::CommandInvocation,
+        out: &mut DispatchOutcome,
+    ) {
         // Attach the pending register (from a `"a` prefix) to the
         // invocation if not already specified.
         if let Some(reg) = self.pending_register.take()

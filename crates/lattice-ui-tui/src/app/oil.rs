@@ -51,7 +51,8 @@ impl App {
     /// elsewhere. (M.3.2.c.5: buffer-locals are canonical
     /// per-buffer mode-owned state; no struct mirror.)
     pub(super) fn set_oil_dir(&mut self, buffer_id: crate::buffers::BufferId, dir: PathBuf) {
-        self.editor.buffer_locals
+        self.editor
+            .buffer_locals
             .entry(buffer_id)
             .or_default()
             .insert(crate::modes::OilDir(dir));
@@ -63,7 +64,8 @@ impl App {
     /// seeded (shouldn't happen in practice -- every oil
     /// buffer's creation path calls [`Self::set_oil_dir`]).
     pub(super) fn oil_dir_for(&self, buffer_id: crate::buffers::BufferId) -> Option<PathBuf> {
-        self.editor.buffer_locals
+        self.editor
+            .buffer_locals
             .get(&buffer_id)
             .and_then(|locals| locals.get::<crate::modes::OilDir>())
             .map(|d| d.0.clone())
@@ -75,7 +77,8 @@ impl App {
     /// dir lives in buffer-locals; we walk the registry's
     /// oil-id list and probe each buffer-local entry.
     pub(super) fn oil_with_dir(&self, dir: &Path) -> Option<crate::buffers::BufferId> {
-        self.editor.buffers
+        self.editor
+            .buffers
             .oil_ids()
             .into_iter()
             .find(|&id| self.oil_dir_for(id).as_deref() == Some(dir))
@@ -88,7 +91,8 @@ impl App {
         let dir = match dir {
             Some(p) => p,
             None => match self
-                .editor.document
+                .editor
+                .document
                 .path()
                 .and_then(|p| p.parent().map(Into::into))
                 // `Path::parent()` returns `Some("")` for a
@@ -174,7 +178,8 @@ impl App {
         // (the cursor the user actually moves with `j` / `k`).
         let idx = self.editor.cursor.line as usize;
         let Some(entry) = self
-            .editor.buffers
+            .editor
+            .buffers
             .with_oil(active_id, |o| o.snapshot_entries().get(idx).cloned())
             .flatten()
         else {
@@ -187,7 +192,8 @@ impl App {
         if entry.is_dir {
             let new_dir = dir.join(&entry.name);
             let reload_result = self
-                .editor.buffers
+                .editor
+                .buffers
                 .with_oil_mut(active_id, |oil| oil.reload(&new_dir));
             match reload_result {
                 Some(Err(e)) => {
@@ -226,7 +232,10 @@ impl App {
                     // Already at the filesystem root; no-op.
                     return;
                 };
-                let reload_result = self.editor.buffers.with_oil_mut(id, |oil| oil.reload(&parent));
+                let reload_result = self
+                    .editor
+                    .buffers
+                    .with_oil_mut(id, |oil| oil.reload(&parent));
                 match reload_result {
                     Some(Err(e)) => {
                         self.set_message(EchoLevel::Error, format!("oil navigate up: {e}"));
@@ -261,7 +270,8 @@ impl App {
             }
             _ => {
                 let dir = self
-                    .editor.document
+                    .editor
+                    .document
                     .path()
                     .and_then(|p| p.parent().map(Into::into));
                 self.do_open_oil(dir);

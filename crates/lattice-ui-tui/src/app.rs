@@ -77,14 +77,14 @@ use lattice_grammar::SearchDirection;
 use lattice_grammar::YankKind;
 // Re-exported so submodule tests using `use super::*;` keep
 // seeing the names after Phase 5.B.* migrations.
+use crate::buffer_registry::{BufferData, BufferEntry, BufferRegistry, DocumentEntry};
+use crate::buffers::{BufferFlags, BufferId, BufferKind};
 pub use lattice_grammar::ModalState;
 pub use lattice_grammar::command::CommandInvocation;
 use lattice_grammar::register::Register;
 use lattice_protocol::position::Position;
 #[cfg(test)]
 use lattice_protocol::selection::{Selection, SelectionSet};
-use crate::buffer_registry::{BufferData, BufferEntry, BufferRegistry, DocumentEntry};
-use crate::buffers::{BufferFlags, BufferId, BufferKind};
 
 // Re-export PaneDirection so `super::*` in the tests module
 // resolves it. The `Action::NavigatePane(PaneDirection)` variant
@@ -126,7 +126,6 @@ mod search;
 mod state;
 mod syntax;
 mod visual;
-
 
 #[cfg(test)]
 pub(crate) mod test_helpers;
@@ -225,11 +224,12 @@ pub(crate) fn echo_level_from_wire(level: lattice_grammar::EchoLevel) -> EchoLev
 // `aliases()`. The in-module test now imports it directly through the
 // fully-qualified path.
 
-
 // Phase 5.2: `SearchLine`, `LastSearch`, `UnnamedRegister`,
 // `PrevPaneState` moved to `lattice_host::state`. Re-exported
 // below.
-pub use lattice_host::state::{CompletionState, LastSearch, PrevPaneState, SearchLine, UnnamedRegister};
+pub use lattice_host::state::{
+    CompletionState, LastSearch, PrevPaneState, SearchLine, UnnamedRegister,
+};
 
 // Phase 5.B.13: `PendingPickerInit`, `LivePickerQueryState`,
 // `InFlightLiveQuery`, `LIVE_PICKER_DEBOUNCE` moved to
@@ -242,20 +242,19 @@ pub use lattice_host::state::{
 // `UnnamedRegister` and `PrevPaneState` moved to
 // `lattice_host::state` (re-export above).
 
-
 // Phase 5.2: LSP cache + outcome types moved to
 // `lattice_lsp::cache`. Re-exported here so existing
 // `crate::app::HoverOutcome` etc. references continue to
 // resolve unchanged across this crate + downstream consumers.
 pub use lattice_lsp::cache::{
     CodeActionOutcome, CodeActionRow, CodeLensOutcome, CompletionItemRow, CompletionOutcome,
-    CompletionResolveOutcome, DecodedSemanticToken, DocumentColorOutcome,
-    DocumentHighlightCache, DocumentHighlightOutcome, DocumentLinksOutcome, FoldingRangeOutcome,
-    FormatOutcome, HoverOutcome, InlayHintOutcome, InsertCompletionLspOutcome, LspCodeLensCache,
+    CompletionResolveOutcome, DecodedSemanticToken, DocumentColorOutcome, DocumentHighlightCache,
+    DocumentHighlightOutcome, DocumentLinksOutcome, FoldingRangeOutcome, FormatOutcome,
+    HoverOutcome, InlayHintOutcome, InsertCompletionLspOutcome, LspCodeLensCache,
     LspDocumentColorCache, LspDocumentLinksCache, LspFoldsCache, LspInlayHintCache, LspNavKind,
-    LspPullDiagnosticsCache, LspSelectionChain, LspSemanticTokensCache,
-    PullDiagnosticsOutcome, ReferencesOutcome, RenameOutcome, SelectionRangeOutcome,
-    SelectionRangeStep, SemanticTokensOutcome, SignatureHelpOutcome, SymbolRow, SymbolsOutcome,
+    LspPullDiagnosticsCache, LspSelectionChain, LspSemanticTokensCache, PullDiagnosticsOutcome,
+    ReferencesOutcome, RenameOutcome, SelectionRangeOutcome, SelectionRangeStep,
+    SemanticTokensOutcome, SignatureHelpOutcome, SymbolRow, SymbolsOutcome,
     apply_semantic_token_edits, decode_semantic_tokens,
 };
 
@@ -865,14 +864,12 @@ pub struct App {
 /// rendering). Built by `Action::CommandLineCompleteOrAdvance`
 /// when the user presses Tab; consumed by accept / dismiss / scroll
 /// actions.
-
 // `Fold` + `FoldMethod` moved to `lattice_core::folding` for
 // renderer-agnostic ownership. Both re-exported through
 // `lattice_core`'s crate root + this re-export so existing
 // `crate::app::Fold` / `crate::app::FoldMethod` call sites
 // keep resolving unchanged.
 pub use lattice_core::{Fold, FoldMethod};
-
 
 /// CSM.8b: `LspCompletionMeta` + `LSP_COMPLETION_KIND_ID`
 /// moved into `lattice-lsp::completion` so the type lives in
@@ -900,7 +897,6 @@ pub const SNIPPET_COMPLETION_KIND_ID: u32 = 2;
 /// Re-exported here so existing callers keep compiling.
 pub use lattice_host::state::SnippetCandidateMeta;
 
-
 // Phase 5.2: OptionCache, LastFind, MacroRecording, TagStackEntry,
 // PositionEntry, PositionSource, ReplaceEntry, LastVisual,
 // SubstitutePreview, PendingBlockInsert moved to lattice_host::state.
@@ -908,7 +904,6 @@ pub use lattice_host::state::{
     LastFind, LastVisual, MacroRecording, OptionCache, PendingBlockInsert, PositionEntry,
     PositionSource, ReplaceEntry, SubstitutePreview, TagStackEntry,
 };
-
 
 impl std::fmt::Debug for App {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1549,7 +1544,10 @@ mod tests {
             for arg in &spec.args_schema {
                 if let Some(source) = arg.completion {
                     assert!(
-                        a.editor.completion_registry.generator_by_name(source).is_some(),
+                        a.editor
+                            .completion_registry
+                            .generator_by_name(source)
+                            .is_some(),
                         "{name}'s arg `{}` advertises completion source `{source}` \
                          but no generator with that name is registered at boot",
                         arg.name,
@@ -1608,7 +1606,10 @@ mod tests {
             level: EchoLevel::Warn,
         }));
         assert_eq!(a.editor.last_message.as_ref().unwrap().text, "bye");
-        assert_eq!(a.editor.last_message.as_ref().unwrap().level, EchoLevel::Warn);
+        assert_eq!(
+            a.editor.last_message.as_ref().unwrap().level,
+            EchoLevel::Warn
+        );
     }
     // ---- change operator end-to-end ----
 
@@ -1856,7 +1857,10 @@ mod tests {
     fn yw_populates_unnamed_register_charwise() {
         let mut a = app_with("hello world", 10);
         let inv = CommandInvocation::of(a.editor.builtins.yank.0).with_target(
-            lattice_grammar::Target::Motion(a.editor.builtins.word_forward, lattice_grammar::Args::None),
+            lattice_grammar::Target::Motion(
+                a.editor.builtins.word_forward,
+                lattice_grammar::Args::None,
+            ),
         );
         a.apply(Action::Invoke(inv));
         let reg = a.editor.unnamed_register.as_ref().unwrap();
@@ -1873,7 +1877,8 @@ mod tests {
         a.set_foldmethod_for_test(FoldMethod::Markdown);
         a.recompute_folds();
         let idx = a
-            .editor.folds
+            .editor
+            .folds
             .iter()
             .position(|f| f.start_line == 0)
             .expect("H1 fold");
@@ -1883,7 +1888,8 @@ mod tests {
         let inv = CommandInvocation::of(a.editor.builtins.goto_first_line.0);
         a.apply(Action::Invoke(inv));
         let fold = a
-            .editor.folds
+            .editor
+            .folds
             .iter()
             .find(|f| f.start_line == 0)
             .expect("H1 fold still present");
@@ -1896,7 +1902,8 @@ mod tests {
         a.set_foldmethod_for_test(FoldMethod::Markdown);
         a.recompute_folds();
         let idx = a
-            .editor.folds
+            .editor
+            .folds
             .iter()
             .position(|f| f.start_line == 0)
             .expect("H1 fold");
@@ -1924,7 +1931,8 @@ mod tests {
         a.set_foldmethod_for_test(FoldMethod::Markdown);
         a.recompute_folds();
         let idx = a
-            .editor.folds
+            .editor
+            .folds
             .iter()
             .position(|f| f.start_line == 0)
             .expect("H1 fold");
@@ -1958,7 +1966,8 @@ mod tests {
         a.set_foldmethod_for_test(FoldMethod::Markdown);
         a.recompute_folds();
         let idx = a
-            .editor.folds
+            .editor
+            .folds
             .iter()
             .position(|f| f.start_line == 0)
             .expect("H1 fold");
@@ -1966,7 +1975,8 @@ mod tests {
         // Direct cursor move (not via auto-open path).
         a.editor.cursor = Position::new(1, 0);
         let still_closed = a
-            .editor.folds
+            .editor
+            .folds
             .iter()
             .find(|f| f.start_line == 0)
             .expect("H1 fold still present");
@@ -2045,7 +2055,11 @@ mod tests {
         a.apply(Action::CommandLineAcceptCompletion);
         // Should now be "describe-command motion:..." -- the
         // command word + space preserved; only `moti` replaced.
-        assert!(a.editor.command_line.starts_with("describe-command motion:"));
+        assert!(
+            a.editor
+                .command_line
+                .starts_with("describe-command motion:")
+        );
     }
 
     // ---- Hybrid <C-h> (DESIGN.md §5.11.3 Q11) ----
@@ -2060,15 +2074,30 @@ mod tests {
         let _ = lattice_grammar::builtins::populate(&mut registry);
         let _ = lattice_grammar::ex_commands::populate(&mut registry);
         // Canonical hits.
-        assert!(lattice_host::excommand::resolve_command_name_or_alias(&registry, "ex:write").is_some());
-        assert!(lattice_host::excommand::resolve_command_name_or_alias(&registry, "ex:apropos").is_some());
-        assert!(lattice_host::excommand::resolve_command_name_or_alias(&registry, "motion:line-down").is_some());
+        assert!(
+            lattice_host::excommand::resolve_command_name_or_alias(&registry, "ex:write").is_some()
+        );
+        assert!(
+            lattice_host::excommand::resolve_command_name_or_alias(&registry, "ex:apropos")
+                .is_some()
+        );
+        assert!(
+            lattice_host::excommand::resolve_command_name_or_alias(&registry, "motion:line-down")
+                .is_some()
+        );
         // Alias hits.
         assert!(lattice_host::excommand::resolve_command_name_or_alias(&registry, "w").is_some());
-        assert!(lattice_host::excommand::resolve_command_name_or_alias(&registry, "apropos").is_some());
-        assert!(lattice_host::excommand::resolve_command_name_or_alias(&registry, "describe-command").is_some());
+        assert!(
+            lattice_host::excommand::resolve_command_name_or_alias(&registry, "apropos").is_some()
+        );
+        assert!(
+            lattice_host::excommand::resolve_command_name_or_alias(&registry, "describe-command")
+                .is_some()
+        );
         // Misses.
-        assert!(lattice_host::excommand::resolve_command_name_or_alias(&registry, "nope").is_none());
+        assert!(
+            lattice_host::excommand::resolve_command_name_or_alias(&registry, "nope").is_none()
+        );
         assert!(lattice_host::excommand::resolve_command_name_or_alias(&registry, "").is_none());
     }
 
@@ -2403,7 +2432,10 @@ mod tests {
     fn after_change_user_can_type_and_replacement_lands() {
         let mut a = app_with("hello world", 10);
         let inv = CommandInvocation::of(a.editor.builtins.change.0).with_target(
-            lattice_grammar::Target::Motion(a.editor.builtins.word_forward, lattice_grammar::Args::None),
+            lattice_grammar::Target::Motion(
+                a.editor.builtins.word_forward,
+                lattice_grammar::Args::None,
+            ),
         );
         a.apply(Action::Invoke(inv));
         assert_eq!(a.editor.modal, ModalState::Insert);
@@ -2605,7 +2637,10 @@ mod tests {
         a.do_completion_accept_then_insert('.');
         // Popup closed; accept replaced the partial with the
         // full LSP insert, then `.` was appended.
-        assert!(a.editor.insert_completion.is_none(), "popup closed on commit");
+        assert!(
+            a.editor.insert_completion.is_none(),
+            "popup closed on commit"
+        );
         assert_eq!(a.editor.document.snapshot().buffer.as_string(), "foo.");
     }
 
@@ -2710,7 +2745,11 @@ mod tests {
         // Plain document with no path ⇒ Lang::Plain ⇒ text-mode.
         let a = app_with("hi", 5);
         let buf = a.editor.document_buffer_id;
-        let active = a.editor.active_modes.get(&buf).expect("active_modes populated");
+        let active = a
+            .editor
+            .active_modes
+            .get(&buf)
+            .expect("active_modes populated");
         assert_eq!(active.major(), Some(lattice_mode::TextMode::mode_id()));
     }
 
@@ -2738,14 +2777,16 @@ mod tests {
             ),
             target: crate::help::HelpLinkTarget::Unresolved("synthetic".into()),
         }]);
-        a.editor.buffer_locals
+        a.editor
+            .buffer_locals
             .get_mut(&help_id)
             .expect("locals seeded")
             .insert(synthetic);
 
         let _ = a.popup_help().expect("popup_buffer set");
         let locals = a
-            .editor.buffer_locals
+            .editor
+            .buffer_locals
             .get(&help_id)
             .expect("locals seeded by open_help_in_pane");
         let from_locals = locals.get::<crate::modes::HelpLinks>().unwrap();
@@ -2772,7 +2813,10 @@ mod tests {
     fn list_registers_includes_unnamed_and_zero() {
         let mut a = app_with("hello world", 10);
         let inv = CommandInvocation::of(a.editor.builtins.yank.0).with_target(
-            lattice_grammar::Target::Motion(a.editor.builtins.word_forward, lattice_grammar::Args::None),
+            lattice_grammar::Target::Motion(
+                a.editor.builtins.word_forward,
+                lattice_grammar::Args::None,
+            ),
         );
         a.apply(Action::Invoke(inv));
         submit_ex(&mut a, "reg");
@@ -2855,14 +2899,20 @@ mod tests {
         let mut a = app_with("hello world", 10);
         a.apply(Action::SelectRegister(Register::Named('a')));
         let inv = CommandInvocation::of(a.editor.builtins.yank.0).with_target(
-            lattice_grammar::Target::Motion(a.editor.builtins.word_forward, lattice_grammar::Args::None),
+            lattice_grammar::Target::Motion(
+                a.editor.builtins.word_forward,
+                lattice_grammar::Args::None,
+            ),
         );
         a.apply(Action::Invoke(inv));
         // Named slot populated.
         let named = a.editor.registers.get(&Register::Named('a')).unwrap();
         assert_eq!(named.content, "hello ");
         // Unnamed also populated.
-        assert_eq!(a.editor.unnamed_register.as_ref().unwrap().content, "hello ");
+        assert_eq!(
+            a.editor.unnamed_register.as_ref().unwrap().content,
+            "hello "
+        );
         // Pending register consumed.
         assert!(a.editor.pending_register.is_none());
     }
@@ -2871,7 +2921,10 @@ mod tests {
     fn yank_auto_populates_zero_register() {
         let mut a = app_with("hello world", 10);
         let inv = CommandInvocation::of(a.editor.builtins.yank.0).with_target(
-            lattice_grammar::Target::Motion(a.editor.builtins.word_forward, lattice_grammar::Args::None),
+            lattice_grammar::Target::Motion(
+                a.editor.builtins.word_forward,
+                lattice_grammar::Args::None,
+            ),
         );
         a.apply(Action::Invoke(inv));
         let zero = a.editor.registers.get(&Register::Numbered(0)).unwrap();
@@ -2882,7 +2935,10 @@ mod tests {
     fn yank_does_not_record_last_change() {
         let mut a = app_with("hello world", 10);
         let inv = CommandInvocation::of(a.editor.builtins.yank.0).with_target(
-            lattice_grammar::Target::Motion(a.editor.builtins.word_forward, lattice_grammar::Args::None),
+            lattice_grammar::Target::Motion(
+                a.editor.builtins.word_forward,
+                lattice_grammar::Args::None,
+            ),
         );
         a.apply(Action::Invoke(inv));
         // Yank doesn't mutate the buffer; dot-repeat shouldn't pick this up.
@@ -2893,7 +2949,10 @@ mod tests {
     fn change_records_last_change() {
         let mut a = app_with("hello world", 10);
         let inv = CommandInvocation::of(a.editor.builtins.change.0).with_target(
-            lattice_grammar::Target::Motion(a.editor.builtins.word_forward, lattice_grammar::Args::None),
+            lattice_grammar::Target::Motion(
+                a.editor.builtins.word_forward,
+                lattice_grammar::Args::None,
+            ),
         );
         a.apply(Action::Invoke(inv));
         // change drops to Insert, but the change itself is recorded.
@@ -3014,7 +3073,13 @@ mod tests {
             "syntax must stay live during help-in-pane overlay"
         );
         // Round-trip back to the document.
-        let doc_id = a.editor.buffers.document_ids_sorted().first().copied().unwrap();
+        let doc_id = a
+            .editor
+            .buffers
+            .document_ids_sorted()
+            .first()
+            .copied()
+            .unwrap();
         a.activate_document(doc_id);
         assert!(matches!(a.editor.active_buffer, BufferKind::Document));
         assert!(
@@ -3198,7 +3263,8 @@ mod tests {
         let _ = meta;
         a.editor.insert_completion = Some(state);
         a.do_completion_toggle_docs();
-        let body = a.editor
+        let body = a
+            .editor
             .insert_completion
             .as_ref()
             .and_then(|s| s.doc_popup.as_ref())
@@ -3222,14 +3288,16 @@ mod tests {
         a.do_completion_toggle_docs();
         // Even with no candidate, the popup opens with an
         // empty body slot. Toggling again closes it.
-        let was_open = a.editor
+        let was_open = a
+            .editor
             .insert_completion
             .as_ref()
             .map(|s| s.doc_popup.is_some())
             .unwrap_or(false);
         assert!(was_open);
         a.do_completion_toggle_docs();
-        let now_closed = a.editor
+        let now_closed = a
+            .editor
             .insert_completion
             .as_ref()
             .map(|s| s.doc_popup.is_none())
@@ -3251,7 +3319,8 @@ mod tests {
         a.do_completion_toggle_docs();
         // Default scroll is 0; up clamps at 0.
         assert_eq!(
-            a.editor.insert_completion
+            a.editor
+                .insert_completion
                 .as_ref()
                 .and_then(|s| s.doc_popup.as_ref())
                 .map(|d| d.scroll),
@@ -3259,7 +3328,8 @@ mod tests {
         );
         a.apply(Action::CompletionDocsScrollUp);
         assert_eq!(
-            a.editor.insert_completion
+            a.editor
+                .insert_completion
                 .as_ref()
                 .and_then(|s| s.doc_popup.as_ref())
                 .map(|d| d.scroll),
@@ -3267,7 +3337,8 @@ mod tests {
         );
         a.apply(Action::CompletionDocsScrollDown);
         assert_eq!(
-            a.editor.insert_completion
+            a.editor
+                .insert_completion
                 .as_ref()
                 .and_then(|s| s.doc_popup.as_ref())
                 .map(|d| d.scroll),
@@ -3275,7 +3346,8 @@ mod tests {
         );
         a.apply(Action::CompletionDocsScrollDown);
         assert_eq!(
-            a.editor.insert_completion
+            a.editor
+                .insert_completion
                 .as_ref()
                 .and_then(|s| s.doc_popup.as_ref())
                 .map(|d| d.scroll),
@@ -3283,7 +3355,8 @@ mod tests {
         );
         a.apply(Action::CompletionDocsScrollUp);
         assert_eq!(
-            a.editor.insert_completion
+            a.editor
+                .insert_completion
                 .as_ref()
                 .and_then(|s| s.doc_popup.as_ref())
                 .map(|d| d.scroll),
@@ -3330,13 +3403,15 @@ mod tests {
             h.cursor = lattice_protocol::Position::ZERO;
         });
         let mut existing_links = a
-            .editor.buffer_locals
+            .editor
+            .buffer_locals
             .get(&buf_id)
             .and_then(|l| l.get::<crate::modes::HelpLinks>())
             .map(|l| l.0.clone())
             .unwrap_or_default();
         existing_links.push(link);
-        a.editor.buffer_locals
+        a.editor
+            .buffer_locals
             .entry(buf_id)
             .or_default()
             .insert(crate::modes::HelpLinks(existing_links));
@@ -3389,13 +3464,15 @@ mod tests {
             h.cursor = lattice_protocol::Position::ZERO;
         });
         let mut existing_links = a
-            .editor.buffer_locals
+            .editor
+            .buffer_locals
             .get(&buf_id)
             .and_then(|l| l.get::<crate::modes::HelpLinks>())
             .map(|l| l.0.clone())
             .unwrap_or_default();
         existing_links.push(link);
-        a.editor.buffer_locals
+        a.editor
+            .buffer_locals
             .entry(buf_id)
             .or_default()
             .insert(crate::modes::HelpLinks(existing_links));
@@ -3403,7 +3480,13 @@ mod tests {
         a.apply(Action::FollowLink);
         // Out-of-range line should clamp to the last valid line,
         // not panic and not echo a confusing error.
-        let last_line = a.editor.document.snapshot().buffer.line_count().saturating_sub(1);
+        let last_line = a
+            .editor
+            .document
+            .snapshot()
+            .buffer
+            .line_count()
+            .saturating_sub(1);
         assert_eq!(a.editor.cursor.line, last_line);
         let _ = std::fs::remove_file(path);
     }
@@ -3412,7 +3495,10 @@ mod tests {
     fn yank_then_paste_round_trips_word() {
         let mut a = app_with("hello world", 10);
         let yank = CommandInvocation::of(a.editor.builtins.yank.0).with_target(
-            lattice_grammar::Target::Motion(a.editor.builtins.word_forward, lattice_grammar::Args::None),
+            lattice_grammar::Target::Motion(
+                a.editor.builtins.word_forward,
+                lattice_grammar::Args::None,
+            ),
         );
         a.apply(Action::Invoke(yank));
         // Move cursor to end of buffer.
@@ -3450,12 +3536,14 @@ mod tests {
         // pre-open record.
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let log_id = app
-            .editor.buffers
+            .editor
+            .buffers
             .by_name(&lattice_lsp::lsp_server_log_name(&instance))
             .expect("per-instance log buffer registered");
         assert_eq!(app.active_pane_buffer_id(), log_id);
         let body = app
-            .editor.buffers
+            .editor
+            .buffers
             .document_handle(log_id)
             .expect("log buffer is a Document")
             .text();
@@ -3489,7 +3577,8 @@ mod tests {
         app.open_lsp_log_in_pane("rust");
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let log_id = app
-            .editor.buffers
+            .editor
+            .buffers
             .by_name(&lattice_lsp::lsp_server_log_name(&instance))
             .expect("per-instance log buffer registered");
         let body = app.editor.buffers.document_handle(log_id).unwrap().text();
@@ -3526,7 +3615,8 @@ mod tests {
         app.open_lsp_trace_log_in_pane("rust");
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let trace_id = app
-            .editor.buffers
+            .editor
+            .buffers
             .by_name(&lattice_lsp::lsp_server_trace_log_name(&instance))
             .expect("per-instance trace buffer registered");
         let body = app.editor.buffers.document_handle(trace_id).unwrap().text();
@@ -3541,50 +3631,61 @@ mod tests {
         let a = app_with("hi", 5);
         // Foundation
         assert!(
-            a.editor.mode_registry
+            a.editor
+                .mode_registry
                 .is_registered(lattice_mode::TextMode::mode_id())
         );
         // Languages (lattice-syntax)
         assert!(
-            a.editor.mode_registry
+            a.editor
+                .mode_registry
                 .is_registered(lattice_syntax::RustMode::mode_id())
         );
         assert!(
-            a.editor.mode_registry
+            a.editor
+                .mode_registry
                 .is_registered(lattice_syntax::PythonMode::mode_id())
         );
         assert!(
-            a.editor.mode_registry
+            a.editor
+                .mode_registry
                 .is_registered(lattice_syntax::JavascriptMode::mode_id())
         );
         assert!(
-            a.editor.mode_registry
+            a.editor
+                .mode_registry
                 .is_registered(lattice_syntax::MarkdownMode::mode_id())
         );
         // Buffer-kind majors (lattice-ui-tui)
         assert!(
-            a.editor.mode_registry
+            a.editor
+                .mode_registry
                 .is_registered(crate::modes::HelpMode::mode_id())
         );
         assert!(
-            a.editor.mode_registry
+            a.editor
+                .mode_registry
                 .is_registered(crate::modes::FileTreeMode::mode_id())
         );
         assert!(
-            a.editor.mode_registry
+            a.editor
+                .mode_registry
                 .is_registered(crate::modes::OilMode::mode_id())
         );
         // LSP log majors (lattice-lsp)
         assert!(
-            a.editor.mode_registry
+            a.editor
+                .mode_registry
                 .is_registered(lattice_lsp::modes::LspLogMode::mode_id())
         );
         assert!(
-            a.editor.mode_registry
+            a.editor
+                .mode_registry
                 .is_registered(lattice_lsp::modes::LspTraceLogMode::mode_id())
         );
         assert!(
-            a.editor.mode_registry
+            a.editor
+                .mode_registry
                 .is_registered(lattice_lsp::modes::LspServerLogMode::mode_id())
         );
     }
@@ -3607,7 +3708,8 @@ mod tests {
         let tree_id = a.active_pane_buffer_id();
 
         let locals = a
-            .editor.buffer_locals
+            .editor
+            .buffer_locals
             .get(&tree_id)
             .expect("file-tree locals seeded");
         let root = locals
@@ -3649,7 +3751,8 @@ mod tests {
         // the source-code middle-dot, not the nerd-font rust
         // glyph.
         let body = a
-            .editor.buffers
+            .editor
+            .buffers
             .with_file_tree(tree_id, |t| t.content.as_string())
             .unwrap();
         assert!(
@@ -3667,7 +3770,8 @@ mod tests {
         submit_ex(&mut a, "set ui.nerd_fonts=on");
 
         let body = a
-            .editor.buffers
+            .editor
+            .buffers
             .with_file_tree(tree_id, |t| t.content.as_string())
             .unwrap();
         assert!(
@@ -3707,7 +3811,8 @@ mod tests {
             ),
             target: crate::help::HelpLinkTarget::Topic("synthetic-topic".into()),
         }]);
-        a.editor.buffer_locals
+        a.editor
+            .buffer_locals
             .get_mut(&help_id)
             .expect("locals seeded")
             .insert(synthetic);
@@ -3727,7 +3832,11 @@ mod tests {
         // production path had read from the (empty) struct
         // field, the message would have been "no link under
         // cursor".
-        let msg = a.editor.last_message.as_ref().expect("echo set by FollowLink");
+        let msg = a
+            .editor
+            .last_message
+            .as_ref()
+            .expect("echo set by FollowLink");
         assert!(
             !msg.text.contains("no link under cursor"),
             "production reader should have found the link via buffer_locals, \

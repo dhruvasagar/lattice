@@ -105,7 +105,8 @@ mod tests {
         let mut a = app_with("hello world", 10);
         a.apply(Action::EnterVisual(VisualKind::Charwise));
         a.apply(invoke_motion(a.editor.builtins.word_forward));
-        let inv = CommandInvocation::of(a.editor.builtins.yank.0).with_range(GrammarRange::Selection);
+        let inv =
+            CommandInvocation::of(a.editor.builtins.yank.0).with_range(GrammarRange::Selection);
         a.apply(Action::Invoke(inv));
         assert_eq!(a.editor.modal, ModalState::Normal);
         a.apply(Action::ReselectLastVisual);
@@ -173,7 +174,8 @@ mod tests {
         a.apply(invoke_motion(a.editor.builtins.char_right));
         // Selection now covers bytes 0..3 of "hello world" charwise (vim
         // INCLUSIVE -> visual range covers 0..=3 = 4 bytes "hell").
-        let inv = CommandInvocation::of(a.editor.builtins.delete.0).with_range(GrammarRange::Selection);
+        let inv =
+            CommandInvocation::of(a.editor.builtins.delete.0).with_range(GrammarRange::Selection);
         a.apply(Action::Invoke(inv));
         assert_eq!(a.editor.document.text(), "o world");
         assert_eq!(a.editor.modal, ModalState::Normal);
@@ -184,7 +186,8 @@ mod tests {
         let mut a = app_with("hello world", 10);
         a.apply(Action::EnterVisual(VisualKind::Charwise));
         a.apply(invoke_motion(a.editor.builtins.word_forward));
-        let inv = CommandInvocation::of(a.editor.builtins.yank.0).with_range(GrammarRange::Selection);
+        let inv =
+            CommandInvocation::of(a.editor.builtins.yank.0).with_range(GrammarRange::Selection);
         a.apply(Action::Invoke(inv));
         let reg = a.editor.unnamed_register.as_ref().unwrap();
         assert_eq!(reg.kind, YankKind::Charwise);
@@ -199,7 +202,8 @@ mod tests {
         let mut a = app_with("hello world", 10);
         a.apply(Action::EnterVisual(VisualKind::Charwise));
         a.apply(invoke_motion(a.editor.builtins.word_forward));
-        let inv = CommandInvocation::of(a.editor.builtins.change.0).with_range(GrammarRange::Selection);
+        let inv =
+            CommandInvocation::of(a.editor.builtins.change.0).with_range(GrammarRange::Selection);
         a.apply(Action::Invoke(inv));
         // Change in Visual deletes selection AND drops into Insert.
         assert_eq!(a.editor.modal, ModalState::Insert);
@@ -213,7 +217,8 @@ mod tests {
         // Selection is single line; yank captures the whole line
         // regardless of byte offsets. Slice 8.i.4.g: linewise yank
         // content always ends with `\n`.
-        let inv = CommandInvocation::of(a.editor.builtins.yank.0).with_range(GrammarRange::Selection);
+        let inv =
+            CommandInvocation::of(a.editor.builtins.yank.0).with_range(GrammarRange::Selection);
         a.apply(Action::Invoke(inv));
         let reg = a.editor.unnamed_register.as_ref().unwrap();
         assert_eq!(reg.kind, YankKind::Linewise);
@@ -225,7 +230,8 @@ mod tests {
         let mut a = app_with("aaa\nbbb\nccc\nddd", 10);
         a.apply(Action::EnterVisual(VisualKind::Linewise));
         a.apply(invoke_motion(a.editor.builtins.line_down));
-        let inv = CommandInvocation::of(a.editor.builtins.yank.0).with_range(GrammarRange::Selection);
+        let inv =
+            CommandInvocation::of(a.editor.builtins.yank.0).with_range(GrammarRange::Selection);
         a.apply(Action::Invoke(inv));
         let reg = a.editor.unnamed_register.as_ref().unwrap();
         assert_eq!(reg.kind, YankKind::Linewise);

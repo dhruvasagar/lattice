@@ -194,7 +194,8 @@ impl App {
         // Document"; State B (focused popup) is "active is Help"
         // -- the second clause stays as the State-A discriminator.
         let popup_has_hover_mode = self
-            .editor.popup_buffer
+            .editor
+            .popup_buffer
             .and_then(|id| self.editor.active_modes.get(&id))
             .map(|modes| modes.minors().contains(&crate::modes::HoverMode::mode_id()))
             .unwrap_or(false);
@@ -888,14 +889,13 @@ impl App {
             RendererSignal::DisplayBuffer(req) => {
                 let lattice_host::dispatch::DisplayBufferRequest { content, category } = *req;
                 self.display_buffer(content, category);
-            }
-            // 5.5.F.5.5: `BufferActivated` retired. The Bucket-A
-            // `visible_highlights` / `pane_highlights` cache clear
-            // lives on `Editor` as plain field writes, so the
-            // post-activation tail (`activate_buffer_state`) runs
-            // entirely host-side; cascading mode-lifecycle signals
-            // stream into the `handle_effect` outcome and fan out
-            // through this same match.
+            } // 5.5.F.5.5: `BufferActivated` retired. The Bucket-A
+              // `visible_highlights` / `pane_highlights` cache clear
+              // lives on `Editor` as plain field writes, so the
+              // post-activation tail (`activate_buffer_state`) runs
+              // entirely host-side; cascading mode-lifecycle signals
+              // stream into the `handle_effect` outcome and fan out
+              // through this same match.
         }
     }
 
@@ -1103,8 +1103,7 @@ mod tests {
 
     impl Drop for TestLocalsGuard {
         fn drop(&mut self) {
-            self.counter
-                .store(0, std::sync::atomic::Ordering::SeqCst);
+            self.counter.store(0, std::sync::atomic::Ordering::SeqCst);
         }
     }
 
@@ -1409,7 +1408,10 @@ mod tests {
     fn invocation_with_no_pending_register_uses_unnamed() {
         let mut a = app_with("hello world", 10);
         let inv = CommandInvocation::of(a.editor.builtins.yank.0).with_target(
-            lattice_grammar::Target::Motion(a.editor.builtins.word_forward, lattice_grammar::Args::None),
+            lattice_grammar::Target::Motion(
+                a.editor.builtins.word_forward,
+                lattice_grammar::Args::None,
+            ),
         );
         a.apply(Action::Invoke(inv));
         // Unnamed populated; "0 also populated by vim's auto-fill on yank.
@@ -1417,7 +1419,12 @@ mod tests {
         assert!(a.editor.unnamed_register.is_some());
         assert!(a.editor.registers.contains_key(&Register::Numbered(0)));
         // No alphabetic named slots populated.
-        assert!(!a.editor.registers.keys().any(|r| matches!(r, Register::Named(_))));
+        assert!(
+            !a.editor
+                .registers
+                .keys()
+                .any(|r| matches!(r, Register::Named(_)))
+        );
     }
 
     #[test]
@@ -1470,7 +1477,10 @@ mod tests {
         let mut a = app_with("alpha beta gamma", 10);
         // cw on first word.
         let inv = CommandInvocation::of(a.editor.builtins.change.0).with_target(
-            lattice_grammar::Target::Motion(a.editor.builtins.word_forward, lattice_grammar::Args::None),
+            lattice_grammar::Target::Motion(
+                a.editor.builtins.word_forward,
+                lattice_grammar::Args::None,
+            ),
         );
         a.apply(Action::Invoke(inv));
         a.apply(Action::Insert("X".into()));
@@ -1493,7 +1503,10 @@ mod tests {
         // dw (no insert phase) -> . repeats just the delete.
         let mut a = app_with("alpha beta gamma", 10);
         let inv = CommandInvocation::of(a.editor.builtins.delete.0).with_target(
-            lattice_grammar::Target::Motion(a.editor.builtins.word_forward, lattice_grammar::Args::None),
+            lattice_grammar::Target::Motion(
+                a.editor.builtins.word_forward,
+                lattice_grammar::Args::None,
+            ),
         );
         a.apply(Action::Invoke(inv));
         // dw deletes "alpha "; then `.` deletes another word (no insert).
@@ -1591,7 +1604,8 @@ mod tests {
         a.recompute_folds();
         // Close the H1 fold (lines 0..=2).
         let idx = a
-            .editor.folds
+            .editor
+            .folds
             .iter()
             .position(|f| f.start_line == 0)
             .expect("H1 fold");
@@ -1615,7 +1629,8 @@ mod tests {
         a.set_foldmethod_for_test(FoldMethod::Markdown);
         a.recompute_folds();
         let idx = a
-            .editor.folds
+            .editor
+            .folds
             .iter()
             .position(|f| f.start_line == 0)
             .expect("H1 fold");
@@ -1759,15 +1774,17 @@ mod tests {
         let crate::help::HelpContent { buffer, .. } =
             crate::help::HelpContent::from_lines("preexisting", vec!["x".into()]);
         let id = buffer.id;
-        a.editor.buffers.insert(crate::buffer_registry::BufferEntry {
-            id,
-            flags: crate::buffers::BufferFlags {
-                listed: false,
-                hidden: true,
-            },
-            data: crate::buffer_registry::BufferData::Help(buffer),
-            name: None,
-        });
+        a.editor
+            .buffers
+            .insert(crate::buffer_registry::BufferEntry {
+                id,
+                flags: crate::buffers::BufferFlags {
+                    listed: false,
+                    hidden: true,
+                },
+                data: crate::buffer_registry::BufferData::Help(buffer),
+                name: None,
+            });
         a.editor.popup_buffer = Some(id);
         a.apply(Action::EnterCommandLine);
         assert!(a.editor.popup_buffer.is_none());
@@ -1801,7 +1818,10 @@ mod tests {
         a.editor.pane_highlights.insert(0, vec![Vec::new(); 1]);
         a.editor.pending_redraw = false;
         a.apply(Action::RedrawScreen);
-        assert!(a.editor.pending_redraw, "runtime should clear terminal next frame");
+        assert!(
+            a.editor.pending_redraw,
+            "runtime should clear terminal next frame"
+        );
         assert!(
             a.editor.pane_highlights.is_empty(),
             "pane highlights cache must reset (so next frame repopulates from scratch)"
@@ -1837,7 +1857,10 @@ mod tests {
         // exercise the State A -> State B promote through the Action
         // path so the test covers the live dispatch wire too.
         a.apply(Action::LspHoverRequest);
-        assert!(a.editor.popup_buffer.is_some(), "popup stays up after focus");
+        assert!(
+            a.editor.popup_buffer.is_some(),
+            "popup stays up after focus"
+        );
         assert!(matches!(a.editor.active_buffer, BufferKind::Help));
         let stash = a.editor.prev_pane_for_help.expect("State B captures stash");
         assert_eq!(stash.buffer, BufferKind::Document);
@@ -1855,7 +1878,8 @@ mod tests {
         let initial_id = a.editor.document_buffer_id;
         // Close the first fold (line 0) on the initial buffer.
         let first_idx = a
-            .editor.folds
+            .editor
+            .folds
             .iter()
             .position(|f| f.start_line == 0)
             .expect("fold");
@@ -1896,7 +1920,8 @@ mod tests {
         assert!(a.editor.folds.is_empty(), "manual leaves folds empty");
         // Switch back to the original buffer.
         let original_id = a
-            .editor.buffers
+            .editor
+            .buffers
             .document_ids_sorted()
             .into_iter()
             .find(|id| *id != id_target)
@@ -1967,7 +1992,9 @@ mod tests {
         // reaches the supervisor.
         use std::str::FromStr;
         let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
-        app.editor.buffer_uris.insert(app.editor.document_buffer_id, uri.clone());
+        app.editor
+            .buffer_uris
+            .insert(app.editor.document_buffer_id, uri.clone());
         // Test-only: register the URI directly with the
         // supervisor under a mock actor. Without a real
         // ServerHandle attach_handle requires one, so instead
@@ -1978,7 +2005,10 @@ mod tests {
         let _ = app.apply_edit_blocking(edit.clone());
         // Buffer mapping unchanged; record_edit is best-effort
         // (skips if no actor attached for the URI).
-        assert_eq!(app.editor.buffer_uris.get(&app.editor.document_buffer_id), Some(&uri));
+        assert_eq!(
+            app.editor.buffer_uris.get(&app.editor.document_buffer_id),
+            Some(&uri)
+        );
     }
 
     #[test]
@@ -2087,7 +2117,8 @@ mod tests {
 
         let mut active = lattice_mode::ActiveModes::new();
         let guards = lattice_mode::GuardStoreHandle::new();
-        a.editor.mode_registry
+        a.editor
+            .mode_registry
             .activate_minor(
                 &mut active,
                 &guards,
@@ -2133,7 +2164,8 @@ mod tests {
 
         let mut active = lattice_mode::ActiveModes::new();
         let guards = lattice_mode::GuardStoreHandle::new();
-        a.editor.mode_registry
+        a.editor
+            .mode_registry
             .activate_minor(
                 &mut active,
                 &guards,
@@ -2153,7 +2185,8 @@ mod tests {
         }
         assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 42);
 
-        a.editor.mode_registry
+        a.editor
+            .mode_registry
             .deactivate_minor(
                 &mut active,
                 &guards,

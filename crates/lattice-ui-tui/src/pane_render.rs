@@ -138,7 +138,8 @@ mod tests {
         let help = crate::help::HelpContent::from_lines("test", vec!["line one".to_string()]);
         let help_id = a.open_help_in_pane(help);
         let modes = a
-            .editor.active_modes
+            .editor
+            .active_modes
             .get(&help_id)
             .expect("in-pane help has modes");
         assert_eq!(modes.major(), Some(lattice_syntax::MarkdownMode.id()));

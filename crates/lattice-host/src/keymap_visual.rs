@@ -56,8 +56,8 @@ use lattice_grammar::VisualKind;
 use lattice_grammar::builtins::Builtins;
 use lattice_grammar::command::CommandInvocation;
 
-use crate::actions::ActionIds;
 use crate::action::Action;
+use crate::actions::ActionIds;
 use crate::chord::{KeyChord, SpecialKey};
 use crate::keymap::BindingMode;
 use crate::keymap_registry::KeymapHandle;
@@ -242,4 +242,3 @@ pub fn dispatch_visual(handle: &KeymapHandle, chord: &KeyChord, kind: VisualKind
 fn action_from_bound(bound: &Arc<BoundCommand>) -> Action {
     Action::Invoke(bound.command.clone())
 }
-

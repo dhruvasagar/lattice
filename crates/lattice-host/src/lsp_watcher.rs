@@ -41,32 +41,68 @@ impl LspFileWatcher {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<NotifyEvent>();
         let watcher = RecommendedWatcher::new(
             move |res: notify::Result<NotifyEvent>| {
-                if let Ok(ev) = res { let _ = tx.send(ev); }
+                if let Ok(ev) = res {
+                    let _ = tx.send(ev);
+                }
             },
             notify::Config::default(),
         )?;
-        Ok(Self { watcher, watched_roots: HashSet::new(), rx, by_server: HashMap::new() })
+        Ok(Self {
+            watcher,
+            watched_roots: HashSet::new(),
+            rx,
+            by_server: HashMap::new(),
+        })
     }
 
     /// Sync the watched roots to match `target`.
-    pub fn sync_watched_roots(&mut self, target: &HashSet<PathBuf>, logger: &lattice_lsp::LspLogger) {
+    pub fn sync_watched_roots(
+        &mut self,
+        target: &HashSet<PathBuf>,
+        logger: &lattice_lsp::LspLogger,
+    ) {
         // Unwatch removed.
-        let stale: Vec<PathBuf> = self.watched_roots.iter().filter(|p| !target.contains(*p)).cloned().collect();
-        for p in stale { let _ = self.watcher.unwatch(&p); self.watched_roots.remove(&p); }
+        let stale: Vec<PathBuf> = self
+            .watched_roots
+            .iter()
+            .filter(|p| !target.contains(*p))
+            .cloned()
+            .collect();
+        for p in stale {
+            let _ = self.watcher.unwatch(&p);
+            self.watched_roots.remove(&p);
+        }
         // Watch new.
-        let new: Vec<PathBuf> = target.iter().filter(|p| !self.watched_roots.contains(*p)).cloned().collect();
-        for p in new { match self.watcher.watch(&p, RecursiveMode::Recursive) {
-            Ok(()) => { self.watched_roots.insert(p); }
-            Err(e) => logger.log(None, lattice_lsp::LogLevel::Warn, lattice_lsp::LogSource::Client, format!("file-watcher watch {} failed: {e}", p.display())),
-        }}
+        let new: Vec<PathBuf> = target
+            .iter()
+            .filter(|p| !self.watched_roots.contains(*p))
+            .cloned()
+            .collect();
+        for p in new {
+            match self.watcher.watch(&p, RecursiveMode::Recursive) {
+                Ok(()) => {
+                    self.watched_roots.insert(p);
+                }
+                Err(e) => logger.log(
+                    None,
+                    lattice_lsp::LogLevel::Warn,
+                    lattice_lsp::LogSource::Client,
+                    format!("file-watcher watch {} failed: {e}", p.display()),
+                ),
+            }
+        }
     }
 
-    pub fn watched_roots(&self) -> &HashSet<PathBuf> { &self.watched_roots }
+    pub fn watched_roots(&self) -> &HashSet<PathBuf> {
+        &self.watched_roots
+    }
 
     /// Drain queued fs events (used by ui-tui drain path).
     pub fn drain_pending(&mut self) -> Vec<NotifyEvent> {
         let mut out = Vec::new();
-        while let Ok(ev) = self.rx.try_recv() { out.push(ev); }
+        while let Ok(ev) = self.rx.try_recv() {
+            out.push(ev);
+        }
         out
     }
 }

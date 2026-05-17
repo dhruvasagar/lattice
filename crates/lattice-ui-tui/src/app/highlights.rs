@@ -233,7 +233,8 @@ impl App {
         // inactive Document pane that doesn't share doc with the
         // active pane.
         let pending: Vec<(usize, BufferId, u32, u32)> = self
-            .editor.pane_tree
+            .editor
+            .pane_tree
             .leaves()
             .iter()
             .enumerate()
@@ -304,7 +305,8 @@ impl App {
     /// `viewport_row` no longer maps to `scroll + row` once folds
     /// hide interior lines.
     pub fn highlights_for_viewport_row(&self, viewport_row: u32) -> &[StyledSpan] {
-        self.editor.visible_highlights
+        self.editor
+            .visible_highlights
             .get(viewport_row as usize)
             .map(Vec::as_slice)
             .unwrap_or(&[])
@@ -322,7 +324,8 @@ impl App {
             return &[];
         }
         let offset = (line - self.editor.scroll) as usize;
-        self.editor.visible_highlights
+        self.editor
+            .visible_highlights
             .get(offset)
             .map(Vec::as_slice)
             .unwrap_or(&[])

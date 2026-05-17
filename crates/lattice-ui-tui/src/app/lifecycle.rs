@@ -176,7 +176,10 @@ impl App {
                 let initial_text = new_doc.text();
                 let initial_text_version = new_doc.text_version();
                 let syntax: Option<lattice_syntax::SyntaxHandle> =
-                    match Syntax::for_language_with_registry(lang, self.editor.lang_registry.clone()) {
+                    match Syntax::for_language_with_registry(
+                        lang,
+                        self.editor.lang_registry.clone(),
+                    ) {
                         Ok(Some(mut s)) => {
                             s.parse_at(&initial_text, initial_text_version);
                             Some(lattice_syntax::SyntaxHandle::seeded_with_runtime(
@@ -326,7 +329,10 @@ impl App {
                 return;
             };
             let dir_display = dir.display().to_string();
-            let result = self.editor.buffers.with_oil_mut(oil_id, |oil| oil.apply(&dir));
+            let result = self
+                .editor
+                .buffers
+                .with_oil_mut(oil_id, |oil| oil.apply(&dir));
             if let Some(r) = result {
                 match r {
                     Ok(()) => self.set_message(
@@ -367,7 +373,8 @@ impl App {
         }
         if !force {
             let dirty_id = self
-                .editor.buffers
+                .editor
+                .buffers
                 .document_ids_sorted()
                 .into_iter()
                 .find(|id| self.editor.buffers.document_dirty(*id));
@@ -524,7 +531,6 @@ impl App {
     // — it sat alongside `set_selections_blocking` (its only caller),
     // which migrated host-side in the same slice.
 
-
     /// Total area available to pane content in screen-cell units.
     /// Currently the buffer area = full terminal minus the mode
     /// line (1 row) and the echo / cmdline area (1 row). Width is
@@ -557,7 +563,8 @@ impl App {
             return "[no buffer]".to_string();
         }
         let label = self
-            .editor.buffers
+            .editor
+            .buffers
             .document_path(pane.buffer_id)
             .map(|p| p.display().to_string())
             .or_else(|| self.editor.buffers.name_of(pane.buffer_id))
@@ -589,7 +596,12 @@ impl App {
         // Push pre-jump cursor before any state mutates.
         self.push_position_history(self.editor.cursor, PositionSource::PluginPush);
 
-        let same_buffer = self.editor.document.path().map(|p| p == path).unwrap_or(false);
+        let same_buffer = self
+            .editor
+            .document
+            .path()
+            .map(|p| p == path)
+            .unwrap_or(false);
         if !same_buffer {
             self.do_edit(Some(path.to_path_buf()), false);
         }
@@ -647,7 +659,8 @@ impl App {
             // to it. Re-seed buffer_locals with the fresh metadata
             // so live-tail readers (link / anchor / highlights)
             // see the updated parse.
-            self.editor.buffers
+            self.editor
+                .buffers
                 .with_help_mut(existing_id, |slot| *slot = buffer);
             self.seed_help_metadata_locals(existing_id, metadata);
             self.activate_help_in_pane(existing_id);
@@ -734,10 +747,13 @@ impl App {
     /// non-document buffers).
     #[allow(dead_code)]
     pub(crate) fn document_folds_for(&self, id: BufferId) -> &[crate::app::Fold] {
-        if id == self.editor.document_buffer_id && matches!(self.editor.active_buffer, BufferKind::Document) {
+        if id == self.editor.document_buffer_id
+            && matches!(self.editor.active_buffer, BufferKind::Document)
+        {
             return &self.editor.folds;
         }
-        self.editor.buffer_locals
+        self.editor
+            .buffer_locals
             .get(&id)
             .and_then(|l| l.get::<crate::modes::DocumentFolds>())
             .map(|f| f.0.as_slice())
@@ -747,10 +763,13 @@ impl App {
     /// Mode-owned `last_parsed_text_version` for `id`.
     #[allow(dead_code)]
     pub(crate) fn document_last_parsed_text_version_for(&self, id: BufferId) -> u64 {
-        if id == self.editor.document_buffer_id && matches!(self.editor.active_buffer, BufferKind::Document) {
+        if id == self.editor.document_buffer_id
+            && matches!(self.editor.active_buffer, BufferKind::Document)
+        {
             return self.editor.last_parsed_text_version;
         }
-        self.editor.buffer_locals
+        self.editor
+            .buffer_locals
             .get(&id)
             .and_then(|l| l.get::<crate::modes::DocumentLastParsedTextVersion>())
             .map(|v| v.0)
@@ -760,10 +779,13 @@ impl App {
     /// Mode-owned `last_synced_syntax_version` for `id`.
     #[allow(dead_code)]
     pub(crate) fn document_last_synced_syntax_version_for(&self, id: BufferId) -> u64 {
-        if id == self.editor.document_buffer_id && matches!(self.editor.active_buffer, BufferKind::Document) {
+        if id == self.editor.document_buffer_id
+            && matches!(self.editor.active_buffer, BufferKind::Document)
+        {
             return self.editor.last_synced_syntax_version;
         }
-        self.editor.buffer_locals
+        self.editor
+            .buffer_locals
             .get(&id)
             .and_then(|l| l.get::<crate::modes::DocumentLastSyncedSyntaxVersion>())
             .map(|v| v.0)
@@ -892,7 +914,12 @@ impl App {
     /// concern (1.5s+ stalls for multi-server saves) without
     /// the behavioural change of fully-async save.
     fn run_will_save_wait_until_blocking(&mut self) {
-        let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id).cloned() else {
+        let Some(uri) = self
+            .editor
+            .buffer_uris
+            .get(&self.editor.document_buffer_id)
+            .cloned()
+        else {
             return;
         };
         let handles = self.editor.lsp.servers_for(&uri);
@@ -1004,7 +1031,8 @@ impl App {
         });
         let result = block_on(self.editor.document.save_as(path.clone()));
         if result.is_ok() {
-            self.editor.event_bus
+            self.editor
+                .event_bus
                 .publish(Event::DocumentSaved { id: snap.id, path });
         }
         result
@@ -1042,7 +1070,10 @@ mod tests {
         // Version baseline advanced -- next request will use
         // this as `from_version`.
         assert!(a.editor.last_synced_syntax_version > initial_synced);
-        assert_eq!(a.editor.last_synced_syntax_version, a.editor.document.text_version());
+        assert_eq!(
+            a.editor.last_synced_syntax_version,
+            a.editor.document.text_version()
+        );
     }
 
     #[test]
@@ -1094,7 +1125,10 @@ mod tests {
         std::fs::write(&path, "new content").unwrap();
         let mut a = app_with("hello world", 10);
         let inv = CommandInvocation::of(a.editor.builtins.yank.0).with_target(
-            lattice_grammar::Target::Motion(a.editor.builtins.word_forward, lattice_grammar::Args::None),
+            lattice_grammar::Target::Motion(
+                a.editor.builtins.word_forward,
+                lattice_grammar::Args::None,
+            ),
         );
         a.apply(Action::Invoke(inv));
         assert!(a.editor.unnamed_register.is_some());
@@ -1162,7 +1196,10 @@ mod tests {
         a.apply(Action::SplitPaneVertical);
         assert_eq!(a.editor.pane_tree.len(), 2);
         a.do_quit(false);
-        assert!(!a.editor.should_quit, "extra pane: :q must not exit the editor");
+        assert!(
+            !a.editor.should_quit,
+            "extra pane: :q must not exit the editor"
+        );
         assert_eq!(a.editor.pane_tree.len(), 1);
     }
 
@@ -1195,7 +1232,8 @@ mod tests {
         a.do_quit(false);
         assert!(!a.editor.should_quit);
         assert!(
-            a.editor.last_message
+            a.editor
+                .last_message
                 .as_ref()
                 .map(|m| m.text.contains("no write since last change"))
                 .unwrap_or(false)
@@ -1400,7 +1438,8 @@ mod tests {
         assert_eq!(app.active_pane_content_height(20), 20);
         // Horizontal split -> two panes, each ~half the buffer
         // height; minus the per-pane status row.
-        app.editor.pane_tree
+        app.editor
+            .pane_tree
             .split_active(crate::pane::SplitOrientation::Horizontal);
         let content = app.active_pane_content_height(20);
         // 20 / 2 = 10; minus status row = 9.
@@ -1520,9 +1559,21 @@ mod tests {
         let mut a = app_with("", 5);
         // tabstop default is 8; override should land before
         // first frame.
-        assert_eq!(*a.editor.config.get_typed::<lattice_config::Tabstop>().unwrap(), 8);
+        assert_eq!(
+            *a.editor
+                .config
+                .get_typed::<lattice_config::Tabstop>()
+                .unwrap(),
+            8
+        );
         a.load_persistent_config(Some(&ws));
-        assert_eq!(*a.editor.config.get_typed::<lattice_config::Tabstop>().unwrap(), 4);
+        assert_eq!(
+            *a.editor
+                .config
+                .get_typed::<lattice_config::Tabstop>()
+                .unwrap(),
+            4
+        );
     }
 
     #[test]
@@ -1734,7 +1785,8 @@ mod tests {
         );
         let help_id = a.open_help_in_pane(help);
         let locals = a
-            .editor.buffer_locals
+            .editor
+            .buffer_locals
             .get(&help_id)
             .expect("buffer_locals should be populated for help buffer");
         // Links parsed from `[ex:write](command:ex:write)`.
@@ -1798,7 +1850,8 @@ mod tests {
         let a = app_with("hello", 10);
         let id = a.editor.document_buffer_id;
         let locals = a
-            .editor.buffer_locals
+            .editor
+            .buffer_locals
             .get(&id)
             .expect("initial document has buffer_locals");
         assert!(
@@ -1843,7 +1896,8 @@ mod tests {
         a.editor.last_synced_syntax_version = 41;
         a.snapshot_active_document();
         let locals = a
-            .editor.buffer_locals
+            .editor
+            .buffer_locals
             .get(&active_id)
             .expect("locals exist for active id");
         let parsed = locals
@@ -1880,7 +1934,10 @@ mod tests {
         a.do_lsp_status();
         // viewport_height is now the popup's inner height (small).
         // Set it explicitly to mimic what runtime would do.
-        a.set_viewport_height(a.help_popup_inner_height(30).unwrap_or(a.editor.viewport_height));
+        a.set_viewport_height(
+            a.help_popup_inner_height(30)
+                .unwrap_or(a.editor.viewport_height),
+        );
         // Dismiss the popup (the dispatch path calls this on Esc).
         a.dismiss_popup();
         // Now simulate what `apply` does post-dispatch: the fix is
@@ -1914,7 +1971,10 @@ mod tests {
         // viewport. Each iteration mirrors the runtime: refresh
         // viewport_height, then process the keystroke.
         for _ in 0..(inner + 5) {
-            a.set_viewport_height(a.help_popup_inner_height(30).unwrap_or(a.editor.viewport_height));
+            a.set_viewport_height(
+                a.help_popup_inner_height(30)
+                    .unwrap_or(a.editor.viewport_height),
+            );
             crate::app::test_helpers::press(
                 &mut a,
                 KeyEvent::new(KeyCode::Char('j'), KeyModifiers::empty()),
@@ -2013,7 +2073,8 @@ mod tests {
         assert_eq!(a.editor.active_buffer, BufferKind::Oil);
 
         let oil_id = a.active_pane_buffer_id();
-        a.editor.buffers
+        a.editor
+            .buffers
             .with_oil_mut(oil_id, |oil| {
                 oil.content
                     .apply_edit(&lattice_protocol::edit::Edit::insert(
@@ -2054,7 +2115,8 @@ mod tests {
         a.do_open_oil(Some(tmp.join("nested")));
         let oil_id = a.active_pane_buffer_id();
         assert_eq!(
-            a.editor.buffer_locals
+            a.editor
+                .buffer_locals
                 .get(&oil_id)
                 .and_then(|l| l.get::<crate::modes::OilDir>())
                 .map(|d| d.0.clone())
@@ -2184,7 +2246,8 @@ mod tests {
         let oil_id = a.active_pane_buffer_id();
         // Verify initial OilDir mirror.
         assert_eq!(
-            a.editor.buffer_locals
+            a.editor
+                .buffer_locals
                 .get(&oil_id)
                 .and_then(|l| l.get::<crate::modes::OilDir>())
                 .map(|d| d.0.clone())
@@ -2211,7 +2274,8 @@ mod tests {
         a.editor.cursor.byte = 0;
         // Find a.txt's row (dirs come first; "sub" is dir, then "a.txt").
         let names: Vec<String> = a
-            .editor.buffers
+            .editor
+            .buffers
             .with_oil(oil_id, |o| {
                 o.snapshot_entries()
                     .iter()
@@ -2239,10 +2303,8 @@ mod tests {
         // single-component cases, and `read_dir("")` failed.
         // Post-fix `do_open_oil` normalises to absolute before
         // storing.
-        let tmp = std::env::temp_dir().join(format!(
-            "lattice-oil-relative-dir-{}",
-            std::process::id()
-        ));
+        let tmp =
+            std::env::temp_dir().join(format!("lattice-oil-relative-dir-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(tmp.join("sub")).expect("sub");
         std::fs::write(tmp.join("sub/inside.txt"), "i").expect("inside");
@@ -2319,7 +2381,8 @@ mod tests {
         let oil_id = a.active_pane_buffer_id();
         // Find `sub` (dirs first; should be row 0).
         let names: Vec<String> = a
-            .editor.buffers
+            .editor
+            .buffers
             .with_oil(oil_id, |o| {
                 o.snapshot_entries()
                     .iter()
@@ -2340,7 +2403,8 @@ mod tests {
         assert_eq!(dir_after, tmp.join("sub"));
         // Listing should show `inside.txt` at row 0.
         let names_after: Vec<String> = a
-            .editor.buffers
+            .editor
+            .buffers
             .with_oil(oil_id, |o| {
                 o.snapshot_entries()
                     .iter()
@@ -2387,7 +2451,8 @@ mod tests {
         let oil_id = a.active_pane_buffer_id();
         // Snapshot order: alpha, beta, gamma.
         let names: Vec<String> = a
-            .editor.buffers
+            .editor
+            .buffers
             .with_oil(oil_id, |o| {
                 o.snapshot_entries()
                     .iter()
@@ -2450,7 +2515,8 @@ mod tests {
         // depends on sort: dirs first, so subdir is at 0 (or 1
         // if `..` is included). Let's find it.
         let snap: Vec<String> = a
-            .editor.buffers
+            .editor
+            .buffers
             .with_oil(oil_id, |o| {
                 o.snapshot_entries()
                     .iter()
@@ -2479,7 +2545,8 @@ mod tests {
 
         // The buffer-locals dir reflects the new location.
         let dir = a
-            .editor.buffer_locals
+            .editor
+            .buffer_locals
             .get(&oil_id)
             .and_then(|l| l.get::<crate::modes::OilDir>())
             .map(|d| d.0.clone())
@@ -2498,7 +2565,11 @@ mod tests {
         a.do_open_oil(Some(tmp.clone()));
         let oil_id = a.active_pane_buffer_id();
 
-        let locals = a.editor.buffer_locals.get(&oil_id).expect("oil locals seeded");
+        let locals = a
+            .editor
+            .buffer_locals
+            .get(&oil_id)
+            .expect("oil locals seeded");
         let dir = locals
             .get::<crate::modes::OilDir>()
             .expect("OilDir local present");

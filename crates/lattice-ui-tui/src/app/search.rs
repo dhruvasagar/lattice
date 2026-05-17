@@ -45,7 +45,8 @@ impl App {
     /// compilation fails. Cleared explicitly by CommandLineCancel
     /// and by execute_ex_line on submit.
     pub(super) fn refresh_substitute_preview(&mut self) {
-        let parsed = match crate::excommand::try_parse_substitute_partial(&self.editor.command_line) {
+        let parsed = match crate::excommand::try_parse_substitute_partial(&self.editor.command_line)
+        {
             Some(p) => p,
             None => {
                 self.editor.substitute_preview = None;
@@ -273,7 +274,11 @@ mod tests {
         let mut a = app_with("hello world", 10);
         a.apply(Action::EnterSearch(SearchDirection::Forward));
         assert_eq!(a.editor.modal, ModalState::Search(SearchDirection::Forward));
-        let line = a.editor.search_line.as_ref().expect("search_line populated");
+        let line = a
+            .editor
+            .search_line
+            .as_ref()
+            .expect("search_line populated");
         assert_eq!(line.pattern, "");
         assert_eq!(line.origin, Position::ZERO);
     }
@@ -547,7 +552,8 @@ mod tests {
         a.set_foldmethod_for_test(FoldMethod::Markdown);
         a.recompute_folds();
         let idx = a
-            .editor.folds
+            .editor
+            .folds
             .iter()
             .position(|f| f.start_line == 0)
             .expect("H1 fold");
@@ -562,7 +568,8 @@ mod tests {
         a.apply(Action::SearchSubmit);
         // The fold containing `body one` should now be open.
         let fold = a
-            .editor.folds
+            .editor
+            .folds
             .iter()
             .find(|f| f.start_line == 0)
             .expect("H1 fold still present");

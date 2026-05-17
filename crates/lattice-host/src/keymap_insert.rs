@@ -106,8 +106,8 @@ use lattice_grammar::CommandInvocation;
 use lattice_grammar::SourceLocation;
 use lattice_protocol::ids::CommandId;
 
-use crate::actions::ActionIds;
 use crate::action::Action;
+use crate::actions::ActionIds;
 use crate::chord::{KeyChord, KeyKind, KeyMods, SpecialKey};
 use crate::keymap::BindingMode;
 use crate::keymap_registry::KeymapHandle;
@@ -524,4 +524,3 @@ fn bind_invocation_with_string(
     let bound = Arc::new(BoundCommand::from_invocation(inv, source(), layer));
     trie.insert(path, bound);
 }
-

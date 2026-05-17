@@ -78,8 +78,8 @@ use lattice_grammar::builtins::Builtins;
 use lattice_grammar::command::CommandInvocation;
 use lattice_protocol::ids::CommandId;
 
-use crate::actions::ActionIds;
 use crate::action::{Action, FindKind};
+use crate::actions::ActionIds;
 use crate::chord::{KeyChord, KeyKind, KeyMods, SpecialKey};
 use crate::keymap::BindingMode;
 use crate::keymap_registry::KeymapHandle;
@@ -1562,4 +1562,3 @@ fn lit_special(s: SpecialKey) -> ChordPattern {
 fn source() -> SourceLocation {
     SourceLocation::builtin_file(file!(), line!())
 }
-

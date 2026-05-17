@@ -586,10 +586,7 @@ impl Mode for LspMode {
                     if let Err(e) = sup.open_buffer(path.clone(), text).await {
                         return Err(ModeActivationError::LifecycleFailed {
                             mode: LspMode::mode_id(),
-                            reason: format!(
-                                "open_buffer({}) failed: {e}",
-                                path.display()
-                            ),
+                            reason: format!("open_buffer({}) failed: {e}", path.display()),
                         });
                     }
                 }

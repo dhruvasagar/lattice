@@ -49,8 +49,8 @@
 
 use lattice_grammar::{CommandInvocation, SourceLocation};
 
-use crate::actions::ActionIds;
 use crate::action::Action;
+use crate::actions::ActionIds;
 use crate::chord::{KeyChord, SpecialKey};
 use crate::keymap::BindingMode;
 use crate::keymap_registry::KeymapHandle;
@@ -197,4 +197,3 @@ pub fn dispatch_replace(handle: &KeymapHandle, chord: &KeyChord) -> Action {
         LookupResult::Partial | LookupResult::Unbound => Action::None,
     }
 }
-

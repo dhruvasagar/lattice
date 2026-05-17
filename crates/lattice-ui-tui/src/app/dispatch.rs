@@ -111,7 +111,23 @@ impl App {
         // host-side. `consumed` collapses once the last subsystem
         // lands; until then the seam below is the architectural
         // boundary, not a deferred TODO.
-        let outcome = self.editor.dispatch(action.clone());
+        let mut outcome = self.editor.dispatch(action.clone());
+        // 5.5.G.23: drain any effects the host queued (e.g. from
+        // host-side `Editor::run_invocation` producing
+        // `Effect::SaveBuffer` / `Effect::OpenBuffer` / etc.). The host
+        // has already called `editor.handle_effect(effect.clone())` on
+        // each one, so we drain via `apply_effect_app_arms` — the
+        // renderer-coupled match alone, never `handle_effect` again.
+        // Drained BEFORE the `consumed` early-return so host-handled
+        // actions still get their renderer-side effect tail. Drained
+        // BEFORE `renderer_signals` so signal handlers (e.g. theme
+        // rebuild) observe the final state.
+        for effect in std::mem::take(&mut outcome.effects) {
+            self.apply_effect_app_arms(effect);
+        }
+        for signal in std::mem::take(&mut outcome.renderer_signals) {
+            self.handle_renderer_signal(signal);
+        }
         if outcome.consumed {
             return;
         }
@@ -972,7 +988,28 @@ impl App {
         // below runs. Today no migrated arm pushes a signal, so the loop
         // is a no-op; the pipe is wired so subsequent E.* slices that
         // emit signals don't need to rewire the call site.
+        //
+        // 5.5.G.23: body extracted into [`Self::apply_effect_app_arms`]
+        // so the host-side `Editor::run_invocation` (forthcoming) can
+        // push effects into `outcome.effects` and the renderer's
+        // dispatch wrapper drains via the renderer-coupled match arm
+        // only — never re-running `handle_effect` and double-executing
+        // host-migrated arms.
         let outcome = self.editor.handle_effect(effect.clone());
+        self.apply_effect_app_arms(effect);
+        for signal in outcome.renderer_signals {
+            self.handle_renderer_signal(signal);
+        }
+    }
+
+    /// 5.5.G.23: the renderer-coupled effect match — every arm that
+    /// still drives an App-side `do_*` helper. Drained by
+    /// [`Self::apply_effect`] for App-originated effects, and by the
+    /// dispatch wrapper for effects the host queued into
+    /// `outcome.effects` (those already had `editor.handle_effect`
+    /// called on them host-side; this method must NOT call
+    /// `handle_effect` again).
+    pub(super) fn apply_effect_app_arms(&mut self, effect: Effect) {
         match effect {
             // Phase 5.5.E.1–E.4: migrated arms. Bodies live in
             // `lattice_host::dispatch::handle_effect`.
@@ -1116,21 +1153,15 @@ impl App {
             Effect::Tutor { lesson } => self.do_tutor(lesson),
             Effect::AppAction(app) => self.apply_app_effect(app),
             Effect::Many(many) => {
+                // 5.5.G.23: inner effects of a `Many` go through the
+                // full wrapper (`apply_effect`) so each one gets a
+                // fresh `editor.handle_effect` pass — the host doesn't
+                // descend into Many in its handler. Same semantics as
+                // before the split.
                 for e in many {
                     self.apply_effect(e);
                 }
             }
-        }
-        // 5.5.E.5: drain renderer-side signals the host queued. Each
-        // signal maps to renderer-specific work the host cannot do
-        // itself (rebuild the TUI Style cache on `ThemeChanged`,
-        // begin window-close on `Quit`, etc.). Drained after the
-        // post-effect match so renderer-coupled callees in the match
-        // (`do_*` helpers that still touch App state) run BEFORE the
-        // signal handler -- avoids a partial-state visible to the
-        // signal-driven rebuild.
-        for signal in outcome.renderer_signals {
-            self.handle_renderer_signal(signal);
         }
     }
 

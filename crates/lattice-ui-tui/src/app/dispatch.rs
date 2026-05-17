@@ -141,11 +141,18 @@ impl App {
         // 5.5.G.23.insert: drain follow-up Actions the host queued
         // (LSP autopilots like `LspOnTypeFormattingRequest` /
         // `LspInsertCompletionRequest` that need `spawn_on_lsp_runtime`
-        // App-side). Each runs through the full `apply` loop so it
-        // sees the same macro-recording / partial-chord lifecycle as
-        // user-driven actions.
+        // App-side; macro replay via `editor.do_play_macro` emits the
+        // recorded action list here). Each runs through the full
+        // `apply` loop so it sees the same macro-recording /
+        // partial-chord lifecycle as user-driven actions. The
+        // `should_quit` break preserves the mid-macro-quit semantic:
+        // a recorded `:q` short-circuits the rest of the replay so
+        // we don't keep firing actions against a tearing-down App.
         for follow_up in std::mem::take(&mut outcome.next_actions) {
             self.apply(follow_up);
+            if self.editor.should_quit {
+                break;
+            }
         }
         if outcome.consumed {
             return;
@@ -424,7 +431,11 @@ impl App {
             // 5.5.G.10: `SearchWordUnderCursor` migrated.
             // 5.5.G.4: `MatchBracket` migrated to `Editor::dispatch`.
             // 5.5.G.3: `ToggleCaseAtCursor` / `JoinLines` migrated.
-            Action::FindRepeat { reverse } => self.do_find_repeat(reverse),
+            // 5.5.G.23.macros: `;` / `,` host-handled via
+            // `editor.do_find_repeat`; the synthesized invocation
+            // routes through `run_invocation` and its effects drain
+            // via `outcome.effects`.
+            Action::FindRepeat { .. } => {}
 
             // 5.5.G.16: `CreateFoldFromVisual` migrated to `Editor::dispatch`.
             // 5.5.G.1: `OpenFoldAtCursor` / `CloseFoldAtCursor` /
@@ -486,19 +497,12 @@ impl App {
             // 5.5.G.6: `WalkMarkHistoryBack` / `WalkMarkHistoryForward`
             // migrated to `Editor::dispatch`.
 
-            // 5.5.G.1: `StartMacroRecord` / `StopMacroRecord`
-            // migrated to `Editor::dispatch`. `PlayMacro` /
-            // `PlayLastMacro` stay App-side until `do_play_macro`
-            // (which recurses through `self.apply`) lands a host
-            // path.
-            Action::PlayMacro(reg) => self.do_play_macro(reg),
-            Action::PlayLastMacro => {
-                if let Some(reg) = self.editor.last_played_macro {
-                    self.do_play_macro(reg);
-                } else {
-                    self.set_message(EchoLevel::Error, "no previous macro".to_string());
-                }
-            }
+            // 5.5.G.23.macros: `PlayMacro` / `PlayLastMacro` are
+            // host-handled via `editor.do_play_macro` /
+            // `do_play_last_macro`; recorded actions stream through
+            // `out.next_actions` and the dispatch wrapper's drain
+            // (with `should_quit` short-circuit).
+            Action::PlayMacro(_) | Action::PlayLastMacro => {}
 
             // 5.5.G.3: `OverwriteChar` / `ReplaceUndoLast` migrated
             // to `Editor::dispatch`.
@@ -508,26 +512,13 @@ impl App {
             // 5.5.G.2: `SetMark` migrated to `Editor::dispatch`.
             // 5.5.G.7: `JumpToMarkLine` / `JumpToMarkExact` migrated.
 
-            Action::RepeatLastChange => {
-                if let Some(inv) = self.editor.last_change.clone() {
-                    // Snapshot last_insert because run_invocation may
-                    // reset it (running the change op enters Insert,
-                    // which clears recording_insert) -- we want the
-                    // OLD text to replay.
-                    let insert_replay = self.editor.last_insert.clone();
-                    self.run_invocation(inv);
-                    // If the change flipped us into Insert and there's
-                    // captured text, replay it and exit back to Normal.
-                    if matches!(self.editor.modal, ModalState::Insert)
-                        && let Some(text) = insert_replay
-                    {
-                        self.do_insert_text(&text);
-                        self.enter_mode(ModalState::Normal);
-                    }
-                } else {
-                    self.set_message(EchoLevel::Error, "no previous change to repeat".to_string());
-                }
-            }
+            // 5.5.G.23.macros: `.` host-handled via
+            // `editor.do_repeat_last_change` (re-dispatches the
+            // captured invocation through host's `run_invocation` and
+            // replays the captured Insert tail through host's
+            // `do_insert_text`). Effects + signals + LSP follow-ups
+            // drain through the outcome channels above.
+            Action::RepeatLastChange => {}
 
             // 5.5.G.9: `PasteAfter` / `PasteBefore` / `PasteText`
             // migrated to `Editor::dispatch`.
@@ -759,6 +750,7 @@ impl App {
             | Effect::EchoRegisters
             | Effect::Yank { .. }
             | Effect::SelectionChange(_)
+            | Effect::EnterMode(_)
             | Effect::SetOption { .. }
             | Effect::ListBuffers
             | Effect::DescribeBuffer
@@ -785,14 +777,11 @@ impl App {
             // routed through the grouped no-op above. `handle_edits`
             // and `publish_document_changed` wrappers retired in the
             // same slice.
-            Effect::EnterMode(mode) => {
-                // Operators that flip mode (`c` -> Insert) come through
-                // the same `enter_mode` helper as direct Action::EnterMode
-                // does, so the dot-repeat insert-recording starts/stops
-                // consistently. (`enter_mode`'s cursor pull-back only
-                // fires when going to Normal; safe for our use cases.)
-                self.enter_mode(mode);
-            }
+            // 5.5.G.23.macros: `Effect::EnterMode` migrated to
+            // `Editor::handle_effect` so host runners
+            // (`run_document_invocation`, `do_repeat_last_change`)
+            // observe the flipped modal state synchronously. App-side
+            // arm collapses to the grouped no-op below.
             // --- Ex-command effects (DESIGN.md §5.2.1 unified dispatch). ---
             // These come from ex-command apply closures registered in the
             // grammar registry; the host owns the side effects.

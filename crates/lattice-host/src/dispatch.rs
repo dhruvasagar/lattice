@@ -774,6 +774,17 @@ pub(crate) fn handle_action(
         // autopilots; LSP follow-ups defer through `out.next_actions`
         // so the renderer's `apply` loop fires the async paths.
         Action::Insert(s) => editor.do_insert_text(&s, _out),
+        // 5.5.G.23.macros: macro replay + dot-repeat + find-repeat
+        // arms. `PlayMacro` / `PlayLastMacro` push recorded actions
+        // through `out.next_actions`; `RepeatLastChange` /
+        // `FindRepeat` re-dispatch directly through host's
+        // `run_invocation` (+ `do_insert_text` for the
+        // Insert-tail of `c` replays). `should_quit` mid-replay is
+        // preserved via the renderer's drain.
+        Action::PlayMacro(reg) => editor.do_play_macro(reg, _out),
+        Action::PlayLastMacro => editor.do_play_last_macro(_out),
+        Action::RepeatLastChange => editor.do_repeat_last_change(_out),
+        Action::FindRepeat { reverse } => editor.do_find_repeat(reverse, _out),
         // Catch-all: any Action variant not yet migrated from
         // App::apply. Sub-slices 5.5.D+ extend the match upward as
         // helpers move.
@@ -1090,6 +1101,20 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             // through the chokepoint so LSP `didChange`, syntax
             // reparse, and highlight byte-shifts all see the deltas.
             editor.handle_edits(&edits);
+        }
+        Effect::EnterMode(mode) => {
+            // 5.5.G.23.macros: operators that flip mode (`c` ->
+            // Insert) come through the same `enter_mode` helper as
+            // direct `Action::EnterMode` does, so the dot-repeat
+            // insert-recording starts / stops consistently. Migrated
+            // host-side so post-effect modal checks in host runners
+            // (`run_document_invocation`, `do_repeat_last_change`)
+            // see the flipped state synchronously, before the App-side
+            // `apply_effect_app_arms` drain runs. The App-side
+            // `Effect::EnterMode` arm now no-ops via the grouped band
+            // (added below) — both sides handling it would
+            // double-fire `enter_mode`'s lifecycle hooks.
+            editor.enter_mode(mode);
         }
         Effect::Customize { name } => {
             // 5.5.F.6: `:customize [name]` (M.9.0). Three resolution
@@ -1447,6 +1472,124 @@ impl Editor {
 
     /// 5.5.LSP.4: signature help (Insert-mode auto-trigger).
     /// Sends `textDocument/signatureHelp` to every attached server
+    /// 5.5.G.23.macros: host-side macro replay. Push every recorded
+    /// action onto `out.next_actions` so the renderer's `apply` loop
+    /// drains them through its full dispatch pipeline (including arms
+    /// that still live App-side — completion / cmdline / picker
+    /// clusters). The dispatch wrapper's drain honours
+    /// `editor.should_quit` so a recorded `:q` short-circuits replay
+    /// in lockstep with the pre-migration semantic.
+    ///
+    /// Macro-recording capture is suppressed during playback by
+    /// snapshot-and-restore of `self.macro_recording` — the recorded
+    /// actions themselves trigger the dispatch loop's
+    /// "skip-management-actions" guard, but a `q`-started recording
+    /// that overlaps playback should not absorb the replayed actions.
+    pub fn do_play_macro(&mut self, register: char, out: &mut DispatchOutcome) {
+        if !is_valid_macro_register(register) {
+            self.set_message(
+                EchoLevel::Error,
+                format!("invalid macro register: {register}"),
+            );
+            return;
+        }
+        let Some(actions) = self.macros.get(&register).cloned() else {
+            self.set_message(
+                EchoLevel::Error,
+                format!("no macro in register {register}"),
+            );
+            return;
+        };
+        // Suppress recording-into-current-macro while replaying.
+        let _paused = self.macro_recording.take();
+        // The replay-drain caller restores recording state. Push
+        // actions through `next_actions` so the renderer's drain runs
+        // each through the full `apply` loop. Recording was paused
+        // above; restore happens after the App-side drain completes.
+        // To match vim's "drop play actions from the recording"
+        // semantic, the renderer drain doesn't re-capture into
+        // `macro_recording` because the App's `apply` checks
+        // `editor.macro_recording.is_some()` and we cleared it.
+        out.next_actions.extend(actions);
+        // Stash the paused recording back IMMEDIATELY — the next_actions
+        // drain on the App side happens after `editor.dispatch` returns,
+        // so we need to restore it now (otherwise the drained actions
+        // would re-enter `apply` with `macro_recording = None` and
+        // miss any concurrent-macro reentry). Vim's spec is: `qa @b qa`
+        // doesn't put `@b`'s actions into `a`; play DOES however suspend
+        // capture, which we honour because the `Action::PlayMacro` /
+        // `Action::PlayLastMacro` guard in the dispatch preamble already
+        // excludes the play call from the recorded stream.
+        if let Some(rec) = _paused {
+            self.macro_recording = Some(rec);
+        }
+        self.last_played_macro = Some(register);
+    }
+
+    /// 5.5.G.23.macros: `@@` — replay the most recently-played
+    /// macro. Errors when no prior replay has occurred.
+    pub fn do_play_last_macro(&mut self, out: &mut DispatchOutcome) {
+        let Some(reg) = self.last_played_macro else {
+            self.set_message(EchoLevel::Error, "no previous macro".to_string());
+            return;
+        };
+        self.do_play_macro(reg, out);
+    }
+
+    /// 5.5.G.23.macros: `.` — dot-repeat the last change. Replays
+    /// the captured invocation through `run_invocation`; if the
+    /// captured invocation flipped into Insert and there's a
+    /// captured insert string, replay that too and exit back to
+    /// Normal. Both `run_invocation` + `do_insert_text` are
+    /// host-resident, so this stays a single host call with no
+    /// `next_actions` indirection (effects + signals + LSP
+    /// follow-ups still thread through `out`).
+    pub fn do_repeat_last_change(&mut self, out: &mut DispatchOutcome) {
+        let Some(inv) = self.last_change.clone() else {
+            self.set_message(EchoLevel::Error, "no previous change to repeat".to_string());
+            return;
+        };
+        let insert_replay = self.last_insert.clone();
+        self.run_invocation(inv, out);
+        if matches!(self.modal, ModalState::Insert)
+            && let Some(text) = insert_replay
+        {
+            self.do_insert_text(&text, out);
+            self.enter_mode(ModalState::Normal);
+        }
+    }
+
+    /// 5.5.G.23.macros: `;` / `,` — repeat the last `f`/`F`/`t`/`T`
+    /// motion in the original (`reverse = false`) or opposite
+    /// (`reverse = true`) direction. Builds a synthesized
+    /// `CommandInvocation` against the appropriate builtin and
+    /// routes through `run_invocation`.
+    pub fn do_find_repeat(&mut self, reverse: bool, out: &mut DispatchOutcome) {
+        let Some(last) = self.last_find else {
+            self.set_message(EchoLevel::Error, "no previous find".to_string());
+            return;
+        };
+        let kind = if reverse {
+            match last.kind {
+                FindKind::Forward => FindKind::Backward,
+                FindKind::Backward => FindKind::Forward,
+                FindKind::TillForward => FindKind::TillBackward,
+                FindKind::TillBackward => FindKind::TillForward,
+            }
+        } else {
+            last.kind
+        };
+        let cmd_id = match kind {
+            FindKind::Forward => self.builtins.find_char_forward.0,
+            FindKind::Backward => self.builtins.find_char_backward.0,
+            FindKind::TillForward => self.builtins.till_char_forward.0,
+            FindKind::TillBackward => self.builtins.till_char_backward.0,
+        };
+        let inv = lattice_grammar::CommandInvocation::of(cmd_id)
+            .with_args(lattice_grammar::Args::Char(last.target));
+        self.run_invocation(inv, out);
+    }
+
     /// 5.5.G.23.insert: host-side text insertion at the cursor (the
     /// Insert-mode keystroke path). Drives `apply_edit_blocking`,
     /// updates the dot-repeat insert recording, bumps the block-

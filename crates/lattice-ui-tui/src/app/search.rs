@@ -28,10 +28,9 @@
 
 use fancy_regex::Regex;
 use lattice_core::Buffer;
-use lattice_grammar::CommandInvocation;
 use lattice_protocol::position::{Position, Range as ProtoRange};
 
-use super::{App, EchoLevel, FindKind, SubstitutePreview, last_addressable_line};
+use super::{App, SubstitutePreview, last_addressable_line};
 
 impl App {
     // 5.5.G.10: `preview_search`, `submit_search`, `cancel_search`,
@@ -141,38 +140,10 @@ impl App {
     // callers; host copy lives at
     // [`lattice_host::dispatch::Editor::do_substitute`]).
 
-    /// Vim's `;` / `,`: repeat the last f/F/t/T find on the current
-    /// line. `reverse = false` keeps the original direction; `true`
-    /// flips it.
-    pub(super) fn do_find_repeat(&mut self, reverse: bool) {
-        let Some(last) = self.editor.last_find else {
-            self.set_message(EchoLevel::Error, "no previous find".to_string());
-            return;
-        };
-        let kind = if reverse {
-            match last.kind {
-                FindKind::Forward => FindKind::Backward,
-                FindKind::Backward => FindKind::Forward,
-                FindKind::TillForward => FindKind::TillBackward,
-                FindKind::TillBackward => FindKind::TillForward,
-            }
-        } else {
-            last.kind
-        };
-        let motion_id = match kind {
-            FindKind::Forward => self.editor.builtins.find_char_forward,
-            FindKind::Backward => self.editor.builtins.find_char_backward,
-            FindKind::TillForward => self.editor.builtins.till_char_forward,
-            FindKind::TillBackward => self.editor.builtins.till_char_backward,
-        };
-        // Don't update last_find on repeat -- the original direction
-        // sticks (vim semantics: ; preserves direction even after ,).
-        let inv =
-            CommandInvocation::of(motion_id.0).with_args(lattice_grammar::Args::Char(last.target));
-        // Bypass run_invocation's last_find recording by dispatching
-        // directly. We still want the standard pending/count consumption.
-        self.run_invocation(inv);
-    }
+    // 5.5.G.23.macros: `do_find_repeat` migrated to
+    // [`lattice_host::dispatch::Editor::do_find_repeat`]. Zero
+    // remaining App callers after `Action::FindRepeat` collapsed to a
+    // host-handled no-op arm.
 
     // 5.5.G.10: `do_search_word_under_cursor` migrated to
     // [`lattice_host::dispatch::Editor`] (zero remaining App

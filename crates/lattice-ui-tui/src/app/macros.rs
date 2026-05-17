@@ -12,43 +12,12 @@
 //! `App` field), or `recording_insert` (insert-mode
 //! keystroke recording, distinct from `q`-macros).
 
-use super::{App, EchoLevel, is_valid_mark_name};
 
-impl App {
-    // 5.5.G.1: `do_start_macro_record` / `do_stop_macro_record`
-    // migrated to `lattice_host::dispatch::Editor`. `do_play_macro`
-    // stays here because its body recurses through `self.apply`
-    // (App-side dispatch loop); it joins the host once Editor owns
-    // the full `apply` loop.
-
-    pub(super) fn do_play_macro(&mut self, register: char) {
-        if !is_valid_mark_name(register) {
-            self.set_message(
-                EchoLevel::Error,
-                format!("invalid macro register: {register}"),
-            );
-            return;
-        }
-        let Some(actions) = self.editor.macros.get(&register).cloned() else {
-            self.set_message(EchoLevel::Error, format!("no macro in register {register}"));
-            return;
-        };
-        // Suppress recording-into-current-macro while replaying. (We don't
-        // want a `q` started before play to capture the playback's actions
-        // -- vim explicitly drops play actions from the recording.)
-        let mut paused = self.editor.macro_recording.take();
-        for action in actions {
-            self.apply(action);
-            if self.editor.should_quit {
-                break;
-            }
-        }
-        if let Some(rec) = paused.take() {
-            self.editor.macro_recording = Some(rec);
-        }
-        self.editor.last_played_macro = Some(register);
-    }
-}
+// 5.5.G.23.macros: `do_play_macro` migrated to
+// [`lattice_host::dispatch::Editor::do_play_macro`]. Recorded actions
+// flow through `out.next_actions`, which the dispatch wrapper drains
+// via `self.apply(action)` with a `should_quit` short-circuit. The
+// recording-suspend during replay also lives host-side.
 
 #[cfg(test)]
 mod tests {

@@ -785,7 +785,14 @@ impl App {
             // migrated to `Editor::handle_effect`; routed through
             // the grouped no-op below.
             Effect::Tutor { lesson } => self.do_tutor(lesson),
-            Effect::AppAction(app) => self.apply_app_effect(app),
+            // 5.5.G.24: AppEffect router migrated to
+            // `Editor::apply_app_effect`. Host either mutates editor
+            // fields directly (`AbsorbOperatorPrefix`) or pushes a
+            // follow-up `Action` through `out.next_actions` for the
+            // renderer's drain. App-side arm is now a no-op; routing
+            // through this match means a stale apply-effect from
+            // earlier in the pipeline still reaches the right place.
+            Effect::AppAction(_) => {}
             Effect::Many(many) => {
                 // 5.5.G.23: inner effects of a `Many` go through the
                 // full wrapper (`apply_effect`) so each one gets a
@@ -862,133 +869,15 @@ impl App {
         }
     }
 
-    fn apply_app_effect(&mut self, app: lattice_grammar::AppEffect) {
-        use lattice_grammar::AppEffect;
-        match app {
-            AppEffect::Quit => self.apply(Action::Quit),
-            AppEffect::MatchBracket => self.apply(Action::MatchBracket),
-            AppEffect::ToggleCaseAtCursor => self.apply(Action::ToggleCaseAtCursor),
-            AppEffect::OpenLineBelow => self.apply(Action::OpenLineBelow),
-            AppEffect::OpenLineAbove => self.apply(Action::OpenLineAbove),
-            AppEffect::LspHoverRequest => self.apply(Action::LspHoverRequest),
-            AppEffect::SearchNext => self.apply(Action::SearchNext),
-            AppEffect::SearchPrevious => self.apply(Action::SearchPrevious),
-            AppEffect::JumpHistoryBack => self.apply(Action::JumpHistoryBack),
-            AppEffect::JumpHistoryForward => self.apply(Action::JumpHistoryForward),
-            AppEffect::WalkMarkHistoryBack => self.apply(Action::WalkMarkHistoryBack),
-            AppEffect::WalkMarkHistoryForward => self.apply(Action::WalkMarkHistoryForward),
-            AppEffect::TagStackPop => self.apply(Action::TagStackPop),
-            AppEffect::OpenFoldAtCursor => self.apply(Action::OpenFoldAtCursor),
-            AppEffect::CloseFoldAtCursor => self.apply(Action::CloseFoldAtCursor),
-            AppEffect::ToggleFoldAtCursor => self.apply(Action::ToggleFoldAtCursor),
-            AppEffect::OpenAllFolds => self.apply(Action::OpenAllFolds),
-            AppEffect::CloseAllFolds => self.apply(Action::CloseAllFolds),
-            AppEffect::DeleteFoldAtCursor => self.apply(Action::DeleteFoldAtCursor),
-            AppEffect::GotoNextFold => self.apply(Action::GotoNextFold),
-            AppEffect::GotoPrevFold => self.apply(Action::GotoPrevFold),
-            AppEffect::ToggleFoldEnable => self.apply(Action::ToggleFoldEnable),
-            AppEffect::Undo => self.apply(Action::Undo),
-            AppEffect::Redo => self.apply(Action::Redo),
-            AppEffect::RepeatLastChange => self.apply(Action::RepeatLastChange),
-            AppEffect::PageDown => self.apply(Action::PageDown),
-            AppEffect::PageUp => self.apply(Action::PageUp),
-            AppEffect::ScrollLineUp => self.apply(Action::ScrollLineUp),
-            AppEffect::ScrollLineDown => self.apply(Action::ScrollLineDown),
-            AppEffect::RedrawScreen => self.apply(Action::RedrawScreen),
-            AppEffect::EnterCommandLine => self.apply(Action::EnterCommandLine),
-            AppEffect::OilNavigateUp => self.apply(Action::OilNavigateUp),
-            AppEffect::ReselectLastVisual => self.apply(Action::ReselectLastVisual),
-            AppEffect::PasteAfter => self.apply(Action::PasteAfter),
-            AppEffect::PasteBefore => self.apply(Action::PasteBefore),
-            AppEffect::LspDefinitionRequest => self.apply(Action::LspDefinitionRequest),
-            AppEffect::LspDeclarationRequest => self.apply(Action::LspDeclarationRequest),
-            AppEffect::LspTypeDefinitionRequest => self.apply(Action::LspTypeDefinitionRequest),
-            AppEffect::LspImplementationRequest => self.apply(Action::LspImplementationRequest),
-            AppEffect::LspReferencesRequest => self.apply(Action::LspReferencesRequest),
-            AppEffect::LspFollowLinkAtCursor => self.apply(Action::LspFollowLinkAtCursor),
-            AppEffect::EnterAppend => self.apply(Action::EnterAppend),
-            AppEffect::CreateFoldFromVisual => self.apply(Action::CreateFoldFromVisual),
-            AppEffect::DeleteCharBackward => self.apply(Action::DeleteCharBackward),
-            AppEffect::CompletionTrigger => self.apply(Action::CompletionTrigger),
-            AppEffect::SnippetExpand => self.apply(Action::SnippetExpand),
-            AppEffect::ExitVisual => self.apply(Action::ExitVisual),
-            AppEffect::ReplaceUndoLast => self.apply(Action::ReplaceUndoLast),
-            AppEffect::EnterMode(state) => self.apply(Action::EnterMode(state)),
-            AppEffect::EnterVisual(kind) => self.apply(Action::EnterVisual(kind)),
-            AppEffect::EnterSearch(dir) => self.apply(Action::EnterSearch(dir)),
-            AppEffect::SearchWordUnderCursor(dir) => self.apply(Action::SearchWordUnderCursor(dir)),
-            AppEffect::JumpViewport(pos) => self.apply(Action::JumpViewport(pos)),
-            AppEffect::ScrollCursorTo(pos) => self.apply(Action::ScrollCursorTo(pos)),
-            AppEffect::JoinLines { with_space } => self.apply(Action::JoinLines { with_space }),
-            AppEffect::FindRepeat { reverse } => self.apply(Action::FindRepeat { reverse }),
-            AppEffect::InsertNewline => self.apply(Action::Insert("\n".to_string())),
-            AppEffect::InsertTab => self.apply(Action::Insert("\t".to_string())),
-            AppEffect::OverwriteChar(c) => self.apply(Action::OverwriteChar(c)),
-            AppEffect::SetMark(c) => self.apply(Action::SetMark(c)),
-            AppEffect::JumpToMarkLine(c) => self.apply(Action::JumpToMarkLine(c)),
-            AppEffect::JumpToMarkExact(c) => self.apply(Action::JumpToMarkExact(c)),
-            AppEffect::SelectRegister(reg) => self.apply(Action::SelectRegister(reg)),
-            AppEffect::StartMacroRecord(c) => self.apply(Action::StartMacroRecord(c)),
-            AppEffect::PlayMacro(c) => self.apply(Action::PlayMacro(c)),
-            AppEffect::PlayLastMacro => self.apply(Action::PlayLastMacro),
-            AppEffect::AbsorbOperatorPrefix(op) => {
-                // Slice 8.i.4.c: arm operator-pending via the
-                // partial_chord mechanism. Two atomic effects:
-                //
-                // 1. Latch `pending_count` -> `op_count` so the
-                //    next motion's count multiplies (vim's `2dw`
-                //    -> count=2; `2d3w` -> count=2*3=6, the
-                //    multiplication happens at the motion side
-                //    in `keymap_normal::attach_count`).
-                // 2. Push the operator's chord prefix into
-                //    `App::partial_chord`. The next keystroke
-                //    routes through `compute_normal_action`'s
-                //    partial_chord short-circuit, hitting
-                //    `lookup_normal_with_prefix` with this stack
-                //    as prefix and resolving `[op, motion]` /
-                //    `[op, i/a, text-object]` / `[op, f/F/t/T,
-                //    char]` to the bound `Invoke`.
-                //
-                // App::apply already cleared partial_chord at
-                // the top of this dispatch (since `Action::Invoke`
-                // is not `AbsorbPartialChord(_)`). Populate it
-                // here.
-                if self.editor.pending_count > 0 {
-                    self.editor.op_count = self.editor.pending_count;
-                    self.editor.pending_count = 0;
-                }
-                let prefix = crate::keymap_normal::operator_prefix(op, &self.editor.builtins);
-                self.editor.partial_chord.extend(prefix);
-            }
-            AppEffect::SplitPaneHorizontal => self.apply(Action::SplitPaneHorizontal),
-            AppEffect::SplitPaneVertical => self.apply(Action::SplitPaneVertical),
-            AppEffect::ClosePane => self.apply(Action::ClosePane),
-            AppEffect::NavigatePane(dir) => self.apply(Action::NavigatePane(dir)),
-            AppEffect::NextPane => self.apply(Action::NextPane),
-            AppEffect::PrevPane => self.apply(Action::PrevPane),
-            AppEffect::CompletionNext => self.apply(Action::CompletionNext),
-            AppEffect::CompletionPrev => self.apply(Action::CompletionPrev),
-            AppEffect::CompletionAccept => self.apply(Action::CompletionAccept),
-            AppEffect::CompletionCancel => self.apply(Action::CompletionCancel),
-            AppEffect::CompletionCancelAndExitInsert => {
-                self.apply(Action::CompletionCancelAndExitInsert)
-            }
-            AppEffect::CompletionToggleDocs => self.apply(Action::CompletionToggleDocs),
-            AppEffect::CompletionDocsScrollDown => self.apply(Action::CompletionDocsScrollDown),
-            AppEffect::CompletionDocsScrollUp => self.apply(Action::CompletionDocsScrollUp),
-            AppEffect::CompletionFilterToSource(id) => {
-                self.apply(Action::CompletionFilterToSource(id))
-            }
-            AppEffect::CompletionFilterClear => self.apply(Action::CompletionFilterClear),
-            AppEffect::CompletionAcceptThenInsert(c) => {
-                self.apply(Action::CompletionAcceptThenInsert(c))
-            }
-            AppEffect::SnippetNextPlaceholder => self.apply(Action::SnippetNextPlaceholder),
-            AppEffect::SnippetPrevPlaceholder => self.apply(Action::SnippetPrevPlaceholder),
-            AppEffect::SnippetLeave => self.apply(Action::SnippetLeave),
-        }
-    }
-
+    // 5.5.G.24: App-side `apply_app_effect` retired. Body moved to
+    // `lattice_host::dispatch::Editor::apply_app_effect`; the host
+    // mutates editor fields directly for `AbsorbOperatorPrefix` (only
+    // structural arm) and enqueues a follow-up `Action` via
+    // `out.next_actions` for every other variant. The renderer's
+    // existing drain processes those through the full `apply` loop.
+    // `Effect::AppAction(_)` in `apply_effect_app_arms` collapses to
+    // the grouped no-op band.
+    //
     // 5.5.E.7.7: `handle_edits` retired -- body moved to
     // `lattice_host::dispatch::Editor::handle_edits`, called via the
     // `Effect::Edits` arm in `Editor::handle_effect`. The grouped

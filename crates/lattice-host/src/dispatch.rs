@@ -1157,6 +1157,15 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
                     })));
             }
         }
+        // 5.5.G.24: AppEffect router collapse. Every grammar-emitted
+        // `Effect::AppAction(_)` flows through here; the host either
+        // mutates editor fields directly (the `AbsorbOperatorPrefix`
+        // case for `op_count` / `partial_chord`) or enqueues a
+        // follow-up `Action` through `out.next_actions` for the
+        // renderer's existing drain to process. The renderer-side
+        // `apply_effect_app_arms` collapses its old `AppAction` arm to
+        // the grouped no-op band.
+        Effect::AppAction(app) => editor.apply_app_effect(app, out),
         // Catch-all: any Effect variant not yet migrated from
         // `App::apply_effect`. Sub-slices 5.5.E.7+ extend the match
         // upward as helpers move.
@@ -1693,6 +1702,204 @@ impl Editor {
                     "no command-line context for `C-h`".to_string(),
                 );
             }
+        }
+    }
+
+    /// 5.5.G.24: AppEffect router collapse. Every `Effect::AppAction`
+    /// emitted by the grammar registry routes here; the body mirrors
+    /// the App-side `apply_app_effect` 1:1, except every
+    /// `self.apply(Action::X)` becomes `out.next_actions.push(Action::X)`
+    /// so the renderer's existing `next_actions` drain (with
+    /// `should_quit` short-circuit) processes them through the full
+    /// `apply` loop. The one structural arm (`AbsorbOperatorPrefix`)
+    /// mutates editor fields directly host-side -- `pending_count` /
+    /// `op_count` / `partial_chord` all live on `Editor`, and
+    /// `operator_prefix` is already in `lattice-host::keymap_normal`.
+    pub fn apply_app_effect(
+        &mut self,
+        app: lattice_grammar::AppEffect,
+        out: &mut DispatchOutcome,
+    ) {
+        use lattice_grammar::AppEffect;
+        match app {
+            AppEffect::Quit => out.next_actions.push(Action::Quit),
+            AppEffect::MatchBracket => out.next_actions.push(Action::MatchBracket),
+            AppEffect::ToggleCaseAtCursor => {
+                out.next_actions.push(Action::ToggleCaseAtCursor)
+            }
+            AppEffect::OpenLineBelow => out.next_actions.push(Action::OpenLineBelow),
+            AppEffect::OpenLineAbove => out.next_actions.push(Action::OpenLineAbove),
+            AppEffect::LspHoverRequest => out.next_actions.push(Action::LspHoverRequest),
+            AppEffect::SearchNext => out.next_actions.push(Action::SearchNext),
+            AppEffect::SearchPrevious => out.next_actions.push(Action::SearchPrevious),
+            AppEffect::JumpHistoryBack => out.next_actions.push(Action::JumpHistoryBack),
+            AppEffect::JumpHistoryForward => {
+                out.next_actions.push(Action::JumpHistoryForward)
+            }
+            AppEffect::WalkMarkHistoryBack => {
+                out.next_actions.push(Action::WalkMarkHistoryBack)
+            }
+            AppEffect::WalkMarkHistoryForward => {
+                out.next_actions.push(Action::WalkMarkHistoryForward)
+            }
+            AppEffect::TagStackPop => out.next_actions.push(Action::TagStackPop),
+            AppEffect::OpenFoldAtCursor => out.next_actions.push(Action::OpenFoldAtCursor),
+            AppEffect::CloseFoldAtCursor => {
+                out.next_actions.push(Action::CloseFoldAtCursor)
+            }
+            AppEffect::ToggleFoldAtCursor => {
+                out.next_actions.push(Action::ToggleFoldAtCursor)
+            }
+            AppEffect::OpenAllFolds => out.next_actions.push(Action::OpenAllFolds),
+            AppEffect::CloseAllFolds => out.next_actions.push(Action::CloseAllFolds),
+            AppEffect::DeleteFoldAtCursor => {
+                out.next_actions.push(Action::DeleteFoldAtCursor)
+            }
+            AppEffect::GotoNextFold => out.next_actions.push(Action::GotoNextFold),
+            AppEffect::GotoPrevFold => out.next_actions.push(Action::GotoPrevFold),
+            AppEffect::ToggleFoldEnable => out.next_actions.push(Action::ToggleFoldEnable),
+            AppEffect::Undo => out.next_actions.push(Action::Undo),
+            AppEffect::Redo => out.next_actions.push(Action::Redo),
+            AppEffect::RepeatLastChange => out.next_actions.push(Action::RepeatLastChange),
+            AppEffect::PageDown => out.next_actions.push(Action::PageDown),
+            AppEffect::PageUp => out.next_actions.push(Action::PageUp),
+            AppEffect::ScrollLineUp => out.next_actions.push(Action::ScrollLineUp),
+            AppEffect::ScrollLineDown => out.next_actions.push(Action::ScrollLineDown),
+            AppEffect::RedrawScreen => out.next_actions.push(Action::RedrawScreen),
+            AppEffect::EnterCommandLine => out.next_actions.push(Action::EnterCommandLine),
+            AppEffect::OilNavigateUp => out.next_actions.push(Action::OilNavigateUp),
+            AppEffect::ReselectLastVisual => {
+                out.next_actions.push(Action::ReselectLastVisual)
+            }
+            AppEffect::PasteAfter => out.next_actions.push(Action::PasteAfter),
+            AppEffect::PasteBefore => out.next_actions.push(Action::PasteBefore),
+            AppEffect::LspDefinitionRequest => {
+                out.next_actions.push(Action::LspDefinitionRequest)
+            }
+            AppEffect::LspDeclarationRequest => {
+                out.next_actions.push(Action::LspDeclarationRequest)
+            }
+            AppEffect::LspTypeDefinitionRequest => {
+                out.next_actions.push(Action::LspTypeDefinitionRequest)
+            }
+            AppEffect::LspImplementationRequest => {
+                out.next_actions.push(Action::LspImplementationRequest)
+            }
+            AppEffect::LspReferencesRequest => {
+                out.next_actions.push(Action::LspReferencesRequest)
+            }
+            AppEffect::LspFollowLinkAtCursor => {
+                out.next_actions.push(Action::LspFollowLinkAtCursor)
+            }
+            AppEffect::EnterAppend => out.next_actions.push(Action::EnterAppend),
+            AppEffect::CreateFoldFromVisual => {
+                out.next_actions.push(Action::CreateFoldFromVisual)
+            }
+            AppEffect::DeleteCharBackward => {
+                out.next_actions.push(Action::DeleteCharBackward)
+            }
+            AppEffect::CompletionTrigger => out.next_actions.push(Action::CompletionTrigger),
+            AppEffect::SnippetExpand => out.next_actions.push(Action::SnippetExpand),
+            AppEffect::ExitVisual => out.next_actions.push(Action::ExitVisual),
+            AppEffect::ReplaceUndoLast => out.next_actions.push(Action::ReplaceUndoLast),
+            AppEffect::EnterMode(state) => out.next_actions.push(Action::EnterMode(state)),
+            AppEffect::EnterVisual(kind) => {
+                out.next_actions.push(Action::EnterVisual(kind))
+            }
+            AppEffect::EnterSearch(dir) => out.next_actions.push(Action::EnterSearch(dir)),
+            AppEffect::SearchWordUnderCursor(dir) => {
+                out.next_actions.push(Action::SearchWordUnderCursor(dir))
+            }
+            AppEffect::JumpViewport(pos) => out.next_actions.push(Action::JumpViewport(pos)),
+            AppEffect::ScrollCursorTo(pos) => {
+                out.next_actions.push(Action::ScrollCursorTo(pos))
+            }
+            AppEffect::JoinLines { with_space } => {
+                out.next_actions.push(Action::JoinLines { with_space })
+            }
+            AppEffect::FindRepeat { reverse } => {
+                out.next_actions.push(Action::FindRepeat { reverse })
+            }
+            AppEffect::InsertNewline => out.next_actions.push(Action::Insert("\n".to_string())),
+            AppEffect::InsertTab => out.next_actions.push(Action::Insert("\t".to_string())),
+            AppEffect::OverwriteChar(c) => out.next_actions.push(Action::OverwriteChar(c)),
+            AppEffect::SetMark(c) => out.next_actions.push(Action::SetMark(c)),
+            AppEffect::JumpToMarkLine(c) => out.next_actions.push(Action::JumpToMarkLine(c)),
+            AppEffect::JumpToMarkExact(c) => out.next_actions.push(Action::JumpToMarkExact(c)),
+            AppEffect::SelectRegister(reg) => {
+                out.next_actions.push(Action::SelectRegister(reg))
+            }
+            AppEffect::StartMacroRecord(c) => {
+                out.next_actions.push(Action::StartMacroRecord(c))
+            }
+            AppEffect::PlayMacro(c) => out.next_actions.push(Action::PlayMacro(c)),
+            AppEffect::PlayLastMacro => out.next_actions.push(Action::PlayLastMacro),
+            AppEffect::AbsorbOperatorPrefix(op) => {
+                // Slice 8.i.4.c: arm operator-pending via the
+                // partial_chord mechanism. Two atomic effects:
+                //   1. Latch `pending_count` -> `op_count` so the next
+                //      motion's count multiplies (vim's `2dw` -> count=2;
+                //      `2d3w` -> count=2*3=6, the multiplication happens
+                //      at the motion side in `keymap_normal::attach_count`).
+                //   2. Push the operator's chord prefix into `partial_chord`.
+                //      The next keystroke routes through `compute_normal_action`'s
+                //      partial_chord short-circuit, hitting
+                //      `lookup_normal_with_prefix` with this stack as prefix
+                //      and resolving `[op, motion]` / `[op, i/a, text-object]` /
+                //      `[op, f/F/t/T, char]` to the bound `Invoke`.
+                //
+                // `Editor::dispatch`'s preamble already cleared
+                // `partial_chord` (since `Action::Invoke` is not
+                // `AbsorbPartialChord(_)`). Populate it here.
+                if self.pending_count > 0 {
+                    self.op_count = self.pending_count;
+                    self.pending_count = 0;
+                }
+                let prefix = crate::keymap_normal::operator_prefix(op, &self.builtins);
+                self.partial_chord.extend(prefix);
+            }
+            AppEffect::SplitPaneHorizontal => {
+                out.next_actions.push(Action::SplitPaneHorizontal)
+            }
+            AppEffect::SplitPaneVertical => {
+                out.next_actions.push(Action::SplitPaneVertical)
+            }
+            AppEffect::ClosePane => out.next_actions.push(Action::ClosePane),
+            AppEffect::NavigatePane(dir) => out.next_actions.push(Action::NavigatePane(dir)),
+            AppEffect::NextPane => out.next_actions.push(Action::NextPane),
+            AppEffect::PrevPane => out.next_actions.push(Action::PrevPane),
+            AppEffect::CompletionNext => out.next_actions.push(Action::CompletionNext),
+            AppEffect::CompletionPrev => out.next_actions.push(Action::CompletionPrev),
+            AppEffect::CompletionAccept => out.next_actions.push(Action::CompletionAccept),
+            AppEffect::CompletionCancel => out.next_actions.push(Action::CompletionCancel),
+            AppEffect::CompletionCancelAndExitInsert => {
+                out.next_actions.push(Action::CompletionCancelAndExitInsert)
+            }
+            AppEffect::CompletionToggleDocs => {
+                out.next_actions.push(Action::CompletionToggleDocs)
+            }
+            AppEffect::CompletionDocsScrollDown => {
+                out.next_actions.push(Action::CompletionDocsScrollDown)
+            }
+            AppEffect::CompletionDocsScrollUp => {
+                out.next_actions.push(Action::CompletionDocsScrollUp)
+            }
+            AppEffect::CompletionFilterToSource(id) => {
+                out.next_actions.push(Action::CompletionFilterToSource(id))
+            }
+            AppEffect::CompletionFilterClear => {
+                out.next_actions.push(Action::CompletionFilterClear)
+            }
+            AppEffect::CompletionAcceptThenInsert(c) => {
+                out.next_actions.push(Action::CompletionAcceptThenInsert(c))
+            }
+            AppEffect::SnippetNextPlaceholder => {
+                out.next_actions.push(Action::SnippetNextPlaceholder)
+            }
+            AppEffect::SnippetPrevPlaceholder => {
+                out.next_actions.push(Action::SnippetPrevPlaceholder)
+            }
+            AppEffect::SnippetLeave => out.next_actions.push(Action::SnippetLeave),
         }
     }
 

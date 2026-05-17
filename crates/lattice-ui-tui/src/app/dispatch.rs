@@ -225,7 +225,9 @@ impl App {
             | Action::PickerBackspace
             | Action::PickerSelectNext
             | Action::PickerSelectPrev
-            | Action::CloseHover => {}
+            | Action::CloseHover
+            // 5.5.G.12: HelpDismiss migrated to Editor::dispatch.
+            | Action::HelpDismiss => {}
             Action::Invoke(inv) => self.run_invocation(inv),
             Action::Insert(s) => self.do_insert_text(&s),
             // 5.5.G.3: `DeleteCharBackward`, `EnterAppend`,
@@ -489,11 +491,7 @@ impl App {
             Action::CommandLineCompletePrev => self.do_command_line_complete_prev(),
             Action::CommandLineAcceptCompletion => self.do_command_line_accept_completion(),
 
-            Action::HelpDismiss => match self.editor.active_buffer {
-                BufferKind::Help => self.dismiss_popup(),
-                BufferKind::FileTree => self.dismiss_file_tree(),
-                BufferKind::Document | BufferKind::Oil => {}
-            },
+            // 5.5.G.12: `HelpDismiss` migrated to `Editor::dispatch`.
             Action::FollowLink => match self.editor.active_buffer {
                 BufferKind::Help => self.do_help_follow_link(),
                 BufferKind::Oil => self.do_oil_follow(),

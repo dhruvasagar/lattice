@@ -630,6 +630,15 @@ pub(crate) fn handle_action(
                 .extend(editor.preview_picker_selection());
         }
         Action::CloseHover => editor.dismiss_popup(),
+        // 5.5.G.12: HelpDismiss dispatches on active_buffer to
+        // pop the help popup or dismiss the file-tree pane.
+        Action::HelpDismiss => match editor.active_buffer {
+            BufferKind::Help => editor.dismiss_popup(),
+            BufferKind::FileTree => {
+                _out.renderer_signals.extend(editor.dismiss_file_tree());
+            }
+            BufferKind::Document | BufferKind::Oil => {}
+        },
         // Catch-all: any Action variant not yet migrated from
         // App::apply. Sub-slices 5.5.D+ extend the match upward as
         // helpers move.
@@ -3040,6 +3049,43 @@ impl Editor {
         self.recompute_folds();
         self.pending_redraw = true;
         self.set_message(EchoLevel::Info, "redraw".to_string());
+    }
+}
+
+/// 5.5.G.12: file-tree dismiss + HelpDismiss arm.
+impl Editor {
+    /// Close the file-tree pane: activate the first listed document
+    /// buffer as a successor, remove the tree from the registry, and
+    /// rebind every pane that pointed at it to the new buffer. Returns
+    /// any signals emitted by `activate_buffer_state` (mode lifecycle
+    /// + LSP attach cascade).
+    pub fn dismiss_file_tree(&mut self) -> Vec<RendererSignal> {
+        if !matches!(self.active_buffer, BufferKind::FileTree) {
+            return Vec::new();
+        }
+        let tree_id = self.active_pane_buffer_id();
+        let successor = self
+            .buffers
+            .document_ids_sorted()
+            .first()
+            .copied()
+            .unwrap_or(self.document_buffer_id);
+        let needs_state = self.activate_buffer(successor);
+        let signals = if needs_state {
+            self.activate_buffer_state()
+        } else {
+            Vec::new()
+        };
+        self.buffers.remove(tree_id);
+        let new_kind = self.active_buffer;
+        let new_id = self.active_pane_buffer_id();
+        for pane in self.pane_tree.leaves_mut() {
+            if pane.buffer_id == tree_id {
+                pane.buffer = new_kind;
+                pane.buffer_id = new_id;
+            }
+        }
+        signals
     }
 }
 

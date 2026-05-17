@@ -210,26 +210,15 @@ impl App {
     /// `:TreeClose` -- close the active pane's tree by swapping
     /// the active pane back to a Document buffer and dropping the
     /// tree from the registry.
+    /// 5.5.G.12: body migrated to
+    /// [`lattice_host::dispatch::Editor::dismiss_file_tree`]. Kept
+    /// as a delegate that fans the returned `RendererSignal`s
+    /// through `handle_renderer_signal` so the `Effect::CloseFileTree`
+    /// apply_effect arm continues to compile.
     pub(super) fn dismiss_file_tree(&mut self) {
-        if !matches!(self.editor.active_buffer, BufferKind::FileTree) {
-            return;
-        }
-        let tree_id = self.active_pane_buffer_id();
-        let successor = self
-            .editor.buffers
-            .document_ids_sorted()
-            .first()
-            .copied()
-            .unwrap_or(self.editor.document_buffer_id);
-        self.activate_buffer(successor);
-        self.editor.buffers.remove(tree_id);
-        let new_kind = self.editor.active_buffer;
-        let new_id = self.active_pane_buffer_id();
-        for pane in self.editor.pane_tree.leaves_mut() {
-            if pane.buffer_id == tree_id {
-                pane.buffer = new_kind;
-                pane.buffer_id = new_id;
-            }
+        let signals = self.editor.dismiss_file_tree();
+        for signal in signals {
+            self.handle_renderer_signal(signal);
         }
     }
 

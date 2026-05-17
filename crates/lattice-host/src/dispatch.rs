@@ -673,6 +673,9 @@ pub(crate) fn handle_action(
         }
         Action::CompletionDocsScrollDown => editor.do_completion_docs_scroll_down(),
         Action::CompletionDocsScrollUp => editor.do_completion_docs_scroll_up(),
+        // 5.5.G.15: pure-editor cmdline-completion popup nav.
+        Action::CommandLineCompletePrev => editor.do_command_line_complete_prev(),
+        Action::CommandLineAcceptCompletion => editor.do_command_line_accept_completion(),
         Action::ToggleFoldEnable => {
             // `zi` toggle. `set_typed` publishes through the bus;
             // drain immediately so the cascade refreshes
@@ -3130,6 +3133,46 @@ impl Editor {
             }
         }
         signals
+    }
+}
+
+/// 5.5.G.15: pure-editor cmdline-completion popup navigation.
+/// `<S-Tab>` walks backward through candidates; `<C-y>` /
+/// `<CR>` (when popup is open) splices the focused candidate
+/// into the cmdline. Migrated from
+/// `lattice-ui-tui::app::cmdline`.
+impl Editor {
+    /// `<S-Tab>` -- step backward through the cmdline-completion
+    /// popup candidates with wrap-around on the lower bound.
+    /// No-op when the popup is closed or empty.
+    pub fn do_command_line_complete_prev(&mut self) {
+        if let Some(state) = self.completion_state.as_mut()
+            && !state.candidates.is_empty()
+        {
+            if state.selected == 0 {
+                state.selected = state.candidates.len() - 1;
+            } else {
+                state.selected -= 1;
+            }
+        }
+    }
+
+    /// Splice the cmdline-completion popup's focused candidate
+    /// into `command_line` (replacing the active slot's prefix)
+    /// and dismiss the popup. Idempotent when the popup is
+    /// closed or has no candidates.
+    pub fn do_command_line_accept_completion(&mut self) {
+        let Some(state) = self.completion_state.take() else {
+            return;
+        };
+        if state.candidates.is_empty() {
+            return;
+        }
+        let chosen = &state.candidates[state.selected];
+        self.command_line.replace_range(
+            state.replace_start..self.command_line.len(),
+            &chosen.raw.text,
+        );
     }
 }
 

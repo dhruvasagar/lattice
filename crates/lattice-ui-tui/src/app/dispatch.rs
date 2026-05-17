@@ -238,7 +238,10 @@ impl App {
             | Action::CompletionCancelAndExitInsert
             | Action::CompletionDocsScrollDown
             | Action::CompletionDocsScrollUp
-            | Action::ToggleFoldEnable => {}
+            | Action::ToggleFoldEnable
+            // 5.5.G.15: cmdline-completion popup nav.
+            | Action::CommandLineCompletePrev
+            | Action::CommandLineAcceptCompletion => {}
             Action::Invoke(inv) => self.run_invocation(inv),
             Action::Insert(s) => self.do_insert_text(&s),
             // 5.5.G.3: `DeleteCharBackward`, `EnterAppend`,
@@ -469,8 +472,8 @@ impl App {
                 }
             }
             Action::CommandLineCompleteOrAdvance => self.do_command_line_complete_or_advance(),
-            Action::CommandLineCompletePrev => self.do_command_line_complete_prev(),
-            Action::CommandLineAcceptCompletion => self.do_command_line_accept_completion(),
+            // 5.5.G.15: `CommandLineCompletePrev` /
+            // `CommandLineAcceptCompletion` migrated to `Editor::dispatch`.
 
             // 5.5.G.12: `HelpDismiss` migrated to `Editor::dispatch`.
             Action::FollowLink => match self.editor.active_buffer {

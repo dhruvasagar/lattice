@@ -143,31 +143,9 @@ impl App {
         self.open_completion_popup();
     }
 
-    pub(super) fn do_command_line_complete_prev(&mut self) {
-        if let Some(state) = self.editor.completion_state.as_mut()
-            && !state.candidates.is_empty()
-        {
-            if state.selected == 0 {
-                state.selected = state.candidates.len() - 1;
-            } else {
-                state.selected -= 1;
-            }
-        }
-    }
-
-    pub(super) fn do_command_line_accept_completion(&mut self) {
-        let Some(state) = self.editor.completion_state.take() else {
-            return;
-        };
-        if state.candidates.is_empty() {
-            return;
-        }
-        let chosen = &state.candidates[state.selected];
-        self.editor.command_line.replace_range(
-            state.replace_start..self.editor.command_line.len(),
-            &chosen.raw.text,
-        );
-    }
+    // 5.5.G.15: `do_command_line_complete_prev` /
+    // `do_command_line_accept_completion` migrated to
+    // [`lattice_host::dispatch::Editor`].
 
     // 5.5.G.13: body migrated to
     // [`lattice_host::dispatch::Editor::do_command_history_step`].

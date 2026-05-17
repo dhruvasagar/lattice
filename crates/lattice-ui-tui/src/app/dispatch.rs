@@ -101,15 +101,45 @@ impl App {
         // set the host already surfaced the relevant echo + cleanup
         // (read-only-help today); App's match below must bail.
         //
-        // 5.5.G.final: 78 Action arms now resolve host-side via the
-        // grouped `_ => {}` no-op below. The remaining explicit arms
-        // are subsystem-coupled (LSP host, completion orchestrator,
-        // picker SMR queue, oil/file-tree state, snippet engine,
-        // command-line parser & alias rewriter, AppEffect router) —
-        // each retires mechanically when its subsystem migrates
-        // host-side. `consumed` collapses once the last subsystem
-        // lands; until then the seam below is the architectural
-        // boundary, not a deferred TODO.
+        // 5.5.G.final / 5.5.H: ~90 Action arms now resolve host-side
+        // via `Editor::dispatch` (every motion / operator / text-object
+        // / ex-command keystroke; `Invoke`, `Insert`, macros, dot-
+        // repeat, find-repeat, the full 8-arm command-line cluster).
+        // `Effect::AppAction` collapses through `Editor::apply_app_effect`
+        // (5.5.G.24); `out.next_actions` is the unified deferred-Action
+        // channel for everything host-emitted that needs the renderer's
+        // `apply` loop (LSP autopilots, macro replay, AppEffect-derived
+        // follow-ups).
+        //
+        // The 13 explicit arms remaining are the architectural seam,
+        // NOT migration debt:
+        //
+        //   - `LspOnTypeFormattingRequest(c)` /
+        //     `LspInsertCompletionRequest` — host→renderer LSP autopilot
+        //     landing zones. The host fires the action; the renderer
+        //     owns the LSP runtime (`spawn_on_lsp_runtime`, BatchingSink,
+        //     `pending_insert_completion_lsp_*`). gpui will implement
+        //     its own equivalent on `lattice-ui-gpui::App`.
+        //
+        //   - 8 Completion arms (`CompletionTrigger`/`Next`/`Prev`/`Accept`/
+        //     `ToggleDocs`/`FilterToSource`/`FilterClear`/`AcceptThenInsert`)
+        //     — completion popup state mutation + LSP async resolve.
+        //     `editor.completion` lives host-side, but the LSP fetch
+        //     path is renderer-coupled (same reason as above).
+        //
+        //   - `PickerAccept` / `PickerDismiss` — file-open + the
+        //     show-message-request queue. `do_edit` is renderer-side
+        //     because the gpui port opens a window, not a TUI pane.
+        //
+        //   - `LspFollowLinkAtCursor` / `FollowLink` / `OilNavigateUp`
+        //     — reach for `do_edit` + `open_external_uri` + the
+        //     BufferKind-dispatch help/oil/file-tree helpers, each of
+        //     which terminates in a renderer-coupled chokepoint.
+        //
+        // `consumed` collapses when (if) every subsystem above migrates
+        // host-side; until then the seam is correct, not debt. The
+        // gpui peer renderer implements its own version of these arms
+        // against its own LSP runtime / window-open / picker UI.
         // 5.5.G.23: snapshot pre-dispatch state BEFORE `editor.dispatch`
         // so the State-A hover-auto-dismiss hook below sees the true
         // pre-motion cursor. Before the keystone slice this snapshot

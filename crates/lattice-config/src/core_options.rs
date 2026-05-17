@@ -399,7 +399,7 @@ crate::options! {
     /// `"ag"`, `"grep"`) force a specific binary and surface
     /// an error if it's not on PATH. Future plugin-shipped
     /// backends can register additional names; the matching
-    /// logic lives in `lattice_ui_tui::picker_sources::grep`.
+    /// logic lives in `lattice_picker::picker_sources::grep`.
     #[name("picker.grep.backend")]
     pub PickerGrepBackend: String = String::from("auto");
 

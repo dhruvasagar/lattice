@@ -1401,78 +1401,6 @@ fn picker_buffer_entry(
     }
 }
 
-/// Hard cap on the file-picker walker's emitted entry count.
-/// At this scale the host's fuzzy matcher stays well inside the
-/// per-keystroke frame budget; larger trees fall back to ripgrep-
-/// style live filtering via `:grep` (P.10) or `:Filetree`'s
-/// per-directory lazy walk.
-const FILE_PICKER_MAX_ENTRIES: usize = 5000;
-
-/// Walk `root` recursively (BFS) and return the absolute paths
-/// of every regular file, capped at [`FILE_PICKER_MAX_ENTRIES`].
-/// Skips the conventional ignore directories (`.git`, `target`,
-/// `node_modules`, `dist`, `.cache`) and dotfiles at the top of
-/// each directory entry. Symlinks aren't followed -- a cycle on
-/// disk would silently consume the cap.
-///
-/// Errors are silently absorbed (unreadable directories show up
-/// as gaps in the listing); the picker UX prefers "some results"
-/// over a hard failure when the workspace has a permission
-/// pocket somewhere.
-pub(crate) fn walk_files_for_picker(root: &std::path::Path) -> Vec<std::path::PathBuf> {
-    const IGNORE_DIRS: &[&str] = &[".git", "target", "node_modules", "dist", ".cache"];
-    let mut out: Vec<std::path::PathBuf> = Vec::new();
-    let mut stack: Vec<std::path::PathBuf> = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        if out.len() >= FILE_PICKER_MAX_ENTRIES {
-            break;
-        }
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        let mut subdirs: Vec<std::path::PathBuf> = Vec::new();
-        let mut files: Vec<std::path::PathBuf> = Vec::new();
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-                continue;
-            };
-            if name.starts_with('.') {
-                continue;
-            }
-            let Ok(ft) = entry.file_type() else {
-                continue;
-            };
-            if ft.is_dir() {
-                if IGNORE_DIRS.contains(&name) {
-                    continue;
-                }
-                subdirs.push(path);
-            } else if ft.is_file() {
-                files.push(path);
-            }
-        }
-        // Stable order: alphabetic. Files first so they show up
-        // before deep subdirs in the candidate list (relative-
-        // path sort still scrambles them, but the matcher is
-        // fuzzy so order isn't load-bearing).
-        files.sort();
-        subdirs.sort();
-        for f in files {
-            if out.len() >= FILE_PICKER_MAX_ENTRIES {
-                break;
-            }
-            out.push(f);
-        }
-        // BFS-ish: push subdirs in reverse so pop() drains
-        // alphabetically.
-        for sub in subdirs.into_iter().rev() {
-            stack.push(sub);
-        }
-    }
-    out
-}
-
 /// Build the buffer-picker candidate set: every entry in the
 /// registry, with the active buffer floated to the bottom and
 /// tagged `(current)` in marginalia.
@@ -1720,35 +1648,6 @@ mod tests {
             history_before, history_after,
             "preview hovers should leave the jump list alone"
         );
-    }
-
-    /// P.1: the walker enumerates regular files in `root` while
-    /// skipping the conventional ignore directories and
-    /// dotfiles.
-    #[test]
-    fn file_picker_walks_root_and_skips_ignored() {
-        let tmp = std::env::temp_dir().join(format!("lattice-files-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-        std::fs::write(tmp.join("a.rs"), "").unwrap();
-        std::fs::write(tmp.join("b.rs"), "").unwrap();
-        std::fs::create_dir(tmp.join("sub")).unwrap();
-        std::fs::write(tmp.join("sub").join("c.rs"), "").unwrap();
-        // Ignored: dotfile and ignore-dir.
-        std::fs::write(tmp.join(".secret"), "").unwrap();
-        std::fs::create_dir(tmp.join("target")).unwrap();
-        std::fs::write(tmp.join("target").join("d.rs"), "").unwrap();
-        let entries = super::walk_files_for_picker(&tmp);
-        let names: Vec<String> = entries
-            .iter()
-            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
-            .collect();
-        assert!(names.iter().any(|n| n == "a.rs"));
-        assert!(names.iter().any(|n| n == "b.rs"));
-        assert!(names.iter().any(|n| n == "c.rs"));
-        assert!(!names.iter().any(|n| n == ".secret"));
-        assert!(!names.iter().any(|n| n == "d.rs"));
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     /// P.2: `push_recent_file` keeps MRU order (newest first),

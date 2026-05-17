@@ -49,6 +49,7 @@ pub mod context;
 pub mod events;
 pub mod mru;
 pub mod outcome;
+pub mod picker_sources;
 pub mod source;
 
 pub use context::{

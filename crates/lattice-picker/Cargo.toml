@@ -10,6 +10,11 @@ lattice-completion = { path = "../lattice-completion" }
 lattice-grammar = { path = "../lattice-grammar" }
 lattice-core = { path = "../lattice-core" }
 lattice-protocol = { path = "../lattice-protocol" }
+# Slice 5.7.B.0: first-party sources read picker.grep.backend
+# (and other `picker.*` typed options) via ConfigRegistry.
+# No cycle: lattice-config depends on grammar/core/completion,
+# none of which touch picker.
+lattice-config = { path = "../lattice-config" }
 tokio = { workspace = true, features = ["sync"] }
 serde = { workspace = true, features = ["derive"] }
 bincode = { version = "2", features = ["serde"] }

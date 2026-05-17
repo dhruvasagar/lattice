@@ -29,10 +29,9 @@
 //! struct (lives in `app.rs`), tree-sitter query plumbing
 //! (`crate::syntax`).
 
-use lattice_grammar::ModalState;
 use lattice_protocol::position::Position;
 
-use super::{App, EchoLevel, Fold, is_blank_line, last_addressable_line, line_byte_len};
+use super::{App, Fold, is_blank_line, last_addressable_line, line_byte_len};
 
 impl App {
     /// Refresh [`Self::folds`] from the active [`FoldMethod`].
@@ -59,32 +58,8 @@ impl App {
         self.editor.recompute_folds();
     }
 
-    /// Vim's `zf`: create a fold over the current Visual selection's
-    /// line range. No-op outside Visual mode.
-    pub(super) fn do_create_fold_from_visual(&mut self) {
-        if !matches!(self.editor.modal, ModalState::Visual(_)) {
-            self.set_message(
-                EchoLevel::Error,
-                "zf requires a Visual selection".to_string(),
-            );
-            return;
-        }
-        let sels = self.editor.document.selections();
-        let sel = sels.primary();
-        let start_line = sel.anchor.line.min(sel.head.line);
-        let end_line = sel.anchor.line.max(sel.head.line);
-        if start_line == end_line {
-            return;
-        }
-        self.editor.folds.push(Fold {
-            start_line,
-            end_line,
-            closed: true,
-            identity: None,
-        });
-        self.editor.cursor = Position::new(start_line, 0);
-        self.do_exit_visual();
-    }
+    // 5.5.G.16: `do_create_fold_from_visual` migrated to
+    // [`lattice_host::dispatch::Editor`].
 
     // 5.5.G.1: `do_set_fold_state_at_cursor` / `do_set_all_folds`
     // / `do_goto_fold` / `do_delete_fold_at_cursor` all migrated

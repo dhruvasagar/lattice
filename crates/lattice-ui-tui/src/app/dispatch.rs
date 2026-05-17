@@ -241,7 +241,9 @@ impl App {
             | Action::ToggleFoldEnable
             // 5.5.G.15: cmdline-completion popup nav.
             | Action::CommandLineCompletePrev
-            | Action::CommandLineAcceptCompletion => {}
+            | Action::CommandLineAcceptCompletion
+            // 5.5.G.16: `zf` Visual-selection fold creation.
+            | Action::CreateFoldFromVisual => {}
             Action::Invoke(inv) => self.run_invocation(inv),
             Action::Insert(s) => self.do_insert_text(&s),
             // 5.5.G.3: `DeleteCharBackward`, `EnterAppend`,
@@ -338,7 +340,7 @@ impl App {
             // 5.5.G.3: `ToggleCaseAtCursor` / `JoinLines` migrated.
             Action::FindRepeat { reverse } => self.do_find_repeat(reverse),
 
-            Action::CreateFoldFromVisual => self.do_create_fold_from_visual(),
+            // 5.5.G.16: `CreateFoldFromVisual` migrated to `Editor::dispatch`.
             // 5.5.G.1: `OpenFoldAtCursor` / `CloseFoldAtCursor` /
             // `ToggleFoldAtCursor` / `OpenAllFolds` / `CloseAllFolds`
             // / `DeleteFoldAtCursor` / `GotoNextFold` / `GotoPrevFold`

@@ -676,6 +676,8 @@ pub(crate) fn handle_action(
         // 5.5.G.15: pure-editor cmdline-completion popup nav.
         Action::CommandLineCompletePrev => editor.do_command_line_complete_prev(),
         Action::CommandLineAcceptCompletion => editor.do_command_line_accept_completion(),
+        // 5.5.G.16: `zf` creates a fold over the Visual selection.
+        Action::CreateFoldFromVisual => editor.do_create_fold_from_visual(),
         Action::ToggleFoldEnable => {
             // `zi` toggle. `set_typed` publishes through the bus;
             // drain immediately so the cascade refreshes
@@ -3133,6 +3135,41 @@ impl Editor {
             }
         }
         signals
+    }
+}
+
+/// 5.5.G.16: vim `zf` -- create a closed fold over the active
+/// Visual selection's line range. Pure-editor migration; the
+/// helper relied only on host-side fold + selection state.
+impl Editor {
+    /// Vim `zf`: create a closed fold spanning the active Visual
+    /// selection's first..last line, snap the cursor to the fold
+    /// start, and exit Visual mode. No-op when called outside
+    /// Visual or when the selection is single-line (a 1-line
+    /// fold isn't meaningful in vim).
+    pub fn do_create_fold_from_visual(&mut self) {
+        if !matches!(self.modal, ModalState::Visual(_)) {
+            self.set_message(
+                EchoLevel::Error,
+                "zf requires a Visual selection".to_string(),
+            );
+            return;
+        }
+        let sels = self.document.selections();
+        let sel = sels.primary();
+        let start_line = sel.anchor.line.min(sel.head.line);
+        let end_line = sel.anchor.line.max(sel.head.line);
+        if start_line == end_line {
+            return;
+        }
+        self.folds.push(Fold {
+            start_line,
+            end_line,
+            closed: true,
+            identity: None,
+        });
+        self.cursor = lattice_protocol::position::Position::new(start_line, 0);
+        self.do_exit_visual();
     }
 }
 

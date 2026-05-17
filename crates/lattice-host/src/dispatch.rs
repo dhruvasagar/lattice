@@ -70,8 +70,8 @@ use crate::action::{Action, EchoLevel, FindKind};
 use crate::buffers::BufferId;
 use crate::editor::Editor;
 use crate::state::{
-    LastFind, MacroRecording, PositionEntry, PositionSource, PrevPaneState, SearchLine,
-    TagStackEntry, UnnamedRegister,
+    CompletionState, LastFind, MacroRecording, PositionEntry, PositionSource, PrevPaneState,
+    SearchLine, TagStackEntry, UnnamedRegister,
 };
 
 /// 5.5.F.4.2: position-history ring cap, co-located with
@@ -1472,6 +1472,128 @@ impl Editor {
 
     /// 5.5.LSP.4: signature help (Insert-mode auto-trigger).
     /// Sends `textDocument/signatureHelp` to every attached server
+    /// 5.5.G.23.cmdline: compute the `:` completion popup state from
+    /// the current command line. Reads the cursor-position slot
+    /// (command-name / arg / empty) via
+    /// `lattice_completion::current_slot`, resolves the matching
+    /// generator, runs the pipeline, and post-processes command
+    /// candidates to prefer alias names.
+    pub fn compute_completion_state(
+        &self,
+    ) -> Result<CompletionState, CompletionComputeError> {
+        let line = self.command_line.clone();
+        let cursor = line.len();
+        let alias_resolver = |short: &str| {
+            crate::excommand::aliases()
+                .get(short)
+                .map(|s| (*s).to_string())
+        };
+        let slot =
+            lattice_completion::current_slot(&line, cursor, &self.registry, &alias_resolver);
+        let (source_name, prefix, replace_start) = match &slot {
+            lattice_completion::CommandLineSlot::CommandName {
+                prefix,
+                replace_start,
+            } => ("gen:commands", prefix.clone(), *replace_start),
+            lattice_completion::CommandLineSlot::Arg {
+                arg_spec,
+                prefix,
+                replace_start,
+                ..
+            } => match arg_spec.completion {
+                Some(name) => (name, prefix.clone(), *replace_start),
+                None => {
+                    return Err(CompletionComputeError::NoCompletionForArg(
+                        arg_spec.name.to_string(),
+                    ));
+                }
+            },
+            lattice_completion::CommandLineSlot::Empty => ("gen:commands", String::new(), 0),
+            _ => {
+                return Err(CompletionComputeError::NoCompletionAtCursor);
+            }
+        };
+        let Some(generator) = self.completion_registry.generator_by_name(source_name) else {
+            return Err(CompletionComputeError::MissingSource(
+                source_name.to_string(),
+            ));
+        };
+        let generator_id = generator.id;
+        let Some(pipeline) = lattice_completion::CompletionPipeline::for_generator(
+            &self.completion_registry,
+            generator_id,
+        ) else {
+            return Err(CompletionComputeError::PipelineUnconfigured);
+        };
+        let snap = self.document.snapshot();
+        let ctx = lattice_completion::GenerateContext {
+            prefix: &prefix,
+            buffer: &snap.buffer,
+            registry: &self.registry,
+            case_sensitive: false,
+        };
+        let mut candidates = pipeline.run(&ctx, &prefix, &self.completion_registry.cache);
+        prefer_aliases_for_command_candidates(&mut candidates, &prefix);
+        if candidates.is_empty() {
+            return Err(CompletionComputeError::NoMatches { prefix });
+        }
+        Ok(CompletionState {
+            candidates,
+            selected: 0,
+            replace_start,
+            original_line: line,
+        })
+    }
+
+    /// 5.5.G.23.cmdline: open the `:` completion popup, or inline a
+    /// single candidate when `completion.auto_insert_single` is on
+    /// and the compute yields exactly one match. Errors echo via
+    /// `set_message`. The `<Tab>` path drives this entry point.
+    pub fn open_completion_popup(&mut self) {
+        match self.compute_completion_state() {
+            Ok(state) => {
+                if self.completion_auto_insert_single() && state.candidates.len() == 1 {
+                    let chosen_text = state.candidates[0].raw.text.clone();
+                    self.command_line
+                        .replace_range(state.replace_start..self.command_line.len(), &chosen_text);
+                    return;
+                }
+                self.completion_state = Some(state);
+            }
+            Err(err) => {
+                let (level, msg) = err.echo();
+                self.set_message(level, msg);
+            }
+        }
+    }
+
+    /// 5.5.G.23.cmdline: refresh the `:` popup against the current
+    /// command-line prefix. Called after every command-line edit
+    /// (append / backspace / clear / delete-word) while a popup is
+    /// open. `NoMatches` keeps the popup open with zero candidates;
+    /// other errors drop the popup (slot moved to a no-completion
+    /// region).
+    pub fn refresh_completion_popup(&mut self) {
+        if self.completion_state.is_none() {
+            return;
+        }
+        match self.compute_completion_state() {
+            Ok(state) => {
+                self.completion_state = Some(state);
+            }
+            Err(CompletionComputeError::NoMatches { .. }) => {
+                if let Some(state) = self.completion_state.as_mut() {
+                    state.candidates.clear();
+                    state.selected = 0;
+                    state.original_line = self.command_line.clone();
+                }
+            }
+            Err(_) => {
+                self.completion_state = None;
+            }
+        }
+    }
+
     /// 5.5.G.23.macros: host-side macro replay. Push every recorded
     /// action onto `out.next_actions` so the renderer's `apply` loop
     /// drains them through its full dispatch pipeline (including arms
@@ -4231,6 +4353,14 @@ impl Editor {
     /// bool load with no option-tree traversal.
     pub fn foldenable(&self) -> bool {
         self.option_cache.foldenable
+    }
+
+    /// 5.5.G.23.cmdline: `:set completion.auto_insert_single`. Default
+    /// `true`. When the popup compute yields exactly one candidate
+    /// and this option is on, the candidate is inlined immediately
+    /// instead of opening a popup the user has to confirm.
+    pub fn completion_auto_insert_single(&self) -> bool {
+        self.option_cache.completion_auto_insert_single
     }
 
     /// Returns Some(fold) if `line` is the start of a closed fold; the
@@ -8230,6 +8360,98 @@ fn last_addressable_line(buf: &lattice_core::Buffer) -> u32 {
     } else {
         last_idx
     }
+}
+
+/// 5.5.G.23.cmdline: error variants for `Editor::compute_completion_state`.
+/// Routed through `refresh_completion_popup` to decide whether to
+/// keep the popup open with zero candidates (`NoMatches`) or drop it
+/// entirely (other variants — slot moved to a no-completion region).
+#[derive(Debug, Clone)]
+pub enum CompletionComputeError {
+    NoCompletionForArg(String),
+    NoCompletionAtCursor,
+    MissingSource(String),
+    PipelineUnconfigured,
+    NoMatches { prefix: String },
+}
+
+impl CompletionComputeError {
+    /// 5.5.G.23.cmdline: format the error as a `(level, message)`
+    /// pair for echo-area surfacing. `NoMatches` echoes Info so the
+    /// user can keep typing; missing-source / pipeline-unconfigured
+    /// echo Error because they indicate a config gap.
+    pub fn echo(&self) -> (EchoLevel, String) {
+        match self {
+            Self::NoCompletionForArg(name) => {
+                (EchoLevel::Info, format!("no completion for arg `{name}`"))
+            }
+            Self::NoCompletionAtCursor => {
+                (EchoLevel::Info, "no completion at cursor".to_string())
+            }
+            Self::MissingSource(name) => (
+                EchoLevel::Error,
+                format!("completion source `{name}` not registered"),
+            ),
+            Self::PipelineUnconfigured => (
+                EchoLevel::Error,
+                "completion pipeline not configured (missing default matcher / ranker)".to_string(),
+            ),
+            Self::NoMatches { prefix } => {
+                (EchoLevel::Info, format!("no completions for `{prefix}`"))
+            }
+        }
+    }
+}
+
+/// 5.5.G.23.cmdline: subsequence highlight range builder for the
+/// command-name popup. Recomputes match ranges after the alias
+/// rewrite so the fuzzy matcher's per-byte highlights still align
+/// with the alias-displayed text.
+fn subsequence_match_ranges(needle_lower: &str, haystack: &str) -> Vec<std::ops::Range<usize>> {
+    if needle_lower.is_empty() {
+        return Vec::new();
+    }
+    let n = needle_lower.as_bytes();
+    let h = haystack.as_bytes();
+    let mut ranges = Vec::with_capacity(n.len());
+    let mut ni = 0;
+    for (i, b) in h.iter().enumerate() {
+        if ni >= n.len() {
+            break;
+        }
+        if b.eq_ignore_ascii_case(&n[ni]) {
+            ranges.push(i..i + 1);
+            ni += 1;
+        }
+    }
+    if ni < n.len() {
+        Vec::new()
+    } else {
+        ranges
+    }
+}
+
+/// 5.5.G.23.cmdline: rewrite command candidates from canonical names
+/// to user-facing aliases. The parser accepts both forms; this is a
+/// pure UX rewrite. Public so the App-side test module's existing
+/// `prefer_aliases_*` tests can call it through the re-export.
+pub fn prefer_aliases_for_command_candidates(
+    candidates: &mut Vec<lattice_completion::RenderedCandidate>,
+    query: &str,
+) {
+    let needle = query.to_ascii_lowercase();
+    candidates.retain_mut(|c| {
+        if !matches!(c.raw.kind, lattice_completion::CandidateKind::Command) {
+            return true;
+        }
+        let canonical = c.raw.text.clone();
+        let alias = crate::excommand::preferred_alias_for(&canonical);
+        let new_text = alias.map(|a| a.to_string()).unwrap_or(canonical);
+        c.raw.text = new_text.clone();
+        c.raw.display = new_text.clone();
+        c.match_ranges = subsequence_match_ranges(&needle, &new_text);
+        true
+    });
 }
 
 /// 5.5.G.23.insert-prep: cross-source visual dedup for the

@@ -101,9 +101,12 @@ impl App {
         self.editor.foldenable()
     }
 
-    /// `:set completion.auto_insert_single`. Default `true`.
+    /// 5.5.G.23.cmdline: body migrated to
+    /// [`lattice_host::dispatch::Editor::completion_auto_insert_single`].
+    /// Retained as a 1-line delegate; deletion follows when the
+    /// remaining App callers (cmdline + completion arms) retire.
     pub fn completion_auto_insert_single(&self) -> bool {
-        self.editor.option_cache.completion_auto_insert_single
+        self.editor.completion_auto_insert_single()
     }
 
     // ---- Test-only typed setters (kept on the public surface

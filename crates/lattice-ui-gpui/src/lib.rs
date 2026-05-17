@@ -66,7 +66,7 @@ use lattice_core::{BufferKind, Document};
 use lattice_host::Renderer;
 use lattice_host::action::Action;
 use lattice_host::chord::KeyChord;
-use lattice_host::dispatch::DispatchOutcome;
+use lattice_host::dispatch::{DispatchOutcome, RendererSignal};
 use lattice_host::editor::Editor;
 use lattice_host::input::TranslateContext;
 use lattice_host::pane_render::ProviderLookup;
@@ -184,10 +184,84 @@ impl GpuiApp {
     /// renderer notifications all propagate to GPUI caches.
     fn finalize_boot(&mut self) {
         self.editor.rebuild_option_cache();
-        let _signals = self
+        let signals = self
             .editor
             .activate_major_for_buffer_kind(self.editor.document_buffer_id, BufferKind::Document);
+        for signal in signals {
+            self.handle_renderer_signal(signal);
+        }
         self.editor.publish_document_opened_for_active();
+    }
+
+    /// Renderer-side handler for the [`RendererSignal`] stream
+    /// the host emits from option cascades + mode lifecycle
+    /// helpers. Phase 5.7.B.7 wiring -- mirrors the TUI peer's
+    /// `App::handle_renderer_signal` in shape; each arm's body
+    /// reflects the GPUI peer's current capability surface.
+    ///
+    /// As GPUI-side infrastructure grows (theme cache, popup +
+    /// pane display, file-tree buffers, window-close bridge),
+    /// the corresponding arms light up. The signal contract
+    /// itself is stable -- the host doesn't know which renderer
+    /// is on the other side; both peers see the same enum.
+    pub fn handle_renderer_signal(&mut self, signal: RendererSignal) {
+        match signal {
+            // GpuiTheme is currently a placeholder (`_placeholder:
+            // ()`); when it grows GPUI-native style primitives
+            // (`Hsla`, `TextStyle`, variable-font selections)
+            // this arm rebuilds the cache from `editor.host_theme`.
+            // The corresponding `rebuild_gpui_theme()` lands
+            // alongside the first real theme field.
+            RendererSignal::ThemeChanged => {
+                tracing::debug!("ThemeChanged signal: GpuiTheme rebuild pending (cache is empty)");
+            }
+            // `editor.should_quit` was set alongside the signal
+            // emission (see `Action::Quit` in `Editor::dispatch`).
+            // The GPUI binary polls `should_quit` after each
+            // `dispatch_keystroke` and calls `cx.quit()` from the
+            // event handler -- the lib has no `gpui::App` context
+            // to drive shutdown from here.
+            RendererSignal::Quit => {
+                tracing::debug!("Quit signal: editor.should_quit set; binary polls per-event");
+            }
+            // The TUI peer's file-tree buffers embed nerd-font
+            // glyphs in their rendered rope, so a palette flip
+            // needs a rope refresh. The GPUI peer doesn't have
+            // file-tree buffers (or rope-side icon embedding)
+            // yet; the toggle is read live from
+            // `editor.host_theme.nerd_fonts` when those views
+            // exist. No-op for now -- the host emits this
+            // alongside `ThemeChanged` so renderers that don't
+            // track file-tree state can drop it.
+            RendererSignal::NerdFontsToggled => {
+                tracing::debug!(
+                    "NerdFontsToggled signal: no file-tree buffers in GPUI peer; no-op"
+                );
+            }
+            // The fan-out body migrated to
+            // `Editor::fan_out_did_change_configuration` in
+            // Phase 5.7.B.7; both peers route through the same
+            // LSP supervisor walk + per-actor `did_change_configuration`.
+            RendererSignal::LspConfigChanged(server_id) => {
+                self.editor.fan_out_did_change_configuration(&server_id);
+            }
+            // Host-side `do_*` arms build `HelpContent` and want
+            // the renderer to surface it. The GPUI peer doesn't
+            // have its `display_buffer` dispatch yet (popup +
+            // active-pane swap + split are TUI-only today); when
+            // those land, this arm routes through the same
+            // category -> BufferDisplay resolution the TUI peer
+            // uses. Today's host call sites (`:ls`,
+            // `:describe-buffer`) silently produce no visible
+            // output in the GPUI peer; the host state mutations
+            // already happened before the signal was emitted.
+            RendererSignal::DisplayBuffer(req) => {
+                tracing::debug!(
+                    category = ?req.category,
+                    "DisplayBuffer signal: GPUI display dispatch not yet implemented"
+                );
+            }
+        }
     }
 
     /// Convenience entry point for GPUI's key-down event handler:
@@ -291,6 +365,19 @@ impl GpuiApp {
                 break;
             }
         }
+        // 5.7.B.7: drain renderer signals through the GPUI
+        // handler. Drained BEFORE returning so callers see a
+        // post-signal-handling editor state; the returned
+        // outcome still carries the (now-handled) signal list
+        // for callers that want to inspect or re-route them.
+        let signals = std::mem::take(&mut outcome.renderer_signals);
+        for signal in signals.iter().cloned() {
+            self.handle_renderer_signal(signal);
+        }
+        // Restore the list on the outcome so the returned value
+        // matches the historical TUI shape (App::apply also
+        // hands these to the caller after fan-out).
+        outcome.renderer_signals = signals;
         outcome
     }
 }

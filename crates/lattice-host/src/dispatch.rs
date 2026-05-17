@@ -3571,6 +3571,65 @@ impl Editor {
             });
     }
 
+    /// Phase 5.7.B.7: fan out `workspace/didChangeConfiguration`
+    /// to every actor matching `server_id` with the freshly
+    /// merged subtree from `lsp_config_tree`. Emitted in
+    /// response to [`RendererSignal::LspConfigChanged`] from an
+    /// `lsp.<server>.*` option-cascade write.
+    ///
+    /// Migrated from
+    /// `lattice-ui-tui::app::lsp::App::fan_out_did_change_configuration`
+    /// so both renderer peers can route the cascade without
+    /// duplicating the supervisor-walk + log path. TUI keeps a
+    /// thin wrapper for back-compat with its
+    /// `handle_renderer_signal` match arm.
+    pub fn fan_out_did_change_configuration(&mut self, server_id: &str) {
+        let settings = self.lookup_lsp_config_section(server_id);
+        let params = lsp_types::DidChangeConfigurationParams { settings };
+        let supervisor = self.lsp.clone();
+        for (_key, handle) in supervisor.running_actors() {
+            if handle.server_id() != server_id {
+                continue;
+            }
+            if let Err(e) = handle.did_change_configuration(params.clone()) {
+                let instance = handle.instance();
+                self.lsp_logger.log(
+                    Some(&instance),
+                    lattice_lsp::LogLevel::Warn,
+                    lattice_lsp::LogSource::Client,
+                    format!("workspace/didChangeConfiguration fan-out failed: {e}"),
+                );
+            }
+        }
+    }
+
+    /// Look up a server-supplied `section` path in the cached
+    /// TOML tree at `lsp.<section>`. Returns `Value::Null` when
+    /// the path is missing or the TOML value can't be converted
+    /// to JSON. Empty section ("all") returns the whole `lsp`
+    /// sub-tree.
+    ///
+    /// Phase 5.7.B.7: migrated from
+    /// `lattice-ui-tui::app::lsp::App::lookup_lsp_config_section`
+    /// alongside the fan-out helper above. Pure data: reads
+    /// `self.lsp_config_tree`, converts the matched subtree to
+    /// JSON via the serde round-trip.
+    pub fn lookup_lsp_config_section(&self, section: &str) -> serde_json::Value {
+        let path = if section.is_empty() {
+            "lsp".to_string()
+        } else {
+            format!("lsp.{section}")
+        };
+        let toml_value = match lattice_config::lookup_dotted_path(&self.lsp_config_tree, &path) {
+            Some(v) => v,
+            None => return serde_json::Value::Null,
+        };
+        // toml::Value -> serde_json::Value via the round-trip
+        // serialiser. Both crates speak serde, so this is the
+        // direct path -- no manual variant matching.
+        serde_json::to_value(toml_value).unwrap_or(serde_json::Value::Null)
+    }
+
     /// 5.5.F.5.3 (M-async.3): rollback drain for the mode dispatcher's
     /// spawned lifecycle task. Reads `ModeEvent` variants off
     /// `pending_mode_lifecycle_rx` and acts on `ModeActivationFailed`

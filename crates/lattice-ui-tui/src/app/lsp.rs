@@ -1098,7 +1098,7 @@ impl App {
             let values: Vec<serde_json::Value> = req
                 .sections
                 .iter()
-                .map(|section| self.lookup_lsp_config_section(section))
+                .map(|section| self.editor.lookup_lsp_config_section(section))
                 .collect();
             let _ = req.response.send(values);
         }
@@ -1122,46 +1122,14 @@ impl App {
     /// Cross-workspace fan-out: if two actors share `server_id`
     /// across different workspace roots, both receive the
     /// notification (config is global, not workspace-scoped).
+    /// Thin wrapper around
+    /// [`lattice_host::editor::Editor::fan_out_did_change_configuration`]
+    /// (Phase 5.7.B.7 migration). Kept on `impl App` so the TUI
+    /// peer's `handle_renderer_signal` match arm doesn't churn
+    /// while the body lives host-side -- the GPUI peer reaches
+    /// the same logic through `editor.fan_out_did_change_configuration`.
     pub fn fan_out_did_change_configuration(&mut self, server_id: &str) {
-        let settings = self.lookup_lsp_config_section(server_id);
-        let params = lsp_types::DidChangeConfigurationParams { settings };
-        let supervisor = self.editor.lsp.clone();
-        for (_key, handle) in supervisor.running_actors() {
-            if handle.server_id() != server_id {
-                continue;
-            }
-            if let Err(e) = handle.did_change_configuration(params.clone()) {
-                let instance = handle.instance();
-                self.editor.lsp_logger.log(
-                    Some(&instance),
-                    lattice_lsp::LogLevel::Warn,
-                    lattice_lsp::LogSource::Client,
-                    format!("workspace/didChangeConfiguration fan-out failed: {e}"),
-                );
-            }
-        }
-    }
-
-    /// Look up a server-supplied `section` path in the cached
-    /// TOML tree at `lsp.<section>`. Returns `Value::Null` when
-    /// the path is missing or the TOML value can't be converted
-    /// to JSON. Empty section ("all") returns the whole `lsp`
-    /// sub-tree.
-    fn lookup_lsp_config_section(&self, section: &str) -> serde_json::Value {
-        let path = if section.is_empty() {
-            "lsp".to_string()
-        } else {
-            format!("lsp.{section}")
-        };
-        let toml_value =
-            match lattice_config::lookup_dotted_path(&self.editor.lsp_config_tree, &path) {
-                Some(v) => v,
-                None => return serde_json::Value::Null,
-            };
-        // toml::Value -> serde_json::Value via the round-trip
-        // serialiser. Both crates speak serde, so this is the
-        // direct path -- no manual variant matching.
-        serde_json::to_value(toml_value).unwrap_or(serde_json::Value::Null)
+        self.editor.fan_out_did_change_configuration(server_id);
     }
 
     /// 4.4.b: drain server-initiated `window/showDocument`

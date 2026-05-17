@@ -110,6 +110,15 @@ impl EditorView {
         );
         cx.stop_propagation();
         cx.notify();
+        // 5.7.B.7: `:q` / `:qa` / `<C-c>` / `Action::Quit` all
+        // set `editor.should_quit` (and emit `RendererSignal::Quit`,
+        // which `GpuiApp::handle_renderer_signal` logs but can't
+        // act on without a `gpui::App` context). The binary
+        // observes the flag here and tears down the application.
+        if self.app.editor.should_quit {
+            tracing::info!("lattice-gpui: editor.should_quit set; closing application");
+            cx.quit();
+        }
     }
 }
 

@@ -68,6 +68,11 @@ tokio = { workspace = true, features = ["sync"] }
 # MessageActionItem). `lsp_config_tree` is a `toml::Table`.
 lsp-types = { workspace = true }
 toml = { workspace = true }
+# 5.7.B.7: `Editor::lookup_lsp_config_section` round-trips
+# toml::Value -> serde_json::Value so it can ship the
+# server-namespaced config subtree to LSP actors via
+# `workspace/didChangeConfiguration`.
+serde_json = { workspace = true }
 notify = { workspace = true }
 # 5.5.E.7.5: `Editor::do_substitute` compiles `:s/pat/repl/`
 # patterns host-side via the same fancy-regex engine that backs

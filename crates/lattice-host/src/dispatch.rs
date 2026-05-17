@@ -8953,7 +8953,7 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
 /// Compute the last addressable line of `buf`. ropey reports an
 /// extra empty line for any rope ending in `\n`; this helper returns
 /// the line index of the last non-trailing-empty row instead.
-fn last_addressable_line(buf: &lattice_core::Buffer) -> u32 {
+pub(crate) fn last_addressable_line(buf: &lattice_core::Buffer) -> u32 {
     let lc = buf.line_count();
     if lc == 0 {
         return 0;

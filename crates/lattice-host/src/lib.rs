@@ -64,6 +64,11 @@ pub mod pane_render;
 pub mod popup;
 pub mod renderer;
 pub mod state;
+// Phase 5.7.B.9: synthetic-buffer + messages helpers migrate
+// from `impl App` (TUI) to `impl Editor` (host) so both
+// renderer peers seed `*lsp*` + `*messages*` eagerly.
+pub mod messages;
+pub mod synthetic_buffers;
 pub mod ui;
 
 // Re-export the host-side Renderer trait at the crate root for

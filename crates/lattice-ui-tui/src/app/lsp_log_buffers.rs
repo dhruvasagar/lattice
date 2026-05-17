@@ -26,142 +26,50 @@
 //! produces a regular editable file while the streaming buffer
 //! keeps its read-only-by-subsystem identity.
 
-use lattice_protocol::edit::Edit;
-use lattice_protocol::position::Position;
+//! Phase 5.7.B.9: synthetic-buffer plumbing migrated to
+//! `lattice_host::synthetic_buffers`. The `impl App` block
+//! below keeps the historical `pub(crate)` API surface as thin
+//! wrappers so existing call sites (boot, ex-command handlers,
+//! picker-driven open paths) stay compiling -- each wrapper
+//! delegates to the host method on `self.editor`.
 
 use crate::app::App;
-use crate::buffer_registry::{BufferData, BufferEntry, DocumentEntry};
 use crate::buffers::{BufferFlags, BufferId};
 
 impl App {
-    /// Find-or-create a synthetic Document buffer with `name`,
-    /// the given `major_id` activated on it, and the supplied
-    /// `flags`. Idempotent: a second call with the same `name`
-    /// returns the existing id (major mode is not re-activated,
-    /// flags are not overwritten).
-    ///
-    /// Used by every mode-owned synthetic buffer:
-    /// - `*lsp*` (boot) via `LspLogMode::mode_id()`.
-    /// - `*lsp:<server>:<workspace>*` (ex-command + picker open)
-    ///   via `LspServerLogMode::mode_id()`.
-    /// - `*lsp:<server>:<workspace>:trace*` (`:lsp-trace` toggle +
-    ///   `:lsp-trace-log` open) via `LspTraceLogMode::mode_id()`.
-    /// - `*messages*` (boot) via `MessagesMode::mode_id()`.
-    ///
-    /// Activation runs the major's `on_activate` synchronously,
-    /// so any subscription / spawn the mode does is in place by
-    /// the time this function returns. The major mode is what
-    /// derives the buffer's identity (instance key for LSP log
-    /// variants); the host does not stash any subsystem-shaped
-    /// buffer-local before activation.
+    /// Thin wrapper around
+    /// [`lattice_host::editor::Editor::ensure_named_synthetic_document`].
     pub(crate) fn ensure_named_synthetic_document(
         &mut self,
         name: &str,
         major_id: lattice_mode::ModeId,
         flags: BufferFlags,
     ) -> BufferId {
-        if let Some(id) = self.editor.buffers.by_name(name) {
-            return id;
-        }
-        let id = BufferId::next();
-        let document = lattice_core::Document::empty();
-        let handle = lattice_runtime::spawn_document(document, self.editor.registry.clone());
-        self.editor.buffers.insert(BufferEntry {
-            id,
-            flags,
-            data: BufferData::Document(DocumentEntry { id, handle }),
-            name: Some(name.to_string()),
-        });
-        // Seed empty mode-owned document locals so downstream
-        // accessors (`document_syntax_for` etc.) resolve cleanly
-        // through `buffer_locals` for this id.
-        self.seed_empty_document_locals(id);
-        // Activate `major_id` directly. We can't use
-        // `activate_major_for_buffer_kind` because it auto-detects
-        // the language from the buffer's path (which is None here)
-        // and would pick `text-mode` instead of the caller's
-        // intended major.
-        self.activate_major_by_id(id, major_id);
-        id
+        self.editor
+            .ensure_named_synthetic_document(name, major_id, flags)
     }
 
-    /// Unlisted, non-hidden flags — the canonical shape every
-    /// mode-owned synthetic buffer wants (`:bn` / `:bp` cycles
-    /// skip, `:ls` shows with a `u` marker, `:b <name>` still
-    /// reaches).
-    pub(crate) const SYNTHETIC_BUFFER_FLAGS: BufferFlags = BufferFlags {
-        listed: false,
-        hidden: false,
-    };
+    /// Re-export of the canonical
+    /// [`lattice_host::synthetic_buffers::SYNTHETIC_BUFFER_FLAGS`].
+    /// Kept on `impl App` so existing `App::SYNTHETIC_BUFFER_FLAGS`
+    /// references in this crate continue to resolve.
+    pub(crate) const SYNTHETIC_BUFFER_FLAGS: BufferFlags =
+        lattice_host::synthetic_buffers::SYNTHETIC_BUFFER_FLAGS;
 
-    /// Activate `major_id` on `buffer_id` directly, bypassing the
-    /// language-detection path. Used by synthetic-buffer creators
-    /// that already know which major mode they want.
+    /// Thin wrapper around
+    /// [`lattice_host::editor::Editor::activate_major_by_id`].
     pub(crate) fn activate_major_by_id(
         &mut self,
         buffer_id: BufferId,
         major_id: lattice_mode::ModeId,
     ) {
-        let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
-        let mut active = self
-            .editor
-            .active_modes
-            .remove(&buffer_id)
-            .unwrap_or_default();
-        if let Err(e) = self.editor.mode_registry.activate_major(
-            &mut active,
-            &self.editor.mode_guards,
-            &self.editor.config,
-            &self.editor.event_bus,
-            &self.editor.services,
-            proto_id,
-            major_id,
-            lattice_mode::CapabilitySet::empty(),
-        ) {
-            self.set_message(
-                crate::app::EchoLevel::Warn,
-                format!(
-                    "mode: activate_major({}) for buffer {} failed: {}",
-                    major_id, buffer_id.0, e,
-                ),
-            );
-        }
-        self.editor.active_modes.insert(buffer_id, active);
-        // Recompute the resolved-options cache so the mode's
-        // contributions (e.g. `ReadOnly = true` from
-        // `lsp-log-mode`) are visible at the next `resolved_option`
-        // read. The full kind-driven `activate_major_for_buffer_kind`
-        // calls this too; we mirror the contract here.
-        self.recompute_options_for_buffer(buffer_id);
+        self.editor.activate_major_by_id(buffer_id, major_id);
     }
 
-    /// Append `text` to the end of the Document at `buffer_id`.
-    /// Used by subsystems that own synthetic buffers to feed
-    /// streamed records without going through the modal-dispatch
-    /// insert path (which would block on the buffer's read-only
-    /// contribution).
-    ///
-    /// Blocking: this calls into the document actor's
-    /// `apply_edit_batch` mailbox via `block_on`. Cheap when text
-    /// is small; the actor's reparse path is a no-op for buffers
-    /// whose major mode (`lsp-log-mode` / `lsp-trace-log-mode`)
-    /// does not attach a syntax handle.
-    ///
-    /// No-op when `buffer_id` does not resolve to a Document in
-    /// the registry, or when `text` is empty.
+    /// Thin wrapper around
+    /// [`lattice_host::editor::Editor::append_to_owned_buffer`].
     pub(crate) fn append_to_owned_buffer(&mut self, buffer_id: BufferId, text: &str) {
-        if text.is_empty() {
-            return;
-        }
-        let Some(handle) = self.editor.buffers.document_handle(buffer_id) else {
-            return;
-        };
-        let snap = handle.snapshot();
-        let last_line = crate::app::last_addressable_line(&snap.buffer);
-        let line_len = crate::app::line_byte_len(&snap.buffer, last_line);
-        let pos = Position::new(last_line, line_len);
-        let edit = Edit::insert(pos, text);
-        let _ = lattice_runtime::block_on(handle.apply_edit_batch(vec![edit]));
+        self.editor.append_to_owned_buffer(buffer_id, text);
     }
 }
 

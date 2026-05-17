@@ -191,6 +191,14 @@ impl GpuiApp {
             self.handle_renderer_signal(signal);
         }
         self.editor.publish_document_opened_for_active();
+        // 5.7.B.9: eager subsystem buffer seeding -- matches the
+        // tail of the TUI peer's `App::new`. Creates the `*lsp*`
+        // and `*messages*` Document buffers so `:b *lsp*` /
+        // `:b *messages*` resolve from t=0 instead of lazy-
+        // creating on first use. The subsystem-name +
+        // mode-id knowledge lives host-side (no need for the
+        // GPUI peer to depend on `lattice-lsp` directly).
+        self.editor.ensure_subsystem_buffers();
     }
 
     /// Renderer-side handler for the [`RendererSignal`] stream

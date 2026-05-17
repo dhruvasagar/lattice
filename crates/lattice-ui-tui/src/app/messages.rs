@@ -30,10 +30,17 @@
 //!   continues to receive records.
 
 use crate::app::App;
-use crate::buffers::BufferId;
+use lattice_host::messages::format_message_record;
 
-/// Synthetic name for the messages buffer in the registry.
-pub const MESSAGES_BUFFER_NAME: &str = "*messages*";
+/// Re-export of the canonical
+/// [`lattice_host::messages::MESSAGES_BUFFER_NAME`] (Phase
+/// 5.7.B.9 migration). Kept at this path so existing
+/// `crate::app::messages::MESSAGES_BUFFER_NAME` references in
+/// downstream call sites + tests resolve unchanged. The
+/// `#[allow]` silences rustc's false-positive "unused import"
+/// when the only in-file consumers are inside `#[cfg(test)]`.
+#[allow(unused_imports)]
+pub use lattice_host::messages::MESSAGES_BUFFER_NAME;
 
 impl App {
     /// `:messages` -- activate the `*messages*` Document buffer.
@@ -44,55 +51,13 @@ impl App {
         self.activate_buffer(id);
     }
 
-    /// Find-or-create the `*messages*` Document buffer.
-    /// Idempotent; first creation seeds the buffer with the
-    /// in-memory ring contents (so `:messages` after some
-    /// records have already accumulated shows the backlog).
-    /// Activates `text-mode` major + `read-only-mode` minor.
-    pub(crate) fn ensure_messages_buffer(&mut self) -> BufferId {
-        let already_present = self.editor.buffers.by_name(MESSAGES_BUFFER_NAME).is_some();
-        // msg-mode.1: the buffer's major mode IS `messages-mode`
-        // (symmetric with `lsp-log-mode` for `*lsp*`). The
-        // mode contributes `ReadOnly = true` directly --
-        // no separate `read-only-mode` minor needed.
-        let id = self.ensure_named_synthetic_document(
-            MESSAGES_BUFFER_NAME,
-            lattice_mode::MessagesMode::mode_id(),
-            Self::SYNTHETIC_BUFFER_FLAGS,
-        );
-        if already_present {
-            return id;
-        }
-        // First-time creation: seed the buffer with any ring
-        // backlog records that arrived before the buffer
-        // existed. Backlog seeding matters when the buffer is
-        // created lazily (e.g. tests); the production boot
-        // creates it eagerly so the ring is usually empty at
-        // creation time.
-        // msg-mode.1: ring is Arc<Mutex<>> so the
-        // boot-installed MessagesLayer can push from any
-        // thread. Lock briefly to snapshot the backlog into a
-        // local Vec, then release before formatting +
-        // appending (Drop semantics: keep the critical section
-        // short).
-        let backlog_records: Vec<lattice_runtime::MessageRecord> = match self.editor.messages.lock()
-        {
-            Ok(ring) => ring.records().iter().cloned().collect(),
-            Err(_) => Vec::new(),
-        };
-        let backlog: String = backlog_records
-            .iter()
-            .map(format_message_record)
-            .map(|line| {
-                let mut s = line;
-                s.push('\n');
-                s
-            })
-            .collect();
-        if !backlog.is_empty() {
-            self.append_to_owned_buffer(id, &backlog);
-        }
-        id
+    /// Thin wrapper around
+    /// [`lattice_host::editor::Editor::ensure_messages_buffer`]
+    /// (Phase 5.7.B.9 migration). The find-or-create body +
+    /// backlog seeding live host-side; the GPUI peer reaches
+    /// the same logic via `editor.ensure_messages_buffer()`.
+    pub(crate) fn ensure_messages_buffer(&mut self) -> crate::buffers::BufferId {
+        self.editor.ensure_messages_buffer()
     }
 
     /// Drain queued [`lattice_runtime::MessagePushed`] events;
@@ -118,52 +83,6 @@ impl App {
         let id = self.ensure_messages_buffer();
         self.append_to_owned_buffer(id, &text);
     }
-}
-
-/// Render one record as `HH:MM:SS.mmm <level> <text>`. The
-/// level prefix lets the reader scan for warns / errors at a
-/// glance; the timestamp anchors the entry to wall-clock so
-/// users can correlate with logs / external tools.
-fn format_message_record(r: &lattice_runtime::MessageRecord) -> String {
-    let elapsed = r
-        .timestamp
-        .duration_since(std::time::SystemTime::UNIX_EPOCH)
-        .ok();
-    let secs = elapsed.map(|d| d.as_secs()).unwrap_or(0);
-    let ms = elapsed.map(|d| d.subsec_millis()).unwrap_or(0);
-    let hh = (secs / 3600) % 24;
-    let mm = (secs / 60) % 60;
-    let ss = secs % 60;
-    let level = match r.level {
-        lattice_grammar::EchoLevel::Trace => "TRACE",
-        lattice_grammar::EchoLevel::Debug => "DEBUG",
-        lattice_grammar::EchoLevel::Info => " INFO",
-        lattice_grammar::EchoLevel::Warn => " WARN",
-        lattice_grammar::EchoLevel::Error => "ERROR",
-    };
-    let text = one_line(&r.text);
-    format!("{hh:02}:{mm:02}:{ss:02}.{ms:03} {level} {text}")
-}
-
-/// Collapse internal newlines so multi-line echo bodies (rare
-/// but possible -- e.g. a multi-line server error) still
-/// render as a single transcript row. Mirrors the formatting
-/// the LSP log buffer uses.
-fn one_line(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut last_was_space = false;
-    for c in s.chars() {
-        if c == '\n' || c == '\r' || c == '\t' {
-            if !last_was_space {
-                out.push(' ');
-                last_was_space = true;
-            }
-        } else {
-            out.push(c);
-            last_was_space = c == ' ';
-        }
-    }
-    out
 }
 
 #[cfg(test)]

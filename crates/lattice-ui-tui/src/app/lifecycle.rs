@@ -693,17 +693,11 @@ impl App {
         id
     }
 
-    /// M.3.2.c.5: seed an empty set of document mode-locals for a
-    /// freshly-registered document buffer. Subsequent activation
-    /// transitions read through these slots; if the slot is
-    /// missing the accessor returns the type's natural default.
-    /// Idempotent (replace-on-collision).
+    /// Thin wrapper around
+    /// [`lattice_host::editor::Editor::seed_empty_document_locals`]
+    /// (Phase 5.7.B.9 migration).
     pub(super) fn seed_empty_document_locals(&mut self, buffer_id: BufferId) {
-        let locals = self.editor.buffer_locals.entry(buffer_id).or_default();
-        locals.insert(crate::modes::DocumentSyntax(None));
-        locals.insert(crate::modes::DocumentLastParsedTextVersion(0));
-        locals.insert(crate::modes::DocumentLastSyncedSyntaxVersion(0));
-        locals.insert(crate::modes::DocumentFolds(Vec::new()));
+        self.editor.seed_empty_document_locals(buffer_id);
     }
 
     /// M.3.2.c.4 mirror for the active document: copy the App's

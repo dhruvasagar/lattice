@@ -3609,6 +3609,51 @@ impl Editor {
         self.minor_mode_enabled_for(buffer_id, lattice_lsp::modes::LspInlayHintMode::mode_id())
     }
 
+    /// Phase 5.8.AA.h: remaining mode-gate helpers — one-line
+    /// delegates to `minor_mode_enabled_for`. Both renderer peers
+    /// reach them through `Editor::*` now.
+    pub fn lsp_diagnostics_mode_enabled_for(&self, buffer_id: lattice_core::BufferId) -> bool {
+        self.minor_mode_enabled_for(buffer_id, lattice_lsp::modes::LspDiagnosticsMode::mode_id())
+    }
+
+    pub fn lsp_format_mode_enabled_for(&self, buffer_id: lattice_core::BufferId) -> bool {
+        self.minor_mode_enabled_for(buffer_id, lattice_lsp::modes::LspFormatMode::mode_id())
+    }
+
+    pub fn lsp_rename_mode_enabled_for(&self, buffer_id: lattice_core::BufferId) -> bool {
+        self.minor_mode_enabled_for(buffer_id, lattice_lsp::modes::LspRenameMode::mode_id())
+    }
+
+    pub fn lsp_symbols_mode_enabled_for(&self, buffer_id: lattice_core::BufferId) -> bool {
+        self.minor_mode_enabled_for(buffer_id, lattice_lsp::modes::LspSymbolsMode::mode_id())
+    }
+
+    pub fn lsp_code_action_mode_enabled_for(&self, buffer_id: lattice_core::BufferId) -> bool {
+        self.minor_mode_enabled_for(buffer_id, lattice_lsp::modes::LspCodeActionMode::mode_id())
+    }
+
+    pub fn lsp_nav_mode_enabled_for(&self, buffer_id: lattice_core::BufferId) -> bool {
+        self.minor_mode_enabled_for(buffer_id, lattice_lsp::modes::LspNavMode::mode_id())
+    }
+
+    pub fn lsp_progress_mode_enabled_for(&self, buffer_id: lattice_core::BufferId) -> bool {
+        self.minor_mode_enabled_for(buffer_id, lattice_lsp::modes::LspProgressMode::mode_id())
+    }
+
+    pub fn lsp_selection_range_mode_enabled_for(&self, buffer_id: lattice_core::BufferId) -> bool {
+        self.minor_mode_enabled_for(
+            buffer_id,
+            lattice_lsp::modes::LspSelectionRangeMode::mode_id(),
+        )
+    }
+
+    pub fn lsp_semantic_tokens_mode_enabled_for(&self, buffer_id: lattice_core::BufferId) -> bool {
+        self.minor_mode_enabled_for(
+            buffer_id,
+            lattice_lsp::modes::LspSemanticTokensMode::mode_id(),
+        )
+    }
+
     /// Gates `textDocument/documentHighlight` issuance + the
     /// renderer overlay paint. Phase 5.8.AA.g: hoisted from
     /// TUI App.

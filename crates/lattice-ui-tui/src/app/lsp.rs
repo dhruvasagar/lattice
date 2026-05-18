@@ -181,7 +181,7 @@ impl App {
     /// Read by the publish-diagnostics paint pipeline and
     /// `:diag-next` / `:diag-prev` once M.6.3 wires the gate.
     pub fn lsp_diagnostics_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        self.minor_mode_enabled_for(buffer_id, lattice_lsp::modes::LspDiagnosticsMode::mode_id())
+        self.editor.lsp_diagnostics_mode_enabled_for(buffer_id)
     }
 
     /// M.6.0: is `lsp-hover-mode` active on `buffer_id`? Read by
@@ -198,29 +198,23 @@ impl App {
     /// M.6.0: is `lsp-format-mode` active on `buffer_id`? Gates
     /// `:lsp-format` / `:lsp-format-range` and `onTypeFormatting`.
     pub fn lsp_format_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        self.minor_mode_enabled_for(buffer_id, lattice_lsp::modes::LspFormatMode::mode_id())
+        self.editor.lsp_format_mode_enabled_for(buffer_id)
     }
 
-    /// M.6.0: is `lsp-rename-mode` active on `buffer_id`?
     pub fn lsp_rename_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        self.minor_mode_enabled_for(buffer_id, lattice_lsp::modes::LspRenameMode::mode_id())
+        self.editor.lsp_rename_mode_enabled_for(buffer_id)
     }
 
-    /// M.6.0: is `lsp-symbols-mode` active on `buffer_id`? Gates
-    /// `:lsp-symbols` and `:lsp-workspace-symbol`.
     pub fn lsp_symbols_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        self.minor_mode_enabled_for(buffer_id, lattice_lsp::modes::LspSymbolsMode::mode_id())
+        self.editor.lsp_symbols_mode_enabled_for(buffer_id)
     }
 
-    /// M.6.0: is `lsp-code-action-mode` active on `buffer_id`?
     pub fn lsp_code_action_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        self.minor_mode_enabled_for(buffer_id, lattice_lsp::modes::LspCodeActionMode::mode_id())
+        self.editor.lsp_code_action_mode_enabled_for(buffer_id)
     }
 
-    /// M.6.0: is `lsp-nav-mode` active on `buffer_id`? Gates
-    /// definition / declaration / type-def / impl + references.
     pub fn lsp_nav_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        self.minor_mode_enabled_for(buffer_id, lattice_lsp::modes::LspNavMode::mode_id())
+        self.editor.lsp_nav_mode_enabled_for(buffer_id)
     }
 
     /// 4.4.c: is `lsp-progress-mode` active on `buffer_id`?
@@ -230,7 +224,7 @@ impl App {
     /// the bus (plugins can subscribe) but the modeline stays
     /// quiet for that buffer.
     pub fn lsp_progress_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        self.minor_mode_enabled_for(buffer_id, lattice_lsp::modes::LspProgressMode::mode_id())
+        self.editor.lsp_progress_mode_enabled_for(buffer_id)
     }
 
     /// 4.4.e: is `lsp-document-highlight-mode` active on
@@ -238,20 +232,15 @@ impl App {
     /// `textDocument/documentHighlight` request issuance and
     /// the soft-highlight decoration overlay.
     pub fn lsp_document_highlight_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        self.minor_mode_enabled_for(
-            buffer_id,
-            lattice_lsp::modes::LspDocumentHighlightMode::mode_id(),
-        )
+        self.editor
+            .lsp_document_highlight_mode_enabled_for(buffer_id)
     }
 
     /// 4.4.e: is `lsp-selection-range-mode` active on
     /// `buffer_id`? Gates `textDocument/selectionRange`
     /// issuance for the smart-expansion operator.
     pub fn lsp_selection_range_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        self.minor_mode_enabled_for(
-            buffer_id,
-            lattice_lsp::modes::LspSelectionRangeMode::mode_id(),
-        )
+        self.editor.lsp_selection_range_mode_enabled_for(buffer_id)
     }
 
     /// 4.4.f: is `lsp-folding-mode` active on `buffer_id`?
@@ -260,24 +249,15 @@ impl App {
     /// cache stays empty and `:set foldmethod=lsp` cascades to
     /// `Syntax`.
     pub fn lsp_folding_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        self.minor_mode_enabled_for(buffer_id, lattice_lsp::modes::LspFoldingMode::mode_id())
+        self.editor.lsp_folding_mode_enabled_for(buffer_id)
     }
 
-    /// 4.4.g: is `lsp-inlay-hint-mode` active on `buffer_id`?
-    /// Gates `textDocument/inlayHint` issuance and the
-    /// renderer overlay paint.
     pub fn lsp_inlay_hint_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        self.minor_mode_enabled_for(buffer_id, lattice_lsp::modes::LspInlayHintMode::mode_id())
+        self.editor.lsp_inlay_hint_mode_enabled_for(buffer_id)
     }
 
-    /// 4.4.h: is `lsp-semantic-tokens-mode` active on
-    /// `buffer_id`? Gates `textDocument/semanticTokens/full`
-    /// issuance and the renderer's per-kind overlay.
     pub fn lsp_semantic_tokens_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        self.minor_mode_enabled_for(
-            buffer_id,
-            lattice_lsp::modes::LspSemanticTokensMode::mode_id(),
-        )
+        self.editor.lsp_semantic_tokens_mode_enabled_for(buffer_id)
     }
 
     /// M.5.4: shared gate for every LSP request entry point

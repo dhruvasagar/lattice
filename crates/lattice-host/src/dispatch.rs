@@ -3184,16 +3184,24 @@ impl Editor {
     /// bookkeeping; the single-result jump path stays caller-side
     /// (TUI peer applies; GPUI peer logs a warn until the
     /// `do_edit` chain hoists).
-    pub fn drain_pending_definitions(&mut self) -> Option<lattice_lsp::lsp_types::Location> {
+    /// Drain queued goto-definition / declaration / implementation /
+    /// type-definition responses and emit renderer signals for the
+    /// single-result jump. Multi-result opens an in-pane picker;
+    /// zero-result echoes "no X found". 5.8.AA.p: signals-shape so
+    /// `run_tick_pending` can aggregate without a separate App-side
+    /// wrapper — GPUI peer reaches the same path.
+    pub fn drain_pending_definitions(&mut self) -> Vec<RendererSignal> {
         let Some(mut rx) = self.pending_definition_rx.take() else {
-            return None;
+            return Vec::new();
         };
         let mut latest: Option<Vec<lattice_lsp::lsp_types::Location>> = None;
         while let Ok(locs) = rx.try_recv() {
             latest = Some(locs);
         }
         self.pending_definition_rx = Some(rx);
-        let locs = latest?;
+        let Some(locs) = latest else {
+            return Vec::new();
+        };
         self.pending_definition_token = None;
         let kind = self
             .pending_nav_kind
@@ -3204,19 +3212,19 @@ impl Editor {
             0 => {
                 self.pending_tag_origin = None;
                 self.set_message(EchoLevel::Info, format!("no {noun} found"));
-                None
+                Vec::new()
             }
             1 => {
                 // Push tag-stack origin now so single-result jump
-                // walks back cleanly. Caller applies the jump.
+                // walks back cleanly.
                 if let Some(origin) = self.pending_tag_origin.take() {
                     self.tag_stack.push(origin);
                 }
-                Some(locs[0].clone())
+                self.jump_to_lsp_location(&locs[0])
             }
             _ => {
                 self.open_lsp_locations_picker(format!("lsp:{noun}"), &locs);
-                None
+                Vec::new()
             }
         }
     }
@@ -6238,6 +6246,7 @@ impl Editor {
         signals.extend(self.drain_option_changes());
         signals.extend(self.drain_pending_hover());
         signals.extend(self.drain_pending_signature_help());
+        signals.extend(self.drain_pending_definitions());
         signals.extend(self.drain_mode_lifecycle_events());
         self.drain_pending_references();
         self.drain_pending_symbols();

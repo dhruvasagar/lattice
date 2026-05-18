@@ -2166,12 +2166,12 @@ impl App {
     /// in echoes (`definitions` vs `implementations` etc.) reads
     /// from `pending_nav_kind`.
     pub fn drain_pending_definitions(&mut self) {
-        // 5.8.AA: picker-opening + tag-stack bookkeeping moved to
-        // `lattice_host::dispatch::Editor::drain_pending_definitions`
-        // (returns Some(loc) for single-result so the caller can
-        // run its `do_edit`-based jump path).
-        if let Some(loc) = self.editor.drain_pending_definitions() {
-            self.jump_to_lsp_location(&loc);
+        // 5.8.AA.p: hoisted in full to host; jump is performed
+        // inside `Editor::drain_pending_definitions` and the
+        // resulting renderer signals are fanned out here.
+        let signals = self.editor.drain_pending_definitions();
+        for s in signals {
+            self.handle_renderer_signal(s);
         }
     }
 

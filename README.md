@@ -198,7 +198,7 @@ Among modern editors built on Rust + GPU + tree-sitter + LSP + WASM (the only st
 - **WIT is the canonical plugin API today** (not aspirationally). Any Component-Model language speaks the same protocol — Rust, Zig, Go, AssemblyScript. CI-gated overhead budgets (typed-call < 500 ns p99, grammar-extension round-trip < 5 µs p99).
 - **Asynchrony is architectural, not disciplinary**. Other editors keep the UI thread free by convention — contributors know which calls might block. Lattice (DESIGN.md §5.7) chooses primitives that make UI-thread blocking *physically impossible* in the steady state: `RenderState` for reads, `Arc<ArcSwapOption<T>>` / `PerBufferCache<T>` for writes, dedicated subsystem tasks for everything else. The architecture stays uniform under feature pressure.
 
-The detailed framing — what Lattice converges with Zed on, where it diverges deliberately, what to borrow (the `cx.notify()` reactive shape), and what not to borrow (imposed layouts, custom rope, single-language extensions) — is in [DESIGN.md Appendix C](docs/dev/architecture/design.md).
+The detailed framing — what Lattice converges with Zed on, where it diverges deliberately, what we evaluated (Zed's `cx.notify()` reactive paint — assessed and deferred; the savings curve doesn't transfer to Lattice's cursor-coupled UI), and what we explicitly don't borrow (imposed layouts, custom rope, single-language extensions) — is in [DESIGN.md Appendix C](docs/dev/architecture/design.md).
 
 ---
 

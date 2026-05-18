@@ -1301,14 +1301,27 @@ Every LSP feature drain in `run_tick_pending` migrates onto §5.7.2 + §5.7.3 th
 
 End state: `run_tick_pending` does not exist. The renderer reads `editor.render_state.load_full()`, paints, and hands input back. Subsystems publish on their own cadence.
 
-#### 5.7.6 Reactive publication (planned)
+#### 5.7.6 Paint-time savings — deferred-decision rationale
 
-Today's `build_render_state` rebuilds every sub-state per dispatch tick (naive: every `Arc` is fresh). Slice 3a accepted this cost (well under the 100µs budget since 9 of 10 sub-states are empty placeholders); Slice 3b populates them. Once the sub-states carry meaningful work, we'll add dirty-bit publication:
+Today's `build_render_state` rebuilds every sub-state per dispatch tick (naive: every `Arc` is fresh). Slice 3a accepted this cost (well under the 100µs budget since 9 of 10 sub-states are empty placeholders); Slice 3b populates them. The question is whether the substrate should evolve toward Zed-style reactive publication (`cx.notify()` shape: dirty-bit per sub-state, renderer-side `Arc::ptr_eq` short-circuits) once the sub-states carry meaningful work.
 
-- Each subsystem tracks "did anything in my domain change since last publication?" via typed `EventBus` subscriptions (`Event::CursorMoved`, `Event::DocumentChanged`, …; §5.10).
-- `build_render_state` only rebuilds dirty sub-states; clean sub-states reuse the previous frame's `Arc`. Renderer-side `Arc::ptr_eq` checks become first-class cache-validity signals.
+We evaluated this against the paramount goals and the answer is **defer — and treat the design as open**.
 
-This is the same shape Zed's `cx.notify()` reactive model takes (see Appendix C.3.1), expressed via Rust's typed event bus rather than an effect system. The performance constraint is non-negotiable: the dirty-tracking overhead itself must stay below the savings it produces. Bench first; ship only if the data clears the bar (heuristic #4).
+**Why the savings curve is shallow in Lattice.** Zed's reactive paint wins decisively because Zed has substantial "cold" UI relative to the cursor: a file-tree sidebar, an AI panel, a status bar, and a project-search panel that *don't* change during most editing. On a cursor move, reactive paint skips all of that.
+
+Lattice's "everything is a buffer" model means the active pane *is* the cursor-coupled work; there are no cold panels to skip. The dominant on-screen surfaces (document text + syntax highlights, gutter with `relativenumber`, cursor-coupled diagnostic glyphs / inlay-hint annotations) all derive from `ActiveDocumentRenderState` or `LspRenderState` and change every frame during interactive use. Reactive savings would apply only to idle frames (where the user doesn't perceive the latency anyway) and to background-LSP-update frames where only `diagnostics` changed (real but rare in absolute frame count).
+
+**The reactive *semantic* is already delivered by the existing primitives.** `Arc<ArcSwapOption<T>>` (§5.7.3) and `PerBufferCache<T>` (§5.7.3) propagate writes across all clones atomically. The renderer's `rs.lsp.foo.load()` sees the spawned task's write within nanoseconds, no re-publication of `RenderState` needed. What `cx.notify()` would add on top is a *paint-side short-circuit* — and that only pays when the paint work it skips is substantial relative to the bookkeeping cost.
+
+**Simpler alternatives target the same idle-frame savings.** Per-pane input-keyed cache (`(buffer_id, cursor.line, scroll, viewport_dims, theme_epoch, syntax_version, diag_version)` → rendered output) is a strictly simpler design: no dirty bits, no event-bus subscriptions, no `Arc::ptr_eq` logic — just a hash-of-inputs cache. Cache key invalidates correctly: cursor moved → recompute (which is exactly what we want). Glyph atlas + line-layout caching at the rendering crate level (cosmic-text / parley already do shaping cache; we'd extend per-line layout) targets the same hot path more locally. Tree-sitter highlight span cache keyed on `(buffer_id, range, syntax_version)` is the syntax-side equivalent.
+
+**Decision posture.** No commitment to adopt cx.notify()-shaped reactive publication. The substrate (§5.7.2 + §5.7.3) is already reactive in the load-bearing sense; further paint-side savings are an *open* question, gated on bench data:
+
+1. Land Slice 3c (`Editor` on its own thread). Sub-states fully populated.
+2. Bench: where is the renderer thread actually spending its 8 ms budget? On what kinds of frames?
+3. *If* the data shows redundant per-frame paint work, evaluate the alternatives in order of complexity — input-keyed pane cache first (simplest), syntax/atlas caching second, sub-state dirty bits with renderer-side `Arc::ptr_eq` only if the simpler shapes don't close the gap.
+
+This is heuristic #2 in action: evaluate against the paramount goals, not against other editors. Zed has reactive paint; that's data, not justification.
 
 ### 5.8 Major Modes and Minor Modes
 
@@ -3336,11 +3349,13 @@ Zed keeps the UI thread free by convention: contributors know which operations m
 
 This is the technical moat. The rendering pipeline is literally the same as Zed's. The differentiator is that Lattice *cannot* regress into UI-blocking code paths in the way every editor (Zed included) eventually does.
 
-### C.3 What Lattice should borrow from Zed
+### C.3 What Lattice should borrow from Zed (and what we evaluated and didn't)
 
-#### C.3.1 The `cx.notify()` reactive model (the dirty-bit publication shape)
+#### C.3.1 The `cx.notify()` reactive model — evaluated, not borrowed
 
-Zed's UI redraws are driven by typed observation of state changes: a subsystem that mutates state calls `cx.notify()`, observers re-paint. Today's `build_render_state` rebuilds every sub-state per dispatch tick (naive); §5.7.6 plans dirty-bit publication on the same conceptual shape, expressed via Rust's typed `EventBus` (§5.10) instead of Zed's effect system. The implementation constraint stays Lattice's: every primitive lives or dies by the bench. We ship reactive publication only if the dirty-tracking overhead clears the savings.
+Zed's UI redraws are driven by typed observation of state changes: a subsystem that mutates state calls `cx.notify()`, observers re-paint; clean entities skip paint code. We initially noted this as a candidate to import after Slice 3c. On re-evaluation against the paramount goals (heuristic #2), the savings curve doesn't transfer to Lattice -- Zed's reactive paint wins on its sidebar / panel / status-bar surfaces (cold relative to the cursor), but Lattice's "everything is a buffer" model has no comparable cold surfaces. The dominant on-screen work (document + syntax + relativenumber gutter + cursor-coupled diagnostic glyphs) changes every frame during interactive use.
+
+The reactive *semantic* is already delivered by the existing primitives (`Arc<ArcSwapOption<T>>` + `PerBufferCache<T>`; §5.7.3): writes propagate to all clones atomically without re-publication. What `cx.notify()` would add is a *paint-side short-circuit*, and simpler alternatives (per-pane input-keyed cache; glyph-atlas / line-layout caching at the rendering crate; tree-sitter span cache) target the same idle-frame savings without the substrate complexity. See §5.7.6 for the full rationale and the deferred-decision posture: open question, gated on bench data from Slice 3c.
 
 #### C.3.2 AI as a buffer kind (post-stability)
 

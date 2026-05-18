@@ -2371,12 +2371,14 @@ impl App {
     /// `:lsp-status` -- render every running server in a
     /// help-style buffer.
     pub fn do_lsp_status(&mut self) {
-        let buffer = lattice_lsp::help_views::lsp_status_help(&self.editor.lsp)
-            .with_markdown_syntax(self.editor.lang_registry.clone());
-        self.display_buffer(
-            buffer,
-            lattice_core::ui::display::BufferDisplayCategory::LspStatus,
-        );
+        // Phase 5.8.AD.2: body migrated to
+        // `lattice_host::dispatch::Editor::do_lsp_status`. Returns
+        // a `DisplayBuffer` signal that the renderer's handler
+        // routes through `display_buffer`.
+        let signals = self.editor.do_lsp_status();
+        for s in signals {
+            self.handle_renderer_signal(s);
+        }
     }
 
     /// `:lsp-server-log` -- vertico picker over every running
@@ -2394,42 +2396,9 @@ impl App {
     /// Currently emits an info message; full restart-with-
     /// backoff lands in 4.4.
     pub fn do_lsp_restart(&mut self, server_id: &str) {
-        // 4.4.d: drive the supervisor mailbox. Backoff lives on
-        // the supervisor side; the user-facing surface here is
-        // just success / error / report. The call is async but
-        // we don't have an executor on the UI thread, so we
-        // spawn into the LSP runtime and let the result echo
-        // via the bus-message path.
-        let supervisor = self.editor.lsp.clone();
-        let id_owned = server_id.to_string();
-        let runtime = crate::runtime::lsp_runtime();
-        let logger = self.editor.lsp_logger.clone();
-        runtime.spawn(async move {
-            match supervisor.restart_server(id_owned.clone()).await {
-                Ok(report) => {
-                    logger.log(
-                        None,
-                        lattice_lsp::LogLevel::Info,
-                        lattice_lsp::LogSource::Client,
-                        format!(
-                            "lsp-restart {}: respawned {} actor(s); replayed didOpen on {} uri(s)",
-                            report.server_id,
-                            report.respawned.len(),
-                            report.replayed_uris.len(),
-                        ),
-                    );
-                }
-                Err(e) => {
-                    logger.log(
-                        None,
-                        lattice_lsp::LogLevel::Warn,
-                        lattice_lsp::LogSource::Client,
-                        format!("lsp-restart {}: {}", id_owned, e),
-                    );
-                }
-            }
-        });
-        self.set_message(EchoLevel::Info, format!("lsp-restart {server_id}: queued"));
+        // Phase 5.8.AD.2: body migrated to
+        // `lattice_host::dispatch::Editor::do_lsp_restart`.
+        self.editor.do_lsp_restart(server_id);
     }
 
     /// `:lsp-progress-cancel [server]` -- send
@@ -3049,160 +3018,14 @@ impl App {
     /// fire `textDocument/selectionRange` and let the drain
     /// seat the chain + apply step 0 on completion.
     pub fn do_lsp_expand_region(&mut self) {
-        if self.try_step_cached_region(super::SelectionRangeStep::Expand) {
-            return;
-        }
-        self.issue_selection_range_request(super::SelectionRangeStep::Expand);
+        // Phase 5.8.AD.2: body migrated to
+        // `lattice_host::dispatch::Editor::do_lsp_expand_region`.
+        self.editor.do_lsp_expand_region();
     }
 
-    /// 4.4.e: `:lsp-shrink-region` -- step inward inside the
-    /// cached chain. With no cache (e.g. user invoked shrink
-    /// first), echo + bail; with the cursor at index 0, exit
-    /// Visual mode.
+    /// 4.4.e: `:lsp-shrink-region`. Phase 5.8.AD.2: migrated.
     pub fn do_lsp_shrink_region(&mut self) {
-        if self.try_step_cached_region(super::SelectionRangeStep::Shrink) {
-            return;
-        }
-        // No active chain to shrink -- user likely invoked
-        // shrink before expand. Echo + bail rather than issuing
-        // a fresh request (a shrink without prior expand has no
-        // meaningful step to take).
-        self.set_message(
-            EchoLevel::Info,
-            "lsp-shrink-region: no active expansion to shrink".to_string(),
-        );
-    }
-
-    /// Returns `true` when the cached chain was usable for the
-    /// requested step (and the selection has been applied).
-    /// `false` means the caller must fall back to issuing a
-    /// fresh request (expand) or surfacing an error (shrink).
-    fn try_step_cached_region(&mut self, step: super::SelectionRangeStep) -> bool {
-        let Some(chain) = self.editor.lsp_selection_chain.as_ref() else {
-            return false;
-        };
-        if chain.buffer_id != self.editor.document_buffer_id {
-            self.editor.lsp_selection_chain = None;
-            self.editor.lsp_selection_chain_index = 0;
-            return false;
-        }
-        // Cache is anchored at the original cursor. If the
-        // cursor has wandered outside the innermost range we
-        // invalidate -- the chain belonged to a different
-        // symbol position.
-        let inside = chain
-            .ranges
-            .first()
-            .is_some_and(|r| crate::app::cursor_inside_range(self.editor.cursor, r));
-        if !inside {
-            self.editor.lsp_selection_chain = None;
-            self.editor.lsp_selection_chain_index = 0;
-            return false;
-        }
-        match step {
-            super::SelectionRangeStep::Expand => {
-                let next = self.editor.lsp_selection_chain_index + 1;
-                if next >= chain.ranges.len() {
-                    self.set_message(EchoLevel::Info, "lsp-expand-region: outermost".to_string());
-                    return true;
-                }
-                self.editor.lsp_selection_chain_index = next;
-            }
-            super::SelectionRangeStep::Shrink => {
-                if self.editor.lsp_selection_chain_index == 0 {
-                    // Collapse to cursor; exit Visual.
-                    self.do_exit_visual();
-                    return true;
-                }
-                self.editor.lsp_selection_chain_index -= 1;
-            }
-        }
-        self.apply_selection_chain_step();
-        true
-    }
-
-    fn apply_selection_chain_step(&mut self) {
-        // 5.8.AA.m: migrated to host.
-        self.editor.apply_selection_chain_step();
-    }
-
-    fn issue_selection_range_request(&mut self, step: super::SelectionRangeStep) {
-        // M.6.2: lsp-selection-range-mode gate.
-        if !self.check_lsp_sub_mode_gate(
-            lattice_lsp::modes::LspSelectionRangeMode::mode_id(),
-            "lsp-selection-range-mode",
-        ) {
-            return;
-        }
-        // Cancel any in-flight request first so the prior
-        // response can't seat a stale chain.
-        if let Some(token) = self.editor.pending_selection_range_token.take() {
-            token.cancel();
-        }
-        let Some(uri) = self
-            .editor
-            .buffer_uris
-            .get(&self.editor.document_buffer_id)
-            .cloned()
-        else {
-            self.set_message(
-                EchoLevel::Info,
-                "no LSP server attached to current buffer".to_string(),
-            );
-            return;
-        };
-        let snapshot = self.editor.document.snapshot();
-        let position = match crate::app::app_to_lsp_position(&snapshot.buffer, self.editor.cursor) {
-            Some(p) => p,
-            None => {
-                self.set_message(
-                    EchoLevel::Error,
-                    "lsp-expand-region: cursor out of buffer".to_string(),
-                );
-                return;
-            }
-        };
-        let anchor_cursor = self.editor.cursor;
-        let anchor_buffer = self.editor.document_buffer_id;
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::SelectionRangeOutcome>();
-        let token = lattice_protocol::CancellationToken::new();
-        self.editor.pending_selection_range_rx = Some(rx);
-        self.editor.pending_selection_range_token = Some(token.clone());
-        let lsp = self.editor.lsp.clone();
-        crate::runtime::spawn_on_lsp_runtime(async move {
-            let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
-            let Some(handle) = handles
-                .into_iter()
-                .find(|h| h.capabilities().supports_selection_range())
-            else {
-                let _ = tx.send(super::SelectionRangeOutcome::NoProvider);
-                return;
-            };
-            let params = lattice_lsp::lsp_types::SelectionRangeParams {
-                text_document: lattice_lsp::lsp_types::TextDocumentIdentifier { uri: uri.clone() },
-                positions: vec![position],
-                work_done_progress_params: Default::default(),
-                partial_result_params: Default::default(),
-            };
-            match handle.selection_range(params, token.clone()).await {
-                Ok(Some(ranges)) if !ranges.is_empty() => {
-                    let flat = super::flatten_selection_range_chain(&ranges[0]);
-                    if flat.is_empty() {
-                        let _ = tx.send(super::SelectionRangeOutcome::Empty);
-                        return;
-                    }
-                    let _ = tx.send(super::SelectionRangeOutcome::Items {
-                        anchor_cursor,
-                        anchor_buffer,
-                        ranges: flat,
-                        pending_step: step,
-                    });
-                }
-                _ => {
-                    let _ = tx.send(super::SelectionRangeOutcome::Empty);
-                }
-            }
-        });
+        self.editor.do_lsp_shrink_region();
     }
 
     /// 4.4.e: drain the in-flight `selectionRange` response.

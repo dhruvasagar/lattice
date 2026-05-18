@@ -726,6 +726,18 @@ impl GpuiApp {
             // (BeforeSave / willSave / willSaveWaitUntil /
             // didSave / didCreateFiles) is now host-resident.
             Effect::SaveBuffer { path } => self.editor.do_write(path),
+            // Phase 5.8.AD.2: LSP commands whose bodies migrated.
+            Effect::LspStatus => {
+                let signals = self.editor.do_lsp_status();
+                for s in signals {
+                    self.handle_renderer_signal(s);
+                }
+            }
+            Effect::LspRestart { server_id } => {
+                self.editor.do_lsp_restart(&server_id);
+            }
+            Effect::LspExpandRegion => self.editor.do_lsp_expand_region(),
+            Effect::LspShrinkRegion => self.editor.do_lsp_shrink_region(),
             Effect::OpenBufferPicker => {
                 let signals = self.editor.do_open_buffer_picker();
                 for s in signals {

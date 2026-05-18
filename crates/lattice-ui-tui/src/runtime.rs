@@ -63,7 +63,10 @@ pub fn run(document: Document) -> Result<()> {
 // `crate::runtime::*` call sites (34 inside `App`) keep
 // compiling unchanged. Both names point at the single
 // `lattice_runtime::LSP_RUNTIME` OnceLock -- no behaviour change.
-pub(crate) use lattice_runtime::runtime::lsp_runtime;
+// Phase 5.8.AD.2: `lsp_runtime` re-export retired -- last
+// caller (`do_lsp_restart`) migrated host-side. `spawn_on_lsp_runtime`
+// is still publicly re-exported for the few App-resident async
+// helpers that haven't migrated yet.
 pub use lattice_runtime::runtime::spawn_on_lsp_runtime;
 
 fn setup() -> Result<Terminal<CrosstermBackend<Stdout>>> {

@@ -336,6 +336,37 @@ pub fn app_to_lsp_position(
 /// rendered as either markdown or plaintext (we treat plaintext
 /// as already-good markdown). `Array` joins each element with two
 /// newlines so blocks separate cleanly.
+/// Is the editor cursor inside the half-open LSP `range`?
+/// Compares only by (line, character) in LSP utf-16 space because
+/// the range is LSP-shape; the host cursor is assumed converted.
+/// Phase 5.8.AD.2: hoisted from TUI App.
+pub fn cursor_inside_range(
+    cursor: lattice_protocol::Position,
+    range: &lattice_lsp::lsp_types::Range,
+) -> bool {
+    let line = cursor.line;
+    let col = cursor.byte;
+    let start = (range.start.line, range.start.character);
+    let end = (range.end.line, range.end.character);
+    let here = (line, col);
+    here >= start && here < end
+}
+
+/// 4.4.e: flatten an LSP `SelectionRange` (linked list via
+/// `parent`) into a `Vec<Range>` ordered innermost-first.
+/// Phase 5.8.AD.2: hoisted from TUI App.
+pub fn flatten_selection_range_chain(
+    head: &lattice_lsp::lsp_types::SelectionRange,
+) -> Vec<lattice_lsp::lsp_types::Range> {
+    let mut out = Vec::new();
+    let mut cur = Some(head);
+    while let Some(node) = cur {
+        out.push(node.range);
+        cur = node.parent.as_deref();
+    }
+    out
+}
+
 pub fn hover_contents_to_markdown(contents: &lattice_lsp::lsp_types::HoverContents) -> String {
     fn marked_to_markdown(m: &lattice_lsp::lsp_types::MarkedString) -> String {
         match m {

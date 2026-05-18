@@ -11026,6 +11026,211 @@ impl Editor {
         }
     }
 
+    /// `:lsp-status` -- render every running server in a help-
+    /// style buffer. Phase 5.8.AD.2: hoisted from TUI App.
+    /// Returns a `RendererSignal::DisplayBuffer` for the renderer
+    /// to surface (popup / pane / split per the user's typed
+    /// option).
+    pub fn do_lsp_status(&mut self) -> Vec<RendererSignal> {
+        let content = lattice_lsp::help_views::lsp_status_help(&self.lsp)
+            .with_markdown_syntax(self.lang_registry.clone());
+        vec![RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
+            content,
+            category: lattice_core::ui::display::BufferDisplayCategory::LspStatus,
+        }))]
+    }
+
+    /// `:lsp-restart <server>` -- supervisor restart hook. Drives
+    /// the supervisor mailbox; the call is async and we don't have
+    /// an executor on the UI thread, so we spawn into the LSP
+    /// runtime. Success / error reports flow back through the
+    /// per-server log ring. Phase 5.8.AD.2: hoisted from TUI App.
+    pub fn do_lsp_restart(&mut self, server_id: &str) {
+        let supervisor = self.lsp.clone();
+        let id_owned = server_id.to_string();
+        let logger = self.lsp_logger.clone();
+        let runtime = lattice_runtime::runtime::lsp_runtime();
+        runtime.spawn(async move {
+            match supervisor.restart_server(id_owned.clone()).await {
+                Ok(report) => {
+                    logger.log(
+                        None,
+                        lattice_lsp::LogLevel::Info,
+                        lattice_lsp::LogSource::Client,
+                        format!(
+                            "lsp-restart {}: respawned {} actor(s); replayed didOpen on {} uri(s)",
+                            report.server_id,
+                            report.respawned.len(),
+                            report.replayed_uris.len(),
+                        ),
+                    );
+                }
+                Err(e) => {
+                    logger.log(
+                        None,
+                        lattice_lsp::LogLevel::Warn,
+                        lattice_lsp::LogSource::Client,
+                        format!("lsp-restart {}: {}", id_owned, e),
+                    );
+                }
+            }
+        });
+        self.set_message(EchoLevel::Info, format!("lsp-restart {server_id}: queued"));
+    }
+
+    /// 4.4.e: `:lsp-expand-region` -- step outward through the
+    /// cached selection-range chain. If a cached chain still
+    /// applies (cursor inside its innermost range AND same
+    /// buffer), step the index outward and apply the new
+    /// selection. Otherwise fire `textDocument/selectionRange`
+    /// and let the drain seat the chain + apply step 0 on
+    /// completion. Phase 5.8.AD.2: hoisted from TUI App.
+    pub fn do_lsp_expand_region(&mut self) {
+        if self.try_step_cached_region(lattice_lsp::cache::SelectionRangeStep::Expand) {
+            return;
+        }
+        self.issue_selection_range_request(lattice_lsp::cache::SelectionRangeStep::Expand);
+    }
+
+    /// 4.4.e: `:lsp-shrink-region` -- step inward inside the
+    /// cached chain. With no cache (e.g. user invoked shrink
+    /// first), echo + bail. Phase 5.8.AD.2: hoisted from TUI App.
+    pub fn do_lsp_shrink_region(&mut self) {
+        if self.try_step_cached_region(lattice_lsp::cache::SelectionRangeStep::Shrink) {
+            return;
+        }
+        self.set_message(
+            EchoLevel::Info,
+            "lsp-shrink-region: no active expansion to shrink".to_string(),
+        );
+    }
+
+    /// Returns `true` when the cached chain was usable for the
+    /// requested step (and the selection has been applied).
+    /// `false` means the caller must fall back to issuing a fresh
+    /// request (expand) or surfacing an error (shrink).
+    fn try_step_cached_region(&mut self, step: lattice_lsp::cache::SelectionRangeStep) -> bool {
+        let Some(chain) = self.lsp_selection_chain.as_ref() else {
+            return false;
+        };
+        if chain.buffer_id != self.document_buffer_id {
+            self.lsp_selection_chain = None;
+            self.lsp_selection_chain_index = 0;
+            return false;
+        }
+        let inside = chain
+            .ranges
+            .first()
+            .is_some_and(|r| crate::lsp_helpers::cursor_inside_range(self.cursor, r));
+        if !inside {
+            self.lsp_selection_chain = None;
+            self.lsp_selection_chain_index = 0;
+            return false;
+        }
+        match step {
+            lattice_lsp::cache::SelectionRangeStep::Expand => {
+                let next = self.lsp_selection_chain_index + 1;
+                if next >= chain.ranges.len() {
+                    self.set_message(
+                        EchoLevel::Info,
+                        "lsp-expand-region: outermost".to_string(),
+                    );
+                    return true;
+                }
+                self.lsp_selection_chain_index = next;
+            }
+            lattice_lsp::cache::SelectionRangeStep::Shrink => {
+                if self.lsp_selection_chain_index == 0 {
+                    self.do_exit_visual();
+                    return true;
+                }
+                self.lsp_selection_chain_index -= 1;
+            }
+        }
+        self.apply_selection_chain_step();
+        true
+    }
+
+    fn issue_selection_range_request(
+        &mut self,
+        step: lattice_lsp::cache::SelectionRangeStep,
+    ) {
+        if !self.check_lsp_sub_mode_gate(
+            lattice_lsp::modes::LspSelectionRangeMode::mode_id(),
+            "lsp-selection-range-mode",
+        ) {
+            return;
+        }
+        if let Some(token) = self.pending_selection_range_token.take() {
+            token.cancel();
+        }
+        let Some(uri) = self
+            .buffer_uris
+            .get(&self.document_buffer_id)
+            .cloned()
+        else {
+            self.set_message(
+                EchoLevel::Info,
+                "no LSP server attached to current buffer".to_string(),
+            );
+            return;
+        };
+        let snapshot = self.document.snapshot();
+        let position = match crate::lsp_helpers::app_to_lsp_position(&snapshot.buffer, self.cursor)
+        {
+            Some(p) => p,
+            None => {
+                self.set_message(
+                    EchoLevel::Error,
+                    "lsp-expand-region: cursor out of buffer".to_string(),
+                );
+                return;
+            }
+        };
+        let anchor_cursor = self.cursor;
+        let anchor_buffer = self.document_buffer_id;
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<lattice_lsp::cache::SelectionRangeOutcome>();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_selection_range_rx = Some(rx);
+        self.pending_selection_range_token = Some(token.clone());
+        let lsp = self.lsp.clone();
+        lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
+            let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
+            let Some(handle) = handles
+                .into_iter()
+                .find(|h| h.capabilities().supports_selection_range())
+            else {
+                let _ = tx.send(lattice_lsp::cache::SelectionRangeOutcome::NoProvider);
+                return;
+            };
+            let params = lattice_lsp::lsp_types::SelectionRangeParams {
+                text_document: lattice_lsp::lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                positions: vec![position],
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            };
+            match handle.selection_range(params, token.clone()).await {
+                Ok(Some(ranges)) if !ranges.is_empty() => {
+                    let flat = crate::lsp_helpers::flatten_selection_range_chain(&ranges[0]);
+                    if flat.is_empty() {
+                        let _ = tx.send(lattice_lsp::cache::SelectionRangeOutcome::Empty);
+                        return;
+                    }
+                    let _ = tx.send(lattice_lsp::cache::SelectionRangeOutcome::Items {
+                        anchor_cursor,
+                        anchor_buffer,
+                        ranges: flat,
+                        pending_step: step,
+                    });
+                }
+                _ => {
+                    let _ = tx.send(lattice_lsp::cache::SelectionRangeOutcome::Empty);
+                }
+            }
+        });
+    }
+
     /// Minimal `Action::PickerDismiss` -- close the picker and,
     /// if a buffer-switch picker was previewing, restore the
     /// active pane to whatever buffer it was on at picker-open.

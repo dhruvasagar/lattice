@@ -3603,6 +3603,191 @@ impl Editor {
         }
     }
 
+    /// Gates `textDocument/inlayHint` issuance + the renderer
+    /// overlay paint. Phase 5.8.AA.g: hoisted from TUI App.
+    pub fn lsp_inlay_hint_mode_enabled_for(&self, buffer_id: lattice_core::BufferId) -> bool {
+        self.minor_mode_enabled_for(buffer_id, lattice_lsp::modes::LspInlayHintMode::mode_id())
+    }
+
+    /// Gates `textDocument/documentHighlight` issuance + the
+    /// renderer overlay paint. Phase 5.8.AA.g: hoisted from
+    /// TUI App.
+    pub fn lsp_document_highlight_mode_enabled_for(
+        &self,
+        buffer_id: lattice_core::BufferId,
+    ) -> bool {
+        self.minor_mode_enabled_for(
+            buffer_id,
+            lattice_lsp::modes::LspDocumentHighlightMode::mode_id(),
+        )
+    }
+
+    /// 4.4.g: per-tick `inlayHint` pump. Fires when the mode is
+    /// active and the cache is stale for the visible viewport ±
+    /// overscan. Single-flight; each request cancels its
+    /// predecessor. Phase 5.8.AA.g: hoisted from TUI App.
+    pub fn maybe_request_inlay_hint(&mut self) {
+        if !self.lsp_inlay_hint_mode_enabled_for(self.document_buffer_id) {
+            return;
+        }
+        let snapshot = self.document.snapshot();
+        let version = snapshot.version;
+        const OVERSCAN_LINES: u32 = 100;
+        let last_buffer_line = last_addressable_line(&snapshot.buffer);
+        let viewport_first = self.scroll;
+        let viewport_last = self
+            .scroll
+            .saturating_add(self.viewport_height.saturating_sub(1));
+        let requested_first = viewport_first.saturating_sub(OVERSCAN_LINES);
+        let requested_last = viewport_last
+            .saturating_add(OVERSCAN_LINES)
+            .min(last_buffer_line);
+        if let Some(cache) = self.lsp_inlay_hints_cache.get(&self.document_buffer_id)
+            && cache.document_version == version
+            && viewport_first >= cache.requested_first_line
+            && viewport_last <= cache.requested_last_line
+        {
+            return;
+        }
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
+            return;
+        };
+        if let Some(token) = self.pending_inlay_hint_token.take() {
+            token.cancel();
+        }
+        let buffer_id = self.document_buffer_id;
+        let range = lattice_lsp::lsp_types::Range {
+            start: lattice_lsp::lsp_types::Position {
+                line: requested_first,
+                character: 0,
+            },
+            end: lattice_lsp::lsp_types::Position {
+                line: requested_last.saturating_add(1),
+                character: 0,
+            },
+        };
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<lattice_lsp::cache::InlayHintOutcome>();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_inlay_hint_rx = Some(rx);
+        self.pending_inlay_hint_token = Some(token.clone());
+        let lsp = self.lsp.clone();
+        lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
+            let handles: Vec<lattice_lsp::ServerHandle> = lsp.servers_for(&uri);
+            let Some(handle) = handles
+                .into_iter()
+                .find(|h| h.capabilities().supports_inlay_hint())
+            else {
+                let _ = tx.send(lattice_lsp::cache::InlayHintOutcome::Empty {
+                    buffer_id,
+                    document_version: version,
+                    requested_first_line: requested_first,
+                    requested_last_line: requested_last,
+                });
+                return;
+            };
+            let params = lattice_lsp::lsp_types::InlayHintParams {
+                text_document: lattice_lsp::lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                range,
+                work_done_progress_params: Default::default(),
+            };
+            match handle.inlay_hint(params, token.clone()).await {
+                Ok(Some(hints)) if !hints.is_empty() => {
+                    let _ = tx.send(lattice_lsp::cache::InlayHintOutcome::Items {
+                        buffer_id,
+                        document_version: version,
+                        hints,
+                        requested_first_line: requested_first,
+                        requested_last_line: requested_last,
+                    });
+                }
+                _ => {
+                    let _ = tx.send(lattice_lsp::cache::InlayHintOutcome::Empty {
+                        buffer_id,
+                        document_version: version,
+                        requested_first_line: requested_first,
+                        requested_last_line: requested_last,
+                    });
+                }
+            }
+        });
+    }
+
+    /// 4.4.e: per-tick `documentHighlight` pump. Fires when the
+    /// mode is active and the cursor moved off the previous
+    /// anchor. Phase 5.8.AA.g: hoisted from TUI App.
+    pub fn maybe_request_document_highlight(&mut self) {
+        if !self.lsp_document_highlight_mode_enabled_for(self.document_buffer_id) {
+            self.lsp_document_highlights = None;
+            self.last_document_highlight_issue_cursor = None;
+            if let Some(token) = self.pending_document_highlight_token.take() {
+                token.cancel();
+            }
+            return;
+        }
+        if self.last_document_highlight_issue_cursor == Some(self.cursor) {
+            return;
+        }
+        if let Some(cache) = self.lsp_document_highlights.as_ref()
+            && cache.buffer_id != self.document_buffer_id
+        {
+            self.lsp_document_highlights = None;
+        }
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
+            return;
+        };
+        let snapshot = self.document.snapshot();
+        let Some(position) = crate::lsp_helpers::app_to_lsp_position(&snapshot.buffer, self.cursor)
+        else {
+            return;
+        };
+        if let Some(token) = self.pending_document_highlight_token.take() {
+            token.cancel();
+        }
+        let buffer_id = self.document_buffer_id;
+        let anchor_cursor = self.cursor;
+        self.last_document_highlight_issue_cursor = Some(anchor_cursor);
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<lattice_lsp::cache::DocumentHighlightOutcome>();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_document_highlight_rx = Some(rx);
+        self.pending_document_highlight_token = Some(token.clone());
+        let lsp = self.lsp.clone();
+        lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
+            let handles: Vec<lattice_lsp::ServerHandle> = lsp.servers_for(&uri);
+            let Some(handle) = handles
+                .into_iter()
+                .find(|h| h.capabilities().supports_document_highlight())
+            else {
+                let _ = tx.send(lattice_lsp::cache::DocumentHighlightOutcome::Empty { buffer_id });
+                return;
+            };
+            let params = lattice_lsp::lsp_types::DocumentHighlightParams {
+                text_document_position_params: lattice_lsp::lsp_types::TextDocumentPositionParams {
+                    text_document: lattice_lsp::lsp_types::TextDocumentIdentifier {
+                        uri: uri.clone(),
+                    },
+                    position,
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            };
+            match handle.document_highlight(params, token.clone()).await {
+                Ok(Some(highlights)) if !highlights.is_empty() => {
+                    let _ = tx.send(lattice_lsp::cache::DocumentHighlightOutcome::Items {
+                        buffer_id,
+                        cursor: anchor_cursor,
+                        highlights,
+                    });
+                }
+                _ => {
+                    let _ =
+                        tx.send(lattice_lsp::cache::DocumentHighlightOutcome::Empty { buffer_id });
+                }
+            }
+        });
+    }
+
     /// Drain server-initiated `window/showMessageRequest`s; open
     /// the picker for actionable ones, echo + log informational
     /// ones. Phase 5.8.AA.e: hoisted from TUI App.
@@ -4473,6 +4658,11 @@ impl Editor {
         self.drain_inbound_configuration_requests();
         self.drain_inbound_show_message_requests();
         self.drain_message_events();
+        // Pre-drain "fire request" pumps. Each is single-flight
+        // (cancels prior in-flight) + cache-key-gated, so calling
+        // here is cheap when nothing changed.
+        self.maybe_request_inlay_hint();
+        self.maybe_request_document_highlight();
         // `drain_pending_code_actions` returns an `Option<(handle,
         // action)>` for the App-side apply chain — not signal-shaped.
         // Renderer peers call it directly and decide how to handle

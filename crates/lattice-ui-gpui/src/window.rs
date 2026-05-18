@@ -990,18 +990,49 @@ impl Render for EditorView {
                     .saturating_sub(max_visible / 2)
                     .min(total.saturating_sub(max_visible.min(total)));
                 let window_end = (window_start + max_visible).min(total);
+                // 5.8.AB.1: match-range highlighting in the
+                // insert-completion popup, same rules as the
+                // picker overlay.
+                let match_hl_fg = rgb(theme.cursor_background);
                 let visible: Vec<gpui::Div> = ic.rendered[window_start..window_end]
                     .iter()
                     .enumerate()
                     .map(|(i, cand)| {
                         let abs_idx = window_start + i;
-                        let row = div().child(cand.raw.display.clone());
-                        if abs_idx == ic.selected {
-                            row.bg(rgb(theme.status_background))
-                                .text_color(rgb(theme.status_foreground))
+                        let selected = abs_idx == ic.selected;
+                        let row_bg = if selected {
+                            Some(rgb(theme.status_background))
                         } else {
-                            row
+                            None
+                        };
+                        let row_fg = if selected {
+                            rgb(theme.status_foreground)
+                        } else {
+                            rgb(theme.foreground)
+                        };
+                        let display = &cand.raw.display;
+                        if cand.match_ranges.is_empty() {
+                            let row = div().child(display.clone()).text_color(row_fg);
+                            return if let Some(bg) = row_bg { row.bg(bg) } else { row };
                         }
+                        let in_match = |byte_idx: usize| -> bool {
+                            cand.match_ranges
+                                .iter()
+                                .any(|r| byte_idx >= r.start && byte_idx < r.end)
+                        };
+                        let cells: Vec<gpui::Div> = display
+                            .char_indices()
+                            .map(|(byte_idx, c)| {
+                                let cell = div().child(c.to_string());
+                                if in_match(byte_idx) {
+                                    cell.text_color(match_hl_fg)
+                                } else {
+                                    cell.text_color(row_fg)
+                                }
+                            })
+                            .collect();
+                        let row = div().flex().flex_row().children(cells);
+                        if let Some(bg) = row_bg { row.bg(bg) } else { row }
                     })
                     .collect();
                 div()
@@ -1034,18 +1065,57 @@ impl Render for EditorView {
                 .saturating_sub(max_visible / 2)
                 .min(total.saturating_sub(max_visible.min(total)));
             let window_end = (window_start + max_visible).min(total);
+            // 5.8.AB.1: paint matched bytes in cursor_background
+            // so the user can see *why* each row matched their
+            // query. The TUI peer can't easily render styled
+            // per-character spans mid-row; GPUI walks the byte
+            // sequence and emits one cell-div per char with the
+            // matched ones tinted. `match_ranges` is half-open
+            // byte ranges into `raw.display` (the renderer's
+            // canonical row text).
+            let match_hl_fg = rgb(theme.cursor_background);
             let visible_candidates: Vec<gpui::Div> = picker.candidates[window_start..window_end]
                 .iter()
                 .enumerate()
                 .map(|(i, cand)| {
                     let abs_idx = window_start + i;
-                    let row = div().child(cand.raw.display.clone());
-                    if abs_idx == picker.selected {
-                        row.bg(rgb(theme.status_background))
-                            .text_color(rgb(theme.status_foreground))
+                    let selected = abs_idx == picker.selected;
+                    let row_bg = if selected {
+                        Some(rgb(theme.status_background))
                     } else {
-                        row
+                        None
+                    };
+                    let row_fg = if selected {
+                        rgb(theme.status_foreground)
+                    } else {
+                        rgb(theme.foreground)
+                    };
+                    let display = &cand.raw.display;
+                    // Fast path: no matches → single child, no
+                    // per-cell loop. Empty-query "show all" rows
+                    // hit this branch every time.
+                    if cand.match_ranges.is_empty() {
+                        let row = div().child(display.clone()).text_color(row_fg);
+                        return if let Some(bg) = row_bg { row.bg(bg) } else { row };
                     }
+                    let in_match = |byte_idx: usize| -> bool {
+                        cand.match_ranges
+                            .iter()
+                            .any(|r| byte_idx >= r.start && byte_idx < r.end)
+                    };
+                    let cells: Vec<gpui::Div> = display
+                        .char_indices()
+                        .map(|(byte_idx, c)| {
+                            let cell = div().child(c.to_string());
+                            if in_match(byte_idx) {
+                                cell.text_color(match_hl_fg)
+                            } else {
+                                cell.text_color(row_fg)
+                            }
+                        })
+                        .collect();
+                    let row = div().flex().flex_row().children(cells);
+                    if let Some(bg) = row_bg { row.bg(bg) } else { row }
                 })
                 .collect();
             div()
@@ -1102,9 +1172,38 @@ impl Render for EditorView {
         let popup_overlay: Option<gpui::Div> = self.app.popup_content.as_ref().map(|content| {
             let title = content.buffer.title.clone();
             let body_text = content.buffer.content.as_string();
-            let popup_lines: Vec<gpui::Div> = body_text
-                .split('\n')
-                .map(|line| div().child(line.to_string()))
+            // 5.8.AB.3: markdown-styled hover / help / describe-X
+            // popups. The host pre-computes per-line tree-sitter
+            // markdown spans via `HelpContent::with_markdown_syntax`
+            // (every `RendererSignal::DisplayBuffer` payload is
+            // enriched). Walk those alongside the line text to
+            // produce per-character `text_color`'d divs — same
+            // approach the document-area paint uses. Lines without
+            // a span vector fall through to the unstyled fast
+            // path (one child, no per-char loop).
+            let line_highlights: &[Vec<lattice_syntax::StyledSpan>] =
+                content.metadata.highlights.as_slice();
+            let body_lines: Vec<&str> = body_text.split('\n').collect();
+            let popup_lines: Vec<gpui::Div> = body_lines
+                .iter()
+                .enumerate()
+                .map(|(idx, line)| {
+                    let spans: &[lattice_syntax::StyledSpan] =
+                        line_highlights.get(idx).map(Vec::as_slice).unwrap_or(&[]);
+                    if spans.is_empty() {
+                        return div().child(line.to_string());
+                    }
+                    let cells: Vec<gpui::Div> = line
+                        .char_indices()
+                        .map(|(byte_idx, c)| {
+                            let style = style_at(spans, byte_idx);
+                            div()
+                                .text_color(rgb(syntax_color(style)))
+                                .child(c.to_string())
+                        })
+                        .collect();
+                    div().flex().flex_row().children(cells)
+                })
                 .collect();
             div()
                 .flex()

@@ -745,7 +745,14 @@ pub struct Editor {
     /// Per-buffer `documentColor` cache.
     pub lsp_document_color_cache: HashMap<BufferId, LspDocumentColorCache>,
     /// Per-buffer semantic-tokens cache.
-    pub lsp_semantic_tokens_cache: HashMap<BufferId, LspSemanticTokensCache>,
+    /// Per-buffer cache of the last `textDocument/semanticTokens/*`
+    /// response. Phase 5.8.AF.5 / Slice 3b.2: `PerBufferCache<T>`
+    /// so the spawned LSP request task writes results (Items /
+    /// Delta-applied / Empty) directly when the response arrives.
+    /// Renderers read wait-free via
+    /// `rs.lsp.semantic_tokens.get_for(buffer_id)`.
+    pub lsp_semantic_tokens_cache:
+        crate::per_buffer_cache::PerBufferCache<LspSemanticTokensCache>,
     /// Per-buffer pull-diagnostics cache (keyed
     /// `result_id`s for `Unchanged` short-circuit).
     pub lsp_pull_diagnostics_cache: HashMap<BufferId, LspPullDiagnosticsCache>,
@@ -855,8 +862,10 @@ pub struct Editor {
     // retired -- the spawned task writes directly into
     // `lsp_inlay_hints_cache` via `PerBufferCacheExt::insert_for`.
     pub pending_semantic_tokens_token: Option<CancellationToken>,
-    pub pending_semantic_tokens_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<SemanticTokensOutcome>>,
+    // Phase 5.8.AF.5 / Slice 3b.2: `pending_semantic_tokens_rx`
+    // retired -- the spawned task writes directly into
+    // `lsp_semantic_tokens_cache` via `PerBufferCacheExt::insert_for`
+    // (or `remove_for` on result_id mismatch in the Delta path).
     pub pending_pull_diagnostics_token: Option<CancellationToken>,
     pub pending_pull_diagnostics_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<PullDiagnosticsOutcome>>,

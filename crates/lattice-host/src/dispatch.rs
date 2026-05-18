@@ -348,6 +348,7 @@ impl Editor {
                 document_highlights: self.lsp_document_highlights.clone(),
                 inlay_hints: self.lsp_inlay_hints_cache.clone(),
                 folds: self.lsp_folds_cache.clone(),
+                semantic_tokens: self.lsp_semantic_tokens_cache.clone(),
             }),
             ..RenderState::default()
         }
@@ -3576,99 +3577,60 @@ impl Editor {
     // cache version flips -- tracked via
     // `last_recomputed_lsp_fold_version`.
 
-    /// 4.4.h: drain semantic-tokens responses (Items/Delta/Empty).
-    /// Phase 5.8.AA.b: hoisted from TUI App.
-    pub fn drain_pending_semantic_tokens(&mut self) {
-        let Some(mut rx) = self.pending_semantic_tokens_rx.take() else {
+    // Phase 5.8.AF.5 / Slice 3b.2: `drain_pending_semantic_tokens`
+    // retired. The spawned task in `maybe_request_semantic_tokens`
+    // writes directly into `lsp_semantic_tokens_cache` via
+    // `PerBufferCacheExt::insert_for` (or `remove_for` on Delta
+    // result_id mismatch / apply failure). Delta application
+    // reads the current cache through the same cloned Arc.
+
+    /// Slice 3b.2: apply a `SemanticTokensOutcome::Delta` to the
+    /// per-buffer cache. Pure with respect to `Editor` state --
+    /// only the passed `cache_slot` is mutated (via interior
+    /// ArcSwap), so the spawned LSP request task and synchronous
+    /// tests can share the exact same code path.
+    ///
+    /// Semantics: read the current cache; verify its `result_id`
+    /// matches the delta's `previous_result_id`; apply edits to
+    /// `raw_data`; redecode; `insert_for` the new cache. On any
+    /// mismatch / apply failure / missing cache, `remove_for` the
+    /// entry so the next pump re-fetches a Full.
+    pub fn apply_semantic_tokens_delta_outcome(
+        cache_slot: &crate::per_buffer_cache::PerBufferCache<
+            lattice_lsp::cache::LspSemanticTokensCache,
+        >,
+        buffer_id: lattice_core::BufferId,
+        document_version: u64,
+        previous_result_id: &str,
+        new_result_id: Option<String>,
+        edits: &[lattice_lsp::lsp_types::SemanticTokensEdit],
+        token_types: &[lattice_lsp::lsp_types::SemanticTokenType],
+        token_modifiers: &[lattice_lsp::lsp_types::SemanticTokenModifier],
+    ) {
+        use crate::per_buffer_cache::PerBufferCacheExt;
+        let Some(cur) = cache_slot.get_for(buffer_id) else {
             return;
         };
-        let mut latest: Option<lattice_lsp::cache::SemanticTokensOutcome> = None;
-        while let Ok(outcome) = rx.try_recv() {
-            latest = Some(outcome);
+        if cur.result_id.as_deref() != Some(previous_result_id) {
+            cache_slot.remove_for(buffer_id);
+            return;
         }
-        self.pending_semantic_tokens_rx = Some(rx);
-        let Some(outcome) = latest else {
+        let mut raw_data = cur.raw_data.clone();
+        if lattice_lsp::cache::apply_semantic_token_edits(&mut raw_data, edits).is_err() {
+            cache_slot.remove_for(buffer_id);
             return;
-        };
-        use lattice_lsp::cache::{LspSemanticTokensCache, SemanticTokensOutcome};
-        match outcome {
-            SemanticTokensOutcome::Items {
-                buffer_id,
+        }
+        let decoded =
+            lattice_lsp::cache::decode_semantic_tokens(&raw_data, token_types, token_modifiers);
+        cache_slot.insert_for(
+            buffer_id,
+            lattice_lsp::cache::LspSemanticTokensCache {
                 document_version,
-                result_id,
+                result_id: new_result_id,
                 raw_data,
-                tokens,
-            } => {
-                if buffer_id != self.document_buffer_id {
-                    return;
-                }
-                self.lsp_semantic_tokens_cache.insert(
-                    buffer_id,
-                    LspSemanticTokensCache {
-                        document_version,
-                        result_id,
-                        raw_data,
-                        tokens,
-                    },
-                );
-            }
-            SemanticTokensOutcome::Delta {
-                buffer_id,
-                document_version,
-                previous_result_id,
-                new_result_id,
-                edits,
-                token_types,
-                token_modifiers,
-            } => {
-                if buffer_id != self.document_buffer_id {
-                    return;
-                }
-                let Some(cache) = self.lsp_semantic_tokens_cache.get(&buffer_id) else {
-                    return;
-                };
-                if cache.result_id.as_deref() != Some(previous_result_id.as_str()) {
-                    self.lsp_semantic_tokens_cache.remove(&buffer_id);
-                    return;
-                }
-                let mut raw_data = cache.raw_data.clone();
-                if lattice_lsp::cache::apply_semantic_token_edits(&mut raw_data, &edits).is_err() {
-                    self.lsp_semantic_tokens_cache.remove(&buffer_id);
-                    return;
-                }
-                let decoded = lattice_lsp::cache::decode_semantic_tokens(
-                    &raw_data,
-                    &token_types,
-                    &token_modifiers,
-                );
-                self.lsp_semantic_tokens_cache.insert(
-                    buffer_id,
-                    LspSemanticTokensCache {
-                        document_version,
-                        result_id: new_result_id,
-                        raw_data,
-                        tokens: decoded,
-                    },
-                );
-            }
-            SemanticTokensOutcome::Empty {
-                buffer_id,
-                document_version,
-            } => {
-                if buffer_id != self.document_buffer_id {
-                    return;
-                }
-                self.lsp_semantic_tokens_cache.insert(
-                    buffer_id,
-                    LspSemanticTokensCache {
-                        document_version,
-                        result_id: None,
-                        raw_data: Vec::new(),
-                        tokens: Vec::new(),
-                    },
-                );
-            }
-        }
+                tokens: decoded,
+            },
+        );
     }
 
     /// Gates `textDocument/inlayHint` issuance + the renderer
@@ -5413,18 +5375,21 @@ impl Editor {
     /// when prior result_id + server supports delta; full
     /// otherwise. Phase 5.8.AA.i: hoisted from TUI App.
     pub fn maybe_request_semantic_tokens(&mut self) {
+        use crate::per_buffer_cache::PerBufferCacheExt;
         if !self.lsp_semantic_tokens_mode_enabled_for(self.document_buffer_id) {
             return;
         }
         let snapshot = self.document.snapshot();
         let version = snapshot.version;
-        let prior = self.lsp_semantic_tokens_cache.get(&self.document_buffer_id);
-        if let Some(cache) = prior
+        let prior = self
+            .lsp_semantic_tokens_cache
+            .get_for(self.document_buffer_id);
+        if let Some(cache) = prior.as_ref()
             && cache.document_version == version
         {
             return;
         }
-        let prior_result_id = prior.and_then(|c| c.result_id.clone());
+        let prior_result_id = prior.as_ref().and_then(|c| c.result_id.clone());
         let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
             return;
         };
@@ -5432,22 +5397,32 @@ impl Editor {
             token.cancel();
         }
         let buffer_id = self.document_buffer_id;
-        let (tx, rx) =
-            tokio::sync::mpsc::unbounded_channel::<lattice_lsp::cache::SemanticTokensOutcome>();
         let token = lattice_protocol::CancellationToken::new();
-        self.pending_semantic_tokens_rx = Some(rx);
         self.pending_semantic_tokens_token = Some(token.clone());
         let lsp = self.lsp.clone();
+        // Slice 3b.2: clone the cache slot Arc into the task.
+        // The task handles all three outcomes (Items / Delta /
+        // Empty) by writing directly via `insert_for` / `remove_for`
+        // -- no channel hop. Delta application reads the current
+        // cache via `cache_slot.get_for(buffer_id)`; the spawned
+        // task has the same Arc identity as the editor, so the
+        // read sees any concurrent writes consistently.
+        let cache_slot = self.lsp_semantic_tokens_cache.clone();
         lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = lsp.servers_for(&uri);
             let Some(handle) = handles
                 .into_iter()
                 .find(|h| h.capabilities().supports_semantic_tokens())
             else {
-                let _ = tx.send(lattice_lsp::cache::SemanticTokensOutcome::Empty {
+                cache_slot.insert_for(
                     buffer_id,
-                    document_version: version,
-                });
+                    lattice_lsp::cache::LspSemanticTokensCache {
+                        document_version: version,
+                        result_id: None,
+                        raw_data: Vec::new(),
+                        tokens: Vec::new(),
+                    },
+                );
                 return;
             };
             let caps = handle.capabilities();
@@ -5473,32 +5448,44 @@ impl Editor {
                             &token_types,
                             &token_modifiers,
                         );
-                        let _ = tx.send(lattice_lsp::cache::SemanticTokensOutcome::Items {
+                        cache_slot.insert_for(
                             buffer_id,
-                            document_version: version,
-                            result_id: t.result_id,
-                            raw_data: t.data,
-                            tokens: decoded,
-                        });
+                            lattice_lsp::cache::LspSemanticTokensCache {
+                                document_version: version,
+                                result_id: t.result_id,
+                                raw_data: t.data,
+                                tokens: decoded,
+                            },
+                        );
                     }
                     Ok(Some(
                         lattice_lsp::lsp_types::SemanticTokensFullDeltaResult::TokensDelta(d),
                     )) => {
-                        let _ = tx.send(lattice_lsp::cache::SemanticTokensOutcome::Delta {
+                        // Delta application factored into a pure
+                        // helper so synchronous tests can exercise
+                        // the same code path without spinning up
+                        // the async task.
+                        Editor::apply_semantic_tokens_delta_outcome(
+                            &cache_slot,
                             buffer_id,
-                            document_version: version,
-                            previous_result_id: prev_id,
-                            new_result_id: d.result_id,
-                            edits: d.edits,
-                            token_types: token_types.clone(),
-                            token_modifiers: token_modifiers.clone(),
-                        });
+                            version,
+                            &prev_id,
+                            d.result_id,
+                            &d.edits,
+                            &token_types,
+                            &token_modifiers,
+                        );
                     }
                     _ => {
-                        let _ = tx.send(lattice_lsp::cache::SemanticTokensOutcome::Empty {
+                        cache_slot.insert_for(
                             buffer_id,
-                            document_version: version,
-                        });
+                            lattice_lsp::cache::LspSemanticTokensCache {
+                                document_version: version,
+                                result_id: None,
+                                raw_data: Vec::new(),
+                                tokens: Vec::new(),
+                            },
+                        );
                     }
                 }
                 return;
@@ -5515,19 +5502,26 @@ impl Editor {
                         &token_types,
                         &token_modifiers,
                     );
-                    let _ = tx.send(lattice_lsp::cache::SemanticTokensOutcome::Items {
+                    cache_slot.insert_for(
                         buffer_id,
-                        document_version: version,
-                        result_id: t.result_id,
-                        raw_data: t.data,
-                        tokens: decoded,
-                    });
+                        lattice_lsp::cache::LspSemanticTokensCache {
+                            document_version: version,
+                            result_id: t.result_id,
+                            raw_data: t.data,
+                            tokens: decoded,
+                        },
+                    );
                 }
                 _ => {
-                    let _ = tx.send(lattice_lsp::cache::SemanticTokensOutcome::Empty {
+                    cache_slot.insert_for(
                         buffer_id,
-                        document_version: version,
-                    });
+                        lattice_lsp::cache::LspSemanticTokensCache {
+                            document_version: version,
+                            result_id: None,
+                            raw_data: Vec::new(),
+                            tokens: Vec::new(),
+                        },
+                    );
                 }
             }
         });
@@ -6269,7 +6263,8 @@ impl Editor {
             })
             .collect();
         for buffer_id in buffer_ids {
-            self.lsp_semantic_tokens_cache.remove(&buffer_id);
+            use crate::per_buffer_cache::PerBufferCacheExt;
+            self.lsp_semantic_tokens_cache.remove_for(buffer_id);
         }
     }
 
@@ -6558,7 +6553,10 @@ impl Editor {
         // `recompute_folds()` side-effect now runs in
         // `maybe_request_folding_range` on cache-version flip.
         self.drain_pending_pull_diagnostics();
-        self.drain_pending_semantic_tokens();
+        // 5.8.AF.5 / Slice 3b.2: `drain_pending_semantic_tokens`
+        // retired -- writes happen directly from the spawned
+        // request task into `lsp_semantic_tokens_cache` via
+        // `PerBufferCacheExt::insert_for`.
         self.drain_pending_moniker();
         self.drain_pending_document_link();
         self.drain_pending_code_lens();

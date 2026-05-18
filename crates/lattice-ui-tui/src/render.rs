@@ -2491,10 +2491,17 @@ fn compose_visible_lines_inner(
         // their bg / underline on top of the LSP-driven fg
         // -- the user's selection and search highlight stay
         // visible over semantic-colored text.
-        if let Some(cache) = app
-            .editor
-            .lsp_semantic_tokens_cache
-            .get(&app.editor.document_buffer_id)
+        // 5.8.AF.5 / Slice 3b.2: read semantic-tokens through
+        // `RenderState.lsp.semantic_tokens`. The spawned request
+        // task writes via `insert_for` into the same underlying
+        // `PerBufferCache` -- this read sees fresh data without
+        // any UI-thread drain.
+        use lattice_host::per_buffer_cache::PerBufferCacheExt;
+        let rs_st = app.editor.render_state.load();
+        if let Some(cache) = rs_st
+            .lsp
+            .semantic_tokens
+            .get_for(app.editor.document_buffer_id)
             && app.lsp_semantic_tokens_mode_enabled_for(app.editor.document_buffer_id)
         {
             for tok in cache.tokens.iter().filter(|t| t.line == line_idx) {
@@ -2639,8 +2646,8 @@ fn compose_visible_lines_inner(
         // `RenderState.lsp.inlay_hints`. The spawned LSP request
         // task `.insert_for`s directly into the same underlying
         // `PerBufferCache`, so this read sees fresh data without
-        // any UI-thread drain.
-        use lattice_host::per_buffer_cache::PerBufferCacheExt;
+        // any UI-thread drain. (`PerBufferCacheExt` already in
+        // scope from the semantic-tokens reader above.)
         let rs = app.editor.render_state.load();
         if let Some(cache) = rs.lsp.inlay_hints.get_for(app.editor.document_buffer_id)
             && app.lsp_inlay_hint_mode_enabled_for(app.editor.document_buffer_id)
@@ -5384,30 +5391,36 @@ mod tests {
         }
         // Seed: "fn" as keyword (chars 0..=1), "main" as function
         // (chars 3..=6).
-        app.editor.lsp_semantic_tokens_cache.insert(
-            app.editor.document_buffer_id,
-            crate::app::LspSemanticTokensCache {
-                document_version: app.editor.document.snapshot().version,
-                result_id: None,
-                raw_data: Vec::new(),
-                tokens: vec![
-                    crate::app::DecodedSemanticToken {
-                        line: 0,
-                        start_char: 0,
-                        length: 2,
-                        token_type: "keyword".into(),
-                        modifiers: Vec::new(),
-                    },
-                    crate::app::DecodedSemanticToken {
-                        line: 0,
-                        start_char: 3,
-                        length: 4,
-                        token_type: "function".into(),
-                        modifiers: Vec::new(),
-                    },
-                ],
-            },
-        );
+        // 5.8.AF.5 / Slice 3b.2: `lsp_semantic_tokens_cache` is
+        // now a `PerBufferCache<...>`; use `insert_for` + publish.
+        {
+            use lattice_host::per_buffer_cache::PerBufferCacheExt;
+            app.editor.lsp_semantic_tokens_cache.insert_for(
+                app.editor.document_buffer_id,
+                crate::app::LspSemanticTokensCache {
+                    document_version: app.editor.document.snapshot().version,
+                    result_id: None,
+                    raw_data: Vec::new(),
+                    tokens: vec![
+                        crate::app::DecodedSemanticToken {
+                            line: 0,
+                            start_char: 0,
+                            length: 2,
+                            token_type: "keyword".into(),
+                            modifiers: Vec::new(),
+                        },
+                        crate::app::DecodedSemanticToken {
+                            line: 0,
+                            start_char: 3,
+                            length: 4,
+                            token_type: "function".into(),
+                            modifiers: Vec::new(),
+                        },
+                    ],
+                },
+            );
+        }
+        app.editor.publish_render_state();
         let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
         let row0 = &lines[0];
         // Magenta = keyword, Yellow = function. Find at least
@@ -5444,21 +5457,26 @@ mod tests {
         if app.lsp_semantic_tokens_mode_enabled_for(app.editor.document_buffer_id) {
             app.toggle_mode_by_name("lsp-semantic-tokens-mode");
         }
-        app.editor.lsp_semantic_tokens_cache.insert(
-            app.editor.document_buffer_id,
-            crate::app::LspSemanticTokensCache {
-                document_version: app.editor.document.snapshot().version,
-                result_id: None,
-                raw_data: Vec::new(),
-                tokens: vec![crate::app::DecodedSemanticToken {
-                    line: 0,
-                    start_char: 0,
-                    length: 2,
-                    token_type: "keyword".into(),
-                    modifiers: Vec::new(),
-                }],
-            },
-        );
+        // 5.8.AF.5 / Slice 3b.2: see seed pattern note above.
+        {
+            use lattice_host::per_buffer_cache::PerBufferCacheExt;
+            app.editor.lsp_semantic_tokens_cache.insert_for(
+                app.editor.document_buffer_id,
+                crate::app::LspSemanticTokensCache {
+                    document_version: app.editor.document.snapshot().version,
+                    result_id: None,
+                    raw_data: Vec::new(),
+                    tokens: vec![crate::app::DecodedSemanticToken {
+                        line: 0,
+                        start_char: 0,
+                        length: 2,
+                        token_type: "keyword".into(),
+                        modifiers: Vec::new(),
+                    }],
+                },
+            );
+        }
+        app.editor.publish_render_state();
         let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
         let row0 = &lines[0];
         // No magenta fg should appear on the "fn" span.

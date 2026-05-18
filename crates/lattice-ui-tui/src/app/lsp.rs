@@ -1190,15 +1190,13 @@ impl App {
         self.editor.maybe_request_semantic_tokens();
     }
 
-    /// 4.4.h: drain the in-flight `semanticTokens/full`
-    /// response. Coalesces multiple queued outcomes to the
-    /// latest. On success seats the cache; on Empty seats an
-    /// empty list so we don't re-issue immediately.
-    pub fn drain_pending_semantic_tokens(&mut self) {
-        // 5.8.AA.b: migrated to
-        // `lattice_host::dispatch::Editor::drain_pending_semantic_tokens`.
-        self.editor.drain_pending_semantic_tokens();
-    }
+    // Phase 5.8.AF.5 / Slice 3b.2: `App::drain_pending_semantic_tokens`
+    // retired -- spawned LSP request task writes directly into
+    // `lsp_semantic_tokens_cache` via `PerBufferCacheExt::insert_for`.
+    // No drain needed. Delta application is factored into
+    // `Editor::apply_semantic_tokens_delta_outcome` -- the
+    // synchronous tests that previously fed an outcome through the
+    // drain now call that helper directly.
 
     /// 4.4.j: per-tick `textDocument/diagnostic` (pull-based)
     /// pump. Fires when:
@@ -2353,57 +2351,64 @@ mod tests {
             token_type: 0,
             token_modifiers_bitset: 0,
         }];
-        a.editor.lsp_semantic_tokens_cache.insert(
-            buffer_id,
-            crate::app::LspSemanticTokensCache {
-                document_version: 1,
-                result_id: Some("r1".into()),
-                raw_data: initial_raw,
-                tokens: vec![crate::app::DecodedSemanticToken {
-                    line: 0,
-                    start_char: 0,
-                    length: 2,
-                    token_type: "keyword".into(),
-                    modifiers: Vec::new(),
-                }],
-            },
-        );
-        // Send a Delta outcome that appends a new "function"
-        // token. The drain should splice into raw_data and
+        // 5.8.AF.5 / Slice 3b.2: tests drive the delta path by
+        // calling the pure helper directly. Channel + drain
+        // dance is gone -- the spawned task in
+        // `maybe_request_semantic_tokens` calls the same helper.
+        {
+            use lattice_host::per_buffer_cache::PerBufferCacheExt;
+            a.editor.lsp_semantic_tokens_cache.insert_for(
+                buffer_id,
+                crate::app::LspSemanticTokensCache {
+                    document_version: 1,
+                    result_id: Some("r1".into()),
+                    raw_data: initial_raw,
+                    tokens: vec![crate::app::DecodedSemanticToken {
+                        line: 0,
+                        start_char: 0,
+                        length: 2,
+                        token_type: "keyword".into(),
+                        modifiers: Vec::new(),
+                    }],
+                },
+            );
+        }
+        // Apply a Delta outcome that appends a new "function"
+        // token. The helper should splice into raw_data and
         // re-decode against the carried legend.
         let token_types = vec![
             lattice_lsp::lsp_types::SemanticTokenType::KEYWORD,
             lattice_lsp::lsp_types::SemanticTokenType::FUNCTION,
         ];
         let token_modifiers: Vec<lattice_lsp::lsp_types::SemanticTokenModifier> = Vec::new();
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<crate::app::SemanticTokensOutcome>();
-        tx.send(crate::app::SemanticTokensOutcome::Delta {
+        let edits = vec![lattice_lsp::lsp_types::SemanticTokensEdit {
+            start: 1,
+            delete_count: 0,
+            data: Some(vec![lattice_lsp::lsp_types::SemanticToken {
+                delta_line: 0,
+                delta_start: 3,
+                length: 4,
+                token_type: 1,
+                token_modifiers_bitset: 0,
+            }]),
+        }];
+        lattice_host::editor::Editor::apply_semantic_tokens_delta_outcome(
+            &a.editor.lsp_semantic_tokens_cache,
             buffer_id,
-            document_version: 2,
-            previous_result_id: "r1".into(),
-            new_result_id: Some("r2".into()),
-            edits: vec![lattice_lsp::lsp_types::SemanticTokensEdit {
-                start: 1,
-                delete_count: 0,
-                data: Some(vec![lattice_lsp::lsp_types::SemanticToken {
-                    delta_line: 0,
-                    delta_start: 3,
-                    length: 4,
-                    token_type: 1,
-                    token_modifiers_bitset: 0,
-                }]),
-            }],
-            token_types,
-            token_modifiers,
-        })
-        .expect("send delta");
-        a.editor.pending_semantic_tokens_rx = Some(rx);
-        a.drain_pending_semantic_tokens();
-        let cache = a
-            .editor
-            .lsp_semantic_tokens_cache
-            .get(&buffer_id)
-            .expect("cache seated");
+            2,
+            "r1",
+            Some("r2".into()),
+            &edits,
+            &token_types,
+            &token_modifiers,
+        );
+        let cache = {
+            use lattice_host::per_buffer_cache::PerBufferCacheExt;
+            a.editor
+                .lsp_semantic_tokens_cache
+                .get_for(buffer_id)
+                .expect("cache seated")
+        };
         assert_eq!(cache.document_version, 2);
         assert_eq!(cache.result_id.as_deref(), Some("r2"));
         assert_eq!(cache.raw_data.len(), 2);
@@ -2418,32 +2423,41 @@ mod tests {
     /// cache so the next pump issues a fresh full request.
     #[test]
     fn drain_semantic_tokens_delta_stale_baseline_evicts_cache() {
-        let mut a = app_with("fn main() {}\n", 5);
+        let a = app_with("fn main() {}\n", 5);
         let buffer_id = a.editor.document_buffer_id;
-        a.editor.lsp_semantic_tokens_cache.insert(
+        // 5.8.AF.5 / Slice 3b.2: tests drive the delta path by
+        // calling the pure helper directly (see twin test above).
+        {
+            use lattice_host::per_buffer_cache::PerBufferCacheExt;
+            a.editor.lsp_semantic_tokens_cache.insert_for(
+                buffer_id,
+                crate::app::LspSemanticTokensCache {
+                    document_version: 1,
+                    result_id: Some("different-id".into()),
+                    raw_data: Vec::new(),
+                    tokens: Vec::new(),
+                },
+            );
+        }
+        lattice_host::editor::Editor::apply_semantic_tokens_delta_outcome(
+            &a.editor.lsp_semantic_tokens_cache,
             buffer_id,
-            crate::app::LspSemanticTokensCache {
-                document_version: 1,
-                result_id: Some("different-id".into()),
-                raw_data: Vec::new(),
-                tokens: Vec::new(),
-            },
+            2,
+            "r1",
+            Some("r2".into()),
+            &[],
+            &[],
+            &[],
         );
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<crate::app::SemanticTokensOutcome>();
-        tx.send(crate::app::SemanticTokensOutcome::Delta {
-            buffer_id,
-            document_version: 2,
-            previous_result_id: "r1".into(),
-            new_result_id: Some("r2".into()),
-            edits: Vec::new(),
-            token_types: Vec::new(),
-            token_modifiers: Vec::new(),
-        })
-        .expect("send delta");
-        a.editor.pending_semantic_tokens_rx = Some(rx);
-        a.drain_pending_semantic_tokens();
+        let evicted = {
+            use lattice_host::per_buffer_cache::PerBufferCacheExt;
+            a.editor
+                .lsp_semantic_tokens_cache
+                .get_for(buffer_id)
+                .is_none()
+        };
         assert!(
-            a.editor.lsp_semantic_tokens_cache.get(&buffer_id).is_none(),
+            evicted,
             "stale-baseline delta should evict the cache",
         );
     }

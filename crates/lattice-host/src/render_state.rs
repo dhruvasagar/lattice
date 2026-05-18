@@ -186,6 +186,13 @@ pub struct LspRenderState {
     /// Same shape as `inlay_hints`; renderers read via
     /// `.get_for(buffer_id)`.
     pub folds: crate::per_buffer_cache::PerBufferCache<lattice_lsp::cache::LspFoldsCache>,
+    /// Slice 3b.2: per-buffer `textDocument/semanticTokens/*`
+    /// cache. Spawned request task handles Items / Delta-applied /
+    /// Empty outcomes by writing directly via `insert_for` (or
+    /// `remove_for` on Delta result_id mismatch). Renderers read
+    /// via `.get_for(buffer_id)`.
+    pub semantic_tokens:
+        crate::per_buffer_cache::PerBufferCache<lattice_lsp::cache::LspSemanticTokensCache>,
 }
 
 /// Tree-sitter highlights + visible-range cache.

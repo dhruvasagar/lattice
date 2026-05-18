@@ -5,10 +5,13 @@ A modal, GPU-accelerated, plugin-first text editor written in Rust. Combines
 non-blocking, multi-threaded core where the UI thread does no I/O, no parsing,
 and no shaping.
 
-> **Status:** Pre-1.0 / heavy development. Phases 0–3 of the design roadmap
-> are landed (foundation, modal engine, terminal UI, tree-sitter); the rest
-> is in flight. The TUI is editable today; LSP, GPU rendering, and the WASM
-> plugin host arrive in subsequent phases.
+> **Status:** Pre-1.0 / heavy development. Phases 0–4 of the design roadmap
+> are landed (foundation, modal engine, terminal UI, tree-sitter, LSP);
+> Phase 5 (GPU rendering + architectural asynchrony enforcement) is in
+> flight. The TUI and GPUI peers are both editable today against a live
+> LSP backend (rust-analyzer tested); the WASM plugin host arrives in
+> Phase 7. See [`docs/dev/operations/implementation.md`](docs/dev/operations/implementation.md)
+> for the per-feature ledger.
 
 ---
 
@@ -106,18 +109,28 @@ flowchart TD
 
 ### Crate map
 
-| Crate                | Purpose                                                                                                    | Status     |
-|----------------------|------------------------------------------------------------------------------------------------------------|------------|
-| `lattice-protocol`   | Bottom-layer types: `Position`, `Range`, `Edit`, `Selection`, `CancellationToken`, `Event`, ID newtypes.   | ✅ stable  |
-| `lattice-core`       | `Buffer` (ropey-backed), `Document` with batched undo, file I/O, regex search (fancy-regex w/ backrefs).   | ✅ stable  |
-| `lattice-grammar`    | Vim modal state machine, `CommandRegistry`, dispatcher, built-in motions/operators/text objects/ex-cmds.  | ✅ stable  |
-| `lattice-completion` | Pluggable completion pipeline: generators, matchers, rankers, annotators.                                  | ✅ stable  |
-| `lattice-syntax`     | Tree-sitter integration (Rust / Python / JavaScript bundled), incremental parse, highlight emission.       | ✅ stable  |
-| `lattice-runtime`    | `DocumentActor` + `DocumentHandle` (tokio task per doc), arc-swap snapshots, `Pending<T>`, event bus.      | ✅ stable  |
-| `lattice-ui-tui`     | Terminal UI: crossterm + ratatui, modal cursor, gutter, hlsearch, command line, help overlay.              | ✅ stable  |
-| `lattice-cli`        | Binary entry-point. Spawns the TUI runtime against a document.                                             | ✅ stable  |
-| `lattice-render`     | GPU rendering foundation (GPUI preferred, wgpu fallback). **Planned (Phase 5).**                           | ⛔ planned |
-| `lattice-plugin-host`| WASM Component Model host. **Planned (Phase 7).**                                                          | ⛔ planned |
+| Crate                  | Purpose                                                                                                  | Status      |
+|------------------------|----------------------------------------------------------------------------------------------------------|-------------|
+| `lattice-protocol`     | Bottom-layer types: `Position`, `Range`, `Edit`, `Selection`, `CancellationToken`, `Event`, ID newtypes. | ✅ stable   |
+| `lattice-core`         | `Buffer` (ropey-backed), `Document` with batched undo, file I/O, regex search (fancy-regex w/ backrefs). | ✅ stable   |
+| `lattice-grammar`      | Vim modal state machine, `CommandRegistry`, dispatcher, built-in motions/operators/text objects/ex-cmds. | ✅ stable   |
+| `lattice-runtime`      | `DocumentActor` + `DocumentHandle` (tokio task per doc), arc-swap snapshots, `Pending<T>`, event bus.    | ✅ stable   |
+| `lattice-syntax`       | Tree-sitter integration (Rust / Python / JavaScript / Markdown bundled), incremental parse, highlights.  | ✅ stable   |
+| `lattice-completion`   | Pluggable completion pipeline: generators, matchers, rankers, annotators.                                | ✅ stable   |
+| `lattice-config`       | Typed-options registry (`OptionType` + `ArcSwap`-backed cells), `:set` parser, `gen:options` source.     | ✅ stable   |
+| `lattice-mode`         | Major / minor mode trait surface, lifecycle events, mode registry, mode-async epoch.                     | ✅ stable   |
+| `lattice-help`         | `HelpContent` + `HelpBuffer` + per-line markdown highlight cache; backing for `:help` and `:describe-*`. | ✅ stable   |
+| `lattice-picker`       | Picker primitive: source registry, candidate batches, live-query subsystem, MRU frecency.                | ✅ stable   |
+| `lattice-snippet`      | Snippet parser + registry; lazy expansion against `editor.snippet_registry` (ArcSwap).                   | ✅ stable   |
+| `lattice-file-tree`    | File-tree buffer kind + per-buffer state types.                                                          | ✅ stable   |
+| `lattice-oil`          | Oil-style directory buffer kind + state types.                                                           | ✅ stable   |
+| `lattice-lsp`          | LSP client: actor pool, capability fingerprinting, diagnostics layer, supervisor, watcher subscriptions. | ✅ stable   |
+| `lattice-host`         | Renderer-agnostic substrate. Owns `Editor`, dispatch, mode lifecycle, options cascade, `RenderState`, `PerBufferCache`, LSP watcher task. | ✅ stable   |
+| `lattice-ui-tui`       | Terminal UI peer: crossterm + ratatui, modal cursor, gutter, hlsearch, command line, popups, picker UI.  | ✅ stable   |
+| `lattice-ui-gpui`      | GPU UI peer (feature `window`): GPUI + blade rendering, symmetric capability with the TUI peer.          | 🚧 partial parity |
+| `lattice-cli`          | Binary entry-point. `--tui` / `--gui` flag routes to either peer; tokio multi-thread main.               | ✅ stable   |
+| `lattice-config-macros`| Proc-macro for typed-option / `OptionGroup` registration via `linkme` distributed slices.                | ✅ stable   |
+| `lattice-plugin-host`  | WASM Component Model host. **Planned (Phase 7).**                                                        | ⛔ planned  |
 
 ---
 
@@ -176,6 +189,19 @@ In the running editor:
 
 ---
 
+## What distinguishes Lattice
+
+Among modern editors built on Rust + GPU + tree-sitter + LSP + WASM (the only stack that hits sub-frame latency without compromising extensibility, and one Lattice shares with Zed deliberately), the differentiators are:
+
+- **Vim grammar is the public command API**, not a key mapping over a non-modal core. One dispatcher; ex-commands, chords, and plugin contributions all flow through `CommandInvocation`. Adding a motion *is* extending the grammar.
+- **Everything is a buffer, enforced**. File tree, diagnostics list, terminal, `*messages*`, scratch — all are buffers placed by the user into panes via splits. There is no sidebar / bottom-panel concept. Every text operation works on every buffer kind through one code path.
+- **WIT is the canonical plugin API today** (not aspirationally). Any Component-Model language speaks the same protocol — Rust, Zig, Go, AssemblyScript. CI-gated overhead budgets (typed-call < 500 ns p99, grammar-extension round-trip < 5 µs p99).
+- **Asynchrony is architectural, not disciplinary**. Other editors keep the UI thread free by convention — contributors know which calls might block. Lattice (DESIGN.md §5.7) chooses primitives that make UI-thread blocking *physically impossible* in the steady state: `RenderState` for reads, `Arc<ArcSwapOption<T>>` / `PerBufferCache<T>` for writes, dedicated subsystem tasks for everything else. The architecture stays uniform under feature pressure.
+
+The detailed framing — what Lattice converges with Zed on, where it diverges deliberately, what to borrow (the `cx.notify()` reactive shape), and what not to borrow (imposed layouts, custom rope, single-language extensions) — is in [DESIGN.md Appendix C](docs/dev/architecture/design.md).
+
+---
+
 ## Performance commitments
 
 Tracked against [DESIGN.md §8.2](docs/dev/architecture/design.md). Latest measured numbers in
@@ -206,9 +232,9 @@ flipped `CancellationToken` within ~100 µs).
 | 0     | Foundation                             | ✅ done     |
 | 1     | Modal Editing                          | ✅ done     |
 | 2     | Terminal UI Bootstrap                  | ✅ done     |
-| 3     | Tree-sitter (Rust / Python / JS)       | ✅ done     |
-| 4     | LSP                                    | 🔜 next    |
-| 5     | GPU Rendering Foundation               | ⛔ planned  |
+| 3     | Tree-sitter (Rust / Python / JS / MD)  | ✅ done     |
+| 4     | LSP                                    | ✅ done     |
+| 5     | GPU Rendering + architectural async    | 🚧 in flight (Phase 5.8.AF.5: TUI/GPUI parity + UI-thread relocation) |
 | 6     | Document Renderer + UI Components      | ⛔ planned  |
 | 7     | Plugin Host (WASM Component Model)     | ⛔ planned  |
 | 8     | Major / Minor Modes + Reference Plugins| ⛔ planned  |
@@ -416,5 +442,10 @@ The design draws on three editors that got things right:
   wholesale.
 - **Emacs** — the everything-is-a-buffer principle, the self-documenting
   help system, and the customize-as-buffer-view model are all here.
-- **Zed** — the GPUI rendering stack and the discipline of keeping the UI
-  thread free of work above 8 ms is the bar we're shooting at.
+- **Zed** — the GPUI rendering stack is the same one Lattice uses, and the
+  modern-Rust editor playbook (GPU rendering, tree-sitter, native LSP,
+  WASM extensions) is shared on purpose. Where Lattice diverges
+  deliberately — modal grammar as the public API, everything-is-a-buffer
+  enforced, WIT as the canonical plugin interface, *architectural* (not
+  disciplinary) async — is laid out in
+  [DESIGN.md Appendix C](docs/dev/architecture/design.md).

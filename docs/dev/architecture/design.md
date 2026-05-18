@@ -1220,12 +1220,95 @@ This is the load-bearing async invariant of the editor. Every other piece of the
 | Tree-sitter parses | `spawn_blocking` |
 | Text shaping (rich buffers) | rayon pool |
 | LSP I/O | tokio tasks |
+| LSP file-watcher | Dedicated tokio task on the LSP runtime (§5.7.4) |
 | Plugin instances | tokio tasks (wasmtime async) |
 | Search/index | rayon pool |
 | File I/O (small) | tokio file ops |
 | File I/O (huge) | `spawn_blocking` |
 
 **The actor pattern for documents:** each open document owned by one tokio task; mutations via mpsc; reads via O(1) rope snapshot. No locks on the hot path.
+
+#### 5.7.1 The architectural enforcement of paramount goal #4
+
+"Nothing blocks the UI -- enforced architecturally, not by discipline." The UI thread reads input, reads `RenderState`, renders. Nothing else.
+
+Every other editor we measured against (vim, neovim, emacs, helix, zed) keeps the UI thread free by discipline: contributors are expected to know which operations might block and route them off-thread. Lattice instead chooses primitives that make UI-thread blocking *physically impossible* in the steady state. Three primitives carry the load:
+
+1. **`RenderState`** -- the renderer's wait-free read contract with the host (§5.7.2).
+2. **`Arc<ArcSwapOption<T>>` / `PerBufferCache<T>`** -- the publication primitives background tasks use to write results directly into renderer-visible state without touching `&mut Editor` (§5.7.3).
+3. **Subsystem-task ownership of channel rxes** -- LSP file events, request responses, and similar streams are consumed by dedicated tokio tasks on the LSP runtime, not by per-tick drains on the UI loop (§5.7.4).
+
+The compounding property: every renderer-coupled subsystem migrates onto these primitives the same way, so the architecture is *uniform* by the time a new feature lands.
+
+#### 5.7.2 `RenderState` -- the renderer's read contract
+
+Renderers do not read `Editor` fields directly during render. They consult a typed `RenderState` snapshot published by the dispatcher at the end of every tick. The snapshot is wait-free for readers (one `ArcSwap::load`) and decoupled from whoever is mutating `Editor`:
+
+```rust
+// lattice-host/src/render_state.rs
+
+pub struct RenderState {
+	pub active_document: Arc<ActiveDocumentRenderState>,
+	pub buffers:         Arc<BuffersRenderState>,
+	pub panes:           Arc<PanesRenderState>,
+	pub lsp:             Arc<LspRenderState>,
+	pub syntax:          Arc<SyntaxRenderState>,
+	pub picker:          Arc<PickerRenderState>,
+	pub completion:      Arc<CompletionRenderState>,
+	pub popup:           Arc<PopupRenderState>,
+	pub messages:        Arc<MessagesRenderState>,
+	pub modeline:        Arc<ModelineRenderState>,
+	pub diagnostics:     Arc<DiagnosticsRenderState>,
+}
+```
+
+Each sub-state is `Arc`-wrapped so subsystems publish independently -- a motion republishes `ActiveDocumentRenderState` (per-frame critical) without forcing `BuffersRenderState` (`:b N`-rate) to churn. The split tracks read frequency, not domain boundaries.
+
+`Editor::dispatch(...)` republishes after every action. Background tasks (LSP responses, syntax updates, etc.) publish their sub-state directly without re-snapshotting the whole world.
+
+#### 5.7.3 Per-subsystem publication primitives
+
+The shape that bridges "background task" and "renderer-visible state":
+
+- **`Arc<ArcSwapOption<T>>`** -- a wait-free `Option<Arc<T>>` cell. Used for single-slot caches (e.g. `lsp_document_highlights`). The spawned LSP request task clones the `Arc`, awaits the response, and `.store(Some(Arc::new(cache)))`. Renderers `.load()` wait-free.
+- **`PerBufferCache<T> = Arc<ArcSwap<HashMap<BufferId, Arc<T>>>>`** (`lattice_host::per_buffer_cache`) -- a copy-on-write `HashMap` for per-buffer caches (inlay hints, folding ranges, semantic tokens, code lenses, document links, document colors, pull diagnostics, references, symbols, …). The `PerBufferCacheExt` trait carries `get_for` / `insert_for` / `remove_for`; writes clone the inner map (microseconds for ~5--50 open buffers), reads return a detached `Arc<T>` the renderer holds across the frame.
+
+Both primitives share the invariant `RenderState`'s sub-state Arcs depend on: a clone observes writes made through the original. So `rs.lsp.inlay_hints.get_for(id)` sees data the spawned task wrote via the editor's `lsp_inlay_hints_cache.insert_for(...)` without any further publication of `RenderState` itself.
+
+#### 5.7.4 The LSP file-watcher as worked example
+
+The watcher fans `workspace/didChangeWatchedFiles` notifications to interested LSP servers. The naive (pre-5.8.AF.5) implementation kept the `notify::Watcher` and the event drain on the renderer's per-tick loop -- `notify::Watcher::watch(workspace_root, Recursive)` walks the entire subtree synchronously on Linux, which froze the UI for *minutes* on Rust workspaces with populated `target/` directories.
+
+The relocated shape:
+
+- **`LspFileWatcherHandle`** lives on `Editor`. Holds only a `cmd_tx`.
+- A dedicated tokio task on the LSP runtime owns the `RecommendedWatcher`, the notify event rx, the per-server subscription map, and an ignore matcher.
+- `Editor::refresh_lsp_file_watcher` is now a fingerprint-gated, non-blocking `cmd_tx.send(SyncSubscriptions { … })`. No `notify` API call, no inotify install -- those happen inside the task via `tokio::task::block_in_place` so a giant `target/` walk doesn't stall sibling LSP tasks on the multi-thread runtime.
+- The notify callback consults a shared `Arc<ArcSwap<WatcherIgnoreMatcher>>` (`.gitignore` + `.ignore` + baked default globs covering `target/`, `.git/`, `node_modules/`, …) and drops events whose every path is ignored *before* they enter the channel. Events for paths a server registered for, but no others.
+- Fan-out happens inside the task: the cloned `LspSupervisorHandle` is wait-free; the per-server `did_change_watched_files` notify is a non-blocking actor channel send.
+
+`drain_lsp_fs_events` deleted entirely. Zero watcher work runs on the renderer thread.
+
+#### 5.7.5 Migration shape for the rest of `run_tick_pending`
+
+Every LSP feature drain in `run_tick_pending` migrates onto §5.7.2 + §5.7.3 the same way:
+
+1. The cache field on `Editor` flips from `Option<T>` or `HashMap<BufferId, T>` to the matching `Arc<ArcSwapOption<T>>` or `PerBufferCache<T>`.
+2. `maybe_request_X` clones the cache slot `Arc` into the spawned task. The task awaits the LSP response and writes the result directly via `.store(...)` / `.insert_for(...)`. No channel construction.
+3. `drain_pending_X` and its `pending_X_rx` field delete entirely.
+4. The corresponding sub-state on `RenderState` carries a clone of the cache slot; renderers read through `rs.lsp.X.load()` / `rs.lsp.X.get_for(id)`.
+5. Renderer-coupled side-effects the old drain ran inline (e.g. `recompute_folds` after a fold-cache write) move to the renderer-tick `maybe_request_X` via a "last cache version reflected" tracker, fired once per (buffer, version) transition.
+
+End state: `run_tick_pending` does not exist. The renderer reads `editor.render_state.load_full()`, paints, and hands input back. Subsystems publish on their own cadence.
+
+#### 5.7.6 Reactive publication (planned)
+
+Today's `build_render_state` rebuilds every sub-state per dispatch tick (naive: every `Arc` is fresh). Slice 3a accepted this cost (well under the 100µs budget since 9 of 10 sub-states are empty placeholders); Slice 3b populates them. Once the sub-states carry meaningful work, we'll add dirty-bit publication:
+
+- Each subsystem tracks "did anything in my domain change since last publication?" via typed `EventBus` subscriptions (`Event::CursorMoved`, `Event::DocumentChanged`, …; §5.10).
+- `build_render_state` only rebuilds dirty sub-states; clean sub-states reuse the previous frame's `Arc`. Renderer-side `Arc::ptr_eq` checks become first-class cache-validity signals.
+
+This is the same shape Zed's `cx.notify()` reactive model takes (see Appendix C.3.1), expressed via Rust's typed event bus rather than an effect system. The performance constraint is non-negotiable: the dirty-tracking overhead itself must stay below the savings it produces. Bench first; ship only if the data clears the bar (heuristic #4).
 
 ### 5.8 Major Modes and Minor Modes
 
@@ -3197,6 +3280,93 @@ Notifications (§5.9.9) are transient corner-anchored UI but they are *also* log
 ### B.10 Buffer-local commands
 
 A buffer can have commands registered against it specifically (the buffer-local keymap, its major mode, an active minor mode). `:describe-buffer` enumerates which commands are reachable in the current context, with their resolved key bindings. Both vim's `:map` and emacs's `C-h b` collapse into this.
+
+---
+
+## Appendix C: Lattice vs Zed -- architecture and performance positioning
+
+Zed is the editor whose design Lattice converges with most closely, because the underlying technology choices (Rust, GPU, tree-sitter, LSP, WASM extensions) are the only modern stack that hits sub-frame latency without compromising extensibility. This appendix names where the convergence is deliberate, where the divergence is, and what we should and should not borrow.
+
+### C.1 Where the convergence is deliberate
+
+| Choice | Lattice | Zed |
+|---|---|---|
+| Language | Rust | Rust |
+| GPU rendering | GPUI preferred / wgpu fallback | GPUI (same renderer) |
+| Text storage | `ropey` | custom `sum_tree` |
+| Async runtime | tokio multi-thread, dedicated LSP runtime | smol/futures, single executor + worker pool |
+| Tree-sitter | yes | yes |
+| LSP | native client | native client |
+| Plugin substrate | WASM (Component Model + WIT) | WASM (extension API) |
+
+There is no reason to differentiate by picking a worse foundation. Where we share with Zed, we share deliberately.
+
+### C.2 Where Lattice diverges deliberately
+
+#### C.2.1 Modal editing as the public API, not a key mapping
+
+Zed exposes a non-modal Rust command surface and emulates vim on top of it via a `vim_mode = true` toggle. Lattice's grammar (operators × motions × text objects × registers × ranges × counts) **is** the public command API: there is one dispatcher (§5.2.1); ex-commands, normal-mode chords, and plugin contributions all flow through `CommandInvocation` → `execute(...)`. A plugin that adds a motion is extending the grammar, not bolting on a binding. Adding tree-sitter-driven text objects lands natively because the grammar is the surface.
+
+This is the largest architectural distinction, and it is also the most constraining one. Modal editing is paramount goal #3.
+
+#### C.2.2 Everything-is-a-buffer is enforced, not implied
+
+Zed has sidebars, bottom panels, and a buffer area as distinct UI primitives, each with its own focus and layout rules. Lattice has buffers placed in panes via splits (§5.9). File tree, diagnostics list, terminal -- all are buffers. `:bn` / `:bp` / `:ls` / `:bd` work uniformly across kinds because there is no "sidebar" concept to special-case. The UX cost is real (no draggable sidebar; you split a pane and `:Tree` into it). The benefit is that every text operation works on every buffer kind, with one code path.
+
+This is the design call the running auto-memory feedback (`buffers_no_special_case`, `synthetic_buffers`, `mode_owns_its_buffers`) keeps enforcing.
+
+#### C.2.3 WIT is the canonical plugin API (today, not aspirationally)
+
+Zed extensions are written against a Zed-specific Rust crate that compiles to WASM. Lattice commits to **WIT** (§9.4) as the canonical interface: any language with a Component Model toolchain (Rust today; Zig, Go, AssemblyScript tomorrow) speaks the same plugin protocol. Per-plugin instances each own a `wasmtime::Store` and run as tokio tasks -- crash-isolated, fuel-limited, capability-gated. Plugin overhead is CI-enforced: typed-call < 500 ns p99, grammar-extension round-trip < 5 µs p99 (§8.2).
+
+Zed's API is faster to ship features against; Lattice's is faster to port between language ecosystems and harder to silently regress under feature pressure.
+
+#### C.2.4 Asynchrony is architectural, not disciplinary
+
+Both editors target sub-frame latency. The mechanism is the meaningful distinction:
+
+| Aspect | Lattice | Zed (typical) |
+|---|---|---|
+| Keystroke → glyph @ 120 Hz | ≤ 8 ms (§8.2) | ~8--12 ms |
+| Per-call WASM overhead | < 500 ns p99 (CI-gated) | unbudgeted |
+| UI-thread blocking | architecturally impossible (§5.7.1) | discipline-enforced |
+| Cold-start file open → first frame | not yet committed | ~50--80 ms typical |
+
+Zed keeps the UI thread free by convention: contributors know which operations might block and route them off-thread. Lattice (§5.7) chooses primitives that make UI-thread blocking *physically impossible* in the steady state -- `RenderState` for reads, `Arc<ArcSwapOption<T>>` / `PerBufferCache<T>` for writes, dedicated subsystem tasks for everything else. The compounding property: every renderer-coupled subsystem migrates onto these primitives the same way, so the architecture stays uniform under feature pressure.
+
+This is the technical moat. The rendering pipeline is literally the same as Zed's. The differentiator is that Lattice *cannot* regress into UI-blocking code paths in the way every editor (Zed included) eventually does.
+
+### C.3 What Lattice should borrow from Zed
+
+#### C.3.1 The `cx.notify()` reactive model (the dirty-bit publication shape)
+
+Zed's UI redraws are driven by typed observation of state changes: a subsystem that mutates state calls `cx.notify()`, observers re-paint. Today's `build_render_state` rebuilds every sub-state per dispatch tick (naive); §5.7.6 plans dirty-bit publication on the same conceptual shape, expressed via Rust's typed `EventBus` (§5.10) instead of Zed's effect system. The implementation constraint stays Lattice's: every primitive lives or dies by the bench. We ship reactive publication only if the dirty-tracking overhead clears the savings.
+
+#### C.3.2 AI as a buffer kind (post-stability)
+
+Zed's AI integration is a buffer kind, not a sidebar -- the chat history, prompt input, and notebook-style edit loops all live in a buffer with its own major mode. This maps cleanly onto Lattice's `everything-is-a-buffer` + WIT plugin surface: an AI plugin contributes a Document-buffer kind with chat semantics, plus optionally a grammar extension for prompt cmdlines. Deferred until the core stabilizes; the shape is already compatible with the design today.
+
+### C.4 What Lattice should NOT borrow from Zed
+
+#### C.4.1 Non-modal editing as the default
+
+Vim's grammar is Lattice's identity (paramount goal #3). A "config that disables modal" path is post-v1 territory; the design starts modal.
+
+#### C.4.2 Imposed layout primitives
+
+Zed's UI carries a set of pane / panel / sidebar primitives with explicit layout rules. Lattice does not impose any layout: panes + splits + buffers compose into whatever the user wants. The architect's position is explicit: enforcing layouts is *anti-flexibility*. The user expresses preferred layouts via their `init.rs` / keymap (a hypothetical "open file-tree on the left at 30% width" is a startup command, not a built-in layout primitive). Lattice's model offers more flexibility *because* it does not pre-decide layout.
+
+#### C.4.3 Custom rope
+
+Building a better rope than `ropey` is pure complexity-debt for marginal wins. Not on the v1 critical path.
+
+#### C.4.4 Single-language extension API
+
+WIT is the more portable target. Plugin authors who already write Rust are happy either way; everyone else benefits from us not having Lattice-specific bindings.
+
+### C.5 The one-line framing
+
+Lattice = vim's grammar + emacs's extensibility + Zed's hardware bet, with paramount-goal-4 architectural asynchrony as the differentiator.
 
 ---
 

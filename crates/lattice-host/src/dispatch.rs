@@ -14321,12 +14321,84 @@ impl Editor {
         });
     }
 
-    /// Minimal `Action::PickerDismiss` -- close the picker and,
-    /// if a buffer-switch picker was previewing, restore the
-    /// active pane to whatever buffer it was on at picker-open.
-    /// Phase 5.8.AC.1: skeleton of the TUI App's
-    /// `do_picker_dismiss`; the SMR / event-bus + position-history
-    /// tail stays App-only until those migrate.
+    /// Splice a chosen completion item into the buffer at its
+    /// captured replace range. Plain text only -- snippet
+    /// expansion lands with the buffer-level Insert-mode
+    /// completion shell. Phase 5.8.AF: hoisted from TUI App.
+    pub fn apply_lsp_completion_item(
+        &mut self,
+        item: &lattice_lsp::cache::CompletionItemRow,
+    ) {
+        let (start_byte, end_byte) = item.replace_range;
+        let range = lattice_protocol::position::Range::new(
+            lattice_protocol::position::Position::new(item.line, start_byte),
+            lattice_protocol::position::Position::new(item.line, end_byte),
+        );
+        let edit = lattice_protocol::edit::Edit::replace(range, item.insert_text.clone());
+        match self.apply_edit_blocking(edit) {
+            Ok(applied) => {
+                self.cursor = applied.inserted_range.end;
+            }
+            Err(e) => {
+                self.set_message(EchoLevel::Error, format!("complete: apply failed: {e:?}"));
+            }
+        }
+    }
+
+    /// Send the LSP response for one in-flight
+    /// `showMessageRequest`. Phase 5.8.AF: hoisted from TUI App.
+    pub fn finalize_show_message_request(
+        &mut self,
+        request_id: u32,
+        selected_index: Option<u32>,
+    ) {
+        let Some(req) = self
+            .lsp_pending_show_message_requests
+            .remove(&request_id)
+        else {
+            return;
+        };
+        let selected = selected_index.and_then(|i| req.actions.get(i as usize).cloned());
+        let _ = req
+            .response
+            .send(lattice_lsp::ShowMessageRequestOutcome { selected });
+    }
+
+    /// Advance the SMR queue. Phase 5.8.AF: hoisted.
+    pub fn open_next_queued_show_message_request(&mut self) {
+        while let Some(next_id) = self.lsp_show_message_request_queue.pop_front() {
+            if self.lsp_pending_show_message_requests.contains_key(&next_id) {
+                self.open_show_message_request_picker(next_id);
+                return;
+            }
+        }
+    }
+
+    /// Write the MRU index to its configured path. Best-effort:
+    /// disabled / fail logs once and continues. Phase 5.8.AF.
+    fn persist_picker_mru_best_effort(&self) {
+        let persist = self
+            .config
+            .get_typed::<lattice_config::core_options::PickerMruPersist>()
+            .map(|b| *b)
+            .unwrap_or(true);
+        if !persist {
+            return;
+        }
+        let Some(path) = self.picker_mru_path.as_ref() else {
+            return;
+        };
+        if let Err(e) = self.picker_mru.save_to(path) {
+            eprintln!(
+                "lattice: failed to persist picker MRU at {}: {e}",
+                path.display(),
+            );
+        }
+    }
+
+    /// Full `Action::PickerDismiss`. Phase 5.8.AF: full body
+    /// (SMR queue advance, event-bus publish, preview-origin
+    /// restore) consolidated host-side.
     pub fn do_picker_dismiss(&mut self) -> Vec<RendererSignal> {
         if let Some(state) = self.live_picker_query.take()
             && let Some(inflight) = state.inflight
@@ -14337,6 +14409,20 @@ impl Editor {
         let Some(picker) = self.picker.take() else {
             return Vec::new();
         };
+        if let lattice_picker::PickerSource::LspShowMessageRequest { request_id, .. } =
+            picker.source
+        {
+            self.finalize_show_message_request(request_id, None);
+            self.open_next_queued_show_message_request();
+            return Vec::new();
+        }
+        if let Some(source_id) = picker.source_id.as_deref() {
+            self.event_bus
+                .publish_typed(lattice_picker::events::PickerDismissed {
+                    source_id: source_id.to_string(),
+                    ts: std::time::SystemTime::now(),
+                });
+        }
         if let Some(origin_raw) = picker.preview_origin {
             let origin = BufferId(origin_raw);
             if origin != self.active_pane_buffer_id() {
@@ -14351,14 +14437,9 @@ impl Editor {
         Vec::new()
     }
 
-    /// Minimal `Action::PickerAccept` for the buffer-switcher
-    /// path. Phase 5.8.AC.1: handles `RoutingPayload::Buffer`
-    /// (commit the preview-activated target) and
-    /// `RoutingPayload::Path` (route through `do_edit`). Other
-    /// payload kinds (mark / register / command / snippet /
-    /// LSP code-action / completion / etc.) still live in the
-    /// TUI App's `do_picker_accept`; they'll migrate as the
-    /// underlying `do_*` helpers move host-side.
+    /// Full `Action::PickerAccept`. Phase 5.8.AF: complete body
+    /// including the trait-driven generator path + MRU recording
+    /// + event-bus publish + legacy routing arms.
     pub fn do_picker_accept(&mut self) -> Vec<RendererSignal> {
         let Some(picker) = self.picker.take() else {
             return Vec::new();
@@ -14374,86 +14455,186 @@ impl Editor {
             }
             return Vec::new();
         };
-        let Some(routing) = picker.routing_for(c).cloned() else {
-            self.set_message(
-                EchoLevel::Error,
-                "picker: candidate carries no routing payload".to_string(),
-            );
-            return Vec::new();
-        };
-        match routing {
-            lattice_picker::RoutingPayload::Buffer { id } => {
-                // SwitchToBuffer: the preview pass already
-                // activated the target buffer. Clear the
-                // previewing flag so the next activate sees a
-                // fresh commit. No further signals needed —
-                // `activate_buffer_state` already ran during
-                // the preview.
-                self.previewing = false;
-                let target = BufferId(id);
-                if target != self.active_pane_buffer_id() {
-                    let needs_state = self.activate_buffer(target);
+        let routing = match picker.routing_for(c).cloned() {
+            Some(r) => r,
+            None => {
+                self.set_message(
+                    EchoLevel::Error,
+                    "picker: candidate carries no routing payload".to_string(),
+                );
+                if let Some(origin) = picker.preview_origin {
+                    self.previewing = true;
+                    let needs_state = self.activate_buffer(BufferId(origin));
+                    self.previewing = false;
                     if needs_state {
                         return self.activate_buffer_state();
                     }
                 }
-                Vec::new()
+                return Vec::new();
             }
-            lattice_picker::RoutingPayload::OpenFile { path } => {
-                let outcome = self.do_edit(Some(path), false);
-                match outcome {
-                    DoEditOutcome::Opened(signals)
-                    | DoEditOutcome::Activated(signals)
-                    | DoEditOutcome::Reloaded(signals) => signals,
-                    DoEditOutcome::Directory(_)
-                    | DoEditOutcome::NoFileName
-                    | DoEditOutcome::Failed => Vec::new(),
+        };
+        // Trait-driven path: source id stamped on Picker. Resolve
+        // generator, accept, translate outcome.
+        if let Some(source_id) = picker.source_id.as_deref()
+            && let Some(generator) = self.picker_registry.generator(source_id).cloned()
+        {
+            let source_id_owned = source_id.to_string();
+            let snap = self.document.snapshot();
+            let ctx = self.build_picker_context(&snap);
+            let outcome = match generator.accept(&ctx, &routing) {
+                Ok(o) => o,
+                Err(e) => {
+                    self.set_message(EchoLevel::Error, e);
+                    return Vec::new();
+                }
+            };
+            drop(ctx);
+            drop(snap);
+            let mru_enabled = self
+                .config
+                .get_typed::<lattice_config::core_options::PickerMruEnabled>()
+                .map(|b| *b)
+                .unwrap_or(true);
+            let identity = lattice_picker::routing_identity(&routing);
+            if mru_enabled && let Some(identity) = identity.as_deref() {
+                self.picker_mru.record(&source_id_owned, identity);
+                self.persist_picker_mru_best_effort();
+            }
+            self.event_bus
+                .publish_typed(lattice_picker::events::PickerAccepted {
+                    source_id: source_id_owned.clone(),
+                    identity,
+                    routing_payload_path: routing_payload_path(&routing),
+                    ts: std::time::SystemTime::now(),
+                });
+            return self.apply_picker_outcome(outcome);
+        }
+        // Legacy imperative path.
+        let mut signals = Vec::new();
+        match routing {
+            lattice_picker::RoutingPayload::Buffer { id: raw_id } => {
+                let id = BufferId(raw_id);
+                if id != self.active_pane_buffer_id() {
+                    self.prepare_pane_for_picker_result();
+                    let needs_state = self.activate_buffer(id);
+                    if needs_state {
+                        signals.extend(self.activate_buffer_state());
+                    }
+                }
+            }
+            lattice_picker::RoutingPayload::LspInstance { server_id, .. } => {
+                match picker.on_accept {
+                    lattice_picker::PickerAction::OpenLspLog => {
+                        self.open_lsp_log_in_pane(&server_id);
+                    }
+                    lattice_picker::PickerAction::OpenLspTraceLog => {
+                        self.open_lsp_trace_log_in_pane(&server_id);
+                    }
+                    _ => {
+                        self.set_message(
+                            EchoLevel::Error,
+                            "picker: lsp-instance routing on non-lsp-log action".to_string(),
+                        );
+                    }
                 }
             }
             lattice_picker::RoutingPayload::LspLocation { path, line, col } => {
+                if let Some(origin) = self.pending_tag_origin.take() {
+                    self.tag_stack.push(origin);
+                }
+                self.prepare_pane_for_picker_result();
+                signals.extend(self.jump_to_file_line_col(&path, line, col));
+            }
+            lattice_picker::RoutingPayload::LspCompletion { index } => {
+                let Some(items) = self.pending_completion_items.take() else {
+                    return signals;
+                };
+                let Some(item) = items.into_iter().nth(index as usize) else {
+                    self.set_message(
+                        EchoLevel::Error,
+                        format!("picker: completion idx {index} out of range"),
+                    );
+                    return signals;
+                };
+                self.apply_lsp_completion_item(&item);
+            }
+            lattice_picker::RoutingPayload::LspCodeAction { index } => {
+                let Some(items) = self.pending_code_action_items.take() else {
+                    return signals;
+                };
+                let handle = self.pending_code_action_handle.take();
+                let Some(row) = items.into_iter().nth(index as usize) else {
+                    self.set_message(
+                        EchoLevel::Error,
+                        format!("picker: code-action idx {index} out of range"),
+                    );
+                    return signals;
+                };
+                signals.extend(self.apply_lsp_code_action(row, handle));
+            }
+            lattice_picker::RoutingPayload::OpenFile { path } => {
+                self.prepare_pane_for_picker_result();
                 let outcome = self.do_edit(Some(path), false);
-                let mut signals = match outcome {
+                match outcome {
                     DoEditOutcome::Opened(s)
                     | DoEditOutcome::Activated(s)
-                    | DoEditOutcome::Reloaded(s) => s,
-                    _ => Vec::new(),
-                };
-                let snap = self.document.snapshot();
-                let line = line.min(last_addressable_line(&snap.buffer));
-                let len = snap.buffer.line_byte_len(line);
-                let col = col.min(len);
-                self.cursor = lattice_protocol::Position::new(line, col);
-                signals.extend(self.activate_buffer_state());
-                signals
+                    | DoEditOutcome::Reloaded(s) => signals.extend(s),
+                    DoEditOutcome::Directory(d) => signals.extend(self.do_open_oil(Some(d))),
+                    DoEditOutcome::NoFileName | DoEditOutcome::Failed => {}
+                }
             }
             lattice_picker::RoutingPayload::JumpInBuffer {
                 buffer_id,
                 line,
                 col,
             } => {
-                let id = BufferId(buffer_id);
-                let mut signals = Vec::new();
-                if id != self.active_pane_buffer_id() {
-                    let needs_state = self.activate_buffer(id);
-                    if needs_state {
-                        signals.extend(self.activate_buffer_state());
-                    }
-                }
-                let snap = self.document.snapshot();
-                let line = line.min(last_addressable_line(&snap.buffer));
-                let len = snap.buffer.line_byte_len(line);
-                let col = col.min(len);
-                self.cursor = lattice_protocol::Position::new(line, col);
-                signals
+                signals.extend(self.apply_picker_outcome(
+                    lattice_picker::PickerAcceptOutcome::JumpInBuffer {
+                        buffer_id,
+                        line,
+                        col,
+                    },
+                ));
             }
-            // Other payload kinds keep their TUI-side routing
-            // until the renderer-coupled helpers (do_jump_mark,
-            // do_paste-from-register, execute_ex_line, snippet
-            // expand, LSP applies, completion accept) migrate
-            // host-side. The GPUI peer's `apply_effect_gpui`
-            // echoes "not yet wired" for now.
-            _ => Vec::new(),
+            lattice_picker::RoutingPayload::InvokeCommand { id, args } => {
+                signals.extend(self.apply_picker_outcome(
+                    lattice_picker::PickerAcceptOutcome::InvokeCommand { id, args },
+                ));
+            }
+            lattice_picker::RoutingPayload::PasteRegister { name } => {
+                signals.extend(self.apply_picker_outcome(
+                    lattice_picker::PickerAcceptOutcome::PasteRegister { name },
+                ));
+            }
+            lattice_picker::RoutingPayload::JumpToMark { name } => {
+                signals.extend(
+                    self.apply_picker_outcome(
+                        lattice_picker::PickerAcceptOutcome::JumpToMark { name },
+                    ),
+                );
+            }
+            lattice_picker::RoutingPayload::ExpandSnippet { id } => {
+                signals.extend(
+                    self.apply_picker_outcome(
+                        lattice_picker::PickerAcceptOutcome::ExpandSnippet { id },
+                    ),
+                );
+            }
+            lattice_picker::RoutingPayload::AcceptShowMessageAction {
+                request_id,
+                action_index,
+            } => {
+                self.finalize_show_message_request(request_id, Some(action_index));
+                self.open_next_queued_show_message_request();
+            }
+            lattice_picker::RoutingPayload::LspCodeLens { index } => {
+                self.accept_lsp_code_lens(index);
+            }
+            lattice_picker::RoutingPayload::ColorPresentation { index } => {
+                self.accept_lsp_color_presentation(index);
+            }
         }
+        signals
     }
 
     /// `:b` no-arg / `<leader>b` -- open the vertico-style buffer
@@ -16857,6 +17038,19 @@ pub fn visual_kind_to_mode(kind: VisualKind) -> VisualMode {
         VisualKind::Charwise => VisualMode::Charwise,
         VisualKind::Linewise => VisualMode::Linewise,
         VisualKind::Blockwise => VisualMode::Blockwise,
+    }
+}
+
+/// Extract a path from a routing payload when one is carried,
+/// otherwise `None`. Used by the picker-accepted event publish.
+/// Phase 5.8.AF: hoisted from TUI App.
+fn routing_payload_path(
+    payload: &lattice_picker::RoutingPayload,
+) -> Option<std::path::PathBuf> {
+    match payload {
+        lattice_picker::RoutingPayload::OpenFile { path }
+        | lattice_picker::RoutingPayload::LspLocation { path, .. } => Some(path.clone()),
+        _ => None,
     }
 }
 

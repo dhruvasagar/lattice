@@ -419,70 +419,23 @@ impl App {
     /// pane to whatever buffer it was on at picker-open. Tested
     /// by `picker_dismiss_restores_origin_when_previewing`.
     pub(super) fn do_picker_dismiss(&mut self) {
-        // Slice 2: tear down live-picker state on dismiss --
-        // cancel any in-flight `on_query_changed` future so the
-        // spawned task drops its result instead of seating into
-        // a closed picker.
-        if let Some(state) = self.editor.live_picker_query.take()
-            && let Some(inflight) = state.inflight
-        {
-            inflight.cancel.cancel();
-        }
-        // Drop any pending tag origin -- the user dismissed the
-        // picker, so no drill-down happened. Without this clear
-        // a subsequent `:lsp-symbols` (or any picker open) would
-        // inherit the stale origin and a later accept would
-        // push the wrong entry.
-        self.editor.pending_tag_origin = None;
-        let Some(picker) = self.editor.picker.take() else {
-            return;
-        };
-        // 4.4.b: SMR picker dismiss = reply `null` to the
-        // server. Snapshot the request id before any other
-        // mutation; the finalize call removes the slot, the
-        // queue advance opens the next picker (which sets
-        // `self.editor.picker` again so the preview-restore branch
-        // below must not run for SMR).
-        if let lattice_picker::PickerSource::LspShowMessageRequest { request_id, .. } =
-            picker.source
-        {
-            self.finalize_show_message_request(request_id, None);
-            self.open_next_queued_show_message_request();
-            return;
-        }
-        // Publish the dismiss event for subscribers tracking
-        // open-without-accept sessions. Source id may be
-        // absent for legacy imperative pickers (`:b`,
-        // multi-result LSP locations); skip the publish in
-        // that case rather than emit a misleading default.
-        if let Some(source_id) = picker.source_id.as_deref() {
-            self.editor
-                .event_bus
-                .publish_typed(lattice_picker::events::PickerDismissed {
-                    source_id: source_id.to_string(),
-                    ts: std::time::SystemTime::now(),
-                });
-        }
-        if let Some(origin_raw) = picker.preview_origin {
-            let origin = BufferId(origin_raw);
-            if origin != self.active_pane_buffer_id() {
-                self.editor.previewing = true;
-                self.activate_buffer(origin);
-                self.editor.previewing = false;
-            }
+        // Phase 5.8.AF: body migrated.
+        let signals = self.editor.do_picker_dismiss();
+        for s in signals {
+            self.handle_renderer_signal(s);
         }
     }
 
-    /// Apply `Action::PickerAccept` -- run the picker's stored
-    /// action against the selected candidate, then dismiss.
-    /// For [`lattice_picker::PickerAction::SwitchToBuffer`] the
-    /// preview-activated buffer is already on screen; the accept
-    /// path just commits (clears preview tracking) without
-    /// re-activating, so the position history sees ONE entry for
-    /// the user's original cursor (pushed at picker-open in
-    /// future, today the help-arm autopush handles cross-buffer-
-    /// kind landings).
+    /// Apply `Action::PickerAccept`. Phase 5.8.AF: body migrated.
     pub(super) fn do_picker_accept(&mut self) {
+        let signals = self.editor.do_picker_accept();
+        for s in signals {
+            self.handle_renderer_signal(s);
+        }
+    }
+
+    #[cfg(any())]
+    fn _retired_do_picker_accept_body(&mut self) {
         let Some(picker) = self.editor.picker.take() else {
             return;
         };
@@ -731,18 +684,7 @@ impl App {
     }
 }
 
-/// Extract a path from a routing payload when one is
-/// directly carried, otherwise `None`. Used by the picker-
-/// accepted event publish so subscribers that care about
-/// the path (telemetry, recent-file logs, plugin hooks)
-/// don't have to repeat the routing-payload match.
-fn routing_payload_path(payload: &lattice_picker::RoutingPayload) -> Option<std::path::PathBuf> {
-    match payload {
-        lattice_picker::RoutingPayload::OpenFile { path }
-        | lattice_picker::RoutingPayload::LspLocation { path, .. } => Some(path.clone()),
-        _ => None,
-    }
-}
+// Phase 5.8.AF: `routing_payload_path` migrated to host.
 
 // Phase 5.8.AA.s: `picker_buffer_entry` migrated to
 // `lattice_host::dispatch::picker_buffer_entry`. Both renderer

@@ -855,11 +855,11 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
             }
             BufferKind::Help | BufferKind::Document => {}
         },
-        // Catch-all: any Action variant not yet migrated from
-        // App::apply. Sub-slices 5.5.D+ extend the match upward as
-        // helpers move.
-        _ => {}
     }
+    // 5.8.AF.3 closeout: every renderer-neutral `Action` is now
+    // explicitly handled. The match is exhaustive — a future
+    // variant becomes a compile error rather than a silent miss,
+    // which is the louder signal.
 }
 
 /// Wire-typed projection of [`EchoLevel`]. Used by [`Editor::set_message`]

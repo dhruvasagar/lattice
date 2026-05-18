@@ -784,6 +784,12 @@ impl GpuiApp {
             Effect::LspSignatureHelp => self.editor.lsp_signature_help_request(),
             Effect::LspComplete => self.editor.lsp_completion_request(),
             Effect::SnippetExpand => self.editor.do_snippet_expand_at_cursor(),
+            // 5.5.LSP.5: symbol helpers host-side; both peers reach
+            // them through the same dispatch.
+            Effect::LspDocumentSymbol => self.editor.lsp_document_symbol_request(),
+            Effect::LspWorkspaceSymbol { query } => {
+                self.editor.lsp_workspace_symbol_request(&query);
+            }
             // Phase 5.8.AD.5: describe / hover / tutor / customize
             // entries now host-resident.
             Effect::OpenHelpTopic { topic } => {
@@ -883,16 +889,11 @@ impl GpuiApp {
                     self.apply_effect_gpui(p);
                 }
             }
-            // Effects whose handlers are still App-only in TUI;
-            // not yet wired in GPUI. One-line trace so the
-            // user sees *why* nothing happened.
-            other => {
-                tracing::warn!(
-                    effect = ?other,
-                    "lattice-gpui: effect not yet wired (App-side handler hasn't migrated to host)"
-                );
-            }
         }
+        // 5.8.AF.3 closeout: every renderer-neutral `Effect` is now
+        // explicitly handled. The match is exhaustive — a future
+        // variant becomes a compile error rather than a silent
+        // runtime warning, which is the louder signal.
     }
 
     /// Wrapper around `editor.do_edit(path, force)` that translates

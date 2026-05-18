@@ -4472,6 +4472,7 @@ impl Editor {
         self.drain_lsp_detach_events();
         self.drain_inbound_configuration_requests();
         self.drain_inbound_show_message_requests();
+        self.drain_message_events();
         // `drain_pending_code_actions` returns an `Option<(handle,
         // action)>` for the App-side apply chain — not signal-shaped.
         // Renderer peers call it directly and decide how to handle

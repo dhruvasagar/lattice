@@ -91,6 +91,28 @@ impl Editor {
         self.ensure_messages_buffer();
     }
 
+    /// Drain queued `MessagePushed` events; append each formatted
+    /// record to the `*messages*` buffer in one
+    /// `apply_edit_batch` so the actor sees a single edit per
+    /// drain. Phase 5.8.AA.f: hoisted from
+    /// `lattice-ui-tui::app::messages::App::drain_message_events`.
+    pub fn drain_message_events(&mut self) {
+        let Some(mut rx) = self.pending_message_event_rx.take() else {
+            return;
+        };
+        let mut text = String::new();
+        while let Ok(ev) = rx.try_recv() {
+            text.push_str(&format_message_record(&ev.record));
+            text.push('\n');
+        }
+        self.pending_message_event_rx = Some(rx);
+        if text.is_empty() {
+            return;
+        }
+        let id = self.ensure_messages_buffer();
+        self.append_to_owned_buffer(id, &text);
+    }
+
     /// Find-or-create the `*messages*` Document buffer.
     /// Idempotent; first creation seeds the buffer with the
     /// in-memory ring contents (so `:messages` after some

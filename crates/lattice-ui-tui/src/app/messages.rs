@@ -30,6 +30,10 @@
 //!   continues to receive records.
 
 use crate::app::App;
+// 5.8.AA.f: `format_message_record` lives host-side now and the
+// drain body moved with it. Kept as `#[allow]` so the existing
+// `#[cfg(test)]` consumers below still resolve.
+#[allow(unused_imports)]
 use lattice_host::messages::format_message_record;
 
 /// Re-export of the canonical
@@ -68,20 +72,8 @@ impl App {
     /// `apply_edit_batch` so the actor sees one edit per drain
     /// regardless of event rate.
     pub fn drain_message_events(&mut self) {
-        let Some(mut rx) = self.editor.pending_message_event_rx.take() else {
-            return;
-        };
-        let mut text = String::new();
-        while let Ok(ev) = rx.try_recv() {
-            text.push_str(&format_message_record(&ev.record));
-            text.push('\n');
-        }
-        self.editor.pending_message_event_rx = Some(rx);
-        if text.is_empty() {
-            return;
-        }
-        let id = self.ensure_messages_buffer();
-        self.append_to_owned_buffer(id, &text);
+        // 5.8.AA.f: migrated to host.
+        self.editor.drain_message_events();
     }
 }
 

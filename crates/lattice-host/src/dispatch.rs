@@ -11040,6 +11040,172 @@ impl Editor {
         }))]
     }
 
+    /// `:lsp-progress-cancel [server]` -- send
+    /// `window/workDoneProgress/cancel` for every cancellable
+    /// active progress entry (4.4.c). With `server_id == Some`,
+    /// cancel only entries on that server; with `None`, cancel
+    /// across every server attached to the current buffer.
+    /// Phase 5.8.AD.2: hoisted from TUI App.
+    pub fn do_lsp_progress_cancel(&mut self, server_id: Option<&str>) {
+        let allowed: std::collections::HashSet<String> = match server_id {
+            Some(id) => std::iter::once(id.to_string()).collect(),
+            None => {
+                let Some(uri) = self
+                    .buffer_uris
+                    .get(&self.document_buffer_id)
+                    .cloned()
+                else {
+                    self.set_message(
+                        EchoLevel::Info,
+                        "lsp-progress-cancel: buffer has no URI".to_string(),
+                    );
+                    return;
+                };
+                self.lsp
+                    .servers_for(&uri)
+                    .into_iter()
+                    .map(|h| h.server_id().to_string())
+                    .collect()
+            }
+        };
+        if allowed.is_empty() {
+            self.set_message(
+                EchoLevel::Info,
+                "lsp-progress-cancel: no attached servers".to_string(),
+            );
+            return;
+        }
+        let mut handles_by_id: std::collections::HashMap<String, lattice_lsp::ServerHandle> =
+            std::collections::HashMap::new();
+        for (_key, h) in self.lsp.running_actors() {
+            let id = h.server_id().to_string();
+            if allowed.contains(&id) {
+                handles_by_id.insert(id, h);
+            }
+        }
+        let mut sent = 0usize;
+        let mut skipped_non_cancellable = 0usize;
+        for ((sid, token), update) in &self.lsp_progress {
+            if !allowed.contains(sid.as_ref()) {
+                continue;
+            }
+            if !update.cancellable {
+                skipped_non_cancellable += 1;
+                continue;
+            }
+            if matches!(update.kind, lattice_lsp::LspProgressKind::End) {
+                continue;
+            }
+            if let Some(handle) = handles_by_id.get(sid.as_ref()) {
+                let _ = handle.cancel_progress(token);
+                sent += 1;
+            }
+        }
+        let scope = match server_id {
+            Some(id) => format!(" on {id}"),
+            None => String::new(),
+        };
+        if sent == 0 && skipped_non_cancellable == 0 {
+            self.set_message(
+                EchoLevel::Info,
+                format!("lsp-progress-cancel: no active progress{scope}"),
+            );
+        } else {
+            self.set_message(
+                EchoLevel::Info,
+                format!(
+                    "lsp-progress-cancel{scope}: sent {sent}, skipped {skipped_non_cancellable} non-cancellable"
+                ),
+            );
+        }
+    }
+
+    /// `:lsp-log-level [server] <level>` -- set the subsystem
+    /// default min level (when no server) or a per-server
+    /// override. Phase 5.8.AD.2.
+    pub fn do_set_lsp_log_level(&mut self, server_id: Option<&str>, level: &str) {
+        let Some(parsed) = lattice_lsp::LogLevel::parse(level) else {
+            self.set_message(
+                EchoLevel::Error,
+                format!("unknown log level {level:?}; expected error/warn/info/debug/trace"),
+            );
+            return;
+        };
+        match server_id {
+            None => {
+                self.lsp_logger.set_default_level(parsed);
+                self.set_message(EchoLevel::Info, format!("lsp default log level: {level}"));
+            }
+            Some(id) => {
+                let mut applied = 0usize;
+                let targets: Vec<lattice_lsp::InstanceKey> = self
+                    .lsp_logger
+                    .known_instances()
+                    .into_iter()
+                    .filter(|k| k.server_id.as_ref() == id)
+                    .collect();
+                let mut seen: std::collections::HashSet<lattice_lsp::InstanceKey> =
+                    targets.iter().cloned().collect();
+                for (_key, handle) in self.lsp.running_actors() {
+                    if handle.server_id() != id {
+                        continue;
+                    }
+                    let inst = handle.instance();
+                    if seen.insert(inst.clone()) {
+                        // Newly-discovered; will be applied below.
+                    }
+                }
+                for inst in seen {
+                    self.lsp_logger.set_instance_level(inst, Some(parsed));
+                    applied += 1;
+                }
+                if applied == 0 {
+                    let synth = lattice_lsp::InstanceKey::new(
+                        std::sync::Arc::<str>::from(id),
+                        std::sync::Arc::<std::path::Path>::from(
+                            std::env::current_dir()
+                                .unwrap_or_else(|_| std::path::PathBuf::from("/"))
+                                .as_path(),
+                        ),
+                    );
+                    self.lsp_logger.set_instance_level(synth, Some(parsed));
+                    applied = 1;
+                }
+                self.set_message(
+                    EchoLevel::Info,
+                    format!("lsp log level for {id}: {level} ({applied} instance(s))"),
+                );
+            }
+        }
+    }
+
+    /// `:lsp-log-clear [server]` -- drop ring contents.
+    /// Phase 5.8.AD.2.
+    pub fn do_lsp_log_clear(&mut self, server_id: Option<&str>) {
+        match server_id {
+            None => {
+                self.lsp_logger.clear_global();
+                self.set_message(EchoLevel::Info, "*lsp* cleared".to_string());
+            }
+            Some(id) => {
+                let targets: Vec<lattice_lsp::InstanceKey> = self
+                    .lsp_logger
+                    .known_instances()
+                    .into_iter()
+                    .filter(|k| k.server_id.as_ref() == id)
+                    .collect();
+                let cleared = targets.len();
+                for inst in targets {
+                    self.lsp_logger.clear_instance(&inst);
+                }
+                self.set_message(
+                    EchoLevel::Info,
+                    format!("*lsp:{id}* cleared ({cleared} instance(s))"),
+                );
+            }
+        }
+    }
+
     /// `:lsp-restart <server>` -- supervisor restart hook. Drives
     /// the supervisor mailbox; the call is async and we don't have
     /// an executor on the UI thread, so we spawn into the LSP

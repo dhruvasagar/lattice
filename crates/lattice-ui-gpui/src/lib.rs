@@ -738,6 +738,15 @@ impl GpuiApp {
             }
             Effect::LspExpandRegion => self.editor.do_lsp_expand_region(),
             Effect::LspShrinkRegion => self.editor.do_lsp_shrink_region(),
+            Effect::LspProgressCancel { server_id } => {
+                self.editor.do_lsp_progress_cancel(server_id.as_deref());
+            }
+            Effect::SetLspLogLevel { server_id, level } => {
+                self.editor.do_set_lsp_log_level(server_id.as_deref(), &level);
+            }
+            Effect::LspLogClear { server_id } => {
+                self.editor.do_lsp_log_clear(server_id.as_deref());
+            }
             Effect::OpenBufferPicker => {
                 let signals = self.editor.do_open_buffer_picker();
                 for s in signals {

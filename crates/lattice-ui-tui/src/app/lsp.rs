@@ -1219,17 +1219,10 @@ impl App {
         self.editor.maybe_request_pull_diagnostics();
     }
 
-    /// 4.4.j: drain the in-flight `textDocument/diagnostic`
-    /// response. Full reports flow into `DiagnosticsLayer` via
-    /// the same `DiagnosticEvent` shape push diagnostics use;
-    /// Unchanged reports refresh just the cache's
-    /// (version, result_id) pair; Empty reports seat the
-    /// version so the pump doesn't re-fire idly.
-    pub fn drain_pending_pull_diagnostics(&mut self) {
-        // 5.8.AA.b: migrated to
-        // `lattice_host::dispatch::Editor::drain_pending_pull_diagnostics`.
-        self.editor.drain_pending_pull_diagnostics();
-    }
+    // Phase 5.8.AF.5 / Slice 3b.5: `App::drain_pending_pull_diagnostics`
+    // retired -- spawned task writes both the per-buffer cache
+    // slot and fans into `lsp_diagnostics` (Arc-backed layer)
+    // directly.
 
     /// 4.4.j: drain `workspace/diagnostic/refresh` events.
     /// Each event names a server; evict the per-buffer
@@ -2507,10 +2500,9 @@ mod tests {
     #[test]
     fn drain_pending_pull_diagnostics_full_applies_to_layer() {
         use std::str::FromStr;
-        let mut app = app_with("fn main() {}\n", 5);
+        let app = app_with("fn main() {}\n", 5);
         let buffer_id = app.editor.document_buffer_id;
         let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
-        app.editor.buffer_uris.insert(buffer_id, uri.clone());
         let server_id: std::sync::Arc<str> = std::sync::Arc::from("rust");
         let diag = lattice_lsp::lsp_types::Diagnostic {
             range: lattice_lsp::lsp_types::Range {
@@ -2532,23 +2524,28 @@ mod tests {
             tags: None,
             data: None,
         };
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<crate::app::PullDiagnosticsOutcome>();
-        tx.send(crate::app::PullDiagnosticsOutcome::Full {
-            buffer_id,
-            server_id: server_id.clone(),
-            uri: uri.clone(),
-            document_version: 1,
-            result_id: Some("r1".into()),
-            diagnostics: vec![diag.clone()],
-        })
-        .expect("send full");
-        app.editor.pending_pull_diagnostics_rx = Some(rx);
-        app.drain_pending_pull_diagnostics();
-        let cache = app
-            .editor
-            .lsp_pull_diagnostics_cache
-            .get(&buffer_id)
-            .expect("cache seated");
+        // 5.8.AF.5 / Slice 3b.5: drive the outcome through the
+        // pure helper. The spawned task in
+        // `maybe_request_pull_diagnostics` calls the same helper.
+        lattice_host::editor::Editor::apply_pull_diagnostics_outcome(
+            &app.editor.lsp_pull_diagnostics_cache,
+            &app.editor.lsp_diagnostics,
+            crate::app::PullDiagnosticsOutcome::Full {
+                buffer_id,
+                server_id: server_id.clone(),
+                uri: uri.clone(),
+                document_version: 1,
+                result_id: Some("r1".into()),
+                diagnostics: vec![diag.clone()],
+            },
+        );
+        let cache = {
+            use lattice_host::per_buffer_cache::PerBufferCacheExt;
+            app.editor
+                .lsp_pull_diagnostics_cache
+                .get_for(buffer_id)
+                .expect("cache seated")
+        };
         assert_eq!(cache.document_version, 1);
         assert_eq!(cache.result_id.as_deref(), Some("r1"));
         // Layer should now carry the diagnostic. URI equality
@@ -2569,30 +2566,37 @@ mod tests {
     /// preserved verbatim.
     #[test]
     fn drain_pending_pull_diagnostics_unchanged_keeps_layer_state() {
-        let mut app = app_with("fn main() {}\n", 5);
+        let app = app_with("fn main() {}\n", 5);
         let buffer_id = app.editor.document_buffer_id;
         // Seed initial cache state.
-        app.editor.lsp_pull_diagnostics_cache.insert(
-            buffer_id,
-            crate::app::LspPullDiagnosticsCache {
-                document_version: 1,
-                result_id: Some("r1".into()),
+        {
+            use lattice_host::per_buffer_cache::PerBufferCacheExt;
+            app.editor.lsp_pull_diagnostics_cache.insert_for(
+                buffer_id,
+                crate::app::LspPullDiagnosticsCache {
+                    document_version: 1,
+                    result_id: Some("r1".into()),
+                },
+            );
+        }
+        // 5.8.AF.5 / Slice 3b.5: drive the outcome through the
+        // helper directly.
+        lattice_host::editor::Editor::apply_pull_diagnostics_outcome(
+            &app.editor.lsp_pull_diagnostics_cache,
+            &app.editor.lsp_diagnostics,
+            crate::app::PullDiagnosticsOutcome::Unchanged {
+                buffer_id,
+                document_version: 2,
+                result_id: "r2".into(),
             },
         );
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<crate::app::PullDiagnosticsOutcome>();
-        tx.send(crate::app::PullDiagnosticsOutcome::Unchanged {
-            buffer_id,
-            document_version: 2,
-            result_id: "r2".into(),
-        })
-        .expect("send unchanged");
-        app.editor.pending_pull_diagnostics_rx = Some(rx);
-        app.drain_pending_pull_diagnostics();
-        let cache = app
-            .editor
-            .lsp_pull_diagnostics_cache
-            .get(&buffer_id)
-            .expect("cache seated");
+        let cache = {
+            use lattice_host::per_buffer_cache::PerBufferCacheExt;
+            app.editor
+                .lsp_pull_diagnostics_cache
+                .get_for(buffer_id)
+                .expect("cache seated")
+        };
         assert_eq!(cache.document_version, 2);
         assert_eq!(cache.result_id.as_deref(), Some("r2"));
     }
@@ -2610,13 +2614,17 @@ mod tests {
     fn drain_diagnostic_refresh_handles_no_attached_buffers() {
         let mut app = app_with("fn main() {}\n", 5);
         let buffer_id = app.editor.document_buffer_id;
-        app.editor.lsp_pull_diagnostics_cache.insert(
-            buffer_id,
-            crate::app::LspPullDiagnosticsCache {
-                document_version: 1,
-                result_id: Some("r1".into()),
-            },
-        );
+        // 5.8.AF.5 / Slice 3b.5: cache is `PerBufferCache`.
+        {
+            use lattice_host::per_buffer_cache::PerBufferCacheExt;
+            app.editor.lsp_pull_diagnostics_cache.insert_for(
+                buffer_id,
+                crate::app::LspPullDiagnosticsCache {
+                    document_version: 1,
+                    result_id: Some("r1".into()),
+                },
+            );
+        }
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<lattice_lsp::LspDiagnosticRefresh>();
         tx.send(lattice_lsp::LspDiagnosticRefresh {
             server_id: std::sync::Arc::from("rust"),
@@ -2625,10 +2633,12 @@ mod tests {
         app.editor.pending_diagnostic_refresh_rx = Some(rx);
         app.drain_diagnostic_refresh();
         // No actors attached -> no eviction.
+        use lattice_host::per_buffer_cache::PerBufferCacheExt;
         assert!(
             app.editor
                 .lsp_pull_diagnostics_cache
-                .contains_key(&buffer_id)
+                .get_for(buffer_id)
+                .is_some()
         );
     }
 
@@ -2640,16 +2650,22 @@ mod tests {
         let mut app = app_with("fn main() {}\n", 5);
         let buffer_id = app.editor.document_buffer_id;
         let version = app.editor.document.snapshot().version;
-        app.editor.lsp_pull_diagnostics_cache.insert(
-            buffer_id,
-            crate::app::LspPullDiagnosticsCache {
-                document_version: version,
-                result_id: Some("r1".into()),
-            },
-        );
+        // 5.8.AF.5 / Slice 3b.5: cache is `PerBufferCache`; the
+        // pump fires a request when the cache is stale and
+        // installs a cancellation token (was `pending_*_rx`).
+        {
+            use lattice_host::per_buffer_cache::PerBufferCacheExt;
+            app.editor.lsp_pull_diagnostics_cache.insert_for(
+                buffer_id,
+                crate::app::LspPullDiagnosticsCache {
+                    document_version: version,
+                    result_id: Some("r1".into()),
+                },
+            );
+        }
         app.maybe_request_pull_diagnostics();
         assert!(
-            app.editor.pending_pull_diagnostics_rx.is_none(),
+            app.editor.pending_pull_diagnostics_token.is_none(),
             "pump should short-circuit on unchanged version",
         );
     }

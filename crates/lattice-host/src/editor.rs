@@ -767,7 +767,10 @@ pub struct Editor {
         crate::per_buffer_cache::PerBufferCache<LspSemanticTokensCache>,
     /// Per-buffer pull-diagnostics cache (keyed
     /// `result_id`s for `Unchanged` short-circuit).
-    pub lsp_pull_diagnostics_cache: HashMap<BufferId, LspPullDiagnosticsCache>,
+    /// Per-buffer `textDocument/diagnostic` (pull) cache.
+    /// Phase 5.8.AF.5 / Slice 3b.5: `PerBufferCache<T>`.
+    pub lsp_pull_diagnostics_cache:
+        crate::per_buffer_cache::PerBufferCache<LspPullDiagnosticsCache>,
     // ---- LSP subsystem handles + log/progress channels ----
     pub lsp: LspSupervisorHandle,
     pub lsp_diagnostics: DiagnosticsLayer,
@@ -883,8 +886,9 @@ pub struct Editor {
     // `lsp_semantic_tokens_cache` via `PerBufferCacheExt::insert_for`
     // (or `remove_for` on result_id mismatch in the Delta path).
     pub pending_pull_diagnostics_token: Option<CancellationToken>,
-    pub pending_pull_diagnostics_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<PullDiagnosticsOutcome>>,
+    // Phase 5.8.AF.5 / Slice 3b.5: `pending_pull_diagnostics_rx`
+    // retired -- spawned task writes directly into
+    // `lsp_pull_diagnostics_cache` + `lsp_diagnostics` layer.
     pub pending_diagnostic_refresh_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspDiagnosticRefresh>>,
     pub pending_inlay_hint_refresh_rx:

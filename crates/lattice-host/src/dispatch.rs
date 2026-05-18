@@ -352,6 +352,7 @@ impl Editor {
                 code_lens: self.lsp_code_lens_cache.clone(),
                 document_links: self.lsp_document_links_cache.clone(),
                 document_color: self.lsp_document_color_cache.clone(),
+                pull_diagnostics: self.lsp_pull_diagnostics_cache.clone(),
             }),
             ..RenderState::default()
         }
@@ -3502,22 +3503,24 @@ impl Editor {
     // `PerBufferCacheExt::insert_for` when the LSP response
     // arrives. No channel, no UI-thread drain.
 
-    /// 4.4.j: drain pulled-diagnostics responses.
-    ///
-    /// Phase 5.8.AA.b: hoisted from
-    /// `lattice-ui-tui::app::lsp::App::drain_pending_pull_diagnostics`.
-    pub fn drain_pending_pull_diagnostics(&mut self) {
-        let Some(mut rx) = self.pending_pull_diagnostics_rx.take() else {
-            return;
-        };
-        let mut latest: Option<lattice_lsp::cache::PullDiagnosticsOutcome> = None;
-        while let Ok(outcome) = rx.try_recv() {
-            latest = Some(outcome);
-        }
-        self.pending_pull_diagnostics_rx = Some(rx);
-        let Some(outcome) = latest else {
-            return;
-        };
+    // Phase 5.8.AF.5 / Slice 3b.5: `drain_pending_pull_diagnostics`
+    // retired. The spawned task in `maybe_request_pull_diagnostics`
+    // writes both the per-buffer cache slot AND fans the
+    // diagnostics into `lsp_diagnostics` (the Arc-backed layer)
+    // directly when the response arrives. No channel.
+
+    /// Slice 3b.5: apply a `PullDiagnosticsOutcome` to the
+    /// per-buffer cache + the shared diagnostics layer. Pure
+    /// with respect to `Editor` state -- the spawned LSP request
+    /// task and synchronous tests share this code path.
+    pub fn apply_pull_diagnostics_outcome(
+        cache_slot: &crate::per_buffer_cache::PerBufferCache<
+            lattice_lsp::cache::LspPullDiagnosticsCache,
+        >,
+        diagnostics_layer: &lattice_lsp::DiagnosticsLayer,
+        outcome: lattice_lsp::cache::PullDiagnosticsOutcome,
+    ) {
+        use crate::per_buffer_cache::PerBufferCacheExt;
         use lattice_lsp::cache::{LspPullDiagnosticsCache, PullDiagnosticsOutcome};
         match outcome {
             PullDiagnosticsOutcome::Full {
@@ -3528,7 +3531,7 @@ impl Editor {
                 result_id,
                 diagnostics,
             } => {
-                self.lsp_pull_diagnostics_cache.insert(
+                cache_slot.insert_for(
                     buffer_id,
                     LspPullDiagnosticsCache {
                         document_version,
@@ -3536,7 +3539,7 @@ impl Editor {
                     },
                 );
                 let version_i32 = i32::try_from(document_version).ok();
-                self.lsp_diagnostics.apply(lattice_lsp::DiagnosticEvent {
+                diagnostics_layer.apply(lattice_lsp::DiagnosticEvent {
                     server_id,
                     uri,
                     version: version_i32,
@@ -3548,7 +3551,7 @@ impl Editor {
                 document_version,
                 result_id,
             } => {
-                self.lsp_pull_diagnostics_cache.insert(
+                cache_slot.insert_for(
                     buffer_id,
                     LspPullDiagnosticsCache {
                         document_version,
@@ -3560,7 +3563,7 @@ impl Editor {
                 buffer_id,
                 document_version,
             } => {
-                self.lsp_pull_diagnostics_cache.insert(
+                cache_slot.insert_for(
                     buffer_id,
                     LspPullDiagnosticsCache {
                         document_version,
@@ -5026,6 +5029,7 @@ impl Editor {
     /// 4.4.j: per-tick `textDocument/diagnostic` (pull-based)
     /// pump. Phase 5.8.AA.i: hoisted from TUI App.
     pub fn maybe_request_pull_diagnostics(&mut self) {
+        use crate::per_buffer_cache::PerBufferCacheExt;
         if !self.lsp_diagnostics_mode_enabled_for(self.document_buffer_id) {
             return;
         }
@@ -5033,13 +5037,13 @@ impl Editor {
         let version = snapshot.version;
         let prior = self
             .lsp_pull_diagnostics_cache
-            .get(&self.document_buffer_id);
-        if let Some(cache) = prior
+            .get_for(self.document_buffer_id);
+        if let Some(cache) = prior.as_ref()
             && cache.document_version == version
         {
             return;
         }
-        let prior_result_id = prior.and_then(|c| c.result_id.clone());
+        let prior_result_id = prior.as_ref().and_then(|c| c.result_id.clone());
         let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
             return;
         };
@@ -5047,22 +5051,27 @@ impl Editor {
             token.cancel();
         }
         let buffer_id = self.document_buffer_id;
-        let (tx, rx) =
-            tokio::sync::mpsc::unbounded_channel::<lattice_lsp::cache::PullDiagnosticsOutcome>();
         let token = lattice_protocol::CancellationToken::new();
-        self.pending_pull_diagnostics_rx = Some(rx);
         self.pending_pull_diagnostics_token = Some(token.clone());
         let lsp = self.lsp.clone();
+        // Slice 3b.5: spawned task writes both the per-buffer
+        // cache slot AND fans the diagnostics into the shared
+        // `DiagnosticsLayer` (already Arc-backed; thread-safe).
+        let cache_slot = self.lsp_pull_diagnostics_cache.clone();
+        let diagnostics_layer = self.lsp_diagnostics.clone();
         lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = lsp.servers_for(&uri);
             let Some(handle) = handles
                 .into_iter()
                 .find(|h| h.capabilities().supports_pull_diagnostics())
             else {
-                let _ = tx.send(lattice_lsp::cache::PullDiagnosticsOutcome::Empty {
+                cache_slot.insert_for(
                     buffer_id,
-                    document_version: version,
-                });
+                    lattice_lsp::cache::LspPullDiagnosticsCache {
+                        document_version: version,
+                        result_id: None,
+                    },
+                );
                 return;
             };
             let identifier = handle.capabilities().diagnostic_identifier();
@@ -5074,39 +5083,37 @@ impl Editor {
                 work_done_progress_params: Default::default(),
                 partial_result_params: Default::default(),
             };
-            match handle.document_diagnostic(params, token.clone()).await {
+            let outcome = match handle.document_diagnostic(params, token.clone()).await {
                 Ok(lattice_lsp::lsp_types::DocumentDiagnosticReportResult::Report(report)) => {
                     match report {
                         lattice_lsp::lsp_types::DocumentDiagnosticReport::Full(full) => {
                             let inner = full.full_document_diagnostic_report;
-                            let _ = tx.send(lattice_lsp::cache::PullDiagnosticsOutcome::Full {
+                            lattice_lsp::cache::PullDiagnosticsOutcome::Full {
                                 buffer_id,
                                 server_id: server_id_arc,
                                 uri,
                                 document_version: version,
                                 result_id: inner.result_id,
                                 diagnostics: inner.items,
-                            });
+                            }
                         }
                         lattice_lsp::lsp_types::DocumentDiagnosticReport::Unchanged(unchanged) => {
-                            let _ =
-                                tx.send(lattice_lsp::cache::PullDiagnosticsOutcome::Unchanged {
-                                    buffer_id,
-                                    document_version: version,
-                                    result_id: unchanged
-                                        .unchanged_document_diagnostic_report
-                                        .result_id,
-                                });
+                            lattice_lsp::cache::PullDiagnosticsOutcome::Unchanged {
+                                buffer_id,
+                                document_version: version,
+                                result_id: unchanged
+                                    .unchanged_document_diagnostic_report
+                                    .result_id,
+                            }
                         }
                     }
                 }
-                _ => {
-                    let _ = tx.send(lattice_lsp::cache::PullDiagnosticsOutcome::Empty {
-                        buffer_id,
-                        document_version: version,
-                    });
-                }
-            }
+                _ => lattice_lsp::cache::PullDiagnosticsOutcome::Empty {
+                    buffer_id,
+                    document_version: version,
+                },
+            };
+            Editor::apply_pull_diagnostics_outcome(&cache_slot, &diagnostics_layer, outcome);
         });
     }
 
@@ -6227,8 +6234,9 @@ impl Editor {
                 if attached { Some(*id) } else { None }
             })
             .collect();
+        use crate::per_buffer_cache::PerBufferCacheExt;
         for buffer_id in buffer_ids {
-            self.lsp_pull_diagnostics_cache.remove(&buffer_id);
+            self.lsp_pull_diagnostics_cache.remove_for(buffer_id);
         }
     }
 
@@ -6432,7 +6440,10 @@ impl Editor {
         // `PerBufferCacheExt::insert_for`. The folding-range
         // `recompute_folds()` side-effect now runs in
         // `maybe_request_folding_range` on cache-version flip.
-        self.drain_pending_pull_diagnostics();
+        // 5.8.AF.5 / Slice 3b.5: `drain_pending_pull_diagnostics`
+        // retired -- writes happen directly from the spawned
+        // request task into `lsp_pull_diagnostics_cache` +
+        // `lsp_diagnostics` (the Arc-backed layer).
         // 5.8.AF.5 / Slice 3b.2: `drain_pending_semantic_tokens`
         // retired -- writes happen directly from the spawned
         // request task into `lsp_semantic_tokens_cache` via

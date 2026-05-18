@@ -205,6 +205,13 @@ pub struct LspRenderState {
     /// Slice 3b.4: per-buffer `textDocument/documentColor` cache.
     pub document_color:
         crate::per_buffer_cache::PerBufferCache<lattice_lsp::cache::LspDocumentColorCache>,
+    /// Slice 3b.5: per-buffer `textDocument/diagnostic` (pull)
+    /// result_id cache. The actual diagnostics live in
+    /// `diagnostics.layer` (DiagnosticsLayer); this slot tracks
+    /// only the (version, result_id) pair the next pump uses for
+    /// the `previousResultId` short-circuit.
+    pub pull_diagnostics:
+        crate::per_buffer_cache::PerBufferCache<lattice_lsp::cache::LspPullDiagnosticsCache>,
 }
 
 /// Tree-sitter highlights + visible-range cache.

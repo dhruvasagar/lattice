@@ -3603,6 +3603,324 @@ impl Editor {
         }
     }
 
+    /// 4.2.f: drain `completionItem/resolve` responses; fold the
+    /// resolved metadata back into `editor.insert_completion`'s
+    /// raw entry + refresh the docs popup body when the resolved
+    /// candidate is the focused one. Phase 5.8.AA.d: hoisted
+    /// from TUI App.
+    pub fn drain_pending_completion_resolve(&mut self) {
+        let Some(mut rx) = self.pending_completion_resolve_rx.take() else {
+            return;
+        };
+        let mut latest: Option<lattice_lsp::cache::CompletionResolveOutcome> = None;
+        while let Ok(o) = rx.try_recv() {
+            latest = Some(o);
+        }
+        self.pending_completion_resolve_rx = Some(rx);
+        let Some(outcome) = latest else {
+            return;
+        };
+        self.pending_completion_resolve_token = None;
+        let Some(state) = self.insert_completion.as_mut() else {
+            return;
+        };
+        let target_raw_idx = state
+            .raw
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| {
+                matches!(
+                    r.data,
+                    lattice_completion::CandidateData::Extension {
+                        kind_id: lattice_lsp::completion::LSP_COMPLETION_KIND_ID,
+                        ..
+                    }
+                )
+            })
+            .nth(outcome.meta_index)
+            .map(|(idx, _)| idx);
+        let Some(target_raw_idx) = target_raw_idx else {
+            return;
+        };
+        let resolved = outcome.resolved;
+        let mut meta = match &state.raw[target_raw_idx].data {
+            lattice_completion::CandidateData::Extension { payload, .. } => {
+                match lattice_lsp::completion::decode_meta(payload) {
+                    Some(m) => m,
+                    None => return,
+                }
+            }
+            _ => return,
+        };
+        if let Some(d) = resolved.documentation.as_ref() {
+            let body = match d {
+                lattice_lsp::lsp_types::Documentation::String(s) => s.clone(),
+                lattice_lsp::lsp_types::Documentation::MarkupContent(mc) => mc.value.clone(),
+            };
+            meta.documentation = Some(body);
+        }
+        if let Some(detail) = resolved.detail.clone() {
+            meta.detail = Some(detail);
+        }
+        if let Some(adds) = resolved.additional_text_edits.clone() {
+            meta.additional_text_edits = adds;
+        }
+        if let Some(cmd) = resolved.command.clone() {
+            meta.command = Some(cmd);
+        }
+        meta.resolved = true;
+        let new_payload = lattice_lsp::completion::encode_meta(&meta);
+        state.raw[target_raw_idx].data = lattice_completion::CandidateData::Extension {
+            kind_id: lattice_lsp::completion::LSP_COMPLETION_KIND_ID,
+            payload: new_payload.clone(),
+        };
+        let Some(doc_popup) = state.doc_popup.as_mut() else {
+            return;
+        };
+        let Some(cand) = state.rendered.get(state.selected) else {
+            return;
+        };
+        let cand_payload = match &cand.raw.data {
+            lattice_completion::CandidateData::Extension { payload, .. } => payload.clone(),
+            _ => return,
+        };
+        let cand_original = lattice_lsp::completion::decode_meta(&cand_payload)
+            .map(|m| m.original_item)
+            .unwrap_or_default();
+        if cand_original != meta.original_item {
+            return;
+        }
+        let detail = meta
+            .detail
+            .clone()
+            .filter(|s| !s.is_empty())
+            .map(|s| format!("```\n{s}\n```"));
+        let docs = meta.documentation.clone().filter(|s| !s.is_empty());
+        doc_popup.body = match (detail, docs) {
+            (Some(d), Some(b)) => Some(format!("{d}\n\n{b}")),
+            (Some(d), None) => Some(d),
+            (None, Some(b)) => Some(b),
+            (None, None) => Some("(no documentation)".to_string()),
+        };
+        doc_popup.scroll = 0;
+    }
+
+    /// Drain `LspLogPushed` events; surface `showMessage`-sourced
+    /// records to the minibuffer (transient `:echom`-style). Other
+    /// records are owned by the LSP log majors. Phase 5.8.AA.d:
+    /// hoisted from TUI App.
+    pub fn drain_lsp_log_events(&mut self) {
+        let Some(mut rx) = self.lsp_log_event_rx.take() else {
+            return;
+        };
+        let mut last_show: Option<(EchoLevel, String)> = None;
+        while let Ok(event) = rx.try_recv() {
+            let lattice_lsp::LspLogPushed {
+                server_id,
+                workspace: _,
+                level,
+                source,
+                message,
+            } = event;
+            if source == "show" {
+                let echo_level = match level.as_str() {
+                    "error" => EchoLevel::Error,
+                    "warn" => EchoLevel::Warn,
+                    _ => EchoLevel::Info,
+                };
+                let prefix = server_id
+                    .as_deref()
+                    .map(|id| format!("[{id}] "))
+                    .unwrap_or_default();
+                last_show = Some((echo_level, format!("{prefix}{message}")));
+            }
+        }
+        if let Some((level, msg)) = last_show {
+            self.set_message(level, msg);
+        }
+        self.lsp_log_event_rx = Some(rx);
+    }
+
+    /// 4.2.f: drain inline insert-completion LSP response.
+    /// Merges incoming candidates into `editor.insert_completion`'s
+    /// raw set, refilters via `FuzzyInsertMatcher` + `InsertRanker`
+    /// using per-source priority + frequency bonus, deduplicates,
+    /// and updates the rendered list. Phase 5.8.AA.d: hoisted
+    /// from TUI App.
+    pub fn drain_pending_insert_completion_lsp(&mut self) {
+        let Some(mut rx) = self.pending_insert_completion_lsp_rx.take() else {
+            return;
+        };
+        let mut latest: Option<lattice_lsp::cache::InsertCompletionLspOutcome> = None;
+        while let Ok(o) = rx.try_recv() {
+            latest = Some(o);
+        }
+        self.pending_insert_completion_lsp_rx = Some(rx);
+        let Some(outcome) = latest else {
+            return;
+        };
+        self.pending_insert_completion_lsp_token = None;
+        let Some(state) = self.insert_completion.as_mut() else {
+            return;
+        };
+        use lattice_lsp::cache::InsertCompletionLspOutcome;
+        match outcome {
+            InsertCompletionLspOutcome::NoServers => {}
+            InsertCompletionLspOutcome::Items {
+                candidates,
+                is_incomplete,
+            } => {
+                state.raw.retain(|c| {
+                    !matches!(
+                        c.data,
+                        lattice_completion::CandidateData::Extension {
+                            kind_id: lattice_lsp::completion::LSP_COMPLETION_KIND_ID,
+                            ..
+                        }
+                    )
+                });
+                for raw in candidates.into_iter() {
+                    if matches!(
+                        raw.data,
+                        lattice_completion::CandidateData::Extension {
+                            kind_id: lattice_lsp::completion::LSP_COMPLETION_KIND_ID,
+                            ..
+                        }
+                    ) {
+                        state.raw.push(raw);
+                    }
+                }
+                state.lsp_incomplete = is_incomplete;
+            }
+        }
+        let matcher = lattice_completion::FuzzyInsertMatcher::new();
+        let mut scored: Vec<lattice_completion::ScoredCandidate> = state
+            .raw
+            .iter()
+            .filter_map(|raw| {
+                lattice_completion::CandidateMatcher::matches(&matcher, &state.query, raw).map(
+                    |(score, ranges)| lattice_completion::ScoredCandidate {
+                        raw: raw.clone(),
+                        score,
+                        match_ranges: ranges,
+                    },
+                )
+            })
+            .collect();
+        let ranker = lattice_completion::InsertRanker::new();
+        let freq = &self.completion_accept_freq;
+        let config = &self.config;
+        ranker.rank_with_bonus(&mut scored, |raw| {
+            let priority = match raw.source.as_ref().map(|s| s.as_str()) {
+                Some("gen:lsp-completion") => *config
+                    .get_typed::<lattice_config::CompletionSourceLspPriority>()
+                    .expect("CompletionSourceLspPriority"),
+                Some("gen:snippet") => *config
+                    .get_typed::<lattice_config::CompletionSourceSnippetPriority>()
+                    .expect("CompletionSourceSnippetPriority"),
+                Some("gen:buffer-words") => *config
+                    .get_typed::<lattice_config::CompletionSourceBufferWordsPriority>()
+                    .expect("CompletionSourceBufferWordsPriority"),
+                _ => 0,
+            }
+            .clamp(0, u32::MAX as i64) as u32;
+            let freq_bonus = freq
+                .get(&(raw.text.clone(), raw.kind))
+                .copied()
+                .unwrap_or(0)
+                .min(lattice_completion::InsertRanker::FREQUENCY_BONUS_CAP);
+            priority.saturating_add(freq_bonus)
+        });
+        state.rendered = scored
+            .into_iter()
+            .map(lattice_completion::RenderedCandidate::from_scored)
+            .collect();
+        dedup_rendered_by_text(&mut state.rendered);
+        if !state.rendered.is_empty() && state.selected >= state.rendered.len() {
+            state.selected = state.rendered.len() - 1;
+        }
+        if state.rendered.is_empty() {
+            self.insert_completion = None;
+        }
+    }
+
+    /// 4.4.c: drain queued `LspProgressUpdate` events; fold
+    /// Begin/Report/End into `editor.lsp_progress`. Phase
+    /// 5.8.AA.d: hoisted from TUI App.
+    pub fn drain_lsp_progress_events(&mut self) {
+        let Some(mut rx) = self.lsp_progress_event_rx.take() else {
+            return;
+        };
+        while let Ok(event) = rx.try_recv() {
+            let key = (event.server_id.clone(), event.token.clone());
+            match event.kind {
+                lattice_lsp::LspProgressKind::Begin => {
+                    self.lsp_progress.insert(key, event);
+                }
+                lattice_lsp::LspProgressKind::Report => {
+                    if let Some(prev) = self.lsp_progress.get(&key) {
+                        let title = event.title.clone().or_else(|| prev.title.clone());
+                        let merged = lattice_lsp::LspProgressUpdate {
+                            server_id: event.server_id,
+                            token: event.token,
+                            kind: event.kind,
+                            title,
+                            message: event.message,
+                            percentage: event.percentage.or(prev.percentage),
+                            cancellable: event.cancellable,
+                        };
+                        self.lsp_progress.insert(key, merged);
+                    } else {
+                        self.lsp_progress.insert(key, event);
+                    }
+                }
+                lattice_lsp::LspProgressKind::End => {
+                    self.lsp_progress.remove(&key);
+                }
+            }
+        }
+        self.lsp_progress_event_rx = Some(rx);
+    }
+
+    /// Drain `LspBufferDetached` events; fire didClose + clear
+    /// per-buffer URI mapping via `lsp_close_buffer` (already
+    /// host). Phase 5.8.AA.d: hoisted from TUI App.
+    pub fn drain_lsp_detach_events(&mut self) {
+        let Some(mut rx) = self.pending_lsp_detach_rx.take() else {
+            return;
+        };
+        let mut buffer_ids: Vec<lattice_core::BufferId> = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            buffer_ids.push(lattice_core::BufferId(event.id.raw() as u32));
+        }
+        self.pending_lsp_detach_rx = Some(rx);
+        for buffer_id in buffer_ids {
+            self.lsp_close_buffer(buffer_id);
+        }
+    }
+
+    /// Drain server-initiated `workspace/configuration` requests.
+    /// Phase 5.8.AA.d: hoisted from TUI App. Uses host-resident
+    /// `lookup_lsp_config_section` to resolve each section.
+    pub fn drain_inbound_configuration_requests(&mut self) {
+        let Some(mut rx) = self.pending_configuration_rx.take() else {
+            return;
+        };
+        let mut requests: Vec<lattice_lsp::InboundConfigurationRequest> = Vec::new();
+        while let Ok(req) = rx.try_recv() {
+            requests.push(req);
+        }
+        self.pending_configuration_rx = Some(rx);
+        for req in requests {
+            let values: Vec<serde_json::Value> = req
+                .sections
+                .iter()
+                .map(|section| self.lookup_lsp_config_section(section))
+                .collect();
+            let _ = req.response.send(values);
+        }
+    }
+
     /// 4.4.j: drain `workspace/diagnostic/refresh` events; evict
     /// per-buffer result_id caches so the next pump re-pulls.
     /// Phase 5.8.AA.c: hoisted from TUI App.
@@ -4023,6 +4341,12 @@ impl Editor {
         self.drain_inlay_hint_refresh();
         self.drain_semantic_tokens_refresh();
         self.drain_code_lens_refresh();
+        self.drain_pending_insert_completion_lsp();
+        self.drain_pending_completion_resolve();
+        self.drain_lsp_log_events();
+        self.drain_lsp_progress_events();
+        self.drain_lsp_detach_events();
+        self.drain_inbound_configuration_requests();
         // `drain_pending_code_actions` returns an `Option<(handle,
         // action)>` for the App-side apply chain — not signal-shaped.
         // Renderer peers call it directly and decide how to handle

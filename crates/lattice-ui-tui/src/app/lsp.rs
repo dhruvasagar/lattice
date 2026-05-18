@@ -900,117 +900,15 @@ impl App {
     /// files echo a warning but don't roll back successfully-
     /// applied files.
     pub fn drain_inbound_apply_edits(&mut self) {
-        let Some(mut rx) = self.editor.pending_apply_edit_rx.take() else {
-            return;
-        };
-        let mut requests: Vec<lattice_lsp::InboundApplyEdit> = Vec::new();
-        while let Ok(req) = rx.try_recv() {
-            requests.push(req);
-        }
-        self.editor.pending_apply_edit_rx = Some(rx);
-        for req in requests {
-            let outcome =
-                self.apply_inbound_workspace_edit(&req.server_id, req.label.as_deref(), req.edit);
-            let _ = req.response.send(outcome);
+        // 5.8.AA.l.5: migrated to host.
+        let signals = self.editor.drain_inbound_apply_edits();
+        for s in signals {
+            self.handle_renderer_signal(s);
         }
     }
 
-    /// Apply one server-initiated WorkspaceEdit to the editor's
-    /// buffers. Returns the `lattice_lsp::ApplyEditOutcome` the
-    /// actor's response task ferries back to the server.
-    fn apply_inbound_workspace_edit(
-        &mut self,
-        server_id: &std::sync::Arc<str>,
-        label: Option<&str>,
-        edit: lattice_lsp::lsp_types::WorkspaceEdit,
-    ) -> lattice_lsp::ApplyEditOutcome {
-        let per_file = flatten_workspace_edit(edit);
-        if per_file.is_empty() {
-            // Spec: when the edit is empty there's nothing to do;
-            // reply applied=true with a clarifying note.
-            return lattice_lsp::ApplyEditOutcome {
-                applied: true,
-                failure_reason: Some("empty workspace edit".into()),
-            };
-        }
-        let mut applied_files = 0usize;
-        let mut failed_files: Vec<String> = Vec::new();
-        let mut total_edits = 0usize;
-        for (uri, edits) in per_file {
-            let target_path = match lattice_lsp::actor::uri_to_path(&uri) {
-                Some(p) => p,
-                None => {
-                    failed_files.push(format!("{uri:?} (malformed URI)"));
-                    continue;
-                }
-            };
-            let edit_count = edits.len();
-            if self
-                .editor
-                .document
-                .path()
-                .map(|p| p == target_path)
-                .unwrap_or(false)
-            {
-                if let Err(e) = self.apply_lsp_text_edits(edits) {
-                    failed_files.push(format!("{}: {e}", target_path.display()));
-                    continue;
-                }
-                applied_files += 1;
-                total_edits += edit_count;
-            } else {
-                // Cross-file edits: open via `:e` then apply.
-                self.do_edit(Some(target_path.clone()), false);
-                if matches!(
-                    self.editor.last_message.as_ref().map(|m| m.level),
-                    Some(EchoLevel::Error)
-                ) {
-                    failed_files.push(format!("{}: open failed", target_path.display()));
-                    continue;
-                }
-                if let Err(e) = self.apply_lsp_text_edits(edits) {
-                    failed_files.push(format!("{}: {e}", target_path.display()));
-                    continue;
-                }
-                applied_files += 1;
-                total_edits += edit_count;
-            }
-        }
-        // Echo a status line for the user.
-        let label_text = label.map(|l| format!(" `{l}`")).unwrap_or_default();
-        let summary = if failed_files.is_empty() {
-            format!(
-                "{server_id}: applyEdit{label_text} -> {total_edits} edit{} across {applied_files} file{}",
-                if total_edits == 1 { "" } else { "s" },
-                if applied_files == 1 { "" } else { "s" },
-            )
-        } else {
-            format!(
-                "{server_id}: applyEdit{label_text} partial -- {applied_files} ok, {} failed: {}",
-                failed_files.len(),
-                failed_files.join("; "),
-            )
-        };
-        let echo_level = if failed_files.is_empty() {
-            EchoLevel::Info
-        } else {
-            EchoLevel::Warn
-        };
-        self.set_message(echo_level, summary.clone());
-        lattice_lsp::ApplyEditOutcome {
-            applied: applied_files > 0,
-            failure_reason: if failed_files.is_empty() {
-                None
-            } else {
-                Some(format!(
-                    "{} file{} failed: {}",
-                    failed_files.len(),
-                    if failed_files.len() == 1 { "" } else { "s" },
-                    failed_files.join("; "),
-                ))
-            },
-        }
-    }
+    // 5.8.AA.l.5: apply_inbound_workspace_edit body migrated
+    // to host.
 
     /// Single canonical hook for "this buffer was just opened":
     /// register `BufferId → Uri` eagerly (path-bearing only),

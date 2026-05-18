@@ -3737,6 +3737,136 @@ impl Editor {
             .map_err(|e| format!("{e:?}"))
     }
 
+    /// Drain server-initiated `workspace/applyEdit` requests.
+    /// Each request's workspace edit is flattened to per-file
+    /// entries, edits to the active buffer land via
+    /// `apply_lsp_text_edits`, cross-file edits route through
+    /// `do_edit`. Returns renderer signals from cross-file opens.
+    /// The server reply (`ApplyEditOutcome`) ferries back via
+    /// the per-request oneshot.
+    ///
+    /// Phase 5.8.AA.l.5: hoisted from TUI App.
+    pub fn drain_inbound_apply_edits(&mut self) -> Vec<RendererSignal> {
+        let Some(mut rx) = self.pending_apply_edit_rx.take() else {
+            return Vec::new();
+        };
+        let mut requests: Vec<lattice_lsp::InboundApplyEdit> = Vec::new();
+        while let Ok(req) = rx.try_recv() {
+            requests.push(req);
+        }
+        self.pending_apply_edit_rx = Some(rx);
+        let mut signals = Vec::new();
+        for req in requests {
+            let outcome = self.apply_inbound_workspace_edit(
+                &req.server_id,
+                req.label.as_deref(),
+                req.edit,
+                &mut signals,
+            );
+            let _ = req.response.send(outcome);
+        }
+        signals
+    }
+
+    fn apply_inbound_workspace_edit(
+        &mut self,
+        server_id: &std::sync::Arc<str>,
+        label: Option<&str>,
+        edit: lattice_lsp::lsp_types::WorkspaceEdit,
+        signals: &mut Vec<RendererSignal>,
+    ) -> lattice_lsp::ApplyEditOutcome {
+        let per_file = flatten_workspace_edit(edit);
+        if per_file.is_empty() {
+            return lattice_lsp::ApplyEditOutcome {
+                applied: true,
+                failure_reason: Some("empty workspace edit".into()),
+            };
+        }
+        let mut applied_files = 0usize;
+        let mut failed_files: Vec<String> = Vec::new();
+        let mut total_edits = 0usize;
+        for (uri, edits) in per_file {
+            let target_path = match lattice_lsp::actor::uri_to_path(&uri) {
+                Some(p) => p,
+                None => {
+                    failed_files.push(format!("{uri:?} (malformed URI)"));
+                    continue;
+                }
+            };
+            let edit_count = edits.len();
+            if self
+                .document
+                .path()
+                .map(|p| p == target_path)
+                .unwrap_or(false)
+            {
+                if let Err(e) = self.apply_lsp_text_edits(edits) {
+                    failed_files.push(format!("{}: {e}", target_path.display()));
+                    continue;
+                }
+                applied_files += 1;
+                total_edits += edit_count;
+            } else {
+                match self.do_edit(Some(target_path.clone()), false) {
+                    DoEditOutcome::Opened(s)
+                    | DoEditOutcome::Activated(s)
+                    | DoEditOutcome::Reloaded(s) => signals.extend(s),
+                    DoEditOutcome::Failed | DoEditOutcome::Directory(_) => {
+                        failed_files.push(format!("{}: open failed", target_path.display()));
+                        continue;
+                    }
+                    DoEditOutcome::NoFileName => {}
+                }
+                if matches!(
+                    self.last_message.as_ref().map(|m| m.level),
+                    Some(EchoLevel::Error)
+                ) {
+                    failed_files.push(format!("{}: open failed", target_path.display()));
+                    continue;
+                }
+                if let Err(e) = self.apply_lsp_text_edits(edits) {
+                    failed_files.push(format!("{}: {e}", target_path.display()));
+                    continue;
+                }
+                applied_files += 1;
+                total_edits += edit_count;
+            }
+        }
+        let label_text = label.map(|l| format!(" `{l}`")).unwrap_or_default();
+        let summary = if failed_files.is_empty() {
+            format!(
+                "{server_id}: applyEdit{label_text} -> {total_edits} edit{} across {applied_files} file{}",
+                if total_edits == 1 { "" } else { "s" },
+                if applied_files == 1 { "" } else { "s" },
+            )
+        } else {
+            format!(
+                "{server_id}: applyEdit{label_text} partial -- {applied_files} ok, {} failed: {}",
+                failed_files.len(),
+                failed_files.join("; "),
+            )
+        };
+        let echo_level = if failed_files.is_empty() {
+            EchoLevel::Info
+        } else {
+            EchoLevel::Warn
+        };
+        self.set_message(echo_level, summary);
+        lattice_lsp::ApplyEditOutcome {
+            applied: applied_files > 0,
+            failure_reason: if failed_files.is_empty() {
+                None
+            } else {
+                Some(format!(
+                    "{} file{} failed: {}",
+                    failed_files.len(),
+                    if failed_files.len() == 1 { "" } else { "s" },
+                    failed_files.join("; "),
+                ))
+            },
+        }
+    }
+
     /// Drain queued format / onType-format responses; apply
     /// edits as one undo unit. Phase 5.8.AA.l.4: hoisted from
     /// TUI App.
@@ -5731,6 +5861,7 @@ impl Editor {
         signals.extend(self.drain_inbound_show_documents());
         signals.extend(self.drain_pending_rename());
         self.drain_pending_format();
+        signals.extend(self.drain_inbound_apply_edits());
         // Pre-drain "fire request" pumps. Each is single-flight
         // (cancels prior in-flight) + cache-key-gated, so calling
         // here is cheap when nothing changed.
@@ -12039,6 +12170,55 @@ pub enum DoEditOutcome {
     Reloaded(Vec<RendererSignal>),
     Activated(Vec<RendererSignal>),
     Opened(Vec<RendererSignal>),
+}
+
+/// Flatten a `WorkspaceEdit` into a per-file `Vec<(Uri,
+/// Vec<TextEdit>)>`. Handles both the legacy `changes` map and
+/// the modern `document_changes` shape (create/rename/delete
+/// ops skipped in v1; rename returns plain text edits for ~100%
+/// of identifier rewrites).
+///
+/// Phase 5.8.AA.l.5: hoisted from
+/// `lattice-ui-tui::app::flatten_workspace_edit`.
+pub fn flatten_workspace_edit(
+    we: lattice_lsp::lsp_types::WorkspaceEdit,
+) -> Vec<(
+    lattice_lsp::lsp_types::Uri,
+    Vec<lattice_lsp::lsp_types::TextEdit>,
+)> {
+    let mut out: Vec<(
+        lattice_lsp::lsp_types::Uri,
+        Vec<lattice_lsp::lsp_types::TextEdit>,
+    )> = Vec::new();
+    if let Some(changes) = we.changes {
+        for (uri, edits) in changes {
+            if !edits.is_empty() {
+                out.push((uri, edits));
+            }
+        }
+    }
+    if let Some(doc_changes) = we.document_changes {
+        match doc_changes {
+            lattice_lsp::lsp_types::DocumentChanges::Edits(edits) => {
+                for te_doc in edits {
+                    let uri = te_doc.text_document.uri.clone();
+                    let raw_edits: Vec<lattice_lsp::lsp_types::TextEdit> = te_doc
+                        .edits
+                        .into_iter()
+                        .filter_map(|e| match e {
+                            lattice_lsp::lsp_types::OneOf::Left(te) => Some(te),
+                            lattice_lsp::lsp_types::OneOf::Right(ate) => Some(ate.text_edit),
+                        })
+                        .collect();
+                    if !raw_edits.is_empty() {
+                        out.push((uri, raw_edits));
+                    }
+                }
+            }
+            lattice_lsp::lsp_types::DocumentChanges::Operations(_) => {}
+        }
+    }
+    out
 }
 
 /// Tilde-expand + absolutise a user-typed path. `~/rest` →

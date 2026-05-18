@@ -1084,7 +1084,7 @@ pub(crate) fn lsp_position_to_app_byte(buffer: &Buffer, line: u32, character: u3
 /// half-open LSP `range`? We compare only by (line, character)
 /// in LSP utf-16 space because the range itself is LSP-shape;
 /// the App cursor is converted on the fly.
-pub(crate) fn cursor_inside_range(cursor: Position, range: &lsp_types::Range) -> bool {
+pub(crate) fn cursor_inside_range(cursor: Position, range: &lattice_lsp::lsp_types::Range) -> bool {
     let line = cursor.line;
     let col = cursor.byte;
     let start = (range.start.line, range.start.character);
@@ -1097,7 +1097,7 @@ pub(crate) fn cursor_inside_range(cursor: Position, range: &lsp_types::Range) ->
 /// returns line-based extents; the identity hash combines
 /// start_line + end_line + kind so closed-state survives
 /// re-fetches that produce the same logical fold.
-pub(crate) fn folding_range_to_fold(r: lsp_types::FoldingRange) -> Fold {
+pub(crate) fn folding_range_to_fold(r: lattice_lsp::lsp_types::FoldingRange) -> Fold {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     r.start_line.hash(&mut hasher);
@@ -1118,8 +1118,8 @@ pub(crate) fn folding_range_to_fold(r: lsp_types::FoldingRange) -> Fold {
 /// 4.4.e: flatten an LSP `SelectionRange` (linked list via
 /// `parent`) into a `Vec<Range>` ordered innermost-first.
 pub(crate) fn flatten_selection_range_chain(
-    head: &lsp_types::SelectionRange,
-) -> Vec<lsp_types::Range> {
+    head: &lattice_lsp::lsp_types::SelectionRange,
+) -> Vec<lattice_lsp::lsp_types::Range> {
     let mut out = Vec::new();
     let mut cur = Some(head);
     while let Some(node) = cur {
@@ -1156,7 +1156,7 @@ pub(crate) use lattice_host::lsp_helpers::flatten_document_symbol_response;
 /// Falls back to `(path, 0, 0)` if the URI doesn't parse;
 /// keeping the row visible beats silently dropping it.
 pub(crate) fn call_hierarchy_to_row(
-    item: &lsp_types::CallHierarchyItem,
+    item: &lattice_lsp::lsp_types::CallHierarchyItem,
     related_to: &str,
 ) -> SymbolRow {
     let path = lattice_lsp::actor::uri_to_path(&item.uri).unwrap_or_default();
@@ -1176,7 +1176,10 @@ pub(crate) fn call_hierarchy_to_row(
 /// semantics on a link's rightmost char). Used by the `gx`
 /// keystroke to find the first cached `documentLink` under
 /// the cursor.
-pub(crate) fn range_covers(range: lsp_types::Range, position: lsp_types::Position) -> bool {
+pub(crate) fn range_covers(
+    range: lattice_lsp::lsp_types::Range,
+    position: lattice_lsp::lsp_types::Position,
+) -> bool {
     let after_start =
         (range.start.line, range.start.character) <= (position.line, position.character);
     let before_end = (position.line, position.character) <= (range.end.line, range.end.character);
@@ -1190,7 +1193,7 @@ pub(crate) fn range_covers(range: lsp_types::Range, position: lsp_types::Positio
 /// range, selection_range); the container hint differs
 /// (`"super of foo"` / `"sub of foo"`).
 pub(crate) fn type_hierarchy_to_row(
-    item: &lsp_types::TypeHierarchyItem,
+    item: &lattice_lsp::lsp_types::TypeHierarchyItem,
     related_to: &str,
 ) -> SymbolRow {
     let path = lattice_lsp::actor::uri_to_path(&item.uri).unwrap_or_default();
@@ -1213,14 +1216,14 @@ pub(crate) fn type_hierarchy_to_row(
 /// present, else `None` so the App's caller can fall back to
 /// the heuristic.
 pub(crate) fn prepare_rename_placeholder(
-    resp: &lsp_types::PrepareRenameResponse,
+    resp: &lattice_lsp::lsp_types::PrepareRenameResponse,
 ) -> Option<String> {
     match resp {
-        lsp_types::PrepareRenameResponse::RangeWithPlaceholder { placeholder, .. } => {
-            Some(placeholder.clone())
-        }
-        lsp_types::PrepareRenameResponse::Range(_) => None,
-        lsp_types::PrepareRenameResponse::DefaultBehavior { .. } => None,
+        lattice_lsp::lsp_types::PrepareRenameResponse::RangeWithPlaceholder {
+            placeholder, ..
+        } => Some(placeholder.clone()),
+        lattice_lsp::lsp_types::PrepareRenameResponse::Range(_) => None,
+        lattice_lsp::lsp_types::PrepareRenameResponse::DefaultBehavior { .. } => None,
     }
 }
 
@@ -1233,9 +1236,15 @@ pub(crate) fn prepare_rename_placeholder(
 ///
 /// Empty Vec means "nothing to apply" (the App echoes `Empty`).
 pub(crate) fn flatten_workspace_edit(
-    we: lsp_types::WorkspaceEdit,
-) -> Vec<(lsp_types::Uri, Vec<lsp_types::TextEdit>)> {
-    let mut out: Vec<(lsp_types::Uri, Vec<lsp_types::TextEdit>)> = Vec::new();
+    we: lattice_lsp::lsp_types::WorkspaceEdit,
+) -> Vec<(
+    lattice_lsp::lsp_types::Uri,
+    Vec<lattice_lsp::lsp_types::TextEdit>,
+)> {
+    let mut out: Vec<(
+        lattice_lsp::lsp_types::Uri,
+        Vec<lattice_lsp::lsp_types::TextEdit>,
+    )> = Vec::new();
     if let Some(changes) = we.changes {
         for (uri, edits) in changes {
             if !edits.is_empty() {
@@ -1245,18 +1254,18 @@ pub(crate) fn flatten_workspace_edit(
     }
     if let Some(doc_changes) = we.document_changes {
         match doc_changes {
-            lsp_types::DocumentChanges::Edits(edits) => {
+            lattice_lsp::lsp_types::DocumentChanges::Edits(edits) => {
                 for te_doc in edits {
                     let uri = te_doc.text_document.uri.clone();
-                    let raw_edits: Vec<lsp_types::TextEdit> = te_doc
+                    let raw_edits: Vec<lattice_lsp::lsp_types::TextEdit> = te_doc
                         .edits
                         .into_iter()
                         .filter_map(|e| match e {
-                            lsp_types::OneOf::Left(te) => Some(te),
+                            lattice_lsp::lsp_types::OneOf::Left(te) => Some(te),
                             // AnnotatedTextEdit -- strip the
                             // annotation; v1 doesn't surface
                             // change-annotations to the user.
-                            lsp_types::OneOf::Right(ate) => Some(ate.text_edit),
+                            lattice_lsp::lsp_types::OneOf::Right(ate) => Some(ate.text_edit),
                         })
                         .collect();
                     if !raw_edits.is_empty() {
@@ -1267,7 +1276,7 @@ pub(crate) fn flatten_workspace_edit(
             // create-file / rename-file / delete-file ops are
             // skipped in v1 -- the rename use case is identifier
             // rewrites, which servers return as plain text edits.
-            lsp_types::DocumentChanges::Operations(_) => {}
+            lattice_lsp::lsp_types::DocumentChanges::Operations(_) => {}
         }
     }
     out
@@ -1277,8 +1286,10 @@ pub(crate) fn flatten_workspace_edit(
 /// the standard kinds (quickfix, refactor*, source*) to a
 /// short visual marker for the picker margin. Unknown / custom
 /// kinds and bare `Command` payloads land on `?`.
-pub(crate) fn code_action_kind_glyph(kind: Option<&lsp_types::CodeActionKind>) -> &'static str {
-    use lsp_types::CodeActionKind as K;
+pub(crate) fn code_action_kind_glyph(
+    kind: Option<&lattice_lsp::lsp_types::CodeActionKind>,
+) -> &'static str {
+    use lattice_lsp::lsp_types::CodeActionKind as K;
     let Some(kind) = kind else {
         return "?";
     };
@@ -1316,8 +1327,8 @@ pub(crate) use lattice_host::lsp_helpers::completion_kind_glyph;
 /// fit a fixed-width column in picker rows so the marginalia
 /// column stays aligned. Falls back to `?` for kinds we don't
 /// have a specific glyph for.
-pub(crate) fn symbol_kind_glyph(kind: lsp_types::SymbolKind) -> &'static str {
-    use lsp_types::SymbolKind as K;
+pub(crate) fn symbol_kind_glyph(kind: lattice_lsp::lsp_types::SymbolKind) -> &'static str {
+    use lattice_lsp::lsp_types::SymbolKind as K;
     match kind {
         K::FILE => "📄",
         K::MODULE | K::NAMESPACE | K::PACKAGE => "📦",
@@ -2249,12 +2260,12 @@ mod tests {
     /// "click on the rightmost char of a link" UX.
     #[test]
     fn range_covers_inclusive_at_both_ends() {
-        let r = lsp_types::Range {
-            start: lsp_types::Position {
+        let r = lattice_lsp::lsp_types::Range {
+            start: lattice_lsp::lsp_types::Position {
                 line: 2,
                 character: 4,
             },
-            end: lsp_types::Position {
+            end: lattice_lsp::lsp_types::Position {
                 line: 2,
                 character: 10,
             },
@@ -2262,7 +2273,7 @@ mod tests {
         // Inside.
         assert!(super::range_covers(
             r,
-            lsp_types::Position {
+            lattice_lsp::lsp_types::Position {
                 line: 2,
                 character: 6
             }
@@ -2273,7 +2284,7 @@ mod tests {
         // Before start -> miss.
         assert!(!super::range_covers(
             r,
-            lsp_types::Position {
+            lattice_lsp::lsp_types::Position {
                 line: 2,
                 character: 3
             }
@@ -2281,7 +2292,7 @@ mod tests {
         // After end -> miss.
         assert!(!super::range_covers(
             r,
-            lsp_types::Position {
+            lattice_lsp::lsp_types::Position {
                 line: 2,
                 character: 11
             }
@@ -2289,14 +2300,14 @@ mod tests {
         // Different line outside the range.
         assert!(!super::range_covers(
             r,
-            lsp_types::Position {
+            lattice_lsp::lsp_types::Position {
                 line: 1,
                 character: 7
             }
         ));
         assert!(!super::range_covers(
             r,
-            lsp_types::Position {
+            lattice_lsp::lsp_types::Position {
                 line: 3,
                 character: 0
             }
@@ -2307,12 +2318,12 @@ mod tests {
     /// the range spans multiple lines.
     #[test]
     fn range_covers_multi_line_range() {
-        let r = lsp_types::Range {
-            start: lsp_types::Position {
+        let r = lattice_lsp::lsp_types::Range {
+            start: lattice_lsp::lsp_types::Position {
                 line: 2,
                 character: 4,
             },
-            end: lsp_types::Position {
+            end: lattice_lsp::lsp_types::Position {
                 line: 4,
                 character: 8,
             },
@@ -2320,7 +2331,7 @@ mod tests {
         // Mid-range second line: covered regardless of column.
         assert!(super::range_covers(
             r,
-            lsp_types::Position {
+            lattice_lsp::lsp_types::Position {
                 line: 3,
                 character: 0
             }
@@ -2328,7 +2339,7 @@ mod tests {
         // First line before start column -> miss.
         assert!(!super::range_covers(
             r,
-            lsp_types::Position {
+            lattice_lsp::lsp_types::Position {
                 line: 2,
                 character: 3
             }
@@ -2336,7 +2347,7 @@ mod tests {
         // Last line after end column -> miss.
         assert!(!super::range_covers(
             r,
-            lsp_types::Position {
+            lattice_lsp::lsp_types::Position {
                 line: 4,
                 character: 9
             }
@@ -2348,7 +2359,7 @@ mod tests {
         // We don't assert the *exact* glyph (those may evolve);
         // we just want the common kinds to map to *distinct*
         // glyphs so a glance distinguishes a fn from a struct.
-        use lsp_types::SymbolKind as K;
+        use lattice_lsp::lsp_types::SymbolKind as K;
         let f = super::symbol_kind_glyph(K::FUNCTION);
         let s = super::symbol_kind_glyph(K::STRUCT);
         let m = super::symbol_kind_glyph(K::MODULE);
@@ -2360,17 +2371,17 @@ mod tests {
 
     #[test]
     fn prepare_rename_placeholder_extracted_from_range_with_placeholder() {
-        let r = lsp_types::Range {
-            start: lsp_types::Position {
+        let r = lattice_lsp::lsp_types::Range {
+            start: lattice_lsp::lsp_types::Position {
                 line: 0,
                 character: 0,
             },
-            end: lsp_types::Position {
+            end: lattice_lsp::lsp_types::Position {
                 line: 0,
                 character: 3,
             },
         };
-        let resp = lsp_types::PrepareRenameResponse::RangeWithPlaceholder {
+        let resp = lattice_lsp::lsp_types::PrepareRenameResponse::RangeWithPlaceholder {
             range: r,
             placeholder: "foo".into(),
         };
@@ -2378,7 +2389,7 @@ mod tests {
             super::prepare_rename_placeholder(&resp),
             Some("foo".to_string())
         );
-        let resp = lsp_types::PrepareRenameResponse::Range(r);
+        let resp = lattice_lsp::lsp_types::PrepareRenameResponse::Range(r);
         assert_eq!(super::prepare_rename_placeholder(&resp), None);
     }
 
@@ -2608,16 +2619,19 @@ mod tests {
             sort_text: None,
             detail: None,
             documentation: None,
-            kind: Some(lsp_types::CompletionItemKind::FUNCTION),
+            kind: Some(lattice_lsp::lsp_types::CompletionItemKind::FUNCTION),
             deprecated: false,
             preselect: false,
             commit_characters: commit_chars,
             additional_text_edits: Vec::new(),
             command: None,
-            insert_text_format: lsp_types::InsertTextFormat::PLAIN_TEXT,
+            insert_text_format: lattice_lsp::lsp_types::InsertTextFormat::PLAIN_TEXT,
             replace_range: None,
             server_id: "test-server".to_string(),
-            original_item: lsp_types::CompletionItem::new_simple(text.to_string(), String::new()),
+            original_item: lattice_lsp::lsp_types::CompletionItem::new_simple(
+                text.to_string(),
+                String::new(),
+            ),
             resolved: false,
         };
         let payload = lattice_lsp::completion::encode_meta(&meta);
@@ -3237,16 +3251,16 @@ mod tests {
             sort_text: None,
             detail: Some("fn foo() -> i32".into()),
             documentation: Some("Returns 42.".into()),
-            kind: Some(lsp_types::CompletionItemKind::FUNCTION),
+            kind: Some(lattice_lsp::lsp_types::CompletionItemKind::FUNCTION),
             deprecated: false,
             preselect: false,
             commit_characters: Vec::new(),
             additional_text_edits: Vec::new(),
             command: None,
-            insert_text_format: lsp_types::InsertTextFormat::PLAIN_TEXT,
+            insert_text_format: lattice_lsp::lsp_types::InsertTextFormat::PLAIN_TEXT,
             replace_range: None,
             server_id: "test-server".to_string(),
-            original_item: lsp_types::CompletionItem::default(),
+            original_item: lattice_lsp::lsp_types::CompletionItem::default(),
             resolved: true,
         };
         let mut raw = lattice_completion::RawCandidate::plain(

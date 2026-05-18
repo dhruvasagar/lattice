@@ -399,7 +399,7 @@ impl App {
         let main_range = match meta.replace_range {
             Some(r) => r,
             None => {
-                let start = lsp_types::Position {
+                let start = lattice_lsp::lsp_types::Position {
                     line: anchor.line,
                     character: lattice_lsp::position::utf8_byte_to_utf16_column(
                         &self
@@ -412,7 +412,7 @@ impl App {
                         anchor.byte,
                     ),
                 };
-                let end = lsp_types::Position {
+                let end = lattice_lsp::lsp_types::Position {
                     line: self.editor.cursor.line,
                     character: lattice_lsp::position::utf8_byte_to_utf16_column(
                         &self
@@ -425,14 +425,14 @@ impl App {
                         self.editor.cursor.byte,
                     ),
                 };
-                lsp_types::Range { start, end }
+                lattice_lsp::lsp_types::Range { start, end }
             }
         };
         // Apply additionalTextEdits + main as one batch via the
         // existing path. Sort + reverse-apply is handled there;
         // pass everything together so undo is atomic.
-        let mut edits: Vec<lsp_types::TextEdit> = meta.additional_text_edits.clone();
-        edits.push(lsp_types::TextEdit {
+        let mut edits: Vec<lattice_lsp::lsp_types::TextEdit> = meta.additional_text_edits.clone();
+        edits.push(lattice_lsp::lsp_types::TextEdit {
             range: main_range,
             new_text: meta.insert_text.clone(),
         });
@@ -579,7 +579,7 @@ impl App {
             // a serializable param; the resolved item comes back
             // as `CompletionItem`.
             let pending = handle
-                .request_with_cancel::<lsp_types::CompletionItem, lsp_types::CompletionItem>(
+                .request_with_cancel::<lattice_lsp::lsp_types::CompletionItem, lattice_lsp::lsp_types::CompletionItem>(
                     "completionItem/resolve",
                     original,
                     token.clone(),
@@ -771,8 +771,8 @@ impl App {
         };
         if let Some(d) = resolved.documentation.as_ref() {
             let body = match d {
-                lsp_types::Documentation::String(s) => s.clone(),
-                lsp_types::Documentation::MarkupContent(mc) => mc.value.clone(),
+                lattice_lsp::lsp_types::Documentation::String(s) => s.clone(),
+                lattice_lsp::lsp_types::Documentation::MarkupContent(mc) => mc.value.clone(),
             };
             meta.documentation = Some(body);
         }
@@ -1183,7 +1183,7 @@ impl App {
         uri: &lattice_lsp::Uri,
         external: bool,
         take_focus: bool,
-        selection: Option<lsp_types::Range>,
+        selection: Option<lattice_lsp::lsp_types::Range>,
     ) -> bool {
         let uri_str = uri.as_str().to_string();
         if external {
@@ -1255,7 +1255,7 @@ impl App {
         }
     }
 
-    fn move_cursor_to_lsp_position(&mut self, position: lsp_types::Position) {
+    fn move_cursor_to_lsp_position(&mut self, position: lattice_lsp::lsp_types::Position) {
         // Position arrives in LSP utf-16; convert via the
         // active document's encoding before moving. Best-
         // effort: if the line is out of buffer, leave the
@@ -1304,13 +1304,13 @@ impl App {
             let labels: Vec<&str> = req.actions.iter().map(|a| a.title.as_str()).collect();
             let labels_joined = labels.join(" / ");
             let echo_level = match req.level {
-                lsp_types::MessageType::ERROR => EchoLevel::Error,
-                lsp_types::MessageType::WARNING => EchoLevel::Warn,
+                lattice_lsp::lsp_types::MessageType::ERROR => EchoLevel::Error,
+                lattice_lsp::lsp_types::MessageType::WARNING => EchoLevel::Warn,
                 _ => EchoLevel::Info,
             };
             let log_level = match req.level {
-                lsp_types::MessageType::ERROR => lattice_lsp::LogLevel::Error,
-                lsp_types::MessageType::WARNING => lattice_lsp::LogLevel::Warn,
+                lattice_lsp::lsp_types::MessageType::ERROR => lattice_lsp::LogLevel::Error,
+                lattice_lsp::lsp_types::MessageType::WARNING => lattice_lsp::LogLevel::Warn,
                 _ => lattice_lsp::LogLevel::Info,
             };
             let instance = lattice_lsp::InstanceKey::new(
@@ -1518,7 +1518,7 @@ impl App {
         &mut self,
         server_id: &std::sync::Arc<str>,
         label: Option<&str>,
-        edit: lsp_types::WorkspaceEdit,
+        edit: lattice_lsp::lsp_types::WorkspaceEdit,
     ) -> lattice_lsp::ApplyEditOutcome {
         let per_file = flatten_workspace_edit(edit);
         if per_file.is_empty() {
@@ -1748,7 +1748,7 @@ impl App {
     /// non-overlapping and reference the original document).
     pub(super) fn apply_lsp_text_edits(
         &mut self,
-        mut edits: Vec<lsp_types::TextEdit>,
+        mut edits: Vec<lattice_lsp::lsp_types::TextEdit>,
     ) -> Result<(), String> {
         edits.sort_by(|a, b| {
             b.range
@@ -1817,7 +1817,7 @@ impl App {
         };
         let lsp = self.editor.lsp.clone();
         let trigger_str = trigger.to_string();
-        let options = lsp_types::FormattingOptions {
+        let options = lattice_lsp::lsp_types::FormattingOptions {
             tab_size: 4,
             insert_spaces: true,
             properties: Default::default(),
@@ -1845,9 +1845,9 @@ impl App {
                 let _ = tx.send(FormatOutcome::NoProvider { is_range: false });
                 return;
             };
-            let params = lsp_types::DocumentOnTypeFormattingParams {
-                text_document_position: lsp_types::TextDocumentPositionParams {
-                    text_document: lsp_types::TextDocumentIdentifier { uri },
+            let params = lattice_lsp::lsp_types::DocumentOnTypeFormattingParams {
+                text_document_position: lattice_lsp::lsp_types::TextDocumentPositionParams {
+                    text_document: lattice_lsp::lsp_types::TextDocumentIdentifier { uri },
                     position: pos,
                 },
                 ch: trigger_str,
@@ -1929,8 +1929,10 @@ impl App {
                 if token.is_cancelled() {
                     return;
                 }
-                let pos = lsp_types::TextDocumentPositionParams {
-                    text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                let pos = lattice_lsp::lsp_types::TextDocumentPositionParams {
+                    text_document: lattice_lsp::lsp_types::TextDocumentIdentifier {
+                        uri: uri.clone(),
+                    },
                     position: lsp_position,
                 };
                 match handle.prepare_rename(pos, token.clone()).await {
@@ -1956,9 +1958,11 @@ impl App {
                 });
                 return;
             }
-            let params = lsp_types::RenameParams {
-                text_document_position: lsp_types::TextDocumentPositionParams {
-                    text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+            let params = lattice_lsp::lsp_types::RenameParams {
+                text_document_position: lattice_lsp::lsp_types::TextDocumentPositionParams {
+                    text_document: lattice_lsp::lsp_types::TextDocumentIdentifier {
+                        uri: uri.clone(),
+                    },
                     position: lsp_position,
                 },
                 new_name: effective_name.clone(),
@@ -2019,7 +2023,10 @@ impl App {
     /// cross-file edits open the file via `:e` and apply.
     pub(super) fn apply_rename_workspace_edit(
         &mut self,
-        per_file: Vec<(lsp_types::Uri, Vec<lsp_types::TextEdit>)>,
+        per_file: Vec<(
+            lattice_lsp::lsp_types::Uri,
+            Vec<lattice_lsp::lsp_types::TextEdit>,
+        )>,
         new_name: String,
     ) {
         let mut applied_files = 0usize;
@@ -2094,11 +2101,11 @@ impl App {
     ) {
         let action = match row.action {
             // Bare command -- skip resolve, route through executeCommand.
-            lsp_types::CodeActionOrCommand::Command(cmd) => {
+            lattice_lsp::lsp_types::CodeActionOrCommand::Command(cmd) => {
                 self.execute_lsp_command(handle, cmd);
                 return;
             }
-            lsp_types::CodeActionOrCommand::CodeAction(ca) => ca,
+            lattice_lsp::lsp_types::CodeActionOrCommand::CodeAction(ca) => ca,
         };
         // Resolve when the action arrived without `edit` AND a
         // handle is available.
@@ -2124,7 +2131,7 @@ impl App {
     fn spawn_code_action_resolve_apply(
         &mut self,
         handle: lattice_lsp::ServerHandle,
-        action: lsp_types::CodeAction,
+        action: lattice_lsp::lsp_types::CodeAction,
     ) {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<CodeActionOutcome>();
         let token = lattice_protocol::CancellationToken::new();
@@ -2153,7 +2160,7 @@ impl App {
     fn apply_resolved_code_action(
         &mut self,
         handle: Option<lattice_lsp::ServerHandle>,
-        action: lsp_types::CodeAction,
+        action: lattice_lsp::lsp_types::CodeAction,
     ) {
         if let Some(edit) = action.edit {
             let per_file = flatten_workspace_edit(edit);
@@ -2171,7 +2178,7 @@ impl App {
     pub(super) fn execute_lsp_command(
         &mut self,
         handle: Option<lattice_lsp::ServerHandle>,
-        cmd: lsp_types::Command,
+        cmd: lattice_lsp::lsp_types::Command,
     ) {
         let Some(handle) = handle else {
             self.set_message(
@@ -2190,7 +2197,7 @@ impl App {
             );
             return;
         }
-        let params = lsp_types::ExecuteCommandParams {
+        let params = lattice_lsp::lsp_types::ExecuteCommandParams {
             command: cmd.command.clone(),
             arguments: cmd.arguments.unwrap_or_default(),
             work_done_progress_params: Default::default(),
@@ -2257,10 +2264,10 @@ impl App {
         };
         let snapshot = self.editor.document.snapshot();
         let range = self.code_action_range(&snapshot.buffer);
-        let context = lsp_types::CodeActionContext {
+        let context = lattice_lsp::lsp_types::CodeActionContext {
             diagnostics: self.diagnostics_for_range(&uri, &range),
             only: None,
-            trigger_kind: Some(lsp_types::CodeActionTriggerKind::INVOKED),
+            trigger_kind: Some(lattice_lsp::lsp_types::CodeActionTriggerKind::INVOKED),
         };
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<CodeActionOutcome>();
         let token = lattice_protocol::CancellationToken::new();
@@ -2279,8 +2286,8 @@ impl App {
                 return;
             };
             *stash_for_task.lock().unwrap() = Some(handle.clone());
-            let params = lsp_types::CodeActionParams {
-                text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+            let params = lattice_lsp::lsp_types::CodeActionParams {
+                text_document: lattice_lsp::lsp_types::TextDocumentIdentifier { uri: uri.clone() },
                 range,
                 context,
                 work_done_progress_params: Default::default(),
@@ -2291,10 +2298,10 @@ impl App {
                     .into_iter()
                     .map(|act| {
                         let (title, kind_glyph) = match &act {
-                            lsp_types::CodeActionOrCommand::Command(c) => {
+                            lattice_lsp::lsp_types::CodeActionOrCommand::Command(c) => {
                                 (c.title.clone(), code_action_kind_glyph(None))
                             }
-                            lsp_types::CodeActionOrCommand::CodeAction(ca) => {
+                            lattice_lsp::lsp_types::CodeActionOrCommand::CodeAction(ca) => {
                                 (ca.title.clone(), code_action_kind_glyph(ca.kind.as_ref()))
                             }
                         };
@@ -2315,7 +2322,7 @@ impl App {
 
     /// LSP-shape range for the current code-action request.
     /// Visual selection when active; point range at cursor otherwise.
-    fn code_action_range(&self, buffer: &lattice_core::Buffer) -> lsp_types::Range {
+    fn code_action_range(&self, buffer: &lattice_core::Buffer) -> lattice_lsp::lsp_types::Range {
         if let lattice_grammar::ModalState::Visual(_) = self.editor.modal {
             let anchor = self.editor.visual_anchor.unwrap_or(self.editor.cursor);
             let head = self.editor.cursor;
@@ -2324,19 +2331,22 @@ impl App {
             } else {
                 (head, anchor)
             };
-            let start = app_to_lsp_position(buffer, start_pos).unwrap_or(lsp_types::Position {
-                line: 0,
-                character: 0,
-            });
-            let end = app_to_lsp_position(buffer, end_pos).unwrap_or(start);
-            lsp_types::Range { start, end }
-        } else {
-            let p =
-                app_to_lsp_position(buffer, self.editor.cursor).unwrap_or(lsp_types::Position {
+            let start = app_to_lsp_position(buffer, start_pos).unwrap_or(
+                lattice_lsp::lsp_types::Position {
                     line: 0,
                     character: 0,
-                });
-            lsp_types::Range { start: p, end: p }
+                },
+            );
+            let end = app_to_lsp_position(buffer, end_pos).unwrap_or(start);
+            lattice_lsp::lsp_types::Range { start, end }
+        } else {
+            let p = app_to_lsp_position(buffer, self.editor.cursor).unwrap_or(
+                lattice_lsp::lsp_types::Position {
+                    line: 0,
+                    character: 0,
+                },
+            );
+            lattice_lsp::lsp_types::Range { start: p, end: p }
         }
     }
 
@@ -2347,7 +2357,7 @@ impl App {
     fn diagnostics_for_range(
         &self,
         uri: &lattice_lsp::Uri,
-        range: &lsp_types::Range,
+        range: &lattice_lsp::lsp_types::Range,
     ) -> Vec<lattice_lsp::Diagnostic> {
         self.editor
             .lsp_diagnostics
@@ -2584,19 +2594,19 @@ impl App {
             let line_text = snapshot.buffer.line(e).unwrap_or_default();
             let end_char =
                 lattice_lsp::position::utf8_byte_to_utf16_column(&line_text, end_line_text_len);
-            lsp_types::Range {
-                start: lsp_types::Position {
+            lattice_lsp::lsp_types::Range {
+                start: lattice_lsp::lsp_types::Position {
                     line: s,
                     character: 0,
                 },
-                end: lsp_types::Position {
+                end: lattice_lsp::lsp_types::Position {
                     line: e,
                     character: end_char,
                 },
             }
         });
         // Conservative formatting options.
-        let options = lsp_types::FormattingOptions {
+        let options = lattice_lsp::lsp_types::FormattingOptions {
             tab_size: 4,
             insert_spaces: true,
             properties: Default::default(),
@@ -2621,30 +2631,35 @@ impl App {
                 });
                 return;
             };
-            let edits: Option<Vec<lsp_types::TextEdit>> = if let Some(range) = lsp_range {
-                let params = lsp_types::DocumentRangeFormattingParams {
-                    text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
-                    range,
-                    options: options.clone(),
-                    work_done_progress_params: Default::default(),
+            let edits: Option<Vec<lattice_lsp::lsp_types::TextEdit>> =
+                if let Some(range) = lsp_range {
+                    let params = lattice_lsp::lsp_types::DocumentRangeFormattingParams {
+                        text_document: lattice_lsp::lsp_types::TextDocumentIdentifier {
+                            uri: uri.clone(),
+                        },
+                        range,
+                        options: options.clone(),
+                        work_done_progress_params: Default::default(),
+                    };
+                    handle
+                        .range_formatting(params, token.clone())
+                        .await
+                        .ok()
+                        .flatten()
+                } else {
+                    let params = lattice_lsp::lsp_types::DocumentFormattingParams {
+                        text_document: lattice_lsp::lsp_types::TextDocumentIdentifier {
+                            uri: uri.clone(),
+                        },
+                        options,
+                        work_done_progress_params: Default::default(),
+                    };
+                    handle
+                        .formatting(params, token.clone())
+                        .await
+                        .ok()
+                        .flatten()
                 };
-                handle
-                    .range_formatting(params, token.clone())
-                    .await
-                    .ok()
-                    .flatten()
-            } else {
-                let params = lsp_types::DocumentFormattingParams {
-                    text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
-                    options,
-                    work_done_progress_params: Default::default(),
-                };
-                handle
-                    .formatting(params, token.clone())
-                    .await
-                    .ok()
-                    .flatten()
-            };
             let edits = edits.unwrap_or_default();
             let _ = tx.send(FormatOutcome::Edits(edits));
         });
@@ -2832,9 +2847,9 @@ impl App {
         let direction_label = if outgoing { "outgoing" } else { "incoming" };
         crate::runtime::spawn_on_lsp_runtime(async move {
             // 1. Prepare at cursor.
-            let prepare_params = lsp_types::CallHierarchyPrepareParams {
-                text_document_position_params: lsp_types::TextDocumentPositionParams {
-                    text_document: lsp_types::TextDocumentIdentifier { uri },
+            let prepare_params = lattice_lsp::lsp_types::CallHierarchyPrepareParams {
+                text_document_position_params: lattice_lsp::lsp_types::TextDocumentPositionParams {
+                    text_document: lattice_lsp::lsp_types::TextDocumentIdentifier { uri },
                     position: lsp_position,
                 },
                 work_done_progress_params: Default::default(),
@@ -2862,7 +2877,7 @@ impl App {
             // 2. Call the chosen direction.
             let mut rows: Vec<SymbolRow> = Vec::new();
             if outgoing {
-                let p = lsp_types::CallHierarchyOutgoingCallsParams {
+                let p = lattice_lsp::lsp_types::CallHierarchyOutgoingCallsParams {
                     item: item.clone(),
                     work_done_progress_params: Default::default(),
                     partial_result_params: Default::default(),
@@ -2878,7 +2893,7 @@ impl App {
                     }
                 }
             } else {
-                let p = lsp_types::CallHierarchyIncomingCallsParams {
+                let p = lattice_lsp::lsp_types::CallHierarchyIncomingCallsParams {
                     item: item.clone(),
                     work_done_progress_params: Default::default(),
                     partial_result_params: Default::default(),
@@ -2971,9 +2986,9 @@ impl App {
         self.editor.pending_symbols_token = Some(token.clone());
         let direction_label = if subtypes { "subtypes" } else { "supertypes" };
         crate::runtime::spawn_on_lsp_runtime(async move {
-            let prepare_params = lsp_types::TypeHierarchyPrepareParams {
-                text_document_position_params: lsp_types::TextDocumentPositionParams {
-                    text_document: lsp_types::TextDocumentIdentifier { uri },
+            let prepare_params = lattice_lsp::lsp_types::TypeHierarchyPrepareParams {
+                text_document_position_params: lattice_lsp::lsp_types::TextDocumentPositionParams {
+                    text_document: lattice_lsp::lsp_types::TextDocumentIdentifier { uri },
                     position: lsp_position,
                 },
                 work_done_progress_params: Default::default(),
@@ -2995,7 +3010,7 @@ impl App {
             let item_name = item.name.clone();
             let mut rows: Vec<SymbolRow> = Vec::new();
             if subtypes {
-                let p = lsp_types::TypeHierarchySubtypesParams {
+                let p = lattice_lsp::lsp_types::TypeHierarchySubtypesParams {
                     item: item.clone(),
                     work_done_progress_params: Default::default(),
                     partial_result_params: Default::default(),
@@ -3009,7 +3024,7 @@ impl App {
                     }
                 }
             } else {
-                let p = lsp_types::TypeHierarchySupertypesParams {
+                let p = lattice_lsp::lsp_types::TypeHierarchySupertypesParams {
                     item: item.clone(),
                     work_done_progress_params: Default::default(),
                     partial_result_params: Default::default(),
@@ -3081,9 +3096,9 @@ impl App {
         self.editor.pending_moniker_rx = Some(rx);
         let token = lattice_protocol::CancellationToken::new();
         crate::runtime::spawn_on_lsp_runtime(async move {
-            let params = lsp_types::MonikerParams {
-                text_document_position_params: lsp_types::TextDocumentPositionParams {
-                    text_document: lsp_types::TextDocumentIdentifier { uri },
+            let params = lattice_lsp::lsp_types::MonikerParams {
+                text_document_position_params: lattice_lsp::lsp_types::TextDocumentPositionParams {
+                    text_document: lattice_lsp::lsp_types::TextDocumentIdentifier { uri },
                     position: lsp_position,
                 },
                 work_done_progress_params: Default::default(),
@@ -3195,7 +3210,7 @@ impl App {
         let Some(mut rx) = self.editor.pending_definition_rx.take() else {
             return;
         };
-        let mut latest: Option<Vec<lsp_types::Location>> = None;
+        let mut latest: Option<Vec<lattice_lsp::lsp_types::Location>> = None;
         while let Ok(locs) = rx.try_recv() {
             latest = Some(locs);
         }
@@ -3311,7 +3326,7 @@ impl App {
     /// Tagging it as PluginPush (not AutoJump) reflects that the
     /// jump came from an external dispatch (LSP) rather than a
     /// vim-style motion.
-    pub(super) fn jump_to_lsp_location(&mut self, loc: &lsp_types::Location) {
+    pub(super) fn jump_to_lsp_location(&mut self, loc: &lattice_lsp::lsp_types::Location) {
         let target_path = match lattice_lsp::actor::uri_to_path(&loc.uri) {
             Some(p) => p,
             None => {
@@ -3566,9 +3581,9 @@ impl App {
         // already flipped, and a server that ignores setTrace
         // still feeds the trace ring from wire-frame records.
         let trace_value = if now_on_any {
-            lsp_types::TraceValue::Verbose
+            lattice_lsp::lsp_types::TraceValue::Verbose
         } else {
-            lsp_types::TraceValue::Off
+            lattice_lsp::lsp_types::TraceValue::Off
         };
         for (_key, handle) in self.editor.lsp.running_actors() {
             if handle.server_id() != server_id {
@@ -3716,8 +3731,8 @@ impl App {
                 });
                 return;
             };
-            let params = lsp_types::FoldingRangeParams {
-                text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+            let params = lattice_lsp::lsp_types::FoldingRangeParams {
+                text_document: lattice_lsp::lsp_types::TextDocumentIdentifier { uri: uri.clone() },
                 work_done_progress_params: Default::default(),
                 partial_result_params: Default::default(),
             };
@@ -3869,8 +3884,10 @@ impl App {
             // side hasn't supplied the prerequisites.
             if let (Some(prev_id), true) = (prior_result_id, caps.supports_semantic_tokens_delta())
             {
-                let params = lsp_types::SemanticTokensDeltaParams {
-                    text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                let params = lattice_lsp::lsp_types::SemanticTokensDeltaParams {
+                    text_document: lattice_lsp::lsp_types::TextDocumentIdentifier {
+                        uri: uri.clone(),
+                    },
                     previous_result_id: prev_id.clone(),
                     work_done_progress_params: Default::default(),
                     partial_result_params: Default::default(),
@@ -3879,7 +3896,7 @@ impl App {
                     .semantic_tokens_full_delta(params, token.clone())
                     .await
                 {
-                    Ok(Some(lsp_types::SemanticTokensFullDeltaResult::Tokens(t))) => {
+                    Ok(Some(lattice_lsp::lsp_types::SemanticTokensFullDeltaResult::Tokens(t))) => {
                         let decoded = crate::app::decode_semantic_tokens(
                             &t.data,
                             &token_types,
@@ -3893,7 +3910,9 @@ impl App {
                             tokens: decoded,
                         });
                     }
-                    Ok(Some(lsp_types::SemanticTokensFullDeltaResult::TokensDelta(d))) => {
+                    Ok(Some(
+                        lattice_lsp::lsp_types::SemanticTokensFullDeltaResult::TokensDelta(d),
+                    )) => {
                         let _ = tx.send(super::SemanticTokensOutcome::Delta {
                             buffer_id,
                             document_version: version,
@@ -3913,13 +3932,13 @@ impl App {
                 }
                 return;
             }
-            let params = lsp_types::SemanticTokensParams {
-                text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+            let params = lattice_lsp::lsp_types::SemanticTokensParams {
+                text_document: lattice_lsp::lsp_types::TextDocumentIdentifier { uri: uri.clone() },
                 work_done_progress_params: Default::default(),
                 partial_result_params: Default::default(),
             };
             match handle.semantic_tokens_full(params, token.clone()).await {
-                Ok(Some(lsp_types::SemanticTokensResult::Tokens(t))) => {
+                Ok(Some(lattice_lsp::lsp_types::SemanticTokensResult::Tokens(t))) => {
                     let decoded =
                         crate::app::decode_semantic_tokens(&t.data, &token_types, &token_modifiers);
                     let _ = tx.send(super::SemanticTokensOutcome::Items {
@@ -3930,7 +3949,7 @@ impl App {
                         tokens: decoded,
                     });
                 }
-                Ok(Some(lsp_types::SemanticTokensResult::Partial(_))) => {
+                Ok(Some(lattice_lsp::lsp_types::SemanticTokensResult::Partial(_))) => {
                     // Partial-result streaming is a 4.4.i / future
                     // optimization; treat the partial response as
                     // "nothing for now" and wait for the next
@@ -4114,34 +4133,36 @@ impl App {
             };
             let identifier = handle.capabilities().diagnostic_identifier();
             let server_id_arc: std::sync::Arc<str> = std::sync::Arc::from(handle.server_id());
-            let params = lsp_types::DocumentDiagnosticParams {
-                text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+            let params = lattice_lsp::lsp_types::DocumentDiagnosticParams {
+                text_document: lattice_lsp::lsp_types::TextDocumentIdentifier { uri: uri.clone() },
                 identifier,
                 previous_result_id: prior_result_id,
                 work_done_progress_params: Default::default(),
                 partial_result_params: Default::default(),
             };
             match handle.document_diagnostic(params, token.clone()).await {
-                Ok(lsp_types::DocumentDiagnosticReportResult::Report(report)) => match report {
-                    lsp_types::DocumentDiagnosticReport::Full(full) => {
-                        let inner = full.full_document_diagnostic_report;
-                        let _ = tx.send(super::PullDiagnosticsOutcome::Full {
-                            buffer_id,
-                            server_id: server_id_arc,
-                            uri,
-                            document_version: version,
-                            result_id: inner.result_id,
-                            diagnostics: inner.items,
-                        });
+                Ok(lattice_lsp::lsp_types::DocumentDiagnosticReportResult::Report(report)) => {
+                    match report {
+                        lattice_lsp::lsp_types::DocumentDiagnosticReport::Full(full) => {
+                            let inner = full.full_document_diagnostic_report;
+                            let _ = tx.send(super::PullDiagnosticsOutcome::Full {
+                                buffer_id,
+                                server_id: server_id_arc,
+                                uri,
+                                document_version: version,
+                                result_id: inner.result_id,
+                                diagnostics: inner.items,
+                            });
+                        }
+                        lattice_lsp::lsp_types::DocumentDiagnosticReport::Unchanged(unchanged) => {
+                            let _ = tx.send(super::PullDiagnosticsOutcome::Unchanged {
+                                buffer_id,
+                                document_version: version,
+                                result_id: unchanged.unchanged_document_diagnostic_report.result_id,
+                            });
+                        }
                     }
-                    lsp_types::DocumentDiagnosticReport::Unchanged(unchanged) => {
-                        let _ = tx.send(super::PullDiagnosticsOutcome::Unchanged {
-                            buffer_id,
-                            document_version: version,
-                            result_id: unchanged.unchanged_document_diagnostic_report.result_id,
-                        });
-                    }
-                },
+                }
                 // Partial streaming: treat as Empty for v1 (a
                 // follow-up could splice partial-result chunks
                 // the same way semantic-tokens partials would).
@@ -4333,12 +4354,12 @@ impl App {
         // so we set end.line = requested_last + 1 with
         // character = 0 to cover the entire last line without
         // utf-16 column conversion.
-        let range = lsp_types::Range {
-            start: lsp_types::Position {
+        let range = lattice_lsp::lsp_types::Range {
+            start: lattice_lsp::lsp_types::Position {
                 line: requested_first,
                 character: 0,
             },
-            end: lsp_types::Position {
+            end: lattice_lsp::lsp_types::Position {
                 line: requested_last.saturating_add(1),
                 character: 0,
             },
@@ -4362,8 +4383,8 @@ impl App {
                 });
                 return;
             };
-            let params = lsp_types::InlayHintParams {
-                text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+            let params = lattice_lsp::lsp_types::InlayHintParams {
+                text_document: lattice_lsp::lsp_types::TextDocumentIdentifier { uri: uri.clone() },
                 range,
                 work_done_progress_params: Default::default(),
             };
@@ -4574,8 +4595,8 @@ impl App {
                 });
                 return;
             };
-            let params = lsp_types::DocumentLinkParams {
-                text_document: lsp_types::TextDocumentIdentifier { uri },
+            let params = lattice_lsp::lsp_types::DocumentLinkParams {
+                text_document: lattice_lsp::lsp_types::TextDocumentIdentifier { uri },
                 work_done_progress_params: Default::default(),
                 partial_result_params: Default::default(),
             };
@@ -4733,7 +4754,7 @@ impl App {
     /// else (`http(s)://`, etc.) delegates to the OS handler.
     /// Non-`file://` URIs use the same dispatch as
     /// `window/showDocument`'s `external` path.
-    fn follow_document_link_target(&mut self, target: &lsp_types::Uri) {
+    fn follow_document_link_target(&mut self, target: &lattice_lsp::lsp_types::Uri) {
         let target_str = target.as_str();
         if target_str.starts_with("file://") {
             if let Some(path) = lattice_lsp::actor::uri_to_path(target) {
@@ -4811,8 +4832,8 @@ impl App {
                 return;
             };
             let server_id_arc: std::sync::Arc<str> = std::sync::Arc::from(handle.server_id());
-            let params = lsp_types::CodeLensParams {
-                text_document: lsp_types::TextDocumentIdentifier { uri },
+            let params = lattice_lsp::lsp_types::CodeLensParams {
+                text_document: lattice_lsp::lsp_types::TextDocumentIdentifier { uri },
                 work_done_progress_params: Default::default(),
                 partial_result_params: Default::default(),
             };
@@ -5071,8 +5092,8 @@ impl App {
                 return;
             };
             let server_id_arc: std::sync::Arc<str> = std::sync::Arc::from(handle.server_id());
-            let params = lsp_types::DocumentColorParams {
-                text_document: lsp_types::TextDocumentIdentifier { uri },
+            let params = lattice_lsp::lsp_types::DocumentColorParams {
+                text_document: lattice_lsp::lsp_types::TextDocumentIdentifier { uri },
                 work_done_progress_params: Default::default(),
                 partial_result_params: Default::default(),
             };
@@ -5202,8 +5223,8 @@ impl App {
             );
             return;
         };
-        let params = lsp_types::ColorPresentationParams {
-            text_document: lsp_types::TextDocumentIdentifier { uri },
+        let params = lattice_lsp::lsp_types::ColorPresentationParams {
+            text_document: lattice_lsp::lsp_types::TextDocumentIdentifier { uri },
             color: entry.color,
             range: entry.range,
             work_done_progress_params: Default::default(),
@@ -5276,7 +5297,7 @@ impl App {
         if let Some(edit) = item.text_edit {
             let _ = self.apply_lsp_text_edits(vec![edit]);
         } else {
-            let edit = lsp_types::TextEdit {
+            let edit = lattice_lsp::lsp_types::TextEdit {
                 range,
                 new_text: item.label,
             };
@@ -5376,9 +5397,11 @@ impl App {
                 let _ = tx.send(super::DocumentHighlightOutcome::Empty { buffer_id });
                 return;
             };
-            let params = lsp_types::DocumentHighlightParams {
-                text_document_position_params: lsp_types::TextDocumentPositionParams {
-                    text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+            let params = lattice_lsp::lsp_types::DocumentHighlightParams {
+                text_document_position_params: lattice_lsp::lsp_types::TextDocumentPositionParams {
+                    text_document: lattice_lsp::lsp_types::TextDocumentIdentifier {
+                        uri: uri.clone(),
+                    },
                     position,
                 },
                 work_done_progress_params: Default::default(),
@@ -5618,8 +5641,8 @@ impl App {
                 let _ = tx.send(super::SelectionRangeOutcome::NoProvider);
                 return;
             };
-            let params = lsp_types::SelectionRangeParams {
-                text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+            let params = lattice_lsp::lsp_types::SelectionRangeParams {
+                text_document: lattice_lsp::lsp_types::TextDocumentIdentifier { uri: uri.clone() },
                 positions: vec![position],
                 work_done_progress_params: Default::default(),
                 partial_result_params: Default::default(),
@@ -6377,20 +6400,22 @@ mod tests {
 
     #[test]
     fn hover_contents_scalar_string_renders_verbatim() {
-        let m = lsp_types::HoverContents::Scalar(lsp_types::MarkedString::String(
-            "fn foo() -> u32".into(),
-        ));
+        let m = lattice_lsp::lsp_types::HoverContents::Scalar(
+            lattice_lsp::lsp_types::MarkedString::String("fn foo() -> u32".into()),
+        );
         assert_eq!(super::hover_contents_to_markdown(&m), "fn foo() -> u32");
     }
 
     #[test]
     fn hover_contents_language_string_renders_as_fenced_block() {
-        let m = lsp_types::HoverContents::Scalar(lsp_types::MarkedString::LanguageString(
-            lsp_types::LanguageString {
-                language: "rust".into(),
-                value: "let x: u32 = 5;".into(),
-            },
-        ));
+        let m = lattice_lsp::lsp_types::HoverContents::Scalar(
+            lattice_lsp::lsp_types::MarkedString::LanguageString(
+                lattice_lsp::lsp_types::LanguageString {
+                    language: "rust".into(),
+                    value: "let x: u32 = 5;".into(),
+                },
+            ),
+        );
         let md = super::hover_contents_to_markdown(&m);
         assert!(md.contains("```rust"));
         assert!(md.contains("let x: u32 = 5;"));
@@ -6399,9 +6424,9 @@ mod tests {
 
     #[test]
     fn hover_contents_array_joins_with_double_newline() {
-        let m = lsp_types::HoverContents::Array(vec![
-            lsp_types::MarkedString::String("first".into()),
-            lsp_types::MarkedString::String("second".into()),
+        let m = lattice_lsp::lsp_types::HoverContents::Array(vec![
+            lattice_lsp::lsp_types::MarkedString::String("first".into()),
+            lattice_lsp::lsp_types::MarkedString::String("second".into()),
         ]);
         let md = super::hover_contents_to_markdown(&m);
         assert_eq!(md, "first\n\nsecond");
@@ -6409,10 +6434,11 @@ mod tests {
 
     #[test]
     fn hover_contents_markup_uses_value_as_markdown() {
-        let m = lsp_types::HoverContents::Markup(lsp_types::MarkupContent {
-            kind: lsp_types::MarkupKind::Markdown,
-            value: "# heading\n\nbody".into(),
-        });
+        let m =
+            lattice_lsp::lsp_types::HoverContents::Markup(lattice_lsp::lsp_types::MarkupContent {
+                kind: lattice_lsp::lsp_types::MarkupKind::Markdown,
+                value: "# heading\n\nbody".into(),
+            });
         assert_eq!(super::hover_contents_to_markdown(&m), "# heading\n\nbody");
     }
 
@@ -6552,39 +6578,39 @@ mod tests {
     /// `Vec<Range>` ordered innermost-first.
     #[test]
     fn flatten_selection_range_chain_walks_parent_links() {
-        let outer = lsp_types::SelectionRange {
-            range: lsp_types::Range {
-                start: lsp_types::Position {
+        let outer = lattice_lsp::lsp_types::SelectionRange {
+            range: lattice_lsp::lsp_types::Range {
+                start: lattice_lsp::lsp_types::Position {
                     line: 0,
                     character: 0,
                 },
-                end: lsp_types::Position {
+                end: lattice_lsp::lsp_types::Position {
                     line: 5,
                     character: 0,
                 },
             },
             parent: None,
         };
-        let middle = lsp_types::SelectionRange {
-            range: lsp_types::Range {
-                start: lsp_types::Position {
+        let middle = lattice_lsp::lsp_types::SelectionRange {
+            range: lattice_lsp::lsp_types::Range {
+                start: lattice_lsp::lsp_types::Position {
                     line: 1,
                     character: 0,
                 },
-                end: lsp_types::Position {
+                end: lattice_lsp::lsp_types::Position {
                     line: 3,
                     character: 0,
                 },
             },
             parent: Some(Box::new(outer)),
         };
-        let inner = lsp_types::SelectionRange {
-            range: lsp_types::Range {
-                start: lsp_types::Position {
+        let inner = lattice_lsp::lsp_types::SelectionRange {
+            range: lattice_lsp::lsp_types::Range {
+                start: lattice_lsp::lsp_types::Position {
                     line: 2,
                     character: 0,
                 },
-                end: lsp_types::Position {
+                end: lattice_lsp::lsp_types::Position {
                     line: 2,
                     character: 8,
                 },
@@ -6609,33 +6635,33 @@ mod tests {
     #[test]
     fn decode_semantic_tokens_absolute_positions() {
         let token_types = vec![
-            lsp_types::SemanticTokenType::KEYWORD,
-            lsp_types::SemanticTokenType::FUNCTION,
+            lattice_lsp::lsp_types::SemanticTokenType::KEYWORD,
+            lattice_lsp::lsp_types::SemanticTokenType::FUNCTION,
         ];
         let token_modifiers = vec![
-            lsp_types::SemanticTokenModifier::STATIC,
-            lsp_types::SemanticTokenModifier::READONLY,
+            lattice_lsp::lsp_types::SemanticTokenModifier::STATIC,
+            lattice_lsp::lsp_types::SemanticTokenModifier::READONLY,
         ];
         // Three tokens:
         //  - Line 0, col 0, len 3, type=keyword, no mods.
         //  - Line 0, col 4, len 4, type=function, mod bit 0 (static).
         //  - Line 2, col 2, len 1, type=keyword, mod bits 0+1.
         let data = vec![
-            lsp_types::SemanticToken {
+            lattice_lsp::lsp_types::SemanticToken {
                 delta_line: 0,
                 delta_start: 0,
                 length: 3,
                 token_type: 0,
                 token_modifiers_bitset: 0,
             },
-            lsp_types::SemanticToken {
+            lattice_lsp::lsp_types::SemanticToken {
                 delta_line: 0,
                 delta_start: 4,
                 length: 4,
                 token_type: 1,
                 token_modifiers_bitset: 0b01,
             },
-            lsp_types::SemanticToken {
+            lattice_lsp::lsp_types::SemanticToken {
                 delta_line: 2,
                 delta_start: 2,
                 length: 1,
@@ -6665,17 +6691,17 @@ mod tests {
     /// dropped (defense in depth; real servers don't emit).
     #[test]
     fn decode_semantic_tokens_drops_out_of_range_type() {
-        let token_types = vec![lsp_types::SemanticTokenType::KEYWORD];
-        let token_modifiers: Vec<lsp_types::SemanticTokenModifier> = Vec::new();
+        let token_types = vec![lattice_lsp::lsp_types::SemanticTokenType::KEYWORD];
+        let token_modifiers: Vec<lattice_lsp::lsp_types::SemanticTokenModifier> = Vec::new();
         let data = vec![
-            lsp_types::SemanticToken {
+            lattice_lsp::lsp_types::SemanticToken {
                 delta_line: 0,
                 delta_start: 0,
                 length: 3,
                 token_type: 0,
                 token_modifiers_bitset: 0,
             },
-            lsp_types::SemanticToken {
+            lattice_lsp::lsp_types::SemanticToken {
                 delta_line: 0,
                 delta_start: 4,
                 length: 4,
@@ -6695,21 +6721,21 @@ mod tests {
     #[test]
     fn apply_semantic_token_edits_replace_middle() {
         let mut raw = vec![
-            lsp_types::SemanticToken {
+            lattice_lsp::lsp_types::SemanticToken {
                 delta_line: 0,
                 delta_start: 0,
                 length: 2,
                 token_type: 0,
                 token_modifiers_bitset: 0,
             },
-            lsp_types::SemanticToken {
+            lattice_lsp::lsp_types::SemanticToken {
                 delta_line: 0,
                 delta_start: 3,
                 length: 4,
                 token_type: 1,
                 token_modifiers_bitset: 0,
             },
-            lsp_types::SemanticToken {
+            lattice_lsp::lsp_types::SemanticToken {
                 delta_line: 1,
                 delta_start: 2,
                 length: 1,
@@ -6718,18 +6744,18 @@ mod tests {
             },
         ];
         // Replace the middle token (index 1) with two new tokens.
-        let edit = lsp_types::SemanticTokensEdit {
+        let edit = lattice_lsp::lsp_types::SemanticTokensEdit {
             start: 1,
             delete_count: 1,
             data: Some(vec![
-                lsp_types::SemanticToken {
+                lattice_lsp::lsp_types::SemanticToken {
                     delta_line: 0,
                     delta_start: 3,
                     length: 2,
                     token_type: 2,
                     token_modifiers_bitset: 0,
                 },
-                lsp_types::SemanticToken {
+                lattice_lsp::lsp_types::SemanticToken {
                     delta_line: 0,
                     delta_start: 5,
                     length: 3,
@@ -6751,17 +6777,17 @@ mod tests {
     /// new tokens in without removing anything.
     #[test]
     fn apply_semantic_token_edits_insert_only() {
-        let mut raw = vec![lsp_types::SemanticToken {
+        let mut raw = vec![lattice_lsp::lsp_types::SemanticToken {
             delta_line: 0,
             delta_start: 0,
             length: 2,
             token_type: 0,
             token_modifiers_bitset: 0,
         }];
-        let edit = lsp_types::SemanticTokensEdit {
+        let edit = lattice_lsp::lsp_types::SemanticTokensEdit {
             start: 1,
             delete_count: 0,
-            data: Some(vec![lsp_types::SemanticToken {
+            data: Some(vec![lattice_lsp::lsp_types::SemanticToken {
                 delta_line: 0,
                 delta_start: 3,
                 length: 4,
@@ -6779,14 +6805,14 @@ mod tests {
     #[test]
     fn apply_semantic_token_edits_delete_only() {
         let mut raw = vec![
-            lsp_types::SemanticToken {
+            lattice_lsp::lsp_types::SemanticToken {
                 delta_line: 0,
                 delta_start: 0,
                 length: 2,
                 token_type: 0,
                 token_modifiers_bitset: 0,
             },
-            lsp_types::SemanticToken {
+            lattice_lsp::lsp_types::SemanticToken {
                 delta_line: 0,
                 delta_start: 3,
                 length: 4,
@@ -6794,7 +6820,7 @@ mod tests {
                 token_modifiers_bitset: 0,
             },
         ];
-        let edit = lsp_types::SemanticTokensEdit {
+        let edit = lattice_lsp::lsp_types::SemanticTokensEdit {
             start: 1,
             delete_count: 1,
             data: None,
@@ -6810,14 +6836,14 @@ mod tests {
     /// drops the cache to force a fresh full request.
     #[test]
     fn apply_semantic_token_edits_out_of_bounds_errs() {
-        let mut raw = vec![lsp_types::SemanticToken {
+        let mut raw = vec![lattice_lsp::lsp_types::SemanticToken {
             delta_line: 0,
             delta_start: 0,
             length: 2,
             token_type: 0,
             token_modifiers_bitset: 0,
         }];
-        let edit = lsp_types::SemanticTokensEdit {
+        let edit = lattice_lsp::lsp_types::SemanticTokensEdit {
             start: 5,
             delete_count: 2,
             data: None,
@@ -6841,7 +6867,7 @@ mod tests {
         // a `result_id` the delta will reference. Use a single
         // legend entry so the decoder's name resolution is
         // deterministic.
-        let initial_raw = vec![lsp_types::SemanticToken {
+        let initial_raw = vec![lattice_lsp::lsp_types::SemanticToken {
             delta_line: 0,
             delta_start: 0,
             length: 2,
@@ -6867,20 +6893,20 @@ mod tests {
         // token. The drain should splice into raw_data and
         // re-decode against the carried legend.
         let token_types = vec![
-            lsp_types::SemanticTokenType::KEYWORD,
-            lsp_types::SemanticTokenType::FUNCTION,
+            lattice_lsp::lsp_types::SemanticTokenType::KEYWORD,
+            lattice_lsp::lsp_types::SemanticTokenType::FUNCTION,
         ];
-        let token_modifiers: Vec<lsp_types::SemanticTokenModifier> = Vec::new();
+        let token_modifiers: Vec<lattice_lsp::lsp_types::SemanticTokenModifier> = Vec::new();
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<crate::app::SemanticTokensOutcome>();
         tx.send(crate::app::SemanticTokensOutcome::Delta {
             buffer_id,
             document_version: 2,
             previous_result_id: "r1".into(),
             new_result_id: Some("r2".into()),
-            edits: vec![lsp_types::SemanticTokensEdit {
+            edits: vec![lattice_lsp::lsp_types::SemanticTokensEdit {
                 start: 1,
                 delete_count: 0,
-                data: Some(vec![lsp_types::SemanticToken {
+                data: Some(vec![lattice_lsp::lsp_types::SemanticToken {
                     delta_line: 0,
                     delta_start: 3,
                     length: 4,
@@ -6950,14 +6976,14 @@ mod tests {
     #[test]
     fn apply_semantic_token_edits_sequential() {
         let mut raw = vec![
-            lsp_types::SemanticToken {
+            lattice_lsp::lsp_types::SemanticToken {
                 delta_line: 0,
                 delta_start: 0,
                 length: 2,
                 token_type: 0,
                 token_modifiers_bitset: 0,
             },
-            lsp_types::SemanticToken {
+            lattice_lsp::lsp_types::SemanticToken {
                 delta_line: 0,
                 delta_start: 3,
                 length: 4,
@@ -6967,16 +6993,16 @@ mod tests {
         ];
         let edits = vec![
             // Delete index 0.
-            lsp_types::SemanticTokensEdit {
+            lattice_lsp::lsp_types::SemanticTokensEdit {
                 start: 0,
                 delete_count: 1,
                 data: None,
             },
             // Then insert a new token at the (now) start.
-            lsp_types::SemanticTokensEdit {
+            lattice_lsp::lsp_types::SemanticTokensEdit {
                 start: 0,
                 delete_count: 0,
-                data: Some(vec![lsp_types::SemanticToken {
+                data: Some(vec![lattice_lsp::lsp_types::SemanticToken {
                     delta_line: 0,
                     delta_start: 0,
                     length: 5,
@@ -7003,18 +7029,18 @@ mod tests {
         let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
         app.editor.buffer_uris.insert(buffer_id, uri.clone());
         let server_id: std::sync::Arc<str> = std::sync::Arc::from("rust");
-        let diag = lsp_types::Diagnostic {
-            range: lsp_types::Range {
-                start: lsp_types::Position {
+        let diag = lattice_lsp::lsp_types::Diagnostic {
+            range: lattice_lsp::lsp_types::Range {
+                start: lattice_lsp::lsp_types::Position {
                     line: 0,
                     character: 0,
                 },
-                end: lsp_types::Position {
+                end: lattice_lsp::lsp_types::Position {
                     line: 0,
                     character: 2,
                 },
             },
-            severity: Some(lsp_types::DiagnosticSeverity::ERROR),
+            severity: Some(lattice_lsp::lsp_types::DiagnosticSeverity::ERROR),
             code: None,
             code_description: None,
             source: None,
@@ -7262,12 +7288,12 @@ mod tests {
     /// matching entries), and a stable identity hash.
     #[test]
     fn folding_range_to_fold_preserves_extents_and_keys_identity() {
-        let r = lsp_types::FoldingRange {
+        let r = lattice_lsp::lsp_types::FoldingRange {
             start_line: 2,
             end_line: 5,
             start_character: None,
             end_character: None,
-            kind: Some(lsp_types::FoldingRangeKind::Comment),
+            kind: Some(lattice_lsp::lsp_types::FoldingRangeKind::Comment),
             collapsed_text: None,
         };
         let f = crate::app::folding_range_to_fold(r.clone());
@@ -7282,12 +7308,12 @@ mod tests {
         assert_eq!(f.identity, f2.identity);
 
         // Different end-line -> different identity.
-        let r3 = lsp_types::FoldingRange {
+        let r3 = lattice_lsp::lsp_types::FoldingRange {
             start_line: 2,
             end_line: 9,
             start_character: None,
             end_character: None,
-            kind: Some(lsp_types::FoldingRangeKind::Comment),
+            kind: Some(lattice_lsp::lsp_types::FoldingRangeKind::Comment),
             collapsed_text: None,
         };
         let f3 = crate::app::folding_range_to_fold(r3);
@@ -7327,7 +7353,7 @@ mod tests {
         use lattice_core::FoldMethod;
         let mut app = app_with("fn a() {}\nfn b() {}\nfn c() {}\n", 5);
         app.set_foldmethod_for_test(FoldMethod::Lsp);
-        let fold = crate::app::folding_range_to_fold(lsp_types::FoldingRange {
+        let fold = crate::app::folding_range_to_fold(lattice_lsp::lsp_types::FoldingRange {
             start_line: 0,
             end_line: 1,
             start_character: None,
@@ -7363,12 +7389,12 @@ mod tests {
     /// "inside" (half-open); cursor on `end` is outside.
     #[test]
     fn cursor_inside_range_is_half_open() {
-        let r = lsp_types::Range {
-            start: lsp_types::Position {
+        let r = lattice_lsp::lsp_types::Range {
+            start: lattice_lsp::lsp_types::Position {
                 line: 1,
                 character: 4,
             },
-            end: lsp_types::Position {
+            end: lattice_lsp::lsp_types::Position {
                 line: 1,
                 character: 8,
             },
@@ -7380,20 +7406,20 @@ mod tests {
         assert!(!crate::app::cursor_inside_range(Position::new(2, 6), &r));
     }
 
-    fn fake_uri(path: &str) -> lsp_types::Uri {
+    fn fake_uri(path: &str) -> lattice_lsp::lsp_types::Uri {
         use std::str::FromStr;
-        lsp_types::Uri::from_str(&format!("file://{path}")).unwrap()
+        lattice_lsp::lsp_types::Uri::from_str(&format!("file://{path}")).unwrap()
     }
 
-    fn loc(path: &str, line: u32, col: u32) -> lsp_types::Location {
-        lsp_types::Location {
+    fn loc(path: &str, line: u32, col: u32) -> lattice_lsp::lsp_types::Location {
+        lattice_lsp::lsp_types::Location {
             uri: fake_uri(path),
-            range: lsp_types::Range {
-                start: lsp_types::Position {
+            range: lattice_lsp::lsp_types::Range {
+                start: lattice_lsp::lsp_types::Position {
                     line,
                     character: col,
                 },
-                end: lsp_types::Position {
+                end: lattice_lsp::lsp_types::Position {
                     line,
                     character: col + 1,
                 },
@@ -7403,7 +7429,7 @@ mod tests {
 
     #[test]
     fn definition_response_scalar_flattens_to_one_location() {
-        let resp = lsp_types::GotoDefinitionResponse::Scalar(loc("/x.rs", 1, 2));
+        let resp = lattice_lsp::lsp_types::GotoDefinitionResponse::Scalar(loc("/x.rs", 1, 2));
         let v = super::definition_response_to_locations(resp);
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].range.start.line, 1);
@@ -7411,8 +7437,10 @@ mod tests {
 
     #[test]
     fn definition_response_array_flattens_verbatim() {
-        let resp =
-            lsp_types::GotoDefinitionResponse::Array(vec![loc("/a.rs", 0, 0), loc("/b.rs", 5, 5)]);
+        let resp = lattice_lsp::lsp_types::GotoDefinitionResponse::Array(vec![
+            loc("/a.rs", 0, 0),
+            loc("/b.rs", 5, 5),
+        ]);
         let v = super::definition_response_to_locations(resp);
         assert_eq!(v.len(), 2);
     }
@@ -7421,31 +7449,31 @@ mod tests {
     fn definition_response_link_uses_target_selection_range() {
         // Link variant carries richer per-result info; we use
         // target_selection_range (narrower) for jumps.
-        let link = lsp_types::LocationLink {
+        let link = lattice_lsp::lsp_types::LocationLink {
             origin_selection_range: None,
             target_uri: fake_uri("/x.rs"),
-            target_range: lsp_types::Range {
-                start: lsp_types::Position {
+            target_range: lattice_lsp::lsp_types::Range {
+                start: lattice_lsp::lsp_types::Position {
                     line: 0,
                     character: 0,
                 },
-                end: lsp_types::Position {
+                end: lattice_lsp::lsp_types::Position {
                     line: 10,
                     character: 0,
                 },
             },
-            target_selection_range: lsp_types::Range {
-                start: lsp_types::Position {
+            target_selection_range: lattice_lsp::lsp_types::Range {
+                start: lattice_lsp::lsp_types::Position {
                     line: 5,
                     character: 4,
                 },
-                end: lsp_types::Position {
+                end: lattice_lsp::lsp_types::Position {
                     line: 5,
                     character: 7,
                 },
             },
         };
-        let resp = lsp_types::GotoDefinitionResponse::Link(vec![link]);
+        let resp = lattice_lsp::lsp_types::GotoDefinitionResponse::Link(vec![link]);
         let v = super::definition_response_to_locations(resp);
         assert_eq!(v.len(), 1);
         // Should be the target_selection_range, not target_range.
@@ -7496,7 +7524,8 @@ mod tests {
     fn drain_pending_no_implementations_echoes_kind_specific_message() {
         // Verify the kind drives the verb in the "no X found" echo.
         let mut a = app_with("xx", 10);
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Vec<lsp_types::Location>>();
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<Vec<lattice_lsp::lsp_types::Location>>();
         a.editor.pending_definition_rx = Some(rx);
         a.editor.pending_definition_token = Some(lattice_protocol::CancellationToken::new());
         a.editor.pending_nav_kind = Some(super::LspNavKind::Implementation);
@@ -7514,7 +7543,8 @@ mod tests {
     #[test]
     fn drain_pending_no_type_definitions_echoes_kind_specific_message() {
         let mut a = app_with("xx", 10);
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Vec<lsp_types::Location>>();
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<Vec<lattice_lsp::lsp_types::Location>>();
         a.editor.pending_definition_rx = Some(rx);
         a.editor.pending_definition_token = Some(lattice_protocol::CancellationToken::new());
         a.editor.pending_nav_kind = Some(super::LspNavKind::TypeDefinition);
@@ -7527,7 +7557,8 @@ mod tests {
     #[test]
     fn drain_pending_no_declarations_echoes_kind_specific_message() {
         let mut a = app_with("xx", 10);
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Vec<lsp_types::Location>>();
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<Vec<lattice_lsp::lsp_types::Location>>();
         a.editor.pending_definition_rx = Some(rx);
         a.editor.pending_definition_token = Some(lattice_protocol::CancellationToken::new());
         a.editor.pending_nav_kind = Some(super::LspNavKind::Declaration);
@@ -7634,13 +7665,13 @@ mod tests {
 
     #[test]
     fn flatten_document_symbol_response_flat_preserves_order() {
-        use lsp_types::{Location as LLoc, Position as LPos, Range as LRange};
+        use lattice_lsp::lsp_types::{Location as LLoc, Position as LPos, Range as LRange};
         let path = std::path::PathBuf::from("/tmp/x.rs");
         #[allow(deprecated)]
         let syms = vec![
-            lsp_types::SymbolInformation {
+            lattice_lsp::lsp_types::SymbolInformation {
                 name: "foo".into(),
-                kind: lsp_types::SymbolKind::FUNCTION,
+                kind: lattice_lsp::lsp_types::SymbolKind::FUNCTION,
                 tags: None,
                 deprecated: None,
                 location: LLoc {
@@ -7658,9 +7689,9 @@ mod tests {
                 },
                 container_name: None,
             },
-            lsp_types::SymbolInformation {
+            lattice_lsp::lsp_types::SymbolInformation {
                 name: "bar".into(),
-                kind: lsp_types::SymbolKind::METHOD,
+                kind: lattice_lsp::lsp_types::SymbolKind::METHOD,
                 tags: None,
                 deprecated: None,
                 location: LLoc {
@@ -7679,7 +7710,7 @@ mod tests {
                 container_name: Some("Bag".into()),
             },
         ];
-        let resp = lsp_types::DocumentSymbolResponse::Flat(syms);
+        let resp = lattice_lsp::lsp_types::DocumentSymbolResponse::Flat(syms);
         let mut out = Vec::new();
         super::flatten_document_symbol_response(resp, &path, &mut out);
         assert_eq!(out.len(), 2);
@@ -7691,7 +7722,7 @@ mod tests {
 
     #[test]
     fn flatten_document_symbol_response_nested_assigns_depth_via_dfs() {
-        use lsp_types::{DocumentSymbol, Position as LPos, Range as LRange};
+        use lattice_lsp::lsp_types::{DocumentSymbol, Position as LPos, Range as LRange};
         let path = std::path::PathBuf::from("/tmp/x.rs");
         // mod foo { fn bar() {} } -> outer at depth 0, bar at depth 1.
         let inner_range = LRange {
@@ -7718,7 +7749,7 @@ mod tests {
         let inner = DocumentSymbol {
             name: "bar".into(),
             detail: None,
-            kind: lsp_types::SymbolKind::FUNCTION,
+            kind: lattice_lsp::lsp_types::SymbolKind::FUNCTION,
             tags: None,
             deprecated: None,
             range: inner_range,
@@ -7729,14 +7760,14 @@ mod tests {
         let outer = DocumentSymbol {
             name: "foo".into(),
             detail: None,
-            kind: lsp_types::SymbolKind::MODULE,
+            kind: lattice_lsp::lsp_types::SymbolKind::MODULE,
             tags: None,
             deprecated: None,
             range: outer_range,
             selection_range: outer_range,
             children: Some(vec![inner]),
         };
-        let resp = lsp_types::DocumentSymbolResponse::Nested(vec![outer]);
+        let resp = lattice_lsp::lsp_types::DocumentSymbolResponse::Nested(vec![outer]);
         let mut out = Vec::new();
         super::flatten_document_symbol_response(resp, &path, &mut out);
         assert_eq!(out.len(), 2);
@@ -7817,7 +7848,7 @@ mod tests {
 
     #[test]
     fn code_action_kind_glyph_distinct_for_common_kinds() {
-        use lsp_types::CodeActionKind as K;
+        use lattice_lsp::lsp_types::CodeActionKind as K;
         let qf = super::code_action_kind_glyph(Some(&K::QUICKFIX));
         let rf = super::code_action_kind_glyph(Some(&K::REFACTOR));
         let sr = super::code_action_kind_glyph(Some(&K::SOURCE));
@@ -7858,9 +7889,9 @@ mod tests {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::CodeActionOutcome>();
         a.editor.pending_code_action_rx = Some(rx);
         a.editor.pending_code_action_token = Some(lattice_protocol::CancellationToken::new());
-        let act = lsp_types::CodeAction {
+        let act = lattice_lsp::lsp_types::CodeAction {
             title: "Add `mut` modifier".into(),
-            kind: Some(lsp_types::CodeActionKind::QUICKFIX),
+            kind: Some(lattice_lsp::lsp_types::CodeActionKind::QUICKFIX),
             diagnostics: None,
             edit: None,
             command: None,
@@ -7872,7 +7903,7 @@ mod tests {
             super::CodeActionRow {
                 title: act.title.clone(),
                 kind_glyph: "🛠",
-                action: lsp_types::CodeActionOrCommand::CodeAction(act),
+                action: lattice_lsp::lsp_types::CodeActionOrCommand::CodeAction(act),
             },
         ]))
         .unwrap();
@@ -7894,16 +7925,19 @@ mod tests {
     fn flatten_workspace_edit_collects_legacy_changes_map() {
         use std::collections::HashMap;
         let uri = super::tests::fake_uri("/tmp/x.rs");
-        let mut changes: HashMap<lsp_types::Uri, Vec<lsp_types::TextEdit>> = HashMap::new();
+        let mut changes: HashMap<
+            lattice_lsp::lsp_types::Uri,
+            Vec<lattice_lsp::lsp_types::TextEdit>,
+        > = HashMap::new();
         changes.insert(
             uri.clone(),
-            vec![lsp_types::TextEdit {
-                range: lsp_types::Range {
-                    start: lsp_types::Position {
+            vec![lattice_lsp::lsp_types::TextEdit {
+                range: lattice_lsp::lsp_types::Range {
+                    start: lattice_lsp::lsp_types::Position {
                         line: 0,
                         character: 0,
                     },
-                    end: lsp_types::Position {
+                    end: lattice_lsp::lsp_types::Position {
                         line: 0,
                         character: 3,
                     },
@@ -7911,7 +7945,7 @@ mod tests {
                 new_text: "bar".into(),
             }],
         );
-        let we = lsp_types::WorkspaceEdit {
+        let we = lattice_lsp::lsp_types::WorkspaceEdit {
             changes: Some(changes),
             document_changes: None,
             change_annotations: None,
@@ -7975,13 +8009,13 @@ mod tests {
         let uri = super::tests::fake_uri(path.to_str().unwrap());
         let edits = vec![
             // Replace `foo` on line 0 col 4..7
-            lsp_types::TextEdit {
-                range: lsp_types::Range {
-                    start: lsp_types::Position {
+            lattice_lsp::lsp_types::TextEdit {
+                range: lattice_lsp::lsp_types::Range {
+                    start: lattice_lsp::lsp_types::Position {
                         line: 0,
                         character: 4,
                     },
-                    end: lsp_types::Position {
+                    end: lattice_lsp::lsp_types::Position {
                         line: 0,
                         character: 7,
                     },
@@ -7989,13 +8023,13 @@ mod tests {
                 new_text: "bar".into(),
             },
             // Replace `foo` on line 1 col 8..11
-            lsp_types::TextEdit {
-                range: lsp_types::Range {
-                    start: lsp_types::Position {
+            lattice_lsp::lsp_types::TextEdit {
+                range: lattice_lsp::lsp_types::Range {
+                    start: lattice_lsp::lsp_types::Position {
                         line: 1,
                         character: 8,
                     },
-                    end: lsp_types::Position {
+                    end: lattice_lsp::lsp_types::Position {
                         line: 1,
                         character: 11,
                     },
@@ -8074,16 +8108,16 @@ mod tests {
                     sort_text: None,
                     detail: Some("fn() -> i32".into()),
                     documentation: None,
-                    kind: Some(lsp_types::CompletionItemKind::FUNCTION),
+                    kind: Some(lattice_lsp::lsp_types::CompletionItemKind::FUNCTION),
                     deprecated: false,
                     preselect: false,
                     commit_characters: Vec::new(),
                     additional_text_edits: Vec::new(),
                     command: None,
-                    insert_text_format: lsp_types::InsertTextFormat::PLAIN_TEXT,
+                    insert_text_format: lattice_lsp::lsp_types::InsertTextFormat::PLAIN_TEXT,
                     replace_range: None,
                     server_id: "test-server".to_string(),
-                    original_item: lsp_types::CompletionItem::default(),
+                    original_item: lattice_lsp::lsp_types::CompletionItem::default(),
                     resolved: false,
                 }),
                 lsp_meta_candidate(super::LspCompletionMeta {
@@ -8093,16 +8127,16 @@ mod tests {
                     sort_text: None,
                     detail: None,
                     documentation: None,
-                    kind: Some(lsp_types::CompletionItemKind::VARIABLE),
+                    kind: Some(lattice_lsp::lsp_types::CompletionItemKind::VARIABLE),
                     deprecated: false,
                     preselect: false,
                     commit_characters: Vec::new(),
                     additional_text_edits: Vec::new(),
                     command: None,
-                    insert_text_format: lsp_types::InsertTextFormat::PLAIN_TEXT,
+                    insert_text_format: lattice_lsp::lsp_types::InsertTextFormat::PLAIN_TEXT,
                     replace_range: None,
                     server_id: "test-server".to_string(),
-                    original_item: lsp_types::CompletionItem::default(),
+                    original_item: lattice_lsp::lsp_types::CompletionItem::default(),
                     resolved: false,
                 }),
             ],
@@ -8165,10 +8199,10 @@ mod tests {
             commit_characters: Vec::new(),
             additional_text_edits: Vec::new(),
             command: None,
-            insert_text_format: lsp_types::InsertTextFormat::PLAIN_TEXT,
+            insert_text_format: lattice_lsp::lsp_types::InsertTextFormat::PLAIN_TEXT,
             replace_range: None,
             server_id: "test-server".to_string(),
-            original_item: lsp_types::CompletionItem::default(),
+            original_item: lattice_lsp::lsp_types::CompletionItem::default(),
             resolved: false,
         };
         // First batch.
@@ -8263,10 +8297,10 @@ mod tests {
             commit_characters: Vec::new(),
             additional_text_edits: Vec::new(),
             command: None,
-            insert_text_format: lsp_types::InsertTextFormat::PLAIN_TEXT,
+            insert_text_format: lattice_lsp::lsp_types::InsertTextFormat::PLAIN_TEXT,
             replace_range: None,
             server_id: "test-server".to_string(),
-            original_item: lsp_types::CompletionItem::default(),
+            original_item: lattice_lsp::lsp_types::CompletionItem::default(),
             resolved: false,
         };
         let mut raw = lattice_completion::RawCandidate::plain(
@@ -8302,10 +8336,12 @@ mod tests {
         a.editor.pending_completion_resolve_rx = Some(rx);
         a.editor.pending_completion_resolve_token =
             Some(lattice_protocol::CancellationToken::new());
-        let mut resolved = lsp_types::CompletionItem::default();
+        let mut resolved = lattice_lsp::lsp_types::CompletionItem::default();
         resolved.label = "foo".into();
         resolved.detail = Some("fn foo() -> i32".into());
-        resolved.documentation = Some(lsp_types::Documentation::String("Returns 42.".into()));
+        resolved.documentation = Some(lattice_lsp::lsp_types::Documentation::String(
+            "Returns 42.".into(),
+        ));
         tx.send(super::CompletionResolveOutcome {
             meta_index: 0,
             resolved,
@@ -8357,11 +8393,11 @@ mod tests {
             commit_characters: Vec::new(),
             additional_text_edits: Vec::new(),
             command: None,
-            insert_text_format: lsp_types::InsertTextFormat::PLAIN_TEXT,
+            insert_text_format: lattice_lsp::lsp_types::InsertTextFormat::PLAIN_TEXT,
             replace_range: None,
             server_id: "test-server".to_string(),
             original_item: {
-                let mut ci = lsp_types::CompletionItem::default();
+                let mut ci = lattice_lsp::lsp_types::CompletionItem::default();
                 ci.label = label.into();
                 ci
             },
@@ -8399,9 +8435,11 @@ mod tests {
         a.editor.pending_completion_resolve_rx = Some(rx);
         a.editor.pending_completion_resolve_token =
             Some(lattice_protocol::CancellationToken::new());
-        let mut resolved = lsp_types::CompletionItem::default();
+        let mut resolved = lattice_lsp::lsp_types::CompletionItem::default();
         resolved.label = "c0".into();
-        resolved.documentation = Some(lsp_types::Documentation::String("stale".into()));
+        resolved.documentation = Some(lattice_lsp::lsp_types::Documentation::String(
+            "stale".into(),
+        ));
         tx.send(super::CompletionResolveOutcome {
             meta_index: 0,
             resolved,
@@ -8441,10 +8479,10 @@ mod tests {
             commit_characters: Vec::new(),
             additional_text_edits: Vec::new(),
             command: None,
-            insert_text_format: lsp_types::InsertTextFormat::PLAIN_TEXT,
+            insert_text_format: lattice_lsp::lsp_types::InsertTextFormat::PLAIN_TEXT,
             replace_range: None,
             server_id: "test-server".to_string(),
-            original_item: lsp_types::CompletionItem::default(),
+            original_item: lattice_lsp::lsp_types::CompletionItem::default(),
             resolved: false,
         };
         let mut raw = lattice_completion::RawCandidate::plain(
@@ -8538,17 +8576,21 @@ mod tests {
 
     #[test]
     fn signature_help_to_markdown_renders_active_signature() {
-        let sh = lsp_types::SignatureHelp {
-            signatures: vec![lsp_types::SignatureInformation {
+        let sh = lattice_lsp::lsp_types::SignatureHelp {
+            signatures: vec![lattice_lsp::lsp_types::SignatureInformation {
                 label: "fn foo(a: i32, b: &str) -> i32".into(),
-                documentation: Some(lsp_types::Documentation::String("Adds.".into())),
+                documentation: Some(lattice_lsp::lsp_types::Documentation::String(
+                    "Adds.".into(),
+                )),
                 parameters: Some(vec![
-                    lsp_types::ParameterInformation {
-                        label: lsp_types::ParameterLabel::Simple("a: i32".into()),
-                        documentation: Some(lsp_types::Documentation::String("the first.".into())),
+                    lattice_lsp::lsp_types::ParameterInformation {
+                        label: lattice_lsp::lsp_types::ParameterLabel::Simple("a: i32".into()),
+                        documentation: Some(lattice_lsp::lsp_types::Documentation::String(
+                            "the first.".into(),
+                        )),
                     },
-                    lsp_types::ParameterInformation {
-                        label: lsp_types::ParameterLabel::Simple("b: &str".into()),
+                    lattice_lsp::lsp_types::ParameterInformation {
+                        label: lattice_lsp::lsp_types::ParameterLabel::Simple("b: &str".into()),
                         documentation: None,
                     },
                 ]),
@@ -8566,7 +8608,7 @@ mod tests {
 
     #[test]
     fn signature_help_to_markdown_empty_when_no_signatures() {
-        let sh = lsp_types::SignatureHelp {
+        let sh = lattice_lsp::lsp_types::SignatureHelp {
             signatures: vec![],
             active_signature: None,
             active_parameter: None,
@@ -8650,7 +8692,8 @@ mod tests {
     #[test]
     fn drain_pending_definitions_with_no_results_echoes_not_found() {
         let mut a = app_with("xx", 10);
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Vec<lsp_types::Location>>();
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<Vec<lattice_lsp::lsp_types::Location>>();
         a.editor.pending_definition_rx = Some(rx);
         a.editor.pending_definition_token = Some(lattice_protocol::CancellationToken::new());
         tx.send(Vec::new()).unwrap();
@@ -8672,17 +8715,18 @@ mod tests {
         // Cursor starts at (0, 0). Drain a definition pointing at
         // line 2 col 5 (utf-16 character; same as utf-8 byte for
         // ASCII).
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Vec<lsp_types::Location>>();
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<Vec<lattice_lsp::lsp_types::Location>>();
         a.editor.pending_definition_rx = Some(rx);
         a.editor.pending_definition_token = Some(lattice_protocol::CancellationToken::new());
-        let target = lsp_types::Location {
+        let target = lattice_lsp::lsp_types::Location {
             uri: super::tests::fake_uri(path.to_str().unwrap()),
-            range: lsp_types::Range {
-                start: lsp_types::Position {
+            range: lattice_lsp::lsp_types::Range {
+                start: lattice_lsp::lsp_types::Position {
                     line: 2,
                     character: 5,
                 },
-                end: lsp_types::Position {
+                end: lattice_lsp::lsp_types::Position {
                     line: 2,
                     character: 6,
                 },
@@ -8714,7 +8758,8 @@ mod tests {
         let doc = Document::open(&path).unwrap();
         let mut a = App::new(doc);
         a.set_viewport_height(10);
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Vec<lsp_types::Location>>();
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<Vec<lattice_lsp::lsp_types::Location>>();
         a.editor.pending_definition_rx = Some(rx);
         a.editor.pending_definition_token = Some(lattice_protocol::CancellationToken::new());
         a.editor.pending_nav_kind = Some(super::LspNavKind::Definition);
@@ -9362,11 +9407,11 @@ mod tests {
         let req = lattice_lsp::InboundShowMessageRequest {
             server_id: server_id.clone(),
             workspace: std::sync::Arc::<std::path::Path>::from(std::path::Path::new("/tmp")),
-            level: lsp_types::MessageType::INFO,
+            level: lattice_lsp::lsp_types::MessageType::INFO,
             message: message.into(),
             actions: actions
                 .into_iter()
-                .map(|t| lsp_types::MessageActionItem {
+                .map(|t| lattice_lsp::lsp_types::MessageActionItem {
                     title: t.into(),
                     properties: Default::default(),
                 })
@@ -9539,15 +9584,16 @@ mod tests {
         let path = dir.join("buffer.rs");
         std::fs::write(&path, "fn main() {}\n").unwrap();
         let mut a = app_with_path("fn main() {}\n", 5, path.clone());
-        let uri: lsp_types::Uri = format!("file://{}", path.display()).parse().unwrap();
+        let uri: lattice_lsp::lsp_types::Uri =
+            format!("file://{}", path.display()).parse().unwrap();
         // Edit replaces `main` (line 0, char 3..7) with `xyz`.
-        let edit = lsp_types::TextEdit {
-            range: lsp_types::Range {
-                start: lsp_types::Position {
+        let edit = lattice_lsp::lsp_types::TextEdit {
+            range: lattice_lsp::lsp_types::Range {
+                start: lattice_lsp::lsp_types::Position {
                     line: 0,
                     character: 3,
                 },
-                end: lsp_types::Position {
+                end: lattice_lsp::lsp_types::Position {
                     line: 0,
                     character: 7,
                 },
@@ -9556,7 +9602,7 @@ mod tests {
         };
         let mut changes = std::collections::HashMap::new();
         changes.insert(uri, vec![edit]);
-        let workspace_edit = lsp_types::WorkspaceEdit {
+        let workspace_edit = lattice_lsp::lsp_types::WorkspaceEdit {
             changes: Some(changes),
             document_changes: None,
             change_annotations: None,
@@ -9592,7 +9638,7 @@ mod tests {
         // applied=true so the server doesn't think we
         // failed -- just nothing to do.
         let mut a = app_with("", 5);
-        let workspace_edit = lsp_types::WorkspaceEdit::default();
+        let workspace_edit = lattice_lsp::lsp_types::WorkspaceEdit::default();
         let (resp_tx, mut resp_rx) = tokio::sync::oneshot::channel();
         inject_inbound_apply_edit(
             &mut a,
@@ -9742,17 +9788,17 @@ mod tests {
             sort_text: None,
             detail: None,
             documentation: None,
-            kind: Some(lsp_types::CompletionItemKind::SNIPPET),
+            kind: Some(lattice_lsp::lsp_types::CompletionItemKind::SNIPPET),
             deprecated: false,
             preselect: false,
             commit_characters: Vec::new(),
-            additional_text_edits: vec![lsp_types::TextEdit {
-                range: lsp_types::Range {
-                    start: lsp_types::Position {
+            additional_text_edits: vec![lattice_lsp::lsp_types::TextEdit {
+                range: lattice_lsp::lsp_types::Range {
+                    start: lattice_lsp::lsp_types::Position {
                         line: 0,
                         character: 0,
                     },
-                    end: lsp_types::Position {
+                    end: lattice_lsp::lsp_types::Position {
                         line: 0,
                         character: 0,
                     },
@@ -9760,10 +9806,10 @@ mod tests {
                 new_text: "use std::iter;\n".into(),
             }],
             command: None,
-            insert_text_format: lsp_types::InsertTextFormat::SNIPPET,
+            insert_text_format: lattice_lsp::lsp_types::InsertTextFormat::SNIPPET,
             replace_range: None,
             server_id: "test-server".to_string(),
-            original_item: lsp_types::CompletionItem::default(),
+            original_item: lattice_lsp::lsp_types::CompletionItem::default(),
             resolved: true,
         };
         let mut raw = lattice_completion::RawCandidate::plain(

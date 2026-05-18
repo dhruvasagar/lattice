@@ -53,8 +53,8 @@ pub fn word_under_cursor(buffer: &Buffer, cursor: Position) -> Option<String> {
 /// Picked to fit a fixed-width column in picker rows so the
 /// marginalia column stays aligned. Falls back to `?` for kinds
 /// we don't have a specific glyph for.
-pub fn symbol_kind_glyph(kind: lsp_types::SymbolKind) -> &'static str {
-    use lsp_types::SymbolKind as K;
+pub fn symbol_kind_glyph(kind: lattice_lsp::lsp_types::SymbolKind) -> &'static str {
+    use lattice_lsp::lsp_types::SymbolKind as K;
     match kind {
         K::FILE => "📄",
         K::MODULE | K::NAMESPACE | K::PACKAGE => "📦",
@@ -78,7 +78,7 @@ pub fn symbol_kind_glyph(kind: lsp_types::SymbolKind) -> &'static str {
 /// + workspace-symbol shape) into a `SymbolRow`. Returns `None`
 /// when the location's URI doesn't resolve to a path.
 pub fn symbol_information_to_row(
-    sym: &lsp_types::SymbolInformation,
+    sym: &lattice_lsp::lsp_types::SymbolInformation,
 ) -> Option<lattice_lsp::cache::SymbolRow> {
     let path = lattice_lsp::actor::uri_to_path(&sym.location.uri)?;
     Some(lattice_lsp::cache::SymbolRow {
@@ -99,21 +99,21 @@ pub fn symbol_information_to_row(
 /// variant carries `children: Vec<DocumentSymbol>`, walked
 /// depth-first to preserve outline ordering.
 pub fn flatten_document_symbol_response(
-    resp: lsp_types::DocumentSymbolResponse,
+    resp: lattice_lsp::lsp_types::DocumentSymbolResponse,
     path: &std::path::Path,
     out: &mut Vec<lattice_lsp::cache::SymbolRow>,
 ) {
     match resp {
-        lsp_types::DocumentSymbolResponse::Flat(syms) => {
+        lattice_lsp::lsp_types::DocumentSymbolResponse::Flat(syms) => {
             for sym in syms {
                 if let Some(row) = symbol_information_to_row(&sym) {
                     out.push(row);
                 }
             }
         }
-        lsp_types::DocumentSymbolResponse::Nested(syms) => {
+        lattice_lsp::lsp_types::DocumentSymbolResponse::Nested(syms) => {
             fn walk(
-                syms: Vec<lsp_types::DocumentSymbol>,
+                syms: Vec<lattice_lsp::lsp_types::DocumentSymbol>,
                 path: &std::path::Path,
                 depth: u32,
                 out: &mut Vec<lattice_lsp::cache::SymbolRow>,
@@ -147,10 +147,10 @@ pub fn flatten_document_symbol_response(
 /// `(0, 0)` so the row stays navigable.
 pub async fn workspace_symbol_to_row(
     handle: &lattice_lsp::ServerHandle,
-    sym: lsp_types::WorkspaceSymbol,
+    sym: lattice_lsp::lsp_types::WorkspaceSymbol,
     token: &lattice_protocol::CancellationToken,
 ) -> Option<lattice_lsp::cache::SymbolRow> {
-    use lsp_types::OneOf;
+    use lattice_lsp::lsp_types::OneOf;
     let (path, line, col) = match &sym.location {
         OneOf::Left(loc) => (
             lattice_lsp::actor::uri_to_path(&loc.uri)?,
@@ -199,7 +199,7 @@ pub async fn workspace_symbol_to_row(
 /// 0) and inlines the active parameter's documentation when
 /// present. Returns the empty string when the response carries no
 /// signatures -- the caller surfaces "no signature info".
-pub fn signature_help_to_markdown(sh: &lsp_types::SignatureHelp) -> String {
+pub fn signature_help_to_markdown(sh: &lattice_lsp::lsp_types::SignatureHelp) -> String {
     if sh.signatures.is_empty() {
         return String::new();
     }
@@ -222,16 +222,16 @@ pub fn signature_help_to_markdown(sh: &lsp_types::SignatureHelp) -> String {
         && let Some(param) = params.get(active_param_idx as usize)
     {
         let label_str = match &param.label {
-            lsp_types::ParameterLabel::Simple(s) => s.clone(),
-            lsp_types::ParameterLabel::LabelOffsets(_) => String::new(),
+            lattice_lsp::lsp_types::ParameterLabel::Simple(s) => s.clone(),
+            lattice_lsp::lsp_types::ParameterLabel::LabelOffsets(_) => String::new(),
         };
         if !label_str.is_empty() {
             out.push_str(&format!("\n**param:** `{label_str}`\n"));
         }
         if let Some(doc) = param.documentation.as_ref() {
             let doc_str = match doc {
-                lsp_types::Documentation::String(s) => s.clone(),
-                lsp_types::Documentation::MarkupContent(mc) => mc.value.clone(),
+                lattice_lsp::lsp_types::Documentation::String(s) => s.clone(),
+                lattice_lsp::lsp_types::Documentation::MarkupContent(mc) => mc.value.clone(),
             };
             if !doc_str.is_empty() {
                 out.push('\n');
@@ -243,8 +243,8 @@ pub fn signature_help_to_markdown(sh: &lsp_types::SignatureHelp) -> String {
     // Signature-level documentation when present.
     if let Some(doc) = sig.documentation.as_ref() {
         let doc_str = match doc {
-            lsp_types::Documentation::String(s) => s.clone(),
-            lsp_types::Documentation::MarkupContent(mc) => mc.value.clone(),
+            lattice_lsp::lsp_types::Documentation::String(s) => s.clone(),
+            lattice_lsp::lsp_types::Documentation::MarkupContent(mc) => mc.value.clone(),
         };
         if !doc_str.is_empty() {
             out.push('\n');
@@ -260,8 +260,10 @@ pub fn signature_help_to_markdown(sh: &lsp_types::SignatureHelp) -> String {
 /// maps the completion-item kind enum (which is wider -- snippets,
 /// keywords, folders, etc.). Used by the LSP completion picker /
 /// insert-completion overlay row marginalia.
-pub fn completion_kind_glyph(kind: Option<lsp_types::CompletionItemKind>) -> &'static str {
-    use lsp_types::CompletionItemKind as K;
+pub fn completion_kind_glyph(
+    kind: Option<lattice_lsp::lsp_types::CompletionItemKind>,
+) -> &'static str {
+    use lattice_lsp::lsp_types::CompletionItemKind as K;
     match kind {
         Some(K::FUNCTION) | Some(K::METHOD) | Some(K::CONSTRUCTOR) => "ƒ",
         Some(K::VARIABLE) | Some(K::FIELD) | Some(K::PROPERTY) => "v",
@@ -289,14 +291,14 @@ pub fn completion_kind_glyph(kind: Option<lsp_types::CompletionItemKind>) -> &'s
 /// destinations) becomes useful and this function gains a richer
 /// sibling.
 pub fn definition_response_to_locations(
-    resp: lsp_types::GotoDefinitionResponse,
-) -> Vec<lsp_types::Location> {
+    resp: lattice_lsp::lsp_types::GotoDefinitionResponse,
+) -> Vec<lattice_lsp::lsp_types::Location> {
     match resp {
-        lsp_types::GotoDefinitionResponse::Scalar(loc) => vec![loc],
-        lsp_types::GotoDefinitionResponse::Array(locs) => locs,
-        lsp_types::GotoDefinitionResponse::Link(links) => links
+        lattice_lsp::lsp_types::GotoDefinitionResponse::Scalar(loc) => vec![loc],
+        lattice_lsp::lsp_types::GotoDefinitionResponse::Array(locs) => locs,
+        lattice_lsp::lsp_types::GotoDefinitionResponse::Link(links) => links
             .into_iter()
-            .map(|l| lsp_types::Location {
+            .map(|l| lattice_lsp::lsp_types::Location {
                 uri: l.target_uri,
                 // `target_selection_range` is the narrower symbol
                 // range; `target_range` is the enclosing block.
@@ -308,13 +310,16 @@ pub fn definition_response_to_locations(
 }
 
 /// Convert an editor-side `Position` (line + utf-8 byte column)
-/// into the LSP-side `lsp_types::Position` (line + utf-16 code-
+/// into the LSP-side `lattice_lsp::lsp_types::Position` (line + utf-16 code-
 /// unit column). Returns `None` when the line index is past the
 /// end of the buffer -- e.g. cursor on a sentinel row past EOF.
-pub fn app_to_lsp_position(buffer: &Buffer, p: Position) -> Option<lsp_types::Position> {
+pub fn app_to_lsp_position(
+    buffer: &Buffer,
+    p: Position,
+) -> Option<lattice_lsp::lsp_types::Position> {
     let line_text = buffer.line(p.line)?;
     let character = lattice_lsp::position::utf8_byte_to_utf16_column(&line_text, p.byte);
-    Some(lsp_types::Position {
+    Some(lattice_lsp::lsp_types::Position {
         line: p.line,
         character,
     })
@@ -331,22 +336,22 @@ pub fn app_to_lsp_position(buffer: &Buffer, p: Position) -> Option<lsp_types::Po
 /// rendered as either markdown or plaintext (we treat plaintext
 /// as already-good markdown). `Array` joins each element with two
 /// newlines so blocks separate cleanly.
-pub fn hover_contents_to_markdown(contents: &lsp_types::HoverContents) -> String {
-    fn marked_to_markdown(m: &lsp_types::MarkedString) -> String {
+pub fn hover_contents_to_markdown(contents: &lattice_lsp::lsp_types::HoverContents) -> String {
+    fn marked_to_markdown(m: &lattice_lsp::lsp_types::MarkedString) -> String {
         match m {
-            lsp_types::MarkedString::String(s) => s.clone(),
-            lsp_types::MarkedString::LanguageString(ls) => {
+            lattice_lsp::lsp_types::MarkedString::String(s) => s.clone(),
+            lattice_lsp::lsp_types::MarkedString::LanguageString(ls) => {
                 format!("```{}\n{}\n```", ls.language, ls.value)
             }
         }
     }
     match contents {
-        lsp_types::HoverContents::Scalar(m) => marked_to_markdown(m),
-        lsp_types::HoverContents::Array(items) => items
+        lattice_lsp::lsp_types::HoverContents::Scalar(m) => marked_to_markdown(m),
+        lattice_lsp::lsp_types::HoverContents::Array(items) => items
             .iter()
             .map(marked_to_markdown)
             .collect::<Vec<_>>()
             .join("\n\n"),
-        lsp_types::HoverContents::Markup(m) => m.value.clone(),
+        lattice_lsp::lsp_types::HoverContents::Markup(m) => m.value.clone(),
     }
 }

@@ -2631,7 +2631,7 @@ fn compose_visible_lines_inner(
             .get(&app.editor.document_buffer_id)
             && app.lsp_inlay_hint_mode_enabled_for(app.editor.document_buffer_id)
         {
-            let mut on_line: Vec<&lsp_types::InlayHint> = cache
+            let mut on_line: Vec<&lattice_lsp::lsp_types::InlayHint> = cache
                 .hints
                 .iter()
                 .filter(|h| h.position.line == line_idx)
@@ -2770,8 +2770,10 @@ fn hlsearch_style() -> TuiStyle {
 /// All three use a dark background tint + the original fg so
 /// the text stays readable; composes with the other overlays
 /// (diagnostics underline, visual selection bg, hlsearch).
-fn document_highlight_style(kind: Option<lsp_types::DocumentHighlightKind>) -> TuiStyle {
-    use lsp_types::DocumentHighlightKind;
+fn document_highlight_style(
+    kind: Option<lattice_lsp::lsp_types::DocumentHighlightKind>,
+) -> TuiStyle {
+    use lattice_lsp::lsp_types::DocumentHighlightKind;
     let bg = match kind {
         Some(DocumentHighlightKind::READ) => Color::Rgb(20, 50, 25),
         Some(DocumentHighlightKind::WRITE) => Color::Rgb(60, 20, 20),
@@ -3098,10 +3100,10 @@ fn apply_semantic_token_modifiers(mut style: TuiStyle, modifiers: &[String]) -> 
 /// concatenates each part's `value`. Tooltip / command / location
 /// fields on label parts are ignored at paint time (they're a
 /// resolve / hover affordance, not a render concern).
-fn inlay_hint_label_text(label: &lsp_types::InlayHintLabel) -> String {
+fn inlay_hint_label_text(label: &lattice_lsp::lsp_types::InlayHintLabel) -> String {
     match label {
-        lsp_types::InlayHintLabel::String(s) => s.clone(),
-        lsp_types::InlayHintLabel::LabelParts(parts) => {
+        lattice_lsp::lsp_types::InlayHintLabel::String(s) => s.clone(),
+        lattice_lsp::lsp_types::InlayHintLabel::LabelParts(parts) => {
             parts.iter().map(|p| p.value.clone()).collect()
         }
     }
@@ -4629,22 +4631,22 @@ mod tests {
     /// 4.4.g: `inlay_hint_label_text` flattens both shapes.
     #[test]
     fn inlay_hint_label_text_handles_string_and_parts() {
-        let s = lsp_types::InlayHintLabel::String(": i32".into());
+        let s = lattice_lsp::lsp_types::InlayHintLabel::String(": i32".into());
         assert_eq!(inlay_hint_label_text(&s), ": i32");
-        let parts = lsp_types::InlayHintLabel::LabelParts(vec![
-            lsp_types::InlayHintLabelPart {
+        let parts = lattice_lsp::lsp_types::InlayHintLabel::LabelParts(vec![
+            lattice_lsp::lsp_types::InlayHintLabelPart {
                 value: "size".into(),
                 tooltip: None,
                 location: None,
                 command: None,
             },
-            lsp_types::InlayHintLabelPart {
+            lattice_lsp::lsp_types::InlayHintLabelPart {
                 value: ": ".into(),
                 tooltip: None,
                 location: None,
                 command: None,
             },
-            lsp_types::InlayHintLabelPart {
+            lattice_lsp::lsp_types::InlayHintLabelPart {
                 value: "usize".into(),
                 tooltip: None,
                 location: None,
@@ -5285,31 +5287,31 @@ mod tests {
             buffer_id: app.editor.document_buffer_id,
             cursor: lattice_protocol::Position::new(0, 4),
             highlights: vec![
-                lsp_types::DocumentHighlight {
-                    range: lsp_types::Range {
-                        start: lsp_types::Position {
+                lattice_lsp::lsp_types::DocumentHighlight {
+                    range: lattice_lsp::lsp_types::Range {
+                        start: lattice_lsp::lsp_types::Position {
                             line: 0,
                             character: 4,
                         },
-                        end: lsp_types::Position {
+                        end: lattice_lsp::lsp_types::Position {
                             line: 0,
                             character: 5,
                         },
                     },
-                    kind: Some(lsp_types::DocumentHighlightKind::WRITE),
+                    kind: Some(lattice_lsp::lsp_types::DocumentHighlightKind::WRITE),
                 },
-                lsp_types::DocumentHighlight {
-                    range: lsp_types::Range {
-                        start: lsp_types::Position {
+                lattice_lsp::lsp_types::DocumentHighlight {
+                    range: lattice_lsp::lsp_types::Range {
+                        start: lattice_lsp::lsp_types::Position {
                             line: 0,
                             character: 8,
                         },
-                        end: lsp_types::Position {
+                        end: lattice_lsp::lsp_types::Position {
                             line: 0,
                             character: 9,
                         },
                     },
-                    kind: Some(lsp_types::DocumentHighlightKind::READ),
+                    kind: Some(lattice_lsp::lsp_types::DocumentHighlightKind::READ),
                 },
             ],
         });
@@ -5355,13 +5357,13 @@ mod tests {
             app.editor.document_buffer_id,
             crate::app::LspInlayHintCache {
                 document_version: app.editor.document.snapshot().version,
-                hints: vec![lsp_types::InlayHint {
-                    position: lsp_types::Position {
+                hints: vec![lattice_lsp::lsp_types::InlayHint {
+                    position: lattice_lsp::lsp_types::Position {
                         line: 0,
                         character: 5,
                     },
-                    label: lsp_types::InlayHintLabel::String(": i32".into()),
-                    kind: Some(lsp_types::InlayHintKind::TYPE),
+                    label: lattice_lsp::lsp_types::InlayHintLabel::String(": i32".into()),
+                    kind: Some(lattice_lsp::lsp_types::InlayHintKind::TYPE),
                     text_edits: None,
                     tooltip: None,
                     padding_left: Some(false),
@@ -5512,12 +5514,12 @@ mod tests {
             app.editor.document_buffer_id,
             crate::app::LspInlayHintCache {
                 document_version: app.editor.document.snapshot().version,
-                hints: vec![lsp_types::InlayHint {
-                    position: lsp_types::Position {
+                hints: vec![lattice_lsp::lsp_types::InlayHint {
+                    position: lattice_lsp::lsp_types::Position {
                         line: 0,
                         character: 5,
                     },
-                    label: lsp_types::InlayHintLabel::String(": i32".into()),
+                    label: lattice_lsp::lsp_types::InlayHintLabel::String(": i32".into()),
                     kind: None,
                     text_edits: None,
                     tooltip: None,
@@ -5561,13 +5563,13 @@ mod tests {
         app.editor.lsp_document_highlights = Some(crate::app::DocumentHighlightCache {
             buffer_id: app.editor.document_buffer_id,
             cursor: lattice_protocol::Position::new(0, 4),
-            highlights: vec![lsp_types::DocumentHighlight {
-                range: lsp_types::Range {
-                    start: lsp_types::Position {
+            highlights: vec![lattice_lsp::lsp_types::DocumentHighlight {
+                range: lattice_lsp::lsp_types::Range {
+                    start: lattice_lsp::lsp_types::Position {
                         line: 0,
                         character: 4,
                     },
-                    end: lsp_types::Position {
+                    end: lattice_lsp::lsp_types::Position {
                         line: 0,
                         character: 5,
                     },

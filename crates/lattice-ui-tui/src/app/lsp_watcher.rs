@@ -48,7 +48,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use lsp_types::{FileChangeType, FileEvent};
+use lattice_lsp::lsp_types::{FileChangeType, FileEvent};
 use notify::{
     Event as NotifyEvent, EventKind as NotifyEventKind,
     event::{CreateKind, ModifyKind, RemoveKind},
@@ -252,7 +252,7 @@ impl App {
             let Some(batch) = per_server.remove(&server_id) else {
                 continue;
             };
-            let params = lsp_types::DidChangeWatchedFilesParams { changes: batch };
+            let params = lattice_lsp::lsp_types::DidChangeWatchedFilesParams { changes: batch };
             if let Err(e) = handle.did_change_watched_files(params) {
                 let instance = handle.instance();
                 self.editor.lsp_logger.log(

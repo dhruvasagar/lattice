@@ -860,8 +860,8 @@ impl App {
             return;
         }
         let uri_string = lattice_lsp::actor::uri_from_path(path).as_str().to_string();
-        let params = lsp_types::CreateFilesParams {
-            files: vec![lsp_types::FileCreate { uri: uri_string }],
+        let params = lattice_lsp::lsp_types::CreateFilesParams {
+            files: vec![lattice_lsp::lsp_types::FileCreate { uri: uri_string }],
         };
         for h in handles {
             if !h.capabilities().supports_did_create_files() {
@@ -881,9 +881,9 @@ impl App {
         };
         let uri = uri.clone();
         let handles = self.editor.lsp.servers_for(&uri);
-        let params = lsp_types::WillSaveTextDocumentParams {
-            text_document: lsp_types::TextDocumentIdentifier { uri },
-            reason: lsp_types::TextDocumentSaveReason::MANUAL,
+        let params = lattice_lsp::lsp_types::WillSaveTextDocumentParams {
+            text_document: lattice_lsp::lsp_types::TextDocumentIdentifier { uri },
+            reason: lattice_lsp::lsp_types::TextDocumentSaveReason::MANUAL,
         };
         for h in handles {
             if h.capabilities().wants_will_save() {
@@ -924,9 +924,9 @@ impl App {
         if interested.is_empty() {
             return;
         }
-        let params = lsp_types::WillSaveTextDocumentParams {
-            text_document: lsp_types::TextDocumentIdentifier { uri },
-            reason: lsp_types::TextDocumentSaveReason::MANUAL,
+        let params = lattice_lsp::lsp_types::WillSaveTextDocumentParams {
+            text_document: lattice_lsp::lsp_types::TextDocumentIdentifier { uri },
+            reason: lattice_lsp::lsp_types::TextDocumentSaveReason::MANUAL,
         };
         // One cancellation token per request; on overall
         // timeout we cancel every in-flight one so slow servers
@@ -940,19 +940,19 @@ impl App {
             .map(|(handle, token)| handle.will_save_wait_until(params.clone(), token.clone()))
             .collect();
         let cancel_tokens = tokens.clone();
-        let all_edits: Vec<lsp_types::TextEdit> = block_on(async move {
+        let all_edits: Vec<lattice_lsp::lsp_types::TextEdit> = block_on(async move {
             // Spawn each request onto a `JoinSet` so they run
             // concurrently on the LSP runtime. The shared
             // 500ms deadline below caps the *total* UI-thread
             // block.
-            let mut set: tokio::task::JoinSet<Vec<lsp_types::TextEdit>> =
+            let mut set: tokio::task::JoinSet<Vec<lattice_lsp::lsp_types::TextEdit>> =
                 tokio::task::JoinSet::new();
             for fut in pending {
                 set.spawn(async move { fut.await.ok().flatten().unwrap_or_default() });
             }
             let deadline = tokio::time::sleep(Duration::from_millis(500));
             tokio::pin!(deadline);
-            let mut acc: Vec<lsp_types::TextEdit> = Vec::new();
+            let mut acc: Vec<lattice_lsp::lsp_types::TextEdit> = Vec::new();
             loop {
                 tokio::select! {
                     next = set.join_next() => match next {
@@ -1009,8 +1009,8 @@ impl App {
             } else {
                 None
             };
-            let params = lsp_types::DidSaveTextDocumentParams {
-                text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+            let params = lattice_lsp::lsp_types::DidSaveTextDocumentParams {
+                text_document: lattice_lsp::lsp_types::TextDocumentIdentifier { uri: uri.clone() },
                 text,
             };
             let _ = h.did_save(params);

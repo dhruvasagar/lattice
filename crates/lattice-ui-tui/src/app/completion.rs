@@ -704,7 +704,7 @@ impl App {
         if let Some(meta) = self.lsp_completion_meta_for(&item) {
             if matches!(
                 meta.insert_text_format,
-                lsp_types::InsertTextFormat::SNIPPET
+                lattice_lsp::lsp_types::InsertTextFormat::SNIPPET
             ) {
                 // Coalesce additionalTextEdits + the snippet
                 // body's main splice into ONE undo unit (Phase
@@ -1010,7 +1010,7 @@ impl App {
         &mut self,
         body: &lattice_snippet::SnippetBody,
         anchor: Position,
-        additional: Vec<lsp_types::TextEdit>,
+        additional: Vec<lattice_lsp::lsp_types::TextEdit>,
     ) -> Result<(), String> {
         let vars = self.snippet_variable_context();
         let rendered = lattice_snippet::render::render(body, &vars);
@@ -1245,7 +1245,7 @@ mod tests {
 
     #[test]
     fn completion_kind_glyph_distinct_for_common_kinds() {
-        use lsp_types::CompletionItemKind as K;
+        use lattice_lsp::lsp_types::CompletionItemKind as K;
         let f = completion_kind_glyph(Some(K::FUNCTION));
         let s = completion_kind_glyph(Some(K::SNIPPET));
         let v = completion_kind_glyph(Some(K::VARIABLE));

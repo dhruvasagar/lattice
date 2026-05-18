@@ -120,6 +120,16 @@ pub use sync::{DocSync, uri_from_str};
 // a direct `lsp-types` dep just to spell them out in
 // signatures. lsp-types changes shape across major versions;
 // the re-exports give us a stable seam if we need to swap.
+// 5.8.J / refactor #70: lattice-lsp is the canonical owner of the
+// `lsp_types` substrate; downstream crates reach types through this
+// crate rather than depending on `lsp-types` directly. The module
+// re-export gives them the full namespace (~108 distinct types are
+// used workspace-wide; selective re-exports were unwieldy).
+pub use lsp_types;
+
+// Convenience re-exports for the most-used items so callers can
+// write `lattice_lsp::Diagnostic` instead of
+// `lattice_lsp::lsp_types::Diagnostic` for the common cases.
 pub use lsp_types::{
     Diagnostic, DiagnosticSeverity, InlayHint, InlayHintLabel, InlayHintLabelPart,
     Position as LspPosition, Range as LspRange, Uri,

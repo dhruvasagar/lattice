@@ -2532,11 +2532,14 @@ impl Editor {
                 if !handle.capabilities().supports_signature_help() {
                     continue;
                 }
-                let params = lsp_types::SignatureHelpParams {
-                    text_document_position_params: lsp_types::TextDocumentPositionParams {
-                        text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
-                        position: lsp_position,
-                    },
+                let params = lattice_lsp::lsp_types::SignatureHelpParams {
+                    text_document_position_params:
+                        lattice_lsp::lsp_types::TextDocumentPositionParams {
+                            text_document: lattice_lsp::lsp_types::TextDocumentIdentifier {
+                                uri: uri.clone(),
+                            },
+                            position: lsp_position,
+                        },
                     work_done_progress_params: Default::default(),
                     context: None,
                 };
@@ -2619,9 +2622,11 @@ impl Editor {
                 if !handle.capabilities().supports_completion() {
                     continue;
                 }
-                let params = lsp_types::CompletionParams {
-                    text_document_position: lsp_types::TextDocumentPositionParams {
-                        text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                let params = lattice_lsp::lsp_types::CompletionParams {
+                    text_document_position: lattice_lsp::lsp_types::TextDocumentPositionParams {
+                        text_document: lattice_lsp::lsp_types::TextDocumentIdentifier {
+                            uri: uri.clone(),
+                        },
                         position: lsp_position,
                     },
                     work_done_progress_params: Default::default(),
@@ -2630,8 +2635,8 @@ impl Editor {
                 };
                 if let Ok(Some(resp)) = handle.completion(params, token.clone()).await {
                     let items = match resp {
-                        lsp_types::CompletionResponse::Array(items) => items,
-                        lsp_types::CompletionResponse::List(list) => list.items,
+                        lattice_lsp::lsp_types::CompletionResponse::Array(items) => items,
+                        lattice_lsp::lsp_types::CompletionResponse::List(list) => list.items,
                     };
                     for ci in items {
                         let label = ci.label;
@@ -2711,8 +2716,10 @@ impl Editor {
                 if token.is_cancelled() {
                     return;
                 }
-                let params = lsp_types::DocumentSymbolParams {
-                    text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                let params = lattice_lsp::lsp_types::DocumentSymbolParams {
+                    text_document: lattice_lsp::lsp_types::TextDocumentIdentifier {
+                        uri: uri.clone(),
+                    },
                     work_done_progress_params: Default::default(),
                     partial_result_params: Default::default(),
                 };
@@ -2769,7 +2776,7 @@ impl Editor {
                 if token.is_cancelled() {
                     return;
                 }
-                let params = lsp_types::WorkspaceSymbolParams {
+                let params = lattice_lsp::lsp_types::WorkspaceSymbolParams {
                     query: query.clone(),
                     work_done_progress_params: Default::default(),
                     partial_result_params: Default::default(),
@@ -2779,7 +2786,7 @@ impl Editor {
                 };
                 match resp {
                     // Legacy `Vec<SymbolInformation>` shape.
-                    lsp_types::WorkspaceSymbolResponse::Flat(syms) => {
+                    lattice_lsp::lsp_types::WorkspaceSymbolResponse::Flat(syms) => {
                         for sym in syms {
                             if let Some(row) = crate::lsp_helpers::symbol_information_to_row(&sym) {
                                 all.push(row);
@@ -2787,7 +2794,7 @@ impl Editor {
                         }
                     }
                     // Modern `Vec<WorkspaceSymbol>` shape (LSP 3.17+).
-                    lsp_types::WorkspaceSymbolResponse::Nested(syms) => {
+                    lattice_lsp::lsp_types::WorkspaceSymbolResponse::Nested(syms) => {
                         for sym in syms {
                             if let Some(row) =
                                 crate::lsp_helpers::workspace_symbol_to_row(&handle, sym, &token)
@@ -2875,19 +2882,21 @@ impl Editor {
                 let _ = tx.send(lattice_lsp::cache::ReferencesOutcome::NoServers);
                 return;
             }
-            let mut all: Vec<lsp_types::Location> = Vec::new();
+            let mut all: Vec<lattice_lsp::lsp_types::Location> = Vec::new();
             for handle in handles {
                 if token.is_cancelled() {
                     return;
                 }
-                let params = lsp_types::ReferenceParams {
-                    text_document_position: lsp_types::TextDocumentPositionParams {
-                        text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                let params = lattice_lsp::lsp_types::ReferenceParams {
+                    text_document_position: lattice_lsp::lsp_types::TextDocumentPositionParams {
+                        text_document: lattice_lsp::lsp_types::TextDocumentIdentifier {
+                            uri: uri.clone(),
+                        },
                         position: lsp_position,
                     },
                     work_done_progress_params: Default::default(),
                     partial_result_params: Default::default(),
-                    context: lsp_types::ReferenceContext {
+                    context: lattice_lsp::lsp_types::ReferenceContext {
                         include_declaration: true,
                     },
                 };
@@ -2961,7 +2970,8 @@ impl Editor {
             position: self.cursor,
             label,
         });
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Vec<lsp_types::Location>>();
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<Vec<lattice_lsp::lsp_types::Location>>();
         let token = lattice_protocol::CancellationToken::new();
         self.pending_definition_rx = Some(rx);
         self.pending_definition_token = Some(token.clone());
@@ -2969,18 +2979,20 @@ impl Editor {
         let lsp = self.lsp.clone();
         lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
-            let mut all: Vec<lsp_types::Location> = Vec::new();
+            let mut all: Vec<lattice_lsp::lsp_types::Location> = Vec::new();
             for handle in handles {
                 if token.is_cancelled() {
                     return;
                 }
-                let pos_params = lsp_types::TextDocumentPositionParams {
-                    text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                let pos_params = lattice_lsp::lsp_types::TextDocumentPositionParams {
+                    text_document: lattice_lsp::lsp_types::TextDocumentIdentifier {
+                        uri: uri.clone(),
+                    },
                     position: lsp_position,
                 };
                 let resp_locs = match kind {
                     lattice_lsp::cache::LspNavKind::Definition => {
-                        let params = lsp_types::GotoDefinitionParams {
+                        let params = lattice_lsp::lsp_types::GotoDefinitionParams {
                             text_document_position_params: pos_params,
                             work_done_progress_params: Default::default(),
                             partial_result_params: Default::default(),
@@ -2994,7 +3006,7 @@ impl Editor {
                             .unwrap_or_default()
                     }
                     lattice_lsp::cache::LspNavKind::Declaration => {
-                        let params = lsp_types::request::GotoDeclarationParams {
+                        let params = lattice_lsp::lsp_types::request::GotoDeclarationParams {
                             text_document_position_params: pos_params,
                             work_done_progress_params: Default::default(),
                             partial_result_params: Default::default(),
@@ -3008,7 +3020,7 @@ impl Editor {
                             .unwrap_or_default()
                     }
                     lattice_lsp::cache::LspNavKind::TypeDefinition => {
-                        let params = lsp_types::request::GotoTypeDefinitionParams {
+                        let params = lattice_lsp::lsp_types::request::GotoTypeDefinitionParams {
                             text_document_position_params: pos_params,
                             work_done_progress_params: Default::default(),
                             partial_result_params: Default::default(),
@@ -3022,7 +3034,7 @@ impl Editor {
                             .unwrap_or_default()
                     }
                     lattice_lsp::cache::LspNavKind::Implementation => {
-                        let params = lsp_types::request::GotoImplementationParams {
+                        let params = lattice_lsp::lsp_types::request::GotoImplementationParams {
                             text_document_position_params: pos_params,
                             work_done_progress_params: Default::default(),
                             partial_result_params: Default::default(),
@@ -3138,11 +3150,14 @@ impl Editor {
                     return;
                 }
                 tried += 1;
-                let params = lsp_types::HoverParams {
-                    text_document_position_params: lsp_types::TextDocumentPositionParams {
-                        text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
-                        position: lsp_position,
-                    },
+                let params = lattice_lsp::lsp_types::HoverParams {
+                    text_document_position_params:
+                        lattice_lsp::lsp_types::TextDocumentPositionParams {
+                            text_document: lattice_lsp::lsp_types::TextDocumentIdentifier {
+                                uri: uri.clone(),
+                            },
+                            position: lsp_position,
+                        },
                     work_done_progress_params: Default::default(),
                 };
                 let instance = handle.instance();
@@ -3585,7 +3600,7 @@ impl Editor {
     /// `handle_renderer_signal` match arm.
     pub fn fan_out_did_change_configuration(&mut self, server_id: &str) {
         let settings = self.lookup_lsp_config_section(server_id);
-        let params = lsp_types::DidChangeConfigurationParams { settings };
+        let params = lattice_lsp::lsp_types::DidChangeConfigurationParams { settings };
         let supervisor = self.lsp.clone();
         for (_key, handle) in supervisor.running_actors() {
             if handle.server_id() != server_id {

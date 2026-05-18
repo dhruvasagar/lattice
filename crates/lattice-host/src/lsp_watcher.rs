@@ -5,7 +5,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use lsp_types::FileChangeType;
+use lattice_lsp::lsp_types::FileChangeType;
 use notify::{
     Event as NotifyEvent, EventKind as NotifyEventKind, RecommendedWatcher, RecursiveMode, Watcher,
     event::{CreateKind, ModifyKind, RemoveKind},

@@ -746,7 +746,7 @@ pub struct Editor {
     pub pending_hover_rx: Option<tokio::sync::mpsc::UnboundedReceiver<HoverOutcome>>,
     pub pending_hover_token: Option<CancellationToken>,
     pub pending_definition_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<Vec<lsp_types::Location>>>,
+        Option<tokio::sync::mpsc::UnboundedReceiver<Vec<lattice_lsp::lsp_types::Location>>>,
     pub pending_definition_token: Option<CancellationToken>,
     pub pending_nav_kind: Option<LspNavKind>,
     pub pending_references_rx: Option<tokio::sync::mpsc::UnboundedReceiver<ReferencesOutcome>>,
@@ -783,13 +783,13 @@ pub struct Editor {
     pub pending_code_lens_rx: Option<tokio::sync::mpsc::UnboundedReceiver<CodeLensOutcome>>,
     pub pending_code_lens_refresh_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspCodeLensRefresh>>,
-    pub pending_code_lens_items: Option<Vec<lsp_types::CodeLens>>,
+    pub pending_code_lens_items: Option<Vec<lattice_lsp::lsp_types::CodeLens>>,
     pub pending_code_lens_server: Option<Arc<str>>,
     pub pending_document_color_token: Option<CancellationToken>,
     pub pending_document_color_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<DocumentColorOutcome>>,
-    pub pending_color_presentations: Option<Vec<lsp_types::ColorPresentation>>,
-    pub pending_color_range: Option<lsp_types::Range>,
+    pub pending_color_presentations: Option<Vec<lattice_lsp::lsp_types::ColorPresentation>>,
+    pub pending_color_range: Option<lattice_lsp::lsp_types::Range>,
     pub pending_inlay_hint_token: Option<CancellationToken>,
     pub pending_inlay_hint_rx: Option<tokio::sync::mpsc::UnboundedReceiver<InlayHintOutcome>>,
     pub pending_semantic_tokens_token: Option<CancellationToken>,

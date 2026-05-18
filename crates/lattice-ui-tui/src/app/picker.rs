@@ -357,7 +357,7 @@ impl App {
     pub(super) fn open_lsp_locations_picker(
         &mut self,
         title: impl Into<String>,
-        locations: &[lsp_types::Location],
+        locations: &[lattice_lsp::lsp_types::Location],
     ) {
         if locations.is_empty() {
             return;

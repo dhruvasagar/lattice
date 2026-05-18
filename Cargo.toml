@@ -91,6 +91,14 @@ notify = "6"
 # registered.
 globset = "0.4"
 
+# 5.8.AF.5 Slice 2: `.gitignore` / `.ignore` aware matching for
+# the LSP file-watcher's source-side filter. Built by ripgrep's
+# author; same crate every mature editor's LSP integration
+# (helix, zed, neovim, ...) uses for "don't watch the things the
+# user already told us are noise." We use the
+# `gitignore::GitignoreBuilder` API directly, not the walker.
+ignore = "0.4"
+
 # LSP (Phase 4 -- lattice-lsp). `lsp-types` models the LSP 3.17
 # wire types; we hand-roll the JSON-RPC client + framing per
 # DESIGN.md §5.4 (tower-lsp is server-side). `serde_json` is the

@@ -81,6 +81,15 @@ notify = { workspace = true }
 # `RUST_LOG=lattice_host=debug`; default subscriber filter is
 # `info` so this is silent in normal operation.
 tracing = { workspace = true }
+# Phase 5.8.AF.5 Slice 2: source-side filtering for the LSP
+# file-watcher. `ignore` provides `.gitignore` / `.ignore` /
+# global-gitignore aware path matching; `globset` compiles the
+# baked default exclude patterns (`**/target/**`, `**/.git/**`,
+# ...) into one aho-corasick-backed matcher. Both consulted in
+# the notify callback so events for ignored paths never enter
+# the channel.
+ignore = { workspace = true }
+globset = { workspace = true }
 # 5.5.E.7.5: `Editor::do_substitute` compiles `:s/pat/repl/`
 # patterns host-side via the same fancy-regex engine that backs
 # `/` and `?` in `lattice-core::search`.

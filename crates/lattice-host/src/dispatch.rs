@@ -3319,6 +3319,509 @@ impl Editor {
         }
     }
 
+    /// 4.4.g: drain the in-flight `inlayHint` response.
+    /// Coalesces multiple queued outcomes to the latest.
+    ///
+    /// Phase 5.8.AA.b: hoisted from
+    /// `lattice-ui-tui::app::lsp::App::drain_pending_inlay_hint`.
+    /// Pure cache mutation against `editor.lsp_inlay_hints_cache`
+    /// which the GPUI peer's paint_pane already reads (5.8.J).
+    pub fn drain_pending_inlay_hint(&mut self) {
+        let Some(mut rx) = self.pending_inlay_hint_rx.take() else {
+            return;
+        };
+        let mut latest: Option<lattice_lsp::cache::InlayHintOutcome> = None;
+        while let Ok(outcome) = rx.try_recv() {
+            latest = Some(outcome);
+        }
+        self.pending_inlay_hint_rx = Some(rx);
+        let Some(outcome) = latest else {
+            return;
+        };
+        use lattice_lsp::cache::InlayHintOutcome;
+        match outcome {
+            InlayHintOutcome::Items {
+                buffer_id,
+                document_version,
+                hints,
+                requested_first_line,
+                requested_last_line,
+            } => {
+                if buffer_id != self.document_buffer_id {
+                    return;
+                }
+                self.lsp_inlay_hints_cache.insert(
+                    buffer_id,
+                    lattice_lsp::cache::LspInlayHintCache {
+                        document_version,
+                        hints,
+                        requested_first_line,
+                        requested_last_line,
+                    },
+                );
+            }
+            InlayHintOutcome::Empty {
+                buffer_id,
+                document_version,
+                requested_first_line,
+                requested_last_line,
+            } => {
+                if buffer_id != self.document_buffer_id {
+                    return;
+                }
+                self.lsp_inlay_hints_cache.insert(
+                    buffer_id,
+                    lattice_lsp::cache::LspInlayHintCache {
+                        document_version,
+                        hints: Vec::new(),
+                        requested_first_line,
+                        requested_last_line,
+                    },
+                );
+            }
+        }
+    }
+
+    /// 4.4.j: drain pulled-diagnostics responses.
+    ///
+    /// Phase 5.8.AA.b: hoisted from
+    /// `lattice-ui-tui::app::lsp::App::drain_pending_pull_diagnostics`.
+    pub fn drain_pending_pull_diagnostics(&mut self) {
+        let Some(mut rx) = self.pending_pull_diagnostics_rx.take() else {
+            return;
+        };
+        let mut latest: Option<lattice_lsp::cache::PullDiagnosticsOutcome> = None;
+        while let Ok(outcome) = rx.try_recv() {
+            latest = Some(outcome);
+        }
+        self.pending_pull_diagnostics_rx = Some(rx);
+        let Some(outcome) = latest else {
+            return;
+        };
+        use lattice_lsp::cache::{LspPullDiagnosticsCache, PullDiagnosticsOutcome};
+        match outcome {
+            PullDiagnosticsOutcome::Full {
+                buffer_id,
+                server_id,
+                uri,
+                document_version,
+                result_id,
+                diagnostics,
+            } => {
+                self.lsp_pull_diagnostics_cache.insert(
+                    buffer_id,
+                    LspPullDiagnosticsCache {
+                        document_version,
+                        result_id,
+                    },
+                );
+                let version_i32 = i32::try_from(document_version).ok();
+                self.lsp_diagnostics.apply(lattice_lsp::DiagnosticEvent {
+                    server_id,
+                    uri,
+                    version: version_i32,
+                    diagnostics: std::sync::Arc::from(diagnostics.into_boxed_slice()),
+                });
+            }
+            PullDiagnosticsOutcome::Unchanged {
+                buffer_id,
+                document_version,
+                result_id,
+            } => {
+                self.lsp_pull_diagnostics_cache.insert(
+                    buffer_id,
+                    LspPullDiagnosticsCache {
+                        document_version,
+                        result_id: Some(result_id),
+                    },
+                );
+            }
+            PullDiagnosticsOutcome::Empty {
+                buffer_id,
+                document_version,
+            } => {
+                self.lsp_pull_diagnostics_cache.insert(
+                    buffer_id,
+                    LspPullDiagnosticsCache {
+                        document_version,
+                        result_id: None,
+                    },
+                );
+            }
+        }
+    }
+
+    /// 4.4.f: drain pending `foldingRange` outcome; seats the
+    /// per-buffer cache and triggers `recompute_folds` so the
+    /// renderer picks up new extents next frame.
+    ///
+    /// Phase 5.8.AA.b: hoisted from
+    /// `lattice-ui-tui::app::lsp::App::drain_pending_folding_range`.
+    /// `recompute_folds` was already host-resident.
+    pub fn drain_pending_folding_range(&mut self) {
+        let Some(mut rx) = self.pending_folding_range_rx.take() else {
+            return;
+        };
+        let mut latest: Option<lattice_lsp::cache::FoldingRangeOutcome> = None;
+        while let Ok(outcome) = rx.try_recv() {
+            latest = Some(outcome);
+        }
+        self.pending_folding_range_rx = Some(rx);
+        let Some(outcome) = latest else {
+            return;
+        };
+        use lattice_lsp::cache::{FoldingRangeOutcome, LspFoldsCache};
+        match outcome {
+            FoldingRangeOutcome::Items {
+                buffer_id,
+                document_version,
+                folds,
+            } => {
+                if buffer_id != self.document_buffer_id {
+                    return;
+                }
+                self.lsp_folds_cache.insert(
+                    buffer_id,
+                    LspFoldsCache {
+                        document_version,
+                        folds,
+                    },
+                );
+                self.recompute_folds();
+            }
+            FoldingRangeOutcome::Empty {
+                buffer_id,
+                document_version,
+            } => {
+                if buffer_id != self.document_buffer_id {
+                    return;
+                }
+                self.lsp_folds_cache.insert(
+                    buffer_id,
+                    LspFoldsCache {
+                        document_version,
+                        folds: Vec::new(),
+                    },
+                );
+                self.recompute_folds();
+            }
+        }
+    }
+
+    /// 4.4.h: drain semantic-tokens responses (Items/Delta/Empty).
+    /// Phase 5.8.AA.b: hoisted from TUI App.
+    pub fn drain_pending_semantic_tokens(&mut self) {
+        let Some(mut rx) = self.pending_semantic_tokens_rx.take() else {
+            return;
+        };
+        let mut latest: Option<lattice_lsp::cache::SemanticTokensOutcome> = None;
+        while let Ok(outcome) = rx.try_recv() {
+            latest = Some(outcome);
+        }
+        self.pending_semantic_tokens_rx = Some(rx);
+        let Some(outcome) = latest else {
+            return;
+        };
+        use lattice_lsp::cache::{LspSemanticTokensCache, SemanticTokensOutcome};
+        match outcome {
+            SemanticTokensOutcome::Items {
+                buffer_id,
+                document_version,
+                result_id,
+                raw_data,
+                tokens,
+            } => {
+                if buffer_id != self.document_buffer_id {
+                    return;
+                }
+                self.lsp_semantic_tokens_cache.insert(
+                    buffer_id,
+                    LspSemanticTokensCache {
+                        document_version,
+                        result_id,
+                        raw_data,
+                        tokens,
+                    },
+                );
+            }
+            SemanticTokensOutcome::Delta {
+                buffer_id,
+                document_version,
+                previous_result_id,
+                new_result_id,
+                edits,
+                token_types,
+                token_modifiers,
+            } => {
+                if buffer_id != self.document_buffer_id {
+                    return;
+                }
+                let Some(cache) = self.lsp_semantic_tokens_cache.get(&buffer_id) else {
+                    return;
+                };
+                if cache.result_id.as_deref() != Some(previous_result_id.as_str()) {
+                    self.lsp_semantic_tokens_cache.remove(&buffer_id);
+                    return;
+                }
+                let mut raw_data = cache.raw_data.clone();
+                if lattice_lsp::cache::apply_semantic_token_edits(&mut raw_data, &edits).is_err() {
+                    self.lsp_semantic_tokens_cache.remove(&buffer_id);
+                    return;
+                }
+                let decoded = lattice_lsp::cache::decode_semantic_tokens(
+                    &raw_data,
+                    &token_types,
+                    &token_modifiers,
+                );
+                self.lsp_semantic_tokens_cache.insert(
+                    buffer_id,
+                    LspSemanticTokensCache {
+                        document_version,
+                        result_id: new_result_id,
+                        raw_data,
+                        tokens: decoded,
+                    },
+                );
+            }
+            SemanticTokensOutcome::Empty {
+                buffer_id,
+                document_version,
+            } => {
+                if buffer_id != self.document_buffer_id {
+                    return;
+                }
+                self.lsp_semantic_tokens_cache.insert(
+                    buffer_id,
+                    LspSemanticTokensCache {
+                        document_version,
+                        result_id: None,
+                        raw_data: Vec::new(),
+                        tokens: Vec::new(),
+                    },
+                );
+            }
+        }
+    }
+
+    /// 4.5.b: drain `moniker` outcome — echoes the moniker
+    /// scheme + value. Phase 5.8.AA.b: hoisted from TUI App.
+    pub fn drain_pending_moniker(&mut self) {
+        let Some(mut rx) = self.pending_moniker_rx.take() else {
+            return;
+        };
+        let mut latest: Option<String> = None;
+        while let Ok(s) = rx.try_recv() {
+            latest = Some(s);
+        }
+        self.pending_moniker_rx = Some(rx);
+        if let Some(msg) = latest {
+            self.set_message(EchoLevel::Info, format!("moniker: {msg}"));
+        }
+    }
+
+    /// 4.5.c: drain `documentLink` outcome; seat the per-buffer
+    /// cache. Phase 5.8.AA.b: hoisted from TUI App.
+    pub fn drain_pending_document_link(&mut self) {
+        let Some(mut rx) = self.pending_document_links_rx.take() else {
+            return;
+        };
+        let mut latest: Option<lattice_lsp::cache::DocumentLinksOutcome> = None;
+        while let Ok(o) = rx.try_recv() {
+            latest = Some(o);
+        }
+        self.pending_document_links_rx = Some(rx);
+        let Some(outcome) = latest else {
+            return;
+        };
+        self.pending_document_links_token = None;
+        use lattice_lsp::cache::{DocumentLinksOutcome, LspDocumentLinksCache};
+        match outcome {
+            DocumentLinksOutcome::Items {
+                buffer_id,
+                document_version,
+                links,
+            } => {
+                if buffer_id != self.document_buffer_id {
+                    return;
+                }
+                self.lsp_document_links_cache.insert(
+                    buffer_id,
+                    LspDocumentLinksCache {
+                        document_version,
+                        links,
+                    },
+                );
+            }
+            DocumentLinksOutcome::Empty {
+                buffer_id,
+                document_version,
+            } => {
+                if buffer_id != self.document_buffer_id {
+                    return;
+                }
+                self.lsp_document_links_cache.insert(
+                    buffer_id,
+                    LspDocumentLinksCache {
+                        document_version,
+                        links: Vec::new(),
+                    },
+                );
+            }
+        }
+    }
+
+    /// 4.5.d: drain `codeLens` outcome; seat the per-buffer cache.
+    /// Phase 5.8.AA.b: hoisted from TUI App.
+    pub fn drain_pending_code_lens(&mut self) {
+        let Some(mut rx) = self.pending_code_lens_rx.take() else {
+            return;
+        };
+        let mut latest: Option<lattice_lsp::cache::CodeLensOutcome> = None;
+        while let Ok(o) = rx.try_recv() {
+            latest = Some(o);
+        }
+        self.pending_code_lens_rx = Some(rx);
+        let Some(outcome) = latest else {
+            return;
+        };
+        self.pending_code_lens_token = None;
+        use lattice_lsp::cache::{CodeLensOutcome, LspCodeLensCache};
+        match outcome {
+            CodeLensOutcome::Items {
+                buffer_id,
+                document_version,
+                server_id,
+                lenses,
+            } => {
+                if buffer_id != self.document_buffer_id {
+                    return;
+                }
+                self.lsp_code_lens_cache.insert(
+                    buffer_id,
+                    LspCodeLensCache {
+                        document_version,
+                        lenses,
+                        server_id,
+                    },
+                );
+            }
+            CodeLensOutcome::Empty {
+                buffer_id,
+                document_version,
+            } => {
+                if buffer_id != self.document_buffer_id {
+                    return;
+                }
+                self.lsp_code_lens_cache.insert(
+                    buffer_id,
+                    LspCodeLensCache {
+                        document_version,
+                        lenses: Vec::new(),
+                        server_id: std::sync::Arc::from("<none>"),
+                    },
+                );
+            }
+        }
+    }
+
+    /// 4.5.e: drain `documentColor` outcome; seat the per-buffer
+    /// cache. Phase 5.8.AA.b: hoisted from TUI App.
+    pub fn drain_pending_document_color(&mut self) {
+        let Some(mut rx) = self.pending_document_color_rx.take() else {
+            return;
+        };
+        let mut latest: Option<lattice_lsp::cache::DocumentColorOutcome> = None;
+        while let Ok(o) = rx.try_recv() {
+            latest = Some(o);
+        }
+        self.pending_document_color_rx = Some(rx);
+        let Some(outcome) = latest else {
+            return;
+        };
+        self.pending_document_color_token = None;
+        use lattice_lsp::cache::{DocumentColorOutcome, LspDocumentColorCache};
+        match outcome {
+            DocumentColorOutcome::Items {
+                buffer_id,
+                document_version,
+                server_id,
+                colors,
+            } => {
+                if buffer_id != self.document_buffer_id {
+                    return;
+                }
+                self.lsp_document_color_cache.insert(
+                    buffer_id,
+                    LspDocumentColorCache {
+                        document_version,
+                        colors,
+                        server_id,
+                    },
+                );
+            }
+            DocumentColorOutcome::Empty {
+                buffer_id,
+                document_version,
+            } => {
+                if buffer_id != self.document_buffer_id {
+                    return;
+                }
+                self.lsp_document_color_cache.insert(
+                    buffer_id,
+                    LspDocumentColorCache {
+                        document_version,
+                        colors: Vec::new(),
+                        server_id: std::sync::Arc::from("<none>"),
+                    },
+                );
+            }
+        }
+    }
+
+    /// 4.4.e: drain the in-flight `documentHighlight` response.
+    /// Coalesces multiple queued outcomes to the latest one so a
+    /// burst of cursor moves only commits the final response.
+    ///
+    /// Phase 5.8.AA.b: hoisted from
+    /// `lattice-ui-tui::app::lsp::App::drain_pending_document_highlight`.
+    /// Pure cache mutation against `editor.lsp_document_highlights`
+    /// which the GPUI peer's paint_pane already reads (5.8.V).
+    pub fn drain_pending_document_highlight(&mut self) {
+        let Some(mut rx) = self.pending_document_highlight_rx.take() else {
+            return;
+        };
+        let mut latest: Option<lattice_lsp::cache::DocumentHighlightOutcome> = None;
+        while let Ok(outcome) = rx.try_recv() {
+            latest = Some(outcome);
+        }
+        self.pending_document_highlight_rx = Some(rx);
+        let Some(outcome) = latest else {
+            return;
+        };
+        use lattice_lsp::cache::DocumentHighlightOutcome;
+        match outcome {
+            DocumentHighlightOutcome::Items {
+                buffer_id,
+                cursor,
+                highlights,
+            } => {
+                if buffer_id != self.document_buffer_id {
+                    return;
+                }
+                self.lsp_document_highlights = Some(lattice_lsp::cache::DocumentHighlightCache {
+                    buffer_id,
+                    cursor,
+                    highlights,
+                });
+            }
+            DocumentHighlightOutcome::Empty { buffer_id } => {
+                if buffer_id == self.document_buffer_id {
+                    self.lsp_document_highlights = None;
+                }
+            }
+        }
+    }
+
     pub fn run_tick_pending(&mut self) -> Vec<RendererSignal> {
         let mut signals = Vec::new();
         signals.extend(self.drain_option_changes());
@@ -3327,6 +3830,15 @@ impl Editor {
         signals.extend(self.drain_mode_lifecycle_events());
         self.drain_pending_references();
         self.drain_pending_symbols();
+        self.drain_pending_inlay_hint();
+        self.drain_pending_document_highlight();
+        self.drain_pending_pull_diagnostics();
+        self.drain_pending_folding_range();
+        self.drain_pending_semantic_tokens();
+        self.drain_pending_moniker();
+        self.drain_pending_document_link();
+        self.drain_pending_code_lens();
+        self.drain_pending_document_color();
         // `drain_pending_code_actions` returns an `Option<(handle,
         // action)>` for the App-side apply chain — not signal-shaped.
         // Renderer peers call it directly and decide how to handle

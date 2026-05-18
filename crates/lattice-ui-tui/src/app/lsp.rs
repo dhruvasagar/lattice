@@ -3012,17 +3012,8 @@ impl App {
     /// per main-loop tick like the other LSP drains; cheap when
     /// the channel is empty.
     pub fn drain_pending_moniker(&mut self) {
-        let Some(mut rx) = self.editor.pending_moniker_rx.take() else {
-            return;
-        };
-        let mut latest: Option<String> = None;
-        while let Ok(s) = rx.try_recv() {
-            latest = Some(s);
-        }
-        self.editor.pending_moniker_rx = Some(rx);
-        if let Some(msg) = latest {
-            self.set_message(EchoLevel::Info, format!("moniker: {msg}"));
-        }
+        // 5.8.AA.b: migrated to host.
+        self.editor.drain_pending_moniker();
     }
 
     /// `:lsp-signature-help` (Phase 4.3). Fan-out across attached
@@ -3556,55 +3547,9 @@ impl App {
     /// `recompute_folds` so the renderer picks up the new
     /// extents on the next frame.
     pub fn drain_pending_folding_range(&mut self) {
-        let Some(mut rx) = self.editor.pending_folding_range_rx.take() else {
-            return;
-        };
-        let mut latest: Option<super::FoldingRangeOutcome> = None;
-        while let Ok(outcome) = rx.try_recv() {
-            latest = Some(outcome);
-        }
-        self.editor.pending_folding_range_rx = Some(rx);
-        let Some(outcome) = latest else {
-            return;
-        };
-        match outcome {
-            super::FoldingRangeOutcome::Items {
-                buffer_id,
-                document_version,
-                folds,
-            } => {
-                if buffer_id != self.editor.document_buffer_id {
-                    return;
-                }
-                self.editor.lsp_folds_cache.insert(
-                    buffer_id,
-                    super::LspFoldsCache {
-                        document_version,
-                        folds,
-                    },
-                );
-                self.recompute_folds();
-            }
-            super::FoldingRangeOutcome::Empty {
-                buffer_id,
-                document_version,
-            } => {
-                if buffer_id != self.editor.document_buffer_id {
-                    return;
-                }
-                // Remember the version so we don't re-issue
-                // immediately; a future edit will bump the
-                // version and re-trigger.
-                self.editor.lsp_folds_cache.insert(
-                    buffer_id,
-                    super::LspFoldsCache {
-                        document_version,
-                        folds: Vec::new(),
-                    },
-                );
-                self.recompute_folds();
-            }
-        }
+        // 5.8.AA.b: migrated to
+        // `lattice_host::dispatch::Editor::drain_pending_folding_range`.
+        self.editor.drain_pending_folding_range();
     }
 
     /// 4.4.h: per-tick `semanticTokens/full` pump. Fires when
@@ -3766,100 +3711,9 @@ impl App {
     /// latest. On success seats the cache; on Empty seats an
     /// empty list so we don't re-issue immediately.
     pub fn drain_pending_semantic_tokens(&mut self) {
-        let Some(mut rx) = self.editor.pending_semantic_tokens_rx.take() else {
-            return;
-        };
-        let mut latest: Option<super::SemanticTokensOutcome> = None;
-        while let Ok(outcome) = rx.try_recv() {
-            latest = Some(outcome);
-        }
-        self.editor.pending_semantic_tokens_rx = Some(rx);
-        let Some(outcome) = latest else {
-            return;
-        };
-        match outcome {
-            super::SemanticTokensOutcome::Items {
-                buffer_id,
-                document_version,
-                result_id,
-                raw_data,
-                tokens,
-            } => {
-                if buffer_id != self.editor.document_buffer_id {
-                    return;
-                }
-                self.editor.lsp_semantic_tokens_cache.insert(
-                    buffer_id,
-                    super::LspSemanticTokensCache {
-                        document_version,
-                        result_id,
-                        raw_data,
-                        tokens,
-                    },
-                );
-            }
-            // 4.4.i: splice the server-issued edit script into
-            // the cached raw token vec, re-decode for the
-            // renderer, and seat the updated cache entry.
-            // Stale-baseline check: if our current cache's
-            // result_id no longer matches `previous_result_id`
-            // we drop the cache and let the next pump issue a
-            // fresh `full` request. Same fallback on splice
-            // failure (out-of-bounds edit indices).
-            super::SemanticTokensOutcome::Delta {
-                buffer_id,
-                document_version,
-                previous_result_id,
-                new_result_id,
-                edits,
-                token_types,
-                token_modifiers,
-            } => {
-                if buffer_id != self.editor.document_buffer_id {
-                    return;
-                }
-                let Some(cache) = self.editor.lsp_semantic_tokens_cache.get(&buffer_id) else {
-                    return;
-                };
-                if cache.result_id.as_deref() != Some(previous_result_id.as_str()) {
-                    self.editor.lsp_semantic_tokens_cache.remove(&buffer_id);
-                    return;
-                }
-                let mut raw_data = cache.raw_data.clone();
-                if crate::app::apply_semantic_token_edits(&mut raw_data, &edits).is_err() {
-                    self.editor.lsp_semantic_tokens_cache.remove(&buffer_id);
-                    return;
-                }
-                let decoded =
-                    crate::app::decode_semantic_tokens(&raw_data, &token_types, &token_modifiers);
-                self.editor.lsp_semantic_tokens_cache.insert(
-                    buffer_id,
-                    super::LspSemanticTokensCache {
-                        document_version,
-                        result_id: new_result_id,
-                        raw_data,
-                        tokens: decoded,
-                    },
-                );
-            }
-            super::SemanticTokensOutcome::Empty {
-                buffer_id,
-                document_version,
-            } => {
-                if buffer_id != self.editor.document_buffer_id {
-                    return;
-                }
-                self.editor.lsp_semantic_tokens_cache.insert(
-                    buffer_id,
-                    super::LspSemanticTokensCache {
-                        document_version,
-                        result_id: None,
-                        raw_data: Vec::new(),
-                        tokens: Vec::new(),
-                    },
-                );
-            }
-        }
+        // 5.8.AA.b: migrated to
+        // `lattice_host::dispatch::Editor::drain_pending_semantic_tokens`.
+        self.editor.drain_pending_semantic_tokens();
     }
 
     /// 4.4.j: per-tick `textDocument/diagnostic` (pull-based)
@@ -3975,76 +3829,9 @@ impl App {
     /// (version, result_id) pair; Empty reports seat the
     /// version so the pump doesn't re-fire idly.
     pub fn drain_pending_pull_diagnostics(&mut self) {
-        let Some(mut rx) = self.editor.pending_pull_diagnostics_rx.take() else {
-            return;
-        };
-        let mut latest: Option<super::PullDiagnosticsOutcome> = None;
-        while let Ok(outcome) = rx.try_recv() {
-            latest = Some(outcome);
-        }
-        self.editor.pending_pull_diagnostics_rx = Some(rx);
-        let Some(outcome) = latest else {
-            return;
-        };
-        match outcome {
-            super::PullDiagnosticsOutcome::Full {
-                buffer_id,
-                server_id,
-                uri,
-                document_version,
-                result_id,
-                diagnostics,
-            } => {
-                self.editor.lsp_pull_diagnostics_cache.insert(
-                    buffer_id,
-                    super::LspPullDiagnosticsCache {
-                        document_version,
-                        result_id,
-                    },
-                );
-                // Cast the doc version into LSP's i32 (the
-                // version that rides on `DiagnosticEvent` is
-                // the *server's* notion of version, but our
-                // pull response doesn't carry one; threading
-                // our own version is the closest analogue and
-                // lets the layer's stale-drop logic stay
-                // honest).
-                let version_i32 = i32::try_from(document_version).ok();
-                self.editor
-                    .lsp_diagnostics
-                    .apply(lattice_lsp::DiagnosticEvent {
-                        server_id,
-                        uri,
-                        version: version_i32,
-                        diagnostics: std::sync::Arc::from(diagnostics.into_boxed_slice()),
-                    });
-            }
-            super::PullDiagnosticsOutcome::Unchanged {
-                buffer_id,
-                document_version,
-                result_id,
-            } => {
-                self.editor.lsp_pull_diagnostics_cache.insert(
-                    buffer_id,
-                    super::LspPullDiagnosticsCache {
-                        document_version,
-                        result_id: Some(result_id),
-                    },
-                );
-            }
-            super::PullDiagnosticsOutcome::Empty {
-                buffer_id,
-                document_version,
-            } => {
-                self.editor.lsp_pull_diagnostics_cache.insert(
-                    buffer_id,
-                    super::LspPullDiagnosticsCache {
-                        document_version,
-                        result_id: None,
-                    },
-                );
-            }
-        }
+        // 5.8.AA.b: migrated to
+        // `lattice_host::dispatch::Editor::drain_pending_pull_diagnostics`.
+        self.editor.drain_pending_pull_diagnostics();
     }
 
     /// 4.4.j: drain `workspace/diagnostic/refresh` events.
@@ -4284,61 +4071,9 @@ impl App {
     /// 4.4.g: drain the in-flight `inlayHint` response.
     /// Coalesces multiple queued outcomes to the latest.
     pub fn drain_pending_inlay_hint(&mut self) {
-        let Some(mut rx) = self.editor.pending_inlay_hint_rx.take() else {
-            return;
-        };
-        let mut latest: Option<super::InlayHintOutcome> = None;
-        while let Ok(outcome) = rx.try_recv() {
-            latest = Some(outcome);
-        }
-        self.editor.pending_inlay_hint_rx = Some(rx);
-        let Some(outcome) = latest else {
-            return;
-        };
-        match outcome {
-            super::InlayHintOutcome::Items {
-                buffer_id,
-                document_version,
-                hints,
-                requested_first_line,
-                requested_last_line,
-            } => {
-                if buffer_id != self.editor.document_buffer_id {
-                    return;
-                }
-                self.editor.lsp_inlay_hints_cache.insert(
-                    buffer_id,
-                    super::LspInlayHintCache {
-                        document_version,
-                        hints,
-                        requested_first_line,
-                        requested_last_line,
-                    },
-                );
-            }
-            super::InlayHintOutcome::Empty {
-                buffer_id,
-                document_version,
-                requested_first_line,
-                requested_last_line,
-            } => {
-                if buffer_id != self.editor.document_buffer_id {
-                    return;
-                }
-                // Cache empty list so we don't re-issue
-                // immediately; bumped on next edit / when the
-                // viewport scrolls outside the requested range.
-                self.editor.lsp_inlay_hints_cache.insert(
-                    buffer_id,
-                    super::LspInlayHintCache {
-                        document_version,
-                        hints: Vec::new(),
-                        requested_first_line,
-                        requested_last_line,
-                    },
-                );
-            }
-        }
+        // 5.8.AA.b: migrated to
+        // `lattice_host::dispatch::Editor::drain_pending_inlay_hint`.
+        self.editor.drain_pending_inlay_hint();
     }
 
     /// 4.5.c: per-tick `documentLink` pump. Fires on
@@ -4414,54 +4149,8 @@ impl App {
     /// cache. Cancels stale single-flight tokens; `gx`
     /// consults the cache when triggered.
     pub fn drain_pending_document_link(&mut self) {
-        let Some(mut rx) = self.editor.pending_document_links_rx.take() else {
-            return;
-        };
-        let mut latest: Option<super::DocumentLinksOutcome> = None;
-        while let Ok(o) = rx.try_recv() {
-            latest = Some(o);
-        }
-        self.editor.pending_document_links_rx = Some(rx);
-        let outcome = match latest {
-            Some(o) => o,
-            None => return,
-        };
-        self.editor.pending_document_links_token = None;
-        match outcome {
-            super::DocumentLinksOutcome::Items {
-                buffer_id,
-                document_version,
-                links,
-            } => {
-                if buffer_id != self.editor.document_buffer_id {
-                    return;
-                }
-                self.editor.lsp_document_links_cache.insert(
-                    buffer_id,
-                    super::LspDocumentLinksCache {
-                        document_version,
-                        links,
-                    },
-                );
-            }
-            super::DocumentLinksOutcome::Empty {
-                buffer_id,
-                document_version,
-            } => {
-                if buffer_id != self.editor.document_buffer_id {
-                    return;
-                }
-                // Empty cache prevents re-issuing for the same
-                // version; bumped on next edit.
-                self.editor.lsp_document_links_cache.insert(
-                    buffer_id,
-                    super::LspDocumentLinksCache {
-                        document_version,
-                        links: Vec::new(),
-                    },
-                );
-            }
-        }
+        // 5.8.AA.b: migrated to host.
+        self.editor.drain_pending_document_link();
     }
 
     /// 4.5.c: follow the LSP `documentLink` at the cursor (the
@@ -4652,57 +4341,8 @@ impl App {
     /// cache. The cache feeds `:lsp-code-lens`; the picker
     /// reads from it.
     pub fn drain_pending_code_lens(&mut self) {
-        let Some(mut rx) = self.editor.pending_code_lens_rx.take() else {
-            return;
-        };
-        let mut latest: Option<super::CodeLensOutcome> = None;
-        while let Ok(o) = rx.try_recv() {
-            latest = Some(o);
-        }
-        self.editor.pending_code_lens_rx = Some(rx);
-        let outcome = match latest {
-            Some(o) => o,
-            None => return,
-        };
-        self.editor.pending_code_lens_token = None;
-        match outcome {
-            super::CodeLensOutcome::Items {
-                buffer_id,
-                document_version,
-                server_id,
-                lenses,
-            } => {
-                if buffer_id != self.editor.document_buffer_id {
-                    return;
-                }
-                self.editor.lsp_code_lens_cache.insert(
-                    buffer_id,
-                    super::LspCodeLensCache {
-                        document_version,
-                        lenses,
-                        server_id,
-                    },
-                );
-            }
-            super::CodeLensOutcome::Empty {
-                buffer_id,
-                document_version,
-            } => {
-                if buffer_id != self.editor.document_buffer_id {
-                    return;
-                }
-                // Empty cache prevents re-issuing for the same
-                // version; bumped on next edit / refresh.
-                self.editor.lsp_code_lens_cache.insert(
-                    buffer_id,
-                    super::LspCodeLensCache {
-                        document_version,
-                        lenses: Vec::new(),
-                        server_id: std::sync::Arc::from("<none>"),
-                    },
-                );
-            }
-        }
+        // 5.8.AA.b: migrated to host.
+        self.editor.drain_pending_code_lens();
     }
 
     /// 4.5.d: `:lsp-code-lens`. Open a picker over the
@@ -4911,55 +4551,8 @@ impl App {
     /// 4.5.e: drain queued `documentColor` responses + seat
     /// the cache.
     pub fn drain_pending_document_color(&mut self) {
-        let Some(mut rx) = self.editor.pending_document_color_rx.take() else {
-            return;
-        };
-        let mut latest: Option<super::DocumentColorOutcome> = None;
-        while let Ok(o) = rx.try_recv() {
-            latest = Some(o);
-        }
-        self.editor.pending_document_color_rx = Some(rx);
-        let outcome = match latest {
-            Some(o) => o,
-            None => return,
-        };
-        self.editor.pending_document_color_token = None;
-        match outcome {
-            super::DocumentColorOutcome::Items {
-                buffer_id,
-                document_version,
-                server_id,
-                colors,
-            } => {
-                if buffer_id != self.editor.document_buffer_id {
-                    return;
-                }
-                self.editor.lsp_document_color_cache.insert(
-                    buffer_id,
-                    super::LspDocumentColorCache {
-                        document_version,
-                        colors,
-                        server_id,
-                    },
-                );
-            }
-            super::DocumentColorOutcome::Empty {
-                buffer_id,
-                document_version,
-            } => {
-                if buffer_id != self.editor.document_buffer_id {
-                    return;
-                }
-                self.editor.lsp_document_color_cache.insert(
-                    buffer_id,
-                    super::LspDocumentColorCache {
-                        document_version,
-                        colors: Vec::new(),
-                        server_id: std::sync::Arc::from("<none>"),
-                    },
-                );
-            }
-        }
+        // 5.8.AA.b: migrated to host.
+        self.editor.drain_pending_document_color();
     }
 
     /// 4.5.e: `:lsp-color-presentation`. Looks up the color
@@ -5219,41 +4812,9 @@ impl App {
     /// latest one so a burst of cursor moves only commits the
     /// final response.
     pub fn drain_pending_document_highlight(&mut self) {
-        let Some(mut rx) = self.editor.pending_document_highlight_rx.take() else {
-            return;
-        };
-        let mut latest: Option<super::DocumentHighlightOutcome> = None;
-        while let Ok(outcome) = rx.try_recv() {
-            latest = Some(outcome);
-        }
-        self.editor.pending_document_highlight_rx = Some(rx);
-        let Some(outcome) = latest else {
-            return;
-        };
-        match outcome {
-            super::DocumentHighlightOutcome::Items {
-                buffer_id,
-                cursor,
-                highlights,
-            } => {
-                // Guard against stale responses that arrived
-                // after the active buffer switched out from
-                // under the request.
-                if buffer_id != self.editor.document_buffer_id {
-                    return;
-                }
-                self.editor.lsp_document_highlights = Some(super::DocumentHighlightCache {
-                    buffer_id,
-                    cursor,
-                    highlights,
-                });
-            }
-            super::DocumentHighlightOutcome::Empty { buffer_id } => {
-                if buffer_id == self.editor.document_buffer_id {
-                    self.editor.lsp_document_highlights = None;
-                }
-            }
-        }
+        // 5.8.AA.b: migrated to
+        // `lattice_host::dispatch::Editor::drain_pending_document_highlight`.
+        self.editor.drain_pending_document_highlight();
     }
 
     /// 4.4.e: `:lsp-expand-region` -- structural smart-

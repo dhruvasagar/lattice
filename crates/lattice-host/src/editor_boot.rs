@@ -623,6 +623,15 @@ impl Editor {
             lsp_watcher: None,
             lsp_watcher_subscriptions: std::collections::HashMap::new(),
             lsp_watcher_watched_roots: std::collections::HashSet::new(),
+            // Phase 5.8.AF.5 / Slice 3a: empty `RenderState` so
+            // the first dispatch publication has somewhere to
+            // store into. Renderers reading before the first
+            // dispatch (e.g. the initial paint at boot) see the
+            // default empty sub-states, which is correct -- no
+            // diagnostics, no popups, no pickers exist yet.
+            render_state: std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
+                crate::render_state::RenderState::default(),
+            )),
             lsp_log_event_rx: Some(lsp_log_event_rx),
             lsp_progress_event_rx: Some(lsp_progress_event_rx),
             pending_apply_edit_rx: Some(lsp_apply_edit_rx),

@@ -3199,7 +3199,15 @@ pub(crate) fn severity_for_line(
         return None;
     }
     let uri = app.buffer_uri(app.editor.document_buffer_id)?;
-    app.editor.lsp_diagnostics.line_severity(uri, line_idx)
+    // Phase 5.8.AF.5 / Slice 3a: read through the renderer's
+    // `RenderState` contract instead of `editor.lsp_diagnostics`
+    // directly. This is the proof-of-life migration that
+    // establishes the read seam every later sub-slice cuts
+    // against. `load` is wait-free (~2ns); the layer it returns
+    // is internally `Arc<ArcSwap<...>>`-backed so
+    // `line_severity` stays wait-free.
+    let rs = app.editor.render_state.load();
+    rs.diagnostics.layer.line_severity(uri, line_idx)
 }
 
 /// Diagnostics that overlap `line_idx` of the active buffer.
@@ -5135,6 +5143,13 @@ mod tests {
                 version: None,
                 diagnostics: std::sync::Arc::from(vec![diag].into_boxed_slice()),
             });
+        // Phase 5.8.AF.5 / Slice 3a: republish the renderer's
+        // `RenderState` so the diagnostic the test just wrote
+        // appears in `render_state.diagnostics.layer`. In prod
+        // this fires automatically at the end of every
+        // `Editor::dispatch`; tests that mutate `Editor` state
+        // directly must publish manually.
+        app.editor.publish_render_state();
     }
 
     #[test]

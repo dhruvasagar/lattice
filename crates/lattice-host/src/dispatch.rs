@@ -262,6 +262,14 @@ impl Editor {
     pub fn dispatch(&mut self, action: Action) -> DispatchOutcome {
         let mut out = DispatchOutcome::default();
         handle_action(self, action, &mut out);
+        // Phase 5.8.AF.5 / Slice 3a: publish the renderer's read
+        // contract at the end of every dispatch. Naive rebuild
+        // (every sub-state Arc is fresh); sub-states 3b/3c
+        // populate as drains/state slots migrate. Cost: one
+        // Arc allocation per sub-state (10) plus one for the
+        // top-level -- well below the 100µs budget today since
+        // every sub-state body is empty except diagnostics.
+        self.publish_render_state();
         out
     }
 
@@ -289,7 +297,61 @@ impl Editor {
     pub fn handle_effect(&mut self, effect: Effect) -> DispatchOutcome {
         let mut out = DispatchOutcome::default();
         handle_effect(self, effect, &mut out);
+        // Phase 5.8.AF.5 / Slice 3a: parallel publication path
+        // for the alternate entry. Keeps the renderer's read
+        // contract fresh regardless of whether mutation arrives
+        // through `dispatch` or `handle_effect`.
+        self.publish_render_state();
         out
+    }
+
+    /// Phase 5.8.AF.5 / Slice 3a. Build a fresh `RenderState`
+    /// snapshot from the editor's current backing fields.
+    ///
+    /// Naive shape today: every sub-state is reconstructed from
+    /// scratch. Most sub-states are still empty placeholders
+    /// (see `render_state.rs` module docs) so the cost is one
+    /// `Arc::new(SubState::default())` per slot. Only
+    /// `DiagnosticsRenderState` clones a real layer; that clone
+    /// is one `Arc` bump because `DiagnosticsLayer` is
+    /// internally `Arc<ArcSwap<...>>`-backed.
+    ///
+    /// Slice 3b/3c will replace this with per-subsystem
+    /// publication (each background task `store()`s its own
+    /// sub-state Arc directly), at which point this whole-world
+    /// rebuild method retires.
+    pub fn build_render_state(&self) -> crate::render_state::RenderState {
+        use crate::render_state::*;
+        RenderState {
+            buffers: std::sync::Arc::new(BuffersRenderState::default()),
+            panes: std::sync::Arc::new(PanesRenderState::default()),
+            lsp: std::sync::Arc::new(LspRenderState::default()),
+            syntax: std::sync::Arc::new(SyntaxRenderState::default()),
+            picker: std::sync::Arc::new(PickerRenderState::default()),
+            completion: std::sync::Arc::new(CompletionRenderState::default()),
+            popup: std::sync::Arc::new(PopupRenderState::default()),
+            messages: std::sync::Arc::new(MessagesRenderState::default()),
+            modeline: std::sync::Arc::new(ModelineRenderState::default()),
+            diagnostics: std::sync::Arc::new(DiagnosticsRenderState {
+                // Clone the `DiagnosticsLayer` -- it's internally
+                // `Arc<ArcSwap<...>>`-backed so this is one Arc
+                // bump per publication. Renderers reading
+                // through `render_state.diagnostics.layer` get
+                // wait-free access to the latest published
+                // diagnostics snapshot.
+                layer: self.lsp_diagnostics.clone(),
+            }),
+        }
+    }
+
+    /// Phase 5.8.AF.5 / Slice 3a. Build a fresh `RenderState`
+    /// and atomically install it into the editor's
+    /// `Arc<ArcSwap<RenderState>>`. One atomic release-store on
+    /// the hot path; concurrent readers see either the previous
+    /// snapshot or the new one with no torn observation.
+    pub fn publish_render_state(&self) {
+        let next = self.build_render_state();
+        self.render_state.store(std::sync::Arc::new(next));
     }
 }
 

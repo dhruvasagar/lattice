@@ -387,8 +387,16 @@ impl EditorView {
         // the line-number alignment stays stable regardless of
         // whether diagnostics are present.
         let uri = editor.buffer_uris.get(&pane.buffer_id);
+        // Phase 5.8.AF.5 / Slice 3a: read through the renderer's
+        // `RenderState` contract instead of `editor.lsp_diagnostics`
+        // directly. Symmetric with the TUI peer's
+        // `severity_for_line` migration. `load_full` is wait-free
+        // (~2ns); the returned snapshot's diagnostics layer is
+        // internally `Arc<ArcSwap<...>>`-backed so the inner
+        // `line_severity` call stays wait-free too.
+        let render_state = editor.render_state.load_full();
         let line_severity = |line_idx: u32| -> Option<lattice_lsp::DiagnosticSeverity> {
-            uri.and_then(|u| editor.lsp_diagnostics.line_severity(u, line_idx))
+            uri.and_then(|u| render_state.diagnostics.layer.line_severity(u, line_idx))
         };
 
         // 5.8.J: per-line inlay hints. Read the buffer's

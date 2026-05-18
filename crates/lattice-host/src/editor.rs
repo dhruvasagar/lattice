@@ -747,6 +747,12 @@ pub struct Editor {
     /// task's set so we can skip sending `SyncSubscriptions` when
     /// nothing changed.
     pub lsp_watcher_watched_roots: std::collections::HashSet<std::path::PathBuf>,
+    /// Phase 5.8.AF.5 / Slice 3a: renderer's wait-free read
+    /// contract. Published by `Editor::publish_render_state` at
+    /// the end of every `dispatch()` tick. Renderers load via
+    /// `editor.render_state.load_full()` once per frame and read
+    /// every per-frame field through the returned snapshot.
+    pub render_state: std::sync::Arc<arc_swap::ArcSwap<crate::render_state::RenderState>>,
     pub lsp_log_event_rx: Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspLogPushed>>,
     pub lsp_progress_event_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspProgressUpdate>>,

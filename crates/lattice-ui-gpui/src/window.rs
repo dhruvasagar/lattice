@@ -358,6 +358,55 @@ impl EditorView {
             uri.and_then(|u| editor.lsp_diagnostics.line_severity(u, line_idx))
         };
 
+        // 5.8.J: per-line inlay hints. Read the buffer's
+        // `LspInlayHintCache`; collect hints whose
+        // `position.line == line_idx` for this paint. Hints are
+        // virtual text (don't affect cursor offset), rendered
+        // inline at their `position.character` byte offset in a
+        // dimmed overlay colour. v1 doesn't gate on
+        // `lsp-inlay-hint-mode` — if the cache exists, paint it
+        // (when the mode is off, the driver doesn't repopulate
+        // the cache, so the most-recent state is shown).
+        let inlay_hints_for_line: Box<dyn Fn(u32, &str) -> Vec<(usize, String)>> = {
+            let buffer_id = pane.buffer_id;
+            let cache_opt = editor.lsp_inlay_hints_cache.get(&buffer_id);
+            Box::new(
+                move |line_idx: u32, line_text: &str| -> Vec<(usize, String)> {
+                    let Some(cache) = cache_opt else {
+                        return Vec::new();
+                    };
+                    let mut hits: Vec<(usize, String)> = cache
+                        .hints
+                        .iter()
+                        .filter(|h| h.position.line == line_idx)
+                        .map(|h| {
+                            let mut text = match &h.label {
+                                lattice_lsp::InlayHintLabel::String(s) => s.clone(),
+                                lattice_lsp::InlayHintLabel::LabelParts(parts) => parts
+                                    .iter()
+                                    .map(|p| p.value.clone())
+                                    .collect::<Vec<_>>()
+                                    .join(""),
+                            };
+                            if h.padding_left.unwrap_or(false) {
+                                text.insert(0, ' ');
+                            }
+                            if h.padding_right.unwrap_or(false) {
+                                text.push(' ');
+                            }
+                            let byte_offset = lattice_lsp::position::utf16_column_to_utf8_byte(
+                                line_text,
+                                h.position.character,
+                            ) as usize;
+                            (byte_offset.min(line_text.len()), text)
+                        })
+                        .collect();
+                    hits.sort_by_key(|(off, _)| *off);
+                    hits
+                },
+            )
+        };
+
         let make_gutter = |line_idx: usize, is_cursor_line: bool| -> gpui::Div {
             // 5.8.I: severity sign cell + line-number cell.
             // Painted as two children of a flex_row so each can
@@ -382,6 +431,11 @@ impl EditorView {
                 .child(div().text_color(label_color).child(label))
         };
 
+        // 5.8.J: dimmed Catppuccin overlay colour for inlay-hint
+        // virtual text. Matches the TUI peer's `inlay_hint_style`
+        // (subdued comment-like style).
+        let inlay_color = rgb(0x7f849c); // Catppuccin overlay1.
+
         let mut rows: Vec<gpui::Div> = raw_lines
             .iter()
             .enumerate()
@@ -389,19 +443,42 @@ impl EditorView {
                 let is_cursor_line = line_idx == cursor_line;
                 let line_spans: &[lattice_syntax::StyledSpan] =
                     highlights.get(line_idx).map(Vec::as_slice).unwrap_or(&[]);
-                let mut cells: Vec<gpui::Div> = Vec::with_capacity(line.len() + 2);
+                // 5.8.J: pre-compute inlay hits for this line.
+                let hints = inlay_hints_for_line(line_idx as u32, line);
+                let mut hint_iter = hints.iter().peekable();
+                let mut cells: Vec<gpui::Div> = Vec::with_capacity(line.len() + 2 + hints.len());
                 cells.push(make_gutter(line_idx, is_cursor_line));
-                cells.extend(line.char_indices().map(|(byte_idx, c)| {
+                for (byte_idx, c) in line.char_indices() {
+                    // 5.8.J: drain hints whose byte offset is at
+                    // or before this char — they render inline
+                    // before the char. `position.character`
+                    // typically sits on a token boundary so the
+                    // hint visually appears between tokens.
+                    while let Some(&&(off, _)) = hint_iter.peek() {
+                        if off <= byte_idx {
+                            let (_, text) = hint_iter.next().unwrap();
+                            cells.push(div().text_color(inlay_color).child(text.clone()));
+                        } else {
+                            break;
+                        }
+                    }
                     let is_cursor = is_active && is_cursor_line && byte_idx == cursor_byte;
                     if is_cursor {
-                        style_cursor_cell(&c.to_string())
+                        cells.push(style_cursor_cell(&c.to_string()));
                     } else {
                         let span_style = style_at(line_spans, byte_idx);
-                        div()
-                            .text_color(rgb(syntax_color(span_style)))
-                            .child(c.to_string())
+                        cells.push(
+                            div()
+                                .text_color(rgb(syntax_color(span_style)))
+                                .child(c.to_string()),
+                        );
                     }
-                }));
+                }
+                // 5.8.J: drain trailing hints positioned at or
+                // past EOL.
+                for (_, text) in hint_iter {
+                    cells.push(div().text_color(inlay_color).child(text.clone()));
+                }
                 if is_active && is_cursor_line && cursor_byte >= line.len() {
                     cells.push(style_cursor_cell(" "));
                 }

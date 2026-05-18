@@ -121,6 +121,7 @@ pub use sync::{DocSync, uri_from_str};
 // signatures. lsp-types changes shape across major versions;
 // the re-exports give us a stable seam if we need to swap.
 pub use lsp_types::{
-    Diagnostic, DiagnosticSeverity, Position as LspPosition, Range as LspRange, Uri,
+    Diagnostic, DiagnosticSeverity, InlayHint, InlayHintLabel, InlayHintLabelPart,
+    Position as LspPosition, Range as LspRange, Uri,
 };
 pub use transport::{ChildTransport, TransportError};

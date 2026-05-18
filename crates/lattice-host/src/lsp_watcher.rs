@@ -80,7 +80,7 @@ impl LspFileWatcher {
             .cloned()
             .collect();
         for p in stale {
-            tracing::debug!(path = %p.display(), "lsp_watcher: unwatching stale root");
+            tracing::info!(path = %p.display(), "lsp_watcher: unwatching stale root");
             let _ = self.watcher.unwatch(&p);
             self.watched_roots.remove(&p);
         }
@@ -98,14 +98,14 @@ impl LspFileWatcher {
             // this can take seconds-to-minutes and blocks the
             // calling thread. The debug markers below let users
             // confirm whether a UI freeze sits on this call.
-            tracing::debug!(
+            tracing::info!(
                 path = %p.display(),
                 "lsp_watcher: installing recursive watch (may block on large trees)"
             );
             let started = std::time::Instant::now();
             match self.watcher.watch(&p, RecursiveMode::Recursive) {
                 Ok(()) => {
-                    tracing::debug!(
+                    tracing::info!(
                         path = %p.display(),
                         elapsed_ms = started.elapsed().as_millis(),
                         "lsp_watcher: recursive watch installed"
@@ -113,7 +113,7 @@ impl LspFileWatcher {
                     self.watched_roots.insert(p);
                 }
                 Err(e) => {
-                    tracing::debug!(
+                    tracing::info!(
                         path = %p.display(),
                         elapsed_ms = started.elapsed().as_millis(),
                         error = %e,

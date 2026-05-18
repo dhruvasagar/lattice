@@ -4273,16 +4273,16 @@ impl Editor {
             return;
         }
         // Hot path: most ticks see no roster change. Only emit the
-        // pre/post-sync trace pair when an actor with watcher caps
-        // is live and the watcher hasn't been initialised yet (the
-        // first call after LSP attach is the one that can stall on
-        // a giant `target/`).
-        let _watcher_existed = self.lsp_file_watcher.is_some();
-        tracing::debug!(
-            actor_count = actors_with_watchers.len(),
-            watcher_existed = _watcher_existed,
-            "refresh_lsp_file_watcher: pre-sync"
-        );
+        // pre-sync info line when the watcher hasn't been
+        // initialised yet -- that's the first call after LSP
+        // attach, the one that can stall on a giant `target/`.
+        let watcher_existed = self.lsp_file_watcher.is_some();
+        if !watcher_existed {
+            tracing::info!(
+                actor_count = actors_with_watchers.len(),
+                "refresh_lsp_file_watcher: first sync after LSP attach"
+            );
+        }
         if self.lsp_file_watcher.is_none() {
             match crate::lsp_watcher::LspFileWatcher::new() {
                 Ok(w) => self.lsp_file_watcher = Some(w),
@@ -5123,13 +5123,13 @@ impl Editor {
         self.pane_tree.active_mut().buffer = lattice_core::BufferKind::Document;
         self.pane_tree.active_mut().buffer_id = new_id;
         let signals = self.activate_buffer_state();
-        tracing::debug!(
+        tracing::info!(
             path = %target.display(),
             lang = ?lang,
             "do_edit: about to publish DocumentOpened (LSP attach trigger)"
         );
         self.publish_document_opened_for_active();
-        tracing::debug!(path = %target.display(), "do_edit: DocumentOpened published");
+        tracing::info!(path = %target.display(), "do_edit: DocumentOpened published");
         self.set_message(EchoLevel::Info, format!("\"{}\" opened", target.display()));
         self.push_recent_file(&target);
         DoEditOutcome::Opened(signals)

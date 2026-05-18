@@ -3667,6 +3667,20 @@ impl Editor {
         )
     }
 
+    /// Look up a buffer by file path. Used by `:e FILE` to detect
+    /// "already open"; later by `:b NAME` for completion. Phase
+    /// 5.8.AA.j: hoisted from TUI App.
+    pub fn find_document_by_path(&self, path: &std::path::Path) -> Option<lattice_core::BufferId> {
+        self.buffers.document_with_path(path)
+    }
+
+    /// Replace the actor's document outright. Used by `:edit
+    /// path`. The actor swaps state in place and republishes the
+    /// snapshot. Phase 5.8.AA.j: hoisted from TUI App.
+    pub fn replace_document_blocking(&self, document: lattice_core::Document) {
+        let _ = lattice_runtime::block_on(self.document.replace(document));
+    }
+
     /// 4.4.j: per-tick `textDocument/diagnostic` (pull-based)
     /// pump. Phase 5.8.AA.i: hoisted from TUI App.
     pub fn maybe_request_pull_diagnostics(&mut self) {
@@ -11445,6 +11459,38 @@ pub fn prefer_aliases_for_command_candidates(
 pub fn dedup_rendered_by_text(rendered: &mut Vec<lattice_completion::RenderedCandidate>) {
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     rendered.retain(|cand| seen.insert(cand.raw.text.clone()));
+}
+
+/// Tilde-expand + absolutise a user-typed path. `~/rest` →
+/// `$HOME/rest`; `~` alone → `$HOME`; relative paths join the
+/// current working directory. Phase 5.8.AA.j: hoisted from
+/// `lattice-ui-tui::app::normalize_user_path` so the host-side
+/// `do_edit` migration can reach it without dragging in the App.
+pub fn normalize_user_path(path: &std::path::Path) -> std::path::PathBuf {
+    let expanded = expand_tilde(path);
+    if expanded.is_absolute() {
+        return expanded;
+    }
+    match std::env::current_dir() {
+        Ok(cwd) => cwd.join(expanded),
+        Err(_) => expanded,
+    }
+}
+
+fn expand_tilde(path: &std::path::Path) -> std::path::PathBuf {
+    let Some(s) = path.to_str() else {
+        return path.to_path_buf();
+    };
+    let Some(home) = std::env::var_os("HOME") else {
+        return path.to_path_buf();
+    };
+    if s == "~" {
+        return std::path::PathBuf::from(home);
+    }
+    if let Some(rest) = s.strip_prefix("~/") {
+        return std::path::PathBuf::from(home).join(rest);
+    }
+    path.to_path_buf()
 }
 
 /// Translate an LSP `FoldingRange` into the renderer-neutral

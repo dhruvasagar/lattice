@@ -1020,36 +1020,11 @@ pub(super) fn is_path_byte(b: u8) -> bool {
 /// through to the input verbatim; the caller's open then
 /// produces the same error it would have produced without
 /// the normalise step.
+/// 5.8.AA.j: migrated to `lattice_host::dispatch::normalize_user_path`.
+/// Wrapper retained so the existing call sites in this peer keep
+/// resolving via `crate::app::normalize_user_path`.
 pub(super) fn normalize_user_path(path: &std::path::Path) -> std::path::PathBuf {
-    let expanded = expand_tilde(path);
-    if expanded.is_absolute() {
-        return expanded;
-    }
-    match std::env::current_dir() {
-        Ok(cwd) => cwd.join(expanded),
-        Err(_) => expanded,
-    }
-}
-
-/// `~/rest` → `$HOME/rest`, `~` alone → `$HOME`. Anything else
-/// passes through unchanged. Mirrors the helper in
-/// `lattice-completion::builtins::generators` -- they stay
-/// in lockstep because the cmdline-completion source and the
-/// `:e` submit path both flow through user-typed strings.
-fn expand_tilde(path: &std::path::Path) -> std::path::PathBuf {
-    let Some(s) = path.to_str() else {
-        return path.to_path_buf();
-    };
-    let Some(home) = std::env::var_os("HOME") else {
-        return path.to_path_buf();
-    };
-    if s == "~" {
-        return std::path::PathBuf::from(home);
-    }
-    if let Some(rest) = s.strip_prefix("~/") {
-        return std::path::PathBuf::from(home).join(rest);
-    }
-    path.to_path_buf()
+    lattice_host::dispatch::normalize_user_path(path)
 }
 
 // 5.5.G.23: `is_blank_line` migrated to

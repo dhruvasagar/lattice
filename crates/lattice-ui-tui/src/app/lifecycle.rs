@@ -456,13 +456,13 @@ impl App {
     /// path`. The actor swaps state in place and republishes the
     /// snapshot.
     pub(super) fn replace_document_blocking(&self, document: Document) {
-        let _ = block_on(self.editor.document.replace(document));
+        // 5.8.AA.j: migrated to host.
+        self.editor.replace_document_blocking(document);
     }
 
-    /// Look up a buffer by file path. Used by `:e FILE` to detect
-    /// "already open"; later by `:b NAME` for completion.
     pub(super) fn find_document_by_path(&self, path: &std::path::Path) -> Option<BufferId> {
-        self.editor.buffers.document_with_path(path)
+        // 5.8.AA.j: migrated to host.
+        self.editor.find_document_by_path(path)
     }
 
     /// Save the currently-active document's hot-path state

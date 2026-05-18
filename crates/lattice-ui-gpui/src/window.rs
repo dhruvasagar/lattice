@@ -455,6 +455,84 @@ impl EditorView {
         // (subdued comment-like style).
         let inlay_color = rgb(0x7f849c); // Catppuccin overlay1.
 
+        // 5.8.P: visual-mode selection range. `None` outside
+        // Visual mode; inactive panes never paint a selection
+        // since the visual range lives on `editor` (active pane).
+        // Selection background uses Catppuccin surface1 — a
+        // distinguishable highlight that doesn't fight syntax
+        // colours.
+        let visual_range = if is_active {
+            editor.visual_selection_range()
+        } else {
+            None
+        };
+        let selection_bg = rgb(0x45475a); // Catppuccin surface1
+        // 5.8.Q: hlsearch + current-match + substitute-preview
+        // overlays. All three are protocol `Range`s the host
+        // already maintains; the GPUI peer just paints them.
+        // `current_match` (primary hit) uses a stronger colour
+        // than `all_matches` (secondary hlsearch).
+        let current_match = if is_active {
+            editor.current_match
+        } else {
+            None
+        };
+        let all_matches: &[lattice_core::protocol::position::Range] = if is_active {
+            editor.all_matches.as_slice()
+        } else {
+            &[]
+        };
+        let current_match_bg = rgb(0xf9e2af); // Catppuccin yellow
+        let current_match_fg = rgb(0x1e1e2e); // Catppuccin base (contrast on yellow)
+        let hlsearch_bg = rgb(0x6c7086); // Catppuccin overlay0
+
+        // Per-line predicate that clamps the half-open range to
+        // the actual line length so a linewise `u32::MAX` end
+        // byte covers exactly the real characters.
+        let byte_in_range = |range: &lattice_core::protocol::position::Range,
+                             line_idx: usize,
+                             byte_idx: usize,
+                             line_len: usize|
+         -> bool {
+            let li = line_idx as u32;
+            if li < range.start.line || li > range.end.line {
+                return false;
+            }
+            let start = if li == range.start.line {
+                range.start.byte as usize
+            } else {
+                0
+            };
+            let end = if li == range.end.line {
+                (range.end.byte as usize).min(line_len)
+            } else {
+                line_len
+            };
+            byte_idx >= start && byte_idx < end
+        };
+        let byte_in_visual = |line_idx: usize, byte_idx: usize, line_len: usize| -> bool {
+            visual_range
+                .as_ref()
+                .is_some_and(|r| byte_in_range(r, line_idx, byte_idx, line_len))
+        };
+        let byte_in_current_match = |line_idx: usize, byte_idx: usize, line_len: usize| -> bool {
+            current_match
+                .as_ref()
+                .is_some_and(|r| byte_in_range(r, line_idx, byte_idx, line_len))
+        };
+        let byte_in_any_match = |line_idx: usize, byte_idx: usize, line_len: usize| -> bool {
+            all_matches
+                .iter()
+                .any(|r| byte_in_range(r, line_idx, byte_idx, line_len))
+        };
+
+        // 5.8.Q: cursorline background — paint a subtle row
+        // background on the active pane's cursor line so the
+        // user can locate the cursor at a glance. Read from
+        // host_theme.cursor_line_bg; if it's Color::Default the
+        // fallback is Catppuccin surface0 (close to bg, gentle).
+        let cursorline_bg = editor.host_theme.cursor_line_bg.to_rgb_u32(0x313244);
+
         // 5.8.O: walk only the visible window [visible_start,
         // visible_end). `line_idx` is the ABSOLUTE buffer-line
         // index so gutter labels, cursor maths, and highlight
@@ -486,15 +564,30 @@ impl EditorView {
                         }
                     }
                     let is_cursor = is_active && is_cursor_line && byte_idx == cursor_byte;
+                    let in_visual = byte_in_visual(line_idx, byte_idx, line.len());
+                    let in_current_match = byte_in_current_match(line_idx, byte_idx, line.len());
+                    let in_hlsearch =
+                        !in_current_match && byte_in_any_match(line_idx, byte_idx, line.len());
                     if is_cursor {
                         cells.push(style_cursor_cell(&c.to_string()));
                     } else {
                         let span_style = style_at(line_spans, byte_idx);
-                        cells.push(
-                            div()
-                                .text_color(rgb(syntax_color(span_style)))
-                                .child(c.to_string()),
-                        );
+                        let mut cell = div()
+                            .text_color(rgb(syntax_color(span_style)))
+                            .child(c.to_string());
+                        // 5.8.P / 5.8.Q: layer overlays from lowest
+                        // to highest precedence. Visual selection
+                        // > current_match (in-progress search) >
+                        // hlsearch (passive). A char in multiple
+                        // overlays takes the *highest* one.
+                        if in_visual {
+                            cell = cell.bg(selection_bg);
+                        } else if in_current_match {
+                            cell = cell.bg(current_match_bg).text_color(current_match_fg);
+                        } else if in_hlsearch {
+                            cell = cell.bg(hlsearch_bg);
+                        }
+                        cells.push(cell);
                     }
                 }
                 // 5.8.J: drain trailing hints positioned at or
@@ -505,7 +598,16 @@ impl EditorView {
                 if is_active && is_cursor_line && cursor_byte >= line.len() {
                     cells.push(style_cursor_cell(" "));
                 }
-                div().flex().flex_row().children(cells)
+                // 5.8.Q: paint cursorline bg under the row when
+                // this is the active pane's cursor line. Per-cell
+                // overlays (visual / match) still layer on top
+                // because each cell carries its own bg.
+                let row = div().flex().flex_row().children(cells);
+                if is_active && is_cursor_line {
+                    row.bg(rgb(cursorline_bg))
+                } else {
+                    row
+                }
             })
             .collect();
 

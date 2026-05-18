@@ -22,7 +22,9 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use lattice_grammar::{ModalState, SearchDirection};
 use lattice_lsp::{Diagnostic as LspDiagnostic, DiagnosticSeverity};
 use lattice_protocol::position::Range as ProtoRange;
-use lattice_protocol::selection::VisualMode;
+// 5.8.P: `VisualMode` reads now live host-side via
+// `Editor::visual_selection_range`; this peer no longer references
+// the variants directly.
 use lattice_runtime::DocumentSnapshot;
 use lattice_syntax::{Lang, Style, StyledSpan};
 
@@ -2829,41 +2831,12 @@ struct BlockExtents {
 /// not in Visual mode. For Linewise visual the byte extents on the first
 /// and last lines are normalized to cover the full lines (mirrored from
 /// the dispatcher's `Range::Selection` resolution).
+// 5.8.P: `visual_selection_range` migrated to
+// `lattice_host::editor::Editor::visual_selection_range` — renderer-
+// neutral logic shared between TUI and GPUI peers. Thin wrapper
+// kept here so this peer's call sites resolve unchanged.
 fn visual_selection_range(app: &App) -> Option<ProtoRange> {
-    if !matches!(app.editor.modal, ModalState::Visual(_)) {
-        return None;
-    }
-    let sels = app.editor.document.selections();
-    let sel = sels.primary();
-    let (a, b) = if sel.anchor <= sel.head {
-        (sel.anchor, sel.head)
-    } else {
-        (sel.head, sel.anchor)
-    };
-    match sel.visual {
-        Some(VisualMode::Linewise) => {
-            // Cover full lines from a.line to b.line. Use a large byte
-            // index for `end.byte`; match_overlay_range clamps to line_len.
-            Some(ProtoRange::new(
-                lattice_protocol::position::Position::new(a.line, 0),
-                lattice_protocol::position::Position::new(b.line, u32::MAX),
-            ))
-        }
-        Some(VisualMode::Charwise) | None => {
-            // Charwise: include the head byte (vim semantics).
-            Some(ProtoRange::new(
-                a,
-                lattice_protocol::position::Position::new(b.line, b.byte.saturating_add(1)),
-            ))
-        }
-        Some(VisualMode::Blockwise) => {
-            // Stub: render as charwise for v1.
-            Some(ProtoRange::new(
-                a,
-                lattice_protocol::position::Position::new(b.line, b.byte.saturating_add(1)),
-            ))
-        }
-    }
+    app.editor.visual_selection_range()
 }
 
 fn visual_style() -> TuiStyle {

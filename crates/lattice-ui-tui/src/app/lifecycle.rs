@@ -450,44 +450,11 @@ impl App {
     /// sync the two at boundaries -- same pattern as Document's
     /// `syntax`/`folds` snapshots.
     pub(crate) fn open_help_in_pane(&mut self, content: HelpContent) -> BufferId {
-        let HelpContent { buffer, metadata } = content;
-        if let Some(existing_id) = self.editor.buffers.help_with_title(&buffer.title) {
-            // Already open: refresh its content (so `:lsp-log` re-
-            // run picks up new records) and switch the active pane
-            // to it. Re-seed buffer_locals with the fresh metadata
-            // so live-tail readers (link / anchor / highlights)
-            // see the updated parse.
-            self.editor
-                .buffers
-                .with_help_mut(existing_id, |slot| *slot = buffer);
-            self.seed_help_metadata_locals(existing_id, metadata);
-            self.activate_help_in_pane(existing_id);
-            return existing_id;
+        // Phase 5.8.AE: body migrated.
+        let (id, signals) = self.editor.open_help_in_pane(content);
+        for s in signals {
+            self.handle_renderer_signal(s);
         }
-        let id = BufferId::next();
-        // Clone for the registry record; the active hot-path copy
-        // lands on `self.editor.popup_buffer` via `activate_help_in_pane`.
-        // Note: `buffer.id` (the construction-time id) and the
-        // registered `id` here are intentionally different.
-        // Production reader sites that look up `buffer_locals` use
-        // the registered id; the construction-time id is discarded.
-        self.editor.buffers.insert(BufferEntry {
-            id,
-            flags: BufferFlags::default(),
-            data: BufferData::Help(buffer),
-            name: None,
-        });
-        // M.3.1: activate help-mode for this buffer so its
-        // ReadOnly = true contribution lands in the resolved
-        // options cache.
-        self.activate_major_for_buffer_kind(id, BufferKind::Help);
-        // M.3.2.c.5: seed parsed metadata into buffer_locals
-        // under the *registered* id (the locals key the renderer
-        // and link-follow path resolve against).
-        self.seed_help_metadata_locals(id, metadata);
-        // M.4 (b): popup_buffer is just the registry id.
-        self.editor.popup_buffer = Some(id);
-        self.activate_help_in_pane(id);
         id
     }
 

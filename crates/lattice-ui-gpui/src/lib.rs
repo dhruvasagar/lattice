@@ -195,13 +195,12 @@ pub struct GpuiApp {
     pub editor: Editor,
     pub theme: GpuiTheme,
     pub pane_render_registry: GpuiPaneRenderRegistry,
-    /// 5.7.B.10: active help popup content, set by
-    /// `RendererSignal::DisplayBuffer`. The binary renders it as
-    /// a centered overlay when `Some`; pressing `Esc` dismisses.
-    /// `None` when no popup is showing. Box keeps the
-    /// `GpuiApp` field-size sane (HelpContent is ~6 fields incl.
-    /// a parsed highlight cache).
-    pub popup_content: Option<Box<lattice_help::HelpContent>>,
+    // Phase 5.8.AE: `popup_content` retired. Popup state is
+    // unified in `editor.popup_buffer` (+ buffer-locals for
+    // links/anchors/highlights). The binary's render reads
+    // `editor.popup_help()` for the buffer and the host
+    // accessors for metadata, so both renderer peers paint
+    // popups from the same source-of-truth state.
 }
 
 impl GpuiApp {
@@ -229,18 +228,16 @@ impl GpuiApp {
             editor: Editor::boot(document),
             theme: GpuiTheme::default(),
             pane_render_registry: GpuiPaneRenderRegistry::default(),
-            popup_content: None,
         };
         app.finalize_boot();
         app
     }
 
-    /// Dismiss any active help popup. Called from the binary's
-    /// `on_key_down` when the user presses `Esc` while a popup
-    /// is showing (pre-empting the chord dispatch so `Esc`
-    /// doesn't also fire a mode transition). Idempotent.
+    /// Dismiss any active help popup. Phase 5.8.AE: routes
+    /// through the host's `dismiss_popup` so popup state lands
+    /// uniformly across both peers.
     pub fn dismiss_popup(&mut self) {
-        self.popup_content = None;
+        self.editor.dismiss_popup();
     }
 
     /// Refresh the active-document visible-spans cache. Phase
@@ -442,13 +439,26 @@ impl GpuiApp {
             // implements the popup surface, so every category
             // collapses to a popup overlay.
             RendererSignal::DisplayBuffer(req) => {
+                // Phase 5.8.AE: route through host's display_buffer
+                // so the popup state lands on `editor.popup_buffer`.
+                // The binary's render reads `editor.popup_buffer` +
+                // `editor.popup_help()` instead of the now-retired
+                // `popup_content` field — keeping the popup state
+                // unified across both peers.
                 let lattice_host::dispatch::DisplayBufferRequest { content, category } = *req;
                 tracing::debug!(
                     category = ?category,
                     title = %content.buffer.title,
-                    "DisplayBuffer signal: showing as popup overlay"
+                    "DisplayBuffer signal: routing through editor.display_buffer"
                 );
-                self.popup_content = Some(Box::new(content));
+                let (_id, mode_signals) = self.editor.display_buffer(content, category);
+                // Mode-activate signals don't recurse meaningfully
+                // for the popup paths (no further DisplayBuffer);
+                // drain through the handler so any ThemeChanged
+                // etc. still propagates.
+                for s in mode_signals {
+                    tracing::debug!(signal = ?s, "popup mode-activate cascade signal");
+                }
             }
         }
     }

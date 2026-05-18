@@ -46,21 +46,12 @@ impl App {
         content: HelpContent,
         category: BufferDisplayCategory,
     ) -> Option<BufferId> {
-        let display = self.resolve_display(category);
-        match display {
-            BufferDisplay::Popup(placement) => {
-                self.open_popup(content, placement);
-                self.editor.popup_buffer
-            }
-            BufferDisplay::FloatingPopup(placement) => {
-                self.open_floating_popup(content, placement);
-                self.editor.popup_buffer
-            }
-            BufferDisplay::ActivePane => Some(self.open_help_in_pane(content)),
-            BufferDisplay::Split(orientation) => {
-                Some(self.open_help_in_split(content, orientation))
-            }
+        // Phase 5.8.AE: body migrated.
+        let (id, signals) = self.editor.display_buffer(content, category);
+        for s in signals {
+            self.handle_renderer_signal(s);
         }
+        id
     }
 
     /// Resolve a [`BufferDisplayCategory`] to a concrete
@@ -106,23 +97,12 @@ impl App {
         content: HelpContent,
         orientation: SplitOrientation,
     ) -> BufferId {
-        // Sync the active pane's hot-path cursor / scroll into
-        // its stash so the new sibling clones a fresh snapshot.
-        // (`split_active` copies the active pane's content +
-        // cursor + scroll into the new sibling; without the
-        // snapshot the snapshot would be stale.)
-        self.snapshot_active_pane();
-        let new_idx = self.editor.pane_tree.split_active(orientation);
-        // Focus the new pane before adopting the help buffer so
-        // `activate_help_in_pane` swaps the right pane's content.
-        // `set_active` is a no-op if `new_idx` is already active,
-        // which `split_active` doesn't promise (the active pane
-        // stays the original by default, matching `do_split_pane`).
-        self.editor.pane_tree.set_active(new_idx);
-        // From here the in-pane path handles registry adoption,
-        // mode activation, locals seeding, and the popup hot-
-        // path slot mirror.
-        self.open_help_in_pane(content)
+        // Phase 5.8.AE: body migrated.
+        let (id, signals) = self.editor.open_help_in_split(content, orientation);
+        for s in signals {
+            self.handle_renderer_signal(s);
+        }
+        id
     }
 }
 

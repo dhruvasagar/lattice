@@ -11720,6 +11720,247 @@ impl Editor {
         });
     }
 
+    /// Snapshot the current popup's content + cursor + metadata
+    /// for `<C-o>` walk-back. Phase 5.8.AE.
+    pub fn snapshot_current_popup(&self) -> Option<crate::popup::PopupSnapshot> {
+        let id = self.popup_buffer?;
+        let (title, content) = self
+            .buffers
+            .with_help(id, |buf| (buf.title.clone(), buf.content.clone()))?;
+        let locals = self.buffer_locals.get(&id)?;
+        let metadata = crate::popup::HelpMetadata {
+            links: locals
+                .get::<crate::modes::HelpLinks>()
+                .map(|h| h.0.clone())
+                .unwrap_or_default(),
+            anchors: locals
+                .get::<crate::modes::HelpAnchors>()
+                .map(|h| h.0.clone())
+                .unwrap_or_default(),
+            highlights: locals
+                .get::<crate::modes::HelpHighlights>()
+                .map(|h| h.0.clone())
+                .unwrap_or_default(),
+        };
+        Some(crate::popup::PopupSnapshot {
+            title,
+            content,
+            cursor: self.cursor,
+            scroll: self.scroll,
+            metadata,
+            placement: self.popup_placement,
+        })
+    }
+
+    /// Swap `content` into the existing popup buffer in place.
+    /// Phase 5.8.AE.
+    pub fn swap_popup_content(
+        &mut self,
+        content: lattice_help::HelpContent,
+        placement: crate::popup::PopupPlacement,
+    ) {
+        let Some(id) = self.popup_buffer else {
+            return;
+        };
+        let lattice_help::HelpContent {
+            buffer: new_buf,
+            metadata,
+        } = content;
+        self.buffers.with_help_mut(id, |existing| {
+            existing.title = new_buf.title;
+            existing.content = new_buf.content;
+            existing.scroll = 0;
+            existing.cursor = lattice_protocol::position::Position::ZERO;
+        });
+        self.cursor = lattice_protocol::position::Position::ZERO;
+        self.scroll = 0;
+        self.popup_placement = placement;
+        self.seed_help_metadata_locals(id, metadata);
+    }
+
+    /// Adopt a freshly-built help buffer as the active view in
+    /// the active pane. Phase 5.8.AE: hoisted from TUI App.
+    /// Returns mode-activate signals.
+    pub fn open_help_in_pane(
+        &mut self,
+        content: lattice_help::HelpContent,
+    ) -> (BufferId, Vec<RendererSignal>) {
+        use crate::buffer_registry::{BufferData, BufferEntry};
+        use crate::buffers::BufferFlags;
+        let lattice_help::HelpContent { buffer, metadata } = content;
+        let mut signals = Vec::new();
+        if let Some(existing_id) = self.buffers.help_with_title(&buffer.title) {
+            self.buffers.with_help_mut(existing_id, |slot| *slot = buffer);
+            self.seed_help_metadata_locals(existing_id, metadata);
+            self.activate_help_in_pane(existing_id);
+            return (existing_id, signals);
+        }
+        let id = BufferId::next();
+        self.buffers.insert(BufferEntry {
+            id,
+            flags: BufferFlags::default(),
+            data: BufferData::Help(buffer),
+            name: None,
+        });
+        signals.extend(self.activate_major_for_buffer_kind(id, BufferKind::Help));
+        self.seed_help_metadata_locals(id, metadata);
+        self.popup_buffer = Some(id);
+        self.activate_help_in_pane(id);
+        (id, signals)
+    }
+
+    /// Open `content` in a fresh split alongside the active pane.
+    /// Phase 5.8.AE.
+    pub fn open_help_in_split(
+        &mut self,
+        content: lattice_help::HelpContent,
+        orientation: lattice_core::ui::pane::SplitOrientation,
+    ) -> (BufferId, Vec<RendererSignal>) {
+        self.snapshot_active_pane();
+        let new_idx = self.pane_tree.split_active(orientation);
+        self.pane_tree.set_active(new_idx);
+        self.open_help_in_pane(content)
+    }
+
+    /// Open a popup with `content` as its body at `placement`.
+    /// Captures pre-popup state for clean dismiss. Phase 5.8.AE:
+    /// hoisted from TUI App.
+    pub fn open_popup(
+        &mut self,
+        content: lattice_help::HelpContent,
+        placement: crate::popup::PopupPlacement,
+    ) -> Vec<RendererSignal> {
+        use crate::buffer_registry::{BufferData, BufferEntry};
+        use crate::buffers::BufferFlags;
+        let mut signals = Vec::new();
+        // From within Help: reuse the same popup buffer by
+        // swapping content; snapshot prior state for `<C-o>`.
+        if matches!(self.active_buffer, BufferKind::Help) && self.popup_buffer.is_some() {
+            if let Some(snap) = self.snapshot_current_popup() {
+                self.popup_back_stack.push(snap);
+            }
+            self.swap_popup_content(content, placement);
+            return signals;
+        }
+        self.popup_back_stack.clear();
+        let lattice_help::HelpContent { buffer, metadata } = content;
+        let buffer_id = buffer.id;
+        self.dismiss_stale_popup_registry();
+        if matches!(self.active_buffer, BufferKind::Document) {
+            let cur = self.cursor;
+            self.push_position_history(cur, crate::state::PositionSource::AutoJump);
+        }
+        self.snapshot_active_pane();
+        if !matches!(self.active_buffer, BufferKind::Help) {
+            let active = self.pane_tree.active();
+            self.prev_pane_for_help = Some(crate::state::PrevPaneState {
+                buffer: active.buffer,
+                buffer_id: active.buffer_id,
+                cursor: self.cursor,
+                scroll: self.scroll,
+            });
+        }
+        let stash_cursor = buffer.cursor;
+        let stash_scroll = buffer.scroll as u32;
+        self.buffers.insert(BufferEntry {
+            id: buffer_id,
+            flags: BufferFlags {
+                listed: false,
+                hidden: true,
+            },
+            data: BufferData::Help(buffer),
+            name: None,
+        });
+        self.popup_buffer = Some(buffer_id);
+        self.popup_placement = placement;
+        self.cursor = stash_cursor;
+        self.scroll = stash_scroll;
+        self.active_buffer = BufferKind::Help;
+        self.seed_help_metadata_locals(buffer_id, metadata);
+        signals.extend(self.activate_major_for_buffer_kind(buffer_id, BufferKind::Help));
+        signals
+    }
+
+    /// Open `content` as a *floating* popup over the active
+    /// document. State A semantics (doc keeps focus). Phase 5.8.AE.
+    pub fn open_floating_popup(
+        &mut self,
+        content: lattice_help::HelpContent,
+        placement: crate::popup::PopupPlacement,
+    ) -> Vec<RendererSignal> {
+        use crate::buffer_registry::{BufferData, BufferEntry};
+        use crate::buffers::BufferFlags;
+        let lattice_help::HelpContent { buffer, metadata } = content;
+        let buffer_id = buffer.id;
+        self.dismiss_stale_popup_registry();
+        self.buffers.insert(BufferEntry {
+            id: buffer_id,
+            flags: BufferFlags {
+                listed: false,
+                hidden: true,
+            },
+            data: BufferData::Help(buffer),
+            name: None,
+        });
+        self.popup_buffer = Some(buffer_id);
+        self.popup_placement = placement;
+        self.seed_help_metadata_locals(buffer_id, metadata);
+        let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
+        let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
+        let _ = self.mode_registry.activate_major(
+            &mut active,
+            &self.mode_guards,
+            &self.config,
+            &self.event_bus,
+            &self.services,
+            proto_id,
+            lattice_syntax::MarkdownMode::mode_id(),
+            lattice_mode::CapabilitySet::empty(),
+        );
+        let _ = self.mode_registry.activate_minor(
+            &mut active,
+            &self.mode_guards,
+            &self.config,
+            &self.event_bus,
+            &self.services,
+            proto_id,
+            lattice_mode::HoverMode::mode_id(),
+            lattice_mode::CapabilitySet::empty(),
+        );
+        self.active_modes.insert(buffer_id, active);
+        self.recompute_options_for_buffer(buffer_id);
+        Vec::new()
+    }
+
+    /// Route a `HelpContent` to the resolved [`BufferDisplay`]
+    /// surface for `category`. Phase 5.8.AE: hoisted from TUI App.
+    pub fn display_buffer(
+        &mut self,
+        content: lattice_help::HelpContent,
+        category: lattice_core::ui::display::BufferDisplayCategory,
+    ) -> (Option<BufferId>, Vec<RendererSignal>) {
+        use lattice_core::ui::display::BufferDisplay;
+        let display = self.resolve_display(category);
+        match display {
+            BufferDisplay::Popup(placement) => {
+                let signals = self.open_popup(content, placement);
+                (self.popup_buffer, signals)
+            }
+            BufferDisplay::FloatingPopup(placement) => {
+                let signals = self.open_floating_popup(content, placement);
+                (self.popup_buffer, signals)
+            }
+            BufferDisplay::ActivePane => {
+                let (id, signals) = self.open_help_in_pane(content);
+                (Some(id), signals)
+            }
+            BufferDisplay::Split(orientation) => {
+                let (id, signals) = self.open_help_in_split(content, orientation);
+                (Some(id), signals)
+            }
+        }
+    }
+
     /// Resolve a `BufferDisplayCategory` to a concrete
     /// `BufferDisplay`. Reads the per-category typed option;
     /// falls back to the category's default. Phase 5.8.AD.6:

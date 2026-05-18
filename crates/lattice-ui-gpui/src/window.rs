@@ -193,7 +193,7 @@ impl EditorView {
             platform = ks.modifiers.platform,
             "lattice-gpui: key down"
         );
-        if self.app.popup_content.is_some()
+        if self.app.editor.popup_buffer.is_some()
             && (ks.key.eq_ignore_ascii_case("escape") || ks.key.eq_ignore_ascii_case("esc"))
         {
             tracing::debug!("lattice-gpui: dismissing popup overlay (Esc)");
@@ -1169,20 +1169,21 @@ impl Render for EditorView {
                 )
         });
 
-        let popup_overlay: Option<gpui::Div> = self.app.popup_content.as_ref().map(|content| {
-            let title = content.buffer.title.clone();
-            let body_text = content.buffer.content.as_string();
-            // 5.8.AB.3: markdown-styled hover / help / describe-X
-            // popups. The host pre-computes per-line tree-sitter
-            // markdown spans via `HelpContent::with_markdown_syntax`
-            // (every `RendererSignal::DisplayBuffer` payload is
-            // enriched). Walk those alongside the line text to
-            // produce per-character `text_color`'d divs — same
-            // approach the document-area paint uses. Lines without
-            // a span vector fall through to the unstyled fast
-            // path (one child, no per-char loop).
+        // Phase 5.8.AE: read popup state from host editor instead
+        // of the renderer-local `popup_content` field. Title +
+        // body come from `editor.popup_help()`; highlights come
+        // from the buffer-local seeded at popup-open time.
+        let popup_overlay: Option<gpui::Div> = self.app.editor.popup_help().map(|buf| {
+            let title = buf.title.clone();
+            let body_text = buf.content.as_string();
+            let highlights_owned: Vec<Vec<lattice_syntax::StyledSpan>> = self
+                .app
+                .editor
+                .popup_help_highlights()
+                .map(|h| h.to_vec())
+                .unwrap_or_default();
             let line_highlights: &[Vec<lattice_syntax::StyledSpan>] =
-                content.metadata.highlights.as_slice();
+                highlights_owned.as_slice();
             let body_lines: Vec<&str> = body_text.split('\n').collect();
             let popup_lines: Vec<gpui::Div> = body_lines
                 .iter()

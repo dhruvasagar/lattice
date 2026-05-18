@@ -36,11 +36,10 @@
 //! gain a `placement` field on `Buffer`; the popup gains the
 //! field, exactly as it does today.
 
-use crate::buffers::BufferKind;
 use crate::help::HelpContent;
 use lattice_host::popup::{HelpMetadata, PopupPlacement};
 
-use super::{App, PositionSource, PrevPaneState};
+use super::App;
 
 /// One frame of in-popup navigation history. Captured by
 /// [`App::snapshot_current_popup`] before [`App::swap_popup_content`]
@@ -68,106 +67,11 @@ impl App {
     /// so the renderer + link-follow / anchor-jump readers route
     /// uniformly through buffer_locals (M.3.2.c.5).
     pub(crate) fn open_popup(&mut self, content: HelpContent, placement: PopupPlacement) {
-        // Two paths into a popup, distinguished by `active_buffer`:
-        //
-        // - From outside Help (`Document` / `Oil` / `FileTree`):
-        //   fresh top-level popup. Drop any prior back-stack so
-        //   stale frames from a closed help session don't
-        //   accumulate.
-        // - From within Help: the user just followed a help link
-        //   (`[foo](mode:foo)` / `command:` / `help:` etc.). Reuse
-        //   the *same* popup buffer by swapping its content in
-        //   place; snapshot the prior state onto `popup_back_stack`
-        //   so `<C-o>` walks back to it without leaving the
-        //   popup.
-        if matches!(self.editor.active_buffer, BufferKind::Help)
-            && self.editor.popup_buffer.is_some()
-        {
-            if let Some(snap) = self.snapshot_current_popup() {
-                self.editor.popup_back_stack.push(snap);
-            }
-            self.swap_popup_content(content, placement);
-            return;
+        // Phase 5.8.AE: body migrated.
+        let signals = self.editor.open_popup(content, placement);
+        for s in signals {
+            self.handle_renderer_signal(s);
         }
-        self.editor.popup_back_stack.clear();
-        let HelpContent { buffer, metadata } = content;
-        let buffer_id = buffer.id;
-        // Drop any previous popup buffer cleanly before adopting
-        // the new one. Avoids stale registry entries / mode state
-        // accumulating across back-to-back `:lsp-status` / `:help`
-        // / `:apropos` invocations.
-        self.dismiss_stale_popup_registry();
-        // Record the *document* cursor (we're still active=Document
-        // here, since the popup-open precedes the active_buffer
-        // flip). Skip the push if we're already in Help (a help->
-        // help re-open from a link follow); the inter-help
-        // transition is recorded by `do_help_follow_link` itself.
-        if matches!(self.editor.active_buffer, BufferKind::Document) {
-            let cur = self.editor.cursor;
-            self.push_position_history(cur, PositionSource::AutoJump);
-        }
-        // Sync the active pane's cursor / scroll stash *before*
-        // swapping `active_buffer` to Help. Once active is Help,
-        // the active pane's buffer (Document) no longer matches
-        // `app.editor.active_buffer`, so the renderer paints it as
-        // visually inactive -- reading from `pane.cursor` rather
-        // than `app.editor.cursor`. Without this snapshot the pane stash
-        // is whatever it was last set to (often (0,0)) and the
-        // doc visibly jumps to the top of file when the popup
-        // opens.
-        self.snapshot_active_pane();
-        // Capture pre-popup state so dismiss restores cleanly.
-        // Mirrors `activate_help_in_pane` / `focus_help_popup`.
-        if !matches!(self.editor.active_buffer, BufferKind::Help) {
-            let active = self.editor.pane_tree.active();
-            self.editor.prev_pane_for_help = Some(PrevPaneState {
-                buffer: active.buffer,
-                buffer_id: active.buffer_id,
-                cursor: self.editor.cursor,
-                scroll: self.editor.scroll,
-            });
-        }
-        // Load the buffer's cursor / scroll into the App's hot
-        // path. Motion / scroll / search read / write them
-        // uniformly across buffer kinds.
-        let stash_cursor = buffer.cursor;
-        let stash_scroll = buffer.scroll as u32;
-        // M.4 (b): popup buffers participate in `app.editor.buffers` like
-        // any other buffer. The registry entry is the durable
-        // record; the `popup_buffer` slot just holds the id.
-        // `listed: false` keeps `:ls` / `:bn` / `:bp` from cycling
-        // through transient popups; `hidden: true` is
-        // informational (popups don't have windows of their own).
-        // Same shape as [`Self::open_help_in_pane`] uses for
-        // `:lsp-log` etc.
-        self.editor
-            .buffers
-            .insert(crate::buffer_registry::BufferEntry {
-                id: buffer_id,
-                flags: crate::buffers::BufferFlags {
-                    listed: false,
-                    hidden: true,
-                },
-                data: crate::buffer_registry::BufferData::Help(buffer),
-                name: None,
-            });
-        self.editor.popup_buffer = Some(buffer_id);
-        self.editor.popup_placement = placement;
-        self.editor.cursor = stash_cursor;
-        self.editor.scroll = stash_scroll;
-        self.editor.active_buffer = BufferKind::Help;
-        // M.3.2.c.5: seed parsed metadata into buffer_locals.
-        // Reader sites (renderer's link / anchor / highlights
-        // lookups, do_help_follow_link, scroll-to-anchor) consume
-        // the locals exclusively now that the struct fields are
-        // gone.
-        self.seed_help_metadata_locals(buffer_id, metadata);
-        // M.4 (Option B): popup help buffers run `markdown-mode`
-        // major + `help-mode` minor -- same activation
-        // `open_help_in_pane` performs for the registry-tracked
-        // copy. Drives the `pane_render_provider` lookup uniformly
-        // across the popup and in-pane display strategies.
-        self.activate_major_for_buffer_kind(buffer_id, BufferKind::Help);
     }
 
     /// Open `content` as a *floating* popup over the active
@@ -183,65 +87,11 @@ impl App {
     /// cursor-anchored quick-info popup that wants the
     /// "popup floats; doc keeps focus" shape.
     pub(crate) fn open_floating_popup(&mut self, content: HelpContent, placement: PopupPlacement) {
-        let HelpContent { buffer, metadata } = content;
-        let buffer_id = buffer.id;
-        // Drop any previous popup buffer cleanly before adopting
-        // the new one (back-to-back hovers shouldn't pile up).
-        self.dismiss_stale_popup_registry();
-        // Popup buffers participate in `app.editor.buffers` like every
-        // other buffer (same shape `open_popup` uses).
-        self.editor
-            .buffers
-            .insert(crate::buffer_registry::BufferEntry {
-                id: buffer_id,
-                flags: crate::buffers::BufferFlags {
-                    listed: false,
-                    hidden: true,
-                },
-                data: crate::buffer_registry::BufferData::Help(buffer),
-                name: None,
-            });
-        self.editor.popup_buffer = Some(buffer_id);
-        self.editor.popup_placement = placement;
-        self.seed_help_metadata_locals(buffer_id, metadata);
-        // markdown-mode major + hover-mode minor. Markdown
-        // carries the syntax pipeline; hover-mode adds the
-        // auto-dismiss-on-doc-cursor-motion contract (and any
-        // future hover-only behaviour). Help-mode is
-        // intentionally NOT activated -- hover content is
-        // markdown that may include fenced code, but its links
-        // are typically external URLs we don't follow internally.
-        let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
-        let mut active = self
-            .editor
-            .active_modes
-            .remove(&buffer_id)
-            .unwrap_or_default();
-        let _ = self.editor.mode_registry.activate_major(
-            &mut active,
-            &self.editor.mode_guards,
-            &self.editor.config,
-            &self.editor.event_bus,
-            &self.editor.services,
-            proto_id,
-            lattice_syntax::MarkdownMode::mode_id(),
-            lattice_mode::CapabilitySet::empty(),
-        );
-        let _ = self.editor.mode_registry.activate_minor(
-            &mut active,
-            &self.editor.mode_guards,
-            &self.editor.config,
-            &self.editor.event_bus,
-            &self.editor.services,
-            proto_id,
-            crate::modes::HoverMode::mode_id(),
-            lattice_mode::CapabilitySet::empty(),
-        );
-        self.editor.active_modes.insert(buffer_id, active);
-        self.recompute_options_for_buffer(buffer_id);
-        // Crucially, NO active_buffer flip, NO prev_pane_for_help
-        // capture, NO position-history push, NO cursor/scroll
-        // load -- the document keeps focus. State A.
+        // Phase 5.8.AE: body migrated.
+        let signals = self.editor.open_floating_popup(content, placement);
+        for s in signals {
+            self.handle_renderer_signal(s);
+        }
     }
 
     /// M.4 (b): clear out a popup buffer's registry / mode /
@@ -350,63 +200,14 @@ impl App {
     /// it can be restored later by `<C-o>`. Returns `None` if no
     /// popup is open or the registry entry has been torn down.
     pub(super) fn snapshot_current_popup(&self) -> Option<PopupSnapshot> {
-        let id = self.editor.popup_buffer?;
-        let (title, content) = self
-            .editor
-            .buffers
-            .with_help(id, |buf| (buf.title.clone(), buf.content.clone()))?;
-        let locals = self.editor.buffer_locals.get(&id)?;
-        let metadata = HelpMetadata {
-            links: locals
-                .get::<crate::modes::HelpLinks>()
-                .map(|h| h.0.clone())
-                .unwrap_or_default(),
-            anchors: locals
-                .get::<crate::modes::HelpAnchors>()
-                .map(|h| h.0.clone())
-                .unwrap_or_default(),
-            highlights: locals
-                .get::<crate::modes::HelpHighlights>()
-                .map(|h| h.0.clone())
-                .unwrap_or_default(),
-        };
-        Some(lattice_host::popup::PopupSnapshot {
-            title,
-            content,
-            cursor: self.editor.cursor,
-            scroll: self.editor.scroll,
-            metadata,
-            placement: self.editor.popup_placement,
-        })
+        // Phase 5.8.AE: body migrated.
+        self.editor.snapshot_current_popup()
     }
 
-    /// Swap `content` into the existing popup buffer in place. Reuses
-    /// the current `popup_buffer` id so position-history entries,
-    /// marks, and cross-buffer features keep working coherently
-    /// across in-popup navigation. Updates the buffer's rope,
-    /// title, cursor, scroll, placement, and the
-    /// `links`/`anchors`/`highlights` buffer-locals.
+    /// Swap `content` into the existing popup buffer in place.
+    /// Phase 5.8.AE: body migrated.
     pub(super) fn swap_popup_content(&mut self, content: HelpContent, placement: PopupPlacement) {
-        let Some(id) = self.editor.popup_buffer else {
-            return;
-        };
-        let HelpContent {
-            buffer: new_buf,
-            metadata,
-        } = content;
-        // Update the registered HelpBuffer in place. We retain `id`
-        // (the existing popup's id) -- not `new_buf.id` -- so every
-        // outer-state slot keyed on the popup id stays coherent.
-        self.editor.buffers.with_help_mut(id, |existing| {
-            existing.title = new_buf.title;
-            existing.content = new_buf.content;
-            existing.scroll = 0;
-            existing.cursor = lattice_protocol::position::Position::ZERO;
-        });
-        self.editor.cursor = lattice_protocol::position::Position::ZERO;
-        self.editor.scroll = 0;
-        self.editor.popup_placement = placement;
-        self.seed_help_metadata_locals(id, metadata);
+        self.editor.swap_popup_content(content, placement);
     }
 
     // 5.5.H: `pop_popup_back` App-side delegate retired (zero

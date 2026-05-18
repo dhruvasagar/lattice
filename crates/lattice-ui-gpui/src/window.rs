@@ -66,10 +66,11 @@ use gpui::{
     div, px, rgb, size,
 };
 use lattice_core::Document;
+use lattice_core::ui::pane::{PaneNode, PaneState};
 use lattice_grammar::ModalState;
 use lattice_syntax::Style as SyntaxStyle;
 
-use crate::GpuiApp;
+use crate::{GpuiApp, GpuiTheme};
 
 /// Map a `lattice_syntax::Style` to a Catppuccin Mocha hex
 /// palette value. Phase 5.8.A: keeps the palette inline so
@@ -199,113 +200,125 @@ impl Focusable for EditorView {
     }
 }
 
-impl Render for EditorView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // 5.8.G: refresh the host-side highlight cache before
-        // reading spans. Cache-hit path is ~50ns; cache-miss path
-        // walks `highlight_lines` exactly once and stores into
-        // `editor.visible_highlights`. The per-frame
-        // `highlight_lines` call this replaces ran ~178µs at 80
-        // lines unconditionally.
-        self.app.refresh_highlights();
-        let snapshot = self.app.editor.document.snapshot();
+impl EditorView {
+    /// Recursive walker over `editor.pane_tree.root()`. Each
+    /// [`PaneNode::Leaf`] paints via [`Self::paint_pane`]; splits
+    /// wrap children in `flex_col` (horizontal split: stacked
+    /// vertically) or `flex_row` (vertical split: side by side)
+    /// with a thin divider border between them. The active leaf
+    /// gets the richer rendering (cursor + cached highlights);
+    /// inactive leaves get a simpler text + gutter + per-pane
+    /// status view.
+    ///
+    /// Phase 5.8.H: multi-pane visible in the GPUI peer. Single-
+    /// pane case still works (the root is just `Leaf(0)`); v1
+    /// inactive-pane rendering deliberately omits highlights +
+    /// cursor markers — those need per-pane caches the host
+    /// already populates for the TUI peer via
+    /// `refresh_pane_highlights`, queued for a future slice.
+    fn paint_pane_tree(&self, node: &PaneNode, theme: &GpuiTheme, active_idx: usize) -> gpui::Div {
+        match node {
+            PaneNode::Leaf(idx) => self.paint_pane(*idx, theme, *idx == active_idx),
+            PaneNode::HorizontalSplit { top, bottom } => div()
+                .flex()
+                .flex_col()
+                .flex_grow()
+                .size_full()
+                .child(
+                    self.paint_pane_tree(top, theme, active_idx)
+                        .flex_grow()
+                        .border_b_1()
+                        .border_color(rgb(theme.popup_border)),
+                )
+                .child(self.paint_pane_tree(bottom, theme, active_idx).flex_grow()),
+            PaneNode::VerticalSplit { left, right } => div()
+                .flex()
+                .flex_row()
+                .flex_grow()
+                .size_full()
+                .child(
+                    self.paint_pane_tree(left, theme, active_idx)
+                        .flex_grow()
+                        .border_r_1()
+                        .border_color(rgb(theme.popup_border)),
+                )
+                .child(self.paint_pane_tree(right, theme, active_idx).flex_grow()),
+        }
+    }
+
+    /// Paint a single pane. Active pane uses `editor.cursor` +
+    /// `editor.visible_highlights` (refreshed at the top of
+    /// render); inactive panes use the stashed `PaneState::cursor`
+    /// and no highlights. Each pane gets its own status line at
+    /// its bottom (path + cursor coords), which keeps the visible
+    /// boundary between panes legible without a hard chrome border.
+    fn paint_pane(&self, pane_idx: usize, theme: &GpuiTheme, is_active: bool) -> gpui::Div {
+        let editor = &self.app.editor;
+        let leaves = editor.pane_tree.leaves();
+        if pane_idx >= leaves.len() {
+            return div().child(format!("(stale pane index {pane_idx})"));
+        }
+        let pane: &PaneState = &leaves[pane_idx];
+        // Resolve the buffer's document handle. Inactive panes may
+        // reference buffers different from `editor.document`; lookup
+        // by buffer_id.
+        let snapshot_opt = editor
+            .buffers
+            .document_handle(pane.buffer_id)
+            .map(|h| h.snapshot());
+        let Some(snapshot) = snapshot_opt else {
+            return div()
+                .p_3()
+                .child(format!("(buffer {:?} unavailable)", pane.buffer_id));
+        };
         let text = snapshot.text();
-        let cursor = self.app.editor.cursor;
-        let modal = self.app.editor.modal;
-
-        let modal_label = match modal {
-            ModalState::Normal => "NORMAL",
-            ModalState::Insert => "INSERT",
-            ModalState::Visual(_) => "VISUAL",
-            ModalState::OperatorPending => "PENDING",
-            ModalState::Command => "COMMAND",
-            ModalState::Search(_) => "SEARCH",
-            ModalState::Replace => "REPLACE",
+        let cursor = if is_active {
+            editor.cursor
+        } else {
+            pane.cursor
         };
-        let path_label = match snapshot.path() {
-            Some(p) => {
-                let display = match std::env::current_dir()
-                    .ok()
-                    .and_then(|cwd| p.strip_prefix(&cwd).ok().map(|s| s.to_path_buf()))
-                {
-                    Some(rel) => rel.display().to_string(),
-                    None => p.display().to_string(),
-                };
-                if snapshot.dirty {
-                    format!("{display} [+]")
-                } else {
-                    display
-                }
-            }
-            None => {
-                if snapshot.dirty {
-                    "[scratch][+]".to_string()
-                } else {
-                    "[scratch]".to_string()
-                }
-            }
-        };
-        let bottom_row: String = match modal {
-            ModalState::Command => {
-                format!(":{}", self.app.editor.command_line)
-            }
-            ModalState::Search(dir) => {
-                let prefix = match dir {
-                    lattice_grammar::SearchDirection::Forward => '/',
-                    lattice_grammar::SearchDirection::Backward => '?',
-                };
-                let pattern = self
-                    .app
-                    .editor
-                    .search_line
-                    .as_ref()
-                    .map(|s| s.pattern.as_str())
-                    .unwrap_or("");
-                format!("{prefix}{pattern}")
-            }
-            _ => format!(
-                "  {}   {}   L:{}  C:{}",
-                modal_label,
-                path_label,
-                cursor.line + 1,
-                cursor.byte,
-            ),
-        };
-        let bottom_is_minibuffer = matches!(modal, ModalState::Command | ModalState::Search(_));
-
         let cursor_line = cursor.line as usize;
         let cursor_byte = cursor.byte as usize;
-        let cursor_fg = rgb(self.app.theme.cursor_foreground);
-        let cursor_bg = rgb(self.app.theme.cursor_background);
-        let cursor_shape = CursorShape::for_mode(modal);
         let raw_lines: Vec<&str> = text.split('\n').collect();
-        let cursor_past_last_line = cursor_line >= raw_lines.len();
 
-        // 5.8.G: read the host-side cached visible-spans. Cache
-        // is built by `self.app.refresh_highlights()` above (at
-        // the top of render); the cell loop below indexes into
-        // `visible_highlights[line_idx]` for per-line spans.
-        let highlights: &[Vec<lattice_syntax::StyledSpan>] =
-            self.app.editor.visible_highlights.as_slice();
+        let cursor_shape = if is_active {
+            Some(CursorShape::for_mode(editor.modal))
+        } else {
+            None
+        };
+        let cursor_fg = rgb(theme.cursor_foreground);
+        let cursor_bg = rgb(theme.cursor_background);
 
-        let style_cursor_cell = |c: &str| -> gpui::Div {
-            let cell = div().child(c.to_string());
-            match cursor_shape {
-                CursorShape::Block => cell.bg(cursor_bg).text_color(cursor_fg),
-                CursorShape::Bar => cell.border_l_2().border_color(cursor_bg),
-                CursorShape::Underline => cell.border_b_2().border_color(cursor_bg),
-            }
+        // Highlights: active pane reads the live cache. Inactive
+        // panes show plain text for v1 (the host's
+        // `refresh_pane_highlights` populates `pane_highlights`
+        // keyed by pane index; wiring those into the GPUI peer is
+        // a follow-up slice).
+        let highlights: &[Vec<lattice_syntax::StyledSpan>] = if is_active {
+            editor.visible_highlights.as_slice()
+        } else {
+            &[]
         };
 
         let total_lines = raw_lines.len().max(1);
         let gutter_width = total_lines.to_string().len();
         let gutter_pad_len = gutter_width + 1;
-        let gutter_normal = rgb(0x9399b2);
+        let gutter_normal = rgb(0x9399b2); // Catppuccin overlay2.
+
+        let style_cursor_cell = |c: &str| -> gpui::Div {
+            let cell = div().child(c.to_string());
+            match cursor_shape {
+                Some(CursorShape::Block) => cell.bg(cursor_bg).text_color(cursor_fg),
+                Some(CursorShape::Bar) => cell.border_l_2().border_color(cursor_bg),
+                Some(CursorShape::Underline) => cell.border_b_2().border_color(cursor_bg),
+                None => cell,
+            }
+        };
 
         let make_gutter = |line_idx: usize, is_cursor_line: bool| -> gpui::Div {
             let label = format!("{:>width$} ", line_idx + 1, width = gutter_width);
-            let color = if is_cursor_line {
-                rgb(self.app.theme.cursor_background)
+            let color = if is_cursor_line && is_active {
+                cursor_bg
             } else {
                 gutter_normal
             };
@@ -322,7 +335,7 @@ impl Render for EditorView {
                 let mut cells: Vec<gpui::Div> = Vec::with_capacity(line.len() + 2);
                 cells.push(make_gutter(line_idx, is_cursor_line));
                 cells.extend(line.char_indices().map(|(byte_idx, c)| {
-                    let is_cursor = is_cursor_line && byte_idx == cursor_byte;
+                    let is_cursor = is_active && is_cursor_line && byte_idx == cursor_byte;
                     if is_cursor {
                         style_cursor_cell(&c.to_string())
                     } else {
@@ -332,13 +345,14 @@ impl Render for EditorView {
                             .child(c.to_string())
                     }
                 }));
-                if is_cursor_line && cursor_byte >= line.len() {
+                if is_active && is_cursor_line && cursor_byte >= line.len() {
                     cells.push(style_cursor_cell(" "));
                 }
                 div().flex().flex_row().children(cells)
             })
             .collect();
 
+        let cursor_past_last_line = is_active && cursor_line >= raw_lines.len();
         if cursor_past_last_line {
             let blank_gutter = div().child(" ".repeat(gutter_pad_len));
             rows.push(
@@ -350,8 +364,125 @@ impl Render for EditorView {
             );
         }
 
+        // Per-pane status line at the pane's bottom. Format
+        // matches the TUI's per-pane status: path + cursor coords.
+        // Active pane uses the cursor color for the bar so the
+        // user can tell which pane has focus at a glance.
+        let path_label = snapshot
+            .path()
+            .map(|p| {
+                let display = match std::env::current_dir()
+                    .ok()
+                    .and_then(|cwd| p.strip_prefix(&cwd).ok().map(|s| s.to_path_buf()))
+                {
+                    Some(rel) => rel.display().to_string(),
+                    None => p.display().to_string(),
+                };
+                if snapshot.dirty {
+                    format!("{display} [+]")
+                } else {
+                    display
+                }
+            })
+            .unwrap_or_else(|| {
+                if snapshot.dirty {
+                    "[scratch][+]".to_string()
+                } else {
+                    "[scratch]".to_string()
+                }
+            });
+        let status_line = format!("  {path_label}   L:{}  C:{}", cursor.line + 1, cursor.byte);
+        let (status_bg, status_fg) = if is_active {
+            (rgb(theme.cursor_background), rgb(theme.cursor_foreground))
+        } else {
+            (rgb(theme.status_background), rgb(theme.status_foreground))
+        };
+
+        div()
+            .flex()
+            .flex_col()
+            .flex_grow()
+            .overflow_hidden()
+            .child(
+                div()
+                    .flex_grow()
+                    .p_3()
+                    .flex()
+                    .flex_col()
+                    .overflow_hidden()
+                    .children(rows),
+            )
+            .child(
+                div()
+                    .bg(status_bg)
+                    .text_color(status_fg)
+                    .px_2()
+                    .py_1()
+                    .flex()
+                    .flex_row()
+                    .child(div().child(status_line)),
+            )
+    }
+}
+
+impl Render for EditorView {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // 5.8.G: refresh the host-side highlight cache before
+        // reading spans. Cache-hit path is ~50ns; cache-miss path
+        // walks `highlight_lines` exactly once and stores into
+        // `editor.visible_highlights`. The per-frame
+        // `highlight_lines` call this replaces ran ~178µs at 80
+        // lines unconditionally.
+        self.app.refresh_highlights();
+        let modal = self.app.editor.modal;
+
+        let modal_label = match modal {
+            ModalState::Normal => "NORMAL",
+            ModalState::Insert => "INSERT",
+            ModalState::Visual(_) => "VISUAL",
+            ModalState::OperatorPending => "PENDING",
+            ModalState::Command => "COMMAND",
+            ModalState::Search(_) => "SEARCH",
+            ModalState::Replace => "REPLACE",
+        };
+        // 5.8.C / 5.8.H: bottom global row. In Command/Search
+        // modes it shows the in-progress `:cmd` / `/pattern`
+        // minibuffer; otherwise it shows the global modal label.
+        // Per-pane path + cursor coords now live inside each
+        // pane's own status line (built in `paint_pane`).
+        let bottom_row: String = match modal {
+            ModalState::Command => format!(":{}", self.app.editor.command_line),
+            ModalState::Search(dir) => {
+                let prefix = match dir {
+                    lattice_grammar::SearchDirection::Forward => '/',
+                    lattice_grammar::SearchDirection::Backward => '?',
+                };
+                let pattern = self
+                    .app
+                    .editor
+                    .search_line
+                    .as_ref()
+                    .map(|s| s.pattern.as_str())
+                    .unwrap_or("");
+                format!("{prefix}{pattern}")
+            }
+            _ => format!("  {modal_label}"),
+        };
+        let bottom_is_minibuffer = matches!(modal, ModalState::Command | ModalState::Search(_));
+
         let theme = self.app.theme;
-        let document_area = div().flex_grow().p_3().flex().flex_col().children(rows);
+        // 5.8.H: render the pane tree. `paint_pane_tree` walks
+        // `editor.pane_tree.root()` recursively; each leaf paints
+        // via `paint_pane` with active/inactive style. The active
+        // leaf gets the refreshed `visible_highlights` cache + a
+        // visible cursor; inactive leaves show plain text + no
+        // cursor (their own stashed `PaneState::cursor` is read
+        // for the per-pane status coords but no visible marker is
+        // painted).
+        let active_idx = self.app.editor.pane_tree.active_index();
+        let document_area = self
+            .paint_pane_tree(self.app.editor.pane_tree.root(), &theme, active_idx)
+            .flex_grow();
 
         let completion_overlay: Option<gpui::Div> = self
             .app

@@ -88,8 +88,9 @@ use crate::buffer_registry::{BufferData, BufferEntry};
 use crate::buffers::{BufferFlags, BufferId, BufferKind};
 pub use lattice_grammar::ModalState;
 pub use lattice_grammar::command::CommandInvocation;
-use lattice_grammar::register::Register;
 use lattice_protocol::position::Position;
+#[cfg(test)]
+use lattice_grammar::register::Register;
 #[cfg(test)]
 use lattice_protocol::selection::{Selection, SelectionSet};
 

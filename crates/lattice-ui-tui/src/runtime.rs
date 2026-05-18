@@ -151,15 +151,13 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
         // out through the existing `handle_renderer_signal`
         // sink — same shape used elsewhere (definitions, rename,
         // apply_edit).
+        // 5.8.AA.t: `drain_pending_live_picker_query` is now part
+        // of `run_tick_pending`. Both renderer peers reach every
+        // per-tick drain through this single aggregator.
         let signals = app.editor.run_tick_pending();
         for s in signals {
             app.handle_renderer_signal(s);
         }
-        // One App-resident drain still needs an explicit call:
-        // `drain_pending_live_picker_query` reaches into the
-        // picker's `build_picker_context` helper which hasn't
-        // migrated yet.
-        app.drain_pending_live_picker_query();
         // Update viewport height. The buffer-area band is the
         // terminal minus the mode line + cmdline/echo row (and the
         // candidate-list row band, when a picker / completion popup

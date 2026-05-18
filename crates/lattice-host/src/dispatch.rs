@@ -3904,6 +3904,135 @@ impl Editor {
         }
     }
 
+    /// Best-effort workspace root for picker sources. Active
+    /// document's parent if it has one; current working directory
+    /// otherwise; `.` if cwd resolution fails. Returned owned so
+    /// the context's `workspace_root` field has a stable home
+    /// regardless of fallback. Phase 5.8.AA.s: hoisted from TUI
+    /// App so both peers reach the picker through the same code.
+    pub fn picker_workspace_root_path(
+        &self,
+        snap: &lattice_runtime::DocumentSnapshot,
+    ) -> std::path::PathBuf {
+        if let Some(arc) = snap.path.as_ref()
+            && let Some(parent) = arc.parent()
+        {
+            return parent.to_path_buf();
+        }
+        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    }
+
+    /// Build the snapshot the picker primitive hands to source
+    /// generators on each `:picker <source>` invocation. Caller
+    /// holds `snap` for the duration of the synchronous `init`
+    /// call -- the returned `PickerContext` borrows from both
+    /// `self` and `snap`.
+    ///
+    /// Phase 5.8.AA.s: hoisted from TUI App. `FileTreeRoot` /
+    /// `OilDir` buffer-locals are read through the canonical
+    /// domain-crate paths (`lattice_file_tree::modes::FileTreeRoot`,
+    /// `lattice_oil::modes::OilDir`) so the body is renderer-
+    /// agnostic -- both peers can call it.
+    pub fn build_picker_context<'a>(
+        &'a self,
+        snap: &'a lattice_runtime::DocumentSnapshot,
+    ) -> lattice_picker::PickerContext<'a> {
+        use lattice_picker::{
+            ActiveBufferSnapshot, BufferEntry, PickerContext, PositionEntry, PositionSource,
+        };
+
+        let active_id = self.active_pane_buffer_id();
+        let path: Option<&std::path::Path> = snap.path.as_ref().map(|p| p.as_path());
+        let language = Some(lattice_syntax::Lang::detect_from_path(path).label());
+        // Selection: the most recent visual-mode range. While in
+        // Command mode (the only state from which `:picker ...` can
+        // fire) the cursor is not in Visual, so `last_visual`
+        // captures the prior selection.
+        let selection = self.last_visual.as_ref().map(|v| (v.anchor, v.head));
+
+        let syntax_symbols = self
+            .syntax
+            .as_ref()
+            .map(|s| s.snapshot().collect_symbol_locations())
+            .unwrap_or_default();
+        let active_buffer = ActiveBufferSnapshot {
+            buffer_id: active_id.0,
+            path,
+            language,
+            cursor: self.cursor,
+            selection,
+            buffer: &snap.buffer,
+            syntax_symbols,
+        };
+
+        let workspace_root = self.picker_workspace_root_path(snap);
+
+        let mut buffers: Vec<BufferEntry> = Vec::new();
+        self.buffers.for_each(|entry| {
+            buffers.push(picker_buffer_entry(entry, &self.buffer_locals));
+        });
+
+        // Marks: HashMap<char, Position> -> Vec<(char, Position)>.
+        let mut marks: Vec<(char, lattice_protocol::Position)> =
+            self.marks.iter().map(|(c, p)| (*c, *p)).collect();
+        marks.sort_by_key(|(c, _)| *c);
+
+        // Registers: unnamed + named, both as (name, preview).
+        let mut registers: Vec<(String, String)> = Vec::new();
+        if let Some(r) = &self.unnamed_register {
+            registers.push(("\"".into(), preview_register(&r.content)));
+        }
+        let mut named: Vec<(Register, String)> = self
+            .registers
+            .iter()
+            .map(|(k, v)| (*k, preview_register(&v.content)))
+            .collect();
+        named.sort_by_key(|(k, _)| match k {
+            Register::Named(c) => format!("a{c}"),
+            Register::Numbered(n) => format!("b{n}"),
+            Register::System => "z+".into(),
+            _ => "z".into(),
+        });
+        for (key, preview) in named {
+            let name = match key {
+                Register::Named(c) => c.to_string(),
+                Register::Numbered(n) => n.to_string(),
+                Register::System => "+".into(),
+                _ => "?".into(),
+            };
+            registers.push((name, preview));
+        }
+
+        // Position history: translate from the host's richer
+        // PositionEntry (which carries BufferKind) into the
+        // picker's renderer-agnostic view.
+        let position_history: Vec<PositionEntry> = self
+            .position_history
+            .iter()
+            .map(|e| PositionEntry {
+                buffer_id: e.buffer_id.0,
+                line: e.position.line,
+                col: e.position.byte,
+                source: match e.source {
+                    crate::state::PositionSource::AutoJump => PositionSource::AutoJump,
+                    crate::state::PositionSource::ExplicitMark => PositionSource::ExplicitMark,
+                    crate::state::PositionSource::PluginPush => PositionSource::PluginPush,
+                    crate::state::PositionSource::NamedMark(c) => PositionSource::NamedMark(c),
+                },
+            })
+            .collect();
+
+        PickerContext {
+            active_buffer,
+            workspace_root,
+            recent_files: &self.recent_files,
+            position_history,
+            buffers,
+            marks,
+            registers,
+        }
+    }
+
     /// 4.4.l: per-tick refresh of the `workspace/didChangeWatchedFiles`
     /// watcher set. Spawns the OS watcher on first registration;
     /// drops it when no actor advertises the capability. Per-server
@@ -6296,6 +6425,10 @@ impl Editor {
         // workspace-edit + executeCommand path so both peers consume
         // them uniformly here.
         signals.extend(self.drain_pending_code_actions());
+        // 5.8.AA.t: live-picker query drain + in-flight pump.
+        // Last App-resident drain to migrate; both peers now reach
+        // every per-tick drain through this aggregator.
+        signals.extend(self.drain_pending_live_picker_query());
         signals
     }
 
@@ -9119,6 +9252,155 @@ impl Editor {
             self.activate_buffer_state()
         } else {
             Vec::new()
+        }
+    }
+
+    /// 5.8.AA.t: per-tick live-picker query drain. Two steps:
+    ///
+    /// 1. Fire `on_query_changed` if debounce elapsed.
+    /// 2. Pump in-flight results.
+    ///
+    /// Both renderer peers reach this through `run_tick_pending`.
+    /// Returns any [`RendererSignal`]s the seat path emits (the
+    /// `buffers` source preview activates the alternate buffer,
+    /// which can fan out a `ThemeChanged` / mode-lifecycle signal).
+    pub fn drain_pending_live_picker_query(&mut self) -> Vec<RendererSignal> {
+        let mut signals = Vec::new();
+        let now = std::time::Instant::now();
+        let should_fire = self
+            .live_picker_query
+            .as_ref()
+            .and_then(|s| s.debounce_until)
+            .map(|d| now >= d)
+            .unwrap_or(false);
+        if should_fire {
+            signals.extend(self.fire_live_picker_query_changed());
+        }
+        signals.extend(self.drain_inflight_live_picker_query());
+        signals
+    }
+
+    /// Internal: take the snapshot, cancel any in-flight, call
+    /// `on_query_changed`, route the result. Phase 5.8.AA.t:
+    /// hoisted from TUI App. The async spawn routes through
+    /// `lattice_runtime::runtime::spawn_on_lsp_runtime` so both
+    /// peers reach the same task pool.
+    fn fire_live_picker_query_changed(&mut self) -> Vec<RendererSignal> {
+        let Some(state) = self.live_picker_query.as_mut() else {
+            return Vec::new();
+        };
+        state.debounce_until = None;
+        let generator = state.generator.clone();
+        let source_id = state.source_id.clone();
+        if let Some(prev) = state.inflight.take() {
+            prev.cancel.cancel();
+        }
+        let query = match self.picker.as_ref() {
+            Some(p) => p.query.clone(),
+            None => return Vec::new(),
+        };
+        let snap = self.document.snapshot();
+        let ctx = self.build_picker_context(&snap);
+        let res = generator.on_query_changed(&ctx, &query);
+        drop(ctx);
+        drop(snap);
+        let Some(res) = res else {
+            self.set_message(
+                EchoLevel::Warn,
+                format!("picker: live source `{source_id}` returned None from on_query_changed"),
+            );
+            return Vec::new();
+        };
+        let init_result = match res {
+            Ok(r) => r,
+            Err(e) => {
+                self.set_message(EchoLevel::Error, format!("picker: {e}"));
+                return Vec::new();
+            }
+        };
+        match init_result {
+            lattice_picker::PickerInitResult::Inline(pairs) => {
+                self.seat_picker_from_pairs(source_id, pairs)
+            }
+            lattice_picker::PickerInitResult::Future(fut) => {
+                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                let cancel = lattice_protocol::CancellationToken::new();
+                let cancel_clone = cancel.clone();
+                lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
+                    let result = fut.await;
+                    if !cancel_clone.is_cancelled() {
+                        let _ = tx.send(result.map(lattice_picker::PickerInitResult::Inline));
+                    }
+                });
+                if let Some(state) = self.live_picker_query.as_mut() {
+                    state.inflight = Some(crate::state::InFlightLiveQuery {
+                        cancel,
+                        rx,
+                        launched_for_query: query,
+                    });
+                }
+                Vec::new()
+            }
+            lattice_picker::PickerInitResult::Stream(_) => {
+                self.set_message(
+                    EchoLevel::Error,
+                    format!(
+                        "picker: streaming live results not yet wired (source `{source_id}` returned a Stream)"
+                    ),
+                );
+                Vec::new()
+            }
+        }
+    }
+
+    /// Internal: pump the in-flight live-query channel. If the
+    /// completion's launched query no longer matches the picker's
+    /// current query, drop it (stale). Phase 5.8.AA.t: hoisted
+    /// from TUI App.
+    fn drain_inflight_live_picker_query(&mut self) -> Vec<RendererSignal> {
+        let Some(state) = self.live_picker_query.as_mut() else {
+            return Vec::new();
+        };
+        let Some(inflight) = state.inflight.as_mut() else {
+            return Vec::new();
+        };
+        let result = match inflight.rx.try_recv() {
+            Ok(r) => r,
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => return Vec::new(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                state.inflight = None;
+                return Vec::new();
+            }
+        };
+        let launched_for = inflight.launched_for_query.clone();
+        state.inflight = None;
+        let current_query = self
+            .picker
+            .as_ref()
+            .map(|p| p.query.clone())
+            .unwrap_or_default();
+        if launched_for != current_query {
+            return Vec::new();
+        }
+        let source_id = match self.live_picker_query.as_ref() {
+            Some(s) => s.source_id.clone(),
+            None => return Vec::new(),
+        };
+        match result {
+            Ok(lattice_picker::PickerInitResult::Inline(pairs)) => {
+                self.seat_picker_from_pairs(source_id, pairs)
+            }
+            Ok(_) => {
+                self.set_message(
+                    EchoLevel::Error,
+                    "picker: live source future resolved to non-Inline (unsupported)".to_string(),
+                );
+                Vec::new()
+            }
+            Err(e) => {
+                self.set_message(EchoLevel::Error, format!("picker: {e}"));
+                Vec::new()
+            }
         }
     }
 }
@@ -12275,6 +12557,64 @@ pub fn visual_kind_to_mode(kind: VisualKind) -> VisualMode {
         VisualKind::Charwise => VisualMode::Charwise,
         VisualKind::Linewise => VisualMode::Linewise,
         VisualKind::Blockwise => VisualMode::Blockwise,
+    }
+}
+
+/// Translate a host-side [`crate::buffer_registry::BufferEntry`]
+/// into the picker's renderer-agnostic [`lattice_picker::BufferEntry`].
+/// Pure function on the input + buffer-locals map; called by
+/// [`Editor::build_picker_context`] for every registry entry.
+///
+/// Phase 5.8.AA.s: hoisted from TUI App so both renderer peers
+/// build the picker through the same code. `FileTreeRoot` / `OilDir`
+/// reads route through the canonical domain-crate paths (no TUI
+/// re-export needed).
+pub fn picker_buffer_entry(
+    entry: &crate::buffer_registry::BufferEntry,
+    buffer_locals: &std::collections::HashMap<BufferId, lattice_mode::BufferLocals>,
+) -> lattice_picker::BufferEntry {
+    use crate::buffer_registry::BufferData;
+    let id = entry.id.0;
+    let (kind_label, path, title, dirty) = match &entry.data {
+        BufferData::Document(d) => {
+            let path = d.handle.path();
+            let title = path
+                .as_ref()
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "[no name]".to_string());
+            ("doc".to_string(), path, title, d.handle.dirty())
+        }
+        BufferData::FileTree(_) => {
+            let root = buffer_locals
+                .get(&entry.id)
+                .and_then(|locals| locals.get::<lattice_file_tree::modes::FileTreeRoot>())
+                .map(|r| r.0.clone());
+            let title = root
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "[no root]".to_string());
+            ("tree".to_string(), root, title, false)
+        }
+        BufferData::Help(h) => ("help".to_string(), None, h.title.clone(), false),
+        BufferData::Oil(_) => {
+            let dir = buffer_locals
+                .get(&entry.id)
+                .and_then(|locals| locals.get::<lattice_oil::modes::OilDir>())
+                .map(|d| d.0.clone());
+            let title = dir
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "[no dir]".to_string());
+            ("oil".to_string(), dir, title, false)
+        }
+    };
+    lattice_picker::BufferEntry {
+        id,
+        kind_label,
+        path,
+        title,
+        dirty,
     }
 }
 

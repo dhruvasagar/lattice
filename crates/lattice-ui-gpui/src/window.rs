@@ -1176,6 +1176,8 @@ impl Render for EditorView {
         let popup_overlay: Option<gpui::Div> = self.app.editor.popup_help().map(|buf| {
             let title = buf.title.clone();
             let body_text = buf.content.as_string();
+            // M.3.2.c.5: highlights live in buffer-locals keyed by the
+            // popup buffer id (see host's `Editor::popup_help_highlights`).
             let highlights_owned: Vec<Vec<lattice_syntax::StyledSpan>> = self
                 .app
                 .editor

@@ -80,6 +80,7 @@ impl LspFileWatcher {
             .cloned()
             .collect();
         for p in stale {
+            tracing::debug!(path = %p.display(), "lsp_watcher: unwatching stale root");
             let _ = self.watcher.unwatch(&p);
             self.watched_roots.remove(&p);
         }
@@ -90,16 +91,41 @@ impl LspFileWatcher {
             .cloned()
             .collect();
         for p in new {
+            // notify's `Recursive` watch walks the entire subtree
+            // synchronously on Linux to install per-dir inotify
+            // watches. On big workspaces (Rust projects with
+            // populated `target/`, mono-repos with `node_modules/`)
+            // this can take seconds-to-minutes and blocks the
+            // calling thread. The debug markers below let users
+            // confirm whether a UI freeze sits on this call.
+            tracing::debug!(
+                path = %p.display(),
+                "lsp_watcher: installing recursive watch (may block on large trees)"
+            );
+            let started = std::time::Instant::now();
             match self.watcher.watch(&p, RecursiveMode::Recursive) {
                 Ok(()) => {
+                    tracing::debug!(
+                        path = %p.display(),
+                        elapsed_ms = started.elapsed().as_millis(),
+                        "lsp_watcher: recursive watch installed"
+                    );
                     self.watched_roots.insert(p);
                 }
-                Err(e) => logger.log(
-                    None,
-                    lattice_lsp::LogLevel::Warn,
-                    lattice_lsp::LogSource::Client,
-                    format!("file-watcher watch {} failed: {e}", p.display()),
-                ),
+                Err(e) => {
+                    tracing::debug!(
+                        path = %p.display(),
+                        elapsed_ms = started.elapsed().as_millis(),
+                        error = %e,
+                        "lsp_watcher: recursive watch failed"
+                    );
+                    logger.log(
+                        None,
+                        lattice_lsp::LogLevel::Warn,
+                        lattice_lsp::LogSource::Client,
+                        format!("file-watcher watch {} failed: {e}", p.display()),
+                    );
+                }
             }
         }
     }

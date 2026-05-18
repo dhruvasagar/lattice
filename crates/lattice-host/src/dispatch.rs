@@ -1330,6 +1330,18 @@ impl Editor {
         self.buffers.with_help(id, |h| h.clone())
     }
 
+    /// M.3.2.c.5: read the pre-computed per-line markdown highlight
+    /// spans seeded into the active popup's buffer-locals. Returns
+    /// `None` when no popup is open or the locals slot was not
+    /// seeded. Both renderer peers read through here.
+    pub fn popup_help_highlights(&self) -> Option<&[Vec<lattice_syntax::StyledSpan>]> {
+        let id = self.popup_buffer?;
+        self.buffer_locals
+            .get(&id)
+            .and_then(|l| l.get::<crate::modes::HelpHighlights>())
+            .map(|h| h.0.as_slice())
+    }
+
     /// The active buffer's text -- a `Buffer` clone (rope is O(1)).
     /// Document, help, file-tree, oil all flow through this so motion
     /// / scroll / search code can read text without branching on
@@ -4260,6 +4272,17 @@ impl Editor {
             self.lsp_file_watcher = None;
             return;
         }
+        // Hot path: most ticks see no roster change. Only emit the
+        // pre/post-sync trace pair when an actor with watcher caps
+        // is live and the watcher hasn't been initialised yet (the
+        // first call after LSP attach is the one that can stall on
+        // a giant `target/`).
+        let _watcher_existed = self.lsp_file_watcher.is_some();
+        tracing::debug!(
+            actor_count = actors_with_watchers.len(),
+            watcher_existed = _watcher_existed,
+            "refresh_lsp_file_watcher: pre-sync"
+        );
         if self.lsp_file_watcher.is_none() {
             match crate::lsp_watcher::LspFileWatcher::new() {
                 Ok(w) => self.lsp_file_watcher = Some(w),
@@ -5100,7 +5123,13 @@ impl Editor {
         self.pane_tree.active_mut().buffer = lattice_core::BufferKind::Document;
         self.pane_tree.active_mut().buffer_id = new_id;
         let signals = self.activate_buffer_state();
+        tracing::debug!(
+            path = %target.display(),
+            lang = ?lang,
+            "do_edit: about to publish DocumentOpened (LSP attach trigger)"
+        );
         self.publish_document_opened_for_active();
+        tracing::debug!(path = %target.display(), "do_edit: DocumentOpened published");
         self.set_message(EchoLevel::Info, format!("\"{}\" opened", target.display()));
         self.push_recent_file(&target);
         DoEditOutcome::Opened(signals)

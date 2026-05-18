@@ -75,6 +75,12 @@ toml = { workspace = true }
 # `workspace/didChangeConfiguration`.
 serde_json = { workspace = true }
 notify = { workspace = true }
+# Phase 5.8.AF.4: structured debug logging for diagnosing
+# main-thread blocking calls (notably `notify`'s recursive watch
+# install on cold workspace roots). Filterable via
+# `RUST_LOG=lattice_host=debug`; default subscriber filter is
+# `info` so this is silent in normal operation.
+tracing = { workspace = true }
 # 5.5.E.7.5: `Editor::do_substitute` compiles `:s/pat/repl/`
 # patterns host-side via the same fancy-regex engine that backs
 # `/` and `?` in `lattice-core::search`.

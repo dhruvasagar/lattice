@@ -363,12 +363,9 @@ impl App {
             // live App-side because they reach for `spawn_on_lsp_runtime`
             // + `BatchingSink` + the `pending_insert_completion_lsp_*`
             // channels.
-            Action::LspOnTypeFormattingRequest(c) => {
-                self.do_lsp_on_type_formatting_request(c)
-            }
-            Action::LspInsertCompletionRequest => {
-                self.do_lsp_insert_completion_request()
-            }
+            // Phase 5.8.AF: migrated to host (consumed = true).
+            Action::LspOnTypeFormattingRequest(_) => {}
+            Action::LspInsertCompletionRequest => {}
             // 5.5.G.3: `DeleteCharBackward`, `EnterAppend`,
             // `OpenLineBelow`, `OpenLineAbove`, `Undo`, `Redo`
             // migrated to `Editor::dispatch`; routed through the
@@ -391,8 +388,8 @@ impl App {
             // 5.5.G.11: `CloseHover` / `PickerAppend` /
             // `PickerBackspace` / `PickerSelectNext` /
             // `PickerSelectPrev` migrated to `Editor::dispatch`.
-            Action::PickerAccept => self.do_picker_accept(),
-            Action::PickerDismiss => self.do_picker_dismiss(),
+            // Phase 5.8.AF: migrated to host (consumed = true).
+            Action::PickerAccept | Action::PickerDismiss => {}
 
             // 5.5.G.2: `EnterVisual` / `ExitVisual` / `ReselectLastVisual`
             // migrated to `Editor::dispatch`; routed through the
@@ -427,27 +424,21 @@ impl App {
             // `Editor::dispatch` (host-side
             // `Editor::lsp_references_request`); falls through to
             // the grouped no-op below.
-            Action::LspFollowLinkAtCursor => self.do_lsp_follow_link_at_cursor(),
+            // Phase 5.8.AF: migrated to host (consumed = true).
+            Action::LspFollowLinkAtCursor => {}
             // 5.5.LSP.4: `LspSignatureHelpRequest` /
             // `LspCompletionRequest` migrated to `Editor::dispatch`;
             // fall through to the grouped no-op below.
             // 5.5.G.7: `TagStackPop` migrated to `Editor::dispatch`.
-            Action::CompletionTrigger => self.do_completion_trigger(),
-            Action::CompletionNext => self.do_completion_next(),
-            Action::CompletionPrev => self.do_completion_prev(),
-            Action::CompletionAccept => self.do_completion_accept(),
-            // 5.5.G.14: `CompletionCancel` /
-            // `CompletionCancelAndExitInsert` /
-            // `CompletionDocsScrollDown` /
-            // `CompletionDocsScrollUp` migrated to `Editor::dispatch`.
-            Action::CompletionToggleDocs => self.do_completion_toggle_docs(),
-            Action::CompletionFilterToSource(id) => {
-                self.do_completion_filter_to_source(id);
-            }
-            Action::CompletionFilterClear => self.do_completion_filter_clear(),
-            Action::CompletionAcceptThenInsert(c) => {
-                self.do_completion_accept_then_insert(c);
-            }
+            // Phase 5.8.AF: migrated to host (consumed = true).
+            Action::CompletionTrigger
+            | Action::CompletionNext
+            | Action::CompletionPrev
+            | Action::CompletionAccept
+            | Action::CompletionToggleDocs
+            | Action::CompletionFilterToSource(_)
+            | Action::CompletionFilterClear
+            | Action::CompletionAcceptThenInsert(_) => {}
             // 5.5.SNIPPET.1: `Action::SnippetExpand` migrated to
             // `Editor::dispatch`; routed through the grouped no-op
             // above.
@@ -506,13 +497,17 @@ impl App {
             // `CommandLineAcceptCompletion` migrated to `Editor::dispatch`.
 
             // 5.5.G.12: `HelpDismiss` migrated to `Editor::dispatch`.
+            // Phase 5.8.AF: FollowLink Oil/FileTree arms migrated
+            // to host (consumed=true). Help follow-link still
+            // App-side because do_help_follow_link reaches for
+            // App-only link-target handlers (Source variant);
+            // host short-circuits Help to no-op so App handles.
             Action::FollowLink => match self.editor.active_buffer {
                 BufferKind::Help => self.do_help_follow_link(),
-                BufferKind::Oil => self.do_oil_follow(),
-                BufferKind::FileTree => self.do_file_tree_follow(),
-                BufferKind::Document => {}
+                BufferKind::Oil | BufferKind::FileTree | BufferKind::Document => {}
             },
-            Action::OilNavigateUp => self.do_oil_navigate_up(),
+            // Phase 5.8.AF: migrated to host (consumed = true).
+            Action::OilNavigateUp => {}
 
             // 5.5.G.5: `SplitPaneHorizontal` / `SplitPaneVertical` /
             // `ClosePane` / `NavigatePane` / `NextPane` / `PrevPane`

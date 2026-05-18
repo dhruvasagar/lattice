@@ -807,6 +807,54 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         }
         Action::CommandLineAppendChord(token) => editor.do_command_line_append_chord(token, _out),
         Action::CommandLineCompleteOrAdvance => editor.do_command_line_complete_or_advance(),
+        // Phase 5.8.AF: final App::apply collapse. NOTE: we
+        // intentionally do NOT set `consumed = true` for these
+        // arms — they're host-resident but the renderer's
+        // post-dispatch hooks (sync_keymap_overlays for the
+        // completion-popup-mode minor toggle, ensure_cursor_visible,
+        // maybe_reparse_syntax, hover auto-dismiss) still need to
+        // run. App's match arms below are grouped no-ops so each
+        // action consumes a single mutation point host-side
+        // without double-invoking.
+        Action::PickerAccept => {
+            let signals = editor.do_picker_accept();
+            _out.renderer_signals.extend(signals);
+        }
+        Action::PickerDismiss => {
+            let signals = editor.do_picker_dismiss();
+            _out.renderer_signals.extend(signals);
+        }
+        Action::CompletionTrigger => editor.do_completion_trigger(),
+        Action::CompletionNext => editor.do_completion_next(),
+        Action::CompletionPrev => editor.do_completion_prev(),
+        Action::CompletionAccept => editor.do_completion_accept(),
+        Action::CompletionToggleDocs => editor.do_completion_toggle_docs(),
+        Action::CompletionFilterToSource(id) => editor.do_completion_filter_to_source(id),
+        Action::CompletionFilterClear => editor.do_completion_filter_clear(),
+        Action::CompletionAcceptThenInsert(c) => {
+            editor.do_completion_accept_then_insert(c, _out);
+        }
+        Action::LspOnTypeFormattingRequest(c) => editor.do_lsp_on_type_formatting_request(c),
+        Action::LspInsertCompletionRequest => editor.do_lsp_insert_completion_request(),
+        Action::LspFollowLinkAtCursor => {
+            let signals = editor.do_lsp_follow_link_at_cursor();
+            _out.renderer_signals.extend(signals);
+        }
+        Action::OilNavigateUp => {
+            let signals = editor.do_oil_navigate_up();
+            _out.renderer_signals.extend(signals);
+        }
+        Action::FollowLink => match editor.active_buffer {
+            BufferKind::Oil => {
+                let signals = editor.do_oil_follow();
+                _out.renderer_signals.extend(signals);
+            }
+            BufferKind::FileTree => {
+                let signals = editor.do_file_tree_follow();
+                _out.renderer_signals.extend(signals);
+            }
+            BufferKind::Help | BufferKind::Document => {}
+        },
         // Catch-all: any Action variant not yet migrated from
         // App::apply. Sub-slices 5.5.D+ extend the match upward as
         // helpers move.

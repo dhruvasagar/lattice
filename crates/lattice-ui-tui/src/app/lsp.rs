@@ -3223,49 +3223,8 @@ impl App {
     }
 
     fn apply_selection_chain_step(&mut self) {
-        let Some(chain) = self.editor.lsp_selection_chain.as_ref() else {
-            return;
-        };
-        let Some(range) = chain
-            .ranges
-            .get(self.editor.lsp_selection_chain_index)
-            .cloned()
-        else {
-            return;
-        };
-        let snapshot = self.editor.document.snapshot();
-        let anchor = lattice_protocol::Position {
-            line: range.start.line,
-            byte: crate::app::lsp_position_to_app_byte(
-                &snapshot.buffer,
-                range.start.line,
-                range.start.character,
-            ),
-        };
-        let head = lattice_protocol::Position {
-            line: range.end.line,
-            byte: crate::app::lsp_position_to_app_byte(
-                &snapshot.buffer,
-                range.end.line,
-                range.end.character,
-            ),
-        };
-        // Apply via Visual-mode plumbing: enter Visual if not
-        // already, then seat the selection with anchor/head.
-        use lattice_grammar::{ModalState, VisualKind};
-        use lattice_protocol::selection::{Selection, SelectionSet, VisualMode};
-        self.editor.modal = ModalState::Visual(VisualKind::Charwise);
-        self.editor.visual_anchor = Some(anchor);
-        // The cursor lands on the head; the head sits *inside*
-        // the range (LSP ranges are half-open).
-        self.editor.cursor = head;
-        let sel = Selection {
-            anchor,
-            head,
-            visual: Some(VisualMode::Charwise),
-        };
-        self.editor
-            .set_selections_blocking(SelectionSet::single(sel));
+        // 5.8.AA.m: migrated to host.
+        self.editor.apply_selection_chain_step();
     }
 
     fn issue_selection_range_request(&mut self, step: super::SelectionRangeStep) {
@@ -3351,61 +3310,8 @@ impl App {
     /// Seats the chain into `App::lsp_selection_chain` and
     /// applies the step the original invocation requested.
     pub fn drain_pending_selection_range(&mut self) {
-        let Some(mut rx) = self.editor.pending_selection_range_rx.take() else {
-            return;
-        };
-        // Coalesce: only the most recent outcome wins. A user
-        // that mashes `:lsp-expand-region` faster than the
-        // server can respond would otherwise step through the
-        // older chain before the newer one lands.
-        let mut latest: Option<super::SelectionRangeOutcome> = None;
-        while let Ok(outcome) = rx.try_recv() {
-            latest = Some(outcome);
-        }
-        self.editor.pending_selection_range_rx = Some(rx);
-        let Some(outcome) = latest else {
-            return;
-        };
-        match outcome {
-            super::SelectionRangeOutcome::Items {
-                anchor_cursor,
-                anchor_buffer,
-                ranges,
-                pending_step,
-            } => {
-                self.editor.lsp_selection_chain = Some(super::LspSelectionChain {
-                    buffer_id: anchor_buffer,
-                    anchor_cursor,
-                    ranges,
-                });
-                // Always start at index 0 (innermost); for an
-                // expand-triggered fetch we then bump to 1 so
-                // the user sees the first widening; for a
-                // shrink-triggered fetch we leave at 0 (the
-                // shrink-without-cache case is the user's bail
-                // path).
-                self.editor.lsp_selection_chain_index = match pending_step {
-                    super::SelectionRangeStep::Expand => {
-                        let chain = self.editor.lsp_selection_chain.as_ref().unwrap();
-                        if chain.ranges.len() > 1 { 1 } else { 0 }
-                    }
-                    super::SelectionRangeStep::Shrink => 0,
-                };
-                self.apply_selection_chain_step();
-            }
-            super::SelectionRangeOutcome::NoProvider => {
-                self.set_message(
-                    EchoLevel::Info,
-                    "lsp-expand-region: no server advertises selectionRange".to_string(),
-                );
-            }
-            super::SelectionRangeOutcome::Empty => {
-                self.set_message(
-                    EchoLevel::Info,
-                    "lsp-expand-region: server returned no ranges".to_string(),
-                );
-            }
-        }
+        // 5.8.AA.m: migrated to host.
+        self.editor.drain_pending_selection_range();
     }
 
     /// active progress entry (4.4.c). With `server_id == Some`,

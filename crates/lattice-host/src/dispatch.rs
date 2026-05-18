@@ -3800,6 +3800,98 @@ impl Editor {
         signals
     }
 
+    /// Step the cursor + selection to the current entry in the
+    /// cached LSP selection chain. Used by `:lsp-expand-region` /
+    /// `:lsp-shrink-region`. Phase 5.8.AA.m: hoisted from TUI App.
+    pub fn apply_selection_chain_step(&mut self) {
+        let Some(chain) = self.lsp_selection_chain.as_ref() else {
+            return;
+        };
+        let Some(range) = chain.ranges.get(self.lsp_selection_chain_index).cloned() else {
+            return;
+        };
+        let snapshot = self.document.snapshot();
+        let anchor = lattice_protocol::Position {
+            line: range.start.line,
+            byte: Self::lsp_position_to_app_byte(
+                &snapshot.buffer,
+                range.start.line,
+                range.start.character,
+            ),
+        };
+        let head = lattice_protocol::Position {
+            line: range.end.line,
+            byte: Self::lsp_position_to_app_byte(
+                &snapshot.buffer,
+                range.end.line,
+                range.end.character,
+            ),
+        };
+        use lattice_grammar::{ModalState, VisualKind};
+        use lattice_protocol::selection::{Selection, SelectionSet, VisualMode};
+        self.modal = ModalState::Visual(VisualKind::Charwise);
+        self.visual_anchor = Some(anchor);
+        self.cursor = head;
+        let sel = Selection {
+            anchor,
+            head,
+            visual: Some(VisualMode::Charwise),
+        };
+        self.set_selections_blocking(SelectionSet::single(sel));
+    }
+
+    /// Drain queued `selectionRange` responses; either seat the
+    /// chain + apply step 0 (or 1 for Expand), or echo when no
+    /// provider / empty. Phase 5.8.AA.m: hoisted from TUI App.
+    pub fn drain_pending_selection_range(&mut self) {
+        let Some(mut rx) = self.pending_selection_range_rx.take() else {
+            return;
+        };
+        let mut latest: Option<lattice_lsp::cache::SelectionRangeOutcome> = None;
+        while let Ok(outcome) = rx.try_recv() {
+            latest = Some(outcome);
+        }
+        self.pending_selection_range_rx = Some(rx);
+        let Some(outcome) = latest else {
+            return;
+        };
+        use lattice_lsp::cache::SelectionRangeOutcome;
+        match outcome {
+            SelectionRangeOutcome::Items {
+                anchor_cursor,
+                anchor_buffer,
+                ranges,
+                pending_step,
+            } => {
+                self.lsp_selection_chain = Some(lattice_lsp::cache::LspSelectionChain {
+                    buffer_id: anchor_buffer,
+                    anchor_cursor,
+                    ranges,
+                });
+                self.lsp_selection_chain_index = match pending_step {
+                    lattice_lsp::cache::SelectionRangeStep::Expand => {
+                        let chain = self.lsp_selection_chain.as_ref().unwrap();
+                        if chain.ranges.len() > 1 { 1 } else { 0 }
+                    }
+                    lattice_lsp::cache::SelectionRangeStep::Shrink => 0,
+                };
+                self.apply_selection_chain_step();
+            }
+            SelectionRangeOutcome::NoProvider => {
+                self.set_message(
+                    EchoLevel::Info,
+                    "lsp-expand-region: no server advertises selectionRange".to_string(),
+                );
+            }
+            SelectionRangeOutcome::Empty => {
+                self.set_message(
+                    EchoLevel::Info,
+                    "lsp-expand-region: server returned no ranges".to_string(),
+                );
+            }
+        }
+    }
+
     /// Drain server-initiated `workspace/applyEdit` requests.
     /// Each request's workspace edit is flattened to per-file
     /// entries, edits to the active buffer land via
@@ -5925,6 +6017,7 @@ impl Editor {
         signals.extend(self.drain_pending_rename());
         self.drain_pending_format();
         signals.extend(self.drain_inbound_apply_edits());
+        self.drain_pending_selection_range();
         // Pre-drain "fire request" pumps. Each is single-flight
         // (cancels prior in-flight) + cache-key-gated, so calling
         // here is cheap when nothing changed.

@@ -4344,12 +4344,26 @@ impl Editor {
     pub fn drain_lsp_fs_events(&mut self) {
         use std::collections::HashMap;
         use std::path::PathBuf;
+        let drain_started = std::time::Instant::now();
         let events = match self.lsp_file_watcher.as_mut() {
             Some(w) => w.drain_pending(),
             None => return,
         };
+        let event_count = events.len();
         if events.is_empty() {
             return;
+        }
+        // Diag (Phase 5.8.AF.5): the recursive notify watch on a
+        // workspace root that contains `target/` can flood this
+        // channel with thousands of events as cargo + rust-analyzer
+        // rewrite cache files. Log non-trivial batches at INFO so
+        // we can spot the storm without RUST_LOG. >100 events per
+        // tick is a smoking gun for the post-`:e` UI freeze.
+        if event_count > 50 {
+            tracing::info!(
+                event_count,
+                "drain_lsp_fs_events: large batch (potential fs-event flood)"
+            );
         }
         let mut classified: Vec<(PathBuf, lattice_lsp::lsp_types::FileChangeType)> = Vec::new();
         for ev in &events {
@@ -4361,6 +4375,15 @@ impl Editor {
             }
         }
         if classified.is_empty() {
+            // Even with no classified events, log the total drain
+            // duration when we entered the slow-path (>50 raw events).
+            if event_count > 50 {
+                tracing::info!(
+                    event_count,
+                    elapsed_ms = drain_started.elapsed().as_millis(),
+                    "drain_lsp_fs_events: drained (no classified events)"
+                );
+            }
             return;
         }
         let mut per_server: HashMap<String, Vec<lattice_lsp::lsp_types::FileEvent>> =
@@ -4395,11 +4418,13 @@ impl Editor {
         if per_server.is_empty() {
             return;
         }
+        let mut total_changes = 0usize;
         for (_key, handle) in self.lsp.running_actors() {
             let server_id = handle.server_id().to_string();
             let Some(batch) = per_server.remove(&server_id) else {
                 continue;
             };
+            total_changes += batch.len();
             let params = lattice_lsp::lsp_types::DidChangeWatchedFilesParams { changes: batch };
             if let Err(e) = handle.did_change_watched_files(params) {
                 let instance = handle.instance();
@@ -4410,6 +4435,18 @@ impl Editor {
                     format!("workspace/didChangeWatchedFiles fan-out failed: {e}"),
                 );
             }
+        }
+        // Diag (Phase 5.8.AF.5): log the post-drain totals when the
+        // raw batch was non-trivial so we can see the
+        // classified/forwarded counts alongside elapsed time.
+        if event_count > 50 {
+            tracing::info!(
+                event_count,
+                classified_count = classified.len(),
+                forwarded_changes = total_changes,
+                elapsed_ms = drain_started.elapsed().as_millis(),
+                "drain_lsp_fs_events: drained"
+            );
         }
     }
 

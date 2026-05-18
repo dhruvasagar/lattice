@@ -747,6 +747,10 @@ impl GpuiApp {
             Effect::LspLogClear { server_id } => {
                 self.editor.do_lsp_log_clear(server_id.as_deref());
             }
+            Effect::LspCodeAction => self.editor.do_lsp_code_action_request(),
+            Effect::LspFormat => self.editor.do_lsp_format_request(false),
+            Effect::LspFormatRange => self.editor.do_lsp_format_request(true),
+            Effect::LspRename { new_name } => self.editor.do_lsp_rename_request(&new_name),
             Effect::OpenBufferPicker => {
                 let signals = self.editor.do_open_buffer_picker();
                 for s in signals {

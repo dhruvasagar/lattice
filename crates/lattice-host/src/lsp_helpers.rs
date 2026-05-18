@@ -336,6 +336,52 @@ pub fn app_to_lsp_position(
 /// rendered as either markdown or plaintext (we treat plaintext
 /// as already-good markdown). `Array` joins each element with two
 /// newlines so blocks separate cleanly.
+/// Map an LSP `CodeActionKind` to a one-char glyph used in the
+/// picker margin (`🛠`, `♻`, `↗`, etc.). Unknown / custom kinds
+/// and bare `Command` payloads land on `?`. Phase 5.8.AD.2.
+pub fn code_action_kind_glyph(
+    kind: Option<&lattice_lsp::lsp_types::CodeActionKind>,
+) -> &'static str {
+    use lattice_lsp::lsp_types::CodeActionKind as K;
+    let Some(kind) = kind else {
+        return "?";
+    };
+    if *kind == K::QUICKFIX {
+        "🛠"
+    } else if *kind == K::REFACTOR {
+        "♻"
+    } else if *kind == K::REFACTOR_EXTRACT {
+        "↗"
+    } else if *kind == K::REFACTOR_INLINE {
+        "↘"
+    } else if *kind == K::REFACTOR_REWRITE {
+        "↺"
+    } else if *kind == K::SOURCE {
+        "★"
+    } else if *kind == K::SOURCE_ORGANIZE_IMPORTS {
+        "≡"
+    } else if *kind == K::SOURCE_FIX_ALL {
+        "✓"
+    } else {
+        "?"
+    }
+}
+
+/// Extract a placeholder name from a `PrepareRenameResponse`, if
+/// the server supplied one. Used when the user invoked `:rename`
+/// without a name. Phase 5.8.AD.2.
+pub fn prepare_rename_placeholder(
+    resp: &lattice_lsp::lsp_types::PrepareRenameResponse,
+) -> Option<String> {
+    match resp {
+        lattice_lsp::lsp_types::PrepareRenameResponse::RangeWithPlaceholder {
+            placeholder, ..
+        } => Some(placeholder.clone()),
+        lattice_lsp::lsp_types::PrepareRenameResponse::Range(_) => None,
+        lattice_lsp::lsp_types::PrepareRenameResponse::DefaultBehavior { .. } => None,
+    }
+}
+
 /// Is the editor cursor inside the half-open LSP `range`?
 /// Compares only by (line, character) in LSP utf-16 space because
 /// the range is LSP-shape; the host cursor is assumed converted.

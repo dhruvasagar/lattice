@@ -11026,6 +11026,375 @@ impl Editor {
         }
     }
 
+    /// LSP-shape range for the current code-action request.
+    /// Visual selection when active; point range at cursor
+    /// otherwise. Phase 5.8.AD.2.
+    fn code_action_range(
+        &self,
+        buffer: &lattice_core::Buffer,
+    ) -> lattice_lsp::lsp_types::Range {
+        if let lattice_grammar::ModalState::Visual(_) = self.modal {
+            let anchor = self.visual_anchor.unwrap_or(self.cursor);
+            let head = self.cursor;
+            let (start_pos, end_pos) =
+                if (anchor.line, anchor.byte) <= (head.line, head.byte) {
+                    (anchor, head)
+                } else {
+                    (head, anchor)
+                };
+            let start = crate::lsp_helpers::app_to_lsp_position(buffer, start_pos).unwrap_or(
+                lattice_lsp::lsp_types::Position {
+                    line: 0,
+                    character: 0,
+                },
+            );
+            let end = crate::lsp_helpers::app_to_lsp_position(buffer, end_pos).unwrap_or(start);
+            lattice_lsp::lsp_types::Range { start, end }
+        } else {
+            let p = crate::lsp_helpers::app_to_lsp_position(buffer, self.cursor).unwrap_or(
+                lattice_lsp::lsp_types::Position {
+                    line: 0,
+                    character: 0,
+                },
+            );
+            lattice_lsp::lsp_types::Range { start: p, end: p }
+        }
+    }
+
+    /// Diagnostics overlapping `range` in `uri`, converted to the
+    /// LSP shape codeAction servers expect in `CodeActionContext`.
+    /// Phase 5.8.AD.2.
+    fn diagnostics_for_range(
+        &self,
+        uri: &lattice_lsp::Uri,
+        range: &lattice_lsp::lsp_types::Range,
+    ) -> Vec<lattice_lsp::Diagnostic> {
+        self.lsp_diagnostics
+            .diagnostics_for(uri)
+            .into_iter()
+            .filter(|d| {
+                d.range.end.line > range.start.line
+                    || (d.range.end.line == range.start.line
+                        && d.range.end.character > range.start.character)
+            })
+            .filter(|d| {
+                d.range.start.line < range.end.line
+                    || (d.range.start.line == range.end.line
+                        && d.range.start.character <= range.end.character)
+            })
+            .collect()
+    }
+
+    /// `:code-actions` (Phase 4.3). Run `textDocument/codeAction`
+    /// at the cursor (or active Visual selection); the drain opens
+    /// the merged item list as a vertico picker. Phase 5.8.AD.2.
+    pub fn do_lsp_code_action_request(&mut self) {
+        if let Some(token) = self.pending_code_action_token.take() {
+            token.cancel();
+        }
+        self.pending_tag_origin = None;
+        if !self.check_lsp_sub_mode_gate(
+            lattice_lsp::modes::LspCodeActionMode::mode_id(),
+            "lsp-code-action-mode",
+        ) {
+            return;
+        }
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
+            self.set_message(
+                EchoLevel::Info,
+                "no LSP server attached to current buffer".to_string(),
+            );
+            return;
+        };
+        let snapshot = self.document.snapshot();
+        let range = self.code_action_range(&snapshot.buffer);
+        let context = lattice_lsp::lsp_types::CodeActionContext {
+            diagnostics: self.diagnostics_for_range(&uri, &range),
+            only: None,
+            trigger_kind: Some(lattice_lsp::lsp_types::CodeActionTriggerKind::INVOKED),
+        };
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<lattice_lsp::cache::CodeActionOutcome>();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_code_action_rx = Some(rx);
+        self.pending_code_action_token = Some(token.clone());
+        let lsp = self.lsp.clone();
+        lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
+            let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
+            let chosen = handles
+                .into_iter()
+                .find(|h| h.capabilities().supports_code_action());
+            let Some(handle) = chosen else {
+                let _ = tx.send(lattice_lsp::cache::CodeActionOutcome::NoProvider);
+                return;
+            };
+            let params = lattice_lsp::lsp_types::CodeActionParams {
+                text_document: lattice_lsp::lsp_types::TextDocumentIdentifier {
+                    uri: uri.clone(),
+                },
+                range,
+                context,
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            };
+            if let Ok(Some(resp)) = handle.code_action(params, token.clone()).await {
+                let rows: Vec<lattice_lsp::cache::CodeActionRow> = resp
+                    .into_iter()
+                    .map(|act| {
+                        let (title, kind_glyph) = match &act {
+                            lattice_lsp::lsp_types::CodeActionOrCommand::Command(c) => {
+                                (c.title.clone(), crate::lsp_helpers::code_action_kind_glyph(None))
+                            }
+                            lattice_lsp::lsp_types::CodeActionOrCommand::CodeAction(ca) => (
+                                ca.title.clone(),
+                                crate::lsp_helpers::code_action_kind_glyph(ca.kind.as_ref()),
+                            ),
+                        };
+                        lattice_lsp::cache::CodeActionRow {
+                            title,
+                            kind_glyph,
+                            action: act,
+                        }
+                    })
+                    .collect();
+                let _ = tx.send(lattice_lsp::cache::CodeActionOutcome::Items(rows));
+            } else {
+                let _ = tx.send(lattice_lsp::cache::CodeActionOutcome::Items(Vec::new()));
+            }
+        });
+    }
+
+    /// `:lsp-format` / `:lsp-format-range`. Fires
+    /// `textDocument/formatting` or `textDocument/rangeFormatting`
+    /// on the first server advertising the matching provider; the
+    /// drain applies the returned `TextEdit`s as one undo unit.
+    /// Phase 5.8.AD.2.
+    pub fn do_lsp_format_request(&mut self, is_range: bool) {
+        if let Some(token) = self.pending_format_token.take() {
+            token.cancel();
+        }
+        if !self.check_lsp_sub_mode_gate(
+            lattice_lsp::modes::LspFormatMode::mode_id(),
+            "lsp-format-mode",
+        ) {
+            return;
+        }
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
+            self.set_message(
+                EchoLevel::Info,
+                "no LSP server attached to current buffer".to_string(),
+            );
+            return;
+        };
+        let snapshot = self.document.snapshot();
+        let last_line = last_addressable_line(&snapshot.buffer);
+        let range_lines: Option<(u32, u32)> = if is_range {
+            if let lattice_grammar::ModalState::Visual(_) = self.modal {
+                let anchor = self.visual_anchor.unwrap_or(self.cursor);
+                let head = self.cursor;
+                let (s, e): (u32, u32) = if anchor.line <= head.line {
+                    (anchor.line, head.line)
+                } else {
+                    (head.line, anchor.line)
+                };
+                Some((s, e.min(last_line)))
+            } else {
+                Some((0u32, last_line))
+            }
+        } else {
+            None
+        };
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<lattice_lsp::cache::FormatOutcome>();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_format_rx = Some(rx);
+        self.pending_format_token = Some(token.clone());
+        let lsp = self.lsp.clone();
+        let lsp_range = range_lines.map(|(s, e)| {
+            let end_line_text_len = snapshot.buffer.line_byte_len(e);
+            let line_text = snapshot.buffer.line(e).unwrap_or_default();
+            let end_char = lattice_lsp::position::utf8_byte_to_utf16_column(
+                &line_text,
+                end_line_text_len,
+            );
+            lattice_lsp::lsp_types::Range {
+                start: lattice_lsp::lsp_types::Position {
+                    line: s,
+                    character: 0,
+                },
+                end: lattice_lsp::lsp_types::Position {
+                    line: e,
+                    character: end_char,
+                },
+            }
+        });
+        let options = lattice_lsp::lsp_types::FormattingOptions {
+            tab_size: 4,
+            insert_spaces: true,
+            properties: Default::default(),
+            trim_trailing_whitespace: Some(true),
+            insert_final_newline: Some(true),
+            trim_final_newlines: Some(true),
+        };
+        lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
+            let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
+            let chosen: Option<lattice_lsp::ServerHandle> = handles.into_iter().find(|h| {
+                let caps = h.capabilities();
+                if lsp_range.is_some() {
+                    caps.supports_range_formatting()
+                } else {
+                    caps.supports_formatting()
+                }
+            });
+            let Some(handle) = chosen else {
+                let _ = tx.send(lattice_lsp::cache::FormatOutcome::NoProvider {
+                    is_range: lsp_range.is_some(),
+                });
+                return;
+            };
+            let edits: Option<Vec<lattice_lsp::lsp_types::TextEdit>> = if let Some(range) =
+                lsp_range
+            {
+                let params = lattice_lsp::lsp_types::DocumentRangeFormattingParams {
+                    text_document: lattice_lsp::lsp_types::TextDocumentIdentifier {
+                        uri: uri.clone(),
+                    },
+                    range,
+                    options: options.clone(),
+                    work_done_progress_params: Default::default(),
+                };
+                handle
+                    .range_formatting(params, token.clone())
+                    .await
+                    .ok()
+                    .flatten()
+            } else {
+                let params = lattice_lsp::lsp_types::DocumentFormattingParams {
+                    text_document: lattice_lsp::lsp_types::TextDocumentIdentifier {
+                        uri: uri.clone(),
+                    },
+                    options,
+                    work_done_progress_params: Default::default(),
+                };
+                handle
+                    .formatting(params, token.clone())
+                    .await
+                    .ok()
+                    .flatten()
+            };
+            let edits = edits.unwrap_or_default();
+            let _ = tx.send(lattice_lsp::cache::FormatOutcome::Edits(edits));
+        });
+    }
+
+    /// `:lsp-rename <new>` (Phase 4.3). Pre-cancels any in-flight
+    /// rename, runs prepareRename when supported, then fires the
+    /// rename request. The drain applies the returned
+    /// `WorkspaceEdit` per-file. Phase 5.8.AD.2.
+    pub fn do_lsp_rename_request(&mut self, new_name: &str) {
+        if let Some(token) = self.pending_rename_token.take() {
+            token.cancel();
+        }
+        if !self.check_lsp_sub_mode_gate(
+            lattice_lsp::modes::LspRenameMode::mode_id(),
+            "lsp-rename-mode",
+        ) {
+            return;
+        }
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
+            self.set_message(
+                EchoLevel::Info,
+                "no LSP server attached to current buffer".to_string(),
+            );
+            return;
+        };
+        let snapshot = self.document.snapshot();
+        let lsp_position = match crate::lsp_helpers::app_to_lsp_position(&snapshot.buffer, self.cursor)
+        {
+            Some(p) => p,
+            None => {
+                self.set_message(EchoLevel::Error, "rename: cursor out of buffer");
+                return;
+            }
+        };
+        let new_name = new_name.to_string();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<lattice_lsp::cache::RenameOutcome>();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_rename_rx = Some(rx);
+        self.pending_rename_token = Some(token.clone());
+        let lsp = self.lsp.clone();
+        lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
+            let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
+            let chosen = handles
+                .into_iter()
+                .find(|h| h.capabilities().supports_rename());
+            let Some(handle) = chosen else {
+                let _ = tx.send(lattice_lsp::cache::RenameOutcome::NoProvider);
+                return;
+            };
+            let mut effective_name = new_name.clone();
+            if handle.capabilities().supports_prepare_rename() {
+                if token.is_cancelled() {
+                    return;
+                }
+                let pos = lattice_lsp::lsp_types::TextDocumentPositionParams {
+                    text_document: lattice_lsp::lsp_types::TextDocumentIdentifier {
+                        uri: uri.clone(),
+                    },
+                    position: lsp_position,
+                };
+                match handle.prepare_rename(pos, token.clone()).await {
+                    Ok(Some(prep)) => {
+                        if effective_name.is_empty() {
+                            effective_name =
+                                crate::lsp_helpers::prepare_rename_placeholder(&prep)
+                                    .unwrap_or_default();
+                        }
+                    }
+                    Ok(None) => {
+                        let _ = tx.send(lattice_lsp::cache::RenameOutcome::NotRenameable {
+                            reason: "server refused rename at this position".into(),
+                        });
+                        return;
+                    }
+                    Err(_) => {}
+                }
+            }
+            if effective_name.is_empty() {
+                let _ = tx.send(lattice_lsp::cache::RenameOutcome::NotRenameable {
+                    reason: "rename requires a new name".into(),
+                });
+                return;
+            }
+            let params = lattice_lsp::lsp_types::RenameParams {
+                text_document_position: lattice_lsp::lsp_types::TextDocumentPositionParams {
+                    text_document: lattice_lsp::lsp_types::TextDocumentIdentifier {
+                        uri: uri.clone(),
+                    },
+                    position: lsp_position,
+                },
+                new_name: effective_name.clone(),
+                work_done_progress_params: Default::default(),
+            };
+            match handle.rename(params, token.clone()).await {
+                Ok(Some(workspace_edit)) => {
+                    let per_file = flatten_workspace_edit(workspace_edit);
+                    if per_file.is_empty() {
+                        let _ = tx.send(lattice_lsp::cache::RenameOutcome::Empty);
+                    } else {
+                        let _ = tx.send(lattice_lsp::cache::RenameOutcome::Edits {
+                            per_file,
+                            new_name: effective_name,
+                        });
+                    }
+                }
+                _ => {
+                    let _ = tx.send(lattice_lsp::cache::RenameOutcome::Empty);
+                }
+            }
+        });
+    }
+
     /// `:lsp-status` -- render every running server in a help-
     /// style buffer. Phase 5.8.AD.2: hoisted from TUI App.
     /// Returns a `RendererSignal::DisplayBuffer` for the renderer

@@ -2400,60 +2400,8 @@ impl App {
     /// Drain queued LSP completion responses and open a picker.
     /// `NoServers` echoes; empty list echoes.
     pub fn drain_pending_completion(&mut self) {
-        let Some(mut rx) = self.editor.pending_completion_rx.take() else {
-            return;
-        };
-        let mut latest: Option<CompletionOutcome> = None;
-        while let Ok(o) = rx.try_recv() {
-            latest = Some(o);
-        }
-        self.editor.pending_completion_rx = Some(rx);
-        let outcome = match latest {
-            Some(o) => o,
-            None => return,
-        };
-        self.editor.pending_completion_token = None;
-        match outcome {
-            CompletionOutcome::NoServers => {
-                self.set_message(EchoLevel::Info, "no LSP server attached".to_string());
-            }
-            CompletionOutcome::Items(items) => {
-                if items.is_empty() {
-                    self.set_message(EchoLevel::Info, "no completions".to_string());
-                    return;
-                }
-                let total = items.len();
-                let pairs: Vec<(
-                    lattice_completion::RawCandidate,
-                    lattice_picker::RoutingPayload,
-                )> = items
-                    .iter()
-                    .enumerate()
-                    .map(|(i, item)| {
-                        let mut c = lattice_completion::RawCandidate::plain(
-                            item.label.clone(),
-                            lattice_completion::CandidateKind::Plain,
-                        );
-                        c.display = match &item.detail {
-                            Some(d) => format!("{} {}  {d}", item.kind_glyph, item.label),
-                            None => format!("{} {}", item.kind_glyph, item.label),
-                        };
-                        (
-                            c,
-                            lattice_picker::RoutingPayload::LspCompletion { index: i as u32 },
-                        )
-                    })
-                    .collect();
-                self.editor.pending_completion_items = Some(items);
-                let mut p = lattice_picker::Picker::new(
-                    format!("complete ({total})"),
-                    lattice_picker::PickerSource::LspLocations,
-                    lattice_picker::PickerAction::AcceptLspCompletion,
-                );
-                p.set_raw_candidates_with_routing(pairs);
-                self.editor.picker = Some(p);
-            }
-        }
+        // 5.8.AA.c: migrated to host.
+        self.editor.drain_pending_completion();
     }
 
     /// `:format` / `:format-range` (Phase 4.3). Picks the
@@ -3840,34 +3788,8 @@ impl App {
     /// next pump tick re-pulls without a `previous_result_id`
     /// and the server emits a forced `Full` report.
     pub fn drain_diagnostic_refresh(&mut self) {
-        let Some(mut rx) = self.editor.pending_diagnostic_refresh_rx.take() else {
-            return;
-        };
-        let mut refreshes: Vec<lattice_lsp::LspDiagnosticRefresh> = Vec::new();
-        while let Ok(event) = rx.try_recv() {
-            refreshes.push(event);
-        }
-        self.editor.pending_diagnostic_refresh_rx = Some(rx);
-        if refreshes.is_empty() {
-            return;
-        }
-        let buffer_ids: Vec<BufferId> = self
-            .editor
-            .buffer_uris
-            .iter()
-            .filter_map(|(id, uri)| {
-                let handles = self.editor.lsp.servers_for(uri);
-                let attached = handles.iter().any(|h| {
-                    refreshes
-                        .iter()
-                        .any(|r| r.server_id.as_ref() == h.server_id())
-                });
-                if attached { Some(*id) } else { None }
-            })
-            .collect();
-        for buffer_id in buffer_ids {
-            self.editor.lsp_pull_diagnostics_cache.remove(&buffer_id);
-        }
+        // 5.8.AA.c: migrated to host.
+        self.editor.drain_diagnostic_refresh();
     }
 
     /// 4.4.g: per-tick `inlayHint` pump. Fires when:
@@ -3994,40 +3916,8 @@ impl App {
     /// buffer attached to that server so the next render
     /// tick's pump re-issues `inlayHint`.
     pub fn drain_inlay_hint_refresh(&mut self) {
-        let Some(mut rx) = self.editor.pending_inlay_hint_refresh_rx.take() else {
-            return;
-        };
-        let mut refreshes: Vec<lattice_lsp::LspInlayHintRefresh> = Vec::new();
-        while let Ok(event) = rx.try_recv() {
-            refreshes.push(event);
-        }
-        self.editor.pending_inlay_hint_refresh_rx = Some(rx);
-        if refreshes.is_empty() {
-            return;
-        }
-        // Build a set of (BufferId) entries to invalidate. A
-        // buffer is "attached" to a server when its URI shows
-        // up in the supervisor's per-server attachment map.
-        // Simple coarser-than-needed approach: any buffer
-        // whose attached servers list contains the named id
-        // gets its cache cleared.
-        let buffer_ids: Vec<BufferId> = self
-            .editor
-            .buffer_uris
-            .iter()
-            .filter_map(|(id, uri)| {
-                let handles = self.editor.lsp.servers_for(uri);
-                let attached = handles.iter().any(|h| {
-                    refreshes
-                        .iter()
-                        .any(|r| r.server_id.as_ref() == h.server_id())
-                });
-                if attached { Some(*id) } else { None }
-            })
-            .collect();
-        for buffer_id in buffer_ids {
-            self.editor.lsp_inlay_hints_cache.remove(&buffer_id);
-        }
+        // 5.8.AA.c: migrated to host.
+        self.editor.drain_inlay_hint_refresh();
     }
 
     /// 4.4.i: drain `workspace/semanticTokens/refresh` events.
@@ -4038,34 +3928,8 @@ impl App {
     /// the now-stale `result_id` rules out a delta request that
     /// the server would reject).
     pub fn drain_semantic_tokens_refresh(&mut self) {
-        let Some(mut rx) = self.editor.pending_semantic_tokens_refresh_rx.take() else {
-            return;
-        };
-        let mut refreshes: Vec<lattice_lsp::LspSemanticTokensRefresh> = Vec::new();
-        while let Ok(event) = rx.try_recv() {
-            refreshes.push(event);
-        }
-        self.editor.pending_semantic_tokens_refresh_rx = Some(rx);
-        if refreshes.is_empty() {
-            return;
-        }
-        let buffer_ids: Vec<BufferId> = self
-            .editor
-            .buffer_uris
-            .iter()
-            .filter_map(|(id, uri)| {
-                let handles = self.editor.lsp.servers_for(uri);
-                let attached = handles.iter().any(|h| {
-                    refreshes
-                        .iter()
-                        .any(|r| r.server_id.as_ref() == h.server_id())
-                });
-                if attached { Some(*id) } else { None }
-            })
-            .collect();
-        for buffer_id in buffer_ids {
-            self.editor.lsp_semantic_tokens_cache.remove(&buffer_id);
-        }
+        // 5.8.AA.c: migrated to host.
+        self.editor.drain_semantic_tokens_refresh();
     }
 
     /// 4.4.g: drain the in-flight `inlayHint` response.
@@ -4695,22 +4559,8 @@ impl App {
     /// entry that came from that server. The next pump tick
     /// re-issues `textDocument/codeLens`.
     pub fn drain_code_lens_refresh(&mut self) {
-        let Some(mut rx) = self.editor.pending_code_lens_refresh_rx.take() else {
-            return;
-        };
-        let mut servers: Vec<std::sync::Arc<str>> = Vec::new();
-        while let Ok(ev) = rx.try_recv() {
-            servers.push(ev.server_id);
-        }
-        self.editor.pending_code_lens_refresh_rx = Some(rx);
-        if servers.is_empty() {
-            return;
-        }
-        self.editor.lsp_code_lens_cache.retain(|_buf, cache| {
-            !servers
-                .iter()
-                .any(|s| s.as_ref() == cache.server_id.as_ref())
-        });
+        // 5.8.AA.c: migrated to host.
+        self.editor.drain_code_lens_refresh();
     }
 
     /// 4.4.e: per-tick `documentHighlight` pump. Compares the

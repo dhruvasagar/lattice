@@ -3603,6 +3603,185 @@ impl Editor {
         }
     }
 
+    /// 4.4.j: drain `workspace/diagnostic/refresh` events; evict
+    /// per-buffer result_id caches so the next pump re-pulls.
+    /// Phase 5.8.AA.c: hoisted from TUI App.
+    pub fn drain_diagnostic_refresh(&mut self) {
+        let Some(mut rx) = self.pending_diagnostic_refresh_rx.take() else {
+            return;
+        };
+        let mut refreshes: Vec<lattice_lsp::LspDiagnosticRefresh> = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            refreshes.push(event);
+        }
+        self.pending_diagnostic_refresh_rx = Some(rx);
+        if refreshes.is_empty() {
+            return;
+        }
+        let buffer_ids: Vec<lattice_core::BufferId> = self
+            .buffer_uris
+            .iter()
+            .filter_map(|(id, uri)| {
+                let handles = self.lsp.servers_for(uri);
+                let attached = handles.iter().any(|h| {
+                    refreshes
+                        .iter()
+                        .any(|r| r.server_id.as_ref() == h.server_id())
+                });
+                if attached { Some(*id) } else { None }
+            })
+            .collect();
+        for buffer_id in buffer_ids {
+            self.lsp_pull_diagnostics_cache.remove(&buffer_id);
+        }
+    }
+
+    /// 4.4.g: drain `workspace/inlayHint/refresh` events; clear
+    /// caches for attached buffers. Phase 5.8.AA.c: hoisted from
+    /// TUI App.
+    pub fn drain_inlay_hint_refresh(&mut self) {
+        let Some(mut rx) = self.pending_inlay_hint_refresh_rx.take() else {
+            return;
+        };
+        let mut refreshes: Vec<lattice_lsp::LspInlayHintRefresh> = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            refreshes.push(event);
+        }
+        self.pending_inlay_hint_refresh_rx = Some(rx);
+        if refreshes.is_empty() {
+            return;
+        }
+        let buffer_ids: Vec<lattice_core::BufferId> = self
+            .buffer_uris
+            .iter()
+            .filter_map(|(id, uri)| {
+                let handles = self.lsp.servers_for(uri);
+                let attached = handles.iter().any(|h| {
+                    refreshes
+                        .iter()
+                        .any(|r| r.server_id.as_ref() == h.server_id())
+                });
+                if attached { Some(*id) } else { None }
+            })
+            .collect();
+        for buffer_id in buffer_ids {
+            self.lsp_inlay_hints_cache.remove(&buffer_id);
+        }
+    }
+
+    /// 4.4.i: drain `workspace/semanticTokens/refresh` events.
+    /// Phase 5.8.AA.c: hoisted from TUI App.
+    pub fn drain_semantic_tokens_refresh(&mut self) {
+        let Some(mut rx) = self.pending_semantic_tokens_refresh_rx.take() else {
+            return;
+        };
+        let mut refreshes: Vec<lattice_lsp::LspSemanticTokensRefresh> = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            refreshes.push(event);
+        }
+        self.pending_semantic_tokens_refresh_rx = Some(rx);
+        if refreshes.is_empty() {
+            return;
+        }
+        let buffer_ids: Vec<lattice_core::BufferId> = self
+            .buffer_uris
+            .iter()
+            .filter_map(|(id, uri)| {
+                let handles = self.lsp.servers_for(uri);
+                let attached = handles.iter().any(|h| {
+                    refreshes
+                        .iter()
+                        .any(|r| r.server_id.as_ref() == h.server_id())
+                });
+                if attached { Some(*id) } else { None }
+            })
+            .collect();
+        for buffer_id in buffer_ids {
+            self.lsp_semantic_tokens_cache.remove(&buffer_id);
+        }
+    }
+
+    /// 4.5.d: drain `workspace/codeLens/refresh` events; evict
+    /// cached lenses for the named servers. Phase 5.8.AA.c:
+    /// hoisted from TUI App.
+    pub fn drain_code_lens_refresh(&mut self) {
+        let Some(mut rx) = self.pending_code_lens_refresh_rx.take() else {
+            return;
+        };
+        let mut servers: Vec<std::sync::Arc<str>> = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            servers.push(ev.server_id);
+        }
+        self.pending_code_lens_refresh_rx = Some(rx);
+        if servers.is_empty() {
+            return;
+        }
+        self.lsp_code_lens_cache.retain(|_buf, cache| {
+            !servers
+                .iter()
+                .any(|s| s.as_ref() == cache.server_id.as_ref())
+        });
+    }
+
+    /// 4.2.g: drain LSP completion responses; opens picker.
+    /// Phase 5.8.AA.c: hoisted from TUI App.
+    pub fn drain_pending_completion(&mut self) {
+        let Some(mut rx) = self.pending_completion_rx.take() else {
+            return;
+        };
+        let mut latest: Option<lattice_lsp::cache::CompletionOutcome> = None;
+        while let Ok(o) = rx.try_recv() {
+            latest = Some(o);
+        }
+        self.pending_completion_rx = Some(rx);
+        let Some(outcome) = latest else {
+            return;
+        };
+        self.pending_completion_token = None;
+        use lattice_lsp::cache::CompletionOutcome;
+        match outcome {
+            CompletionOutcome::NoServers => {
+                self.set_message(EchoLevel::Info, "no LSP server attached".to_string());
+            }
+            CompletionOutcome::Items(items) => {
+                if items.is_empty() {
+                    self.set_message(EchoLevel::Info, "no completions".to_string());
+                    return;
+                }
+                let total = items.len();
+                let pairs: Vec<(
+                    lattice_completion::RawCandidate,
+                    lattice_picker::RoutingPayload,
+                )> = items
+                    .iter()
+                    .enumerate()
+                    .map(|(i, item)| {
+                        let mut c = lattice_completion::RawCandidate::plain(
+                            item.label.clone(),
+                            lattice_completion::CandidateKind::Plain,
+                        );
+                        c.display = match &item.detail {
+                            Some(d) => format!("{} {}  {d}", item.kind_glyph, item.label),
+                            None => format!("{} {}", item.kind_glyph, item.label),
+                        };
+                        (
+                            c,
+                            lattice_picker::RoutingPayload::LspCompletion { index: i as u32 },
+                        )
+                    })
+                    .collect();
+                self.pending_completion_items = Some(items);
+                let mut p = lattice_picker::Picker::new(
+                    format!("complete ({total})"),
+                    lattice_picker::PickerSource::LspLocations,
+                    lattice_picker::PickerAction::AcceptLspCompletion,
+                );
+                p.set_raw_candidates_with_routing(pairs);
+                self.picker = Some(p);
+            }
+        }
+    }
+
     /// 4.5.b: drain `moniker` outcome — echoes the moniker
     /// scheme + value. Phase 5.8.AA.b: hoisted from TUI App.
     pub fn drain_pending_moniker(&mut self) {
@@ -3839,6 +4018,11 @@ impl Editor {
         self.drain_pending_document_link();
         self.drain_pending_code_lens();
         self.drain_pending_document_color();
+        self.drain_pending_completion();
+        self.drain_diagnostic_refresh();
+        self.drain_inlay_hint_refresh();
+        self.drain_semantic_tokens_refresh();
+        self.drain_code_lens_refresh();
         // `drain_pending_code_actions` returns an `Option<(handle,
         // action)>` for the App-side apply chain — not signal-shaped.
         // Renderer peers call it directly and decide how to handle

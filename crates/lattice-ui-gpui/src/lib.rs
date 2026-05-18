@@ -83,7 +83,7 @@ pub mod gpui_chord;
 pub mod window;
 
 #[cfg(feature = "window")]
-pub use window::{document_from_first_arg, document_from_path, run};
+pub use window::{document_from_path, run};
 
 /// GPUI peer's typed theme cache.
 ///

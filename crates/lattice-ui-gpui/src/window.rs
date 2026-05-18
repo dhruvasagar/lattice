@@ -887,29 +887,10 @@ pub fn run(document: Document) -> Result<()> {
 }
 
 /// Open a [`Document`] from `path`, with friendly error
-/// context. Used by the lattice-cli `--gpu` route, where the
-/// caller has already parsed the path via clap and wants a
-/// hard error rather than a fallback to empty.
+/// context. Available for callers that want to pre-open a
+/// document before handing it to [`run`].
 pub fn document_from_path(path: &std::path::Path) -> Result<Document> {
     Document::open(path).with_context(|| format!("opening {}", path.display()))
-}
-
-/// Read the first positional CLI argument and open it as a
-/// [`Document`]. Used by the `lattice-gpui` shim binary —
-/// fallback to empty on error so the user always gets a window.
-pub fn document_from_first_arg() -> Document {
-    std::env::args().nth(1).map_or_else(Document::empty, |path| {
-        match Document::open(&path) {
-            Ok(doc) => {
-                tracing::info!("lattice-gpui: opened {path}");
-                doc
-            }
-            Err(e) => {
-                tracing::warn!(error = ?e, "lattice-gpui: failed to open {path}; using empty buffer");
-                Document::empty()
-            }
-        }
-    })
 }
 
 #[cfg(test)]

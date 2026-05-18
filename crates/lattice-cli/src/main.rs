@@ -45,19 +45,33 @@ struct Cli {
     /// Path to the file to open. If omitted, an empty buffer is opened.
     file: Option<PathBuf>,
 
-    /// Route to the GPUI peer renderer (requires the `gpu` build feature).
-    /// Mutually exclusive with `--tui`.
+    /// Route to the GPUI renderer (requires the `gui` build feature).
+    /// Default until phase 5.last lands; from then on `--gui` becomes
+    /// the default and `--tui` opts in to the terminal renderer. Mutually
+    /// exclusive with `--tui`.
     #[arg(long, conflicts_with = "tui")]
-    gpu: bool,
+    gui: bool,
 
-    /// Route to the TUI peer renderer (default). Explicit for symmetry with
-    /// `--gpu`. Mutually exclusive with `--gpu`.
-    #[arg(long, conflicts_with = "gpu")]
+    /// Route to the TUI renderer (terminal). Default until phase 5.last.
+    /// Mutually exclusive with `--gui`.
+    #[arg(long, conflicts_with = "gui")]
     tui: bool,
 }
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<()> {
+    // Tracing subscriber: per-keystroke debug output lands on stderr when
+    // `RUST_LOG=lattice_ui_gpui=debug` (or any module-targeted filter) is
+    // set. With no env var the default filter (`info`) keeps the binary
+    // quiet for normal use. `try_init` is idempotent — safe if a hook /
+    // test framework already installed a subscriber.
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .try_init();
+
     let cli = Cli::parse();
 
     let document = match cli.file {
@@ -67,31 +81,32 @@ async fn main() -> Result<()> {
         None => Document::empty(),
     };
 
-    // 5.9: `--gpu` routes to the GPUI peer via `lattice-ui-gpui::run`
-    // (feature-gated). Default (no flag) and explicit `--tui` both
-    // route to the TUI peer. `clap`'s `conflicts_with` enforces
-    // mutual exclusivity at parse time.
-    if cli.gpu {
-        run_gpu(document)
+    // Phase 5.9 / 5.8.M: single-binary entry. `--gui` routes to the
+    // GPUI peer (feature-gated by `gui`). `--tui` (or no flag) routes
+    // to the TUI peer. After phase 5.last achieves full feature parity
+    // the default flips to GUI; until then TUI stays the default.
+    // `clap`'s `conflicts_with` enforces mutual exclusivity at parse
+    // time.
+    if cli.gui {
+        run_gui(document)
     } else {
         lattice_ui_tui::run(document)
     }
 }
 
-/// Route to the GPUI peer. Feature-gated: the `gpu` Cargo
-/// feature pulls in `lattice-ui-gpui` (with its `window`
-/// feature) and exposes the real entry. Without the feature,
-/// `--gpu` produces a helpful error so users know to rebuild
-/// with `--features gpu`.
-#[cfg(feature = "gpu")]
-fn run_gpu(document: Document) -> Result<()> {
+/// Route to the GPUI peer. Feature-gated: the `gui` Cargo feature
+/// pulls in `lattice-ui-gpui` (with its `window` feature) and
+/// exposes the real entry. Without the feature, `--gui` produces a
+/// helpful error so users know to rebuild with `--features gui`.
+#[cfg(feature = "gui")]
+fn run_gui(document: Document) -> Result<()> {
     lattice_ui_gpui::run(document)
 }
 
-#[cfg(not(feature = "gpu"))]
-fn run_gpu(_document: Document) -> Result<()> {
+#[cfg(not(feature = "gui"))]
+fn run_gui(_document: Document) -> Result<()> {
     anyhow::bail!(
-        "GPU renderer not compiled in. Rebuild with `cargo build --features gpu` \
+        "GUI renderer not compiled in. Rebuild with `cargo build --features gui` \
          (Linux: requires `libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev`)."
     )
 }

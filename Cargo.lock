@@ -3285,6 +3285,7 @@ dependencies = [
  "lattice-ui-gpui",
  "lattice-ui-tui",
  "tokio",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -3545,7 +3546,6 @@ dependencies = [
  "lattice-mode",
  "lattice-syntax",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

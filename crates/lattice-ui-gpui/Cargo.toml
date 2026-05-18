@@ -51,25 +51,23 @@ lattice-lsp = { path = "../lattice-lsp" }
 gpui = { version = "0.2.2", optional = true }
 
 anyhow.workspace = true
+# 5.7.B.4 / 5.8.M: structured logs from `on_key_down` + focus /
+# activation paths. Subscriber init lives in the unified `lattice`
+# binary (lattice-cli); this crate just emits via `tracing::*!`.
 tracing.workspace = true
-# 5.7.B.4: the binary installs a `fmt` subscriber at startup so
-# `tracing::debug!` / `tracing::info!` from `on_key_down` and
-# the focus / activation paths land on stderr. Run with e.g.
-# `RUST_LOG=lattice_gpui=debug` to see per-keystroke traces.
-tracing-subscriber = { workspace = true }
 
 [features]
 default = []
-# 5.7.B: opens a real GPUI window via the `lattice-gpui` binary.
-# Requires display system libraries at link time (see the gpui dep
-# comment above). Off by default so `cargo test --workspace` works
-# in environments without display deps installed.
+# 5.7.B: enables real GPUI linkage so the unified `lattice` binary
+# can open a window via `lattice --gui`. Requires display system
+# libraries at link time (see the gpui dep comment above). Off by
+# default so `cargo test --workspace` works in environments without
+# display deps installed.
+#
+# Phase 5.8.M: the previous `lattice-gpui` shim binary was removed
+# in favour of the single `lattice` entry in lattice-cli; this
+# crate now ships only as a lib.
 window = ["dep:gpui"]
-
-[[bin]]
-name = "lattice-gpui"
-path = "src/bin/lattice_gpui.rs"
-required-features = ["window"]
 
 [lints]
 workspace = true

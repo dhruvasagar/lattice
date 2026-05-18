@@ -3688,6 +3688,226 @@ impl Editor {
         }
     }
 
+    /// utf-16 column → utf-8 byte for `line` against
+    /// `buffer.line(line)`. Returns 0 on out-of-range line.
+    /// Phase 5.8.AA.l: hoisted from
+    /// `lattice-ui-tui::app::lsp_position_to_app_byte`.
+    pub fn lsp_position_to_app_byte(
+        buffer: &lattice_core::Buffer,
+        line: u32,
+        character: u32,
+    ) -> u32 {
+        let line_text = buffer.line(line).unwrap_or_default();
+        lattice_lsp::position::utf16_column_to_utf8_byte(&line_text, character)
+    }
+
+    /// Apply a batch of LSP `TextEdit`s as one undo unit. Sorts
+    /// reverse-by-position so each application doesn't shift the
+    /// positions of the later ones (LSP convention: edits are
+    /// non-overlapping and reference the original document).
+    /// Phase 5.8.AA.l: hoisted from TUI App.
+    pub fn apply_lsp_text_edits(
+        &mut self,
+        mut edits: Vec<lattice_lsp::lsp_types::TextEdit>,
+    ) -> Result<(), String> {
+        edits.sort_by(|a, b| {
+            b.range
+                .start
+                .line
+                .cmp(&a.range.start.line)
+                .then_with(|| b.range.start.character.cmp(&a.range.start.character))
+        });
+        let snap = self.document.snapshot();
+        let mut lattice_edits: Vec<lattice_protocol::edit::Edit> = Vec::with_capacity(edits.len());
+        for te in edits {
+            let start_line = te.range.start.line;
+            let end_line = te.range.end.line;
+            let start_byte =
+                Self::lsp_position_to_app_byte(&snap.buffer, start_line, te.range.start.character);
+            let end_byte =
+                Self::lsp_position_to_app_byte(&snap.buffer, end_line, te.range.end.character);
+            let range = lattice_protocol::position::Range::new(
+                lattice_protocol::position::Position::new(start_line, start_byte),
+                lattice_protocol::position::Position::new(end_line, end_byte),
+            );
+            lattice_edits.push(lattice_protocol::edit::Edit::replace(range, te.new_text));
+        }
+        self.apply_edit_batch_blocking(lattice_edits)
+            .map(|_| ())
+            .map_err(|e| format!("{e:?}"))
+    }
+
+    /// Drain queued format / onType-format responses; apply
+    /// edits as one undo unit. Phase 5.8.AA.l.4: hoisted from
+    /// TUI App.
+    pub fn drain_pending_format(&mut self) {
+        let Some(mut rx) = self.pending_format_rx.take() else {
+            return;
+        };
+        let mut latest: Option<lattice_lsp::cache::FormatOutcome> = None;
+        while let Ok(o) = rx.try_recv() {
+            latest = Some(o);
+        }
+        self.pending_format_rx = Some(rx);
+        let Some(outcome) = latest else {
+            return;
+        };
+        self.pending_format_token = None;
+        use lattice_lsp::cache::FormatOutcome;
+        match outcome {
+            FormatOutcome::NoProvider { is_range } => {
+                let kind = if is_range { "range " } else { "" };
+                self.set_message(
+                    EchoLevel::Info,
+                    format!("no server with {kind}formatting provider"),
+                );
+            }
+            FormatOutcome::Edits(edits) => {
+                if edits.is_empty() {
+                    self.set_message(
+                        EchoLevel::Info,
+                        "format: no changes (already formatted)".to_string(),
+                    );
+                    return;
+                }
+                let n = edits.len();
+                match self.apply_lsp_text_edits(edits) {
+                    Ok(()) => self.set_message(
+                        EchoLevel::Info,
+                        format!("format: applied {n} edit{}", if n == 1 { "" } else { "s" }),
+                    ),
+                    Err(e) => {
+                        self.set_message(EchoLevel::Error, format!("format: apply failed: {e}"))
+                    }
+                }
+            }
+        }
+    }
+
+    /// Drain queued `:rename` responses; apply the WorkspaceEdit
+    /// returned by the server. Phase 5.8.AA.l.3: hoisted from
+    /// TUI App. Returns renderer signals from any cross-file
+    /// `do_edit` calls.
+    pub fn drain_pending_rename(&mut self) -> Vec<RendererSignal> {
+        let Some(mut rx) = self.pending_rename_rx.take() else {
+            return Vec::new();
+        };
+        let mut latest: Option<lattice_lsp::cache::RenameOutcome> = None;
+        while let Ok(o) = rx.try_recv() {
+            latest = Some(o);
+        }
+        self.pending_rename_rx = Some(rx);
+        let Some(outcome) = latest else {
+            return Vec::new();
+        };
+        self.pending_rename_token = None;
+        use lattice_lsp::cache::RenameOutcome;
+        match outcome {
+            RenameOutcome::NoProvider => {
+                self.set_message(EchoLevel::Info, "no server with renameProvider".to_string());
+                Vec::new()
+            }
+            RenameOutcome::NotRenameable { reason } => {
+                self.set_message(EchoLevel::Error, format!("rename: {reason}"));
+                Vec::new()
+            }
+            RenameOutcome::Empty => {
+                self.set_message(EchoLevel::Info, "rename: no changes".to_string());
+                Vec::new()
+            }
+            RenameOutcome::Edits { per_file, new_name } => {
+                self.apply_rename_workspace_edit(per_file, new_name)
+            }
+        }
+    }
+
+    /// Apply a per-file WorkspaceEdit returned by `:rename` (or
+    /// a code-action). Active-buffer edits land directly via
+    /// `apply_lsp_text_edits`; cross-file edits route through
+    /// `do_edit` to open the file then apply.
+    ///
+    /// Returns `(summary_text, signals)`. Caller echoes summary
+    /// and fans signals through `handle_renderer_signal`.
+    ///
+    /// Phase 5.8.AA.l.2: hoisted from TUI App.
+    pub fn apply_rename_workspace_edit(
+        &mut self,
+        per_file: Vec<(
+            lattice_lsp::lsp_types::Uri,
+            Vec<lattice_lsp::lsp_types::TextEdit>,
+        )>,
+        new_name: String,
+    ) -> Vec<RendererSignal> {
+        let mut applied_files = 0usize;
+        let mut total_edits = 0usize;
+        let mut deferred_files: Vec<String> = Vec::new();
+        let mut signals = Vec::new();
+        for (uri, edits) in per_file {
+            let target_path = match lattice_lsp::actor::uri_to_path(&uri) {
+                Some(p) => p,
+                None => continue,
+            };
+            let edit_count = edits.len();
+            if self
+                .document
+                .path()
+                .map(|p| p == target_path)
+                .unwrap_or(false)
+            {
+                if let Err(e) = self.apply_lsp_text_edits(edits) {
+                    self.set_message(
+                        EchoLevel::Error,
+                        format!("rename: apply failed for active buffer: {e}"),
+                    );
+                    return signals;
+                }
+                applied_files += 1;
+                total_edits += edit_count;
+            } else {
+                // Cross-file edit: route through `do_edit`.
+                match self.do_edit(Some(target_path.clone()), false) {
+                    DoEditOutcome::Opened(s)
+                    | DoEditOutcome::Activated(s)
+                    | DoEditOutcome::Reloaded(s) => signals.extend(s),
+                    DoEditOutcome::Failed | DoEditOutcome::Directory(_) => {
+                        deferred_files.push(target_path.display().to_string());
+                        continue;
+                    }
+                    DoEditOutcome::NoFileName => {}
+                }
+                if matches!(
+                    self.last_message.as_ref().map(|m| m.level),
+                    Some(EchoLevel::Error)
+                ) {
+                    deferred_files.push(target_path.display().to_string());
+                    continue;
+                }
+                if let Err(e) = self.apply_lsp_text_edits(edits) {
+                    self.set_message(
+                        EchoLevel::Error,
+                        format!("rename: apply failed for {}: {e}", target_path.display()),
+                    );
+                    return signals;
+                }
+                applied_files += 1;
+                total_edits += edit_count;
+            }
+        }
+        let mut summary = format!(
+            "rename -> {new_name}: {total_edits} edit{} across {applied_files} file{}",
+            if total_edits == 1 { "" } else { "s" },
+            if applied_files == 1 { "" } else { "s" },
+        );
+        if !deferred_files.is_empty() {
+            summary.push_str(&format!(
+                " (skipped {}: open the file then re-run)",
+                deferred_files.join(", ")
+            ));
+        }
+        self.set_message(EchoLevel::Info, summary);
+        signals
+    }
+
     /// Move cursor to an LSP-encoded position (utf-16 column).
     /// Best-effort: out-of-buffer lines leave the cursor where it
     /// was. Phase 5.8.AA.k.3: hoisted from TUI App.
@@ -5509,6 +5729,8 @@ impl Editor {
         self.drain_inbound_show_message_requests();
         self.drain_message_events();
         signals.extend(self.drain_inbound_show_documents());
+        signals.extend(self.drain_pending_rename());
+        self.drain_pending_format();
         // Pre-drain "fire request" pumps. Each is single-flight
         // (cancels prior in-flight) + cache-key-gated, so calling
         // here is cheap when nothing changed.

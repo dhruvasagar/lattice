@@ -1152,32 +1152,10 @@ impl App {
     /// non-overlapping and reference the original document).
     pub(super) fn apply_lsp_text_edits(
         &mut self,
-        mut edits: Vec<lattice_lsp::lsp_types::TextEdit>,
+        edits: Vec<lattice_lsp::lsp_types::TextEdit>,
     ) -> Result<(), String> {
-        edits.sort_by(|a, b| {
-            b.range
-                .start
-                .line
-                .cmp(&a.range.start.line)
-                .then_with(|| b.range.start.character.cmp(&a.range.start.character))
-        });
-        let snap = self.editor.document.snapshot();
-        let mut lattice_edits: Vec<Edit> = Vec::with_capacity(edits.len());
-        for te in edits {
-            let start_line = te.range.start.line;
-            let end_line = te.range.end.line;
-            let start_byte =
-                lsp_position_to_app_byte(&snap.buffer, start_line, te.range.start.character);
-            let end_byte = lsp_position_to_app_byte(&snap.buffer, end_line, te.range.end.character);
-            let range = lattice_protocol::position::Range::new(
-                lattice_protocol::position::Position::new(start_line, start_byte),
-                lattice_protocol::position::Position::new(end_line, end_byte),
-            );
-            lattice_edits.push(Edit::replace(range, te.new_text));
-        }
-        self.apply_edit_batch_blocking(lattice_edits)
-            .map(|_| ())
-            .map_err(|e| format!("{e:?}"))
+        // 5.8.AA.l: migrated to host.
+        self.editor.apply_lsp_text_edits(edits)
     }
 
     /// 5.5.G.23.insert-prep: body migrated to
@@ -1395,30 +1373,10 @@ impl App {
     /// v1: per-file edits land as one undo unit in each affected
     /// buffer.
     pub fn drain_pending_rename(&mut self) {
-        let Some(mut rx) = self.editor.pending_rename_rx.take() else {
-            return;
-        };
-        let mut latest: Option<RenameOutcome> = None;
-        while let Ok(o) = rx.try_recv() {
-            latest = Some(o);
-        }
-        self.editor.pending_rename_rx = Some(rx);
-        let outcome = match latest {
-            Some(o) => o,
-            None => return,
-        };
-        self.editor.pending_rename_token = None;
-        match outcome {
-            RenameOutcome::NoProvider => {
-                self.set_message(EchoLevel::Info, "no server with renameProvider")
-            }
-            RenameOutcome::NotRenameable { reason } => {
-                self.set_message(EchoLevel::Error, format!("rename: {reason}"))
-            }
-            RenameOutcome::Empty => self.set_message(EchoLevel::Info, "rename: no changes"),
-            RenameOutcome::Edits { per_file, new_name } => {
-                self.apply_rename_workspace_edit(per_file, new_name);
-            }
+        // 5.8.AA.l.3: migrated to host.
+        let signals = self.editor.drain_pending_rename();
+        for s in signals {
+            self.handle_renderer_signal(s);
         }
     }
 
@@ -1433,64 +1391,12 @@ impl App {
         )>,
         new_name: String,
     ) {
-        let mut applied_files = 0usize;
-        let mut total_edits = 0usize;
-        let mut deferred_files: Vec<String> = Vec::new();
-        for (uri, edits) in per_file {
-            let target_path = match lattice_lsp::actor::uri_to_path(&uri) {
-                Some(p) => p,
-                None => continue,
-            };
-            let edit_count = edits.len();
-            if self
-                .editor
-                .document
-                .path()
-                .map(|p| p == target_path)
-                .unwrap_or(false)
-            {
-                if let Err(e) = self.apply_lsp_text_edits(edits) {
-                    self.set_message(
-                        EchoLevel::Error,
-                        format!("rename: apply failed for active buffer: {e}"),
-                    );
-                    return;
-                }
-                applied_files += 1;
-                total_edits += edit_count;
-            } else {
-                // Cross-file edits: open the file via :e and apply.
-                self.do_edit(Some(target_path.clone()), false);
-                if matches!(
-                    self.editor.last_message.as_ref().map(|m| m.level),
-                    Some(EchoLevel::Error)
-                ) {
-                    deferred_files.push(target_path.display().to_string());
-                    continue;
-                }
-                if let Err(e) = self.apply_lsp_text_edits(edits) {
-                    self.set_message(
-                        EchoLevel::Error,
-                        format!("rename: apply failed for {}: {e}", target_path.display()),
-                    );
-                    return;
-                }
-                applied_files += 1;
-                total_edits += edit_count;
-            }
+        // 5.8.AA.l.2: migrated to host. Fan returned signals
+        // through the existing renderer-signal handler.
+        let signals = self.editor.apply_rename_workspace_edit(per_file, new_name);
+        for s in signals {
+            self.handle_renderer_signal(s);
         }
-        let mut summary = format!(
-            "rename -> {new_name}: {total_edits} edit{} across {applied_files} file{}",
-            if total_edits == 1 { "" } else { "s" },
-            if applied_files == 1 { "" } else { "s" },
-        );
-        if !deferred_files.is_empty() {
-            summary.push_str(&format!(
-                " (skipped {}: open the file then re-run)",
-                deferred_files.join(", ")
-            ));
-        }
-        self.set_message(EchoLevel::Info, summary);
     }
 
     /// Apply a chosen code-action. The action may carry an
@@ -1970,47 +1876,8 @@ impl App {
     /// edits as one undo unit. Echoes when the server returned no
     /// edits ("already formatted") or no provider was available.
     pub fn drain_pending_format(&mut self) {
-        let Some(mut rx) = self.editor.pending_format_rx.take() else {
-            return;
-        };
-        let mut latest: Option<FormatOutcome> = None;
-        while let Ok(o) = rx.try_recv() {
-            latest = Some(o);
-        }
-        self.editor.pending_format_rx = Some(rx);
-        let outcome = match latest {
-            Some(o) => o,
-            None => return,
-        };
-        self.editor.pending_format_token = None;
-        match outcome {
-            FormatOutcome::NoProvider { is_range } => {
-                let kind = if is_range { "range " } else { "" };
-                self.set_message(
-                    EchoLevel::Info,
-                    format!("no server with {kind}formatting provider"),
-                );
-            }
-            FormatOutcome::Edits(edits) => {
-                if edits.is_empty() {
-                    self.set_message(
-                        EchoLevel::Info,
-                        "format: no changes (already formatted)".to_string(),
-                    );
-                    return;
-                }
-                let n = edits.len();
-                match self.apply_lsp_text_edits(edits) {
-                    Ok(()) => self.set_message(
-                        EchoLevel::Info,
-                        format!("format: applied {n} edit{}", if n == 1 { "" } else { "s" }),
-                    ),
-                    Err(e) => {
-                        self.set_message(EchoLevel::Error, format!("format: apply failed: {e}"))
-                    }
-                }
-            }
-        }
+        // 5.8.AA.l.4: migrated to host.
+        self.editor.drain_pending_format();
     }
 
     /// `:lsp-symbols` (Phase 4.2.e). Send

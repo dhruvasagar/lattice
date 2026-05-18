@@ -844,7 +844,7 @@ impl App {
     /// no-op (already set on `editor.should_quit`, which
     /// `runtime::main_loop` reads each tick). A future GPUI renderer
     /// implements its own equivalent on `lattice-ui-gpui::App`.
-    pub(super) fn handle_renderer_signal(&mut self, signal: RendererSignal) {
+    pub fn handle_renderer_signal(&mut self, signal: RendererSignal) {
         match signal {
             RendererSignal::ThemeChanged => self.rebuild_tui_theme(),
             RendererSignal::Quit => {

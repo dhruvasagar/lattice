@@ -142,217 +142,29 @@ fn popup_height_for(candidate_count: usize) -> usize {
 fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) -> Result<()> {
     let mut last_modal: Option<ModalState> = None;
     while !app.editor.should_quit {
-        // No queue-and-drain step for LSP opens any more --
-        // `Event::DocumentOpened` flows directly from the
-        // publisher (`App::new` / `App::do_edit`) into the
-        // attach driver task on the LSP runtime. The UI thread
-        // never parks on the LSP `initialize` round-trip.
-        //
-        // Drain queued `Event::OptionChanged` cascades (DESIGN.md
-        // §5.10 + §5.12). Backstop for option writes that happened
-        // outside a keystroke -- e.g. plugin tasks, future
-        // LSP-driven config writes. The cmdline path's `do_set`
-        // already drains synchronously after each `:set`, so the
-        // common case here is a no-op pull on an empty channel.
-        app.drain_option_changes();
-        // Drain queued LSP hover responses (Phase 4.2.b). The K
-        // keystroke spawns a request on the LSP runtime; the
-        // response flows back through `App.pending_hover_rx` and
-        // surfaces here, before the next draw, via the existing
-        // hover popup. Cheap on an idle channel.
-        app.drain_pending_hover();
-        // Drain queued LSP goto-definition responses (Phase 4.2.c).
-        // `gd` spawns a request; single-result jumps in-place,
-        // multi-result echoes a count + jumps to first.
-        app.drain_pending_definitions();
-        // Drain queued LSP references responses (Phase 4.2.d).
-        // `gr` spawns a request; the merged + deduped list opens
-        // as a vertico picker.
-        app.drain_pending_references();
-        // Drain queued documentSymbol / workspaceSymbol responses
-        // (Phase 4.2.e / 4.2.f). Both surfaces share one channel
-        // since there's never more than one symbol request in
-        // flight; a follow-up `:lsp-symbols` cancels its
-        // predecessor.
-        app.drain_pending_symbols();
-        // Drain queued formatting responses (Phase 4.3). Applies
-        // the returned edits as one undo unit; echoes when no
-        // provider was found or no changes were needed.
-        app.drain_pending_format();
-        // Drain queued signatureHelp responses (Phase 4.3).
-        // Renders the active signature into the hover popup
-        // pipeline.
-        app.drain_pending_signature_help();
-        // Drain queued completion responses (Phase 4.2.g).
-        // Opens a picker over the merged item list.
-        app.drain_pending_completion();
-        // Drain queued rename responses (Phase 4.3). Applies
-        // the WorkspaceEdit per-file (one undo unit per
-        // affected buffer in v1) and echoes a summary.
-        app.drain_pending_rename();
-        // Drain queued code-action responses (Phase 4.3).
-        // Items open a picker; resolve responses (post-accept)
-        // apply directly.
+        // 5.8.AA.q: per-tick LSP / option / inbound-request /
+        // pump+drain orchestration lives in
+        // `lattice_host::dispatch::Editor::run_tick_pending` so
+        // both renderer peers reach an identical aggregator.
+        // It returns a `Vec<RendererSignal>` (hover popups, jumps,
+        // applyEdit results, picker batches, ...) that we fan
+        // out through the existing `handle_renderer_signal`
+        // sink — same shape used elsewhere (definitions, rename,
+        // apply_edit).
+        let signals = app.editor.run_tick_pending();
+        for s in signals {
+            app.handle_renderer_signal(s);
+        }
+        // Two App-resident drains still need explicit calls:
+        // - `drain_pending_code_actions` returns
+        //   `Option<(handle, action)>` so the App-side apply
+        //   chain (`apply_lsp_code_action`) can run; folding it
+        //   into `run_tick_pending` is queued behind hoisting
+        //   the apply chain.
+        // - `drain_pending_live_picker_query` needs
+        //   `build_picker_context` to migrate first.
         app.drain_pending_code_actions();
-        // Drain queued LSP insert-completion responses (Phase
-        // 4.2.g.2). Merge into the active popup's `raw` set
-        // and refilter; close the popup if everything dropped.
-        app.drain_pending_insert_completion_lsp();
-        // Drain queued completionItem/resolve responses
-        // (Phase 4.2.g.3). Update the focused candidate's
-        // metadata + the docs popup body in place.
-        app.drain_pending_completion_resolve();
-        // Drain async picker init futures (slice 14d). When a
-        // source returns `PickerInitResult::Future`, the
-        // resolved batch lands here; the picker seats with the
-        // results, same code path as inline. Cheap on an idle
-        // channel (try_recv -> Empty).
-        app.drain_pending_picker_init();
-        // Drain live-picker debounce + in-flight (slice 2).
-        // Fires `on_query_changed` when the debounce elapses
-        // and seats new candidates when the source's future
-        // resolves. Cheap on an idle live picker (single
-        // `Instant::now()` compare, no allocations).
         app.drain_pending_live_picker_query();
-        // Drain queued Event::LspLogPushed events (Phase 4) and
-        // refresh any open log / trace buffers from the logger
-        // snapshot. Cheap on an idle channel; cheap when no log
-        // buffer is open (the refresh path short-circuits on
-        // missing-by-title).
-        app.drain_lsp_log_events();
-        // Drain queued `LspProgressUpdate` events (4.4.c) into
-        // the App's progress accumulator so the modeline shows
-        // the freshest state on the next render tick.
-        app.drain_lsp_progress_events();
-        // `LspBufferDetached` subscriber: `LspMode::on_deactivate`
-        // publishes the event; this drain calls
-        // `lsp_close_buffer` per event so the wire-level
-        // `didClose` runs after the mode lifecycle without
-        // the App's `deactivate_mode_by_id` knowing anything
-        // about `lsp-mode`.
-        app.drain_lsp_detach_events();
-        // M-async.3 rollback drain: the mode dispatcher's
-        // spawned lifecycle task publishes `ModeEvent::
-        // ModeActivationFailed` when `on_activate.await`
-        // returns `Err` (or when a cascade abort marks a
-        // child as unrun); the App rolls back `active_modes`
-        // + `mode_guards` for each.
-        app.drain_mode_lifecycle_events();
-        // Drain server-initiated `workspace/applyEdit` requests
-        // (Phase 4.3). Each is applied via the existing
-        // workspace-edit flatten + per-file batch path, then
-        // the LSP response (`applied`/`failure_reason`) ferries
-        // back to the originating server through the embedded
-        // oneshot.
-        app.drain_inbound_apply_edits();
-        // Drain server-initiated `workspace/configuration`
-        // requests (Phase 4.1 follow-up). Walk each requested
-        // section in the cached TOML tree at `lsp.<section>`
-        // and reply with the per-section value.
-        app.drain_inbound_configuration_requests();
-        // 4.4.l.2: refresh the file-watcher subscription set +
-        // drain any fs events the watcher emitted since the
-        // last tick. Refresh is cheap when nothing changed
-        // (per-server fingerprint short-circuit); the drain
-        // fans out `workspace/didChangeWatchedFiles` per server
-        // for matching events.
-        app.refresh_lsp_file_watcher();
-        app.drain_lsp_fs_events();
-        // 4.5.g: drain pending `:lsp-moniker` response (if any)
-        // and echo the summary line. Cheap when the channel is
-        // empty; no-op when no request is in flight.
-        app.drain_pending_moniker();
-        // 4.5.c: per-tick documentLink pump + drain. The pump
-        // fires on document-version change (cheap short-circuit
-        // otherwise); the drain seats fresh link ranges into
-        // the per-buffer cache that `gx` consults.
-        app.maybe_request_document_link();
-        app.drain_pending_document_link();
-        // 4.5.d: codeLens refresh + pump + drain. The refresh
-        // drain evicts cached lenses for servers that emitted
-        // `workspace/codeLens/refresh` (so the next pump
-        // refetches); the pump fires on doc-version change OR
-        // a fresh eviction; the drain seats the response into
-        // the per-buffer cache that `:lsp-code-lens` reads.
-        app.drain_code_lens_refresh();
-        app.maybe_request_code_lens();
-        app.drain_pending_code_lens();
-        // 4.5.e: documentColor pump + drain. Per-tick pump on
-        // doc-version change caches color literal ranges; the
-        // cache feeds `:lsp-color-presentation` (and a future
-        // renderer swatch overlay).
-        app.maybe_request_document_color();
-        app.drain_pending_document_color();
-        // 4.4.b: server-initiated window/showDocument requests
-        // (open URI in buffer / external handler).
-        app.drain_inbound_show_documents();
-        // 4.4.b: server-initiated window/showMessageRequest
-        // (modal action picker; user's selection ferries back).
-        app.drain_inbound_show_message_requests();
-        // 4.4.e: outstanding selectionRange response, if any
-        // expand/shrink invocation hit the wire path. Seats
-        // the chain + applies the step.
-        app.drain_pending_selection_range();
-        // 4.4.e: documentHighlight pump. Fires a fresh
-        // request when the cursor has moved off the last
-        // issue point; cancels any in-flight predecessor.
-        // The drain consumes the most recent response and
-        // seats the cache for the renderer overlay.
-        app.maybe_request_document_highlight();
-        app.drain_pending_document_highlight();
-        // 4.4.f: foldingRange pump. Only fires when
-        // `:set foldmethod=lsp` is active AND the buffer's
-        // document version has changed; the drain seats the
-        // cache and triggers `recompute_folds`.
-        app.maybe_request_folding_range();
-        app.drain_pending_folding_range();
-        // 4.4.g: server-initiated inlay-hint refresh. Drain
-        // before the pump so a refresh that arrived this tick
-        // invalidates the cache before the pump checks it
-        // (otherwise the pump sees the cache as up-to-date for
-        // the current doc version and skips the re-fetch).
-        app.drain_inlay_hint_refresh();
-        // 4.4.g: inlayHint pump. Fires when
-        // `lsp-inlay-hint-mode` is on AND the buffer's
-        // document version has changed; the renderer overlay
-        // splices each hint as virtual text mid-line.
-        app.maybe_request_inlay_hint();
-        app.drain_pending_inlay_hint();
-        // `*messages*` live tail: coalesce queued
-        // MessagePushed events and rebuild the buffer view
-        // once per tick. Cheap (rebuild only fires when at
-        // least one event landed AND the buffer is open).
-        app.drain_message_events();
-        // 4.4.j: server-initiated pull-diagnostic refresh.
-        // Drained ahead of the pull pump so a refresh this
-        // tick evicts the cache before the pump's version
-        // check sees it as fresh.
-        app.drain_diagnostic_refresh();
-        // 4.4.j: textDocument/diagnostic pull pump. Fires when
-        // `lsp-diagnostics-mode` is on AND the active server
-        // advertises pull AND the document version changed.
-        // The server can answer either `Full` (apply to the
-        // layer same as push) or `Unchanged` (no-op, just
-        // refresh the cached result_id). Pump is single-
-        // flight: each new request cancels its predecessor.
-        app.maybe_request_pull_diagnostics();
-        app.drain_pending_pull_diagnostics();
-        // 4.4.i: server-initiated semantic-tokens refresh.
-        // Drained before the pump for the same reason as the
-        // inlay-hint refresh -- a refresh this tick must
-        // invalidate the cache before the pump's version check
-        // sees it as fresh.
-        app.drain_semantic_tokens_refresh();
-        // 4.4.h: semanticTokens/full pump. Fires when
-        // `lsp-semantic-tokens-mode` is on AND the document
-        // version has changed; the renderer overlay overrides
-        // tree-sitter styling within each token's byte range.
-        // 4.4.i: when the cache has a `result_id` and the server
-        // advertises delta support, the pump issues
-        // `semanticTokens/full/delta` and the drain splices the
-        // returned edit script into the cached raw vec.
-        app.maybe_request_semantic_tokens();
-        app.drain_pending_semantic_tokens();
         // Update viewport height. The buffer-area band is the
         // terminal minus the mode line + cmdline/echo row (and the
         // candidate-list row band, when a picker / completion popup

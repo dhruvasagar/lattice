@@ -476,10 +476,33 @@ impl GpuiApp {
     /// keeps its `Default` palette; the wiring is what this
     /// slice unblocks.
     pub fn rebuild_gpui_theme(&mut self) {
-        // Touch the field so a typo in a later iteration is
-        // caught immediately. Body left empty until host_theme
-        // grows window-level color fields.
-        let _ = &self.editor.host_theme;
+        // Phase 5.8.K: live-cascade host_theme → GpuiTheme for the
+        // fields where the host's `Theme` carries a matching colour
+        // today. Fields without a host source (the bulk of the
+        // window-only palette: editor bg/fg, cursor inversion,
+        // popup chrome) keep their Catppuccin defaults until the
+        // host's `Theme` grows window-color fields. The wiring is
+        // already in place — `RendererSignal::ThemeChanged` fires
+        // this method — so adding host fields later flows through
+        // automatically.
+        let host = &self.editor.host_theme;
+        let defaults = GpuiTheme::default();
+
+        // Status line ↔ host's `pane_status_active` (mirrors the
+        // TUI's active-pane status row). Inactive pane status maps
+        // to GpuiTheme's `popup_border` accent for now (visually
+        // distinct from the active row).
+        if let Some(bg) = host.pane_status_active.bg {
+            self.theme.status_background = bg.to_rgb_u32(defaults.status_background);
+        }
+        if let Some(fg) = host.pane_status_active.fg {
+            self.theme.status_foreground = fg.to_rgb_u32(defaults.status_foreground);
+        }
+        // Popup border ↔ host's pane_separator (same conceptual
+        // role: thin accent line between visual regions).
+        if let Some(fg) = host.pane_separator.fg {
+            self.theme.popup_border = fg.to_rgb_u32(defaults.popup_border);
+        }
     }
 
     /// Dispatch a single [`Action`] through `editor.dispatch` and

@@ -167,6 +167,91 @@ pub enum Color {
     Rgb(u8, u8, u8),
 }
 
+impl Color {
+    /// Convert to a 24-bit `0xRRGGBB` packed `u32` for GPU-side
+    /// renderers (which want raw truecolor, not the renderer-
+    /// neutral [`Color`] enum). [`Color::Default`] returns
+    /// `fallback` — the caller decides what "use the terminal /
+    /// window default channel" means in pixel-space.
+    ///
+    /// Named colors map to canonical ANSI RGB values that match
+    /// what xterm + most modern terminal emulators use. The
+    /// indexed (xterm 256) path computes the 6×6×6 cube + the
+    /// 24-step grayscale ramp standardly.
+    ///
+    /// Phase 5.8.K: GPUI peer's `GpuiTheme` rebuild reads
+    /// host-themed colours through this helper so any palette
+    /// change visible to the TUI also propagates to the window.
+    /// Renderer-neutral; lives on `host_theme` because the
+    /// `Color` enum is the canonical owner.
+    pub fn to_rgb_u32(self, fallback: u32) -> u32 {
+        use NamedColor as N;
+        match self {
+            Color::Default => fallback,
+            Color::Rgb(r, g, b) => ((r as u32) << 16) | ((g as u32) << 8) | (b as u32),
+            Color::Named(n) => match n {
+                N::Black => 0x000000,
+                N::Red => 0xcd0000,
+                N::Green => 0x00cd00,
+                N::Yellow => 0xcdcd00,
+                N::Blue => 0x0000ee,
+                N::Magenta => 0xcd00cd,
+                N::Cyan => 0x00cdcd,
+                N::Gray => 0xe5e5e5,
+                N::DarkGray => 0x7f7f7f,
+                N::LightRed => 0xff0000,
+                N::LightGreen => 0x00ff00,
+                N::LightYellow => 0xffff00,
+                N::LightBlue => 0x5c5cff,
+                N::LightMagenta => 0xff00ff,
+                N::LightCyan => 0x00ffff,
+                N::White => 0xffffff,
+            },
+            Color::Indexed(idx) => indexed_to_rgb_u32(idx),
+        }
+    }
+}
+
+/// Map an xterm 256-colour index to a packed `0xRRGGBB` value.
+/// - 0..=15: ANSI base colors (matches [`Color::Named`] mapping)
+/// - 16..=231: 6×6×6 cube; each channel steps through
+///   `[0, 95, 135, 175, 215, 255]`
+/// - 232..=255: 24-step grayscale ramp from `0x080808` to
+///   `0xeeeeee` in `+10` increments
+fn indexed_to_rgb_u32(idx: u8) -> u32 {
+    if idx < 16 {
+        let names = [
+            NamedColor::Black,
+            NamedColor::Red,
+            NamedColor::Green,
+            NamedColor::Yellow,
+            NamedColor::Blue,
+            NamedColor::Magenta,
+            NamedColor::Cyan,
+            NamedColor::Gray,
+            NamedColor::DarkGray,
+            NamedColor::LightRed,
+            NamedColor::LightGreen,
+            NamedColor::LightYellow,
+            NamedColor::LightBlue,
+            NamedColor::LightMagenta,
+            NamedColor::LightCyan,
+            NamedColor::White,
+        ];
+        Color::Named(names[idx as usize]).to_rgb_u32(0)
+    } else if idx < 232 {
+        const STEPS: [u8; 6] = [0, 95, 135, 175, 215, 255];
+        let n = idx - 16;
+        let r = STEPS[(n / 36) as usize];
+        let g = STEPS[((n / 6) % 6) as usize];
+        let b = STEPS[(n % 6) as usize];
+        ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
+    } else {
+        let level = 8 + 10 * (idx - 232) as u32;
+        (level << 16) | (level << 8) | level
+    }
+}
+
 /// The 16 named ANSI colors. Order matches ratatui's
 /// `Color::Black..White` enumeration so the adapter is a
 /// straightforward variant-by-variant match.
@@ -276,6 +361,72 @@ mod tests {
             Color::Named(NamedColor::DarkGray)
         );
         assert_eq!(parse_color("default").unwrap(), Color::Default);
+    }
+
+    // ---- 5.8.K: Color::to_rgb_u32 (host → GPU adapter) ----
+
+    #[test]
+    fn rgb_to_u32_packs_24_bit() {
+        // 0xRRGGBB ordering. 0xff0000 = red, 0x00ff00 = green,
+        // 0x0000ff = blue.
+        assert_eq!(Color::Rgb(0xff, 0x00, 0x00).to_rgb_u32(0), 0xff0000);
+        assert_eq!(Color::Rgb(0x00, 0xff, 0x00).to_rgb_u32(0), 0x00ff00);
+        assert_eq!(Color::Rgb(0x00, 0x00, 0xff).to_rgb_u32(0), 0x0000ff);
+        assert_eq!(Color::Rgb(0x12, 0x34, 0x56).to_rgb_u32(0), 0x123456);
+    }
+
+    #[test]
+    fn default_color_returns_fallback() {
+        // `Color::Default` means "use the terminal / window
+        // default channel" — there's no truecolour answer, so we
+        // hand back the caller's chosen fallback.
+        assert_eq!(Color::Default.to_rgb_u32(0xdeadbe), 0xdeadbe);
+        assert_eq!(Color::Default.to_rgb_u32(0), 0);
+    }
+
+    #[test]
+    fn named_red_canonical_ansi_value() {
+        // The 16 named ANSI colors map to standard xterm RGB.
+        // Red == 0xcd0000 in the canonical xterm palette.
+        assert_eq!(Color::Named(NamedColor::Red).to_rgb_u32(0), 0xcd0000);
+        assert_eq!(Color::Named(NamedColor::White).to_rgb_u32(0), 0xffffff);
+        assert_eq!(Color::Named(NamedColor::Black).to_rgb_u32(0), 0x000000);
+    }
+
+    #[test]
+    fn indexed_below_16_matches_named() {
+        // Indexed 0..=15 must agree with their Named equivalents
+        // (callers should not see a discontinuity between the
+        // 16-color named palette and the indexed-256 path).
+        assert_eq!(
+            Color::Indexed(1).to_rgb_u32(0),
+            Color::Named(NamedColor::Red).to_rgb_u32(0)
+        );
+        assert_eq!(
+            Color::Indexed(15).to_rgb_u32(0),
+            Color::Named(NamedColor::White).to_rgb_u32(0)
+        );
+    }
+
+    #[test]
+    fn indexed_cube_corner_pure_black() {
+        // Index 16 is the start of the 6×6×6 colour cube — pure
+        // (0,0,0) black.
+        assert_eq!(Color::Indexed(16).to_rgb_u32(0), 0x000000);
+    }
+
+    #[test]
+    fn indexed_cube_corner_pure_white() {
+        // Index 231 is the end of the cube — (255,255,255) white.
+        assert_eq!(Color::Indexed(231).to_rgb_u32(0), 0xffffff);
+    }
+
+    #[test]
+    fn indexed_grayscale_ramp() {
+        // 232..=255 is a 24-step grey ramp from 0x080808 to
+        // 0xeeeeee in +10 increments.
+        assert_eq!(Color::Indexed(232).to_rgb_u32(0), 0x080808);
+        assert_eq!(Color::Indexed(255).to_rgb_u32(0), 0xeeeeee);
     }
 
     #[test]

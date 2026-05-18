@@ -728,6 +728,26 @@ impl GpuiApp {
                     self.handle_renderer_signal(s);
                 }
             }
+            // Phase 5.8.AD.1: oil + file-tree migrated host-side
+            // so `:e .` / `:Oil` / `:Tree` work in GPUI.
+            Effect::OpenOil { dir } => {
+                let signals = self.editor.do_open_oil(dir);
+                for s in signals {
+                    self.handle_renderer_signal(s);
+                }
+            }
+            Effect::OpenFileTree { root } => {
+                let signals = self.editor.do_open_file_tree(root);
+                for s in signals {
+                    self.handle_renderer_signal(s);
+                }
+            }
+            Effect::CloseFileTree => {
+                let signals = self.editor.dismiss_file_tree();
+                for s in signals {
+                    self.handle_renderer_signal(s);
+                }
+            }
             // Many recurses through the same handler so inner
             // arms hit their renderer-coupled tail too.
             Effect::Many(parts) => {
@@ -748,18 +768,24 @@ impl GpuiApp {
     }
 
     /// Wrapper around `editor.do_edit(path, force)` that translates
-    /// the host's [`DoEditOutcome`] for the GPUI peer. The TUI peer
-    /// has the same shape; the only difference is the `Directory`
-    /// arm — TUI opens an oil view, GPUI doesn't have one yet.
+    /// the host's [`DoEditOutcome`] for the GPUI peer. Mirrors
+    /// TUI's `App::do_edit`: `Directory` routes to `do_open_oil`,
+    /// `Opened`/`Activated`/`Reloaded` fan signals through the
+    /// renderer handler, `NoFileName`/`Failed` are silent (the
+    /// host already echoed).
     fn apply_open_buffer(&mut self, path: Option<std::path::PathBuf>, force: bool) {
         use lattice_host::dispatch::DoEditOutcome;
         let outcome = self.editor.do_edit(path, force);
         match outcome {
             DoEditOutcome::NoFileName | DoEditOutcome::Failed => {}
-            DoEditOutcome::Directory(_dir) => {
-                tracing::warn!(
-                    "lattice-gpui: `:e <dir>` would open oil; oil view not wired in GPUI yet"
-                );
+            DoEditOutcome::Directory(dir) => {
+                // Phase 5.8.AD.1: oil is now host-side; route the
+                // directory `:e` through the same path the TUI peer
+                // uses.
+                let signals = self.editor.do_open_oil(Some(dir));
+                for s in signals {
+                    self.handle_renderer_signal(s);
+                }
             }
             DoEditOutcome::Reloaded(signals)
             | DoEditOutcome::Activated(signals)

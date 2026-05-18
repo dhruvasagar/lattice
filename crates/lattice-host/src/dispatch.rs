@@ -8942,6 +8942,393 @@ impl Editor {
     }
 }
 
+/// Phase 5.8.AD.1: oil + file-tree buffer creation, navigation,
+/// and buffer-local seeding. All operations are renderer-neutral
+/// — both peers reach them through `Editor`. The TUI's
+/// `app/oil.rs` and `app/file_tree.rs` collapse to delegate
+/// shims; the GPUI peer wires `Effect::OpenOil` / `OpenFileTree`
+/// / `CloseFileTree` host-side via `handle_effect`.
+impl Editor {
+    /// Write the `OilDir` buffer-local for `buffer_id`. Single
+    /// chokepoint for every oil-buffer dir mutation (M.3.2.c.5).
+    pub fn set_oil_dir(&mut self, buffer_id: BufferId, dir: std::path::PathBuf) {
+        self.buffer_locals
+            .entry(buffer_id)
+            .or_default()
+            .insert(lattice_oil::modes::OilDir(dir));
+    }
+
+    /// Read the dir an oil buffer represents from its `OilDir`
+    /// buffer-local. `None` if the buffer isn't registered or
+    /// the local hasn't been seeded.
+    pub fn oil_dir_for(&self, buffer_id: BufferId) -> Option<std::path::PathBuf> {
+        self.buffer_locals
+            .get(&buffer_id)
+            .and_then(|locals| locals.get::<lattice_oil::modes::OilDir>())
+            .map(|d| d.0.clone())
+    }
+
+    /// Find a registered oil buffer whose `OilDir` matches `dir`.
+    /// Used by `do_open_oil`'s dedup path.
+    pub fn oil_with_dir(&self, dir: &std::path::Path) -> Option<BufferId> {
+        self.buffers
+            .oil_ids()
+            .into_iter()
+            .find(|&id| self.oil_dir_for(id).as_deref() == Some(dir))
+    }
+
+    /// `:Oil [dir]` -- open an oil buffer rooted at `dir` (or the
+    /// current document's parent / cwd if absent). De-dup: if a
+    /// buffer at the same dir is already open, switch to it.
+    /// Phase 5.8.AD.1: hoisted from TUI App.
+    pub fn do_open_oil(&mut self, dir: Option<std::path::PathBuf>) -> Vec<RendererSignal> {
+        let dir = match dir {
+            Some(p) => p,
+            None => match self
+                .document
+                .path()
+                .and_then(|p| p.parent().map(Into::into))
+                .filter(|p: &std::path::PathBuf| !p.as_os_str().is_empty())
+            {
+                Some(parent) => parent,
+                None => match std::env::current_dir() {
+                    Ok(p) => p,
+                    Err(e) => {
+                        self.set_message(EchoLevel::Error, format!("cwd error: {e}"));
+                        return Vec::new();
+                    }
+                },
+            },
+        };
+        let dir = normalize_user_path(&dir);
+        if let Some(existing_id) = self.oil_with_dir(&dir) {
+            self.activate_oil(existing_id);
+            self.set_message(
+                EchoLevel::Info,
+                format!("oil: {} (already open)", dir.display()),
+            );
+            return Vec::new();
+        }
+        let oil = match lattice_oil::OilBuffer::open(&dir) {
+            Ok(o) => o,
+            Err(e) => {
+                self.set_message(
+                    EchoLevel::Error,
+                    format!("oil open error: {}: {e}", dir.display()),
+                );
+                return Vec::new();
+            }
+        };
+        if matches!(self.active_buffer, BufferKind::Document) {
+            let cur = self.cursor;
+            self.push_position_history(cur, crate::state::PositionSource::AutoJump);
+        }
+        let new_id = oil.id;
+        self.set_oil_dir(new_id, dir.clone());
+        self.buffers.insert(crate::buffer_registry::BufferEntry {
+            id: new_id,
+            flags: crate::buffers::BufferFlags::default(),
+            data: crate::buffer_registry::BufferData::Oil(oil),
+            name: None,
+        });
+        let signals = self.activate_major_for_buffer_kind(new_id, BufferKind::Oil);
+        self.snapshot_active_pane();
+        self.snapshot_active_document();
+        self.active_buffer = BufferKind::Oil;
+        let pane = self.pane_tree.active_mut();
+        pane.buffer = BufferKind::Oil;
+        pane.buffer_id = new_id;
+        pane.cursor = lattice_protocol::Position::ZERO;
+        pane.scroll = 0;
+        self.cursor = lattice_protocol::Position::ZERO;
+        self.scroll = 0;
+        self.set_message(EchoLevel::Info, format!("oil: {}", dir.display()));
+        signals
+    }
+
+    /// `<CR>` on an oil row: navigate into directory or `:e`
+    /// the file. Phase 5.8.AD.1: hoisted from TUI App.
+    pub fn do_oil_follow(&mut self) -> Vec<RendererSignal> {
+        let active_id = self.active_pane_buffer_id();
+        let idx = self.cursor.line as usize;
+        let Some(entry) = self
+            .buffers
+            .with_oil(active_id, |o| o.snapshot_entries().get(idx).cloned())
+            .flatten()
+        else {
+            return Vec::new();
+        };
+        let Some(dir) = self.oil_dir_for(active_id) else {
+            return Vec::new();
+        };
+        if entry.is_dir {
+            let new_dir = dir.join(&entry.name);
+            let reload_result = self
+                .buffers
+                .with_oil_mut(active_id, |oil| oil.reload(&new_dir));
+            match reload_result {
+                Some(Err(e)) => {
+                    self.set_message(EchoLevel::Error, format!("oil navigate: {e}"));
+                }
+                Some(Ok(_)) => {
+                    self.set_oil_dir(active_id, new_dir);
+                    self.cursor = lattice_protocol::Position::ZERO;
+                    self.scroll = 0;
+                }
+                None => {}
+            }
+            Vec::new()
+        } else {
+            let path = dir.join(&entry.name);
+            let outcome = self.do_edit(Some(path), false);
+            match outcome {
+                DoEditOutcome::Opened(s)
+                | DoEditOutcome::Activated(s)
+                | DoEditOutcome::Reloaded(s) => s,
+                DoEditOutcome::Directory(d) => self.do_open_oil(Some(d)),
+                DoEditOutcome::NoFileName | DoEditOutcome::Failed => Vec::new(),
+            }
+        }
+    }
+
+    /// `-` -- navigate to the parent of the current buffer's
+    /// dir. In oil: compute the parent from `OilDir`. In file-
+    /// tree: open oil rooted at the parent of the entry under
+    /// the cursor (or the entry itself when it's a directory).
+    /// Anywhere else: open oil rooted at the parent of the
+    /// active document's path. Phase 5.8.AD.1.
+    pub fn do_oil_navigate_up(&mut self) -> Vec<RendererSignal> {
+        match self.active_buffer {
+            BufferKind::Oil => {
+                let id = self.active_pane_buffer_id();
+                let Some(current_dir) = self.oil_dir_for(id) else {
+                    return Vec::new();
+                };
+                let Some(parent) = current_dir.parent().map(std::path::Path::to_path_buf) else {
+                    return Vec::new();
+                };
+                let reload_result = self
+                    .buffers
+                    .with_oil_mut(id, |oil| oil.reload(&parent));
+                match reload_result {
+                    Some(Err(e)) => {
+                        self.set_message(EchoLevel::Error, format!("oil navigate up: {e}"));
+                    }
+                    Some(Ok(_)) => {
+                        self.set_oil_dir(id, parent);
+                        self.cursor = lattice_protocol::Position::ZERO;
+                        self.scroll = 0;
+                    }
+                    None => {}
+                }
+                Vec::new()
+            }
+            BufferKind::FileTree => {
+                let id = self.active_pane_buffer_id();
+                let line = self.cursor.line;
+                let dir = self.file_tree_entries_for(id).and_then(|entries| {
+                    lattice_file_tree::entry_at_line(&entries, line).map(|e| {
+                        if matches!(
+                            e.kind,
+                            lattice_file_tree::FileTreeEntryKind::Directory { .. }
+                        ) {
+                            e.path.clone()
+                        } else {
+                            e.path.parent().unwrap_or(&e.path).to_path_buf()
+                        }
+                    })
+                });
+                self.do_open_oil(dir)
+            }
+            _ => {
+                let dir = self
+                    .document
+                    .path()
+                    .and_then(|p| p.parent().map(Into::into));
+                self.do_open_oil(dir)
+            }
+        }
+    }
+
+    /// Write `FileTreeRoot`. Single chokepoint (M.3.2.c.5).
+    pub fn set_file_tree_root(&mut self, buffer_id: BufferId, root: std::path::PathBuf) {
+        self.buffer_locals
+            .entry(buffer_id)
+            .or_default()
+            .insert(lattice_file_tree::modes::FileTreeRoot(root));
+    }
+
+    /// Write `FileTreeEntries` AND re-render the buffer's rope.
+    /// Single chokepoint for every entries mutation.
+    pub fn set_file_tree_entries(
+        &mut self,
+        buffer_id: BufferId,
+        entries: Vec<lattice_file_tree::FileTreeEntry>,
+    ) {
+        let nerd_fonts = self.file_tree_nerd_fonts_for(buffer_id).unwrap_or(false);
+        let content = lattice_file_tree::render_to_buffer(&entries, nerd_fonts);
+        self.buffer_locals
+            .entry(buffer_id)
+            .or_default()
+            .insert(lattice_file_tree::modes::FileTreeEntries(entries));
+        self.buffers
+            .with_file_tree_mut(buffer_id, |tree| tree.content = content);
+    }
+
+    /// Write `FileTreeNerdFonts` and re-render the rope.
+    pub fn set_file_tree_nerd_fonts(&mut self, buffer_id: BufferId, nerd_fonts: bool) {
+        self.buffer_locals
+            .entry(buffer_id)
+            .or_default()
+            .insert(lattice_file_tree::modes::FileTreeNerdFonts(nerd_fonts));
+        if let Some(entries) = self.file_tree_entries_for(buffer_id) {
+            let content = lattice_file_tree::render_to_buffer(&entries, nerd_fonts);
+            self.buffers
+                .with_file_tree_mut(buffer_id, |tree| tree.content = content);
+        }
+    }
+
+    pub fn file_tree_root_for(&self, buffer_id: BufferId) -> Option<std::path::PathBuf> {
+        self.buffer_locals
+            .get(&buffer_id)
+            .and_then(|l| l.get::<lattice_file_tree::modes::FileTreeRoot>())
+            .map(|r| r.0.clone())
+    }
+
+    pub fn file_tree_entries_for(
+        &self,
+        buffer_id: BufferId,
+    ) -> Option<Vec<lattice_file_tree::FileTreeEntry>> {
+        self.buffer_locals
+            .get(&buffer_id)
+            .and_then(|l| l.get::<lattice_file_tree::modes::FileTreeEntries>())
+            .map(|e| e.0.clone())
+    }
+
+    pub fn file_tree_nerd_fonts_for(&self, buffer_id: BufferId) -> Option<bool> {
+        self.buffer_locals
+            .get(&buffer_id)
+            .and_then(|l| l.get::<lattice_file_tree::modes::FileTreeNerdFonts>())
+            .map(|n| n.0)
+    }
+
+    /// Find a registered file-tree buffer whose `FileTreeRoot`
+    /// matches `root`. Mirrors `oil_with_dir`.
+    pub fn file_tree_with_root(&self, root: &std::path::Path) -> Option<BufferId> {
+        self.buffers
+            .file_tree_ids()
+            .into_iter()
+            .find(|&id| self.file_tree_root_for(id).as_deref() == Some(root))
+    }
+
+    /// `:Tree [path]` -- open a `FileTreeBuffer` rooted at `path`
+    /// (or the current document's parent / cwd if absent). De-dup:
+    /// if a tree at the same root is already open, switch to it.
+    /// Phase 5.8.AD.1: hoisted from TUI App. The nerd-fonts setting
+    /// reads from the host's `Theme` so both peers seed the tree
+    /// identically.
+    pub fn do_open_file_tree(
+        &mut self,
+        root: Option<std::path::PathBuf>,
+    ) -> Vec<RendererSignal> {
+        let root = match root {
+            Some(p) => p,
+            None => match self
+                .document
+                .path()
+                .and_then(|p| p.parent().map(Into::into))
+            {
+                Some(parent) => parent,
+                None => match std::env::current_dir() {
+                    Ok(p) => p,
+                    Err(e) => {
+                        self.set_message(EchoLevel::Error, format!("cwd error: {e}"));
+                        return Vec::new();
+                    }
+                },
+            },
+        };
+        if let Some(existing_id) = self.file_tree_with_root(&root) {
+            self.activate_file_tree(existing_id);
+            self.set_message(
+                EchoLevel::Info,
+                format!("tree: {} (already open)", root.display()),
+            );
+            return Vec::new();
+        }
+        let nerd_fonts = self.host_theme.nerd_fonts;
+        let (tree, entries) = match lattice_file_tree::FileTreeBuffer::open(&root, nerd_fonts) {
+            Ok(t) => t,
+            Err(e) => {
+                self.set_message(
+                    EchoLevel::Error,
+                    format!("tree open error: {}: {e}", root.display()),
+                );
+                return Vec::new();
+            }
+        };
+        if matches!(self.active_buffer, BufferKind::Document) {
+            let cur = self.cursor;
+            self.push_position_history(cur, crate::state::PositionSource::AutoJump);
+        }
+        let new_id = tree.id;
+        self.set_file_tree_root(new_id, root.clone());
+        self.set_file_tree_nerd_fonts(new_id, nerd_fonts);
+        self.buffers.insert(crate::buffer_registry::BufferEntry {
+            id: new_id,
+            flags: crate::buffers::BufferFlags::default(),
+            data: crate::buffer_registry::BufferData::FileTree(tree),
+            name: None,
+        });
+        self.set_file_tree_entries(new_id, entries);
+        let signals = self.activate_major_for_buffer_kind(new_id, BufferKind::FileTree);
+        self.snapshot_active_pane();
+        self.snapshot_active_document();
+        self.active_buffer = BufferKind::FileTree;
+        let pane = self.pane_tree.active_mut();
+        pane.buffer = BufferKind::FileTree;
+        pane.buffer_id = new_id;
+        pane.cursor = lattice_protocol::Position::ZERO;
+        pane.scroll = 0;
+        self.set_message(EchoLevel::Info, format!("tree: {}", root.display()));
+        signals
+    }
+
+    /// `<CR>` on a tree row: directory → toggle expansion;
+    /// file → `:e` it. Phase 5.8.AD.1.
+    pub fn do_file_tree_follow(&mut self) -> Vec<RendererSignal> {
+        let active_id = self.active_pane_buffer_id();
+        let idx = self.cursor.line as usize;
+        let Some(mut entries) = self.file_tree_entries_for(active_id) else {
+            return Vec::new();
+        };
+        let Some(entry) = entries.get(idx).cloned() else {
+            return Vec::new();
+        };
+        match entry.kind {
+            lattice_file_tree::FileTreeEntryKind::Directory { .. } => {
+                if let Err(e) = lattice_file_tree::toggle_entries_at(&mut entries, idx) {
+                    self.set_message(EchoLevel::Error, format!("toggle error: {e}"));
+                    return Vec::new();
+                }
+                self.set_file_tree_entries(active_id, entries);
+                Vec::new()
+            }
+            lattice_file_tree::FileTreeEntryKind::File => {
+                let path = entry.path.clone();
+                let outcome = self.do_edit(Some(path), false);
+                match outcome {
+                    DoEditOutcome::Opened(s)
+                    | DoEditOutcome::Activated(s)
+                    | DoEditOutcome::Reloaded(s) => s,
+                    DoEditOutcome::Directory(d) => self.do_open_oil(Some(d)),
+                    DoEditOutcome::NoFileName | DoEditOutcome::Failed => Vec::new(),
+                }
+            }
+        }
+    }
+}
+
 /// 5.5.G.17: modal-state transitions + blockwise-Visual I/A.
 /// `enter_mode` is the canonical modal pivot (the Insert-replay
 /// recording lifecycle, cursor pull-back on `<Esc>`, modal-event

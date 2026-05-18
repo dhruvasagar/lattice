@@ -1,281 +1,52 @@
-//! Oil-buffer App surface -- opening, navigation, and the
-//! per-creation buffer-locals seed.
-//!
-//! Methods that live here:
-//! - `set_oil_dir` (M.3.2.c.5 chokepoint: the *single*
-//!   write path for the `OilDir` buffer-local; every
-//!   directory change goes through here so the
-//!   "post-mutation re-mirror" can't be forgotten).
-//! - `oil_dir_for` / `oil_with_dir` (read accessors).
-//! - `do_open_oil` (`:Oil` / `:e <dir>` entry).
-//! - `do_oil_follow` (`<CR>` on a row -- navigate into
-//!   directory or `:e` the file).
-//! - `do_oil_navigate_up` (`-`).
-//!
-//! Stays in app.rs (lifecycle / cmdline write):
-//! - `activate_oil` (the pane-flip path for switching back
-//!   to an already-registered oil buffer).
-//! - The oil-arm of `do_write` (it sits inside `do_write`'s
-//!   match on active_buffer; lives with do_write's home in
-//!   the lifecycle slice).
-//!
-//! What does NOT live here: `OilBuffer` itself
-//! (`crate::oil::OilBuffer`), the diff algorithm, the
-//! filesystem-op planner -- those are content-shape
-//! concerns owned by `crate::oil`.
-//!
-//! ## The dir-lookup model (post-M.3.2.c.5)
-//!
-//! The directory an oil buffer represents lives in the
-//! [`crate::modes::OilDir`] [`lattice_mode::BufferLocal`]
-//! owned by `oil-mode`. There is no struct-stored copy on
-//! `OilBuffer` anymore. Every reader -- renderer, status
-//! line, navigate, apply -- looks up the dir through
-//! `buffer_locals[id].get::<OilDir>()` (or
-//! [`Self::oil_dir_for`] which wraps it). Mutating the dir
-//! goes through [`Self::set_oil_dir`]; that's the single
-//! chokepoint that guarantees the buffer-local stays
-//! current. Forgetting to update it is impossible -- there's
-//! no second copy to drift.
+//! Oil-buffer App surface -- thin delegates over the host's
+//! oil methods. Phase 5.8.AD.1 migrated every body to
+//! `lattice_host::dispatch::Editor::do_open_oil` etc., so this
+//! file is just the renderer-coupled fan-out for the few sites
+//! that need to hop through `handle_renderer_signal`.
 
 use std::path::{Path, PathBuf};
 
-use lattice_protocol::position::Position;
-
-use super::{App, BufferData, BufferEntry, BufferFlags, BufferKind, EchoLevel, PositionSource};
+use super::App;
 
 impl App {
-    /// Write the [`crate::modes::OilDir`] buffer-local for
-    /// `buffer_id` to `dir`. **Single chokepoint** for every
-    /// oil-buffer dir mutation; do not insert `OilDir`
-    /// elsewhere. (M.3.2.c.5: buffer-locals are canonical
-    /// per-buffer mode-owned state; no struct mirror.)
+    /// Delegate to [`lattice_host::dispatch::Editor::set_oil_dir`].
     pub(super) fn set_oil_dir(&mut self, buffer_id: crate::buffers::BufferId, dir: PathBuf) {
-        self.editor
-            .buffer_locals
-            .entry(buffer_id)
-            .or_default()
-            .insert(crate::modes::OilDir(dir));
+        self.editor.set_oil_dir(buffer_id, dir);
     }
 
-    /// Read the dir an oil buffer represents from its
-    /// [`crate::modes::OilDir`] buffer-local. `None` if the
-    /// buffer isn't registered or doesn't have the local
-    /// seeded (shouldn't happen in practice -- every oil
-    /// buffer's creation path calls [`Self::set_oil_dir`]).
+    /// Delegate to [`lattice_host::dispatch::Editor::oil_dir_for`].
     pub(super) fn oil_dir_for(&self, buffer_id: crate::buffers::BufferId) -> Option<PathBuf> {
-        self.editor
-            .buffer_locals
-            .get(&buffer_id)
-            .and_then(|locals| locals.get::<crate::modes::OilDir>())
-            .map(|d| d.0.clone())
+        self.editor.oil_dir_for(buffer_id)
     }
 
-    /// Find a registered oil buffer whose `OilDir` matches
-    /// `dir`. Used by `do_open_oil`'s dedup path. The
-    /// registry can't answer this on its own because the
-    /// dir lives in buffer-locals; we walk the registry's
-    /// oil-id list and probe each buffer-local entry.
+    /// Delegate to [`lattice_host::dispatch::Editor::oil_with_dir`].
     pub(super) fn oil_with_dir(&self, dir: &Path) -> Option<crate::buffers::BufferId> {
-        self.editor
-            .buffers
-            .oil_ids()
-            .into_iter()
-            .find(|&id| self.oil_dir_for(id).as_deref() == Some(dir))
+        self.editor.oil_with_dir(dir)
     }
 
-    /// `:Oil [dir]` -- open an oil buffer rooted at `dir` (or the
-    /// current document's parent / cwd if absent). De-dup: if a
-    /// buffer at the same dir is already open, switch to it.
+    /// `:Oil [dir]`. Phase 5.8.AD.1: body migrated to
+    /// [`lattice_host::dispatch::Editor::do_open_oil`]. The
+    /// wrapper fans host-returned signals through
+    /// `handle_renderer_signal` so mode-activate cascades reach
+    /// the renderer.
     pub(super) fn do_open_oil(&mut self, dir: Option<PathBuf>) {
-        let dir = match dir {
-            Some(p) => p,
-            None => match self
-                .editor
-                .document
-                .path()
-                .and_then(|p| p.parent().map(Into::into))
-                // `Path::parent()` returns `Some("")` for a
-                // single-component relative path like `foo.rs`;
-                // an empty path is useless for `read_dir`, so
-                // treat it as "no parent" and fall through to
-                // cwd.
-                .filter(|p: &PathBuf| !p.as_os_str().is_empty())
-            {
-                Some(parent) => parent,
-                None => match std::env::current_dir() {
-                    Ok(p) => p,
-                    Err(e) => {
-                        self.set_message(EchoLevel::Error, format!("cwd error: {e}"));
-                        return;
-                    }
-                },
-            },
-        };
-        // Absolutise (+ tilde-expand) the dir before storing.
-        // Oil's navigate-up depends on `OilDir.parent()`
-        // walking the filesystem; a relative dir without
-        // enough components hits `Some("")` and `read_dir`
-        // ENOENT. Doing it here keeps the invariant local to
-        // the buffer's creation -- every later reload /
-        // navigate-up trusts `OilDir` is absolute.
-        let dir = crate::app::normalize_user_path(&dir);
-        if let Some(existing_id) = self.oil_with_dir(&dir) {
-            self.activate_oil(existing_id);
-            self.set_message(
-                EchoLevel::Info,
-                format!("oil: {} (already open)", dir.display()),
-            );
-            return;
+        let signals = self.editor.do_open_oil(dir);
+        for s in signals {
+            self.handle_renderer_signal(s);
         }
-        let oil = match crate::oil::OilBuffer::open(&dir) {
-            Ok(o) => o,
-            Err(e) => {
-                self.set_message(
-                    EchoLevel::Error,
-                    format!("oil open error: {}: {e}", dir.display()),
-                );
-                return;
-            }
-        };
-        if matches!(self.editor.active_buffer, BufferKind::Document) {
-            let cur = self.editor.cursor;
-            self.push_position_history(cur, PositionSource::AutoJump);
-        }
-        let new_id = oil.id;
-        // M.3.2.c.5: seed the OilDir buffer-local at creation
-        // time through the chokepoint helper. From now on every
-        // dir change for this buffer goes through `set_oil_dir`
-        // as well.
-        self.set_oil_dir(new_id, dir.clone());
-        self.editor.buffers.insert(BufferEntry {
-            id: new_id,
-            flags: BufferFlags::default(),
-            data: BufferData::Oil(oil),
-            name: None,
-        });
-        self.activate_major_for_buffer_kind(new_id, BufferKind::Oil);
-        self.snapshot_active_pane();
-        self.snapshot_active_document();
-        self.editor.active_buffer = BufferKind::Oil;
-        let pane = self.editor.pane_tree.active_mut();
-        pane.buffer = BufferKind::Oil;
-        pane.buffer_id = new_id;
-        pane.cursor = Position::ZERO;
-        pane.scroll = 0;
-        // Sync the App-side hot-path cursor / scroll to the
-        // freshly-activated oil pane. Without this, `self.editor.cursor`
-        // carries over from the prior document buffer and oil
-        // edits land at the wrong rope position.
-        self.editor.cursor = Position::ZERO;
-        self.editor.scroll = 0;
-        self.set_message(EchoLevel::Info, format!("oil: {}", dir.display()));
     }
 
     pub(super) fn do_oil_follow(&mut self) {
-        let active_id = self.active_pane_buffer_id();
-        // Read the entry by the App's hot-path cursor line
-        // (the cursor the user actually moves with `j` / `k`).
-        let idx = self.editor.cursor.line as usize;
-        let Some(entry) = self
-            .editor
-            .buffers
-            .with_oil(active_id, |o| o.snapshot_entries().get(idx).cloned())
-            .flatten()
-        else {
-            return;
-        };
-        // The dir lives in the OilDir buffer-local (canonical).
-        let Some(dir) = self.oil_dir_for(active_id) else {
-            return;
-        };
-        if entry.is_dir {
-            let new_dir = dir.join(&entry.name);
-            let reload_result = self
-                .editor
-                .buffers
-                .with_oil_mut(active_id, |oil| oil.reload(&new_dir));
-            match reload_result {
-                Some(Err(e)) => {
-                    self.set_message(EchoLevel::Error, format!("oil navigate: {e}"));
-                }
-                Some(Ok(_)) => {
-                    // Single chokepoint write -- the buffer-
-                    // local mirrors no struct field, it IS the
-                    // state.
-                    self.set_oil_dir(active_id, new_dir);
-                    self.editor.cursor = Position::ZERO;
-                    self.editor.scroll = 0;
-                }
-                None => {}
-            }
-        } else {
-            let path = dir.join(&entry.name);
-            self.do_edit(Some(path), false);
+        let signals = self.editor.do_oil_follow();
+        for s in signals {
+            self.handle_renderer_signal(s);
         }
     }
 
-    /// `-` -- navigate to the parent of the current buffer's dir.
-    /// In oil: compute the parent from `OilDir`, reload at parent,
-    /// rewrite `OilDir`. In file-tree: open oil rooted at the
-    /// parent of the entry under the cursor (or the entry itself
-    /// when it's a directory). Anywhere else: open oil rooted at
-    /// the parent of the active document's path.
     pub(super) fn do_oil_navigate_up(&mut self) {
-        match self.editor.active_buffer {
-            BufferKind::Oil => {
-                let id = self.active_pane_buffer_id();
-                let Some(current_dir) = self.oil_dir_for(id) else {
-                    return;
-                };
-                let Some(parent) = current_dir.parent().map(Path::to_path_buf) else {
-                    // Already at the filesystem root; no-op.
-                    return;
-                };
-                let reload_result = self
-                    .editor
-                    .buffers
-                    .with_oil_mut(id, |oil| oil.reload(&parent));
-                match reload_result {
-                    Some(Err(e)) => {
-                        self.set_message(EchoLevel::Error, format!("oil navigate up: {e}"));
-                    }
-                    Some(Ok(_)) => {
-                        self.set_oil_dir(id, parent);
-                        self.editor.cursor = Position::ZERO;
-                        self.editor.scroll = 0;
-                    }
-                    None => {}
-                }
-            }
-            BufferKind::FileTree => {
-                let id = self.active_pane_buffer_id();
-                // M.3.2.c.5: entries live in the FileTreeEntries
-                // buffer-local; index by the App's cursor line
-                // (same pattern as oil's `do_oil_follow`).
-                let line = self.editor.cursor.line;
-                let dir = self.file_tree_entries_for(id).and_then(|entries| {
-                    crate::file_tree::entry_at_line(&entries, line).map(|e| {
-                        if matches!(
-                            e.kind,
-                            crate::file_tree::FileTreeEntryKind::Directory { .. }
-                        ) {
-                            e.path.clone()
-                        } else {
-                            e.path.parent().unwrap_or(&e.path).to_path_buf()
-                        }
-                    })
-                });
-                self.do_open_oil(dir);
-            }
-            _ => {
-                let dir = self
-                    .editor
-                    .document
-                    .path()
-                    .and_then(|p| p.parent().map(Into::into));
-                self.do_open_oil(dir);
-            }
+        let signals = self.editor.do_oil_navigate_up();
+        for s in signals {
+            self.handle_renderer_signal(s);
         }
     }
 }

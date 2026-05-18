@@ -84,8 +84,11 @@ use lattice_grammar::YankKind;
 // path `lattice_ui_tui::BufferRegistry` available for downstream
 // consumers; `BufferData` + `BufferEntry` stay in scope here for
 // the submodule tests that build entries by hand.
+#[cfg(test)]
 use crate::buffer_registry::{BufferData, BufferEntry};
-use crate::buffers::{BufferFlags, BufferId, BufferKind};
+use crate::buffers::{BufferId, BufferKind};
+#[cfg(test)]
+use crate::buffers::BufferFlags;
 pub use lattice_grammar::ModalState;
 pub use lattice_grammar::command::CommandInvocation;
 use lattice_protocol::position::Position;

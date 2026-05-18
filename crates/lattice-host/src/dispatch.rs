@@ -338,6 +338,16 @@ impl Editor {
                 // snapshot.
                 layer: self.lsp_diagnostics.clone(),
             }),
+            // Slice 3b.0: clone the document-highlights cache
+            // slot's `Arc<ArcSwapOption<...>>`. Cheap (one Arc
+            // bump) and shares the same underlying ArcSwap with
+            // `Editor.lsp_document_highlights`, so the spawned
+            // request task's `.store()` is observable by readers
+            // through `rs.lsp.document_highlights.load()` without
+            // any further publication.
+            lsp: std::sync::Arc::new(LspRenderState {
+                document_highlights: self.lsp_document_highlights.clone(),
+            }),
             ..RenderState::default()
         }
     }
@@ -5699,10 +5709,23 @@ impl Editor {
 
     /// 4.4.e: per-tick `documentHighlight` pump. Fires when the
     /// mode is active and the cursor moved off the previous
-    /// anchor. Phase 5.8.AA.g: hoisted from TUI App.
+    /// anchor.
+    ///
+    /// Phase 5.8.AF.5 / Slice 3b.0: rewritten from the old
+    /// drain-channel shape (`tx → Editor.rx → drain on UI
+    /// thread → cache`) to direct ArcSwap publication. The
+    /// spawned task on the LSP runtime clones the cache's
+    /// `Arc<ArcSwapOption<...>>` and writes results directly
+    /// when the response arrives. No channel, no drain method,
+    /// no UI-thread cache write. Per paramount goal #4.
+    ///
+    /// Cancellation semantics unchanged: each call cancels any
+    /// prior in-flight token; renderers self-validate
+    /// `cache.buffer_id == active_buffer_id` so a result that
+    /// races a buffer switch is naturally ignored at paint time.
     pub fn maybe_request_document_highlight(&mut self) {
         if !self.lsp_document_highlight_mode_enabled_for(self.document_buffer_id) {
-            self.lsp_document_highlights = None;
+            self.lsp_document_highlights.store(None);
             self.last_document_highlight_issue_cursor = None;
             if let Some(token) = self.pending_document_highlight_token.take() {
                 token.cancel();
@@ -5712,10 +5735,10 @@ impl Editor {
         if self.last_document_highlight_issue_cursor == Some(self.cursor) {
             return;
         }
-        if let Some(cache) = self.lsp_document_highlights.as_ref()
+        if let Some(cache) = self.lsp_document_highlights.load().as_ref()
             && cache.buffer_id != self.document_buffer_id
         {
-            self.lsp_document_highlights = None;
+            self.lsp_document_highlights.store(None);
         }
         let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
             return;
@@ -5731,19 +5754,22 @@ impl Editor {
         let buffer_id = self.document_buffer_id;
         let anchor_cursor = self.cursor;
         self.last_document_highlight_issue_cursor = Some(anchor_cursor);
-        let (tx, rx) =
-            tokio::sync::mpsc::unbounded_channel::<lattice_lsp::cache::DocumentHighlightOutcome>();
         let token = lattice_protocol::CancellationToken::new();
-        self.pending_document_highlight_rx = Some(rx);
         self.pending_document_highlight_token = Some(token.clone());
         let lsp = self.lsp.clone();
+        // Phase 5.8.AF.5 / Slice 3b.0: clone the cache slot Arc
+        // into the task. When the response lands, the task
+        // writes directly via `.store()` -- no channel hop, no
+        // UI-thread drain. Renderers read wait-free via the
+        // `RenderState` snapshot which holds the same Arc.
+        let cache_slot = self.lsp_document_highlights.clone();
         lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = lsp.servers_for(&uri);
             let Some(handle) = handles
                 .into_iter()
                 .find(|h| h.capabilities().supports_document_highlight())
             else {
-                let _ = tx.send(lattice_lsp::cache::DocumentHighlightOutcome::Empty { buffer_id });
+                cache_slot.store(None);
                 return;
             };
             let params = lattice_lsp::lsp_types::DocumentHighlightParams {
@@ -5758,15 +5784,16 @@ impl Editor {
             };
             match handle.document_highlight(params, token.clone()).await {
                 Ok(Some(highlights)) if !highlights.is_empty() => {
-                    let _ = tx.send(lattice_lsp::cache::DocumentHighlightOutcome::Items {
-                        buffer_id,
-                        cursor: anchor_cursor,
-                        highlights,
-                    });
+                    cache_slot.store(Some(std::sync::Arc::new(
+                        lattice_lsp::cache::DocumentHighlightCache {
+                            buffer_id,
+                            cursor: anchor_cursor,
+                            highlights,
+                        },
+                    )));
                 }
                 _ => {
-                    let _ =
-                        tx.send(lattice_lsp::cache::DocumentHighlightOutcome::Empty { buffer_id });
+                    cache_slot.store(None);
                 }
             }
         });
@@ -6568,49 +6595,13 @@ impl Editor {
         }
     }
 
-    /// 4.4.e: drain the in-flight `documentHighlight` response.
-    /// Coalesces multiple queued outcomes to the latest one so a
-    /// burst of cursor moves only commits the final response.
-    ///
-    /// Phase 5.8.AA.b: hoisted from
-    /// `lattice-ui-tui::app::lsp::App::drain_pending_document_highlight`.
-    /// Pure cache mutation against `editor.lsp_document_highlights`
-    /// which the GPUI peer's paint_pane already reads (5.8.V).
-    pub fn drain_pending_document_highlight(&mut self) {
-        let Some(mut rx) = self.pending_document_highlight_rx.take() else {
-            return;
-        };
-        let mut latest: Option<lattice_lsp::cache::DocumentHighlightOutcome> = None;
-        while let Ok(outcome) = rx.try_recv() {
-            latest = Some(outcome);
-        }
-        self.pending_document_highlight_rx = Some(rx);
-        let Some(outcome) = latest else {
-            return;
-        };
-        use lattice_lsp::cache::DocumentHighlightOutcome;
-        match outcome {
-            DocumentHighlightOutcome::Items {
-                buffer_id,
-                cursor,
-                highlights,
-            } => {
-                if buffer_id != self.document_buffer_id {
-                    return;
-                }
-                self.lsp_document_highlights = Some(lattice_lsp::cache::DocumentHighlightCache {
-                    buffer_id,
-                    cursor,
-                    highlights,
-                });
-            }
-            DocumentHighlightOutcome::Empty { buffer_id } => {
-                if buffer_id == self.document_buffer_id {
-                    self.lsp_document_highlights = None;
-                }
-            }
-        }
-    }
+    // Phase 5.8.AF.5 / Slice 3b.0: `drain_pending_document_highlight`
+    // retired. The spawned task in `maybe_request_document_highlight`
+    // now writes directly into `lsp_document_highlights`
+    // (`Arc<ArcSwapOption<...>>`) when the LSP response arrives.
+    // No channel, no UI-thread drain. Renderers self-validate
+    // `cache.buffer_id == active_buffer_id` so a result that races
+    // a buffer switch is ignored at paint time.
 
     pub fn run_tick_pending(&mut self) -> Vec<RendererSignal> {
         let mut signals = Vec::new();
@@ -6622,7 +6613,10 @@ impl Editor {
         self.drain_pending_references();
         self.drain_pending_symbols();
         self.drain_pending_inlay_hint();
-        self.drain_pending_document_highlight();
+        // 5.8.AF.5 / Slice 3b.0: `drain_pending_document_highlight`
+        // retired -- writes happen directly from the spawned
+        // request task into `lsp_document_highlights`'s
+        // `ArcSwapOption`.
         self.drain_pending_pull_diagnostics();
         self.drain_pending_folding_range();
         self.drain_pending_semantic_tokens();

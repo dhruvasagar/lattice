@@ -701,7 +701,14 @@ pub struct Editor {
     pub lsp_selection_chain_index: usize,
     /// Cached `textDocument/documentHighlight` for the
     /// active buffer + symbol position.
-    pub lsp_document_highlights: Option<DocumentHighlightCache>,
+    ///
+    /// Phase 5.8.AF.5 / Slice 3b.0: the cache lives behind
+    /// `Arc<ArcSwapOption<...>>` so the spawned task on the LSP
+    /// runtime can store results directly when the response
+    /// arrives — no channel, no UI-thread drain. Renderers read
+    /// wait-free via `editor.render_state.load().lsp.document_highlights.load()`.
+    pub lsp_document_highlights:
+        std::sync::Arc<arc_swap::ArcSwapOption<DocumentHighlightCache>>,
     /// Cursor position at which the most recent
     /// `documentHighlight` request was issued.
     pub last_document_highlight_issue_cursor: Option<ProtoPosition>,
@@ -800,8 +807,10 @@ pub struct Editor {
         Option<tokio::sync::mpsc::UnboundedReceiver<SelectionRangeOutcome>>,
     pub pending_selection_range_token: Option<CancellationToken>,
     pub pending_document_highlight_token: Option<CancellationToken>,
-    pub pending_document_highlight_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<DocumentHighlightOutcome>>,
+    // Phase 5.8.AF.5 / Slice 3b.0: `pending_document_highlight_rx`
+    // retired -- the spawned task now writes directly into
+    // `lsp_document_highlights` (`ArcSwapOption`) when the
+    // response arrives. No channel, no drain.
     pub pending_folding_range_token: Option<CancellationToken>,
     pub pending_folding_range_rx: Option<tokio::sync::mpsc::UnboundedReceiver<FoldingRangeOutcome>>,
     pub pending_document_links_token: Option<CancellationToken>,

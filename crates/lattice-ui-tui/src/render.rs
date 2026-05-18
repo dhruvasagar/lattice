@@ -2592,7 +2592,15 @@ fn compose_visible_lines_inner(
         // Write = red-ish, Text/None = blue-ish). The styling
         // composes with diagnostics + hlsearch + visual so a
         // symbol caught by all four still reads correctly.
-        if let Some(cache) = app.editor.lsp_document_highlights.as_ref()
+        // Phase 5.8.AF.5 / Slice 3b.0: read through the
+        // `RenderState.lsp.document_highlights` ArcSwap. The
+        // spawned LSP request task `.store()`s directly into
+        // the same underlying slot, so this `load_full()` sees
+        // the latest result without any tick-driven drain on
+        // the renderer thread.
+        let rs = app.editor.render_state.load();
+        let dh_guard = rs.lsp.document_highlights.load_full();
+        if let Some(cache) = dh_guard.as_deref()
             && cache.buffer_id == app.editor.document_buffer_id
             && app.lsp_document_highlight_mode_enabled_for(app.editor.document_buffer_id)
         {
@@ -5239,7 +5247,13 @@ mod tests {
         if !app.lsp_document_highlight_mode_enabled_for(app.editor.document_buffer_id) {
             app.toggle_mode_by_name("lsp-document-highlight-mode");
         }
-        app.editor.lsp_document_highlights = Some(crate::app::DocumentHighlightCache {
+        // 5.8.AF.5 / Slice 3b.0: `lsp_document_highlights` is
+        // now `Arc<ArcSwapOption<...>>`. Tests `.store()` the
+        // cache and `publish_render_state()` so renderer reads
+        // via `RenderState` reflect the seeded value (mirrors
+        // the prod path where the spawned task stores + the
+        // ArcSwap is shared with the render-state snapshot).
+        app.editor.lsp_document_highlights.store(Some(std::sync::Arc::new(crate::app::DocumentHighlightCache {
             buffer_id: app.editor.document_buffer_id,
             cursor: lattice_protocol::Position::new(0, 4),
             highlights: vec![
@@ -5270,7 +5284,8 @@ mod tests {
                     kind: Some(lattice_lsp::lsp_types::DocumentHighlightKind::READ),
                 },
             ],
-        });
+        })));
+        app.editor.publish_render_state();
         let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
         // Walk the spans on row 0; expect at least one span
         // with the read tint (rgb(20,50,25)) and one with the
@@ -5516,7 +5531,8 @@ mod tests {
         if app.lsp_document_highlight_mode_enabled_for(app.editor.document_buffer_id) {
             app.toggle_mode_by_name("lsp-document-highlight-mode");
         }
-        app.editor.lsp_document_highlights = Some(crate::app::DocumentHighlightCache {
+        // 5.8.AF.5 / Slice 3b.0: see seed pattern note above.
+        app.editor.lsp_document_highlights.store(Some(std::sync::Arc::new(crate::app::DocumentHighlightCache {
             buffer_id: app.editor.document_buffer_id,
             cursor: lattice_protocol::Position::new(0, 4),
             highlights: vec![lattice_lsp::lsp_types::DocumentHighlight {
@@ -5532,7 +5548,8 @@ mod tests {
                 },
                 kind: None,
             }],
-        });
+        })));
+        app.editor.publish_render_state();
         let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
         let row0 = &lines[0];
         for span in &row0.spans {

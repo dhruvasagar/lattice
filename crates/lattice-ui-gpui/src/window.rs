@@ -567,8 +567,16 @@ impl EditorView {
         // Painted with Catppuccin overlay0 (matches hlsearch
         // intensity — a soft "related symbol" feel).
         let doc_highlights_bg = rgb(0x585b70); // Catppuccin surface2 (soft accent)
+        // Phase 5.8.AF.5 / Slice 3b.0: read through the
+        // `RenderState.lsp.document_highlights` ArcSwap. The
+        // spawned LSP request task `.store()`s directly into the
+        // same underlying slot, so this `load_full()` sees the
+        // latest result without any tick-driven drain on the
+        // renderer thread. Symmetric with the TUI peer.
+        let rs = editor.render_state.load_full();
+        let dh_guard = rs.lsp.document_highlights.load_full();
         let doc_highlight_in_buffer = |line_idx: usize, byte_idx: usize| -> bool {
-            let Some(cache) = editor.lsp_document_highlights.as_ref() else {
+            let Some(cache) = dh_guard.as_deref() else {
                 return false;
             };
             // Only highlight when the cache is for this pane's

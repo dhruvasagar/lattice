@@ -1408,29 +1408,24 @@ impl App {
     /// current cursor against the cache anchor; when they
     /// differ AND the sub-mode is on AND the buffer has an
     /// attached server advertising the capability, fires a
-    /// fresh request (cancelling any in-flight). The drain
-    /// (`drain_pending_document_highlight`) seats the response
-    /// into `lsp_document_highlights`.
+    /// fresh request (cancelling any in-flight).
     ///
-    /// Self-cancelling: the cursor moves faster than the
+    /// Phase 5.8.AF.5 / Slice 3b.0: the spawned LSP request task
+    /// now writes results directly into
+    /// `editor.lsp_document_highlights` (`Arc<ArcSwapOption<...>>`)
+    /// when the response arrives -- no channel, no UI-thread
+    /// drain. Self-cancelling: the cursor moves faster than the
     /// network round-trip during a `/word` search, so the
     /// `CancellationToken` invalidates every in-flight request
-    /// the moment the next one fires. Only the latest response
-    /// ever lands in the cache.
+    /// the moment the next one fires.
     pub fn maybe_request_document_highlight(&mut self) {
         // 5.8.AA.g: migrated to host.
         self.editor.maybe_request_document_highlight();
     }
-
-    /// 4.4.e: drain the in-flight `documentHighlight` response
-    /// (if any). Coalesces multiple queued outcomes to the
-    /// latest one so a burst of cursor moves only commits the
-    /// final response.
-    pub fn drain_pending_document_highlight(&mut self) {
-        // 5.8.AA.b: migrated to
-        // `lattice_host::dispatch::Editor::drain_pending_document_highlight`.
-        self.editor.drain_pending_document_highlight();
-    }
+    // Phase 5.8.AF.5 / Slice 3b.0: `App::drain_pending_document_highlight`
+    // retired -- the spawned request task on the LSP runtime
+    // writes directly into the cache slot's ArcSwap when the
+    // response arrives. No drain needed.
 
     /// 4.4.e: `:lsp-expand-region` -- structural smart-
     /// expansion. If a cached chain still applies (cursor sits

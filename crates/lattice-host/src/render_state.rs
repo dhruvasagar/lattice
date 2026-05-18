@@ -154,12 +154,28 @@ pub struct PanesRenderState {}
 
 /// LSP feature data the renderer reads beyond diagnostics.
 ///
-/// Slice 3a: empty placeholder. Slice 3b populates with hovers,
-/// signature help, document highlights, inlay hints, semantic
-/// tokens, code actions, document links, code lenses — every
-/// LSP-derived overlay the renderer paints.
+/// Slice 3a stubbed this empty. Slice 3b.0 wires the first
+/// drained subsystem: `document_highlights`. Subsequent 3b
+/// sub-slices add the remaining LSP caches one at a time
+/// (hovers, signature help, inlay hints, semantic tokens, code
+/// actions, document links, code lenses) following the same
+/// `Arc<ArcSwapOption<...>>` shape -- the spawned request task
+/// writes directly, the renderer reads wait-free.
 #[derive(Debug, Default, Clone)]
-pub struct LspRenderState {}
+pub struct LspRenderState {
+    /// `textDocument/documentHighlight` cache for the active
+    /// buffer + symbol position. Cloned `Arc` shared with
+    /// `Editor.lsp_document_highlights` so the spawned request
+    /// task's `.store()` is observable by readers without any
+    /// republication of `RenderState` itself.
+    ///
+    /// Renderers read via
+    /// `rs.lsp.document_highlights.load()` and self-validate
+    /// `cache.buffer_id == active_buffer_id` to ignore results
+    /// that raced a buffer switch.
+    pub document_highlights:
+        Arc<arc_swap::ArcSwapOption<lattice_lsp::cache::DocumentHighlightCache>>,
+}
 
 /// Tree-sitter highlights + visible-range cache.
 ///
@@ -311,6 +327,77 @@ mod tests {
             None,
             "lines without a diagnostic return None through the same path"
         );
+    }
+
+    /// Slice 3b.0 template proof: a write into the editor's
+    /// `lsp_document_highlights` `ArcSwapOption` is visible
+    /// through `render_state.lsp.document_highlights.load()`
+    /// without re-publishing `RenderState`.
+    ///
+    /// This is the contract every Slice 3b.* migration relies
+    /// on: the background request task `.store()`s directly
+    /// into the cache slot, and renderer reads through
+    /// `RenderState` see the new value immediately because the
+    /// sub-state's Arc points at the same underlying ArcSwap.
+    #[test]
+    fn document_highlights_substate_reflects_arcswap_writes() {
+        use lattice_lsp::cache::DocumentHighlightCache;
+        use lattice_lsp::lsp_types::{
+            DocumentHighlight, DocumentHighlightKind, Position as LspPosition, Range as LspRange,
+        };
+        use lattice_protocol::position::Position;
+        use std::sync::Arc;
+        let editor = Editor::default();
+        // Force a publication so RenderState.lsp carries a clone
+        // of the editor's lsp_document_highlights ArcSwap.
+        editor.publish_render_state();
+        // Sanity: empty initially.
+        assert!(
+            editor
+                .render_state
+                .load()
+                .lsp
+                .document_highlights
+                .load()
+                .is_none(),
+            "renderer must see None before any task writes"
+        );
+        // Simulate the spawned task's write -- same code path
+        // it executes when the LSP response arrives.
+        editor
+            .lsp_document_highlights
+            .store(Some(Arc::new(DocumentHighlightCache {
+                buffer_id: editor.document_buffer_id,
+                cursor: Position::new(0, 0),
+                highlights: vec![DocumentHighlight {
+                    range: LspRange {
+                        start: LspPosition {
+                            line: 1,
+                            character: 0,
+                        },
+                        end: LspPosition {
+                            line: 1,
+                            character: 5,
+                        },
+                    },
+                    kind: Some(DocumentHighlightKind::READ),
+                }],
+            })));
+        // Renderer reads through RenderState -- no re-publish
+        // needed. The sub-state's Arc points at the same
+        // ArcSwap the task wrote to.
+        let rs = editor.render_state.load();
+        let cache = rs
+            .lsp
+            .document_highlights
+            .load_full()
+            .expect("post-store, renderer must see the cache");
+        assert_eq!(
+            cache.highlights.len(),
+            1,
+            "renderer must see the highlight the task stored"
+        );
+        assert_eq!(cache.highlights[0].range.start.line, 1);
     }
 
     /// Identity-preservation contract for unrelated sub-states.

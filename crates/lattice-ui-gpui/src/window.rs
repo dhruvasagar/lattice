@@ -118,6 +118,35 @@ fn style_at(spans: &[lattice_syntax::StyledSpan], byte: usize) -> SyntaxStyle {
     SyntaxStyle::Default
 }
 
+/// Catppuccin-palette glyph for a diagnostic severity. Matches
+/// the TUI peer's gutter-sign convention (configurable there via
+/// `theme.diagnostic_*_glyph`; the GPUI peer hardcodes the
+/// Catppuccin v1 defaults until `GpuiTheme` grows the same fields).
+///
+/// Phase 5.8.I: gutter signs visible. The TUI peer paints these
+/// in `severity_for_line` + `theme::diagnostic_glyph_and_style`;
+/// the GPUI peer mirrors the shape here.
+fn diagnostic_glyph(severity: lattice_lsp::DiagnosticSeverity) -> char {
+    match severity {
+        lattice_lsp::DiagnosticSeverity::ERROR => '●',
+        lattice_lsp::DiagnosticSeverity::WARNING => '▲',
+        lattice_lsp::DiagnosticSeverity::INFORMATION => '◆',
+        lattice_lsp::DiagnosticSeverity::HINT => '·',
+        _ => '·',
+    }
+}
+
+/// Catppuccin Mocha hex color for a diagnostic severity.
+fn diagnostic_color(severity: lattice_lsp::DiagnosticSeverity) -> u32 {
+    match severity {
+        lattice_lsp::DiagnosticSeverity::ERROR => 0xf38ba8, // red
+        lattice_lsp::DiagnosticSeverity::WARNING => 0xf9e2af, // yellow
+        lattice_lsp::DiagnosticSeverity::INFORMATION => 0x89b4fa, // blue
+        lattice_lsp::DiagnosticSeverity::HINT => 0x9399b2,  // overlay2
+        _ => 0x9399b2,
+    }
+}
+
 /// Vim-style cursor shape derived from [`ModalState`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CursorShape {
@@ -302,7 +331,9 @@ impl EditorView {
 
         let total_lines = raw_lines.len().max(1);
         let gutter_width = total_lines.to_string().len();
-        let gutter_pad_len = gutter_width + 1;
+        // 5.8.I: gutter pad = 1 (severity sign column) + N (line
+        // number width) + 1 (trailing space separator).
+        let gutter_pad_len = 1 + gutter_width + 1;
         let gutter_normal = rgb(0x9399b2); // Catppuccin overlay2.
 
         let style_cursor_cell = |c: &str| -> gpui::Div {
@@ -315,14 +346,40 @@ impl EditorView {
             }
         };
 
+        // 5.8.I: per-line severity lookup. URI for this pane's
+        // buffer comes from `editor.buffer_uris` (populated when
+        // LSP attaches). `None` means: unsaved scratch, no LSP
+        // attachment, or LSP-mode disabled for this buffer. The
+        // gutter then renders a blank sign column (one space) so
+        // the line-number alignment stays stable regardless of
+        // whether diagnostics are present.
+        let uri = editor.buffer_uris.get(&pane.buffer_id);
+        let line_severity = |line_idx: u32| -> Option<lattice_lsp::DiagnosticSeverity> {
+            uri.and_then(|u| editor.lsp_diagnostics.line_severity(u, line_idx))
+        };
+
         let make_gutter = |line_idx: usize, is_cursor_line: bool| -> gpui::Div {
+            // 5.8.I: severity sign cell + line-number cell.
+            // Painted as two children of a flex_row so each can
+            // carry its own colour.
+            let sev = line_severity(line_idx as u32);
+            let sign_cell: gpui::Div = match sev {
+                Some(s) => div()
+                    .text_color(rgb(diagnostic_color(s)))
+                    .child(diagnostic_glyph(s).to_string()),
+                None => div().child(" ".to_string()),
+            };
             let label = format!("{:>width$} ", line_idx + 1, width = gutter_width);
-            let color = if is_cursor_line && is_active {
+            let label_color = if is_cursor_line && is_active {
                 cursor_bg
             } else {
                 gutter_normal
             };
-            div().text_color(color).child(label)
+            div()
+                .flex()
+                .flex_row()
+                .child(sign_cell)
+                .child(div().text_color(label_color).child(label))
         };
 
         let mut rows: Vec<gpui::Div> = raw_lines

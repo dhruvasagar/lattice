@@ -3542,6 +3542,7 @@ dependencies = [
  "lattice-grammar",
  "lattice-help",
  "lattice-host",
+ "lattice-lsp",
  "lattice-mode",
  "lattice-syntax",
  "tracing",

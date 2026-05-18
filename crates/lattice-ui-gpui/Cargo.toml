@@ -31,6 +31,10 @@ lattice-help = { path = "../lattice-help" }
 # `Syntax::highlight_lines` and mapping `lattice_syntax::Style`
 # variants to a Catppuccin palette.
 lattice-syntax = { path = "../lattice-syntax" }
+# 5.8.I: gutter renders LSP diagnostic severity signs (●/▲/◆/·).
+# Window calls `editor.lsp_diagnostics.line_severity(uri, line)` and
+# maps `lattice_lsp::DiagnosticSeverity` to glyph + Catppuccin colour.
+lattice-lsp = { path = "../lattice-lsp" }
 
 # Zed's GPU-accelerated UI framework. Gated behind the `window`
 # feature so the scaffold types + tests build on every host

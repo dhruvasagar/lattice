@@ -722,6 +722,10 @@ impl GpuiApp {
             // Renderer-coupled effects whose body lives host-side.
             Effect::QuitEditor { force } => self.editor.do_quit(force),
             Effect::OpenBuffer { path, force } => self.apply_open_buffer(path, force),
+            // Phase 5.8.AD.3: `:w` save with full LSP fan-out
+            // (BeforeSave / willSave / willSaveWaitUntil /
+            // didSave / didCreateFiles) is now host-resident.
+            Effect::SaveBuffer { path } => self.editor.do_write(path),
             Effect::OpenBufferPicker => {
                 let signals = self.editor.do_open_buffer_picker();
                 for s in signals {

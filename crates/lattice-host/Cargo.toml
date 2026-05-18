@@ -62,7 +62,7 @@ lattice-runtime = { path = "../lattice-runtime" }
 # Phase 5.B.11: `Editor` holds typed `tokio::sync::mpsc`
 # receivers (message events; later: LSP request channels).
 # Naming those receiver types requires tokio as a direct dep.
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["sync", "time", "macros", "rt"] }
 # Phase 5.B.18 / refactor #70: LSP request channels carry
 # `lsp_types::*` values (CodeLens, ColorPresentation, Range,
 # Location, MessageActionItem). These are reached through

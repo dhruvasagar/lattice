@@ -28,19 +28,17 @@
 //! - `set_viewport_height`, `pending_redraw` handling,
 //!   per-loop-iteration state hooks.
 
-use lattice_core::{CoreError, Document};
-use lattice_protocol::Event;
+use lattice_core::Document;
 use lattice_protocol::position::Position;
-use lattice_runtime::{RuntimeError, block_on};
+use lattice_runtime::RuntimeError;
 // 5.8.AA.k: `do_edit` body moved host-side; the `Lang` / `Syntax`
 // imports here are referenced only by `#[cfg(test)]` fixtures
 // below. `spawn_document` follows do_edit and isn't needed
 // elsewhere in this module.
 #[allow(unused_imports)]
 use lattice_syntax::{Lang, Syntax};
-use std::time::Duration;
 
-use super::{App, BufferId, EchoLevel, PositionSource};
+use super::{App, BufferId, PositionSource};
 // 5.8.AA.k: BufferEntry / BufferData / DocumentEntry consumed by
 // `do_edit` (now host); BufferFlags ditto. Kept here under
 // `#[allow]` for `#[cfg(test)]` fixtures further down the file.
@@ -186,48 +184,9 @@ impl App {
     /// save_blocking / save_as_blocking against the document
     /// actor.
     pub(super) fn do_write(&mut self, path: Option<std::path::PathBuf>) {
-        if matches!(self.editor.active_buffer, BufferKind::Oil) {
-            let oil_id = self.active_pane_buffer_id();
-            // M.3.2.c.5: dir lives in the OilDir buffer-local
-            // (no struct mirror). Read it once and pass into
-            // `OilBuffer::apply` -- the apply operation walks
-            // disk relative to this path.
-            let Some(dir) = self.oil_dir_for(oil_id) else {
-                self.set_message(
-                    EchoLevel::Error,
-                    "oil apply: no OilDir buffer-local seeded".to_string(),
-                );
-                return;
-            };
-            let dir_display = dir.display().to_string();
-            let result = self
-                .editor
-                .buffers
-                .with_oil_mut(oil_id, |oil| oil.apply(&dir));
-            if let Some(r) = result {
-                match r {
-                    Ok(()) => self.set_message(
-                        EchoLevel::Info,
-                        format!("oil: applied changes in {dir_display}"),
-                    ),
-                    Err(e) => self.set_message(EchoLevel::Error, format!("oil apply error: {e}")),
-                }
-            }
-            return;
-        }
-        let result: Result<String, RuntimeError> = match path {
-            Some(p) => self
-                .save_as_blocking(p.clone())
-                .map(|()| p.display().to_string()),
-            None => self.save_blocking().map(|p| p.display().to_string()),
-        };
-        match result {
-            Ok(displayed) => self.set_message(EchoLevel::Info, format!("\"{displayed}\" written")),
-            Err(RuntimeError::Core(CoreError::NoPath)) => {
-                self.set_message(EchoLevel::Error, "no file name (use :w <path>)".to_string());
-            }
-            Err(e) => self.set_message(EchoLevel::Error, format!("write error: {e}")),
-        }
+        // Phase 5.8.AD.3: body migrated to
+        // `lattice_host::dispatch::Editor::do_write`.
+        self.editor.do_write(path);
     }
 
     /// `:q[uit]` -- vim-style window close. With multiple panes
@@ -642,110 +601,17 @@ impl App {
     }
 
     pub(super) fn save_blocking(&mut self) -> Result<std::path::PathBuf, RuntimeError> {
-        // BeforeSave fires before the actor commits, so a future
-        // veto-class handler (§5.10.2) can format / sanitize the
-        // buffer before it hits disk. v1 is observation-only, so
-        // BeforeSave runs only for telemetry / autocmd compatibility.
-        let snap = self.editor.document.snapshot();
-        if let Some(path) = snap.path.as_ref() {
-            self.editor.event_bus.publish(Event::BeforeSave {
-                id: snap.id,
-                path: (**path).clone(),
-            });
-        }
-        // 4.4.m: detect first-save BEFORE block_on triggers the
-        // write. If the resolved path doesn't yet exist on disk,
-        // the post-save fan-out should also emit
-        // `workspace/didCreateFiles` so servers can update
-        // module trees / import graphs / etc. without waiting
-        // for a file-watcher round-trip.
-        let pre_save_existed = snap.path.as_ref().map(|p| p.exists()).unwrap_or(false);
-        // LSP textDocument/willSave (Phase 4.3) fan-out: every
-        // server attached to the buffer that advertises the
-        // notification gets a heads-up before the disk write.
-        // Manual reason today (`TextDocumentSaveReason::Manual`).
-        self.fire_will_save_notifications();
-        // willSaveWaitUntil block-on-response (Phase 4.3).
-        // Each server advertising the request returns a Vec<
-        // TextEdit> the editor applies pre-save. Format-on-
-        // save flows through here when the server emits one.
-        // Bounded by a 500ms timeout so a buggy server can't
-        // hang the save.
-        self.run_will_save_wait_until_blocking();
-        let result = block_on(self.editor.document.save());
-        if let Ok(path) = result.as_ref() {
-            self.editor.event_bus.publish(Event::DocumentSaved {
-                id: snap.id,
-                path: path.clone(),
-            });
-            // Fire didSave to every server that wants it.
-            self.fire_did_save_notifications();
-            // 4.4.m: fire `workspace/didCreateFiles` when the
-            // save just created the path. willCreateFiles
-            // (pre-create blocking edits) is strong-reason
-            // deferred -- it requires applying the returned
-            // WorkspaceEdit inside the same atomic save
-            // window, which the format-on-save pipeline could
-            // host but isn't wired today.
-            if !pre_save_existed {
-                self.fire_did_create_files_notifications(path);
-            }
-        }
-        result
+        // Phase 5.8.AD.3: body migrated to
+        // `lattice_host::dispatch::Editor::save_blocking` along
+        // with the full BeforeSave / willSave / willSaveWaitUntil /
+        // didSave / didCreateFiles fan-out chain.
+        self.editor.save_blocking()
     }
 
-    /// 4.4.m: fan out `workspace/didCreateFiles` to every
-    /// attached server that advertises interest. The wire
-    /// wrapper accepts any URI list; in this single-file
-    /// save path the batch is exactly one entry. Servers
-    /// without registered filters or with non-matching
-    /// filters still receive the notification (server-side
-    /// filter logic isn't echoed on the client side -- the
-    /// server is the source of truth on whether to act).
-    /// Future enhancement: filter URIs against
-    /// `Capabilities::file_operations_options(DidCreate)`
-    /// pre-emptively to avoid sending notifications the
-    /// server will discard.
-    fn fire_did_create_files_notifications(&self, path: &std::path::Path) {
-        let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id) else {
-            return;
-        };
-        let handles = self.editor.lsp.servers_for(uri);
-        if handles.is_empty() {
-            return;
-        }
-        let uri_string = lattice_lsp::actor::uri_from_path(path).as_str().to_string();
-        let params = lattice_lsp::lsp_types::CreateFilesParams {
-            files: vec![lattice_lsp::lsp_types::FileCreate { uri: uri_string }],
-        };
-        for h in handles {
-            if !h.capabilities().supports_did_create_files() {
-                continue;
-            }
-            let _ = h.did_create_files(params.clone());
-        }
-    }
-
-    /// Walk the buffer's attached servers; fire
-    /// `textDocument/willSave` to each that advertises it.
-    /// Cheap on no-LSP buffers (the URI lookup short-circuits).
-    /// Notification only -- responses, if any, drop on the floor.
-    fn fire_will_save_notifications(&self) {
-        let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id) else {
-            return;
-        };
-        let uri = uri.clone();
-        let handles = self.editor.lsp.servers_for(&uri);
-        let params = lattice_lsp::lsp_types::WillSaveTextDocumentParams {
-            text_document: lattice_lsp::lsp_types::TextDocumentIdentifier { uri },
-            reason: lattice_lsp::lsp_types::TextDocumentSaveReason::MANUAL,
-        };
-        for h in handles {
-            if h.capabilities().wants_will_save() {
-                let _ = h.will_save(params.clone());
-            }
-        }
-    }
+    // Phase 5.8.AD.3: `fire_did_create_files_notifications` +
+    // `fire_will_save_notifications` migrated to
+    // `lattice_host::dispatch::Editor` (private helpers under
+    // `save_blocking`). No App-side callers remain.
 
     /// Run `textDocument/willSaveWaitUntil` against every
     /// server advertising the request; collect their TextEdits
@@ -762,129 +628,15 @@ impl App {
     /// the bounded-parallel fix covers the audit's actual
     /// concern (1.5s+ stalls for multi-server saves) without
     /// the behavioural change of fully-async save.
-    fn run_will_save_wait_until_blocking(&mut self) {
-        let Some(uri) = self
-            .editor
-            .buffer_uris
-            .get(&self.editor.document_buffer_id)
-            .cloned()
-        else {
-            return;
-        };
-        let handles = self.editor.lsp.servers_for(&uri);
-        let interested: Vec<lattice_lsp::ServerHandle> = handles
-            .into_iter()
-            .filter(|h| h.capabilities().wants_will_save_wait_until())
-            .collect();
-        if interested.is_empty() {
-            return;
-        }
-        let params = lattice_lsp::lsp_types::WillSaveTextDocumentParams {
-            text_document: lattice_lsp::lsp_types::TextDocumentIdentifier { uri },
-            reason: lattice_lsp::lsp_types::TextDocumentSaveReason::MANUAL,
-        };
-        // One cancellation token per request; on overall
-        // timeout we cancel every in-flight one so slow servers
-        // stop wasting the LSP runtime's worker time.
-        let tokens: Vec<lattice_protocol::CancellationToken> = (0..interested.len())
-            .map(|_| lattice_protocol::CancellationToken::new())
-            .collect();
-        let pending: Vec<_> = interested
-            .iter()
-            .zip(tokens.iter())
-            .map(|(handle, token)| handle.will_save_wait_until(params.clone(), token.clone()))
-            .collect();
-        let cancel_tokens = tokens.clone();
-        let all_edits: Vec<lattice_lsp::lsp_types::TextEdit> = block_on(async move {
-            // Spawn each request onto a `JoinSet` so they run
-            // concurrently on the LSP runtime. The shared
-            // 500ms deadline below caps the *total* UI-thread
-            // block.
-            let mut set: tokio::task::JoinSet<Vec<lattice_lsp::lsp_types::TextEdit>> =
-                tokio::task::JoinSet::new();
-            for fut in pending {
-                set.spawn(async move { fut.await.ok().flatten().unwrap_or_default() });
-            }
-            let deadline = tokio::time::sleep(Duration::from_millis(500));
-            tokio::pin!(deadline);
-            let mut acc: Vec<lattice_lsp::lsp_types::TextEdit> = Vec::new();
-            loop {
-                tokio::select! {
-                    next = set.join_next() => match next {
-                        Some(Ok(edits)) => acc.extend(edits),
-                        Some(Err(_)) => {} // task panicked; skip
-                        None => break,     // every task done
-                    },
-                    _ = &mut deadline => {
-                        // Bound the total UI-thread block at
-                        // 500ms; any server still in flight
-                        // gets cancelled so its response (if it
-                        // eventually arrives) doesn't try to
-                        // apply edits to a post-save buffer.
-                        for t in &cancel_tokens { t.cancel(); }
-                        set.abort_all();
-                        break;
-                    }
-                }
-            }
-            acc
-        });
-        if !all_edits.is_empty() {
-            // Apply pre-save edits as one undo unit. A failed
-            // apply echoes but doesn't abort the save -- the
-            // user's data still hits disk.
-            if let Err(e) = self.apply_lsp_text_edits(all_edits) {
-                self.set_message(
-                    EchoLevel::Warn,
-                    format!("willSaveWaitUntil: apply failed: {e}"),
-                );
-            }
-        }
-    }
-
-    /// Walk the buffer's attached servers; fire
-    /// `textDocument/didSave` to each that wants it. When the
-    /// server requested `includeText`, attach the post-save
-    /// text from the rope.
-    fn fire_did_save_notifications(&self) {
-        let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id) else {
-            return;
-        };
-        let uri = uri.clone();
-        let handles = self.editor.lsp.servers_for(&uri);
-        let snap = self.editor.document.snapshot();
-        let full_text = snap.buffer.as_string();
-        for h in handles {
-            let caps = h.capabilities();
-            if !caps.wants_did_save() {
-                continue;
-            }
-            let text = if caps.did_save_include_text() {
-                Some(full_text.clone())
-            } else {
-                None
-            };
-            let params = lattice_lsp::lsp_types::DidSaveTextDocumentParams {
-                text_document: lattice_lsp::lsp_types::TextDocumentIdentifier { uri: uri.clone() },
-                text,
-            };
-            let _ = h.did_save(params);
-        }
-    }
+    // Phase 5.8.AD.3: `run_will_save_wait_until_blocking` +
+    // `fire_did_save_notifications` migrated to
+    // `lattice_host::dispatch::Editor` (private helpers under
+    // `save_blocking`).
 
     pub(super) fn save_as_blocking(&self, path: std::path::PathBuf) -> Result<(), RuntimeError> {
-        let snap = self.editor.document.snapshot();
-        self.editor.event_bus.publish(Event::BeforeSave {
-            id: snap.id,
-            path: path.clone(),
-        });
-        let result = block_on(self.editor.document.save_as(path.clone()));
-        if result.is_ok() {
-            self.editor
-                .event_bus
-                .publish(Event::DocumentSaved { id: snap.id, path });
-        }
-        result
+        // Phase 5.8.AD.3: body migrated to
+        // `lattice_host::dispatch::Editor::save_as_blocking`.
+        self.editor.save_as_blocking(path)
     }
 
     // 5.5.G.4: `do_redraw_screen` migrated to

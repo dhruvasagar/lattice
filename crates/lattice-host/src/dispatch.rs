@@ -10792,6 +10792,240 @@ impl Editor {
         self.should_quit = true;
     }
 
+    /// `:w[rite] [path]` -- save the active buffer to disk. Oil
+    /// buffers route through `OilBuffer::apply` (diff-and-apply
+    /// filesystem ops); document buffers route through
+    /// `save_blocking` / `save_as_blocking` against the document
+    /// actor. Phase 5.8.AD.3: hoisted from TUI App.
+    pub fn do_write(&mut self, path: Option<std::path::PathBuf>) {
+        if matches!(self.active_buffer, BufferKind::Oil) {
+            let oil_id = self.active_pane_buffer_id();
+            let Some(dir) = self.oil_dir_for(oil_id) else {
+                self.set_message(
+                    EchoLevel::Error,
+                    "oil apply: no OilDir buffer-local seeded".to_string(),
+                );
+                return;
+            };
+            let dir_display = dir.display().to_string();
+            let result = self
+                .buffers
+                .with_oil_mut(oil_id, |oil| oil.apply(&dir));
+            if let Some(r) = result {
+                match r {
+                    Ok(()) => self.set_message(
+                        EchoLevel::Info,
+                        format!("oil: applied changes in {dir_display}"),
+                    ),
+                    Err(e) => self.set_message(EchoLevel::Error, format!("oil apply error: {e}")),
+                }
+            }
+            return;
+        }
+        let result: Result<String, lattice_runtime::RuntimeError> = match path {
+            Some(p) => self
+                .save_as_blocking(p.clone())
+                .map(|()| p.display().to_string()),
+            None => self.save_blocking().map(|p| p.display().to_string()),
+        };
+        match result {
+            Ok(displayed) => self.set_message(EchoLevel::Info, format!("\"{displayed}\" written")),
+            Err(lattice_runtime::RuntimeError::Core(lattice_core::CoreError::NoPath)) => {
+                self.set_message(EchoLevel::Error, "no file name (use :w <path>)".to_string());
+            }
+            Err(e) => self.set_message(EchoLevel::Error, format!("write error: {e}")),
+        }
+    }
+
+    /// Synchronous save of the active document. Phase 5.8.AD.3:
+    /// hoisted from TUI App with the full LSP fan-out chain
+    /// (BeforeSave / willSave / willSaveWaitUntil / didSave /
+    /// didCreateFiles) intact.
+    pub fn save_blocking(&mut self) -> Result<std::path::PathBuf, lattice_runtime::RuntimeError> {
+        let snap = self.document.snapshot();
+        if let Some(path) = snap.path.as_ref() {
+            self.event_bus.publish(Event::BeforeSave {
+                id: snap.id,
+                path: (**path).clone(),
+            });
+        }
+        let pre_save_existed = snap.path.as_ref().map(|p| p.exists()).unwrap_or(false);
+        self.fire_will_save_notifications();
+        self.run_will_save_wait_until_blocking();
+        let result = lattice_runtime::block_on(self.document.save());
+        if let Ok(path) = result.as_ref() {
+            self.event_bus.publish(Event::DocumentSaved {
+                id: snap.id,
+                path: path.clone(),
+            });
+            self.fire_did_save_notifications();
+            if !pre_save_existed {
+                self.fire_did_create_files_notifications(path);
+            }
+        }
+        result
+    }
+
+    /// `:w <path>` -- save the active document under a new path.
+    /// Phase 5.8.AD.3: hoisted from TUI App.
+    pub fn save_as_blocking(
+        &self,
+        path: std::path::PathBuf,
+    ) -> Result<(), lattice_runtime::RuntimeError> {
+        let snap = self.document.snapshot();
+        self.event_bus.publish(Event::BeforeSave {
+            id: snap.id,
+            path: path.clone(),
+        });
+        let result = lattice_runtime::block_on(self.document.save_as(path.clone()));
+        if result.is_ok() {
+            self.event_bus
+                .publish(Event::DocumentSaved { id: snap.id, path });
+        }
+        result
+    }
+
+    /// Fan `textDocument/willSave` (notification) to every
+    /// server attached to the active document that wants it.
+    /// Phase 5.8.AD.3.
+    fn fire_will_save_notifications(&self) {
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id) else {
+            return;
+        };
+        let uri = uri.clone();
+        let handles = self.lsp.servers_for(&uri);
+        let params = lattice_lsp::lsp_types::WillSaveTextDocumentParams {
+            text_document: lattice_lsp::lsp_types::TextDocumentIdentifier { uri },
+            reason: lattice_lsp::lsp_types::TextDocumentSaveReason::MANUAL,
+        };
+        for h in handles {
+            if h.capabilities().wants_will_save() {
+                let _ = h.will_save(params.clone());
+            }
+        }
+    }
+
+    /// Run `textDocument/willSaveWaitUntil` concurrently across
+    /// every interested server under a bounded 500ms budget;
+    /// apply collected TextEdits pre-save. Phase 5.8.AD.3.
+    fn run_will_save_wait_until_blocking(&mut self) {
+        let Some(uri) = self
+            .buffer_uris
+            .get(&self.document_buffer_id)
+            .cloned()
+        else {
+            return;
+        };
+        let handles = self.lsp.servers_for(&uri);
+        let interested: Vec<lattice_lsp::ServerHandle> = handles
+            .into_iter()
+            .filter(|h| h.capabilities().wants_will_save_wait_until())
+            .collect();
+        if interested.is_empty() {
+            return;
+        }
+        let params = lattice_lsp::lsp_types::WillSaveTextDocumentParams {
+            text_document: lattice_lsp::lsp_types::TextDocumentIdentifier { uri },
+            reason: lattice_lsp::lsp_types::TextDocumentSaveReason::MANUAL,
+        };
+        let tokens: Vec<lattice_protocol::CancellationToken> = (0..interested.len())
+            .map(|_| lattice_protocol::CancellationToken::new())
+            .collect();
+        let pending: Vec<_> = interested
+            .iter()
+            .zip(tokens.iter())
+            .map(|(handle, token)| handle.will_save_wait_until(params.clone(), token.clone()))
+            .collect();
+        let cancel_tokens = tokens.clone();
+        let all_edits: Vec<lattice_lsp::lsp_types::TextEdit> =
+            lattice_runtime::block_on(async move {
+                let mut set: tokio::task::JoinSet<Vec<lattice_lsp::lsp_types::TextEdit>> =
+                    tokio::task::JoinSet::new();
+                for fut in pending {
+                    set.spawn(async move { fut.await.ok().flatten().unwrap_or_default() });
+                }
+                let deadline = tokio::time::sleep(std::time::Duration::from_millis(500));
+                tokio::pin!(deadline);
+                let mut acc: Vec<lattice_lsp::lsp_types::TextEdit> = Vec::new();
+                loop {
+                    tokio::select! {
+                        next = set.join_next() => match next {
+                            Some(Ok(edits)) => acc.extend(edits),
+                            Some(Err(_)) => {}
+                            None => break,
+                        },
+                        _ = &mut deadline => {
+                            for t in &cancel_tokens { t.cancel(); }
+                            set.abort_all();
+                            break;
+                        }
+                    }
+                }
+                acc
+            });
+        if !all_edits.is_empty()
+            && let Err(e) = self.apply_lsp_text_edits(all_edits)
+        {
+            self.set_message(
+                EchoLevel::Warn,
+                format!("willSaveWaitUntil: apply failed: {e}"),
+            );
+        }
+    }
+
+    /// Fan `textDocument/didSave` to every interested server.
+    /// `includeText` is honoured per the server's capability
+    /// declaration. Phase 5.8.AD.3.
+    fn fire_did_save_notifications(&self) {
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id) else {
+            return;
+        };
+        let uri = uri.clone();
+        let handles = self.lsp.servers_for(&uri);
+        let snap = self.document.snapshot();
+        let full_text = snap.buffer.as_string();
+        for h in handles {
+            let caps = h.capabilities();
+            if !caps.wants_did_save() {
+                continue;
+            }
+            let text = if caps.did_save_include_text() {
+                Some(full_text.clone())
+            } else {
+                None
+            };
+            let params = lattice_lsp::lsp_types::DidSaveTextDocumentParams {
+                text_document: lattice_lsp::lsp_types::TextDocumentIdentifier {
+                    uri: uri.clone(),
+                },
+                text,
+            };
+            let _ = h.did_save(params);
+        }
+    }
+
+    /// Fan `workspace/didCreateFiles` to every interested server
+    /// when the save just created the file on disk. Phase 5.8.AD.3.
+    fn fire_did_create_files_notifications(&self, path: &std::path::Path) {
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id) else {
+            return;
+        };
+        let handles = self.lsp.servers_for(uri);
+        if handles.is_empty() {
+            return;
+        }
+        let uri_string = lattice_lsp::actor::uri_from_path(path).as_str().to_string();
+        let params = lattice_lsp::lsp_types::CreateFilesParams {
+            files: vec![lattice_lsp::lsp_types::FileCreate { uri: uri_string }],
+        };
+        for h in handles {
+            if !h.capabilities().supports_did_create_files() {
+                continue;
+            }
+            let _ = h.did_create_files(params.clone());
+        }
+    }
+
     /// Minimal `Action::PickerDismiss` -- close the picker and,
     /// if a buffer-switch picker was previewing, restore the
     /// active pane to whatever buffer it was on at picker-open.

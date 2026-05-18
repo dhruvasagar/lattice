@@ -337,15 +337,28 @@ impl EditorView {
         let cursor_fg = rgb(theme.cursor_foreground);
         let cursor_bg = rgb(theme.cursor_background);
 
-        // Highlights: active pane reads the live cache. Inactive
-        // panes show plain text for v1 (the host's
-        // `refresh_pane_highlights` populates `pane_highlights`
-        // keyed by pane index; wiring those into the GPUI peer is
-        // a follow-up slice).
-        let highlights: &[Vec<lattice_syntax::StyledSpan>] = if is_active {
+        // Highlights:
+        //   - active pane: live cache (`visible_highlights`),
+        //     refreshed at render entry.
+        //   - inactive pane sharing the active doc: live cache
+        //     too — one parse covers both panes' visible windows.
+        //   - inactive pane with a *different* doc: per-pane cache
+        //     (`pane_highlights[pane_idx]`), refreshed at render
+        //     entry by `refresh_pane_highlights`.
+        let active_doc_id = if matches!(editor.active_buffer, lattice_core::BufferKind::Document) {
+            Some(editor.document_buffer_id)
+        } else {
+            None
+        };
+        let same_doc_as_active = Some(pane.buffer_id) == active_doc_id;
+        let highlights: &[Vec<lattice_syntax::StyledSpan>] = if is_active || same_doc_as_active {
             editor.visible_highlights.as_slice()
         } else {
-            &[]
+            editor
+                .pane_highlights
+                .get(&pane_idx)
+                .map(Vec::as_slice)
+                .unwrap_or(&[])
         };
 
         let total_lines = raw_lines.len().max(1);
@@ -702,6 +715,12 @@ impl Render for EditorView {
         // `highlight_lines` call this replaces ran ~178µs at 80
         // lines unconditionally.
         self.app.refresh_highlights();
+        // 5.8.R: rebuild the per-pane cache for inactive Document
+        // panes whose buffer differs from the active pane's. The
+        // host method handles the same-doc short-circuit + reparse
+        // gating; this peer just makes the call so paint_pane can
+        // read `editor.pane_highlights[idx]` for the inactive case.
+        self.app.editor.refresh_pane_highlights();
         let modal = self.app.editor.modal;
 
         let modal_label = match modal {

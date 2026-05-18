@@ -33,7 +33,7 @@
 
 use lattice_syntax::StyledSpan;
 
-use super::{App, BufferId, BufferKind, folds};
+use super::{App, folds};
 
 /// Cache key for `visible_highlights`. The renderer paints
 /// the spans every frame; the actual `highlight_lines`
@@ -187,79 +187,13 @@ impl App {
     /// document also fall through to `visible_highlights` -- a
     /// single parse covers both panes.
     pub fn refresh_pane_highlights(&mut self) {
-        self.editor.pane_highlights.clear();
-        let active_idx = self.editor.pane_tree.active_index();
-        let active_doc_id = if matches!(self.editor.active_buffer, BufferKind::Document) {
-            Some(self.editor.document_buffer_id)
-        } else {
-            None
-        };
-        // Collect (pane_idx, doc_id, scroll, height) for each
-        // inactive Document pane that doesn't share doc with the
-        // active pane.
-        let pending: Vec<(usize, BufferId, u32, u32)> = self
-            .editor
-            .pane_tree
-            .leaves()
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, pane)| {
-                if idx == active_idx {
-                    return None;
-                }
-                if !matches!(pane.buffer, BufferKind::Document) {
-                    return None;
-                }
-                if Some(pane.buffer_id) == active_doc_id {
-                    return None;
-                }
-                // Use the pane's own viewport slice (the per-pane
-                // status line eats one row, so subtract; for v1
-                // we approximate using app.editor.viewport_height).
-                let h = self.editor.viewport_height;
-                Some((idx, pane.buffer_id, pane.scroll, h))
-            })
-            .collect();
-        for (idx, doc_id, scroll, height) in pending {
-            // M.3.2.c.4 / .c.5: read the syntax handle through
-            // the locals-backed accessor (clone is a cheap Arc
-            // bump). Active / inactive documents resolve through
-            // the same path; on .c.5 the entry no longer carries
-            // mode-state at all.
-            let syntax = self.document_syntax_for(doc_id).cloned();
-            let Some(syntax) = syntax else {
-                continue;
-            };
-            let last_parsed = self.document_last_parsed_text_version_for(doc_id);
-            let last_synced = self.document_last_synced_syntax_version_for(doc_id);
-            let Some(handle) = self.editor.buffers.document_handle(doc_id) else {
-                continue;
-            };
-            let snap = handle.snapshot();
-            let tv = snap.version;
-            if tv != last_parsed {
-                // Slice B.2 part 2: inactive-pane path doesn't
-                // yet accumulate per-document edit deltas (the
-                // active-pane path does, on
-                // App.editor.pending_syntax_edits). For now we send
-                // empty edits which routes the worker to full
-                // reparse. The inactive-pane path is rare
-                // (only fires when pane shows a different
-                // document) so the perf cost stays bounded.
-                syntax.request_reparse(last_synced, tv, snap.buffer.clone(), Vec::new());
-                // M.3.2.c.5: write the new baseline back into
-                // buffer_locals so subsequent reads see it.
-                let locals = self.editor.buffer_locals.entry(doc_id).or_default();
-                locals.insert(crate::modes::DocumentLastParsedTextVersion(tv));
-                locals.insert(crate::modes::DocumentLastSyncedSyntaxVersion(tv));
-            }
-            let end = scroll.saturating_add(height);
-            let spans = syntax
-                .snapshot()
-                .highlight_lines(scroll, end)
-                .unwrap_or_default();
-            self.editor.pane_highlights.insert(idx, spans);
-        }
+        // 5.8.R: cache-rebuild body migrated to
+        // `lattice_host::editor::Editor::refresh_pane_highlights`
+        // so the GPUI peer reaches the same path. Buffer-locals
+        // routing (`document_syntax_for`, version accessors) and
+        // mode types (`DocumentLastParsed*`,
+        // `DocumentLastSynced*`) already live host-side.
+        self.editor.refresh_pane_highlights();
     }
 
     /// Spans for the line at `viewport_row` (0-based, relative to the top of

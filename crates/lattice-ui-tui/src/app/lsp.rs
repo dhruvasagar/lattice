@@ -799,128 +799,16 @@ impl App {
     ///   `success: false` (we don't know how to surface a
     ///   non-file URI in a buffer).
     pub fn drain_inbound_show_documents(&mut self) {
-        let Some(mut rx) = self.editor.pending_show_document_rx.take() else {
-            return;
-        };
-        let mut requests: Vec<lattice_lsp::InboundShowDocument> = Vec::new();
-        while let Ok(req) = rx.try_recv() {
-            requests.push(req);
-        }
-        self.editor.pending_show_document_rx = Some(rx);
-        for req in requests {
-            let instance = lattice_lsp::InstanceKey::new(
-                std::sync::Arc::clone(&req.server_id),
-                std::sync::Arc::clone(&req.workspace),
-            );
-            let success = self.perform_show_document(
-                &instance,
-                &req.uri,
-                req.external,
-                req.take_focus,
-                req.selection,
-            );
-            let _ = req
-                .response
-                .send(lattice_lsp::ShowDocumentOutcome { success });
+        // 5.8.AA.k.3: migrated to host.
+        let signals = self.editor.drain_inbound_show_documents();
+        for s in signals {
+            self.handle_renderer_signal(s);
         }
     }
 
-    fn perform_show_document(
-        &mut self,
-        instance: &lattice_lsp::InstanceKey,
-        uri: &lattice_lsp::Uri,
-        external: bool,
-        take_focus: bool,
-        selection: Option<lattice_lsp::lsp_types::Range>,
-    ) -> bool {
-        let uri_str = uri.as_str().to_string();
-        if external {
-            return self.open_external_uri(instance, &uri_str);
-        }
-        // In-editor branch: only `file://` URIs reach here.
-        if !uri_str.starts_with("file://") {
-            self.editor.lsp_logger.log(
-                Some(instance),
-                lattice_lsp::LogLevel::Warn,
-                lattice_lsp::LogSource::Client,
-                format!("showDocument: refusing non-file URI {uri_str:?} without `external`"),
-            );
-            return false;
-        }
-        let Some(path) = lattice_lsp::actor::uri_to_path(uri) else {
-            self.editor.lsp_logger.log(
-                Some(instance),
-                lattice_lsp::LogLevel::Warn,
-                lattice_lsp::LogSource::Client,
-                format!("showDocument: malformed file URI {uri_str:?}"),
-            );
-            return false;
-        };
-        // `take_focus` defaults to false in spec; we don't
-        // implement preview-without-focus today (every `:e`
-        // moves focus). The flag stays honoured by always
-        // moving focus when true and accepting that the
-        // false case still moves focus -- documented in
-        // lsp-features.md.
-        let _ = take_focus;
-        self.do_edit(Some(path), false);
-        if let Some(range) = selection {
-            self.move_cursor_to_lsp_position(range.start);
-        }
-        true
-    }
-
-    fn open_external_uri(&mut self, instance: &lattice_lsp::InstanceKey, uri: &str) -> bool {
-        // Pick the platform's open command. We don't take an
-        // optional `App.external_open_command` config knob
-        // yet -- the OS defaults cover the supported
-        // platforms.
-        #[cfg(target_os = "macos")]
-        let cmd = "open";
-        #[cfg(target_os = "windows")]
-        let cmd = "explorer";
-        #[cfg(all(unix, not(target_os = "macos")))]
-        let cmd = "xdg-open";
-        match std::process::Command::new(cmd).arg(uri).spawn() {
-            Ok(_) => {
-                self.editor.lsp_logger.log(
-                    Some(instance),
-                    lattice_lsp::LogLevel::Info,
-                    lattice_lsp::LogSource::Client,
-                    format!("showDocument(external): {uri}"),
-                );
-                true
-            }
-            Err(e) => {
-                self.editor.lsp_logger.log(
-                    Some(instance),
-                    lattice_lsp::LogLevel::Warn,
-                    lattice_lsp::LogSource::Client,
-                    format!("showDocument(external) failed: {e}"),
-                );
-                false
-            }
-        }
-    }
-
-    fn move_cursor_to_lsp_position(&mut self, position: lattice_lsp::lsp_types::Position) {
-        // Position arrives in LSP utf-16; convert via the
-        // active document's encoding before moving. Best-
-        // effort: if the line is out of buffer, leave the
-        // cursor where `do_edit` put it.
-        let snapshot = self.editor.document.snapshot();
-        let byte = crate::app::lsp_position_to_app_byte(
-            &snapshot.buffer,
-            position.line,
-            position.character,
-        );
-        if snapshot.buffer.line(position.line).is_some() {
-            self.editor.cursor = lattice_protocol::Position {
-                line: position.line,
-                byte,
-            };
-        }
-    }
+    // 5.8.AA.k.3: perform_show_document, open_external_uri,
+    // move_cursor_to_lsp_position migrated to host alongside
+    // drain_inbound_show_documents.
 
     /// 4.4.b: drain server-initiated
     /// Drain server-initiated `window/showMessageRequest`
@@ -3180,7 +3068,7 @@ impl App {
                     .as_path(),
             ),
         );
-        let opened = self.open_external_uri(&instance, target_str);
+        let opened = self.editor.open_external_uri(&instance, target_str);
         if !opened {
             self.set_message(EchoLevel::Warn, format!("could not open {target_str}"));
         }

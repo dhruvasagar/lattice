@@ -338,15 +338,16 @@ impl Editor {
                 // snapshot.
                 layer: self.lsp_diagnostics.clone(),
             }),
-            // Slice 3b.0: clone the document-highlights cache
-            // slot's `Arc<ArcSwapOption<...>>`. Cheap (one Arc
-            // bump) and shares the same underlying ArcSwap with
-            // `Editor.lsp_document_highlights`, so the spawned
-            // request task's `.store()` is observable by readers
-            // through `rs.lsp.document_highlights.load()` without
+            // Slice 3b.0/3b.1: clone the per-subsystem cache
+            // slot Arcs. Cheap (one Arc bump each) and shares the
+            // underlying ArcSwap/PerBufferCache with the editor's
+            // fields -- the spawned request tasks' writes are
+            // observable through the rendered snapshot without
             // any further publication.
             lsp: std::sync::Arc::new(LspRenderState {
                 document_highlights: self.lsp_document_highlights.clone(),
+                inlay_hints: self.lsp_inlay_hints_cache.clone(),
+                folds: self.lsp_folds_cache.clone(),
             }),
             ..RenderState::default()
         }
@@ -3491,68 +3492,11 @@ impl Editor {
         }
     }
 
-    /// 4.4.g: drain the in-flight `inlayHint` response.
-    /// Coalesces multiple queued outcomes to the latest.
-    ///
-    /// Phase 5.8.AA.b: hoisted from
-    /// `lattice-ui-tui::app::lsp::App::drain_pending_inlay_hint`.
-    /// Pure cache mutation against `editor.lsp_inlay_hints_cache`
-    /// which the GPUI peer's paint_pane already reads (5.8.J).
-    pub fn drain_pending_inlay_hint(&mut self) {
-        let Some(mut rx) = self.pending_inlay_hint_rx.take() else {
-            return;
-        };
-        let mut latest: Option<lattice_lsp::cache::InlayHintOutcome> = None;
-        while let Ok(outcome) = rx.try_recv() {
-            latest = Some(outcome);
-        }
-        self.pending_inlay_hint_rx = Some(rx);
-        let Some(outcome) = latest else {
-            return;
-        };
-        use lattice_lsp::cache::InlayHintOutcome;
-        match outcome {
-            InlayHintOutcome::Items {
-                buffer_id,
-                document_version,
-                hints,
-                requested_first_line,
-                requested_last_line,
-            } => {
-                if buffer_id != self.document_buffer_id {
-                    return;
-                }
-                self.lsp_inlay_hints_cache.insert(
-                    buffer_id,
-                    lattice_lsp::cache::LspInlayHintCache {
-                        document_version,
-                        hints,
-                        requested_first_line,
-                        requested_last_line,
-                    },
-                );
-            }
-            InlayHintOutcome::Empty {
-                buffer_id,
-                document_version,
-                requested_first_line,
-                requested_last_line,
-            } => {
-                if buffer_id != self.document_buffer_id {
-                    return;
-                }
-                self.lsp_inlay_hints_cache.insert(
-                    buffer_id,
-                    lattice_lsp::cache::LspInlayHintCache {
-                        document_version,
-                        hints: Vec::new(),
-                        requested_first_line,
-                        requested_last_line,
-                    },
-                );
-            }
-        }
-    }
+    // Phase 5.8.AF.5 / Slice 3b.1: `drain_pending_inlay_hint`
+    // retired. The spawned task in `maybe_request_inlay_hint`
+    // writes directly into `lsp_inlay_hints_cache` via
+    // `PerBufferCacheExt::insert_for` when the LSP response
+    // arrives. No channel, no UI-thread drain.
 
     /// 4.4.j: drain pulled-diagnostics responses.
     ///
@@ -3623,62 +3567,14 @@ impl Editor {
         }
     }
 
-    /// 4.4.f: drain pending `foldingRange` outcome; seats the
-    /// per-buffer cache and triggers `recompute_folds` so the
-    /// renderer picks up new extents next frame.
-    ///
-    /// Phase 5.8.AA.b: hoisted from
-    /// `lattice-ui-tui::app::lsp::App::drain_pending_folding_range`.
-    /// `recompute_folds` was already host-resident.
-    pub fn drain_pending_folding_range(&mut self) {
-        let Some(mut rx) = self.pending_folding_range_rx.take() else {
-            return;
-        };
-        let mut latest: Option<lattice_lsp::cache::FoldingRangeOutcome> = None;
-        while let Ok(outcome) = rx.try_recv() {
-            latest = Some(outcome);
-        }
-        self.pending_folding_range_rx = Some(rx);
-        let Some(outcome) = latest else {
-            return;
-        };
-        use lattice_lsp::cache::{FoldingRangeOutcome, LspFoldsCache};
-        match outcome {
-            FoldingRangeOutcome::Items {
-                buffer_id,
-                document_version,
-                folds,
-            } => {
-                if buffer_id != self.document_buffer_id {
-                    return;
-                }
-                self.lsp_folds_cache.insert(
-                    buffer_id,
-                    LspFoldsCache {
-                        document_version,
-                        folds,
-                    },
-                );
-                self.recompute_folds();
-            }
-            FoldingRangeOutcome::Empty {
-                buffer_id,
-                document_version,
-            } => {
-                if buffer_id != self.document_buffer_id {
-                    return;
-                }
-                self.lsp_folds_cache.insert(
-                    buffer_id,
-                    LspFoldsCache {
-                        document_version,
-                        folds: Vec::new(),
-                    },
-                );
-                self.recompute_folds();
-            }
-        }
-    }
+    // Phase 5.8.AF.5 / Slice 3b.1: `drain_pending_folding_range`
+    // retired. The spawned task in `maybe_request_folding_range`
+    // writes directly into `lsp_folds_cache` via
+    // `PerBufferCacheExt::insert_for`. The `recompute_folds()`
+    // side-effect that the old drain ran now fires from
+    // `maybe_request_folding_range` on the first tick after the
+    // cache version flips -- tracked via
+    // `last_recomputed_lsp_fold_version`.
 
     /// 4.4.h: drain semantic-tokens responses (Items/Delta/Empty).
     /// Phase 5.8.AA.b: hoisted from TUI App.
@@ -5249,9 +5145,13 @@ impl Editor {
         });
     }
 
-    /// 4.4.f: per-tick `foldingRange` pump. Phase 5.8.AA.i:
-    /// hoisted from TUI App.
+    /// 4.4.f: per-tick `foldingRange` pump.
+    ///
+    /// Phase 5.8.AF.5 / Slice 3b.1: spawned task writes directly
+    /// into `lsp_folds_cache` (`PerBufferCache<...>`) via
+    /// `insert_for`. No channel, no UI-thread drain.
     pub fn maybe_request_folding_range(&mut self) {
+        use crate::per_buffer_cache::PerBufferCacheExt;
         if !matches!(self.foldmethod(), lattice_core::FoldMethod::Lsp) {
             return;
         }
@@ -5260,9 +5160,19 @@ impl Editor {
         }
         let snapshot = self.document.snapshot();
         let version = snapshot.version;
-        if let Some(cache) = self.lsp_folds_cache.get(&self.document_buffer_id)
+        if let Some(cache) = self.lsp_folds_cache.get_for(self.document_buffer_id)
             && cache.document_version == version
         {
+            // Slice 3b.1: cache is current. The OLD drain called
+            // `recompute_folds()` after writing the cache; since
+            // the task now writes off-thread, we run that
+            // side-effect here on the renderer tick exactly once
+            // per (buffer, version) transition.
+            let key = (self.document_buffer_id, version);
+            if self.last_recomputed_lsp_fold_version != Some(key) {
+                self.recompute_folds();
+                self.last_recomputed_lsp_fold_version = Some(key);
+            }
             return;
         }
         let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
@@ -5272,22 +5182,24 @@ impl Editor {
             token.cancel();
         }
         let buffer_id = self.document_buffer_id;
-        let (tx, rx) =
-            tokio::sync::mpsc::unbounded_channel::<lattice_lsp::cache::FoldingRangeOutcome>();
         let token = lattice_protocol::CancellationToken::new();
-        self.pending_folding_range_rx = Some(rx);
         self.pending_folding_range_token = Some(token.clone());
         let lsp = self.lsp.clone();
+        // Slice 3b.1: clone the cache slot Arc into the task.
+        let cache_slot = self.lsp_folds_cache.clone();
         lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = lsp.servers_for(&uri);
             let Some(handle) = handles
                 .into_iter()
                 .find(|h| h.capabilities().supports_folding_range())
             else {
-                let _ = tx.send(lattice_lsp::cache::FoldingRangeOutcome::Empty {
+                cache_slot.insert_for(
                     buffer_id,
-                    document_version: version,
-                });
+                    lattice_lsp::cache::LspFoldsCache {
+                        document_version: version,
+                        folds: Vec::new(),
+                    },
+                );
                 return;
             };
             let params = lattice_lsp::lsp_types::FoldingRangeParams {
@@ -5298,17 +5210,22 @@ impl Editor {
             match handle.folding_range(params, token.clone()).await {
                 Ok(Some(ranges)) if !ranges.is_empty() => {
                     let folds = ranges.into_iter().map(folding_range_to_fold).collect();
-                    let _ = tx.send(lattice_lsp::cache::FoldingRangeOutcome::Items {
+                    cache_slot.insert_for(
                         buffer_id,
-                        document_version: version,
-                        folds,
-                    });
+                        lattice_lsp::cache::LspFoldsCache {
+                            document_version: version,
+                            folds,
+                        },
+                    );
                 }
                 _ => {
-                    let _ = tx.send(lattice_lsp::cache::FoldingRangeOutcome::Empty {
+                    cache_slot.insert_for(
                         buffer_id,
-                        document_version: version,
-                    });
+                        lattice_lsp::cache::LspFoldsCache {
+                            document_version: version,
+                            folds: Vec::new(),
+                        },
+                    );
                 }
             }
         });
@@ -5619,8 +5536,15 @@ impl Editor {
     /// 4.4.g: per-tick `inlayHint` pump. Fires when the mode is
     /// active and the cache is stale for the visible viewport ±
     /// overscan. Single-flight; each request cancels its
-    /// predecessor. Phase 5.8.AA.g: hoisted from TUI App.
+    /// predecessor.
+    ///
+    /// Phase 5.8.AF.5 / Slice 3b.1: spawned task writes directly
+    /// into `lsp_inlay_hints_cache` (`PerBufferCache<...>`) via
+    /// `insert_for`. No channel, no UI-thread drain. Renderers
+    /// read wait-free via
+    /// `rs.lsp.inlay_hints.get_for(buffer_id)`.
     pub fn maybe_request_inlay_hint(&mut self) {
+        use crate::per_buffer_cache::PerBufferCacheExt;
         if !self.lsp_inlay_hint_mode_enabled_for(self.document_buffer_id) {
             return;
         }
@@ -5636,7 +5560,7 @@ impl Editor {
         let requested_last = viewport_last
             .saturating_add(OVERSCAN_LINES)
             .min(last_buffer_line);
-        if let Some(cache) = self.lsp_inlay_hints_cache.get(&self.document_buffer_id)
+        if let Some(cache) = self.lsp_inlay_hints_cache.get_for(self.document_buffer_id)
             && cache.document_version == version
             && viewport_first >= cache.requested_first_line
             && viewport_last <= cache.requested_last_line
@@ -5660,24 +5584,28 @@ impl Editor {
                 character: 0,
             },
         };
-        let (tx, rx) =
-            tokio::sync::mpsc::unbounded_channel::<lattice_lsp::cache::InlayHintOutcome>();
         let token = lattice_protocol::CancellationToken::new();
-        self.pending_inlay_hint_rx = Some(rx);
         self.pending_inlay_hint_token = Some(token.clone());
         let lsp = self.lsp.clone();
+        // Slice 3b.1: clone the cache slot Arc into the task.
+        // When the LSP response lands, write directly via
+        // `insert_for` -- no channel.
+        let cache_slot = self.lsp_inlay_hints_cache.clone();
         lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = lsp.servers_for(&uri);
             let Some(handle) = handles
                 .into_iter()
                 .find(|h| h.capabilities().supports_inlay_hint())
             else {
-                let _ = tx.send(lattice_lsp::cache::InlayHintOutcome::Empty {
+                cache_slot.insert_for(
                     buffer_id,
-                    document_version: version,
-                    requested_first_line: requested_first,
-                    requested_last_line: requested_last,
-                });
+                    lattice_lsp::cache::LspInlayHintCache {
+                        document_version: version,
+                        hints: Vec::new(),
+                        requested_first_line: requested_first,
+                        requested_last_line: requested_last,
+                    },
+                );
                 return;
             };
             let params = lattice_lsp::lsp_types::InlayHintParams {
@@ -5687,21 +5615,26 @@ impl Editor {
             };
             match handle.inlay_hint(params, token.clone()).await {
                 Ok(Some(hints)) if !hints.is_empty() => {
-                    let _ = tx.send(lattice_lsp::cache::InlayHintOutcome::Items {
+                    cache_slot.insert_for(
                         buffer_id,
-                        document_version: version,
-                        hints,
-                        requested_first_line: requested_first,
-                        requested_last_line: requested_last,
-                    });
+                        lattice_lsp::cache::LspInlayHintCache {
+                            document_version: version,
+                            hints,
+                            requested_first_line: requested_first,
+                            requested_last_line: requested_last,
+                        },
+                    );
                 }
                 _ => {
-                    let _ = tx.send(lattice_lsp::cache::InlayHintOutcome::Empty {
+                    cache_slot.insert_for(
                         buffer_id,
-                        document_version: version,
-                        requested_first_line: requested_first,
-                        requested_last_line: requested_last,
-                    });
+                        lattice_lsp::cache::LspInlayHintCache {
+                            document_version: version,
+                            hints: Vec::new(),
+                            requested_first_line: requested_first,
+                            requested_last_line: requested_last,
+                        },
+                    );
                 }
             }
         });
@@ -6303,7 +6236,8 @@ impl Editor {
             })
             .collect();
         for buffer_id in buffer_ids {
-            self.lsp_inlay_hints_cache.remove(&buffer_id);
+            use crate::per_buffer_cache::PerBufferCacheExt;
+            self.lsp_inlay_hints_cache.remove_for(buffer_id);
         }
     }
 
@@ -6612,13 +6546,18 @@ impl Editor {
         signals.extend(self.drain_mode_lifecycle_events());
         self.drain_pending_references();
         self.drain_pending_symbols();
-        self.drain_pending_inlay_hint();
         // 5.8.AF.5 / Slice 3b.0: `drain_pending_document_highlight`
         // retired -- writes happen directly from the spawned
         // request task into `lsp_document_highlights`'s
         // `ArcSwapOption`.
+        // 5.8.AF.5 / Slice 3b.1: `drain_pending_inlay_hint` +
+        // `drain_pending_folding_range` retired -- writes happen
+        // directly from the spawned request tasks into
+        // `lsp_inlay_hints_cache` / `lsp_folds_cache` via
+        // `PerBufferCacheExt::insert_for`. The folding-range
+        // `recompute_folds()` side-effect now runs in
+        // `maybe_request_folding_range` on cache-version flip.
         self.drain_pending_pull_diagnostics();
-        self.drain_pending_folding_range();
         self.drain_pending_semantic_tokens();
         self.drain_pending_moniker();
         self.drain_pending_document_link();
@@ -7784,8 +7723,9 @@ impl Editor {
     /// provider so the user sees *some* folds rather than an empty
     /// list.
     fn recompute_lsp_folds(&self, buffer: &lattice_core::Buffer) -> Vec<Fold> {
+        use crate::per_buffer_cache::PerBufferCacheExt;
         if self.lsp_folding_mode_enabled_for(self.document_buffer_id)
-            && let Some(cache) = self.lsp_folds_cache.get(&self.document_buffer_id)
+            && let Some(cache) = self.lsp_folds_cache.get_for(self.document_buffer_id)
             && !cache.folds.is_empty()
         {
             return cache.folds.clone();

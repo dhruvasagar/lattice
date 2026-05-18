@@ -2635,10 +2635,14 @@ fn compose_visible_lines_inner(
         // beside it, not as part of it. Iterate in *reverse*
         // position order so earlier splices don't shift the
         // byte offsets of later ones.
-        if let Some(cache) = app
-            .editor
-            .lsp_inlay_hints_cache
-            .get(&app.editor.document_buffer_id)
+        // 5.8.AF.5 / Slice 3b.1: read inlay-hint cache through
+        // `RenderState.lsp.inlay_hints`. The spawned LSP request
+        // task `.insert_for`s directly into the same underlying
+        // `PerBufferCache`, so this read sees fresh data without
+        // any UI-thread drain.
+        use lattice_host::per_buffer_cache::PerBufferCacheExt;
+        let rs = app.editor.render_state.load();
+        if let Some(cache) = rs.lsp.inlay_hints.get_for(app.editor.document_buffer_id)
             && app.lsp_inlay_hint_mode_enabled_for(app.editor.document_buffer_id)
         {
             let mut on_line: Vec<&lattice_lsp::lsp_types::InlayHint> = cache
@@ -5324,27 +5328,32 @@ mod tests {
             app.toggle_mode_by_name("lsp-inlay-hint-mode");
         }
         // Hint at column 5 (end of "let x") with label ": i32".
-        app.editor.lsp_inlay_hints_cache.insert(
-            app.editor.document_buffer_id,
-            crate::app::LspInlayHintCache {
-                document_version: app.editor.document.snapshot().version,
-                hints: vec![lattice_lsp::lsp_types::InlayHint {
-                    position: lattice_lsp::lsp_types::Position {
-                        line: 0,
-                        character: 5,
-                    },
-                    label: lattice_lsp::lsp_types::InlayHintLabel::String(": i32".into()),
-                    kind: Some(lattice_lsp::lsp_types::InlayHintKind::TYPE),
-                    text_edits: None,
-                    tooltip: None,
-                    padding_left: Some(false),
-                    padding_right: Some(false),
-                    data: None,
-                }],
-                requested_first_line: 0,
-                requested_last_line: u32::MAX,
-            },
-        );
+        // 5.8.AF.5 / Slice 3b.1: use `insert_for` + publish.
+        {
+            use lattice_host::per_buffer_cache::PerBufferCacheExt;
+            app.editor.lsp_inlay_hints_cache.insert_for(
+                app.editor.document_buffer_id,
+                crate::app::LspInlayHintCache {
+                    document_version: app.editor.document.snapshot().version,
+                    hints: vec![lattice_lsp::lsp_types::InlayHint {
+                        position: lattice_lsp::lsp_types::Position {
+                            line: 0,
+                            character: 5,
+                        },
+                        label: lattice_lsp::lsp_types::InlayHintLabel::String(": i32".into()),
+                        kind: Some(lattice_lsp::lsp_types::InlayHintKind::TYPE),
+                        text_edits: None,
+                        tooltip: None,
+                        padding_left: Some(false),
+                        padding_right: Some(false),
+                        data: None,
+                    }],
+                    requested_first_line: 0,
+                    requested_last_line: u32::MAX,
+                },
+            );
+        }
+        app.editor.publish_render_state();
         let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
         let row0 = &lines[0];
         let mut found = false;
@@ -5481,27 +5490,32 @@ mod tests {
         if app.lsp_inlay_hint_mode_enabled_for(app.editor.document_buffer_id) {
             app.toggle_mode_by_name("lsp-inlay-hint-mode");
         }
-        app.editor.lsp_inlay_hints_cache.insert(
-            app.editor.document_buffer_id,
-            crate::app::LspInlayHintCache {
-                document_version: app.editor.document.snapshot().version,
-                hints: vec![lattice_lsp::lsp_types::InlayHint {
-                    position: lattice_lsp::lsp_types::Position {
-                        line: 0,
-                        character: 5,
-                    },
-                    label: lattice_lsp::lsp_types::InlayHintLabel::String(": i32".into()),
-                    kind: None,
-                    text_edits: None,
-                    tooltip: None,
-                    padding_left: None,
-                    padding_right: None,
-                    data: None,
-                }],
-                requested_first_line: 0,
-                requested_last_line: u32::MAX,
-            },
-        );
+        // 5.8.AF.5 / Slice 3b.1: use `insert_for` + publish.
+        {
+            use lattice_host::per_buffer_cache::PerBufferCacheExt;
+            app.editor.lsp_inlay_hints_cache.insert_for(
+                app.editor.document_buffer_id,
+                crate::app::LspInlayHintCache {
+                    document_version: app.editor.document.snapshot().version,
+                    hints: vec![lattice_lsp::lsp_types::InlayHint {
+                        position: lattice_lsp::lsp_types::Position {
+                            line: 0,
+                            character: 5,
+                        },
+                        label: lattice_lsp::lsp_types::InlayHintLabel::String(": i32".into()),
+                        kind: None,
+                        text_edits: None,
+                        tooltip: None,
+                        padding_left: None,
+                        padding_right: None,
+                        data: None,
+                    }],
+                    requested_first_line: 0,
+                    requested_last_line: u32::MAX,
+                },
+            );
+        }
+        app.editor.publish_render_state();
         let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
         let row0 = &lines[0];
         for span in &row0.spans {

@@ -175,6 +175,17 @@ pub struct LspRenderState {
     /// that raced a buffer switch.
     pub document_highlights:
         Arc<arc_swap::ArcSwapOption<lattice_lsp::cache::DocumentHighlightCache>>,
+    /// Slice 3b.1: per-buffer `textDocument/inlayHint` cache.
+    /// Spawned request task writes via
+    /// `PerBufferCacheExt::insert_for`; renderers read wait-free
+    /// via `.get_for(buffer_id)` and get a detached
+    /// `Arc<LspInlayHintCache>`.
+    pub inlay_hints:
+        crate::per_buffer_cache::PerBufferCache<lattice_lsp::cache::LspInlayHintCache>,
+    /// Slice 3b.1: per-buffer `textDocument/foldingRange` cache.
+    /// Same shape as `inlay_hints`; renderers read via
+    /// `.get_for(buffer_id)`.
+    pub folds: crate::per_buffer_cache::PerBufferCache<lattice_lsp::cache::LspFoldsCache>,
 }
 
 /// Tree-sitter highlights + visible-range cache.

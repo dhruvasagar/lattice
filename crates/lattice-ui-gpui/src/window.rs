@@ -409,11 +409,17 @@ impl EditorView {
         // (when the mode is off, the driver doesn't repopulate
         // the cache, so the most-recent state is shown).
         let inlay_hints_for_line: Box<dyn Fn(u32, &str) -> Vec<(usize, String)>> = {
+            // 5.8.AF.5 / Slice 3b.1: read inlay-hint cache
+            // through `RenderState.lsp.inlay_hints`. Symmetric
+            // with the TUI peer; the spawned LSP request task
+            // writes into the same underlying PerBufferCache.
+            use lattice_host::per_buffer_cache::PerBufferCacheExt;
             let buffer_id = pane.buffer_id;
-            let cache_opt = editor.lsp_inlay_hints_cache.get(&buffer_id);
+            let rs = editor.render_state.load_full();
+            let cache_opt = rs.lsp.inlay_hints.get_for(buffer_id);
             Box::new(
                 move |line_idx: u32, line_text: &str| -> Vec<(usize, String)> {
-                    let Some(cache) = cache_opt else {
+                    let Some(cache) = cache_opt.as_ref() else {
                         return Vec::new();
                     };
                     let mut hits: Vec<(usize, String)> = cache

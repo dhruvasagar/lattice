@@ -714,9 +714,30 @@ pub struct Editor {
     pub last_document_highlight_issue_cursor: Option<ProtoPosition>,
     /// Per-buffer cache of the last
     /// `textDocument/foldingRange` response.
-    pub lsp_folds_cache: HashMap<BufferId, LspFoldsCache>,
+    ///
+    /// Phase 5.8.AF.5 / Slice 3b.1: `PerBufferCache<T>` so the
+    /// spawned LSP request task can write results directly when
+    /// the response arrives -- no channel, no UI-thread drain.
+    /// Renderers read wait-free via
+    /// `rs.lsp.folds.get_for(buffer_id)`.
+    pub lsp_folds_cache: crate::per_buffer_cache::PerBufferCache<LspFoldsCache>,
+    /// Phase 5.8.AF.5 / Slice 3b.1: the old drain
+    /// (`drain_pending_folding_range`) called `recompute_folds()`
+    /// inline after writing the cache so `self.folds` reflected
+    /// the latest LSP response. The new shape has the task
+    /// writing the cache off-thread; this tuple lets
+    /// `maybe_request_folding_range` detect when the cache
+    /// version has changed and trigger `recompute_folds()` on
+    /// the renderer thread (where `&mut self.folds` is safe).
+    /// `Some((buffer_id, document_version))` records the cache
+    /// state last reflected into `self.folds`.
+    pub last_recomputed_lsp_fold_version: Option<(BufferId, u64)>,
     /// Per-buffer `inlayHint` cache.
-    pub lsp_inlay_hints_cache: HashMap<BufferId, LspInlayHintCache>,
+    ///
+    /// Phase 5.8.AF.5 / Slice 3b.1: see `lsp_folds_cache` note.
+    /// Renderers read wait-free via
+    /// `rs.lsp.inlay_hints.get_for(buffer_id)`.
+    pub lsp_inlay_hints_cache: crate::per_buffer_cache::PerBufferCache<LspInlayHintCache>,
     /// Per-buffer `documentLink` cache.
     pub lsp_document_links_cache: HashMap<BufferId, LspDocumentLinksCache>,
     /// Per-buffer code-lens cache.
@@ -812,7 +833,9 @@ pub struct Editor {
     // `lsp_document_highlights` (`ArcSwapOption`) when the
     // response arrives. No channel, no drain.
     pub pending_folding_range_token: Option<CancellationToken>,
-    pub pending_folding_range_rx: Option<tokio::sync::mpsc::UnboundedReceiver<FoldingRangeOutcome>>,
+    // Phase 5.8.AF.5 / Slice 3b.1: `pending_folding_range_rx`
+    // retired -- the spawned task writes directly into
+    // `lsp_folds_cache` via `PerBufferCacheExt::insert_for`.
     pub pending_document_links_token: Option<CancellationToken>,
     pub pending_document_links_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<DocumentLinksOutcome>>,
@@ -828,7 +851,9 @@ pub struct Editor {
     pub pending_color_presentations: Option<Vec<lattice_lsp::lsp_types::ColorPresentation>>,
     pub pending_color_range: Option<lattice_lsp::lsp_types::Range>,
     pub pending_inlay_hint_token: Option<CancellationToken>,
-    pub pending_inlay_hint_rx: Option<tokio::sync::mpsc::UnboundedReceiver<InlayHintOutcome>>,
+    // Phase 5.8.AF.5 / Slice 3b.1: `pending_inlay_hint_rx`
+    // retired -- the spawned task writes directly into
+    // `lsp_inlay_hints_cache` via `PerBufferCacheExt::insert_for`.
     pub pending_semantic_tokens_token: Option<CancellationToken>,
     pub pending_semantic_tokens_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<SemanticTokensOutcome>>,

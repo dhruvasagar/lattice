@@ -1172,16 +1172,12 @@ impl App {
         self.editor.maybe_request_folding_range();
     }
 
-    /// 4.4.f: drain the in-flight `foldingRange` response.
-    /// Coalesces multiple queued outcomes to the latest. On a
-    /// successful response, seats the cache + triggers a
-    /// `recompute_folds` so the renderer picks up the new
-    /// extents on the next frame.
-    pub fn drain_pending_folding_range(&mut self) {
-        // 5.8.AA.b: migrated to
-        // `lattice_host::dispatch::Editor::drain_pending_folding_range`.
-        self.editor.drain_pending_folding_range();
-    }
+    // Phase 5.8.AF.5 / Slice 3b.1: `App::drain_pending_folding_range`
+    // retired -- the spawned LSP request task writes directly
+    // into `lsp_folds_cache` via `PerBufferCacheExt::insert_for`.
+    // No drain needed; the `recompute_folds()` side-effect now
+    // fires from `maybe_request_folding_range` on cache-version
+    // flip.
 
     /// 4.4.h: per-tick `semanticTokens/full` pump. Fires when
     /// `lsp-semantic-tokens-mode` is on AND the buffer's
@@ -1283,13 +1279,10 @@ impl App {
         self.editor.drain_semantic_tokens_refresh();
     }
 
-    /// 4.4.g: drain the in-flight `inlayHint` response.
-    /// Coalesces multiple queued outcomes to the latest.
-    pub fn drain_pending_inlay_hint(&mut self) {
-        // 5.8.AA.b: migrated to
-        // `lattice_host::dispatch::Editor::drain_pending_inlay_hint`.
-        self.editor.drain_pending_inlay_hint();
-    }
+    // Phase 5.8.AF.5 / Slice 3b.1: `App::drain_pending_inlay_hint`
+    // retired -- spawned LSP request task writes directly into
+    // `lsp_inlay_hints_cache` via `PerBufferCacheExt::insert_for`.
+    // No drain needed.
 
     /// 4.5.c: per-tick `documentLink` pump. Fires on
     /// document-version change (cheap when versions match;
@@ -2673,15 +2666,22 @@ mod tests {
             .buffer_uris
             .insert(app.editor.document_buffer_id, uri);
         // Seed cache with a wide range covering 0..=1000.
-        app.editor.lsp_inlay_hints_cache.insert(
-            app.editor.document_buffer_id,
-            crate::app::LspInlayHintCache {
-                document_version: app.editor.document.snapshot().version,
-                hints: Vec::new(),
-                requested_first_line: 0,
-                requested_last_line: 1000,
-            },
-        );
+        // 5.8.AF.5 / Slice 3b.1: `lsp_inlay_hints_cache` is now
+        // a `PerBufferCache<...>`; tests use `insert_for` and
+        // publish so renderer reads via `RenderState` match.
+        {
+            use lattice_host::per_buffer_cache::PerBufferCacheExt;
+            app.editor.lsp_inlay_hints_cache.insert_for(
+                app.editor.document_buffer_id,
+                crate::app::LspInlayHintCache {
+                    document_version: app.editor.document.snapshot().version,
+                    hints: Vec::new(),
+                    requested_first_line: 0,
+                    requested_last_line: 1000,
+                },
+            );
+        }
+        app.editor.publish_render_state();
         // Viewport at line 0, height 5 (set by app_with) --
         // comfortably inside the cached range. Avoid calling
         // `set_viewport_height` here: it triggers
@@ -2691,7 +2691,7 @@ mod tests {
         app.editor.scroll = 0;
         app.maybe_request_inlay_hint();
         assert!(
-            app.editor.pending_inlay_hint_rx.is_none(),
+            app.editor.pending_inlay_hint_token.is_none(),
             "pump should short-circuit when viewport is inside cached range",
         );
     }
@@ -2712,15 +2712,19 @@ mod tests {
             .buffer_uris
             .insert(app.editor.document_buffer_id, uri);
         // Cached range: lines 0..=200.
-        app.editor.lsp_inlay_hints_cache.insert(
-            app.editor.document_buffer_id,
-            crate::app::LspInlayHintCache {
-                document_version: app.editor.document.snapshot().version,
-                hints: Vec::new(),
-                requested_first_line: 0,
-                requested_last_line: 200,
-            },
-        );
+        {
+            use lattice_host::per_buffer_cache::PerBufferCacheExt;
+            app.editor.lsp_inlay_hints_cache.insert_for(
+                app.editor.document_buffer_id,
+                crate::app::LspInlayHintCache {
+                    document_version: app.editor.document.snapshot().version,
+                    hints: Vec::new(),
+                    requested_first_line: 0,
+                    requested_last_line: 200,
+                },
+            );
+        }
+        app.editor.publish_render_state();
         // Viewport now far below the cached range. Skip
         // `set_viewport_height` -- it calls
         // `ensure_cursor_visible` which would snap scroll
@@ -2728,7 +2732,7 @@ mod tests {
         app.editor.scroll = 1500;
         app.maybe_request_inlay_hint();
         assert!(
-            app.editor.pending_inlay_hint_rx.is_some(),
+            app.editor.pending_inlay_hint_token.is_some(),
             "pump should issue a new request when viewport leaves cached range",
         );
     }
@@ -2752,21 +2756,25 @@ mod tests {
             .insert(app.editor.document_buffer_id, uri);
         // Cache covers lines 100..=400 (the overscan-padded
         // window the pump would have fetched at scroll=200).
-        app.editor.lsp_inlay_hints_cache.insert(
-            app.editor.document_buffer_id,
-            crate::app::LspInlayHintCache {
-                document_version: app.editor.document.snapshot().version,
-                hints: Vec::new(),
-                requested_first_line: 100,
-                requested_last_line: 400,
-            },
-        );
+        {
+            use lattice_host::per_buffer_cache::PerBufferCacheExt;
+            app.editor.lsp_inlay_hints_cache.insert_for(
+                app.editor.document_buffer_id,
+                crate::app::LspInlayHintCache {
+                    document_version: app.editor.document.snapshot().version,
+                    hints: Vec::new(),
+                    requested_first_line: 100,
+                    requested_last_line: 400,
+                },
+            );
+        }
+        app.editor.publish_render_state();
         // Scroll a bit -- still well within the cached window.
         // Same `set_viewport_height` caveat as above.
         app.editor.scroll = 250;
         app.maybe_request_inlay_hint();
         assert!(
-            app.editor.pending_inlay_hint_rx.is_none(),
+            app.editor.pending_inlay_hint_token.is_none(),
             "small scroll inside cached window should not refetch",
         );
     }
@@ -2847,13 +2855,19 @@ mod tests {
             kind: None,
             collapsed_text: None,
         });
-        app.editor.lsp_folds_cache.insert(
-            app.editor.document_buffer_id,
-            crate::app::LspFoldsCache {
-                document_version: app.editor.document.snapshot().version,
-                folds: vec![fold],
-            },
-        );
+        // 5.8.AF.5 / Slice 3b.1: `lsp_folds_cache` is now a
+        // `PerBufferCache<...>`; use `insert_for` + publish.
+        {
+            use lattice_host::per_buffer_cache::PerBufferCacheExt;
+            app.editor.lsp_folds_cache.insert_for(
+                app.editor.document_buffer_id,
+                crate::app::LspFoldsCache {
+                    document_version: app.editor.document.snapshot().version,
+                    folds: vec![fold],
+                },
+            );
+        }
+        app.editor.publish_render_state();
         // Force `lsp-folding-mode` on so the cache is read
         // (the M.6.0 cascade may have left it off in test
         // setup).

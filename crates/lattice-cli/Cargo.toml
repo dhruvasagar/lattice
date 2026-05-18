@@ -12,9 +12,22 @@ path = "src/main.rs"
 [dependencies]
 lattice-core = { path = "../lattice-core" }
 lattice-ui-tui = { path = "../lattice-ui-tui" }
+# 5.9: optional GPUI peer renderer. Off by default so `cargo
+# build -p lattice-cli` and `cargo test -p lattice-cli` stay
+# headless-friendly (no system-display-lib link required). Enable
+# with `cargo build --features gpu` to get `lattice --gpu`.
+lattice-ui-gpui = { path = "../lattice-ui-gpui", optional = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[features]
+default = []
+# 5.9: opt-in routing to the GPUI peer via `lattice --gpu`. Pulls
+# in `lattice-ui-gpui` with its own `window` feature on, which in
+# turn links real gpui (needs display libs at link time on Linux:
+# `libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev`).
+gpu = ["dep:lattice-ui-gpui", "lattice-ui-gpui/window"]
 
 [lints]
 workspace = true

@@ -74,6 +74,17 @@ use lattice_mode::ModeId;
 
 pub mod gpui_chord;
 
+/// GPUI window-opening entry point ([`run`], [`document_from_path`],
+/// [`document_from_first_arg`]). Behind the `window` Cargo feature
+/// so the lib's headless build doesn't link gpui. Lifted from the
+/// `lattice-gpui` binary in Phase 5.9 so `lattice-cli --gpu` can
+/// reuse the same entry without duplicating the window setup.
+#[cfg(feature = "window")]
+pub mod window;
+
+#[cfg(feature = "window")]
+pub use window::{document_from_first_arg, document_from_path, run};
+
 /// GPUI peer's typed theme cache.
 ///
 /// Phase 5.7.B.12: real fields land for the surfaces the

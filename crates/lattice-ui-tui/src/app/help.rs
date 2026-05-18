@@ -40,7 +40,8 @@
 use lattice_protocol::position::Position;
 
 use super::{App, EchoLevel, PositionSource, line_byte_len};
-use crate::help::HelpContent;
+// Phase 5.8.AD.5: `HelpContent` no longer used at module
+// scope — every content builder + display path is host-side.
 
 impl App {
     /// `:help [topic]` (DESIGN.md §5.11). With no topic the index
@@ -51,28 +52,13 @@ impl App {
     /// surfaces as a clear echo error so completion + typo
     /// recovery work.
     pub(super) fn do_open_help_topic(&mut self, topic: Option<&str>) {
-        let name = topic.unwrap_or("index").to_string();
-        let registry = self.editor.help_topics.clone();
-        let Some(t) = registry.lookup(&name) else {
-            self.set_message(EchoLevel::Error, format!("no help topic: {name}"));
-            return;
-        };
-        let body = t.body.render();
-        let lines: Vec<String> = body.split('\n').map(|s| s.to_string()).collect();
-        // Auto-generate anchors from `#` / `##` / ... headings so
-        // intra-doc `[label](#slug)` links route to the right
-        // section without authors hand-maintaining anchor tables.
-        let anchors = crate::help::generate_heading_anchors(&lines);
-        let title = if name == "index" {
-            "help".to_string()
-        } else {
-            format!("help {name}")
-        };
-        self.display_buffer(
-            HelpContent::from_lines_and_anchors(title, lines, anchors)
-                .with_markdown_syntax(self.editor.lang_registry.clone()),
-            lattice_core::ui::display::BufferDisplayCategory::HelpTopic,
-        );
+        // Phase 5.8.AD.5: body migrated; signals fan through the
+        // standard handler (which routes DisplayBuffer through
+        // `display_buffer`).
+        let signals = self.editor.do_open_help_topic(topic);
+        for s in signals {
+            self.handle_renderer_signal(s);
+        }
     }
 
     // 5.5.F.1: `:describe-buffer` content builder relocated to
@@ -100,23 +86,19 @@ impl App {
     /// Effect-path callers route through `Editor::handle_effect`
     /// + `RendererSignal::DisplayBuffer`.
     pub(super) fn do_describe_command(&mut self, name: &str, anchor: Option<&str>) {
-        if let Some(content) = self.editor.build_describe_command_content(name, anchor) {
-            self.display_buffer(
-                content,
-                lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
-            );
+        // Phase 5.8.AD.5: body migrated.
+        let signals = self.editor.do_describe_command(name, anchor);
+        for s in signals {
+            self.handle_renderer_signal(s);
         }
     }
 
-    /// `:describe-key <chord>` direct-call wrapper for renderer-side
-    /// callers (help-link follow on `HelpLinkTarget::Chord`).
-    /// Effect-path callers route through `Editor::handle_effect`.
+    /// `:describe-key <chord>` direct-call. Phase 5.8.AD.5.
     pub(super) fn do_describe_key(&mut self, chord: &str) {
-        let content = self.editor.build_describe_key_content(chord);
-        self.display_buffer(
-            content,
-            lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
-        );
+        let signals = self.editor.do_describe_key(chord);
+        for s in signals {
+            self.handle_renderer_signal(s);
+        }
     }
 
     /// `K` (LSP hover) response handler / `:hover [markdown]`.
@@ -127,20 +109,11 @@ impl App {
     /// the user presses `K` again, which `do_lsp_hover_request`
     /// recognises as "focus into popup" -> State B.
     pub(super) fn do_open_hover(&mut self, markdown: &str) {
-        let lines: Vec<String> = markdown.split('\n').map(String::from).collect();
-        let content = HelpContent::from_lines("hover", lines)
-            .with_markdown_syntax(self.editor.lang_registry.clone());
-        // M.4 follow-up: hover routes through the unified
-        // dispatch like every other dedicated-buffer producer.
-        // `BufferDisplayCategory::Hover` resolves to
-        // `BufferDisplay::FloatingPopup(CursorAnchored)`, which
-        // dispatches to `open_floating_popup` -- State A
-        // semantics (active stays on the doc, cursor untouched,
-        // hover-mode minor instead of help-mode).
-        self.display_buffer(
-            content,
-            lattice_core::ui::display::BufferDisplayCategory::Hover,
-        );
+        // Phase 5.8.AD.5: body migrated.
+        let signals = self.editor.do_open_hover(markdown);
+        for s in signals {
+            self.handle_renderer_signal(s);
+        }
     }
 
     // 5.5.LSP.1: `focus_help_popup` (State A -> B promote)
@@ -177,25 +150,21 @@ impl App {
     /// callers (asserting renderer-side display routing). Effect-
     /// path callers route through `Editor::handle_effect` +
     /// `RendererSignal::DisplayBuffer`.
-    #[allow(dead_code)] // 5.5.F.3: prod path is Effect-driven; tests in `app/mode.rs` call this directly.
+    #[allow(dead_code)]
     pub(super) fn do_describe_events(&mut self) {
-        let content = self.editor.build_describe_events_content();
-        self.display_buffer(
-            content,
-            lattice_core::ui::display::BufferDisplayCategory::HelpList,
-        );
+        // Phase 5.8.AD.5: body migrated.
+        let signals = self.editor.do_describe_events();
+        for s in signals {
+            self.handle_renderer_signal(s);
+        }
     }
 
-    /// `:describe-event <name>` direct-call wrapper for test-mode
-    /// callers. Effect-path callers route through
-    /// `Editor::handle_effect`.
-    #[allow(dead_code)] // 5.5.F.3: prod path is Effect-driven; tests in `app/mode.rs` call this directly.
+    /// `:describe-event <name>` direct-call. Phase 5.8.AD.5.
+    #[allow(dead_code)]
     pub(super) fn do_describe_event(&mut self, name: &str) {
-        if let Some(content) = self.editor.build_describe_event_content(name) {
-            self.display_buffer(
-                content,
-                lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
-            );
+        let signals = self.editor.do_describe_event(name);
+        for s in signals {
+            self.handle_renderer_signal(s);
         }
     }
 
@@ -211,11 +180,10 @@ impl App {
     /// calls it directly outside the Effect-arm dispatch path.
     #[allow(dead_code)]
     pub(super) fn do_describe_mode(&mut self, name: &str) {
-        if let Some(content) = self.editor.build_describe_mode_content(name) {
-            self.display_buffer(
-                content,
-                lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
-            );
+        // Phase 5.8.AD.5: body migrated.
+        let signals = self.editor.do_describe_mode(name);
+        for s in signals {
+            self.handle_renderer_signal(s);
         }
     }
 
@@ -233,18 +201,10 @@ impl App {
     /// it directly outside the Effect-arm dispatch path.
     #[allow(dead_code)]
     pub(super) fn do_customize(&mut self, name: Option<&str>) {
-        let content_opt = match name {
-            None => Some(self.editor.build_customize_picker_content()),
-            Some(n) if lattice_config::ends_with_mode_suffix(n) => {
-                self.editor.build_customize_mode_content(n)
-            }
-            Some(n) => self.editor.build_customize_group_content(n),
-        };
-        if let Some(content) = content_opt {
-            self.display_buffer(
-                content,
-                lattice_core::ui::display::BufferDisplayCategory::HelpList,
-            );
+        // Phase 5.8.AD.5: body migrated.
+        let signals = self.editor.do_customize(name);
+        for s in signals {
+            self.handle_renderer_signal(s);
         }
     }
 
@@ -298,38 +258,14 @@ impl App {
     /// additional `docs/user/tutor/lesson-N.md` files, each
     /// added to this match.
     pub(super) fn do_tutor(&mut self, lesson: Option<u32>) {
-        let lesson_num = lesson.unwrap_or(1);
-        let lesson_text: &'static str = match lesson_num {
-            1 => include_str!("../../../../docs/user/tutor/lesson-1.md"),
-            n => {
-                self.set_message(
-                    crate::app::EchoLevel::Error,
-                    format!(
-                        "lesson {n} doesn't exist yet (lessons 1 available); \
-                         contributions welcome"
-                    ),
-                );
-                return;
-            }
-        };
-        // Copy the embedded lesson to a temp file so the user
-        // can edit / practice without affecting the binary's
-        // canonical copy. Each invocation overwrites, so re-
-        // running `:tutor` starts the user fresh.
-        let mut path = std::env::temp_dir();
-        path.push(format!("lattice-tutor-lesson-{lesson_num}.txt"));
-        if let Err(e) = std::fs::write(&path, lesson_text) {
-            self.set_message(
-                crate::app::EchoLevel::Error,
-                format!("tutor: failed to write lesson file: {e}"),
-            );
-            return;
+        // Phase 5.8.AD.5: body migrated.
+        let signals = self.editor.do_tutor(lesson);
+        for s in signals {
+            self.handle_renderer_signal(s);
         }
-        // Open the temp file via the existing `:e` mechanism.
-        // The user can `:w` to save edits to the temp path; the
-        // canonical lesson source stays untouched.
-        self.do_edit(Some(path), false);
     }
+
+    // Phase 5.8.AD.5: legacy do_tutor body removed.
 
     /// Follow the help link under the cursor (`<CR>` in help mode).
     /// Looks up the link by cursor position, then dispatches based

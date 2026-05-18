@@ -774,6 +774,31 @@ impl GpuiApp {
             Effect::LspSignatureHelp => self.editor.lsp_signature_help_request(),
             Effect::LspComplete => self.editor.lsp_completion_request(),
             Effect::SnippetExpand => self.editor.do_snippet_expand_at_cursor(),
+            // Phase 5.8.AD.5: describe / hover / tutor / customize
+            // entries now host-resident.
+            Effect::OpenHelpTopic { topic } => {
+                let signals = self.editor.do_open_help_topic(topic.as_deref());
+                for s in signals {
+                    self.handle_renderer_signal(s);
+                }
+            }
+            Effect::OpenHover { markdown } => {
+                let signals = self.editor.do_open_hover(&markdown);
+                for s in signals {
+                    self.handle_renderer_signal(s);
+                }
+            }
+            Effect::CloseHover => {
+                // CloseHover is App-side popup state today; GPUI's
+                // popup_content covers it directly.
+                self.dismiss_popup();
+            }
+            Effect::Tutor { lesson } => {
+                let signals = self.editor.do_tutor(lesson);
+                for s in signals {
+                    self.handle_renderer_signal(s);
+                }
+            }
             Effect::OpenBufferPicker => {
                 let signals = self.editor.do_open_buffer_picker();
                 for s in signals {

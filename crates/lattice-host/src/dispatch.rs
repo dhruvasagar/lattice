@@ -11720,6 +11720,156 @@ impl Editor {
         });
     }
 
+    /// `:help [topic]` direct-call entry. Phase 5.8.AD.5.
+    pub fn do_open_help_topic(&mut self, topic: Option<&str>) -> Vec<RendererSignal> {
+        let name = topic.unwrap_or("index").to_string();
+        let registry = self.help_topics.clone();
+        let Some(t) = registry.lookup(&name) else {
+            self.set_message(EchoLevel::Error, format!("no help topic: {name}"));
+            return Vec::new();
+        };
+        let body = t.body.render();
+        let lines: Vec<String> = body.split('\n').map(|s| s.to_string()).collect();
+        let anchors = lattice_help::generate_heading_anchors(&lines);
+        let title = if name == "index" {
+            "help".to_string()
+        } else {
+            format!("help {name}")
+        };
+        let content = lattice_help::HelpContent::from_lines_and_anchors(title, lines, anchors)
+            .with_markdown_syntax(self.lang_registry.clone());
+        vec![RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
+            content,
+            category: lattice_core::ui::display::BufferDisplayCategory::HelpTopic,
+        }))]
+    }
+
+    /// `:describe-command <name>` direct-call. Phase 5.8.AD.5.
+    pub fn do_describe_command(
+        &mut self,
+        name: &str,
+        anchor: Option<&str>,
+    ) -> Vec<RendererSignal> {
+        if let Some(content) = self.build_describe_command_content(name, anchor) {
+            vec![RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
+                content,
+                category: lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
+            }))]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// `:describe-key <chord>` direct-call. Phase 5.8.AD.5.
+    pub fn do_describe_key(&mut self, chord: &str) -> Vec<RendererSignal> {
+        let content = self.build_describe_key_content(chord);
+        vec![RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
+            content,
+            category: lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
+        }))]
+    }
+
+    /// `K` (LSP hover) response / `:hover [markdown]`. Phase 5.8.AD.5.
+    pub fn do_open_hover(&mut self, markdown: &str) -> Vec<RendererSignal> {
+        let lines: Vec<String> = markdown.split('\n').map(String::from).collect();
+        let content = lattice_help::HelpContent::from_lines("hover", lines)
+            .with_markdown_syntax(self.lang_registry.clone());
+        vec![RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
+            content,
+            category: lattice_core::ui::display::BufferDisplayCategory::Hover,
+        }))]
+    }
+
+    /// `:describe-events` direct-call. Phase 5.8.AD.5.
+    pub fn do_describe_events(&mut self) -> Vec<RendererSignal> {
+        let content = self.build_describe_events_content();
+        vec![RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
+            content,
+            category: lattice_core::ui::display::BufferDisplayCategory::HelpList,
+        }))]
+    }
+
+    /// `:describe-event <name>` direct-call. Phase 5.8.AD.5.
+    pub fn do_describe_event(&mut self, name: &str) -> Vec<RendererSignal> {
+        if let Some(content) = self.build_describe_event_content(name) {
+            vec![RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
+                content,
+                category: lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
+            }))]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// `:describe-mode <name>` direct-call. Phase 5.8.AD.5.
+    pub fn do_describe_mode(&mut self, name: &str) -> Vec<RendererSignal> {
+        if let Some(content) = self.build_describe_mode_content(name) {
+            vec![RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
+                content,
+                category: lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
+            }))]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// `:customize [name]` direct-call. Phase 5.8.AD.5.
+    pub fn do_customize(&mut self, name: Option<&str>) -> Vec<RendererSignal> {
+        let content_opt = match name {
+            None => Some(self.build_customize_picker_content()),
+            Some(n) if lattice_config::ends_with_mode_suffix(n) => {
+                self.build_customize_mode_content(n)
+            }
+            Some(n) => self.build_customize_group_content(n),
+        };
+        if let Some(content) = content_opt {
+            vec![RendererSignal::DisplayBuffer(Box::new(DisplayBufferRequest {
+                content,
+                category: lattice_core::ui::display::BufferDisplayCategory::HelpList,
+            }))]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// `:tutor [N]` -- open the interactive Lattice tutor lesson
+    /// `N`. Embeds the lesson via `include_str!`; copies to a temp
+    /// path so the user can edit. Phase 5.8.AD.5: returns
+    /// `Vec<RendererSignal>` because `do_edit` may emit signals.
+    pub fn do_tutor(&mut self, lesson: Option<u32>) -> Vec<RendererSignal> {
+        let lesson_num = lesson.unwrap_or(1);
+        let lesson_text: &'static str = match lesson_num {
+            1 => include_str!("../../../docs/user/tutor/lesson-1.md"),
+            n => {
+                self.set_message(
+                    EchoLevel::Error,
+                    format!(
+                        "lesson {n} doesn't exist yet (lessons 1 available); \
+                         contributions welcome"
+                    ),
+                );
+                return Vec::new();
+            }
+        };
+        let mut path = std::env::temp_dir();
+        path.push(format!("lattice-tutor-lesson-{lesson_num}.txt"));
+        if let Err(e) = std::fs::write(&path, lesson_text) {
+            self.set_message(
+                EchoLevel::Error,
+                format!("tutor: failed to write lesson file: {e}"),
+            );
+            return Vec::new();
+        }
+        let outcome = self.do_edit(Some(path), false);
+        match outcome {
+            DoEditOutcome::Opened(s) | DoEditOutcome::Activated(s) | DoEditOutcome::Reloaded(s) => {
+                s
+            }
+            DoEditOutcome::Directory(d) => self.do_open_oil(Some(d)),
+            DoEditOutcome::NoFileName | DoEditOutcome::Failed => Vec::new(),
+        }
+    }
+
     /// Insert-mode auto-trigger: fire `textDocument/onTypeFormatting`
     /// for `trigger`; apply the returned edits via the format
     /// drain. Phase 5.8.AD.4.

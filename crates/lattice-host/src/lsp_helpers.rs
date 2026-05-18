@@ -336,6 +336,22 @@ pub fn app_to_lsp_position(
 /// rendered as either markdown or plaintext (we treat plaintext
 /// as already-good markdown). `Array` joins each element with two
 /// newlines so blocks separate cleanly.
+/// 4.5.c: does the given `range` cover the LSP `position`?
+/// Inclusive on both ends (matches VSCode's click-through
+/// semantics on a link's rightmost char). Used by `gx` to find
+/// the first cached `documentLink` under the cursor. Phase
+/// 5.8.AD.2.
+pub fn range_covers(
+    range: lattice_lsp::lsp_types::Range,
+    position: lattice_lsp::lsp_types::Position,
+) -> bool {
+    let after_start =
+        (range.start.line, range.start.character) <= (position.line, position.character);
+    let before_end =
+        (position.line, position.character) <= (range.end.line, range.end.character);
+    after_start && before_end
+}
+
 /// Render one `CallHierarchyItem` (the caller / callee) as a
 /// `SymbolRow` for the picker. The item's `detail` (if any)
 /// plus the originating callable's name ride in `container`.

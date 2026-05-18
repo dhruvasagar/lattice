@@ -11696,6 +11696,646 @@ impl Editor {
         });
     }
 
+    /// 4.5.c: `gx` -- follow the document link under the cursor.
+    /// Phase 5.8.AD.2.
+    pub fn do_lsp_follow_link_at_cursor(&mut self) -> Vec<RendererSignal> {
+        let snapshot = self.document.snapshot();
+        let Some(pos) = crate::lsp_helpers::app_to_lsp_position(&snapshot.buffer, self.cursor)
+        else {
+            return Vec::new();
+        };
+        let buffer_id = self.document_buffer_id;
+        let link = self
+            .lsp_document_links_cache
+            .get(&buffer_id)
+            .and_then(|c| {
+                c.links
+                    .iter()
+                    .find(|l| crate::lsp_helpers::range_covers(l.range, pos))
+                    .cloned()
+            });
+        let Some(link) = link else {
+            self.set_message(EchoLevel::Info, "no link at cursor".to_string());
+            return Vec::new();
+        };
+        if let Some(target) = link.target.clone() {
+            return self.follow_document_link_target(&target);
+        }
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
+            return Vec::new();
+        };
+        let handles = self.lsp.servers_for(&uri);
+        let Some(handle) = handles.into_iter().find(|h| {
+            let c = h.capabilities();
+            c.supports_document_link() && c.document_link_resolve_provider()
+        }) else {
+            self.set_message(
+                EchoLevel::Info,
+                "link has no target (server doesn't resolve)".to_string(),
+            );
+            return Vec::new();
+        };
+        let token = lattice_protocol::CancellationToken::new();
+        let resolved =
+            lattice_runtime::block_on(
+                async move { handle.document_link_resolve(link, token).await },
+            );
+        match resolved {
+            Ok(resolved) => {
+                if let Some(target) = resolved.target {
+                    return self.follow_document_link_target(&target);
+                }
+                self.set_message(
+                    EchoLevel::Info,
+                    "link has no target after resolve".to_string(),
+                );
+            }
+            Err(_) => {
+                self.set_message(EchoLevel::Warn, "documentLink/resolve failed".to_string());
+            }
+        }
+        Vec::new()
+    }
+
+    /// Follow a `documentLink` target URI: `file://` URIs route
+    /// through `do_edit`; everything else delegates to the OS
+    /// handler via `open_external_uri`. Phase 5.8.AD.2.
+    fn follow_document_link_target(
+        &mut self,
+        target: &lattice_lsp::lsp_types::Uri,
+    ) -> Vec<RendererSignal> {
+        let target_str = target.as_str();
+        if target_str.starts_with("file://") {
+            if let Some(path) = lattice_lsp::actor::uri_to_path(target) {
+                let outcome = self.do_edit(Some(path), false);
+                return match outcome {
+                    DoEditOutcome::Opened(s)
+                    | DoEditOutcome::Activated(s)
+                    | DoEditOutcome::Reloaded(s) => s,
+                    DoEditOutcome::Directory(d) => self.do_open_oil(Some(d)),
+                    DoEditOutcome::NoFileName | DoEditOutcome::Failed => Vec::new(),
+                };
+            }
+            self.set_message(
+                EchoLevel::Warn,
+                format!("could not parse file URI: {target_str}"),
+            );
+            return Vec::new();
+        }
+        let instance = lattice_lsp::InstanceKey::new(
+            std::sync::Arc::<str>::from("<editor>"),
+            std::sync::Arc::<std::path::Path>::from(
+                std::env::current_dir()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("/"))
+                    .as_path(),
+            ),
+        );
+        let opened = self.open_external_uri(&instance, target_str);
+        if !opened {
+            self.set_message(EchoLevel::Warn, format!("could not open {target_str}"));
+        }
+        Vec::new()
+    }
+
+    /// 4.5.d: `:lsp-code-lens`. Open a picker over the active
+    /// buffer's cached lenses. Phase 5.8.AD.2.
+    pub fn do_lsp_code_lens_picker(&mut self) {
+        let buffer_id = self.document_buffer_id;
+        let Some(cache) = self.lsp_code_lens_cache.get(&buffer_id).cloned() else {
+            self.set_message(EchoLevel::Info, "no code lenses (cache empty)".to_string());
+            return;
+        };
+        if cache.lenses.is_empty() {
+            self.set_message(EchoLevel::Info, "no code lenses".to_string());
+            return;
+        }
+        let pairs: Vec<(
+            lattice_completion::RawCandidate,
+            lattice_picker::RoutingPayload,
+        )> = cache
+            .lenses
+            .iter()
+            .enumerate()
+            .map(|(i, lens)| {
+                let title = lens
+                    .command
+                    .as_ref()
+                    .map(|c| c.title.clone())
+                    .unwrap_or_else(|| {
+                        format!("(unresolved lens at line {})", lens.range.start.line)
+                    });
+                let line = lens.range.start.line;
+                let display = format!("{line:>4}  {title}");
+                let mut c = lattice_completion::RawCandidate::plain(
+                    title,
+                    lattice_completion::CandidateKind::Plain,
+                );
+                c.display = display;
+                (
+                    c,
+                    lattice_picker::RoutingPayload::LspCodeLens { index: i as u32 },
+                )
+            })
+            .collect();
+        let total = pairs.len();
+        self.pending_code_lens_items = Some(cache.lenses.clone());
+        self.pending_code_lens_server = Some(cache.server_id.clone());
+        let mut p = lattice_picker::Picker::new(
+            format!("code-lens ({total})"),
+            lattice_picker::PickerSource::LspLocations,
+            lattice_picker::PickerAction::AcceptLspCodeLens,
+        );
+        p.set_raw_candidates_with_routing(pairs);
+        self.picker = Some(p);
+    }
+
+    /// 4.5.d: accept a code lens by `index` (the routing
+    /// payload). Resolves lazily, executes on the originating
+    /// server. Phase 5.8.AD.2.
+    pub fn accept_lsp_code_lens(&mut self, index: u32) {
+        let Some(items) = self.pending_code_lens_items.take() else {
+            return;
+        };
+        let server_id = self.pending_code_lens_server.take();
+        let Some(lens) = items.get(index as usize).cloned() else {
+            self.set_message(
+                EchoLevel::Warn,
+                format!("code-lens accept: index {index} out of bounds"),
+            );
+            return;
+        };
+        let Some(server_id) = server_id else {
+            self.set_message(
+                EchoLevel::Warn,
+                "code-lens accept: no server id captured".to_string(),
+            );
+            return;
+        };
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
+            return;
+        };
+        let handle = self
+            .lsp
+            .servers_for(&uri)
+            .into_iter()
+            .find(|h| h.server_id() == server_id.as_ref());
+        let Some(handle) = handle else {
+            self.set_message(
+                EchoLevel::Warn,
+                format!("code-lens accept: server `{server_id}` no longer attached"),
+            );
+            return;
+        };
+        let command = if let Some(cmd) = lens.command.clone() {
+            Some(cmd)
+        } else if handle.capabilities().code_lens_resolve_provider() {
+            let handle_for_resolve = handle.clone();
+            let token = lattice_protocol::CancellationToken::new();
+            let resolved = lattice_runtime::block_on(async move {
+                handle_for_resolve.code_lens_resolve(lens, token).await
+            });
+            match resolved {
+                Ok(r) => r.command,
+                Err(_) => {
+                    self.set_message(EchoLevel::Warn, "codeLens/resolve failed".to_string());
+                    return;
+                }
+            }
+        } else {
+            self.set_message(
+                EchoLevel::Info,
+                "code lens has no command (server doesn't resolve)".to_string(),
+            );
+            return;
+        };
+        let Some(command) = command else {
+            self.set_message(
+                EchoLevel::Info,
+                "code lens has no command after resolve".to_string(),
+            );
+            return;
+        };
+        self.execute_lsp_command(Some(handle), command);
+    }
+
+    /// 4.5.e: `:lsp-color-presentation`. Phase 5.8.AD.2.
+    pub fn do_lsp_color_presentation(&mut self) {
+        let snapshot = self.document.snapshot();
+        let Some(pos) = crate::lsp_helpers::app_to_lsp_position(&snapshot.buffer, self.cursor)
+        else {
+            return;
+        };
+        let buffer_id = self.document_buffer_id;
+        let cache = self.lsp_document_color_cache.get(&buffer_id).cloned();
+        let Some(cache) = cache else {
+            self.set_message(
+                EchoLevel::Info,
+                "no color literal at cursor (cache empty)".to_string(),
+            );
+            return;
+        };
+        let entry = cache
+            .colors
+            .iter()
+            .find(|c| crate::lsp_helpers::range_covers(c.range, pos))
+            .cloned();
+        let Some(entry) = entry else {
+            self.set_message(EchoLevel::Info, "no color literal at cursor".to_string());
+            return;
+        };
+        let Some(uri) = self.buffer_uris.get(&buffer_id).cloned() else {
+            return;
+        };
+        let handle = self
+            .lsp
+            .servers_for(&uri)
+            .into_iter()
+            .find(|h| h.server_id() == cache.server_id.as_ref());
+        let Some(handle) = handle else {
+            self.set_message(
+                EchoLevel::Warn,
+                format!(
+                    "color-presentation: server `{}` no longer attached",
+                    cache.server_id
+                ),
+            );
+            return;
+        };
+        let params = lattice_lsp::lsp_types::ColorPresentationParams {
+            text_document: lattice_lsp::lsp_types::TextDocumentIdentifier { uri },
+            color: entry.color,
+            range: entry.range,
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+        let token = lattice_protocol::CancellationToken::new();
+        let presentations =
+            lattice_runtime::block_on(
+                async move { handle.color_presentation(params, token).await },
+            );
+        let presentations = match presentations {
+            Ok(p) => p,
+            Err(_) => {
+                self.set_message(EchoLevel::Warn, "colorPresentation failed".to_string());
+                return;
+            }
+        };
+        if presentations.is_empty() {
+            self.set_message(EchoLevel::Info, "no color alternatives".to_string());
+            return;
+        }
+        let pairs: Vec<(
+            lattice_completion::RawCandidate,
+            lattice_picker::RoutingPayload,
+        )> = presentations
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let mut c = lattice_completion::RawCandidate::plain(
+                    p.label.clone(),
+                    lattice_completion::CandidateKind::Plain,
+                );
+                c.display = p.label.clone();
+                (
+                    c,
+                    lattice_picker::RoutingPayload::ColorPresentation { index: i as u32 },
+                )
+            })
+            .collect();
+        let total = pairs.len();
+        self.pending_color_presentations = Some(presentations);
+        self.pending_color_range = Some(entry.range);
+        let mut p = lattice_picker::Picker::new(
+            format!("color alternatives ({total})"),
+            lattice_picker::PickerSource::LspLocations,
+            lattice_picker::PickerAction::AcceptColorPresentation,
+        );
+        p.set_raw_candidates_with_routing(pairs);
+        self.picker = Some(p);
+    }
+
+    /// 4.5.e: accept one color presentation by index. Phase 5.8.AD.2.
+    pub fn accept_lsp_color_presentation(&mut self, index: u32) {
+        let Some(items) = self.pending_color_presentations.take() else {
+            return;
+        };
+        let range = self.pending_color_range.take();
+        let Some(item) = items.get(index as usize).cloned() else {
+            return;
+        };
+        let Some(range) = range else {
+            return;
+        };
+        if let Some(edit) = item.text_edit {
+            let _ = self.apply_lsp_text_edits(vec![edit]);
+        } else {
+            let edit = lattice_lsp::lsp_types::TextEdit {
+                range,
+                new_text: item.label,
+            };
+            let _ = self.apply_lsp_text_edits(vec![edit]);
+        }
+    }
+
+    /// Resolve a user-supplied server name to a canonical server
+    /// id (running actors → configs → binary-name aliases).
+    /// Phase 5.8.AD.2: hoisted from TUI App.
+    pub fn resolve_server_id(&self, name: &str) -> Option<String> {
+        for ((_, sid), _) in self.lsp.running_actors() {
+            if sid == name {
+                return Some(sid);
+            }
+        }
+        for cfg in self.lsp.configs() {
+            if cfg.id == name {
+                return Some(cfg.id.clone());
+            }
+            let file = cfg
+                .binary
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("");
+            let stem = file.trim_end_matches(".exe");
+            if file == name || stem == name {
+                return Some(cfg.id.clone());
+            }
+        }
+        None
+    }
+
+    /// Distinct server ids of every running actor. Phase 5.8.AD.2.
+    pub fn running_server_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .lsp
+            .running_actors()
+            .into_iter()
+            .map(|((_, sid), _)| sid)
+            .collect();
+        ids.sort();
+        ids.dedup();
+        ids
+    }
+
+    /// Snapshot of every running LSP actor as picker rows.
+    /// Phase 5.8.AD.2.
+    pub fn snapshot_lsp_instances(&self) -> Vec<lattice_picker::LspInstanceRow> {
+        let actors = self.lsp.running_actors();
+        actors
+            .into_iter()
+            .map(|((workspace, server_id), handle)| {
+                let key = (workspace.clone(), server_id.clone());
+                let buffer_count = self.lsp.buffer_count_for(&key);
+                let caps = handle.capabilities();
+                let cap_summary = lattice_lsp::help_views::summarise_capabilities(&caps);
+                lattice_picker::LspInstanceRow {
+                    workspace,
+                    server_id,
+                    buffer_count,
+                    cap_summary,
+                }
+            })
+            .collect()
+    }
+
+    /// Pick an `InstanceKey` for `server_id`: prefer a running
+    /// actor's instance, then any known-by-logger instance, then
+    /// synthesise a cwd-based instance as a last resort.
+    /// Phase 5.8.AD.2.
+    pub fn resolve_lsp_instance_for(&self, server_id: &str) -> lattice_lsp::InstanceKey {
+        for (_key, handle) in self.lsp.running_actors() {
+            if handle.server_id() == server_id {
+                return handle.instance();
+            }
+        }
+        for inst in self.lsp_logger.known_instances() {
+            if inst.server_id.as_ref() == server_id {
+                return inst;
+            }
+        }
+        lattice_lsp::InstanceKey::new(
+            std::sync::Arc::<str>::from(server_id),
+            std::sync::Arc::<std::path::Path>::from(
+                std::env::current_dir()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("/"))
+                    .as_path(),
+            ),
+        )
+    }
+
+    /// Activate the per-instance `*lsp:<server>:<workspace>*`
+    /// Document buffer in the active pane. Phase 5.8.AD.2.
+    pub fn open_lsp_log_in_pane(&mut self, server_id: &str) {
+        let instance = self.resolve_lsp_instance_for(server_id);
+        let name = lattice_lsp::lsp_server_log_name(&instance);
+        let id = self.ensure_named_synthetic_document(
+            &name,
+            lattice_lsp::modes::LspServerLogMode::mode_id(),
+            crate::synthetic_buffers::SYNTHETIC_BUFFER_FLAGS,
+        );
+        self.activate_buffer(id);
+    }
+
+    /// Activate the per-instance trace-log Document buffer.
+    /// Phase 5.8.AD.2.
+    pub fn open_lsp_trace_log_in_pane(&mut self, server_id: &str) {
+        let instance = self.resolve_lsp_instance_for(server_id);
+        let name = lattice_lsp::lsp_server_trace_log_name(&instance);
+        let id = self.ensure_named_synthetic_document(
+            &name,
+            lattice_lsp::modes::LspTraceLogMode::mode_id(),
+            crate::synthetic_buffers::SYNTHETIC_BUFFER_FLAGS,
+        );
+        self.activate_buffer(id);
+    }
+
+    /// Build + open an LSP instance picker. Called by `:lsp-log`,
+    /// `:lsp-server-log`, and `:lsp-trace-log`. Phase 5.8.AD.2.
+    pub fn open_lsp_picker(
+        &mut self,
+        title: &str,
+        prefilter: Option<String>,
+        on_accept: lattice_picker::PickerAction,
+    ) {
+        let rows = self.snapshot_lsp_instances();
+        if rows.is_empty() {
+            self.set_message(
+                EchoLevel::Info,
+                "no LSP servers running; open a file with a matching language to attach"
+                    .to_string(),
+            );
+            return;
+        }
+        let resolved_prefilter = prefilter.as_deref().and_then(|n| self.resolve_server_id(n));
+        let effective = resolved_prefilter.clone().or_else(|| prefilter.clone());
+        let matches: Vec<&lattice_picker::LspInstanceRow> = rows
+            .iter()
+            .filter(|r| effective.as_ref().is_none_or(|want| r.server_id == *want))
+            .collect();
+        if matches.len() == 1 {
+            let server_id = matches[0].server_id.clone();
+            match on_accept {
+                lattice_picker::PickerAction::OpenLspLog => self.open_lsp_log_in_pane(&server_id),
+                lattice_picker::PickerAction::OpenLspTraceLog => {
+                    self.open_lsp_trace_log_in_pane(&server_id)
+                }
+                _ => {}
+            }
+            return;
+        }
+        if matches.is_empty() {
+            let asked = prefilter.clone().unwrap_or_default();
+            let running = self.running_server_ids();
+            let listing = if running.is_empty() {
+                String::new()
+            } else {
+                format!(" (running: {})", running.join(", "))
+            };
+            self.set_message(
+                EchoLevel::Info,
+                format!("no LSP server matching {asked:?} running{listing}"),
+            );
+            return;
+        }
+        let mut p = lattice_picker::Picker::new(
+            title,
+            lattice_picker::PickerSource::LspInstances {
+                prefilter: effective,
+            },
+            on_accept,
+        );
+        p.set_lsp_instances(rows);
+        self.picker = Some(p);
+    }
+
+    /// `:lsp-log [server]` -- open the `*lsp*` subsystem buffer
+    /// (no arg) or a per-server picker. Phase 5.8.AD.2.
+    pub fn do_open_lsp_log(&mut self, server_id: Option<&str>) {
+        match server_id {
+            None => {
+                let id = self.ensure_named_synthetic_document(
+                    lattice_lsp::LSP_SUBSYSTEM_LOG_NAME,
+                    lattice_lsp::modes::LspLogMode::mode_id(),
+                    crate::synthetic_buffers::SYNTHETIC_BUFFER_FLAGS,
+                );
+                self.activate_buffer(id);
+            }
+            Some(name) => {
+                self.open_lsp_picker(
+                    "lsp-log",
+                    Some(name.to_string()),
+                    lattice_picker::PickerAction::OpenLspLog,
+                );
+            }
+        }
+    }
+
+    /// `:lsp-trace-log [server]`. Phase 5.8.AD.2.
+    pub fn do_open_lsp_trace_log(&mut self, server_id: Option<&str>) {
+        self.open_lsp_picker(
+            "lsp-trace-log",
+            server_id.map(|s| s.to_string()),
+            lattice_picker::PickerAction::OpenLspTraceLog,
+        );
+    }
+
+    /// `:lsp-server-log` -- picker over every running LSP actor.
+    /// Phase 5.8.AD.2.
+    pub fn do_lsp_server_log_listing(&mut self) {
+        self.open_lsp_picker(
+            "lsp-server-log",
+            None,
+            lattice_picker::PickerAction::OpenLspLog,
+        );
+    }
+
+    /// `:lsp-trace <name>` -- toggle JSON-RPC trace for the
+    /// server. Phase 5.8.AD.2.
+    pub fn do_toggle_lsp_trace(&mut self, name: &str) {
+        let resolved = self.resolve_server_id(name);
+        let Some(server_id) = resolved else {
+            let running = self.running_server_ids();
+            let listing = if running.is_empty() {
+                "no LSP servers running".to_string()
+            } else {
+                format!("running: {}", running.join(", "))
+            };
+            self.set_message(
+                EchoLevel::Error,
+                format!("lsp-trace: no server matches {name:?} ({listing})"),
+            );
+            return;
+        };
+        let mut now_on_any = false;
+        let mut toggled_instances: Vec<lattice_lsp::InstanceKey> = Vec::new();
+        for (_key, handle) in self.lsp.running_actors() {
+            if handle.server_id() != server_id {
+                continue;
+            }
+            let instance = handle.instance();
+            let on = self.lsp_logger.toggle_trace(instance.clone());
+            if on {
+                now_on_any = true;
+            }
+            toggled_instances.push(instance);
+        }
+        if toggled_instances.is_empty() {
+            let synth = lattice_lsp::InstanceKey::new(
+                std::sync::Arc::<str>::from(server_id.as_str()),
+                std::sync::Arc::<std::path::Path>::from(
+                    std::env::current_dir()
+                        .unwrap_or_else(|_| std::path::PathBuf::from("/"))
+                        .as_path(),
+                ),
+            );
+            let on = self.lsp_logger.toggle_trace(synth.clone());
+            if on {
+                now_on_any = true;
+            }
+            toggled_instances.push(synth);
+        }
+        if now_on_any {
+            for inst in &toggled_instances {
+                let name = lattice_lsp::lsp_server_trace_log_name(inst);
+                self.ensure_named_synthetic_document(
+                    &name,
+                    lattice_lsp::modes::LspTraceLogMode::mode_id(),
+                    crate::synthetic_buffers::SYNTHETIC_BUFFER_FLAGS,
+                );
+            }
+        }
+        let label = if now_on_any { "on" } else { "off" };
+        let alias_note = if server_id != name {
+            format!(" (resolved {name:?} -> {server_id:?})")
+        } else {
+            String::new()
+        };
+        let trace_value = if now_on_any {
+            lattice_lsp::lsp_types::TraceValue::Verbose
+        } else {
+            lattice_lsp::lsp_types::TraceValue::Off
+        };
+        for (_key, handle) in self.lsp.running_actors() {
+            if handle.server_id() != server_id {
+                continue;
+            }
+            if let Err(e) = handle.set_trace(trace_value) {
+                let instance = handle.instance();
+                self.lsp_logger.log(
+                    Some(&instance),
+                    lattice_lsp::LogLevel::Warn,
+                    lattice_lsp::LogSource::Client,
+                    format!("setTrace failed: {e}"),
+                );
+            }
+        }
+        self.set_message(
+            EchoLevel::Info,
+            format!(
+                "lsp-trace {server_id}: {label}{alias_note} (use :lsp-trace-log {server_id} to view)"
+            ),
+        );
+    }
+
     /// `:lsp-status` -- render every running server in a help-
     /// style buffer. Phase 5.8.AD.2: hoisted from TUI App.
     /// Returns a `RendererSignal::DisplayBuffer` for the renderer

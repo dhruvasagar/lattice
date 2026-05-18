@@ -756,6 +756,18 @@ impl GpuiApp {
             Effect::LspSupertypes => self.editor.do_lsp_type_hierarchy_request(false),
             Effect::LspSubtypes => self.editor.do_lsp_type_hierarchy_request(true),
             Effect::LspMoniker => self.editor.do_lsp_moniker_request(),
+            Effect::OpenLspLog { server_id } => {
+                self.editor.do_open_lsp_log(server_id.as_deref());
+            }
+            Effect::OpenLspTraceLog { server_id } => {
+                self.editor.do_open_lsp_trace_log(server_id.as_deref());
+            }
+            Effect::ToggleLspTrace { server_id } => {
+                self.editor.do_toggle_lsp_trace(&server_id);
+            }
+            Effect::LspServerLogListing => self.editor.do_lsp_server_log_listing(),
+            Effect::LspCodeLens => self.editor.do_lsp_code_lens_picker(),
+            Effect::LspColorPresentation => self.editor.do_lsp_color_presentation(),
             Effect::OpenBufferPicker => {
                 let signals = self.editor.do_open_buffer_picker();
                 for s in signals {

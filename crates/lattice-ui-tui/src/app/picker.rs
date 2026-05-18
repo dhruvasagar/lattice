@@ -204,22 +204,8 @@ impl App {
     /// fall-through (degrade to empty if supervisor was
     /// busy) is gone -- the snapshot is always readable.
     fn snapshot_lsp_instances(&mut self) -> Vec<lattice_picker::LspInstanceRow> {
-        let actors = self.editor.lsp.running_actors();
-        actors
-            .into_iter()
-            .map(|((workspace, server_id), handle)| {
-                let key = (workspace.clone(), server_id.clone());
-                let buffer_count = self.editor.lsp.buffer_count_for(&key);
-                let caps = handle.capabilities();
-                let cap_summary = lattice_lsp::help_views::summarise_capabilities(&caps);
-                lattice_picker::LspInstanceRow {
-                    workspace,
-                    server_id,
-                    buffer_count,
-                    cap_summary,
-                }
-            })
-            .collect()
+        // Phase 5.8.AD.2: body migrated.
+        self.editor.snapshot_lsp_instances()
     }
 
     /// Build + open an LSP location picker (multi-result `gd` /
@@ -252,70 +238,8 @@ impl App {
         prefilter: Option<String>,
         on_accept: lattice_picker::PickerAction,
     ) {
-        let rows = self.snapshot_lsp_instances();
-        if rows.is_empty() {
-            self.set_message(
-                EchoLevel::Info,
-                "no LSP servers running; open a file with a matching language to attach"
-                    .to_string(),
-            );
-            return;
-        }
-        // Resolve the user's prefilter through the alias table so
-        // `:lsp-log rust-analyzer` finds the `rust` actor. On miss
-        // we fall back to the literal string -- the picker UI then
-        // shows "no match" with the unresolved name in the echo.
-        let resolved_prefilter = prefilter.as_deref().and_then(|n| self.resolve_server_id(n));
-        let effective = resolved_prefilter.clone().or_else(|| prefilter.clone());
-        // Single match short-circuit: when prefilter narrows the
-        // candidate set to exactly one row, skip the picker and
-        // open the buffer directly. Vim-style "do what I mean"
-        // (e.g. `:lsp-log rust` with one rust workspace).
-        let matches: Vec<&lattice_picker::LspInstanceRow> = rows
-            .iter()
-            .filter(|r| effective.as_ref().is_none_or(|want| r.server_id == *want))
-            .collect();
-        if matches.len() == 1 {
-            let server_id = matches[0].server_id.clone();
-            match on_accept {
-                lattice_picker::PickerAction::OpenLspLog => self.open_lsp_log_in_pane(&server_id),
-                lattice_picker::PickerAction::OpenLspTraceLog => {
-                    self.open_lsp_trace_log_in_pane(&server_id)
-                }
-                lattice_picker::PickerAction::SwitchToBuffer
-                | lattice_picker::PickerAction::JumpToLspLocation
-                | lattice_picker::PickerAction::AcceptLspCompletion
-                | lattice_picker::PickerAction::AcceptLspCodeAction
-                | lattice_picker::PickerAction::AcceptLspCodeLens
-                | lattice_picker::PickerAction::AcceptColorPresentation
-                | lattice_picker::PickerAction::OpenFile
-                | lattice_picker::PickerAction::AcceptShowMessageAction => {}
-            }
-            return;
-        }
-        if matches.is_empty() {
-            let asked = prefilter.clone().unwrap_or_default();
-            let running = self.running_server_ids();
-            let listing = if running.is_empty() {
-                String::new()
-            } else {
-                format!(" (running: {})", running.join(", "))
-            };
-            self.set_message(
-                EchoLevel::Info,
-                format!("no LSP server matching {asked:?} running{listing}"),
-            );
-            return;
-        }
-        let mut p = lattice_picker::Picker::new(
-            title,
-            lattice_picker::PickerSource::LspInstances {
-                prefilter: effective,
-            },
-            on_accept,
-        );
-        p.set_lsp_instances(rows);
-        self.editor.picker = Some(p);
+        // Phase 5.8.AD.2: body migrated.
+        self.editor.open_lsp_picker(title, prefilter, on_accept);
     }
 
     /// `:b` with no arg (DESIGN.md §5.9.7) -- open the vertico-style

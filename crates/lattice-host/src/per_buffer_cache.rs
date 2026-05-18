@@ -74,6 +74,16 @@ pub trait PerBufferCacheExt<T> {
     /// the entry doesn't exist. Copy-on-write semantics.
     fn remove_for(&self, id: BufferId);
 
+    /// Retain only entries matching the predicate. Mirrors
+    /// `HashMap::retain`'s semantics: the predicate sees each
+    /// `(BufferId, &T)`; entries returning `false` are dropped.
+    ///
+    /// Copy-on-write: if no entries need to be dropped, the
+    /// underlying Arc is unchanged. Used by LSP `*/refresh`
+    /// drains to evict per-server caches when a server's
+    /// invalidation notification arrives.
+    fn retain<F: FnMut(BufferId, &T) -> bool>(&self, predicate: F);
+
     /// Returns `true` when no entries exist. Wait-free.
     fn is_empty_snapshot(&self) -> bool;
 }
@@ -100,6 +110,24 @@ impl<T> PerBufferCacheExt<T> for PerBufferCache<T> {
         }
         let mut next = (**current).clone();
         next.remove(&id);
+        self.store(Arc::new(next));
+    }
+
+    fn retain<F: FnMut(BufferId, &T) -> bool>(&self, mut predicate: F) {
+        let current = self.load();
+        // First pass: identify keys to drop without cloning the
+        // map. Skip the rebuild entirely when nothing matches.
+        let drop_keys: Vec<BufferId> = current
+            .iter()
+            .filter_map(|(id, value)| if predicate(*id, value) { None } else { Some(*id) })
+            .collect();
+        if drop_keys.is_empty() {
+            return;
+        }
+        let mut next = (**current).clone();
+        for id in drop_keys {
+            next.remove(&id);
+        }
         self.store(Arc::new(next));
     }
 

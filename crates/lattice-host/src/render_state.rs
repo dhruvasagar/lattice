@@ -193,6 +193,12 @@ pub struct LspRenderState {
     /// via `.get_for(buffer_id)`.
     pub semantic_tokens:
         crate::per_buffer_cache::PerBufferCache<lattice_lsp::cache::LspSemanticTokensCache>,
+    /// Slice 3b.3: per-buffer `textDocument/codeLens` cache.
+    /// Spawned request task writes via `insert_for`; the
+    /// `codeLens/refresh` drain evicts per-server entries via
+    /// `PerBufferCacheExt::retain`. Renderers read via
+    /// `.get_for(buffer_id)`.
+    pub code_lens: crate::per_buffer_cache::PerBufferCache<lattice_lsp::cache::LspCodeLensCache>,
 }
 
 /// Tree-sitter highlights + visible-range cache.

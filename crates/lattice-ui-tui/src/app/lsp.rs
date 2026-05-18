@@ -1325,13 +1325,10 @@ impl App {
         self.editor.maybe_request_code_lens();
     }
 
-    /// 4.5.d: drain queued `codeLens` responses + seat the
-    /// cache. The cache feeds `:lsp-code-lens`; the picker
-    /// reads from it.
-    pub fn drain_pending_code_lens(&mut self) {
-        // 5.8.AA.b: migrated to host.
-        self.editor.drain_pending_code_lens();
-    }
+    // Phase 5.8.AF.5 / Slice 3b.3: `App::drain_pending_code_lens`
+    // retired -- spawned LSP request task writes directly into
+    // `lsp_code_lens_cache` via `PerBufferCacheExt::insert_for`.
+    // The `:lsp-code-lens` picker reads through `get_for`.
 
     /// 4.5.d: `:lsp-code-lens`. Open a picker over the
     /// active buffer's cached lenses. Empty cache -> echo.

@@ -741,7 +741,11 @@ pub struct Editor {
     /// Per-buffer `documentLink` cache.
     pub lsp_document_links_cache: HashMap<BufferId, LspDocumentLinksCache>,
     /// Per-buffer code-lens cache.
-    pub lsp_code_lens_cache: HashMap<BufferId, LspCodeLensCache>,
+    /// Per-buffer `textDocument/codeLens` cache. Phase 5.8.AF.5
+    /// / Slice 3b.3: `PerBufferCache<T>` so the spawned LSP
+    /// request task writes results directly. Renderers read
+    /// via `rs.lsp.code_lens.get_for(buffer_id)`.
+    pub lsp_code_lens_cache: crate::per_buffer_cache::PerBufferCache<LspCodeLensCache>,
     /// Per-buffer `documentColor` cache.
     pub lsp_document_color_cache: HashMap<BufferId, LspDocumentColorCache>,
     /// Per-buffer semantic-tokens cache.
@@ -847,7 +851,9 @@ pub struct Editor {
     pub pending_document_links_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<DocumentLinksOutcome>>,
     pub pending_code_lens_token: Option<CancellationToken>,
-    pub pending_code_lens_rx: Option<tokio::sync::mpsc::UnboundedReceiver<CodeLensOutcome>>,
+    // Phase 5.8.AF.5 / Slice 3b.3: `pending_code_lens_rx` retired
+    // -- spawned task writes directly into `lsp_code_lens_cache`
+    // via `PerBufferCacheExt::insert_for`.
     pub pending_code_lens_refresh_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspCodeLensRefresh>>,
     pub pending_code_lens_items: Option<Vec<lattice_lsp::lsp_types::CodeLens>>,

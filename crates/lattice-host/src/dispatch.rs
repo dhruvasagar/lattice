@@ -349,6 +349,7 @@ impl Editor {
                 inlay_hints: self.lsp_inlay_hints_cache.clone(),
                 folds: self.lsp_folds_cache.clone(),
                 semantic_tokens: self.lsp_semantic_tokens_cache.clone(),
+                code_lens: self.lsp_code_lens_cache.clone(),
             }),
             ..RenderState::default()
         }
@@ -5254,12 +5255,13 @@ impl Editor {
     /// 4.5.d: per-tick `codeLens` pump. Phase 5.8.AA.i: hoisted
     /// from TUI App.
     pub fn maybe_request_code_lens(&mut self) {
+        use crate::per_buffer_cache::PerBufferCacheExt;
         let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
             return;
         };
         let snapshot = self.document.snapshot();
         let version = snapshot.version;
-        if let Some(cache) = self.lsp_code_lens_cache.get(&self.document_buffer_id)
+        if let Some(cache) = self.lsp_code_lens_cache.get_for(self.document_buffer_id)
             && cache.document_version == version
         {
             return;
@@ -5268,22 +5270,25 @@ impl Editor {
             token.cancel();
         }
         let buffer_id = self.document_buffer_id;
-        let (tx, rx) =
-            tokio::sync::mpsc::unbounded_channel::<lattice_lsp::cache::CodeLensOutcome>();
         let token = lattice_protocol::CancellationToken::new();
-        self.pending_code_lens_rx = Some(rx);
         self.pending_code_lens_token = Some(token.clone());
         let lsp = self.lsp.clone();
+        // Slice 3b.3: clone the cache slot Arc into the task.
+        let cache_slot = self.lsp_code_lens_cache.clone();
         lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = lsp.servers_for(&uri);
             let Some(handle) = handles
                 .into_iter()
                 .find(|h| h.capabilities().supports_code_lens())
             else {
-                let _ = tx.send(lattice_lsp::cache::CodeLensOutcome::Empty {
+                cache_slot.insert_for(
                     buffer_id,
-                    document_version: version,
-                });
+                    lattice_lsp::cache::LspCodeLensCache {
+                        document_version: version,
+                        lenses: Vec::new(),
+                        server_id: std::sync::Arc::from("<none>"),
+                    },
+                );
                 return;
             };
             let server_id_arc: std::sync::Arc<str> = std::sync::Arc::from(handle.server_id());
@@ -5294,18 +5299,24 @@ impl Editor {
             };
             match handle.code_lens(params, token.clone()).await {
                 Ok(Some(lenses)) if !lenses.is_empty() => {
-                    let _ = tx.send(lattice_lsp::cache::CodeLensOutcome::Items {
+                    cache_slot.insert_for(
                         buffer_id,
-                        document_version: version,
-                        server_id: server_id_arc,
-                        lenses,
-                    });
+                        lattice_lsp::cache::LspCodeLensCache {
+                            document_version: version,
+                            lenses,
+                            server_id: server_id_arc,
+                        },
+                    );
                 }
                 _ => {
-                    let _ = tx.send(lattice_lsp::cache::CodeLensOutcome::Empty {
+                    cache_slot.insert_for(
                         buffer_id,
-                        document_version: version,
-                    });
+                        lattice_lsp::cache::LspCodeLensCache {
+                            document_version: version,
+                            lenses: Vec::new(),
+                            server_id: std::sync::Arc::from("<none>"),
+                        },
+                    );
                 }
             }
         });
@@ -6283,6 +6294,9 @@ impl Editor {
         if servers.is_empty() {
             return;
         }
+        // Slice 3b.3: `PerBufferCacheExt::retain` -- copy-on-write
+        // eviction when at least one entry needs to drop.
+        use crate::per_buffer_cache::PerBufferCacheExt;
         self.lsp_code_lens_cache.retain(|_buf, cache| {
             !servers
                 .iter()
@@ -6418,57 +6432,10 @@ impl Editor {
 
     /// 4.5.d: drain `codeLens` outcome; seat the per-buffer cache.
     /// Phase 5.8.AA.b: hoisted from TUI App.
-    pub fn drain_pending_code_lens(&mut self) {
-        let Some(mut rx) = self.pending_code_lens_rx.take() else {
-            return;
-        };
-        let mut latest: Option<lattice_lsp::cache::CodeLensOutcome> = None;
-        while let Ok(o) = rx.try_recv() {
-            latest = Some(o);
-        }
-        self.pending_code_lens_rx = Some(rx);
-        let Some(outcome) = latest else {
-            return;
-        };
-        self.pending_code_lens_token = None;
-        use lattice_lsp::cache::{CodeLensOutcome, LspCodeLensCache};
-        match outcome {
-            CodeLensOutcome::Items {
-                buffer_id,
-                document_version,
-                server_id,
-                lenses,
-            } => {
-                if buffer_id != self.document_buffer_id {
-                    return;
-                }
-                self.lsp_code_lens_cache.insert(
-                    buffer_id,
-                    LspCodeLensCache {
-                        document_version,
-                        lenses,
-                        server_id,
-                    },
-                );
-            }
-            CodeLensOutcome::Empty {
-                buffer_id,
-                document_version,
-            } => {
-                if buffer_id != self.document_buffer_id {
-                    return;
-                }
-                self.lsp_code_lens_cache.insert(
-                    buffer_id,
-                    LspCodeLensCache {
-                        document_version,
-                        lenses: Vec::new(),
-                        server_id: std::sync::Arc::from("<none>"),
-                    },
-                );
-            }
-        }
-    }
+    // Phase 5.8.AF.5 / Slice 3b.3: `drain_pending_code_lens`
+    // retired. The spawned task in `maybe_request_code_lens`
+    // writes directly into `lsp_code_lens_cache` via
+    // `PerBufferCacheExt::insert_for`. No channel, no drain.
 
     /// 4.5.e: drain `documentColor` outcome; seat the per-buffer
     /// cache. Phase 5.8.AA.b: hoisted from TUI App.
@@ -6559,7 +6526,10 @@ impl Editor {
         // `PerBufferCacheExt::insert_for`.
         self.drain_pending_moniker();
         self.drain_pending_document_link();
-        self.drain_pending_code_lens();
+        // 5.8.AF.5 / Slice 3b.3: `drain_pending_code_lens`
+        // retired -- writes happen directly from the spawned
+        // request task into `lsp_code_lens_cache` via
+        // `PerBufferCacheExt::insert_for`.
         self.drain_pending_document_color();
         self.drain_pending_completion();
         self.drain_diagnostic_refresh();
@@ -13682,8 +13652,9 @@ impl Editor {
     /// 4.5.d: `:lsp-code-lens`. Open a picker over the active
     /// buffer's cached lenses. Phase 5.8.AD.2.
     pub fn do_lsp_code_lens_picker(&mut self) {
+        use crate::per_buffer_cache::PerBufferCacheExt;
         let buffer_id = self.document_buffer_id;
-        let Some(cache) = self.lsp_code_lens_cache.get(&buffer_id).cloned() else {
+        let Some(cache) = self.lsp_code_lens_cache.get_for(buffer_id) else {
             self.set_message(EchoLevel::Info, "no code lenses (cache empty)".to_string());
             return;
         };

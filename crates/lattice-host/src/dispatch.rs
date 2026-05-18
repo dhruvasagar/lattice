@@ -3688,6 +3688,56 @@ impl Editor {
         }
     }
 
+    /// Jump to an LSP `Location`. Same-buffer: move cursor only.
+    /// Cross-file: route through `do_edit` so LSP attach + buffer-
+    /// registry seam handles the open; then move cursor. Pushes
+    /// the pre-jump cursor onto position history (PluginPush) so
+    /// `<C-o>` walks back to where the user started.
+    ///
+    /// Returned `Vec<RendererSignal>` carries the `do_edit`
+    /// signals (Opened/Activated/Reloaded) for the caller to fan
+    /// through its `handle_renderer_signal`.
+    ///
+    /// Phase 5.8.AA.k.2: hoisted from
+    /// `lattice-ui-tui::app::lsp::App::jump_to_lsp_location`.
+    pub fn jump_to_lsp_location(
+        &mut self,
+        loc: &lattice_lsp::lsp_types::Location,
+    ) -> Vec<RendererSignal> {
+        let target_path = match lattice_lsp::actor::uri_to_path(&loc.uri) {
+            Some(p) => p,
+            None => {
+                self.set_message(
+                    EchoLevel::Error,
+                    format!("definition target uri is not a file: {}", loc.uri.as_str()),
+                );
+                return Vec::new();
+            }
+        };
+        self.push_position_history(self.cursor, crate::state::PositionSource::PluginPush);
+        let same_buffer = self
+            .document
+            .path()
+            .map(|p| p == target_path)
+            .unwrap_or(false);
+        let signals = if !same_buffer {
+            match self.do_edit(Some(target_path), false) {
+                DoEditOutcome::Opened(s)
+                | DoEditOutcome::Activated(s)
+                | DoEditOutcome::Reloaded(s) => s,
+                _ => Vec::new(),
+            }
+        } else {
+            Vec::new()
+        };
+        let snap = self.document.snapshot();
+        let line_text = snap.buffer.line(loc.range.start.line).unwrap_or_default();
+        let byte =
+            lattice_lsp::position::utf16_column_to_utf8_byte(&line_text, loc.range.start.character);
+        self.cursor = lattice_protocol::position::Position::new(loc.range.start.line, byte);
+        signals
+    }
+
     /// Outcome of [`Editor::do_edit`]. Renderer peers act on:
     ///   - `Directory(path)` → open the file-tree (oil) view —
     ///     caller-side because the oil-view machinery is still

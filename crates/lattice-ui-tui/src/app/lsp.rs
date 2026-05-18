@@ -2595,38 +2595,13 @@ impl App {
     /// jump came from an external dispatch (LSP) rather than a
     /// vim-style motion.
     pub(super) fn jump_to_lsp_location(&mut self, loc: &lattice_lsp::lsp_types::Location) {
-        let target_path = match lattice_lsp::actor::uri_to_path(&loc.uri) {
-            Some(p) => p,
-            None => {
-                self.set_message(
-                    EchoLevel::Error,
-                    format!("definition target uri is not a file: {}", loc.uri.as_str()),
-                );
-                return;
-            }
-        };
-        // Push pre-jump cursor before doing anything else so a
-        // subsequent <C-o> walks back to where we started, not
-        // to the target.
-        self.push_position_history(self.editor.cursor, super::PositionSource::PluginPush);
-
-        // Same buffer? Just update the cursor.
-        let same_buffer = self
-            .editor
-            .document
-            .path()
-            .map(|p| p == target_path)
-            .unwrap_or(false);
-        if !same_buffer {
-            self.do_edit(Some(target_path), false);
+        // 5.8.AA.k.2: migrated to host. Host returns
+        // `Vec<RendererSignal>` from the embedded `do_edit`; fan
+        // them through the existing signal handler.
+        let signals = self.editor.jump_to_lsp_location(loc);
+        for s in signals {
+            self.handle_renderer_signal(s);
         }
-        // Convert LSP target position back to App (line, byte).
-        let snap = self.editor.document.snapshot();
-        let line_text = snap.buffer.line(loc.range.start.line).unwrap_or_default();
-        // utf-16 -> utf-8 byte.
-        let byte =
-            lattice_lsp::position::utf16_column_to_utf8_byte(&line_text, loc.range.start.character);
-        self.editor.cursor = lattice_protocol::position::Position::new(loc.range.start.line, byte);
     }
 
     /// 5.5.F.7: see [`lattice_host::dispatch::Editor::do_list_diagnostics`].

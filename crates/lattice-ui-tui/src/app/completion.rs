@@ -39,42 +39,12 @@ use lattice_protocol::edit::Edit;
 use lattice_protocol::position::{Position, Range as ProtoRange};
 
 use super::{
-    App, EchoLevel, SNIPPET_COMPLETION_KIND_ID, SnippetCandidateMeta, dedup_rendered_by_text,
-    is_path_byte, is_word_char_byte, lsp_position_to_app_byte,
+    App, EchoLevel, SNIPPET_COMPLETION_KIND_ID, SnippetCandidateMeta, is_path_byte,
+    is_word_char_byte, lsp_position_to_app_byte,
 };
 
-/// Effective insert-completion config for a given language.
-/// Materialised by [`App::effective_completion_for`] from the
-/// per-language overrides + global typed options + spec
-/// fallbacks. Carried as a value type so the producer / fan-out
-/// paths read it without re-resolving for every candidate.
-#[derive(Debug, Clone)]
-#[allow(dead_code)] // `auto_trigger` / `auto_insert_single` /
-// `suppress_in` are plumbing the loader populates; production
-// readers come with the scope-detect slice. Tests already read
-// them, so the assertion shape is locked in.
-pub(crate) struct EffectiveCompletionConfig {
-    /// `Some(list)` -> only sources whose id appears in the list
-    /// contribute. `None` -> every enabled source contributes
-    /// (the "no per-language override" case).
-    pub(crate) sources: Option<Vec<lattice_completion::SourceId>>,
-    pub(crate) auto_trigger: bool,
-    pub(crate) auto_insert_single: bool,
-    /// Tree-sitter scopes where the popup should not fire.
-    /// Plumbed today; enforcement awaits the scope-detect slice.
-    pub(crate) suppress_in: Vec<String>,
-}
-
-impl EffectiveCompletionConfig {
-    /// True if `source` contributes for this language. `None`
-    /// effective `sources` means "every source contributes."
-    pub(crate) fn source_enabled(&self, source: &lattice_completion::SourceId) -> bool {
-        match &self.sources {
-            Some(list) => list.contains(source),
-            None => true,
-        }
-    }
-}
+// Phase 5.8.AD.4: `EffectiveCompletionConfig` migrated to host.
+pub(crate) use lattice_host::dispatch::EffectiveCompletionConfig;
 
 impl App {
     /// `<C-x><C-s>` -- direct snippet expansion (Phase 4.2.g.4).
@@ -187,17 +157,13 @@ impl App {
 
 impl App {
     pub fn do_completion_next(&mut self) {
-        if let Some(s) = self.editor.insert_completion.as_mut() {
-            s.select_next();
-        }
-        self.refresh_docs_popup_for_selection();
+        // Phase 5.8.AD.4: body migrated.
+        self.editor.do_completion_next();
     }
 
     pub fn do_completion_prev(&mut self) {
-        if let Some(s) = self.editor.insert_completion.as_mut() {
-            s.select_prev();
-        }
-        self.refresh_docs_popup_for_selection();
+        // Phase 5.8.AD.4: body migrated.
+        self.editor.do_completion_prev();
     }
 
     // 5.5.G.14: `do_completion_docs_scroll_down` /
@@ -215,234 +181,22 @@ impl App {
         buffer: &Buffer,
         trigger: &lattice_completion::CompletionTrigger,
     ) {
-        let language = self.active_language_id();
-        // CSM.6: pre-compute tree-sitter symbols once. The
-        // tree-sitter source iterates this slice via
-        // `ctx.tree_sitter_symbols` rather than re-walking the
-        // tree per produce.
-        let tree_sitter_symbols: Vec<String> = self
-            .document_syntax_for(self.editor.document_buffer_id)
-            .map(|s| s.snapshot().collect_symbols())
-            .unwrap_or_default();
-        // CSM.7: resolve the path source's base directory once
-        // (the buffer's parent dir or `cwd` fallback). The path
-        // source joins relative segments onto this; absolute
-        // partial paths bypass it.
-        let buffer_dir_owned: Option<std::path::PathBuf> = {
-            let snap = self.editor.document.snapshot();
-            snap.path
-                .as_ref()
-                .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-                .or_else(|| std::env::current_dir().ok())
-        };
-        // CSM.8b: pre-compute the LSP-side URI + position once;
-        // the LSP source reads them from the snapshot rather
-        // than threading them through its own struct. Both are
-        // `None` for scratch buffers (no URI mapping) or when
-        // the cursor's UTF-16 position can't be derived (out-
-        // of-range -- shouldn't happen in practice).
-        let uri_string: Option<String> = self
-            .editor
-            .buffer_uris
-            .get(&self.editor.document_buffer_id)
-            .map(|u| u.as_str().to_string());
-        let lsp_position_pair: Option<(u32, u32)> = {
-            let snap = self.editor.document.snapshot();
-            crate::app::app_to_lsp_position(&snap.buffer, self.editor.cursor)
-                .map(|p| (p.line, p.character))
-        };
-        let ctx = lattice_completion::InsertContext {
-            buffer,
-            cursor: state.cursor,
-            anchor: state.anchor,
-            query: &state.query,
-            trigger,
-            case_sensitive: false,
-            language: &language,
-            tree_sitter_symbols: &tree_sitter_symbols,
-            path_context: self.editor.completion_in_path_context,
-            buffer_dir: buffer_dir_owned.as_deref(),
-            uri: uri_string.as_deref(),
-            lsp_position: lsp_position_pair,
-        };
-        // Resolve the active language's effective config once;
-        // both sync sources (buffer-words, snippet) gate emit on
-        // it. The global default (no override) returns
-        // `sources = None` -> every source contributes.
-        let effective = self.effective_completion_for(&language);
-        let mut raw: Vec<lattice_completion::RawCandidate> = Vec::new();
-        // CSM.3: read mode-contributed sources from the cached
-        // `ActiveCompletionSources` buffer-local. CSM.4 -- CSM.8
-        // migrate today's hardcoded sources into this path one at
-        // a time; until then the cache is empty in practice and
-        // this loop is a no-op (fallback to the hardcoded calls
-        // below keeps the popup populated). Per-language
-        // `EffectiveCompletionConfig.source_enabled` still gates
-        // each contribution -- the per-language TOML filter
-        // applies on top of the mode-contributed set.
-        if let Some(active_sources) = self
-            .editor
-            .buffer_locals
-            .get(&self.editor.document_buffer_id)
-            .and_then(|locals| locals.get::<lattice_mode::ActiveCompletionSources>())
-        {
-            for contribution in &active_sources.0 {
-                if !effective.source_enabled(&contribution.id) {
-                    continue;
-                }
-                // CSM.7: inside a string scope the path source
-                // owns the popup -- non-path contributions
-                // would interleave buffer-words / snippets /
-                // tree-sitter symbols with filenames, which
-                // surprises the user. Suppress them at the
-                // loop level.
-                if ctx.path_context
-                    && contribution.id.as_str() != lattice_completion::PATH_SOURCE_ID
-                {
-                    continue;
-                }
-                if let lattice_completion::CompletionSourceKind::Sync(src) = &contribution.kind {
-                    raw.extend(src.produce(&ctx));
-                }
-                // Async sources are spawned at popup-open time
-                // by the LSP / plugin-driver path, not here.
-                // CSM.8 wires the LSP source through this branch.
-            }
-        }
-        // CSM.4/CSM.5: buffer-words + snippet completion sources
-        // are now contributed via their respective minor modes
-        // (read from `ActiveCompletionSources` above). The
-        // legacy hardcoded calls are retired; the cache-driven
-        // path populates the popup. The snippet sidecar that
-        // used to hold (name, prefix, description, body) tuples
-        // is gone -- candidate payloads carry the snippet's
-        // name; the accept path resolves the body via
-        // `SnippetRegistry::by_name` (see `snippet_meta_for`).
-        // CSM.6: tree-sitter local symbols are now contributed
-        // via `tree-sitter-completion-mode` (read from
-        // `ActiveCompletionSources` above). The host pre-walks
-        // `collect_symbols()` once per populate and threads
-        // the result via `ctx.tree_sitter_symbols`; the
-        // contributed source iterates that slice without
-        // re-traversing the tree. Per-language `source_enabled`
-        // gate still applies through the cache-reader loop.
-        state.raw = raw;
-        self.refilter_insert_completion(state);
+        // Phase 5.8.AD.4: body migrated.
+        self.editor
+            .populate_insert_completion_sync(state, buffer, trigger);
     }
 
-    /// Re-run matcher + ranker over `state.raw` against the
-    /// current `state.query`. Called every time the query
-    /// mutates (each Insert-mode keystroke while the popup is
-    /// open).
+    /// Re-run matcher + ranker. Phase 5.8.AD.4: migrated.
     pub(super) fn refilter_insert_completion(
         &self,
         state: &mut lattice_completion::InsertCompletionState,
     ) {
-        let matcher = lattice_completion::FuzzyInsertMatcher::new();
-        // CSM.K2: when `source_filter` is set, narrow the raw
-        // pool to candidates from that source before matcher /
-        // ranker run. `None` ⇒ unfiltered (every source).
-        let source_filter = state.source_filter.clone();
-        let mut scored: Vec<lattice_completion::ScoredCandidate> = state
-            .raw
-            .iter()
-            .filter(|raw| match source_filter.as_ref() {
-                Some(id) => raw.source.as_ref() == Some(id),
-                None => true,
-            })
-            .filter_map(|raw| {
-                lattice_completion::CandidateMatcher::matches(&matcher, &state.query, raw).map(
-                    |(score, ranges)| lattice_completion::ScoredCandidate {
-                        raw: raw.clone(),
-                        score,
-                        match_ranges: ranges,
-                    },
-                )
-            })
-            .collect();
-        let ranker = lattice_completion::InsertRanker::new();
-        ranker.rank_with_bonus(&mut scored, |raw| self.completion_total_bonus(raw));
-        state.rendered = scored
-            .into_iter()
-            .map(lattice_completion::RenderedCandidate::from_scored)
-            .collect();
-        dedup_rendered_by_text(&mut state.rendered);
-        if !state.rendered.is_empty() && state.selected >= state.rendered.len() {
-            state.selected = state.rendered.len() - 1;
-        }
+        self.editor.refilter_insert_completion(state);
     }
 
-    /// Total ranker bonus for a candidate -- per-source priority
-    /// (`docs/dev/architecture/insert-completion.md` §3.4 / §3.6) plus the capped
-    /// frequency lift. Future bonus terms (preselect,
-    /// deprecated penalty) compose into this same closure as
-    /// 4.2.g.5 / 4.2.g.6 land them.
-    fn completion_total_bonus(&self, raw: &lattice_completion::RawCandidate) -> u32 {
-        let priority = raw
-            .source
-            .as_ref()
-            .map(|s| self.priority_for_source(s))
-            .unwrap_or(0);
-        let freq = self
-            .editor
-            .completion_accept_freq
-            .get(&(raw.text.clone(), raw.kind))
-            .copied()
-            .unwrap_or(0)
-            .min(lattice_completion::InsertRanker::FREQUENCY_BONUS_CAP);
-        priority.saturating_add(freq)
-    }
+    // Phase 5.8.AD.4: `completion_total_bonus` migrated to host.
 
-    /// Effective per-source priority for the insert-completion
-    /// ranker. Reads the typed `completion.source.<id>.priority`
-    /// option for known v1 sources (LSP / snippet /
-    /// buffer-words). Unknown source ids -- plugin sources or
-    /// future built-ins not yet wired into config -- get 0;
-    /// the ranker still sorts them by their matcher score so
-    /// they're not discarded, just not boosted.
-    fn priority_for_source(&self, source: &lattice_completion::SourceId) -> u32 {
-        use lattice_config::{
-            CompletionSourceBufferWordsPriority, CompletionSourceLspPriority,
-            CompletionSourcePathPriority, CompletionSourceSnippetPriority,
-            CompletionSourceTreeSitterPriority,
-        };
-        // Type-keyed read per source. Five distinct option types
-        // ⇒ the type can't be variable, so the dispatch is a
-        // match on source.as_str() returning the read value
-        // directly.
-        let raw: i64 = match source.as_str() {
-            "gen:lsp-completion" => *self
-                .editor
-                .config
-                .get_typed::<CompletionSourceLspPriority>()
-                .expect("CompletionSourceLspPriority"),
-            "gen:snippet" => *self
-                .editor
-                .config
-                .get_typed::<CompletionSourceSnippetPriority>()
-                .expect("CompletionSourceSnippetPriority"),
-            "gen:buffer-words" => *self
-                .editor
-                .config
-                .get_typed::<CompletionSourceBufferWordsPriority>()
-                .expect("CompletionSourceBufferWordsPriority"),
-            "gen:tree-sitter-symbol" => *self
-                .editor
-                .config
-                .get_typed::<CompletionSourceTreeSitterPriority>()
-                .expect("CompletionSourceTreeSitterPriority"),
-            "gen:path" => *self
-                .editor
-                .config
-                .get_typed::<CompletionSourcePathPriority>()
-                .expect("CompletionSourcePathPriority"),
-            _ => return 0,
-        };
-        // Validator clamps to [0, 9999] so this saturating cast
-        // is a no-op in practice; defend against config writes
-        // that bypass the validator (none today, but cheap).
-        raw.clamp(0, u32::MAX as i64) as u32
-    }
+    // Phase 5.8.AD.4: `priority_for_source` migrated to host.
 
     /// Manual trigger / refresh. Opens the popup if it's
     /// closed; refreshes raw + rendered candidates if it's
@@ -762,93 +516,19 @@ impl App {
     /// missing AND the originating server advertises the
     /// resolve provider.
     pub fn do_completion_toggle_docs(&mut self) {
-        let Some(state) = self.editor.insert_completion.as_mut() else {
-            return;
-        };
-        if state.doc_popup.is_some() {
-            state.doc_popup = None;
-            return;
-        }
-        let selected = state.selected;
-        // Pull the immediate body from the focused candidate
-        // when we already have it; this avoids paying a
-        // resolve round-trip for items that arrived with
-        // `documentation` already set.
-        let body = self.docs_body_for_selected();
-        let needs_resolve = body.is_none() && self.selected_needs_resolve();
-        if let Some(state) = self.editor.insert_completion.as_mut() {
-            state.doc_popup = Some(lattice_completion::DocPopupState {
-                for_index: selected,
-                body,
-                scroll: 0,
-            });
-        }
-        if needs_resolve {
-            self.do_completion_resolve_focused();
-        }
+        // Phase 5.8.AD.4: body migrated.
+        self.editor.do_completion_toggle_docs();
     }
 
     /// Build the docs body for the popup's currently-focused
-    /// candidate from cached metadata. Returns `None` when
-    /// the candidate is sync-source (no docs) or LSP without
-    /// pre-resolved documentation. The caller decides whether
-    /// to fire resolve.
+    /// candidate. Phase 5.8.AD.4: migrated.
     pub(super) fn docs_body_for_selected(&self) -> Option<String> {
-        let state = self.editor.insert_completion.as_ref()?;
-        let cand = state.rendered.get(state.selected)?;
-        let meta = self.lsp_completion_meta_for(cand)?;
-        // Header: signature / detail when present. The body
-        // joins detail + documentation so the popup feels like
-        // a hover panel for the candidate.
-        let detail = meta.detail.as_ref().filter(|s| !s.is_empty()).map(|s| {
-            // Render detail as a fenced code block so the
-            // popup's markdown highlighter (4.2.g.5+) picks
-            // up syntax highlighting once wired.
-            format!("```\n{s}\n```")
-        });
-        let docs = meta
-            .documentation
-            .as_ref()
-            .filter(|s| !s.is_empty())
-            .cloned();
-        match (detail, docs) {
-            (Some(d), Some(b)) => Some(format!("{d}\n\n{b}")),
-            (Some(d), None) => Some(d),
-            (None, Some(b)) => Some(b),
-            (None, None) => None,
-        }
+        self.editor.docs_body_for_selected()
     }
 
-    /// True when the focused candidate is LSP-sourced, has no
-    /// documentation, and the originating server advertises
-    /// the resolve provider.
+    /// True when the focused candidate needs resolve. Phase 5.8.AD.4.
     pub(super) fn selected_needs_resolve(&self) -> bool {
-        let Some(state) = self.editor.insert_completion.as_ref() else {
-            return false;
-        };
-        let Some(cand) = state.rendered.get(state.selected) else {
-            return false;
-        };
-        let Some(meta) = self.lsp_completion_meta_for(cand) else {
-            return false;
-        };
-        if meta.resolved {
-            return false;
-        }
-        if meta.documentation.is_some() {
-            return false;
-        }
-        // Walk attached servers; check if the originating one
-        // (by id) advertises `completionProvider.resolveProvider`.
-        let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id) else {
-            return false;
-        };
-        for h in self.editor.lsp.servers_for(uri) {
-            if h.server_id() == meta.server_id.as_str() {
-                return h.capabilities().completion_resolve_provider();
-            }
-        }
-        false
+        self.editor.selected_needs_resolve()
     }
 
     /// On every Insert-mode text insertion, if the popup is
@@ -888,61 +568,17 @@ impl App {
     /// the popup stays open so the user can switch chords or
     /// clear the filter without losing the trigger context.
     pub fn do_completion_filter_to_source(&mut self, id: String) {
-        let Some(mut state) = self.editor.insert_completion.take() else {
-            return;
-        };
-        state.source_filter = Some(lattice_completion::SourceId::new(id));
-        self.refilter_insert_completion(&mut state);
-        self.editor.insert_completion = Some(state);
-        self.refresh_docs_popup_for_selection();
+        // Phase 5.8.AD.4: body migrated.
+        self.editor.do_completion_filter_to_source(id);
     }
 
-    /// CSM.K2: clear the active source filter (`<C-Space>`).
-    /// Restores the mixed merged candidate list.
+    /// CSM.K2: clear the active source filter. Phase 5.8.AD.4.
     pub fn do_completion_filter_clear(&mut self) {
-        let Some(mut state) = self.editor.insert_completion.take() else {
-            return;
-        };
-        state.source_filter = None;
-        self.refilter_insert_completion(&mut state);
-        self.editor.insert_completion = Some(state);
-        self.refresh_docs_popup_for_selection();
+        self.editor.do_completion_filter_clear();
     }
 
-    /// When the focused candidate changes (next / prev /
-    /// refilter pinning), re-target the docs popup. If the
-    /// popup is open AND `for_index` no longer matches
-    /// `selected`, re-derive the body and (when needed) fire
-    /// a fresh `completionItem/resolve`.
-    fn refresh_docs_popup_for_selection(&mut self) {
-        let docs_open = self
-            .editor
-            .insert_completion
-            .as_ref()
-            .map(|s| s.doc_popup.is_some())
-            .unwrap_or(false);
-        if !docs_open {
-            return;
-        }
-        let new_index = self
-            .editor
-            .insert_completion
-            .as_ref()
-            .map(|s| s.selected)
-            .unwrap_or(0);
-        let body = self.docs_body_for_selected();
-        let needs_resolve = body.is_none() && self.selected_needs_resolve();
-        if let Some(state) = self.editor.insert_completion.as_mut()
-            && let Some(doc) = state.doc_popup.as_mut()
-        {
-            doc.for_index = new_index;
-            doc.scroll = 0;
-            doc.body = body;
-        }
-        if needs_resolve {
-            self.do_completion_resolve_focused();
-        }
-    }
+    // Phase 5.8.AD.4: `refresh_docs_popup_for_selection`
+    // migrated to host as a private helper.
 
     /// Build a `VariableContext` for snippet expansion from
     /// the active buffer / cursor / clipboard / etc. 5.5.SNIPPET.1:
@@ -1109,20 +745,8 @@ impl App {
     /// enforcement seam (sync source filter, LSP fan-out, the
     /// `auto_insert_single` check at popup-open).
     pub(crate) fn effective_completion_for(&self, language: &str) -> EffectiveCompletionConfig {
-        let overrides = self.editor.per_language_completion.get(language);
-        EffectiveCompletionConfig {
-            sources: overrides.and_then(|o| o.sources.clone()),
-            // No global `completion.auto_trigger` typed option
-            // yet (auto-trigger firing itself lands in a future
-            // slice); fall back to false per spec.
-            auto_trigger: overrides.and_then(|o| o.auto_trigger).unwrap_or(false),
-            auto_insert_single: overrides
-                .and_then(|o| o.auto_insert_single)
-                .unwrap_or_else(|| self.completion_auto_insert_single()),
-            suppress_in: overrides
-                .and_then(|o| o.suppress_in.clone())
-                .unwrap_or_default(),
-        }
+        // Phase 5.8.AD.4: body migrated.
+        self.editor.effective_completion_for(language)
     }
 }
 

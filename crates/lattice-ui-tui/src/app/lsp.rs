@@ -79,43 +79,8 @@ use lattice_protocol::edit::Edit;
 /// path keeps its "replace prior LSP slice" semantics
 /// untouched. `is_incomplete` rides on
 /// [`lattice_completion::CandidateSink::mark_incomplete`].
-struct BatchingSink {
-    items: std::sync::Mutex<Vec<lattice_completion::RawCandidate>>,
-    is_incomplete: std::sync::atomic::AtomicBool,
-}
-
-impl BatchingSink {
-    fn new() -> Self {
-        Self {
-            items: std::sync::Mutex::new(Vec::new()),
-            is_incomplete: std::sync::atomic::AtomicBool::new(false),
-        }
-    }
-
-    /// Take the buffered candidate set and the incomplete
-    /// flag. Called by the spawn wrapper after the future
-    /// resolves.
-    fn drain(&self) -> (Vec<lattice_completion::RawCandidate>, bool) {
-        let items = std::mem::take(&mut *self.items.lock().expect("BatchingSink mutex"));
-        let is_incomplete = self
-            .is_incomplete
-            .load(std::sync::atomic::Ordering::Relaxed);
-        (items, is_incomplete)
-    }
-}
-
-impl lattice_completion::CandidateSink for BatchingSink {
-    fn push(&self, candidate: lattice_completion::RawCandidate) {
-        self.items
-            .lock()
-            .expect("BatchingSink mutex")
-            .push(candidate);
-    }
-    fn mark_incomplete(&self) {
-        self.is_incomplete
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-    }
-}
+// Phase 5.8.AD.4: `BatchingSink` migrated to host as
+// `InsertCompletionBatchingSink` (private to `lattice_host::dispatch`).
 
 impl App {
     /// M.5.0: is `lsp-mode` active for `buffer_id`? Every LSP
@@ -454,104 +419,8 @@ impl App {
     /// the LSP spec. Drain updates the meta + the docs popup
     /// body in place.
     pub(super) fn do_completion_resolve_focused(&mut self) {
-        // Cancel any prior in-flight resolve -- the focus moved
-        // to a different candidate.
-        if let Some(token) = self.editor.pending_completion_resolve_token.take() {
-            token.cancel();
-        }
-        let Some(state) = self.editor.insert_completion.as_ref() else {
-            return;
-        };
-        let Some(cand) = state.rendered.get(state.selected) else {
-            return;
-        };
-        let Some(meta) = self.lsp_completion_meta_for(cand) else {
-            return;
-        };
-        if meta.resolved {
-            return;
-        }
-        let original = meta.original_item.clone();
-        let server_id = meta.server_id.clone();
-        // CSM.8b: index of this meta entry within state.raw's
-        // LSP-row sequence. The drain populates the parallel
-        // sidecar in the same order, so this lookup hits the
-        // matching meta. Match on full payload bytes since two
-        // distinct items will always serialise differently (the
-        // produce_async dedup happens up-stream).
-        let candidate_payload = match &cand.raw.data {
-            lattice_completion::CandidateData::Extension { payload, .. } => payload.clone(),
-            _ => return,
-        };
-        let Some(state_ref) = self.editor.insert_completion.as_ref() else {
-            return;
-        };
-        let Some(meta_index) = state_ref
-            .raw
-            .iter()
-            .filter(|r| {
-                matches!(
-                    r.data,
-                    lattice_completion::CandidateData::Extension {
-                        kind_id: LSP_COMPLETION_KIND_ID,
-                        ..
-                    }
-                )
-            })
-            .position(|r| match &r.data {
-                lattice_completion::CandidateData::Extension { payload, .. } => {
-                    payload == &candidate_payload
-                }
-                _ => false,
-            })
-        else {
-            return;
-        };
-        // Resolve URI to find the originating server handle.
-        let Some(uri) = self
-            .editor
-            .buffer_uris
-            .get(&self.editor.document_buffer_id)
-            .cloned()
-        else {
-            return;
-        };
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<CompletionResolveOutcome>();
-        let token = lattice_protocol::CancellationToken::new();
-        self.editor.pending_completion_resolve_rx = Some(rx);
-        self.editor.pending_completion_resolve_token = Some(token.clone());
-        let lsp = self.editor.lsp.clone();
-        crate::runtime::spawn_on_lsp_runtime(async move {
-            let handle = lsp
-                .servers_for(&uri)
-                .into_iter()
-                .find(|h| h.server_id() == &*server_id);
-            let Some(handle) = handle else {
-                return;
-            };
-            if !handle.capabilities().completion_resolve_provider() {
-                return;
-            }
-            if token.is_cancelled() {
-                return;
-            }
-            // `request_with_cancel` takes `&str` method name and
-            // a serializable param; the resolved item comes back
-            // as `CompletionItem`.
-            let pending = handle
-                .request_with_cancel::<lattice_lsp::lsp_types::CompletionItem, lattice_lsp::lsp_types::CompletionItem>(
-                    "completionItem/resolve",
-                    original,
-                    token.clone(),
-                );
-            let Ok(resolved) = pending.await else {
-                return;
-            };
-            let _ = tx.send(CompletionResolveOutcome {
-                meta_index,
-                resolved,
-            });
-        });
+        // Phase 5.8.AD.4: body migrated.
+        self.editor.do_completion_resolve_focused();
     }
 
     /// Fire `textDocument/completion` for the active Insert-
@@ -565,116 +434,8 @@ impl App {
     /// architecture-doc strategy. Items beyond `MAX_LSP_ITEMS`
     /// are dropped.
     pub(super) fn do_lsp_insert_completion_request(&mut self) {
-        // M.6.2: lsp-completion-mode gate (umbrella implied by
-        // M.6.1 cascade: sub-mode can't be on without umbrella).
-        // Insert-mode is high-frequency; silent on bail (the user
-        // is typing, not invoking a discrete command).
-        if !self.lsp_completion_mode_enabled_for(self.editor.document_buffer_id) {
-            return;
-        }
-        if let Some(token) = self.editor.pending_insert_completion_lsp_token.take() {
-            token.cancel();
-        }
-        // Path-completion mode (4.2.g.6 (2/2)) suppresses LSP
-        // completion -- the popup is showing filesystem entries.
-        if self.editor.completion_in_path_context {
-            return;
-        }
-        // Per-language sources filter (Phase 4.2.g.5 (3b/3)).
-        let language = self.active_language_id();
-        let effective = self.effective_completion_for(&language);
-        let lsp_id =
-            lattice_completion::SourceId::new(lattice_completion::LSP_COMPLETION_SOURCE_ID);
-        if !effective.source_enabled(&lsp_id) {
-            return;
-        }
-        let Some(uri) = self
-            .editor
-            .buffer_uris
-            .get(&self.editor.document_buffer_id)
-            .cloned()
-        else {
-            // No URI -- no LSP. Sync sources still populate the
-            // popup; just skip the LSP request silently.
-            return;
-        };
-        let snapshot = self.editor.document.snapshot();
-        let lsp_position = match app_to_lsp_position(&snapshot.buffer, self.editor.cursor) {
-            Some(p) => p,
-            None => return,
-        };
-        // CSM.8b.3: pre-check "no servers attached" synchronously
-        // so the existing popup-empty-close gate fires without
-        // waiting on a no-op async round-trip.
-        if self.editor.lsp.servers_for(&uri).is_empty() {
-            let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<InsertCompletionLspOutcome>();
-            self.editor.pending_insert_completion_lsp_rx = Some(rx);
-            self.editor.pending_insert_completion_lsp_token = None;
-            let _ = tx.send(InsertCompletionLspOutcome::NoServers);
-            return;
-        }
-        // CSM.8b.3: dispatch through the cached `LspCompletionSource`
-        // (contributed by `lsp-completion-mode`) instead of the
-        // bespoke inline fan-out. The source's `produce_async`
-        // owns the multi-server fan-out + dedup + per-item
-        // payload encode; this method just gates, builds the
-        // snapshot, and bridges the sink output onto the
-        // existing channel.
-        let Some(state) = self.editor.insert_completion.as_ref() else {
-            return;
-        };
-        let trigger = state.trigger.clone();
-        let cursor = state.cursor;
-        let anchor = state.anchor;
-        let query = state.query.clone();
-        let source = self
-            .editor
-            .buffer_locals
-            .get(&self.editor.document_buffer_id)
-            .and_then(|locals| locals.get::<lattice_mode::ActiveCompletionSources>())
-            .and_then(|s| {
-                s.0.iter().find_map(|c| match &c.kind {
-                    lattice_completion::CompletionSourceKind::Async(src) if c.id == lsp_id => {
-                        Some(src.clone())
-                    }
-                    _ => None,
-                })
-            });
-        let Some(source) = source else {
-            // Mode active but cache hasn't seeded the source yet
-            // -- shouldn't happen in practice (M.6.1 cascade
-            // recomputes). Silent bail.
-            return;
-        };
-        let ctx_snapshot = lattice_completion::InsertContextSnapshot {
-            cursor,
-            anchor,
-            query,
-            trigger,
-            case_sensitive: false,
-            language: language.clone(),
-            tree_sitter_symbols: Vec::new(),
-            path_context: false,
-            buffer_dir: None,
-            uri: Some(uri.as_str().to_string()),
-            lsp_position: Some((lsp_position.line, lsp_position.character)),
-        };
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<InsertCompletionLspOutcome>();
-        let token = lattice_protocol::CancellationToken::new();
-        self.editor.pending_insert_completion_lsp_rx = Some(rx);
-        self.editor.pending_insert_completion_lsp_token = Some(token.clone());
-        let sink = std::sync::Arc::new(BatchingSink::new());
-        let sink_for_fut = sink.clone();
-        let token_for_fut = token.clone();
-        crate::runtime::spawn_on_lsp_runtime(async move {
-            let fut = source.produce_async(ctx_snapshot, sink_for_fut, token_for_fut);
-            fut.await;
-            let (candidates, is_incomplete) = sink.drain();
-            let _ = tx.send(InsertCompletionLspOutcome::Items {
-                candidates,
-                is_incomplete,
-            });
-        });
+        // Phase 5.8.AD.4: body migrated.
+        self.editor.do_lsp_insert_completion_request();
     }
 
     /// Drain queued `completionItem/resolve` responses --
@@ -948,14 +709,8 @@ impl App {
         &self,
         candidate: &lattice_completion::RenderedCandidate,
     ) -> Option<LspCompletionMeta> {
-        let lattice_completion::CandidateData::Extension { kind_id, payload } = &candidate.raw.data
-        else {
-            return None;
-        };
-        if *kind_id != LSP_COMPLETION_KIND_ID {
-            return None;
-        }
-        lattice_lsp::completion::decode_meta(payload)
+        // Phase 5.8.AD.4: body migrated.
+        self.editor.lsp_completion_meta_for(candidate)
     }
 
     /// Look up the current URI of a buffer. None for buffers

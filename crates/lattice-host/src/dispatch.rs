@@ -1438,6 +1438,12 @@ impl Editor {
         self.minor_mode_enabled_for(buffer_id, lattice_lsp::modes::LspHoverMode::mode_id())
     }
 
+    /// M.6.0: is `lsp-completion-mode` active on `buffer_id`?
+    /// Phase 5.8.AD.4: hoisted from TUI App.
+    pub fn lsp_completion_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
+        self.minor_mode_enabled_for(buffer_id, lattice_lsp::modes::LspCompletionMode::mode_id())
+    }
+
     /// 5.5.LSP.4: is `lsp-signature-mode` active on `buffer_id`?
     /// Gates `lsp_signature_help_request` -- silent gate (Insert-
     /// mode auto-trigger).
@@ -11696,6 +11702,533 @@ impl Editor {
         });
     }
 
+    /// `<C-Space>` (or auto-trigger) -- fire `textDocument/completion`
+    /// for the active Insert-mode popup. Multi-server fan-out
+    /// happens inside the `LspCompletionSource` contributed by
+    /// `lsp-completion-mode`. Phase 5.8.AD.4: hoisted from TUI App.
+    pub fn do_lsp_insert_completion_request(&mut self) {
+        if !self.lsp_completion_mode_enabled_for(self.document_buffer_id) {
+            return;
+        }
+        if let Some(token) = self.pending_insert_completion_lsp_token.take() {
+            token.cancel();
+        }
+        if self.completion_in_path_context {
+            return;
+        }
+        let language = self.active_language_id();
+        let effective = self.effective_completion_for(&language);
+        let lsp_id =
+            lattice_completion::SourceId::new(lattice_completion::LSP_COMPLETION_SOURCE_ID);
+        if !effective.source_enabled(&lsp_id) {
+            return;
+        }
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
+            return;
+        };
+        let snapshot = self.document.snapshot();
+        let lsp_position = match crate::lsp_helpers::app_to_lsp_position(&snapshot.buffer, self.cursor) {
+            Some(p) => p,
+            None => return,
+        };
+        if self.lsp.servers_for(&uri).is_empty() {
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<
+                lattice_lsp::cache::InsertCompletionLspOutcome,
+            >();
+            self.pending_insert_completion_lsp_rx = Some(rx);
+            self.pending_insert_completion_lsp_token = None;
+            let _ = tx.send(lattice_lsp::cache::InsertCompletionLspOutcome::NoServers);
+            return;
+        }
+        let Some(state) = self.insert_completion.as_ref() else {
+            return;
+        };
+        let trigger = state.trigger.clone();
+        let cursor = state.cursor;
+        let anchor = state.anchor;
+        let query = state.query.clone();
+        let source = self
+            .buffer_locals
+            .get(&self.document_buffer_id)
+            .and_then(|locals| locals.get::<lattice_mode::ActiveCompletionSources>())
+            .and_then(|s| {
+                s.0.iter().find_map(|c| match &c.kind {
+                    lattice_completion::CompletionSourceKind::Async(src) if c.id == lsp_id => {
+                        Some(src.clone())
+                    }
+                    _ => None,
+                })
+            });
+        let Some(source) = source else {
+            return;
+        };
+        let ctx_snapshot = lattice_completion::InsertContextSnapshot {
+            cursor,
+            anchor,
+            query,
+            trigger,
+            case_sensitive: false,
+            language: language.clone(),
+            tree_sitter_symbols: Vec::new(),
+            path_context: false,
+            buffer_dir: None,
+            uri: Some(uri.as_str().to_string()),
+            lsp_position: Some((lsp_position.line, lsp_position.character)),
+        };
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<
+            lattice_lsp::cache::InsertCompletionLspOutcome,
+        >();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_insert_completion_lsp_rx = Some(rx);
+        self.pending_insert_completion_lsp_token = Some(token.clone());
+        let sink = std::sync::Arc::new(InsertCompletionBatchingSink::new());
+        let sink_for_fut = sink.clone();
+        let token_for_fut = token.clone();
+        lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
+            let fut = source.produce_async(ctx_snapshot, sink_for_fut, token_for_fut);
+            fut.await;
+            let (candidates, is_incomplete) = sink.drain();
+            let _ = tx.send(lattice_lsp::cache::InsertCompletionLspOutcome::Items {
+                candidates,
+                is_incomplete,
+            });
+        });
+    }
+
+    /// Decode the LSP completion metadata sidecar from a rendered
+    /// candidate. `None` for sync-source candidates (no LSP
+    /// payload). Phase 5.8.AD.4: hoisted from TUI App.
+    pub fn lsp_completion_meta_for(
+        &self,
+        candidate: &lattice_completion::RenderedCandidate,
+    ) -> Option<lattice_lsp::completion::LspCompletionMeta> {
+        let lattice_completion::CandidateData::Extension { kind_id, payload } = &candidate.raw.data
+        else {
+            return None;
+        };
+        if *kind_id != lattice_lsp::completion::LSP_COMPLETION_KIND_ID {
+            return None;
+        }
+        lattice_lsp::completion::decode_meta(payload)
+    }
+
+    /// Build the docs popup body for the focused candidate from
+    /// cached metadata. `None` for sync sources or LSP without
+    /// pre-resolved documentation. Phase 5.8.AD.4.
+    pub fn docs_body_for_selected(&self) -> Option<String> {
+        let state = self.insert_completion.as_ref()?;
+        let cand = state.rendered.get(state.selected)?;
+        let meta = self.lsp_completion_meta_for(cand)?;
+        let detail = meta
+            .detail
+            .as_ref()
+            .filter(|s| !s.is_empty())
+            .map(|s| format!("```\n{s}\n```"));
+        let docs = meta
+            .documentation
+            .as_ref()
+            .filter(|s| !s.is_empty())
+            .cloned();
+        match (detail, docs) {
+            (Some(d), Some(b)) => Some(format!("{d}\n\n{b}")),
+            (Some(d), None) => Some(d),
+            (None, Some(b)) => Some(b),
+            (None, None) => None,
+        }
+    }
+
+    /// True when the focused candidate is LSP-sourced, has no
+    /// documentation, and the originating server advertises the
+    /// resolve provider. Phase 5.8.AD.4.
+    pub fn selected_needs_resolve(&self) -> bool {
+        let Some(state) = self.insert_completion.as_ref() else {
+            return false;
+        };
+        let Some(cand) = state.rendered.get(state.selected) else {
+            return false;
+        };
+        let Some(meta) = self.lsp_completion_meta_for(cand) else {
+            return false;
+        };
+        if meta.resolved {
+            return false;
+        }
+        if meta.documentation.is_some() {
+            return false;
+        }
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id) else {
+            return false;
+        };
+        for h in self.lsp.servers_for(uri) {
+            if h.server_id() == meta.server_id.as_str() {
+                return h.capabilities().completion_resolve_provider();
+            }
+        }
+        false
+    }
+
+    /// Fire `completionItem/resolve` for the focused candidate
+    /// (Phase 4.2.g.3). The drain seats the resolved fields into
+    /// the parallel sidecar + the docs popup body. Phase 5.8.AD.4.
+    pub fn do_completion_resolve_focused(&mut self) {
+        if let Some(token) = self.pending_completion_resolve_token.take() {
+            token.cancel();
+        }
+        let Some(state) = self.insert_completion.as_ref() else {
+            return;
+        };
+        let Some(cand) = state.rendered.get(state.selected) else {
+            return;
+        };
+        let Some(meta) = self.lsp_completion_meta_for(cand) else {
+            return;
+        };
+        if meta.resolved {
+            return;
+        }
+        let original = meta.original_item.clone();
+        let server_id = meta.server_id.clone();
+        let candidate_payload = match &cand.raw.data {
+            lattice_completion::CandidateData::Extension { payload, .. } => payload.clone(),
+            _ => return,
+        };
+        let Some(state_ref) = self.insert_completion.as_ref() else {
+            return;
+        };
+        let Some(meta_index) = state_ref
+            .raw
+            .iter()
+            .filter(|r| {
+                matches!(
+                    r.data,
+                    lattice_completion::CandidateData::Extension {
+                        kind_id: lattice_lsp::completion::LSP_COMPLETION_KIND_ID,
+                        ..
+                    }
+                )
+            })
+            .position(|r| match &r.data {
+                lattice_completion::CandidateData::Extension { payload, .. } => {
+                    payload == &candidate_payload
+                }
+                _ => false,
+            })
+        else {
+            return;
+        };
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
+            return;
+        };
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<
+            lattice_lsp::cache::CompletionResolveOutcome,
+        >();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_completion_resolve_rx = Some(rx);
+        self.pending_completion_resolve_token = Some(token.clone());
+        let lsp = self.lsp.clone();
+        lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
+            let handle = lsp
+                .servers_for(&uri)
+                .into_iter()
+                .find(|h| h.server_id() == &*server_id);
+            let Some(handle) = handle else {
+                return;
+            };
+            if !handle.capabilities().completion_resolve_provider() {
+                return;
+            }
+            if token.is_cancelled() {
+                return;
+            }
+            let pending = handle
+                .request_with_cancel::<lattice_lsp::lsp_types::CompletionItem, lattice_lsp::lsp_types::CompletionItem>(
+                    "completionItem/resolve",
+                    original,
+                    token.clone(),
+                );
+            let Ok(resolved) = pending.await else {
+                return;
+            };
+            let _ = tx.send(lattice_lsp::cache::CompletionResolveOutcome {
+                meta_index,
+                resolved,
+            });
+        });
+    }
+
+    /// Effective insert-completion config for `language` --
+    /// per-language override → global typed option → spec
+    /// fallback. Phase 5.8.AD.4: hoisted from TUI App.
+    pub fn effective_completion_for(&self, language: &str) -> EffectiveCompletionConfig {
+        let overrides = self.per_language_completion.get(language);
+        EffectiveCompletionConfig {
+            sources: overrides.and_then(|o| o.sources.clone()),
+            auto_trigger: overrides.and_then(|o| o.auto_trigger).unwrap_or(false),
+            auto_insert_single: overrides
+                .and_then(|o| o.auto_insert_single)
+                .unwrap_or_else(|| self.completion_auto_insert_single()),
+            suppress_in: overrides
+                .and_then(|o| o.suppress_in.clone())
+                .unwrap_or_default(),
+        }
+    }
+
+    /// Per-source ranker priority. Phase 5.8.AD.4.
+    fn priority_for_source(&self, source: &lattice_completion::SourceId) -> u32 {
+        use lattice_config::{
+            CompletionSourceBufferWordsPriority, CompletionSourceLspPriority,
+            CompletionSourcePathPriority, CompletionSourceSnippetPriority,
+            CompletionSourceTreeSitterPriority,
+        };
+        let raw: i64 = match source.as_str() {
+            "gen:lsp-completion" => *self
+                .config
+                .get_typed::<CompletionSourceLspPriority>()
+                .expect("CompletionSourceLspPriority"),
+            "gen:snippet" => *self
+                .config
+                .get_typed::<CompletionSourceSnippetPriority>()
+                .expect("CompletionSourceSnippetPriority"),
+            "gen:buffer-words" => *self
+                .config
+                .get_typed::<CompletionSourceBufferWordsPriority>()
+                .expect("CompletionSourceBufferWordsPriority"),
+            "gen:tree-sitter-symbol" => *self
+                .config
+                .get_typed::<CompletionSourceTreeSitterPriority>()
+                .expect("CompletionSourceTreeSitterPriority"),
+            "gen:path" => *self
+                .config
+                .get_typed::<CompletionSourcePathPriority>()
+                .expect("CompletionSourcePathPriority"),
+            _ => 0,
+        };
+        raw.max(0) as u32
+    }
+
+    /// Total ranker bonus for a candidate (per-source priority +
+    /// capped frequency lift). Phase 5.8.AD.4.
+    fn completion_total_bonus(&self, raw: &lattice_completion::RawCandidate) -> u32 {
+        let priority = raw
+            .source
+            .as_ref()
+            .map(|s| self.priority_for_source(s))
+            .unwrap_or(0);
+        let freq = self
+            .completion_accept_freq
+            .get(&(raw.text.clone(), raw.kind))
+            .copied()
+            .unwrap_or(0)
+            .min(lattice_completion::InsertRanker::FREQUENCY_BONUS_CAP);
+        priority.saturating_add(freq)
+    }
+
+    /// Re-run matcher + ranker over `state.raw` against the
+    /// current `state.query`. Phase 5.8.AD.4.
+    pub fn refilter_insert_completion(
+        &self,
+        state: &mut lattice_completion::InsertCompletionState,
+    ) {
+        let matcher = lattice_completion::FuzzyInsertMatcher::new();
+        let source_filter = state.source_filter.clone();
+        let mut scored: Vec<lattice_completion::ScoredCandidate> = state
+            .raw
+            .iter()
+            .filter(|raw| match source_filter.as_ref() {
+                Some(id) => raw.source.as_ref() == Some(id),
+                None => true,
+            })
+            .filter_map(|raw| {
+                lattice_completion::CandidateMatcher::matches(&matcher, &state.query, raw).map(
+                    |(score, ranges)| lattice_completion::ScoredCandidate {
+                        raw: raw.clone(),
+                        score,
+                        match_ranges: ranges,
+                    },
+                )
+            })
+            .collect();
+        let ranker = lattice_completion::InsertRanker::new();
+        ranker.rank_with_bonus(&mut scored, |raw| self.completion_total_bonus(raw));
+        state.rendered = scored
+            .into_iter()
+            .map(lattice_completion::RenderedCandidate::from_scored)
+            .collect();
+        dedup_rendered_by_text(&mut state.rendered);
+        if !state.rendered.is_empty() && state.selected >= state.rendered.len() {
+            state.selected = state.rendered.len() - 1;
+        }
+    }
+
+    /// Run sync sources against the supplied state, populating
+    /// `state.raw` and re-running matcher + ranker so
+    /// `state.rendered` reflects the current `query`. Phase
+    /// 5.8.AD.4: hoisted from TUI App.
+    pub fn populate_insert_completion_sync(
+        &mut self,
+        state: &mut lattice_completion::InsertCompletionState,
+        buffer: &lattice_core::Buffer,
+        trigger: &lattice_completion::CompletionTrigger,
+    ) {
+        let language = self.active_language_id();
+        let tree_sitter_symbols: Vec<String> = self
+            .document_syntax_for(self.document_buffer_id)
+            .map(|s| s.snapshot().collect_symbols())
+            .unwrap_or_default();
+        let buffer_dir_owned: Option<std::path::PathBuf> = {
+            let snap = self.document.snapshot();
+            snap.path
+                .as_ref()
+                .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+                .or_else(|| std::env::current_dir().ok())
+        };
+        let uri_string: Option<String> = self
+            .buffer_uris
+            .get(&self.document_buffer_id)
+            .map(|u| u.as_str().to_string());
+        let lsp_position_pair: Option<(u32, u32)> = {
+            let snap = self.document.snapshot();
+            crate::lsp_helpers::app_to_lsp_position(&snap.buffer, self.cursor)
+                .map(|p| (p.line, p.character))
+        };
+        let ctx = lattice_completion::InsertContext {
+            buffer,
+            cursor: state.cursor,
+            anchor: state.anchor,
+            query: &state.query,
+            trigger,
+            case_sensitive: false,
+            language: &language,
+            tree_sitter_symbols: &tree_sitter_symbols,
+            path_context: self.completion_in_path_context,
+            buffer_dir: buffer_dir_owned.as_deref(),
+            uri: uri_string.as_deref(),
+            lsp_position: lsp_position_pair,
+        };
+        let effective = self.effective_completion_for(&language);
+        let mut raw: Vec<lattice_completion::RawCandidate> = Vec::new();
+        if let Some(active_sources) = self
+            .buffer_locals
+            .get(&self.document_buffer_id)
+            .and_then(|locals| locals.get::<lattice_mode::ActiveCompletionSources>())
+        {
+            for contribution in &active_sources.0 {
+                if !effective.source_enabled(&contribution.id) {
+                    continue;
+                }
+                if ctx.path_context
+                    && contribution.id.as_str() != lattice_completion::PATH_SOURCE_ID
+                {
+                    continue;
+                }
+                if let lattice_completion::CompletionSourceKind::Sync(src) = &contribution.kind {
+                    raw.extend(src.produce(&ctx));
+                }
+            }
+        }
+        state.raw = raw;
+        self.refilter_insert_completion(state);
+    }
+
+    /// CSM.K2: restrict the open completion popup to a single
+    /// source. `id` is the `SourceId` as a raw string. Phase 5.8.AD.4.
+    pub fn do_completion_filter_to_source(&mut self, id: String) {
+        let Some(mut state) = self.insert_completion.take() else {
+            return;
+        };
+        state.source_filter = Some(lattice_completion::SourceId::new(id));
+        self.refilter_insert_completion(&mut state);
+        self.insert_completion = Some(state);
+        self.refresh_docs_popup_for_selection();
+    }
+
+    /// CSM.K2: clear the active source filter. Phase 5.8.AD.4.
+    pub fn do_completion_filter_clear(&mut self) {
+        let Some(mut state) = self.insert_completion.take() else {
+            return;
+        };
+        state.source_filter = None;
+        self.refilter_insert_completion(&mut state);
+        self.insert_completion = Some(state);
+        self.refresh_docs_popup_for_selection();
+    }
+
+    /// `<C-n>` -- step forward through the insert-completion
+    /// popup. Refreshes the docs popup when open. Phase 5.8.AD.4.
+    pub fn do_completion_next(&mut self) {
+        if let Some(s) = self.insert_completion.as_mut() {
+            s.select_next();
+        }
+        self.refresh_docs_popup_for_selection();
+    }
+
+    /// `<C-p>` -- step backward. Phase 5.8.AD.4.
+    pub fn do_completion_prev(&mut self) {
+        if let Some(s) = self.insert_completion.as_mut() {
+            s.select_prev();
+        }
+        self.refresh_docs_popup_for_selection();
+    }
+
+    /// When the focused candidate changes, re-target the docs
+    /// popup if open. Re-derives the body and fires resolve when
+    /// needed. Phase 5.8.AD.4.
+    fn refresh_docs_popup_for_selection(&mut self) {
+        let docs_open = self
+            .insert_completion
+            .as_ref()
+            .map(|s| s.doc_popup.is_some())
+            .unwrap_or(false);
+        if !docs_open {
+            return;
+        }
+        let new_index = self
+            .insert_completion
+            .as_ref()
+            .map(|s| s.selected)
+            .unwrap_or(0);
+        let body = self.docs_body_for_selected();
+        let needs_resolve = body.is_none() && self.selected_needs_resolve();
+        if let Some(state) = self.insert_completion.as_mut()
+            && let Some(doc) = state.doc_popup.as_mut()
+        {
+            doc.for_index = new_index;
+            doc.scroll = 0;
+            doc.body = body;
+        }
+        if needs_resolve {
+            self.do_completion_resolve_focused();
+        }
+    }
+
+    /// `<C-d>` (or similar) -- toggle the docs side panel for the
+    /// focused candidate. Closes if open; otherwise builds the
+    /// body from cached metadata (firing
+    /// `completionItem/resolve` when documentation is missing
+    /// and the server advertises the provider). Phase 5.8.AD.4.
+    pub fn do_completion_toggle_docs(&mut self) {
+        let Some(state) = self.insert_completion.as_mut() else {
+            return;
+        };
+        if state.doc_popup.is_some() {
+            state.doc_popup = None;
+            return;
+        }
+        let selected = state.selected;
+        let body = self.docs_body_for_selected();
+        let needs_resolve = body.is_none() && self.selected_needs_resolve();
+        if let Some(state) = self.insert_completion.as_mut() {
+            state.doc_popup = Some(lattice_completion::DocPopupState {
+                for_index: selected,
+                body,
+                scroll: 0,
+            });
+        }
+        if needs_resolve {
+            self.do_completion_resolve_focused();
+        }
+    }
+
     /// 4.5.c: `gx` -- follow the document link under the cursor.
     /// Phase 5.8.AD.2.
     pub fn do_lsp_follow_link_at_cursor(&mut self) -> Vec<RendererSignal> {
@@ -15243,6 +15776,68 @@ pub fn visual_kind_to_mode(kind: VisualKind) -> VisualMode {
         VisualKind::Charwise => VisualMode::Charwise,
         VisualKind::Linewise => VisualMode::Linewise,
         VisualKind::Blockwise => VisualMode::Blockwise,
+    }
+}
+
+/// Batched candidate sink used by `do_lsp_insert_completion_request`:
+/// async LSP source produces into this, then the spawn wrapper
+/// drains the buffered list + the `is_incomplete` flag in one
+/// step. Phase 5.8.AD.4: hoisted from TUI App.
+struct InsertCompletionBatchingSink {
+    items: std::sync::Mutex<Vec<lattice_completion::RawCandidate>>,
+    is_incomplete: std::sync::atomic::AtomicBool,
+}
+
+impl InsertCompletionBatchingSink {
+    fn new() -> Self {
+        Self {
+            items: std::sync::Mutex::new(Vec::new()),
+            is_incomplete: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    fn drain(&self) -> (Vec<lattice_completion::RawCandidate>, bool) {
+        let items = std::mem::take(&mut *self.items.lock().expect("BatchingSink mutex"));
+        let is_incomplete = self
+            .is_incomplete
+            .load(std::sync::atomic::Ordering::Relaxed);
+        (items, is_incomplete)
+    }
+}
+
+impl lattice_completion::CandidateSink for InsertCompletionBatchingSink {
+    fn push(&self, candidate: lattice_completion::RawCandidate) {
+        self.items
+            .lock()
+            .expect("BatchingSink mutex")
+            .push(candidate);
+    }
+    fn mark_incomplete(&self) {
+        self.is_incomplete
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Effective insert-completion config for a given language.
+/// Materialised by [`Editor::effective_completion_for`] from the
+/// per-language overrides + global typed options + spec
+/// fallbacks. Phase 5.8.AD.4: hoisted from TUI App.
+#[derive(Debug, Clone)]
+pub struct EffectiveCompletionConfig {
+    pub sources: Option<Vec<lattice_completion::SourceId>>,
+    pub auto_trigger: bool,
+    pub auto_insert_single: bool,
+    pub suppress_in: Vec<String>,
+}
+
+impl EffectiveCompletionConfig {
+    /// True if `source` contributes for this language. `None`
+    /// effective `sources` means "every source contributes."
+    pub fn source_enabled(&self, source: &lattice_completion::SourceId) -> bool {
+        match &self.sources {
+            Some(list) => list.contains(source),
+            None => true,
+        }
     }
 }
 

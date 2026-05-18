@@ -833,25 +833,20 @@ impl Render for EditorView {
         // gating; this peer just makes the call so paint_pane can
         // read `editor.pane_highlights[idx]` for the inactive case.
         self.app.editor.refresh_pane_highlights();
-        // 5.8.W: drain pending hover outcomes; the host method
-        // returns `RendererSignal`s (DisplayBuffer carries the
-        // HelpContent; the GPUI peer's existing handler stores
-        // it in `popup_content` so the next paint shows the
-        // popup overlay).
-        let hover_signals = self.app.editor.drain_pending_hover();
-        for signal in hover_signals {
+        // 5.8.Z: run all host-resident per-tick drains via the
+        // aggregator. Replaces individual calls to
+        // `drain_pending_hover` / `drain_pending_signature_help` /
+        // `drain_option_changes` / `drain_mode_lifecycle_events` —
+        // the host owns the list, so when a new drain migrates to
+        // host the GPUI peer auto-picks it up.
+        let tick_signals = self.app.editor.run_tick_pending();
+        for signal in tick_signals {
             self.app.handle_renderer_signal(signal);
         }
-        // 5.8.X: same shape for signature help (`(` inside Insert).
-        let sig_signals = self.app.editor.drain_pending_signature_help();
-        for signal in sig_signals {
-            self.app.handle_renderer_signal(signal);
-        }
-        // 5.8.Y: code-action drain — opens the picker for Items;
-        // returns Resolved arm to caller for apply. GPUI peer can't
-        // apply workspace edits yet (chain is still App-resident),
-        // so a Resolved outcome echoes a warning and drops the
-        // action. This is a known gap queued for the next slice.
+        // 5.8.Y: code-action drain returns Option<(handle, action)>
+        // for the App-side apply chain (which is still TUI-only).
+        // GPUI peer drops the Resolved arm with a warn until the
+        // apply chain hoists host-side.
         if let Some((_handle, action)) = self.app.editor.drain_pending_code_actions() {
             tracing::warn!(
                 title = %action.title,

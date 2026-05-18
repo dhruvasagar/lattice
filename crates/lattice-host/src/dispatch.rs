@@ -3090,6 +3090,33 @@ impl Editor {
     /// Phase 5.8.W: hoisted from
     /// `lattice-ui-tui::app::lsp::App::drain_pending_hover` so the
     /// GPUI peer can call it per frame.
+    /// Run all host-resident per-tick drains and collect their
+    /// renderer signals. Both renderer peers call this once per
+    /// frame; each peer handles the returned signals via its own
+    /// `handle_renderer_signal` then runs any peer-specific drains
+    /// (the TUI peer still has many App-resident drains awaiting
+    /// migration; the GPUI peer ships with whatever the host has
+    /// already migrated).
+    ///
+    /// Phase 5.8.Z: aggregator so the GPUI peer reaches all the
+    /// per-tick work the TUI peer has historically done — without
+    /// needing to know each drain's name. New host migrations
+    /// extend this aggregator; the GPUI peer auto-picks them up
+    /// next frame with no peer-side change.
+    pub fn run_tick_pending(&mut self) -> Vec<RendererSignal> {
+        let mut signals = Vec::new();
+        signals.extend(self.drain_option_changes());
+        signals.extend(self.drain_pending_hover());
+        signals.extend(self.drain_pending_signature_help());
+        signals.extend(self.drain_mode_lifecycle_events());
+        // `drain_pending_code_actions` returns an `Option<(handle,
+        // action)>` for the App-side apply chain — not signal-shaped.
+        // Renderer peers call it directly and decide how to handle
+        // the Resolved arm (TUI applies via App-side helpers; GPUI
+        // logs + drops with a warn until the apply chain hoists).
+        signals
+    }
+
     pub fn drain_pending_hover(&mut self) -> Vec<RendererSignal> {
         let Some(mut rx) = self.pending_hover_rx.take() else {
             return Vec::new();

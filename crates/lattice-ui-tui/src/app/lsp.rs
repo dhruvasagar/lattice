@@ -1297,81 +1297,15 @@ impl App {
         }
     }
 
-    /// Apply a chosen code-action. The action may carry an
-    /// inline `WorkspaceEdit`, a `Command`, both, or neither
-    /// (resolve required). The `handle` is the server that
-    /// produced the action -- resolve / executeCommand routes
-    /// back to it.
+    /// 5.8.AA.r: apply chain migrated to host. The picker accept
+    /// arm hits this wrapper, which fans the returned signals
+    /// through the existing `handle_renderer_signal` sink.
     pub(super) fn apply_lsp_code_action(
         &mut self,
         row: CodeActionRow,
         handle: Option<lattice_lsp::ServerHandle>,
     ) {
-        let action = match row.action {
-            // Bare command -- skip resolve, route through executeCommand.
-            lattice_lsp::lsp_types::CodeActionOrCommand::Command(cmd) => {
-                self.execute_lsp_command(handle, cmd);
-                return;
-            }
-            lattice_lsp::lsp_types::CodeActionOrCommand::CodeAction(ca) => ca,
-        };
-        // Resolve when the action arrived without `edit` AND a
-        // handle is available.
-        let needs_resolve = action.edit.is_none() && action.command.is_none();
-        if needs_resolve {
-            let Some(handle) = handle else {
-                self.set_message(
-                    EchoLevel::Error,
-                    "code-action: cannot resolve (no server handle)".to_string(),
-                );
-                return;
-            };
-            self.spawn_code_action_resolve_apply(handle, action);
-            return;
-        }
-        self.apply_resolved_code_action(handle, action);
-    }
-
-    /// Async path for codeAction/resolve. Spawns a task that
-    /// resolves the action then queues the resolved version
-    /// back to the App for apply via the same channel the
-    /// initial code-action request used.
-    fn spawn_code_action_resolve_apply(
-        &mut self,
-        handle: lattice_lsp::ServerHandle,
-        action: lattice_lsp::lsp_types::CodeAction,
-    ) {
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<CodeActionOutcome>();
-        let token = lattice_protocol::CancellationToken::new();
-        // Stash the original handle so the post-resolve dispatch
-        // can route back to the same server.
-        self.editor.pending_code_action_rx = Some(rx);
-        self.editor.pending_code_action_token = Some(token.clone());
-        self.editor.pending_code_action_handle = Some(handle.clone());
-        crate::runtime::spawn_on_lsp_runtime(async move {
-            if token.is_cancelled() {
-                return;
-            }
-            let resolved = match handle.code_action_resolve(action.clone(), token).await {
-                Ok(r) => r,
-                Err(_) => action,
-            };
-            let _ = tx.send(CodeActionOutcome::Resolved(resolved));
-        });
-    }
-
-    /// Apply a fully-resolved code-action: WorkspaceEdit (when
-    /// present) lands as one undo unit per affected buffer;
-    /// `Command` (when present) routes through
-    /// `workspace/executeCommand`. Both can fire for the same
-    /// action -- LSP spec allows it.
-    fn apply_resolved_code_action(
-        &mut self,
-        handle: Option<lattice_lsp::ServerHandle>,
-        action: lattice_lsp::lsp_types::CodeAction,
-    ) {
-        // 5.8.AA.l.6: migrated to host.
-        let signals = self.editor.apply_resolved_code_action(handle, action);
+        let signals = self.editor.apply_lsp_code_action(row, handle);
         for s in signals {
             self.handle_renderer_signal(s);
         }
@@ -1550,19 +1484,16 @@ impl App {
             .collect()
     }
 
-    /// Drain queued code-action responses. Items pin to App + open
-    /// a picker. Resolve responses (single-row outcomes seeded with
-    /// the resolved action) apply directly when the original handle
-    /// is still pinned.
+    /// Drain queued code-action responses. 5.8.AA.r: full
+    /// apply chain (Items/Resolved/NoProvider + workspace-edit +
+    /// executeCommand) hoisted to host; this wrapper exists for
+    /// any remaining direct callers and the test-suite. The host
+    /// drain is folded into `run_tick_pending` so the TUI runtime
+    /// no longer needs an explicit call.
     pub fn drain_pending_code_actions(&mut self) {
-        // 5.8.Y: Items + NoProvider arms migrated to
-        // `lattice_host::dispatch::Editor::drain_pending_code_actions`
-        // so the GPUI peer can open the menu. The Resolved arm is
-        // returned for caller-side apply because the workspace-
-        // edit / executeCommand chains are still App-resident
-        // (queued for a later host migration).
-        if let Some((handle, action)) = self.editor.drain_pending_code_actions() {
-            self.apply_resolved_code_action(handle, action);
+        let signals = self.editor.drain_pending_code_actions();
+        for s in signals {
+            self.handle_renderer_signal(s);
         }
     }
 

@@ -6291,11 +6291,11 @@ impl Editor {
         self.maybe_request_code_lens();
         self.maybe_request_document_color();
         self.maybe_request_semantic_tokens();
-        // `drain_pending_code_actions` returns an `Option<(handle,
-        // action)>` for the App-side apply chain — not signal-shaped.
-        // Renderer peers call it directly and decide how to handle
-        // the Resolved arm (TUI applies via App-side helpers; GPUI
-        // logs + drops with a warn until the apply chain hoists).
+        // 5.8.AA.r: code-action apply chain folded host-side; the
+        // drain emits `RendererSignal`s from the inline
+        // workspace-edit + executeCommand path so both peers consume
+        // them uniformly here.
+        signals.extend(self.drain_pending_code_actions());
         signals
     }
 
@@ -6413,21 +6413,24 @@ impl Editor {
     /// Phase 5.8.Y: hoists the Items + NoProvider arms host-side
     /// so the GPUI peer can open the code-action menu. Resolved
     /// arm stays as-returned for the App-side apply chain.
-    pub fn drain_pending_code_actions(
-        &mut self,
-    ) -> Option<(
-        Option<lattice_lsp::ServerHandle>,
-        lattice_lsp::lsp_types::CodeAction,
-    )> {
+    /// Drain queued code-action responses. NoProvider / empty Items
+    /// echo and return no signals; Items opens an in-pane picker
+    /// (no signals); Resolved applies the workspace-edit +
+    /// executeCommand chain inline via [`Self::apply_resolved_code_action`]
+    /// and returns its signals. 5.8.AA.r: signal-shaped so
+    /// `run_tick_pending` aggregates without an App-side wrapper.
+    pub fn drain_pending_code_actions(&mut self) -> Vec<RendererSignal> {
         let Some(mut rx) = self.pending_code_action_rx.take() else {
-            return None;
+            return Vec::new();
         };
         let mut latest: Option<lattice_lsp::cache::CodeActionOutcome> = None;
         while let Ok(o) = rx.try_recv() {
             latest = Some(o);
         }
         self.pending_code_action_rx = Some(rx);
-        let outcome = latest?;
+        let Some(outcome) = latest else {
+            return Vec::new();
+        };
         self.pending_code_action_token = None;
         use lattice_lsp::cache::CodeActionOutcome;
         match outcome {
@@ -6436,18 +6439,16 @@ impl Editor {
                     EchoLevel::Info,
                     "no server with codeActionProvider".to_string(),
                 );
-                None
+                Vec::new()
             }
             CodeActionOutcome::Resolved(action) => {
-                // Return for caller-side apply — the workspace-
-                // edit + executeCommand chains aren't host-side yet.
                 let handle = self.pending_code_action_handle.take();
-                Some((handle, action))
+                self.apply_resolved_code_action(handle, action)
             }
             CodeActionOutcome::Items(items) => {
                 if items.is_empty() {
                     self.set_message(EchoLevel::Info, "no code actions".to_string());
-                    return None;
+                    return Vec::new();
                 }
                 let total = items.len();
                 let pairs: Vec<(
@@ -6478,9 +6479,71 @@ impl Editor {
                 );
                 p.set_raw_candidates_with_routing(pairs);
                 self.picker = Some(p);
-                None
+                Vec::new()
             }
         }
+    }
+
+    /// 5.8.AA.r: apply a chosen code-action row. Bare `Command` →
+    /// `executeCommand`; action without `edit`/`command` → spawn
+    /// resolve (response lands back through the same channel that
+    /// `drain_pending_code_actions` reads); resolved action →
+    /// inline workspace-edit + executeCommand via
+    /// [`Self::apply_resolved_code_action`]. Returns any
+    /// `RendererSignal`s the apply chain produced.
+    pub fn apply_lsp_code_action(
+        &mut self,
+        row: lattice_lsp::cache::CodeActionRow,
+        handle: Option<lattice_lsp::ServerHandle>,
+    ) -> Vec<RendererSignal> {
+        let action = match row.action {
+            lattice_lsp::lsp_types::CodeActionOrCommand::Command(cmd) => {
+                self.execute_lsp_command(handle, cmd);
+                return Vec::new();
+            }
+            lattice_lsp::lsp_types::CodeActionOrCommand::CodeAction(ca) => ca,
+        };
+        let needs_resolve = action.edit.is_none() && action.command.is_none();
+        if needs_resolve {
+            let Some(handle) = handle else {
+                self.set_message(
+                    EchoLevel::Error,
+                    "code-action: cannot resolve (no server handle)".to_string(),
+                );
+                return Vec::new();
+            };
+            self.spawn_code_action_resolve_apply(handle, action);
+            return Vec::new();
+        }
+        self.apply_resolved_code_action(handle, action)
+    }
+
+    /// Async path for `codeAction/resolve`. Spawns a task that
+    /// resolves the action and queues a `CodeActionOutcome::Resolved`
+    /// back through the same channel the initial code-action
+    /// request used — so the next tick's
+    /// [`Self::drain_pending_code_actions`] applies it inline.
+    fn spawn_code_action_resolve_apply(
+        &mut self,
+        handle: lattice_lsp::ServerHandle,
+        action: lattice_lsp::lsp_types::CodeAction,
+    ) {
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<lattice_lsp::cache::CodeActionOutcome>();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_code_action_rx = Some(rx);
+        self.pending_code_action_token = Some(token.clone());
+        self.pending_code_action_handle = Some(handle.clone());
+        lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
+            if token.is_cancelled() {
+                return;
+            }
+            let resolved = match handle.code_action_resolve(action.clone(), token).await {
+                Ok(r) => r,
+                Err(_) => action,
+            };
+            let _ = tx.send(lattice_lsp::cache::CodeActionOutcome::Resolved(resolved));
+        });
     }
 
     /// First attached LSP server advertising `codeActionProvider`.

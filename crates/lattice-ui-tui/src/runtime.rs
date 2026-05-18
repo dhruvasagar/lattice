@@ -155,15 +155,10 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
         for s in signals {
             app.handle_renderer_signal(s);
         }
-        // Two App-resident drains still need explicit calls:
-        // - `drain_pending_code_actions` returns
-        //   `Option<(handle, action)>` so the App-side apply
-        //   chain (`apply_lsp_code_action`) can run; folding it
-        //   into `run_tick_pending` is queued behind hoisting
-        //   the apply chain.
-        // - `drain_pending_live_picker_query` needs
-        //   `build_picker_context` to migrate first.
-        app.drain_pending_code_actions();
+        // One App-resident drain still needs an explicit call:
+        // `drain_pending_live_picker_query` reaches into the
+        // picker's `build_picker_context` helper which hasn't
+        // migrated yet.
         app.drain_pending_live_picker_query();
         // Update viewport height. The buffer-area band is the
         // terminal minus the mode line + cmdline/echo row (and the

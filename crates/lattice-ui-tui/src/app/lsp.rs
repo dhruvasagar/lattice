@@ -1293,13 +1293,9 @@ impl App {
         self.editor.maybe_request_document_link();
     }
 
-    /// 4.5.c: drain queued `documentLink` responses + seat the
-    /// cache. Cancels stale single-flight tokens; `gx`
-    /// consults the cache when triggered.
-    pub fn drain_pending_document_link(&mut self) {
-        // 5.8.AA.b: migrated to host.
-        self.editor.drain_pending_document_link();
-    }
+    // Phase 5.8.AF.5 / Slice 3b.4: `App::drain_pending_document_link`
+    // retired -- spawned task writes directly via
+    // `PerBufferCacheExt::insert_for`. `gx` reads via `get_for`.
 
     /// 4.5.c: follow the LSP `documentLink` at the cursor (the
     /// `gx` keystroke). Walks the cache, picks the first link
@@ -1359,12 +1355,9 @@ impl App {
         self.editor.maybe_request_document_color();
     }
 
-    /// 4.5.e: drain queued `documentColor` responses + seat
-    /// the cache.
-    pub fn drain_pending_document_color(&mut self) {
-        // 5.8.AA.b: migrated to host.
-        self.editor.drain_pending_document_color();
-    }
+    // Phase 5.8.AF.5 / Slice 3b.4: `App::drain_pending_document_color`
+    // retired -- spawned task writes directly via
+    // `PerBufferCacheExt::insert_for`.
 
     /// 4.5.e: `:lsp-color-presentation`. Looks up the color
     /// literal under the cursor in the per-buffer cache and

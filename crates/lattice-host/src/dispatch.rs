@@ -350,6 +350,8 @@ impl Editor {
                 folds: self.lsp_folds_cache.clone(),
                 semantic_tokens: self.lsp_semantic_tokens_cache.clone(),
                 code_lens: self.lsp_code_lens_cache.clone(),
+                document_links: self.lsp_document_links_cache.clone(),
+                document_color: self.lsp_document_color_cache.clone(),
             }),
             ..RenderState::default()
         }
@@ -5197,12 +5199,13 @@ impl Editor {
     /// 4.5.c: per-tick `documentLink` pump. Phase 5.8.AA.i:
     /// hoisted from TUI App.
     pub fn maybe_request_document_link(&mut self) {
+        use crate::per_buffer_cache::PerBufferCacheExt;
         let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
             return;
         };
         let snapshot = self.document.snapshot();
         let version = snapshot.version;
-        if let Some(cache) = self.lsp_document_links_cache.get(&self.document_buffer_id)
+        if let Some(cache) = self.lsp_document_links_cache.get_for(self.document_buffer_id)
             && cache.document_version == version
         {
             return;
@@ -5211,22 +5214,24 @@ impl Editor {
             token.cancel();
         }
         let buffer_id = self.document_buffer_id;
-        let (tx, rx) =
-            tokio::sync::mpsc::unbounded_channel::<lattice_lsp::cache::DocumentLinksOutcome>();
         let token = lattice_protocol::CancellationToken::new();
-        self.pending_document_links_rx = Some(rx);
         self.pending_document_links_token = Some(token.clone());
         let lsp = self.lsp.clone();
+        // Slice 3b.4: cache slot Arc cloned into task.
+        let cache_slot = self.lsp_document_links_cache.clone();
         lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = lsp.servers_for(&uri);
             let Some(handle) = handles
                 .into_iter()
                 .find(|h| h.capabilities().supports_document_link())
             else {
-                let _ = tx.send(lattice_lsp::cache::DocumentLinksOutcome::Empty {
+                cache_slot.insert_for(
                     buffer_id,
-                    document_version: version,
-                });
+                    lattice_lsp::cache::LspDocumentLinksCache {
+                        document_version: version,
+                        links: Vec::new(),
+                    },
+                );
                 return;
             };
             let params = lattice_lsp::lsp_types::DocumentLinkParams {
@@ -5236,17 +5241,22 @@ impl Editor {
             };
             match handle.document_link(params, token.clone()).await {
                 Ok(Some(links)) if !links.is_empty() => {
-                    let _ = tx.send(lattice_lsp::cache::DocumentLinksOutcome::Items {
+                    cache_slot.insert_for(
                         buffer_id,
-                        document_version: version,
-                        links,
-                    });
+                        lattice_lsp::cache::LspDocumentLinksCache {
+                            document_version: version,
+                            links,
+                        },
+                    );
                 }
                 _ => {
-                    let _ = tx.send(lattice_lsp::cache::DocumentLinksOutcome::Empty {
+                    cache_slot.insert_for(
                         buffer_id,
-                        document_version: version,
-                    });
+                        lattice_lsp::cache::LspDocumentLinksCache {
+                            document_version: version,
+                            links: Vec::new(),
+                        },
+                    );
                 }
             }
         });
@@ -5325,12 +5335,13 @@ impl Editor {
     /// 4.5.e: per-tick `documentColor` pump. Phase 5.8.AA.i:
     /// hoisted from TUI App.
     pub fn maybe_request_document_color(&mut self) {
+        use crate::per_buffer_cache::PerBufferCacheExt;
         let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
             return;
         };
         let snapshot = self.document.snapshot();
         let version = snapshot.version;
-        if let Some(cache) = self.lsp_document_color_cache.get(&self.document_buffer_id)
+        if let Some(cache) = self.lsp_document_color_cache.get_for(self.document_buffer_id)
             && cache.document_version == version
         {
             return;
@@ -5339,22 +5350,25 @@ impl Editor {
             token.cancel();
         }
         let buffer_id = self.document_buffer_id;
-        let (tx, rx) =
-            tokio::sync::mpsc::unbounded_channel::<lattice_lsp::cache::DocumentColorOutcome>();
         let token = lattice_protocol::CancellationToken::new();
-        self.pending_document_color_rx = Some(rx);
         self.pending_document_color_token = Some(token.clone());
         let lsp = self.lsp.clone();
+        // Slice 3b.4: cache slot Arc cloned into task.
+        let cache_slot = self.lsp_document_color_cache.clone();
         lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
             let handles: Vec<lattice_lsp::ServerHandle> = lsp.servers_for(&uri);
             let Some(handle) = handles
                 .into_iter()
                 .find(|h| h.capabilities().supports_color())
             else {
-                let _ = tx.send(lattice_lsp::cache::DocumentColorOutcome::Empty {
+                cache_slot.insert_for(
                     buffer_id,
-                    document_version: version,
-                });
+                    lattice_lsp::cache::LspDocumentColorCache {
+                        document_version: version,
+                        colors: Vec::new(),
+                        server_id: std::sync::Arc::from("<none>"),
+                    },
+                );
                 return;
             };
             let server_id_arc: std::sync::Arc<str> = std::sync::Arc::from(handle.server_id());
@@ -5365,18 +5379,24 @@ impl Editor {
             };
             match handle.document_color(params, token.clone()).await {
                 Ok(colors) if !colors.is_empty() => {
-                    let _ = tx.send(lattice_lsp::cache::DocumentColorOutcome::Items {
+                    cache_slot.insert_for(
                         buffer_id,
-                        document_version: version,
-                        server_id: server_id_arc,
-                        colors,
-                    });
+                        lattice_lsp::cache::LspDocumentColorCache {
+                            document_version: version,
+                            colors,
+                            server_id: server_id_arc,
+                        },
+                    );
                 }
                 _ => {
-                    let _ = tx.send(lattice_lsp::cache::DocumentColorOutcome::Empty {
+                    cache_slot.insert_for(
                         buffer_id,
-                        document_version: version,
-                    });
+                        lattice_lsp::cache::LspDocumentColorCache {
+                            document_version: version,
+                            colors: Vec::new(),
+                            server_id: server_id_arc,
+                        },
+                    );
                 }
             }
         });
@@ -6379,117 +6399,10 @@ impl Editor {
         }
     }
 
-    /// 4.5.c: drain `documentLink` outcome; seat the per-buffer
-    /// cache. Phase 5.8.AA.b: hoisted from TUI App.
-    pub fn drain_pending_document_link(&mut self) {
-        let Some(mut rx) = self.pending_document_links_rx.take() else {
-            return;
-        };
-        let mut latest: Option<lattice_lsp::cache::DocumentLinksOutcome> = None;
-        while let Ok(o) = rx.try_recv() {
-            latest = Some(o);
-        }
-        self.pending_document_links_rx = Some(rx);
-        let Some(outcome) = latest else {
-            return;
-        };
-        self.pending_document_links_token = None;
-        use lattice_lsp::cache::{DocumentLinksOutcome, LspDocumentLinksCache};
-        match outcome {
-            DocumentLinksOutcome::Items {
-                buffer_id,
-                document_version,
-                links,
-            } => {
-                if buffer_id != self.document_buffer_id {
-                    return;
-                }
-                self.lsp_document_links_cache.insert(
-                    buffer_id,
-                    LspDocumentLinksCache {
-                        document_version,
-                        links,
-                    },
-                );
-            }
-            DocumentLinksOutcome::Empty {
-                buffer_id,
-                document_version,
-            } => {
-                if buffer_id != self.document_buffer_id {
-                    return;
-                }
-                self.lsp_document_links_cache.insert(
-                    buffer_id,
-                    LspDocumentLinksCache {
-                        document_version,
-                        links: Vec::new(),
-                    },
-                );
-            }
-        }
-    }
-
-    /// 4.5.d: drain `codeLens` outcome; seat the per-buffer cache.
-    /// Phase 5.8.AA.b: hoisted from TUI App.
-    // Phase 5.8.AF.5 / Slice 3b.3: `drain_pending_code_lens`
-    // retired. The spawned task in `maybe_request_code_lens`
-    // writes directly into `lsp_code_lens_cache` via
-    // `PerBufferCacheExt::insert_for`. No channel, no drain.
-
-    /// 4.5.e: drain `documentColor` outcome; seat the per-buffer
-    /// cache. Phase 5.8.AA.b: hoisted from TUI App.
-    pub fn drain_pending_document_color(&mut self) {
-        let Some(mut rx) = self.pending_document_color_rx.take() else {
-            return;
-        };
-        let mut latest: Option<lattice_lsp::cache::DocumentColorOutcome> = None;
-        while let Ok(o) = rx.try_recv() {
-            latest = Some(o);
-        }
-        self.pending_document_color_rx = Some(rx);
-        let Some(outcome) = latest else {
-            return;
-        };
-        self.pending_document_color_token = None;
-        use lattice_lsp::cache::{DocumentColorOutcome, LspDocumentColorCache};
-        match outcome {
-            DocumentColorOutcome::Items {
-                buffer_id,
-                document_version,
-                server_id,
-                colors,
-            } => {
-                if buffer_id != self.document_buffer_id {
-                    return;
-                }
-                self.lsp_document_color_cache.insert(
-                    buffer_id,
-                    LspDocumentColorCache {
-                        document_version,
-                        colors,
-                        server_id,
-                    },
-                );
-            }
-            DocumentColorOutcome::Empty {
-                buffer_id,
-                document_version,
-            } => {
-                if buffer_id != self.document_buffer_id {
-                    return;
-                }
-                self.lsp_document_color_cache.insert(
-                    buffer_id,
-                    LspDocumentColorCache {
-                        document_version,
-                        colors: Vec::new(),
-                        server_id: std::sync::Arc::from("<none>"),
-                    },
-                );
-            }
-        }
-    }
+    // Phase 5.8.AF.5 / Slice 3b.4: `drain_pending_document_link`
+    // + `drain_pending_document_color` retired. Both spawned
+    // tasks write directly into their `PerBufferCache` slots
+    // via `insert_for`. No channels, no drains.
 
     // Phase 5.8.AF.5 / Slice 3b.0: `drain_pending_document_highlight`
     // retired. The spawned task in `maybe_request_document_highlight`
@@ -6525,12 +6438,16 @@ impl Editor {
         // request task into `lsp_semantic_tokens_cache` via
         // `PerBufferCacheExt::insert_for`.
         self.drain_pending_moniker();
-        self.drain_pending_document_link();
+        // 5.8.AF.5 / Slice 3b.4: `drain_pending_document_link`
+        // retired -- spawned task writes directly into
+        // `lsp_document_links_cache` via `insert_for`.
         // 5.8.AF.5 / Slice 3b.3: `drain_pending_code_lens`
         // retired -- writes happen directly from the spawned
         // request task into `lsp_code_lens_cache` via
         // `PerBufferCacheExt::insert_for`.
-        self.drain_pending_document_color();
+        // 5.8.AF.5 / Slice 3b.4: `drain_pending_document_color`
+        // retired -- spawned task writes directly into
+        // `lsp_document_color_cache` via `insert_for`.
         self.drain_pending_completion();
         self.drain_diagnostic_refresh();
         self.drain_inlay_hint_refresh();
@@ -13556,10 +13473,11 @@ impl Editor {
         else {
             return Vec::new();
         };
+        use crate::per_buffer_cache::PerBufferCacheExt;
         let buffer_id = self.document_buffer_id;
         let link = self
             .lsp_document_links_cache
-            .get(&buffer_id)
+            .get_for(buffer_id)
             .and_then(|c| {
                 c.links
                     .iter()
@@ -13778,8 +13696,9 @@ impl Editor {
         else {
             return;
         };
+        use crate::per_buffer_cache::PerBufferCacheExt;
         let buffer_id = self.document_buffer_id;
-        let cache = self.lsp_document_color_cache.get(&buffer_id).cloned();
+        let cache = self.lsp_document_color_cache.get_for(buffer_id);
         let Some(cache) = cache else {
             self.set_message(
                 EchoLevel::Info,

@@ -199,6 +199,12 @@ pub struct LspRenderState {
     /// `PerBufferCacheExt::retain`. Renderers read via
     /// `.get_for(buffer_id)`.
     pub code_lens: crate::per_buffer_cache::PerBufferCache<lattice_lsp::cache::LspCodeLensCache>,
+    /// Slice 3b.4: per-buffer `textDocument/documentLink` cache.
+    pub document_links:
+        crate::per_buffer_cache::PerBufferCache<lattice_lsp::cache::LspDocumentLinksCache>,
+    /// Slice 3b.4: per-buffer `textDocument/documentColor` cache.
+    pub document_color:
+        crate::per_buffer_cache::PerBufferCache<lattice_lsp::cache::LspDocumentColorCache>,
 }
 
 /// Tree-sitter highlights + visible-range cache.

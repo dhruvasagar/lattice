@@ -739,7 +739,12 @@ pub struct Editor {
     /// `rs.lsp.inlay_hints.get_for(buffer_id)`.
     pub lsp_inlay_hints_cache: crate::per_buffer_cache::PerBufferCache<LspInlayHintCache>,
     /// Per-buffer `documentLink` cache.
-    pub lsp_document_links_cache: HashMap<BufferId, LspDocumentLinksCache>,
+    /// Per-buffer `textDocument/documentLink` cache. Phase
+    /// 5.8.AF.5 / Slice 3b.4: `PerBufferCache<T>` so the spawned
+    /// LSP request task writes results directly. Renderers read
+    /// via `rs.lsp.document_links.get_for(buffer_id)`.
+    pub lsp_document_links_cache:
+        crate::per_buffer_cache::PerBufferCache<LspDocumentLinksCache>,
     /// Per-buffer code-lens cache.
     /// Per-buffer `textDocument/codeLens` cache. Phase 5.8.AF.5
     /// / Slice 3b.3: `PerBufferCache<T>` so the spawned LSP
@@ -747,7 +752,10 @@ pub struct Editor {
     /// via `rs.lsp.code_lens.get_for(buffer_id)`.
     pub lsp_code_lens_cache: crate::per_buffer_cache::PerBufferCache<LspCodeLensCache>,
     /// Per-buffer `documentColor` cache.
-    pub lsp_document_color_cache: HashMap<BufferId, LspDocumentColorCache>,
+    /// Per-buffer `textDocument/documentColor` cache. Phase
+    /// 5.8.AF.5 / Slice 3b.4: `PerBufferCache<T>`.
+    pub lsp_document_color_cache:
+        crate::per_buffer_cache::PerBufferCache<LspDocumentColorCache>,
     /// Per-buffer semantic-tokens cache.
     /// Per-buffer cache of the last `textDocument/semanticTokens/*`
     /// response. Phase 5.8.AF.5 / Slice 3b.2: `PerBufferCache<T>`
@@ -848,8 +856,9 @@ pub struct Editor {
     // retired -- the spawned task writes directly into
     // `lsp_folds_cache` via `PerBufferCacheExt::insert_for`.
     pub pending_document_links_token: Option<CancellationToken>,
-    pub pending_document_links_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<DocumentLinksOutcome>>,
+    // Phase 5.8.AF.5 / Slice 3b.4: `pending_document_links_rx`
+    // retired -- spawned task writes directly into
+    // `lsp_document_links_cache` via `PerBufferCacheExt::insert_for`.
     pub pending_code_lens_token: Option<CancellationToken>,
     // Phase 5.8.AF.5 / Slice 3b.3: `pending_code_lens_rx` retired
     // -- spawned task writes directly into `lsp_code_lens_cache`
@@ -859,8 +868,9 @@ pub struct Editor {
     pub pending_code_lens_items: Option<Vec<lattice_lsp::lsp_types::CodeLens>>,
     pub pending_code_lens_server: Option<Arc<str>>,
     pub pending_document_color_token: Option<CancellationToken>,
-    pub pending_document_color_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<DocumentColorOutcome>>,
+    // Phase 5.8.AF.5 / Slice 3b.4: `pending_document_color_rx`
+    // retired -- spawned task writes directly into
+    // `lsp_document_color_cache` via `PerBufferCacheExt::insert_for`.
     pub pending_color_presentations: Option<Vec<lattice_lsp::lsp_types::ColorPresentation>>,
     pub pending_color_range: Option<lattice_lsp::lsp_types::Range>,
     pub pending_inlay_hint_token: Option<CancellationToken>,

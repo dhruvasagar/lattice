@@ -363,9 +363,10 @@ impl EditorView {
 
         let total_lines = raw_lines.len().max(1);
         let gutter_width = total_lines.to_string().len();
-        // 5.8.I: gutter pad = 1 (severity sign column) + N (line
-        // number width) + 1 (trailing space separator).
-        let gutter_pad_len = 1 + gutter_width + 1;
+        // 5.8.I / 5.8.U: gutter pad = 1 (fold marker column) +
+        // 1 (severity sign column) + N (line number width) + 1
+        // (trailing space).
+        let gutter_pad_len = 2 + gutter_width + 1;
         let gutter_normal = rgb(0x9399b2); // Catppuccin overlay2.
 
         let style_cursor_cell = |c: &str| -> gpui::Div {
@@ -438,10 +439,10 @@ impl EditorView {
         // `:set ui.diagnostics.*` overrides flow through identically
         // for both renderer peers.
         let host_theme = editor.host_theme;
-        let make_gutter = |line_idx: usize, is_cursor_line: bool| -> gpui::Div {
+        let make_gutter = |line_idx: usize, is_cursor_line: bool, fold_marker: bool| -> gpui::Div {
             // 5.8.I / 5.8.N: severity sign cell + line-number cell.
-            // Painted as two children of a flex_row so each can
-            // carry its own colour.
+            // Painted as children of a flex_row so each can carry
+            // its own colour.
             let sev = line_severity(line_idx as u32);
             let sign_cell: gpui::Div = match sev {
                 Some(s) => {
@@ -456,9 +457,20 @@ impl EditorView {
             } else {
                 gutter_normal
             };
+            // 5.8.U: fold-start marker (►) sits in a third
+            // gutter cell, on the left of the severity sign.
+            // Lines that aren't a fold-start render a blank
+            // space in that column so alignment stays stable
+            // regardless of whether folds are present.
+            let fold_cell = if fold_marker {
+                div().text_color(rgb(0xfab387)).child("►".to_string())
+            } else {
+                div().child(" ".to_string())
+            };
             div()
                 .flex()
                 .flex_row()
+                .child(fold_cell)
                 .child(sign_cell)
                 .child(div().text_color(label_color).child(label))
         };
@@ -539,6 +551,74 @@ impl EditorView {
                 .any(|r| byte_in_range(r, line_idx, byte_idx, line_len))
         };
 
+        // 5.8.V: LSP document-highlight overlay. Read
+        // `editor.lsp_document_highlights.highlights` — each entry
+        // is an `lsp_types::DocumentHighlight` with utf16 LSP
+        // positions. Convert to per-line byte ranges via
+        // `utf16_column_to_utf8_byte` keyed against the doc text.
+        // Painted with Catppuccin overlay0 (matches hlsearch
+        // intensity — a soft "related symbol" feel).
+        let doc_highlights_bg = rgb(0x585b70); // Catppuccin surface2 (soft accent)
+        let doc_highlight_in_buffer = |line_idx: usize, byte_idx: usize| -> bool {
+            let Some(cache) = editor.lsp_document_highlights.as_ref() else {
+                return false;
+            };
+            // Only highlight when the cache is for this pane's
+            // buffer (the host pump keys highlights per buffer).
+            if cache.buffer_id != pane.buffer_id {
+                return false;
+            }
+            for h in cache.highlights.iter() {
+                let start = h.range.start;
+                let end = h.range.end;
+                let li = line_idx as u32;
+                if li < start.line || li > end.line {
+                    continue;
+                }
+                // utf16 → utf8 byte conversion is keyed by the
+                // line's text. For multi-line highlights, lines
+                // strictly between start/end are fully covered.
+                let line_text = raw_lines.get(line_idx).copied().unwrap_or("");
+                let start_byte = if li == start.line {
+                    lattice_lsp::position::utf16_column_to_utf8_byte(line_text, start.character)
+                        as usize
+                } else {
+                    0
+                };
+                let end_byte = if li == end.line {
+                    lattice_lsp::position::utf16_column_to_utf8_byte(line_text, end.character)
+                        as usize
+                } else {
+                    line_text.len()
+                };
+                if byte_idx >= start_byte && byte_idx < end_byte {
+                    return true;
+                }
+            }
+            false
+        };
+
+        // 5.8.S: substitute preview overlays. Read
+        // `editor.substitute_preview.matches` — the about-to-be-
+        // replaced ranges. Paint with a distinctive bg so the user
+        // sees the change before pressing Enter. Active pane only.
+        let substitute_matches: &[lattice_core::protocol::position::Range] = if is_active {
+            editor
+                .substitute_preview
+                .as_ref()
+                .map(|p| p.matches.as_slice())
+                .unwrap_or(&[])
+        } else {
+            &[]
+        };
+        let substitute_bg = rgb(0xf38ba8); // Catppuccin red — destructive preview
+        let substitute_fg = rgb(0x1e1e2e); // Catppuccin base — contrast on red
+        let byte_in_substitute = |line_idx: usize, byte_idx: usize, line_len: usize| -> bool {
+            substitute_matches
+                .iter()
+                .any(|r| byte_in_range(r, line_idx, byte_idx, line_len))
+        };
+
         // 5.8.Q: cursorline background — paint a subtle row
         // background on the active pane's cursor line so the
         // user can locate the cursor at a glance. Read from
@@ -551,9 +631,15 @@ impl EditorView {
         // index so gutter labels, cursor maths, and highlight
         // lookups stay 0-based against the document — not relative
         // to the viewport.
+        // 5.8.U: skip lines hidden inside closed folds. The
+        // fold-start row still paints (with a ► marker prepended
+        // to the gutter); rows strictly inside the fold body are
+        // filtered out of the iteration.
         let mut rows: Vec<gpui::Div> = (visible_start..visible_end)
+            .filter(|line_idx| !editor.line_inside_closed_fold(*line_idx as u32))
             .map(|line_idx| {
                 let line = raw_lines[line_idx];
+                let fold_marker = editor.fold_start_at(line_idx as u32).is_some();
                 let is_cursor_line = line_idx == cursor_line;
                 let line_spans: &[lattice_syntax::StyledSpan] =
                     highlights.get(line_idx).map(Vec::as_slice).unwrap_or(&[]);
@@ -561,7 +647,7 @@ impl EditorView {
                 let hints = inlay_hints_for_line(line_idx as u32, line);
                 let mut hint_iter = hints.iter().peekable();
                 let mut cells: Vec<gpui::Div> = Vec::with_capacity(line.len() + 2 + hints.len());
-                cells.push(make_gutter(line_idx, is_cursor_line));
+                cells.push(make_gutter(line_idx, is_cursor_line, fold_marker));
                 for (byte_idx, c) in line.char_indices() {
                     // 5.8.J: drain hints whose byte offset is at
                     // or before this char — they render inline
@@ -588,17 +674,28 @@ impl EditorView {
                         let mut cell = div()
                             .text_color(rgb(syntax_color(span_style)))
                             .child(c.to_string());
-                        // 5.8.P / 5.8.Q: layer overlays from lowest
-                        // to highest precedence. Visual selection
-                        // > current_match (in-progress search) >
-                        // hlsearch (passive). A char in multiple
-                        // overlays takes the *highest* one.
-                        if in_visual {
+                        // 5.8.P / 5.8.Q / 5.8.S / 5.8.V: layer
+                        // overlays from highest to lowest
+                        // precedence:
+                        //   Substitute preview (destructive intent)
+                        //   > Visual selection
+                        //   > current_match (in-progress search)
+                        //   > hlsearch (passive)
+                        //   > doc_highlight (LSP related-symbol)
+                        // A char in multiple overlays takes the
+                        // highest one.
+                        let in_substitute = byte_in_substitute(line_idx, byte_idx, line.len());
+                        let in_doc_highlight = doc_highlight_in_buffer(line_idx, byte_idx);
+                        if in_substitute {
+                            cell = cell.bg(substitute_bg).text_color(substitute_fg);
+                        } else if in_visual {
                             cell = cell.bg(selection_bg);
                         } else if in_current_match {
                             cell = cell.bg(current_match_bg).text_color(current_match_fg);
                         } else if in_hlsearch {
                             cell = cell.bg(hlsearch_bg);
+                        } else if in_doc_highlight {
+                            cell = cell.bg(doc_highlights_bg);
                         }
                         cells.push(cell);
                     }
@@ -703,7 +800,22 @@ impl EditorView {
 }
 
 impl Render for EditorView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // 5.8.T: per-frame viewport-height recompute from the
+        // window's current pixel bounds. `text_sm` lands at ~16px
+        // per row in the default font; subtract a row for the
+        // status line + a row for the global minibuffer footer.
+        // `window.viewport_size()` returns `Size<Pixels>` (gpui
+        // 0.2.2). On resize, this picks up the new size on the
+        // next frame — no event subscription required.
+        let viewport_px = window.viewport_size();
+        let estimated_row_px = 16.0_f32;
+        let total_rows = (f32::from(viewport_px.height) / estimated_row_px).floor() as i32;
+        let chrome_rows = 2; // status line + minibuffer
+        let new_viewport = (total_rows - chrome_rows).max(1) as u32;
+        if new_viewport != self.app.editor.viewport_height {
+            self.app.editor.viewport_height = new_viewport;
+        }
         // 5.8.O: keep the cursor inside the viewport before any
         // paint reads `editor.scroll`. Auto-scrolls if the cursor
         // moved past the visible window since the last frame.
@@ -721,6 +833,32 @@ impl Render for EditorView {
         // gating; this peer just makes the call so paint_pane can
         // read `editor.pane_highlights[idx]` for the inactive case.
         self.app.editor.refresh_pane_highlights();
+        // 5.8.W: drain pending hover outcomes; the host method
+        // returns `RendererSignal`s (DisplayBuffer carries the
+        // HelpContent; the GPUI peer's existing handler stores
+        // it in `popup_content` so the next paint shows the
+        // popup overlay).
+        let hover_signals = self.app.editor.drain_pending_hover();
+        for signal in hover_signals {
+            self.app.handle_renderer_signal(signal);
+        }
+        // 5.8.X: same shape for signature help (`(` inside Insert).
+        let sig_signals = self.app.editor.drain_pending_signature_help();
+        for signal in sig_signals {
+            self.app.handle_renderer_signal(signal);
+        }
+        // 5.8.Y: code-action drain — opens the picker for Items;
+        // returns Resolved arm to caller for apply. GPUI peer can't
+        // apply workspace edits yet (chain is still App-resident),
+        // so a Resolved outcome echoes a warning and drops the
+        // action. This is a known gap queued for the next slice.
+        if let Some((_handle, action)) = self.app.editor.drain_pending_code_actions() {
+            tracing::warn!(
+                title = %action.title,
+                "lattice-gpui: code-action apply chain not yet wired host-side; \
+                 selection dropped. Run via `lattice --tui` to apply this action."
+            );
+        }
         let modal = self.app.editor.modal;
 
         let modal_label = match modal {

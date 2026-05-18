@@ -45,7 +45,7 @@ use lattice_grammar::ModalState;
 
 use super::{
     App, CodeActionOutcome, CodeActionRow, CompletionItemRow, CompletionOutcome,
-    CompletionResolveOutcome, EchoLevel, FormatOutcome, HoverOutcome, InsertCompletionLspOutcome,
+    CompletionResolveOutcome, EchoLevel, FormatOutcome, InsertCompletionLspOutcome,
     LSP_COMPLETION_KIND_ID, LspCompletionMeta, LspNavKind, ReferencesOutcome, RenameOutcome,
     SignatureHelpOutcome, SymbolRow, SymbolsOutcome, TagStackEntry, app_to_lsp_position,
     call_hierarchy_to_row, code_action_kind_glyph, dedup_rendered_by_text, flatten_workspace_edit,
@@ -344,43 +344,17 @@ impl App {
     /// Called once per main_loop iteration before draw; cheap
     /// when the channel is empty (the common case).
     pub fn drain_pending_hover(&mut self) {
-        let Some(mut rx) = self.editor.pending_hover_rx.take() else {
-            return;
-        };
-        // Last-writer-wins -- if a stale outcome and a fresh one
-        // both queued, surface the latest.
-        let mut latest: Option<HoverOutcome> = None;
-        while let Ok(outcome) = rx.try_recv() {
-            latest = Some(outcome);
+        // 5.8.W: drain body migrated to
+        // `lattice_host::dispatch::Editor::drain_pending_hover`
+        // so the GPUI peer reaches the same path. Returns
+        // RendererSignals (DisplayBuffer for Body; no signal for
+        // NoBody/NoServers — those echo via set_message inside
+        // the drain). This peer fans the signals through its
+        // existing handler.
+        let signals = self.editor.drain_pending_hover();
+        for signal in signals {
+            self.handle_renderer_signal(signal);
         }
-        if let Some(outcome) = latest {
-            match outcome {
-                HoverOutcome::Body(body) => {
-                    self.do_open_hover(&body);
-                }
-                HoverOutcome::NoBody { servers_tried } => {
-                    self.set_message(
-                        EchoLevel::Info,
-                        format!(
-                            "no hover info at cursor ({servers_tried} server{} replied)",
-                            if servers_tried == 1 { "" } else { "s" }
-                        ),
-                    );
-                }
-                HoverOutcome::NoServers => {
-                    self.set_message(
-                        EchoLevel::Warn,
-                        "hover: no LSP servers attached for this buffer (\
-                         check :lsp-status / :lsp-log)"
-                            .to_string(),
-                    );
-                }
-            }
-            // Outcome delivered: clear the in-flight token so a
-            // subsequent motion doesn't try to flip a stale token.
-            self.editor.pending_hover_token = None;
-        }
-        self.editor.pending_hover_rx = Some(rx);
     }
 
     /// Apply an accepted LSP completion item. Routes the main
@@ -2381,65 +2355,14 @@ impl App {
     /// the resolved action) apply directly when the original handle
     /// is still pinned.
     pub fn drain_pending_code_actions(&mut self) {
-        let Some(mut rx) = self.editor.pending_code_action_rx.take() else {
-            return;
-        };
-        let mut latest: Option<CodeActionOutcome> = None;
-        while let Ok(o) = rx.try_recv() {
-            latest = Some(o);
-        }
-        self.editor.pending_code_action_rx = Some(rx);
-        let outcome = match latest {
-            Some(o) => o,
-            None => return,
-        };
-        self.editor.pending_code_action_token = None;
-        match outcome {
-            CodeActionOutcome::NoProvider => {
-                self.set_message(
-                    EchoLevel::Info,
-                    "no server with codeActionProvider".to_string(),
-                );
-            }
-            CodeActionOutcome::Resolved(action) => {
-                let handle = self.editor.pending_code_action_handle.take();
-                self.apply_resolved_code_action(handle, action);
-            }
-            CodeActionOutcome::Items(items) => {
-                if items.is_empty() {
-                    self.set_message(EchoLevel::Info, "no code actions".to_string());
-                    return;
-                }
-                let total = items.len();
-                let pairs: Vec<(
-                    lattice_completion::RawCandidate,
-                    lattice_picker::RoutingPayload,
-                )> = items
-                    .iter()
-                    .enumerate()
-                    .map(|(i, item)| {
-                        let mut c = lattice_completion::RawCandidate::plain(
-                            item.title.clone(),
-                            lattice_completion::CandidateKind::Plain,
-                        );
-                        c.display = format!("{} {}", item.kind_glyph, item.title);
-                        (
-                            c,
-                            lattice_picker::RoutingPayload::LspCodeAction { index: i as u32 },
-                        )
-                    })
-                    .collect();
-                let handle = self.first_code_action_handle();
-                self.editor.pending_code_action_items = Some(items);
-                self.editor.pending_code_action_handle = handle;
-                let mut p = lattice_picker::Picker::new(
-                    format!("code-actions ({total})"),
-                    lattice_picker::PickerSource::LspLocations,
-                    lattice_picker::PickerAction::AcceptLspCodeAction,
-                );
-                p.set_raw_candidates_with_routing(pairs);
-                self.editor.picker = Some(p);
-            }
+        // 5.8.Y: Items + NoProvider arms migrated to
+        // `lattice_host::dispatch::Editor::drain_pending_code_actions`
+        // so the GPUI peer can open the menu. The Resolved arm is
+        // returned for caller-side apply because the workspace-
+        // edit / executeCommand chains are still App-resident
+        // (queued for a later host migration).
+        if let Some((handle, action)) = self.editor.drain_pending_code_actions() {
+            self.apply_resolved_code_action(handle, action);
         }
     }
 
@@ -3159,32 +3082,14 @@ impl App {
     /// renders into the popup; empty echoes "no signature info";
     /// `NoServers` echoes the standard "no LSP server" message.
     pub fn drain_pending_signature_help(&mut self) {
-        let Some(mut rx) = self.editor.pending_signature_help_rx.take() else {
-            return;
-        };
-        let mut latest: Option<SignatureHelpOutcome> = None;
-        while let Ok(o) = rx.try_recv() {
-            latest = Some(o);
-        }
-        self.editor.pending_signature_help_rx = Some(rx);
-        let outcome = match latest {
-            Some(o) => o,
-            None => return,
-        };
-        self.editor.pending_signature_help_token = None;
-        match outcome {
-            SignatureHelpOutcome::NoServers => {
-                self.set_message(
-                    EchoLevel::Info,
-                    "no LSP server attached to current buffer".to_string(),
-                );
-            }
-            SignatureHelpOutcome::Body(body) if body.is_empty() => {
-                self.set_message(EchoLevel::Info, "no signature info".to_string());
-            }
-            SignatureHelpOutcome::Body(body) => {
-                self.do_open_hover(&body);
-            }
+        // 5.8.X: drain body migrated to
+        // `lattice_host::dispatch::Editor::drain_pending_signature_help`
+        // so the GPUI peer reaches the same path. Returns
+        // RendererSignals; this peer fans them through its
+        // existing handler.
+        let signals = self.editor.drain_pending_signature_help();
+        for signal in signals {
+            self.handle_renderer_signal(signal);
         }
     }
 

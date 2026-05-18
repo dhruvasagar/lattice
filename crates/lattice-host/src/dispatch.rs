@@ -818,7 +818,7 @@ fn echo_level_to_wire(level: EchoLevel) -> lattice_grammar::EchoLevel {
 }
 
 /// Inverse of [`echo_level_to_wire`]. Grammar [`Effect::Echo`] carries
-/// the wire-typed `lattice_grammar::EchoLevel`; the host's
+/// the wire-typed `EchoLevel`; the host's
 /// [`Editor::set_message`] takes the renderer-neutral [`EchoLevel`].
 /// Moved here from `lattice-ui-tui::app::dispatch` in 5.5.E.1
 /// alongside the [`Effect::Echo`] arm.
@@ -3074,6 +3074,218 @@ impl Editor {
     /// **Cancellation**: any prior in-flight hover's token is
     /// flipped before the new request fires, so a slow server can't
     /// drop a stale popup over the new cursor position.
+    /// Drain queued `HoverOutcome`s and produce renderer signals.
+    ///
+    /// Mirrors the TUI peer's `App::drain_pending_hover` but in
+    /// host shape so the GPUI peer (and any future peer) reaches
+    /// the same path. Body outcomes turn into a
+    /// `RendererSignal::DisplayBuffer` carrying a HelpContent
+    /// built from the markdown; NoBody / NoServers outcomes echo
+    /// via `set_message` (which both peers already surface).
+    ///
+    /// Last-writer-wins on the channel: if multiple outcomes are
+    /// queued, only the latest fires a signal — stale hovers from
+    /// before the most recent `K` press are dropped.
+    ///
+    /// Phase 5.8.W: hoisted from
+    /// `lattice-ui-tui::app::lsp::App::drain_pending_hover` so the
+    /// GPUI peer can call it per frame.
+    pub fn drain_pending_hover(&mut self) -> Vec<RendererSignal> {
+        let Some(mut rx) = self.pending_hover_rx.take() else {
+            return Vec::new();
+        };
+        let mut latest: Option<lattice_lsp::cache::HoverOutcome> = None;
+        while let Ok(outcome) = rx.try_recv() {
+            latest = Some(outcome);
+        }
+        // Put the receiver back for next-frame drains.
+        self.pending_hover_rx = Some(rx);
+        let mut signals = Vec::new();
+        if let Some(outcome) = latest {
+            use lattice_lsp::cache::HoverOutcome;
+            match outcome {
+                HoverOutcome::Body(body) => {
+                    let lines: Vec<String> = body.split('\n').map(String::from).collect();
+                    let content = lattice_help::HelpContent::from_lines("hover", lines)
+                        .with_markdown_syntax(self.lang_registry.clone());
+                    signals.push(RendererSignal::DisplayBuffer(Box::new(
+                        DisplayBufferRequest {
+                            content,
+                            category: lattice_core::ui::display::BufferDisplayCategory::Hover,
+                        },
+                    )));
+                }
+                HoverOutcome::NoBody { servers_tried } => {
+                    let plural = if servers_tried == 1 { "" } else { "s" };
+                    self.set_message(
+                        EchoLevel::Info,
+                        format!("no hover info at cursor ({servers_tried} server{plural} replied)"),
+                    );
+                }
+                HoverOutcome::NoServers => {
+                    self.set_message(
+                        EchoLevel::Warn,
+                        "hover: no LSP servers attached for this buffer (\
+                         check :lsp-status / :lsp-log)"
+                            .to_string(),
+                    );
+                }
+            }
+            // Outcome delivered: clear the in-flight token so a
+            // subsequent motion doesn't try to flip a stale token.
+            self.pending_hover_token = None;
+        }
+        signals
+    }
+
+    /// Drain queued `SignatureHelpOutcome`s and produce renderer
+    /// signals — same shape as [`Self::drain_pending_hover`].
+    /// Non-empty body → `DisplayBuffer(content)`; empty body or
+    /// `NoServers` → `set_message`.
+    ///
+    /// Phase 5.8.X: hoisted from
+    /// `lattice-ui-tui::app::lsp::App::drain_pending_signature_help`
+    /// so the GPUI peer reaches the same path.
+    pub fn drain_pending_signature_help(&mut self) -> Vec<RendererSignal> {
+        let Some(mut rx) = self.pending_signature_help_rx.take() else {
+            return Vec::new();
+        };
+        let mut latest: Option<lattice_lsp::cache::SignatureHelpOutcome> = None;
+        while let Ok(o) = rx.try_recv() {
+            latest = Some(o);
+        }
+        self.pending_signature_help_rx = Some(rx);
+        let Some(outcome) = latest else {
+            return Vec::new();
+        };
+        self.pending_signature_help_token = None;
+        let mut signals = Vec::new();
+        use lattice_lsp::cache::SignatureHelpOutcome;
+        match outcome {
+            SignatureHelpOutcome::NoServers => {
+                self.set_message(
+                    EchoLevel::Info,
+                    "no LSP server attached to current buffer".to_string(),
+                );
+            }
+            SignatureHelpOutcome::Body(body) if body.is_empty() => {
+                self.set_message(EchoLevel::Info, "no signature info".to_string());
+            }
+            SignatureHelpOutcome::Body(body) => {
+                let lines: Vec<String> = body.split('\n').map(String::from).collect();
+                // Title matches the pre-migration `do_open_hover`
+                // shape — signature help renders into the same
+                // floating-popup surface as hover, so the title
+                // stays consistent with the hover popup. A future
+                // slice could differentiate.
+                let content = lattice_help::HelpContent::from_lines("hover", lines)
+                    .with_markdown_syntax(self.lang_registry.clone());
+                signals.push(RendererSignal::DisplayBuffer(Box::new(
+                    DisplayBufferRequest {
+                        content,
+                        // Same category as hover — both render as
+                        // cursor-anchored floating popups by default.
+                        category: lattice_core::ui::display::BufferDisplayCategory::Hover,
+                    },
+                )));
+            }
+        }
+        signals
+    }
+
+    /// Drain queued `CodeActionOutcome`s. Items open a picker
+    /// (host-side `editor.picker` mutation); `NoProvider` echoes
+    /// "no server with codeActionProvider"; `Resolved` outcomes
+    /// are returned to the caller for renderer-side apply (since
+    /// the apply path needs `apply_lsp_text_edits` /
+    /// `execute_lsp_command` chains that are still App-resident in
+    /// the TUI peer; future slices fold those host-side too).
+    ///
+    /// Phase 5.8.Y: hoists the Items + NoProvider arms host-side
+    /// so the GPUI peer can open the code-action menu. Resolved
+    /// arm stays as-returned for the App-side apply chain.
+    pub fn drain_pending_code_actions(
+        &mut self,
+    ) -> Option<(
+        Option<lattice_lsp::ServerHandle>,
+        lattice_lsp::lsp_types::CodeAction,
+    )> {
+        let Some(mut rx) = self.pending_code_action_rx.take() else {
+            return None;
+        };
+        let mut latest: Option<lattice_lsp::cache::CodeActionOutcome> = None;
+        while let Ok(o) = rx.try_recv() {
+            latest = Some(o);
+        }
+        self.pending_code_action_rx = Some(rx);
+        let outcome = latest?;
+        self.pending_code_action_token = None;
+        use lattice_lsp::cache::CodeActionOutcome;
+        match outcome {
+            CodeActionOutcome::NoProvider => {
+                self.set_message(
+                    EchoLevel::Info,
+                    "no server with codeActionProvider".to_string(),
+                );
+                None
+            }
+            CodeActionOutcome::Resolved(action) => {
+                // Return for caller-side apply — the workspace-
+                // edit + executeCommand chains aren't host-side yet.
+                let handle = self.pending_code_action_handle.take();
+                Some((handle, action))
+            }
+            CodeActionOutcome::Items(items) => {
+                if items.is_empty() {
+                    self.set_message(EchoLevel::Info, "no code actions".to_string());
+                    return None;
+                }
+                let total = items.len();
+                let pairs: Vec<(
+                    lattice_completion::RawCandidate,
+                    lattice_picker::RoutingPayload,
+                )> = items
+                    .iter()
+                    .enumerate()
+                    .map(|(i, item)| {
+                        let mut c = lattice_completion::RawCandidate::plain(
+                            item.title.clone(),
+                            lattice_completion::CandidateKind::Plain,
+                        );
+                        c.display = format!("{} {}", item.kind_glyph, item.title);
+                        (
+                            c,
+                            lattice_picker::RoutingPayload::LspCodeAction { index: i as u32 },
+                        )
+                    })
+                    .collect();
+                let handle = self.first_code_action_server_handle();
+                self.pending_code_action_items = Some(items);
+                self.pending_code_action_handle = handle;
+                let mut p = lattice_picker::Picker::new(
+                    format!("code-actions ({total})"),
+                    lattice_picker::PickerSource::LspLocations,
+                    lattice_picker::PickerAction::AcceptLspCodeAction,
+                );
+                p.set_raw_candidates_with_routing(pairs);
+                self.picker = Some(p);
+                None
+            }
+        }
+    }
+
+    /// First attached LSP server advertising `codeActionProvider`.
+    /// Mirrors the App-side `first_code_action_handle`; used by
+    /// `drain_pending_code_actions` when wiring the Items arm's
+    /// resolve handle.
+    fn first_code_action_server_handle(&self) -> Option<lattice_lsp::ServerHandle> {
+        let uri = self.buffer_uris.get(&self.document_buffer_id)?;
+        self.lsp
+            .servers_for(uri)
+            .into_iter()
+            .find(|h| h.capabilities().supports_code_action())
+    }
+
     pub fn lsp_hover_request(&mut self) {
         // Already focused into the popup (State B) -- K is a no-op.
         // To get a fresh hover the user dismisses with Esc / q,
@@ -5037,6 +5249,22 @@ impl Editor {
             return None;
         }
         self.folds.iter().find(|f| f.start_line == line)
+    }
+
+    /// True if `line` is inside (but not the start of) a closed fold.
+    /// Renderer uses this to skip painting that line. When
+    /// `foldenable = false`, always returns `false`.
+    ///
+    /// Phase 5.8.U: hoisted from
+    /// `lattice-ui-tui::app::folds::App::line_inside_closed_fold`
+    /// so the GPUI peer can also skip lines inside closed folds.
+    pub fn line_inside_closed_fold(&self, line: u32) -> bool {
+        if !self.foldenable() {
+            return false;
+        }
+        self.folds
+            .iter()
+            .any(|f| f.closed && line > f.start_line && line <= f.end_line)
     }
 
     /// Move the cursor out of any closed fold's hidden body to the

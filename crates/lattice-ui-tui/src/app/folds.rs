@@ -66,17 +66,11 @@ impl App {
     // selection-rule helpers `innermost_fold_idx`, `fold_to_close_at`,
     // and `outermost_fold_idx` co-moved.
 
-    /// Returns true if `line` is inside a closed fold (and not the fold
-    /// start). The renderer uses this to skip lines. When `foldenable`
-    /// is false, returns `false` regardless of fold state.
+    /// 5.8.U: body migrated to
+    /// [`lattice_host::dispatch::Editor::line_inside_closed_fold`]
+    /// so the GPUI peer can reach the same check.
     pub fn line_inside_closed_fold(&self, line: u32) -> bool {
-        if !self.foldenable() {
-            return false;
-        }
-        self.editor
-            .folds
-            .iter()
-            .any(|f| f.closed && line > f.start_line && line <= f.end_line)
+        self.editor.line_inside_closed_fold(line)
     }
 
     /// 5.5.G.23: body migrated to

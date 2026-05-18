@@ -355,6 +355,21 @@ impl GpuiApp {
         // mode-id knowledge lives host-side (no need for the
         // GPUI peer to depend on `lattice-lsp` directly).
         self.editor.ensure_subsystem_buffers();
+        // Phase 5.8.AA.u: load persistent TOML config from
+        // `~/.editor.config/lattice/lattice.toml` (user) +
+        // `<workspace>/.lattice/config.toml` (project). Reaches
+        // the same host method the TUI runtime calls, so a
+        // GPUI launch and a TUI launch from the same cwd
+        // produce identical Editor state on first frame. The
+        // returned signals always include `ThemeChanged`; we
+        // fan through the standard signal handler so the GPUI-
+        // typed theme cache rebuilds before the first paint.
+        let workspace_root = Editor::workspace_root_from_cwd();
+        let signals = self.editor.load_persistent_config(workspace_root.as_deref());
+        for signal in signals {
+            self.handle_renderer_signal(signal);
+        }
+        self.editor.apply_per_language_toml_overrides();
     }
 
     /// Renderer-side handler for the [`RendererSignal`] stream

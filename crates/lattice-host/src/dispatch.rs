@@ -10561,6 +10561,189 @@ impl Editor {
     /// the active buffer (transient state during boot before the
     /// first [`Self::recompute_options_for_buffer`]). Cheap: 9
     /// typed reads.
+    /// Walk up from `std::env::current_dir()` looking for a
+    /// `.git` directory or a `.lattice/` directory. Returns the
+    /// first match, or the CWD itself if neither marker is
+    /// found. `None` only when the CWD itself is unreadable.
+    ///
+    /// Phase 5.8.AA.u: hoisted from the TUI runtime so both
+    /// renderer peers reach the same workspace-root semantics.
+    pub fn workspace_root_from_cwd() -> Option<std::path::PathBuf> {
+        let cwd = std::env::current_dir().ok()?;
+        let mut cursor = cwd.as_path();
+        loop {
+            if cursor.join(".git").exists() || cursor.join(".lattice").exists() {
+                return Some(cursor.to_path_buf());
+            }
+            match cursor.parent() {
+                Some(parent) => cursor = parent,
+                None => return Some(cwd),
+            }
+        }
+    }
+
+    /// Read a structural section the loader bucketed and remove
+    /// it from `pending_config_structural_sections`. Subsequent
+    /// calls return `None`. Phase 5.8.AA.u: hoisted from TUI App.
+    pub fn take_pending_structural_section(&mut self, full_path: &str) -> Option<toml::Table> {
+        self.pending_config_structural_sections.remove(full_path)
+    }
+
+    /// Iterate the dotted paths of every pending structural
+    /// section whose path starts with `namespace.`. Returned as
+    /// owned strings so the caller can follow up with mutating
+    /// `take_pending_structural_section`. Phase 5.8.AA.u.
+    pub fn pending_structural_section_paths(&self, namespace: &str) -> Vec<String> {
+        let prefix = format!("{namespace}.");
+        self.pending_config_structural_sections
+            .keys()
+            .filter(|k| k.starts_with(&prefix))
+            .cloned()
+            .collect()
+    }
+
+    /// Apply `lsp-mode.log-level` / legacy `lsp.log-level` from
+    /// the cached TOML tree. Phase 5.8.AA.u: hoisted from TUI App
+    /// (was `apply_persistent_lsp_editor_options`). The body reads
+    /// the host-side `lsp_config_tree` + writes the host-side
+    /// `lsp_logger`; only `set_message` made it App-specific
+    /// pre-hoist, and that's host-resident.
+    pub fn apply_persistent_lsp_editor_options(&mut self) {
+        let canonical =
+            lattice_config::lookup_dotted_path(&self.lsp_config_tree, "lsp-mode.log-level")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+        let legacy = lattice_config::lookup_dotted_path(&self.lsp_config_tree, "lsp.log-level")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let (key, level) = match (canonical, legacy) {
+            (Some(v), _) => ("lsp-mode.log-level", v),
+            (None, Some(v)) => {
+                self.set_message(
+                    EchoLevel::Warn,
+                    "config: `lsp.log-level` is deprecated; rename to `lsp-mode.log-level` \
+                     (the `lsp.*` namespace is reserved for `workspace/configuration` \
+                     server subtables)"
+                        .to_string(),
+                );
+                ("lsp.log-level", v)
+            }
+            (None, None) => return,
+        };
+        match lattice_lsp::LogLevel::parse(&level) {
+            Some(parsed) => self.lsp_logger.set_default_level(parsed),
+            None => self.set_message(
+                EchoLevel::Warn,
+                format!(
+                    "config: {key}: unknown level {level:?}; expected error/warn/info/debug/trace"
+                ),
+            ),
+        }
+    }
+
+    /// Drain every `completion.per-language.<lang>` structural
+    /// section the loader bucketed and merge each into
+    /// `self.per_language_completion`. Per-key TOML wins over the
+    /// spec defaults seeded at boot; unset keys leave the default
+    /// in place. Phase 5.8.AA.u: hoisted from TUI App.
+    pub fn apply_per_language_toml_overrides(&mut self) {
+        let paths = self.pending_structural_section_paths("completion.per-language");
+        let mut warnings: Vec<String> = Vec::new();
+        for path in paths {
+            let lang = match path.strip_prefix("completion.per-language.") {
+                Some(s) if !s.is_empty() => s.to_string(),
+                _ => continue,
+            };
+            let Some(table) = self.take_pending_structural_section(&path) else {
+                continue;
+            };
+            let parsed = parse_per_language_overrides_table(&path, &table, &mut warnings);
+            self.per_language_completion
+                .entry(lang)
+                .or_default()
+                .merge(parsed);
+        }
+        if !warnings.is_empty() {
+            let count = warnings.len();
+            let body = if count == 1 {
+                format!("config: {}", warnings[0])
+            } else {
+                format!(
+                    "config: {count} per-language warnings (first: {})",
+                    warnings[0]
+                )
+            };
+            self.set_message(EchoLevel::Warn, body);
+        }
+    }
+
+    /// Load `~/.editor.config/lattice/lattice.toml` (user) and
+    /// `<workspace_root>/.lattice/config.toml` (project) in
+    /// precedence order. Applies scalar overrides to
+    /// `self.config`, buckets structural sub-tables into
+    /// `self.pending_config_structural_sections`, refreshes the
+    /// host theme + option cache, applies `[lsp]` editor options,
+    /// and emits a single echo summarising loader diagnostics.
+    ///
+    /// Returns the [`RendererSignal`]s the caller should fan to
+    /// the renderer (always at least one
+    /// [`RendererSignal::ThemeChanged`] so peers rebuild their
+    /// typed theme caches).
+    ///
+    /// Phase 5.8.AA.u: hoisted from TUI App. Both renderer peers
+    /// (TUI + GPUI) reach this through `Editor` so the persistent
+    /// config takes effect identically from t=0 in both.
+    pub fn load_persistent_config(
+        &mut self,
+        workspace_root: Option<&std::path::Path>,
+    ) -> Vec<RendererSignal> {
+        let prefixes = ["completion.per-language", "plugin", "lsp"];
+        let outcome = lattice_config::load_default_paths(&self.config, workspace_root, &prefixes);
+        // Re-derive host theme + hot-path option cache.
+        self.sync_host_theme_from_config();
+        self.rebuild_option_cache();
+        // Stash structural sections for the layers that own them.
+        for (k, v) in outcome.structural {
+            self.pending_config_structural_sections.insert(k, v);
+        }
+        // Cache the merged TOML tree so workspace/configuration
+        // can walk server-namespaced keys.
+        self.lsp_config_tree = outcome.raw_tree;
+        self.apply_persistent_lsp_editor_options();
+        // Emit a single echo summarising loader diagnostics.
+        if !outcome.messages.is_empty() {
+            let max_level = outcome
+                .messages
+                .iter()
+                .map(|m| m.level)
+                .max_by_key(|l| match l {
+                    lattice_config::LoadMessageLevel::Error => 1,
+                    lattice_config::LoadMessageLevel::Warning => 0,
+                })
+                .unwrap_or(lattice_config::LoadMessageLevel::Warning);
+            let echo_level = match max_level {
+                lattice_config::LoadMessageLevel::Error => EchoLevel::Error,
+                lattice_config::LoadMessageLevel::Warning => EchoLevel::Warn,
+            };
+            let count = outcome.messages.len();
+            let first = &outcome.messages[0];
+            let body = if count == 1 {
+                format!("config: {}: {}", first.source.display(), first.body)
+            } else {
+                format!(
+                    "config: {count} issues (first: {}: {})",
+                    first.source.display(),
+                    first.body,
+                )
+            };
+            self.set_message(echo_level, body);
+        }
+        // Both peers rebuild their typed theme cache off this
+        // signal; we emit unconditionally so the GPUI peer picks
+        // up the persistent-config palette on first frame.
+        vec![RendererSignal::ThemeChanged]
+    }
+
     pub fn rebuild_option_cache(&mut self) {
         use lattice_config::{
             CompletionAutoInsertSingle, CursorLine, FoldEnable, FoldMethodOption, IgnoreCase,
@@ -12558,6 +12741,60 @@ pub fn visual_kind_to_mode(kind: VisualKind) -> VisualMode {
         VisualKind::Linewise => VisualMode::Linewise,
         VisualKind::Blockwise => VisualMode::Blockwise,
     }
+}
+
+/// Parse a `[completion.per-language.<lang>]` TOML sub-table
+/// into [`lattice_completion::PerLanguageOverrides`]. Unknown
+/// keys + wrong-typed values append warnings to `warnings`;
+/// recognised keys populate the struct. Phase 5.8.AA.u: hoisted
+/// from TUI App alongside [`Editor::apply_per_language_toml_overrides`].
+fn parse_per_language_overrides_table(
+    section_path: &str,
+    table: &toml::Table,
+    warnings: &mut Vec<String>,
+) -> lattice_completion::PerLanguageOverrides {
+    let mut out = lattice_completion::PerLanguageOverrides::default();
+    for (key, value) in table {
+        match key.as_str() {
+            "sources" => match value.as_array() {
+                Some(arr) => {
+                    let sources: Vec<lattice_completion::SourceId> = arr
+                        .iter()
+                        .filter_map(|v| v.as_str().map(lattice_completion::canonical_source_id))
+                        .collect();
+                    out.sources = Some(sources);
+                }
+                None => warnings
+                    .push(format!("{section_path}.sources: expected array of strings",)),
+            },
+            "auto_trigger" => match value.as_bool() {
+                Some(b) => out.auto_trigger = Some(b),
+                None => warnings.push(format!("{section_path}.auto_trigger: expected bool",)),
+            },
+            "auto_insert_single" => match value.as_bool() {
+                Some(b) => out.auto_insert_single = Some(b),
+                None => warnings
+                    .push(format!("{section_path}.auto_insert_single: expected bool",)),
+            },
+            "suppress_in" => match value.as_array() {
+                Some(arr) => {
+                    out.suppress_in = Some(
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect(),
+                    );
+                }
+                None => warnings.push(format!(
+                    "{section_path}.suppress_in: expected array of strings",
+                )),
+            },
+            other => warnings.push(format!(
+                "{section_path}.{other}: unknown per-language key (recognised: \
+                 sources, auto_trigger, auto_insert_single, suppress_in)",
+            )),
+        }
+    }
+    out
 }
 
 /// Translate a host-side [`crate::buffer_registry::BufferEntry`]

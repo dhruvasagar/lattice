@@ -34,11 +34,11 @@ pub fn run(document: Document) -> Result<()> {
     // walked up to the first `.git` / `.lattice/` marker (or
     // the CWD itself if neither is found). Failures are
     // surfaced via the App's echo, never abort startup.
-    let workspace_root = workspace_root_from_cwd();
+    // Phase 5.8.AA.u: workspace-root discovery + persistent-config
+    // loading both live on the host so GPUI gets the same boot
+    // behaviour. The TUI runtime is now a thin wrapper.
+    let workspace_root = lattice_host::editor::Editor::workspace_root_from_cwd();
     app.load_persistent_config(workspace_root.as_deref());
-    // Drain `[completion.per-language.<lang>]` sections the
-    // loader bucketed -- spec defaults seed the map at App
-    // init; TOML overrides layer on top here.
     app.apply_per_language_toml_overrides();
     // LSP attach is event-driven: `App::new` already
     // published `Event::DocumentOpened` for the initial
@@ -53,26 +53,8 @@ pub fn run(document: Document) -> Result<()> {
     result
 }
 
-/// Walk up from `std::env::current_dir()` looking for a `.git`
-/// directory or a `.lattice/` directory. Returns the first
-/// match, or the CWD itself if neither marker is found. The
-/// workspace root is the path the project-config TOML lookup
-/// (`<root>/.lattice/config.toml`) joins onto. `None` only when
-/// the CWD itself is unreadable -- a rare boot failure mode in
-/// which case the loader falls back to user config alone.
-fn workspace_root_from_cwd() -> Option<std::path::PathBuf> {
-    let cwd = std::env::current_dir().ok()?;
-    let mut cursor = cwd.as_path();
-    loop {
-        if cursor.join(".git").exists() || cursor.join(".lattice").exists() {
-            return Some(cursor.to_path_buf());
-        }
-        match cursor.parent() {
-            Some(parent) => cursor = parent,
-            None => return Some(cwd),
-        }
-    }
-}
+// Phase 5.8.AA.u: `workspace_root_from_cwd` migrated to
+// `lattice_host::dispatch::Editor::workspace_root_from_cwd`.
 
 // Phase 5.5.LSP.1: the shared LSP runtime + spawn helper now
 // live in `lattice_runtime::runtime` so host-side dispatchers

@@ -22,7 +22,7 @@
 
 use lattice_core::Document;
 
-use super::{App, BufferKind, EchoLevel};
+use super::{App, BufferKind};
 
 impl App {
     pub fn new(document: Document) -> Self {
@@ -250,73 +250,15 @@ impl App {
     /// silent. Per-file `path:body` detail rides the message
     /// body so the user can see *which* file complained.
     pub fn load_persistent_config(&mut self, workspace_root: Option<&std::path::Path>) {
-        // The structural prefixes the App / future plugin host
-        // own. The per-language layer drains
-        // `completion.per-language.*`; the plugin host (Phase 7)
-        // will drain `plugin.*`; `lsp` is bucketed so the
-        // loader doesn't fire unknown-option warnings for
-        // server-namespaced keys (the cached raw_tree carries
-        // the values; `workspace/configuration` walks it).
-        let prefixes = ["completion.per-language", "plugin", "lsp"];
-        let outcome =
-            lattice_config::load_default_paths(&self.editor.config, workspace_root, &prefixes);
-        // Re-derive theme + hot-path option cache after the
-        // loader's writes. ui.* and the cached options may have
-        // changed; missing this would leave the first frame
-        // rendering with stale derived state.
-        self.sync_theme_from_config();
-        self.rebuild_option_cache();
-        // Stash structural sections for the layers that own
-        // them. Subsequent slices drain via
-        // `take_pending_structural_section(prefix)`.
-        for (k, v) in outcome.structural {
-            self.editor.pending_config_structural_sections.insert(k, v);
+        // Phase 5.8.AA.u: body migrated to
+        // `lattice_host::dispatch::Editor::load_persistent_config`.
+        // The returned `Vec<RendererSignal>` carries the
+        // `ThemeChanged` so the renderer-side typed theme cache
+        // rebuilds; we fan it through the App's standard signal
+        // handler (which calls `rebuild_tui_theme`).
+        let signals = self.editor.load_persistent_config(workspace_root);
+        for s in signals {
+            self.handle_renderer_signal(s);
         }
-        // Cache the merged TOML tree so
-        // `workspace/configuration` can walk server-namespaced
-        // keys (Phase 4.1 follow-up). Project files override
-        // user files at deep-merge time so an `[lsp.X.Y]`
-        // sibling key in the user config survives a project
-        // override of `[lsp.X.Z]`.
-        self.editor.lsp_config_tree = outcome.raw_tree;
-        // Apply editor-side LSP options that live in the same
-        // `[lsp]` table as server-namespaced keys. These are scalars
-        // the editor consumes itself (not forwarded via
-        // `workspace/configuration`); the loader buckets the whole
-        // `lsp` subtree as structural so they're reachable here via
-        // `lsp_config_tree`.
-        self.apply_persistent_lsp_editor_options();
-        // Surface a single echo summarising loader diagnostics.
-        // The renderer's modeline only shows the latest echo,
-        // so multi-warn configs collapse into "<count> issues
-        // (first: <body>)". Severity is the max across the run.
-        if outcome.messages.is_empty() {
-            return;
-        }
-        let max_level = outcome
-            .messages
-            .iter()
-            .map(|m| m.level)
-            .max_by_key(|l| match l {
-                lattice_config::LoadMessageLevel::Error => 1,
-                lattice_config::LoadMessageLevel::Warning => 0,
-            })
-            .unwrap_or(lattice_config::LoadMessageLevel::Warning);
-        let echo_level = match max_level {
-            lattice_config::LoadMessageLevel::Error => EchoLevel::Error,
-            lattice_config::LoadMessageLevel::Warning => EchoLevel::Warn,
-        };
-        let count = outcome.messages.len();
-        let first = &outcome.messages[0];
-        let body = if count == 1 {
-            format!("config: {}: {}", first.source.display(), first.body,)
-        } else {
-            format!(
-                "config: {count} issues (first: {}: {})",
-                first.source.display(),
-                first.body,
-            )
-        };
-        self.set_message(echo_level, body);
     }
 }

@@ -1006,41 +1006,9 @@ impl App {
     /// Unknown / mistyped values surface a warn echo and the
     /// option is skipped. Missing keys are silent.
     pub(super) fn apply_persistent_lsp_editor_options(&mut self) {
-        // M.6.5: prefer the canonical `lsp-mode.log-level`. Fall
-        // back to the legacy `lsp.log-level` with a deprecation
-        // echo so existing TOMLs keep working for one minor
-        // version.
-        let canonical =
-            lattice_config::lookup_dotted_path(&self.editor.lsp_config_tree, "lsp-mode.log-level")
-                .and_then(|v| v.as_str())
-                .map(String::from);
-        let legacy =
-            lattice_config::lookup_dotted_path(&self.editor.lsp_config_tree, "lsp.log-level")
-                .and_then(|v| v.as_str())
-                .map(String::from);
-        let (key, level) = match (canonical, legacy) {
-            (Some(v), _) => ("lsp-mode.log-level", v),
-            (None, Some(v)) => {
-                self.set_message(
-                    EchoLevel::Warn,
-                    "config: `lsp.log-level` is deprecated; rename to `lsp-mode.log-level` \
-                     (the `lsp.*` namespace is reserved for `workspace/configuration` \
-                     server subtables)"
-                        .to_string(),
-                );
-                ("lsp.log-level", v)
-            }
-            (None, None) => return,
-        };
-        match lattice_lsp::LogLevel::parse(&level) {
-            Some(parsed) => self.editor.lsp_logger.set_default_level(parsed),
-            None => self.set_message(
-                EchoLevel::Warn,
-                format!(
-                    "config: {key}: unknown level {level:?}; expected error/warn/info/debug/trace"
-                ),
-            ),
-        }
+        // Phase 5.8.AA.u: body migrated to
+        // `lattice_host::dispatch::Editor::apply_persistent_lsp_editor_options`.
+        self.editor.apply_persistent_lsp_editor_options();
     }
 
     /// Apply a `Vec<TextEdit>` (LSP utf-16 ranges) to the active

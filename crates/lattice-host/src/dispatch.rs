@@ -1444,6 +1444,24 @@ impl Editor {
         self.minor_mode_enabled_for(buffer_id, lattice_lsp::modes::LspCompletionMode::mode_id())
     }
 
+    /// CSM.K1: is `completion-mode` active on `buffer_id`?
+    /// Phase 5.8.AD.4.
+    pub fn completion_mode_active_for(&self, buffer_id: BufferId) -> bool {
+        self.minor_mode_enabled_for(buffer_id, lattice_mode::CompletionMode::mode_id())
+    }
+
+    /// CSM.K1: is `completion-popup-mode` active on `buffer_id`?
+    /// Phase 5.8.AD.4.
+    pub fn completion_popup_mode_active_for(&self, buffer_id: BufferId) -> bool {
+        self.minor_mode_enabled_for(buffer_id, lattice_mode::CompletionPopupMode::mode_id())
+    }
+
+    /// Shorthand: is the insert-completion popup live on the
+    /// active document buffer? Phase 5.8.AD.4.
+    pub fn completion_popup_active(&self) -> bool {
+        self.completion_popup_mode_active_for(self.document_buffer_id)
+    }
+
     /// 5.5.LSP.4: is `lsp-signature-mode` active on `buffer_id`?
     /// Gates `lsp_signature_help_request` -- silent gate (Insert-
     /// mode auto-trigger).
@@ -11702,6 +11720,456 @@ impl Editor {
         });
     }
 
+    /// Insert-mode auto-trigger: fire `textDocument/onTypeFormatting`
+    /// for `trigger`; apply the returned edits via the format
+    /// drain. Phase 5.8.AD.4.
+    pub fn do_lsp_on_type_formatting_request(&mut self, trigger: char) {
+        if !self.lsp_format_mode_enabled_for(self.document_buffer_id) {
+            return;
+        }
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
+            return;
+        };
+        let snapshot = self.document.snapshot();
+        let pos = match crate::lsp_helpers::app_to_lsp_position(&snapshot.buffer, self.cursor) {
+            Some(p) => p,
+            None => return,
+        };
+        let lsp = self.lsp.clone();
+        let trigger_str = trigger.to_string();
+        let options = lattice_lsp::lsp_types::FormattingOptions {
+            tab_size: 4,
+            insert_spaces: true,
+            properties: Default::default(),
+            trim_trailing_whitespace: Some(true),
+            insert_final_newline: Some(true),
+            trim_final_newlines: Some(true),
+        };
+        if let Some(token) = self.pending_format_token.take() {
+            token.cancel();
+        }
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<lattice_lsp::cache::FormatOutcome>();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_format_rx = Some(rx);
+        self.pending_format_token = Some(token.clone());
+        lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
+            let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
+            let chosen = handles
+                .into_iter()
+                .find(|h| h.capabilities().supports_on_type_formatting());
+            let Some(handle) = chosen else {
+                let _ = tx.send(lattice_lsp::cache::FormatOutcome::NoProvider { is_range: false });
+                return;
+            };
+            let params = lattice_lsp::lsp_types::DocumentOnTypeFormattingParams {
+                text_document_position: lattice_lsp::lsp_types::TextDocumentPositionParams {
+                    text_document: lattice_lsp::lsp_types::TextDocumentIdentifier { uri },
+                    position: pos,
+                },
+                ch: trigger_str,
+                options,
+            };
+            let edits = handle
+                .on_type_formatting(params, token)
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or_default();
+            let _ = tx.send(lattice_lsp::cache::FormatOutcome::Edits(edits));
+        });
+    }
+
+    /// CSM.5: resolve a candidate's snippet metadata by decoding
+    /// the payload (snippet name) and looking up in
+    /// `snippet_registry`. Phase 5.8.AD.4.
+    pub fn snippet_meta_for(
+        &self,
+        candidate: &lattice_completion::RenderedCandidate,
+    ) -> Option<crate::state::SnippetCandidateMeta> {
+        let lattice_completion::CandidateData::Extension { kind_id, payload } = &candidate.raw.data
+        else {
+            return None;
+        };
+        if *kind_id != SNIPPET_COMPLETION_KIND_ID {
+            return None;
+        }
+        let name = std::str::from_utf8(payload).ok()?;
+        let registry = self.snippet_registry.load();
+        let snip = registry.by_name(name)?;
+        let prefix = snip
+            .prefixes
+            .first()
+            .cloned()
+            .unwrap_or_else(|| snip.name.clone());
+        Some(crate::state::SnippetCandidateMeta {
+            name: snip.name.clone(),
+            prefix,
+            description: snip.description.clone(),
+            body: snip.body.clone(),
+        })
+    }
+
+    /// Apply an LSP completion accept: main `textEdit` + any
+    /// `additionalTextEdits` as one undo unit, position the
+    /// cursor at the end of the insert, fire the optional LSP
+    /// `command`. Phase 5.8.AD.4.
+    pub fn apply_lsp_completion_accept(
+        &mut self,
+        meta: lattice_lsp::completion::LspCompletionMeta,
+        anchor: lattice_protocol::position::Position,
+    ) {
+        let main_range = match meta.replace_range {
+            Some(r) => r,
+            None => {
+                let start = lattice_lsp::lsp_types::Position {
+                    line: anchor.line,
+                    character: lattice_lsp::position::utf8_byte_to_utf16_column(
+                        &self.document.snapshot().buffer.line(anchor.line).unwrap_or_default(),
+                        anchor.byte,
+                    ),
+                };
+                let end = lattice_lsp::lsp_types::Position {
+                    line: self.cursor.line,
+                    character: lattice_lsp::position::utf8_byte_to_utf16_column(
+                        &self.document.snapshot().buffer.line(self.cursor.line).unwrap_or_default(),
+                        self.cursor.byte,
+                    ),
+                };
+                lattice_lsp::lsp_types::Range { start, end }
+            }
+        };
+        let mut edits: Vec<lattice_lsp::lsp_types::TextEdit> = meta.additional_text_edits.clone();
+        edits.push(lattice_lsp::lsp_types::TextEdit {
+            range: main_range,
+            new_text: meta.insert_text.clone(),
+        });
+        if let Err(e) = self.apply_lsp_text_edits(edits) {
+            self.set_message(EchoLevel::Error, format!("completion: apply failed: {e}"));
+            return;
+        }
+        let inserted_lines: Vec<&str> = meta.insert_text.split('\n').collect();
+        if inserted_lines.len() == 1 {
+            self.cursor = lattice_protocol::position::Position::new(
+                main_range.start.line,
+                lattice_lsp::position::utf16_column_to_utf8_byte(
+                    &self
+                        .document
+                        .snapshot()
+                        .buffer
+                        .line(main_range.start.line)
+                        .unwrap_or_default(),
+                    main_range.start.character + inserted_lines[0].len() as u32,
+                ),
+            );
+        } else {
+            let last_line_idx = main_range.start.line + (inserted_lines.len() as u32 - 1);
+            let last_line_text = inserted_lines.last().unwrap_or(&"");
+            self.cursor = lattice_protocol::position::Position::new(
+                last_line_idx,
+                last_line_text.len() as u32,
+            );
+        }
+        if let Some(cmd) = meta.command.clone() {
+            let uri = self.buffer_uris.get(&self.document_buffer_id).cloned();
+            if let Some(uri) = uri {
+                let handle = self
+                    .lsp
+                    .servers_for(&uri)
+                    .into_iter()
+                    .find(|h| h.capabilities().supports_execute_command());
+                self.execute_lsp_command(handle, cmd);
+            }
+        }
+    }
+
+    /// Expand a snippet body alongside LSP `additionalTextEdits`
+    /// as one undo unit. Phase 5.8.AD.4.
+    pub fn expand_snippet_with_lsp_edits(
+        &mut self,
+        body: &lattice_snippet::SnippetBody,
+        anchor: lattice_protocol::position::Position,
+        additional: Vec<lattice_lsp::lsp_types::TextEdit>,
+    ) -> Result<(), String> {
+        let vars = self.snippet_variable_context();
+        let rendered = lattice_snippet::render::render(body, &vars);
+        let main_range = lattice_protocol::position::Range::new(anchor, self.cursor);
+        let main_edit = lattice_protocol::edit::Edit::replace(main_range, rendered.text.clone());
+        let snap = self.document.snapshot();
+        let mut all_edits: Vec<lattice_protocol::edit::Edit> =
+            Vec::with_capacity(additional.len() + 1);
+        for te in &additional {
+            let start_byte = Editor::lsp_position_to_app_byte(
+                &snap.buffer,
+                te.range.start.line,
+                te.range.start.character,
+            );
+            let end_byte = Editor::lsp_position_to_app_byte(
+                &snap.buffer,
+                te.range.end.line,
+                te.range.end.character,
+            );
+            let r = lattice_protocol::position::Range::new(
+                lattice_protocol::position::Position::new(te.range.start.line, start_byte),
+                lattice_protocol::position::Position::new(te.range.end.line, end_byte),
+            );
+            all_edits.push(lattice_protocol::edit::Edit::replace(r, te.new_text.clone()));
+        }
+        all_edits.push(main_edit.clone());
+        all_edits.sort_by(|a, b| {
+            b.range
+                .start
+                .line
+                .cmp(&a.range.start.line)
+                .then_with(|| b.range.start.byte.cmp(&a.range.start.byte))
+        });
+        let main_idx = all_edits
+            .iter()
+            .position(|e| *e == main_edit)
+            .ok_or_else(|| "main edit lost during sort".to_string())?;
+        drop(snap);
+        let applied = self
+            .apply_edit_batch_blocking(all_edits)
+            .map_err(|e| format!("{e:?}"))?;
+        let main_applied = applied
+            .get(main_idx)
+            .ok_or_else(|| "main edit missing from applied batch".to_string())?;
+        let origin = self
+            .document
+            .snapshot()
+            .buffer
+            .position_to_byte(main_applied.inserted_range.start)
+            .unwrap_or(0);
+        if !rendered.tabstops.is_empty() {
+            let mut active = lattice_snippet::ActiveSnippet::from_render(&rendered, origin);
+            if let Some(group) = active.focus_first()
+                && let Some(first) = group.ranges.first()
+                && let Ok(pos) = self
+                    .document
+                    .snapshot()
+                    .buffer
+                    .byte_to_position(first.start)
+            {
+                self.cursor = pos;
+            }
+            self.active_snippet = Some(active);
+            self.modal = lattice_grammar::ModalState::Insert;
+        } else {
+            self.cursor = main_applied.inserted_range.end;
+        }
+        Ok(())
+    }
+
+    /// Effective commit characters for `candidate` -- per-item
+    /// (LSP `commit_characters`) unioned with the global
+    /// `completion.extra_commit_chars` option. Phase 5.8.AD.4.
+    fn effective_commit_chars_for(
+        &self,
+        candidate: &lattice_completion::RenderedCandidate,
+    ) -> Vec<char> {
+        let mut chars: Vec<char> = self
+            .lsp_completion_meta_for(candidate)
+            .map(|meta| meta.commit_characters.clone())
+            .unwrap_or_default();
+        let extra = self
+            .config
+            .get_typed::<lattice_config::CompletionExtraCommitChars>()
+            .expect("CompletionExtraCommitChars");
+        for c in extra.chars() {
+            if !chars.contains(&c) {
+                chars.push(c);
+            }
+        }
+        chars
+    }
+
+    /// Phase 4.2.g.7 ghost-text suffix. Phase 5.8.AD.4.
+    pub fn completion_ghost_text_suffix(&self) -> Option<String> {
+        if !*self
+            .config
+            .get_typed::<lattice_config::CompletionGhostText>()
+            .expect("CompletionGhostText")
+        {
+            return None;
+        }
+        if self.completion_in_path_context {
+            return None;
+        }
+        let state = self.insert_completion.as_ref()?;
+        if state.query.is_empty() {
+            return None;
+        }
+        let top = state.rendered.first()?;
+        let text = top.raw.text.as_str();
+        let prefix = state.query.as_str();
+        if text.len() < prefix.len() {
+            return None;
+        }
+        let (head, tail) = text.split_at(prefix.len());
+        if !head.eq_ignore_ascii_case(prefix) {
+            return None;
+        }
+        if tail.is_empty() {
+            return None;
+        }
+        Some(tail.to_string())
+    }
+
+    /// Accept the focused completion candidate. Three paths:
+    /// snippet (sync source / LSP-snippet-format) → expand;
+    /// LSP plain → apply textEdit + extras; sync → replace.
+    /// Phase 5.8.AD.4.
+    pub fn do_completion_accept(&mut self) {
+        let Some(state) = self.insert_completion.take() else {
+            self.completion_in_path_context = false;
+            return;
+        };
+        let Some(item) = state.selected_candidate().cloned() else {
+            self.completion_in_path_context = false;
+            return;
+        };
+        self.completion_in_path_context = false;
+        let freq_key = (item.raw.text.clone(), item.raw.kind);
+        *self.completion_accept_freq.entry(freq_key).or_insert(0) += 1;
+        if let Some(meta) = self.snippet_meta_for(&item) {
+            self.expand_snippet(&meta.body, state.anchor);
+            return;
+        }
+        if let Some(meta) = self.lsp_completion_meta_for(&item) {
+            if matches!(
+                meta.insert_text_format,
+                lattice_lsp::lsp_types::InsertTextFormat::SNIPPET
+            ) {
+                match lattice_snippet::parse(&meta.insert_text) {
+                    Ok(body) => {
+                        if let Err(e) = self.expand_snippet_with_lsp_edits(
+                            &body,
+                            state.anchor,
+                            meta.additional_text_edits.clone(),
+                        ) {
+                            self.set_message(
+                                EchoLevel::Error,
+                                format!("completion: apply failed: {e}"),
+                            );
+                            return;
+                        }
+                    }
+                    Err(_) => {
+                        self.apply_lsp_completion_accept(meta, state.anchor);
+                    }
+                }
+                return;
+            }
+            self.apply_lsp_completion_accept(meta, state.anchor);
+            return;
+        }
+        let insert_text = item.raw.text.clone();
+        let range =
+            lattice_protocol::position::Range::new(state.anchor, self.cursor);
+        let edit = lattice_protocol::edit::Edit::replace(range, insert_text);
+        match self.apply_edit_blocking(edit) {
+            Ok(applied) => {
+                self.cursor = applied.inserted_range.end;
+            }
+            Err(e) => {
+                self.set_message(
+                    EchoLevel::Error,
+                    format!("completion: apply failed: {e:?}"),
+                );
+            }
+        }
+    }
+
+    /// Insert-mode character while the popup is open. Accepts
+    /// the focused candidate first when `ch` is a commit char;
+    /// always inserts `ch`. Phase 5.8.AD.4.
+    pub fn do_completion_accept_then_insert(&mut self, ch: char, out: &mut DispatchOutcome) {
+        let is_commit = self
+            .insert_completion
+            .as_ref()
+            .and_then(|s| s.selected_candidate())
+            .map(|cand| self.effective_commit_chars_for(cand).contains(&ch))
+            .unwrap_or(false);
+        if is_commit {
+            self.do_completion_accept();
+        }
+        self.do_insert_text(&ch.to_string(), out);
+    }
+
+    /// `<C-Space>` -- manual trigger / refresh of the insert-
+    /// completion popup. Phase 5.8.AD.4.
+    pub fn do_completion_trigger(&mut self) {
+        if !matches!(self.modal, lattice_grammar::ModalState::Insert) {
+            return;
+        }
+        if !self.completion_mode_active_for(self.document_buffer_id) {
+            return;
+        }
+        let snap = self.document.snapshot();
+        let buffer = &snap.buffer;
+        let line_text = buffer.line(self.cursor.line).unwrap_or_default();
+        let bytes = line_text.as_bytes();
+        let cursor_byte = self.cursor.byte as usize;
+        let path_id = lattice_completion::SourceId::new(lattice_completion::PATH_SOURCE_ID);
+        let language = self.active_language_id();
+        let path_source_enabled = self
+            .effective_completion_for(&language)
+            .source_enabled(&path_id);
+        let path_context = path_source_enabled
+            && match buffer.position_to_byte(self.cursor) {
+                Ok(abs) => self
+                    .syntax
+                    .as_ref()
+                    .map(|s| s.snapshot().cursor_in_string_scope(abs))
+                    .unwrap_or(false),
+                Err(_) => false,
+            };
+        self.completion_in_path_context = path_context;
+        let mut start = cursor_byte;
+        while start > 0 && start <= bytes.len() {
+            let b = bytes[start - 1];
+            let is_boundary = if path_context {
+                b == b'/' || !is_path_byte(b)
+            } else {
+                !is_word_char_byte(b)
+            };
+            if is_boundary {
+                break;
+            }
+            start -= 1;
+        }
+        let anchor = lattice_protocol::position::Position::new(self.cursor.line, start as u32);
+        let query: String = line_text
+            .get(start..cursor_byte.min(line_text.len()))
+            .unwrap_or("")
+            .to_string();
+        let trigger = if self.insert_completion.is_some() {
+            self.insert_completion
+                .as_ref()
+                .map(|s| s.trigger.clone())
+                .unwrap_or(lattice_completion::CompletionTrigger::Manual)
+        } else {
+            lattice_completion::CompletionTrigger::Manual
+        };
+        let mut state = lattice_completion::InsertCompletionState::open(
+            trigger.clone(),
+            anchor,
+            self.cursor,
+            query.clone(),
+        );
+        self.populate_insert_completion_sync(&mut state, buffer, &trigger);
+        self.insert_completion = Some(state);
+        self.do_lsp_insert_completion_request();
+        let lsp_pending = self.pending_insert_completion_lsp_token.is_some();
+        if !lsp_pending
+            && let Some(state) = self.insert_completion.as_ref()
+            && state.rendered.is_empty()
+        {
+            self.set_message(EchoLevel::Info, "no completions");
+            self.insert_completion = None;
+        }
+    }
+
     /// `<C-Space>` (or auto-trigger) -- fire `textDocument/completion`
     /// for the active Insert-mode popup. Multi-server fan-out
     /// happens inside the `LspCompletionSource` contributed by
@@ -15778,6 +16246,20 @@ pub fn visual_kind_to_mode(kind: VisualKind) -> VisualMode {
         VisualKind::Blockwise => VisualMode::Blockwise,
     }
 }
+
+/// Byte predicate for path-completion segment walks. Stricter
+/// than `is_word_char_byte` (no whitespace) but allows common
+/// filename characters (`.`, `-`, `~`). Phase 5.8.AD.4: hoisted
+/// from TUI App.
+fn is_path_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b'~' | b'+' | b'@')
+}
+
+/// `Extension::kind_id` discriminant for snippet-sourced
+/// candidates (Phase 4.2.g.4). Sidecar metadata decoded by
+/// `Editor::snippet_meta_for`. Phase 5.8.AD.4: hoisted from
+/// TUI App.
+pub const SNIPPET_COMPLETION_KIND_ID: u32 = 2;
 
 /// Batched candidate sink used by `do_lsp_insert_completion_request`:
 /// async LSP source produces into this, then the spawn wrapper

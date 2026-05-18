@@ -768,6 +768,12 @@ impl GpuiApp {
             Effect::LspServerLogListing => self.editor.do_lsp_server_log_listing(),
             Effect::LspCodeLens => self.editor.do_lsp_code_lens_picker(),
             Effect::LspColorPresentation => self.editor.do_lsp_color_presentation(),
+            // Phase 5.8.AD.4: completion / signature / snippet
+            // entry points are host-resident; both peers reach
+            // them through the same dispatch.
+            Effect::LspSignatureHelp => self.editor.lsp_signature_help_request(),
+            Effect::LspComplete => self.editor.lsp_completion_request(),
+            Effect::SnippetExpand => self.editor.do_snippet_expand_at_cursor(),
             Effect::OpenBufferPicker => {
                 let signals = self.editor.do_open_buffer_picker();
                 for s in signals {

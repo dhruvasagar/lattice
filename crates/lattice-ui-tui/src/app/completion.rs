@@ -34,14 +34,9 @@
 //! in `crate::completion` / `crate::snippet`.
 
 use lattice_core::Buffer;
-use lattice_grammar::ModalState;
-use lattice_protocol::edit::Edit;
-use lattice_protocol::position::{Position, Range as ProtoRange};
+use lattice_protocol::position::Position;
 
-use super::{
-    App, EchoLevel, SNIPPET_COMPLETION_KIND_ID, SnippetCandidateMeta, is_path_byte,
-    is_word_char_byte, lsp_position_to_app_byte,
-};
+use super::{App, EchoLevel, SnippetCandidateMeta};
 
 // Phase 5.8.AD.4: `EffectiveCompletionConfig` migrated to host.
 pub(crate) use lattice_host::dispatch::EffectiveCompletionConfig;
@@ -203,113 +198,8 @@ impl App {
     /// already open. Sources contributing today: buffer-words.
     /// LSP / snippets / path / tree-sitter follow in 4.2.g.2+.
     pub fn do_completion_trigger(&mut self) {
-        if !matches!(self.editor.modal, ModalState::Insert) {
-            // Manual trigger from any other mode is a no-op
-            // (completion is an Insert-mode surface). The
-            // explicit echo-free no-op is intentional -- no
-            // EchoLevel::Info clutter.
-            return;
-        }
-        // CSM.K1: gate on `completion-mode` being active on the
-        // active document buffer. The mode auto-activates on
-        // writable kinds at buffer creation; read-only kinds
-        // (Help, FileTree, Oil) never activate it, so `<C-Space>`
-        // is a silent no-op there. Same shape as
-        // `lsp-completion-mode` gating LSP fan-out.
-        if !self.completion_mode_active_for(self.editor.document_buffer_id) {
-            return;
-        }
-        let snap = self.editor.document.snapshot();
-        let buffer = &snap.buffer;
-        let line_text = buffer.line(self.editor.cursor.line).unwrap_or_default();
-        let bytes = line_text.as_bytes();
-        let cursor_byte = self.editor.cursor.byte as usize;
-        // Detect path-completion context (Phase 4.2.g.6 (2/2)):
-        // cursor sits inside a string literal AND the active
-        // language enables `gen:path`. In that case the anchor
-        // walks back over path-shaped bytes and stops at `/` so
-        // the popup-supplied filename replaces just the current
-        // path segment; non-path sources skip emit so the popup
-        // doesn't show buffer words intermixed with filenames.
-        let path_id = lattice_completion::SourceId::new(lattice_completion::PATH_SOURCE_ID);
-        let language = self.active_language_id();
-        let path_source_enabled = self
-            .effective_completion_for(&language)
-            .source_enabled(&path_id);
-        let path_context = path_source_enabled
-            && match buffer.position_to_byte(self.editor.cursor) {
-                Ok(abs) => self
-                    .editor
-                    .syntax
-                    .as_ref()
-                    .map(|s| s.snapshot().cursor_in_string_scope(abs))
-                    .unwrap_or(false),
-                Err(_) => false,
-            };
-        self.editor.completion_in_path_context = path_context;
-        // Anchor: walk back from the cursor. In path context we
-        // stop at `/` (dir/file boundary) or any non-path byte;
-        // outside path context we stop at any non-word byte.
-        // The query is the prefix `[anchor, cursor]`.
-        let mut start = cursor_byte;
-        while start > 0 && start <= bytes.len() {
-            let b = bytes[start - 1];
-            let is_boundary = if path_context {
-                b == b'/' || !is_path_byte(b)
-            } else {
-                !is_word_char_byte(b)
-            };
-            if is_boundary {
-                break;
-            }
-            start -= 1;
-        }
-        let anchor = Position::new(self.editor.cursor.line, start as u32);
-        let query: String = line_text
-            .get(start..cursor_byte.min(line_text.len()))
-            .unwrap_or("")
-            .to_string();
-        let trigger = if self.editor.insert_completion.is_some() {
-            // Refresh path: keep the original trigger so LSP's
-            // `triggerKind` doesn't flip mid-popup.
-            self.editor
-                .insert_completion
-                .as_ref()
-                .map(|s| s.trigger.clone())
-                .unwrap_or(lattice_completion::CompletionTrigger::Manual)
-        } else {
-            lattice_completion::CompletionTrigger::Manual
-        };
-        let mut state = lattice_completion::InsertCompletionState::open(
-            trigger.clone(),
-            anchor,
-            self.editor.cursor,
-            query.clone(),
-        );
-        self.populate_insert_completion_sync(&mut state, buffer, &trigger);
-        self.editor.insert_completion = Some(state);
-        // Fire the async LSP source in parallel. It pushes
-        // results back via `pending_insert_completion_lsp_rx`;
-        // the runtime drains them per frame and merges into
-        // `state.raw`. The popup stays open even when sync
-        // sources produce nothing -- the LSP response may
-        // still arrive with candidates.
-        self.do_lsp_insert_completion_request();
-        // If sync produced nothing AND no LSP server is
-        // attached, close the popup with the standard echo.
-        // We can detect "no LSP attached" without waiting on
-        // the request: the URI lookup either succeeded (LSP is
-        // attached and a response is in flight) or didn't
-        // (in which case `do_lsp_insert_completion_request`
-        // returned early without spawning).
-        let lsp_pending = self.editor.pending_insert_completion_lsp_token.is_some();
-        if !lsp_pending
-            && let Some(state) = self.editor.insert_completion.as_ref()
-            && state.rendered.is_empty()
-        {
-            self.set_message(EchoLevel::Info, "no completions");
-            self.editor.insert_completion = None;
-        }
+        // Phase 5.8.AD.4: body migrated.
+        self.editor.do_completion_trigger();
     }
 
     /// Insert-mode character key while the popup is open
@@ -318,17 +208,21 @@ impl App {
     /// effective commit-char set; otherwise inserts `ch`
     /// plainly so the popup refilters as usual.
     pub fn do_completion_accept_then_insert(&mut self, ch: char) {
-        let is_commit = self
-            .editor
-            .insert_completion
-            .as_ref()
-            .and_then(|s| s.selected_candidate())
-            .map(|cand| self.effective_commit_chars_for(cand).contains(&ch))
-            .unwrap_or(false);
-        if is_commit {
-            self.do_completion_accept();
+        // Phase 5.8.AD.4: body migrated. The host method takes a
+        // `&mut DispatchOutcome` for the insert-text follow-up
+        // action queue; build a local one and drain into App's
+        // `apply` loop afterwards.
+        let mut out = lattice_host::dispatch::DispatchOutcome::default();
+        self.editor.do_completion_accept_then_insert(ch, &mut out);
+        for follow_up in std::mem::take(&mut out.next_actions) {
+            self.apply(follow_up);
         }
-        self.do_insert_text(&ch.to_string());
+    }
+
+    /// Suffix of the top-ranked completion candidate for ghost
+    /// text. Phase 5.8.AD.4: migrated.
+    pub fn completion_ghost_text_suffix(&self) -> Option<String> {
+        self.editor.completion_ghost_text_suffix()
     }
 
     /// Suffix of the top-ranked completion candidate that would
@@ -349,64 +243,9 @@ impl App {
     /// - The query is empty (an empty popup just lists
     ///   everything; ghosting the first arbitrary candidate
     ///   would surprise the user).
-    pub fn completion_ghost_text_suffix(&self) -> Option<String> {
-        if !*self
-            .editor
-            .config
-            .get_typed::<lattice_config::CompletionGhostText>()
-            .expect("CompletionGhostText")
-        {
-            return None;
-        }
-        if self.editor.completion_in_path_context {
-            return None;
-        }
-        let state = self.editor.insert_completion.as_ref()?;
-        if state.query.is_empty() {
-            return None;
-        }
-        let top = state.rendered.first()?;
-        let text = top.raw.text.as_str();
-        let prefix = state.query.as_str();
-        if text.len() < prefix.len() {
-            return None;
-        }
-        let (head, tail) = text.split_at(prefix.len());
-        if !head.eq_ignore_ascii_case(prefix) {
-            return None;
-        }
-        if tail.is_empty() {
-            return None;
-        }
-        Some(tail.to_string())
-    }
-
-    /// Effective commit characters for `candidate` -- per-item
-    /// list (LSP-supplied via `LspCompletionMeta.commit_characters`)
-    /// unioned with the global `completion.extra_commit_chars`
-    /// option. Sync sources (buffer-words, snippet,
-    /// tree-sitter) carry no per-item list, so they only honour
-    /// the global extras.
-    fn effective_commit_chars_for(
-        &self,
-        candidate: &lattice_completion::RenderedCandidate,
-    ) -> Vec<char> {
-        let mut chars: Vec<char> = self
-            .lsp_completion_meta_for(candidate)
-            .map(|meta| meta.commit_characters.clone())
-            .unwrap_or_default();
-        let extra = self
-            .editor
-            .config
-            .get_typed::<lattice_config::CompletionExtraCommitChars>()
-            .expect("CompletionExtraCommitChars");
-        for c in extra.chars() {
-            if !chars.contains(&c) {
-                chars.push(c);
-            }
-        }
-        chars
-    }
+    // Phase 5.8.AD.4: second `completion_ghost_text_suffix` body
+    // retired (delegate above suffices).
+    // Phase 5.8.AD.4: `effective_commit_chars_for` migrated to host.
 
     /// Accept the focused candidate. Three routing paths:
     /// 1. **Snippet candidate** (sync source `gen:snippet` or
@@ -419,93 +258,8 @@ impl App {
     /// 3. **Sync-source candidate**: simple replace-`[anchor,
     ///    cursor]` splice.
     pub fn do_completion_accept(&mut self) {
-        let Some(state) = self.editor.insert_completion.take() else {
-            self.editor.completion_in_path_context = false;
-            return;
-        };
-        let Some(item) = state.selected_candidate().cloned() else {
-            self.editor.completion_in_path_context = false;
-            return;
-        };
-        // Clear the path-context flag now that the popup has
-        // closed; the next trigger re-evaluates from scratch.
-        self.editor.completion_in_path_context = false;
-        // Bump the accept-frequency counter for this item. Per
-        // `docs/dev/architecture/insert-completion.md` §3.6, the ranker rereads
-        // this map and adds a bounded bonus so the user's
-        // recently-accepted picks float above tied peers next
-        // time the popup opens. We bump unconditionally here:
-        // if the apply path below fails, the user still
-        // *intended* to accept this item -- recording that
-        // intent matches expected behaviour.
-        let freq_key = (item.raw.text.clone(), item.raw.kind);
-        *self
-            .editor
-            .completion_accept_freq
-            .entry(freq_key)
-            .or_insert(0) += 1;
-        // CSM.5: snippet (sync source) path. `snippet_meta_for`
-        // now decodes the payload as a snippet name and looks up
-        // the body in `App.snippet_registry`; no sidecar to
-        // clear afterwards.
-        if let Some(meta) = self.snippet_meta_for(&item) {
-            self.expand_snippet(&meta.body, state.anchor);
-            return;
-        }
-        // LSP path: typed metadata + additionalTextEdits
-        // coalesce with the main edit. When the LSP item is
-        // snippet-flavoured, route through the engine.
-        if let Some(meta) = self.lsp_completion_meta_for(&item) {
-            if matches!(
-                meta.insert_text_format,
-                lattice_lsp::lsp_types::InsertTextFormat::SNIPPET
-            ) {
-                // Coalesce additionalTextEdits + the snippet
-                // body's main splice into ONE undo unit (Phase
-                // 4.2.g.7 polish). Pre-4.2.g.7 this path
-                // applied the additionals first, then a
-                // separate `expand_snippet`, leaving the user
-                // with two `<C-z>` steps to revert one logical
-                // accept.
-                match lattice_snippet::parse(&meta.insert_text) {
-                    Ok(body) => {
-                        if let Err(e) = self.expand_snippet_with_lsp_edits(
-                            &body,
-                            state.anchor,
-                            meta.additional_text_edits.clone(),
-                        ) {
-                            self.set_message(
-                                EchoLevel::Error,
-                                format!("completion: apply failed: {e}"),
-                            );
-                            return;
-                        }
-                    }
-                    Err(_) => {
-                        // Body didn't parse -- splice as plain.
-                        // `apply_lsp_completion_accept` already
-                        // coalesces additionals + main into one
-                        // batch internally.
-                        self.apply_lsp_completion_accept(meta, state.anchor);
-                    }
-                }
-                return;
-            }
-            self.apply_lsp_completion_accept(meta, state.anchor);
-            return;
-        }
-        // Sync-source path: simple replace.
-        let insert_text = item.raw.text.clone();
-        let range = ProtoRange::new(state.anchor, self.editor.cursor);
-        let edit = Edit::replace(range, insert_text);
-        match self.apply_edit_blocking(edit) {
-            Ok(applied) => {
-                self.editor.cursor = applied.inserted_range.end;
-            }
-            Err(e) => {
-                self.set_message(EchoLevel::Error, format!("completion: apply failed: {e:?}"));
-            }
-        }
+        // Phase 5.8.AD.4: body migrated.
+        self.editor.do_completion_accept();
     }
 
     /// `<C-d>` inside the completion-popup minor mode.
@@ -597,27 +351,8 @@ impl App {
         &self,
         candidate: &lattice_completion::RenderedCandidate,
     ) -> Option<SnippetCandidateMeta> {
-        let lattice_completion::CandidateData::Extension { kind_id, payload } = &candidate.raw.data
-        else {
-            return None;
-        };
-        if *kind_id != SNIPPET_COMPLETION_KIND_ID {
-            return None;
-        }
-        let name = std::str::from_utf8(payload).ok()?;
-        let registry = self.editor.snippet_registry.load();
-        let snip = registry.by_name(name)?;
-        let prefix = snip
-            .prefixes
-            .first()
-            .cloned()
-            .unwrap_or_else(|| snip.name.clone());
-        Some(SnippetCandidateMeta {
-            name: snip.name.clone(),
-            prefix,
-            description: snip.description.clone(),
-            body: snip.body.clone(),
-        })
+        // Phase 5.8.AD.4: body migrated.
+        self.editor.snippet_meta_for(candidate)
     }
 
     /// Expand a parsed snippet body at the popup's anchor.
@@ -648,79 +383,8 @@ impl App {
         anchor: Position,
         additional: Vec<lattice_lsp::lsp_types::TextEdit>,
     ) -> Result<(), String> {
-        let vars = self.snippet_variable_context();
-        let rendered = lattice_snippet::render::render(body, &vars);
-        // Build the main edit -- snippet body splices over
-        // `[anchor, cursor]`.
-        let main_range = lattice_protocol::position::Range::new(anchor, self.editor.cursor);
-        let main_edit = Edit::replace(main_range, rendered.text.clone());
-        // Convert `additionalTextEdits` to lattice Edits.
-        let snap = self.editor.document.snapshot();
-        let mut all_edits: Vec<Edit> = Vec::with_capacity(additional.len() + 1);
-        for te in &additional {
-            let start_byte = lsp_position_to_app_byte(
-                &snap.buffer,
-                te.range.start.line,
-                te.range.start.character,
-            );
-            let end_byte =
-                lsp_position_to_app_byte(&snap.buffer, te.range.end.line, te.range.end.character);
-            let r = lattice_protocol::position::Range::new(
-                Position::new(te.range.start.line, start_byte),
-                Position::new(te.range.end.line, end_byte),
-            );
-            all_edits.push(Edit::replace(r, te.new_text.clone()));
-        }
-        all_edits.push(main_edit.clone());
-        // Reverse-sort by start position so each edit's
-        // original-document positions stay valid as we apply
-        // sequentially. Same convention as `apply_lsp_text_edits`.
-        all_edits.sort_by(|a, b| {
-            b.range
-                .start
-                .line
-                .cmp(&a.range.start.line)
-                .then_with(|| b.range.start.byte.cmp(&a.range.start.byte))
-        });
-        // Track main's index post-sort so we can read its
-        // post-batch range out of the applied vec.
-        let main_idx = all_edits
-            .iter()
-            .position(|e| *e == main_edit)
-            .ok_or_else(|| "main edit lost during sort".to_string())?;
-        drop(snap);
-        let applied = self
-            .apply_edit_batch_blocking(all_edits)
-            .map_err(|e| format!("{e:?}"))?;
-        let main_applied = applied
-            .get(main_idx)
-            .ok_or_else(|| "main edit missing from applied batch".to_string())?;
-        let origin = self
-            .editor
-            .document
-            .snapshot()
-            .buffer
-            .position_to_byte(main_applied.inserted_range.start)
-            .unwrap_or(0);
-        if !rendered.tabstops.is_empty() {
-            let mut active = lattice_snippet::ActiveSnippet::from_render(&rendered, origin);
-            if let Some(group) = active.focus_first()
-                && let Some(first) = group.ranges.first()
-                && let Ok(pos) = self
-                    .editor
-                    .document
-                    .snapshot()
-                    .buffer
-                    .byte_to_position(first.start)
-            {
-                self.editor.cursor = pos;
-            }
-            self.editor.active_snippet = Some(active);
-            self.editor.modal = ModalState::Insert;
-        } else {
-            self.editor.cursor = main_applied.inserted_range.end;
-        }
-        Ok(())
+        // Phase 5.8.AD.4: body migrated.
+        self.editor.expand_snippet_with_lsp_edits(body, anchor, additional)
     }
 
     /// 5.5.SNIPPET.1: body migrated to

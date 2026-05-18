@@ -113,7 +113,8 @@ impl App {
     /// opening the popup so read-only buffers (Help, FileTree,
     /// Oil) silently no-op on `<C-Space>`.
     pub fn completion_mode_active_for(&self, buffer_id: BufferId) -> bool {
-        self.minor_mode_enabled_for(buffer_id, lattice_mode::CompletionMode::mode_id())
+        // Phase 5.8.AD.4: migrated.
+        self.editor.completion_mode_active_for(buffer_id)
     }
 
     /// CSM.K1: is `completion-popup-mode` (the transient
@@ -319,97 +320,8 @@ impl App {
         meta: LspCompletionMeta,
         anchor: lattice_protocol::position::Position,
     ) {
-        // Main edit: prefer the server-supplied range when
-        // present; else replace `[anchor, cursor]`.
-        let main_range = match meta.replace_range {
-            Some(r) => r,
-            None => {
-                let start = lattice_lsp::lsp_types::Position {
-                    line: anchor.line,
-                    character: lattice_lsp::position::utf8_byte_to_utf16_column(
-                        &self
-                            .editor
-                            .document
-                            .snapshot()
-                            .buffer
-                            .line(anchor.line)
-                            .unwrap_or_default(),
-                        anchor.byte,
-                    ),
-                };
-                let end = lattice_lsp::lsp_types::Position {
-                    line: self.editor.cursor.line,
-                    character: lattice_lsp::position::utf8_byte_to_utf16_column(
-                        &self
-                            .editor
-                            .document
-                            .snapshot()
-                            .buffer
-                            .line(self.editor.cursor.line)
-                            .unwrap_or_default(),
-                        self.editor.cursor.byte,
-                    ),
-                };
-                lattice_lsp::lsp_types::Range { start, end }
-            }
-        };
-        // Apply additionalTextEdits + main as one batch via the
-        // existing path. Sort + reverse-apply is handled there;
-        // pass everything together so undo is atomic.
-        let mut edits: Vec<lattice_lsp::lsp_types::TextEdit> = meta.additional_text_edits.clone();
-        edits.push(lattice_lsp::lsp_types::TextEdit {
-            range: main_range,
-            new_text: meta.insert_text.clone(),
-        });
-        if let Err(e) = self.apply_lsp_text_edits(edits) {
-            self.set_message(EchoLevel::Error, format!("completion: apply failed: {e}"));
-            return;
-        }
-        // Position the cursor at the end of the just-inserted
-        // text. Compute it from the inserted text length.
-        let inserted_lines: Vec<&str> = meta.insert_text.split('\n').collect();
-        if inserted_lines.len() == 1 {
-            self.editor.cursor = lattice_protocol::position::Position::new(
-                main_range.start.line,
-                lattice_lsp::position::utf16_column_to_utf8_byte(
-                    &self
-                        .editor
-                        .document
-                        .snapshot()
-                        .buffer
-                        .line(main_range.start.line)
-                        .unwrap_or_default(),
-                    main_range.start.character + inserted_lines[0].len() as u32,
-                ),
-            );
-        } else {
-            // Multi-line insert (rare for plain completions;
-            // common for snippets once 4.2.g.4 lands).
-            let last_line_idx = main_range.start.line + (inserted_lines.len() as u32 - 1);
-            let last_line_text = inserted_lines.last().unwrap_or(&"");
-            self.editor.cursor = lattice_protocol::position::Position::new(
-                last_line_idx,
-                last_line_text.len() as u32,
-            );
-        }
-        // Optional: fire the LSP `command` payload (e.g. server-
-        // side post-accept hooks).
-        if let Some(cmd) = meta.command.clone() {
-            let uri = self
-                .editor
-                .buffer_uris
-                .get(&self.editor.document_buffer_id)
-                .cloned();
-            if let Some(uri) = uri {
-                let handle = self
-                    .editor
-                    .lsp
-                    .servers_for(&uri)
-                    .into_iter()
-                    .find(|h| h.capabilities().supports_execute_command());
-                self.execute_lsp_command(handle, cmd);
-            }
-        }
+        // Phase 5.8.AD.4: body migrated.
+        self.editor.apply_lsp_completion_accept(meta, anchor);
     }
 
     /// Fire `completionItem/resolve` for the focused candidate
@@ -800,71 +712,8 @@ impl App {
     /// priority server advertising the trigger; apply the returned
     /// edits as one undo unit.
     pub(super) fn do_lsp_on_type_formatting_request(&mut self, trigger: char) {
-        // M.6.2: lsp-format-mode gate. Insert-mode trigger; silent
-        // (same shape as completion -- typed character that
-        // doesn't fire isn't a moment to surface mode state).
-        if !self.lsp_format_mode_enabled_for(self.editor.document_buffer_id) {
-            return;
-        }
-        let Some(uri) = self
-            .editor
-            .buffer_uris
-            .get(&self.editor.document_buffer_id)
-            .cloned()
-        else {
-            return;
-        };
-        let snapshot = self.editor.document.snapshot();
-        let pos = match app_to_lsp_position(&snapshot.buffer, self.editor.cursor) {
-            Some(p) => p,
-            None => return,
-        };
-        let lsp = self.editor.lsp.clone();
-        let trigger_str = trigger.to_string();
-        let options = lattice_lsp::lsp_types::FormattingOptions {
-            tab_size: 4,
-            insert_spaces: true,
-            properties: Default::default(),
-            trim_trailing_whitespace: Some(true),
-            insert_final_newline: Some(true),
-            trim_final_newlines: Some(true),
-        };
-        // OnTypeFormatting fires per-character; apply the result
-        // via the same async drain path the format request uses.
-        // Reuse `pending_format_*` since onType and `:format` are
-        // mutually exclusive in time.
-        if let Some(token) = self.editor.pending_format_token.take() {
-            token.cancel();
-        }
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<FormatOutcome>();
-        let token = lattice_protocol::CancellationToken::new();
-        self.editor.pending_format_rx = Some(rx);
-        self.editor.pending_format_token = Some(token.clone());
-        crate::runtime::spawn_on_lsp_runtime(async move {
-            let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
-            let chosen = handles
-                .into_iter()
-                .find(|h| h.capabilities().supports_on_type_formatting());
-            let Some(handle) = chosen else {
-                let _ = tx.send(FormatOutcome::NoProvider { is_range: false });
-                return;
-            };
-            let params = lattice_lsp::lsp_types::DocumentOnTypeFormattingParams {
-                text_document_position: lattice_lsp::lsp_types::TextDocumentPositionParams {
-                    text_document: lattice_lsp::lsp_types::TextDocumentIdentifier { uri },
-                    position: pos,
-                },
-                ch: trigger_str,
-                options,
-            };
-            let edits = handle
-                .on_type_formatting(params, token)
-                .await
-                .ok()
-                .flatten()
-                .unwrap_or_default();
-            let _ = tx.send(FormatOutcome::Edits(edits));
-        });
+        // Phase 5.8.AD.4: body migrated.
+        self.editor.do_lsp_on_type_formatting_request(trigger);
     }
 
     /// `:rename <new-name>` (Phase 4.3). Fires

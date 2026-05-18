@@ -25,7 +25,6 @@
 //! `lattice-picker` crate. This module is App's *workflow*
 //! layer above that.
 
-use crate::buffer_registry::{BufferData, BufferRegistry};
 use crate::buffers::BufferId;
 
 use super::{App, EchoLevel};
@@ -557,41 +556,15 @@ impl App {
     }
 
     pub(super) fn open_buffer_picker(&mut self) {
-        let active = self.active_pane_buffer_id();
-        // Push the pre-picker cursor onto position history *before*
-        // any preview activations fire. The activate_buffer push
-        // skips during `previewing = true`, and the accept path
-        // typically short-circuits (the preview already activated
-        // the target). Recording the origin here gives `<C-o>` a
-        // target to walk back to regardless of whether the user
-        // accepts a different candidate or dismisses.
-        // `push_position_history` coalesces if the same entry
-        // appears twice, so this is safe even when the user
-        // opens picker → dismiss → open picker again.
-        let cur = self.active_cursor();
-        self.push_position_history(cur, super::PositionSource::AutoJump);
-        let mut p = lattice_picker::Picker::new(
-            "buffers",
-            lattice_picker::PickerSource::Buffers,
-            lattice_picker::PickerAction::SwitchToBuffer,
-        );
-        // Host-side candidate build (the picker module is
-        // renderer-agnostic and doesn't import `BufferRegistry`).
-        let pairs = raw_buffer_candidates(&self.editor.buffers, &self.editor.buffer_locals, active);
-        p.set_raw_candidates_with_routing(pairs);
-        // Stash the original active buffer id so dismiss can
-        // restore. None on no-buffer pickers (LSP); for the
-        // buffer switcher we always have one. Encoded as `u32`
-        // because `Picker::preview_origin` is renderer-agnostic
-        // (the host newtype-wraps).
-        p.preview_origin = Some(active.0);
-        self.editor.picker = Some(p);
-        // Preview the initial selection. With the active buffer
-        // floated to the bottom, the initial selection is a
-        // *different* buffer (the alternate-buffer convention),
-        // so opening the picker immediately shows what `<CR>`
-        // would land on.
-        self.preview_picker_selection();
+        // Phase 5.8.AC.1: body migrated to
+        // `lattice_host::dispatch::Editor::do_open_buffer_picker`.
+        // Returned `RendererSignal`s (from `preview_picker_selection`
+        // activate-tail) fan through the App's standard signal
+        // handler.
+        let signals = self.editor.do_open_buffer_picker();
+        for s in signals {
+            self.handle_renderer_signal(s);
+        }
     }
 
     /// If the picker is open and its action is
@@ -961,114 +934,9 @@ fn routing_payload_path(payload: &lattice_picker::RoutingPayload) -> Option<std:
 // `lattice_host::dispatch::picker_buffer_entry`. Both renderer
 // peers reach it through `Editor::build_picker_context`.
 
-/// Build the buffer-picker candidate set: every entry in the
-/// registry, with the active buffer floated to the bottom and
-/// tagged `(current)` in marginalia.
-///
-/// Free function rather than a method because the picker
-/// module's matcher path stores routing payloads; this helper
-/// composes both shapes (`RawCandidate` + `RoutingPayload`)
-/// and isn't useful for callers that don't already have a
-/// `BufferRegistry` in hand.
-pub(super) fn raw_buffer_candidates(
-    registry: &BufferRegistry,
-    buffer_locals: &std::collections::HashMap<BufferId, lattice_mode::BufferLocals>,
-    active: BufferId,
-) -> Vec<(
-    lattice_completion::RawCandidate,
-    lattice_picker::RoutingPayload,
-)> {
-    // Collect everything we need from the registry under one lock
-    // visit: id, listed flag, body, kind_label. The picker module
-    // is renderer-agnostic; we shape rows here and sort outside the
-    // lock.
-    let mut rows: Vec<(BufferId, bool, String, String)> = Vec::new();
-    registry.for_each(|entry| {
-        let id = entry.id;
-        let listed = entry.flags.listed;
-        let active_marker = if id == active { " (current)" } else { "" };
-        let (body, kind_label) = match &entry.data {
-            BufferData::Document(d) => {
-                // Picker label: path -> registry name -> "[no name]".
-                // The registry's `name` slot lets synthetic buffers
-                // (`*lsp*`, `*messages*`) surface their label so users
-                // can type `*lsp*` to filter to them.
-                let label = d
-                    .handle
-                    .path()
-                    .map(|p| p.display().to_string())
-                    .or_else(|| entry.name.clone())
-                    .unwrap_or_else(|| "[no name]".to_string());
-                // Suppress the modified marker for synthetic
-                // buffers -- their content is owner-streamed, not
-                // user-edited, so dirty has no actionable meaning.
-                let dirty = if entry.name.is_none() && d.handle.dirty() {
-                    " [+]"
-                } else {
-                    ""
-                };
-                (
-                    format!("#{:<3} {label}{dirty}", id.0),
-                    format!("doc{active_marker}"),
-                )
-            }
-            BufferData::FileTree(_) => {
-                // M.3.2.c.5: file-tree's root lives in the
-                // FileTreeRoot buffer-local (canonical; no
-                // struct mirror). Reads route through the
-                // passed-in `buffer_locals` map.
-                let root_display = buffer_locals
-                    .get(&id)
-                    .and_then(|locals| locals.get::<crate::modes::FileTreeRoot>())
-                    .map(|r| r.0.display().to_string())
-                    .unwrap_or_else(|| "[no root]".to_string());
-                (
-                    format!("#{:<3} {}", id.0, root_display),
-                    format!("tree{active_marker}"),
-                )
-            }
-            BufferData::Help(h) => (
-                format!("#{:<3} {}", id.0, h.title),
-                format!("help{active_marker}"),
-            ),
-            BufferData::Oil(_) => {
-                // M.3.2.c.5: oil's dir lives in the `OilDir`
-                // buffer-local. The picker reads through the
-                // passed-in `buffer_locals` map; no struct
-                // mirror to fall back on.
-                let dir_display = buffer_locals
-                    .get(&id)
-                    .and_then(|locals| locals.get::<crate::modes::OilDir>())
-                    .map(|d| d.0.display().to_string())
-                    .unwrap_or_else(|| "[no dir]".to_string());
-                (
-                    format!("#{:<3} {}", id.0, dir_display),
-                    format!("oil{active_marker}"),
-                )
-            }
-        };
-        rows.push((id, listed, body, kind_label));
-    });
-    // Picker order: active LAST, listed BEFORE unlisted, otherwise
-    // by id. Unlisted synthetic buffers (`*lsp*`, ...) stay
-    // reachable via the picker (the user can filter to them by
-    // name) but the initial preview lands on a listed alternate
-    // first, matching vim's "skip nobuflisted in cycling" intent.
-    rows.sort_by_key(|(id, listed, _, _)| (*id == active, !*listed, *id));
-    let mut out = Vec::with_capacity(rows.len());
-    for (id, _listed, body, kind_label) in rows {
-        // `text` is the user-facing buffer id; matcher matches
-        // against `display`. The typed routing payload carries
-        // the buffer id the accept dispatch consumes.
-        let mut raw = lattice_completion::RawCandidate::plain(
-            format!("#{}", id.0),
-            lattice_completion::CandidateKind::Buffer,
-        );
-        raw.display = format!("{body:<60} {kind_label}");
-        out.push((raw, lattice_picker::RoutingPayload::Buffer { id: id.0 }));
-    }
-    out
-}
+// Phase 5.8.AC.1: `raw_buffer_candidates` migrated to
+// `lattice_host::dispatch::raw_buffer_candidates`. App-side
+// callers route through `editor.do_open_buffer_picker`.
 
 #[cfg(test)]
 mod tests {

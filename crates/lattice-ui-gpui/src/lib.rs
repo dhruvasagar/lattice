@@ -581,6 +581,38 @@ impl GpuiApp {
     /// same way; callers can inspect them once the GPUI peer
     /// gains a signal handler.
     pub fn dispatch_action(&mut self, action: Action) -> DispatchOutcome {
+        // Phase 5.8.AC.1: GPUI-side intercepts for App-only Action
+        // arms. The host's `handle_action` doesn't dispatch these
+        // (the TUI App's `apply` catches them with renderer-coupled
+        // bodies). Until the full set migrates, the GPUI peer
+        // intercepts the most-common ones here. The host's matching
+        // `do_*` helpers cover the simple Buffer / Path routings;
+        // exotic routings (mark / register / command / snippet /
+        // LSP code-action / completion) still warn until they
+        // migrate.
+        match &action {
+            Action::PickerAccept => {
+                let signals = self.editor.do_picker_accept();
+                let mut outcome = DispatchOutcome::default();
+                outcome.consumed = true;
+                outcome.renderer_signals = signals.clone();
+                for s in signals {
+                    self.handle_renderer_signal(s);
+                }
+                return outcome;
+            }
+            Action::PickerDismiss => {
+                let signals = self.editor.do_picker_dismiss();
+                let mut outcome = DispatchOutcome::default();
+                outcome.consumed = true;
+                outcome.renderer_signals = signals.clone();
+                for s in signals {
+                    self.handle_renderer_signal(s);
+                }
+                return outcome;
+            }
+            _ => {}
+        }
         let mut outcome = self.editor.dispatch(action);
         let mut pending: std::collections::VecDeque<Action> =
             outcome.next_actions.drain(..).collect();
@@ -600,6 +632,29 @@ impl GpuiApp {
                 break;
             }
         }
+        // Phase 5.8.AC.1: drain renderer-coupled effects. The
+        // host's `editor.dispatch` already called
+        // `editor.handle_effect` for every Effect, but the
+        // renderer-coupled tail (`OpenBuffer` → `do_edit`,
+        // `OpenBufferPicker` → `do_open_buffer_picker`,
+        // `QuitEditor` → `do_quit`, ...) doesn't run inside the
+        // host's `handle_effect`. The TUI peer drains these in
+        // `App::apply_effect_app_arms`; the GPUI peer mirrors
+        // those arms here for the variants whose handlers are
+        // host-resident today. Variants whose handlers are still
+        // App-only (file-tree / oil / hover / LSP-request /
+        // diagnostics navigation / picker accept) log a one-line
+        // trace; they'll light up as the matching host methods
+        // land in subsequent slices.
+        for effect in outcome.effects.iter().cloned() {
+            self.apply_effect_gpui(effect);
+        }
+        // Action arms App handles that the host's `handle_action`
+        // doesn't yet route through: `PickerAccept` / `PickerDismiss`
+        // — these need a renderer-coupled close path. Until the
+        // accept body migrates host-side, GPUI catches the action
+        // by inspecting `outcome.consumed` and falling back to a
+        // minimal close + activate-restore for the dismiss arm.
         // 5.7.B.7: drain renderer signals through the GPUI
         // handler. Drained BEFORE returning so callers see a
         // post-signal-handling editor state; the returned
@@ -614,6 +669,106 @@ impl GpuiApp {
         // hands these to the caller after fan-out).
         outcome.renderer_signals = signals;
         outcome
+    }
+
+    /// Renderer-coupled effect handler for the GPUI peer.
+    ///
+    /// Phase 5.8.AC.1: mirrors the role of TUI's
+    /// `App::apply_effect_app_arms`. For ex-effects whose
+    /// renderer-coupled tail lives host-side today
+    /// (`OpenBuffer`, `QuitEditor`, `OpenBufferPicker`), call
+    /// the host method and fan signals through the existing
+    /// `RendererSignal` handler. For the rest (file-tree, oil,
+    /// hover, picker open, LSP requests, diagnostics navigation),
+    /// log a one-line trace + continue; those light up as the
+    /// matching host methods land in subsequent slices.
+    fn apply_effect_gpui(&mut self, effect: lattice_grammar::Effect) {
+        use lattice_grammar::Effect;
+        match effect {
+            // Document-only effects the host has already
+            // applied via `editor.handle_effect`; nothing for the
+            // renderer to do.
+            Effect::None
+            | Effect::Edits(_)
+            | Effect::SelectionChange(_)
+            | Effect::EnterMode(_)
+            | Effect::Yank { .. }
+            | Effect::SetOption { .. }
+            | Effect::ClearSearchHighlight
+            | Effect::Echo { .. }
+            | Effect::EchoRegisters
+            | Effect::EchoMarks
+            | Effect::ListBuffers
+            | Effect::DescribeBuffer
+            | Effect::ListKeymap
+            | Effect::DescribeOption { .. }
+            | Effect::ListOptions
+            | Effect::DescribeOptionResolution { .. }
+            | Effect::DescribeEvents
+            | Effect::DescribeEvent { .. }
+            | Effect::BufferNext
+            | Effect::BufferPrev
+            | Effect::BufferDelete { .. }
+            | Effect::ListModes
+            | Effect::DescribeMode { .. }
+            | Effect::Customize { .. }
+            | Effect::ListDiagnostics
+            | Effect::DeleteCurrentLine
+            | Effect::Substitute { .. }
+            | Effect::DescribeCommand { .. }
+            | Effect::Apropos { .. }
+            | Effect::DescribeKey { .. }
+            | Effect::AppAction(_) => {}
+            // Renderer-coupled effects whose body lives host-side.
+            Effect::QuitEditor { force } => self.editor.do_quit(force),
+            Effect::OpenBuffer { path, force } => self.apply_open_buffer(path, force),
+            Effect::OpenBufferPicker => {
+                let signals = self.editor.do_open_buffer_picker();
+                for s in signals {
+                    self.handle_renderer_signal(s);
+                }
+            }
+            // Many recurses through the same handler so inner
+            // arms hit their renderer-coupled tail too.
+            Effect::Many(parts) => {
+                for p in parts {
+                    self.apply_effect_gpui(p);
+                }
+            }
+            // Effects whose handlers are still App-only in TUI;
+            // not yet wired in GPUI. One-line trace so the
+            // user sees *why* nothing happened.
+            other => {
+                tracing::warn!(
+                    effect = ?other,
+                    "lattice-gpui: effect not yet wired (App-side handler hasn't migrated to host)"
+                );
+            }
+        }
+    }
+
+    /// Wrapper around `editor.do_edit(path, force)` that translates
+    /// the host's [`DoEditOutcome`] for the GPUI peer. The TUI peer
+    /// has the same shape; the only difference is the `Directory`
+    /// arm — TUI opens an oil view, GPUI doesn't have one yet.
+    fn apply_open_buffer(&mut self, path: Option<std::path::PathBuf>, force: bool) {
+        use lattice_host::dispatch::DoEditOutcome;
+        let outcome = self.editor.do_edit(path, force);
+        match outcome {
+            DoEditOutcome::NoFileName | DoEditOutcome::Failed => {}
+            DoEditOutcome::Directory(_dir) => {
+                tracing::warn!(
+                    "lattice-gpui: `:e <dir>` would open oil; oil view not wired in GPUI yet"
+                );
+            }
+            DoEditOutcome::Reloaded(signals)
+            | DoEditOutcome::Activated(signals)
+            | DoEditOutcome::Opened(signals) => {
+                for s in signals {
+                    self.handle_renderer_signal(s);
+                }
+            }
+        }
     }
 }
 

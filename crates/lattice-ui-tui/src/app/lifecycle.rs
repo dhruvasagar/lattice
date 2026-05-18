@@ -238,32 +238,16 @@ impl App {
     /// bypasses the dirty guard. Publishes `Event::BeforeQuit`
     /// for observability when the editor actually quits.
     pub(super) fn do_quit(&mut self, force: bool) {
+        // Phase 5.8.AC.1: body migrated to
+        // `lattice_host::dispatch::Editor::do_quit`. The
+        // pane-close path still routes through the App-side
+        // wrapper because `do_close_pane` calls App's
+        // `gc_unreferenced_panel_buffers` after the host close.
         if self.editor.pane_tree.len() > 1 {
             self.do_close_pane();
             return;
         }
-        if !force {
-            let dirty_id = self
-                .editor
-                .buffers
-                .document_ids_sorted()
-                .into_iter()
-                .find(|id| self.editor.buffers.document_dirty(*id));
-            if let Some(id) = dirty_id {
-                self.set_message(
-                    EchoLevel::Error,
-                    format!(
-                        "no write since last change for buffer #{} (add ! to override)",
-                        id.0
-                    ),
-                );
-                return;
-            }
-        }
-        // BeforeQuit is observation-only in v1 (no veto seam yet).
-        // Subscribers see it; the quit proceeds regardless.
-        self.editor.event_bus.publish(Event::BeforeQuit);
-        self.editor.should_quit = true;
+        self.editor.do_quit(force);
     }
 
     // 5.5.H: `do_split_pane` App-side delegate retired (zero

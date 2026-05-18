@@ -451,6 +451,16 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         Action::Echo(message) => {
             editor.last_message = Some(message);
         }
+        // Phase 5.8.AC.1: picker accept / dismiss are NOT routed
+        // here. The TUI App's `do_picker_accept` / `do_picker_dismiss`
+        // own the SMR queue + position-history + trait-driven
+        // generator-accept paths; setting `consumed = true` would
+        // block those. The host versions of `do_picker_accept` /
+        // `do_picker_dismiss` (Editor methods further down) handle
+        // the common Buffer / Path routings + activate-restore tail,
+        // and the GPUI peer calls them directly from
+        // `GpuiApp::dispatch_action` for actions the host's
+        // `handle_action` returns to without consuming.
         Action::CommandLineCancel => {
             if matches!(editor.modal, ModalState::Command) {
                 editor.command_line.clear();
@@ -10363,6 +10373,197 @@ impl Editor {
         self.load_active_pane();
     }
 
+    /// `:q[uit]` -- close the active pane when there's more than
+    /// one open (vim-style multi-pane quit-closes-pane); with one
+    /// pane left, runs the dirty guard and shuts down the editor.
+    /// `force` (`!`) bypasses the dirty guard. Publishes
+    /// `Event::BeforeQuit` for observability when the editor
+    /// actually quits. Phase 5.8.AC.1: hoisted from TUI App.
+    pub fn do_quit(&mut self, force: bool) {
+        if self.pane_tree.len() > 1 {
+            self.do_close_pane();
+            return;
+        }
+        if !force {
+            let dirty_id = self
+                .buffers
+                .document_ids_sorted()
+                .into_iter()
+                .find(|id| self.buffers.document_dirty(*id));
+            if let Some(id) = dirty_id {
+                self.set_message(
+                    EchoLevel::Error,
+                    format!(
+                        "no write since last change for buffer #{} (add ! to override)",
+                        id.0
+                    ),
+                );
+                return;
+            }
+        }
+        self.event_bus.publish(Event::BeforeQuit);
+        self.should_quit = true;
+    }
+
+    /// Minimal `Action::PickerDismiss` -- close the picker and,
+    /// if a buffer-switch picker was previewing, restore the
+    /// active pane to whatever buffer it was on at picker-open.
+    /// Phase 5.8.AC.1: skeleton of the TUI App's
+    /// `do_picker_dismiss`; the SMR / event-bus + position-history
+    /// tail stays App-only until those migrate.
+    pub fn do_picker_dismiss(&mut self) -> Vec<RendererSignal> {
+        if let Some(state) = self.live_picker_query.take()
+            && let Some(inflight) = state.inflight
+        {
+            inflight.cancel.cancel();
+        }
+        self.pending_tag_origin = None;
+        let Some(picker) = self.picker.take() else {
+            return Vec::new();
+        };
+        if let Some(origin_raw) = picker.preview_origin {
+            let origin = BufferId(origin_raw);
+            if origin != self.active_pane_buffer_id() {
+                self.previewing = true;
+                let needs_state = self.activate_buffer(origin);
+                self.previewing = false;
+                if needs_state {
+                    return self.activate_buffer_state();
+                }
+            }
+        }
+        Vec::new()
+    }
+
+    /// Minimal `Action::PickerAccept` for the buffer-switcher
+    /// path. Phase 5.8.AC.1: handles `RoutingPayload::Buffer`
+    /// (commit the preview-activated target) and
+    /// `RoutingPayload::Path` (route through `do_edit`). Other
+    /// payload kinds (mark / register / command / snippet /
+    /// LSP code-action / completion / etc.) still live in the
+    /// TUI App's `do_picker_accept`; they'll migrate as the
+    /// underlying `do_*` helpers move host-side.
+    pub fn do_picker_accept(&mut self) -> Vec<RendererSignal> {
+        let Some(picker) = self.picker.take() else {
+            return Vec::new();
+        };
+        let Some(c) = picker.selected_candidate() else {
+            if let Some(origin) = picker.preview_origin {
+                self.previewing = true;
+                let needs_state = self.activate_buffer(BufferId(origin));
+                self.previewing = false;
+                if needs_state {
+                    return self.activate_buffer_state();
+                }
+            }
+            return Vec::new();
+        };
+        let Some(routing) = picker.routing_for(c).cloned() else {
+            self.set_message(
+                EchoLevel::Error,
+                "picker: candidate carries no routing payload".to_string(),
+            );
+            return Vec::new();
+        };
+        match routing {
+            lattice_picker::RoutingPayload::Buffer { id } => {
+                // SwitchToBuffer: the preview pass already
+                // activated the target buffer. Clear the
+                // previewing flag so the next activate sees a
+                // fresh commit. No further signals needed —
+                // `activate_buffer_state` already ran during
+                // the preview.
+                self.previewing = false;
+                let target = BufferId(id);
+                if target != self.active_pane_buffer_id() {
+                    let needs_state = self.activate_buffer(target);
+                    if needs_state {
+                        return self.activate_buffer_state();
+                    }
+                }
+                Vec::new()
+            }
+            lattice_picker::RoutingPayload::OpenFile { path } => {
+                let outcome = self.do_edit(Some(path), false);
+                match outcome {
+                    DoEditOutcome::Opened(signals)
+                    | DoEditOutcome::Activated(signals)
+                    | DoEditOutcome::Reloaded(signals) => signals,
+                    DoEditOutcome::Directory(_)
+                    | DoEditOutcome::NoFileName
+                    | DoEditOutcome::Failed => Vec::new(),
+                }
+            }
+            lattice_picker::RoutingPayload::LspLocation { path, line, col } => {
+                let outcome = self.do_edit(Some(path), false);
+                let mut signals = match outcome {
+                    DoEditOutcome::Opened(s)
+                    | DoEditOutcome::Activated(s)
+                    | DoEditOutcome::Reloaded(s) => s,
+                    _ => Vec::new(),
+                };
+                let snap = self.document.snapshot();
+                let line = line.min(last_addressable_line(&snap.buffer));
+                let len = snap.buffer.line_byte_len(line);
+                let col = col.min(len);
+                self.cursor = lattice_protocol::Position::new(line, col);
+                signals.extend(self.activate_buffer_state());
+                signals
+            }
+            lattice_picker::RoutingPayload::JumpInBuffer {
+                buffer_id,
+                line,
+                col,
+            } => {
+                let id = BufferId(buffer_id);
+                let mut signals = Vec::new();
+                if id != self.active_pane_buffer_id() {
+                    let needs_state = self.activate_buffer(id);
+                    if needs_state {
+                        signals.extend(self.activate_buffer_state());
+                    }
+                }
+                let snap = self.document.snapshot();
+                let line = line.min(last_addressable_line(&snap.buffer));
+                let len = snap.buffer.line_byte_len(line);
+                let col = col.min(len);
+                self.cursor = lattice_protocol::Position::new(line, col);
+                signals
+            }
+            // Other payload kinds keep their TUI-side routing
+            // until the renderer-coupled helpers (do_jump_mark,
+            // do_paste-from-register, execute_ex_line, snippet
+            // expand, LSP applies, completion accept) migrate
+            // host-side. The GPUI peer's `apply_effect_gpui`
+            // echoes "not yet wired" for now.
+            _ => Vec::new(),
+        }
+    }
+
+    /// `:b` no-arg / `<leader>b` -- open the vertico-style buffer
+    /// switcher. Floats every entry in the registry into the
+    /// picker; the active buffer is floated to the bottom so the
+    /// initial preview lands on the alternate buffer. Phase
+    /// 5.8.AC.1: hoisted from TUI App.
+    pub fn do_open_buffer_picker(&mut self) -> Vec<RendererSignal> {
+        let active = self.active_pane_buffer_id();
+        let cur = self.active_cursor();
+        self.push_position_history(cur, crate::state::PositionSource::AutoJump);
+        let mut p = lattice_picker::Picker::new(
+            "buffers",
+            lattice_picker::PickerSource::Buffers,
+            lattice_picker::PickerAction::SwitchToBuffer,
+        );
+        let pairs = raw_buffer_candidates(&self.buffers, &self.buffer_locals, active);
+        p.set_raw_candidates_with_routing(pairs);
+        p.preview_origin = Some(active.0);
+        self.picker = Some(p);
+        // Preview-activate the initial (alternate-buffer)
+        // selection so opening the picker immediately shows what
+        // `<CR>` would land on.
+        self.preview_picker_selection()
+    }
+
     /// Cardinal neighbour walk (`<C-w>h/j/k/l`).
     pub fn do_navigate_pane(&mut self, direction: lattice_core::ui::pane::PaneDirection) {
         let area = self.buffer_area_rect();
@@ -12741,6 +12942,86 @@ pub fn visual_kind_to_mode(kind: VisualKind) -> VisualMode {
         VisualKind::Linewise => VisualMode::Linewise,
         VisualKind::Blockwise => VisualMode::Blockwise,
     }
+}
+
+/// Build the buffer-picker candidate set: every entry in the
+/// registry, with the active buffer floated to the bottom and
+/// tagged `(current)` in marginalia. Free function because the
+/// picker module is renderer-agnostic; this composes both
+/// `RawCandidate` + `RoutingPayload` shapes against a
+/// `BufferRegistry` borrow. Phase 5.8.AC.1: hoisted from TUI App.
+pub fn raw_buffer_candidates(
+    registry: &crate::buffer_registry::BufferRegistry,
+    buffer_locals: &std::collections::HashMap<BufferId, lattice_mode::BufferLocals>,
+    active: BufferId,
+) -> Vec<(
+    lattice_completion::RawCandidate,
+    lattice_picker::RoutingPayload,
+)> {
+    use crate::buffer_registry::BufferData;
+    let mut rows: Vec<(BufferId, bool, String, String)> = Vec::new();
+    registry.for_each(|entry| {
+        let id = entry.id;
+        let listed = entry.flags.listed;
+        let active_marker = if id == active { " (current)" } else { "" };
+        let (body, kind_label) = match &entry.data {
+            BufferData::Document(d) => {
+                let label = d
+                    .handle
+                    .path()
+                    .map(|p| p.display().to_string())
+                    .or_else(|| entry.name.clone())
+                    .unwrap_or_else(|| "[no name]".to_string());
+                let dirty = if entry.name.is_none() && d.handle.dirty() {
+                    " [+]"
+                } else {
+                    ""
+                };
+                (
+                    format!("#{:<3} {label}{dirty}", id.0),
+                    format!("doc{active_marker}"),
+                )
+            }
+            BufferData::FileTree(_) => {
+                let root_display = buffer_locals
+                    .get(&id)
+                    .and_then(|locals| locals.get::<lattice_file_tree::modes::FileTreeRoot>())
+                    .map(|r| r.0.display().to_string())
+                    .unwrap_or_else(|| "[no root]".to_string());
+                (
+                    format!("#{:<3} {}", id.0, root_display),
+                    format!("tree{active_marker}"),
+                )
+            }
+            BufferData::Help(h) => (
+                format!("#{:<3} {}", id.0, h.title),
+                format!("help{active_marker}"),
+            ),
+            BufferData::Oil(_) => {
+                let dir_display = buffer_locals
+                    .get(&id)
+                    .and_then(|locals| locals.get::<lattice_oil::modes::OilDir>())
+                    .map(|d| d.0.display().to_string())
+                    .unwrap_or_else(|| "[no dir]".to_string());
+                (
+                    format!("#{:<3} {}", id.0, dir_display),
+                    format!("oil{active_marker}"),
+                )
+            }
+        };
+        rows.push((id, listed, body, kind_label));
+    });
+    rows.sort_by_key(|(id, listed, _, _)| (*id == active, !*listed, *id));
+    let mut out = Vec::with_capacity(rows.len());
+    for (id, _listed, body, kind_label) in rows {
+        let mut raw = lattice_completion::RawCandidate::plain(
+            format!("#{}", id.0),
+            lattice_completion::CandidateKind::Buffer,
+        );
+        raw.display = format!("{body:<60} {kind_label}");
+        out.push((raw, lattice_picker::RoutingPayload::Buffer { id: id.0 }));
+    }
+    out
 }
 
 /// Parse a `[completion.per-language.<lang>]` TOML sub-table

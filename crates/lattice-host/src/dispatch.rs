@@ -322,26 +322,23 @@ impl Editor {
     /// rebuild method retires.
     pub fn build_render_state(&self) -> crate::render_state::RenderState {
         use crate::render_state::*;
+        // Start from the empty `Default` snapshot, then override
+        // each sub-state whose backing source has been wired up.
+        // Slice 3a wires only `diagnostics`; Slice 3b/3c add
+        // overrides one subsystem at a time. The `..Default::default()`
+        // tail keeps unmigrated sub-states at their (empty)
+        // defaults without enumerating every field on every edit.
         RenderState {
-            active_document: std::sync::Arc::new(ActiveDocumentRenderState::default()),
-            buffers: std::sync::Arc::new(BuffersRenderState::default()),
-            panes: std::sync::Arc::new(PanesRenderState::default()),
-            lsp: std::sync::Arc::new(LspRenderState::default()),
-            syntax: std::sync::Arc::new(SyntaxRenderState::default()),
-            picker: std::sync::Arc::new(PickerRenderState::default()),
-            completion: std::sync::Arc::new(CompletionRenderState::default()),
-            popup: std::sync::Arc::new(PopupRenderState::default()),
-            messages: std::sync::Arc::new(MessagesRenderState::default()),
-            modeline: std::sync::Arc::new(ModelineRenderState::default()),
             diagnostics: std::sync::Arc::new(DiagnosticsRenderState {
                 // Clone the `DiagnosticsLayer` -- it's internally
                 // `Arc<ArcSwap<...>>`-backed so this is one Arc
-                // bump per publication. Renderers reading
-                // through `render_state.diagnostics.layer` get
-                // wait-free access to the latest published
-                // diagnostics snapshot.
+                // bump per publication. Renderers reading through
+                // `render_state.diagnostics.layer` get wait-free
+                // access to the latest published diagnostics
+                // snapshot.
                 layer: self.lsp_diagnostics.clone(),
             }),
+            ..RenderState::default()
         }
     }
 

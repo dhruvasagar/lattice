@@ -626,6 +626,73 @@ impl EditorView {
         // fallback is Catppuccin surface0 (close to bg, gentle).
         let cursorline_bg = editor.host_theme.cursor_line_bg.to_rgb_u32(0x313244);
 
+        // 5.8.AB.2: per-character diagnostic underline overlay.
+        // The TUI is limited to a colored gutter sign because
+        // ratatui can't paint sub-character decorations; GPUI
+        // can. Read the full diagnostic array for this pane's
+        // URI once per paint (wait-free `Arc<[Diagnostic]>` via
+        // `diagnostics_arc`), then a per-(line, byte) probe
+        // finds the most-severe overlapping diagnostic for the
+        // cell. Severity → colour mirrors the gutter sign so
+        // the underline tells the user *which* error/warning
+        // covers each token.
+        let diagnostics_arc = uri.and_then(|u| editor.lsp_diagnostics.diagnostics_arc(u));
+        let diagnostic_severity_at_byte = |line_idx: usize,
+                                           byte_idx: usize,
+                                           line_text: &str|
+         -> Option<lattice_lsp::DiagnosticSeverity> {
+            let arr = diagnostics_arc.as_ref()?;
+            let mut best: Option<lattice_lsp::DiagnosticSeverity> = None;
+            for d in arr.iter() {
+                let start = d.range.start;
+                let end = d.range.end;
+                let li = line_idx as u32;
+                if li < start.line || li > end.line {
+                    continue;
+                }
+                // Convert LSP utf-16 columns to utf-8 byte
+                // offsets keyed against the line text. For
+                // multi-line diagnostics the in-between lines
+                // are fully covered.
+                let start_byte = if li == start.line {
+                    lattice_lsp::position::utf16_column_to_utf8_byte(line_text, start.character)
+                        as usize
+                } else {
+                    0
+                };
+                let end_byte = if li == end.line {
+                    lattice_lsp::position::utf16_column_to_utf8_byte(line_text, end.character)
+                        as usize
+                } else {
+                    line_text.len()
+                };
+                // LSP "zero-width" diagnostics (start == end) are
+                // common for "missing X" errors — paint at least
+                // one char so the underline is visible.
+                let coverage_end = end_byte.max(start_byte + 1);
+                if byte_idx >= start_byte && byte_idx < coverage_end {
+                    // Lower severity rank wins (Error < Warning <
+                    // Info < Hint), matching the gutter sign's
+                    // most-severe rule.
+                    let rank = |s: lattice_lsp::DiagnosticSeverity| -> u8 {
+                        match s {
+                            lattice_lsp::DiagnosticSeverity::ERROR => 0,
+                            lattice_lsp::DiagnosticSeverity::WARNING => 1,
+                            lattice_lsp::DiagnosticSeverity::INFORMATION => 2,
+                            lattice_lsp::DiagnosticSeverity::HINT => 3,
+                            _ => 4,
+                        }
+                    };
+                    let sev = d.severity.unwrap_or(lattice_lsp::DiagnosticSeverity::HINT);
+                    best = Some(match best {
+                        Some(b) if rank(b) <= rank(sev) => b,
+                        _ => sev,
+                    });
+                }
+            }
+            best
+        };
+
         // 5.8.O: walk only the visible window [visible_start,
         // visible_end). `line_idx` is the ABSOLUTE buffer-line
         // index so gutter labels, cursor maths, and highlight
@@ -696,6 +763,18 @@ impl EditorView {
                             cell = cell.bg(hlsearch_bg);
                         } else if in_doc_highlight {
                             cell = cell.bg(doc_highlights_bg);
+                        }
+                        // 5.8.AB.2: layer a per-character coloured
+                        // underline when a diagnostic covers this
+                        // byte. Independent of the bg overlays above
+                        // (a visually-selected error still shows the
+                        // underline) — this is the GUI-only signal
+                        // the TUI peer can't paint.
+                        if let Some(sev) =
+                            diagnostic_severity_at_byte(line_idx, byte_idx, line)
+                        {
+                            let (_, color) = diagnostic_glyph_and_color(&host_theme, sev);
+                            cell = cell.border_b_2().border_color(rgb(color));
                         }
                         cells.push(cell);
                     }
@@ -843,29 +922,10 @@ impl Render for EditorView {
         for signal in tick_signals {
             self.app.handle_renderer_signal(signal);
         }
-        // 5.8.Y / 5.8.AA.l.6: code-action drain returns Option<(
-        // handle, action)>. The Resolved arm now applies via the
-        // host's `apply_resolved_code_action` (workspace-edit +
-        // executeCommand chain hoisted in 5.8.AA.l series).
-        if let Some((handle, action)) = self.app.editor.drain_pending_code_actions() {
-            let signals = self.app.editor.apply_resolved_code_action(handle, action);
-            for s in signals {
-                self.app.handle_renderer_signal(s);
-            }
-        }
-        // 5.8.AA / 5.8.AA.k.2: definitions / declaration / type-
-        // def / impl drain. Multi-result outcomes have already
-        // opened the picker host-side. Single-result outcomes
-        // return the `Location`; the host's `jump_to_lsp_location`
-        // routes through host-side `do_edit` (5.8.AA.k) and
-        // returns renderer signals which we fan through the
-        // existing handler.
-        if let Some(loc) = self.app.editor.drain_pending_definitions() {
-            let signals = self.app.editor.jump_to_lsp_location(&loc);
-            for s in signals {
-                self.app.handle_renderer_signal(s);
-            }
-        }
+        // Phase 5.8.AA.p/r/t: every per-tick drain (hover,
+        // definitions, code-actions, live-picker, ...) is now
+        // folded into `run_tick_pending` above; no per-paint
+        // catch-up calls remain.
         let modal = self.app.editor.modal;
 
         let modal_label = match modal {

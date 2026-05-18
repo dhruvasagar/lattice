@@ -610,31 +610,10 @@ impl App {
     /// closed channel = task dropped without sending (the
     /// cancel path took it).
     pub(crate) fn drain_pending_picker_init(&mut self) {
-        let Some(pending) = self.editor.pending_picker_init.as_mut() else {
-            return;
-        };
-        let result = match pending.rx.try_recv() {
-            Ok(r) => r,
-            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => return,
-            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
-                // Task ended without sending (cancelled or
-                // panicked). Drop the pending and move on.
-                self.editor.pending_picker_init = None;
-                return;
-            }
-        };
-        let pending = self
-            .editor
-            .pending_picker_init
-            .take()
-            .expect("guarded above");
-        match result {
-            Ok(pairs) => {
-                self.seat_picker_from_pairs(pending.source_id, pairs);
-            }
-            Err(e) => {
-                self.set_message(EchoLevel::Error, format!("picker: {e}"));
-            }
+        // 5.8.AA.n: migrated to host.
+        let signals = self.editor.drain_pending_picker_init();
+        for s in signals {
+            self.handle_renderer_signal(s);
         }
     }
 
@@ -830,107 +809,10 @@ impl App {
     /// identically regardless of how the candidates were
     /// produced.
     fn seat_picker_from_pairs(&mut self, source: String, pairs: lattice_picker::CandidateBatch) {
-        let title = source.clone();
-        // MRU bonus snapshot -- per-keystroke refilter reads
-        // cached bonuses, not the live MRU HashMap. Honors
-        // `picker.mru.enabled` (skip bonuses entirely when
-        // off) and `picker.mru.recency-half-life-days`.
-        let mru_enabled = self
-            .editor
-            .config
-            .get_typed::<lattice_config::core_options::PickerMruEnabled>()
-            .map(|b| *b)
-            .unwrap_or(true);
-        let now = std::time::SystemTime::now();
-        let half_life = self
-            .editor
-            .config
-            .get_typed::<lattice_config::core_options::PickerMruRecencyHalfLifeDays>()
-            .map(|d| std::time::Duration::from_secs((*d).max(1) as u64 * 24 * 60 * 60))
-            .unwrap_or(lattice_picker::DEFAULT_HALF_LIFE);
-        let bonuses: Vec<f64> = if mru_enabled {
-            pairs
-                .iter()
-                .map(
-                    |(_cand, routing)| match lattice_picker::routing_identity(routing) {
-                        Some(id) => self
-                            .editor
-                            .picker_mru
-                            .frecency_bonus(&source, &id, now, half_life),
-                        None => 0.0,
-                    },
-                )
-                .collect()
-        } else {
-            vec![0.0; pairs.len()]
-        };
-        let mut picker = lattice_picker::Picker::new(
-            title,
-            Self::picker_source_for(&source),
-            Self::picker_action_for(&source),
-        );
-        // Live-source bypass: when the source's spec opts in
-        // (`PickerSourceSpec::live = true`), tell the picker
-        // to skip its fuzzy refilter -- the source's external
-        // engine already produced the rows in the order it
-        // wants. Must be set BEFORE seating raw, because
-        // `set_raw_candidates_*` calls refilter internally.
-        // Sources not in the registry (legacy imperative
-        // pickers) default to non-live.
-        let live = self
-            .editor
-            .picker_registry
-            .entry(&source)
-            .map(|e| e.spec.live)
-            .unwrap_or(false);
-        picker.set_live_source_mode(live);
-        // Slice 3: consume the live-state's stashed initial
-        // query (set by `open_picker` from the user's first
-        // positional arg) so `:picker grep TODO` opens with
-        // "TODO" already typed. Take() ensures subsequent
-        // seats (e.g. when on_query_changed reseats with new
-        // hits) don't reset the prompt back to the original
-        // pattern.
-        let initial_query = self
-            .editor
-            .live_picker_query
-            .as_mut()
-            .and_then(|s| s.initial_query.take());
-        if let Some(initial) = initial_query {
-            picker.query_cursor = initial.len();
-            picker.query = initial;
-        }
-        // Single-pass seat: one refilter instead of two.
-        picker.set_raw_candidates_with_routing_and_bonuses(pairs, bonuses);
-        picker.source_id = Some(source.clone());
-        if source == "buffers" {
-            picker.preview_origin = Some(self.active_pane_buffer_id().0);
-        }
-        self.editor.picker = Some(picker);
-        if source == "buffers" {
-            self.preview_picker_selection();
-        }
-    }
-
-    /// Translate a first-party source id into the
-    /// `PickerSource` tag the picker primitive stores. The
-    /// tag is mostly informational today (refresh paths read
-    /// it); slice 13d will retire it entirely once every
-    /// source registers as a trait object.
-    fn picker_source_for(source: &str) -> lattice_picker::PickerSource {
-        match source {
-            "buffers" => lattice_picker::PickerSource::Buffers,
-            _ => lattice_picker::PickerSource::Files,
-        }
-    }
-
-    /// Translate a first-party source id into the
-    /// `PickerAction` tag. Retires alongside `picker_source_for`
-    /// once the trait-driven path is the only one.
-    fn picker_action_for(source: &str) -> lattice_picker::PickerAction {
-        match source {
-            "buffers" => lattice_picker::PickerAction::SwitchToBuffer,
-            _ => lattice_picker::PickerAction::OpenFile,
+        // 5.8.AA.n: migrated to host.
+        let signals = self.editor.seat_picker_from_pairs(source, pairs);
+        for s in signals {
+            self.handle_renderer_signal(s);
         }
     }
 

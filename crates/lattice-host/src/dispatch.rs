@@ -3800,6 +3800,102 @@ impl Editor {
         signals
     }
 
+    /// Seat the picker from a `CandidateBatch` produced by a
+    /// first-party source. Wires MRU bonuses (gated by
+    /// `picker.mru.enabled` + `picker.mru.recency-half-life-days`),
+    /// honours `PickerSourceSpec::live`, and consumes any stashed
+    /// initial query for `:picker grep TODO`-style submissions.
+    ///
+    /// Phase 5.8.AA.n: hoisted from TUI App.
+    pub fn seat_picker_from_pairs(
+        &mut self,
+        source: String,
+        pairs: lattice_picker::CandidateBatch,
+    ) -> Vec<RendererSignal> {
+        let title = source.clone();
+        let mru_enabled = self
+            .config
+            .get_typed::<lattice_config::core_options::PickerMruEnabled>()
+            .map(|b| *b)
+            .unwrap_or(true);
+        let now = std::time::SystemTime::now();
+        let half_life = self
+            .config
+            .get_typed::<lattice_config::core_options::PickerMruRecencyHalfLifeDays>()
+            .map(|d| std::time::Duration::from_secs((*d).max(1) as u64 * 24 * 60 * 60))
+            .unwrap_or(lattice_picker::DEFAULT_HALF_LIFE);
+        let bonuses: Vec<f64> = if mru_enabled {
+            pairs
+                .iter()
+                .map(
+                    |(_cand, routing)| match lattice_picker::routing_identity(routing) {
+                        Some(id) => self.picker_mru.frecency_bonus(&source, &id, now, half_life),
+                        None => 0.0,
+                    },
+                )
+                .collect()
+        } else {
+            vec![0.0; pairs.len()]
+        };
+        let mut picker = lattice_picker::Picker::new(
+            title,
+            picker_source_for(&source),
+            picker_action_for(&source),
+        );
+        let live = self
+            .picker_registry
+            .entry(&source)
+            .map(|e| e.spec.live)
+            .unwrap_or(false);
+        picker.set_live_source_mode(live);
+        let initial_query = self
+            .live_picker_query
+            .as_mut()
+            .and_then(|s| s.initial_query.take());
+        if let Some(initial) = initial_query {
+            picker.query_cursor = initial.len();
+            picker.query = initial;
+        }
+        picker.set_raw_candidates_with_routing_and_bonuses(pairs, bonuses);
+        picker.source_id = Some(source.clone());
+        if source == "buffers" {
+            picker.preview_origin = Some(self.active_pane_buffer_id().0);
+        }
+        self.picker = Some(picker);
+        if source == "buffers" {
+            self.preview_picker_selection()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Drain the pending-picker-init future channel. Pumps the
+    /// async result the spawned task wrote; once a result arrives
+    /// the picker is seated. Empty channel = future still pending;
+    /// closed channel = task dropped without sending. Phase
+    /// 5.8.AA.n: hoisted from TUI App.
+    pub fn drain_pending_picker_init(&mut self) -> Vec<RendererSignal> {
+        let Some(pending) = self.pending_picker_init.as_mut() else {
+            return Vec::new();
+        };
+        let result = match pending.rx.try_recv() {
+            Ok(r) => r,
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => return Vec::new(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                self.pending_picker_init = None;
+                return Vec::new();
+            }
+        };
+        let pending = self.pending_picker_init.take().expect("guarded above");
+        match result {
+            Ok(pairs) => self.seat_picker_from_pairs(pending.source_id, pairs),
+            Err(e) => {
+                self.set_message(EchoLevel::Error, format!("picker: {e}"));
+                Vec::new()
+            }
+        }
+    }
+
     /// Step the cursor + selection to the current entry in the
     /// cached LSP selection chain. Used by `:lsp-expand-region` /
     /// `:lsp-shrink-region`. Phase 5.8.AA.m: hoisted from TUI App.
@@ -6018,6 +6114,7 @@ impl Editor {
         self.drain_pending_format();
         signals.extend(self.drain_inbound_apply_edits());
         self.drain_pending_selection_range();
+        signals.extend(self.drain_pending_picker_init());
         // Pre-drain "fire request" pumps. Each is single-flight
         // (cancels prior in-flight) + cache-key-gated, so calling
         // here is cheap when nothing changed.
@@ -12326,6 +12423,25 @@ pub enum DoEditOutcome {
     Reloaded(Vec<RendererSignal>),
     Activated(Vec<RendererSignal>),
     Opened(Vec<RendererSignal>),
+}
+
+/// Translate a first-party source id into the `PickerSource`
+/// tag the picker primitive stores. Phase 5.8.AA.n: hoisted
+/// from TUI App; pure constant mapping.
+pub fn picker_source_for(source: &str) -> lattice_picker::PickerSource {
+    match source {
+        "buffers" => lattice_picker::PickerSource::Buffers,
+        _ => lattice_picker::PickerSource::Files,
+    }
+}
+
+/// Translate a first-party source id into the `PickerAction`
+/// tag. Phase 5.8.AA.n: hoisted from TUI App.
+pub fn picker_action_for(source: &str) -> lattice_picker::PickerAction {
+    match source {
+        "buffers" => lattice_picker::PickerAction::SwitchToBuffer,
+        _ => lattice_picker::PickerAction::OpenFile,
+    }
 }
 
 /// Flatten a `WorkspaceEdit` into a per-file `Vec<(Uri,

@@ -201,6 +201,13 @@ impl Focusable for EditorView {
 
 impl Render for EditorView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // 5.8.G: refresh the host-side highlight cache before
+        // reading spans. Cache-hit path is ~50ns; cache-miss path
+        // walks `highlight_lines` exactly once and stores into
+        // `editor.visible_highlights`. The per-frame
+        // `highlight_lines` call this replaces ran ~178µs at 80
+        // lines unconditionally.
+        self.app.refresh_highlights();
         let snapshot = self.app.editor.document.snapshot();
         let text = snapshot.text();
         let cursor = self.app.editor.cursor;
@@ -274,13 +281,12 @@ impl Render for EditorView {
         let raw_lines: Vec<&str> = text.split('\n').collect();
         let cursor_past_last_line = cursor_line >= raw_lines.len();
 
-        let highlights: Option<Vec<Vec<lattice_syntax::StyledSpan>>> =
-            self.app.editor.syntax.as_ref().and_then(|syntax| {
-                syntax
-                    .snapshot()
-                    .highlight_lines(0, raw_lines.len() as u32)
-                    .ok()
-            });
+        // 5.8.G: read the host-side cached visible-spans. Cache
+        // is built by `self.app.refresh_highlights()` above (at
+        // the top of render); the cell loop below indexes into
+        // `visible_highlights[line_idx]` for per-line spans.
+        let highlights: &[Vec<lattice_syntax::StyledSpan>] =
+            self.app.editor.visible_highlights.as_slice();
 
         let style_cursor_cell = |c: &str| -> gpui::Div {
             let cell = div().child(c.to_string());
@@ -311,11 +317,8 @@ impl Render for EditorView {
             .enumerate()
             .map(|(line_idx, line)| {
                 let is_cursor_line = line_idx == cursor_line;
-                let line_spans: &[lattice_syntax::StyledSpan] = highlights
-                    .as_ref()
-                    .and_then(|h| h.get(line_idx))
-                    .map(Vec::as_slice)
-                    .unwrap_or(&[]);
+                let line_spans: &[lattice_syntax::StyledSpan] =
+                    highlights.get(line_idx).map(Vec::as_slice).unwrap_or(&[]);
                 let mut cells: Vec<gpui::Div> = Vec::with_capacity(line.len() + 2);
                 cells.push(make_gutter(line_idx, is_cursor_line));
                 cells.extend(line.char_indices().map(|(byte_idx, c)| {

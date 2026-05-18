@@ -243,6 +243,29 @@ impl GpuiApp {
         self.popup_content = None;
     }
 
+    /// Refresh the active-document visible-spans cache. Phase
+    /// 5.8.G: routes through `Editor::refresh_highlights_window`
+    /// (host-side) so the GPUI peer shares the content-keyed
+    /// short-circuit + stale-snapshot HOLD with the TUI peer.
+    ///
+    /// The GPUI peer doesn't track folds yet (`fold_hash = 0`)
+    /// and doesn't have a per-frame viewport-height yet, so it
+    /// passes the document's full line count as the end. Once
+    /// pane splits + viewport tracking land (5.8.H+), this
+    /// updates to feed the active pane's viewport extent.
+    ///
+    /// Call this at the top of the renderer's per-frame paint
+    /// before reading `editor.visible_highlights`.
+    pub fn refresh_highlights(&mut self) {
+        let syntax = self.editor.syntax.clone();
+        // Whole-document range for now -- the per-frame paint
+        // walks every visible row anyway. When viewport tracking
+        // lands the range tightens to `[scroll, scroll + viewport]`.
+        let end_line = self.editor.document.snapshot().buffer.line_count() as u32;
+        self.editor
+            .refresh_highlights_window(syntax.as_ref(), end_line, 0);
+    }
+
     /// Run the renderer-side post-boot helpers the TUI peer
     /// runs at the tail of `App::new`. Phase 5.7.B.6 brings the
     /// GPUI peer to the same boot end-state as the TUI peer

@@ -115,61 +115,26 @@ impl App {
     /// per-frame cost from ~178µs to noise floor (key compare +
     /// fold hash, ~50ns).
     pub fn refresh_highlights(&mut self) {
+        // 5.8.G: cache-key + HOLD + recompute logic lives host-
+        // side on `Editor::refresh_highlights_window`. App
+        // resolves the App-specific pieces (per-buffer syntax
+        // handle via buffer-locals routing, fold-aware end line,
+        // fold hash) and hands them in. Both renderer peers share
+        // the host body; the TUI peer adds folds + locals.
+        //
         // M.3.2.c.4: route through the buffer-locals-backed
         // accessor. For the active buffer this still resolves to
-        // `self.editor.syntax` (App's hot-path slot); for any future
-        // multi-buffer reads it would route through `buffer_locals`.
-        let Some(syntax) = self.document_syntax_for(self.editor.document_buffer_id) else {
-            self.editor.visible_highlights = Vec::new();
-            self.editor.visible_highlights_key = None;
-            return;
-        };
-        let snap = syntax.snapshot();
-        let key = lattice_host::highlights::VisibleHighlightsKey {
-            snapshot_ptr: std::sync::Arc::as_ptr(&snap) as usize,
-            syntax_text_version: snap.text_version(),
-            scroll: self.editor.scroll,
-            viewport_height: self.editor.viewport_height,
-            fold_hash: folds::compute_fold_hash(&self.editor.folds),
-        };
-        if self.editor.visible_highlights_key == Some(key) {
-            // Cache hit -- existing visible_highlights is valid.
-            return;
-        }
-        // Cache miss. Decide between recompute and HOLD based on
-        // whether the snapshot is current enough to give correct
-        // spans.
-        //
-        // Slice C.3 stale-snapshot hold: if the document has
-        // advanced past the worker's published snapshot, any
-        // spans we compute would be against pre-edit data --
-        // possibly producing wrong colors or wrong line counts
-        // for the brief window before the worker publishes.
-        // Instead, hold the existing visible_highlights (kept
-        // line-aligned by `shift_highlights_for_edit` on edit)
-        // and just update the key. The renderer paints the held
-        // spans, which are byte-correct for unchanged content
-        // and line-aligned even after line-deletes / inserts.
-        //
-        // When the worker publishes (snapshot_ptr changes),
-        // we'll re-enter this path with a fresh snapshot and
-        // recompute correctly. The spans only ever transition
-        // from one CORRECT set to another -- never through an
-        // empty/wrong intermediate that would visibly flicker.
-        if snap.text_version() < self.editor.document.text_version() {
-            self.editor.visible_highlights_key = Some(key);
-            return;
-        }
-        // Snapshot is current with the document. Recompute.
-        // The window stretches via `visible_buffer_line_extent`
-        // to cover lines under closed folds (see method
-        // docstring).
-        let start = self.editor.scroll;
+        // `self.editor.syntax`; for future multi-buffer reads it
+        // routes through `buffer_locals`.
+        let syntax_handle = self
+            .document_syntax_for(self.editor.document_buffer_id)
+            .cloned();
         let end = self
-            .visible_buffer_line_extent(start, self.editor.viewport_height)
+            .visible_buffer_line_extent(self.editor.scroll, self.editor.viewport_height)
             .saturating_add(1);
-        self.editor.visible_highlights = snap.highlight_lines(start, end).unwrap_or_default();
-        self.editor.visible_highlights_key = Some(key);
+        let fold_hash = folds::compute_fold_hash(&self.editor.folds);
+        self.editor
+            .refresh_highlights_window(syntax_handle.as_ref(), end, fold_hash);
     }
 
     /// Last buffer-line index that ends up rendered when the

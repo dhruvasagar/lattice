@@ -323,6 +323,7 @@ impl Editor {
     pub fn build_render_state(&self) -> crate::render_state::RenderState {
         use crate::render_state::*;
         RenderState {
+            document: std::sync::Arc::new(ActiveDocumentRenderState::default()),
             buffers: std::sync::Arc::new(BuffersRenderState::default()),
             panes: std::sync::Arc::new(PanesRenderState::default()),
             lsp: std::sync::Arc::new(LspRenderState::default()),

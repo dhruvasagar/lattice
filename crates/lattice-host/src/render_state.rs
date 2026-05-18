@@ -34,7 +34,7 @@
 //!
 //! ## Per-subsystem sub-states
 //!
-//! `RenderState` is split into 10 sub-state structs, one per
+//! `RenderState` is split into 11 sub-state structs, one per
 //! UI-visible subsystem. Each is `Arc`-wrapped so a subsystem
 //! whose backing state didn't change between publications can
 //! share its sub-state `Arc` across frames (identity-preserved).
@@ -42,11 +42,14 @@
 //! sub-state directly without re-snapshotting unrelated
 //! domains.
 //!
-//! Per "everything is a buffer" (CLAUDE.md decision), the
-//! active document's hot-path state (snapshot pointer, cursor,
-//! scroll, modal, visual selection) lives inside
-//! [`BuffersRenderState`] alongside the buffer index — not in
-//! a separate document sub-state.
+//! The active-buffer hot-path state (cursor, scroll, viewport,
+//! modal, visual selection, snapshot pointer) lives in its own
+//! [`ActiveDocumentRenderState`] — separate from the buffer registry
+//! ([`BuffersRenderState`]) because the read frequencies differ
+//! by orders of magnitude: the active-buffer state churns on
+//! every motion/edit (per-frame critical), the registry churns
+//! only on `:b` / `:e` / `:bd`. Splitting lets Slice 3b
+//! republish them on independent cadences.
 //!
 //! For Slice 3a only `DiagnosticsRenderState` carries real
 //! data — that's the proof-of-life migration path. The other
@@ -63,6 +66,7 @@ use std::sync::Arc;
 /// `editor.render_state.load_full()` once per frame.
 #[derive(Debug, Clone)]
 pub struct RenderState {
+    pub document: Arc<ActiveDocumentRenderState>,
     pub buffers: Arc<BuffersRenderState>,
     pub panes: Arc<PanesRenderState>,
     pub lsp: Arc<LspRenderState>,
@@ -78,6 +82,7 @@ pub struct RenderState {
 impl Default for RenderState {
     fn default() -> Self {
         Self {
+            document: Arc::new(ActiveDocumentRenderState::default()),
             buffers: Arc::new(BuffersRenderState::default()),
             panes: Arc::new(PanesRenderState::default()),
             lsp: Arc::new(LspRenderState::default()),
@@ -92,22 +97,50 @@ impl Default for RenderState {
     }
 }
 
-/// Buffer registry's render-side projection — including the
-/// active document.
+/// Active buffer's hot-path render-side projection.
 ///
-/// Per the "everything is a buffer" decision (CLAUDE.md): files,
-/// help, oil, file-tree, `*messages*`, scratch — all are entries
-/// in one registry. Document hot-path state (snapshot pointer,
-/// cursor, scroll, viewport height, modal, visual selection)
-/// belongs alongside the buffer index rather than in its own
-/// sub-state.
+/// Carries everything the renderer needs to draw the currently-
+/// active buffer regardless of its kind (`Document` / `Help` /
+/// `Oil` / `FileTree`). Per "everything is a buffer" (CLAUDE.md):
+/// the same fields apply uniformly to every kind — the kind
+/// itself is one of the carried fields.
+///
+/// Split out of [`BuffersRenderState`] (which is the *registry*
+/// of all buffers) because read frequencies differ by orders of
+/// magnitude:
+///
+/// - The active-buffer state churns on every motion / edit /
+///   scroll — per-frame critical.
+/// - The registry churns only on `:b N` / `:e <path>` / `:bd`.
+///
+/// Splitting lets Slice 3b republish them independently — a
+/// motion republishes `ActiveDocumentRenderState` without forcing
+/// `BuffersRenderState` to allocate a new Arc.
+///
+/// Slice 3a: empty placeholder. Slice 3b populates with:
+/// - the active buffer's kind ([`lattice_core::BufferKind`]),
+/// - the snapshot pointer (cheap rope `Arc` clone),
+/// - cursor + scroll + viewport height,
+/// - modal state + visual anchor + selection range,
+/// - kind-specific overlays the renderer composites on top
+///   (help anchors, oil entries, etc.).
+#[derive(Debug, Default, Clone)]
+pub struct ActiveDocumentRenderState {}
+
+/// Buffer registry's render-side projection — the list of
+/// buffers the editor knows about, independent of which one is
+/// currently active.
+///
+/// Per "everything is a buffer" (CLAUDE.md): files, help, oil,
+/// file-tree, `*messages*`, scratch — all are entries in this
+/// one index. Active-buffer hot-path state lives in
+/// [`ActiveDocumentRenderState`]; this sub-state is touched on
+/// registry changes only.
 ///
 /// Slice 3a: empty placeholder. Slice 3b populates with:
 /// - the listed/unlisted buffer index (`:ls` + buffer picker),
 /// - `BufferFlags` per entry,
-/// - the active buffer id,
-/// - the active document's snapshot, cursor, scroll, viewport,
-///   modal state, and visual selection.
+/// - the active buffer id.
 #[derive(Debug, Default, Clone)]
 pub struct BuffersRenderState {}
 

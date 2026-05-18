@@ -3737,6 +3737,69 @@ impl Editor {
             .map_err(|e| format!("{e:?}"))
     }
 
+    /// Fire `workspace/executeCommand` for a code-action's command
+    /// payload. Server response is opaque; this is fire-and-
+    /// forget. Phase 5.8.AA.l.6: hoisted from TUI App.
+    pub fn execute_lsp_command(
+        &mut self,
+        handle: Option<lattice_lsp::ServerHandle>,
+        cmd: lattice_lsp::lsp_types::Command,
+    ) {
+        let Some(handle) = handle else {
+            self.set_message(
+                EchoLevel::Error,
+                format!("execute_command: no server handle for `{}`", cmd.command),
+            );
+            return;
+        };
+        if !handle.capabilities().supports_execute_command() {
+            self.set_message(
+                EchoLevel::Error,
+                format!(
+                    "execute_command: server doesn't advertise executeCommandProvider for `{}`",
+                    cmd.command
+                ),
+            );
+            return;
+        }
+        let params = lattice_lsp::lsp_types::ExecuteCommandParams {
+            command: cmd.command.clone(),
+            arguments: cmd.arguments.unwrap_or_default(),
+            work_done_progress_params: Default::default(),
+        };
+        let title = cmd.title.clone();
+        let token = lattice_protocol::CancellationToken::new();
+        lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
+            let _ = handle.execute_command(params, token).await;
+        });
+        self.set_message(EchoLevel::Info, format!("dispatched: {title}"));
+    }
+
+    /// Apply a fully-resolved code-action: WorkspaceEdit (when
+    /// present) lands as one undo unit per affected buffer;
+    /// `Command` (when present) routes through
+    /// `workspace/executeCommand`. Both can fire for the same
+    /// action — LSP spec allows it. Returns renderer signals from
+    /// the workspace-edit apply chain. Phase 5.8.AA.l.6: hoisted
+    /// from TUI App.
+    pub fn apply_resolved_code_action(
+        &mut self,
+        handle: Option<lattice_lsp::ServerHandle>,
+        action: lattice_lsp::lsp_types::CodeAction,
+    ) -> Vec<RendererSignal> {
+        let mut signals = Vec::new();
+        if let Some(edit) = action.edit {
+            let per_file = flatten_workspace_edit(edit);
+            if !per_file.is_empty() {
+                signals.extend(self.apply_rename_workspace_edit(per_file, action.title.clone()));
+            }
+        }
+        if let Some(cmd) = action.command {
+            self.execute_lsp_command(handle, cmd);
+        }
+        signals
+    }
+
     /// Drain server-initiated `workspace/applyEdit` requests.
     /// Each request's workspace edit is flattened to per-file
     /// entries, edits to the active buffer land via

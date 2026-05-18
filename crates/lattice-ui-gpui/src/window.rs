@@ -843,16 +843,15 @@ impl Render for EditorView {
         for signal in tick_signals {
             self.app.handle_renderer_signal(signal);
         }
-        // 5.8.Y: code-action drain returns Option<(handle, action)>
-        // for the App-side apply chain (which is still TUI-only).
-        // GPUI peer drops the Resolved arm with a warn until the
-        // apply chain hoists host-side.
-        if let Some((_handle, action)) = self.app.editor.drain_pending_code_actions() {
-            tracing::warn!(
-                title = %action.title,
-                "lattice-gpui: code-action apply chain not yet wired host-side; \
-                 selection dropped. Run via `lattice --tui` to apply this action."
-            );
+        // 5.8.Y / 5.8.AA.l.6: code-action drain returns Option<(
+        // handle, action)>. The Resolved arm now applies via the
+        // host's `apply_resolved_code_action` (workspace-edit +
+        // executeCommand chain hoisted in 5.8.AA.l series).
+        if let Some((handle, action)) = self.app.editor.drain_pending_code_actions() {
+            let signals = self.app.editor.apply_resolved_code_action(handle, action);
+            for s in signals {
+                self.app.handle_renderer_signal(s);
+            }
         }
         // 5.8.AA / 5.8.AA.k.2: definitions / declaration / type-
         // def / impl drain. Multi-result outcomes have already

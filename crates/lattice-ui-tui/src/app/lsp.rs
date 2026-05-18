@@ -1370,54 +1370,20 @@ impl App {
         handle: Option<lattice_lsp::ServerHandle>,
         action: lattice_lsp::lsp_types::CodeAction,
     ) {
-        if let Some(edit) = action.edit {
-            let per_file = flatten_workspace_edit(edit);
-            if !per_file.is_empty() {
-                self.apply_rename_workspace_edit(per_file, action.title.clone());
-            }
-        }
-        if let Some(cmd) = action.command {
-            self.execute_lsp_command(handle, cmd);
+        // 5.8.AA.l.6: migrated to host.
+        let signals = self.editor.apply_resolved_code_action(handle, action);
+        for s in signals {
+            self.handle_renderer_signal(s);
         }
     }
 
-    /// Fire `workspace/executeCommand` for a code-action's
-    /// command payload. Server response is opaque.
     pub(super) fn execute_lsp_command(
         &mut self,
         handle: Option<lattice_lsp::ServerHandle>,
         cmd: lattice_lsp::lsp_types::Command,
     ) {
-        let Some(handle) = handle else {
-            self.set_message(
-                EchoLevel::Error,
-                format!("execute_command: no server handle for `{}`", cmd.command),
-            );
-            return;
-        };
-        if !handle.capabilities().supports_execute_command() {
-            self.set_message(
-                EchoLevel::Error,
-                format!(
-                    "execute_command: server doesn't advertise executeCommandProvider for `{}`",
-                    cmd.command
-                ),
-            );
-            return;
-        }
-        let params = lattice_lsp::lsp_types::ExecuteCommandParams {
-            command: cmd.command.clone(),
-            arguments: cmd.arguments.unwrap_or_default(),
-            work_done_progress_params: Default::default(),
-        };
-        let title = cmd.title.clone();
-        let token = lattice_protocol::CancellationToken::new();
-        crate::runtime::spawn_on_lsp_runtime(async move {
-            // Fire-and-forget; the response is rarely useful
-            // beyond error logging.
-            let _ = handle.execute_command(params, token).await;
-        });
-        self.set_message(EchoLevel::Info, format!("dispatched: {title}"));
+        // 5.8.AA.l.6: migrated to host.
+        self.editor.execute_lsp_command(handle, cmd);
     }
 
     /// Splice a chosen completion item into the buffer at its

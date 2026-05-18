@@ -29,6 +29,7 @@
 //!   per-loop-iteration state hooks.
 
 use lattice_core::Document;
+#[cfg(test)]
 use lattice_protocol::position::Position;
 use lattice_runtime::RuntimeError;
 // 5.8.AA.k: `do_edit` body moved host-side; the `Lang` / `Syntax`
@@ -38,7 +39,7 @@ use lattice_runtime::RuntimeError;
 #[allow(unused_imports)]
 use lattice_syntax::{Lang, Syntax};
 
-use super::{App, BufferId, PositionSource};
+use super::{App, BufferId};
 // 5.8.AA.k: BufferEntry / BufferData / DocumentEntry consumed by
 // `do_edit` (now host); BufferFlags ditto. Kept here under
 // `#[allow]` for `#[cfg(test)]` fixtures further down the file.
@@ -407,28 +408,11 @@ impl App {
     /// Source-link dispatch. Pushes the pre-jump cursor onto
     /// position history with `PluginPush` so `<C-o>` walks back.
     pub(super) fn jump_to_file_line_col(&mut self, path: &std::path::Path, line: u32, col: u32) {
-        // Push pre-jump cursor before any state mutates.
-        self.push_position_history(self.editor.cursor, PositionSource::PluginPush);
-
-        let same_buffer = self
-            .editor
-            .document
-            .path()
-            .map(|p| p == path)
-            .unwrap_or(false);
-        if !same_buffer {
-            self.do_edit(Some(path.to_path_buf()), false);
+        // Phase 5.8.AD.6: body migrated.
+        let signals = self.editor.jump_to_file_line_col(path, line, col);
+        for s in signals {
+            self.handle_renderer_signal(s);
         }
-        // Clamp the target line to the buffer's line count so a
-        // stale picker entry doesn't crash with an out-of-range
-        // cursor (e.g. user edited the file after the picker
-        // populated). `last_addressable_line` accounts for
-        // ropey's trailing-newline pseudo-line.
-        let snap = self.editor.document.snapshot();
-        let line = line.min(super::last_addressable_line(&snap.buffer));
-        let line_len = super::line_byte_len(&snap.buffer, line);
-        let col = col.min(line_len);
-        self.editor.cursor = Position::new(line, col);
     }
 
     /// Adopt a freshly-built help buffer as the active view. Records

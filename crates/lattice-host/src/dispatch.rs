@@ -11720,6 +11720,228 @@ impl Editor {
         });
     }
 
+    /// Resolve a `BufferDisplayCategory` to a concrete
+    /// `BufferDisplay`. Reads the per-category typed option;
+    /// falls back to the category's default. Phase 5.8.AD.6:
+    /// hoisted from TUI App.
+    pub fn resolve_display(
+        &self,
+        category: lattice_core::ui::display::BufferDisplayCategory,
+    ) -> lattice_core::ui::display::BufferDisplay {
+        use lattice_core::ui::display::{BufferDisplayCategory, BufferDisplayPreference};
+        let pref: BufferDisplayPreference = match category {
+            BufferDisplayCategory::LspStatus => self
+                .config
+                .get_typed::<lattice_config::LspStatusDisplay>()
+                .map(|v| *v)
+                .unwrap_or_default(),
+            BufferDisplayCategory::LspLog => self
+                .config
+                .get_typed::<lattice_config::LspLogDisplay>()
+                .map(|v| *v)
+                .unwrap_or_default(),
+            BufferDisplayCategory::Messages => self
+                .config
+                .get_typed::<lattice_config::MessagesDisplay>()
+                .map(|v| *v)
+                .unwrap_or_default(),
+            BufferDisplayCategory::HelpTopic => self
+                .config
+                .get_typed::<lattice_config::HelpTopicDisplay>()
+                .map(|v| *v)
+                .unwrap_or_default(),
+            BufferDisplayCategory::HelpDescribe => self
+                .config
+                .get_typed::<lattice_config::HelpDescribeDisplay>()
+                .map(|v| *v)
+                .unwrap_or_default(),
+            BufferDisplayCategory::HelpApropos => self
+                .config
+                .get_typed::<lattice_config::HelpAproposDisplay>()
+                .map(|v| *v)
+                .unwrap_or_default(),
+            BufferDisplayCategory::HelpList => self
+                .config
+                .get_typed::<lattice_config::HelpListDisplay>()
+                .map(|v| *v)
+                .unwrap_or_default(),
+            BufferDisplayCategory::Hover => self
+                .config
+                .get_typed::<lattice_config::HoverDisplay>()
+                .map(|v| *v)
+                .unwrap_or_default(),
+            BufferDisplayCategory::Signature => self
+                .config
+                .get_typed::<lattice_config::SignatureDisplay>()
+                .map(|v| *v)
+                .unwrap_or_default(),
+            BufferDisplayCategory::PickerResult => self
+                .config
+                .get_typed::<lattice_config::PickerResultDisplay>()
+                .map(|v| *v)
+                .unwrap_or_default(),
+        };
+        pref.resolve(category)
+    }
+
+    /// Apply the `PickerResult` display preference to the active
+    /// pane *before* a picker jump / buffer-switch runs. Phase 5.8.AD.6.
+    pub fn prepare_pane_for_picker_result(&mut self) {
+        use lattice_core::ui::display::{BufferDisplay, BufferDisplayCategory};
+        let display = self.resolve_display(BufferDisplayCategory::PickerResult);
+        match display {
+            BufferDisplay::Split(orientation) => {
+                self.snapshot_active_pane();
+                let new_idx = self.pane_tree.split_active(orientation);
+                self.pane_tree.set_active(new_idx);
+                self.load_active_pane();
+            }
+            BufferDisplay::ActivePane
+            | BufferDisplay::Popup(_)
+            | BufferDisplay::FloatingPopup(_) => {}
+        }
+    }
+
+    /// Jump to `(path, line, col)` opening the file if needed.
+    /// Pushes the pre-jump cursor onto position history.
+    /// Phase 5.8.AD.6: hoisted from TUI App.
+    pub fn jump_to_file_line_col(
+        &mut self,
+        path: &std::path::Path,
+        line: u32,
+        col: u32,
+    ) -> Vec<RendererSignal> {
+        self.push_position_history(self.cursor, crate::state::PositionSource::PluginPush);
+        let same_buffer = self
+            .document
+            .path()
+            .map(|p| p == path)
+            .unwrap_or(false);
+        let mut signals = Vec::new();
+        if !same_buffer {
+            let outcome = self.do_edit(Some(path.to_path_buf()), false);
+            match outcome {
+                DoEditOutcome::Opened(s)
+                | DoEditOutcome::Activated(s)
+                | DoEditOutcome::Reloaded(s) => signals.extend(s),
+                DoEditOutcome::Directory(d) => signals.extend(self.do_open_oil(Some(d))),
+                DoEditOutcome::NoFileName | DoEditOutcome::Failed => {}
+            }
+        }
+        let snap = self.document.snapshot();
+        let line = line.min(last_addressable_line(&snap.buffer));
+        let line_len = snap.buffer.line_byte_len(line);
+        let col = col.min(line_len);
+        self.cursor = lattice_protocol::Position::new(line, col);
+        signals
+    }
+
+    /// Translate a picker source's typed outcome into editor
+    /// state mutation. Phase 5.8.AD.6: hoisted from TUI App.
+    pub fn apply_picker_outcome(
+        &mut self,
+        outcome: lattice_picker::PickerAcceptOutcome,
+    ) -> Vec<RendererSignal> {
+        use lattice_picker::PickerAcceptOutcome::*;
+        let mut signals = Vec::new();
+        match outcome {
+            OpenFile { path } => {
+                self.prepare_pane_for_picker_result();
+                let outcome = self.do_edit(Some(path), false);
+                match outcome {
+                    DoEditOutcome::Opened(s)
+                    | DoEditOutcome::Activated(s)
+                    | DoEditOutcome::Reloaded(s) => signals.extend(s),
+                    DoEditOutcome::Directory(d) => signals.extend(self.do_open_oil(Some(d))),
+                    DoEditOutcome::NoFileName | DoEditOutcome::Failed => {}
+                }
+            }
+            SwitchBuffer { buffer_id } => {
+                let id = BufferId(buffer_id);
+                if id != self.active_pane_buffer_id() {
+                    self.prepare_pane_for_picker_result();
+                    let needs_state = self.activate_buffer(id);
+                    if needs_state {
+                        signals.extend(self.activate_buffer_state());
+                    }
+                }
+            }
+            JumpInBuffer {
+                buffer_id,
+                line,
+                col,
+            } => {
+                self.push_position_history(self.cursor, crate::state::PositionSource::PluginPush);
+                let id = BufferId(buffer_id);
+                if id != self.active_pane_buffer_id() {
+                    self.prepare_pane_for_picker_result();
+                    let needs_state = self.activate_buffer(id);
+                    if needs_state {
+                        signals.extend(self.activate_buffer_state());
+                    }
+                }
+                let snap = self.document.snapshot();
+                let line = line.min(last_addressable_line(&snap.buffer));
+                let len = snap.buffer.line_byte_len(line);
+                let col = col.min(len);
+                self.cursor = lattice_protocol::Position::new(line, col);
+            }
+            JumpToLocation { path, line, col } => {
+                self.prepare_pane_for_picker_result();
+                signals.extend(self.jump_to_file_line_col(&path, line, col));
+            }
+            OpenLspLog { server_id } => self.open_lsp_log_in_pane(&server_id),
+            OpenLspTraceLog { server_id } => self.open_lsp_trace_log_in_pane(&server_id),
+            NoOp => {}
+            JumpToMark { name } => {
+                self.do_jump_mark(name, true);
+            }
+            InvokeCommand { id, .. } => {
+                let user_facing = id.strip_prefix("ex:").unwrap_or(&id).to_string();
+                let mut out = DispatchOutcome::default();
+                self.execute_ex_line(&user_facing, &mut out);
+                signals.extend(std::mem::take(&mut out.renderer_signals));
+            }
+            PasteRegister { name } => {
+                if let Some(reg) = lattice_grammar::register::Register::from_input_char(name) {
+                    self.pending_register = Some(reg);
+                    self.do_paste(false);
+                } else {
+                    self.set_message(
+                        EchoLevel::Error,
+                        format!("picker: register `{name}` is not pasteable"),
+                    );
+                }
+            }
+            ExpandSnippet { id } => {
+                let snippet = self.snippet_registry.load().by_name(&id).cloned();
+                let Some(snippet) = snippet else {
+                    self.set_message(
+                        EchoLevel::Error,
+                        format!("picker: no snippet named `{id}`"),
+                    );
+                    return signals;
+                };
+                self.expand_snippet(&snippet.body, self.cursor);
+            }
+            ApplyLspCodeAction { handle, index } => self.set_message(
+                EchoLevel::Error,
+                format!(
+                    "picker: ApplyLspCodeAction handle={handle} idx={index} \
+                     not yet wired (lands with LSP picker migration)"
+                ),
+            ),
+            ApplyLspCompletion { index } => self.set_message(
+                EchoLevel::Error,
+                format!(
+                    "picker: ApplyLspCompletion idx={index} \
+                     not yet wired (lands with LSP picker migration)"
+                ),
+            ),
+        }
+        signals
+    }
+
     /// `:help [topic]` direct-call entry. Phase 5.8.AD.5.
     pub fn do_open_help_topic(&mut self, topic: Option<&str>) -> Vec<RendererSignal> {
         let name = topic.unwrap_or("index").to_string();

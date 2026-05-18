@@ -73,70 +73,8 @@ impl App {
     /// Reads route through the config registry's typed-keyed
     /// `get_typed::<D>()` -- O(1) hash lookup + an `Arc::clone`.
     pub fn resolve_display(&self, category: BufferDisplayCategory) -> BufferDisplay {
-        use lattice_core::ui::display::BufferDisplayPreference;
-        let pref: BufferDisplayPreference = match category {
-            BufferDisplayCategory::LspStatus => self
-                .editor
-                .config
-                .get_typed::<lattice_config::LspStatusDisplay>()
-                .map(|v| *v)
-                .unwrap_or_default(),
-            BufferDisplayCategory::LspLog => self
-                .editor
-                .config
-                .get_typed::<lattice_config::LspLogDisplay>()
-                .map(|v| *v)
-                .unwrap_or_default(),
-            BufferDisplayCategory::Messages => self
-                .editor
-                .config
-                .get_typed::<lattice_config::MessagesDisplay>()
-                .map(|v| *v)
-                .unwrap_or_default(),
-            BufferDisplayCategory::HelpTopic => self
-                .editor
-                .config
-                .get_typed::<lattice_config::HelpTopicDisplay>()
-                .map(|v| *v)
-                .unwrap_or_default(),
-            BufferDisplayCategory::HelpDescribe => self
-                .editor
-                .config
-                .get_typed::<lattice_config::HelpDescribeDisplay>()
-                .map(|v| *v)
-                .unwrap_or_default(),
-            BufferDisplayCategory::HelpApropos => self
-                .editor
-                .config
-                .get_typed::<lattice_config::HelpAproposDisplay>()
-                .map(|v| *v)
-                .unwrap_or_default(),
-            BufferDisplayCategory::HelpList => self
-                .editor
-                .config
-                .get_typed::<lattice_config::HelpListDisplay>()
-                .map(|v| *v)
-                .unwrap_or_default(),
-            BufferDisplayCategory::Hover => self
-                .editor
-                .config
-                .get_typed::<lattice_config::HoverDisplay>()
-                .map(|v| *v)
-                .unwrap_or_default(),
-            BufferDisplayCategory::Signature => self
-                .editor
-                .config
-                .get_typed::<lattice_config::SignatureDisplay>()
-                .map(|v| *v)
-                .unwrap_or_default(),
-            BufferDisplayCategory::PickerResult => self
-                .editor
-                .config
-                .get_typed::<lattice_config::PickerResultDisplay>()
-                .map(|v| *v)
-                .unwrap_or_default(),
-        };
-        pref.resolve(category)
+        // Phase 5.8.AD.6: body migrated.
+        self.editor.resolve_display(category)
     }
 
     /// Apply the [`BufferDisplayCategory::PickerResult`] preference
@@ -149,18 +87,8 @@ impl App {
     /// error -- the user-set override applies to *normal* buffer
     /// outputs only.
     pub(crate) fn prepare_pane_for_picker_result(&mut self) {
-        let display = self.resolve_display(BufferDisplayCategory::PickerResult);
-        match display {
-            BufferDisplay::Split(orientation) => {
-                self.snapshot_active_pane();
-                let new_idx = self.editor.pane_tree.split_active(orientation);
-                self.editor.pane_tree.set_active(new_idx);
-                self.load_active_pane();
-            }
-            BufferDisplay::ActivePane
-            | BufferDisplay::Popup(_)
-            | BufferDisplay::FloatingPopup(_) => {}
-        }
+        // Phase 5.8.AD.6: body migrated.
+        self.editor.prepare_pane_for_picker_result();
     }
 
     /// Open `content` in a fresh split alongside the active pane.

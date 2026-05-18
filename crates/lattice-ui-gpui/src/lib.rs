@@ -751,6 +751,11 @@ impl GpuiApp {
             Effect::LspFormat => self.editor.do_lsp_format_request(false),
             Effect::LspFormatRange => self.editor.do_lsp_format_request(true),
             Effect::LspRename { new_name } => self.editor.do_lsp_rename_request(&new_name),
+            Effect::LspIncomingCalls => self.editor.do_lsp_call_hierarchy_request(false),
+            Effect::LspOutgoingCalls => self.editor.do_lsp_call_hierarchy_request(true),
+            Effect::LspSupertypes => self.editor.do_lsp_type_hierarchy_request(false),
+            Effect::LspSubtypes => self.editor.do_lsp_type_hierarchy_request(true),
+            Effect::LspMoniker => self.editor.do_lsp_moniker_request(),
             Effect::OpenBufferPicker => {
                 let signals = self.editor.do_open_buffer_picker();
                 for s in signals {

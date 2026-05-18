@@ -336,6 +336,46 @@ pub fn app_to_lsp_position(
 /// rendered as either markdown or plaintext (we treat plaintext
 /// as already-good markdown). `Array` joins each element with two
 /// newlines so blocks separate cleanly.
+/// Render one `CallHierarchyItem` (the caller / callee) as a
+/// `SymbolRow` for the picker. The item's `detail` (if any)
+/// plus the originating callable's name ride in `container`.
+/// Phase 5.8.AD.2: hoisted from TUI App.
+pub fn call_hierarchy_to_row(
+    item: &lattice_lsp::lsp_types::CallHierarchyItem,
+    related_to: &str,
+) -> lattice_lsp::cache::SymbolRow {
+    let path = lattice_lsp::actor::uri_to_path(&item.uri).unwrap_or_default();
+    lattice_lsp::cache::SymbolRow {
+        name: item.name.clone(),
+        kind_glyph: symbol_kind_glyph(item.kind),
+        container: Some(format!("in {related_to}")),
+        depth: 0,
+        path,
+        line: item.selection_range.start.line,
+        col: item.selection_range.start.character,
+    }
+}
+
+/// 4.5.b: render one `TypeHierarchyItem` (a supertype or
+/// subtype of the cursor's type) as a [`SymbolRow`] for the
+/// picker. Same projection as `call_hierarchy_to_row` because
+/// the item shape is identical. Phase 5.8.AD.2.
+pub fn type_hierarchy_to_row(
+    item: &lattice_lsp::lsp_types::TypeHierarchyItem,
+    related_to: &str,
+) -> lattice_lsp::cache::SymbolRow {
+    let path = lattice_lsp::actor::uri_to_path(&item.uri).unwrap_or_default();
+    lattice_lsp::cache::SymbolRow {
+        name: item.name.clone(),
+        kind_glyph: symbol_kind_glyph(item.kind),
+        container: Some(format!("of {related_to}")),
+        depth: 0,
+        path,
+        line: item.selection_range.start.line,
+        col: item.selection_range.start.character,
+    }
+}
+
 /// Map an LSP `CodeActionKind` to a one-char glyph used in the
 /// picker margin (`🛠`, `♻`, `↗`, etc.). Unknown / custom kinds
 /// and bare `Command` payloads land on `?`. Phase 5.8.AD.2.

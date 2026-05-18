@@ -3674,6 +3674,187 @@ impl Editor {
         self.buffers.document_with_path(path)
     }
 
+    /// MRU push for `editor.recent_files`. Canonicalises when
+    /// possible so a path opened twice with different casing /
+    /// symlink routings still collapses to one entry. Capped at 50
+    /// entries (newest first). Phase 5.8.AA.k: hoisted from TUI App.
+    pub fn push_recent_file(&mut self, path: &std::path::Path) {
+        const MAX_RECENT_FILES: usize = 50;
+        let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        self.recent_files.retain(|p| p != &canonical);
+        self.recent_files.insert(0, canonical);
+        if self.recent_files.len() > MAX_RECENT_FILES {
+            self.recent_files.truncate(MAX_RECENT_FILES);
+        }
+    }
+
+    /// Outcome of [`Editor::do_edit`]. Renderer peers act on:
+    ///   - `Directory(path)` → open the file-tree (oil) view —
+    ///     caller-side because the oil-view machinery is still
+    ///     App-resident.
+    ///   - `Activated(signals)` / `Reloaded(signals)` /
+    ///     `Opened(signals)` → fan signals through the peer's
+    ///     `handle_renderer_signal`.
+    ///   - `Failed` / `NoFileName` → host already echoed via
+    ///     `set_message`; nothing else to do.
+    pub fn do_edit(&mut self, path: Option<std::path::PathBuf>, force: bool) -> DoEditOutcome {
+        let target = match path {
+            Some(p) => p,
+            None => match self.document.path() {
+                Some(p) => p,
+                None => {
+                    self.set_message(EchoLevel::Error, "no file name".to_string());
+                    return DoEditOutcome::NoFileName;
+                }
+            },
+        };
+        let target = normalize_user_path(&target);
+        if let Ok(meta) = std::fs::metadata(&target)
+            && meta.is_dir()
+        {
+            return DoEditOutcome::Directory(target);
+        }
+        if let Some(existing_id) = self.find_document_by_path(&target) {
+            if existing_id == self.document_buffer_id {
+                if !force && self.document.dirty() {
+                    self.set_message(
+                        EchoLevel::Error,
+                        "no write since last change (add ! to override)".to_string(),
+                    );
+                    return DoEditOutcome::Failed;
+                }
+                let new_doc = match lattice_core::Document::open(&target) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        self.set_message(EchoLevel::Error, format!("open error: {e}"));
+                        return DoEditOutcome::Failed;
+                    }
+                };
+                let lang = lattice_syntax::Lang::detect_from_path(new_doc.path());
+                let initial_text = new_doc.text();
+                let initial_text_version = new_doc.text_version();
+                let syntax: Option<lattice_syntax::SyntaxHandle> =
+                    match lattice_syntax::Syntax::for_language_with_registry(
+                        lang,
+                        self.lang_registry.clone(),
+                    ) {
+                        Ok(Some(mut s)) => {
+                            s.parse_at(&initial_text, initial_text_version);
+                            Some(lattice_syntax::SyntaxHandle::seeded_with_runtime(
+                                s,
+                                lattice_runtime::runtime::lsp_runtime().handle(),
+                            ))
+                        }
+                        _ => None,
+                    };
+                self.last_parsed_text_version = initial_text_version;
+                self.syntax = syntax;
+                self.replace_document_blocking(new_doc);
+                self.cursor = lattice_protocol::position::Position::ZERO;
+                self.scroll = 0;
+                self.current_match = None;
+                self.all_matches.clear();
+                self.search_line = None;
+                self.last_search = None;
+                self.last_find = None;
+                self.last_change = None;
+                self.last_visual = None;
+                self.visual_anchor = None;
+                self.replace_history.clear();
+                self.position_history.clear();
+                self.position_history_cursor = 0;
+                self.folds.clear();
+                self.set_message(
+                    EchoLevel::Info,
+                    format!("\"{}\" reloaded", target.display()),
+                );
+                self.push_recent_file(&target);
+                return DoEditOutcome::Reloaded(Vec::new());
+            }
+            // Already-open different buffer: switch to it.
+            let activated_full = self.activate_document(existing_id);
+            let signals = if activated_full {
+                self.activate_buffer_state()
+            } else {
+                Vec::new()
+            };
+            self.set_message(
+                EchoLevel::Info,
+                format!("\"{}\" (already open)", target.display()),
+            );
+            self.push_recent_file(&target);
+            return DoEditOutcome::Activated(signals);
+        }
+        // Brand-new file: open a fresh actor and register it.
+        let new_doc = match lattice_core::Document::open(&target) {
+            Ok(d) => d,
+            Err(e) => {
+                self.set_message(EchoLevel::Error, format!("open error: {e}"));
+                return DoEditOutcome::Failed;
+            }
+        };
+        let lang = lattice_syntax::Lang::detect_from_path(new_doc.path());
+        let initial_text = new_doc.text();
+        let initial_text_version = new_doc.text_version();
+        let syntax: Option<lattice_syntax::SyntaxHandle> =
+            match lattice_syntax::Syntax::for_language_with_registry(
+                lang,
+                self.lang_registry.clone(),
+            ) {
+                Ok(Some(mut s)) => {
+                    s.parse_at(&initial_text, initial_text_version);
+                    Some(lattice_syntax::SyntaxHandle::seeded_with_runtime(
+                        s,
+                        lattice_runtime::runtime::lsp_runtime().handle(),
+                    ))
+                }
+                _ => None,
+            };
+        let new_handle = lattice_runtime::spawn_document(new_doc, self.registry.clone());
+        let new_id = lattice_core::BufferId::next();
+        self.buffers.insert(crate::buffer_registry::BufferEntry {
+            id: new_id,
+            flags: lattice_core::BufferFlags::default(),
+            data: crate::buffer_registry::BufferData::Document(
+                crate::buffer_registry::DocumentEntry {
+                    id: new_id,
+                    handle: new_handle.clone(),
+                },
+            ),
+            name: None,
+        });
+        self.seed_empty_document_locals(new_id);
+        self.snapshot_active_pane();
+        self.snapshot_active_document();
+        self.active_buffer = lattice_core::BufferKind::Document;
+        self.document_buffer_id = new_id;
+        self.document = new_handle;
+        self.snapshot_cache = self.document.snapshot_cache();
+        self.syntax = syntax;
+        self.last_parsed_text_version = self.document.text_version();
+        self.cursor = lattice_protocol::position::Position::ZERO;
+        self.scroll = 0;
+        self.current_match = None;
+        self.all_matches.clear();
+        self.search_line = None;
+        self.last_search = None;
+        self.last_find = None;
+        self.last_change = None;
+        self.last_visual = None;
+        self.visual_anchor = None;
+        self.replace_history.clear();
+        self.folds.clear();
+        self.position_history.clear();
+        self.position_history_cursor = 0;
+        self.pane_tree.active_mut().buffer = lattice_core::BufferKind::Document;
+        self.pane_tree.active_mut().buffer_id = new_id;
+        let signals = self.activate_buffer_state();
+        self.publish_document_opened_for_active();
+        self.set_message(EchoLevel::Info, format!("\"{}\" opened", target.display()));
+        self.push_recent_file(&target);
+        DoEditOutcome::Opened(signals)
+    }
+
     /// Replace the actor's document outright. Used by `:edit
     /// path`. The actor swaps state in place and republishes the
     /// snapshot. Phase 5.8.AA.j: hoisted from TUI App.
@@ -11459,6 +11640,26 @@ pub fn prefer_aliases_for_command_candidates(
 pub fn dedup_rendered_by_text(rendered: &mut Vec<lattice_completion::RenderedCandidate>) {
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     rendered.retain(|cand| seen.insert(cand.raw.text.clone()));
+}
+
+/// Outcome of [`Editor::do_edit`]. Renderer peers translate
+/// each variant into the appropriate side-effect:
+/// - `Directory(path)`: open the file-tree (oil) view. The
+///   oil-view path is still App-resident, so the caller routes.
+/// - `Activated`/`Reloaded`/`Opened(signals)`: fan signals
+///   through the peer's `handle_renderer_signal`.
+/// - `Failed`/`NoFileName`: host already echoed via
+///   `set_message`; nothing else to do.
+///
+/// Phase 5.8.AA.k.
+#[derive(Debug)]
+pub enum DoEditOutcome {
+    NoFileName,
+    Failed,
+    Directory(std::path::PathBuf),
+    Reloaded(Vec<RendererSignal>),
+    Activated(Vec<RendererSignal>),
+    Opened(Vec<RendererSignal>),
 }
 
 /// Tilde-expand + absolutise a user-typed path. `~/rest` →

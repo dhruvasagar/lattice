@@ -31,12 +31,22 @@
 use lattice_core::{CoreError, Document};
 use lattice_protocol::Event;
 use lattice_protocol::position::Position;
-use lattice_runtime::{RuntimeError, block_on, spawn_document};
+use lattice_runtime::{RuntimeError, block_on};
+// 5.8.AA.k: `do_edit` body moved host-side; the `Lang` / `Syntax`
+// imports here are referenced only by `#[cfg(test)]` fixtures
+// below. `spawn_document` follows do_edit and isn't needed
+// elsewhere in this module.
+#[allow(unused_imports)]
 use lattice_syntax::{Lang, Syntax};
 use std::time::Duration;
 
 use super::{App, BufferId, EchoLevel, PositionSource};
+// 5.8.AA.k: BufferEntry / BufferData / DocumentEntry consumed by
+// `do_edit` (now host); BufferFlags ditto. Kept here under
+// `#[allow]` for `#[cfg(test)]` fixtures further down the file.
+#[allow(unused_imports)]
 use crate::buffer_registry::{BufferData, BufferEntry, DocumentEntry};
+#[allow(unused_imports)]
 use crate::buffers::{BufferFlags, BufferKind};
 use crate::help::HelpContent;
 // 5.5.H: PaneDirection / SplitOrientation imports retired
@@ -129,167 +139,28 @@ impl App {
     /// buffer's path (force-reload from disk; `!` required when
     /// dirty).
     pub(super) fn do_edit(&mut self, path: Option<std::path::PathBuf>, force: bool) {
-        let target = match path {
-            Some(p) => p,
-            None => match self.editor.document.path() {
-                Some(p) => p,
-                None => {
-                    self.set_message(EchoLevel::Error, "no file name".to_string());
-                    return;
+        // 5.8.AA.k: body migrated to
+        // `lattice_host::dispatch::Editor::do_edit`. This wrapper
+        // routes the host's `DoEditOutcome` through App-side
+        // helpers that aren't host-resident yet:
+        //   - `Directory(path)` → `do_open_oil(Some(path))` (oil
+        //     view is App-only)
+        //   - `Activated`/`Reloaded`/`Opened(signals)` → fan
+        //     signals through `handle_renderer_signal`
+        //   - `Failed`/`NoFileName` → host already echoed
+        use lattice_host::dispatch::DoEditOutcome;
+        let outcome = self.editor.do_edit(path, force);
+        match outcome {
+            DoEditOutcome::NoFileName | DoEditOutcome::Failed => {}
+            DoEditOutcome::Directory(dir) => self.do_open_oil(Some(dir)),
+            DoEditOutcome::Reloaded(signals)
+            | DoEditOutcome::Activated(signals)
+            | DoEditOutcome::Opened(signals) => {
+                for s in signals {
+                    self.handle_renderer_signal(s);
                 }
-            },
-        };
-        // Tilde-expand + absolutise so `Document::open` doesn't
-        // see literal `~` (`read_to_string` would ENOENT) and so
-        // `find_document_by_path` matches against a stable form
-        // (otherwise `:e foo.rs` and `:e ./foo.rs` would create
-        // two separate buffers for the same file).
-        let target = crate::app::normalize_user_path(&target);
-        // Directories defer to `:Tree path` so `:e folder` opens
-        // the file-tree buffer.
-        if let Ok(meta) = std::fs::metadata(&target)
-            && meta.is_dir()
-        {
-            self.do_open_oil(Some(target));
-            return;
-        }
-        // If `target` is already open, switch to it. The dirty
-        // check only applies when we'd discard the current buffer.
-        if let Some(existing_id) = self.find_document_by_path(&target) {
-            if existing_id == self.editor.document_buffer_id {
-                // Re-edit current: reload from disk (vim's `:e`).
-                if !force && self.editor.document.dirty() {
-                    self.set_message(
-                        EchoLevel::Error,
-                        "no write since last change (add ! to override)".to_string(),
-                    );
-                    return;
-                }
-                let new_doc = match Document::open(&target) {
-                    Ok(d) => d,
-                    Err(e) => {
-                        self.set_message(EchoLevel::Error, format!("open error: {e}"));
-                        return;
-                    }
-                };
-                let lang = Lang::detect_from_path(new_doc.path());
-                let initial_text = new_doc.text();
-                let initial_text_version = new_doc.text_version();
-                let syntax: Option<lattice_syntax::SyntaxHandle> =
-                    match Syntax::for_language_with_registry(
-                        lang,
-                        self.editor.lang_registry.clone(),
-                    ) {
-                        Ok(Some(mut s)) => {
-                            s.parse_at(&initial_text, initial_text_version);
-                            Some(lattice_syntax::SyntaxHandle::seeded_with_runtime(
-                                s,
-                                crate::runtime::lsp_runtime().handle(),
-                            ))
-                        }
-                        _ => None,
-                    };
-                self.editor.last_parsed_text_version = initial_text_version;
-                self.editor.syntax = syntax;
-                self.replace_document_blocking(new_doc);
-                self.editor.cursor = Position::ZERO;
-                self.editor.scroll = 0;
-                self.editor.current_match = None;
-                self.editor.all_matches.clear();
-                self.editor.search_line = None;
-                self.editor.last_search = None;
-                self.editor.last_find = None;
-                self.editor.last_change = None;
-                self.editor.last_visual = None;
-                self.editor.visual_anchor = None;
-                self.editor.replace_history.clear();
-                self.editor.position_history.clear();
-                self.editor.position_history_cursor = 0;
-                self.editor.folds.clear();
-                self.set_message(
-                    EchoLevel::Info,
-                    format!("\"{}\" reloaded", target.display()),
-                );
-            } else {
-                // Different already-open buffer: switch to it.
-                self.activate_document(existing_id);
-                self.set_message(
-                    EchoLevel::Info,
-                    format!("\"{}\" (already open)", target.display()),
-                );
             }
-            self.push_recent_file(&target);
-            return;
         }
-        // Brand-new file: open a fresh actor and register it.
-        let new_doc = match Document::open(&target) {
-            Ok(d) => d,
-            Err(e) => {
-                self.set_message(EchoLevel::Error, format!("open error: {e}"));
-                return;
-            }
-        };
-        let lang = Lang::detect_from_path(new_doc.path());
-        let initial_text = new_doc.text();
-        let initial_text_version = new_doc.text_version();
-        let syntax: Option<lattice_syntax::SyntaxHandle> =
-            match Syntax::for_language_with_registry(lang, self.editor.lang_registry.clone()) {
-                Ok(Some(mut s)) => {
-                    s.parse_at(&initial_text, initial_text_version);
-                    Some(lattice_syntax::SyntaxHandle::seeded_with_runtime(
-                        s,
-                        crate::runtime::lsp_runtime().handle(),
-                    ))
-                }
-                _ => None,
-            };
-        let new_handle = spawn_document(new_doc, self.editor.registry.clone());
-        let new_id = BufferId::next();
-        self.editor.buffers.insert(BufferEntry {
-            id: new_id,
-            flags: BufferFlags::default(),
-            data: BufferData::Document(DocumentEntry {
-                id: new_id,
-                handle: new_handle.clone(),
-            }),
-            name: None,
-        });
-        // M.3.2.c.5: seed empty mode-state into the new buffer's
-        // locals so reader accessors resolve uniformly.
-        self.seed_empty_document_locals(new_id);
-        // Save the currently-active buffer's hot-path state into
-        // its registry entry, then load the new buffer's into the
-        // hot path.
-        self.snapshot_active_pane();
-        self.snapshot_active_document();
-        self.editor.active_buffer = BufferKind::Document;
-        self.editor.document_buffer_id = new_id;
-        self.editor.document = new_handle;
-        self.editor.snapshot_cache = self.editor.document.snapshot_cache();
-        self.editor.syntax = syntax;
-        self.editor.last_parsed_text_version = self.editor.document.text_version();
-        self.editor.cursor = Position::ZERO;
-        self.editor.scroll = 0;
-        self.editor.current_match = None;
-        self.editor.all_matches.clear();
-        self.editor.search_line = None;
-        self.editor.last_search = None;
-        self.editor.last_find = None;
-        self.editor.last_change = None;
-        self.editor.last_visual = None;
-        self.editor.visual_anchor = None;
-        self.editor.replace_history.clear();
-        self.editor.folds.clear();
-        // Position history follows the active buffer.
-        self.editor.position_history.clear();
-        self.editor.position_history_cursor = 0;
-        self.editor.pane_tree.active_mut().buffer = BufferKind::Document;
-        self.editor.pane_tree.active_mut().buffer_id = new_id;
-        self.activate_buffer_state();
-        // Event-driven LSP attach.
-        self.publish_document_opened_for_active();
-        self.set_message(EchoLevel::Info, format!("\"{}\" opened", target.display()));
-        self.push_recent_file(&target);
     }
 
     /// P.2: push `path` onto the MRU `recent_files` list -- newest

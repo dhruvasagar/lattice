@@ -725,12 +725,28 @@ pub struct Editor {
     pub lsp: LspSupervisorHandle,
     pub lsp_diagnostics: DiagnosticsLayer,
     pub lsp_logger: LspLogger,
-    /// 4.4.l.2 / 5.8.AA.o: file-watcher service backing
-    /// `workspace/didChangeWatchedFiles`. Lazy-spawned on first
-    /// `workspace/didChangeWatchedFiles` registration; dropped
-    /// when no actor advertises the capability. Lives host-side
-    /// so both renderer peers reach it via `run_tick_pending`.
-    pub lsp_file_watcher: Option<crate::lsp_watcher::LspFileWatcher>,
+    /// 4.4.l.2 / 5.8.AA.o / 5.8.AF.5: file-watcher service handle.
+    /// `None` until the first actor with `workspace/didChangeWatchedFiles`
+    /// capability is observed; at that point the actual watcher +
+    /// notify event loop is spawned on the LSP runtime (see
+    /// `crate::lsp_watcher::spawn_lsp_file_watcher_task`). Editor
+    /// only sends `SyncSubscriptions` commands through this
+    /// handle — no notify API calls, no event drains, ever run
+    /// on the renderer's per-tick loop. Per paramount goal #4.
+    pub lsp_watcher: Option<crate::lsp_watcher::LspFileWatcherHandle>,
+    /// Editor-side memo of `server_id → CachedSubscription`. Used
+    /// to detect whether the actor roster or its compiled
+    /// subscriptions changed since the last `sync` call; only
+    /// non-trivial diffs are pushed to the task. Mirrors the
+    /// per-server map the task itself holds, but lives here so the
+    /// "did anything change?" check stays a cheap fingerprint
+    /// compare on the renderer's `refresh_lsp_file_watcher` path.
+    pub lsp_watcher_subscriptions:
+        std::collections::HashMap<String, crate::lsp_watcher::CachedSubscription>,
+    /// Editor-side memo of currently-watched roots. Mirrors the
+    /// task's set so we can skip sending `SyncSubscriptions` when
+    /// nothing changed.
+    pub lsp_watcher_watched_roots: std::collections::HashSet<std::path::PathBuf>,
     pub lsp_log_event_rx: Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspLogPushed>>,
     pub lsp_progress_event_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspProgressUpdate>>,

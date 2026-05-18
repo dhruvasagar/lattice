@@ -614,10 +614,15 @@ impl Editor {
             lsp,
             lsp_diagnostics,
             lsp_logger,
-            // 5.8.AA.o: lazy-spawn on first
+            // 5.8.AA.o / 5.8.AF.5: lazy-spawn on first
             // `workspace/didChangeWatchedFiles` registration via
-            // `Editor::refresh_lsp_file_watcher`.
-            lsp_file_watcher: None,
+            // `Editor::refresh_lsp_file_watcher`. The handle here
+            // is the cmd_tx side; the watcher itself + the
+            // notify/event loop live on a tokio task on the LSP
+            // runtime so nothing runs on the renderer's per-tick.
+            lsp_watcher: None,
+            lsp_watcher_subscriptions: std::collections::HashMap::new(),
+            lsp_watcher_watched_roots: std::collections::HashSet::new(),
             lsp_log_event_rx: Some(lsp_log_event_rx),
             lsp_progress_event_rx: Some(lsp_progress_event_rx),
             pending_apply_edit_rx: Some(lsp_apply_edit_rx),

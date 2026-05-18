@@ -4248,15 +4248,23 @@ impl Editor {
         }
     }
 
-    /// 4.4.l: per-tick refresh of the `workspace/didChangeWatchedFiles`
-    /// watcher set. Spawns the OS watcher on first registration;
-    /// drops it when no actor advertises the capability. Per-server
-    /// fingerprint compare prevents redundant work when the
-    /// subscription set hasn't changed.
+    /// 4.4.l: refresh the `workspace/didChangeWatchedFiles` watcher
+    /// subscription set. Per paramount goal #4 this runs entirely
+    /// in non-blocking primitives — no `notify` API calls, no
+    /// event drains. The actual watcher lives on a tokio task on
+    /// the LSP runtime (see
+    /// [`crate::lsp_watcher::spawn_lsp_file_watcher_task`]).
     ///
-    /// Phase 5.8.AA.o: hoisted from TUI App.
+    /// Per-server fingerprint compare prevents the cmd-send when
+    /// nothing changed since the last call. The task is spawned
+    /// lazily on the first registration and torn down (handle
+    /// dropped → task exits) when no actor advertises the
+    /// capability.
+    ///
+    /// Phase 5.8.AF.5: rewritten from in-line `notify.watch` +
+    /// per-server mutation to a fire-and-forget cmd send.
     pub fn refresh_lsp_file_watcher(&mut self) {
-        use std::collections::HashSet;
+        use std::collections::{HashMap, HashSet};
         use std::path::PathBuf;
         use std::sync::Arc;
         let actors = self.lsp.running_actors();
@@ -4269,186 +4277,91 @@ impl Editor {
             })
             .collect();
         if actors_with_watchers.is_empty() {
-            self.lsp_file_watcher = None;
+            // No interested actors. Drop the handle so the task
+            // shuts down (every inotify watch releases on its
+            // way out) and clear Editor's memoised state.
+            if let Some(handle) = self.lsp_watcher.take() {
+                handle.shutdown();
+            }
+            self.lsp_watcher_subscriptions.clear();
+            self.lsp_watcher_watched_roots.clear();
             return;
         }
-        // Hot path: most ticks see no roster change. Only emit the
-        // pre-sync info line when the watcher hasn't been
-        // initialised yet -- that's the first call after LSP
-        // attach, the one that can stall on a giant `target/`.
-        let watcher_existed = self.lsp_file_watcher.is_some();
-        if !watcher_existed {
-            tracing::info!(
-                actor_count = actors_with_watchers.len(),
-                "refresh_lsp_file_watcher: first sync after LSP attach"
+        // Build the candidate subscription map + target-root set
+        // from the current actor roster.
+        let target_roots: HashSet<PathBuf> = actors_with_watchers
+            .iter()
+            .map(|((root, _), _)| root.clone())
+            .collect();
+        let mut next_subs: HashMap<String, crate::lsp_watcher::CachedSubscription> = HashMap::new();
+        for ((root, _key_server_id), handle) in &actors_with_watchers {
+            let server_id = handle.server_id().to_string();
+            let caps = handle.capabilities();
+            let server_id_arc: Arc<str> = Arc::from(server_id.as_str());
+            let subs = lattice_lsp::compile_with_workspace_root(&caps, server_id_arc, root);
+            let fp = subs.fingerprint();
+            next_subs.insert(
+                server_id,
+                crate::lsp_watcher::CachedSubscription {
+                    fingerprint: fp,
+                    subs,
+                },
             );
         }
-        if self.lsp_file_watcher.is_none() {
-            match crate::lsp_watcher::LspFileWatcher::new() {
-                Ok(w) => self.lsp_file_watcher = Some(w),
-                Err(_) => {
+        // Cheap "did anything change?" check: compare new
+        // fingerprints + root set against the editor's memo. Most
+        // ticks land here with no work to do.
+        let roots_unchanged = target_roots == self.lsp_watcher_watched_roots;
+        let subs_unchanged = next_subs.len() == self.lsp_watcher_subscriptions.len()
+            && next_subs.iter().all(|(id, cached)| {
+                self.lsp_watcher_subscriptions
+                    .get(id)
+                    .is_some_and(|prev| prev.fingerprint == cached.fingerprint)
+            });
+        if self.lsp_watcher.is_some() && roots_unchanged && subs_unchanged {
+            return;
+        }
+        // Lazy spawn on first sync after attach. The constructor
+        // is non-async; `block_in_place` is unnecessary here
+        // because we're on the renderer thread (single-thread
+        // current runtime is sufficient for the constructor).
+        if self.lsp_watcher.is_none() {
+            tracing::info!(
+                actor_count = actors_with_watchers.len(),
+                "refresh_lsp_file_watcher: first sync after LSP attach (spawning task)"
+            );
+            match crate::lsp_watcher::spawn_lsp_file_watcher_task(
+                self.lsp.clone(),
+                self.lsp_logger.clone(),
+            ) {
+                Ok(handle) => self.lsp_watcher = Some(handle),
+                Err(e) => {
                     self.lsp_logger.log(
                         None,
                         lattice_lsp::LogLevel::Warn,
                         lattice_lsp::LogSource::Client,
-                        "file watcher init failed".to_string(),
+                        format!("file watcher init failed: {e}"),
                     );
                     return;
                 }
             }
         }
-        let watcher = match self.lsp_file_watcher.as_mut() {
-            Some(w) => w,
-            None => return,
-        };
-        let target_roots: HashSet<PathBuf> = actors_with_watchers
-            .iter()
-            .map(|((root, _), _)| root.clone())
-            .collect();
-        let logger = self.lsp_logger.clone();
-        watcher.sync_watched_roots(&target_roots, &logger);
-        let mut live_ids: HashSet<String> = HashSet::new();
-        for ((root, _key_server_id), handle) in &actors_with_watchers {
-            let server_id = handle.server_id().to_string();
-            live_ids.insert(server_id.clone());
-            let caps = handle.capabilities();
-            let server_id_arc: Arc<str> = Arc::from(server_id.as_str());
-            let subs = lattice_lsp::compile_with_workspace_root(&caps, server_id_arc, root);
-            let fp = subs.fingerprint();
-            let entry = watcher.by_server.entry(server_id);
-            match entry {
-                std::collections::hash_map::Entry::Occupied(mut o) => {
-                    if o.get().fingerprint != fp {
-                        o.insert(crate::lsp_watcher::CachedSubscription {
-                            fingerprint: fp,
-                            subs,
-                        });
-                    }
-                }
-                std::collections::hash_map::Entry::Vacant(v) => {
-                    v.insert(crate::lsp_watcher::CachedSubscription {
-                        fingerprint: fp,
-                        subs,
-                    });
-                }
-            }
+        // Send the new snapshot. Non-blocking, returns immediately;
+        // the task picks it up on its next select! wakeup and
+        // installs/tears down watches off the renderer thread.
+        if let Some(handle) = self.lsp_watcher.as_ref() {
+            handle.sync(target_roots.clone(), next_subs.clone());
         }
-        watcher.by_server.retain(|id, _| live_ids.contains(id));
+        // Update editor-side memos so the next call's diff check
+        // reflects what we just sent.
+        self.lsp_watcher_watched_roots = target_roots;
+        self.lsp_watcher_subscriptions = next_subs;
     }
-
-    /// 4.4.l.2: drain queued fs events, match each against every
-    /// server's subscription set, fan out per-server
-    /// `workspace/didChangeWatchedFiles` notifications.
-    ///
-    /// Phase 5.8.AA.o: hoisted from TUI App.
-    pub fn drain_lsp_fs_events(&mut self) {
-        use std::collections::HashMap;
-        use std::path::PathBuf;
-        let drain_started = std::time::Instant::now();
-        let events = match self.lsp_file_watcher.as_mut() {
-            Some(w) => w.drain_pending(),
-            None => return,
-        };
-        let event_count = events.len();
-        if events.is_empty() {
-            return;
-        }
-        // Diag (Phase 5.8.AF.5): the recursive notify watch on a
-        // workspace root that contains `target/` can flood this
-        // channel with thousands of events as cargo + rust-analyzer
-        // rewrite cache files. Log non-trivial batches at INFO so
-        // we can spot the storm without RUST_LOG. >100 events per
-        // tick is a smoking gun for the post-`:e` UI freeze.
-        if event_count > 50 {
-            tracing::info!(
-                event_count,
-                "drain_lsp_fs_events: large batch (potential fs-event flood)"
-            );
-        }
-        let mut classified: Vec<(PathBuf, lattice_lsp::lsp_types::FileChangeType)> = Vec::new();
-        for ev in &events {
-            let Some(kind) = crate::lsp_watcher::classify(ev) else {
-                continue;
-            };
-            for p in &ev.paths {
-                classified.push((p.clone(), kind));
-            }
-        }
-        if classified.is_empty() {
-            // Even with no classified events, log the total drain
-            // duration when we entered the slow-path (>50 raw events).
-            if event_count > 50 {
-                tracing::info!(
-                    event_count,
-                    elapsed_ms = drain_started.elapsed().as_millis(),
-                    "drain_lsp_fs_events: drained (no classified events)"
-                );
-            }
-            return;
-        }
-        let mut per_server: HashMap<String, Vec<lattice_lsp::lsp_types::FileEvent>> =
-            HashMap::new();
-        let by_server: Vec<(String, &crate::lsp_watcher::CachedSubscription)> = self
-            .lsp_file_watcher
-            .as_ref()
-            .map(|w| {
-                w.by_server
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        for (server_id, cached) in by_server {
-            if cached.subs.is_empty() {
-                continue;
-            }
-            let mut batch: Vec<lattice_lsp::lsp_types::FileEvent> = Vec::new();
-            for (path, change) in &classified {
-                let hits = cached.subs.matches(path, *change);
-                if hits.is_empty() {
-                    continue;
-                }
-                let uri = lattice_lsp::actor::uri_from_path(path);
-                batch.push(lattice_lsp::lsp_types::FileEvent::new(uri, *change));
-            }
-            if !batch.is_empty() {
-                per_server.insert(server_id, batch);
-            }
-        }
-        if per_server.is_empty() {
-            return;
-        }
-        let mut total_changes = 0usize;
-        for (_key, handle) in self.lsp.running_actors() {
-            let server_id = handle.server_id().to_string();
-            let Some(batch) = per_server.remove(&server_id) else {
-                continue;
-            };
-            total_changes += batch.len();
-            let params = lattice_lsp::lsp_types::DidChangeWatchedFilesParams { changes: batch };
-            if let Err(e) = handle.did_change_watched_files(params) {
-                let instance = handle.instance();
-                self.lsp_logger.log(
-                    Some(&instance),
-                    lattice_lsp::LogLevel::Warn,
-                    lattice_lsp::LogSource::Client,
-                    format!("workspace/didChangeWatchedFiles fan-out failed: {e}"),
-                );
-            }
-        }
-        // Diag (Phase 5.8.AF.5): log the post-drain totals when the
-        // raw batch was non-trivial so we can see the
-        // classified/forwarded counts alongside elapsed time.
-        if event_count > 50 {
-            tracing::info!(
-                event_count,
-                classified_count = classified.len(),
-                forwarded_changes = total_changes,
-                elapsed_ms = drain_started.elapsed().as_millis(),
-                "drain_lsp_fs_events: drained"
-            );
-        }
-    }
+    // 5.8.AF.5: `drain_lsp_fs_events` deleted. The watcher task on
+    // the LSP runtime now classifies events + fans out
+    // `workspace/didChangeWatchedFiles` directly via the cloned
+    // supervisor handle. No drain runs on the renderer's
+    // per-tick loop.
 
     /// Step the cursor + selection to the current entry in the
     /// cached LSP selection chain. Used by `:lsp-expand-region` /
@@ -6676,8 +6589,12 @@ impl Editor {
         signals.extend(self.drain_inbound_apply_edits());
         self.drain_pending_selection_range();
         signals.extend(self.drain_pending_picker_init());
+        // 5.8.AF.5: `refresh_lsp_file_watcher` is now a
+        // fingerprint-gated, non-blocking cmd-send. The actual
+        // watcher + event fan-out runs on the LSP-runtime task
+        // spawned lazily inside; the old `drain_lsp_fs_events`
+        // host-side drain is gone.
         self.refresh_lsp_file_watcher();
-        self.drain_lsp_fs_events();
         // Pre-drain "fire request" pumps. Each is single-flight
         // (cancels prior in-flight) + cache-key-gated, so calling
         // here is cheap when nothing changed.

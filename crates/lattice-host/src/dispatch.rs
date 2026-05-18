@@ -3103,12 +3103,230 @@ impl Editor {
     /// needing to know each drain's name. New host migrations
     /// extend this aggregator; the GPUI peer auto-picks them up
     /// next frame with no peer-side change.
+    /// Open the LSP-locations picker host-side. Builds preview
+    /// rows from a file cache (one `read_to_string` per unique
+    /// path) + utf16→utf8 column conversion for cursor placement.
+    /// Empty input is a no-op (caller already echoed
+    /// "no X found").
+    ///
+    /// Phase 5.8.AA: hoisted from
+    /// `lattice-ui-tui::app::picker::App::open_lsp_locations_picker`
+    /// so the GPUI peer reaches the same picker via host drains
+    /// (`drain_pending_definitions` / `_references` / `_symbols`).
+    pub fn open_lsp_locations_picker(
+        &mut self,
+        title: impl Into<String>,
+        locations: &[lattice_lsp::lsp_types::Location],
+    ) {
+        if locations.is_empty() {
+            return;
+        }
+        let mut file_cache: std::collections::HashMap<std::path::PathBuf, Vec<String>> =
+            std::collections::HashMap::new();
+        let rows: Vec<lattice_picker::LspLocationRow> = locations
+            .iter()
+            .filter_map(|loc| {
+                let path = lattice_lsp::actor::uri_to_path(&loc.uri)?;
+                let line = loc.range.start.line;
+                let lines_cache = file_cache.entry(path.clone()).or_insert_with(|| {
+                    std::fs::read_to_string(&path)
+                        .ok()
+                        .map(|s| s.lines().map(|l| l.to_string()).collect())
+                        .unwrap_or_default()
+                });
+                let preview = lines_cache.get(line as usize).cloned().unwrap_or_default();
+                // utf-16 char column → utf-8 byte column for jump.
+                let line_text = lines_cache.get(line as usize).cloned().unwrap_or_default();
+                let col = lattice_lsp::position::utf16_column_to_utf8_byte(
+                    &line_text,
+                    loc.range.start.character,
+                );
+                Some(lattice_picker::LspLocationRow {
+                    path,
+                    line,
+                    col,
+                    preview,
+                    marginalia: String::new(),
+                })
+            })
+            .collect();
+        if rows.is_empty() {
+            self.set_message(
+                EchoLevel::Info,
+                "no usable locations (non-file URIs?)".to_string(),
+            );
+            return;
+        }
+        let mut p = lattice_picker::Picker::new(
+            title,
+            lattice_picker::PickerSource::LspLocations,
+            lattice_picker::PickerAction::JumpToLspLocation,
+        );
+        p.set_lsp_locations(rows);
+        self.picker = Some(p);
+    }
+
+    /// Drain queued `ReferencesOutcome`s. Multi-result outcomes
+    /// open the LSP-locations picker; empty results / `NoServers`
+    /// echo via `set_message`.
+    ///
+    /// Phase 5.8.AA: hoisted from
+    /// `lattice-ui-tui::app::lsp::App::drain_pending_references`.
+    /// All state lives host-side already (picker, set_message);
+    /// the picker rendering happens in the renderer peer.
+    /// Drain queued definition / declaration / type-def / impl
+    /// nav results. Multi-result outcomes open the picker
+    /// host-side; single-result outcomes return the `Location` for
+    /// caller-side `do_edit` + cursor jump (since `do_edit`'s
+    /// file-open chain is still App-resident in the TUI peer).
+    ///
+    /// Phase 5.8.AA: hoists the picker-opening + tag-stack
+    /// bookkeeping; the single-result jump path stays caller-side
+    /// (TUI peer applies; GPUI peer logs a warn until the
+    /// `do_edit` chain hoists).
+    pub fn drain_pending_definitions(&mut self) -> Option<lattice_lsp::lsp_types::Location> {
+        let Some(mut rx) = self.pending_definition_rx.take() else {
+            return None;
+        };
+        let mut latest: Option<Vec<lattice_lsp::lsp_types::Location>> = None;
+        while let Ok(locs) = rx.try_recv() {
+            latest = Some(locs);
+        }
+        self.pending_definition_rx = Some(rx);
+        let locs = latest?;
+        self.pending_definition_token = None;
+        let kind = self
+            .pending_nav_kind
+            .take()
+            .unwrap_or(lattice_lsp::cache::LspNavKind::Definition);
+        let noun = kind.noun_plural();
+        match locs.len() {
+            0 => {
+                self.pending_tag_origin = None;
+                self.set_message(EchoLevel::Info, format!("no {noun} found"));
+                None
+            }
+            1 => {
+                // Push tag-stack origin now so single-result jump
+                // walks back cleanly. Caller applies the jump.
+                if let Some(origin) = self.pending_tag_origin.take() {
+                    self.tag_stack.push(origin);
+                }
+                Some(locs[0].clone())
+            }
+            _ => {
+                self.open_lsp_locations_picker(format!("lsp:{noun}"), &locs);
+                None
+            }
+        }
+    }
+
+    pub fn drain_pending_references(&mut self) {
+        let Some(mut rx) = self.pending_references_rx.take() else {
+            return;
+        };
+        let mut latest: Option<lattice_lsp::cache::ReferencesOutcome> = None;
+        while let Ok(o) = rx.try_recv() {
+            latest = Some(o);
+        }
+        self.pending_references_rx = Some(rx);
+        let Some(outcome) = latest else {
+            return;
+        };
+        self.pending_references_token = None;
+        use lattice_lsp::cache::ReferencesOutcome;
+        match outcome {
+            ReferencesOutcome::NoServers => {
+                self.set_message(
+                    EchoLevel::Info,
+                    "no LSP server attached to current buffer".to_string(),
+                );
+            }
+            ReferencesOutcome::Found { symbol, locations } => {
+                if locations.is_empty() {
+                    let label = if symbol.is_empty() {
+                        "(symbol)".to_string()
+                    } else {
+                        format!("\"{symbol}\"")
+                    };
+                    self.set_message(EchoLevel::Info, format!("no references for {label}"));
+                    return;
+                }
+                let title = if symbol.is_empty() {
+                    "lsp:references".to_string()
+                } else {
+                    format!("references: {symbol}")
+                };
+                self.open_lsp_locations_picker(title, &locations);
+            }
+        }
+    }
+
+    /// Drain queued `SymbolsOutcome`s — document / workspace
+    /// symbol search results — and open the picker.
+    ///
+    /// Phase 5.8.AA: hoisted from
+    /// `lattice-ui-tui::app::lsp::App::drain_pending_symbols`.
+    pub fn drain_pending_symbols(&mut self) {
+        let Some(mut rx) = self.pending_symbols_rx.take() else {
+            return;
+        };
+        let mut latest: Option<lattice_lsp::cache::SymbolsOutcome> = None;
+        while let Ok(o) = rx.try_recv() {
+            latest = Some(o);
+        }
+        self.pending_symbols_rx = Some(rx);
+        let Some(outcome) = latest else {
+            return;
+        };
+        self.pending_symbols_token = None;
+        use lattice_lsp::cache::SymbolsOutcome;
+        match outcome {
+            SymbolsOutcome::NoServers => {
+                self.set_message(EchoLevel::Info, "no LSP server attached".to_string());
+            }
+            SymbolsOutcome::Found { title, rows } => {
+                if rows.is_empty() {
+                    self.set_message(EchoLevel::Info, "no symbols".to_string());
+                    return;
+                }
+                let picker_rows: Vec<lattice_picker::LspLocationRow> = rows
+                    .into_iter()
+                    .map(|r| {
+                        let indent = "  ".repeat(r.depth as usize);
+                        let preview = if let Some(c) = r.container {
+                            format!("{indent}{} {}  ({c})", r.kind_glyph, r.name)
+                        } else {
+                            format!("{indent}{} {}", r.kind_glyph, r.name)
+                        };
+                        lattice_picker::LspLocationRow {
+                            path: r.path,
+                            line: r.line,
+                            col: r.col,
+                            preview,
+                            marginalia: String::new(),
+                        }
+                    })
+                    .collect();
+                let mut p = lattice_picker::Picker::new(
+                    title,
+                    lattice_picker::PickerSource::LspLocations,
+                    lattice_picker::PickerAction::JumpToLspLocation,
+                );
+                p.set_lsp_locations(picker_rows);
+                self.picker = Some(p);
+            }
+        }
+    }
+
     pub fn run_tick_pending(&mut self) -> Vec<RendererSignal> {
         let mut signals = Vec::new();
         signals.extend(self.drain_option_changes());
         signals.extend(self.drain_pending_hover());
         signals.extend(self.drain_pending_signature_help());
         signals.extend(self.drain_mode_lifecycle_events());
+        self.drain_pending_references();
+        self.drain_pending_symbols();
         // `drain_pending_code_actions` returns an `Option<(handle,
         // action)>` for the App-side apply chain — not signal-shaped.
         // Renderer peers call it directly and decide how to handle

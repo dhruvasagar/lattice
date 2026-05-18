@@ -854,6 +854,19 @@ impl Render for EditorView {
                  selection dropped. Run via `lattice --tui` to apply this action."
             );
         }
+        // 5.8.AA: definitions / declaration / type-def / impl
+        // drain — single-result outcomes return the Location for
+        // caller-side jump. The TUI peer's `do_edit`-based jump
+        // path is App-only; GPUI peer logs a warn until that
+        // hoists. Multi-result outcomes have already opened the
+        // picker host-side.
+        if let Some(loc) = self.app.editor.drain_pending_definitions() {
+            tracing::warn!(
+                uri = %loc.uri.as_str(),
+                "lattice-gpui: single-result LSP nav jump requires --tui \
+                 (do_edit chain not yet hoisted host-side)."
+            );
+        }
         let modal = self.app.editor.modal;
 
         let modal_label = match modal {

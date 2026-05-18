@@ -359,52 +359,10 @@ impl App {
         title: impl Into<String>,
         locations: &[lattice_lsp::lsp_types::Location],
     ) {
-        if locations.is_empty() {
-            return;
-        }
-        let mut file_cache: std::collections::HashMap<std::path::PathBuf, Vec<String>> =
-            std::collections::HashMap::new();
-        let rows: Vec<lattice_picker::LspLocationRow> = locations
-            .iter()
-            .filter_map(|loc| {
-                let path = lattice_lsp::actor::uri_to_path(&loc.uri)?;
-                let line = loc.range.start.line;
-                let lines_cache = file_cache.entry(path.clone()).or_insert_with(|| {
-                    std::fs::read_to_string(&path)
-                        .ok()
-                        .map(|s| s.lines().map(|l| l.to_string()).collect())
-                        .unwrap_or_default()
-                });
-                let preview = lines_cache.get(line as usize).cloned().unwrap_or_default();
-                // utf-16 char column → utf-8 byte column for jump.
-                let line_text = lines_cache.get(line as usize).cloned().unwrap_or_default();
-                let col = lattice_lsp::position::utf16_column_to_utf8_byte(
-                    &line_text,
-                    loc.range.start.character,
-                );
-                Some(lattice_picker::LspLocationRow {
-                    path,
-                    line,
-                    col,
-                    preview,
-                    marginalia: String::new(),
-                })
-            })
-            .collect();
-        if rows.is_empty() {
-            self.set_message(
-                EchoLevel::Info,
-                "no usable locations (non-file URIs?)".to_string(),
-            );
-            return;
-        }
-        let mut p = lattice_picker::Picker::new(
-            title,
-            lattice_picker::PickerSource::LspLocations,
-            lattice_picker::PickerAction::JumpToLspLocation,
-        );
-        p.set_lsp_locations(rows);
-        self.editor.picker = Some(p);
+        // 5.8.AA: body migrated to
+        // `lattice_host::dispatch::Editor::open_lsp_locations_picker`
+        // so the GPUI peer reaches the same picker.
+        self.editor.open_lsp_locations_picker(title, locations);
     }
 
     /// Build + open an LSP instance picker. Called by `:lsp-log`,

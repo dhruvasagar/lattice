@@ -43,6 +43,11 @@ use lattice_protocol::position::Position;
 
 use lattice_grammar::ModalState;
 
+// 5.8.S-AA: several outcome types moved their drain bodies host-
+// side; the leftover `use` here keeps test-scope references
+// (`super::*Outcome`, `super::LspNavKind`) resolving. `#[allow]`
+// silences the unused-import warning in the non-test build.
+#[allow(unused_imports)]
 use super::{
     App, CodeActionOutcome, CodeActionRow, CompletionItemRow, CompletionOutcome,
     CompletionResolveOutcome, EchoLevel, FormatOutcome, InsertCompletionLspOutcome,
@@ -2650,55 +2655,9 @@ impl App {
     /// Drain queued document-symbol / workspace-symbol responses
     /// and open the picker.
     pub fn drain_pending_symbols(&mut self) {
-        let Some(mut rx) = self.editor.pending_symbols_rx.take() else {
-            return;
-        };
-        let mut latest: Option<SymbolsOutcome> = None;
-        while let Ok(o) = rx.try_recv() {
-            latest = Some(o);
-        }
-        self.editor.pending_symbols_rx = Some(rx);
-        let outcome = match latest {
-            Some(o) => o,
-            None => return,
-        };
-        self.editor.pending_symbols_token = None;
-        match outcome {
-            SymbolsOutcome::NoServers => {
-                self.set_message(EchoLevel::Info, "no LSP server attached".to_string());
-            }
-            SymbolsOutcome::Found { title, rows } => {
-                if rows.is_empty() {
-                    self.set_message(EchoLevel::Info, "no symbols".to_string());
-                    return;
-                }
-                let picker_rows: Vec<lattice_picker::LspLocationRow> = rows
-                    .into_iter()
-                    .map(|r| {
-                        let indent = "  ".repeat(r.depth as usize);
-                        let preview = if let Some(c) = r.container {
-                            format!("{indent}{} {}  ({c})", r.kind_glyph, r.name)
-                        } else {
-                            format!("{indent}{} {}", r.kind_glyph, r.name)
-                        };
-                        lattice_picker::LspLocationRow {
-                            path: r.path,
-                            line: r.line,
-                            col: r.col,
-                            preview,
-                            marginalia: String::new(),
-                        }
-                    })
-                    .collect();
-                let mut p = lattice_picker::Picker::new(
-                    title,
-                    lattice_picker::PickerSource::LspLocations,
-                    lattice_picker::PickerAction::JumpToLspLocation,
-                );
-                p.set_lsp_locations(picker_rows);
-                self.editor.picker = Some(p);
-            }
-        }
+        // 5.8.AA: migrated to
+        // `lattice_host::dispatch::Editor::drain_pending_symbols`.
+        self.editor.drain_pending_symbols();
     }
 
     /// 4.5.a: `:lsp-incoming-calls` / `:lsp-outgoing-calls`.
@@ -3112,49 +3071,12 @@ impl App {
     /// in echoes (`definitions` vs `implementations` etc.) reads
     /// from `pending_nav_kind`.
     pub fn drain_pending_definitions(&mut self) {
-        let Some(mut rx) = self.editor.pending_definition_rx.take() else {
-            return;
-        };
-        let mut latest: Option<Vec<lattice_lsp::lsp_types::Location>> = None;
-        while let Ok(locs) = rx.try_recv() {
-            latest = Some(locs);
-        }
-        self.editor.pending_definition_rx = Some(rx);
-        let locs = match latest {
-            Some(l) => l,
-            None => return,
-        };
-        // Result delivered; clear the in-flight token.
-        self.editor.pending_definition_token = None;
-        let kind = self
-            .editor
-            .pending_nav_kind
-            .take()
-            .unwrap_or(LspNavKind::Definition);
-        let noun = kind.noun_plural();
-
-        match locs.len() {
-            0 => {
-                // No drill-down happened; drop the captured tag
-                // origin so a follow-up nav doesn't see a stale
-                // value.
-                self.editor.pending_tag_origin = None;
-                self.set_message(EchoLevel::Info, format!("no {noun} found"));
-            }
-            1 => {
-                // Vim-style "do what I mean" -- a single-result
-                // nav request still jumps directly. Single-result
-                // jump pushes the tag stack now.
-                if let Some(origin) = self.editor.pending_tag_origin.take() {
-                    self.editor.tag_stack.push(origin);
-                }
-                self.jump_to_lsp_location(&locs[0]);
-            }
-            _ => {
-                // Multi-result -- the picker will consume the
-                // pending tag origin on accept.
-                self.open_lsp_locations_picker(format!("lsp:{noun}"), &locs);
-            }
+        // 5.8.AA: picker-opening + tag-stack bookkeeping moved to
+        // `lattice_host::dispatch::Editor::drain_pending_definitions`
+        // (returns Some(loc) for single-result so the caller can
+        // run its `do_edit`-based jump path).
+        if let Some(loc) = self.editor.drain_pending_definitions() {
+            self.jump_to_lsp_location(&loc);
         }
     }
 
@@ -3178,46 +3100,11 @@ impl App {
     /// `NoServers` echoes "no LSP server attached"; an empty
     /// `Found(_, [])` echoes "no references for X".
     pub fn drain_pending_references(&mut self) {
-        let Some(mut rx) = self.editor.pending_references_rx.take() else {
-            return;
-        };
-        let mut latest: Option<ReferencesOutcome> = None;
-        while let Ok(o) = rx.try_recv() {
-            latest = Some(o);
-        }
-        self.editor.pending_references_rx = Some(rx);
-        let outcome = match latest {
-            Some(o) => o,
-            None => return,
-        };
-        // Delivered; clear the in-flight token regardless of
-        // shape so a follow-up gr fires fresh.
-        self.editor.pending_references_token = None;
-        match outcome {
-            ReferencesOutcome::NoServers => {
-                self.set_message(
-                    EchoLevel::Info,
-                    "no LSP server attached to current buffer".to_string(),
-                );
-            }
-            ReferencesOutcome::Found { symbol, locations } => {
-                if locations.is_empty() {
-                    let label = if symbol.is_empty() {
-                        "(symbol)".to_string()
-                    } else {
-                        format!("\"{symbol}\"")
-                    };
-                    self.set_message(EchoLevel::Info, format!("no references for {label}"));
-                    return;
-                }
-                let title = if symbol.is_empty() {
-                    "lsp:references".to_string()
-                } else {
-                    format!("references: {symbol}")
-                };
-                self.open_lsp_locations_picker(title, &locations);
-            }
-        }
+        // 5.8.AA: drain body migrated to
+        // `lattice_host::dispatch::Editor::drain_pending_references`
+        // so the GPUI peer reaches the same picker via
+        // `run_tick_pending`.
+        self.editor.drain_pending_references();
     }
 
     /// Jump to an LSP `Location`. If the target is the current

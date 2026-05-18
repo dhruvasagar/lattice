@@ -66,7 +66,7 @@ use std::sync::Arc;
 /// `editor.render_state.load_full()` once per frame.
 #[derive(Debug, Clone)]
 pub struct RenderState {
-    pub document: Arc<ActiveDocumentRenderState>,
+    pub active_document: Arc<ActiveDocumentRenderState>,
     pub buffers: Arc<BuffersRenderState>,
     pub panes: Arc<PanesRenderState>,
     pub lsp: Arc<LspRenderState>,
@@ -82,7 +82,7 @@ pub struct RenderState {
 impl Default for RenderState {
     fn default() -> Self {
         Self {
-            document: Arc::new(ActiveDocumentRenderState::default()),
+            active_document: Arc::new(ActiveDocumentRenderState::default()),
             buffers: Arc::new(BuffersRenderState::default()),
             panes: Arc::new(PanesRenderState::default()),
             lsp: Arc::new(LspRenderState::default()),

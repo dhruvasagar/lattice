@@ -3603,6 +3603,130 @@ impl Editor {
         }
     }
 
+    /// Drain server-initiated `window/showMessageRequest`s; open
+    /// the picker for actionable ones, echo + log informational
+    /// ones. Phase 5.8.AA.e: hoisted from TUI App.
+    pub fn drain_inbound_show_message_requests(&mut self) {
+        let Some(mut rx) = self.pending_show_message_request_rx.take() else {
+            return;
+        };
+        let mut requests: Vec<lattice_lsp::InboundShowMessageRequest> = Vec::new();
+        while let Ok(req) = rx.try_recv() {
+            requests.push(req);
+        }
+        self.pending_show_message_request_rx = Some(rx);
+        let mut last_minibuffer: Option<(EchoLevel, String)> = None;
+        for req in requests {
+            let labels: Vec<&str> = req.actions.iter().map(|a| a.title.as_str()).collect();
+            let labels_joined = labels.join(" / ");
+            let echo_level = match req.level {
+                lattice_lsp::lsp_types::MessageType::ERROR => EchoLevel::Error,
+                lattice_lsp::lsp_types::MessageType::WARNING => EchoLevel::Warn,
+                _ => EchoLevel::Info,
+            };
+            let log_level = match req.level {
+                lattice_lsp::lsp_types::MessageType::ERROR => lattice_lsp::LogLevel::Error,
+                lattice_lsp::lsp_types::MessageType::WARNING => lattice_lsp::LogLevel::Warn,
+                _ => lattice_lsp::LogLevel::Info,
+            };
+            let instance = lattice_lsp::InstanceKey::new(
+                std::sync::Arc::clone(&req.server_id),
+                std::sync::Arc::clone(&req.workspace),
+            );
+            if req.actions.is_empty() {
+                self.lsp_logger.log(
+                    Some(&instance),
+                    log_level,
+                    lattice_lsp::LogSource::LspShowMessage,
+                    format!("showMessageRequest: {}", req.message),
+                );
+                last_minibuffer =
+                    Some((echo_level, format!("[{}] {}", req.server_id, req.message)));
+                let _ = req
+                    .response
+                    .send(lattice_lsp::ShowMessageRequestOutcome { selected: None });
+                continue;
+            }
+            let request_id = self.allocate_smr_request_id();
+            self.lsp_logger.log(
+                Some(&instance),
+                log_level,
+                lattice_lsp::LogSource::LspShowMessage,
+                format!(
+                    "showMessageRequest #{request_id}: {} [actions: {labels_joined}]",
+                    req.message
+                ),
+            );
+            last_minibuffer = Some((
+                echo_level,
+                format!("[{}] {} [{labels_joined}]", req.server_id, req.message),
+            ));
+            self.lsp_pending_show_message_requests
+                .insert(request_id, req);
+            if self.picker.is_some() {
+                self.lsp_show_message_request_queue.push_back(request_id);
+            } else {
+                self.open_show_message_request_picker(request_id);
+            }
+        }
+        if let Some((level, text)) = last_minibuffer {
+            self.set_message(level, text);
+        }
+    }
+
+    fn allocate_smr_request_id(&mut self) -> u32 {
+        loop {
+            let id = self.lsp_next_show_message_request_id;
+            self.lsp_next_show_message_request_id =
+                self.lsp_next_show_message_request_id.wrapping_add(1);
+            if !self.lsp_pending_show_message_requests.contains_key(&id) {
+                return id;
+            }
+        }
+    }
+
+    /// Open the actionful `showMessageRequest` picker. Phase
+    /// 5.8.AA.e: hoisted from TUI App.
+    pub fn open_show_message_request_picker(&mut self, request_id: u32) {
+        let Some(req) = self.lsp_pending_show_message_requests.get(&request_id) else {
+            return;
+        };
+        let server_id = req.server_id.to_string();
+        let title = format!("[{}] {}", server_id, req.message);
+        let items: Vec<(
+            lattice_completion::RawCandidate,
+            lattice_picker::RoutingPayload,
+        )> = req
+            .actions
+            .iter()
+            .enumerate()
+            .map(|(i, act)| {
+                let mut raw = lattice_completion::RawCandidate::plain(
+                    act.title.clone(),
+                    lattice_completion::CandidateKind::Plain,
+                );
+                raw.display = format!("{}. {}", i + 1, act.title);
+                (
+                    raw,
+                    lattice_picker::RoutingPayload::AcceptShowMessageAction {
+                        request_id,
+                        action_index: i as u32,
+                    },
+                )
+            })
+            .collect();
+        let mut p = lattice_picker::Picker::new(
+            &title,
+            lattice_picker::PickerSource::LspShowMessageRequest {
+                request_id,
+                server_id,
+            },
+            lattice_picker::PickerAction::AcceptShowMessageAction,
+        );
+        p.set_raw_candidates_with_routing(items);
+        self.picker = Some(p);
+    }
+
     /// 4.2.f: drain `completionItem/resolve` responses; fold the
     /// resolved metadata back into `editor.insert_completion`'s
     /// raw entry + refresh the docs popup body when the resolved
@@ -4347,6 +4471,7 @@ impl Editor {
         self.drain_lsp_progress_events();
         self.drain_lsp_detach_events();
         self.drain_inbound_configuration_requests();
+        self.drain_inbound_show_message_requests();
         // `drain_pending_code_actions` returns an `Option<(handle,
         // action)>` for the App-side apply chain — not signal-shaped.
         // Renderer peers call it directly and decide how to handle

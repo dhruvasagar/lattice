@@ -959,81 +959,8 @@ impl App {
     /// response, then drain the queue so the next pending SMR
     /// opens on the same tick.
     pub fn drain_inbound_show_message_requests(&mut self) {
-        let Some(mut rx) = self.editor.pending_show_message_request_rx.take() else {
-            return;
-        };
-        let mut requests: Vec<lattice_lsp::InboundShowMessageRequest> = Vec::new();
-        while let Ok(req) = rx.try_recv() {
-            requests.push(req);
-        }
-        self.editor.pending_show_message_request_rx = Some(rx);
-        let mut last_minibuffer: Option<(EchoLevel, String)> = None;
-        for req in requests {
-            let labels: Vec<&str> = req.actions.iter().map(|a| a.title.as_str()).collect();
-            let labels_joined = labels.join(" / ");
-            let echo_level = match req.level {
-                lattice_lsp::lsp_types::MessageType::ERROR => EchoLevel::Error,
-                lattice_lsp::lsp_types::MessageType::WARNING => EchoLevel::Warn,
-                _ => EchoLevel::Info,
-            };
-            let log_level = match req.level {
-                lattice_lsp::lsp_types::MessageType::ERROR => lattice_lsp::LogLevel::Error,
-                lattice_lsp::lsp_types::MessageType::WARNING => lattice_lsp::LogLevel::Warn,
-                _ => lattice_lsp::LogLevel::Info,
-            };
-            let instance = lattice_lsp::InstanceKey::new(
-                std::sync::Arc::clone(&req.server_id),
-                std::sync::Arc::clone(&req.workspace),
-            );
-            // Actionless requests: spec-compliant `null` reply
-            // (the prompt is purely informational); surface the
-            // prompt on the minibuffer + LSP log and move on.
-            if req.actions.is_empty() {
-                self.editor.lsp_logger.log(
-                    Some(&instance),
-                    log_level,
-                    lattice_lsp::LogSource::LspShowMessage,
-                    format!("showMessageRequest: {}", req.message),
-                );
-                last_minibuffer =
-                    Some((echo_level, format!("[{}] {}", req.server_id, req.message)));
-                let _ = req
-                    .response
-                    .send(lattice_lsp::ShowMessageRequestOutcome { selected: None });
-                continue;
-            }
-            // Actionful: register and either open the picker
-            // (if none is up) or queue. The log breadcrumb names
-            // every request so nothing is lost when multiple
-            // arrive together.
-            let request_id = self.allocate_smr_request_id();
-            self.editor.lsp_logger.log(
-                Some(&instance),
-                log_level,
-                lattice_lsp::LogSource::LspShowMessage,
-                format!(
-                    "showMessageRequest #{request_id}: {} [actions: {labels_joined}]",
-                    req.message
-                ),
-            );
-            last_minibuffer = Some((
-                echo_level,
-                format!("[{}] {} [{labels_joined}]", req.server_id, req.message),
-            ));
-            self.editor
-                .lsp_pending_show_message_requests
-                .insert(request_id, req);
-            if self.editor.picker.is_some() {
-                self.editor
-                    .lsp_show_message_request_queue
-                    .push_back(request_id);
-            } else {
-                self.open_show_message_request_picker(request_id);
-            }
-        }
-        if let Some((level, text)) = last_minibuffer {
-            self.set_message(level, text);
-        }
+        // 5.8.AA.e: migrated to host.
+        self.editor.drain_inbound_show_message_requests();
     }
 
     /// Allocate a fresh `u32` request id for
@@ -1042,70 +969,11 @@ impl App {
     /// possible if `u32::MAX` actionful requests pile up at
     /// once, which won't happen, but the loop keeps the
     /// invariant honest.
-    fn allocate_smr_request_id(&mut self) -> u32 {
-        loop {
-            let id = self.editor.lsp_next_show_message_request_id;
-            self.editor.lsp_next_show_message_request_id =
-                self.editor.lsp_next_show_message_request_id.wrapping_add(1);
-            if !self
-                .editor
-                .lsp_pending_show_message_requests
-                .contains_key(&id)
-            {
-                return id;
-            }
-        }
-    }
-
-    /// Open the `window/showMessageRequest` action picker for
-    /// the given pending-slot id. One row per `MessageActionItem`
-    /// title; payload is `AcceptShowMessageAction { request_id,
-    /// action_index }` so the accept arm can locate both the
-    /// inbound slot and the chosen action. The picker title is
-    /// the server-prefixed prompt so the user always sees what
-    /// they're answering.
+    /// 5.8.AA.e: open-picker body migrated to host. Thin wrapper
+    /// kept since `accept_show_message_action` (App-side, applies
+    /// the user's choice via the picker dispatcher path) calls it.
     pub(super) fn open_show_message_request_picker(&mut self, request_id: u32) {
-        let Some(req) = self
-            .editor
-            .lsp_pending_show_message_requests
-            .get(&request_id)
-        else {
-            return;
-        };
-        let server_id = req.server_id.to_string();
-        let title = format!("[{}] {}", server_id, req.message);
-        let items: Vec<(
-            lattice_completion::RawCandidate,
-            lattice_picker::RoutingPayload,
-        )> = req
-            .actions
-            .iter()
-            .enumerate()
-            .map(|(i, act)| {
-                let mut raw = lattice_completion::RawCandidate::plain(
-                    act.title.clone(),
-                    lattice_completion::CandidateKind::Plain,
-                );
-                raw.display = format!("{}. {}", i + 1, act.title);
-                (
-                    raw,
-                    lattice_picker::RoutingPayload::AcceptShowMessageAction {
-                        request_id,
-                        action_index: i as u32,
-                    },
-                )
-            })
-            .collect();
-        let mut p = lattice_picker::Picker::new(
-            &title,
-            lattice_picker::PickerSource::LspShowMessageRequest {
-                request_id,
-                server_id,
-            },
-            lattice_picker::PickerAction::AcceptShowMessageAction,
-        );
-        p.set_raw_candidates_with_routing(items);
-        self.editor.picker = Some(p);
+        self.editor.open_show_message_request_picker(request_id);
     }
 
     /// Send the LSP response for one in-flight

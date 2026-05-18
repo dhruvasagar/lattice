@@ -35,6 +35,7 @@ pub mod actions;
 pub mod buffer_registry;
 pub mod buffers;
 pub mod chord;
+pub mod cursor_shape;
 pub mod dispatch;
 pub mod editor;
 // Phase 5.7.B.1: Editor::boot extraction from

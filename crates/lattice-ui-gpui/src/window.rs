@@ -68,6 +68,7 @@ use gpui::{
 use lattice_core::Document;
 use lattice_core::ui::pane::{PaneNode, PaneState};
 use lattice_grammar::ModalState;
+use lattice_host::cursor_shape::CursorShape;
 use lattice_syntax::Style as SyntaxStyle;
 
 use crate::{GpuiApp, GpuiTheme};
@@ -118,52 +119,53 @@ fn style_at(spans: &[lattice_syntax::StyledSpan], byte: usize) -> SyntaxStyle {
     SyntaxStyle::Default
 }
 
-/// Catppuccin-palette glyph for a diagnostic severity. Matches
-/// the TUI peer's gutter-sign convention (configurable there via
-/// `theme.diagnostic_*_glyph`; the GPUI peer hardcodes the
-/// Catppuccin v1 defaults until `GpuiTheme` grows the same fields).
+/// Resolve the diagnostic gutter glyph + colour for a severity by
+/// reading the host's `Theme` (the same source the TUI peer uses
+/// via `theme::diagnostic_glyph_and_style`). Returns the glyph
+/// character and a Catppuccin-compatible `0xRRGGBB` color the
+/// renderer applies to that cell.
 ///
-/// Phase 5.8.I: gutter signs visible. The TUI peer paints these
-/// in `severity_for_line` + `theme::diagnostic_glyph_and_style`;
-/// the GPUI peer mirrors the shape here.
-fn diagnostic_glyph(severity: lattice_lsp::DiagnosticSeverity) -> char {
-    match severity {
-        lattice_lsp::DiagnosticSeverity::ERROR => '●',
-        lattice_lsp::DiagnosticSeverity::WARNING => '▲',
-        lattice_lsp::DiagnosticSeverity::INFORMATION => '◆',
-        lattice_lsp::DiagnosticSeverity::HINT => '·',
-        _ => '·',
-    }
+/// Phase 5.8.I introduced this as hardcoded matches; 5.8.N hoists
+/// the source of truth to `host_theme` so `:set ui.diagnostics.*`
+/// overrides flow to both renderer peers identically. Falls back
+/// to overlay2 grey on Unknown severities (rare; future LSP versions
+/// could add new variants).
+fn diagnostic_glyph_and_color(
+    host_theme: &lattice_host::ui::theme::Theme,
+    severity: lattice_lsp::DiagnosticSeverity,
+) -> (char, u32) {
+    let (glyph, style) = match severity {
+        lattice_lsp::DiagnosticSeverity::ERROR => (
+            host_theme.diagnostic_error_glyph,
+            host_theme.diagnostic_error_style,
+        ),
+        lattice_lsp::DiagnosticSeverity::WARNING => (
+            host_theme.diagnostic_warning_glyph,
+            host_theme.diagnostic_warning_style,
+        ),
+        lattice_lsp::DiagnosticSeverity::INFORMATION => (
+            host_theme.diagnostic_info_glyph,
+            host_theme.diagnostic_info_style,
+        ),
+        lattice_lsp::DiagnosticSeverity::HINT => (
+            host_theme.diagnostic_hint_glyph,
+            host_theme.diagnostic_hint_style,
+        ),
+        _ => (
+            host_theme.diagnostic_info_glyph,
+            host_theme.diagnostic_info_style,
+        ),
+    };
+    // 0x9399b2 is Catppuccin overlay2 — the v1 muted fallback if
+    // the theme uses `Color::Default` (no concrete RGB).
+    let color = style.fg.map(|c| c.to_rgb_u32(0x9399b2)).unwrap_or(0x9399b2);
+    (glyph, color)
 }
 
-/// Catppuccin Mocha hex color for a diagnostic severity.
-fn diagnostic_color(severity: lattice_lsp::DiagnosticSeverity) -> u32 {
-    match severity {
-        lattice_lsp::DiagnosticSeverity::ERROR => 0xf38ba8, // red
-        lattice_lsp::DiagnosticSeverity::WARNING => 0xf9e2af, // yellow
-        lattice_lsp::DiagnosticSeverity::INFORMATION => 0x89b4fa, // blue
-        lattice_lsp::DiagnosticSeverity::HINT => 0x9399b2,  // overlay2
-        _ => 0x9399b2,
-    }
-}
-
-/// Vim-style cursor shape derived from [`ModalState`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CursorShape {
-    Block,
-    Bar,
-    Underline,
-}
-
-impl CursorShape {
-    pub(crate) fn for_mode(modal: ModalState) -> Self {
-        match modal {
-            ModalState::Insert | ModalState::Command | ModalState::Search(_) => Self::Bar,
-            ModalState::Replace => Self::Underline,
-            ModalState::Normal | ModalState::Visual(_) | ModalState::OperatorPending => Self::Block,
-        }
-    }
-}
+// 5.8.N: `CursorShape` lives host-side
+// (`lattice_host::cursor_shape::CursorShape`); both renderer
+// peers map the host shape to their native cursor primitive.
+// Re-imported via `use` at the top of the file.
 
 /// The renderer-side composition root rendered as a GPUI
 /// `Entity`. Holds the [`GpuiApp`] + a [`FocusHandle`] so the
@@ -380,14 +382,9 @@ impl EditorView {
                         .iter()
                         .filter(|h| h.position.line == line_idx)
                         .map(|h| {
-                            let mut text = match &h.label {
-                                lattice_lsp::InlayHintLabel::String(s) => s.clone(),
-                                lattice_lsp::InlayHintLabel::LabelParts(parts) => parts
-                                    .iter()
-                                    .map(|p| p.value.clone())
-                                    .collect::<Vec<_>>()
-                                    .join(""),
-                            };
+                            // 5.8.N: label flattening is renderer-
+                            // neutral; helper lives on lattice-lsp.
+                            let mut text = lattice_lsp::inlay_hint_label_text(&h.label);
                             if h.padding_left.unwrap_or(false) {
                                 text.insert(0, ' ');
                             }
@@ -407,15 +404,20 @@ impl EditorView {
             )
         };
 
+        // 5.8.N: severity glyph + colour come from host_theme so
+        // `:set ui.diagnostics.*` overrides flow through identically
+        // for both renderer peers.
+        let host_theme = editor.host_theme;
         let make_gutter = |line_idx: usize, is_cursor_line: bool| -> gpui::Div {
-            // 5.8.I: severity sign cell + line-number cell.
+            // 5.8.I / 5.8.N: severity sign cell + line-number cell.
             // Painted as two children of a flex_row so each can
             // carry its own colour.
             let sev = line_severity(line_idx as u32);
             let sign_cell: gpui::Div = match sev {
-                Some(s) => div()
-                    .text_color(rgb(diagnostic_color(s)))
-                    .child(diagnostic_glyph(s).to_string()),
+                Some(s) => {
+                    let (glyph, color) = diagnostic_glyph_and_color(&host_theme, s);
+                    div().text_color(rgb(color)).child(glyph.to_string())
+                }
                 None => div().child(" ".to_string()),
             };
             let label = format!("{:>width$} ", line_idx + 1, width = gutter_width);
@@ -893,70 +895,7 @@ pub fn document_from_path(path: &std::path::Path) -> Result<Document> {
     Document::open(path).with_context(|| format!("opening {}", path.display()))
 }
 
-#[cfg(test)]
-mod cursor_shape_tests {
-    use super::CursorShape;
-    use lattice_grammar::{ModalState, SearchDirection, VisualKind};
-
-    #[test]
-    fn normal_uses_block() {
-        assert_eq!(
-            CursorShape::for_mode(ModalState::Normal),
-            CursorShape::Block
-        );
-    }
-
-    #[test]
-    fn visual_uses_block() {
-        assert_eq!(
-            CursorShape::for_mode(ModalState::Visual(VisualKind::Charwise)),
-            CursorShape::Block
-        );
-        assert_eq!(
-            CursorShape::for_mode(ModalState::Visual(VisualKind::Linewise)),
-            CursorShape::Block
-        );
-        assert_eq!(
-            CursorShape::for_mode(ModalState::Visual(VisualKind::Blockwise)),
-            CursorShape::Block
-        );
-    }
-
-    #[test]
-    fn operator_pending_uses_block() {
-        assert_eq!(
-            CursorShape::for_mode(ModalState::OperatorPending),
-            CursorShape::Block
-        );
-    }
-
-    #[test]
-    fn insert_uses_bar() {
-        assert_eq!(CursorShape::for_mode(ModalState::Insert), CursorShape::Bar);
-    }
-
-    #[test]
-    fn command_uses_bar() {
-        assert_eq!(CursorShape::for_mode(ModalState::Command), CursorShape::Bar);
-    }
-
-    #[test]
-    fn search_uses_bar() {
-        assert_eq!(
-            CursorShape::for_mode(ModalState::Search(SearchDirection::Forward)),
-            CursorShape::Bar
-        );
-        assert_eq!(
-            CursorShape::for_mode(ModalState::Search(SearchDirection::Backward)),
-            CursorShape::Bar
-        );
-    }
-
-    #[test]
-    fn replace_uses_underline() {
-        assert_eq!(
-            CursorShape::for_mode(ModalState::Replace),
-            CursorShape::Underline
-        );
-    }
-}
+// 5.8.N: cursor-shape tests live host-side in
+// `lattice_host::cursor_shape::tests`; the GPUI peer's local
+// duplicates were removed. Window-side tests (popup focus, dispatch
+// integration) still live in `crate::tests` at the lib's root.

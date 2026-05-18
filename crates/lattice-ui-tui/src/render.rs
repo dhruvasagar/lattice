@@ -3095,19 +3095,10 @@ fn apply_semantic_token_modifiers(mut style: TuiStyle, modifiers: &[String]) -> 
     style
 }
 
-/// 4.4.g: flatten an LSP `InlayHintLabel` into a single string.
-/// `String` variants return as-is; `LabelParts(Vec<LabelPart>)`
-/// concatenates each part's `value`. Tooltip / command / location
-/// fields on label parts are ignored at paint time (they're a
-/// resolve / hover affordance, not a render concern).
-fn inlay_hint_label_text(label: &lattice_lsp::lsp_types::InlayHintLabel) -> String {
-    match label {
-        lattice_lsp::lsp_types::InlayHintLabel::String(s) => s.clone(),
-        lattice_lsp::lsp_types::InlayHintLabel::LabelParts(parts) => {
-            parts.iter().map(|p| p.value.clone()).collect()
-        }
-    }
-}
+// 5.8.N: `inlay_hint_label_text` migrated to
+// `lattice_lsp::inlay_hint_label_text` (LSP-type natural op,
+// renderer-neutral). Imported below where call sites need it.
+use lattice_lsp::inlay_hint_label_text;
 
 /// Trailing-side padding cells between the gutter's content and the
 /// buffer column. The fold glyph still occupies one of those cells
@@ -4628,33 +4619,10 @@ mod tests {
         assert_eq!(texts, vec!["abc", " // EOL"]);
     }
 
-    /// 4.4.g: `inlay_hint_label_text` flattens both shapes.
-    #[test]
-    fn inlay_hint_label_text_handles_string_and_parts() {
-        let s = lattice_lsp::lsp_types::InlayHintLabel::String(": i32".into());
-        assert_eq!(inlay_hint_label_text(&s), ": i32");
-        let parts = lattice_lsp::lsp_types::InlayHintLabel::LabelParts(vec![
-            lattice_lsp::lsp_types::InlayHintLabelPart {
-                value: "size".into(),
-                tooltip: None,
-                location: None,
-                command: None,
-            },
-            lattice_lsp::lsp_types::InlayHintLabelPart {
-                value: ": ".into(),
-                tooltip: None,
-                location: None,
-                command: None,
-            },
-            lattice_lsp::lsp_types::InlayHintLabelPart {
-                value: "usize".into(),
-                tooltip: None,
-                location: None,
-                command: None,
-            },
-        ]);
-        assert_eq!(inlay_hint_label_text(&parts), "size: usize");
-    }
+    // 5.8.N: `inlay_hint_label_text` test migrated to
+    // `lattice_lsp::inlay_hint_label_tests`. This peer's tests
+    // exercise the call-site (label flattening + paint splicing)
+    // via `inlay_hint_overlay_splices_virtual_text` below.
 
     #[test]
     fn compose_visible_lines_appends_ghost_text_at_eol_when_enabled() {

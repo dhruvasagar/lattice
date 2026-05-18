@@ -114,19 +114,17 @@ fn teardown(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
     Ok(())
 }
 
-/// Map the App's modal state to a terminal cursor shape. Block for
-/// command-language modes (Normal, Visual, Operator-Pending), bar for
-/// Insert (matches the pre-modal feel users expect when typing text),
-/// underscore for Replace (vim convention), bar for the prompt rows
-/// (Command / Search) since the cursor lives in the bottom row there.
+/// Map the App's modal state to a terminal cursor shape via the
+/// renderer-neutral `host::cursor_shape::CursorShape`. The vim
+/// convention (Block for command-language modes, Bar for Insert /
+/// Command-line, Underscore for Replace) lives once on the host
+/// (5.8.N); this peer just maps to crossterm's primitive.
 fn cursor_style_for(modal: ModalState) -> SetCursorStyle {
-    match modal {
-        ModalState::Normal | ModalState::Visual(_) | ModalState::OperatorPending => {
-            SetCursorStyle::SteadyBlock
-        }
-        ModalState::Insert => SetCursorStyle::SteadyBar,
-        ModalState::Replace => SetCursorStyle::SteadyUnderScore,
-        ModalState::Command | ModalState::Search(_) => SetCursorStyle::SteadyBar,
+    use lattice_host::cursor_shape::CursorShape;
+    match CursorShape::for_mode(modal) {
+        CursorShape::Block => SetCursorStyle::SteadyBlock,
+        CursorShape::Bar => SetCursorStyle::SteadyBar,
+        CursorShape::Underline => SetCursorStyle::SteadyUnderScore,
     }
 }
 

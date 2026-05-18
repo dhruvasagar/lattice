@@ -135,3 +135,63 @@ pub use lsp_types::{
     Position as LspPosition, Range as LspRange, Uri,
 };
 pub use transport::{ChildTransport, TransportError};
+
+/// Flatten an LSP [`InlayHintLabel`] into a single plain `String`.
+/// `String` variants return as-is; `LabelParts(Vec<LabelPart>)`
+/// concatenates each part's `value`. Tooltip / command / location
+/// fields on label parts are ignored — they're resolve / hover
+/// affordances, not a paint concern.
+///
+/// Phase 5.8.N: hoisted out of both renderer peers. TUI had it as
+/// `lattice-ui-tui::render::inlay_hint_label_text`; GPUI had the
+/// equivalent inlined in `lattice-ui-gpui::window`. Renderer-
+/// neutral since it operates purely on an LSP type; lives here
+/// because lattice-lsp is the canonical owner of `lsp_types`.
+pub fn inlay_hint_label_text(label: &InlayHintLabel) -> String {
+    match label {
+        InlayHintLabel::String(s) => s.clone(),
+        InlayHintLabel::LabelParts(parts) => parts.iter().map(|p| p.value.clone()).collect(),
+    }
+}
+
+#[cfg(test)]
+mod inlay_hint_label_tests {
+    use super::*;
+
+    #[test]
+    fn string_variant_returns_as_is() {
+        let label = InlayHintLabel::String(": i32".into());
+        assert_eq!(inlay_hint_label_text(&label), ": i32");
+    }
+
+    #[test]
+    fn parts_variant_concatenates_values() {
+        let parts = InlayHintLabel::LabelParts(vec![
+            InlayHintLabelPart {
+                value: "size".into(),
+                tooltip: None,
+                location: None,
+                command: None,
+            },
+            InlayHintLabelPart {
+                value: ": ".into(),
+                tooltip: None,
+                location: None,
+                command: None,
+            },
+            InlayHintLabelPart {
+                value: "usize".into(),
+                tooltip: None,
+                location: None,
+                command: None,
+            },
+        ]);
+        assert_eq!(inlay_hint_label_text(&parts), "size: usize");
+    }
+
+    #[test]
+    fn empty_parts_returns_empty_string() {
+        let parts = InlayHintLabel::LabelParts(vec![]);
+        assert_eq!(inlay_hint_label_text(&parts), "");
+    }
+}

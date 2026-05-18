@@ -3959,6 +3959,127 @@ impl Editor {
         }
     }
 
+    /// `:picker <source> [args...]` -- open a picker by source
+    /// id. Resolves the generator from the registry, builds a
+    /// picker context against a fresh document snapshot, calls
+    /// `init`, and seats the resulting batch (Inline) or parks
+    /// the future (`Future`) for the per-tick drain.
+    ///
+    /// Unknown source ids surface an error echo listing every
+    /// registered id so the user can recover without `:apropos`.
+    /// Phase 5.8.AF.3.
+    pub fn open_picker(
+        &mut self,
+        source: String,
+        args: Vec<String>,
+    ) -> Vec<RendererSignal> {
+        let Some(entry) = self.picker_registry.entry(&source) else {
+            let known: Vec<&str> = self.picker_registry.ids().collect();
+            let msg = if known.is_empty() {
+                format!("picker: unknown source `{source}` (no sources registered)")
+            } else {
+                format!(
+                    "picker: unknown source `{source}` (known: {})",
+                    known.join(", ")
+                )
+            };
+            self.set_message(EchoLevel::Error, msg);
+            return Vec::new();
+        };
+        let Some(generator) = entry.generator.clone() else {
+            self.set_message(
+                EchoLevel::Error,
+                format!("picker: source `{source}` has no generator wired"),
+            );
+            return Vec::new();
+        };
+
+        // Sync prelude: build the context against a fresh
+        // snapshot, call init, drop the borrow.
+        let snap = self.document.snapshot();
+        let ctx = self.build_picker_context(&snap);
+        let init_result = match generator.init(&ctx, &args) {
+            Ok(r) => r,
+            Err(e) => {
+                self.set_message(EchoLevel::Info, e);
+                return Vec::new();
+            }
+        };
+        drop(ctx);
+        drop(snap);
+
+        // Publish the picker-opened typed event.
+        self.event_bus
+            .publish_typed(lattice_picker::events::PickerOpened {
+                source_id: source.clone(),
+                ts: std::time::SystemTime::now(),
+            });
+
+        // Live mode: install per-picker query state before
+        // seating so concurrent keystrokes during the seat
+        // already have somewhere to land.
+        let entry_is_live = self
+            .picker_registry
+            .entry(&source)
+            .map(|e| e.spec.live)
+            .unwrap_or(false);
+        if entry_is_live {
+            if let Some(prev) = self.live_picker_query.take()
+                && let Some(inflight) = prev.inflight
+            {
+                inflight.cancel.cancel();
+            }
+            let initial_query = args
+                .first()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(String::from);
+            self.live_picker_query = Some(crate::state::LivePickerQueryState {
+                source_id: source.clone(),
+                generator: generator.clone(),
+                debounce_until: None,
+                inflight: None,
+                initial_query,
+            });
+        }
+        match init_result {
+            lattice_picker::PickerInitResult::Inline(pairs) => {
+                self.seat_picker_from_pairs(source, pairs)
+            }
+            lattice_picker::PickerInitResult::Future(fut) => {
+                if let Some(prev) = self.pending_picker_init.take() {
+                    prev.cancel.cancel();
+                }
+                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                let cancel = lattice_protocol::CancellationToken::new();
+                let cancel_clone = cancel.clone();
+                lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
+                    let result = fut.await;
+                    if !cancel_clone.is_cancelled() {
+                        let _ = tx.send(result);
+                    }
+                });
+                self.pending_picker_init = Some(crate::state::PendingPickerInit {
+                    source_id: source.clone(),
+                    generator: generator.clone(),
+                    rx,
+                    cancel,
+                });
+                self.set_message(EchoLevel::Info, format!("picker: {source}... (loading)"));
+                Vec::new()
+            }
+            lattice_picker::PickerInitResult::Stream(_) => {
+                self.set_message(
+                    EchoLevel::Error,
+                    format!(
+                        "picker: streaming sources not yet wired (source `{source}` returned a Stream)"
+                    ),
+                );
+                Vec::new()
+            }
+        }
+    }
+
     /// Drain the pending-picker-init future channel. Pumps the
     /// async result the spawned task wrote; once a result arrives
     /// the picker is seated. Empty channel = future still pending;
@@ -7962,6 +8083,53 @@ impl Editor {
             return None;
         }
         Some(targets)
+    }
+
+    /// Vim's `:g` / `:v` -- execute `body` on every line matching
+    /// (or NOT matching, when inverted) the literal `pattern`.
+    /// Iterates bottom-up so deletions / edits on later lines don't
+    /// shift target line numbers. The body's per-line `Effect` is
+    /// applied **immediately** via `handle_effect` because most
+    /// `:g/.../d` / `:g/.../s` effects (`DeleteCurrentLine`,
+    /// `Substitute`) read `editor.cursor` at apply time — deferring
+    /// the apply would smash all iterations into whichever line
+    /// the last dispatch left the cursor at. Any per-effect
+    /// renderer signals stream back through `out` so the caller's
+    /// `RendererSignal` drain still fires. Phase 5.8.AF.3.
+    pub fn do_global(
+        &mut self,
+        pattern: &str,
+        inverted: bool,
+        body: &lattice_grammar::CommandInvocation,
+        out: &mut DispatchOutcome,
+    ) {
+        let Some(targets) = self.build_global_targets(pattern, inverted) else {
+            return;
+        };
+        for &line in targets.iter().rev() {
+            self.cursor = lattice_protocol::position::Position::new(line, 0);
+            match self.dispatch_blocking(body.clone()) {
+                Ok(eff) => {
+                    // Apply each body effect immediately so cursor-
+                    // positional operations land on the right line.
+                    // Renderer signals fan out through `out` so the
+                    // caller's `RendererSignal` drain still fires.
+                    let inner = self.handle_effect(eff.clone());
+                    out.renderer_signals.extend(inner.renderer_signals);
+                    out.next_actions.extend(inner.next_actions);
+                    // Re-emit the original Effect on `out.effects`
+                    // so renderer peers can still see the per-line
+                    // body invocation (App's TUI peer routes through
+                    // its own `apply_effect` for any renderer-coupled
+                    // arms the host hasn't claimed yet).
+                    out.effects.push(eff);
+                }
+                Err(e) => {
+                    self.set_message(EchoLevel::Error, format!("g: {e}"));
+                    return;
+                }
+            }
+        }
     }
 
     /// 5.5.E.7.2: build + publish [`Event::DocumentChanged`] from
@@ -12471,6 +12639,83 @@ impl Editor {
         })
     }
 
+    /// `:reload-snippets` (Phase 4.2.g.4) -- re-read every
+    /// configured snippet directory and rebuild the per-language
+    /// registry. The previous registry is replaced atomically;
+    /// if no directories are configured the user gets a clear
+    /// "no snippet sources configured" echo so the no-op doesn't
+    /// look like a silent failure. Phase 5.8.AF.3.
+    pub fn do_reload_snippets(&mut self) {
+        if self.snippet_dirs.is_empty() {
+            self.set_message(
+                EchoLevel::Info,
+                "no snippet sources configured (set App::snippet_dirs)",
+            );
+            return;
+        }
+        let mut next = lattice_snippet::SnippetRegistry::new();
+        let mut total = 0usize;
+        let mut errors: Vec<String> = Vec::new();
+        let dirs = self.snippet_dirs.clone();
+        for dir in &dirs {
+            let entries = match std::fs::read_dir(dir) {
+                Ok(e) => e,
+                Err(e) => {
+                    errors.push(format!("{}: {e}", dir.display()));
+                    continue;
+                }
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                    continue;
+                }
+                let stem = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_string();
+                // `_global.json` -> all-language slot.
+                let language = if stem == "_global" {
+                    "*".to_string()
+                } else {
+                    stem
+                };
+                let json = match std::fs::read_to_string(&path) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        errors.push(format!("{}: {e}", path.display()));
+                        continue;
+                    }
+                };
+                match lattice_snippet::load::load_pack_from_str(&json) {
+                    Ok(snips) => {
+                        for s in snips {
+                            next.insert(&language, s);
+                            total += 1;
+                        }
+                    }
+                    Err(e) => {
+                        errors.push(format!("{}: {e}", path.display()));
+                    }
+                }
+            }
+        }
+        self.snippet_registry.store(std::sync::Arc::new(next));
+        if errors.is_empty() {
+            self.set_message(EchoLevel::Info, format!("reloaded {total} snippets"));
+        } else {
+            self.set_message(
+                EchoLevel::Warn,
+                format!(
+                    "reloaded {total} snippets ({} error(s); first: {})",
+                    errors.len(),
+                    errors[0]
+                ),
+            );
+        }
+    }
+
     /// Apply an LSP completion accept: main `textEdit` + any
     /// `additionalTextEdits` as one undo unit, position the
     /// cursor at the end of the insert, fire the optional LSP
@@ -13867,6 +14112,78 @@ impl Editor {
         );
         p.set_lsp_instances(rows);
         self.picker = Some(p);
+    }
+
+    /// `]d` / `:diag-next` / `:cnext` -- move the cursor to the
+    /// next diagnostic in the active buffer. Wraps to top.
+    /// Phase 5.8.AF.3.
+    pub fn do_next_diagnostic(&mut self) {
+        // M.6.3: lsp-diagnostics-mode gate.
+        if !self.check_lsp_sub_mode_gate(
+            lattice_lsp::modes::LspDiagnosticsMode::mode_id(),
+            "lsp-diagnostics-mode",
+        ) {
+            return;
+        }
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id) else {
+            self.set_message(EchoLevel::Error, "no LSP attachment".to_string());
+            return;
+        };
+        let mut diags = self.lsp_diagnostics.diagnostics_for(uri);
+        if diags.is_empty() {
+            self.set_message(EchoLevel::Info, "no diagnostics in buffer".to_string());
+            return;
+        }
+        diags.sort_by_key(|d| (d.range.start.line, d.range.start.character));
+        let cursor = self.cursor;
+        let Some(next) = diags
+            .iter()
+            .find(|d| {
+                d.range.start.line > cursor.line
+                    || (d.range.start.line == cursor.line && d.range.start.character > cursor.byte)
+            })
+            .or_else(|| diags.first())
+            .map(|d| d.range.start)
+        else {
+            return;
+        };
+        self.cursor = lattice_protocol::position::Position::new(next.line, next.character);
+    }
+
+    /// `[d` / `:diag-prev` / `:cprev` -- move the cursor to the
+    /// previous diagnostic in the active buffer. Wraps to bottom.
+    /// Phase 5.8.AF.3.
+    pub fn do_prev_diagnostic(&mut self) {
+        if !self.check_lsp_sub_mode_gate(
+            lattice_lsp::modes::LspDiagnosticsMode::mode_id(),
+            "lsp-diagnostics-mode",
+        ) {
+            return;
+        }
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id) else {
+            self.set_message(EchoLevel::Error, "no LSP attachment".to_string());
+            return;
+        };
+        let mut diags = self.lsp_diagnostics.diagnostics_for(uri);
+        if diags.is_empty() {
+            self.set_message(EchoLevel::Info, "no diagnostics in buffer".to_string());
+            return;
+        }
+        diags.sort_by_key(|d| (d.range.start.line, d.range.start.character));
+        let cursor = self.cursor;
+        let Some(prev) = diags
+            .iter()
+            .rev()
+            .find(|d| {
+                d.range.start.line < cursor.line
+                    || (d.range.start.line == cursor.line && d.range.start.character < cursor.byte)
+            })
+            .or_else(|| diags.last())
+            .map(|d| d.range.start)
+        else {
+            return;
+        };
+        self.cursor = lattice_protocol::position::Position::new(prev.line, prev.character);
     }
 
     /// `:lsp-log [server]` -- open the `*lsp*` subsystem buffer

@@ -1082,76 +1082,15 @@ impl App {
     /// `]d` / `:diag-next` / `:cnext` -- move the cursor to the
     /// next diagnostic in the active buffer. Wraps to top.
     pub fn do_next_diagnostic(&mut self) {
-        // M.6.3: lsp-diagnostics-mode gate. The diagnostic store
-        // may still hold data (the wire layer keeps writing)
-        // but navigation respects the user-side disable.
-        if !self.check_lsp_sub_mode_gate(
-            lattice_lsp::modes::LspDiagnosticsMode::mode_id(),
-            "lsp-diagnostics-mode",
-        ) {
-            return;
-        }
-        let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id) else {
-            self.set_message(EchoLevel::Error, "no LSP attachment".to_string());
-            return;
-        };
-        let mut diags = self.editor.lsp_diagnostics.diagnostics_for(uri);
-        if diags.is_empty() {
-            self.set_message(EchoLevel::Info, "no diagnostics in buffer".to_string());
-            return;
-        }
-        diags.sort_by_key(|d| (d.range.start.line, d.range.start.character));
-        let cursor = self.editor.cursor;
-        let Some(next) = diags
-            .iter()
-            .find(|d| {
-                d.range.start.line > cursor.line
-                    || (d.range.start.line == cursor.line && d.range.start.character > cursor.byte)
-            })
-            .or_else(|| diags.first())
-            .map(|d| d.range.start)
-        else {
-            return;
-        };
-        self.editor.cursor = Position::new(next.line, next.character);
-        self.publish_position_change();
+        // Phase 5.8.AF.3: body migrated.
+        self.editor.do_next_diagnostic();
     }
 
     /// `[d` / `:diag-prev` / `:cprev` -- move the cursor to the
     /// previous diagnostic in the active buffer. Wraps to bottom.
     pub fn do_prev_diagnostic(&mut self) {
-        // M.6.3: lsp-diagnostics-mode gate (symmetric to next).
-        if !self.check_lsp_sub_mode_gate(
-            lattice_lsp::modes::LspDiagnosticsMode::mode_id(),
-            "lsp-diagnostics-mode",
-        ) {
-            return;
-        }
-        let Some(uri) = self.editor.buffer_uris.get(&self.editor.document_buffer_id) else {
-            self.set_message(EchoLevel::Error, "no LSP attachment".to_string());
-            return;
-        };
-        let mut diags = self.editor.lsp_diagnostics.diagnostics_for(uri);
-        if diags.is_empty() {
-            self.set_message(EchoLevel::Info, "no diagnostics in buffer".to_string());
-            return;
-        }
-        diags.sort_by_key(|d| (d.range.start.line, d.range.start.character));
-        let cursor = self.editor.cursor;
-        let Some(prev) = diags
-            .iter()
-            .rev()
-            .find(|d| {
-                d.range.start.line < cursor.line
-                    || (d.range.start.line == cursor.line && d.range.start.character < cursor.byte)
-            })
-            .or_else(|| diags.last())
-            .map(|d| d.range.start)
-        else {
-            return;
-        };
-        self.editor.cursor = Position::new(prev.line, prev.character);
-        self.publish_position_change();
+        // Phase 5.8.AF.3: body migrated.
+        self.editor.do_prev_diagnostic();
     }
 
     /// `:lsp-log [server]` -- activate the subsystem-wide `*lsp*`

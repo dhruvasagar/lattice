@@ -171,6 +171,21 @@ impl Editor {
         }
         id
     }
+
+    /// `:messages` -- activate the `*messages*` Document buffer.
+    /// Drains queued events first so the view is up to date.
+    /// Returns post-activation `RendererSignal`s the renderer
+    /// must fan through `handle_renderer_signal` (mode-mirror,
+    /// theme caches). Phase 5.8.AF.3.
+    pub fn do_open_messages(&mut self) -> Vec<crate::dispatch::RendererSignal> {
+        self.drain_message_events();
+        let id = self.ensure_messages_buffer();
+        if self.activate_buffer(id) {
+            self.activate_buffer_state()
+        } else {
+            Vec::new()
+        }
+    }
 }
 
 #[cfg(test)]

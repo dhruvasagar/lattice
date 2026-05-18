@@ -36,7 +36,7 @@
 use lattice_core::Buffer;
 use lattice_protocol::position::Position;
 
-use super::{App, EchoLevel, SnippetCandidateMeta};
+use super::{App, SnippetCandidateMeta};
 
 // Phase 5.8.AD.4: `EffectiveCompletionConfig` migrated to host.
 pub(crate) use lattice_host::dispatch::EffectiveCompletionConfig;
@@ -66,83 +66,10 @@ impl App {
         self.editor.do_snippet_prev_placeholder();
     }
 
-    /// `:reload-snippets` (Phase 4.2.g.4) -- re-read every
-    /// configured snippet directory and rebuild the per-language
-    /// registry. The previous registry is replaced atomically; if
-    /// no directories are configured the user gets a clear "no
-    /// snippet sources configured" echo so the no-op doesn't look
-    /// like a silent failure.
+    /// `:reload-snippets` -- 5.8.AF.3: body migrated to
+    /// [`lattice_host::dispatch::Editor::do_reload_snippets`].
     pub fn do_reload_snippets(&mut self) {
-        if self.editor.snippet_dirs.is_empty() {
-            self.set_message(
-                EchoLevel::Info,
-                "no snippet sources configured (set App::snippet_dirs)",
-            );
-            return;
-        }
-        let mut next = lattice_snippet::SnippetRegistry::new();
-        let mut total = 0usize;
-        let mut errors: Vec<String> = Vec::new();
-        let dirs = self.editor.snippet_dirs.clone();
-        for dir in &dirs {
-            let entries = match std::fs::read_dir(dir) {
-                Ok(e) => e,
-                Err(e) => {
-                    errors.push(format!("{}: {e}", dir.display()));
-                    continue;
-                }
-            };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|s| s.to_str()) != Some("json") {
-                    continue;
-                }
-                let stem = path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("")
-                    .to_string();
-                // `_global.json` -> all-language slot.
-                let language = if stem == "_global" {
-                    "*".to_string()
-                } else {
-                    stem
-                };
-                let json = match std::fs::read_to_string(&path) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        errors.push(format!("{}: {e}", path.display()));
-                        continue;
-                    }
-                };
-                match lattice_snippet::load::load_pack_from_str(&json) {
-                    Ok(snips) => {
-                        for s in snips {
-                            next.insert(&language, s);
-                            total += 1;
-                        }
-                    }
-                    Err(e) => {
-                        errors.push(format!("{}: {e}", path.display()));
-                    }
-                }
-            }
-        }
-        self.editor
-            .snippet_registry
-            .store(std::sync::Arc::new(next));
-        if errors.is_empty() {
-            self.set_message(EchoLevel::Info, format!("reloaded {total} snippets"));
-        } else {
-            self.set_message(
-                EchoLevel::Warn,
-                format!(
-                    "reloaded {total} snippets ({} error(s); first: {})",
-                    errors.len(),
-                    errors[0]
-                ),
-            );
-        }
+        self.editor.do_reload_snippets();
     }
 
     // 5.5.H: `move_cursor_to_snippet_group` retired (zero

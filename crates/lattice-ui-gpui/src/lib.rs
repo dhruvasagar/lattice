@@ -815,6 +815,47 @@ impl GpuiApp {
                     self.handle_renderer_signal(s);
                 }
             }
+            // Phase 5.8.AF.3: `:messages` activates the
+            // `*messages*` Document buffer host-side.
+            Effect::OpenMessages => {
+                let signals = self.editor.do_open_messages();
+                for s in signals {
+                    self.handle_renderer_signal(s);
+                }
+            }
+            // Phase 5.8.AF.3: diagnostic navigation host-side.
+            Effect::NextDiagnostic => self.editor.do_next_diagnostic(),
+            Effect::PrevDiagnostic => self.editor.do_prev_diagnostic(),
+            // Phase 5.8.AF.3: `:reload-snippets` host-side.
+            Effect::ReloadSnippets => self.editor.do_reload_snippets(),
+            // Phase 5.8.AF.3: `:toggle-mode` host-side. Returned
+            // bool flags an unknown-mode-name miss (the host has
+            // already echoed); GPUI has no further fan-out.
+            Effect::ToggleMode { mode_name } => {
+                let _ = self.editor.toggle_mode_by_name(&mode_name);
+            }
+            // Phase 5.8.AF.3: `:g` / `:v` host-side. Body effects
+            // are drained through `apply_effect_gpui` so any
+            // renderer-coupled tail (popup / picker fan-out) still
+            // flows through this peer.
+            Effect::Global {
+                pattern,
+                inverted,
+                body,
+            } => {
+                let mut out = lattice_host::dispatch::DispatchOutcome::default();
+                self.editor.do_global(&pattern, inverted, body.as_ref(), &mut out);
+                for eff in std::mem::take(&mut out.effects) {
+                    self.apply_effect_gpui(eff);
+                }
+            }
+            // Phase 5.8.AF.3: `:picker <source>` host-side.
+            Effect::OpenPicker { source, args } => {
+                let signals = self.editor.open_picker(source, args);
+                for s in signals {
+                    self.handle_renderer_signal(s);
+                }
+            }
             // Phase 5.8.AD.1: oil + file-tree migrated host-side
             // so `:e .` / `:Oil` / `:Tree` work in GPUI.
             Effect::OpenOil { dir } => {

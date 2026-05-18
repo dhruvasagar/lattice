@@ -48,11 +48,14 @@ pub use lattice_host::messages::MESSAGES_BUFFER_NAME;
 
 impl App {
     /// `:messages` -- activate the `*messages*` Document buffer.
-    /// Drains any queued events first so the view is up to date.
+    /// 5.8.AF.3: body migrated to
+    /// [`lattice_host::editor::Editor::do_open_messages`]. Wrapper
+    /// fans renderer signals through `handle_renderer_signal`.
     pub fn do_open_messages(&mut self) {
-        self.drain_message_events();
-        let id = self.ensure_messages_buffer();
-        self.activate_buffer(id);
+        let signals = self.editor.do_open_messages();
+        for sig in signals {
+            self.handle_renderer_signal(sig);
+        }
     }
 
     /// Thin wrapper around

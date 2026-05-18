@@ -27,7 +27,10 @@
 
 use crate::buffers::BufferId;
 
-use super::{App, EchoLevel};
+use super::App;
+// `EchoLevel` only reaches the `#[cfg(any())]`-gated retired body.
+#[cfg(any())]
+use super::EchoLevel;
 
 impl App {
     /// Build the snapshot the picker primitive hands to source
@@ -157,136 +160,10 @@ impl App {
     /// Unknown source ids surface an error echo listing every
     /// registered id so the user can recover without `:apropos`.
     pub(crate) fn open_picker(&mut self, source: String, args: Vec<String>) {
-        // Resolve generator from the registry. A registered
-        // entry without a generator (metadata-only legacy
-        // shape) surfaces a distinct echo so the drift is
-        // visible.
-        let Some(entry) = self.editor.picker_registry.entry(&source) else {
-            let known: Vec<&str> = self.editor.picker_registry.ids().collect();
-            let msg = if known.is_empty() {
-                format!("picker: unknown source `{source}` (no sources registered)")
-            } else {
-                format!(
-                    "picker: unknown source `{source}` (known: {})",
-                    known.join(", ")
-                )
-            };
-            self.set_message(EchoLevel::Error, msg);
-            return;
-        };
-        let Some(generator) = entry.generator.clone() else {
-            self.set_message(
-                EchoLevel::Error,
-                format!("picker: source `{source}` has no generator wired"),
-            );
-            return;
-        };
-
-        // Sync prelude: build the context against a fresh
-        // snapshot, call init, drop the borrow.
-        let snap = self.editor.document.snapshot();
-        let ctx = self.build_picker_context(&snap);
-        let init_result = match generator.init(&ctx, &args) {
-            Ok(r) => r,
-            Err(e) => {
-                self.set_message(EchoLevel::Info, e);
-                return;
-            }
-        };
-        drop(ctx);
-        drop(snap);
-
-        // Publish the picker-opened typed event. Plugins
-        // (Phase 7+) can subscribe to react to source-
-        // specific opens; today there are no first-party
-        // subscribers, but the surface is introspectable
-        // via `:describe-events`.
-        self.editor
-            .event_bus
-            .publish_typed(lattice_picker::events::PickerOpened {
-                source_id: source.clone(),
-                ts: std::time::SystemTime::now(),
-            });
-
-        // Slice 2: if the source's spec opts into live mode,
-        // install the per-picker live-query state up-front --
-        // BEFORE seating the first batch -- so any concurrent
-        // keystrokes during the seat already have somewhere
-        // to land. The state survives until dismiss.
-        let entry_is_live = self
-            .editor
-            .picker_registry
-            .entry(&source)
-            .map(|e| e.spec.live)
-            .unwrap_or(false);
-        if entry_is_live {
-            // Cancel any prior live picker's in-flight task
-            // (vim "do what I last said") and replace the slot.
-            if let Some(prev) = self.editor.live_picker_query.take()
-                && let Some(inflight) = prev.inflight
-            {
-                inflight.cancel.cancel();
-            }
-            // Slice 3: stash the first positional arg as the
-            // initial query so the prompt opens pre-populated
-            // (`:picker grep TODO` → query starts as "TODO";
-            // user keystrokes extend it). `seat_picker_from_pairs`
-            // consumes this on the first seat.
-            let initial_query = args
-                .first()
-                .map(|s| s.trim())
-                .filter(|s| !s.is_empty())
-                .map(String::from);
-            self.editor.live_picker_query = Some(crate::app::LivePickerQueryState {
-                source_id: source.clone(),
-                generator: generator.clone(),
-                debounce_until: None,
-                inflight: None,
-                initial_query,
-            });
-        }
-        match init_result {
-            lattice_picker::PickerInitResult::Inline(pairs) => {
-                self.seat_picker_from_pairs(source, pairs);
-            }
-            lattice_picker::PickerInitResult::Future(fut) => {
-                // Cancel any prior in-flight init -- vim-style
-                // "do what I last said". The previous future
-                // may still resolve in the background; the
-                // cancel token tells the spawn closure to drop
-                // the result without sending.
-                if let Some(prev) = self.editor.pending_picker_init.take() {
-                    prev.cancel.cancel();
-                }
-                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-                let cancel = lattice_protocol::CancellationToken::new();
-                let cancel_clone = cancel.clone();
-                crate::runtime::spawn_on_lsp_runtime(async move {
-                    let result = fut.await;
-                    if !cancel_clone.is_cancelled() {
-                        let _ = tx.send(result);
-                    }
-                });
-                self.editor.pending_picker_init = Some(crate::app::PendingPickerInit {
-                    source_id: source.clone(),
-                    generator: generator.clone(),
-                    rx,
-                    cancel,
-                });
-                self.set_message(EchoLevel::Info, format!("picker: {source}... (loading)"));
-            }
-            lattice_picker::PickerInitResult::Stream(_) => {
-                // Streaming sources land once the seat-on-batch
-                // pump arrives. Today: error out cleanly --
-                // single-batch streams could be flattened into
-                // Inline anyway.
-                self.set_message(
-                    EchoLevel::Error,
-                    format!(
-                        "picker: streaming sources not yet wired (source `{source}` returned a Stream)"
-                    ),
-                );
-            }
+        // 5.8.AF.3: body migrated to `Editor::open_picker`.
+        let signals = self.editor.open_picker(source, args);
+        for s in signals {
+            self.handle_renderer_signal(s);
         }
     }
 

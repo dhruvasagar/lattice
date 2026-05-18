@@ -40,10 +40,11 @@
 use lattice_core::buffer::AppliedEdit;
 use lattice_grammar::CommandInvocation;
 use lattice_protocol::edit::Edit;
+#[cfg(test)]
 use lattice_protocol::position::Position;
 use lattice_runtime::RuntimeError;
 
-use super::{App, EchoLevel};
+use super::App;
 
 #[cfg(test)]
 use lattice_grammar::YankKind;
@@ -150,23 +151,20 @@ impl App {
     /// silent no-op via `Editor::handle_effect` alone; `apply_effect`
     /// still owns the full router today).
     pub(super) fn do_global(&mut self, pattern: &str, inverted: bool, body: &CommandInvocation) {
-        let Some(targets) = self.editor.build_global_targets(pattern, inverted) else {
-            return;
-        };
-        // Run bottom-up so deletions and edits on later lines don't
-        // shift the line numbers we plan to operate on. The body is
-        // already parsed -- the cmdline's `:g/pat/body` parser
-        // compiled it once at submit time, so we just clone the
-        // invocation per match.
-        for &line in targets.iter().rev() {
-            self.editor.cursor = Position::new(line, 0);
-            match self.dispatch_blocking(body.clone()) {
-                Ok(eff) => self.apply_effect(eff),
-                Err(e) => {
-                    self.set_message(EchoLevel::Error, format!("g: {e}"));
-                    return;
-                }
-            }
+        // 5.8.AF.3: planning + body-replay live on `Editor::do_global`.
+        // The host applies each body effect inline (so cursor-
+        // positional effects land on the right line) and emits the
+        // effect on `out.effects` for the renderer's App-side arms.
+        // We call `apply_effect_app_arms` directly (NOT `apply_effect`)
+        // because the host already called `handle_effect` host-side;
+        // routing through `apply_effect` would double-apply.
+        let mut out = lattice_host::dispatch::DispatchOutcome::default();
+        self.editor.do_global(pattern, inverted, body, &mut out);
+        for eff in std::mem::take(&mut out.effects) {
+            self.apply_effect_app_arms(eff);
+        }
+        for signal in std::mem::take(&mut out.renderer_signals) {
+            self.handle_renderer_signal(signal);
         }
     }
 

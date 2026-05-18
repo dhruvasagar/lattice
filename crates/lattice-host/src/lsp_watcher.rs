@@ -54,7 +54,18 @@ impl LspFileWatcher {
             by_server: HashMap::new(),
         })
     }
+}
 
+impl std::fmt::Debug for LspFileWatcher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LspFileWatcher")
+            .field("watched_roots", &self.watched_roots)
+            .field("by_server_count", &self.by_server.len())
+            .finish()
+    }
+}
+
+impl LspFileWatcher {
     /// Sync the watched roots to match `target`.
     pub fn sync_watched_roots(
         &mut self,

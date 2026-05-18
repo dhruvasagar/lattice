@@ -36,7 +36,6 @@ impl App {
             editor,
             pane_render_registry: crate::render::build_pane_render_registry(),
             theme: crate::theme::Theme::default(),
-            lsp_file_watcher: None,
         };
         // Sync derived theme styles from the freshly-registered
         // ui.* options so the renderer's first frame uses the

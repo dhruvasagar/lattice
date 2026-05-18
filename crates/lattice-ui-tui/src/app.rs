@@ -611,34 +611,34 @@ pub struct App {
     /// `App.theme` collapses into `host_theme` (renamed) and each
     /// renderer maintains its own cached view.
     pub theme: crate::theme::Theme,
-    /// Phase 5.3: renderer-neutral canonical theme. `:set ui.*`
-    /// writes this; the cached TUI adapter [`Self::theme`] is
-    /// rebuilt from it. Future renderers (GPUI) read from this
-    /// field and maintain their own cached view -- the host owns
-    /// the canonical neutral state.
+    // Phase 5.3: renderer-neutral canonical theme. `:set ui.*`
+    // writes this; the cached TUI adapter [`Self::theme`] is
+    // rebuilt from it. Future renderers (GPUI) read from this
+    // field and maintain their own cached view -- the host owns
+    // the canonical neutral state.
     // Phase 5.B.14: `host_theme` moved to
     // `editor.editor.host_theme`.
-    /// Per-frame snapshot of inactive panes' visible-window syntax
-    /// highlights, keyed by pane index. Refreshed by
-    /// [`Self::refresh_pane_highlights`] before each draw so the
-    /// renderer can read via `&App`. The active pane uses the live
-    /// [`Self::visible_highlights`] field instead.
+    // Per-frame snapshot of inactive panes' visible-window syntax
+    // highlights, keyed by pane index. Refreshed by
+    // [`Self::refresh_pane_highlights`] before each draw so the
+    // renderer can read via `&App`. The active pane uses the live
+    // [`Self::visible_highlights`] field instead.
     // Phase 5.B.12: `pane_highlights` moved to
     // `editor.editor.pane_highlights`.
     // Phase 5.B.11: `command_history`,
     // `command_history_cursor`, `command_history_pending`
     // moved to `editor.{command_history,
     // command_history_cursor, command_history_pending}`.
-    /// Active popup overlay's buffer id (DESIGN.md §5.11; M.4).
-    /// `Some(id)` while a `:describe-*` / `:apropos` / hover / etc.
-    /// popup is open; the actual buffer lives in
-    /// [`Self::buffers`] (the unified registry) with
-    /// `BufferFlags { listed: false, hidden: true }`. Resolve the
-    /// concrete handle through [`Self::popup_help`] /
-    /// [`Self::popup_help_mut`] -- the slot itself is just a
-    /// reference into the registry. Display strategy is governed
-    /// by [`lattice_core::ui::display::BufferDisplayCategory`];
-    /// callers route through the private `display_buffer` helper.
+    // Active popup overlay's buffer id (DESIGN.md §5.11; M.4).
+    // `Some(id)` while a `:describe-*` / `:apropos` / hover / etc.
+    // popup is open; the actual buffer lives in
+    // [`Self::buffers`] (the unified registry) with
+    // `BufferFlags { listed: false, hidden: true }`. Resolve the
+    // concrete handle through [`Self::popup_help`] /
+    // [`Self::popup_help_mut`] -- the slot itself is just a
+    // reference into the registry. Display strategy is governed
+    // by [`lattice_core::ui::display::BufferDisplayCategory`];
+    // callers route through the private `display_buffer` helper.
     // Phase 5.B.10: `popup_buffer` moved to
     // `editor.popup_buffer`.
     // Phase 5.B.20: `popup_back_stack` moved to
@@ -654,168 +654,168 @@ pub struct App {
     // `insert_completion_snippet_meta`, `completion_accept_freq`,
     // `pending_config_structural_sections`, `per_language_completion`,
     // `completion_in_path_context`, `active_snippet`, `snippet_dirs`.
-    /// Active vertico-style picker (DESIGN.md §5.9.7, §5.9.10).
-    /// `Some` while a picker is open over a buffer / LSP instance
-    /// / future generator. Input routes here in
-    /// [`crate::input::translate`] before falling through to the
-    /// modal handlers; render takes precedence over completion +
-    /// hover popups.
+    // Active vertico-style picker (DESIGN.md §5.9.7, §5.9.10).
+    // `Some` while a picker is open over a buffer / LSP instance
+    // / future generator. Input routes here in
+    // [`crate::input::translate`] before falling through to the
+    // modal handlers; render takes precedence over completion +
+    // hover popups.
     // Phase 5.B.13: `picker` moved to `editor.editor.picker`.
-    /// Metadata registry of every picker source the
-    /// `:picker <source>` ex-command can dispatch to. Populated
-    /// at boot with first-party source specs; feature crates
-    /// (LSP, snippets) add their sources through dedicated
-    /// `register_picker_sources` entry points. The plugin host
-    /// will feed WIT-imported sources into the same registry
-    /// (Phase 7+). See `docs/dev/architecture/picker.md`.
-    ///
-    /// Held as `Arc<...>` so the `gen:picker-sources` completion
-    /// generator can capture a `Weak<PickerRegistry>` and walk
-    /// the source list on every keystroke without keeping the
-    /// registry alive past the App. Mirror of the
-    /// `Arc<ModeRegistry>` pattern used by `gen:modes`.
+    // Metadata registry of every picker source the
+    // `:picker <source>` ex-command can dispatch to. Populated
+    // at boot with first-party source specs; feature crates
+    // (LSP, snippets) add their sources through dedicated
+    // `register_picker_sources` entry points. The plugin host
+    // will feed WIT-imported sources into the same registry
+    // (Phase 7+). See `docs/dev/architecture/picker.md`.
+    //
+    // Held as `Arc<...>` so the `gen:picker-sources` completion
+    // generator can capture a `Weak<PickerRegistry>` and walk
+    // the source list on every keystroke without keeping the
+    // registry alive past the App. Mirror of the
+    // `Arc<ModeRegistry>` pattern used by `gen:modes`.
     // Phase 5.B.13: `picker_registry` moved to
     // `editor.editor.picker_registry`.
-    /// Picker MRU index. Loaded from
-    /// `$XDG_CACHE_HOME/lattice/picker-mru.bincode` at boot
-    /// (best-effort -- corruption / version-mismatch silently
-    /// discards and starts fresh per `docs/dev/architecture/picker.md`
-    /// § 9.3). `open_picker` reads via `frecency_bonus` on
-    /// each candidate; `do_picker_accept` records on the
-    /// chosen row and best-effort persists. Single-threaded
-    /// host today; if plugin sources ever need shared access
-    /// this becomes `Arc<RwLock<...>>` -- the trait surface
-    /// already supports that move.
+    // Picker MRU index. Loaded from
+    // `$XDG_CACHE_HOME/lattice/picker-mru.bincode` at boot
+    // (best-effort -- corruption / version-mismatch silently
+    // discards and starts fresh per `docs/dev/architecture/picker.md`
+    // § 9.3). `open_picker` reads via `frecency_bonus` on
+    // each candidate; `do_picker_accept` records on the
+    // chosen row and best-effort persists. Single-threaded
+    // host today; if plugin sources ever need shared access
+    // this becomes `Arc<RwLock<...>>` -- the trait surface
+    // already supports that move.
     // Phase 5.B.13: `picker_mru` moved to
     // `editor.editor.picker_mru`.
-    /// Resolved persistence path for the MRU cache.
-    /// `Some(path)` when `dirs::cache_dir()` returned a usable
-    /// path at boot; `None` disables persistence (in-memory
-    /// only -- sandboxed runs, headless test fixtures).
+    // Resolved persistence path for the MRU cache.
+    // `Some(path)` when `dirs::cache_dir()` returned a usable
+    // path at boot; `None` disables persistence (in-memory
+    // only -- sandboxed runs, headless test fixtures).
     // Phase 5.B.13: `picker_mru_path` moved to
     // `editor.editor.picker_mru_path`.
-    /// `Some` while an async picker source's `init` future is
-    /// in-flight. Holds the spawned-task channel handle + the
-    /// generator + the source id; the main loop's
-    /// `drain_pending_picker_init` pumps the channel and seats
-    /// the picker once results arrive.
-    ///
-    /// A second `:picker <source>` invocation while one is
-    /// pending cancels the predecessor (`cancel.cancel()`) and
-    /// replaces this slot -- vim-style "do what I last said."
+    // `Some` while an async picker source's `init` future is
+    // in-flight. Holds the spawned-task channel handle + the
+    // generator + the source id; the main loop's
+    // `drain_pending_picker_init` pumps the channel and seats
+    // the picker once results arrive.
+    //
+    // A second `:picker <source>` invocation while one is
+    // pending cancels the predecessor (`cancel.cancel()`) and
+    // replaces this slot -- vim-style "do what I last said."
     // Phase 5.B.13: `pending_picker_init` moved to
     // `editor.editor.pending_picker_init`.
-    /// `Some` while a live picker is open
-    /// ([`PickerSourceSpec::live`] == true). Holds the
-    /// generator + debounce deadline + any in-flight
-    /// `on_query_changed` task. The main loop's
-    /// `drain_pending_live_picker_query` fires the source's
-    /// re-fetch when the debounce expires and seats the new
-    /// batch when the future resolves.
+    // `Some` while a live picker is open
+    // ([`PickerSourceSpec::live`] == true). Holds the
+    // generator + debounce deadline + any in-flight
+    // `on_query_changed` task. The main loop's
+    // `drain_pending_live_picker_query` fires the source's
+    // re-fetch when the debounce expires and seats the new
+    // batch when the future resolves.
     // Phase 5.B.13: `live_picker_query` moved to
     // `editor.editor.live_picker_query`.
-    /// True while a buffer activation is in *preview* mode --
-    /// driven by the picker's `select_next` / `select_prev`
-    /// hooks. Activate paths gate position-history pushes on
-    /// this flag so a hover-preview doesn't pollute the jump
-    /// list. Cleared at the end of every preview tick.
+    // True while a buffer activation is in *preview* mode --
+    // driven by the picker's `select_next` / `select_prev`
+    // hooks. Activate paths gate position-history pushes on
+    // this flag so a hover-preview doesn't pollute the jump
+    // list. Cleared at the end of every preview tick.
     // Phase 5.B.13: `previewing` moved to
     // `editor.editor.previewing`.
-    /// Receiver for [`lattice_lsp::LspLogPushed`] events (Phase
-    /// 4; M.5.3.b moved the event type from `lattice-protocol`'s
-    /// central enum to `lattice-lsp::events`). Drained once per
-    /// main-loop tick by [`Self::drain_lsp_log_events`];
-    /// matching log buffers in `BufferRegistry` are rebuilt from
-    /// the logger snapshot so `*lsp*` / `*lsp:<server>*` /
-    /// `*lsp:<server>:trace*` views update live without the
-    /// user having to reopen them.
+    // Receiver for [`lattice_lsp::LspLogPushed`] events (Phase
+    // 4; M.5.3.b moved the event type from `lattice-protocol`'s
+    // central enum to `lattice-lsp::events`). Drained once per
+    // main-loop tick by [`Self::drain_lsp_log_events`];
+    // matching log buffers in `BufferRegistry` are rebuilt from
+    // the logger snapshot so `*lsp*` / `*lsp:<server>*` /
+    // `*lsp:<server>:trace*` views update live without the
+    // user having to reopen them.
     // 5.B.18b: `lsp_log_event_rx`, `lsp_progress_event_rx`
     // moved to `editor.{lsp_log_event_rx,
     // lsp_progress_event_rx}`.
     // Phase 5.B.19: `pending_lsp_detach_rx`, `pending_mode_lifecycle_rx`,
     // `pending_inlay_hint_refresh_rx`, `pending_semantic_tokens_refresh_rx`
     // moved to `editor.*`.
-    /// Accumulated `$/progress` state keyed by
-    /// (server_id, token). `Begin` inserts; `Report` updates;
-    /// `End` removes. The modeline picks the most recent
-    /// active entry to surface.
+    // Accumulated `$/progress` state keyed by
+    // (server_id, token). `Begin` inserts; `Report` updates;
+    // `End` removes. The modeline picks the most recent
+    // active entry to surface.
     // Phase 5.B.17: `lsp_progress` moved to
     // `editor.lsp_progress`.
-    /// 4.4.e: cached `textDocument/selectionRange` chain for
-    /// the smart-expansion operator. Index 0 is the innermost
-    /// range (closest to the cursor); each subsequent entry is
-    /// one `parent` step outward. `cursor` and `buffer` are the
-    /// anchor that captured this chain; we invalidate the cache
-    /// when the cursor moves outside the innermost range or
-    /// the active buffer changes.
+    // 4.4.e: cached `textDocument/selectionRange` chain for
+    // the smart-expansion operator. Index 0 is the innermost
+    // range (closest to the cursor); each subsequent entry is
+    // one `parent` step outward. `cursor` and `buffer` are the
+    // anchor that captured this chain; we invalidate the cache
+    // when the cursor moves outside the innermost range or
+    // the active buffer changes.
     // Phase 5.B.17: `lsp_selection_chain` moved to
     // `editor.lsp_selection_chain`.
-    /// 4.4.e: current step inside `lsp_selection_chain.ranges`.
-    /// `0` = innermost; `chain.ranges.len() - 1` = outermost.
+    // 4.4.e: current step inside `lsp_selection_chain.ranges`.
+    // `0` = innermost; `chain.ranges.len() - 1` = outermost.
     // Phase 5.B.17: `lsp_selection_chain_index` moved to
     // `editor.lsp_selection_chain_index`.
     // Phase 5.B.19: `pending_selection_range_rx/token` moved to `editor.*`.
-    /// 4.4.e: cached `textDocument/documentHighlight` for the
-    /// active buffer + symbol position. Refreshed by the
-    /// per-tick pump when the cursor moves to a different
-    /// (line, byte). Renderer reads this to paint the soft
-    /// overlay across same-symbol occurrences.
+    // 4.4.e: cached `textDocument/documentHighlight` for the
+    // active buffer + symbol position. Refreshed by the
+    // per-tick pump when the cursor moves to a different
+    // (line, byte). Renderer reads this to paint the soft
+    // overlay across same-symbol occurrences.
     // Phase 5.B.17: `lsp_document_highlights` moved to
     // `editor.lsp_document_highlights`.
-    /// 4.4.e: cursor position at which the most recent
-    /// `documentHighlight` request was issued. Used by the
-    /// pump to decide whether to re-issue (cursor moved) vs.
-    /// reuse the cache. Distinct from `cache.cursor` because
-    /// the in-flight request may not have landed yet.
+    // 4.4.e: cursor position at which the most recent
+    // `documentHighlight` request was issued. Used by the
+    // pump to decide whether to re-issue (cursor moved) vs.
+    // reuse the cache. Distinct from `cache.cursor` because
+    // the in-flight request may not have landed yet.
     // Phase 5.B.17: `last_document_highlight_issue_cursor`
     // moved to
     // `editor.last_document_highlight_issue_cursor`.
     // Phase 5.B.19: `pending_document_highlight_token/rx` moved to `editor.*`.
-    /// 4.4.f: per-buffer cache of the last `textDocument/foldingRange`
-    /// response. Keyed by `BufferId` because the foldmethod is a
-    /// per-buffer setting; multiple open buffers can each track
-    /// their own LSP fold list. Invalidated by the pump when
-    /// the document version bumps.
+    // 4.4.f: per-buffer cache of the last `textDocument/foldingRange`
+    // response. Keyed by `BufferId` because the foldmethod is a
+    // per-buffer setting; multiple open buffers can each track
+    // their own LSP fold list. Invalidated by the pump when
+    // the document version bumps.
     // Phase 5.B.17: `lsp_folds_cache` moved to
     // `editor.lsp_folds_cache`.
     // Phase 5.B.19: `pending_folding_range_token/rx` moved to `editor.*`.
-    /// 4.4.g: per-buffer `inlayHint` cache. Refilled by the
-    /// per-tick pump when the document version changes; the
-    /// renderer overlay splices each hint as virtual text.
+    // 4.4.g: per-buffer `inlayHint` cache. Refilled by the
+    // per-tick pump when the document version changes; the
+    // renderer overlay splices each hint as virtual text.
     // Phase 5.B.17: `lsp_inlay_hints_cache` moved to
     // `editor.lsp_inlay_hints_cache`.
-    /// 4.5.c: per-buffer `documentLink` cache. Refilled by
-    /// the per-tick pump on document-version change; consumed
-    /// by `gx` (Normal-mode keystroke) -- the first link whose
-    /// range covers the cursor wins. The renderer overlay
-    /// (underline link ranges) is queued; today the cache only
-    /// drives navigation, not visuals.
+    // 4.5.c: per-buffer `documentLink` cache. Refilled by
+    // the per-tick pump on document-version change; consumed
+    // by `gx` (Normal-mode keystroke) -- the first link whose
+    // range covers the cursor wins. The renderer overlay
+    // (underline link ranges) is queued; today the cache only
+    // drives navigation, not visuals.
     // Phase 5.B.17: `lsp_document_links_cache` moved to
     // `editor.lsp_document_links_cache`.
     // Phase 5.B.19: `pending_document_links_token/rx` moved to `editor.*`.
-    /// 4.5.d: per-buffer code-lens cache. Refilled by the
-    /// per-tick pump on document-version change; consumed by
-    /// `:lsp-code-lens` (opens a picker over the cached
-    /// lenses). Cleared via `workspace/codeLens/refresh` so
-    /// servers that recompute lenses out-of-band (test runs,
-    /// debug session start) can force a refetch.
+    // 4.5.d: per-buffer code-lens cache. Refilled by the
+    // per-tick pump on document-version change; consumed by
+    // `:lsp-code-lens` (opens a picker over the cached
+    // lenses). Cleared via `workspace/codeLens/refresh` so
+    // servers that recompute lenses out-of-band (test runs,
+    // debug session start) can force a refetch.
     // Phase 5.B.17: `lsp_code_lens_cache` moved to
     // `editor.lsp_code_lens_cache`.
     // Phase 5.B.19: `pending_code_lens_{token,rx,refresh_rx,items,server}`,
     // `pending_document_color_{token,rx}`, `pending_color_{presentations,range}`,
     // `pending_inlay_hint_{token,rx}` moved to `editor.*`.
-    /// 4.4.h: per-buffer semantic-tokens cache. Refilled when
-    /// the document version changes; the renderer overlay
-    /// repaints span ranges that fall under a token with a
-    /// kind-driven style.
+    // 4.4.h: per-buffer semantic-tokens cache. Refilled when
+    // the document version changes; the renderer overlay
+    // repaints span ranges that fall under a token with a
+    // kind-driven style.
     // Phase 5.B.17: `lsp_semantic_tokens_cache` moved to
     // `editor.lsp_semantic_tokens_cache`.
     // Phase 5.B.19: `pending_semantic_tokens_{token,rx}` moved to `editor.*`.
-    /// 4.4.j: per-buffer pull-diagnostics cache. Keys the
-    /// last `result_id` the server issued so the next pull
-    /// can be answered as `Unchanged` cheaply. The pump
-    /// re-issues on document-version change OR cache miss
-    /// (e.g. after `workspace/diagnostic/refresh` evicts).
+    // 4.4.j: per-buffer pull-diagnostics cache. Keys the
+    // last `result_id` the server issued so the next pull
+    // can be answered as `Unchanged` cheaply. The pump
+    // re-issues on document-version change OR cache miss
+    // (e.g. after `workspace/diagnostic/refresh` evicts).
     // Phase 5.B.17: `lsp_pull_diagnostics_cache` moved to
     // `editor.lsp_pull_diagnostics_cache`.
     // Phase 5.B.19: `pending_pull_diagnostics_{token,rx}`,
@@ -831,24 +831,24 @@ pub struct App {
     // [`Self::completion_auto_insert_single`].
     // Phase 5.B.11: `auto_submit_after_chord` moved to
     // `editor.editor.auto_submit_after_chord`.
-    /// LSP subsystem handle (DESIGN.md §5.4, Phase 4.1.h +
-    /// audit slice 1). Reads (`servers_for`, `running_actors`,
-    /// `configs`, ...) are wait-free against an
-    /// `ArcSwap<SupervisorSnapshot>`; writes (`open_buffer`,
-    /// `attach_handle`, `close_buffer`, `flush*`, `shutdown`)
-    /// route through the supervisor task's mailbox. The UI
-    /// thread can call any read on the keystroke / render path
-    /// without ever blocking, and the previous
-    /// `Arc<tokio::sync::Mutex<LspSupervisor>>` -- which
-    /// silently dropped work via `try_lock` whenever an async
-    /// `:e <path>` held the mutex across the LSP `initialize`
-    /// handshake -- is gone.
+    // LSP subsystem handle (DESIGN.md §5.4, Phase 4.1.h +
+    // audit slice 1). Reads (`servers_for`, `running_actors`,
+    // `configs`, ...) are wait-free against an
+    // `ArcSwap<SupervisorSnapshot>`; writes (`open_buffer`,
+    // `attach_handle`, `close_buffer`, `flush*`, `shutdown`)
+    // route through the supervisor task's mailbox. The UI
+    // thread can call any read on the keystroke / render path
+    // without ever blocking, and the previous
+    // `Arc<tokio::sync::Mutex<LspSupervisor>>` -- which
+    // silently dropped work via `try_lock` whenever an async
+    // `:e <path>` held the mutex across the LSP `initialize`
+    // handshake -- is gone.
     // 5.B.18b: `lsp`, `lsp_diagnostics`, `lsp_logger`
     // moved to `editor.{lsp, lsp_diagnostics, lsp_logger}`.
-    /// 4.4.l.2: file-watcher service backing
-    /// `workspace/didChangeWatchedFiles`. Now lives on host; App
-    /// holds the handle for renderer’s drain path.
-    pub lsp_file_watcher: Option<lattice_host::lsp_watcher::LspFileWatcher>,
+    // 5.8.AA.o: `lsp_file_watcher` moved to `editor.lsp_file_watcher`
+    // so the GPUI peer reaches the same watcher path via
+    // `Editor::refresh_lsp_file_watcher` + `drain_lsp_fs_events`
+    // (called from `run_tick_pending`).
     // 5.B.18b: `pending_apply_edit_rx`,
     // `pending_configuration_rx`,
     // `pending_show_document_rx`,

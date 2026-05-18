@@ -614,6 +614,10 @@ impl Editor {
             lsp,
             lsp_diagnostics,
             lsp_logger,
+            // 5.8.AA.o: lazy-spawn on first
+            // `workspace/didChangeWatchedFiles` registration via
+            // `Editor::refresh_lsp_file_watcher`.
+            lsp_file_watcher: None,
             lsp_log_event_rx: Some(lsp_log_event_rx),
             lsp_progress_event_rx: Some(lsp_progress_event_rx),
             pending_apply_edit_rx: Some(lsp_apply_edit_rx),

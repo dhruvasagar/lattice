@@ -725,6 +725,12 @@ pub struct Editor {
     pub lsp: LspSupervisorHandle,
     pub lsp_diagnostics: DiagnosticsLayer,
     pub lsp_logger: LspLogger,
+    /// 4.4.l.2 / 5.8.AA.o: file-watcher service backing
+    /// `workspace/didChangeWatchedFiles`. Lazy-spawned on first
+    /// `workspace/didChangeWatchedFiles` registration; dropped
+    /// when no actor advertises the capability. Lives host-side
+    /// so both renderer peers reach it via `run_tick_pending`.
+    pub lsp_file_watcher: Option<crate::lsp_watcher::LspFileWatcher>,
     pub lsp_log_event_rx: Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspLogPushed>>,
     pub lsp_progress_event_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspProgressUpdate>>,

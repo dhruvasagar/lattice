@@ -3667,6 +3667,460 @@ impl Editor {
         )
     }
 
+    /// 4.4.j: per-tick `textDocument/diagnostic` (pull-based)
+    /// pump. Phase 5.8.AA.i: hoisted from TUI App.
+    pub fn maybe_request_pull_diagnostics(&mut self) {
+        if !self.lsp_diagnostics_mode_enabled_for(self.document_buffer_id) {
+            return;
+        }
+        let snapshot = self.document.snapshot();
+        let version = snapshot.version;
+        let prior = self
+            .lsp_pull_diagnostics_cache
+            .get(&self.document_buffer_id);
+        if let Some(cache) = prior
+            && cache.document_version == version
+        {
+            return;
+        }
+        let prior_result_id = prior.and_then(|c| c.result_id.clone());
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
+            return;
+        };
+        if let Some(token) = self.pending_pull_diagnostics_token.take() {
+            token.cancel();
+        }
+        let buffer_id = self.document_buffer_id;
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<lattice_lsp::cache::PullDiagnosticsOutcome>();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_pull_diagnostics_rx = Some(rx);
+        self.pending_pull_diagnostics_token = Some(token.clone());
+        let lsp = self.lsp.clone();
+        lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
+            let handles: Vec<lattice_lsp::ServerHandle> = lsp.servers_for(&uri);
+            let Some(handle) = handles
+                .into_iter()
+                .find(|h| h.capabilities().supports_pull_diagnostics())
+            else {
+                let _ = tx.send(lattice_lsp::cache::PullDiagnosticsOutcome::Empty {
+                    buffer_id,
+                    document_version: version,
+                });
+                return;
+            };
+            let identifier = handle.capabilities().diagnostic_identifier();
+            let server_id_arc: std::sync::Arc<str> = std::sync::Arc::from(handle.server_id());
+            let params = lattice_lsp::lsp_types::DocumentDiagnosticParams {
+                text_document: lattice_lsp::lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                identifier,
+                previous_result_id: prior_result_id,
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            };
+            match handle.document_diagnostic(params, token.clone()).await {
+                Ok(lattice_lsp::lsp_types::DocumentDiagnosticReportResult::Report(report)) => {
+                    match report {
+                        lattice_lsp::lsp_types::DocumentDiagnosticReport::Full(full) => {
+                            let inner = full.full_document_diagnostic_report;
+                            let _ = tx.send(lattice_lsp::cache::PullDiagnosticsOutcome::Full {
+                                buffer_id,
+                                server_id: server_id_arc,
+                                uri,
+                                document_version: version,
+                                result_id: inner.result_id,
+                                diagnostics: inner.items,
+                            });
+                        }
+                        lattice_lsp::lsp_types::DocumentDiagnosticReport::Unchanged(unchanged) => {
+                            let _ =
+                                tx.send(lattice_lsp::cache::PullDiagnosticsOutcome::Unchanged {
+                                    buffer_id,
+                                    document_version: version,
+                                    result_id: unchanged
+                                        .unchanged_document_diagnostic_report
+                                        .result_id,
+                                });
+                        }
+                    }
+                }
+                _ => {
+                    let _ = tx.send(lattice_lsp::cache::PullDiagnosticsOutcome::Empty {
+                        buffer_id,
+                        document_version: version,
+                    });
+                }
+            }
+        });
+    }
+
+    /// 4.4.f: per-tick `foldingRange` pump. Phase 5.8.AA.i:
+    /// hoisted from TUI App.
+    pub fn maybe_request_folding_range(&mut self) {
+        if !matches!(self.foldmethod(), lattice_core::FoldMethod::Lsp) {
+            return;
+        }
+        if !self.lsp_folding_mode_enabled_for(self.document_buffer_id) {
+            return;
+        }
+        let snapshot = self.document.snapshot();
+        let version = snapshot.version;
+        if let Some(cache) = self.lsp_folds_cache.get(&self.document_buffer_id)
+            && cache.document_version == version
+        {
+            return;
+        }
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
+            return;
+        };
+        if let Some(token) = self.pending_folding_range_token.take() {
+            token.cancel();
+        }
+        let buffer_id = self.document_buffer_id;
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<lattice_lsp::cache::FoldingRangeOutcome>();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_folding_range_rx = Some(rx);
+        self.pending_folding_range_token = Some(token.clone());
+        let lsp = self.lsp.clone();
+        lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
+            let handles: Vec<lattice_lsp::ServerHandle> = lsp.servers_for(&uri);
+            let Some(handle) = handles
+                .into_iter()
+                .find(|h| h.capabilities().supports_folding_range())
+            else {
+                let _ = tx.send(lattice_lsp::cache::FoldingRangeOutcome::Empty {
+                    buffer_id,
+                    document_version: version,
+                });
+                return;
+            };
+            let params = lattice_lsp::lsp_types::FoldingRangeParams {
+                text_document: lattice_lsp::lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            };
+            match handle.folding_range(params, token.clone()).await {
+                Ok(Some(ranges)) if !ranges.is_empty() => {
+                    let folds = ranges.into_iter().map(folding_range_to_fold).collect();
+                    let _ = tx.send(lattice_lsp::cache::FoldingRangeOutcome::Items {
+                        buffer_id,
+                        document_version: version,
+                        folds,
+                    });
+                }
+                _ => {
+                    let _ = tx.send(lattice_lsp::cache::FoldingRangeOutcome::Empty {
+                        buffer_id,
+                        document_version: version,
+                    });
+                }
+            }
+        });
+    }
+
+    /// 4.5.c: per-tick `documentLink` pump. Phase 5.8.AA.i:
+    /// hoisted from TUI App.
+    pub fn maybe_request_document_link(&mut self) {
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
+            return;
+        };
+        let snapshot = self.document.snapshot();
+        let version = snapshot.version;
+        if let Some(cache) = self.lsp_document_links_cache.get(&self.document_buffer_id)
+            && cache.document_version == version
+        {
+            return;
+        }
+        if let Some(token) = self.pending_document_links_token.take() {
+            token.cancel();
+        }
+        let buffer_id = self.document_buffer_id;
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<lattice_lsp::cache::DocumentLinksOutcome>();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_document_links_rx = Some(rx);
+        self.pending_document_links_token = Some(token.clone());
+        let lsp = self.lsp.clone();
+        lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
+            let handles: Vec<lattice_lsp::ServerHandle> = lsp.servers_for(&uri);
+            let Some(handle) = handles
+                .into_iter()
+                .find(|h| h.capabilities().supports_document_link())
+            else {
+                let _ = tx.send(lattice_lsp::cache::DocumentLinksOutcome::Empty {
+                    buffer_id,
+                    document_version: version,
+                });
+                return;
+            };
+            let params = lattice_lsp::lsp_types::DocumentLinkParams {
+                text_document: lattice_lsp::lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            };
+            match handle.document_link(params, token.clone()).await {
+                Ok(Some(links)) if !links.is_empty() => {
+                    let _ = tx.send(lattice_lsp::cache::DocumentLinksOutcome::Items {
+                        buffer_id,
+                        document_version: version,
+                        links,
+                    });
+                }
+                _ => {
+                    let _ = tx.send(lattice_lsp::cache::DocumentLinksOutcome::Empty {
+                        buffer_id,
+                        document_version: version,
+                    });
+                }
+            }
+        });
+    }
+
+    /// 4.5.d: per-tick `codeLens` pump. Phase 5.8.AA.i: hoisted
+    /// from TUI App.
+    pub fn maybe_request_code_lens(&mut self) {
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
+            return;
+        };
+        let snapshot = self.document.snapshot();
+        let version = snapshot.version;
+        if let Some(cache) = self.lsp_code_lens_cache.get(&self.document_buffer_id)
+            && cache.document_version == version
+        {
+            return;
+        }
+        if let Some(token) = self.pending_code_lens_token.take() {
+            token.cancel();
+        }
+        let buffer_id = self.document_buffer_id;
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<lattice_lsp::cache::CodeLensOutcome>();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_code_lens_rx = Some(rx);
+        self.pending_code_lens_token = Some(token.clone());
+        let lsp = self.lsp.clone();
+        lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
+            let handles: Vec<lattice_lsp::ServerHandle> = lsp.servers_for(&uri);
+            let Some(handle) = handles
+                .into_iter()
+                .find(|h| h.capabilities().supports_code_lens())
+            else {
+                let _ = tx.send(lattice_lsp::cache::CodeLensOutcome::Empty {
+                    buffer_id,
+                    document_version: version,
+                });
+                return;
+            };
+            let server_id_arc: std::sync::Arc<str> = std::sync::Arc::from(handle.server_id());
+            let params = lattice_lsp::lsp_types::CodeLensParams {
+                text_document: lattice_lsp::lsp_types::TextDocumentIdentifier { uri },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            };
+            match handle.code_lens(params, token.clone()).await {
+                Ok(Some(lenses)) if !lenses.is_empty() => {
+                    let _ = tx.send(lattice_lsp::cache::CodeLensOutcome::Items {
+                        buffer_id,
+                        document_version: version,
+                        server_id: server_id_arc,
+                        lenses,
+                    });
+                }
+                _ => {
+                    let _ = tx.send(lattice_lsp::cache::CodeLensOutcome::Empty {
+                        buffer_id,
+                        document_version: version,
+                    });
+                }
+            }
+        });
+    }
+
+    /// 4.5.e: per-tick `documentColor` pump. Phase 5.8.AA.i:
+    /// hoisted from TUI App.
+    pub fn maybe_request_document_color(&mut self) {
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
+            return;
+        };
+        let snapshot = self.document.snapshot();
+        let version = snapshot.version;
+        if let Some(cache) = self.lsp_document_color_cache.get(&self.document_buffer_id)
+            && cache.document_version == version
+        {
+            return;
+        }
+        if let Some(token) = self.pending_document_color_token.take() {
+            token.cancel();
+        }
+        let buffer_id = self.document_buffer_id;
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<lattice_lsp::cache::DocumentColorOutcome>();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_document_color_rx = Some(rx);
+        self.pending_document_color_token = Some(token.clone());
+        let lsp = self.lsp.clone();
+        lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
+            let handles: Vec<lattice_lsp::ServerHandle> = lsp.servers_for(&uri);
+            let Some(handle) = handles
+                .into_iter()
+                .find(|h| h.capabilities().supports_color())
+            else {
+                let _ = tx.send(lattice_lsp::cache::DocumentColorOutcome::Empty {
+                    buffer_id,
+                    document_version: version,
+                });
+                return;
+            };
+            let server_id_arc: std::sync::Arc<str> = std::sync::Arc::from(handle.server_id());
+            let params = lattice_lsp::lsp_types::DocumentColorParams {
+                text_document: lattice_lsp::lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            };
+            match handle.document_color(params, token.clone()).await {
+                Ok(colors) if !colors.is_empty() => {
+                    let _ = tx.send(lattice_lsp::cache::DocumentColorOutcome::Items {
+                        buffer_id,
+                        document_version: version,
+                        server_id: server_id_arc,
+                        colors,
+                    });
+                }
+                _ => {
+                    let _ = tx.send(lattice_lsp::cache::DocumentColorOutcome::Empty {
+                        buffer_id,
+                        document_version: version,
+                    });
+                }
+            }
+        });
+    }
+
+    /// 4.4.h: per-tick `semanticTokens/full` pump. Picks delta
+    /// when prior result_id + server supports delta; full
+    /// otherwise. Phase 5.8.AA.i: hoisted from TUI App.
+    pub fn maybe_request_semantic_tokens(&mut self) {
+        if !self.lsp_semantic_tokens_mode_enabled_for(self.document_buffer_id) {
+            return;
+        }
+        let snapshot = self.document.snapshot();
+        let version = snapshot.version;
+        let prior = self.lsp_semantic_tokens_cache.get(&self.document_buffer_id);
+        if let Some(cache) = prior
+            && cache.document_version == version
+        {
+            return;
+        }
+        let prior_result_id = prior.and_then(|c| c.result_id.clone());
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
+            return;
+        };
+        if let Some(token) = self.pending_semantic_tokens_token.take() {
+            token.cancel();
+        }
+        let buffer_id = self.document_buffer_id;
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<lattice_lsp::cache::SemanticTokensOutcome>();
+        let token = lattice_protocol::CancellationToken::new();
+        self.pending_semantic_tokens_rx = Some(rx);
+        self.pending_semantic_tokens_token = Some(token.clone());
+        let lsp = self.lsp.clone();
+        lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
+            let handles: Vec<lattice_lsp::ServerHandle> = lsp.servers_for(&uri);
+            let Some(handle) = handles
+                .into_iter()
+                .find(|h| h.capabilities().supports_semantic_tokens())
+            else {
+                let _ = tx.send(lattice_lsp::cache::SemanticTokensOutcome::Empty {
+                    buffer_id,
+                    document_version: version,
+                });
+                return;
+            };
+            let caps = handle.capabilities();
+            let token_types = caps.semantic_token_types();
+            let token_modifiers = caps.semantic_token_modifiers();
+            if let (Some(prev_id), true) = (prior_result_id, caps.supports_semantic_tokens_delta())
+            {
+                let params = lattice_lsp::lsp_types::SemanticTokensDeltaParams {
+                    text_document: lattice_lsp::lsp_types::TextDocumentIdentifier {
+                        uri: uri.clone(),
+                    },
+                    previous_result_id: prev_id.clone(),
+                    work_done_progress_params: Default::default(),
+                    partial_result_params: Default::default(),
+                };
+                match handle
+                    .semantic_tokens_full_delta(params, token.clone())
+                    .await
+                {
+                    Ok(Some(lattice_lsp::lsp_types::SemanticTokensFullDeltaResult::Tokens(t))) => {
+                        let decoded = lattice_lsp::cache::decode_semantic_tokens(
+                            &t.data,
+                            &token_types,
+                            &token_modifiers,
+                        );
+                        let _ = tx.send(lattice_lsp::cache::SemanticTokensOutcome::Items {
+                            buffer_id,
+                            document_version: version,
+                            result_id: t.result_id,
+                            raw_data: t.data,
+                            tokens: decoded,
+                        });
+                    }
+                    Ok(Some(
+                        lattice_lsp::lsp_types::SemanticTokensFullDeltaResult::TokensDelta(d),
+                    )) => {
+                        let _ = tx.send(lattice_lsp::cache::SemanticTokensOutcome::Delta {
+                            buffer_id,
+                            document_version: version,
+                            previous_result_id: prev_id,
+                            new_result_id: d.result_id,
+                            edits: d.edits,
+                            token_types: token_types.clone(),
+                            token_modifiers: token_modifiers.clone(),
+                        });
+                    }
+                    _ => {
+                        let _ = tx.send(lattice_lsp::cache::SemanticTokensOutcome::Empty {
+                            buffer_id,
+                            document_version: version,
+                        });
+                    }
+                }
+                return;
+            }
+            let params = lattice_lsp::lsp_types::SemanticTokensParams {
+                text_document: lattice_lsp::lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            };
+            match handle.semantic_tokens_full(params, token.clone()).await {
+                Ok(Some(lattice_lsp::lsp_types::SemanticTokensResult::Tokens(t))) => {
+                    let decoded = lattice_lsp::cache::decode_semantic_tokens(
+                        &t.data,
+                        &token_types,
+                        &token_modifiers,
+                    );
+                    let _ = tx.send(lattice_lsp::cache::SemanticTokensOutcome::Items {
+                        buffer_id,
+                        document_version: version,
+                        result_id: t.result_id,
+                        raw_data: t.data,
+                        tokens: decoded,
+                    });
+                }
+                _ => {
+                    let _ = tx.send(lattice_lsp::cache::SemanticTokensOutcome::Empty {
+                        buffer_id,
+                        document_version: version,
+                    });
+                }
+            }
+        });
+    }
+
     /// 4.4.g: per-tick `inlayHint` pump. Fires when the mode is
     /// active and the cache is stale for the visible viewport ±
     /// overscan. Single-flight; each request cancels its
@@ -4708,6 +5162,12 @@ impl Editor {
         // here is cheap when nothing changed.
         self.maybe_request_inlay_hint();
         self.maybe_request_document_highlight();
+        self.maybe_request_pull_diagnostics();
+        self.maybe_request_folding_range();
+        self.maybe_request_document_link();
+        self.maybe_request_code_lens();
+        self.maybe_request_document_color();
+        self.maybe_request_semantic_tokens();
         // `drain_pending_code_actions` returns an `Option<(handle,
         // action)>` for the App-side apply chain — not signal-shaped.
         // Renderer peers call it directly and decide how to handle
@@ -10985,6 +11445,26 @@ pub fn prefer_aliases_for_command_candidates(
 pub fn dedup_rendered_by_text(rendered: &mut Vec<lattice_completion::RenderedCandidate>) {
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     rendered.retain(|cand| seen.insert(cand.raw.text.clone()));
+}
+
+/// Translate an LSP `FoldingRange` into the renderer-neutral
+/// `Fold` shape. Hashes (start_line, end_line, kind) for stable
+/// fold identity across re-fetches. Phase 5.8.AA.i: hoisted from
+/// `lattice-ui-tui::app::folding_range_to_fold`.
+pub fn folding_range_to_fold(r: lattice_lsp::lsp_types::FoldingRange) -> lattice_core::Fold {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    r.start_line.hash(&mut hasher);
+    r.end_line.hash(&mut hasher);
+    if let Some(kind) = r.kind.as_ref() {
+        std::mem::discriminant(kind).hash(&mut hasher);
+    }
+    lattice_core::Fold {
+        start_line: r.start_line,
+        end_line: r.end_line,
+        closed: false,
+        identity: Some(hasher.finish()),
+    }
 }
 
 /// 5.5.G.23: host-side recursive effect flush. Walks any

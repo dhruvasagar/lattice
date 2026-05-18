@@ -258,12 +258,42 @@ impl GpuiApp {
     /// before reading `editor.visible_highlights`.
     pub fn refresh_highlights(&mut self) {
         let syntax = self.editor.syntax.clone();
-        // Whole-document range for now -- the per-frame paint
-        // walks every visible row anyway. When viewport tracking
-        // lands the range tightens to `[scroll, scroll + viewport]`.
-        let end_line = self.editor.document.snapshot().buffer.line_count() as u32;
+        // 5.8.O: tighten the highlight range to the visible
+        // viewport (`[scroll, scroll + viewport_height)`) so the
+        // worker walks only what the user can see. For docs
+        // shorter than the viewport we clamp to line_count.
+        let line_count = self.editor.document.snapshot().buffer.line_count() as u32;
+        let end_line = self
+            .editor
+            .scroll
+            .saturating_add(self.editor.viewport_height.max(1))
+            .min(line_count);
         self.editor
             .refresh_highlights_window(syntax.as_ref(), end_line, 0);
+    }
+
+    /// Auto-scroll the active pane so the cursor stays in the
+    /// visible viewport (`[scroll, scroll + viewport_height)`).
+    /// Mirrors the TUI peer's per-tick scroll-clamp; both renderer
+    /// peers funnel through the host's `editor.scroll` so any
+    /// host-side cursor jump (a motion, a `:N`, a search bounce)
+    /// is reflected here on the next paint.
+    ///
+    /// Phase 5.8.O: foundational for cursorline / visual selection
+    /// (5.8.P, 5.8.Q) — those features paint *within* the viewport
+    /// and would mis-render if the cursor sat outside it.
+    pub fn ensure_cursor_in_viewport(&mut self) {
+        let cursor_line = self.editor.cursor.line;
+        let viewport = self.editor.viewport_height.max(1);
+        if cursor_line < self.editor.scroll {
+            // Cursor moved above the visible window — scroll up so
+            // it lands on the top row.
+            self.editor.scroll = cursor_line;
+        } else if cursor_line >= self.editor.scroll.saturating_add(viewport) {
+            // Cursor moved below the visible window — scroll down
+            // so it lands on the bottom row.
+            self.editor.scroll = cursor_line.saturating_sub(viewport - 1);
+        }
     }
 
     /// Run the renderer-side post-boot helpers the TUI peer
@@ -302,6 +332,14 @@ impl GpuiApp {
         // wiring is in place for the `ThemeChanged` cascade.
         self.rebuild_gpui_theme();
         self.editor.rebuild_option_cache();
+        // 5.8.O: seed viewport_height with a sensible default so
+        // the host-side cache key + cursor-scroll math work from
+        // t=0. The default matches the 720×480 boot window at
+        // roughly 16px per text row; a future slice hooks the
+        // gpui window resize event to recompute on resize.
+        if self.editor.viewport_height == 0 {
+            self.editor.viewport_height = 30;
+        }
         let signals = self
             .editor
             .activate_major_for_buffer_kind(self.editor.document_buffer_id, BufferKind::Document);

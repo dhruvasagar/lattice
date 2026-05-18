@@ -311,6 +311,23 @@ impl EditorView {
         let cursor_line = cursor.line as usize;
         let cursor_byte = cursor.byte as usize;
         let raw_lines: Vec<&str> = text.split('\n').collect();
+        // 5.8.O: clip the visible window to `[scroll, scroll +
+        // viewport_height)` so large docs don't render every line
+        // every frame. Active pane reads scroll from `editor.scroll`
+        // (ensure_cursor_in_viewport keeps it sane); inactive
+        // panes read their stashed `PaneState::scroll`. The
+        // gutter, status, and cursor maths still work in terms of
+        // absolute line indices — only the iter range tightens.
+        let pane_scroll = if is_active {
+            editor.scroll
+        } else {
+            pane.scroll
+        };
+        let viewport_height = editor.viewport_height.max(1);
+        let visible_start = (pane_scroll as usize).min(raw_lines.len());
+        let visible_end = (pane_scroll as usize)
+            .saturating_add(viewport_height as usize)
+            .min(raw_lines.len());
 
         let cursor_shape = if is_active {
             Some(CursorShape::for_mode(editor.modal))
@@ -438,10 +455,14 @@ impl EditorView {
         // (subdued comment-like style).
         let inlay_color = rgb(0x7f849c); // Catppuccin overlay1.
 
-        let mut rows: Vec<gpui::Div> = raw_lines
-            .iter()
-            .enumerate()
-            .map(|(line_idx, line)| {
+        // 5.8.O: walk only the visible window [visible_start,
+        // visible_end). `line_idx` is the ABSOLUTE buffer-line
+        // index so gutter labels, cursor maths, and highlight
+        // lookups stay 0-based against the document — not relative
+        // to the viewport.
+        let mut rows: Vec<gpui::Div> = (visible_start..visible_end)
+            .map(|line_idx| {
+                let line = raw_lines[line_idx];
                 let is_cursor_line = line_idx == cursor_line;
                 let line_spans: &[lattice_syntax::StyledSpan] =
                     highlights.get(line_idx).map(Vec::as_slice).unwrap_or(&[]);
@@ -488,8 +509,13 @@ impl EditorView {
             })
             .collect();
 
+        // 5.8.O: cursor-past-last-line marker only renders if the
+        // synthetic row falls within the visible viewport.
         let cursor_past_last_line = is_active && cursor_line >= raw_lines.len();
-        if cursor_past_last_line {
+        let trailing_row_in_viewport = cursor_past_last_line
+            && cursor_line >= visible_start
+            && cursor_line < (visible_start + (viewport_height as usize));
+        if trailing_row_in_viewport {
             let blank_gutter = div().child(" ".repeat(gutter_pad_len));
             rows.push(
                 div()
@@ -563,6 +589,10 @@ impl EditorView {
 
 impl Render for EditorView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // 5.8.O: keep the cursor inside the viewport before any
+        // paint reads `editor.scroll`. Auto-scrolls if the cursor
+        // moved past the visible window since the last frame.
+        self.app.ensure_cursor_in_viewport();
         // 5.8.G: refresh the host-side highlight cache before
         // reading spans. Cache-hit path is ~50ns; cache-miss path
         // walks `highlight_lines` exactly once and stores into

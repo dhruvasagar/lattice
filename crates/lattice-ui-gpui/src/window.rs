@@ -936,13 +936,13 @@ impl EditorView {
                         in_doc_highlight,
                         diagnostic_severity_at_byte(line_idx, byte_idx, line)
                             .map(|sev| diagnostic_glyph_and_color(&host_theme, sev).1),
-                        selection_bg,
-                        current_match_bg,
-                        current_match_fg,
-                        hlsearch_bg,
-                        substitute_bg,
-                        substitute_fg,
-                        doc_highlights_bg,
+                        selection_bg.into(),
+                        current_match_bg.into(),
+                        current_match_fg.into(),
+                        hlsearch_bg.into(),
+                        substitute_bg.into(),
+                        substitute_fg.into(),
+                        doc_highlights_bg.into(),
                     );
                     match &mut current_run {
                         Some((existing, buf)) if *existing == style => {

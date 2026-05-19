@@ -155,6 +155,29 @@ pub struct ActiveDocumentRenderState {
     /// holds a per-frame consistent view. Wait-free read for
     /// downstream consumers (line iteration, byte indexing).
     pub snapshot: Arc<lattice_runtime::DocumentSnapshot>,
+    /// Pending motion-count accumulator (e.g. `3` in `3dw`).
+    /// Slice 3c.atomic.J: mirrored here so the input translator
+    /// can build its `TranslateContext` from a published snapshot
+    /// instead of reaching through `app.editor.X` per keystroke.
+    pub pending_count: u32,
+    /// Operator-pending count (e.g. `2` in `d2w`). Same
+    /// rationale as `pending_count`.
+    pub op_count: u32,
+    /// `true` while a macro is being recorded (`q<reg>`).
+    /// Used by the translator to gate the `q` rebind and by the
+    /// modeline's recording indicator.
+    pub macro_recording: bool,
+    /// `true` while the insert-completion popup is open.
+    /// Gates insert-mode keystroke translation (Tab cycle,
+    /// CR accept, Esc dismiss).
+    pub completion_open: bool,
+    /// `true` while a picker overlay is open. Gates the
+    /// normal-mode keymap so picker-local keys take precedence.
+    pub picker_open: bool,
+    /// `true` while a snippet's tab-stop chain is active.
+    /// Gates Tab / S-Tab to drive `next_tabstop` / `prev_tabstop`
+    /// instead of falling back to insert-completion / outdent.
+    pub snippet_active: bool,
 }
 
 impl Default for ActiveDocumentRenderState {
@@ -173,6 +196,12 @@ impl Default for ActiveDocumentRenderState {
             modal: lattice_grammar::ModalState::Normal,
             visual_anchor: None,
             snapshot: Arc::new(lattice_runtime::DocumentSnapshot::default()),
+            pending_count: 0,
+            op_count: 0,
+            macro_recording: false,
+            completion_open: false,
+            picker_open: false,
+            snippet_active: false,
         }
     }
 }
@@ -438,6 +467,39 @@ mod tests {
         // Identity isn't preserved across publications (naive
         // rebuild today); the value is what matters.
         assert_eq!(rs.active_document.snapshot.buffer.byte_len(), 0);
+        // Slice 3c.atomic.J: translator-context mirror fields
+        // default to zero/false when no count, no macro, no
+        // picker, no completion, no snippet is active.
+        assert_eq!(rs.active_document.pending_count, 0);
+        assert_eq!(rs.active_document.op_count, 0);
+        assert!(!rs.active_document.macro_recording);
+        assert!(!rs.active_document.completion_open);
+        assert!(!rs.active_document.picker_open);
+        assert!(!rs.active_document.snippet_active);
+    }
+
+    /// Slice 3c.atomic.J: writing the translator-context
+    /// fields directly + publishing produces a snapshot whose
+    /// mirror fields match. Proves `runtime.rs` building
+    /// `TranslateContext` from `app.ad()` sees the same values
+    /// it used to read from `app.editor.X` directly.
+    #[test]
+    fn active_document_substate_reflects_translator_context_fields() {
+        let mut editor = Editor::default();
+        editor.pending_count = 7;
+        editor.op_count = 3;
+        editor.publish_render_state();
+        let rs = editor.render_state.load();
+        assert_eq!(rs.active_document.pending_count, 7);
+        assert_eq!(rs.active_document.op_count, 3);
+        // The Option-typed fields (`macro_recording`,
+        // `completion_state`, `picker`, `active_snippet`) need
+        // domain types to populate. The mirror's contract is
+        // tested via the `.is_some()` projection; constructing
+        // those types here would just be `.is_some()` returning
+        // true for a freshly-built variant, so the existing
+        // `false` baseline from the prior test plus the explicit
+        // u32 mirrors here are enough to lock the contract.
     }
 
     /// Slice 3b.0 template proof: a write into the editor's

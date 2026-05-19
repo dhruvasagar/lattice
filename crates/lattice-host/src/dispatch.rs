@@ -344,6 +344,16 @@ impl Editor {
                 modal: self.modal,
                 visual_anchor: self.visual_anchor,
                 snapshot: self.document.snapshot(),
+                // Slice 3c.atomic.J: mirror translator-context
+                // fields so `runtime.rs` can build
+                // `TranslateContext` from the published snapshot
+                // instead of reading `app.editor.X` per keystroke.
+                pending_count: self.pending_count,
+                op_count: self.op_count,
+                macro_recording: self.macro_recording.is_some(),
+                completion_open: self.completion_state.is_some(),
+                picker_open: self.picker.is_some(),
+                snippet_active: self.active_snippet.is_some(),
             }),
             diagnostics: std::sync::Arc::new(DiagnosticsRenderState {
                 // Clone the `DiagnosticsLayer` -- it's internally

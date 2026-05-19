@@ -210,18 +210,19 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
         if event::poll(Duration::from_millis(100)).context("poll events")? {
             match event::read().context("read event")? {
                 Event::Key(k) => {
+                    let ad = app.ad();
                     let ctx = TranslateContext {
-                        modal: app.ad().modal,
+                        modal: ad.modal,
                         builtins: &app.editor.builtins,
-                        pending_count: app.editor.pending_count,
-                        op_count: app.editor.op_count,
-                        recording_macro: app.editor.macro_recording.is_some(),
-                        active_buffer: app.editor.active_buffer,
-                        completion_open: app.editor.completion_state.is_some(),
+                        pending_count: ad.pending_count,
+                        op_count: ad.op_count,
+                        recording_macro: ad.macro_recording,
+                        active_buffer: ad.buffer_kind,
+                        completion_open: ad.completion_open,
                         chord_capture: app.chord_capture_active(),
-                        picker_open: app.editor.picker.is_some(),
+                        picker_open: ad.picker_open,
                         insert_completion_open: app.completion_popup_active(),
-                        snippet_active: app.editor.active_snippet.is_some(),
+                        snippet_active: ad.snippet_active,
                         keymap: &app.editor.keymap,
                         partial_chord: &app.editor.partial_chord,
                     };

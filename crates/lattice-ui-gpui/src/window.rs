@@ -314,7 +314,16 @@ impl EditorView {
                 .p_3()
                 .child(format!("(buffer {:?} unavailable)", pane.buffer_id));
         };
+        // Phase 5.8.AF.5 / Slice 3c.atomic.L: instrument the
+        // suspected per-frame waste site -- `snapshot.text()` is
+        // a full rope-to-String copy and `split('\n').collect()`
+        // builds a `Vec<&str>` over it. For a 100KB file that's
+        // hundreds of KB of allocation per pane per frame.
+        // `lattice_runtime::DocumentSnapshot::text` docstring
+        // explicitly warns against calling on the hot path.
+        let text_t0 = std::time::Instant::now();
         let text = snapshot.text();
+        let text_us = text_t0.elapsed().as_micros() as u64;
         let cursor = if is_active {
             ad.cursor
         } else {
@@ -322,7 +331,19 @@ impl EditorView {
         };
         let cursor_line = cursor.line as usize;
         let cursor_byte = cursor.byte as usize;
+        let split_t0 = std::time::Instant::now();
         let raw_lines: Vec<&str> = text.split('\n').collect();
+        let split_us = split_t0.elapsed().as_micros() as u64;
+        tracing::info!(
+            target: "lattice_gpui::perf",
+            pane_idx,
+            is_active,
+            text_bytes = text.len() as u64,
+            line_count = raw_lines.len() as u64,
+            text_us,
+            split_us,
+            "paint_pane text materialisation"
+        );
         // 5.8.O: clip the visible window to `[scroll, scroll +
         // viewport_height)` so large docs don't render every line
         // every frame. Active pane reads scroll from `editor.scroll`
@@ -914,6 +935,15 @@ impl EditorView {
 
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Phase 5.8.AF.5 / Slice 3c.atomic.L: per-frame budget
+        // breakdown on the `lattice_gpui::perf` tracing target.
+        // Enable with `RUST_LOG=lattice_gpui::perf=info`. Emits
+        // one info-line per frame summarising the time spent in
+        // each phase (viewport, ensure_cursor, highlights, tick,
+        // paint). One per-pane debug-line covers the document
+        // text materialisation cost (`snapshot.text()` +
+        // line split) -- the prime suspect for per-frame waste.
+        let frame_start = std::time::Instant::now();
         // 5.8.T: per-frame viewport-height recompute from the
         // window's current pixel bounds. `text_sm` lands at ~16px
         // per row in the default font; subtract a row for the
@@ -937,6 +967,7 @@ impl Render for EditorView {
         if new_viewport != self.app.editor.viewport_height {
             self.app.set_viewport_height(new_viewport);
         }
+        let after_viewport = std::time::Instant::now();
         // 5.8.O: keep the cursor inside the viewport before any
         // paint reads `editor.scroll`. Auto-scrolls if the cursor
         // moved past the visible window since the last frame.
@@ -945,6 +976,7 @@ impl Render for EditorView {
         // where the viewport size didn't change but the cursor
         // moved past the existing window.
         self.app.ensure_cursor_in_viewport();
+        let after_ensure = std::time::Instant::now();
         // 5.8.G: refresh the host-side highlight cache before
         // reading spans. Cache-hit path is ~50ns; cache-miss path
         // walks `highlight_lines` exactly once and stores into
@@ -958,6 +990,7 @@ impl Render for EditorView {
         // gating; this peer just makes the call so paint_pane can
         // read `editor.pane_highlights[idx]` for the inactive case.
         self.app.editor.refresh_pane_highlights();
+        let after_highlights = std::time::Instant::now();
         // 5.8.Z: run all host-resident per-tick drains via the
         // aggregator. Replaces individual calls to
         // `drain_pending_hover` / `drain_pending_signature_help` /
@@ -968,6 +1001,7 @@ impl Render for EditorView {
         for signal in tick_signals {
             self.app.handle_renderer_signal(signal);
         }
+        let after_tick = std::time::Instant::now();
         // Phase 5.8.AA.p/r/t: every per-tick drain (hover,
         // definitions, code-actions, live-picker, ...) is now
         // folded into `run_tick_pending` above; no per-paint
@@ -1024,6 +1058,7 @@ impl Render for EditorView {
         let document_area = self
             .paint_pane_tree(self.app.editor.pane_tree.root(), &theme, active_idx)
             .flex_grow();
+        let after_paint = std::time::Instant::now();
 
         let completion_overlay: Option<gpui::Div> = self
             .app
@@ -1346,6 +1381,23 @@ impl Render for EditorView {
                     .child(overlay),
             );
         }
+        // Phase 5.8.AF.5 / Slice 3c.atomic.L: per-frame budget log.
+        // `after_paint` was captured immediately after
+        // `paint_pane_tree` returned; the remaining work (overlay
+        // assembly + return) is folded into the `tail_us` bucket.
+        // Enable with `RUST_LOG=lattice_gpui::perf=info`.
+        let frame_us = frame_start.elapsed().as_micros() as u64;
+        tracing::info!(
+            target: "lattice_gpui::perf",
+            frame_us,
+            viewport_us = (after_viewport - frame_start).as_micros() as u64,
+            ensure_us = (after_ensure - after_viewport).as_micros() as u64,
+            highlights_us = (after_highlights - after_ensure).as_micros() as u64,
+            tick_us = (after_tick - after_highlights).as_micros() as u64,
+            paint_us = (after_paint - after_tick).as_micros() as u64,
+            tail_us = (frame_start.elapsed() - (after_paint - frame_start)).as_micros() as u64,
+            "frame budget"
+        );
         root
     }
 }

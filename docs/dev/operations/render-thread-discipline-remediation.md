@@ -62,8 +62,10 @@ Cost (downstream of our `render()` return): the difference between our measured 
 
 Five structural reasons. None excuse the breach — they explain how an explicit non-negotiable rule produced a 25× breach without alarm.
 
-### R1. The `--features window` build is not in CI
-`crates/lattice-ui-gpui/src/window.rs` is gated `#[cfg(feature = "window")]`. `cargo test --workspace` does not compile it. **Slices H, I, J landed with broken code in `window.rs` for ~30 minutes** earlier this session — `self.app.ad()` and `self.app.set_viewport_height()` referenced methods that did not exist on `GpuiApp`. Slice K incidentally fixed the compile. Workspace tests were green; the GPUI peer was unbuildable.
+### R1. The `--features window` build IS in CI, but commits stayed local
+**Corrected 2026-05-19 (after slice X1 surfaced the actual gap).** The `.github/workflows/ci.yml` `gpui-window-build` job (Phase 5.7.A.1, lines 119-141) already runs `cargo build -p lattice-ui-gpui --features window --locked` on Linux / macOS / Windows for every push and PR. The structural gap is *not* missing CI coverage — it's that commits H, I, J, K, L, M, the X-series doc, and X1 all sat on the local branch unpushed, so CI never ran on any of them. The ~30-minute window where `self.app.ad()` and `self.app.set_viewport_height()` referenced non-existent `GpuiApp` methods was a *local-only* window between H landing and K incidentally fixing the compile; CI would have rejected H at push time, but the breach compounded across the H→K stretch because nothing pushed.
+
+The fix shape changed: instead of *adding* CI coverage (X4 in the original plan), the durable enforcement is to push more frequently so the existing CI gate runs, OR add a local `pre-push` git hook that runs `cargo build -p lattice-ui-gpui --features window --locked` so the gate fires before the push is even attempted. The latter is a developer-environment change and isn't imposed by this remediation doc.
 
 ### R2. No frame-budget benchmark on the GPUI peer
 Task #120 in the project backlog — *"Design + add GPUI-layer UI responsiveness benchmarks"* — has been pending through 13 architectural slices. No automated assertion that `frame_us < 8000`. Performance budgets in CLAUDE.md without CI enforcement are decoration.
@@ -104,9 +106,10 @@ Five slices, sequenced. Each addresses one structural failure and one spec rule.
 **Plan:** Investigate GPUI 0.2.2's styled-text API. Each visible line becomes a single styled-text element with span attributes for color / underline / cursor / visual / hlsearch overlays. Element tree shrinks from ~6,400 nodes to ~80 nodes for the same viewport — **80× reduction**.
 **Expected impact:** Drops the downstream ~230 ms-per-frame GPUI composition cost. Target: 30–60 FPS on llvmpipe, 120 FPS on bare-metal Vulkan. Goal #1 violation B3 closed.
 
-### X4. Add `--features window` (and analogous feature-gated) builds to CI
+### X4. CI build for `--features window` (already done; gap was push cadence, not coverage)
 **Spec enforced:** spec breaches caught at PR time, not by user reports.
-**Plan:** `.github/workflows/*` (or wherever CI lives) gets a job running `cargo build --workspace --all-features` (or explicit `--features lattice-ui-gpui/window`). Audit every other `#[cfg(feature = "...")]` module in the workspace for the same gap. Closes structural reason R1.
+**Status:** **Already implemented** at `.github/workflows/ci.yml` lines 119-141 as the `gpui-window-build` job (Phase 5.7.A.1). Runs `cargo build -p lattice-ui-gpui --features window --locked` on Linux / macOS / Windows on every push + PR. Verified 2026-05-19 by checking out slice H's working-tree contents via `git show` — the H state would have failed CI immediately had it been pushed; the local-branch lag is what let H..K compound unchecked.
+**Optional follow-up (not part of this remediation's required scope):** add a `pre-push` git hook in `scripts/hooks/` that runs the same `cargo build -p lattice-ui-gpui --features window --locked` so the gate fires regardless of when the developer chooses to push.
 
 ### X5. GPUI frame-budget benchmark
 **Spec enforced:** "8 ms at 120Hz" becomes machine-checked.

@@ -87,6 +87,13 @@ impl App {
         if self.editor.activate_buffer(id) {
             self.activate_buffer_state();
         }
+        // 3c.atomic.B: `activate_buffer` mutates active buffer
+        // state outside the dispatch publish path, so reads
+        // through `app.ad().document_buffer_id` would otherwise
+        // observe the pre-activation buffer until the next
+        // dispatch tail. Publish here to keep render-state and
+        // editor in sync.
+        self.editor.publish_render_state();
     }
 
     /// 5.5.F.4.2: see [`lattice_host::dispatch::Editor::activate_file_tree`].

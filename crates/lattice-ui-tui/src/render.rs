@@ -313,7 +313,7 @@ fn draw_insert_completion_popup(
     let pane_rect = active_pane_content_rect(app, buffer_area).unwrap_or(buffer_area);
     let view = FrameView::from_app(app);
     let anchor_screen =
-        cursor_screen_position_at(&view, snap, pane_rect, app.editor.cursor, app.editor.scroll);
+        cursor_screen_position_at(&view, snap, pane_rect, app.ad().cursor, app.ad().scroll);
     let (anchor_x, anchor_y) = anchor_screen.unwrap_or((buffer_area.x, buffer_area.y));
     // Below if there's room, else above.
     let area_bottom = buffer_area.y + buffer_area.height;
@@ -486,7 +486,7 @@ fn draw_insert_completion_docs_popup(
     let pane_rect = active_pane_content_rect(app, buffer_area).unwrap_or(buffer_area);
     let view = FrameView::from_app(app);
     let anchor_screen =
-        cursor_screen_position_at(&view, snap, pane_rect, app.editor.cursor, app.editor.scroll);
+        cursor_screen_position_at(&view, snap, pane_rect, app.ad().cursor, app.ad().scroll);
     let (anchor_x, anchor_y) = anchor_screen.unwrap_or((buffer_area.x, buffer_area.y));
     // Candidate popup geometry (mirrors `draw_insert_completion_popup`).
     let cand_width: u16 = 60u16.min(buffer_area.width.saturating_sub(2)).max(30);
@@ -939,7 +939,7 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App, snap: &Doc
     // unification; popup_buffer's own `scroll` field is archival
     // save-state synced at activation transitions.
     let scroll = if matches!(app.editor.active_buffer, crate::buffers::BufferKind::Help) {
-        app.editor.scroll as usize
+        app.ad().scroll as usize
     } else {
         help.scroll
     };
@@ -1046,8 +1046,8 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App, snap: &Doc
         let (row_off, col_off) = wrap_aware_cursor_offset(
             &lines,
             scroll,
-            app.editor.cursor.line as usize,
-            app.editor.cursor.byte as usize,
+            app.ad().cursor.line as usize,
+            app.ad().cursor.byte as usize,
             inner.width as usize,
             inner.height as usize,
         );
@@ -1278,7 +1278,7 @@ fn position_help_popup(
     // so this is the State A / B case where the active pane shows
     // a doc).
     let (cursor, scroll) = match app.editor.active_buffer {
-        crate::buffers::BufferKind::Document => (app.editor.cursor, app.editor.scroll),
+        crate::buffers::BufferKind::Document => (app.ad().cursor, app.ad().scroll),
         _ => {
             let pane = app.editor.pane_tree.active();
             (pane.cursor, pane.scroll)
@@ -1380,9 +1380,9 @@ fn draw_help_in_pane(frame: &mut Frame, area: Rect, app: &App) {
         return;
     };
     let viewport = area.height as usize;
-    let scroll = app.editor.scroll as usize;
+    let scroll = app.ad().scroll as usize;
     let lines = help.lines();
-    let cursor_line = app.editor.cursor.line as usize;
+    let cursor_line = app.ad().cursor.line as usize;
     // M.3.2.b.2: read help-mode-owned data via buffer-locals.
     // The popup buffer's own id and the registered id (= active
     // pane's `buffer_id`) intentionally differ for in-pane help;
@@ -1441,7 +1441,7 @@ fn draw_help_in_pane(frame: &mut Frame, area: Rect, app: &App) {
     if area.height > 0 && area.width > 0 {
         let row_off = cursor_line.saturating_sub(scroll);
         let row_off = row_off.min(area.height.saturating_sub(1) as usize);
-        let col_off = (app.editor.cursor.byte as usize).min(area.width.saturating_sub(1) as usize);
+        let col_off = (app.ad().cursor.byte as usize).min(area.width.saturating_sub(1) as usize);
         frame.set_cursor_position((area.x + col_off as u16, area.y + row_off as u16));
     }
 }
@@ -1835,14 +1835,14 @@ fn draw_inactive_document(
         app.editor.active_buffer,
         crate::buffers::BufferKind::Document
     ) {
-        Some(app.editor.document_buffer_id)
+        Some(app.ad().document_buffer_id)
     } else {
         None
     };
     let highlights: Vec<Vec<lattice_syntax::StyledSpan>> =
         if let Some(spans) = app.editor.pane_highlights.get(&pane_idx) {
             spans.clone()
-        } else if active_doc_id == Some(pane.buffer_id) && pane.scroll == app.editor.scroll {
+        } else if active_doc_id == Some(pane.buffer_id) && pane.scroll == app.ad().scroll {
             // Read from the FrameView snapshot rather than the
             // live `app.editor.visible_highlights` -- protects against
             // a multi-thread renderer racing with App's
@@ -1951,7 +1951,7 @@ fn draw_file_tree_pane(
     // use the pane's stashed cursor / scroll; the tree's own
     // `cursor` / `scroll` fields are archival save-state.
     let (cursor_line, scroll) = if is_active {
-        (app.editor.cursor.line as usize, app.editor.scroll as usize)
+        (app.ad().cursor.line as usize, app.ad().scroll as usize)
     } else {
         (pane.cursor.line as usize, pane.scroll as usize)
     };
@@ -1993,9 +1993,9 @@ fn draw_file_tree_pane(
         .collect();
     frame.render_widget(Paragraph::new(lines), area);
     if is_active && area.height > 0 && area.width > 0 {
-        let row_off = (app.editor.cursor.line as usize).saturating_sub(app.editor.scroll as usize);
+        let row_off = (app.ad().cursor.line as usize).saturating_sub(app.ad().scroll as usize);
         let row_off = row_off.min(area.height.saturating_sub(1) as usize);
-        let col_off = (app.editor.cursor.byte as usize).min(area.width.saturating_sub(1) as usize);
+        let col_off = (app.ad().cursor.byte as usize).min(area.width.saturating_sub(1) as usize);
         frame.set_cursor_position((area.x + col_off as u16, area.y + row_off as u16));
     }
 }
@@ -2013,7 +2013,7 @@ fn draw_oil_pane(
         return;
     };
     let (cursor_line, scroll) = if is_active {
-        (app.editor.cursor.line as usize, app.editor.scroll as usize)
+        (app.ad().cursor.line as usize, app.ad().scroll as usize)
     } else {
         (pane.cursor.line as usize, pane.scroll as usize)
     };
@@ -2056,11 +2056,11 @@ fn draw_oil_pane(
         .collect();
     frame.render_widget(Paragraph::new(lines), area);
     if is_active && area.height > 0 && area.width > 0 {
-        let row_off = (app.editor.cursor.line as usize).saturating_sub(app.editor.scroll as usize);
+        let row_off = (app.ad().cursor.line as usize).saturating_sub(app.ad().scroll as usize);
         let row_off = row_off.min(area.height.saturating_sub(1) as usize);
         // Both nerd-font and BMP fallback glyphs occupy 2 cells.
         let icon_width = 2;
-        let col_off = (app.editor.cursor.byte as usize + icon_width)
+        let col_off = (app.ad().cursor.byte as usize + icon_width)
             .min(area.width.saturating_sub(1) as usize);
         frame.set_cursor_position((area.x + col_off as u16, area.y + row_off as u16));
     }
@@ -2074,7 +2074,7 @@ fn draw_buffer(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot
     // In Command (`:`) and Search (`/`, `?`) modal states the cursor lives
     // in the bottom prompt row -- handled by `draw_command_or_echo`.
     let prompt_owns_cursor = matches!(
-        app.editor.modal,
+        app.ad().modal,
         ModalState::Command | ModalState::Search(_)
     );
     if !prompt_owns_cursor {
@@ -2086,7 +2086,7 @@ fn draw_buffer(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot
 }
 
 fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
-    if matches!(app.editor.modal, ModalState::Command) {
+    if matches!(app.ad().modal, ModalState::Command) {
         // ":<typed>" with the cursor sitting at the end of the typed text.
         let prompt = format!(":{}", app.editor.command_line);
         let cursor_col = area
@@ -2138,7 +2138,7 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    if let ModalState::Search(direction) = app.editor.modal {
+    if let ModalState::Search(direction) = app.ad().modal {
         let lead = match direction {
             SearchDirection::Forward => '/',
             SearchDirection::Backward => '?',
@@ -2192,10 +2192,10 @@ fn active_lsp_segment(app: &App) -> String {
     // off. The supervisor may still hold attachments (other
     // buffers can still be tracked); we don't surface this
     // buffer's quiet state via a stale `[lsp:...]` indicator.
-    if !app.lsp_mode_enabled_for(app.editor.document_buffer_id) {
+    if !app.lsp_mode_enabled_for(app.ad().document_buffer_id) {
         return String::new();
     }
-    let Some(uri) = app.editor.buffer_uris.get(&app.editor.document_buffer_id) else {
+    let Some(uri) = app.editor.buffer_uris.get(&app.ad().document_buffer_id) else {
         return String::new();
     };
     let handles = app.editor.lsp.servers_for(uri);
@@ -2212,7 +2212,7 @@ fn active_lsp_segment(app: &App) -> String {
     // the highest-percentage active entry, breaking ties by
     // server-id then token so the modeline doesn't flicker
     // between equal candidates frame-to-frame.
-    if !app.lsp_progress_mode_enabled_for(app.editor.document_buffer_id) {
+    if !app.lsp_progress_mode_enabled_for(app.ad().document_buffer_id) {
         return base;
     }
     let attached: std::collections::HashSet<&str> = ids.iter().copied().collect();
@@ -2277,7 +2277,7 @@ fn active_lsp_segment(app: &App) -> String {
 pub(crate) fn modeline_label(app: &App, snap: &DocumentSnapshot) -> String {
     snap.path()
         .map(|p| p.display().to_string())
-        .or_else(|| app.editor.buffers.name_of(app.editor.document_buffer_id))
+        .or_else(|| app.editor.buffers.name_of(app.ad().document_buffer_id))
         .unwrap_or_else(|| "[no name]".to_string())
 }
 
@@ -2288,7 +2288,7 @@ pub(crate) fn modeline_label(app: &App, snap: &DocumentSnapshot) -> String {
 pub(crate) fn modeline_is_synthetic(app: &App) -> bool {
     app.editor
         .buffers
-        .name_of(app.editor.document_buffer_id)
+        .name_of(app.ad().document_buffer_id)
         .is_some()
 }
 
@@ -2307,7 +2307,7 @@ fn draw_mode_line(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnaps
     } else {
         "   "
     };
-    let pos = format!("{}:{}", app.editor.cursor.line + 1, app.editor.cursor.byte);
+    let pos = format!("{}:{}", app.ad().cursor.line + 1, app.ad().cursor.byte);
     let lang = Lang::detect_from_path(snap.path()).label();
     let mode_label = app.modal_label();
     let lsp_segment = active_lsp_segment(app);
@@ -2408,7 +2408,7 @@ fn compose_visible_lines_inner(
     // skip lines inside closed folds, taking up to `height` entries.
     // Bound the walk by `total_lines` from ropey -- O(1).
     let mut visible: Vec<u32> = Vec::with_capacity(height as usize);
-    let mut buf_line = app.editor.scroll;
+    let mut buf_line = app.ad().scroll;
     while visible.len() < height as usize && buf_line < total_lines {
         if app.line_inside_closed_fold(buf_line) {
             buf_line += 1;
@@ -2501,8 +2501,8 @@ fn compose_visible_lines_inner(
         if let Some(cache) = rs_st
             .lsp
             .semantic_tokens
-            .get_for(app.editor.document_buffer_id)
-            && app.lsp_semantic_tokens_mode_enabled_for(app.editor.document_buffer_id)
+            .get_for(app.ad().document_buffer_id)
+            && app.lsp_semantic_tokens_mode_enabled_for(app.ad().document_buffer_id)
         {
             for tok in cache.tokens.iter().filter(|t| t.line == line_idx) {
                 let start =
@@ -2608,8 +2608,8 @@ fn compose_visible_lines_inner(
         let rs = app.editor.render_state.load();
         let dh_guard = rs.lsp.document_highlights.load_full();
         if let Some(cache) = dh_guard.as_deref()
-            && cache.buffer_id == app.editor.document_buffer_id
-            && app.lsp_document_highlight_mode_enabled_for(app.editor.document_buffer_id)
+            && cache.buffer_id == app.ad().document_buffer_id
+            && app.lsp_document_highlight_mode_enabled_for(app.ad().document_buffer_id)
         {
             for h in &cache.highlights {
                 let start_line = h.range.start.line;
@@ -2649,8 +2649,8 @@ fn compose_visible_lines_inner(
         // any UI-thread drain. (`PerBufferCacheExt` already in
         // scope from the semantic-tokens reader above.)
         let rs = app.editor.render_state.load();
-        if let Some(cache) = rs.lsp.inlay_hints.get_for(app.editor.document_buffer_id)
-            && app.lsp_inlay_hint_mode_enabled_for(app.editor.document_buffer_id)
+        if let Some(cache) = rs.lsp.inlay_hints.get_for(app.ad().document_buffer_id)
+            && app.lsp_inlay_hint_mode_enabled_for(app.ad().document_buffer_id)
         {
             let mut on_line: Vec<&lattice_lsp::lsp_types::InlayHint> = cache
                 .hints
@@ -2717,8 +2717,8 @@ fn compose_visible_lines_inner(
         // most-likely accept inline. Cursor block visually
         // overlays the first ghost char (the typed prefix
         // ends right before it).
-        if line_idx == app.editor.cursor.line
-            && (app.editor.cursor.byte as usize) == line_text.len()
+        if line_idx == app.ad().cursor.line
+            && (app.ad().cursor.byte as usize) == line_text.len()
             && let Some(suffix) = app.completion_ghost_text_suffix()
         {
             body.push(Span::styled(
@@ -2744,7 +2744,7 @@ fn compose_visible_lines_inner(
         // highlighted -- they're their own visual column. vim
         // does highlight the line-number column; lattice can
         // add that as a follow-up if users want it.
-        if line_idx == app.editor.cursor.line && app.editor.option_cache.current_line_highlight {
+        if line_idx == app.ad().cursor.line && app.editor.option_cache.current_line_highlight {
             let bg = app.theme.cursor_line_bg;
             for span in body.iter_mut() {
                 if span.style.bg.is_none() {
@@ -2819,7 +2819,7 @@ fn substitute_preview_style() -> TuiStyle {
 /// `(anchor, head)` positions. Returns `None` if not in blockwise mode.
 fn visual_block_extents(app: &App) -> Option<BlockExtents> {
     if !matches!(
-        app.editor.modal,
+        app.ad().modal,
         ModalState::Visual(lattice_grammar::VisualKind::Blockwise)
     ) {
         return None;
@@ -3156,10 +3156,10 @@ fn render_gutter_for(view: &FrameView<'_>, line_idx: u32, width: u32) -> Span<'s
         );
     }
     let app = view.app;
-    if !app.relative_line_numbers() || line_idx == app.editor.cursor.line {
+    if !app.relative_line_numbers() || line_idx == app.ad().cursor.line {
         return render_gutter(line_idx, width, glyph);
     }
-    let dist = line_idx.abs_diff(app.editor.cursor.line);
+    let dist = line_idx.abs_diff(app.ad().cursor.line);
     let n = dist.to_string();
     Span::styled(
         format_gutter_cell(&n, width, glyph),
@@ -3214,10 +3214,10 @@ pub(crate) fn severity_for_line(
     // gate so users can `:disable lsp-diagnostics-mode` to
     // suppress just the visual surface while keeping other
     // LSP features (hover / completion / nav) live.
-    if !app.lsp_diagnostics_mode_enabled_for(app.editor.document_buffer_id) {
+    if !app.lsp_diagnostics_mode_enabled_for(app.ad().document_buffer_id) {
         return None;
     }
-    let uri = app.buffer_uri(app.editor.document_buffer_id)?;
+    let uri = app.buffer_uri(app.ad().document_buffer_id)?;
     // Phase 5.8.AF.5 / Slice 3a: read through the renderer's
     // `RenderState` contract instead of `editor.lsp_diagnostics`
     // directly. This is the proof-of-life migration that
@@ -3241,10 +3241,10 @@ pub(crate) fn diagnostics_on_line(
     // M.6.3: gate on `lsp-diagnostics-mode` (matches
     // `severity_for_line` -- the inline-underline overlay
     // and the gutter glyph share the same surface).
-    if !app.lsp_diagnostics_mode_enabled_for(app.editor.document_buffer_id) {
+    if !app.lsp_diagnostics_mode_enabled_for(app.ad().document_buffer_id) {
         return Vec::new();
     }
-    let Some(uri) = app.buffer_uri(app.editor.document_buffer_id) else {
+    let Some(uri) = app.buffer_uri(app.ad().document_buffer_id) else {
         return Vec::new();
     };
     app.editor
@@ -3718,8 +3718,8 @@ fn cursor_screen_position(
         view,
         snap,
         area,
-        view.app.editor.cursor,
-        view.app.editor.scroll,
+        view.app.ad().cursor,
+        view.app.ad().scroll,
     )
 }
 
@@ -4240,6 +4240,10 @@ mod tests {
     fn compose_visible_lines_starts_at_scroll_offset() {
         let mut app = app_with("0\n1\n2\n3\n4", 2);
         app.editor.scroll = 2;
+        // 3c.atomic.B: tests that mutate `app.editor.*` directly
+        // (bypassing dispatch) must republish so the render-side
+        // `app.ad()` reader observes the fresh value.
+        app.editor.publish_render_state();
         let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 2, 80);
         // Line index 2 is "2"; expect that text in the rendered first line.
         let l0 = format!("{:?}", lines[0]);
@@ -4253,6 +4257,7 @@ mod tests {
     fn cursor_position_advances_for_byte_offset() {
         let mut app = app_with("hello", 5);
         app.editor.cursor.byte = 3;
+        app.editor.publish_render_state();
         let area = Rect::new(0, 0, 80, 5);
         let pos = cursor_screen_position(
             &FrameView::from_app(&app),
@@ -4274,6 +4279,7 @@ mod tests {
         // we used it as the column.
         let mut app = app_with("- §8 Performance commitments", 5);
         app.editor.cursor.byte = 6;
+        app.editor.publish_render_state();
         let area = Rect::new(0, 0, 80, 5);
         let pos = cursor_screen_position(
             &FrameView::from_app(&app),
@@ -4292,6 +4298,7 @@ mod tests {
         // display col 5 (a, b, c, 中=2 cells = total 5 cells).
         let mut app = app_with("abc中 def", 5);
         app.editor.cursor.byte = 6; // past the 3-byte CJK char
+        app.editor.publish_render_state();
         let area = Rect::new(0, 0, 80, 5);
         let pos = cursor_screen_position(
             &FrameView::from_app(&app),
@@ -4308,6 +4315,7 @@ mod tests {
         let mut app = app_with("a\nb\nc\nd\ne", 2);
         app.editor.scroll = 0;
         app.editor.cursor.line = 4; // not in viewport [0,1]
+        app.editor.publish_render_state();
         let area = Rect::new(0, 0, 80, 2);
         assert!(
             cursor_screen_position(
@@ -4330,6 +4338,7 @@ mod tests {
         let mut app = app_with("a\nb\nh\nx\ny\nz\nq", 7);
         app.editor.cursor.line = 3; // hidden by fold
         app.editor.cursor.byte = 0;
+        app.editor.publish_render_state();
         // Push a closed fold over lines 2..=4.
         app.editor.folds.push(crate::app::Fold {
             start_line: 2,
@@ -4632,6 +4641,7 @@ mod tests {
         let mut app = app_with("foo", 5);
         app.editor.modal = lattice_grammar::ModalState::Insert;
         app.editor.cursor = pos(0, 3);
+        app.editor.publish_render_state();
         app.editor
             .config
             .set_typed::<lattice_config::CompletionGhostText>(true)
@@ -4686,6 +4696,7 @@ mod tests {
         let mut app = app_with("foobaz", 5);
         app.editor.modal = lattice_grammar::ModalState::Insert;
         app.editor.cursor = pos(0, 3); // between `foo` and `baz`
+        app.editor.publish_render_state();
         app.editor
             .config
             .set_typed::<lattice_config::CompletionGhostText>(true)
@@ -5127,11 +5138,11 @@ mod tests {
         let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
         app.editor
             .buffer_uris
-            .insert(app.editor.document_buffer_id, uri.clone());
+            .insert(app.ad().document_buffer_id, uri.clone());
         // Activate lsp-mode so the M.5.6 render gate doesn't
         // suppress what we're about to paint. Idempotent: tests
         // that have already toggled it on no-op here.
-        if !app.lsp_mode_enabled_for(app.editor.document_buffer_id) {
+        if !app.lsp_mode_enabled_for(app.ad().document_buffer_id) {
             app.toggle_mode_by_name("lsp-mode");
         }
         let diag = lattice_lsp::Diagnostic {
@@ -5221,11 +5232,11 @@ mod tests {
         // Helper auto-activated lsp-mode (and via cascade,
         // lsp-diagnostics-mode). Toggle just diagnostics-mode
         // off; lsp-mode stays on.
-        assert!(app.lsp_mode_enabled_for(app.editor.document_buffer_id));
-        assert!(app.lsp_diagnostics_mode_enabled_for(app.editor.document_buffer_id));
+        assert!(app.lsp_mode_enabled_for(app.ad().document_buffer_id));
+        assert!(app.lsp_diagnostics_mode_enabled_for(app.ad().document_buffer_id));
         app.toggle_mode_by_name("lsp-diagnostics-mode");
-        assert!(app.lsp_mode_enabled_for(app.editor.document_buffer_id));
-        assert!(!app.lsp_diagnostics_mode_enabled_for(app.editor.document_buffer_id));
+        assert!(app.lsp_mode_enabled_for(app.ad().document_buffer_id));
+        assert!(!app.lsp_diagnostics_mode_enabled_for(app.ad().document_buffer_id));
         // Glyph suppressed.
         let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
         let row0 = line_text(&lines[0]);
@@ -5248,14 +5259,14 @@ mod tests {
         let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
         app.editor
             .buffer_uris
-            .insert(app.editor.document_buffer_id, uri);
-        if !app.lsp_mode_enabled_for(app.editor.document_buffer_id) {
+            .insert(app.ad().document_buffer_id, uri);
+        if !app.lsp_mode_enabled_for(app.ad().document_buffer_id) {
             app.toggle_mode_by_name("lsp-mode");
         }
         // `lsp-document-highlight-mode` should have cascaded
         // on with lsp-mode (capability cascade is per-mode);
         // if not, force it.
-        if !app.lsp_document_highlight_mode_enabled_for(app.editor.document_buffer_id) {
+        if !app.lsp_document_highlight_mode_enabled_for(app.ad().document_buffer_id) {
             app.toggle_mode_by_name("lsp-document-highlight-mode");
         }
         // 5.8.AF.5 / Slice 3b.0: `lsp_document_highlights` is
@@ -5265,7 +5276,7 @@ mod tests {
         // the prod path where the spawned task stores + the
         // ArcSwap is shared with the render-state snapshot).
         app.editor.lsp_document_highlights.store(Some(std::sync::Arc::new(crate::app::DocumentHighlightCache {
-            buffer_id: app.editor.document_buffer_id,
+            buffer_id: app.ad().document_buffer_id,
             cursor: lattice_protocol::Position::new(0, 4),
             highlights: vec![
                 lattice_lsp::lsp_types::DocumentHighlight {
@@ -5327,11 +5338,11 @@ mod tests {
         let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
         app.editor
             .buffer_uris
-            .insert(app.editor.document_buffer_id, uri);
-        if !app.lsp_mode_enabled_for(app.editor.document_buffer_id) {
+            .insert(app.ad().document_buffer_id, uri);
+        if !app.lsp_mode_enabled_for(app.ad().document_buffer_id) {
             app.toggle_mode_by_name("lsp-mode");
         }
-        if !app.lsp_inlay_hint_mode_enabled_for(app.editor.document_buffer_id) {
+        if !app.lsp_inlay_hint_mode_enabled_for(app.ad().document_buffer_id) {
             app.toggle_mode_by_name("lsp-inlay-hint-mode");
         }
         // Hint at column 5 (end of "let x") with label ": i32".
@@ -5339,7 +5350,7 @@ mod tests {
         {
             use lattice_host::per_buffer_cache::PerBufferCacheExt;
             app.editor.lsp_inlay_hints_cache.insert_for(
-                app.editor.document_buffer_id,
+                app.ad().document_buffer_id,
                 crate::app::LspInlayHintCache {
                     document_version: app.editor.document.snapshot().version,
                     hints: vec![lattice_lsp::lsp_types::InlayHint {
@@ -5382,11 +5393,11 @@ mod tests {
         let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
         app.editor
             .buffer_uris
-            .insert(app.editor.document_buffer_id, uri);
-        if !app.lsp_mode_enabled_for(app.editor.document_buffer_id) {
+            .insert(app.ad().document_buffer_id, uri);
+        if !app.lsp_mode_enabled_for(app.ad().document_buffer_id) {
             app.toggle_mode_by_name("lsp-mode");
         }
-        if !app.lsp_semantic_tokens_mode_enabled_for(app.editor.document_buffer_id) {
+        if !app.lsp_semantic_tokens_mode_enabled_for(app.ad().document_buffer_id) {
             app.toggle_mode_by_name("lsp-semantic-tokens-mode");
         }
         // Seed: "fn" as keyword (chars 0..=1), "main" as function
@@ -5396,7 +5407,7 @@ mod tests {
         {
             use lattice_host::per_buffer_cache::PerBufferCacheExt;
             app.editor.lsp_semantic_tokens_cache.insert_for(
-                app.editor.document_buffer_id,
+                app.ad().document_buffer_id,
                 crate::app::LspSemanticTokensCache {
                     document_version: app.editor.document.snapshot().version,
                     result_id: None,
@@ -5450,18 +5461,18 @@ mod tests {
         let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
         app.editor
             .buffer_uris
-            .insert(app.editor.document_buffer_id, uri);
-        if !app.lsp_mode_enabled_for(app.editor.document_buffer_id) {
+            .insert(app.ad().document_buffer_id, uri);
+        if !app.lsp_mode_enabled_for(app.ad().document_buffer_id) {
             app.toggle_mode_by_name("lsp-mode");
         }
-        if app.lsp_semantic_tokens_mode_enabled_for(app.editor.document_buffer_id) {
+        if app.lsp_semantic_tokens_mode_enabled_for(app.ad().document_buffer_id) {
             app.toggle_mode_by_name("lsp-semantic-tokens-mode");
         }
         // 5.8.AF.5 / Slice 3b.2: see seed pattern note above.
         {
             use lattice_host::per_buffer_cache::PerBufferCacheExt;
             app.editor.lsp_semantic_tokens_cache.insert_for(
-                app.editor.document_buffer_id,
+                app.ad().document_buffer_id,
                 crate::app::LspSemanticTokensCache {
                     document_version: app.editor.document.snapshot().version,
                     result_id: None,
@@ -5500,19 +5511,19 @@ mod tests {
         let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
         app.editor
             .buffer_uris
-            .insert(app.editor.document_buffer_id, uri);
-        if !app.lsp_mode_enabled_for(app.editor.document_buffer_id) {
+            .insert(app.ad().document_buffer_id, uri);
+        if !app.lsp_mode_enabled_for(app.ad().document_buffer_id) {
             app.toggle_mode_by_name("lsp-mode");
         }
         // Force mode OFF.
-        if app.lsp_inlay_hint_mode_enabled_for(app.editor.document_buffer_id) {
+        if app.lsp_inlay_hint_mode_enabled_for(app.ad().document_buffer_id) {
             app.toggle_mode_by_name("lsp-inlay-hint-mode");
         }
         // 5.8.AF.5 / Slice 3b.1: use `insert_for` + publish.
         {
             use lattice_host::per_buffer_cache::PerBufferCacheExt;
             app.editor.lsp_inlay_hints_cache.insert_for(
-                app.editor.document_buffer_id,
+                app.ad().document_buffer_id,
                 crate::app::LspInlayHintCache {
                     document_version: app.editor.document.snapshot().version,
                     hints: vec![lattice_lsp::lsp_types::InlayHint {
@@ -5554,18 +5565,18 @@ mod tests {
         let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
         app.editor
             .buffer_uris
-            .insert(app.editor.document_buffer_id, uri);
-        if !app.lsp_mode_enabled_for(app.editor.document_buffer_id) {
+            .insert(app.ad().document_buffer_id, uri);
+        if !app.lsp_mode_enabled_for(app.ad().document_buffer_id) {
             app.toggle_mode_by_name("lsp-mode");
         }
         // Force the sub-mode OFF (lsp-mode cascade may have
         // turned it on by default).
-        if app.lsp_document_highlight_mode_enabled_for(app.editor.document_buffer_id) {
+        if app.lsp_document_highlight_mode_enabled_for(app.ad().document_buffer_id) {
             app.toggle_mode_by_name("lsp-document-highlight-mode");
         }
         // 5.8.AF.5 / Slice 3b.0: see seed pattern note above.
         app.editor.lsp_document_highlights.store(Some(std::sync::Arc::new(crate::app::DocumentHighlightCache {
-            buffer_id: app.editor.document_buffer_id,
+            buffer_id: app.ad().document_buffer_id,
             cursor: lattice_protocol::Position::new(0, 4),
             highlights: vec![lattice_lsp::lsp_types::DocumentHighlight {
                 range: lattice_lsp::lsp_types::Range {
@@ -5695,7 +5706,7 @@ mod tests {
             <lattice_lsp::Uri as std::str::FromStr>::from_str("file:///tmp/x.rs").unwrap();
         app.editor
             .buffer_uris
-            .insert(app.editor.document_buffer_id, fake_uri);
+            .insert(app.ad().document_buffer_id, fake_uri);
         assert_eq!(active_lsp_segment(&app), "");
     }
 

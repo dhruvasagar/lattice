@@ -93,6 +93,18 @@ impl App {
         // streamed via the MessagePushed event drain. Eager at
         // boot so `:b *messages*` works from t=0.
         app.ensure_messages_buffer();
+        // Slice 3c.atomic.B: prime the renderer-owned
+        // `render_state` cell with the boot-time editor state.
+        // Without this initial publish, `app.ad()` returns a
+        // `Default`-constructed `ActiveDocumentRenderState`
+        // (zero cursor, `BufferId::default()` document id, etc.)
+        // until the first dispatch fires -- which would surface
+        // as the renderer reading from an empty document on the
+        // first frame, and as `lsp_diagnostics_mode_enabled_for`
+        // / `lsp_*_mode_enabled_for` checks looking up state on
+        // the wrong buffer id in render-only test fixtures that
+        // skip dispatch.
+        app.editor.publish_render_state();
         app
     }
 

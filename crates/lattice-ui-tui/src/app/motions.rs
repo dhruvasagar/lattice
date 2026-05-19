@@ -159,7 +159,9 @@ impl App {
     /// Border rows (top + bottom) are subtracted; the result is
     /// the row count `Paragraph` actually paints into.
     pub fn help_popup_inner_height(&self, buffer_height: u32) -> Option<u32> {
-        if !matches!(self.editor.active_buffer, BufferKind::Help) {
+        // 3c.atomic.E: renderer-side read through the published
+        // `buffer_kind` mirror of `editor.active_buffer`.
+        if !matches!(self.ad().buffer_kind, BufferKind::Help) {
             return None;
         }
         if self.editor.pane_tree.active().buffer == BufferKind::Help {

@@ -118,6 +118,15 @@ pub(super) fn install_help(a: &mut App, h: HelpContent) {
     a.editor.popup_buffer = Some(id);
     a.editor.active_buffer = BufferKind::Help;
     a.seed_help_metadata_locals(id, metadata);
+    // 3c.atomic.E: this helper mocks the `:describe-*` path
+    // without going through dispatch, so the direct
+    // `active_buffer` write isn't reflected in `render_state`
+    // by default. Renderer-side reads of `ad().buffer_kind` --
+    // e.g. `help_popup_inner_height` -- depend on the
+    // publication, so call it explicitly here. Production code
+    // reaches Help via the popup-open path inside dispatch,
+    // which already publishes at the tail.
+    a.editor.publish_render_state();
 }
 
 /// Drive a complete ex-command line: enter cmdline, type

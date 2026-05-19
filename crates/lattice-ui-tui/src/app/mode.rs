@@ -168,7 +168,10 @@ impl App {
     }
 
     pub fn modal_label(&self) -> &'static str {
-        match self.editor.modal {
+        // 3c.atomic.E: renderer-side modal read through the
+        // published `ActiveDocumentRenderState` cell. The modeline
+        // and other status renderers call this once per frame.
+        match self.ad().modal {
             ModalState::Normal => "NORMAL",
             ModalState::Insert => "INSERT",
             ModalState::Visual(_) => "VISUAL",

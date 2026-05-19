@@ -72,6 +72,13 @@ impl App {
         for s in signals {
             self.handle_renderer_signal(s);
         }
+        // 3c.atomic.E: the host's `open_popup` mutates
+        // `active_buffer`, `cursor`, `scroll` and several
+        // popup-state fields outside the dispatch publish path.
+        // Publish here so renderer-side reads (`ad().buffer_kind`,
+        // `ad().cursor`, `ad().scroll`) reflect the popup state
+        // by the next frame.
+        self.editor.publish_render_state();
     }
 
     /// Open `content` as a *floating* popup over the active
@@ -92,6 +99,10 @@ impl App {
         for s in signals {
             self.handle_renderer_signal(s);
         }
+        // 3c.atomic.E: same publish gap as `open_popup`. The
+        // host mutates popup state directly; renderer-side reads
+        // need the publish to observe the floating popup.
+        self.editor.publish_render_state();
     }
 
     /// M.4 (b): clear out a popup buffer's registry / mode /

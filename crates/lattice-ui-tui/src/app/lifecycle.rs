@@ -513,8 +513,15 @@ impl App {
     /// non-document buffers).
     #[allow(dead_code)]
     pub(crate) fn document_folds_for(&self, id: BufferId) -> &[crate::app::Fold] {
-        if id == self.editor.document_buffer_id
-            && matches!(self.editor.active_buffer, BufferKind::Document)
+        // 3c.atomic.E: combined doc-id + buffer-kind read routes
+        // through the renderer-owned `ActiveDocumentRenderState`.
+        // `buffer_kind` is the published mirror of
+        // `editor.active_buffer` (see dispatch.rs:338). The
+        // active-path fold list itself stays on `editor.folds`
+        // -- folds aren't on the render-state surface yet.
+        let ad = self.ad();
+        if id == ad.document_buffer_id
+            && matches!(ad.buffer_kind, BufferKind::Document)
         {
             return &self.editor.folds;
         }
@@ -529,8 +536,9 @@ impl App {
     /// Mode-owned `last_parsed_text_version` for `id`.
     #[allow(dead_code)]
     pub(crate) fn document_last_parsed_text_version_for(&self, id: BufferId) -> u64 {
-        if id == self.editor.document_buffer_id
-            && matches!(self.editor.active_buffer, BufferKind::Document)
+        let ad = self.ad();
+        if id == ad.document_buffer_id
+            && matches!(ad.buffer_kind, BufferKind::Document)
         {
             return self.editor.last_parsed_text_version;
         }
@@ -545,8 +553,9 @@ impl App {
     /// Mode-owned `last_synced_syntax_version` for `id`.
     #[allow(dead_code)]
     pub(crate) fn document_last_synced_syntax_version_for(&self, id: BufferId) -> u64 {
-        if id == self.editor.document_buffer_id
-            && matches!(self.editor.active_buffer, BufferKind::Document)
+        let ad = self.ad();
+        if id == ad.document_buffer_id
+            && matches!(ad.buffer_kind, BufferKind::Document)
         {
             return self.editor.last_synced_syntax_version;
         }

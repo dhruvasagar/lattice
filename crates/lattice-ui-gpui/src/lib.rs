@@ -280,17 +280,18 @@ impl GpuiApp {
     /// (5.8.P, 5.8.Q) — those features paint *within* the viewport
     /// and would mis-render if the cursor sat outside it.
     pub fn ensure_cursor_in_viewport(&mut self) {
-        let cursor_line = self.editor.cursor.line;
-        let viewport = self.editor.viewport_height.max(1);
-        if cursor_line < self.editor.scroll {
-            // Cursor moved above the visible window — scroll up so
-            // it lands on the top row.
-            self.editor.scroll = cursor_line;
-        } else if cursor_line >= self.editor.scroll.saturating_add(viewport) {
-            // Cursor moved below the visible window — scroll down
-            // so it lands on the bottom row.
-            self.editor.scroll = cursor_line.saturating_sub(viewport - 1);
-        }
+        // 3c.atomic.I: delegate to the host's `ensure_cursor_visible`,
+        // which has identical logic. Previously this method
+        // open-coded the scroll-clamp and bypassed any publish,
+        // so the per-frame mutation of `editor.scroll` was
+        // invisible to renderer-side reads through `ad()`. The
+        // host method is also bypass-publish (its in-dispatch
+        // callers rely on the dispatch tail to publish for them),
+        // so we add the publish here for this per-frame entry
+        // point. Same publish contract the TUI peer's
+        // `set_viewport_height` wrapper enforces (3c.atomic.D).
+        self.editor.ensure_cursor_visible();
+        self.editor.publish_render_state();
     }
 
     /// Run the renderer-side post-boot helpers the TUI peer

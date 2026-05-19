@@ -209,10 +209,15 @@ impl EditorView {
             ks.modifiers.shift,
             ks.modifiers.platform,
         );
+        // 3c.atomic.H: post-dispatch tracing reads through the
+        // published render-state cell. `dispatch_keystroke`'s
+        // chain ends with `publish_render_state()` so `ad()` is
+        // current here.
+        let ad = self.app.ad();
         tracing::debug!(
-            modal = ?self.app.editor.modal,
-            cursor_line = self.app.editor.cursor.line,
-            cursor_byte = self.app.editor.cursor.byte,
+            modal = ?ad.modal,
+            cursor_line = ad.cursor.line,
+            cursor_byte = ad.cursor.byte,
             dispatched = outcome.is_some(),
             "lattice-gpui: post-dispatch state"
         );
@@ -285,6 +290,13 @@ impl EditorView {
     /// boundary between panes legible without a hard chrome border.
     fn paint_pane(&self, pane_idx: usize, theme: &GpuiTheme, is_active: bool) -> gpui::Div {
         let editor = &self.app.editor;
+        // 3c.atomic.H: active-document fields (cursor / scroll /
+        // viewport_height / modal / active_buffer /
+        // document_buffer_id) read through the published
+        // render-state cell. `editor.X` stays for fields not on
+        // `ActiveDocumentRenderState` -- pane_tree, buffers,
+        // visible_highlights, pane_highlights, etc.
+        let ad = self.app.ad();
         let leaves = editor.pane_tree.leaves();
         if pane_idx >= leaves.len() {
             return div().child(format!("(stale pane index {pane_idx})"));
@@ -304,7 +316,7 @@ impl EditorView {
         };
         let text = snapshot.text();
         let cursor = if is_active {
-            editor.cursor
+            ad.cursor
         } else {
             pane.cursor
         };
@@ -319,18 +331,18 @@ impl EditorView {
         // gutter, status, and cursor maths still work in terms of
         // absolute line indices — only the iter range tightens.
         let pane_scroll = if is_active {
-            editor.scroll
+            ad.scroll
         } else {
             pane.scroll
         };
-        let viewport_height = editor.viewport_height.max(1);
+        let viewport_height = ad.viewport_height.max(1);
         let visible_start = (pane_scroll as usize).min(raw_lines.len());
         let visible_end = (pane_scroll as usize)
             .saturating_add(viewport_height as usize)
             .min(raw_lines.len());
 
         let cursor_shape = if is_active {
-            Some(CursorShape::for_mode(editor.modal))
+            Some(CursorShape::for_mode(ad.modal))
         } else {
             None
         };
@@ -345,8 +357,8 @@ impl EditorView {
         //   - inactive pane with a *different* doc: per-pane cache
         //     (`pane_highlights[pane_idx]`), refreshed at render
         //     entry by `refresh_pane_highlights`.
-        let active_doc_id = if matches!(editor.active_buffer, lattice_core::BufferKind::Document) {
-            Some(editor.document_buffer_id)
+        let active_doc_id = if matches!(ad.buffer_kind, lattice_core::BufferKind::Document) {
+            Some(ad.document_buffer_id)
         } else {
             None
         };
@@ -914,12 +926,24 @@ impl Render for EditorView {
         let total_rows = (f32::from(viewport_px.height) / estimated_row_px).floor() as i32;
         let chrome_rows = 2; // status line + minibuffer
         let new_viewport = (total_rows - chrome_rows).max(1) as u32;
+        // 3c.atomic.H: route through `App::set_viewport_height`,
+        // which clamps to >= 1, runs `ensure_cursor_visible`,
+        // AND publishes a fresh render-state. The previous form
+        // wrote the field directly and then called
+        // `ensure_cursor_in_viewport` without publishing -- so
+        // paint-time reads of `ad().{viewport_height,scroll}`
+        // would observe the previous frame's values. Same
+        // publish gap the TUI peer fixed in 3c.atomic.D.
         if new_viewport != self.app.editor.viewport_height {
-            self.app.editor.viewport_height = new_viewport;
+            self.app.set_viewport_height(new_viewport);
         }
         // 5.8.O: keep the cursor inside the viewport before any
         // paint reads `editor.scroll`. Auto-scrolls if the cursor
         // moved past the visible window since the last frame.
+        // `set_viewport_height` above already ran one round of
+        // `ensure_cursor_visible`, but this also covers the case
+        // where the viewport size didn't change but the cursor
+        // moved past the existing window.
         self.app.ensure_cursor_in_viewport();
         // 5.8.G: refresh the host-side highlight cache before
         // reading spans. Cache-hit path is ~50ns; cache-miss path
@@ -948,7 +972,10 @@ impl Render for EditorView {
         // definitions, code-actions, live-picker, ...) is now
         // folded into `run_tick_pending` above; no per-paint
         // catch-up calls remain.
-        let modal = self.app.editor.modal;
+        // 3c.atomic.H: modeline label read through the published
+        // render-state. Paint-time read; the apply loop above
+        // has already published any modal change.
+        let modal = self.app.ad().modal;
 
         let modal_label = match modal {
             ModalState::Normal => "NORMAL",

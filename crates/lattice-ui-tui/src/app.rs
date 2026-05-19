@@ -932,6 +932,21 @@ impl std::fmt::Debug for App {
 }
 
 impl App {
+    /// Phase 5.8.AF.5 / Slice 3c.2: wait-free snapshot of the
+    /// active-buffer hot-path render state. Returns an `Arc`
+    /// clone of `RenderState.active_document`. Used by renderer
+    /// code that today reads `app.editor.cursor` / `.scroll` /
+    /// `.modal` / etc. -- those reads migrate to
+    /// `app.ad().cursor` (etc.) during 3c.2 / 3c.3. After 3c.5
+    /// severs the `Arc<Editor>` reference, the method body
+    /// flips to read from a renderer-owned `render_state`
+    /// field; call sites stay unchanged.
+    pub(crate) fn ad(
+        &self,
+    ) -> std::sync::Arc<lattice_host::render_state::ActiveDocumentRenderState> {
+        self.editor.render_state.load().active_document.clone()
+    }
+
     /// Thin renderer-side wrapper around
     /// [`lattice_host::editor::Editor::set_message`].
     ///

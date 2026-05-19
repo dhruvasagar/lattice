@@ -69,6 +69,10 @@ pub mod popup;
 // LSP feature drains migrating off the renderer thread. See
 // `per_buffer_cache` module docs.
 pub mod per_buffer_cache;
+// Phase 5.8.AF.5 / Slice 3c: editor-actor scaffolding. Dormant
+// in 3c.0; wired by later sub-slices once render-side reads
+// migrate to RenderState.
+pub mod editor_actor;
 // Phase 5.8.AF.5 / Slice 3a: renderer's wait-free read contract
 // with the host. See `render_state` module docs.
 pub mod render_state;

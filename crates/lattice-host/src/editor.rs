@@ -40,15 +40,20 @@ use lattice_grammar::ModalState;
 use lattice_grammar::builtins::Builtins;
 use lattice_help::topics::HelpTopicRegistry;
 use lattice_lsp::cache::{
-    CodeActionOutcome, CodeActionRow, CodeLensOutcome, CompletionItemRow, CompletionOutcome,
-    CompletionResolveOutcome, DocumentColorOutcome, DocumentHighlightCache,
-    DocumentHighlightOutcome, DocumentLinksOutcome, FoldingRangeOutcome, FormatOutcome,
-    HoverOutcome, InlayHintOutcome, InsertCompletionLspOutcome, LspCodeLensCache,
-    LspDocumentColorCache, LspDocumentLinksCache, LspFoldsCache, LspInlayHintCache, LspNavKind,
-    LspPullDiagnosticsCache, LspSelectionChain, LspSemanticTokensCache, PullDiagnosticsOutcome,
-    ReferencesOutcome, RenameOutcome, SelectionRangeOutcome, SemanticTokensOutcome,
+    CodeActionOutcome, CodeActionRow, CompletionItemRow, CompletionOutcome,
+    CompletionResolveOutcome, DocumentHighlightCache, FormatOutcome, HoverOutcome,
+    InsertCompletionLspOutcome, LspCodeLensCache, LspDocumentColorCache, LspDocumentLinksCache,
+    LspFoldsCache, LspInlayHintCache, LspNavKind, LspPullDiagnosticsCache, LspSelectionChain,
+    LspSemanticTokensCache, ReferencesOutcome, RenameOutcome, SelectionRangeOutcome,
     SignatureHelpOutcome, SymbolsOutcome,
 };
+// Phase 5.8.AF.5 / Slice 3b.0–3b.5: `CodeLensOutcome`,
+// `DocumentColorOutcome`, `DocumentHighlightOutcome`,
+// `DocumentLinksOutcome`, `FoldingRangeOutcome`,
+// `InlayHintOutcome`, `PullDiagnosticsOutcome`,
+// `SemanticTokensOutcome` no longer imported -- their
+// `pending_*_rx` fields retired (spawned tasks write directly
+// via `PerBufferCache::insert_for` / `ArcSwapOption::store`).
 use lattice_lsp::{DiagnosticsLayer, LspLogger, LspSupervisorHandle};
 use lattice_mode::{ActiveModes, BufferLocals, GuardStoreHandle, ModeRegistry, ServiceRegistry};
 use lattice_picker::{Picker, PickerMruIndex, PickerRegistry};

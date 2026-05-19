@@ -1,6 +1,6 @@
 # Render-thread discipline remediation (Phase 5.8.AF.5 / X-series)
 
-**Status:** in progress — X1 next; X2..X5 sequenced after.
+**Status:** in progress — X1, X3 (partial), X4, X2 (renderer-hot-path cutover) landed; X2.6 (legacy field deletion), X1b (idle wake bridge), X5 (frame-budget bench) and the full-X3 (per-line styled-text element) still pending.
 **Started:** 2026-05-19.
 **Owners:** session-driven (Dhruva + Claude).
 **Successor work:** Phase 5.8.AF.5 / Slice 3c.final (Editor on its own thread). Resumes AFTER this remediation lands.
@@ -94,11 +94,24 @@ Five slices, sequenced. Each addresses one structural failure and one spec rule.
 **Spec enforced:** "no I/O on the UI thread" (idle path).
 **Plan:** Spawn-side workers post to a `tokio::sync::Notify` (or equivalent) on completion. A renderer-thread bridge listens and posts a wake action so the next dispatch tick fires `run_tick_pending`. Renderer body still never calls `run_tick_pending`. Closes the one-keystroke degradation from X1.
 
-### X2. Move `refresh_highlights` to a worker
+### X2. Move `refresh_highlights` to a worker — **LANDED (renderer-hot-path cutover) 2026-05-19**
 **Spec enforced:** "no parsing on the UI thread."
-**Files:** `crates/lattice-host/src/highlights.rs`, `crates/lattice-host/src/render_state.rs`, both peers' renderer bodies, the syntax subsystem.
-**Plan:** Tree-sitter parse runs on a worker triggered by `Event::DocumentChanged` and `Event::DocumentScrolled`. Result `Vec<Vec<StyledSpan>>` is published into a new `SyntaxRenderState.visible_spans: Arc<ArcSwap<Vec<Vec<StyledSpan>>>>`. Renderer just `.load()`s and reads. The cache key (`VisibleHighlightsKey`) moves to the worker.
-**Expected impact:** Cuts another 200µs–600µs per frame; eliminates post-edit spikes. Goal #1 violation B1 closed.
+**Files:** `crates/lattice-host/src/render_state.rs`, `crates/lattice-host/src/editor.rs`, `crates/lattice-host/src/dispatch.rs`, `crates/lattice-host/src/editor_boot.rs`, `crates/lattice-host/src/highlights_worker.rs` (new), `crates/lattice-host/src/folds.rs`, `crates/lattice-ui-gpui/src/window.rs`, `crates/lattice-ui-tui/src/render.rs`, `crates/lattice-ui-tui/src/runtime.rs`.
+
+**Landed shape** (driven by `tokio::sync::Notify` instead of a typed `Event::*` channel — simpler and integrates with the existing `publish_render_state` tail):
+
+- `SyntaxRenderState` carries inputs (`syntax_handle`, `scroll`, `viewport_height`, `fold_hash`, `text_version`) populated by `build_render_state` and a nested `visible_spans: Arc<ArcSwap<VisibleSpans>>` output cell. `VisibleHighlightsKey` migrated host-side from `highlights.rs` to `render_state.rs`.
+- `Editor::highlight_wake: HighlightWake` (newtype around `Arc<Notify>`) + `Editor::syntax_visible_spans_cell` (durable Arc the worker and `SyntaxRenderState` both clone from).
+- `publish_render_state` fires `highlight_wake.0.notify_one()` at its tail.
+- `crates/lattice-host/src/highlights_worker.rs` owns the async loop. `recompute(...)` is the pure synchronous decision function (returns `Clear` / `CacheHit` / `StaleSnapshotHold` / `Recomputed`); tests cover it.
+- `editor_boot` spawns the worker on the process-wide LSP runtime, sharing the three Arcs.
+- Both peers' per-frame bodies drop `refresh_highlights()` and read `render_state.syntax.visible_spans.load()` directly. Goal #1 violation B1 closed for both peers.
+
+**Idle-wake gap (X1b) still open:** after a publish-burst with the user idle, the worker may publish fresh spans without anything scheduling a renderer repaint. Worst case: one frame of slightly-stale colors until the next event triggers paint. Documented; X1b closes it.
+
+**Remaining cleanup (X2.6):** `Editor::refresh_highlights_window` + `visible_highlights` + `visible_highlights_key` fields are intentionally retained so the TUI peer's `refresh_highlights_cache_invalidates_*` tests stay green. X2.6 ports those tests to drive `highlights_worker::recompute` and deletes the legacy method + fields.
+
+**Open: bench (X5 scope).** Per-keystroke UI-thread cost under held-key bursts needs to be machine-asserted post-X2 (the original motivation for the user-visible "cursor disappears" symptom). Lives in `crates/lattice-host/benches/highlights_worker.rs` once X5 lands.
 
 ### X3. Rewrite `paint_pane` to per-line text runs
 **Spec enforced:** "no shaping on the UI thread"; element-tree fan-out is `O(viewport-lines)`, not `O(chars)`.

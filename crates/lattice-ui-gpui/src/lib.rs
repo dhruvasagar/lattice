@@ -70,7 +70,9 @@ use lattice_host::dispatch::{DispatchOutcome, RendererSignal};
 use lattice_host::editor::Editor;
 use lattice_host::input::TranslateContext;
 use lattice_host::pane_render::ProviderLookup;
+use lattice_host::render_state::{ActiveDocumentRenderState, RenderState};
 use lattice_mode::ModeId;
+use std::sync::Arc;
 
 pub mod gpui_chord;
 
@@ -193,6 +195,15 @@ impl Renderer for GpuiRenderer {
 /// field joins when the LSP runtime adapter for GPUI lands.
 pub struct GpuiApp {
     pub editor: Editor,
+    /// Phase 5.8.AF.5 / Slice 3c.atomic.K: renderer-side clone of
+    /// the editor's `RenderState` cell. Parallel of the TUI peer's
+    /// `App.render_state` field (3c.atomic.A): isolates the
+    /// renderer's read path from `self.editor` so the eventual
+    /// `App.editor: Editor → handle` swap doesn't disturb call
+    /// sites. Today both Arc handles point at the same underlying
+    /// `ArcSwap<RenderState>` instance — readers observe identical
+    /// values byte-for-byte regardless of which they go through.
+    pub render_state: Arc<arc_swap::ArcSwap<RenderState>>,
     pub theme: GpuiTheme,
     pub pane_render_registry: GpuiPaneRenderRegistry,
     // Phase 5.8.AE: `popup_content` retired. Popup state is
@@ -224,13 +235,52 @@ impl GpuiApp {
     /// this peer will call the same methods via its own renderer-
     /// signal handler.
     pub fn new(document: Document) -> Self {
+        let editor = Editor::boot(document);
+        // Slice 3c.atomic.K: renderer-side clone of the editor's
+        // RenderState cell, captured before Editor moves. Mirrors
+        // the TUI peer's `App::new` (3c.atomic.A): once the
+        // actor-swap lands, this assignment swaps to the handle's
+        // exposed Arc; reader call sites stay unchanged.
+        let render_state = editor.render_state.clone();
         let mut app = Self {
-            editor: Editor::boot(document),
+            editor,
+            render_state,
             theme: GpuiTheme::default(),
             pane_render_registry: GpuiPaneRenderRegistry::default(),
         };
         app.finalize_boot();
+        // Slice 3c.atomic.K: prime the renderer-owned
+        // `render_state` cell with the post-finalize editor state.
+        // Without this initial publish, `app.ad()` returns a
+        // `Default`-constructed `ActiveDocumentRenderState` until
+        // the first keystroke fires -- the same boot-publish gap
+        // the TUI peer closed in 3c.atomic.B.
+        app.editor.publish_render_state();
         app
+    }
+
+    /// Phase 5.8.AF.5 / Slice 3c.atomic.K: wait-free snapshot of
+    /// the active-buffer hot-path render state. Returns an `Arc`
+    /// clone of `RenderState.active_document`. Parallel of the
+    /// TUI peer's `App::ad()` -- the GPUI peer reads its
+    /// renderer-side state through this method so the eventual
+    /// `editor → handle` swap leaves call sites untouched.
+    pub fn ad(&self) -> Arc<ActiveDocumentRenderState> {
+        self.render_state.load().active_document.clone()
+    }
+
+    /// Phase 5.8.AF.5 / Slice 3c.atomic.K: publishing wrapper
+    /// around `editor.viewport_height` writes. Parallel of the
+    /// TUI peer's `App::set_viewport_height` (3c.atomic.D): the
+    /// per-frame viewport recompute happens outside dispatch, so
+    /// it must republish render-state for `ad().viewport_height`
+    /// and `ad().scroll` to observe the new values. Without this
+    /// wrapper, a window resize would leave the published
+    /// viewport / scroll one frame behind every time.
+    pub fn set_viewport_height(&mut self, height: u32) {
+        self.editor.viewport_height = height.max(1);
+        self.editor.ensure_cursor_visible();
+        self.editor.publish_render_state();
     }
 
     /// Dismiss any active help popup. Phase 5.8.AE: routes
@@ -503,18 +553,28 @@ impl GpuiApp {
     /// reads from the same shared editor state.
     pub fn dispatch_chord(&mut self, chord: KeyChord) -> DispatchOutcome {
         let action = {
+            // Slice 3c.atomic.K: read value-typed TranslateContext
+            // inputs through the published render-state snapshot
+            // (`ad()`). Parallel of the TUI peer's runtime.rs
+            // migration (3c.atomic.J). The borrowed-reference
+            // inputs (`builtins`, `keymap`, `partial_chord`) still
+            // come off `self.editor` -- they need `&` lifetimes
+            // the published state doesn't carry; they migrate
+            // when the actor swap (3c.final) replaces `editor`
+            // with a handle.
+            let ad = self.ad();
             let ctx = TranslateContext {
-                modal: self.editor.modal,
+                modal: ad.modal,
                 builtins: &self.editor.builtins,
-                pending_count: self.editor.pending_count,
-                op_count: self.editor.op_count,
-                recording_macro: self.editor.macro_recording.is_some(),
-                active_buffer: self.editor.active_buffer,
-                completion_open: self.editor.completion_state.is_some(),
+                pending_count: ad.pending_count,
+                op_count: ad.op_count,
+                recording_macro: ad.macro_recording,
+                active_buffer: ad.buffer_kind,
+                completion_open: ad.completion_open,
                 chord_capture: false,
-                picker_open: self.editor.picker.is_some(),
+                picker_open: ad.picker_open,
                 insert_completion_open: self.editor.insert_completion.is_some(),
-                snippet_active: self.editor.active_snippet.is_some(),
+                snippet_active: ad.snippet_active,
                 keymap: &self.editor.keymap,
                 partial_chord: &self.editor.partial_chord,
             };
@@ -1000,5 +1060,41 @@ mod tests {
         let chord = KeyChord::new(KeyKind::Char('i'), KeyMods::NONE);
         app.dispatch_chord(chord);
         assert_eq!(app.editor.modal, ModalState::Insert);
+    }
+
+    /// Slice 3c.atomic.K: `GpuiApp::ad()` reflects the modal
+    /// transition driven by dispatch. Proves the renderer-side
+    /// publish chain (`dispatch_chord` → `dispatch_action` →
+    /// dispatch tail `publish_render_state()`) reaches the
+    /// `GpuiApp.render_state` cell, so paint-time reads through
+    /// `ad()` see the freshest editor state.
+    #[test]
+    fn gpui_app_ad_reflects_dispatched_state() {
+        use lattice_host::chord::{KeyChord, KeyKind, KeyMods};
+        let mut app = GpuiApp::new(Document::empty());
+        // Boot publish hydrates ad() before any dispatch.
+        assert_eq!(app.ad().modal, ModalState::Normal);
+        app.dispatch_chord(KeyChord::new(KeyKind::Char('i'), KeyMods::NONE));
+        assert_eq!(
+            app.ad().modal,
+            ModalState::Insert,
+            "ad() must observe the post-dispatch modal state through render_state"
+        );
+    }
+
+    /// Slice 3c.atomic.K: `set_viewport_height` clamps height
+    /// to a minimum of 1 and republishes so `ad().viewport_height`
+    /// observes the change. Matches the contract the TUI peer's
+    /// `App::set_viewport_height` exposes (3c.atomic.D).
+    #[test]
+    fn gpui_app_set_viewport_height_publishes() {
+        let mut app = GpuiApp::new(Document::empty());
+        app.set_viewport_height(24);
+        assert_eq!(app.ad().viewport_height, 24);
+        // Clamp: 0 becomes 1 (renderer's per-frame layout never
+        // gives the buffer a zero-height pane, but the wrapper's
+        // contract guarantees a usable lower bound regardless).
+        app.set_viewport_height(0);
+        assert_eq!(app.ad().viewport_height, 1);
     }
 }

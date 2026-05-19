@@ -55,6 +55,11 @@ anyhow.workspace = true
 # activation paths. Subscriber init lives in the unified `lattice`
 # binary (lattice-cli); this crate just emits via `tracing::*!`.
 tracing.workspace = true
+# Phase 5.8.AF.5 / Slice 3c.atomic.K: renderer-side clone of the
+# editor's `Arc<ArcSwap<RenderState>>` cell (`GpuiApp.render_state`).
+# Same primitive the host uses for the wait-free publish path; the
+# renderer just needs the `ArcSwap` type to spell the field.
+arc-swap = { workspace = true }
 
 [features]
 default = []

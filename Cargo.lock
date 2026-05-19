@@ -3556,6 +3556,7 @@ name = "lattice-ui-gpui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arc-swap",
  "gpui",
  "lattice-core",
  "lattice-grammar",

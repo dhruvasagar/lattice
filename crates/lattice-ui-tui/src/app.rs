@@ -293,6 +293,16 @@ pub struct App {
     /// renderer-agnostic state take `&mut Editor` directly;
     /// renderer-side code reaches it via `app.editor`.
     pub editor: lattice_host::editor::Editor,
+    /// Phase 5.8.AF.5 / Slice 3c.atomic.A: renderer-owned clone
+    /// of the editor's `Arc<ArcSwap<RenderState>>`. Lets the
+    /// renderer read state without going through `self.editor`,
+    /// which is the structural seam the eventual actor migration
+    /// pivots on. Today this Arc is a direct clone of
+    /// `editor.render_state` at construction; after 3c moves
+    /// Editor to its own thread, the same Arc is published from
+    /// the actor thread and read here -- identical contract,
+    /// different writer.
+    pub render_state: std::sync::Arc<arc_swap::ArcSwap<lattice_host::render_state::RenderState>>,
     /// Handle to the per-document actor (DESIGN.md §5.2.1, §5.7).
     /// The actor owns the writable `Document` (from `lattice-core`);
     /// mutations route through it; reads load a versioned snapshot.
@@ -944,7 +954,14 @@ impl App {
     pub(crate) fn ad(
         &self,
     ) -> std::sync::Arc<lattice_host::render_state::ActiveDocumentRenderState> {
-        self.editor.render_state.load().active_document.clone()
+        // Slice 3c.atomic.A: read through the renderer-owned
+        // `render_state` Arc rather than `self.editor.render_state`.
+        // The two are the same `Arc<ArcSwap<RenderState>>` cell
+        // today (cloned at App::new), so observed values match
+        // byte-for-byte; the change isolates this method from the
+        // `self.editor` field so 3c.atomic can sever the Editor
+        // reference without disturbing reader call sites.
+        self.render_state.load().active_document.clone()
     }
 
     /// Thin renderer-side wrapper around

@@ -32,8 +32,15 @@ impl App {
         // call the same entry point; each wrapper supplies its
         // own renderer-specific caches afterwards.
         let editor = lattice_host::editor::Editor::boot(document);
+        // Slice 3c.atomic.A: renderer-side clone of the editor's
+        // RenderState cell, captured before Editor moves. Once
+        // 3c.atomic flips the writer to an `EditorActorHandle`,
+        // the assignment swaps to the actor handle's exposed Arc;
+        // every renderer-side reader stays unchanged.
+        let render_state = editor.render_state.clone();
         let mut app = Self {
             editor,
+            render_state,
             pane_render_registry: crate::render::build_pane_render_registry(),
             theme: crate::theme::Theme::default(),
         };

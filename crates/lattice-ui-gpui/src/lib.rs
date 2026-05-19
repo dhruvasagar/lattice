@@ -739,6 +739,31 @@ impl GpuiApp {
         // matches the historical TUI shape (App::apply also
         // hands these to the caller after fan-out).
         outcome.renderer_signals = signals;
+        // Phase 5.8.AF.5 / Slice X1: drain pending LSP / event /
+        // mode-lifecycle results here at the keystroke-driven
+        // dispatch tail rather than in the per-frame body
+        // (`crates/lattice-ui-gpui/src/window.rs::Render::render`).
+        // Paramount goal #1 forbids I/O / event drain on the UI
+        // thread; the renderer body is the UI thread.
+        // `run_tick_pending` is the host aggregator that polls
+        // ~30 channels for async results -- on a busy frame
+        // (file open) it can take 49ms, which is 6x over the
+        // 8ms-at-120Hz keystroke-to-glyph budget. Running it
+        // here makes that cost happen during the keystroke that
+        // caused the work (the open) instead of on the next
+        // paint after open. The post-X1 perf trace expects
+        // `tick_us` in `lattice_gpui::perf` to drop to ~0 once
+        // dispatch tails take over the drain.
+        //
+        // Idle LSP arrivals (response with no keystroke in
+        // flight) are NOT drained until the next keystroke:
+        // see slice X1b (`docs/dev/operations/render-thread-
+        // discipline-remediation.md` §X1b) for the wake-bridge
+        // that closes that gap.
+        let tick_signals = self.editor.run_tick_pending();
+        for signal in tick_signals {
+            self.handle_renderer_signal(signal);
+        }
         outcome
     }
 

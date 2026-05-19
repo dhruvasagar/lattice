@@ -4168,22 +4168,39 @@ mod tests {
 
     #[test]
     fn nav_request_captures_tag_origin_for_picker_consumption() {
-        // `do_lsp_nav_request` should set `pending_tag_origin`
+        // `Editor::lsp_nav_request` should set `pending_tag_origin`
         // so a subsequent picker accept (multi-result) pushes
         // the right entry onto the tag stack.
+        //
+        // Phase 5.8.AF.5 / Slice X1: this test now exercises the
+        // host method directly (`a.editor.lsp_nav_request(...)`)
+        // instead of routing through `a.apply(Action::Lsp...)`.
+        // Reason: post-X1, `apply` calls `editor.run_tick_pending()`
+        // at its tail (paramount-goal-#1 cleanup -- I/O drain off
+        // the renderer body). The spawned LSP task posts an
+        // empty `Vec` synchronously when no LSP server is
+        // attached (the test scenario), and the drain then
+        // consumes that empty response and clears
+        // `pending_tag_origin` via the "no definitions found"
+        // branch. The pre-X1 test relied on the drain not
+        // running in the same `apply` call; that race is closed
+        // by X1. The host-method-level assertion captures the
+        // same invariant (origin is staged by the request
+        // handler) without depending on drain timing.
         let mut a = app_with("foo bar\nbaz\n", 10);
         // M.5.4: gate fires before tag-origin capture; activate
         // lsp-mode so the request gets that far.
         a.toggle_mode_by_name("lsp-mode");
         a.editor.cursor = Position::new(0, 1);
-        // Manually set a uri so do_lsp_nav_request gets past
+        // Manually set a uri so lsp_nav_request gets past
         // the "no LSP server" guard.
         use std::str::FromStr;
         a.editor.buffer_uris.insert(
             a.editor.document_buffer_id,
             lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap(),
         );
-        a.apply(Action::LspDefinitionRequest);
+        a.editor
+            .lsp_nav_request(lattice_lsp::cache::LspNavKind::Definition);
         let origin = a.editor.pending_tag_origin.as_ref().expect("origin set");
         assert_eq!(origin.position, Position::new(0, 1));
         assert_eq!(origin.label, "foo");

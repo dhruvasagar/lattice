@@ -546,6 +546,32 @@ impl App {
         // lockstep with overlay state changes. Cheap when
         // nothing changed.
         self.sync_keymap_overlays();
+        // Phase 5.8.AF.5 / Slice X1: drain pending LSP / event /
+        // mode-lifecycle results here at the keystroke-driven
+        // dispatch tail rather than in the per-frame body
+        // (`crates/lattice-ui-tui/src/runtime.rs`'s main_loop).
+        // Paramount goal #1 forbids I/O / event drain on the UI
+        // thread; the renderer body is the UI thread.
+        // `run_tick_pending` is the host aggregator that polls
+        // ~30 channels for async results -- on a busy frame
+        // (file open) it can take 49ms, which is 6x over the
+        // 8ms-at-120Hz keystroke-to-glyph budget. Running it
+        // here makes that cost happen during the keystroke that
+        // caused the work (the open), where 8ms is not the
+        // budget; subsequent frames see only what the dispatch
+        // tail published.
+        //
+        // Recursive `apply` calls (next_actions) drain again --
+        // cheap because the prior call already emptied the
+        // channels. Idle LSP arrivals (response with no
+        // keystroke in flight) are NOT drained until the next
+        // keystroke: see slice X1b (docs/dev/operations/
+        // render-thread-discipline-remediation.md §X1b) for the
+        // wake-bridge that closes that gap.
+        let tick_signals = self.editor.run_tick_pending();
+        for signal in tick_signals {
+            self.handle_renderer_signal(signal);
+        }
     }
 
     pub(super) fn execute_ex_line(&mut self, line: &str) {

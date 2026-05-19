@@ -1005,16 +1005,16 @@ impl Render for EditorView {
         // read `editor.pane_highlights[idx]` for the inactive case.
         self.app.editor.refresh_pane_highlights();
         let after_highlights = std::time::Instant::now();
-        // 5.8.Z: run all host-resident per-tick drains via the
-        // aggregator. Replaces individual calls to
-        // `drain_pending_hover` / `drain_pending_signature_help` /
-        // `drain_option_changes` / `drain_mode_lifecycle_events` —
-        // the host owns the list, so when a new drain migrates to
-        // host the GPUI peer auto-picks it up.
-        let tick_signals = self.app.editor.run_tick_pending();
-        for signal in tick_signals {
-            self.app.handle_renderer_signal(signal);
-        }
+        // Phase 5.8.AF.5 / Slice X1: `run_tick_pending` no longer
+        // runs in the renderer body. The drain moved to
+        // `GpuiApp::dispatch_action`'s tail so it fires on the
+        // keystroke that caused the work, not in `Render::render`.
+        // Paramount goal #1 forbids I/O / event drain on the UI
+        // thread. With X1 landed, `tick_us` in `lattice_gpui::perf`
+        // should be ~0; if it ever climbs back, something has
+        // re-introduced the violation -- audit per
+        // `docs/dev/operations/render-thread-discipline-remediation.md`
+        // §7 before merging.
         let after_tick = std::time::Instant::now();
         // Phase 5.8.AA.p/r/t: every per-tick drain (hover,
         // definitions, code-actions, live-picker, ...) is now

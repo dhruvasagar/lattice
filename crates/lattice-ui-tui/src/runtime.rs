@@ -127,22 +127,18 @@ fn popup_height_for(candidate_count: usize) -> usize {
 fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) -> Result<()> {
     let mut last_modal: Option<ModalState> = None;
     while !app.editor.should_quit {
-        // 5.8.AA.q: per-tick LSP / option / inbound-request /
-        // pump+drain orchestration lives in
-        // `lattice_host::dispatch::Editor::run_tick_pending` so
-        // both renderer peers reach an identical aggregator.
-        // It returns a `Vec<RendererSignal>` (hover popups, jumps,
-        // applyEdit results, picker batches, ...) that we fan
-        // out through the existing `handle_renderer_signal`
-        // sink — same shape used elsewhere (definitions, rename,
-        // apply_edit).
-        // 5.8.AA.t: `drain_pending_live_picker_query` is now part
-        // of `run_tick_pending`. Both renderer peers reach every
-        // per-tick drain through this single aggregator.
-        let signals = app.editor.run_tick_pending();
-        for s in signals {
-            app.handle_renderer_signal(s);
-        }
+        // Phase 5.8.AF.5 / Slice X1: `run_tick_pending` no longer
+        // runs per-frame here. It moved to `App::apply`'s tail
+        // (`crates/lattice-ui-tui/src/app/dispatch.rs`) so the
+        // drain happens on the keystroke that caused the work,
+        // not in the renderer's per-frame body. Per paramount
+        // goal #1, the UI thread does no I/O / event drain; the
+        // ~30-channel aggregator we used to call here is exactly
+        // the kind of work the spec forbids on this thread.
+        //
+        // Idle LSP arrivals (response with no keystroke in
+        // flight) are pending X1b. See
+        // `docs/dev/operations/render-thread-discipline-remediation.md`.
         // Update viewport height. The buffer-area band is the
         // terminal minus the mode line + cmdline/echo row (and the
         // candidate-list row band, when a picker / completion popup

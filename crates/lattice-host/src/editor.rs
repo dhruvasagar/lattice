@@ -215,6 +215,31 @@ use lattice_protocol::position::Position as ProtoPosition;
 ///   `App` are the renderer-specific caches (`theme`,
 ///   `pane_render_registry`) plus the `LspFileWatcher`
 ///   wrapper -- `App` becomes a thin renderer wrapper.
+/// Cross-thread wake signal for the highlights worker.
+///
+/// Wraps `Arc<tokio::sync::Notify>` so `Editor` can keep its
+/// `#[derive(Default)]` (Notify itself doesn't impl Default).
+/// Cloning the wrapper clones the inner Arc — same notify
+/// channel. `notify_one()` is fired at the tail of
+/// `publish_render_state` so the worker re-evaluates inputs after
+/// every state change without polling.
+///
+/// Phase 5.8.AF.5 / Slice X2.
+#[derive(Clone)]
+pub struct HighlightWake(pub Arc<tokio::sync::Notify>);
+
+impl Default for HighlightWake {
+    fn default() -> Self {
+        Self(Arc::new(tokio::sync::Notify::new()))
+    }
+}
+
+impl std::fmt::Debug for HighlightWake {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HighlightWake").finish_non_exhaustive()
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct Editor {
     /// Completed macro recordings keyed by register name.
@@ -808,6 +833,29 @@ pub struct Editor {
     /// `editor.render_state.load_full()` once per frame and read
     /// every per-frame field through the returned snapshot.
     pub render_state: std::sync::Arc<arc_swap::ArcSwap<crate::render_state::RenderState>>,
+    /// Phase 5.8.AF.5 / Slice X2: wake signal for the
+    /// highlights worker. `publish_render_state` fires
+    /// `highlight_wake.0.notify_one()` at its tail so the worker
+    /// re-evaluates the syntax inputs published into
+    /// `RenderState.syntax` and recomputes spans on a cache miss.
+    /// `Notify` coalesces — a burst of publishes wakes the worker
+    /// once, which is what we want (it always reads the latest
+    /// published inputs anyway).
+    pub highlight_wake: HighlightWake,
+    /// Phase 5.8.AF.5 / Slice X2: durable spans cell shared with
+    /// the highlights worker. The worker stores fresh
+    /// `VisibleSpans` into this cell whenever the cache key
+    /// changes; renderers read it via
+    /// `render_state.syntax.visible_spans.load()`.
+    ///
+    /// Lives on `Editor` (not just inside `SyntaxRenderState`) so
+    /// the `Arc` identity stays stable across every
+    /// `publish_render_state` call — `build_render_state` clones
+    /// this Arc into the new snapshot. The worker holds its own
+    /// clone of the same Arc, so its writes survive subsequent
+    /// publishes.
+    pub syntax_visible_spans_cell:
+        std::sync::Arc<arc_swap::ArcSwap<crate::render_state::VisibleSpans>>,
     pub lsp_log_event_rx: Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspLogPushed>>,
     pub lsp_progress_event_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspProgressUpdate>>,

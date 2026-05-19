@@ -380,6 +380,20 @@ impl Editor {
                 document_color: self.lsp_document_color_cache.clone(),
                 pull_diagnostics: self.lsp_pull_diagnostics_cache.clone(),
             }),
+            // Phase 5.8.AF.5 / Slice X2: syntax inputs the
+            // highlights worker reads. The `visible_spans` cell is
+            // cloned from `self.syntax_visible_spans_cell` so the
+            // Arc identity stays stable across publishes — the
+            // worker holds its own clone of the same Arc, so its
+            // writes survive subsequent publishes.
+            syntax: std::sync::Arc::new(SyntaxRenderState {
+                syntax_handle: self.syntax.clone().map(std::sync::Arc::new),
+                scroll: self.scroll,
+                viewport_height: self.viewport_height,
+                fold_hash: crate::folds::compute_fold_hash(&self.folds),
+                text_version: self.document.text_version(),
+                visible_spans: self.syntax_visible_spans_cell.clone(),
+            }),
             ..RenderState::default()
         }
     }
@@ -392,6 +406,16 @@ impl Editor {
     pub fn publish_render_state(&self) {
         let next = self.build_render_state();
         self.render_state.store(std::sync::Arc::new(next));
+        // Phase 5.8.AF.5 / Slice X2: wake the highlights worker.
+        // `Notify::notify_one` is "permit-style" — if no one is
+        // waiting, it stores a permit so the next `notified().await`
+        // resolves immediately. A burst of publishes therefore wakes
+        // the worker exactly once, which is what we want: the worker
+        // always reads the latest published inputs via
+        // `render_state.load_full()` regardless of how many publishes
+        // it missed during the burst. Cheap (~10ns) on the
+        // dispatch tail; doesn't block.
+        self.highlight_wake.0.notify_one();
     }
 
     // ----------------------------------------------------------------

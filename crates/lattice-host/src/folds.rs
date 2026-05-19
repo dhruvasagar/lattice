@@ -404,6 +404,36 @@ fn line_at(source: &[u8], line_idx: u32) -> &str {
     ""
 }
 
+/// Hash the user-visible signature of the current fold set.
+///
+/// Used as part of the highlights cache key
+/// ([`crate::render_state::VisibleHighlightsKey::fold_hash`]) so a
+/// fold toggle invalidates cached spans: collapsing / expanding a
+/// fold changes which physical lines are visible, which changes
+/// what `highlight_lines(start, end)` should produce.
+///
+/// Only `(start_line, end_line, closed)` are hashed —
+/// fold `identity` is excluded because two folds with the same
+/// range and state but different identities don't change which
+/// bytes are visible.
+///
+/// Phase 5.8.AF.5 / Slice X2: hoisted host-side from
+/// `lattice-ui-tui::app::folds::compute_fold_hash` so dispatch's
+/// `publish_render_state` can populate
+/// `SyntaxRenderState::fold_hash` without depending on the
+/// renderer crate.
+pub fn compute_fold_hash(folds: &[Fold]) -> u64 {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    folds.len().hash(&mut h);
+    for f in folds {
+        f.start_line.hash(&mut h);
+        f.end_line.hash(&mut h);
+        f.closed.hash(&mut h);
+    }
+    h.finish()
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]

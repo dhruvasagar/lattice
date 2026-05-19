@@ -763,8 +763,22 @@ impl EditorView {
                 let line = raw_lines[line_idx];
                 let fold_marker = editor.fold_start_at(line_idx as u32).is_some();
                 let is_cursor_line = line_idx == cursor_line;
+                // Phase 5.8.AF.5 / Slice 3c.atomic.M: index spans by
+                // buffer-line DELTA from `pane_scroll`, not by absolute
+                // buffer line. `highlight_lines(start, end)` returns
+                // `Vec<Vec<StyledSpan>>` where entry `i` covers absolute
+                // line `start + i` (per `lattice-syntax` docstring), so
+                // the lookup must subtract `pane_scroll`. Same lesson
+                // the TUI peer learned -- see
+                // `crates/lattice-ui-tui/src/render.rs:4971-4972`.
+                // Without this delta, every paint with `scroll > 0`
+                // either reads wrong-line spans or falls through to
+                // empty (`SyntaxStyle::Default` -> default text colour),
+                // which is what the user observes as "everything is
+                // just plain white".
+                let rel_line = (line_idx as u32).saturating_sub(pane_scroll) as usize;
                 let line_spans: &[lattice_syntax::StyledSpan] =
-                    highlights.get(line_idx).map(Vec::as_slice).unwrap_or(&[]);
+                    highlights.get(rel_line).map(Vec::as_slice).unwrap_or(&[]);
                 // 5.8.J: pre-compute inlay hits for this line.
                 let hints = inlay_hints_for_line(line_idx as u32, line);
                 let mut hint_iter = hints.iter().peekable();

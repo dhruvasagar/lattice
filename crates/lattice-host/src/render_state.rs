@@ -117,15 +117,65 @@ impl Default for RenderState {
 /// motion republishes `ActiveDocumentRenderState` without forcing
 /// `BuffersRenderState` to allocate a new Arc.
 ///
-/// Slice 3a: empty placeholder. Slice 3b populates with:
-/// - the active buffer's kind ([`lattice_core::BufferKind`]),
-/// - the snapshot pointer (cheap rope `Arc` clone),
-/// - cursor + scroll + viewport height,
-/// - modal state + visual anchor + selection range,
-/// - kind-specific overlays the renderer composites on top
-///   (help anchors, oil entries, etc.).
-#[derive(Debug, Default, Clone)]
-pub struct ActiveDocumentRenderState {}
+/// Phase 5.8.AF.5 / Slice 3c.1: populated. Renderers migrate
+/// their direct `editor.X` reads to this sub-state in Slices
+/// 3c.2 (TUI) + 3c.3 (GPUI); the field set covers every paint-
+/// time hot-path read.
+#[derive(Debug, Clone)]
+pub struct ActiveDocumentRenderState {
+    /// Buffer kind (Document / Help / Oil / FileTree). The
+    /// renderer's paint switch dispatches on this for kind-
+    /// specific overlays (oil row prefix, file-tree decorations,
+    /// help anchors, …).
+    pub buffer_kind: lattice_core::BufferKind,
+    /// BufferId of the currently-active document. For the
+    /// Document kind this equals `active_pane_buffer_id`; for
+    /// help / oil / file-tree the kinds may diverge (a help
+    /// popup sits over a document pane).
+    pub document_buffer_id: lattice_core::BufferId,
+    /// BufferId of the active pane's surface (what the user
+    /// sees in the focused pane). Used by per-pane reads.
+    pub active_pane_buffer_id: lattice_core::BufferId,
+    /// Cursor position (line + byte). Per-frame critical.
+    pub cursor: lattice_protocol::position::Position,
+    /// First visible buffer line. Drives the viewport's top.
+    pub scroll: u32,
+    /// Viewport height in screen-cell rows (active pane's
+    /// content area). Set by the renderer; read back here for
+    /// motions, scroll math, and the gutter.
+    pub viewport_height: u32,
+    /// Modal state (Normal / Insert / Visual / OpPending /
+    /// Command / Search / Replace). Drives cursor shape, the
+    /// modeline label, and gates per-mode paint behavior.
+    pub modal: lattice_grammar::ModalState,
+    /// Visual selection anchor; `None` when not in Visual.
+    pub visual_anchor: Option<lattice_protocol::position::Position>,
+    /// Active document's snapshot pointer (cheap rope `Arc`
+    /// clone). Captured at publication time so the renderer
+    /// holds a per-frame consistent view. Wait-free read for
+    /// downstream consumers (line iteration, byte indexing).
+    pub snapshot: Arc<lattice_runtime::DocumentSnapshot>,
+}
+
+impl Default for ActiveDocumentRenderState {
+    fn default() -> Self {
+        // Default uses a `Document` kind with `BufferId(0)` and
+        // an empty snapshot. Renderers reading the default
+        // before the first dispatch publication see a
+        // consistent zero-state.
+        Self {
+            buffer_kind: lattice_core::BufferKind::Document,
+            document_buffer_id: lattice_core::BufferId(0),
+            active_pane_buffer_id: lattice_core::BufferId(0),
+            cursor: lattice_protocol::position::Position::ZERO,
+            scroll: 0,
+            viewport_height: 0,
+            modal: lattice_grammar::ModalState::Normal,
+            visual_anchor: None,
+            snapshot: Arc::new(lattice_runtime::DocumentSnapshot::default()),
+        }
+    }
+}
 
 /// Buffer registry's render-side projection — the list of
 /// buffers the editor knows about, independent of which one is
@@ -364,6 +414,30 @@ mod tests {
             None,
             "lines without a diagnostic return None through the same path"
         );
+    }
+
+    /// Slice 3c.1: `ActiveDocumentRenderState` reflects current
+    /// editor state after dispatch. Mutating `editor.cursor`
+    /// directly + publishing produces a snapshot whose
+    /// `cursor` field matches.
+    #[test]
+    fn active_document_substate_reflects_editor_fields() {
+        use lattice_protocol::position::Position;
+        let mut editor = Editor::default();
+        editor.cursor = Position::new(7, 3);
+        editor.scroll = 5;
+        editor.viewport_height = 30;
+        editor.publish_render_state();
+        let rs = editor.render_state.load();
+        assert_eq!(rs.active_document.cursor, Position::new(7, 3));
+        assert_eq!(rs.active_document.scroll, 5);
+        assert_eq!(rs.active_document.viewport_height, 30);
+        assert_eq!(rs.active_document.modal, lattice_grammar::ModalState::Normal);
+        assert_eq!(rs.active_document.buffer_kind, lattice_core::BufferKind::Document);
+        // Snapshot is a fresh Arc clone from `editor.document`.
+        // Identity isn't preserved across publications (naive
+        // rebuild today); the value is what matters.
+        assert_eq!(rs.active_document.snapshot.buffer.byte_len(), 0);
     }
 
     /// Slice 3b.0 template proof: a write into the editor's

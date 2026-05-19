@@ -329,6 +329,22 @@ impl Editor {
         // tail keeps unmigrated sub-states at their (empty)
         // defaults without enumerating every field on every edit.
         RenderState {
+            // Slice 3c.1: active-buffer hot-path projection.
+            // Captures cursor/scroll/modal/etc. at publication
+            // time so renderers read consistent per-frame state
+            // without touching `editor.X` directly. Snapshot
+            // clone is one Arc bump (rope is Arc-backed).
+            active_document: std::sync::Arc::new(ActiveDocumentRenderState {
+                buffer_kind: self.active_buffer,
+                document_buffer_id: self.document_buffer_id,
+                active_pane_buffer_id: self.active_pane_buffer_id(),
+                cursor: self.cursor,
+                scroll: self.scroll,
+                viewport_height: self.viewport_height,
+                modal: self.modal,
+                visual_anchor: self.visual_anchor,
+                snapshot: self.document.snapshot(),
+            }),
             diagnostics: std::sync::Arc::new(DiagnosticsRenderState {
                 // Clone the `DiagnosticsLayer` -- it's internally
                 // `Arc<ArcSwap<...>>`-backed so this is one Arc

@@ -104,6 +104,42 @@ pub enum EditorCommand {
     /// Tear down the actor. The thread joins cleanly after the
     /// in-flight command completes.
     Shutdown,
+
+    // ------------------------------------------------------------
+    // 3c.atomic.F: typed setter commands. Mirror the in-process
+    // setters added in 3c.atomic.C (`Editor::set_cursor` /
+    // `set_cursor_line` / `set_cursor_byte` / `set_scroll` /
+    // `set_modal`) and the publish wrapper around
+    // `set_viewport_height` introduced in 3c.atomic.D.
+    //
+    // These commands cover the OUT-OF-DISPATCH write surface --
+    // viewport resize signalled by the renderer, test fixtures
+    // that wanted to seed cursor/scroll/modal directly, and
+    // future paths where a non-editor task needs to nudge active-
+    // document state. Each variant routes to the corresponding
+    // setter, which writes the field and publishes a fresh
+    // `RenderState`. The renderer observes the change via its
+    // shared `Arc<ArcSwap<RenderState>>` clone -- identical
+    // contract to the in-process method, executed on the editor
+    // thread.
+    // ------------------------------------------------------------
+    /// Replace `Editor::cursor` and publish render-state.
+    SetCursor(lattice_protocol::position::Position),
+    /// Replace `Editor::cursor.line` and publish render-state.
+    SetCursorLine(u32),
+    /// Replace `Editor::cursor.byte` and publish render-state.
+    SetCursorByte(u32),
+    /// Replace `Editor::scroll` and publish render-state.
+    SetScroll(u32),
+    /// Replace `Editor::modal` and publish render-state.
+    SetModal(lattice_grammar::ModalState),
+    /// Resize the active pane's viewport. Mirrors the App-side
+    /// `set_viewport_height` wrapper (clamp to >= 1, run
+    /// `ensure_cursor_visible`, publish). The actor wraps the
+    /// no-publish editor field write + the visibility fan-out
+    /// into one atomic command so the renderer's per-frame "tell
+    /// editor the pane size" hand-off is a single `cmd_tx.send`.
+    SetViewportHeight(u32),
 }
 
 /// Renderer-side handle to the editor actor.
@@ -153,6 +189,66 @@ impl EditorActorHandle {
         action: Action,
     ) -> Result<(), mpsc::error::SendError<EditorCommand>> {
         self.send(EditorCommand::Apply(action))
+    }
+
+    // ------------------------------------------------------------
+    // 3c.atomic.F: typed setter helpers. Each wraps the
+    // corresponding command variant so callers write
+    // `handle.set_cursor(p)` instead of
+    // `handle.send(EditorCommand::SetCursor(p))`. Symmetric with
+    // the in-process `Editor::set_*` setters added in
+    // 3c.atomic.C: same call shape, same semantics, different
+    // dispatch (in-actor vs. in-process).
+    // ------------------------------------------------------------
+
+    /// Replace the editor's cursor and republish.
+    pub fn set_cursor(
+        &self,
+        cursor: lattice_protocol::position::Position,
+    ) -> Result<(), mpsc::error::SendError<EditorCommand>> {
+        self.send(EditorCommand::SetCursor(cursor))
+    }
+
+    /// Replace `cursor.line` and republish.
+    pub fn set_cursor_line(
+        &self,
+        line: u32,
+    ) -> Result<(), mpsc::error::SendError<EditorCommand>> {
+        self.send(EditorCommand::SetCursorLine(line))
+    }
+
+    /// Replace `cursor.byte` and republish.
+    pub fn set_cursor_byte(
+        &self,
+        byte: u32,
+    ) -> Result<(), mpsc::error::SendError<EditorCommand>> {
+        self.send(EditorCommand::SetCursorByte(byte))
+    }
+
+    /// Replace `scroll` and republish.
+    pub fn set_scroll(
+        &self,
+        scroll: u32,
+    ) -> Result<(), mpsc::error::SendError<EditorCommand>> {
+        self.send(EditorCommand::SetScroll(scroll))
+    }
+
+    /// Replace `modal` and republish.
+    pub fn set_modal(
+        &self,
+        modal: lattice_grammar::ModalState,
+    ) -> Result<(), mpsc::error::SendError<EditorCommand>> {
+        self.send(EditorCommand::SetModal(modal))
+    }
+
+    /// Resize the active pane's viewport. Runs the same body as
+    /// the App-side wrapper: clamp to >= 1, run
+    /// `ensure_cursor_visible`, publish.
+    pub fn set_viewport_height(
+        &self,
+        height: u32,
+    ) -> Result<(), mpsc::error::SendError<EditorCommand>> {
+        self.send(EditorCommand::SetViewportHeight(height))
     }
 
     /// Drain a single pending signal from the editor's
@@ -290,6 +386,24 @@ async fn run_actor(
                 let _ = reply.send(());
             }
             EditorCommand::Shutdown => break,
+            // 3c.atomic.F: typed setter commands. Each delegates
+            // to the in-process setter, which writes the field
+            // and publishes. The renderer's shared
+            // `Arc<ArcSwap<RenderState>>` clone observes the new
+            // pointer wait-free.
+            EditorCommand::SetCursor(p) => editor.set_cursor(p),
+            EditorCommand::SetCursorLine(line) => editor.set_cursor_line(line),
+            EditorCommand::SetCursorByte(byte) => editor.set_cursor_byte(byte),
+            EditorCommand::SetScroll(s) => editor.set_scroll(s),
+            EditorCommand::SetModal(m) => editor.set_modal(m),
+            EditorCommand::SetViewportHeight(h) => {
+                // Mirrors the App-side wrapper:
+                // clamp to >= 1, run ensure_cursor_visible (which
+                // may adjust `scroll`), publish once at the tail.
+                editor.viewport_height = h.max(1);
+                editor.ensure_cursor_visible();
+                editor.publish_render_state();
+            }
         }
     }
 }
@@ -408,5 +522,100 @@ mod tests {
         // A fresh-default editor with no LSP attach has no
         // signal-producing drains; tick should be silent.
         assert_eq!(sig_count, 0, "fresh editor Tick should be silent");
+    }
+
+    // ------------------------------------------------------------
+    // 3c.atomic.F: typed setter command tests.
+    //
+    // Each test spawns a fresh actor, sends a setter command,
+    // synchronizes with a Ping, and asserts that the published
+    // `RenderState` reflects the mutation. The published-Arc
+    // identity changes on each setter (different `Arc::ptr_eq`),
+    // which is the canonical signal that `publish_render_state`
+    // fired inside the actor body.
+    // ------------------------------------------------------------
+
+    /// Synchronize on the actor's command queue. Ping reply
+    /// is sent after the preceding command's handler returns,
+    /// because commands are processed serially.
+    fn await_actor(handle: &EditorActorHandle) {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        handle
+            .send(EditorCommand::Ping { reply: reply_tx })
+            .expect("send ping");
+        reply_rx.blocking_recv().expect("ping reply");
+    }
+
+    #[test]
+    fn actor_set_cursor_publishes_new_position() {
+        let editor = Editor::default();
+        let handle = spawn_editor_actor(editor);
+        let before = handle.render_state();
+        let target = lattice_protocol::position::Position::new(3, 7);
+        handle.set_cursor(target).expect("send set_cursor");
+        await_actor(&handle);
+        let after = handle.render_state();
+        assert!(
+            !Arc::ptr_eq(&before, &after),
+            "SetCursor must publish a fresh RenderState Arc"
+        );
+        assert_eq!(after.active_document.cursor, target);
+    }
+
+    #[test]
+    fn actor_set_cursor_line_byte_publish_independently() {
+        let editor = Editor::default();
+        let handle = spawn_editor_actor(editor);
+        handle.set_cursor_line(5).expect("send set_cursor_line");
+        await_actor(&handle);
+        let after_line = handle.render_state();
+        assert_eq!(after_line.active_document.cursor.line, 5);
+        // byte stays at default.
+        assert_eq!(after_line.active_document.cursor.byte, 0);
+
+        handle.set_cursor_byte(11).expect("send set_cursor_byte");
+        await_actor(&handle);
+        let after_byte = handle.render_state();
+        assert_eq!(after_byte.active_document.cursor.line, 5);
+        assert_eq!(after_byte.active_document.cursor.byte, 11);
+    }
+
+    #[test]
+    fn actor_set_scroll_publishes_new_scroll() {
+        let editor = Editor::default();
+        let handle = spawn_editor_actor(editor);
+        handle.set_scroll(42).expect("send set_scroll");
+        await_actor(&handle);
+        let after = handle.render_state();
+        assert_eq!(after.active_document.scroll, 42);
+    }
+
+    #[test]
+    fn actor_set_modal_publishes_new_modal() {
+        let editor = Editor::default();
+        let handle = spawn_editor_actor(editor);
+        handle
+            .set_modal(lattice_grammar::ModalState::Insert)
+            .expect("send set_modal");
+        await_actor(&handle);
+        let after = handle.render_state();
+        assert!(matches!(
+            after.active_document.modal,
+            lattice_grammar::ModalState::Insert
+        ));
+    }
+
+    #[test]
+    fn actor_set_viewport_height_clamps_and_publishes() {
+        let editor = Editor::default();
+        let handle = spawn_editor_actor(editor);
+        // 0 must clamp to 1 -- mirror App-side wrapper.
+        handle.set_viewport_height(0).expect("send vh=0");
+        await_actor(&handle);
+        assert_eq!(handle.render_state().active_document.viewport_height, 1);
+
+        handle.set_viewport_height(24).expect("send vh=24");
+        await_actor(&handle);
+        assert_eq!(handle.render_state().active_document.viewport_height, 24);
     }
 }

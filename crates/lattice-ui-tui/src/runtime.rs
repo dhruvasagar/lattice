@@ -187,10 +187,10 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
         // Push the cursor shape only when modal changes -- terminals
         // accept these every frame, but emitting on every iteration adds
         // a few bytes of escape sequence to the stream that isn't free.
-        if last_modal != Some(app.editor.modal) {
-            execute!(terminal.backend_mut(), cursor_style_for(app.editor.modal))
+        if last_modal != Some(app.ad().modal) {
+            execute!(terminal.backend_mut(), cursor_style_for(app.ad().modal))
                 .context("set cursor style")?;
-            last_modal = Some(app.editor.modal);
+            last_modal = Some(app.ad().modal);
         }
 
         // §5.6.8: one Cache::load per frame for the active document.
@@ -211,7 +211,7 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
             match event::read().context("read event")? {
                 Event::Key(k) => {
                     let ctx = TranslateContext {
-                        modal: app.editor.modal,
+                        modal: app.ad().modal,
                         builtins: &app.editor.builtins,
                         pending_count: app.editor.pending_count,
                         op_count: app.editor.op_count,

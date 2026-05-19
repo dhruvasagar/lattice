@@ -295,10 +295,105 @@ pub struct LspRenderState {
 
 /// Tree-sitter highlights + visible-range cache.
 ///
-/// Slice 3a: empty placeholder. Slice 3b populates with the
-/// per-buffer highlight cache the renderer reads each paint.
+/// Phase 5.8.AF.5 / Slice X2: split into two halves.
+///
+/// **Inputs** (`syntax_handle`, `scroll`, `viewport_height`,
+/// `fold_hash`, `text_version`) are written by dispatch's
+/// `publish_render_state` from current `Editor` state. The
+/// background highlights worker reads them via the published
+/// `RenderState` snapshot to decide whether to recompute.
+///
+/// **Output** (`visible_spans`) is a nested `Arc<ArcSwap<...>>`
+/// so the worker can publish a fresh `VisibleSpans` *without*
+/// going through `publish_render_state`. The outer `RenderState`
+/// `Arc` stays stable across a frame; the inner spans cell can
+/// be swapped at any time. Renderers read with
+/// `render_state.syntax.visible_spans.load()` — wait-free.
+///
+/// Goal #1 ("no parsing on the UI thread") is enforced by this
+/// split: the tree-sitter walk runs on the worker, not in any
+/// renderer's per-frame body.
+#[derive(Debug, Clone)]
+pub struct SyntaxRenderState {
+    /// Active document's syntax handle. `None` when no language
+    /// is attached (scratch buffer, plain text). The worker calls
+    /// `.snapshot()` on this each tick to capture the current
+    /// tree state for the highlight walk.
+    pub syntax_handle: Option<Arc<lattice_syntax::SyntaxHandle>>,
+    /// First visible line (the worker passes this as `start` to
+    /// `highlight_lines(start, end_line)`).
+    pub scroll: u32,
+    /// Visible pane height in lines. The worker computes
+    /// `end_line = scroll + viewport_height` (clamped by the
+    /// snapshot's line count).
+    pub viewport_height: u32,
+    /// Caller-tracked signature of closed folds in the visible
+    /// range. Folds change which physical lines are visible, so
+    /// the cache key must include this to avoid serving stale
+    /// spans across fold toggles.
+    pub fold_hash: u64,
+    /// Current document text version. The stale-snapshot HOLD
+    /// (worker recompute path) compares the document's version
+    /// against the snapshot's `text_version()` to decide whether
+    /// the snapshot is still current or has fallen behind.
+    pub text_version: u64,
+    /// Worker-published output cell. Nested `Arc<ArcSwap<...>>`
+    /// so the worker can store a fresh result without rebuilding
+    /// the outer `RenderState`. The same `Arc` identity is
+    /// carried across every `publish_render_state` call (cloned
+    /// from `Editor::syntax_visible_spans_cell`), so the worker's
+    /// writes survive subsequent publishes.
+    pub visible_spans: Arc<arc_swap::ArcSwap<VisibleSpans>>,
+}
+
+impl Default for SyntaxRenderState {
+    fn default() -> Self {
+        Self {
+            syntax_handle: None,
+            scroll: 0,
+            viewport_height: 0,
+            fold_hash: 0,
+            text_version: 0,
+            visible_spans: Arc::new(arc_swap::ArcSwap::from_pointee(VisibleSpans::default())),
+        }
+    }
+}
+
+/// Cache key identifying the inputs that produced a particular
+/// `VisibleSpans`. Worker compares the *current* inputs against
+/// `VisibleSpans::computed_for_key` to short-circuit recompute on
+/// a no-op tick (cursor blink, unchanged scroll/viewport/folds).
+///
+/// `snapshot_ptr` is the `Arc::as_ptr` of the snapshot the spans
+/// were computed against — distinct snapshots produce distinct
+/// keys even if `text_version` happens to match.
+///
+/// Migrated from `crates/lattice-host/src/highlights.rs` in X2;
+/// the renderer's read contract is now the canonical owner.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct VisibleHighlightsKey {
+    pub snapshot_ptr: usize,
+    pub syntax_text_version: u64,
+    pub scroll: u32,
+    pub viewport_height: u32,
+    pub fold_hash: u64,
+}
+
+/// Worker-published syntax highlight spans for the active
+/// document's visible window.
+///
+/// `spans[i]` covers visible line `i` (i.e. document line
+/// `scroll + i`). Empty `spans` (the `Default`) means no
+/// highlights yet — renderer paints plain text until the first
+/// worker tick lands.
+///
+/// `computed_for_key` carries the inputs that produced these
+/// spans so the worker can skip recompute on identical keys.
 #[derive(Debug, Default, Clone)]
-pub struct SyntaxRenderState {}
+pub struct VisibleSpans {
+    pub spans: Vec<Vec<lattice_syntax::StyledSpan>>,
+    pub computed_for_key: VisibleHighlightsKey,
+}
 
 /// Active picker's render-side projection.
 ///

@@ -4239,11 +4239,7 @@ mod tests {
     #[test]
     fn compose_visible_lines_starts_at_scroll_offset() {
         let mut app = app_with("0\n1\n2\n3\n4", 2);
-        app.editor.scroll = 2;
-        // 3c.atomic.B: tests that mutate `app.editor.*` directly
-        // (bypassing dispatch) must republish so the render-side
-        // `app.ad()` reader observes the fresh value.
-        app.editor.publish_render_state();
+        app.editor.set_scroll(2);
         let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 2, 80);
         // Line index 2 is "2"; expect that text in the rendered first line.
         let l0 = format!("{:?}", lines[0]);
@@ -4256,8 +4252,7 @@ mod tests {
     #[test]
     fn cursor_position_advances_for_byte_offset() {
         let mut app = app_with("hello", 5);
-        app.editor.cursor.byte = 3;
-        app.editor.publish_render_state();
+        app.editor.set_cursor_byte(3);
         let area = Rect::new(0, 0, 80, 5);
         let pos = cursor_screen_position(
             &FrameView::from_app(&app),
@@ -4278,8 +4273,7 @@ mod tests {
         // not 6 -- which is what the byte offset would give us if
         // we used it as the column.
         let mut app = app_with("- §8 Performance commitments", 5);
-        app.editor.cursor.byte = 6;
-        app.editor.publish_render_state();
+        app.editor.set_cursor_byte(6);
         let area = Rect::new(0, 0, 80, 5);
         let pos = cursor_screen_position(
             &FrameView::from_app(&app),
@@ -4297,8 +4291,7 @@ mod tests {
         // at byte 6 (the space after the CJK char) should land at
         // display col 5 (a, b, c, 中=2 cells = total 5 cells).
         let mut app = app_with("abc中 def", 5);
-        app.editor.cursor.byte = 6; // past the 3-byte CJK char
-        app.editor.publish_render_state();
+        app.editor.set_cursor_byte(6); // past the 3-byte CJK char
         let area = Rect::new(0, 0, 80, 5);
         let pos = cursor_screen_position(
             &FrameView::from_app(&app),
@@ -4313,9 +4306,8 @@ mod tests {
     #[test]
     fn cursor_position_is_none_when_out_of_view() {
         let mut app = app_with("a\nb\nc\nd\ne", 2);
-        app.editor.scroll = 0;
-        app.editor.cursor.line = 4; // not in viewport [0,1]
-        app.editor.publish_render_state();
+        app.editor.set_scroll(0);
+        app.editor.set_cursor_line(4); // not in viewport [0,1]
         let area = Rect::new(0, 0, 80, 2);
         assert!(
             cursor_screen_position(
@@ -4336,9 +4328,7 @@ mod tests {
         // cursor would draw at row 3, which doesn't correspond to
         // any drawn buffer line.
         let mut app = app_with("a\nb\nh\nx\ny\nz\nq", 7);
-        app.editor.cursor.line = 3; // hidden by fold
-        app.editor.cursor.byte = 0;
-        app.editor.publish_render_state();
+        app.editor.set_cursor(lattice_protocol::position::Position::new(3, 0)); // hidden by fold
         // Push a closed fold over lines 2..=4.
         app.editor.folds.push(crate::app::Fold {
             start_line: 2,
@@ -4639,9 +4629,8 @@ mod tests {
         // prefix-matching top candidate, the cursor's line ends
         // with a dimmed span carrying the suffix.
         let mut app = app_with("foo", 5);
-        app.editor.modal = lattice_grammar::ModalState::Insert;
-        app.editor.cursor = pos(0, 3);
-        app.editor.publish_render_state();
+        app.editor.set_modal(lattice_grammar::ModalState::Insert);
+        app.editor.set_cursor(pos(0, 3));
         app.editor
             .config
             .set_typed::<lattice_config::CompletionGhostText>(true)
@@ -4694,9 +4683,8 @@ mod tests {
         // Cursor mid-line -> ghost would visually clash with
         // existing buffer content; producer suppresses.
         let mut app = app_with("foobaz", 5);
-        app.editor.modal = lattice_grammar::ModalState::Insert;
-        app.editor.cursor = pos(0, 3); // between `foo` and `baz`
-        app.editor.publish_render_state();
+        app.editor.set_modal(lattice_grammar::ModalState::Insert);
+        app.editor.set_cursor(pos(0, 3)); // between `foo` and `baz`
         app.editor
             .config
             .set_typed::<lattice_config::CompletionGhostText>(true)

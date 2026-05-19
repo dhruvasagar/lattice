@@ -383,6 +383,58 @@ impl Editor {
         let next = self.build_render_state();
         self.render_state.store(std::sync::Arc::new(next));
     }
+
+    // ----------------------------------------------------------------
+    // Phase 5.8.AF.5 / Slice 3c.atomic.C: typed write-side setters.
+    //
+    // The actor migration's contract is that every mutation to
+    // active-document state publishes a fresh `RenderState` so
+    // the renderer's wait-free reader observes the change. Inside
+    // `Editor::dispatch` / `handle_effect`, the dispatch tail
+    // calls `publish_render_state` once per command, so direct
+    // field writes inside those paths are correct without
+    // intermediate publishes.
+    //
+    // The methods below cover the OTHER write surface -- writes
+    // that originate OUTSIDE dispatch (test fixtures that mutate
+    // editor state directly, App-side wrappers that mutate after
+    // dispatch returns but before the next renderer frame). Each
+    // setter is `write field; publish_render_state()`. Tests
+    // replace `app.editor.cursor = p; app.editor.publish_render_state();`
+    // with `app.editor.set_cursor(p)`; the seam artifact
+    // disappears and the actor-ready contract is explicit at the
+    // call site.
+
+    /// Write `self.cursor` and publish. See module note above for
+    /// when to use this vs. a raw field write inside dispatch.
+    pub fn set_cursor(&mut self, cursor: lattice_protocol::position::Position) {
+        self.cursor = cursor;
+        self.publish_render_state();
+    }
+
+    /// Write `self.cursor.line` and publish.
+    pub fn set_cursor_line(&mut self, line: u32) {
+        self.cursor.line = line;
+        self.publish_render_state();
+    }
+
+    /// Write `self.cursor.byte` and publish.
+    pub fn set_cursor_byte(&mut self, byte: u32) {
+        self.cursor.byte = byte;
+        self.publish_render_state();
+    }
+
+    /// Write `self.scroll` and publish.
+    pub fn set_scroll(&mut self, scroll: u32) {
+        self.scroll = scroll;
+        self.publish_render_state();
+    }
+
+    /// Write `self.modal` and publish.
+    pub fn set_modal(&mut self, modal: ModalState) {
+        self.modal = modal;
+        self.publish_render_state();
+    }
 }
 
 /// Returns `true` for actions that mutate the document and therefore

@@ -119,6 +119,89 @@ fn style_at(spans: &[lattice_syntax::StyledSpan], byte: usize) -> SyntaxStyle {
     SyntaxStyle::Default
 }
 
+/// Phase 5.8.AF.5 / Slice X3: per-char styling signature used by
+/// `paint_pane`'s run-collapsing inner loop. Two adjacent chars
+/// with the same `CellStyle` render as a single styled div
+/// carrying a string of length N instead of N divs of length 1.
+///
+/// Fields are stripped to the colours that actually paint:
+///   - `fg`: text colour (Catppuccin palette u32);
+///   - `bg`: optional background colour (set by visual / search /
+///     substitute / doc-highlight overlays);
+///   - `underline`: optional bottom-border colour (set by diagnostic
+///     severity at this byte).
+///
+/// `PartialEq` is derived so `run.style == new_style` is one
+/// pointer-sized comparison. The compute fn collapses the
+/// substitute > visual > current_match > hlsearch > doc_highlight
+/// precedence stack into the final `(fg, bg)` pair so the loop
+/// doesn't re-walk the precedence per char.
+#[derive(Clone, Copy, PartialEq)]
+struct CellStyle {
+    fg: u32,
+    bg: Option<u32>,
+    underline: Option<u32>,
+}
+
+impl CellStyle {
+    #[allow(clippy::too_many_arguments)]
+    fn compute(
+        span_style: SyntaxStyle,
+        in_visual: bool,
+        in_current_match: bool,
+        in_hlsearch: bool,
+        in_substitute: bool,
+        in_doc_highlight: bool,
+        diagnostic_color: Option<u32>,
+        selection_bg: u32,
+        current_match_bg: u32,
+        current_match_fg: u32,
+        hlsearch_bg: u32,
+        substitute_bg: u32,
+        substitute_fg: u32,
+        doc_highlights_bg: u32,
+    ) -> Self {
+        // Overlay precedence (highest first):
+        //   substitute > visual > current_match > hlsearch > doc_highlight.
+        // `fg` defaults to the syntax colour; only substitute and
+        // current_match override it.
+        let syntax_fg = syntax_color(span_style);
+        let (fg, bg) = if in_substitute {
+            (substitute_fg, Some(substitute_bg))
+        } else if in_visual {
+            (syntax_fg, Some(selection_bg))
+        } else if in_current_match {
+            (current_match_fg, Some(current_match_bg))
+        } else if in_hlsearch {
+            (syntax_fg, Some(hlsearch_bg))
+        } else if in_doc_highlight {
+            (syntax_fg, Some(doc_highlights_bg))
+        } else {
+            (syntax_fg, None)
+        };
+        Self {
+            fg,
+            bg,
+            underline: diagnostic_color,
+        }
+    }
+}
+
+/// Render a collapsed run of same-styled chars as a single styled
+/// `gpui::Div` carrying the run's text. Mirrors what the per-char
+/// loop in pre-X3 `paint_pane` did for ONE char, but applied to
+/// the whole run.
+fn run_to_cell(style: CellStyle, text: String) -> gpui::Div {
+    let mut cell = div().text_color(rgb(style.fg)).child(text);
+    if let Some(bg) = style.bg {
+        cell = cell.bg(rgb(bg));
+    }
+    if let Some(uc) = style.underline {
+        cell = cell.border_b_2().border_color(rgb(uc));
+    }
+    cell
+}
+
 /// Resolve the diagnostic gutter glyph + colour for a severity by
 /// reading the host's `Theme` (the same source the TUI peer uses
 /// via `theme::diagnostic_glyph_and_style`). Returns the glyph
@@ -784,6 +867,33 @@ impl EditorView {
                 let mut hint_iter = hints.iter().peekable();
                 let mut cells: Vec<gpui::Div> = Vec::with_capacity(line.len() + 2 + hints.len());
                 cells.push(make_gutter(line_idx, is_cursor_line, fold_marker));
+                // Phase 5.8.AF.5 / Slice X3: collapse consecutive
+                // chars with identical styling into a single styled
+                // div carrying a string run, instead of one div per
+                // char. For a typical idle line (no visual, no
+                // search, no doc-highlight, syntax colour changes
+                // only at token boundaries), this cuts ~80 per-char
+                // divs down to ~10-15 per-run divs -- a 5-8x
+                // reduction in element-tree fan-out per line, and
+                // proportionally cheaper downstream GPUI layout +
+                // paint + composite. Visual output is identical:
+                // monospace font, each char in a run has the same
+                // fg/bg/underline, so concatenating into one string
+                // and applying the style to the run preserves
+                // appearance.
+                //
+                // Flush points (force a new run):
+                //   - inlay hint insertion at this byte;
+                //   - cursor char (renders as its own shaped cell);
+                //   - any field of `CellStyle` differs from the
+                //     current run.
+                let mut current_run: Option<(CellStyle, String)> = None;
+                let flush_run = |cells: &mut Vec<gpui::Div>,
+                                 run: &mut Option<(CellStyle, String)>| {
+                    if let Some((style, text)) = run.take() {
+                        cells.push(run_to_cell(style, text));
+                    }
+                };
                 for (byte_idx, c) in line.char_indices() {
                     // 5.8.J: drain hints whose byte offset is at
                     // or before this char — they render inline
@@ -792,6 +902,7 @@ impl EditorView {
                     // hint visually appears between tokens.
                     while let Some(&&(off, _)) = hint_iter.peek() {
                         if off <= byte_idx {
+                            flush_run(&mut cells, &mut current_run);
                             let (_, text) = hint_iter.next().unwrap();
                             cells.push(div().text_color(inlay_color).child(text.clone()));
                         } else {
@@ -799,55 +910,51 @@ impl EditorView {
                         }
                     }
                     let is_cursor = is_active && is_cursor_line && byte_idx == cursor_byte;
+                    if is_cursor {
+                        flush_run(&mut cells, &mut current_run);
+                        cells.push(style_cursor_cell(&c.to_string()));
+                        continue;
+                    }
+                    // Compute the per-char style signature. See
+                    // `CellStyle` + `compute_cell_style` at file
+                    // scope. Overlay precedence (substitute >
+                    // visual > current_match > hlsearch >
+                    // doc_highlight) lives there too.
                     let in_visual = byte_in_visual(line_idx, byte_idx, line.len());
                     let in_current_match = byte_in_current_match(line_idx, byte_idx, line.len());
                     let in_hlsearch =
                         !in_current_match && byte_in_any_match(line_idx, byte_idx, line.len());
-                    if is_cursor {
-                        cells.push(style_cursor_cell(&c.to_string()));
-                    } else {
-                        let span_style = style_at(line_spans, byte_idx);
-                        let mut cell = div()
-                            .text_color(rgb(syntax_color(span_style)))
-                            .child(c.to_string());
-                        // 5.8.P / 5.8.Q / 5.8.S / 5.8.V: layer
-                        // overlays from highest to lowest
-                        // precedence:
-                        //   Substitute preview (destructive intent)
-                        //   > Visual selection
-                        //   > current_match (in-progress search)
-                        //   > hlsearch (passive)
-                        //   > doc_highlight (LSP related-symbol)
-                        // A char in multiple overlays takes the
-                        // highest one.
-                        let in_substitute = byte_in_substitute(line_idx, byte_idx, line.len());
-                        let in_doc_highlight = doc_highlight_in_buffer(line_idx, byte_idx);
-                        if in_substitute {
-                            cell = cell.bg(substitute_bg).text_color(substitute_fg);
-                        } else if in_visual {
-                            cell = cell.bg(selection_bg);
-                        } else if in_current_match {
-                            cell = cell.bg(current_match_bg).text_color(current_match_fg);
-                        } else if in_hlsearch {
-                            cell = cell.bg(hlsearch_bg);
-                        } else if in_doc_highlight {
-                            cell = cell.bg(doc_highlights_bg);
+                    let in_substitute = byte_in_substitute(line_idx, byte_idx, line.len());
+                    let in_doc_highlight = doc_highlight_in_buffer(line_idx, byte_idx);
+                    let span_style = style_at(line_spans, byte_idx);
+                    let style = CellStyle::compute(
+                        span_style,
+                        in_visual,
+                        in_current_match,
+                        in_hlsearch,
+                        in_substitute,
+                        in_doc_highlight,
+                        diagnostic_severity_at_byte(line_idx, byte_idx, line)
+                            .map(|sev| diagnostic_glyph_and_color(&host_theme, sev).1),
+                        selection_bg,
+                        current_match_bg,
+                        current_match_fg,
+                        hlsearch_bg,
+                        substitute_bg,
+                        substitute_fg,
+                        doc_highlights_bg,
+                    );
+                    match &mut current_run {
+                        Some((existing, buf)) if *existing == style => {
+                            buf.push(c);
                         }
-                        // 5.8.AB.2: layer a per-character coloured
-                        // underline when a diagnostic covers this
-                        // byte. Independent of the bg overlays above
-                        // (a visually-selected error still shows the
-                        // underline) — this is the GUI-only signal
-                        // the TUI peer can't paint.
-                        if let Some(sev) =
-                            diagnostic_severity_at_byte(line_idx, byte_idx, line)
-                        {
-                            let (_, color) = diagnostic_glyph_and_color(&host_theme, sev);
-                            cell = cell.border_b_2().border_color(rgb(color));
+                        _ => {
+                            flush_run(&mut cells, &mut current_run);
+                            current_run = Some((style, c.to_string()));
                         }
-                        cells.push(cell);
                     }
                 }
+                flush_run(&mut cells, &mut current_run);
                 // 5.8.J: drain trailing hints positioned at or
                 // past EOL.
                 for (_, text) in hint_iter {

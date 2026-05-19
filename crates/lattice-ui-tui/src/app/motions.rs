@@ -82,6 +82,16 @@ impl App {
     pub fn set_viewport_height(&mut self, height: u32) {
         self.editor.viewport_height = height.max(1);
         self.editor.ensure_cursor_visible();
+        // 3c.atomic.D: this method runs outside the
+        // dispatch publish path (the TUI run loop calls it once
+        // per draw cycle, and tests call it during fixture
+        // setup), so render-state must be republished here for
+        // `app.ad().{viewport_height,scroll}` to observe the new
+        // values. Without this publish, a fixture that builds an
+        // App then calls `set_viewport_height(5)` and immediately
+        // calls `refresh_highlights` would see `ad.viewport_height
+        // == 0` (the boot-time default) and short-circuit.
+        self.editor.publish_render_state();
     }
 
     /// Compute the active pane's *content* height inside a buffer

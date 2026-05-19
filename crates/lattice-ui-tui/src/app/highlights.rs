@@ -126,11 +126,20 @@ impl App {
         // accessor. For the active buffer this still resolves to
         // `self.editor.syntax`; for future multi-buffer reads it
         // routes through `buffer_locals`.
+        // 3c.atomic.D: read active-document state through the
+        // renderer-owned `render_state` cell. `refresh_highlights`
+        // runs in the TUI main loop after the apply/dispatch
+        // chain has published, so `ad` reflects the most recent
+        // active document. The fold list and the subsequent
+        // `refresh_highlights_window` mutation stay on the
+        // editor field -- folds aren't on ActiveDocumentRenderState
+        // yet, and the host method needs `&mut self`.
+        let ad = self.ad();
         let syntax_handle = self
-            .document_syntax_for(self.editor.document_buffer_id)
+            .document_syntax_for(ad.document_buffer_id)
             .cloned();
         let end = self
-            .visible_buffer_line_extent(self.editor.scroll, self.editor.viewport_height)
+            .visible_buffer_line_extent(ad.scroll, ad.viewport_height)
             .saturating_add(1);
         let fold_hash = folds::compute_fold_hash(&self.editor.folds);
         self.editor
@@ -219,10 +228,15 @@ impl App {
     /// don't desync syntax styling -- viewport row 5 might be buffer
     /// line 12 once a fold collapses lines 5..=11.
     pub fn highlights_for_buffer_line(&self, line: u32) -> &[StyledSpan] {
-        if line < self.editor.scroll {
+        // 3c.atomic.D: renderer-side read through `ad()`. The
+        // active pane's scroll is mirrored on
+        // `ActiveDocumentRenderState` and stays current across
+        // dispatch publishes.
+        let scroll = self.ad().scroll;
+        if line < scroll {
             return &[];
         }
-        let offset = (line - self.editor.scroll) as usize;
+        let offset = (line - scroll) as usize;
         self.editor
             .visible_highlights
             .get(offset)

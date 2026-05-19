@@ -48,6 +48,7 @@ pub mod folds;
 pub mod help;
 pub mod help_topics;
 pub mod highlights;
+pub mod highlights_worker;
 pub mod host_generators;
 pub mod input;
 pub mod keymap;

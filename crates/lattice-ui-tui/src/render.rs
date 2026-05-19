@@ -91,10 +91,18 @@ impl<'a> FrameView<'a> {
     /// lock; the App's main loop owns the underlying vecs and
     /// the snapshot is consistent at the moment `from_app` runs.
     pub fn from_app(app: &'a App) -> Self {
+        // Phase 5.8.AF.5 / Slice X2.5: read syntax spans from the
+        // worker-published cell instead of the (legacy) UI-thread
+        // `editor.visible_highlights` mirror. The clone here is
+        // unavoidable — the FrameView snapshot decouples from the
+        // App for thread-safe rendering — but the parse that
+        // populated the cell ran on the worker, not the UI thread.
+        let rs = app.editor.render_state.load_full();
+        let spans = rs.syntax.visible_spans.load();
         Self {
             app,
             folds: Arc::from(app.editor.folds.clone().into_boxed_slice()),
-            visible_highlights: Arc::from(app.editor.visible_highlights.clone().into_boxed_slice()),
+            visible_highlights: Arc::from(spans.spans.clone().into_boxed_slice()),
             show_line_numbers: app.show_line_numbers(),
             relative_line_numbers: app.relative_line_numbers(),
         }
@@ -107,10 +115,14 @@ impl<'a> FrameView<'a> {
     /// stay tied to the active doc (inactive panes pull their own
     /// per-pane span snapshots through `app.editor.pane_highlights`).
     pub fn for_buffer(app: &'a App, buffer_id: crate::buffers::BufferId) -> Self {
+        // X2.5: same migration as `from_app` — read spans through
+        // the worker-published cell, not the legacy UI-thread field.
+        let rs = app.editor.render_state.load_full();
+        let spans = rs.syntax.visible_spans.load();
         Self {
             app,
             folds: Arc::from(app.editor.folds.clone().into_boxed_slice()),
-            visible_highlights: Arc::from(app.editor.visible_highlights.clone().into_boxed_slice()),
+            visible_highlights: Arc::from(spans.spans.clone().into_boxed_slice()),
             show_line_numbers: app.show_line_numbers_for(buffer_id),
             relative_line_numbers: app.relative_line_numbers_for(buffer_id),
         }

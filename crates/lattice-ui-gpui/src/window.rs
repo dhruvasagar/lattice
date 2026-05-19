@@ -378,8 +378,19 @@ impl EditorView {
         // document_buffer_id) read through the published
         // render-state cell. `editor.X` stays for fields not on
         // `ActiveDocumentRenderState` -- pane_tree, buffers,
-        // visible_highlights, pane_highlights, etc.
+        // pane_highlights, etc.
         let ad = self.app.ad();
+        // Phase 5.8.AF.5 / Slice X2.5: read the active document's
+        // syntax spans through the worker-published cell. Two
+        // guards (outer RenderState Arc, inner VisibleSpans Arc)
+        // are bound to local variables for the duration of
+        // paint_pane so the slice borrow into `spans_guard.spans`
+        // stays valid. Wait-free; no parsing on the UI thread.
+        // Pre-X2 read `editor.visible_highlights` (UI-thread cache
+        // refreshed by `self.app.refresh_highlights()` at the
+        // start of `render`, which has been removed in this slice).
+        let rs_guard = editor.render_state.load();
+        let active_spans_guard = rs_guard.syntax.visible_spans.load();
         let leaves = editor.pane_tree.leaves();
         if pane_idx >= leaves.len() {
             return div().child(format!("(stale pane index {pane_idx})"));
@@ -468,7 +479,11 @@ impl EditorView {
         };
         let same_doc_as_active = Some(pane.buffer_id) == active_doc_id;
         let highlights: &[Vec<lattice_syntax::StyledSpan>] = if is_active || same_doc_as_active {
-            editor.visible_highlights.as_slice()
+            // X2.5: was `editor.visible_highlights.as_slice()`.
+            // Now reads the worker-published cell via the
+            // `rs_guard` + `active_spans_guard` bound at the top
+            // of paint_pane.
+            active_spans_guard.spans.as_slice()
         } else {
             editor
                 .pane_highlights
@@ -1098,13 +1113,17 @@ impl Render for EditorView {
         // moved past the existing window.
         self.app.ensure_cursor_in_viewport();
         let after_ensure = std::time::Instant::now();
-        // 5.8.G: refresh the host-side highlight cache before
-        // reading spans. Cache-hit path is ~50ns; cache-miss path
-        // walks `highlight_lines` exactly once and stores into
-        // `editor.visible_highlights`. The per-frame
-        // `highlight_lines` call this replaces ran ~178µs at 80
-        // lines unconditionally.
-        self.app.refresh_highlights();
+        // Phase 5.8.AF.5 / Slice X2.5: the per-frame
+        // `self.app.refresh_highlights()` call has been removed.
+        // Active-pane highlights are now produced by the
+        // background highlights worker
+        // (`lattice_host::highlights_worker`) which subscribes to
+        // `Editor::highlight_wake` and publishes results into
+        // `render_state.syntax.visible_spans`. `paint_pane` reads
+        // those spans through `rs_guard.syntax.visible_spans.load()`.
+        // Pre-X2 cost: ~178µs at 80 lines per frame; post-X2: zero
+        // UI-thread parse cost. Goal #1 violation B1 closed for the
+        // GPUI peer.
         // 5.8.R: rebuild the per-pane cache for inactive Document
         // panes whose buffer differs from the active pane's. The
         // host method handles the same-doc short-circuit + reparse

@@ -177,7 +177,17 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
             terminal.clear().context("clear terminal for redraw")?;
             app.editor.pending_redraw = false;
         }
-        app.refresh_highlights();
+        // Phase 5.8.AF.5 / Slice X2.5: removed
+        // `app.refresh_highlights()` from the per-frame body.
+        // Active-pane highlights now come from the background
+        // highlights worker (`lattice_host::highlights_worker`),
+        // which subscribes to `Editor::highlight_wake` and
+        // publishes results into
+        // `render_state.syntax.visible_spans`. `FrameView::from_app`
+        // reads through that cell. Pre-X2 cost: 200–600µs per
+        // frame on scroll cache miss (tree-sitter walk on UI
+        // thread); post-X2: zero UI-thread parse cost. Goal #1
+        // violation B1 closed for the TUI peer.
         app.refresh_pane_highlights();
 
         // Push the cursor shape only when modal changes -- terminals

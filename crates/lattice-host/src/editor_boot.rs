@@ -568,6 +568,29 @@ impl Editor {
         // also hold one (BufferRegistry is `Clone` via Arc).
         let buffers_for_services = buffers.clone();
 
+        // Phase 5.8.AF.5 / Slice X2.4: instantiate the highlights
+        // worker's shared cells BEFORE the Editor literal so we
+        // can hand the worker its own clones at spawn time. The
+        // Editor literal below assigns these into the struct
+        // fields explicitly (overriding the `..Editor::default()`
+        // tail) so all three holders (Editor, RenderState, worker)
+        // share the SAME Arc identities — the worker's writes
+        // into `spans_cell` are observable through every
+        // `render_state.load_full().syntax.visible_spans.load()`.
+        let highlight_wake = crate::editor::HighlightWake::default();
+        let syntax_visible_spans_cell: std::sync::Arc<
+            arc_swap::ArcSwap<crate::render_state::VisibleSpans>,
+        > = std::sync::Arc::default();
+        let render_state_arc: std::sync::Arc<arc_swap::ArcSwap<crate::render_state::RenderState>> =
+            std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
+                crate::render_state::RenderState::default(),
+            ));
+        runtime_handle.spawn(crate::highlights_worker::run(
+            render_state_arc.clone(),
+            highlight_wake.clone(),
+            syntax_visible_spans_cell.clone(),
+        ));
+
         Editor {
             messages: messages_ring.clone(),
             pending_message_event_rx: Some(message_event_rx),
@@ -629,9 +652,18 @@ impl Editor {
             // dispatch (e.g. the initial paint at boot) see the
             // default empty sub-states, which is correct -- no
             // diagnostics, no popups, no pickers exist yet.
-            render_state: std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
-                crate::render_state::RenderState::default(),
-            )),
+            //
+            // X2.4: the same Arc is now also held by the
+            // highlights worker (spawned above) so its
+            // reads of `syntax` inputs see the SAME atomic snapshots
+            // the renderer reads.
+            render_state: render_state_arc,
+            // X2.4: same-Arc-identity values constructed above and
+            // shared with the highlights worker. Overrides the
+            // `..Editor::default()` tail (which would otherwise
+            // construct fresh, unshared cells).
+            highlight_wake,
+            syntax_visible_spans_cell,
             lsp_log_event_rx: Some(lsp_log_event_rx),
             lsp_progress_event_rx: Some(lsp_progress_event_rx),
             pending_apply_edit_rx: Some(lsp_apply_edit_rx),

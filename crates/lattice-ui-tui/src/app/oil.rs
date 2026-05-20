@@ -24,7 +24,10 @@ impl App {
 
     /// Delegate to [`lattice_host::dispatch::Editor::oil_with_dir`].
     pub(super) fn oil_with_dir(&self, dir: &Path) -> Option<crate::buffers::BufferId> {
-        self.editor.oil_with_dir(dir)
+        // Slice 3c.final.E.5e: clone `dir` to owned `PathBuf` so
+        // the closure satisfies `Send + 'static`. `BufferId` is Copy.
+        let dir = dir.to_path_buf();
+        self.read_editor(move |e| e.oil_with_dir(&dir))
     }
 
     /// `:Oil [dir]`. Phase 5.8.AD.1: body migrated to

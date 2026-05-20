@@ -593,7 +593,8 @@ impl App {
     }
 
     pub(super) fn execute_ex_line(&mut self, line: &str) {
-        match excommand::parse(line, &self.editor.registry) {
+        let reg = self.registry();
+        match excommand::parse(line, &reg) {
             Ok(inv) => match self.dispatch_blocking(inv) {
                 Ok(eff) => self.apply_effect(eff),
                 Err(e) => self.set_message(EchoLevel::Error, e.to_string()),

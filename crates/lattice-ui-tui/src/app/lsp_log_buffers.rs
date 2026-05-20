@@ -45,7 +45,12 @@ impl App {
         major_id: lattice_mode::ModeId,
         flags: BufferFlags,
     ) -> BufferId {
-        self.editor.ensure_named_synthetic_document(name, major_id, flags)
+        // Slice 3c.final.E.5e: clone `name` to owned `String` for
+        // the `Send + 'static` closure. Return type `BufferId` is Copy.
+        let name = name.to_string();
+        self.mutate_editor_with(move |e| {
+            e.ensure_named_synthetic_document(&name, major_id, flags)
+        })
     }
 
     /// Re-export of the canonical
@@ -68,7 +73,10 @@ impl App {
     /// Thin wrapper around
     /// [`lattice_host::editor::Editor::append_to_owned_buffer`].
     pub(crate) fn append_to_owned_buffer(&mut self, buffer_id: BufferId, text: &str) {
-        self.editor.append_to_owned_buffer(buffer_id, text);
+        // Slice 3c.final.E.5e: clone `text` to owned `String` for
+        // the `Send + 'static` closure.
+        let text = text.to_string();
+        self.mutate_editor(move |e| e.append_to_owned_buffer(buffer_id, &text));
     }
 }
 

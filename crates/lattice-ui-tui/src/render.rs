@@ -2700,7 +2700,7 @@ fn compose_visible_lines_inner(
             // visually hide 5 lines but report only the first
             // fold's own 3 lines, which doesn't match what the
             // user just collapsed.
-            closed_fold_display_span(view, snap, f)
+            closed_fold_display_span(view, snap, &f)
         });
         // 4.4.h: LSP semantic-tokens overlay. Replaces the
         // foreground color (folding in modifier bits) for

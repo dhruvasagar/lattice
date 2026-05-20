@@ -14939,7 +14939,10 @@ impl Editor {
 
     /// Write the MRU index to its configured path. Best-effort:
     /// disabled / fail logs once and continues. Phase 5.8.AF.
-    fn persist_picker_mru_best_effort(&self) {
+    /// Slice 3c.final.E.5e: made `pub` so the renderer's
+    /// `App::persist_picker_mru_best_effort` delegate can route
+    /// here through `read_editor`.
+    pub fn persist_picker_mru_best_effort(&self) {
         let persist = self
             .config
             .get_typed::<lattice_config::core_options::PickerMruPersist>()

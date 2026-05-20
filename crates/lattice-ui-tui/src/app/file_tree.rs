@@ -67,7 +67,10 @@ impl App {
     }
 
     pub(super) fn file_tree_with_root(&self, root: &Path) -> Option<crate::buffers::BufferId> {
-        self.editor.file_tree_with_root(root)
+        // Slice 3c.final.E.5e: clone `root` to owned `PathBuf` so
+        // the closure satisfies `Send + 'static`. `BufferId` is Copy.
+        let root = root.to_path_buf();
+        self.read_editor(move |e| e.file_tree_with_root(&root))
     }
 
     /// `:Tree [path]`. Phase 5.8.AD.1: body migrated to

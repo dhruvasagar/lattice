@@ -81,23 +81,24 @@ impl App {
                 .get(short)
                 .map(|s| (*s).to_string())
         };
+        // Slice 3c.final.E.5e: registry accessed through the
+        // Arc-cloning helper; locally-bound so the `&reg` borrow
+        // stays valid for the parser + lookup calls below.
+        let reg = self.registry();
         let slot =
-            lattice_completion::current_slot(&line, cursor, &self.editor.registry, &alias_resolver);
+            lattice_completion::current_slot(&line, cursor, &reg, &alias_resolver);
 
         let word = slot.prefix();
         let canonical = if word.is_empty() {
             None
         } else {
             alias_resolver(word).or_else(|| {
-                self.editor
-                    .registry
-                    .id_by_name(word)
-                    .and(Some(word.to_string()))
+                reg.id_by_name(word).and(Some(word.to_string()))
             })
         };
 
         if let Some(name) = canonical
-            && self.editor.registry.id_by_name(&name).is_some()
+            && reg.id_by_name(&name).is_some()
         {
             self.do_describe_command(&name, None);
             return;
@@ -195,13 +196,17 @@ impl App {
             return None;
         }
         let cmd = raw_cmd.strip_suffix('!').unwrap_or(raw_cmd);
-        let canonical = self.editor.registry.id_by_name(cmd).or_else(|| {
+        // Slice 3c.final.E.5e: registry through the Arc helper;
+        // bound locally so the `&reg`-equivalent lookups below stay
+        // alive across the lifetime of the closure-passed callable.
+        let reg = self.registry();
+        let canonical = reg.id_by_name(cmd).or_else(|| {
             crate::excommand::aliases()
                 .get(cmd)
                 .copied()
-                .and_then(|c| self.editor.registry.id_by_name(c))
+                .and_then(|c| reg.id_by_name(c))
         })?;
-        let spec = self.editor.registry.ex_command_spec(canonical)?;
+        let spec = reg.ex_command_spec(canonical)?;
         // Delimiter-form commands (`:s`, `:g`, `:v`) don't go
         // through the keyword arg-prompt path -- their syntax is
         // its own UX.
@@ -252,10 +257,12 @@ impl App {
                 .get(short)
                 .map(|s| (*s).to_string())
         };
+        // Slice 3c.final.E.5e: registry through the Arc helper.
+        let reg = self.registry();
         let slot = lattice_completion::current_slot(
             line,
             line.len(),
-            &self.editor.registry,
+            &reg,
             &alias_resolver,
         );
         matches!(

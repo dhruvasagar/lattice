@@ -80,16 +80,20 @@ impl App {
     /// (search.rs, motions.rs, render.rs) and the host-side
     /// `run_document_invocation` both still call it before the
     /// helper deletion sweep.
-    pub fn fold_start_at(&self, line: u32) -> Option<&Fold> {
-        self.editor.fold_start_at(line)
+    pub fn fold_start_at(&self, line: u32) -> Option<Fold> {
+        // Slice 3c.final.E.5e: returns owned `Fold` (Copy) so the
+        // closure satisfies `Send + 'static`. Callers all use
+        // `if let Some(fold) = ...` / `.filter(|f| f.closed)` so
+        // the value-vs-borrow swap is source-compatible.
+        self.read_editor(move |e| e.fold_start_at(line).copied())
     }
 
     /// 5.5.G.23: body migrated to
     /// [`lattice_host::dispatch::Editor::fold_start_at_any`]. Retained
     /// as a 1-line delegate; renderer call sites retire on the same
     /// sweep as `fold_start_at`.
-    pub fn fold_start_at_any(&self, line: u32) -> Option<&Fold> {
-        self.editor.fold_start_at_any(line)
+    pub fn fold_start_at_any(&self, line: u32) -> Option<Fold> {
+        self.read_editor(move |e| e.fold_start_at_any(line).copied())
     }
 
     /// 5.5.G.23: body migrated to

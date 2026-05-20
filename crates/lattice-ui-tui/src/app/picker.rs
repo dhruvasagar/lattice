@@ -67,24 +67,10 @@ impl App {
     /// is unacceptable. Slice 14d (event bus + typed options)
     /// can elevate to a debounced background write.
     fn persist_picker_mru_best_effort(&self) {
-        let persist = self
-            .editor
-            .config
-            .get_typed::<lattice_config::core_options::PickerMruPersist>()
-            .map(|b| *b)
-            .unwrap_or(true);
-        if !persist {
-            return;
-        }
-        let Some(path) = self.editor.picker_mru_path.as_ref() else {
-            return;
-        };
-        if let Err(e) = self.editor.picker_mru.save_to(path) {
-            eprintln!(
-                "lattice: failed to persist picker MRU at {}: {e}",
-                path.display(),
-            );
-        }
+        // Slice 3c.final.E.5e: body lives on
+        // [`lattice_host::dispatch::Editor::persist_picker_mru_best_effort`].
+        // Renderer-side wrapper is a 1-line `read_editor` delegate.
+        self.read_editor(|e| e.persist_picker_mru_best_effort());
     }
 
     // Phase 5.8.AA.s: `picker_workspace_root_path` migrated to

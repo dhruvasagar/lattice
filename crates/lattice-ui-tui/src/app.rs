@@ -1106,6 +1106,17 @@ impl App {
         self.read_editor(|e| e.command_line.clone())
     }
 
+    /// Slice 3c.final.E.5e: ExCommandRegistry accessor. Backed by
+    /// `Arc<CommandRegistry>` on the host so the clone is one Arc
+    /// bump, not a deep copy. 6+ sites across `cmdline` and
+    /// `dispatch` need a `&CommandRegistry` for parser /
+    /// completion-slot lookups; callers do
+    /// `let reg = self.registry(); ... &reg ...` to keep the Arc
+    /// alive across the borrow.
+    pub(crate) fn registry(&self) -> std::sync::Arc<lattice_grammar::CommandRegistry> {
+        self.read_editor(|e| e.registry.clone())
+    }
+
     /// Thin renderer-side wrapper around
     /// [`lattice_host::editor::Editor::set_message`].
     ///

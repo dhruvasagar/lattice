@@ -325,8 +325,21 @@ pub struct SyntaxRenderState {
     pub scroll: u32,
     /// Visible pane height in lines. The worker computes
     /// `end_line = scroll + viewport_height` (clamped by the
-    /// snapshot's line count).
+    /// snapshot's line count) when [`Self::end_line_override`]
+    /// is `None`.
     pub viewport_height: u32,
+    /// Fold-aware highlight-window upper bound. `Some(n)` makes
+    /// the worker walk `[scroll, n)` instead of the default
+    /// `[scroll, scroll + viewport_height)`. Set by the peer
+    /// when closed folds collapse multiple buffer lines onto a
+    /// single visible row, so a `n_row` viewport may need to
+    /// highlight `n_row + interior_fold_lines` buffer lines for
+    /// the post-fold tail to render with syntax styling. Slice
+    /// X2.9 plumbing -- before this the legacy
+    /// `Editor::refresh_highlights_window` accepted `end_line`
+    /// as an explicit argument; the X2 worker now reads it
+    /// through the same render-state cell as every other input.
+    pub end_line_override: Option<u32>,
     /// Caller-tracked signature of closed folds in the visible
     /// range. Folds change which physical lines are visible, so
     /// the cache key must include this to avoid serving stale
@@ -352,6 +365,7 @@ impl Default for SyntaxRenderState {
             syntax_handle: None,
             scroll: 0,
             viewport_height: 0,
+            end_line_override: None,
             fold_hash: 0,
             text_version: 0,
             visible_spans: Arc::new(arc_swap::ArcSwap::from_pointee(VisibleSpans::default())),

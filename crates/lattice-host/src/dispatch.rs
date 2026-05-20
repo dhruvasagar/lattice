@@ -390,6 +390,13 @@ impl Editor {
                 syntax_handle: self.syntax.clone().map(std::sync::Arc::new),
                 scroll: self.scroll,
                 viewport_height: self.viewport_height,
+                // Slice X2.9: stretch the worker's parse window
+                // past closed folds so syntax styling reaches
+                // lines that appear after a collapsed fold within
+                // the visible viewport. Falls back to None
+                // (worker uses `scroll + viewport_height`) when
+                // no folds are closed -- the common case.
+                end_line_override: self.fold_aware_highlight_end_line(),
                 fold_hash: crate::folds::compute_fold_hash(&self.folds),
                 text_version: self.document.text_version(),
                 visible_spans: self.syntax_visible_spans_cell.clone(),
@@ -8836,6 +8843,66 @@ impl Editor {
         self.folds
             .iter()
             .any(|f| f.closed && line > f.start_line && line <= f.end_line)
+    }
+
+    /// Slice X2.9: compute the fold-aware upper bound for the
+    /// highlights worker's parse window. When `viewport_height`
+    /// rows are drawn starting at `scroll`, closed folds collapse
+    /// multiple buffer lines onto a single row -- so the LAST
+    /// buffer line that actually appears in the viewport can be
+    /// well past `scroll + viewport_height`. The worker uses the
+    /// returned value (when `Some`) as `end_line` in its
+    /// `highlight_lines(start, end_line)` call so the tail of the
+    /// viewport (after any collapsed fold) gets coloured spans.
+    ///
+    /// Returns `None` when the result equals the default
+    /// `scroll + viewport_height` (no fold-stretch needed) so the
+    /// worker can skip the override branch entirely on the common
+    /// fold-free case. Renderer-agnostic; both peers route through
+    /// `publish_render_state` which wires this into
+    /// `SyntaxRenderState::end_line_override`.
+    pub fn fold_aware_highlight_end_line(&self) -> Option<u32> {
+        if self.viewport_height == 0 {
+            return None;
+        }
+        let total_lines = self.document.snapshot().buffer.line_count() as u32;
+        if total_lines == 0 {
+            return None;
+        }
+        let mut buf_line = self.scroll;
+        let mut row: u32 = 0;
+        let mut last = self.scroll;
+        while row < self.viewport_height && buf_line < total_lines {
+            if self.line_inside_closed_fold(buf_line) {
+                last = buf_line;
+                buf_line += 1;
+                continue;
+            }
+            last = buf_line;
+            if let Some(fold) = self.fold_start_at(buf_line) {
+                last = fold.end_line;
+                buf_line = fold.end_line + 1;
+            } else {
+                buf_line += 1;
+            }
+            row += 1;
+        }
+        // `last` is the highest buffer line that lands inside the
+        // visible band. `highlight_lines` expects end as exclusive
+        // so add 1; clamp at total_lines for safety.
+        let end = (last + 1).min(total_lines);
+        let default_end = self
+            .scroll
+            .saturating_add(self.viewport_height.max(1))
+            .min(total_lines);
+        // Skip the override when the stretch wouldn't add any
+        // lines -- avoids needlessly waking the worker for an
+        // unchanged key.
+        if end <= default_end {
+            None
+        } else {
+            Some(end)
+        }
     }
 
     /// Move the cursor out of any closed fold's hidden body to the

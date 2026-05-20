@@ -3395,6 +3395,7 @@ name = "lattice-host"
 version = "0.1.0"
 dependencies = [
  "arc-swap",
+ "criterion",
  "fancy-regex",
  "globset",
  "ignore",

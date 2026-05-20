@@ -577,14 +577,11 @@ mod tests {
         );
     }
 
-    // X2.6 gap: the worker reads `[scroll, scroll + viewport_height)`
-    // as its parse range and doesn't yet apply the fold-aware
-    // stretch that the legacy `App::visible_buffer_line_extent`
-    // provided. Restoring this assertion requires plumbing the
-    // fold-aware `end_line` through `SyntaxRenderState` so the
-    // worker walks the stretched window. Tracked in
-    // `project_x_series_status.md` as part of X2.9.
-    #[ignore]
+    // X2.9 fix: `Editor::fold_aware_highlight_end_line` is now
+    // wired through `SyntaxRenderState::end_line_override`; the
+    // worker walks the stretched window so syntax styling
+    // reaches lines that appear below a collapsed fold within
+    // the viewport.
     #[test]
     fn refresh_highlights_covers_buffer_lines_below_a_closed_fold() {
         // Regression: with a closed fold inside the viewport, the

@@ -96,6 +96,14 @@ globset = { workspace = true }
 fancy-regex = { workspace = true }
 
 [dev-dependencies]
+# Phase 5.8.AF.6 / Slice X2.9: highlights worker bench
+# (`benches/highlights_worker.rs`) needs criterion + a real
+# `Syntax` instance to feed the worker recompute path.
+criterion = { workspace = true }
+
+[[bench]]
+name = "highlights_worker"
+harness = false
 
 [lints]
 workspace = true

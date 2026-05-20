@@ -45,16 +45,16 @@ impl App {
     /// compilation fails. Cleared explicitly by CommandLineCancel
     /// and by execute_ex_line on submit.
     pub(super) fn refresh_substitute_preview(&mut self) {
-        let parsed = match crate::excommand::try_parse_substitute_partial(&self.editor.command_line)
+        let parsed = match crate::excommand::try_parse_substitute_partial(&self.command_line())
         {
             Some(p) => p,
             None => {
-                self.editor.substitute_preview = None;
+                self.mutate_editor(|e| e.substitute_preview = None);
                 return;
             }
         };
         if parsed.pattern.is_empty() {
-            self.editor.substitute_preview = None;
+            self.mutate_editor(|e| e.substitute_preview = None);
             return;
         }
         let regex = match compile_search_pattern(&parsed.pattern) {
@@ -72,14 +72,14 @@ impl App {
             .map(|f| f.contains('g'))
             .unwrap_or(false);
 
-        let buffer = self.editor.document.snapshot().buffer.clone();
+        let buffer = self.ad().snapshot.clone().buffer.clone();
         let mut matches: Vec<ProtoRange> = Vec::new();
         match parsed.scope {
             crate::excommand::SubstitutePartialScope::CurrentLine => {
                 self.collect_substitute_matches_for_line(
                     &buffer,
                     &regex,
-                    self.editor.cursor.line,
+                    self.cursor().line,
                     global,
                     &mut matches,
                 );

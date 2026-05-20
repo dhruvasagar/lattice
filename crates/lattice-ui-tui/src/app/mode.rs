@@ -41,7 +41,9 @@ impl App {
     /// Wrapper fans host-returned `RendererSignal`s through
     /// [`Self::handle_renderer_signal`].
     pub fn activate_major_for_buffer_kind(&mut self, buffer_id: BufferId, kind: BufferKind) {
-        let signals = self.editor.activate_major_for_buffer_kind(buffer_id, kind);
+        // Slice 3c.final.E.2: route through `mutate_editor_with`.
+        let signals =
+            self.mutate_editor_with(move |e| e.activate_major_for_buffer_kind(buffer_id, kind));
         for sig in signals {
             self.handle_renderer_signal(sig);
         }
@@ -67,7 +69,8 @@ impl App {
     /// Wrapper fans host-returned `RendererSignal`s through
     /// [`Self::handle_renderer_signal`].
     pub fn activate_mode_by_id(&mut self, buffer_id: BufferId, mode_id: ModeId) {
-        let signals = self.editor.activate_mode_by_id(buffer_id, mode_id);
+        // Slice 3c.final.E.2: route through `mutate_editor_with`.
+        let signals = self.mutate_editor_with(move |e| e.activate_mode_by_id(buffer_id, mode_id));
         for sig in signals {
             self.handle_renderer_signal(sig);
         }
@@ -83,7 +86,9 @@ impl App {
     /// Wrapper fans host-returned `RendererSignal`s through
     /// [`Self::handle_renderer_signal`].
     pub fn deactivate_mode_by_id(&mut self, buffer_id: BufferId, mode_id: ModeId) {
-        let signals = self.editor.deactivate_mode_by_id(buffer_id, mode_id);
+        // Slice 3c.final.E.2: route through `mutate_editor_with`.
+        let signals =
+            self.mutate_editor_with(move |e| e.deactivate_mode_by_id(buffer_id, mode_id));
         for sig in signals {
             self.handle_renderer_signal(sig);
         }
@@ -151,7 +156,10 @@ impl App {
     /// Wrapper fans host-returned `RendererSignal`s through
     /// [`Self::handle_renderer_signal`].
     pub fn toggle_mode_by_name(&mut self, name: &str) {
-        let signals = self.editor.toggle_mode_by_name(name);
+        // Slice 3c.final.E.2: route through `mutate_editor_with`.
+        // Closure needs `Send + 'static`, so promote `&str` to `String`.
+        let name_owned = name.to_string();
+        let signals = self.mutate_editor_with(move |e| e.toggle_mode_by_name(&name_owned));
         for sig in signals {
             self.handle_renderer_signal(sig);
         }
@@ -161,7 +169,8 @@ impl App {
     /// Wrapper fans host-returned `RendererSignal`s through
     /// [`Self::handle_renderer_signal`].
     pub fn drain_mode_lifecycle_events(&mut self) {
-        let signals = self.editor.drain_mode_lifecycle_events();
+        // Slice 3c.final.E.2: route through `mutate_editor_with`.
+        let signals = self.mutate_editor_with(|e| e.drain_mode_lifecycle_events());
         for sig in signals {
             self.handle_renderer_signal(sig);
         }
@@ -190,7 +199,8 @@ impl App {
     /// `do_*` helpers in `edit` / `motions` / `lsp` modules).
     /// These retire as their callers migrate host-side.
     pub(super) fn enter_mode(&mut self, state: ModalState) {
-        self.editor.enter_mode(state);
+        // Slice 3c.final.E.2: route through `mutate_editor`.
+        self.mutate_editor(move |e| e.enter_mode(state));
     }
 }
 

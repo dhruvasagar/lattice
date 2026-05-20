@@ -354,7 +354,45 @@ impl Editor {
                 completion_open: self.completion_state.is_some(),
                 picker_open: self.picker.is_some(),
                 snippet_active: self.active_snippet.is_some(),
+                // Slice 3c.final.B (group 2): active-document
+                // decoration fields. Renderers read these
+                // through the published snapshot instead of
+                // `app.editor.X` directly.
+                folds: std::sync::Arc::from(self.folds.clone().into_boxed_slice()),
+                all_matches: std::sync::Arc::from(
+                    self.all_matches.clone().into_boxed_slice(),
+                ),
+                current_match: self.current_match,
+                visual_range: self.visual_selection_range(),
+                substitute_preview: self
+                    .substitute_preview
+                    .clone()
+                    .map(std::sync::Arc::new),
+                selections: self.document.selections(),
+                option_cache: self.option_cache,
             }),
+            // Slice 3c.final.B (group 5): translator inputs.
+            // `builtins` is `Copy`; `keymap` is one Arc bump;
+            // `partial_chord` is small (0–2 entries typically)
+            // so the slice clone is sub-µs.
+            translator: std::sync::Arc::new(TranslatorRenderState {
+                builtins: self.builtins,
+                keymap: self.keymap.clone(),
+                partial_chord: std::sync::Arc::from(
+                    self.partial_chord.clone().into_boxed_slice(),
+                ),
+            }),
+            // Slice 3c.final.B (group 6): lifecycle flags + theme.
+            // `LifecycleRenderState` is three small Copy fields;
+            // the wrapping `Arc::new` keeps the substate shape
+            // consistent with neighbours. Theme is Copy so the
+            // outer publish is a plain struct move.
+            lifecycle: std::sync::Arc::new(LifecycleRenderState {
+                should_quit: self.should_quit,
+                pending_redraw: self.pending_redraw,
+                terminal_width: self.terminal_width,
+            }),
+            theme: self.host_theme,
             diagnostics: std::sync::Arc::new(DiagnosticsRenderState {
                 // Clone the `DiagnosticsLayer` -- it's internally
                 // `Arc<ArcSwap<...>>`-backed so this is one Arc
@@ -379,6 +417,57 @@ impl Editor {
                 document_links: self.lsp_document_links_cache.clone(),
                 document_color: self.lsp_document_color_cache.clone(),
                 pull_diagnostics: self.lsp_pull_diagnostics_cache.clone(),
+                // Slice 3c.final.B (group 4): progress map + supervisor
+                // handle. Progress is small (~10 concurrent items
+                // typical); a per-publish HashMap clone is sub-µs.
+                // Supervisor handle is `Arc<ArcSwap<...>>`-backed so
+                // `Clone` is one Arc bump and `servers_for(uri)` stays
+                // wait-free on the renderer side.
+                progress: std::sync::Arc::new(self.lsp_progress.clone()),
+                supervisor: self.lsp.clone(),
+            }),
+            // Phase 5.8.AF.5 / Slice 3c.final.B (group 1): panes
+            // + buffers foundation. The pane tree is wrapped in an
+            // `Arc` so the published value is shared across reader
+            // frames; cloning the editor's `PaneTree` (one
+            // `Vec<PaneState>` + a handful of `Box<PaneNode>`s for
+            // splits) is bounded by tree depth. The registry is
+            // already `Arc<Mutex<...>>`-backed so its `Clone` is
+            // one Arc bump. `buffer_uris` is a fresh `HashMap`
+            // clone per publish — at ~10 entries the cost is
+            // sub-µs; later slices can migrate to an inner-cell
+            // `Arc<HashMap<...>>` on the editor side if the
+            // registry grows large.
+            panes: std::sync::Arc::new(PanesRenderState {
+                tree: std::sync::Arc::new(self.pane_tree.clone()),
+            }),
+            buffers: std::sync::Arc::new(BuffersRenderState {
+                registry: self.buffers.clone(),
+                uris: std::sync::Arc::new(self.buffer_uris.clone()),
+            }),
+            // Slice 3c.final.B (group 3): picker / completion /
+            // popup snapshots. Each `Arc::new` per publish; the
+            // option-wrapped slots collapse to `None` (no clone)
+            // when the relevant feature is closed.
+            picker: std::sync::Arc::new(PickerRenderState {
+                state: self.picker.clone().map(std::sync::Arc::new),
+            }),
+            completion: std::sync::Arc::new(CompletionRenderState {
+                insert: self.insert_completion.clone().map(std::sync::Arc::new),
+                state: self.completion_state.clone().map(std::sync::Arc::new),
+            }),
+            popup: std::sync::Arc::new(PopupRenderState {
+                buffer_id: self.popup_buffer,
+                help: self.popup_help().map(std::sync::Arc::new),
+                help_highlights: self
+                    .popup_help_highlights()
+                    .map(|spans| std::sync::Arc::from(spans.to_vec().into_boxed_slice()))
+                    .unwrap_or_else(|| {
+                        std::sync::Arc::from(
+                            Vec::<Vec<lattice_syntax::StyledSpan>>::new().into_boxed_slice(),
+                        )
+                    }),
+                placement: self.popup_placement,
             }),
             // Phase 5.8.AF.5 / Slice X2: syntax inputs the
             // highlights worker reads. The `visible_spans` cell is
@@ -609,6 +698,26 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
     // function returns).
     match action {
         Action::None => {}
+        // ---- Slice 3c.final.C: renderer non-dispatch mutations ----
+        Action::SetViewportHeight(h) => {
+            editor.viewport_height = h.max(1);
+            editor.ensure_cursor_visible();
+        }
+        Action::EnsureCursorVisible => {
+            editor.ensure_cursor_visible();
+        }
+        Action::RefreshPaneHighlights => {
+            editor.refresh_pane_highlights();
+        }
+        Action::DismissPopup => {
+            editor.dismiss_popup();
+        }
+        Action::SetTerminalWidth(w) => {
+            editor.terminal_width = Some(w);
+        }
+        Action::AcknowledgeRedraw => {
+            editor.pending_redraw = false;
+        }
         Action::Quit => {
             editor.event_bus.publish(Event::BeforeQuit);
             editor.should_quit = true;
@@ -7670,14 +7779,22 @@ impl Editor {
             .get(&buffer_id)
             .map(|m| m.is_active(mode_id))
             .unwrap_or(false);
-        match (mode.kind(), active_now) {
+        let signals = match (mode.kind(), active_now) {
             (lattice_mode::ModeKind::Minor, true) => self.deactivate_mode_by_id(buffer_id, mode_id),
             (lattice_mode::ModeKind::Minor, false) => self.activate_mode_by_id(buffer_id, mode_id),
             // Major: activating an inactive major swaps it in;
             // re-activating the current major reloads (registry
             // contract). Either way the call is the same.
             (lattice_mode::ModeKind::Major, _) => self.activate_mode_by_id(buffer_id, mode_id),
-        }
+        };
+        // Slice 3c.final.B (group 2): mode cascades flip
+        // `option_cache.X` (current_line_highlight,
+        // show_whitespace, …) which renderers now read through
+        // `rs.active_document.option_cache`. Republish so the
+        // toggle is visible to the next render, even when invoked
+        // outside dispatch (tests, plugin host).
+        self.publish_render_state();
+        signals
     }
 
     /// `:set foldmethod=...` -- the option-cache hot-path read.
@@ -8368,6 +8485,13 @@ impl Editor {
         // `Result` (post-shutdown nothing meaningful to do).
         let _ = block_on(self.document.set_selections(selections));
         self.publish_selections_changed();
+        // Slice 3c.final.B (group 2): renderer reads visual-range
+        // + selections through `rs.active_document` — keep them in
+        // sync when callers mutate selections outside dispatch
+        // (Visual extension, gv-reselect, LSP location jump,
+        // tests). Inside-dispatch callers will republish at the
+        // tail anyway; the extra publish is cheap.
+        self.publish_render_state();
     }
 
     /// Build + publish [`Event::SelectionsChanged`] from the

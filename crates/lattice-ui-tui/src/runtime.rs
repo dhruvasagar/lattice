@@ -126,7 +126,12 @@ fn popup_height_for(candidate_count: usize) -> usize {
 
 fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) -> Result<()> {
     let mut last_modal: Option<ModalState> = None;
-    while !app.editor.should_quit {
+    // Slice 3c.final.B (group 6): lifecycle read via published
+    // substate. `should_quit` flips from inside dispatch (`:q`,
+    // `:wq`, `:qa!`) which republishes at its tail, so the next
+    // iteration's load sees the new value.
+    // Slice 3c.final.E.4: read through App-cached `render_state`.
+    while !app.render_state.load().lifecycle.should_quit {
         // Phase 5.8.AF.5 / Slice X1: `run_tick_pending` no longer
         // runs per-frame here. It moved to `App::apply`'s tail
         // (`crates/lattice-ui-tui/src/app/dispatch.rs`) so the
@@ -168,14 +173,22 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
             .saturating_sub(2)
             .saturating_sub(extra_rows as u16) as u32;
         app.set_viewport_height(app.active_pane_content_height(buffer_height));
-        app.editor.terminal_width = Some(size.width);
+        // Slice 3c.final.C: terminal_width via Action.
+        app.apply(lattice_host::action::Action::SetTerminalWidth(size.width));
         // `<C-l>` (RedrawScreen) sets `pending_redraw`; honour it
         // by clearing the terminal buffer so the next draw repaints
         // every cell instead of letting ratatui's diff engine
         // assume the previous frame's contents are intact.
-        if app.editor.pending_redraw {
+        // Slice 3c.final.B (group 6) + 3c.final.C: pending_redraw
+        // read via the published substate; acknowledge-write goes
+        // through `Action::AcknowledgeRedraw` so the renderer no
+        // longer mutates editor state directly. Dispatch tail
+        // republishes RS so the next iteration's load observes
+        // the cleared flag.
+        // Slice 3c.final.E.4: read through App-cached `render_state`.
+        if app.render_state.load().lifecycle.pending_redraw {
             terminal.clear().context("clear terminal for redraw")?;
-            app.editor.pending_redraw = false;
+            app.apply(lattice_host::action::Action::AcknowledgeRedraw);
         }
         // Phase 5.8.AF.5 / Slice X2.5: removed
         // `app.refresh_highlights()` from the per-frame body.
@@ -216,10 +229,19 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
         if event::poll(Duration::from_millis(100)).context("poll events")? {
             match event::read().context("read event")? {
                 Event::Key(k) => {
+                    // Slice 3c.final.B (group 5): translator
+                    // inputs read through `rs.translator` instead
+                    // of `&app.editor.{builtins,keymap,partial_chord}`.
+                    // The Arc-bound substate keeps the borrows
+                    // valid for the duration of the translate call
+                    // without tying them to `Editor`'s lifetime —
+                    // sets up the slice-E thread split.
                     let ad = app.ad();
+                    // Slice 3c.final.E.4: via App-cached render_state.
+                    let translator = app.render_state.load().translator.clone();
                     let ctx = TranslateContext {
                         modal: ad.modal,
-                        builtins: &app.editor.builtins,
+                        builtins: &translator.builtins,
                         pending_count: ad.pending_count,
                         op_count: ad.op_count,
                         recording_macro: ad.macro_recording,
@@ -229,8 +251,8 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
                         picker_open: ad.picker_open,
                         insert_completion_open: app.completion_popup_active(),
                         snippet_active: ad.snippet_active,
-                        keymap: &app.editor.keymap,
-                        partial_chord: &app.editor.partial_chord,
+                        keymap: &translator.keymap,
+                        partial_chord: &translator.partial_chord,
                     };
                     let action = translate(ctx, k);
                     app.apply(action);

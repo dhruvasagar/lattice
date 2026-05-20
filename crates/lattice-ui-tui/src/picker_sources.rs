@@ -44,7 +44,7 @@ mod tests {
         std::fs::write(tmp.join("a.rs"), "").unwrap();
         std::fs::write(tmp.join("b.rs"), "").unwrap();
         let app = app_with("hi\n", 5);
-        let snap = app.editor.document.snapshot();
+        let snap = app.ad().snapshot.clone();
         let ctx = app.build_picker_context(&snap);
         let source = FilesSource::new();
         let result = source
@@ -78,7 +78,7 @@ mod tests {
         std::fs::create_dir_all(&tmp).unwrap();
         std::fs::write(tmp.join("readme.md"), b"# hello").unwrap();
         let app = app_with("hi\n", 5);
-        let snap = app.editor.document.snapshot();
+        let snap = app.ad().snapshot.clone();
         let ctx = app.build_picker_context(&snap);
         let source = FilesSource::new();
         let result = source
@@ -116,7 +116,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
         let app = app_with("hi\n", 5);
-        let snap = app.editor.document.snapshot();
+        let snap = app.ad().snapshot.clone();
         let ctx = app.build_picker_context(&snap);
         let source = FilesSource::new();
         let err = source
@@ -130,7 +130,7 @@ mod tests {
     #[test]
     fn recent_source_empty_mru_errors() {
         let app = app_with("hi\n", 5);
-        let snap = app.editor.document.snapshot();
+        let snap = app.ad().snapshot.clone();
         let ctx = app.build_picker_context(&snap);
         let source = RecentFilesSource::new();
         let err = source.init(&ctx, &[]).unwrap_err();
@@ -143,7 +143,7 @@ mod tests {
     #[test]
     fn buffers_source_inline_init_floats_active_to_bottom() {
         let app = app_with("hi\n", 5);
-        let snap = app.editor.document.snapshot();
+        let snap = app.ad().snapshot.clone();
         let ctx = app.build_picker_context(&snap);
         let source = BuffersSource::new();
         let result = source.init(&ctx, &[]).expect("inline");
@@ -193,7 +193,7 @@ mod tests {
     #[test]
     fn jumps_source_empty_history_errors() {
         let app = app_with("hi\n", 5);
-        let snap = app.editor.document.snapshot();
+        let snap = app.ad().snapshot.clone();
         let ctx = app.build_picker_context(&snap);
         let source = JumpsSource::new();
         let err = source.init(&ctx, &[]).unwrap_err();
@@ -208,7 +208,7 @@ mod tests {
     #[test]
     fn commands_source_emits_ex_commands_only() {
         let app = app_with("hi\n", 5);
-        let snap = app.editor.document.snapshot();
+        let snap = app.ad().snapshot.clone();
         let ctx = app.build_picker_context(&snap);
         let source = CommandsSource::new(app.editor.registry.clone());
         let result = source.init(&ctx, &[]).expect("inline");
@@ -250,7 +250,7 @@ mod tests {
     #[test]
     fn commands_source_display_carries_marginalia_columns() {
         let app = app_with("hi\n", 5);
-        let snap = app.editor.document.snapshot();
+        let snap = app.ad().snapshot.clone();
         let ctx = app.build_picker_context(&snap);
         let source = CommandsSource::new(app.editor.registry.clone());
         let result = source.init(&ctx, &[]).expect("inline");
@@ -285,7 +285,7 @@ mod tests {
     #[test]
     fn commands_source_accept_translates_invoke_command() {
         let app = app_with("hi\n", 5);
-        let snap = app.editor.document.snapshot();
+        let snap = app.ad().snapshot.clone();
         let ctx = app.build_picker_context(&snap);
         let source = CommandsSource::new(app.editor.registry.clone());
         let routing = RoutingPayload::InvokeCommand {
@@ -311,7 +311,7 @@ mod tests {
     #[test]
     fn registers_source_empty_errors() {
         let app = app_with("hi\n", 5);
-        let snap = app.editor.document.snapshot();
+        let snap = app.ad().snapshot.clone();
         let ctx = app.build_picker_context(&snap);
         let source = RegistersSource::new();
         let err = source.init(&ctx, &[]).unwrap_err();
@@ -324,7 +324,7 @@ mod tests {
     #[test]
     fn registers_source_emits_paste_routing() {
         let app = app_with("hi\n", 5);
-        let snap = app.editor.document.snapshot();
+        let snap = app.ad().snapshot.clone();
         let mut ctx = app.build_picker_context(&snap);
         ctx.registers = vec![("\"".into(), "hello".into()), ("a".into(), "world".into())];
         let source = RegistersSource::new();
@@ -348,7 +348,7 @@ mod tests {
     #[test]
     fn registers_source_accept_translates_paste_register() {
         let app = app_with("hi\n", 5);
-        let snap = app.editor.document.snapshot();
+        let snap = app.ad().snapshot.clone();
         let ctx = app.build_picker_context(&snap);
         let source = RegistersSource::new();
         let routing = RoutingPayload::PasteRegister { name: 'a' };
@@ -371,7 +371,7 @@ mod tests {
     #[test]
     fn grep_source_empty_args_returns_empty_inline() {
         let app = app_with("hi\n", 5);
-        let snap = app.editor.document.snapshot();
+        let snap = app.ad().snapshot.clone();
         let ctx = app.build_picker_context(&snap);
         let source = GrepSource::new(app.editor.config.clone());
         let result = source
@@ -396,7 +396,7 @@ mod tests {
     #[test]
     fn grep_source_on_query_changed_empty_short_circuits() {
         let app = app_with("hi\n", 5);
-        let snap = app.editor.document.snapshot();
+        let snap = app.ad().snapshot.clone();
         let ctx = app.build_picker_context(&snap);
         let source = GrepSource::new(app.editor.config.clone());
         let result = source
@@ -439,7 +439,7 @@ mod tests {
             .config
             .parse_and_set_command("picker.grep.backend=definitely-not-a-binary")
             .unwrap();
-        let snap = app.editor.document.snapshot();
+        let snap = app.ad().snapshot.clone();
         let ctx = app.build_picker_context(&snap);
         let source = GrepSource::new(app.editor.config.clone());
         let err = source.init(&ctx, &["TODO".to_string()]).unwrap_err();
@@ -557,7 +557,7 @@ mod tests {
     #[test]
     fn outline_source_no_symbols_errors() {
         let app = app_with("hi\n", 5);
-        let snap = app.editor.document.snapshot();
+        let snap = app.ad().snapshot.clone();
         let ctx = app.build_picker_context(&snap);
         let source = OutlineSource::new();
         let err = source.init(&ctx, &[]).unwrap_err();
@@ -570,7 +570,7 @@ mod tests {
     #[test]
     fn outline_source_emits_jump_in_buffer_routing() {
         let app = app_with("hi\n", 5);
-        let snap = app.editor.document.snapshot();
+        let snap = app.ad().snapshot.clone();
         let mut ctx = app.build_picker_context(&snap);
         let active_id = ctx.active_buffer.buffer_id;
         ctx.active_buffer.syntax_symbols =
@@ -610,7 +610,7 @@ mod tests {
     #[test]
     fn marks_source_empty_errors() {
         let app = app_with("hi\n", 5);
-        let snap = app.editor.document.snapshot();
+        let snap = app.ad().snapshot.clone();
         let ctx = app.build_picker_context(&snap);
         let source = MarksSource::new();
         let err = source.init(&ctx, &[]).unwrap_err();
@@ -624,7 +624,7 @@ mod tests {
         use lattice_protocol::Position;
 
         let app = app_with("hi\n", 5);
-        let snap = app.editor.document.snapshot();
+        let snap = app.ad().snapshot.clone();
         let mut ctx = app.build_picker_context(&snap);
         ctx.marks = vec![('a', Position::new(2, 0)), ('b', Position::new(5, 3))];
         let source = MarksSource::new();
@@ -655,7 +655,7 @@ mod tests {
     #[test]
     fn marks_source_accept_translates_jump_to_mark() {
         let app = app_with("hi\n", 5);
-        let snap = app.editor.document.snapshot();
+        let snap = app.ad().snapshot.clone();
         let ctx = app.build_picker_context(&snap);
         let source = MarksSource::new();
         let routing = RoutingPayload::JumpToMark { name: 'm' };
@@ -680,7 +680,7 @@ mod tests {
         use lattice_picker::{PositionEntry, PositionSource};
 
         let app = app_with("hi\n", 5);
-        let snap = app.editor.document.snapshot();
+        let snap = app.ad().snapshot.clone();
         let mut ctx = app.build_picker_context(&snap);
         ctx.position_history = vec![
             PositionEntry {
@@ -737,7 +737,7 @@ mod tests {
     #[test]
     fn lines_source_emits_row_per_line() {
         let app = app_with("alpha\nbeta\ngamma\n", 10);
-        let snap = app.editor.document.snapshot();
+        let snap = app.ad().snapshot.clone();
         let ctx = app.build_picker_context(&snap);
         let active_id = ctx.active_buffer.buffer_id;
         let source = LinesSource::new();
@@ -775,7 +775,7 @@ mod tests {
     #[test]
     fn lines_source_empty_buffer_errors() {
         let app = app_with("", 5);
-        let snap = app.editor.document.snapshot();
+        let snap = app.ad().snapshot.clone();
         // ropey treats truly-empty as one logical line; force the
         // guard by constructing a context whose buffer has zero
         // line count -- skip via the buffer's own report. The
@@ -800,7 +800,7 @@ mod tests {
     #[test]
     fn lines_source_accept_translates_jump_in_buffer() {
         let app = app_with("hi\n", 5);
-        let snap = app.editor.document.snapshot();
+        let snap = app.ad().snapshot.clone();
         let ctx = app.build_picker_context(&snap);
         let source = LinesSource::new();
         let routing = RoutingPayload::JumpInBuffer {

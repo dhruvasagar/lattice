@@ -52,8 +52,8 @@ impl App {
     /// mutation. Single dispatch site -- adding a new outcome
     /// variant requires editing exactly this match.
     pub(super) fn apply_picker_outcome(&mut self, outcome: lattice_picker::PickerAcceptOutcome) {
-        // Phase 5.8.AD.6: body migrated.
-        let signals = self.editor.apply_picker_outcome(outcome);
+        // Slice 3c.final.E.3: route through `mutate_editor_with`.
+        let signals = self.mutate_editor_with(move |e| e.apply_picker_outcome(outcome));
         for s in signals {
             self.handle_renderer_signal(s);
         }
@@ -97,8 +97,8 @@ impl App {
     /// fall-through (degrade to empty if supervisor was
     /// busy) is gone -- the snapshot is always readable.
     fn snapshot_lsp_instances(&mut self) -> Vec<lattice_picker::LspInstanceRow> {
-        // Phase 5.8.AD.2: body migrated.
-        self.editor.snapshot_lsp_instances()
+        // Slice 3c.final.E.3: route through `mutate_editor_with`.
+        self.mutate_editor_with(|e| e.snapshot_lsp_instances())
     }
 
     /// Build + open an LSP location picker (multi-result `gd` /
@@ -113,10 +113,11 @@ impl App {
         title: impl Into<String>,
         locations: &[lattice_lsp::lsp_types::Location],
     ) {
-        // 5.8.AA: body migrated to
-        // `lattice_host::dispatch::Editor::open_lsp_locations_picker`
-        // so the GPUI peer reaches the same picker.
-        self.editor.open_lsp_locations_picker(title, locations);
+        // Slice 3c.final.E.3: clone owned for the `Send + 'static`
+        // closure, then route through `mutate_editor`.
+        let title = title.into();
+        let locations = locations.to_vec();
+        self.mutate_editor(move |e| e.open_lsp_locations_picker(title, &locations));
     }
 
     /// Build + open an LSP instance picker. Called by `:lsp-log`,
@@ -131,8 +132,9 @@ impl App {
         prefilter: Option<String>,
         on_accept: lattice_picker::PickerAction,
     ) {
-        // Phase 5.8.AD.2: body migrated.
-        self.editor.open_lsp_picker(title, prefilter, on_accept);
+        // Slice 3c.final.E.3: clone owned title for the closure.
+        let title = title.to_string();
+        self.mutate_editor(move |e| e.open_lsp_picker(&title, prefilter, on_accept));
     }
 
     /// `:b` with no arg (DESIGN.md §5.9.7) -- open the vertico-style
@@ -160,8 +162,8 @@ impl App {
     /// Unknown source ids surface an error echo listing every
     /// registered id so the user can recover without `:apropos`.
     pub(crate) fn open_picker(&mut self, source: String, args: Vec<String>) {
-        // 5.8.AF.3: body migrated to `Editor::open_picker`.
-        let signals = self.editor.open_picker(source, args);
+        // Slice 3c.final.E.3: route through `mutate_editor_with`.
+        let signals = self.mutate_editor_with(move |e| e.open_picker(source, args));
         for s in signals {
             self.handle_renderer_signal(s);
         }
@@ -176,8 +178,8 @@ impl App {
     /// closed channel = task dropped without sending (the
     /// cancel path took it).
     pub(crate) fn drain_pending_picker_init(&mut self) {
-        // 5.8.AA.n: migrated to host.
-        let signals = self.editor.drain_pending_picker_init();
+        // Slice 3c.final.E.3: route through `mutate_editor_with`.
+        let signals = self.mutate_editor_with(|e| e.drain_pending_picker_init());
         for s in signals {
             self.handle_renderer_signal(s);
         }
@@ -226,7 +228,8 @@ impl App {
     /// Wrapper retained for tests that drive the live-query
     /// path directly.
     pub(crate) fn drain_pending_live_picker_query(&mut self) {
-        let signals = self.editor.drain_pending_live_picker_query();
+        // Slice 3c.final.E.3: route through `mutate_editor_with`.
+        let signals = self.mutate_editor_with(|e| e.drain_pending_live_picker_query());
         for s in signals {
             self.handle_renderer_signal(s);
         }
@@ -239,20 +242,16 @@ impl App {
     /// identically regardless of how the candidates were
     /// produced.
     fn seat_picker_from_pairs(&mut self, source: String, pairs: lattice_picker::CandidateBatch) {
-        // 5.8.AA.n: migrated to host.
-        let signals = self.editor.seat_picker_from_pairs(source, pairs);
+        // Slice 3c.final.E.3: route through `mutate_editor_with`.
+        let signals = self.mutate_editor_with(move |e| e.seat_picker_from_pairs(source, pairs));
         for s in signals {
             self.handle_renderer_signal(s);
         }
     }
 
     pub(super) fn open_buffer_picker(&mut self) {
-        // Phase 5.8.AC.1: body migrated to
-        // `lattice_host::dispatch::Editor::do_open_buffer_picker`.
-        // Returned `RendererSignal`s (from `preview_picker_selection`
-        // activate-tail) fan through the App's standard signal
-        // handler.
-        let signals = self.editor.do_open_buffer_picker();
+        // Slice 3c.final.E.3: route through `mutate_editor_with`.
+        let signals = self.mutate_editor_with(|e| e.do_open_buffer_picker());
         for s in signals {
             self.handle_renderer_signal(s);
         }
@@ -286,9 +285,9 @@ impl App {
             // Already showing this buffer; nothing to preview.
             return;
         }
-        self.editor.previewing = true;
+        self.mutate_editor(|e| e.previewing = true);
         self.activate_buffer(id);
-        self.editor.previewing = false;
+        self.mutate_editor(|e| e.previewing = false);
     }
 
     /// Apply `Action::PickerDismiss` -- close the picker and, if
@@ -296,8 +295,8 @@ impl App {
     /// pane to whatever buffer it was on at picker-open. Tested
     /// by `picker_dismiss_restores_origin_when_previewing`.
     pub(super) fn do_picker_dismiss(&mut self) {
-        // Phase 5.8.AF: body migrated.
-        let signals = self.editor.do_picker_dismiss();
+        // Slice 3c.final.E.3: route through `mutate_editor_with`.
+        let signals = self.mutate_editor_with(|e| e.do_picker_dismiss());
         for s in signals {
             self.handle_renderer_signal(s);
         }
@@ -305,7 +304,8 @@ impl App {
 
     /// Apply `Action::PickerAccept`. Phase 5.8.AF: body migrated.
     pub(super) fn do_picker_accept(&mut self) {
-        let signals = self.editor.do_picker_accept();
+        // Slice 3c.final.E.3: route through `mutate_editor_with`.
+        let signals = self.mutate_editor_with(|e| e.do_picker_accept());
         for s in signals {
             self.handle_renderer_signal(s);
         }
@@ -321,9 +321,9 @@ impl App {
             // already gone since we `take()`d it). Restore the
             // original buffer if we'd been previewing.
             if let Some(origin) = picker.preview_origin {
-                self.editor.previewing = true;
+                self.mutate_editor(|e| e.previewing = true);
                 self.activate_buffer(BufferId(origin));
-                self.editor.previewing = false;
+                self.mutate_editor(|e| e.previewing = false);
             }
             return;
         };
@@ -340,9 +340,9 @@ impl App {
                     "picker: candidate carries no routing payload".to_string(),
                 );
                 if let Some(origin) = picker.preview_origin {
-                    self.editor.previewing = true;
+                    self.mutate_editor(|e| e.previewing = true);
                     self.activate_buffer(BufferId(origin));
-                    self.editor.previewing = false;
+                    self.mutate_editor(|e| e.previewing = false);
                 }
                 return;
             }
@@ -355,7 +355,7 @@ impl App {
             && let Some(generator) = self.editor.picker_registry.generator(source_id).cloned()
         {
             let source_id_owned = source_id.to_string();
-            let snap = self.editor.document.snapshot();
+            let snap = self.ad().snapshot.clone();
             let ctx = self.build_picker_context(&snap);
             let outcome = match generator.accept(&ctx, &routing) {
                 Ok(o) => o,

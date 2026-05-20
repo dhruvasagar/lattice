@@ -52,7 +52,7 @@ impl App {
     /// [`lattice_host::editor::Editor::do_open_messages`]. Wrapper
     /// fans renderer signals through `handle_renderer_signal`.
     pub fn do_open_messages(&mut self) {
-        let signals = self.editor.do_open_messages();
+        let signals = self.mutate_editor_with(move |e| e.do_open_messages());
         for sig in signals {
             self.handle_renderer_signal(sig);
         }
@@ -64,7 +64,7 @@ impl App {
     /// backlog seeding live host-side; the GPUI peer reaches
     /// the same logic via `editor.ensure_messages_buffer()`.
     pub(crate) fn ensure_messages_buffer(&mut self) -> crate::buffers::BufferId {
-        self.editor.ensure_messages_buffer()
+        self.mutate_editor_with(move |e| e.ensure_messages_buffer())
     }
 
     /// Drain queued [`lattice_runtime::MessagePushed`] events;
@@ -76,7 +76,7 @@ impl App {
     /// regardless of event rate.
     pub fn drain_message_events(&mut self) {
         // 5.8.AA.f: migrated to host.
-        self.editor.drain_message_events();
+        self.mutate_editor_with(move |e| e.drain_message_events());
     }
 }
 

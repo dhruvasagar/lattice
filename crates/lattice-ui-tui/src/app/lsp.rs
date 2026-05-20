@@ -96,7 +96,7 @@ impl App {
     /// M.5.4+ (gates) have a single accessor to consume.
     /// 5.5.F.5.1: see [`lattice_host::dispatch::Editor::lsp_mode_enabled_for`].
     pub fn lsp_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        self.editor.lsp_mode_enabled_for(buffer_id)
+        self.read_editor(move |e| e.lsp_mode_enabled_for(buffer_id))
     }
 
     /// M.6.0: is `mode_id` active on `buffer_id`? Generic minor-
@@ -104,7 +104,7 @@ impl App {
     /// returns `false` when no entry exists for `buffer_id` --
     /// matches the umbrella accessor's shape.
     fn minor_mode_enabled_for(&self, buffer_id: BufferId, mode_id: lattice_mode::ModeId) -> bool {
-        self.editor.minor_mode_enabled_for(buffer_id, mode_id)
+        self.read_editor(move |e| e.minor_mode_enabled_for(buffer_id, mode_id))
     }
 
     /// CSM.K1: is `completion-mode` (the persistent gate)
@@ -114,7 +114,7 @@ impl App {
     /// Oil) silently no-op on `<C-Space>`.
     pub fn completion_mode_active_for(&self, buffer_id: BufferId) -> bool {
         // Phase 5.8.AD.4: migrated.
-        self.editor.completion_mode_active_for(buffer_id)
+        self.read_editor(move |e| e.completion_mode_active_for(buffer_id))
     }
 
     /// CSM.K1: is `completion-popup-mode` (the transient
@@ -131,9 +131,9 @@ impl App {
     /// Shorthand: is the insert-completion popup live on the
     /// active document buffer? The popup is anchored to the doc
     /// the user is typing in; v1 has a single
-    /// `self.editor.document_buffer_id`.
+    /// `self.document_buffer_id()`.
     pub fn completion_popup_active(&self) -> bool {
-        self.completion_popup_mode_active_for(self.editor.document_buffer_id)
+        self.completion_popup_mode_active_for(self.document_buffer_id())
     }
 
     /// M.6.0: is `lsp-completion-mode` active on `buffer_id`? Read
@@ -148,7 +148,7 @@ impl App {
     /// Read by the publish-diagnostics paint pipeline and
     /// `:diag-next` / `:diag-prev` once M.6.3 wires the gate.
     pub fn lsp_diagnostics_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        self.editor.lsp_diagnostics_mode_enabled_for(buffer_id)
+        self.read_editor(move |e| e.lsp_diagnostics_mode_enabled_for(buffer_id))
     }
 
     /// M.6.0: is `lsp-hover-mode` active on `buffer_id`? Read by
@@ -165,23 +165,23 @@ impl App {
     /// M.6.0: is `lsp-format-mode` active on `buffer_id`? Gates
     /// `:lsp-format` / `:lsp-format-range` and `onTypeFormatting`.
     pub fn lsp_format_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        self.editor.lsp_format_mode_enabled_for(buffer_id)
+        self.read_editor(move |e| e.lsp_format_mode_enabled_for(buffer_id))
     }
 
     pub fn lsp_rename_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        self.editor.lsp_rename_mode_enabled_for(buffer_id)
+        self.read_editor(move |e| e.lsp_rename_mode_enabled_for(buffer_id))
     }
 
     pub fn lsp_symbols_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        self.editor.lsp_symbols_mode_enabled_for(buffer_id)
+        self.read_editor(move |e| e.lsp_symbols_mode_enabled_for(buffer_id))
     }
 
     pub fn lsp_code_action_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        self.editor.lsp_code_action_mode_enabled_for(buffer_id)
+        self.read_editor(move |e| e.lsp_code_action_mode_enabled_for(buffer_id))
     }
 
     pub fn lsp_nav_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        self.editor.lsp_nav_mode_enabled_for(buffer_id)
+        self.read_editor(move |e| e.lsp_nav_mode_enabled_for(buffer_id))
     }
 
     /// 4.4.c: is `lsp-progress-mode` active on `buffer_id`?
@@ -191,7 +191,7 @@ impl App {
     /// the bus (plugins can subscribe) but the modeline stays
     /// quiet for that buffer.
     pub fn lsp_progress_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        self.editor.lsp_progress_mode_enabled_for(buffer_id)
+        self.read_editor(move |e| e.lsp_progress_mode_enabled_for(buffer_id))
     }
 
     /// 4.4.e: is `lsp-document-highlight-mode` active on
@@ -199,15 +199,14 @@ impl App {
     /// `textDocument/documentHighlight` request issuance and
     /// the soft-highlight decoration overlay.
     pub fn lsp_document_highlight_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        self.editor
-            .lsp_document_highlight_mode_enabled_for(buffer_id)
+        self.read_editor(move |e| e.lsp_document_highlight_mode_enabled_for(buffer_id))
     }
 
     /// 4.4.e: is `lsp-selection-range-mode` active on
     /// `buffer_id`? Gates `textDocument/selectionRange`
     /// issuance for the smart-expansion operator.
     pub fn lsp_selection_range_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        self.editor.lsp_selection_range_mode_enabled_for(buffer_id)
+        self.read_editor(move |e| e.lsp_selection_range_mode_enabled_for(buffer_id))
     }
 
     /// 4.4.f: is `lsp-folding-mode` active on `buffer_id`?
@@ -216,15 +215,15 @@ impl App {
     /// cache stays empty and `:set foldmethod=lsp` cascades to
     /// `Syntax`.
     pub fn lsp_folding_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        self.editor.lsp_folding_mode_enabled_for(buffer_id)
+        self.read_editor(move |e| e.lsp_folding_mode_enabled_for(buffer_id))
     }
 
     pub fn lsp_inlay_hint_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        self.editor.lsp_inlay_hint_mode_enabled_for(buffer_id)
+        self.read_editor(move |e| e.lsp_inlay_hint_mode_enabled_for(buffer_id))
     }
 
     pub fn lsp_semantic_tokens_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        self.editor.lsp_semantic_tokens_mode_enabled_for(buffer_id)
+        self.read_editor(move |e| e.lsp_semantic_tokens_mode_enabled_for(buffer_id))
     }
 
     /// M.5.4: shared gate for every LSP request entry point
@@ -239,7 +238,7 @@ impl App {
     /// The echo level is `Info` (not `Warn`) -- gated state is
     /// expected user-controlled, not a misconfiguration.
     pub(super) fn check_lsp_mode_gate(&mut self) -> bool {
-        if self.lsp_mode_enabled_for(self.editor.document_buffer_id) {
+        if self.lsp_mode_enabled_for(self.document_buffer_id()) {
             return true;
         }
         self.set_message(
@@ -269,7 +268,7 @@ impl App {
         if !self.check_lsp_mode_gate() {
             return false;
         }
-        if self.minor_mode_enabled_for(self.editor.document_buffer_id, sub_mode_id) {
+        if self.minor_mode_enabled_for(self.document_buffer_id(), sub_mode_id) {
             return true;
         }
         self.set_message(
@@ -303,7 +302,7 @@ impl App {
         // NoBody/NoServers — those echo via set_message inside
         // the drain). This peer fans the signals through its
         // existing handler.
-        let signals = self.editor.drain_pending_hover();
+        let signals = self.mutate_editor_with(|e| e.drain_pending_hover());
         for signal in signals {
             self.handle_renderer_signal(signal);
         }
@@ -321,7 +320,7 @@ impl App {
         anchor: lattice_protocol::position::Position,
     ) {
         // Phase 5.8.AD.4: body migrated.
-        self.editor.apply_lsp_completion_accept(meta, anchor);
+        self.mutate_editor(move |e| e.apply_lsp_completion_accept(meta, anchor));
     }
 
     /// Fire `completionItem/resolve` for the focused candidate
@@ -332,7 +331,8 @@ impl App {
     /// body in place.
     pub(super) fn do_completion_resolve_focused(&mut self) {
         // Phase 5.8.AD.4: body migrated.
-        self.editor.do_completion_resolve_focused();
+        // Slice 3c.final.E.4: route through `mutate_editor`.
+        self.mutate_editor(|e| e.do_completion_resolve_focused());
     }
 
     /// Fire `textDocument/completion` for the active Insert-
@@ -347,7 +347,7 @@ impl App {
     /// are dropped.
     pub(super) fn do_lsp_insert_completion_request(&mut self) {
         // Phase 5.8.AD.4: body migrated.
-        self.editor.do_lsp_insert_completion_request();
+        self.mutate_editor(|e| e.do_lsp_insert_completion_request());
     }
 
     /// Drain queued `completionItem/resolve` responses --
@@ -358,7 +358,7 @@ impl App {
     /// source of truth; no parallel sidecar to keep in sync.
     pub fn drain_pending_completion_resolve(&mut self) {
         // 5.8.AA.d: migrated to host.
-        self.editor.drain_pending_completion_resolve();
+        self.mutate_editor(|e| e.drain_pending_completion_resolve());
     }
 
     /// Per-frame drain hook -- merge any LSP completion response
@@ -366,7 +366,7 @@ impl App {
     /// the `lsp_incomplete` flag.
     pub fn drain_pending_insert_completion_lsp(&mut self) {
         // 5.8.AA.d: migrated to host.
-        self.editor.drain_pending_insert_completion_lsp();
+        self.mutate_editor(|e| e.drain_pending_insert_completion_lsp());
     }
 
     /// Drain queued `lattice_lsp::LspLogPushed` events for the
@@ -382,7 +382,7 @@ impl App {
     /// Called once per main-loop tick.
     pub fn drain_lsp_log_events(&mut self) {
         // 5.8.AA.d: migrated to host.
-        self.editor.drain_lsp_log_events();
+        self.mutate_editor(|e| e.drain_lsp_log_events());
     }
 
     /// 4.4.c: drain queued `LspProgressUpdate` events and
@@ -405,12 +405,12 @@ impl App {
     /// short-circuits on `buffer_uris.remove` returning `None`).
     pub fn drain_lsp_detach_events(&mut self) {
         // 5.8.AA.d: migrated to host.
-        self.editor.drain_lsp_detach_events();
+        self.mutate_editor(|e| e.drain_lsp_detach_events());
     }
 
     pub fn drain_lsp_progress_events(&mut self) {
         // 5.8.AA.d: migrated to host.
-        self.editor.drain_lsp_progress_events();
+        self.mutate_editor(|e| e.drain_lsp_progress_events());
     }
 
     /// Drain server-initiated `workspace/configuration` requests.
@@ -423,7 +423,7 @@ impl App {
     /// the requested section before walking the tree.
     pub fn drain_inbound_configuration_requests(&mut self) {
         // 5.8.AA.d: migrated to host.
-        self.editor.drain_inbound_configuration_requests();
+        self.mutate_editor(|e| e.drain_inbound_configuration_requests());
     }
 
     /// 4.4.k: fan out `workspace/didChangeConfiguration` to
@@ -451,7 +451,9 @@ impl App {
     /// while the body lives host-side -- the GPUI peer reaches
     /// the same logic through `editor.fan_out_did_change_configuration`.
     pub fn fan_out_did_change_configuration(&mut self, server_id: &str) {
-        self.editor.fan_out_did_change_configuration(server_id);
+        // Slice 3c.final.E.5: clone owned + route via mutate_editor.
+        let server_id = server_id.to_string();
+        self.mutate_editor(move |e| e.fan_out_did_change_configuration(&server_id));
     }
 
     /// 4.4.b: drain server-initiated `window/showDocument`
@@ -474,7 +476,7 @@ impl App {
     ///   non-file URI in a buffer).
     pub fn drain_inbound_show_documents(&mut self) {
         // 5.8.AA.k.3: migrated to host.
-        let signals = self.editor.drain_inbound_show_documents();
+        let signals = self.mutate_editor_with(|e| e.drain_inbound_show_documents());
         for s in signals {
             self.handle_renderer_signal(s);
         }
@@ -502,7 +504,7 @@ impl App {
     /// opens on the same tick.
     pub fn drain_inbound_show_message_requests(&mut self) {
         // 5.8.AA.e: migrated to host.
-        self.editor.drain_inbound_show_message_requests();
+        self.mutate_editor(|e| e.drain_inbound_show_message_requests());
     }
 
     /// Allocate a fresh `u32` request id for
@@ -515,7 +517,7 @@ impl App {
     /// kept since `accept_show_message_action` (App-side, applies
     /// the user's choice via the picker dispatcher path) calls it.
     pub(super) fn open_show_message_request_picker(&mut self, request_id: u32) {
-        self.editor.open_show_message_request_picker(request_id);
+        self.mutate_editor(move |e| e.open_show_message_request_picker(request_id));
     }
 
     /// Send the LSP response for one in-flight
@@ -575,7 +577,7 @@ impl App {
     /// applied files.
     pub fn drain_inbound_apply_edits(&mut self) {
         // 5.8.AA.l.5: migrated to host.
-        let signals = self.editor.drain_inbound_apply_edits();
+        let signals = self.mutate_editor_with(|e| e.drain_inbound_apply_edits());
         for s in signals {
             self.handle_renderer_signal(s);
         }
@@ -600,7 +602,7 @@ impl App {
     /// churning the call site while the body lives host-side so
     /// the GPUI peer can call it through `editor.publish_document_opened_for_active()`.
     pub(super) fn publish_document_opened_for_active(&mut self) {
-        self.editor.publish_document_opened_for_active();
+        self.mutate_editor(|e| e.publish_document_opened_for_active());
     }
 
     /// Decode the LSP metadata directly from a candidate's
@@ -622,14 +624,21 @@ impl App {
         candidate: &lattice_completion::RenderedCandidate,
     ) -> Option<LspCompletionMeta> {
         // Phase 5.8.AD.4: body migrated.
-        self.editor.lsp_completion_meta_for(candidate)
+        // Slice 3c.final.E.swap-prep: clone for Send + 'static closure.
+        let candidate = candidate.clone();
+        self.read_editor(move |e| e.lsp_completion_meta_for(&candidate))
     }
 
     /// Look up the current URI of a buffer. None for buffers
     /// that have no on-disk path yet (new unsaved scratch
     /// buffers).
-    pub fn buffer_uri(&self, id: BufferId) -> Option<&lattice_lsp::Uri> {
-        self.editor.buffer_uris.get(&id)
+    pub fn buffer_uri(&self, id: BufferId) -> Option<lattice_lsp::Uri> {
+        // Slice 3c.final.E.5d: returns owned `Uri` (not `&Uri`)
+        // because the `Arc<BuffersRenderState>` snapshot is a
+        // temporary in this stack frame; borrowing through it
+        // would escape the function. `Uri` is a thin Arc<str>
+        // wrapper under the hood, so this clone is one Arc bump.
+        self.buffers().uris.get(&id).cloned()
     }
 
     /// Flush queued didChange events for a buffer immediately.
@@ -637,7 +646,7 @@ impl App {
     /// caught up before pre-save requests fire. Fire-and-forget
     /// against the supervisor mailbox.
     pub fn lsp_flush(&self, buffer_id: BufferId) {
-        let Some(uri) = self.editor.buffer_uris.get(&buffer_id).cloned() else {
+        let Some(uri) = self.buffers().uris.get(&buffer_id).cloned() else {
             return;
         };
         self.editor.lsp.flush(uri);
@@ -649,7 +658,7 @@ impl App {
     /// in this module call it directly. Deletes when the tick-event
     /// drain moves host-side.
     pub fn lsp_close_buffer(&mut self, buffer_id: BufferId) {
-        self.editor.lsp_close_buffer(buffer_id);
+        self.mutate_editor(move |e| e.lsp_close_buffer(buffer_id));
     }
 
     /// Apply editor-side LSP options that the user configured
@@ -676,7 +685,7 @@ impl App {
     pub(super) fn apply_persistent_lsp_editor_options(&mut self) {
         // Phase 5.8.AA.u: body migrated to
         // `lattice_host::dispatch::Editor::apply_persistent_lsp_editor_options`.
-        self.editor.apply_persistent_lsp_editor_options();
+        self.mutate_editor(|e| e.apply_persistent_lsp_editor_options());
     }
 
     /// Apply a `Vec<TextEdit>` (LSP utf-16 ranges) to the active
@@ -688,8 +697,8 @@ impl App {
         &mut self,
         edits: Vec<lattice_lsp::lsp_types::TextEdit>,
     ) -> Result<(), String> {
-        // 5.8.AA.l: migrated to host.
-        self.editor.apply_lsp_text_edits(edits)
+        // Slice 3c.final.E.5: route through `mutate_editor_with`.
+        self.mutate_editor_with(move |e| e.apply_lsp_text_edits(edits))
     }
 
     /// 5.5.G.23.insert-prep: body migrated to
@@ -697,7 +706,7 @@ impl App {
     /// Retained as a delegate while `do_insert_text` still lives
     /// App-side; deletion follows when `do_insert_text` migrates.
     pub(super) fn on_type_formatting_trigger_chars(&self) -> Vec<char> {
-        self.editor.on_type_formatting_trigger_chars()
+        self.read_editor(move |e| e.on_type_formatting_trigger_chars())
     }
 
     /// 5.5.G.23.insert-prep: body migrated to
@@ -705,7 +714,7 @@ impl App {
     /// Retained as a delegate while `do_insert_text` still lives
     /// App-side; deletion follows when `do_insert_text` migrates.
     pub(super) fn signature_help_trigger_chars(&self) -> Vec<char> {
-        self.editor.signature_help_trigger_chars()
+        self.read_editor(move |e| e.signature_help_trigger_chars())
     }
 
     /// Fire `textDocument/onTypeFormatting` to the highest-
@@ -713,7 +722,7 @@ impl App {
     /// edits as one undo unit.
     pub(super) fn do_lsp_on_type_formatting_request(&mut self, trigger: char) {
         // Phase 5.8.AD.4: body migrated.
-        self.editor.do_lsp_on_type_formatting_request(trigger);
+        self.mutate_editor(move |e| e.do_lsp_on_type_formatting_request(trigger));
     }
 
     /// `:rename <new-name>` (Phase 4.3). Fires
@@ -728,8 +737,9 @@ impl App {
     /// placeholder (when available). When prepareRename returns
     /// nothing AND `new_name` is empty, we error.
     pub(super) fn do_lsp_rename_request(&mut self, new_name: &str) {
-        // Phase 5.8.AD.2: body migrated.
-        self.editor.do_lsp_rename_request(new_name);
+        // Slice 3c.final.E.5: clone owned + route via mutate_editor.
+        let new_name = new_name.to_string();
+        self.mutate_editor(move |e| e.do_lsp_rename_request(&new_name));
     }
 
     /// Drain queued `:rename` responses; apply the WorkspaceEdit.
@@ -737,7 +747,7 @@ impl App {
     /// buffer.
     pub fn drain_pending_rename(&mut self) {
         // 5.8.AA.l.3: migrated to host.
-        let signals = self.editor.drain_pending_rename();
+        let signals = self.mutate_editor_with(|e| e.drain_pending_rename());
         for s in signals {
             self.handle_renderer_signal(s);
         }
@@ -756,7 +766,7 @@ impl App {
     ) {
         // 5.8.AA.l.2: migrated to host. Fan returned signals
         // through the existing renderer-signal handler.
-        let signals = self.editor.apply_rename_workspace_edit(per_file, new_name);
+        let signals = self.mutate_editor_with(move |e| e.apply_rename_workspace_edit(per_file, new_name));
         for s in signals {
             self.handle_renderer_signal(s);
         }
@@ -770,7 +780,7 @@ impl App {
         row: CodeActionRow,
         handle: Option<lattice_lsp::ServerHandle>,
     ) {
-        let signals = self.editor.apply_lsp_code_action(row, handle);
+        let signals = self.mutate_editor_with(move |e| e.apply_lsp_code_action(row, handle));
         for s in signals {
             self.handle_renderer_signal(s);
         }
@@ -782,7 +792,7 @@ impl App {
         cmd: lattice_lsp::lsp_types::Command,
     ) {
         // 5.8.AA.l.6: migrated to host.
-        self.editor.execute_lsp_command(handle, cmd);
+        self.mutate_editor(move |e| e.execute_lsp_command(handle, cmd));
     }
 
     /// Splice a chosen completion item into the buffer at its
@@ -798,7 +808,7 @@ impl App {
         let edit = Edit::replace(range, item.insert_text.clone());
         match self.apply_edit_blocking(edit) {
             Ok(applied) => {
-                self.editor.cursor = applied.inserted_range.end;
+                self.set_cursor(applied.inserted_range.end);
             }
             Err(e) => {
                 self.set_message(EchoLevel::Error, format!("complete: apply failed: {e:?}"));
@@ -813,7 +823,7 @@ impl App {
     pub(super) fn do_lsp_code_action_request(&mut self) {
         // Phase 5.8.AD.2: body migrated, including the
         // `code_action_range` + `diagnostics_for_range` helpers.
-        self.editor.do_lsp_code_action_request();
+        self.mutate_editor(|e| e.do_lsp_code_action_request());
     }
 
     /// Drain queued code-action responses. 5.8.AA.r: full
@@ -823,7 +833,7 @@ impl App {
     /// drain is folded into `run_tick_pending` so the TUI runtime
     /// no longer needs an explicit call.
     pub fn drain_pending_code_actions(&mut self) {
-        let signals = self.editor.drain_pending_code_actions();
+        let signals = self.mutate_editor_with(|e| e.drain_pending_code_actions());
         for s in signals {
             self.handle_renderer_signal(s);
         }
@@ -836,7 +846,7 @@ impl App {
         let uri = self
             .editor
             .buffer_uris
-            .get(&self.editor.document_buffer_id)?;
+            .get(&self.document_buffer_id())?;
         self.editor
             .lsp
             .servers_for(uri)
@@ -859,7 +869,7 @@ impl App {
     /// `NoServers` echoes; empty list echoes.
     pub fn drain_pending_completion(&mut self) {
         // 5.8.AA.c: migrated to host.
-        self.editor.drain_pending_completion();
+        self.mutate_editor(|e| e.drain_pending_completion());
     }
 
     /// `:format` / `:format-range` (Phase 4.3). Picks the
@@ -876,7 +886,7 @@ impl App {
     /// in Visual mode), else the whole buffer.
     pub(super) fn do_lsp_format_request(&mut self, is_range: bool) {
         // Phase 5.8.AD.2: body migrated.
-        self.editor.do_lsp_format_request(is_range);
+        self.mutate_editor(move |e| e.do_lsp_format_request(is_range));
     }
 
     /// Drain the format response channel and apply the returned
@@ -884,7 +894,7 @@ impl App {
     /// edits ("already formatted") or no provider was available.
     pub fn drain_pending_format(&mut self) {
         // 5.8.AA.l.4: migrated to host.
-        self.editor.drain_pending_format();
+        self.mutate_editor(|e| e.drain_pending_format());
     }
 
     /// `:lsp-symbols` (Phase 4.2.e). Send
@@ -904,7 +914,7 @@ impl App {
     pub fn drain_pending_symbols(&mut self) {
         // 5.8.AA: migrated to
         // `lattice_host::dispatch::Editor::drain_pending_symbols`.
-        self.editor.drain_pending_symbols();
+        self.mutate_editor(|e| e.drain_pending_symbols());
     }
 
     /// 4.5.a: `:lsp-incoming-calls` / `:lsp-outgoing-calls`.
@@ -924,7 +934,7 @@ impl App {
     /// path -- no new picker action variant required.
     pub(super) fn do_lsp_call_hierarchy_request(&mut self, outgoing: bool) {
         // Phase 5.8.AD.2: body migrated.
-        self.editor.do_lsp_call_hierarchy_request(outgoing);
+        self.mutate_editor(move |e| e.do_lsp_call_hierarchy_request(outgoing));
     }
 
     /// 4.5.b: `:lsp-supertypes` / `:lsp-subtypes`. Same shape
@@ -944,7 +954,7 @@ impl App {
     /// that would error.
     pub(super) fn do_lsp_type_hierarchy_request(&mut self, subtypes: bool) {
         // Phase 5.8.AD.2: body migrated.
-        self.editor.do_lsp_type_hierarchy_request(subtypes);
+        self.mutate_editor(move |e| e.do_lsp_type_hierarchy_request(subtypes));
     }
 
     /// 4.5.g: `:lsp-moniker`. Fires `textDocument/moniker` on
@@ -956,7 +966,7 @@ impl App {
     /// than a navigation target.
     pub(super) fn do_lsp_moniker_request(&mut self) {
         // Phase 5.8.AD.2: body migrated.
-        self.editor.do_lsp_moniker_request();
+        self.mutate_editor(|e| e.do_lsp_moniker_request());
     }
 
     /// 4.5.g: drain queued moniker responses + echo. Called
@@ -964,7 +974,7 @@ impl App {
     /// the channel is empty.
     pub fn drain_pending_moniker(&mut self) {
         // 5.8.AA.b: migrated to host.
-        self.editor.drain_pending_moniker();
+        self.mutate_editor(|e| e.drain_pending_moniker());
     }
 
     /// `:lsp-signature-help` (Phase 4.3). Fan-out across attached
@@ -988,7 +998,7 @@ impl App {
         // so the GPUI peer reaches the same path. Returns
         // RendererSignals; this peer fans them through its
         // existing handler.
-        let signals = self.editor.drain_pending_signature_help();
+        let signals = self.mutate_editor_with(|e| e.drain_pending_signature_help());
         for signal in signals {
             self.handle_renderer_signal(signal);
         }
@@ -1016,7 +1026,7 @@ impl App {
         // 5.8.AA.p: hoisted in full to host; jump is performed
         // inside `Editor::drain_pending_definitions` and the
         // resulting renderer signals are fanned out here.
-        let signals = self.editor.drain_pending_definitions();
+        let signals = self.mutate_editor_with(|e| e.drain_pending_definitions());
         for s in signals {
             self.handle_renderer_signal(s);
         }
@@ -1046,7 +1056,7 @@ impl App {
         // `lattice_host::dispatch::Editor::drain_pending_references`
         // so the GPUI peer reaches the same picker via
         // `run_tick_pending`.
-        self.editor.drain_pending_references();
+        self.mutate_editor(|e| e.drain_pending_references());
     }
 
     /// Jump to an LSP `Location`. If the target is the current
@@ -1061,10 +1071,9 @@ impl App {
     /// jump came from an external dispatch (LSP) rather than a
     /// vim-style motion.
     pub(super) fn jump_to_lsp_location(&mut self, loc: &lattice_lsp::lsp_types::Location) {
-        // 5.8.AA.k.2: migrated to host. Host returns
-        // `Vec<RendererSignal>` from the embedded `do_edit`; fan
-        // them through the existing signal handler.
-        let signals = self.editor.jump_to_lsp_location(loc);
+        // Slice 3c.final.E.5: clone owned + route via mutate_editor_with.
+        let loc = loc.clone();
+        let signals = self.mutate_editor_with(move |e| e.jump_to_lsp_location(&loc));
         for s in signals {
             self.handle_renderer_signal(s);
         }
@@ -1076,21 +1085,21 @@ impl App {
     /// the Effect-arm dispatch path.
     #[allow(dead_code)]
     pub fn do_list_diagnostics(&mut self) {
-        self.editor.do_list_diagnostics();
+        self.mutate_editor(|e| e.do_list_diagnostics());
     }
 
     /// `]d` / `:diag-next` / `:cnext` -- move the cursor to the
     /// next diagnostic in the active buffer. Wraps to top.
     pub fn do_next_diagnostic(&mut self) {
         // Phase 5.8.AF.3: body migrated.
-        self.editor.do_next_diagnostic();
+        self.mutate_editor(|e| e.do_next_diagnostic());
     }
 
     /// `[d` / `:diag-prev` / `:cprev` -- move the cursor to the
     /// previous diagnostic in the active buffer. Wraps to bottom.
     pub fn do_prev_diagnostic(&mut self) {
         // Phase 5.8.AF.3: body migrated.
-        self.editor.do_prev_diagnostic();
+        self.mutate_editor(|e| e.do_prev_diagnostic());
     }
 
     /// `:lsp-log [server]` -- activate the subsystem-wide `*lsp*`
@@ -1110,18 +1119,21 @@ impl App {
     /// Use `:lsp-server-log` for the picker over running
     /// instances.
     pub fn do_open_lsp_log(&mut self, server_id: Option<&str>) {
-        // Phase 5.8.AD.2: body migrated.
-        self.editor.do_open_lsp_log(server_id);
+        // Slice 3c.final.E.5: clone owned + route via mutate_editor.
+        let server_id = server_id.map(|s| s.to_string());
+        self.mutate_editor(move |e| e.do_open_lsp_log(server_id.as_deref()));
     }
 
     /// `:lsp-trace-log [server]`. Phase 5.8.AD.2: migrated.
     pub fn do_open_lsp_trace_log(&mut self, server_id: Option<&str>) {
-        self.editor.do_open_lsp_trace_log(server_id);
+        let server_id = server_id.map(|s| s.to_string());
+        self.mutate_editor(move |e| e.do_open_lsp_trace_log(server_id.as_deref()));
     }
 
     /// `:lsp-trace <name>`. Phase 5.8.AD.2: migrated.
     pub fn do_toggle_lsp_trace(&mut self, name: &str) {
-        self.editor.do_toggle_lsp_trace(name);
+        let name = name.to_string();
+        self.mutate_editor(move |e| e.do_toggle_lsp_trace(&name));
     }
 
     /// `:lsp-status` -- render every running server in a
@@ -1131,7 +1143,7 @@ impl App {
         // `lattice_host::dispatch::Editor::do_lsp_status`. Returns
         // a `DisplayBuffer` signal that the renderer's handler
         // routes through `display_buffer`.
-        let signals = self.editor.do_lsp_status();
+        let signals = self.mutate_editor_with(|e| e.do_lsp_status());
         for s in signals {
             self.handle_renderer_signal(s);
         }
@@ -1142,16 +1154,16 @@ impl App {
     /// per-server log (`*lsp:<server>*`) for the chosen row.
     pub fn do_lsp_server_log_listing(&mut self) {
         // Phase 5.8.AD.2: body migrated.
-        self.editor.do_lsp_server_log_listing();
+        self.mutate_editor(|e| e.do_lsp_server_log_listing());
     }
 
     /// `:lsp-restart <server>` -- supervisor restart hook.
     /// Currently emits an info message; full restart-with-
     /// backoff lands in 4.4.
     pub fn do_lsp_restart(&mut self, server_id: &str) {
-        // Phase 5.8.AD.2: body migrated to
-        // `lattice_host::dispatch::Editor::do_lsp_restart`.
-        self.editor.do_lsp_restart(server_id);
+        // Slice 3c.final.E.5: clone owned + route via mutate_editor.
+        let server_id = server_id.to_string();
+        self.mutate_editor(move |e| e.do_lsp_restart(&server_id));
     }
 
     /// `:lsp-progress-cancel [server]` -- send
@@ -1169,7 +1181,7 @@ impl App {
     /// without the user having to do anything.
     pub fn maybe_request_folding_range(&mut self) {
         // 5.8.AA.i: migrated to host.
-        self.editor.maybe_request_folding_range();
+        self.mutate_editor(|e| e.maybe_request_folding_range());
     }
 
     // Phase 5.8.AF.5 / Slice 3b.1: `App::drain_pending_folding_range`
@@ -1187,7 +1199,7 @@ impl App {
     /// into the cache.
     pub fn maybe_request_semantic_tokens(&mut self) {
         // 5.8.AA.i: migrated to host.
-        self.editor.maybe_request_semantic_tokens();
+        self.mutate_editor(|e| e.maybe_request_semantic_tokens());
     }
 
     // Phase 5.8.AF.5 / Slice 3b.2: `App::drain_pending_semantic_tokens`
@@ -1216,7 +1228,7 @@ impl App {
     /// actual edit.
     pub fn maybe_request_pull_diagnostics(&mut self) {
         // 5.8.AA.i: migrated to host.
-        self.editor.maybe_request_pull_diagnostics();
+        self.mutate_editor(|e| e.maybe_request_pull_diagnostics());
     }
 
     // Phase 5.8.AF.5 / Slice 3b.5: `App::drain_pending_pull_diagnostics`
@@ -1231,7 +1243,7 @@ impl App {
     /// and the server emits a forced `Full` report.
     pub fn drain_diagnostic_refresh(&mut self) {
         // 5.8.AA.c: migrated to host.
-        self.editor.drain_diagnostic_refresh();
+        self.mutate_editor(|e| e.drain_diagnostic_refresh());
     }
 
     /// 4.4.g: per-tick `inlayHint` pump. Fires when:
@@ -1246,7 +1258,7 @@ impl App {
     /// fetching is a follow-up optimization.
     pub fn maybe_request_inlay_hint(&mut self) {
         // 5.8.AA.g: migrated to host.
-        self.editor.maybe_request_inlay_hint();
+        self.mutate_editor(|e| e.maybe_request_inlay_hint());
     }
 
     /// 4.4.g: drain `workspace/inlayHint/refresh` events. Each
@@ -1255,7 +1267,7 @@ impl App {
     /// tick's pump re-issues `inlayHint`.
     pub fn drain_inlay_hint_refresh(&mut self) {
         // 5.8.AA.c: migrated to host.
-        self.editor.drain_inlay_hint_refresh();
+        self.mutate_editor(|e| e.drain_inlay_hint_refresh());
     }
 
     /// 4.4.i: drain `workspace/semanticTokens/refresh` events.
@@ -1267,7 +1279,7 @@ impl App {
     /// the server would reject).
     pub fn drain_semantic_tokens_refresh(&mut self) {
         // 5.8.AA.c: migrated to host.
-        self.editor.drain_semantic_tokens_refresh();
+        self.mutate_editor(|e| e.drain_semantic_tokens_refresh());
     }
 
     // Phase 5.8.AF.5 / Slice 3b.1: `App::drain_pending_inlay_hint`
@@ -1283,7 +1295,7 @@ impl App {
     /// request cancels its predecessor.
     pub fn maybe_request_document_link(&mut self) {
         // 5.8.AA.i: migrated to host.
-        self.editor.maybe_request_document_link();
+        self.mutate_editor(|e| e.maybe_request_document_link());
     }
 
     // Phase 5.8.AF.5 / Slice 3b.4: `App::drain_pending_document_link`
@@ -1300,7 +1312,7 @@ impl App {
     /// is empty or the cursor sits outside every cached range.
     pub fn do_lsp_follow_link_at_cursor(&mut self) {
         // Phase 5.8.AD.2: body migrated.
-        let signals = self.editor.do_lsp_follow_link_at_cursor();
+        let signals = self.mutate_editor_with(|e| e.do_lsp_follow_link_at_cursor());
         for s in signals {
             self.handle_renderer_signal(s);
         }
@@ -1311,7 +1323,7 @@ impl App {
     /// evicts the entry). Single-flight per buffer.
     pub fn maybe_request_code_lens(&mut self) {
         // 5.8.AA.i: migrated to host.
-        self.editor.maybe_request_code_lens();
+        self.mutate_editor(|e| e.maybe_request_code_lens());
     }
 
     // Phase 5.8.AF.5 / Slice 3b.3: `App::drain_pending_code_lens`
@@ -1325,7 +1337,7 @@ impl App {
     /// [`Self::accept_lsp_code_lens`].
     pub(super) fn do_lsp_code_lens_picker(&mut self) {
         // Phase 5.8.AD.2: body migrated.
-        self.editor.do_lsp_code_lens_picker();
+        self.mutate_editor(|e| e.do_lsp_code_lens_picker());
     }
 
     /// 4.5.d: accept a code lens by `index` (the routing
@@ -1337,7 +1349,7 @@ impl App {
     /// cache).
     pub(super) fn accept_lsp_code_lens(&mut self, index: u32) {
         // Phase 5.8.AD.2: body migrated.
-        self.editor.accept_lsp_code_lens(index);
+        self.mutate_editor(move |e| e.accept_lsp_code_lens(index));
     }
 
     /// 4.5.e: per-tick `documentColor` pump. Same shape as
@@ -1345,7 +1357,7 @@ impl App {
     /// single-flight per buffer.
     pub fn maybe_request_document_color(&mut self) {
         // 5.8.AA.i: migrated to host.
-        self.editor.maybe_request_document_color();
+        self.mutate_editor(|e| e.maybe_request_document_color());
     }
 
     // Phase 5.8.AF.5 / Slice 3b.4: `App::drain_pending_document_color`
@@ -1361,12 +1373,12 @@ impl App {
     /// the literal's range.
     pub(super) fn do_lsp_color_presentation(&mut self) {
         // Phase 5.8.AD.2: body migrated.
-        self.editor.do_lsp_color_presentation();
+        self.mutate_editor(|e| e.do_lsp_color_presentation());
     }
 
     /// 4.5.e: accept one color presentation by index. Phase 5.8.AD.2.
     pub(super) fn accept_lsp_color_presentation(&mut self, index: u32) {
-        self.editor.accept_lsp_color_presentation(index);
+        self.mutate_editor(move |e| e.accept_lsp_color_presentation(index));
     }
 
     /// 4.5.d: drain `workspace/codeLens/refresh` events. Each
@@ -1375,7 +1387,7 @@ impl App {
     /// re-issues `textDocument/codeLens`.
     pub fn drain_code_lens_refresh(&mut self) {
         // 5.8.AA.c: migrated to host.
-        self.editor.drain_code_lens_refresh();
+        self.mutate_editor(|e| e.drain_code_lens_refresh());
     }
 
     /// 4.4.e: per-tick `documentHighlight` pump. Compares the
@@ -1394,7 +1406,7 @@ impl App {
     /// the moment the next one fires.
     pub fn maybe_request_document_highlight(&mut self) {
         // 5.8.AA.g: migrated to host.
-        self.editor.maybe_request_document_highlight();
+        self.mutate_editor(|e| e.maybe_request_document_highlight());
     }
     // Phase 5.8.AF.5 / Slice 3b.0: `App::drain_pending_document_highlight`
     // retired -- the spawned request task on the LSP runtime
@@ -1410,12 +1422,12 @@ impl App {
     pub fn do_lsp_expand_region(&mut self) {
         // Phase 5.8.AD.2: body migrated to
         // `lattice_host::dispatch::Editor::do_lsp_expand_region`.
-        self.editor.do_lsp_expand_region();
+        self.mutate_editor(|e| e.do_lsp_expand_region());
     }
 
     /// 4.4.e: `:lsp-shrink-region`. Phase 5.8.AD.2: migrated.
     pub fn do_lsp_shrink_region(&mut self) {
-        self.editor.do_lsp_shrink_region();
+        self.mutate_editor(|e| e.do_lsp_shrink_region());
     }
 
     /// 4.4.e: drain the in-flight `selectionRange` response.
@@ -1423,7 +1435,7 @@ impl App {
     /// applies the step the original invocation requested.
     pub fn drain_pending_selection_range(&mut self) {
         // 5.8.AA.m: migrated to host.
-        self.editor.drain_pending_selection_range();
+        self.mutate_editor(|e| e.drain_pending_selection_range());
     }
 
     /// active progress entry (4.4.c). With `server_id == Some`,
@@ -1434,21 +1446,26 @@ impl App {
     /// the `end` progress notification — `cancel` is best-effort
     /// per spec, and the server may decline.
     pub fn do_lsp_progress_cancel(&mut self, server_id: Option<&str>) {
-        // Phase 5.8.AD.2: body migrated.
-        self.editor.do_lsp_progress_cancel(server_id);
+        // Slice 3c.final.E.5: clone owned + route via mutate_editor.
+        let server_id = server_id.map(|s| s.to_string());
+        self.mutate_editor(move |e| e.do_lsp_progress_cancel(server_id.as_deref()));
     }
 
     /// `:lsp-log-level [server] <level>` -- set the subsystem
     /// default min level (when no server) or a per-server
     /// override.
     pub fn do_set_lsp_log_level(&mut self, server_id: Option<&str>, level: &str) {
-        // Phase 5.8.AD.2: body migrated.
-        self.editor.do_set_lsp_log_level(server_id, level);
+        // Slice 3c.final.E.5: clone owned + route via mutate_editor.
+        let server_id = server_id.map(|s| s.to_string());
+        let level = level.to_string();
+        self.mutate_editor(move |e| e.do_set_lsp_log_level(server_id.as_deref(), &level));
     }
 
     /// `:lsp-log-clear [server]`. Phase 5.8.AD.2: migrated.
     pub fn do_lsp_log_clear(&mut self, server_id: Option<&str>) {
-        self.editor.do_lsp_log_clear(server_id);
+        // Slice 3c.final.E.5: clone owned + route via mutate_editor.
+        let server_id = server_id.map(|s| s.to_string());
+        self.mutate_editor(move |e| e.do_lsp_log_clear(server_id.as_deref()));
     }
 
     /// Activate the per-instance
@@ -1461,14 +1478,15 @@ impl App {
     /// + mode id come from `lattice-lsp`. Idempotent: the buffer
     /// is created lazily on first call.
     pub(super) fn open_lsp_log_in_pane(&mut self, server_id: &str) {
-        // Phase 5.8.AD.2: body migrated.
-        self.editor.open_lsp_log_in_pane(server_id);
+        // Slice 3c.final.E.5: clone owned + route via mutate_editor.
+        let server_id = server_id.to_string();
+        self.mutate_editor(move |e| e.open_lsp_log_in_pane(&server_id));
     }
 
     /// Activate the per-instance trace-log Document buffer.
     pub(super) fn open_lsp_trace_log_in_pane(&mut self, server_id: &str) {
-        // Phase 5.8.AD.2: body migrated.
-        self.editor.open_lsp_trace_log_in_pane(server_id);
+        let server_id = server_id.to_string();
+        self.mutate_editor(move |e| e.open_lsp_trace_log_in_pane(&server_id));
     }
 
     /// Helper: publish a position-only change event. Cheap
@@ -1496,14 +1514,15 @@ impl App {
     ///
     /// Returns `None` when none matches.
     pub(super) fn resolve_server_id(&self, name: &str) -> Option<String> {
-        // Phase 5.8.AD.2: body migrated.
-        self.editor.resolve_server_id(name)
+        // Slice 3c.final.E.swap-prep: clone for Send + 'static closure.
+        let name = name.to_string();
+        self.read_editor(move |e| e.resolve_server_id(&name))
     }
 
     /// Distinct server ids of every running actor.
     pub(super) fn running_server_ids(&self) -> Vec<String> {
         // Phase 5.8.AD.2: body migrated.
-        self.editor.running_server_ids()
+        self.read_editor(move |e| e.running_server_ids())
     }
 }
 
@@ -4344,9 +4363,16 @@ mod tests {
         app.editor
             .buffer_uris
             .insert(app.editor.document_buffer_id, fake_uri);
+        // Slice 3c.final.E.5d: `buffer_uri()` reads from RS;
+        // direct-field mutations in tests must publish.
+        app.editor.publish_render_state();
         assert!(app.buffer_uri(app.editor.document_buffer_id).is_some());
 
         app.lsp_close_buffer(app.editor.document_buffer_id);
+        // `lsp_close_buffer` already publishes RS at the host
+        // level on the success path, but we re-publish defensively
+        // in case the closure ordering changes.
+        app.editor.publish_render_state();
         assert!(app.buffer_uri(app.editor.document_buffer_id).is_none());
     }
 

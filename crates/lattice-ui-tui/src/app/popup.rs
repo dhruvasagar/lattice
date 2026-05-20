@@ -67,18 +67,13 @@ impl App {
     /// so the renderer + link-follow / anchor-jump readers route
     /// uniformly through buffer_locals (M.3.2.c.5).
     pub(crate) fn open_popup(&mut self, content: HelpContent, placement: PopupPlacement) {
-        // Phase 5.8.AE: body migrated.
-        let signals = self.editor.open_popup(content, placement);
+        // Slice 3c.final.E.3: route through `mutate_editor_with`.
+        // The closure-tail publish from `mutate_editor_with` replaces
+        // the prior 3c.atomic.E manual `publish_render_state()`.
+        let signals = self.mutate_editor_with(move |e| e.open_popup(content, placement));
         for s in signals {
             self.handle_renderer_signal(s);
         }
-        // 3c.atomic.E: the host's `open_popup` mutates
-        // `active_buffer`, `cursor`, `scroll` and several
-        // popup-state fields outside the dispatch publish path.
-        // Publish here so renderer-side reads (`ad().buffer_kind`,
-        // `ad().cursor`, `ad().scroll`) reflect the popup state
-        // by the next frame.
-        self.editor.publish_render_state();
     }
 
     /// Open `content` as a *floating* popup over the active
@@ -94,15 +89,12 @@ impl App {
     /// cursor-anchored quick-info popup that wants the
     /// "popup floats; doc keeps focus" shape.
     pub(crate) fn open_floating_popup(&mut self, content: HelpContent, placement: PopupPlacement) {
-        // Phase 5.8.AE: body migrated.
-        let signals = self.editor.open_floating_popup(content, placement);
+        // Slice 3c.final.E.3: route through `mutate_editor_with`.
+        let signals =
+            self.mutate_editor_with(move |e| e.open_floating_popup(content, placement));
         for s in signals {
             self.handle_renderer_signal(s);
         }
-        // 3c.atomic.E: same publish gap as `open_popup`. The
-        // host mutates popup state directly; renderer-side reads
-        // need the publish to observe the floating popup.
-        self.editor.publish_render_state();
     }
 
     /// M.4 (b): clear out a popup buffer's registry / mode /
@@ -111,7 +103,8 @@ impl App {
     /// accumulate stale entries) and by [`Self::dismiss_popup`]
     /// when the popup closes. No-op when no popup is set.
     pub(super) fn dismiss_stale_popup_registry(&mut self) {
-        self.editor.dismiss_stale_popup_registry();
+        // Slice 3c.final.E.3: route through `mutate_editor`.
+        self.mutate_editor(|e| e.dismiss_stale_popup_registry());
     }
 
     /// M.4 (b): resolve the popup's `HelpBuffer` through the
@@ -121,7 +114,18 @@ impl App {
     /// cloned snapshot (the rope is cheap-to-clone); `None` when no
     /// popup is open or the registry entry has been torn down.
     pub fn popup_help(&self) -> Option<crate::help::HelpBuffer> {
-        self.editor.popup_help()
+        // Slice 3c.final.B (group 3) note: the published
+        // `rs.popup.help` substate IS populated and the GPUI peer
+        // reads it directly. This TUI-side wrapper keeps the
+        // legacy `editor.popup_help()` path because the test
+        // suite + several out-of-dispatch help-popup setup paths
+        // mutate the popup buffer without republishing
+        // `RenderState`. Migrating the wrapper to read from
+        // `rs.popup.help` requires adding `publish_render_state()`
+        // calls at every popup-mutation site (open, scroll,
+        // dismiss, follow-link, …) — deferred to a follow-up
+        // (3c.final.B.3b) so the slice stays bounded.
+        self.read_editor(move |e| e.popup_help())
     }
 
     /// Mutable counterpart to [`Self::popup_help`]. The closure
@@ -131,7 +135,7 @@ impl App {
         &mut self,
         f: impl FnOnce(&mut crate::help::HelpBuffer) -> R,
     ) -> Option<R> {
-        let id = self.editor.popup_buffer?;
+        let id = self.popup().buffer_id?;
         self.editor.buffers.with_help_mut(id, f)
     }
 
@@ -148,14 +152,15 @@ impl App {
         buffer_id: crate::buffers::BufferId,
         metadata: HelpMetadata,
     ) {
-        self.editor.seed_help_metadata_locals(buffer_id, metadata);
+        // Slice 3c.final.E.3: route through `mutate_editor`.
+        self.mutate_editor(move |e| e.seed_help_metadata_locals(buffer_id, metadata));
     }
 
     /// M.3.2.c.5: read the parsed `[label](url)` links seeded into
     /// the active popup's buffer-locals. Returns `None` when no
     /// popup is open or the locals slot was not seeded.
     pub fn popup_help_links(&self) -> Option<&[crate::help::HelpLink]> {
-        let id = self.editor.popup_buffer?;
+        let id = self.popup().buffer_id?;
         self.editor
             .buffer_locals
             .get(&id)
@@ -168,7 +173,7 @@ impl App {
     /// popup's buffer-locals. Returns `None` when no popup is
     /// open or the locals slot was not seeded.
     pub fn popup_help_anchors(&self) -> Option<&[crate::help::HelpAnchor]> {
-        let id = self.editor.popup_buffer?;
+        let id = self.popup().buffer_id?;
         self.editor
             .buffer_locals
             .get(&id)
@@ -181,7 +186,7 @@ impl App {
     /// `None` when no popup is open or the locals slot was not
     /// seeded.
     pub fn popup_help_highlights(&self) -> Option<&[Vec<lattice_syntax::StyledSpan>]> {
-        let id = self.editor.popup_buffer?;
+        let id = self.popup().buffer_id?;
         self.editor
             .buffer_locals
             .get(&id)
@@ -202,8 +207,8 @@ impl App {
     /// lands. Tests below exercise it.
     #[allow(dead_code)]
     pub(crate) fn set_popup_placement(&mut self, placement: PopupPlacement) {
-        if self.editor.popup_buffer.is_some() {
-            self.editor.popup_placement = placement;
+        if self.popup().buffer_id.is_some() {
+            self.mutate_editor(move |e| e.popup_placement = placement);
         }
     }
 
@@ -212,13 +217,14 @@ impl App {
     /// popup is open or the registry entry has been torn down.
     pub(super) fn snapshot_current_popup(&self) -> Option<PopupSnapshot> {
         // Phase 5.8.AE: body migrated.
-        self.editor.snapshot_current_popup()
+        self.read_editor(move |e| e.snapshot_current_popup())
     }
 
     /// Swap `content` into the existing popup buffer in place.
     /// Phase 5.8.AE: body migrated.
     pub(super) fn swap_popup_content(&mut self, content: HelpContent, placement: PopupPlacement) {
-        self.editor.swap_popup_content(content, placement);
+        // Slice 3c.final.E.3: route through `mutate_editor`.
+        self.mutate_editor(move |e| e.swap_popup_content(content, placement));
     }
 
     // 5.5.H: `pop_popup_back` App-side delegate retired (zero
@@ -236,7 +242,7 @@ impl App {
     pub fn active_popup_placement(&self) -> Option<PopupPlacement> {
         self.editor
             .popup_buffer
-            .map(|_| self.editor.popup_placement)
+            .map(|_| self.popup().placement)
     }
 
     /// Close the popup. Drops the popup's content slot, resets
@@ -244,7 +250,8 @@ impl App {
     /// was captured at open. Idempotent: closing when no popup
     /// is open is a no-op.
     pub(crate) fn dismiss_popup(&mut self) {
-        self.editor.dismiss_popup();
+        // Slice 3c.final.E.3: route through `mutate_editor`.
+        self.mutate_editor(|e| e.dismiss_popup());
     }
 }
 

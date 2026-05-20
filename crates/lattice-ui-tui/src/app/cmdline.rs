@@ -71,10 +71,10 @@ impl App {
     ///    `arg:<name>`.
     /// 3. Else, no-op + status message.
     pub(super) fn do_command_line_describe_under_cursor(&mut self) {
-        if !matches!(self.editor.modal, ModalState::Command) {
+        if !matches!(self.ad().modal, ModalState::Command) {
             return;
         }
-        let line = self.editor.command_line.clone();
+        let line = self.command_line();
         let cursor = line.len();
         let alias_resolver = |short: &str| {
             crate::excommand::aliases()
@@ -136,7 +136,7 @@ impl App {
     /// pipeline runs through the registered matcher / ranker /
     /// annotators.
     pub(super) fn do_command_line_complete_or_advance(&mut self) {
-        if !matches!(self.editor.modal, ModalState::Command) {
+        if !matches!(self.ad().modal, ModalState::Command) {
             return;
         }
         if let Some(state) = self.editor.completion_state.as_mut() {
@@ -177,7 +177,8 @@ impl App {
     /// - There's no first arg or it's not Required.
     /// - The command's args use the delimiter form (`:s/.../.../`).
     pub(super) fn try_resolve_missing_arg_prompt(&self) -> Option<MissingArgPrompt> {
-        let line = self.editor.command_line.trim();
+        let line_owned = self.command_line();
+        let line = line_owned.trim();
         if line.is_empty() {
             return None;
         }
@@ -237,10 +238,15 @@ impl App {
     /// `chord` arg is the only `Chord`-kinded arg in the registry;
     /// when `:map` / `:nnoremap` land they reuse this gate.
     pub fn chord_capture_active(&self) -> bool {
+        // Slice 3c.final.E.5d note: modal read stays on
+        // `self.editor` (not `self.ad().modal`) because tests
+        // mutate `editor.modal` directly without republishing
+        // RS, and this query runs without a preceding `apply`.
+        // Same precedent as `motions.rs` pane_tree reads.
         if !matches!(self.editor.modal, ModalState::Command) {
             return false;
         }
-        let line = &self.editor.command_line;
+        let line = self.command_line(); let line = line.as_str();
         let alias_resolver = |short: &str| {
             crate::excommand::aliases()
                 .get(short)
@@ -274,13 +280,15 @@ impl App {
     /// Retained as a 1-line delegate while App callers (cmdline arms
     /// + complete-or-advance helper) still reach for it directly.
     pub(super) fn open_completion_popup(&mut self) {
-        self.editor.open_completion_popup();
+        // Slice 3c.final.E.3: route through `mutate_editor`.
+        self.mutate_editor(|e| e.open_completion_popup());
     }
 
     /// 5.5.G.23.cmdline: body migrated to
     /// [`lattice_host::dispatch::Editor::refresh_completion_popup`].
     pub(super) fn refresh_completion_popup(&mut self) {
-        self.editor.refresh_completion_popup();
+        // Slice 3c.final.E.3: route through `mutate_editor`.
+        self.mutate_editor(|e| e.refresh_completion_popup());
     }
 
     /// Slot-detect, build the pipeline, run it, and host-rewrite
@@ -296,7 +304,7 @@ impl App {
     pub(super) fn compute_completion_state(
         &self,
     ) -> Result<CompletionState, CompletionComputeError> {
-        self.editor.compute_completion_state()
+        self.read_editor(move |e| e.compute_completion_state())
     }
 }
 

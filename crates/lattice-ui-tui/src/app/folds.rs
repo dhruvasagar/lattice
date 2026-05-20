@@ -53,7 +53,8 @@ impl App {
     /// call sites keep this thin wrapper until 5.5.G collapses
     /// App's match entirely.
     pub fn recompute_folds(&mut self) {
-        self.editor.recompute_folds();
+        // Slice 3c.final.E.2: route through `mutate_editor`.
+        self.mutate_editor(|e| e.recompute_folds());
     }
 
     // 5.5.G.16: `do_create_fold_from_visual` migrated to
@@ -70,7 +71,7 @@ impl App {
     /// [`lattice_host::dispatch::Editor::line_inside_closed_fold`]
     /// so the GPUI peer can reach the same check.
     pub fn line_inside_closed_fold(&self, line: u32) -> bool {
-        self.editor.line_inside_closed_fold(line)
+        self.read_editor(move |e| e.line_inside_closed_fold(line))
     }
 
     /// 5.5.G.23: body migrated to
@@ -97,7 +98,8 @@ impl App {
     /// search-result + motions paths still drive it; deletion
     /// follows once those callers go host-side.
     pub(super) fn snap_cursor_past_closed_folds(&mut self, prev_line: u32) {
-        self.editor.snap_cursor_past_closed_folds(prev_line);
+        // Slice 3c.final.E.2: route through `mutate_editor`.
+        self.mutate_editor(move |e| e.snap_cursor_past_closed_folds(prev_line));
     }
 
     /// 5.5.G.4: body migrated to
@@ -106,7 +108,8 @@ impl App {
     /// (search.rs, motions.rs, dispatch.rs) still invoke it; the
     /// delegate retires when those call sites migrate.
     pub fn auto_open_folds_at_cursor(&mut self) {
-        self.editor.auto_open_folds_at_cursor();
+        // Slice 3c.final.E.2: route through `mutate_editor`.
+        self.mutate_editor(|e| e.auto_open_folds_at_cursor());
     }
 }
 

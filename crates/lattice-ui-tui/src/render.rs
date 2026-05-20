@@ -97,11 +97,14 @@ impl<'a> FrameView<'a> {
         // unavoidable — the FrameView snapshot decouples from the
         // App for thread-safe rendering — but the parse that
         // populated the cell ran on the worker, not the UI thread.
-        let rs = app.editor.render_state.load_full();
+        let rs = app.render_state.load_full();
         let spans = rs.syntax.visible_spans.load();
         Self {
             app,
-            folds: Arc::from(app.editor.folds.clone().into_boxed_slice()),
+            // Slice 3c.final.B (group 2): folds already published as
+            // `Arc<[Fold]>` on the active-document substate; one Arc
+            // clone replaces the prior `Vec::clone + into_boxed_slice`.
+            folds: rs.active_document.folds.clone(),
             visible_highlights: Arc::from(spans.spans.clone().into_boxed_slice()),
             show_line_numbers: app.show_line_numbers(),
             relative_line_numbers: app.relative_line_numbers(),
@@ -117,11 +120,14 @@ impl<'a> FrameView<'a> {
     pub fn for_buffer(app: &'a App, buffer_id: crate::buffers::BufferId) -> Self {
         // X2.5: same migration as `from_app` — read spans through
         // the worker-published cell, not the legacy UI-thread field.
-        let rs = app.editor.render_state.load_full();
+        let rs = app.render_state.load_full();
         let spans = rs.syntax.visible_spans.load();
         Self {
             app,
-            folds: Arc::from(app.editor.folds.clone().into_boxed_slice()),
+            // Slice 3c.final.B (group 2): folds already published as
+            // `Arc<[Fold]>` on the active-document substate; one Arc
+            // clone replaces the prior `Vec::clone + into_boxed_slice`.
+            folds: rs.active_document.folds.clone(),
             visible_highlights: Arc::from(spans.spans.clone().into_boxed_slice()),
             show_line_numbers: app.show_line_numbers_for(buffer_id),
             relative_line_numbers: app.relative_line_numbers_for(buffer_id),
@@ -246,7 +252,7 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) {
     // mode. In popup mode the cmdline / echo content stays
     // visible and the picker query renders inside the overlay
     // instead.
-    if app.editor.picker.is_some() && picker_is_minibuffer {
+    if app.picker_state().state.is_some() && picker_is_minibuffer {
         draw_picker_prompt(frame, chunks[2], app);
     } else {
         draw_command_or_echo(frame, chunks[2], app);
@@ -263,8 +269,10 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) {
     //   Document): second `K` moved focus into the popup; popup
     //   paints with a visible cursor at `app.editor.cursor`; doc paints
     //   as inactive (frozen at `pane.cursor`) below.
-    let active_pane_kind = app.editor.pane_tree.active().buffer;
-    if app.editor.popup_buffer.is_some() && active_pane_kind != crate::buffers::BufferKind::Help {
+    // Slice 3c.final.B (group 1): pane-tree reads route through
+    // `app.panes()` instead of `app.editor.pane_tree.X()`.
+    let active_pane_kind = app.panes().tree.active().buffer;
+    if app.popup().is_open() && active_pane_kind != crate::buffers::BufferKind::Help {
         draw_help_overlay(frame, chunks[0], app, snap);
     }
     // Picker candidate list (precedence over completion popup --
@@ -280,7 +288,7 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) {
     // is `"popup"` and a picker is open. Floats centered over
     // the buffer area (chunks[0]) so the user still sees the
     // mode line and any echo / cmdline content underneath.
-    if app.editor.picker.is_some() && !picker_is_minibuffer {
+    if app.picker_state().state.is_some() && !picker_is_minibuffer {
         draw_picker_overlay(frame, chunks[0], app);
     }
     // Insert-mode completion popup overlay (Phase 4.2.g.1).
@@ -293,7 +301,7 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) {
         // rendered when the user has flipped it on with
         // `<C-d>`. Anchored right of the candidate popup
         // when there's room; below otherwise.
-        if let Some(state) = app.editor.insert_completion.as_ref()
+        if let Some(state) = app.completion().insert.as_deref()
             && state.doc_popup.is_some()
         {
             draw_insert_completion_docs_popup(frame, chunks[0], app, snap);
@@ -327,7 +335,10 @@ fn draw_insert_completion_popup(
     app: &App,
     snap: &DocumentSnapshot,
 ) {
-    let Some(state) = app.editor.insert_completion.as_ref() else {
+    // Slice 3c.final.B (group 3): bind the substate Arc so the
+    // `as_deref()` borrow lives for the function body.
+    let completion = app.completion();
+    let Some(state) = completion.insert.as_deref() else {
         return;
     };
     if state.rendered.is_empty() {
@@ -508,7 +519,9 @@ fn draw_insert_completion_docs_popup(
     app: &App,
     snap: &DocumentSnapshot,
 ) {
-    let Some(state) = app.editor.insert_completion.as_ref() else {
+    // Slice 3c.final.B (group 3): bind substate Arc.
+    let completion = app.completion();
+    let Some(state) = completion.insert.as_deref() else {
         return;
     };
     let Some(doc_popup) = state.doc_popup.as_ref() else {
@@ -705,7 +718,9 @@ fn source_tag_for_kind(kind: lattice_completion::CandidateKind) -> &'static str 
 /// cmdline itself by [`draw_command_or_echo`] when completion is
 /// open, matching the picker's prompt-inline `(n/m)` style.
 fn draw_completion_popup(frame: &mut Frame, popup_area: Rect, app: &App) {
-    let Some(state) = app.editor.completion_state.as_ref() else {
+    // Slice 3c.final.B (group 3): bind substate Arc.
+    let completion = app.completion();
+    let Some(state) = completion.state.as_deref() else {
         return;
     };
     if state.candidates.is_empty() {
@@ -820,7 +835,9 @@ fn candidate_to_line<'a>(
 /// candidate list is rendered below by
 /// [`draw_picker_candidates`].
 fn draw_picker_prompt(frame: &mut Frame, area: Rect, app: &App) {
-    let Some(p) = app.editor.picker.as_ref() else {
+    // Slice 3c.final.B (group 3): bind picker substate Arc.
+    let picker = app.picker_state();
+    let Some(p) = picker.state.as_deref() else {
         return;
     };
     let count = if p.candidates.is_empty() {
@@ -851,7 +868,9 @@ fn draw_picker_prompt(frame: &mut Frame, area: Rect, app: &App) {
 /// for per-row rendering so match highlights + marginalia stay
 /// consistent with the cmdline completion popup.
 fn draw_picker_candidates(frame: &mut Frame, area: Rect, app: &App) {
-    let Some(p) = app.editor.picker.as_ref() else {
+    // Slice 3c.final.B (group 3): bind picker substate Arc.
+    let picker = app.picker_state();
+    let Some(p) = picker.state.as_deref() else {
         return;
     };
     frame.render_widget(Clear, area);
@@ -917,7 +936,9 @@ fn picker_display_is_minibuffer(app: &App) -> bool {
 /// painted on top of [`Clear`] so buffer content underneath
 /// doesn't bleed through.
 fn draw_picker_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
-    let Some(p) = app.editor.picker.as_ref() else {
+    // Slice 3c.final.B (group 3): bind picker substate Arc.
+    let picker = app.picker_state();
+    let Some(p) = picker.state.as_deref() else {
         return;
     };
     // Cap width at 80 cells / 70% of the buffer area; cap
@@ -1059,7 +1080,9 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App, snap: &Doc
     let Some(help) = app.popup_help() else {
         return;
     };
-    let popup_id = app.editor.popup_buffer.expect("popup_help is Some");
+    // Slice 3c.final.B (group 3): popup buffer id via published
+    // substate.
+    let popup_id = app.popup().buffer_id.expect("popup_help is Some");
     // Sizing routes through `lattice_core::ui::popup::popup_outer_size`
     // so the renderer + the App's `help_popup_inner_height`
     // (motion / scroll / ensure_cursor_visible) agree on the
@@ -1073,7 +1096,7 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App, snap: &Doc
         buffer_area.width,
         buffer_area.height,
         line_count,
-        app.editor.popup_placement,
+        app.popup().placement,
     );
     let popup = position_help_popup(app, snap, buffer_area, width, height);
 
@@ -1095,7 +1118,7 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App, snap: &Doc
     // Active-buffer scroll lives on `app.editor.scroll` after the
     // unification; popup_buffer's own `scroll` field is archival
     // save-state synced at activation transitions.
-    let scroll = if matches!(app.editor.active_buffer, crate::buffers::BufferKind::Help) {
+    let scroll = if matches!(app.ad().buffer_kind, crate::buffers::BufferKind::Help) {
         app.ad().scroll as usize
     } else {
         help.scroll
@@ -1145,9 +1168,9 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App, snap: &Doc
             // so `/foo` in a focused popup shows highlights too.
             // Only paints when help is actually focused (search
             // state is active-buffer-relative).
-            if matches!(app.editor.active_buffer, crate::buffers::BufferKind::Help) {
+            if matches!(app.ad().buffer_kind, crate::buffers::BufferKind::Help) {
                 let line_len = l.len();
-                for &range in app.editor.all_matches.iter() {
+                for &range in app.ad().all_matches.iter() {
                     if let Some((overlay_start, overlay_end)) =
                         match_overlay_range(range, line_idx as u32, line_len)
                     {
@@ -1155,7 +1178,7 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App, snap: &Doc
                             apply_match_overlay(body, overlay_start, overlay_end, hlsearch_style());
                     }
                 }
-                if let Some(range) = app.editor.current_match
+                if let Some(range) = app.ad().current_match
                     && let Some((overlay_start, overlay_end)) =
                         match_overlay_range(range, line_idx as u32, line_len)
                 {
@@ -1192,7 +1215,7 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App, snap: &Doc
     // about. No cursor placement here in that case.
     if inner.height > 0
         && inner.width > 0
-        && matches!(app.editor.active_buffer, crate::buffers::BufferKind::Help)
+        && matches!(app.ad().buffer_kind, crate::buffers::BufferKind::Help)
     {
         // Wrap-aware screen-position computation matching
         // `manually_wrap_lines`: each line's first display row
@@ -1421,7 +1444,7 @@ fn position_help_popup(
         }
     };
     if matches!(
-        app.editor.popup_placement,
+        app.popup().placement,
         crate::popup::PopupPlacement::Centered
     ) {
         return centered();
@@ -1434,10 +1457,14 @@ fn position_help_popup(
     // (the popup is only painted when active_pane.buffer != Help,
     // so this is the State A / B case where the active pane shows
     // a doc).
-    let (cursor, scroll) = match app.editor.active_buffer {
+    let (cursor, scroll) = match app.ad().buffer_kind {
         crate::buffers::BufferKind::Document => (app.ad().cursor, app.ad().scroll),
         _ => {
-            let pane = app.editor.pane_tree.active();
+            // Slice 3c.final.B (group 1): pane via `app.panes()`.
+            // `active()` returns `&PaneState` borrowing from the
+            // Arc; bind the Arc to keep it alive while we copy.
+            let panes = app.panes();
+            let pane = panes.tree.active();
             (pane.cursor, pane.scroll)
         }
     };
@@ -1484,8 +1511,10 @@ fn active_pane_content_rect(app: &App, buffer_area: Rect) -> Option<Rect> {
         width: buffer_area.width,
         height: buffer_area.height,
     };
-    let rects = app.editor.pane_tree.compute_rects(pane_area);
-    let active_idx = app.editor.pane_tree.active_index();
+    // Slice 3c.final.B (group 1): pane geometry through `app.panes()`.
+    let panes = app.panes();
+    let rects = panes.tree.compute_rects(pane_area);
+    let active_idx = panes.tree.active_index();
     let multi = rects.len() > 1;
     let prect = rects
         .iter()
@@ -1510,17 +1539,19 @@ fn active_pane_content_rect(app: &App, buffer_area: Rect) -> Option<Rect> {
 }
 
 /// True iff the active pane's buffer kind is the same kind as
-/// `app.editor.active_buffer`. When mismatched, the active pane is
+/// `app.ad().buffer_kind`. When mismatched, the active pane is
 /// painted as visually inactive (frozen at `pane.cursor`) -- the
 /// scenario that matters is help-popup-overlay (State B) where
 /// the active pane shows a Document but motions go to the help
 /// popup's buffer.
 fn pane_buffer_matches_active(app: &App, idx: usize) -> bool {
-    app.editor
-        .pane_tree
+    // Slice 3c.final.B (group 1): pane leaves via `app.panes()`.
+    let panes = app.panes();
+    panes
+        .tree
         .leaves()
         .get(idx)
-        .map(|p| p.buffer == app.editor.active_buffer)
+        .map(|p| p.buffer == app.ad().buffer_kind)
         .unwrap_or(false)
 }
 
@@ -1545,7 +1576,8 @@ fn draw_help_in_pane(frame: &mut Frame, area: Rect, app: &App) {
     // pane's `buffer_id`) intentionally differ for in-pane help;
     // locals are keyed by the registered id. See the comment in
     // `App::open_help_in_pane`.
-    let render_id = app.editor.pane_tree.active().buffer_id;
+    // Slice 3c.final.B (group 1): pane via `app.panes()`.
+    let render_id = app.panes().tree.active().buffer_id;
     let (highlights, links) = help_render_data(app, render_id, &help);
     let visible: Vec<Line> = lines
         .iter()
@@ -1575,7 +1607,7 @@ fn draw_help_in_pane(frame: &mut Frame, area: Rect, app: &App) {
             // Hlsearch overlay: every `app.editor.all_matches` range that
             // touches this line. Same painter the document path
             // uses, so visual + match styles compose identically.
-            for &range in app.editor.all_matches.iter() {
+            for &range in app.ad().all_matches.iter() {
                 if let Some((overlay_start, overlay_end)) =
                     match_overlay_range(range, line_idx as u32, line_len)
                 {
@@ -1584,7 +1616,7 @@ fn draw_help_in_pane(frame: &mut Frame, area: Rect, app: &App) {
             }
             // Current-match (the one the cursor is on after `/`
             // submit / `n` / `N`) gets the louder match style.
-            if let Some(range) = app.editor.current_match
+            if let Some(range) = app.ad().current_match
                 && let Some((overlay_start, overlay_end)) =
                     match_overlay_range(range, line_idx as u32, line_len)
             {
@@ -1656,8 +1688,12 @@ fn draw_panes(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot)
         width: area.width,
         height: area.height,
     };
-    let rects = app.editor.pane_tree.compute_rects(pane_area);
-    let active = app.editor.pane_tree.active_index();
+    // Slice 3c.final.B (group 1): pane geometry through `app.panes()`.
+    // Bind the Arc once so subsequent `panes.tree.X()` reads share
+    // the same snapshot for the duration of `draw_panes`.
+    let panes_state = app.panes();
+    let rects = panes_state.tree.compute_rects(pane_area);
+    let active = panes_state.tree.active_index();
     let multi = rects.len() > 1;
     for (idx, prect) in rects.iter().copied() {
         let rect = Rect {
@@ -1669,7 +1705,7 @@ fn draw_panes(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot)
         // A pane is *active for input* iff it's the focused pane
         // AND the active buffer kind matches the pane's buffer.
         // The mismatch case is the help-popup-overlay scenario:
-        // active pane shows a Document, but `app.editor.active_buffer ==
+        // active pane shows a Document, but `app.ad().buffer_kind ==
         // Help` because the popup is focused (State B). The doc
         // must paint with its own (frozen) `pane.cursor`, not
         // `app.editor.cursor` (which is help's). draw_inactive_document
@@ -1696,8 +1732,11 @@ fn draw_panes(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot)
         } else {
             (rect, None)
         };
-        let panes = app.editor.pane_tree.leaves();
-        let Some(pane) = panes.get(idx) else {
+        // Slice 3c.final.B (group 1): reuse the `panes_state` Arc
+        // bound at the top of `draw_panes` so the slice borrow is
+        // safe for the duration of the iteration.
+        let pane_leaves = panes_state.tree.leaves();
+        let Some(pane) = pane_leaves.get(idx) else {
             continue;
         };
         let pane = *pane;
@@ -1962,7 +2001,9 @@ fn draw_inactive_document(
     // active one. Two visible doc panes with different mode
     // stacks now render their gutters independently.
     let view = FrameView::for_buffer(app, pane.buffer_id);
-    let Some(handle) = app.editor.buffers.document_handle(pane.buffer_id) else {
+    // Slice 3c.final.B (group 1): registry lookup via
+    // `app.buffers()`.
+    let Some(handle) = app.buffers().registry.document_handle(pane.buffer_id) else {
         return;
     };
     let snap = handle.snapshot();
@@ -1989,7 +2030,7 @@ fn draw_inactive_document(
     //  3. Empty otherwise -- plain text, no syntax. Acceptable
     //     for the rare same-doc-different-scroll case.
     let active_doc_id = if matches!(
-        app.editor.active_buffer,
+        app.ad().buffer_kind,
         crate::buffers::BufferKind::Document
     ) {
         Some(app.ad().document_buffer_id)
@@ -2030,7 +2071,7 @@ fn draw_inactive_document(
         // panes too -- consistency with the active pane.
         // Same gate as the active path (cache mirror is global,
         // not per-pane in v1).
-        if view.app.editor.option_cache.show_whitespace {
+        if view.app.ad().option_cache.show_whitespace {
             let decoration = WhitespaceDecoration::from_app(view.app);
             body = apply_whitespace_decoration(body, &line_text, &decoration);
         }
@@ -2164,7 +2205,8 @@ fn draw_oil_pane(
     pane: &crate::pane::PaneState,
     is_active: bool,
 ) {
-    let Some((raw_text, snapshot)) = app.editor.buffers.with_oil(pane.buffer_id, |o| {
+    // Slice 3c.final.B (group 1): oil view via `app.buffers()`.
+    let Some((raw_text, snapshot)) = app.buffers().registry.with_oil(pane.buffer_id, |o| {
         (o.content.as_string(), o.snapshot_entries().to_vec())
     }) else {
         return;
@@ -2245,7 +2287,7 @@ fn draw_buffer(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot
 fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
     if matches!(app.ad().modal, ModalState::Command) {
         // ":<typed>" with the cursor sitting at the end of the typed text.
-        let prompt = format!(":{}", app.editor.command_line);
+        let prompt = format!(":{}", app.command_line());
         let cursor_col = area
             .x
             .saturating_add(prompt.len().min(area.width as usize) as u16);
@@ -2281,7 +2323,7 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
         // open: `(selected/total)` faintly trailing the cmdline.
         // Mirrors the picker prompt's `(n/m)` so both surfaces
         // read the same.
-        if let Some(state) = app.editor.completion_state.as_ref()
+        if let Some(state) = app.completion().state.as_deref()
             && !state.candidates.is_empty()
         {
             spans.push(Span::styled(
@@ -2352,10 +2394,15 @@ fn active_lsp_segment(app: &App) -> String {
     if !app.lsp_mode_enabled_for(app.ad().document_buffer_id) {
         return String::new();
     }
-    let Some(uri) = app.editor.buffer_uris.get(&app.ad().document_buffer_id) else {
+    // Slice 3c.final.B (group 1): URI lookup via `app.buffers()`.
+    let buffers = app.buffers();
+    let Some(uri) = buffers.uris.get(&app.ad().document_buffer_id) else {
         return String::new();
     };
-    let handles = app.editor.lsp.servers_for(uri);
+    // Slice 3c.final.B (group 4): supervisor handle via published
+    // substate; `servers_for` stays wait-free behind its own ArcSwap.
+    let rs = app.render_state.load();
+    let handles = rs.lsp.supervisor.servers_for(uri);
     if handles.is_empty() {
         return String::new();
     }
@@ -2374,7 +2421,8 @@ fn active_lsp_segment(app: &App) -> String {
     }
     let attached: std::collections::HashSet<&str> = ids.iter().copied().collect();
     let mut best: Option<&lattice_lsp::LspProgressUpdate> = None;
-    for ((sid, _tok), update) in &app.editor.lsp_progress {
+    // Slice 3c.final.B (group 4): progress via published substate.
+    for ((sid, _tok), update) in rs.lsp.progress.iter() {
         if !attached.contains(sid.as_ref()) {
             continue;
         }
@@ -2434,7 +2482,9 @@ fn active_lsp_segment(app: &App) -> String {
 pub(crate) fn modeline_label(app: &App, snap: &DocumentSnapshot) -> String {
     snap.path()
         .map(|p| p.display().to_string())
-        .or_else(|| app.editor.buffers.name_of(app.ad().document_buffer_id))
+        // Slice 3c.final.B (group 1): registry lookup via
+        // `app.buffers()`.
+        .or_else(|| app.buffers().registry.name_of(app.ad().document_buffer_id))
         .unwrap_or_else(|| "[no name]".to_string())
 }
 
@@ -2528,7 +2578,9 @@ fn compose_visible_lines_inner(
     // bypassed because the level styles aren't expressible as
     // `lattice_syntax::Style` enum variants (which is the
     // unit the spans pipeline carries).
-    let active_buffer = app.editor.pane_tree.active().buffer_id;
+    // Slice 3c.final.B (group 1): active-pane buffer id via
+    // `app.panes()`.
+    let active_buffer = app.panes().tree.active().buffer_id;
     let is_messages_buffer = app
         .editor
         .active_modes
@@ -2628,7 +2680,7 @@ fn compose_visible_lines_inner(
         // on, walks each rendered span and substitutes glyphs
         // for tab / trailing / leading / space / EOL per the
         // typed `display.whitespace.*` options.
-        if app.editor.option_cache.show_whitespace {
+        if app.ad().option_cache.show_whitespace {
             let decoration = WhitespaceDecoration::from_app(app);
             body = apply_whitespace_decoration(body, &line_text, &decoration);
         }
@@ -2663,7 +2715,7 @@ fn compose_visible_lines_inner(
         // `PerBufferCache` -- this read sees fresh data without
         // any UI-thread drain.
         use lattice_host::per_buffer_cache::PerBufferCacheExt;
-        let rs_st = app.editor.render_state.load();
+        let rs_st = app.render_state.load();
         if let Some(cache) = rs_st
             .lsp
             .semantic_tokens
@@ -2715,14 +2767,14 @@ fn compose_visible_lines_inner(
         }
         // Hlsearch overlay: every other occurrence of the search pattern,
         // softer than the current_match style.
-        for &range in app.editor.all_matches.iter() {
+        for &range in app.ad().all_matches.iter() {
             if let Some((overlay_start, overlay_end)) =
                 match_overlay_range(range, line_idx, line_len)
             {
                 body = apply_match_overlay(body, overlay_start, overlay_end, hlsearch_style());
             }
         }
-        if let Some(range) = app.editor.current_match
+        if let Some(range) = app.ad().current_match
             && let Some((overlay_start, overlay_end)) =
                 match_overlay_range(range, line_idx, line_len)
         {
@@ -2771,7 +2823,7 @@ fn compose_visible_lines_inner(
         // the same underlying slot, so this `load_full()` sees
         // the latest result without any tick-driven drain on
         // the renderer thread.
-        let rs = app.editor.render_state.load();
+        let rs = app.render_state.load();
         let dh_guard = rs.lsp.document_highlights.load_full();
         if let Some(cache) = dh_guard.as_deref()
             && cache.buffer_id == app.ad().document_buffer_id
@@ -2814,7 +2866,7 @@ fn compose_visible_lines_inner(
         // `PerBufferCache`, so this read sees fresh data without
         // any UI-thread drain. (`PerBufferCacheExt` already in
         // scope from the semantic-tokens reader above.)
-        let rs = app.editor.render_state.load();
+        let rs = app.render_state.load();
         if let Some(cache) = rs.lsp.inlay_hints.get_for(app.ad().document_buffer_id)
             && app.lsp_inlay_hint_mode_enabled_for(app.ad().document_buffer_id)
         {
@@ -2852,7 +2904,7 @@ fn compose_visible_lines_inner(
         // the about-to-be-replaced ranges in a strike-through-ish
         // style so the user sees what will change before they hit
         // Enter. Distinct from hlsearch's plain match highlight.
-        if let Some(preview) = app.editor.substitute_preview.as_ref() {
+        if let Some(preview) = app.ad().substitute_preview.as_ref() {
             for &range in preview.matches.iter() {
                 if let Some((overlay_start, overlay_end)) =
                     match_overlay_range(range, line_idx, line_len)
@@ -2910,7 +2962,7 @@ fn compose_visible_lines_inner(
         // highlighted -- they're their own visual column. vim
         // does highlight the line-number column; lattice can
         // add that as a follow-up if users want it.
-        if line_idx == app.ad().cursor.line && app.editor.option_cache.current_line_highlight {
+        if line_idx == app.ad().cursor.line && app.ad().option_cache.current_line_highlight {
             let bg = app.theme.cursor_line_bg;
             for span in body.iter_mut() {
                 if span.style.bg.is_none() {
@@ -2990,7 +3042,7 @@ fn visual_block_extents(app: &App) -> Option<BlockExtents> {
     ) {
         return None;
     }
-    let sels = app.editor.document.selections();
+    let sels = app.ad().selections.clone();
     let sel = sels.primary();
     let start_line = sel.anchor.line.min(sel.head.line);
     let end_line = sel.anchor.line.max(sel.head.line);
@@ -3021,7 +3073,7 @@ struct BlockExtents {
 // neutral logic shared between TUI and GPUI peers. Thin wrapper
 // kept here so this peer's call sites resolve unchanged.
 fn visual_selection_range(app: &App) -> Option<ProtoRange> {
-    app.editor.visual_selection_range()
+    app.ad().visual_range
 }
 
 fn visual_style() -> TuiStyle {
@@ -3391,8 +3443,8 @@ pub(crate) fn severity_for_line(
     // against. `load` is wait-free (~2ns); the layer it returns
     // is internally `Arc<ArcSwap<...>>`-backed so
     // `line_severity` stays wait-free.
-    let rs = app.editor.render_state.load();
-    rs.diagnostics.layer.line_severity(uri, line_idx)
+    let rs = app.render_state.load();
+    rs.diagnostics.layer.line_severity(&uri, line_idx)
 }
 
 /// Diagnostics that overlap `line_idx` of the active buffer.
@@ -3415,7 +3467,7 @@ pub(crate) fn diagnostics_on_line(
     };
     app.editor
         .lsp_diagnostics
-        .diagnostics_on_line(uri, line_idx)
+        .diagnostics_on_line(&uri, line_idx)
 }
 
 /// M.7.3.b parameter bundle for the whitespace-decoration
@@ -3441,12 +3493,16 @@ impl WhitespaceDecoration {
     /// on `app.editor.option_cache.show_whitespace` is the caller's
     /// responsibility.
     fn from_app(app: &App) -> Self {
+        // Slice 3c.final.B (group 2): read whitespace glyphs via
+        // `app.ad().option_cache` (published mirror of
+        // `editor.option_cache`).
+        let oc = app.ad().option_cache;
         Self {
-            tab: app.editor.option_cache.whitespace_tab,
-            trailing: app.editor.option_cache.whitespace_trailing,
-            leading: app.editor.option_cache.whitespace_leading,
-            space: app.editor.option_cache.whitespace_space,
-            eol: app.editor.option_cache.whitespace_eol,
+            tab: oc.whitespace_tab,
+            trailing: oc.whitespace_trailing,
+            leading: oc.whitespace_leading,
+            space: oc.whitespace_space,
+            eol: oc.whitespace_eol,
             style_normal: app.theme.whitespace_style,
             style_trailing: app.theme.whitespace_trailing_style,
         }
@@ -4201,7 +4257,7 @@ mod tests {
         // Default state: the option is off ⇒ cursor row has no
         // bg from the highlight pass.
         let app = app_with("hello\nworld\n", 5);
-        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
         for line in &lines {
             assert!(
                 span_with_bg(line, Color::Indexed(236)).is_none(),
@@ -4217,7 +4273,7 @@ mod tests {
         let mut app = app_with("hello\nworld\n", 5);
         app.toggle_mode_by_name("current-line-highlight-mode");
         // Cursor starts on line 0; verify its row has the bg.
-        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
         let cursor_row = &lines[0];
         assert!(
             span_with_bg(cursor_row, Color::Indexed(236)).is_some(),
@@ -4238,7 +4294,7 @@ mod tests {
         // with bg-only style.
         let mut app = app_with("hi\n", 5);
         app.toggle_mode_by_name("current-line-highlight-mode");
-        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
         let cursor_row = &lines[0];
         // Find any pad span: bg = cursor_line_bg, content all
         // spaces.
@@ -4256,7 +4312,7 @@ mod tests {
         // `option_cache.show_whitespace == false` ⇒ pre-pass
         // is skipped ⇒ rendered body shows raw text.
         let app = app_with("hello   \n", 5);
-        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
         let row0 = line_text(&lines[0]);
         assert!(!row0.contains('·'), "no dots when ws-mode off: {row0:?}");
     }
@@ -4268,7 +4324,7 @@ mod tests {
         // through the cache and pre-pass kicks in.
         let mut app = app_with("hello   \n", 5);
         app.toggle_mode_by_name("whitespace-show-mode");
-        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
         let row0 = line_text(&lines[0]);
         assert!(
             row0.contains("hello") && row0.contains('·'),
@@ -4355,7 +4411,7 @@ mod tests {
     #[test]
     fn compose_visible_lines_returns_height_lines_padded_with_marker() {
         let app = app_with("a\nb", 5);
-        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
         assert_eq!(lines.len(), 5);
         // Past EOF lines start with the `~` marker.
         let past_eof = format!("{:?}", lines[3]);
@@ -4366,7 +4422,7 @@ mod tests {
     fn compose_visible_lines_starts_at_scroll_offset() {
         let mut app = app_with("0\n1\n2\n3\n4", 2);
         app.editor.set_scroll(2);
-        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 2, 80);
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 2, 80);
         // Line index 2 is "2"; expect that text in the rendered first line.
         let l0 = format!("{:?}", lines[0]);
         assert!(
@@ -4382,7 +4438,7 @@ mod tests {
         let area = Rect::new(0, 0, 80, 5);
         let pos = cursor_screen_position(
             &FrameView::from_app(&app),
-            &app.editor.document.snapshot(),
+            &app.ad().snapshot.clone(),
             area,
         )
         .unwrap();
@@ -4403,7 +4459,7 @@ mod tests {
         let area = Rect::new(0, 0, 80, 5);
         let pos = cursor_screen_position(
             &FrameView::from_app(&app),
-            &app.editor.document.snapshot(),
+            &app.ad().snapshot.clone(),
             area,
         )
         .unwrap();
@@ -4421,7 +4477,7 @@ mod tests {
         let area = Rect::new(0, 0, 80, 5);
         let pos = cursor_screen_position(
             &FrameView::from_app(&app),
-            &app.editor.document.snapshot(),
+            &app.ad().snapshot.clone(),
             area,
         )
         .unwrap();
@@ -4438,7 +4494,7 @@ mod tests {
         assert!(
             cursor_screen_position(
                 &FrameView::from_app(&app),
-                &app.editor.document.snapshot(),
+                &app.ad().snapshot.clone(),
                 area
             )
             .is_none()
@@ -4462,10 +4518,14 @@ mod tests {
             closed: true,
             identity: None,
         });
+        // Slice 3c.final.B (group 2): direct fold mutation needs
+        // a publish — the renderer reads folds via the published
+        // `rs.active_document.folds` snapshot now.
+        app.editor.publish_render_state();
         let area = Rect::new(0, 0, 80, 7);
         let pos = cursor_screen_position(
             &FrameView::from_app(&app),
-            &app.editor.document.snapshot(),
+            &app.ad().snapshot.clone(),
             area,
         )
         .expect("cursor visible");
@@ -4785,7 +4845,7 @@ mod tests {
             ));
         app.editor.insert_completion = Some(state);
 
-        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 1, 80);
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 1, 80);
         let composed = line_text(&lines[0]);
         // The line should contain BOTH the buffer text `foo`
         // AND the ghost suffix `bar`.
@@ -4836,7 +4896,7 @@ mod tests {
                 },
             ));
         app.editor.insert_completion = Some(state);
-        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 1, 80);
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 1, 80);
         let composed = line_text(&lines[0]);
         // `foobaz` from the buffer is fine; `foobar` (ghost)
         // mustn't sneak in.
@@ -4851,7 +4911,7 @@ mod tests {
     fn compose_visible_lines_applies_match_overlay() {
         let mut app = app_with("hello world", 1);
         app.editor.current_match = Some(ProtoRange::new(pos(0, 6), pos(0, 11)));
-        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 1, 80);
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 1, 80);
         let dump = format!("{:?}", lines[0]);
         // Spans should be split so "world" is its own span; we look for the
         // match style's signature in the debug dump.
@@ -4956,7 +5016,7 @@ mod tests {
         };
         app.editor
             .set_selections_blocking(SelectionSet::single(sel));
-        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 1, 80);
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 1, 80);
         let dump = format!("{:?}", lines[0]);
         // The selected "hello" should appear as its own span(s); we just
         // verify the line still contains the original text after overlay.
@@ -4979,7 +5039,7 @@ mod tests {
             .position(|f| f.start_line == 0)
             .expect("heading fold");
         app.editor.folds[idx].closed = true;
-        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
         let row0 = line_text(&lines[0]);
         // Heading text is preserved.
         assert!(row0.contains("# Heading"), "row0 = {row0:?}");
@@ -4999,7 +5059,7 @@ mod tests {
             .position(|f| f.start_line == 0)
             .expect("heading fold");
         app.editor.folds[idx].closed = true;
-        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
         let blob: String = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
         assert!(!blob.contains("hidden1"), "interior leaked: {blob}");
         assert!(!blob.contains("hidden2"), "interior leaked: {blob}");
@@ -5026,7 +5086,10 @@ mod tests {
             closed: true,
             identity: None,
         });
-        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 7, 80);
+        // Slice 3c.final.B (group 2): publish after direct fold
+        // mutations so `rs.active_document.folds` reflects them.
+        app.editor.publish_render_state();
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 7, 80);
         // Find the row that summarises the chained folds (line 1's
         // heading row).
         let row1_text = line_text(&lines[1]);
@@ -5042,7 +5105,7 @@ mod tests {
         app.set_foldmethod_for_test(crate::app::FoldMethod::Markdown);
         app.recompute_folds();
         // Leave the fold open (default).
-        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
         let row0 = line_text(&lines[0]);
         assert!(row0.contains("# H"), "row0 = {row0:?}");
         assert!(
@@ -5058,7 +5121,11 @@ mod tests {
         let mut app = app_with("# H\nbody\n", 5);
         app.set_foldmethod_for_test(crate::app::FoldMethod::Markdown);
         app.recompute_folds();
-        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
+        // Slice 3c.final.B (group 2): recompute_folds mutates
+        // editor.folds outside dispatch; publish so the renderer's
+        // `rs.active_document.folds` reflects the new set.
+        app.editor.publish_render_state();
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
         let row0 = line_text(&lines[0]);
         assert!(
             row0.contains('▾'),
@@ -5079,7 +5146,10 @@ mod tests {
             .position(|f| f.start_line == 0)
             .expect("heading fold");
         app.editor.folds[idx].closed = true;
-        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
+        // Slice 3c.final.B (group 2): publish after direct
+        // `editor.folds[idx].closed` mutation.
+        app.editor.publish_render_state();
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
         let row0 = line_text(&lines[0]);
         assert!(
             row0.contains('▸'),
@@ -5111,7 +5181,7 @@ mod tests {
             .position(|f| f.start_line == 0)
             .expect("struct fold");
         app.editor.folds[idx].closed = true;
-        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 4, 80);
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 4, 80);
         // Row 0: heading + " ┄ N lines folded".
         // Row 1: the post-fold statement -- correct content, not
         //        leaking interior spans.
@@ -5174,7 +5244,7 @@ mod tests {
         };
         app.editor
             .set_selections_blocking(SelectionSet::single(sel));
-        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
         let visual_bg = visual_style().bg;
         let row0 = &lines[0];
         let has_visual_span = row0.spans.iter().any(|s| s.style.bg == visual_bg);
@@ -5205,7 +5275,7 @@ mod tests {
         };
         app.editor
             .set_selections_blocking(SelectionSet::single(sel));
-        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
         // Verify the second visible line ("beta") has at least one
         // span styled with the visual color.
         let visual_bg = visual_style().bg;
@@ -5222,7 +5292,7 @@ mod tests {
         let mut app = app_with("# H\nbody one\nbody two\nafter\n", 5);
         app.set_foldmethod_for_test(crate::app::FoldMethod::Markdown);
         app.recompute_folds();
-        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
         // Row 1 (body one) is inside the fold, not a fold start.
         let row1 = line_text(&lines[1]);
         assert!(!row1.contains('▸'), "row1: {row1:?}");
@@ -5317,7 +5387,7 @@ mod tests {
         // Toggle lsp-mode OFF; the diagnostic glyph should
         // disappear from the rendered gutter.
         app.toggle_mode_by_name("lsp-mode");
-        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
         let row0 = line_text(&lines[0]);
         assert!(
             !row0.contains('■'),
@@ -5352,7 +5422,7 @@ mod tests {
         assert!(app.lsp_mode_enabled_for(app.ad().document_buffer_id));
         assert!(!app.lsp_diagnostics_mode_enabled_for(app.ad().document_buffer_id));
         // Glyph suppressed.
-        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
         let row0 = line_text(&lines[0]);
         assert!(
             !row0.contains('■'),
@@ -5422,7 +5492,7 @@ mod tests {
             ],
         })));
         app.editor.publish_render_state();
-        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
         // Walk the spans on row 0; expect at least one span
         // with the read tint (rgb(20,50,25)) and one with the
         // write tint (rgb(60,20,20)). Span splitting depends on
@@ -5486,7 +5556,7 @@ mod tests {
             );
         }
         app.editor.publish_render_state();
-        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
         let row0 = &lines[0];
         let mut found = false;
         for span in &row0.spans {
@@ -5546,7 +5616,7 @@ mod tests {
             );
         }
         app.editor.publish_render_state();
-        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
         let row0 = &lines[0];
         // Magenta = keyword, Yellow = function. Find at least
         // one span of each in the row.
@@ -5602,7 +5672,7 @@ mod tests {
             );
         }
         app.editor.publish_render_state();
-        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
         let row0 = &lines[0];
         // No magenta fg should appear on the "fn" span.
         for span in &row0.spans {
@@ -5659,7 +5729,7 @@ mod tests {
             );
         }
         app.editor.publish_render_state();
-        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
         let row0 = &lines[0];
         for span in &row0.spans {
             assert!(
@@ -5707,7 +5777,7 @@ mod tests {
             }],
         })));
         app.editor.publish_render_state();
-        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
         let row0 = &lines[0];
         for span in &row0.spans {
             // No DH-tinted span should appear.
@@ -5729,7 +5799,7 @@ mod tests {
             lattice_lsp::DiagnosticSeverity::ERROR,
             "boom",
         );
-        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
         // Row 0 has the error; expect the ■ glyph somewhere in
         // the rendered first span (the severity cell).
         let row0 = line_text(&lines[0]);
@@ -5755,7 +5825,7 @@ mod tests {
             lattice_lsp::DiagnosticSeverity::WARNING,
             "warn",
         );
-        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 3, 80);
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 3, 80);
         let row0 = line_text(&lines[0]);
         assert!(row0.contains('▲'), "expected warning glyph; got {row0:?}");
     }
@@ -5771,7 +5841,7 @@ mod tests {
             lattice_lsp::DiagnosticSeverity::HINT,
             "hint",
         );
-        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 3, 80);
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 3, 80);
         let row0 = line_text(&lines[0]);
         assert!(row0.contains('·'), "expected hint glyph; got {row0:?}");
     }
@@ -5795,7 +5865,7 @@ mod tests {
             lattice_lsp::DiagnosticSeverity::ERROR,
             "err",
         );
-        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 3, 80);
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 3, 80);
         let row0 = line_text(&lines[0]);
         // Error wins over warning on the same line for the
         // gutter glyph (most-severe semantics).
@@ -5858,7 +5928,7 @@ mod tests {
     fn no_lsp_attachment_no_severity_glyph() {
         let app = app_with("hello\n", 3);
         // No buffer_uri mapping -> no diagnostics queryable.
-        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 3, 80);
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 3, 80);
         let row0 = line_text(&lines[0]);
         assert!(!row0.contains('■'), "no LSP -> no error glyph: {row0:?}");
         assert!(!row0.contains('▲'), "no LSP -> no warn glyph: {row0:?}");
@@ -5876,7 +5946,7 @@ mod tests {
             lattice_lsp::DiagnosticSeverity::ERROR,
             "err",
         );
-        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 3, 80);
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 3, 80);
         // Walk every span on row 0; at least one span covering
         // bytes 6..11 must have UNDERLINED set.
         let mut found_underline = false;
@@ -5917,7 +5987,7 @@ mod tests {
             lattice_lsp::DiagnosticSeverity::WARNING,
             "unused",
         );
-        let lines = compose_visible_lines(&app, &app.editor.document.snapshot(), 5, 80);
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
         for (row, line) in lines.iter().enumerate() {
             for (i, span) in line.spans.iter().enumerate() {
                 assert!(

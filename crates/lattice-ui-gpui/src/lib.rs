@@ -285,6 +285,42 @@ impl GpuiApp {
         self.render_state.load().active_document.clone()
     }
 
+    /// Phase 5.8.AF.5 / Slice 3c.final.E.4: routing helpers for
+    /// editor mutations. Same shape as the TUI peer's
+    /// `App::mutate_editor` / `App::mutate_editor_with`. Pre-swap
+    /// runs the closure against `&mut self.editor` + publishes RS;
+    /// post-swap delegates to the actor handle. Forward-compatible
+    /// `Send + 'static` bounds.
+    pub fn mutate_editor<F>(&mut self, f: F)
+    where
+        F: FnOnce(&mut Editor) + Send + 'static,
+    {
+        f(&mut self.editor);
+        self.read_editor(move |e| e.publish_render_state());
+    }
+
+    /// Variant for closures that return a value.
+    pub fn mutate_editor_with<F, R>(&mut self, f: F) -> R
+    where
+        F: FnOnce(&mut Editor) -> R + Send + 'static,
+        R: Send + 'static,
+    {
+        let r = f(&mut self.editor);
+        self.read_editor(move |e| e.publish_render_state());
+        r
+    }
+
+    /// Read-only helper -- parallels `App::read_editor` on the TUI
+    /// peer. Pre-swap runs against in-process `Editor`; post-swap
+    /// will route through `editor_actor.with_editor(f)`.
+    pub fn read_editor<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&Editor) -> R + Send + 'static,
+        R: Send + 'static,
+    {
+        f(&self.editor)
+    }
+
     /// Phase 5.8.AF.5 / Slice 3c.atomic.K: publishing wrapper
     /// around `editor.viewport_height` writes. Parallel of the
     /// TUI peer's `App::set_viewport_height` (3c.atomic.D): the
@@ -294,16 +330,19 @@ impl GpuiApp {
     /// wrapper, a window resize would leave the published
     /// viewport / scroll one frame behind every time.
     pub fn set_viewport_height(&mut self, height: u32) {
-        self.editor.viewport_height = height.max(1);
-        self.editor.ensure_cursor_visible();
-        self.editor.publish_render_state();
+        // Slice 3c.final.C: route through dispatch so the
+        // mutation goes via `Action::SetViewportHeight`. Dispatch
+        // tail publishes RenderState; no manual publish needed.
+        self.dispatch_action(lattice_host::action::Action::SetViewportHeight(height));
     }
 
     /// Dismiss any active help popup. Phase 5.8.AE: routes
     /// through the host's `dismiss_popup` so popup state lands
-    /// uniformly across both peers.
+    /// uniformly across both peers. Slice 3c.final.C: now goes
+    /// through `Action::DismissPopup` instead of a direct host
+    /// call.
     pub fn dismiss_popup(&mut self) {
-        self.editor.dismiss_popup();
+        self.dispatch_action(lattice_host::action::Action::DismissPopup);
     }
 
     /// X2.6 compatibility shim: the background `highlights_worker`
@@ -328,18 +367,10 @@ impl GpuiApp {
     /// (5.8.P, 5.8.Q) — those features paint *within* the viewport
     /// and would mis-render if the cursor sat outside it.
     pub fn ensure_cursor_in_viewport(&mut self) {
-        // 3c.atomic.I: delegate to the host's `ensure_cursor_visible`,
-        // which has identical logic. Previously this method
-        // open-coded the scroll-clamp and bypassed any publish,
-        // so the per-frame mutation of `editor.scroll` was
-        // invisible to renderer-side reads through `ad()`. The
-        // host method is also bypass-publish (its in-dispatch
-        // callers rely on the dispatch tail to publish for them),
-        // so we add the publish here for this per-frame entry
-        // point. Same publish contract the TUI peer's
-        // `set_viewport_height` wrapper enforces (3c.atomic.D).
-        self.editor.ensure_cursor_visible();
-        self.editor.publish_render_state();
+        // Slice 3c.final.C: route through `Action::EnsureCursorVisible`
+        // so the per-frame mutation goes via dispatch. Tail
+        // publishes RS — no manual publish needed.
+        self.dispatch_action(lattice_host::action::Action::EnsureCursorVisible);
     }
 
     /// Run the renderer-side post-boot helpers the TUI peer
@@ -377,22 +408,27 @@ impl GpuiApp {
         // `editor.host_theme`. Body is currently a stub but
         // wiring is in place for the `ThemeChanged` cascade.
         self.rebuild_gpui_theme();
-        self.editor.rebuild_option_cache();
+        // Slice 3c.final.E.4: route through `mutate_editor`.
+        self.mutate_editor(|e| e.rebuild_option_cache());
         // 5.8.O: seed viewport_height with a sensible default so
         // the host-side cache key + cursor-scroll math work from
         // t=0. The default matches the 720×480 boot window at
         // roughly 16px per text row; a future slice hooks the
         // gpui window resize event to recompute on resize.
-        if self.editor.viewport_height == 0 {
-            self.editor.viewport_height = 30;
-        }
+        // Slice 3c.final.E.5: boot seed via mutate_editor.
+        self.mutate_editor(|e| {
+            if e.viewport_height == 0 {
+                e.viewport_height = 30;
+            }
+        });
+        let doc_id = self.ad().document_buffer_id;
         let signals = self
-            .editor
-            .activate_major_for_buffer_kind(self.editor.document_buffer_id, BufferKind::Document);
+            .mutate_editor_with(move |e| e.activate_major_for_buffer_kind(doc_id, BufferKind::Document));
         for signal in signals {
             self.handle_renderer_signal(signal);
         }
-        self.editor.publish_document_opened_for_active();
+        // Slice 3c.final.E.4: route through `mutate_editor`.
+        self.mutate_editor(|e| e.publish_document_opened_for_active());
         // 5.7.B.9: eager subsystem buffer seeding -- matches the
         // tail of the TUI peer's `App::new`. Creates the `*lsp*`
         // and `*messages*` Document buffers so `:b *lsp*` /
@@ -400,7 +436,8 @@ impl GpuiApp {
         // creating on first use. The subsystem-name +
         // mode-id knowledge lives host-side (no need for the
         // GPUI peer to depend on `lattice-lsp` directly).
-        self.editor.ensure_subsystem_buffers();
+        // Slice 3c.final.E.4: route through `mutate_editor`.
+        self.mutate_editor(|e| e.ensure_subsystem_buffers());
         // Phase 5.8.AA.u: load persistent TOML config from
         // `~/.editor.config/lattice/lattice.toml` (user) +
         // `<workspace>/.lattice/config.toml` (project). Reaches
@@ -411,11 +448,12 @@ impl GpuiApp {
         // fan through the standard signal handler so the GPUI-
         // typed theme cache rebuilds before the first paint.
         let workspace_root = Editor::workspace_root_from_cwd();
-        let signals = self.editor.load_persistent_config(workspace_root.as_deref());
+        let signals = self.mutate_editor_with(move |e| e.load_persistent_config(workspace_root.as_deref()));
         for signal in signals {
             self.handle_renderer_signal(signal);
         }
-        self.editor.apply_per_language_toml_overrides();
+        // Slice 3c.final.E.4: route through `mutate_editor`.
+        self.mutate_editor(|e| e.apply_per_language_toml_overrides());
     }
 
     /// Renderer-side handler for the [`RendererSignal`] stream
@@ -474,7 +512,7 @@ impl GpuiApp {
             // Phase 5.7.B.7; both peers route through the same
             // LSP supervisor walk + per-actor `did_change_configuration`.
             RendererSignal::LspConfigChanged(server_id) => {
-                self.editor.fan_out_did_change_configuration(&server_id);
+                self.mutate_editor(move |e| e.fan_out_did_change_configuration(&server_id));
             }
             // 5.7.B.10: surface the help content as a centered
             // popup overlay. Renderer-side state is just
@@ -500,7 +538,7 @@ impl GpuiApp {
                     title = %content.buffer.title,
                     "DisplayBuffer signal: routing through editor.display_buffer"
                 );
-                let (_id, mode_signals) = self.editor.display_buffer(content, category);
+                let (_id, mode_signals) = self.mutate_editor_with(move |e| e.display_buffer(content, category));
                 // Mode-activate signals don't recurse meaningfully
                 // for the popup paths (no further DisplayBuffer);
                 // drain through the handler so any ThemeChanged
@@ -560,10 +598,14 @@ impl GpuiApp {
             // the published state doesn't carry; they migrate
             // when the actor swap (3c.final) replaces `editor`
             // with a handle.
+            // Slice 3c.final.E.5: translator inputs via published
+            // substate (same pattern as TUI runtime.rs).
             let ad = self.ad();
+            let translator = self.render_state.load().translator.clone();
+            let insert_completion_open = self.render_state.load().completion.insert.is_some();
             let ctx = TranslateContext {
                 modal: ad.modal,
-                builtins: &self.editor.builtins,
+                builtins: &translator.builtins,
                 pending_count: ad.pending_count,
                 op_count: ad.op_count,
                 recording_macro: ad.macro_recording,
@@ -571,10 +613,10 @@ impl GpuiApp {
                 completion_open: ad.completion_open,
                 chord_capture: false,
                 picker_open: ad.picker_open,
-                insert_completion_open: self.editor.insert_completion.is_some(),
+                insert_completion_open,
                 snippet_active: ad.snippet_active,
-                keymap: &self.editor.keymap,
-                partial_chord: &self.editor.partial_chord,
+                keymap: &translator.keymap,
+                partial_chord: &translator.partial_chord,
             };
             lattice_host::input::translate(ctx, chord)
         };
@@ -607,7 +649,9 @@ impl GpuiApp {
         // already in place — `RendererSignal::ThemeChanged` fires
         // this method — so adding host fields later flows through
         // automatically.
-        let host = &self.editor.host_theme;
+        // Slice 3c.final.E.5: theme via published top-level field.
+        let host = self.render_state.load().theme;
+        let host = &host;
         let defaults = GpuiTheme::default();
 
         // Status line ↔ host's `pane_status_active` (mirrors the
@@ -661,7 +705,7 @@ impl GpuiApp {
         // migrate.
         match &action {
             Action::PickerAccept => {
-                let signals = self.editor.do_picker_accept();
+                let signals = self.mutate_editor_with(|e| e.do_picker_accept());
                 let mut outcome = DispatchOutcome::default();
                 outcome.consumed = true;
                 outcome.renderer_signals = signals.clone();
@@ -671,7 +715,7 @@ impl GpuiApp {
                 return outcome;
             }
             Action::PickerDismiss => {
-                let signals = self.editor.do_picker_dismiss();
+                let signals = self.mutate_editor_with(|e| e.do_picker_dismiss());
                 let mut outcome = DispatchOutcome::default();
                 outcome.consumed = true;
                 outcome.renderer_signals = signals.clone();
@@ -682,18 +726,18 @@ impl GpuiApp {
             }
             _ => {}
         }
-        let mut outcome = self.editor.dispatch(action);
+        let mut outcome = self.mutate_editor_with(move |e| e.dispatch(action));
         let mut pending: std::collections::VecDeque<Action> =
             outcome.next_actions.drain(..).collect();
         while let Some(follow_up) = pending.pop_front() {
-            let mut next_out = self.editor.dispatch(follow_up);
+            let mut next_out = self.mutate_editor_with(move |e| e.dispatch(follow_up));
             pending.extend(next_out.next_actions.drain(..));
             outcome.effects.append(&mut next_out.effects);
             outcome
                 .renderer_signals
                 .append(&mut next_out.renderer_signals);
             outcome.consumed |= next_out.consumed;
-            if self.editor.should_quit {
+            if self.render_state.load().lifecycle.should_quit {
                 // Mirrors `App::apply`'s mid-macro-quit semantic:
                 // a recorded `:q` short-circuits the rest of the
                 // chain so we don't keep firing actions against
@@ -758,7 +802,7 @@ impl GpuiApp {
         // see slice X1b (`docs/dev/operations/render-thread-
         // discipline-remediation.md` §X1b) for the wake-bridge
         // that closes that gap.
-        let tick_signals = self.editor.run_tick_pending();
+        let tick_signals = self.mutate_editor_with(|e| e.run_tick_pending());
         for signal in tick_signals {
             self.handle_renderer_signal(signal);
         }
@@ -814,76 +858,86 @@ impl GpuiApp {
             | Effect::DescribeKey { .. }
             | Effect::AppAction(_) => {}
             // Renderer-coupled effects whose body lives host-side.
-            Effect::QuitEditor { force } => self.editor.do_quit(force),
+            Effect::QuitEditor { force } => self.mutate_editor(move |e| e.do_quit(force)),
             Effect::OpenBuffer { path, force } => self.apply_open_buffer(path, force),
             // Phase 5.8.AD.3: `:w` save with full LSP fan-out
             // (BeforeSave / willSave / willSaveWaitUntil /
             // didSave / didCreateFiles) is now host-resident.
-            Effect::SaveBuffer { path } => self.editor.do_write(path),
+            Effect::SaveBuffer { path } => self.mutate_editor(move |e| e.do_write(path)),
             // Phase 5.8.AD.2: LSP commands whose bodies migrated.
             Effect::LspStatus => {
-                let signals = self.editor.do_lsp_status();
+                let signals = self.mutate_editor_with(|e| e.do_lsp_status());
                 for s in signals {
                     self.handle_renderer_signal(s);
                 }
             }
             Effect::LspRestart { server_id } => {
-                self.editor.do_lsp_restart(&server_id);
+                self.mutate_editor(move |e| e.do_lsp_restart(&server_id));
             }
-            Effect::LspExpandRegion => self.editor.do_lsp_expand_region(),
-            Effect::LspShrinkRegion => self.editor.do_lsp_shrink_region(),
+            Effect::LspExpandRegion => self.mutate_editor(|e| e.do_lsp_expand_region()),
+            Effect::LspShrinkRegion => self.mutate_editor(|e| e.do_lsp_shrink_region()),
             Effect::LspProgressCancel { server_id } => {
-                self.editor.do_lsp_progress_cancel(server_id.as_deref());
+                self.mutate_editor(move |e| e.do_lsp_progress_cancel(server_id.as_deref()));
             }
             Effect::SetLspLogLevel { server_id, level } => {
-                self.editor.do_set_lsp_log_level(server_id.as_deref(), &level);
+                self.mutate_editor(move |e| e.do_set_lsp_log_level(server_id.as_deref(), &level));
             }
             Effect::LspLogClear { server_id } => {
-                self.editor.do_lsp_log_clear(server_id.as_deref());
+                self.mutate_editor(move |e| e.do_lsp_log_clear(server_id.as_deref()));
             }
-            Effect::LspCodeAction => self.editor.do_lsp_code_action_request(),
-            Effect::LspFormat => self.editor.do_lsp_format_request(false),
-            Effect::LspFormatRange => self.editor.do_lsp_format_request(true),
-            Effect::LspRename { new_name } => self.editor.do_lsp_rename_request(&new_name),
-            Effect::LspIncomingCalls => self.editor.do_lsp_call_hierarchy_request(false),
-            Effect::LspOutgoingCalls => self.editor.do_lsp_call_hierarchy_request(true),
-            Effect::LspSupertypes => self.editor.do_lsp_type_hierarchy_request(false),
-            Effect::LspSubtypes => self.editor.do_lsp_type_hierarchy_request(true),
-            Effect::LspMoniker => self.editor.do_lsp_moniker_request(),
+            Effect::LspCodeAction => self.mutate_editor(|e| e.do_lsp_code_action_request()),
+            Effect::LspFormat => self.mutate_editor(|e| e.do_lsp_format_request(false)),
+            Effect::LspFormatRange => self.mutate_editor(|e| e.do_lsp_format_request(true)),
+            Effect::LspRename { new_name } => {
+                self.mutate_editor(move |e| e.do_lsp_rename_request(&new_name))
+            }
+            Effect::LspIncomingCalls => {
+                self.mutate_editor(|e| e.do_lsp_call_hierarchy_request(false))
+            }
+            Effect::LspOutgoingCalls => {
+                self.mutate_editor(|e| e.do_lsp_call_hierarchy_request(true))
+            }
+            Effect::LspSupertypes => {
+                self.mutate_editor(|e| e.do_lsp_type_hierarchy_request(false))
+            }
+            Effect::LspSubtypes => self.mutate_editor(|e| e.do_lsp_type_hierarchy_request(true)),
+            Effect::LspMoniker => self.mutate_editor(|e| e.do_lsp_moniker_request()),
             Effect::OpenLspLog { server_id } => {
-                self.editor.do_open_lsp_log(server_id.as_deref());
+                self.mutate_editor(move |e| e.do_open_lsp_log(server_id.as_deref()));
             }
             Effect::OpenLspTraceLog { server_id } => {
-                self.editor.do_open_lsp_trace_log(server_id.as_deref());
+                self.mutate_editor(move |e| e.do_open_lsp_trace_log(server_id.as_deref()));
             }
             Effect::ToggleLspTrace { server_id } => {
-                self.editor.do_toggle_lsp_trace(&server_id);
+                self.mutate_editor(move |e| e.do_toggle_lsp_trace(&server_id));
             }
-            Effect::LspServerLogListing => self.editor.do_lsp_server_log_listing(),
-            Effect::LspCodeLens => self.editor.do_lsp_code_lens_picker(),
-            Effect::LspColorPresentation => self.editor.do_lsp_color_presentation(),
+            Effect::LspServerLogListing => self.mutate_editor(|e| e.do_lsp_server_log_listing()),
+            Effect::LspCodeLens => self.mutate_editor(|e| e.do_lsp_code_lens_picker()),
+            Effect::LspColorPresentation => {
+                self.mutate_editor(|e| e.do_lsp_color_presentation())
+            }
             // Phase 5.8.AD.4: completion / signature / snippet
             // entry points are host-resident; both peers reach
             // them through the same dispatch.
-            Effect::LspSignatureHelp => self.editor.lsp_signature_help_request(),
-            Effect::LspComplete => self.editor.lsp_completion_request(),
-            Effect::SnippetExpand => self.editor.do_snippet_expand_at_cursor(),
+            Effect::LspSignatureHelp => self.mutate_editor(|e| e.lsp_signature_help_request()),
+            Effect::LspComplete => self.mutate_editor(|e| e.lsp_completion_request()),
+            Effect::SnippetExpand => self.mutate_editor(|e| e.do_snippet_expand_at_cursor()),
             // 5.5.LSP.5: symbol helpers host-side; both peers reach
             // them through the same dispatch.
-            Effect::LspDocumentSymbol => self.editor.lsp_document_symbol_request(),
+            Effect::LspDocumentSymbol => self.mutate_editor(|e| e.lsp_document_symbol_request()),
             Effect::LspWorkspaceSymbol { query } => {
-                self.editor.lsp_workspace_symbol_request(&query);
+                self.mutate_editor(move |e| e.lsp_workspace_symbol_request(&query));
             }
             // Phase 5.8.AD.5: describe / hover / tutor / customize
             // entries now host-resident.
             Effect::OpenHelpTopic { topic } => {
-                let signals = self.editor.do_open_help_topic(topic.as_deref());
+                let signals = self.mutate_editor_with(move |e| e.do_open_help_topic(topic.as_deref()));
                 for s in signals {
                     self.handle_renderer_signal(s);
                 }
             }
             Effect::OpenHover { markdown } => {
-                let signals = self.editor.do_open_hover(&markdown);
+                let signals = self.mutate_editor_with(move |e| e.do_open_hover(&markdown));
                 for s in signals {
                     self.handle_renderer_signal(s);
                 }
@@ -894,13 +948,13 @@ impl GpuiApp {
                 self.dismiss_popup();
             }
             Effect::Tutor { lesson } => {
-                let signals = self.editor.do_tutor(lesson);
+                let signals = self.mutate_editor_with(move |e| e.do_tutor(lesson));
                 for s in signals {
                     self.handle_renderer_signal(s);
                 }
             }
             Effect::OpenBufferPicker => {
-                let signals = self.editor.do_open_buffer_picker();
+                let signals = self.mutate_editor_with(|e| e.do_open_buffer_picker());
                 for s in signals {
                     self.handle_renderer_signal(s);
                 }
@@ -908,21 +962,21 @@ impl GpuiApp {
             // Phase 5.8.AF.3: `:messages` activates the
             // `*messages*` Document buffer host-side.
             Effect::OpenMessages => {
-                let signals = self.editor.do_open_messages();
+                let signals = self.mutate_editor_with(|e| e.do_open_messages());
                 for s in signals {
                     self.handle_renderer_signal(s);
                 }
             }
             // Phase 5.8.AF.3: diagnostic navigation host-side.
-            Effect::NextDiagnostic => self.editor.do_next_diagnostic(),
-            Effect::PrevDiagnostic => self.editor.do_prev_diagnostic(),
+            Effect::NextDiagnostic => self.mutate_editor(|e| e.do_next_diagnostic()),
+            Effect::PrevDiagnostic => self.mutate_editor(|e| e.do_prev_diagnostic()),
             // Phase 5.8.AF.3: `:reload-snippets` host-side.
-            Effect::ReloadSnippets => self.editor.do_reload_snippets(),
+            Effect::ReloadSnippets => self.mutate_editor(|e| e.do_reload_snippets()),
             // Phase 5.8.AF.3: `:toggle-mode` host-side. Returned
             // bool flags an unknown-mode-name miss (the host has
             // already echoed); GPUI has no further fan-out.
             Effect::ToggleMode { mode_name } => {
-                let _ = self.editor.toggle_mode_by_name(&mode_name);
+                let _ = self.mutate_editor_with(move |e| e.toggle_mode_by_name(&mode_name));
             }
             // Phase 5.8.AF.3: `:g` / `:v` host-side. Body effects
             // are drained through `apply_effect_gpui` so any
@@ -934,14 +988,15 @@ impl GpuiApp {
                 body,
             } => {
                 let mut out = lattice_host::dispatch::DispatchOutcome::default();
-                self.editor.do_global(&pattern, inverted, body.as_ref(), &mut out);
+                self.editor
+                    .do_global(&pattern, inverted, body.as_ref(), &mut out);
                 for eff in std::mem::take(&mut out.effects) {
                     self.apply_effect_gpui(eff);
                 }
             }
             // Phase 5.8.AF.3: `:picker <source>` host-side.
             Effect::OpenPicker { source, args } => {
-                let signals = self.editor.open_picker(source, args);
+                let signals = self.mutate_editor_with(move |e| e.open_picker(source, args));
                 for s in signals {
                     self.handle_renderer_signal(s);
                 }
@@ -949,19 +1004,19 @@ impl GpuiApp {
             // Phase 5.8.AD.1: oil + file-tree migrated host-side
             // so `:e .` / `:Oil` / `:Tree` work in GPUI.
             Effect::OpenOil { dir } => {
-                let signals = self.editor.do_open_oil(dir);
+                let signals = self.mutate_editor_with(move |e| e.do_open_oil(dir));
                 for s in signals {
                     self.handle_renderer_signal(s);
                 }
             }
             Effect::OpenFileTree { root } => {
-                let signals = self.editor.do_open_file_tree(root);
+                let signals = self.mutate_editor_with(move |e| e.do_open_file_tree(root));
                 for s in signals {
                     self.handle_renderer_signal(s);
                 }
             }
             Effect::CloseFileTree => {
-                let signals = self.editor.dismiss_file_tree();
+                let signals = self.mutate_editor_with(|e| e.dismiss_file_tree());
                 for s in signals {
                     self.handle_renderer_signal(s);
                 }
@@ -988,14 +1043,14 @@ impl GpuiApp {
     /// host already echoed).
     fn apply_open_buffer(&mut self, path: Option<std::path::PathBuf>, force: bool) {
         use lattice_host::dispatch::DoEditOutcome;
-        let outcome = self.editor.do_edit(path, force);
+        let outcome = self.mutate_editor_with(move |e| e.do_edit(path, force));
         match outcome {
             DoEditOutcome::NoFileName | DoEditOutcome::Failed => {}
             DoEditOutcome::Directory(dir) => {
                 // Phase 5.8.AD.1: oil is now host-side; route the
                 // directory `:e` through the same path the TUI peer
                 // uses.
-                let signals = self.editor.do_open_oil(Some(dir));
+                let signals = self.mutate_editor_with(move |e| e.do_open_oil(Some(dir)));
                 for s in signals {
                     self.handle_renderer_signal(s);
                 }

@@ -66,7 +66,7 @@ impl App {
     /// `activate_buffer_state` itself stays on App until F.5 lands
     /// mode lifecycle host-side.
     pub fn activate_document(&mut self, id: BufferId) {
-        if self.editor.activate_document(id) {
+        if self.mutate_editor_with(move |e| e.activate_document(id)) {
             self.activate_buffer_state();
         }
     }
@@ -84,7 +84,7 @@ impl App {
     /// wrapper runs `activate_buffer_state` (mode/syntax/option
     /// re-init still on App until F.5).
     pub fn activate_buffer(&mut self, id: BufferId) {
-        if self.editor.activate_buffer(id) {
+        if self.mutate_editor_with(move |e| e.activate_buffer(id)) {
             self.activate_buffer_state();
         }
         // 3c.atomic.B: `activate_buffer` mutates active buffer
@@ -93,24 +93,27 @@ impl App {
         // observe the pre-activation buffer until the next
         // dispatch tail. Publish here to keep render-state and
         // editor in sync.
-        self.editor.publish_render_state();
+        self.read_editor(move |e| e.publish_render_state());
     }
 
     /// 5.5.F.4.2: see [`lattice_host::dispatch::Editor::activate_file_tree`].
     /// No `activate_buffer_state` tail — tree buffers don't have
     /// document/syntax/options state to re-resolve.
     pub fn activate_file_tree(&mut self, id: BufferId) {
-        self.editor.activate_file_tree(id);
+        // Slice 3c.final.E.3: route through `mutate_editor`.
+        self.mutate_editor(move |e| e.activate_file_tree(id));
     }
 
     /// 5.5.F.4.2: see [`lattice_host::dispatch::Editor::activate_oil`].
     pub fn activate_oil(&mut self, id: BufferId) {
-        self.editor.activate_oil(id);
+        // Slice 3c.final.E.3: route through `mutate_editor`.
+        self.mutate_editor(move |e| e.activate_oil(id));
     }
 
     /// 5.5.F.4.2: see [`lattice_host::dispatch::Editor::activate_help_in_pane`].
     pub(super) fn activate_help_in_pane(&mut self, id: BufferId) {
-        self.editor.activate_help_in_pane(id);
+        // Slice 3c.final.E.3: route through `mutate_editor`.
+        self.mutate_editor(move |e| e.activate_help_in_pane(id));
     }
 
     // 5.5.F.4.3: `do_buffer_next` / `do_buffer_prev` relocated to
@@ -155,7 +158,7 @@ impl App {
         //     signals through `handle_renderer_signal`
         //   - `Failed`/`NoFileName` → host already echoed
         use lattice_host::dispatch::DoEditOutcome;
-        let outcome = self.editor.do_edit(path, force);
+        let outcome = self.mutate_editor_with(move |e| e.do_edit(path, force));
         match outcome {
             DoEditOutcome::NoFileName | DoEditOutcome::Failed => {}
             DoEditOutcome::Directory(dir) => self.do_open_oil(Some(dir)),
@@ -169,21 +172,15 @@ impl App {
         }
     }
 
-    /// P.2: push `path` onto the MRU `recent_files` list -- newest
-    /// first, deduped, capped at [`MAX_RECENT_FILES`]. Canonicalises
-    /// when possible so a path opened twice with different casing /
-    /// symlink routings still collapses to one entry. Called from
-    /// every `:edit` success branch.
+    /// P.2: push `path` onto the MRU `recent_files` list. Slice
+    /// 3c.final.E.5d: stale duplicate body removed -- the host
+    /// already owns the canonical impl
+    /// ([`lattice_host::dispatch::Editor::push_recent_file`]). This
+    /// renderer-side wrapper just routes through `mutate_editor` so
+    /// post-swap callers cross the actor boundary cleanly.
     pub(super) fn push_recent_file(&mut self, path: &std::path::Path) {
-        const MAX_RECENT_FILES: usize = 50;
-        let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-        // Drop any existing occurrence so the freshly-pushed entry
-        // floats to the front.
-        self.editor.recent_files.retain(|p| p != &canonical);
-        self.editor.recent_files.insert(0, canonical);
-        if self.editor.recent_files.len() > MAX_RECENT_FILES {
-            self.editor.recent_files.truncate(MAX_RECENT_FILES);
-        }
+        let path = path.to_path_buf();
+        self.mutate_editor(move |e| e.push_recent_file(&path));
     }
 
     /// `:w[rite] [path]` -- save the active buffer to disk. Oil
@@ -192,9 +189,8 @@ impl App {
     /// save_blocking / save_as_blocking against the document
     /// actor.
     pub(super) fn do_write(&mut self, path: Option<std::path::PathBuf>) {
-        // Phase 5.8.AD.3: body migrated to
-        // `lattice_host::dispatch::Editor::do_write`.
-        self.editor.do_write(path);
+        // Slice 3c.final.E.3: route through `mutate_editor`.
+        self.mutate_editor(move |e| e.do_write(path));
     }
 
     /// `:q[uit]` -- vim-style window close. With multiple panes
@@ -210,11 +206,11 @@ impl App {
         // pane-close path still routes through the App-side
         // wrapper because `do_close_pane` calls App's
         // `gc_unreferenced_panel_buffers` after the host close.
-        if self.editor.pane_tree.len() > 1 {
+        if self.panes().tree.len() > 1 {
             self.do_close_pane();
             return;
         }
-        self.editor.do_quit(force);
+        self.mutate_editor_with(move |e| e.do_quit(force));
     }
 
     // 5.5.H: `do_split_pane` App-side delegate retired (zero
@@ -226,7 +222,7 @@ impl App {
     /// a delegate because `App::do_quit` still calls it when the
     /// editor has >1 panes (quit-just-closes-pane semantics).
     pub(super) fn do_close_pane(&mut self) {
-        self.editor.do_close_pane();
+        self.mutate_editor_with(move |e| e.do_close_pane());
         self.gc_unreferenced_panel_buffers();
     }
 
@@ -257,9 +253,8 @@ impl App {
     /// archival-correct, but the *live* cursor is `self.editor.cursor`
     /// for every motion / scroll / search / render path.
     pub(super) fn load_active_pane(&mut self) {
-        // 5.5.F.4.1: body relocated to
-        // [`lattice_host::dispatch::Editor::load_active_pane`].
-        self.editor.load_active_pane();
+        // Slice 3c.final.E.3: route through `mutate_editor`.
+        self.mutate_editor(|e| e.load_active_pane());
     }
 
     // 5.5.F.1: `:ls` / `:buffers` content builder relocated to
@@ -279,7 +274,7 @@ impl App {
     /// snapshot.
     pub(super) fn replace_document_blocking(&self, document: Document) {
         // 5.8.AA.j: migrated to host.
-        self.editor.replace_document_blocking(document);
+        self.read_editor(move |e| e.replace_document_blocking(document));
     }
 
     pub(super) fn find_document_by_path(&self, path: &std::path::Path) -> Option<BufferId> {
@@ -301,16 +296,16 @@ impl App {
     /// (the visible symptom: opening `:Tree` and pressing `q`
     /// returned to the document with no syntax colours).
     pub(super) fn snapshot_active_document(&mut self) {
-        // 5.5.F.4.1: body relocated to
-        // [`lattice_host::dispatch::Editor::snapshot_active_document`].
-        self.editor.snapshot_active_document();
+        // Slice 3c.final.E.3: route through `mutate_editor`.
+        self.mutate_editor(|e| e.snapshot_active_document());
     }
 
     /// 5.5.F.5.5: see [`lattice_host::dispatch::Editor::activate_buffer_state`].
     /// Wrapper fans host-returned `RendererSignal`s through
     /// [`Self::handle_renderer_signal`].
     pub(super) fn activate_buffer_state(&mut self) {
-        let signals = self.editor.activate_buffer_state();
+        // Slice 3c.final.E.3: route through `mutate_editor_with`.
+        let signals = self.mutate_editor_with(|e| e.activate_buffer_state());
         for sig in signals {
             self.handle_renderer_signal(sig);
         }
@@ -320,7 +315,7 @@ impl App {
     /// stepping. The active pane's buffer_id is the source of
     /// truth (the active pane is what the user sees).
     pub(super) fn active_pane_buffer_id(&self) -> BufferId {
-        self.editor.active_pane_buffer_id()
+        self.read_editor(move |e| e.active_pane_buffer_id())
     }
 
     /// Copy the App's hot-path cursor / scroll into the active
@@ -334,11 +329,8 @@ impl App {
     /// (and the registry copy for help) so the archival state stays
     /// current; live state always lives on `self`.
     pub(super) fn snapshot_active_pane(&mut self) {
-        // 5.5.F.4.1: body relocated to
-        // [`lattice_host::dispatch::Editor::snapshot_active_pane`].
-        // Delegate retained so the ~12 ui-tui call sites compile
-        // unchanged across the migration window.
-        self.editor.snapshot_active_pane();
+        // Slice 3c.final.E.3: route through `mutate_editor`.
+        self.mutate_editor(|e| e.snapshot_active_pane());
     }
 
     // 5.5.E.7.7: `publish_document_changed` wrapper retired -- all
@@ -381,7 +373,7 @@ impl App {
         // `name` slot carries synthetic labels for buffers without
         // a physical file (`*lsp*`, `*messages*`, ...); for
         // path-backed Documents it stays None and the path wins.
-        if !self.editor.buffers.contains_document(pane.buffer_id) {
+        if !self.buffers().registry.contains_document(pane.buffer_id) {
             return "[no buffer]".to_string();
         }
         let label = self
@@ -389,7 +381,7 @@ impl App {
             .buffers
             .document_path(pane.buffer_id)
             .map(|p| p.display().to_string())
-            .or_else(|| self.editor.buffers.name_of(pane.buffer_id))
+            .or_else(|| self.buffers().registry.name_of(pane.buffer_id))
             .unwrap_or_else(|| "[no name]".to_string());
         // Synthetic buffers (`*lsp*`, `*messages*`, ...) carry a
         // name but no path; their content is streamed by the
@@ -400,8 +392,8 @@ impl App {
         // synthetic ones -- the user can't "save" a streaming
         // buffer's current state because new records keep
         // arriving. Suppress the marker for synthetics.
-        let synthetic = self.editor.buffers.name_of(pane.buffer_id).is_some();
-        let dirty = if !synthetic && self.editor.buffers.document_dirty(pane.buffer_id) {
+        let synthetic = self.buffers().registry.name_of(pane.buffer_id).is_some();
+        let dirty = if !synthetic && self.buffers().registry.document_dirty(pane.buffer_id) {
             " [+]"
         } else {
             ""
@@ -415,8 +407,10 @@ impl App {
     /// Source-link dispatch. Pushes the pre-jump cursor onto
     /// position history with `PluginPush` so `<C-o>` walks back.
     pub(super) fn jump_to_file_line_col(&mut self, path: &std::path::Path, line: u32, col: u32) {
-        // Phase 5.8.AD.6: body migrated.
-        let signals = self.editor.jump_to_file_line_col(path, line, col);
+        // Slice 3c.final.E.3: clone path for the `Send + 'static`
+        // closure, then route through `mutate_editor_with`.
+        let path = path.to_path_buf();
+        let signals = self.mutate_editor_with(move |e| e.jump_to_file_line_col(&path, line, col));
         for s in signals {
             self.handle_renderer_signal(s);
         }
@@ -457,8 +451,8 @@ impl App {
     /// sync the two at boundaries -- same pattern as Document's
     /// `syntax`/`folds` snapshots.
     pub(crate) fn open_help_in_pane(&mut self, content: HelpContent) -> BufferId {
-        // Phase 5.8.AE: body migrated.
-        let (id, signals) = self.editor.open_help_in_pane(content);
+        // Slice 3c.final.E.3: route through `mutate_editor_with`.
+        let (id, signals) = self.mutate_editor_with(move |e| e.open_help_in_pane(content));
         for s in signals {
             self.handle_renderer_signal(s);
         }
@@ -469,7 +463,8 @@ impl App {
     /// [`lattice_host::editor::Editor::seed_empty_document_locals`]
     /// (Phase 5.7.B.9 migration).
     pub(super) fn seed_empty_document_locals(&mut self, buffer_id: BufferId) {
-        self.editor.seed_empty_document_locals(buffer_id);
+        // Slice 3c.final.E.3: route through `mutate_editor`.
+        self.mutate_editor(move |e| e.seed_empty_document_locals(buffer_id));
     }
 
     /// M.3.2.c.4 mirror for the active document: copy the App's
@@ -568,11 +563,8 @@ impl App {
     }
 
     pub(super) fn save_blocking(&mut self) -> Result<std::path::PathBuf, RuntimeError> {
-        // Phase 5.8.AD.3: body migrated to
-        // `lattice_host::dispatch::Editor::save_blocking` along
-        // with the full BeforeSave / willSave / willSaveWaitUntil /
-        // didSave / didCreateFiles fan-out chain.
-        self.editor.save_blocking()
+        // Slice 3c.final.E.3: route through `mutate_editor_with`.
+        self.mutate_editor_with(|e| e.save_blocking())
     }
 
     // Phase 5.8.AD.3: `fire_did_create_files_notifications` +
@@ -603,7 +595,7 @@ impl App {
     pub(super) fn save_as_blocking(&self, path: std::path::PathBuf) -> Result<(), RuntimeError> {
         // Phase 5.8.AD.3: body migrated to
         // `lattice_host::dispatch::Editor::save_as_blocking`.
-        self.editor.save_as_blocking(path)
+        self.read_editor(move |e| e.save_as_blocking(path))
     }
 
     // 5.5.G.4: `do_redraw_screen` migrated to

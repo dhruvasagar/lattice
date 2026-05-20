@@ -33,14 +33,23 @@ impl App {
     /// immediately observe the result through
     /// `render_state.syntax.visible_spans.load()`.
     pub fn refresh_highlights(&mut self) {
+        // Slice 3c.final.E.1: read through App-cached Arcs
+        // (`self.render_state` / `self.syntax_visible_spans_cell`)
+        // instead of `self.editor.X`. Same underlying cells today
+        // (cloned at App::new); post-swap the same Arcs come from
+        // the actor handle — readers stay unchanged.
+        //
         // Publish first so the worker reads the latest viewport /
         // scroll / fold-hash / text-version. (Production loop
         // publishes once per dispatch; tests calling this in
-        // isolation need the explicit publish.)
-        self.editor.publish_render_state();
+        // isolation need the explicit publish.) The
+        // `publish_render_state` call still goes through `self.editor`
+        // pre-swap; the final E.swap slice routes it through the
+        // actor's barrier.
+        self.read_editor(move |e| e.publish_render_state());
         lattice_host::highlights_worker::recompute(
-            &self.editor.render_state,
-            &self.editor.syntax_visible_spans_cell,
+            &self.render_state,
+            &self.syntax_visible_spans_cell,
         );
     }
 
@@ -56,7 +65,8 @@ impl App {
             return Vec::new();
         }
         let offset = (line - scroll) as usize;
-        let rs = self.editor.render_state.load_full();
+        // Slice 3c.final.E.1: read via the App-cached RenderState Arc.
+        let rs = self.render_state.load_full();
         let spans = rs.syntax.visible_spans.load();
         spans
             .spans
@@ -73,7 +83,11 @@ impl App {
     /// caller's `+1` then yields a non-empty range so
     /// `highlight_lines` doesn't short-circuit.
     pub(crate) fn visible_buffer_line_extent(&self, scroll: u32, height: u32) -> u32 {
-        let total_lines = self.editor.document.snapshot().buffer.line_count();
+        // Slice 3c.final.E.1: read snapshot via the published
+        // `ActiveDocumentRenderState` instead of
+        // `self.editor.document.snapshot()`. Same Arc — `ad.snapshot`
+        // is captured at publish time from the same handle.
+        let total_lines = self.ad().snapshot.buffer.line_count();
         if total_lines == 0 {
             return scroll;
         }
@@ -116,9 +130,9 @@ impl App {
     /// fall through to the worker cell -- a single parse covers
     /// both panes.
     pub fn refresh_pane_highlights(&mut self) {
-        // 5.8.R: cache-rebuild body migrated to
-        // `lattice_host::editor::Editor::refresh_pane_highlights`
-        // so the GPUI peer reaches the same path.
-        self.editor.refresh_pane_highlights();
+        // Slice 3c.final.C: route through `Action::RefreshPaneHighlights`
+        // so the per-frame call doesn't mutate editor state
+        // directly. Dispatch tail publishes RS.
+        self.apply(lattice_host::action::Action::RefreshPaneHighlights);
     }
 }

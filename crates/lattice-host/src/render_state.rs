@@ -77,6 +77,22 @@ pub struct RenderState {
     pub messages: Arc<MessagesRenderState>,
     pub modeline: Arc<ModelineRenderState>,
     pub diagnostics: Arc<DiagnosticsRenderState>,
+    /// Phase 5.8.AF.5 / Slice 3c.final.B (group 5): translator
+    /// inputs — published so the renderer's input loop can build
+    /// a `TranslateContext` from owned snapshots instead of
+    /// `&'a` borrows that tie it to `Editor`'s lifetime.
+    pub translator: Arc<TranslatorRenderState>,
+    /// Phase 5.8.AF.5 / Slice 3c.final.B (group 6): renderer
+    /// lifecycle flags (should_quit, pending_redraw,
+    /// terminal_width). Carries the per-tick "renderer should
+    /// notice this" signals that the main loop reads before
+    /// composing the next frame.
+    pub lifecycle: Arc<LifecycleRenderState>,
+    /// Phase 5.8.AF.5 / Slice 3c.final.B (group 6): resolved
+    /// host theme. `Theme` is `Copy` (every field is `Copy`),
+    /// so the publish is a plain struct move — no `Arc`
+    /// indirection needed.
+    pub theme: crate::ui::theme::Theme,
 }
 
 impl Default for RenderState {
@@ -93,6 +109,9 @@ impl Default for RenderState {
             messages: Arc::new(MessagesRenderState::default()),
             modeline: Arc::new(ModelineRenderState::default()),
             diagnostics: Arc::new(DiagnosticsRenderState::default()),
+            translator: Arc::new(TranslatorRenderState::default()),
+            lifecycle: Arc::new(LifecycleRenderState::default()),
+            theme: crate::ui::theme::Theme::default(),
         }
     }
 }
@@ -178,6 +197,40 @@ pub struct ActiveDocumentRenderState {
     /// Gates Tab / S-Tab to drive `next_tabstop` / `prev_tabstop`
     /// instead of falling back to insert-completion / outdent.
     pub snippet_active: bool,
+    /// Phase 5.8.AF.5 / Slice 3c.final.B (group 2): folds for
+    /// the active document. Renderers read
+    /// `rs.active_document.folds` instead of `app.editor.folds`.
+    /// `Arc<[Fold]>` so subsequent reader frames share the
+    /// allocation; typical fold count is <20 so cloning at
+    /// publish-time is sub-µs.
+    pub folds: std::sync::Arc<[lattice_core::Fold]>,
+    /// Hlsearch matches in the active document. Each entry is a
+    /// `ProtoRange` covering one occurrence; the renderer paints
+    /// every range with the softer match bg. Cap is bounded by
+    /// `:set max_hits` (default 1000) so the clone is bounded.
+    pub all_matches: std::sync::Arc<[lattice_protocol::position::Range]>,
+    /// Primary search hit the cursor sits on (painted with the
+    /// strongest match colour). `None` outside Search mode.
+    pub current_match: Option<lattice_protocol::position::Range>,
+    /// Resolved visual selection range (anchor → head, normalised).
+    /// `None` when not in Visual. Mirrors the host's
+    /// `Editor::visual_selection_range()` helper so renderers don't
+    /// need to reach for that method through `&Editor`.
+    pub visual_range: Option<lattice_protocol::position::Range>,
+    /// `:s/pat/repl/...` preview overlay. `None` while no
+    /// substitute is being typed. The renderer paints the
+    /// match ranges (and replacement text, if any) with the
+    /// destructive-preview colour. `Arc` for cheap cloning.
+    pub substitute_preview: Option<std::sync::Arc<crate::state::SubstitutePreview>>,
+    /// Active document's selection set (multi-cursor / linewise /
+    /// blockwise). Already an `Arc` on `DocumentHandle` so this
+    /// is one Arc bump.
+    pub selections: std::sync::Arc<lattice_protocol::SelectionSet>,
+    /// Hot-path option cache (typed-options resolved values).
+    /// `Copy` so the publish is a plain struct move. Used heavily
+    /// by per-row paint (whitespace glyphs, current-line highlight,
+    /// line-number style).
+    pub option_cache: crate::state::OptionCache,
 }
 
 impl Default for ActiveDocumentRenderState {
@@ -202,6 +255,15 @@ impl Default for ActiveDocumentRenderState {
             completion_open: false,
             picker_open: false,
             snippet_active: false,
+            folds: Arc::from(Vec::<lattice_core::Fold>::new().into_boxed_slice()),
+            all_matches: Arc::from(
+                Vec::<lattice_protocol::position::Range>::new().into_boxed_slice(),
+            ),
+            current_match: None,
+            visual_range: None,
+            substitute_preview: None,
+            selections: Arc::new(lattice_protocol::SelectionSet::default()),
+            option_cache: crate::state::OptionCache::default(),
         }
     }
 }
@@ -216,20 +278,59 @@ impl Default for ActiveDocumentRenderState {
 /// [`ActiveDocumentRenderState`]; this sub-state is touched on
 /// registry changes only.
 ///
-/// Slice 3a: empty placeholder. Slice 3b populates with:
-/// - the listed/unlisted buffer index (`:ls` + buffer picker),
-/// - `BufferFlags` per entry,
-/// - the active buffer id.
+/// Phase 5.8.AF.5 / Slice 3c.final.B (group 1): populated.
+/// `registry` carries a clone of the editor's [`BufferRegistry`]
+/// — the registry is internally `Arc<Mutex<...>>`-backed so the
+/// clone is one Arc bump and the inner lookups (`document_handle`,
+/// `name_of`, `with_oil`, `flags_of`, `kind_of`) see the latest
+/// editor state without any further publication.
+///
+/// `uris` mirrors `Editor::buffer_uris` — published as a fresh
+/// `HashMap` clone per publish since the editor's field is owned
+/// directly. The renderer reads `rs.buffers.uris.get(&id)` instead
+/// of `app.editor.buffer_uris.get(&id)`.
 #[derive(Debug, Default, Clone)]
-pub struct BuffersRenderState {}
+pub struct BuffersRenderState {
+    /// Cloned [`crate::buffer_registry::BufferRegistry`]. Wait-free
+    /// to construct (one Arc bump); inner methods take their own
+    /// lock for each call.
+    pub registry: crate::buffer_registry::BufferRegistry,
+    /// LSP URI per buffer id. Published fresh each tick. For ~10
+    /// buffers the clone is sub-µs; if the registry grows large,
+    /// migrate to `Arc<HashMap<...>>` on the editor side to
+    /// collapse the clone into one Arc bump.
+    pub uris: std::sync::Arc<std::collections::HashMap<lattice_core::BufferId, lattice_lsp::Uri>>,
+}
 
 /// Pane tree's render-side projection.
 ///
-/// Slice 3a: empty placeholder. Slice 3b populates with the
-/// pane layout (split tree), active pane id, per-pane buffer
-/// reference, status-line label cache.
-#[derive(Debug, Default, Clone)]
-pub struct PanesRenderState {}
+/// Phase 5.8.AF.5 / Slice 3c.final.B (group 1): populated.
+/// Carries a clone of the editor's [`PaneTree`] inside an `Arc`
+/// so subsequent reader frames share the same allocation.
+/// Renderers read `rs.panes.tree.X()` instead of
+/// `app.editor.pane_tree.X()`; every existing `PaneTree` method
+/// (`root`, `leaves`, `active`, `active_index`, `compute_rects`)
+/// flows through unchanged.
+///
+/// `Arc::new(self.pane_tree.clone())` on publish is the simple
+/// shape; the `PaneTree::clone` cost is bounded by the tree depth
+/// (one `Vec<PaneState>` + a handful of `Box<PaneNode>` allocations
+/// for splits). For typical 1–3 pane layouts this is sub-µs.
+/// Optimisation path (post-1.0): keep an `Arc<PaneTree>` on the
+/// editor side and `Arc::make_mut` on mutation so publish collapses
+/// to one Arc bump.
+#[derive(Debug, Clone)]
+pub struct PanesRenderState {
+    pub tree: std::sync::Arc<lattice_core::ui::pane::PaneTree>,
+}
+
+impl Default for PanesRenderState {
+    fn default() -> Self {
+        Self {
+            tree: std::sync::Arc::new(lattice_core::ui::pane::PaneTree::default()),
+        }
+    }
+}
 
 /// LSP feature data the renderer reads beyond diagnostics.
 ///
@@ -291,6 +392,25 @@ pub struct LspRenderState {
     /// the `previousResultId` short-circuit.
     pub pull_diagnostics:
         crate::per_buffer_cache::PerBufferCache<lattice_lsp::cache::LspPullDiagnosticsCache>,
+    /// Phase 5.8.AF.5 / Slice 3c.final.B (group 4): LSP `$/progress`
+    /// updates keyed by `(server_name, token)`. Published as a fresh
+    /// `Arc<HashMap<...>>` per tick — typical concurrent progress
+    /// items < 10 so the clone is sub-µs. Renderers read
+    /// `rs.lsp.progress.iter()` to populate the modeline progress
+    /// strip instead of `app.editor.lsp_progress.iter()`.
+    pub progress: std::sync::Arc<
+        std::collections::HashMap<
+            (std::sync::Arc<str>, String),
+            lattice_lsp::LspProgressUpdate,
+        >,
+    >,
+    /// Slice 3c.final.B (group 4): LSP supervisor handle clone.
+    /// The handle is internally `Arc<ArcSwap<SupervisorSnapshot>>`-
+    /// backed so `Clone` is one Arc bump and `servers_for(uri)`
+    /// stays wait-free. Renderers query
+    /// `rs.lsp.supervisor.servers_for(&uri)` for the modeline's
+    /// `[lsp:rust]` indicator instead of `app.editor.lsp.servers_for(...)`.
+    pub supervisor: lattice_lsp::LspSupervisorHandle,
 }
 
 /// Tree-sitter highlights + visible-range cache.
@@ -411,24 +531,70 @@ pub struct VisibleSpans {
 
 /// Active picker's render-side projection.
 ///
-/// Slice 3a: empty placeholder. Slice 3b populates with the
-/// candidate list, selection index, query, preview origin.
+/// Phase 5.8.AF.5 / Slice 3c.final.B (group 3): populated.
+/// Carries an `Arc<Picker>` clone when a picker is open. The
+/// renderer reads candidate list, selection index, query, title
+/// through this clone instead of `app.editor.picker.as_ref()`.
+/// `Picker` is large enough that the publish path goes through
+/// `Arc::new(picker.clone())` per tick when open; the typical
+/// candidate count keeps the clone sub-µs.
 #[derive(Debug, Default, Clone)]
-pub struct PickerRenderState {}
+pub struct PickerRenderState {
+    pub state: Option<std::sync::Arc<lattice_picker::Picker>>,
+}
 
-/// Insert-completion popup's render-side projection.
+/// Insert-completion + cmdline-completion popup state.
 ///
-/// Slice 3a: empty placeholder. Slice 3b populates with
-/// candidate list, selection, side-docs body.
+/// Phase 5.8.AF.5 / Slice 3c.final.B (group 3): populated.
+/// Two slots — `insert` for the in-buffer ghost popup
+/// (`InsertCompletionState`) and `state` for the cmdline
+/// completion popup (`CompletionState`). Both `Arc`-wrapped so
+/// reader frames share the allocation; both `None` when no
+/// popup is open.
 #[derive(Debug, Default, Clone)]
-pub struct CompletionRenderState {}
+pub struct CompletionRenderState {
+    pub insert: Option<std::sync::Arc<lattice_completion::InsertCompletionState>>,
+    pub state: Option<std::sync::Arc<crate::state::CompletionState>>,
+}
 
 /// Help / hover / signature popup's render-side projection.
 ///
-/// Slice 3a: empty placeholder. Slice 3b populates with the
-/// active popup buffer id, placement, highlights cache.
-#[derive(Debug, Default, Clone)]
-pub struct PopupRenderState {}
+/// Phase 5.8.AF.5 / Slice 3c.final.B (group 3): populated.
+/// `buffer_id` mirrors `Editor::popup_buffer` (the active popup's
+/// id, `None` when no popup is open). `help` carries an
+/// `Arc<HelpBuffer>` snapshot of the popup content. `placement`
+/// echoes `Editor::popup_placement`. `help_highlights` is the
+/// per-line markdown highlight span list seeded into the popup
+/// buffer's locals.
+#[derive(Debug, Clone)]
+pub struct PopupRenderState {
+    pub buffer_id: Option<lattice_core::BufferId>,
+    pub help: Option<std::sync::Arc<lattice_help::HelpBuffer>>,
+    pub help_highlights: std::sync::Arc<[Vec<lattice_syntax::StyledSpan>]>,
+    pub placement: lattice_core::ui::popup::PopupPlacement,
+}
+
+impl Default for PopupRenderState {
+    fn default() -> Self {
+        Self {
+            buffer_id: None,
+            help: None,
+            help_highlights: std::sync::Arc::from(
+                Vec::<Vec<lattice_syntax::StyledSpan>>::new().into_boxed_slice(),
+            ),
+            placement: lattice_core::ui::popup::PopupPlacement::default(),
+        }
+    }
+}
+
+impl PopupRenderState {
+    /// Convenience: `true` while a popup is open. Equivalent to
+    /// `buffer_id.is_some()` but reads cleaner at call sites that
+    /// previously gated on `app.editor.popup_buffer.is_some()`.
+    pub fn is_open(&self) -> bool {
+        self.buffer_id.is_some()
+    }
+}
 
 /// `*messages*` buffer + echo line state.
 ///
@@ -443,6 +609,56 @@ pub struct MessagesRenderState {}
 /// Slice 3a: empty placeholder. Slice 3b populates.
 #[derive(Debug, Default, Clone)]
 pub struct ModelineRenderState {}
+
+/// Renderer lifecycle flags published per tick.
+///
+/// Phase 5.8.AF.5 / Slice 3c.final.B (group 6). Carries the
+/// three per-tick "renderer should notice this" signals:
+///
+/// - `should_quit` — set by `:q` / `:wq` / `:qa!` (host-side
+///   `Editor::should_quit`). The TUI's `main_loop` reads this at
+///   the top of every iteration to break out; the GPUI peer's
+///   `on_key_down` reads it after dispatch to call `cx.quit()`.
+/// - `pending_redraw` — set by `<C-l>` (`RedrawScreen`) so the
+///   TUI peer clears the terminal buffer on the next frame. The
+///   field is "renderer-consumed" — a separate
+///   `acknowledge_pending_redraw` action (slice C target) is
+///   needed to clear it from the renderer side once consumed.
+/// - `terminal_width` — last reported terminal column count from
+///   the TUI peer. Mirrored here so any future renderer-thread
+///   reader sees the published value instead of the live
+///   `Editor::terminal_width` field.
+#[derive(Debug, Default, Clone)]
+pub struct LifecycleRenderState {
+    pub should_quit: bool,
+    pub pending_redraw: bool,
+    pub terminal_width: Option<u16>,
+}
+
+/// Translator inputs for the renderer's input loop.
+///
+/// Phase 5.8.AF.5 / Slice 3c.final.B (group 5) — closes the
+/// audit's slice-D holdout for the `TranslateContext` `&'a` borrow
+/// batch (`builtins`, `keymap`, `partial_chord`). The translator
+/// runs on the renderer thread; in the slice-E end-state it can
+/// no longer borrow through `&Editor`. Publishing these inputs as
+/// owned/Arc-backed values lets `runtime.rs` build a
+/// `TranslateContext` from a single snapshot load per keystroke.
+///
+/// All three fields are cheap to publish:
+/// - `builtins` is `Copy` so the field is a plain move.
+/// - `keymap` is an `Arc<KeymapRegistry>`-backed handle; `Clone`
+///   is one Arc bump and `resolve()` stays wait-free via the
+///   handle's internal `ArcSwap`.
+/// - `partial_chord` is small (typically 0–2 entries during a
+///   chord sequence) so the per-publish `Arc<[KeyChord]>` clone
+///   is sub-µs.
+#[derive(Debug, Default, Clone)]
+pub struct TranslatorRenderState {
+    pub builtins: lattice_grammar::builtins::Builtins,
+    pub keymap: crate::keymap_registry::KeymapHandle,
+    pub partial_chord: std::sync::Arc<[crate::chord::KeyChord]>,
+}
 
 /// Diagnostics — the proof-of-life sub-state for Slice 3a.
 ///
@@ -702,5 +918,242 @@ mod tests {
         assert!(!std::sync::Arc::ptr_eq(&a.diagnostics, &b.diagnostics));
         assert!(!std::sync::Arc::ptr_eq(&a.lsp, &b.lsp));
         assert!(!std::sync::Arc::ptr_eq(&a.popup, &b.popup));
+    }
+
+    /// Slice 3c.final.B (group 1): publishing a `RenderState`
+    /// while the editor holds a multi-pane tree exposes the
+    /// tree through `rs.panes.tree`. Renderers reading the
+    /// snapshot see the same `active_index`, `leaves()` count,
+    /// and `root` shape they used to read from
+    /// `app.editor.pane_tree.X()` directly.
+    #[test]
+    fn panes_substate_reflects_pane_tree() {
+        use lattice_core::ui::pane::{PaneState, PaneTree, SplitOrientation};
+        let mut editor = Editor::default();
+        editor.pane_tree = PaneTree::single(PaneState::default());
+        editor.pane_tree.split_active(SplitOrientation::Vertical);
+        editor.pane_tree.set_active(1);
+        editor.publish_render_state();
+        let rs = editor.render_state.load_full();
+        assert_eq!(
+            rs.panes.tree.leaves().len(),
+            2,
+            "renderer must see both leaves through `rs.panes.tree.leaves()`"
+        );
+        assert_eq!(
+            rs.panes.tree.active_index(),
+            1,
+            "renderer must see the same active_index as the editor"
+        );
+    }
+
+    /// Slice 3c.final.B (group 1): the buffers sub-state's
+    /// registry clone routes the renderer's `name_of` / kind
+    /// queries to the same underlying buffer-id index the editor
+    /// owns. Writing into the editor's registry is observable
+    /// through the published clone without re-publishing
+    /// (registry is `Arc<Mutex<...>>`-backed).
+    #[test]
+    fn buffers_substate_registry_clone_observes_editor_writes() {
+        use crate::buffer_registry::{BufferData, BufferEntry};
+        use crate::buffers::BufferFlags;
+        use crate::file_tree::FileTreeBuffer;
+        use lattice_core::{BufferId, BufferKind};
+        let editor = Editor::default();
+        editor.publish_render_state();
+        // Insert via the editor's registry handle, then read
+        // through the published render-state's clone. FileTree
+        // is the simplest constructible variant for this assert.
+        let inserted_id = BufferId(424242);
+        editor.buffers.insert(BufferEntry {
+            id: inserted_id,
+            name: Some("*scratch-test*".to_string()),
+            flags: BufferFlags::default(),
+            data: BufferData::FileTree(FileTreeBuffer {
+                id: inserted_id,
+                content: lattice_core::Buffer::empty(),
+                cursor: lattice_protocol::position::Position::ZERO,
+                scroll: 0,
+            }),
+        });
+        let rs = editor.render_state.load_full();
+        assert_eq!(
+            rs.buffers.registry.kind_of(inserted_id),
+            Some(BufferKind::FileTree),
+            "registry clone observes the post-publish insert"
+        );
+        assert_eq!(
+            rs.buffers.registry.name_of(inserted_id).as_deref(),
+            Some("*scratch-test*"),
+        );
+    }
+
+    /// Slice 3c.final.B (group 2): mutating editor.folds and
+    /// publishing exposes the same fold list through
+    /// `rs.active_document.folds`.
+    #[test]
+    fn active_document_folds_reflects_editor_state() {
+        use lattice_core::Fold;
+        let mut editor = Editor::default();
+        editor.folds.push(Fold {
+            start_line: 5,
+            end_line: 10,
+            closed: true,
+            identity: None,
+        });
+        editor.folds.push(Fold {
+            start_line: 20,
+            end_line: 30,
+            closed: false,
+            identity: None,
+        });
+        editor.publish_render_state();
+        let rs = editor.render_state.load_full();
+        assert_eq!(rs.active_document.folds.len(), 2);
+        assert_eq!(rs.active_document.folds[0].start_line, 5);
+        assert!(rs.active_document.folds[0].closed);
+        assert_eq!(rs.active_document.folds[1].end_line, 30);
+        assert!(!rs.active_document.folds[1].closed);
+    }
+
+    /// Slice 3c.final.B (group 2): hlsearch matches /
+    /// current_match / option_cache round-trip through the
+    /// published snapshot.
+    #[test]
+    fn active_document_search_and_options_reflect_editor_state() {
+        use lattice_protocol::position::{Position, Range};
+        let mut editor = Editor::default();
+        let r = Range::new(Position::new(2, 0), Position::new(2, 5));
+        editor.all_matches.push(r);
+        editor.current_match = Some(r);
+        editor.option_cache.show_whitespace = true;
+        editor.option_cache.current_line_highlight = true;
+        editor.publish_render_state();
+        let rs = editor.render_state.load_full();
+        assert_eq!(rs.active_document.all_matches.len(), 1);
+        assert_eq!(rs.active_document.all_matches[0], r);
+        assert_eq!(rs.active_document.current_match, Some(r));
+        assert!(rs.active_document.option_cache.show_whitespace);
+        assert!(rs.active_document.option_cache.current_line_highlight);
+    }
+
+    /// Slice 3c.final.B (group 4): editor.lsp_progress is
+    /// published as a fresh `Arc<HashMap<...>>` per tick. Mutating
+    /// the editor's map and re-publishing makes the new entry
+    /// visible through `rs.lsp.progress`.
+    /// Slice 3c.final.B (group 5): translator substate carries
+    /// the published `builtins`, `keymap`, and `partial_chord`
+    /// so the renderer's input loop can build a
+    /// `TranslateContext` from the snapshot.
+    #[test]
+    fn translator_substate_reflects_editor_inputs() {
+        use crate::chord::KeyChord;
+        let mut editor = Editor::default();
+        // Seed a non-empty partial_chord so the publish path
+        // exercises the slice conversion.
+        editor.partial_chord = vec![KeyChord::char('g')];
+        editor.publish_render_state();
+        let rs = editor.render_state.load_full();
+        assert_eq!(rs.translator.partial_chord.len(), 1);
+        // Builtins is `Copy`; the published snapshot has the
+        // same default-shaped value as editor.
+        let _: lattice_grammar::builtins::Builtins = rs.translator.builtins;
+        // Keymap handle clones to an Arc-backed view; verify
+        // we can dereference it without panic.
+        let _ = &rs.translator.keymap;
+    }
+
+    /// Slice 3c.final.B (group 6): lifecycle flags + theme
+    /// round-trip through the published snapshot.
+    #[test]
+    fn lifecycle_and_theme_reflect_editor_state() {
+        let mut editor = Editor::default();
+        editor.should_quit = true;
+        editor.pending_redraw = true;
+        editor.terminal_width = Some(120);
+        editor.publish_render_state();
+        let rs = editor.render_state.load_full();
+        assert!(rs.lifecycle.should_quit);
+        assert!(rs.lifecycle.pending_redraw);
+        assert_eq!(rs.lifecycle.terminal_width, Some(120));
+        // Theme is `Copy`; the field is the editor's current
+        // host_theme by value.
+        assert_eq!(rs.theme, editor.host_theme);
+    }
+
+    #[test]
+    fn lsp_progress_reflects_published_map() {
+        use lattice_lsp::{LspProgressKind, LspProgressUpdate};
+        use std::sync::Arc;
+        let mut editor = Editor::default();
+        let key = (Arc::<str>::from("rust"), "token-1".to_string());
+        editor.lsp_progress.insert(
+            key.clone(),
+            LspProgressUpdate {
+                server_id: Arc::from("rust"),
+                token: "token-1".to_string(),
+                kind: LspProgressKind::Begin,
+                title: Some("indexing".to_string()),
+                message: None,
+                percentage: None,
+                cancellable: false,
+            },
+        );
+        editor.publish_render_state();
+        let rs = editor.render_state.load_full();
+        assert!(rs.lsp.progress.contains_key(&key));
+        assert_eq!(rs.lsp.progress.len(), 1);
+    }
+
+    /// Slice 3c.final.B (group 4): popup_buffer / placement
+    /// fields published into `PopupRenderState`. With no popup
+    /// open the substate reports `is_open() == false` and
+    /// `help` is `None`.
+    #[test]
+    fn popup_substate_defaults_closed() {
+        let editor = Editor::default();
+        editor.publish_render_state();
+        let rs = editor.render_state.load_full();
+        assert!(!rs.popup.is_open());
+        assert!(rs.popup.help.is_none());
+        assert!(rs.popup.help_highlights.is_empty());
+    }
+
+    /// Slice 3c.final.B (group 3): picker + completion slots
+    /// default to None when no overlay is open.
+    #[test]
+    fn picker_and_completion_substates_default_closed() {
+        let editor = Editor::default();
+        editor.publish_render_state();
+        let rs = editor.render_state.load_full();
+        assert!(rs.picker.state.is_none());
+        assert!(rs.completion.insert.is_none());
+        assert!(rs.completion.state.is_none());
+    }
+
+    /// Slice 3c.final.B (group 1): `Editor::buffer_uris` is
+    /// published as a fresh `Arc<HashMap<...>>` per tick.
+    /// Mutating the editor's map and re-publishing makes the
+    /// new entry visible through `rs.buffers.uris`.
+    #[test]
+    fn buffers_substate_uris_reflects_published_map() {
+        use lattice_core::BufferId;
+        use lattice_lsp::Uri;
+        use std::str::FromStr;
+        let mut editor = Editor::default();
+        let id = BufferId(7);
+        let uri = Uri::from_str("file:///tmp/foo.rs").expect("valid uri");
+        editor.buffer_uris.insert(id, uri.clone());
+        editor.publish_render_state();
+        let rs = editor.render_state.load_full();
+        assert_eq!(
+            rs.buffers.uris.get(&id),
+            Some(&uri),
+            "renderer must see the URI the editor inserted before publishing"
+        );
+        assert!(
+            rs.buffers.uris.get(&BufferId(9999)).is_none(),
+            "absent ids return None through the published map"
+        );
     }
 }

@@ -47,7 +47,7 @@ impl App {
         category: BufferDisplayCategory,
     ) -> Option<BufferId> {
         // Phase 5.8.AE: body migrated.
-        let (id, signals) = self.editor.display_buffer(content, category);
+        let (id, signals) = self.mutate_editor_with(move |e| e.display_buffer(content, category));
         for s in signals {
             self.handle_renderer_signal(s);
         }
@@ -65,7 +65,7 @@ impl App {
     /// `get_typed::<D>()` -- O(1) hash lookup + an `Arc::clone`.
     pub fn resolve_display(&self, category: BufferDisplayCategory) -> BufferDisplay {
         // Phase 5.8.AD.6: body migrated.
-        self.editor.resolve_display(category)
+        self.read_editor(move |e| e.resolve_display(category))
     }
 
     /// Apply the [`BufferDisplayCategory::PickerResult`] preference
@@ -79,7 +79,7 @@ impl App {
     /// outputs only.
     pub(crate) fn prepare_pane_for_picker_result(&mut self) {
         // Phase 5.8.AD.6: body migrated.
-        self.editor.prepare_pane_for_picker_result();
+        self.mutate_editor_with(move |e| e.prepare_pane_for_picker_result());
     }
 
     /// Open `content` in a fresh split alongside the active pane.
@@ -98,7 +98,7 @@ impl App {
         orientation: SplitOrientation,
     ) -> BufferId {
         // Phase 5.8.AE: body migrated.
-        let (id, signals) = self.editor.open_help_in_split(content, orientation);
+        let (id, signals) = self.mutate_editor_with(move |e| e.open_help_in_split(content, orientation));
         for s in signals {
             self.handle_renderer_signal(s);
         }

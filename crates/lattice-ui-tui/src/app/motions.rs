@@ -64,34 +64,29 @@ impl App {
     /// Renderer call sites keep the thin wrapper for now; 5.5.G
     /// removes it when App's match collapses.
     pub(super) fn clamp_cursor_to_buffer(&mut self) {
-        self.editor.clamp_cursor_to_active_buffer();
+        // Slice 3c.final.E.2: route through `mutate_editor`.
+        self.mutate_editor(|e| e.clamp_cursor_to_active_buffer());
     }
 
     /// 5.5.D: see [`Self::clamp_cursor_to_buffer`]. Delegates to the
     /// host-side implementation.
     pub(super) fn clamp_cursor_to_active_buffer(&mut self) {
-        self.editor.clamp_cursor_to_active_buffer();
+        // Slice 3c.final.E.2: route through `mutate_editor`.
+        self.mutate_editor(|e| e.clamp_cursor_to_active_buffer());
     }
 
     /// 5.5.D: viewport-scroll-to-cursor logic moved to
     /// [`lattice_host::editor::Editor::ensure_cursor_visible`].
     pub(super) fn ensure_cursor_visible(&mut self) {
-        self.editor.ensure_cursor_visible();
+        // Slice 3c.final.E.2: route through `mutate_editor`.
+        self.mutate_editor(|e| e.ensure_cursor_visible());
     }
 
     pub fn set_viewport_height(&mut self, height: u32) {
-        self.editor.viewport_height = height.max(1);
-        self.editor.ensure_cursor_visible();
-        // 3c.atomic.D: this method runs outside the
-        // dispatch publish path (the TUI run loop calls it once
-        // per draw cycle, and tests call it during fixture
-        // setup), so render-state must be republished here for
-        // `app.ad().{viewport_height,scroll}` to observe the new
-        // values. Without this publish, a fixture that builds an
-        // App then calls `set_viewport_height(5)` and immediately
-        // calls `refresh_highlights` would see `ad.viewport_height
-        // == 0` (the boot-time default) and short-circuit.
-        self.editor.publish_render_state();
+        // Slice 3c.final.C: route through `Action::SetViewportHeight`
+        // so the renderer no longer mutates editor state directly.
+        // Dispatch tail publishes RS — no manual publish needed.
+        self.apply(lattice_host::action::Action::SetViewportHeight(height));
     }
 
     /// Compute the active pane's *content* height inside a buffer
@@ -132,6 +127,12 @@ impl App {
             width: 1,
             height: buffer_height as u16,
         };
+        // Slice 3c.final.E.2 note: pane_tree reads stay on
+        // `self.editor.pane_tree` here because the tests that
+        // exercise this function mutate `editor.pane_tree`
+        // directly without republishing RS. Migrating to
+        // `self.panes()` is a follow-up that also touches those
+        // tests (adds explicit `publish_render_state()` calls).
         let rects = self.editor.pane_tree.compute_rects(area);
         let active_idx = self.editor.pane_tree.active_index();
         let multi = rects.len() > 1;
@@ -164,6 +165,9 @@ impl App {
         if !matches!(self.ad().buffer_kind, BufferKind::Help) {
             return None;
         }
+        // Slice 3c.final.E.2 note: pane_tree read stays on
+        // `self.editor` for test-publish-discipline reasons; see
+        // adjacent comment in `active_pane_content_height`.
         if self.editor.pane_tree.active().buffer == BufferKind::Help {
             return None;
         }
@@ -180,6 +184,8 @@ impl App {
             u16::MAX,
             buffer_h,
             line_count,
+            // Slice 3c.final.E.2 note: popup_placement read stays
+            // on `self.editor` (same test-publish-discipline reason).
             self.editor.popup_placement,
         );
         Some(u32::from(height).saturating_sub(2).max(1))
@@ -208,7 +214,8 @@ impl App {
     /// retained because `app/picker.rs` mark-picker accept still
     /// calls it.
     pub(super) fn do_jump_mark(&mut self, name: char, exact: bool) {
-        self.editor.do_jump_mark(name, exact);
+        // Slice 3c.final.E.2: route through `mutate_editor`.
+        self.mutate_editor(move |e| e.do_jump_mark(name, exact));
     }
 
     /// 5.5.F.4.2: body relocated to
@@ -216,7 +223,8 @@ impl App {
     /// Delegate retained so the ~30 ui-tui call sites compile
     /// unchanged across the wider `motions.rs` migration window.
     pub(super) fn push_position_history(&mut self, pos: Position, source: PositionSource) {
-        self.editor.push_position_history(pos, source);
+        // Slice 3c.final.E.2: route through `mutate_editor`.
+        self.mutate_editor(move |e| e.push_position_history(pos, source));
     }
 
     /// Id of whichever buffer is currently active. The active
@@ -226,17 +234,17 @@ impl App {
     /// overlay; while help is active we return its id, otherwise
     /// the active pane's id.
     pub fn active_buffer_id(&self) -> BufferId {
-        self.editor.active_buffer_id()
+        self.read_editor(move |e| e.active_buffer_id())
     }
 
     /// 5.5.D: see [`lattice_host::editor::Editor::active_cursor`].
     pub fn active_cursor(&self) -> Position {
-        self.editor.active_cursor()
+        self.read_editor(move |e| e.active_cursor())
     }
 
     /// 5.5.D: see [`lattice_host::editor::Editor::active_text`].
     pub fn active_text(&self) -> Buffer {
-        self.editor.active_text()
+        self.read_editor(move |e| e.active_text())
     }
 }
 

@@ -45,8 +45,7 @@ impl App {
         major_id: lattice_mode::ModeId,
         flags: BufferFlags,
     ) -> BufferId {
-        self.editor
-            .ensure_named_synthetic_document(name, major_id, flags)
+        self.editor.ensure_named_synthetic_document(name, major_id, flags)
     }
 
     /// Re-export of the canonical
@@ -63,7 +62,7 @@ impl App {
         buffer_id: BufferId,
         major_id: lattice_mode::ModeId,
     ) {
-        self.editor.activate_major_by_id(buffer_id, major_id);
+        self.mutate_editor_with(move |e| e.activate_major_by_id(buffer_id, major_id));
     }
 
     /// Thin wrapper around

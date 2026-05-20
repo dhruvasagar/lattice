@@ -37,7 +37,7 @@ impl App {
     /// `:set number`. Default `true`. Reads the active buffer's
     /// resolved value via the hot-path cache.
     pub fn show_line_numbers(&self) -> bool {
-        self.editor.option_cache.show_line_numbers
+        self.ad().option_cache.show_line_numbers
     }
 
     /// `:set number` for an arbitrary buffer (per-pane resolution).
@@ -54,7 +54,7 @@ impl App {
     /// behaviour) -- the private `apply_option_cascade` cascade
     /// hook mirrors that cascade.
     pub fn relative_line_numbers(&self) -> bool {
-        self.editor.option_cache.relative_line_numbers
+        self.ad().option_cache.relative_line_numbers
     }
 
     /// `:set relativenumber` for an arbitrary buffer (per-pane
@@ -66,12 +66,12 @@ impl App {
     /// `:set wrap`. Default `false`. (v1 renderer always
     /// horizontal-scrolls; this flag is read by future B.3 polish.)
     pub fn wrap_lines(&self) -> bool {
-        self.editor.option_cache.wrap_lines
+        self.ad().option_cache.wrap_lines
     }
 
     /// `:set ignorecase`. Default `false`.
     pub fn ignorecase(&self) -> bool {
-        self.editor.option_cache.ignorecase
+        self.ad().option_cache.ignorecase
     }
 
     /// `:set tabstop=N`. Default `8`. Stored as `i64` in config
@@ -79,18 +79,18 @@ impl App {
     /// at cache-rebuild time -- the validate closure on the option
     /// caps the range to `1..=32` so the cast can never lose bits.
     pub fn tabstop(&self) -> u32 {
-        self.editor.option_cache.tabstop
+        self.ad().option_cache.tabstop
     }
 
     /// `:set scrolloff=N`. Default `0`. Same `i64`→`u32` shape
     /// as [`Self::tabstop`]; range `0..=64`.
     pub fn scrolloff(&self) -> u32 {
-        self.editor.option_cache.scrolloff
+        self.ad().option_cache.scrolloff
     }
 
     /// `:set foldmethod=...`. Default [`FoldMethod::Manual`].
     pub fn foldmethod(&self) -> FoldMethod {
-        self.editor.option_cache.foldmethod
+        self.ad().option_cache.foldmethod
     }
 
     /// 5.5.G.23: body migrated to
@@ -98,7 +98,7 @@ impl App {
     /// 1-line delegate while the renderer's gutter + motions still
     /// reach the App surface.
     pub fn foldenable(&self) -> bool {
-        self.editor.foldenable()
+        self.read_editor(move |e| e.foldenable())
     }
 
     /// 5.5.G.23.cmdline: body migrated to
@@ -106,7 +106,7 @@ impl App {
     /// Retained as a 1-line delegate; deletion follows when the
     /// remaining App callers (cmdline + completion arms) retire.
     pub fn completion_auto_insert_single(&self) -> bool {
-        self.editor.completion_auto_insert_single()
+        self.read_editor(move |e| e.completion_auto_insert_single())
     }
 
     // ---- Test-only typed setters (kept on the public surface
@@ -156,7 +156,8 @@ impl App {
     /// unchanged. Future slices can drop the wrapper once those sites
     /// migrate to `app.editor.rebuild_option_cache()`.
     pub(super) fn rebuild_option_cache(&mut self) {
-        self.editor.rebuild_option_cache();
+        // Slice 3c.final.E.3: route through `mutate_editor`.
+        self.mutate_editor(|e| e.rebuild_option_cache());
     }
 
     /// Delegate to
@@ -164,7 +165,8 @@ impl App {
     /// Phase 5.5.E.6 moved the body host-side; layer ordering and the
     /// resolver walk are documented on the host method.
     pub fn recompute_options_for_buffer(&mut self, buffer: crate::buffers::BufferId) {
-        self.editor.recompute_options_for_buffer(buffer);
+        // Slice 3c.final.E.3: route through `mutate_editor`.
+        self.mutate_editor(move |e| e.recompute_options_for_buffer(buffer));
     }
 
     /// CSM.3 (insert-completion.md §12.4): recompute the
@@ -184,7 +186,8 @@ impl App {
     /// behaviour.
     /// 5.5.F.5.1: see [`lattice_host::dispatch::Editor::recompute_active_completion_sources_for`].
     pub fn recompute_active_completion_sources_for(&mut self, buffer: crate::buffers::BufferId) {
-        self.editor.recompute_active_completion_sources_for(buffer);
+        // Slice 3c.final.E.3: route through `mutate_editor`.
+        self.mutate_editor(move |e| e.recompute_active_completion_sources_for(buffer));
     }
 
     /// Delegate to [`lattice_host::editor::Editor::resolved_option`].
@@ -214,7 +217,10 @@ impl App {
     /// build's lint.
     #[allow(dead_code)]
     pub(super) fn do_set(&mut self, option: &str) {
-        let signals = self.editor.do_set(option);
+        // Slice 3c.final.E.3: route through `mutate_editor_with`.
+        // Promote `&str` to `String` so the closure is `Send + 'static`.
+        let option_owned = option.to_string();
+        let signals = self.mutate_editor_with(move |e| e.do_set(&option_owned));
         for sig in signals {
             self.handle_renderer_signal(sig);
         }
@@ -231,7 +237,8 @@ impl App {
     /// LSP-driven config writes. Routing every cascade through this
     /// channel keeps the per-option cascade off the publish thread.
     pub fn drain_option_changes(&mut self) {
-        let signals = self.editor.drain_option_changes();
+        // Slice 3c.final.E.3: route through `mutate_editor_with`.
+        let signals = self.mutate_editor_with(|e| e.drain_option_changes());
         for sig in signals {
             self.handle_renderer_signal(sig);
         }
@@ -301,7 +308,8 @@ impl App {
         // `lattice_host::dispatch::Editor::apply_per_language_toml_overrides`.
         // App-side tests at `dispatch.rs:2038/2061/2088` keep exercising
         // the merge via this delegate.
-        self.editor.apply_per_language_toml_overrides();
+        // Slice 3c.final.E.3: route through `mutate_editor`.
+        self.mutate_editor(|e| e.apply_per_language_toml_overrides());
     }
 }
 

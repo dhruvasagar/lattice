@@ -525,4 +525,34 @@ pub enum Action {
     SearchNext,
     /// Repeat the last search in the opposite direction.
     SearchPrevious,
+    // ---- Phase 5.8.AF.5 / Slice 3c.final.C ----
+    // Renderer-thread non-dispatch mutations lifted to Action
+    // variants so the renderer doesn't need `&mut Editor` to
+    // perform them. Each fires from the per-frame setup code in
+    // the TUI's `main_loop` / GPUI's `EditorView::render` and
+    // dispatches through the standard `apply` tail (which
+    // publishes RenderState).
+    /// Set the active pane's viewport-height (rows). Triggered by
+    /// the renderer when the window size changes. Mirrors the
+    /// pre-3c.final `App::set_viewport_height` shape — clamps to
+    /// `>= 1` and runs `ensure_cursor_visible` host-side.
+    SetViewportHeight(u32),
+    /// Auto-scroll so the cursor stays visible in the active
+    /// pane. Idempotent: no-op when the cursor is already on
+    /// screen.
+    EnsureCursorVisible,
+    /// Recompute the per-pane highlight cache for inactive
+    /// Document panes whose buffer differs from the active. The
+    /// host's body is gated on per-pane buffer change so most
+    /// ticks are a cheap no-op.
+    RefreshPaneHighlights,
+    /// Dismiss the active popup (closes `popup_buffer`, restores
+    /// the previous pane focus). No-op when no popup is open.
+    DismissPopup,
+    /// Mirror the TUI's terminal width into editor state so
+    /// status-line layout matches what crossterm reported.
+    SetTerminalWidth(u16),
+    /// Clear `pending_redraw` after the renderer has cleared the
+    /// terminal buffer in response to `<C-l>` (`RedrawScreen`).
+    AcknowledgeRedraw,
 }

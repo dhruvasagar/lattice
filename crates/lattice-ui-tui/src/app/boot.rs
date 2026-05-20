@@ -38,9 +38,16 @@ impl App {
         // the assignment swaps to the actor handle's exposed Arc;
         // every renderer-side reader stays unchanged.
         let render_state = editor.render_state.clone();
+        // Slice 3c.final.E.1: cache the worker's output cell on
+        // App. Pre-swap: a direct clone of `editor.syntax_visible_spans_cell`.
+        // Post-swap (when Editor moves to the actor): the same Arc
+        // is exposed through the actor handle; the constructor line
+        // is the only place that changes.
+        let syntax_visible_spans_cell = editor.syntax_visible_spans_cell.clone();
         let mut app = Self {
             editor,
             render_state,
+            syntax_visible_spans_cell,
             pane_render_registry: crate::render::build_pane_render_registry(),
             theme: crate::theme::Theme::default(),
         };
@@ -175,11 +182,11 @@ impl App {
     ///
     /// Per-buffer scope: the popup belongs to the document the
     /// user is typing in. v1 has a single document buffer
-    /// (`self.editor.document_buffer_id`); multi-document support
+    /// (`self.document_buffer_id()`); multi-document support
     /// activates this mode on whichever doc owns the popup at
     /// open time when that lands. Deactivation is symmetric.
     fn sync_completion_popup_mode_activation(&mut self, want_popup: bool) {
-        let buffer_id = self.editor.document_buffer_id;
+        let buffer_id = self.document_buffer_id();
         let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
         let mode_id = lattice_mode::CompletionPopupMode::mode_id();
         let mut active = self
@@ -232,7 +239,8 @@ impl App {
         // run the host half directly and emit `RendererSignal::ThemeChanged`;
         // the renderer (here) only owns the cached TUI-typed
         // mirror rebuild.
-        self.editor.sync_host_theme_from_config();
+        // Slice 3c.final.E.3: route through `mutate_editor`.
+        self.mutate_editor(|e| e.sync_host_theme_from_config());
         self.rebuild_tui_theme();
     }
 
@@ -244,7 +252,7 @@ impl App {
     /// never per frame. A future GPUI renderer implements an
     /// equivalent `rebuild_gpui_theme` on its own `App`.
     pub fn rebuild_tui_theme(&mut self) {
-        self.theme = crate::theme::Theme::from(&self.editor.host_theme);
+        self.theme = crate::theme::Theme::from(&self.render_state.load().theme);
     }
 
     /// Load `~/.editor.config/lattice/lattice.toml` (user) and
@@ -269,13 +277,11 @@ impl App {
     /// silent. Per-file `path:body` detail rides the message
     /// body so the user can see *which* file complained.
     pub fn load_persistent_config(&mut self, workspace_root: Option<&std::path::Path>) {
-        // Phase 5.8.AA.u: body migrated to
-        // `lattice_host::dispatch::Editor::load_persistent_config`.
-        // The returned `Vec<RendererSignal>` carries the
-        // `ThemeChanged` so the renderer-side typed theme cache
-        // rebuilds; we fan it through the App's standard signal
-        // handler (which calls `rebuild_tui_theme`).
-        let signals = self.editor.load_persistent_config(workspace_root);
+        // Slice 3c.final.E.3: clone path for the `Send + 'static`
+        // closure, then route through `mutate_editor_with`.
+        let workspace_root = workspace_root.map(|p| p.to_path_buf());
+        let signals =
+            self.mutate_editor_with(move |e| e.load_persistent_config(workspace_root.as_deref()));
         for s in signals {
             self.handle_renderer_signal(s);
         }

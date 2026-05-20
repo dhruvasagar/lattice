@@ -52,10 +52,10 @@ impl App {
     /// surfaces as a clear echo error so completion + typo
     /// recovery work.
     pub(super) fn do_open_help_topic(&mut self, topic: Option<&str>) {
-        // Phase 5.8.AD.5: body migrated; signals fan through the
-        // standard handler (which routes DisplayBuffer through
-        // `display_buffer`).
-        let signals = self.editor.do_open_help_topic(topic);
+        // Slice 3c.final.E.3: clone to owned for the `Send + 'static`
+        // closure, then route through `mutate_editor_with`.
+        let topic = topic.map(|s| s.to_string());
+        let signals = self.mutate_editor_with(move |e| e.do_open_help_topic(topic.as_deref()));
         for s in signals {
             self.handle_renderer_signal(s);
         }
@@ -87,7 +87,11 @@ impl App {
     /// + `RendererSignal::DisplayBuffer`.
     pub(super) fn do_describe_command(&mut self, name: &str, anchor: Option<&str>) {
         // Phase 5.8.AD.5: body migrated.
-        let signals = self.editor.do_describe_command(name, anchor);
+        // Slice 3c.final.E.3.
+        let name = name.to_string();
+        let anchor = anchor.map(|s| s.to_string());
+        let signals =
+            self.mutate_editor_with(move |e| e.do_describe_command(&name, anchor.as_deref()));
         for s in signals {
             self.handle_renderer_signal(s);
         }
@@ -95,7 +99,9 @@ impl App {
 
     /// `:describe-key <chord>` direct-call. Phase 5.8.AD.5.
     pub(super) fn do_describe_key(&mut self, chord: &str) {
-        let signals = self.editor.do_describe_key(chord);
+        // Slice 3c.final.E.3.
+        let chord = chord.to_string();
+        let signals = self.mutate_editor_with(move |e| e.do_describe_key(&chord));
         for s in signals {
             self.handle_renderer_signal(s);
         }
@@ -109,8 +115,9 @@ impl App {
     /// the user presses `K` again, which `do_lsp_hover_request`
     /// recognises as "focus into popup" -> State B.
     pub(super) fn do_open_hover(&mut self, markdown: &str) {
-        // Phase 5.8.AD.5: body migrated.
-        let signals = self.editor.do_open_hover(markdown);
+        // Slice 3c.final.E.3.
+        let markdown = markdown.to_string();
+        let signals = self.mutate_editor_with(move |e| e.do_open_hover(&markdown));
         for s in signals {
             self.handle_renderer_signal(s);
         }
@@ -152,8 +159,8 @@ impl App {
     /// `RendererSignal::DisplayBuffer`.
     #[allow(dead_code)]
     pub(super) fn do_describe_events(&mut self) {
-        // Phase 5.8.AD.5: body migrated.
-        let signals = self.editor.do_describe_events();
+        // Slice 3c.final.E.3.
+        let signals = self.mutate_editor_with(|e| e.do_describe_events());
         for s in signals {
             self.handle_renderer_signal(s);
         }
@@ -162,7 +169,9 @@ impl App {
     /// `:describe-event <name>` direct-call. Phase 5.8.AD.5.
     #[allow(dead_code)]
     pub(super) fn do_describe_event(&mut self, name: &str) {
-        let signals = self.editor.do_describe_event(name);
+        // Slice 3c.final.E.3.
+        let name = name.to_string();
+        let signals = self.mutate_editor_with(move |e| e.do_describe_event(&name));
         for s in signals {
             self.handle_renderer_signal(s);
         }
@@ -180,8 +189,9 @@ impl App {
     /// calls it directly outside the Effect-arm dispatch path.
     #[allow(dead_code)]
     pub(super) fn do_describe_mode(&mut self, name: &str) {
-        // Phase 5.8.AD.5: body migrated.
-        let signals = self.editor.do_describe_mode(name);
+        // Slice 3c.final.E.3.
+        let name = name.to_string();
+        let signals = self.mutate_editor_with(move |e| e.do_describe_mode(&name));
         for s in signals {
             self.handle_renderer_signal(s);
         }
@@ -201,8 +211,9 @@ impl App {
     /// it directly outside the Effect-arm dispatch path.
     #[allow(dead_code)]
     pub(super) fn do_customize(&mut self, name: Option<&str>) {
-        // Phase 5.8.AD.5: body migrated.
-        let signals = self.editor.do_customize(name);
+        // Slice 3c.final.E.3.
+        let name = name.map(|s| s.to_string());
+        let signals = self.mutate_editor_with(move |e| e.do_customize(name.as_deref()));
         for s in signals {
             self.handle_renderer_signal(s);
         }
@@ -242,8 +253,11 @@ impl App {
         } else {
             format!("set {name}={current}")
         };
-        self.editor.command_line = prefill;
-        self.editor.modal = lattice_grammar::ModalState::Command;
+        // Slice 3c.final.E.3: bundle both writes into one closure.
+        self.mutate_editor(move |e| {
+            e.command_line = prefill;
+            e.modal = lattice_grammar::ModalState::Command;
+        });
     }
 
     /// `:tutor [N]` -- open the interactive Lattice tutor
@@ -258,8 +272,8 @@ impl App {
     /// additional `docs/user/tutor/lesson-N.md` files, each
     /// added to this match.
     pub(super) fn do_tutor(&mut self, lesson: Option<u32>) {
-        // Phase 5.8.AD.5: body migrated.
-        let signals = self.editor.do_tutor(lesson);
+        // Slice 3c.final.E.3.
+        let signals = self.mutate_editor_with(move |e| e.do_tutor(lesson));
         for s in signals {
             self.handle_renderer_signal(s);
         }
@@ -297,8 +311,8 @@ impl App {
             true
         }
 
-        let cursor = self.editor.cursor;
-        if self.editor.popup_buffer.is_none() {
+        let cursor = self.cursor();
+        if self.popup().buffer_id.is_none() {
             return;
         }
         // M.3.2.c.1: prefer help-mode-owned link data from
@@ -328,7 +342,7 @@ impl App {
         let active_help_id = self
             .editor
             .popup_buffer
-            .unwrap_or_else(|| self.editor.pane_tree.active().buffer_id);
+            .unwrap_or_else(|| self.panes().tree.active().buffer_id);
         let Some(link) = self
             .editor
             .buffer_locals
@@ -342,7 +356,7 @@ impl App {
             .or_else(|| {
                 // For in-pane help where popup_buffer != pane.buffer_id,
                 // try the pane's id too.
-                let pane_id = self.editor.pane_tree.active().buffer_id;
+                let pane_id = self.panes().tree.active().buffer_id;
                 if pane_id == active_help_id {
                     return None;
                 }
@@ -417,8 +431,8 @@ impl App {
                 // own id first (centred-popup case where
                 // pane.buffer_id is the doc behind the popup),
                 // then fall back to the pane's id (in-pane case).
-                let popup_id = self.editor.popup_buffer;
-                let pane_id = self.editor.pane_tree.active().buffer_id;
+                let popup_id = self.popup().buffer_id;
+                let pane_id = self.panes().tree.active().buffer_id;
                 let target_line = popup_id
                     .and_then(|id| self.editor.buffer_locals.get(&id))
                     .and_then(|locals| locals.get::<crate::modes::HelpAnchors>())
@@ -435,8 +449,9 @@ impl App {
                 if let Some(line) = target_line {
                     let buffer = self.active_text();
                     let len = line_byte_len(&buffer, line);
-                    self.editor.cursor = Position::new(line, self.editor.cursor.byte.min(len));
-                    self.editor.scroll = line;
+                    let byte = self.cursor().byte;
+                    self.set_cursor(Position::new(line, byte.min(len)));
+                    self.mutate_editor(move |e| e.scroll = line);
                 } else {
                     self.set_message(EchoLevel::Warn, format!("anchor not found: #{slug}"));
                 }
@@ -463,10 +478,10 @@ impl App {
                 // every editor + every `path:line` convention);
                 // convert to the App's 0-based line index, clamping
                 // to a valid line in the now-loaded buffer.
-                let snap = self.editor.document.snapshot();
+                let snap = self.ad().snapshot.clone();
                 let last = snap.buffer.line_count().saturating_sub(1);
                 let target_line = line.saturating_sub(1).min(last);
-                self.editor.cursor = Position::new(target_line, 0);
+                self.set_cursor(Position::new(target_line, 0));
             }
             crate::help::HelpLinkTarget::Unresolved(url) => {
                 self.set_message(EchoLevel::Warn, format!("no handler for `{url}`"));

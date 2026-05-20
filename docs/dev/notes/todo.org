@@ -1,0 +1,22 @@
+* Features
+- Terminal
+- Quickfix / Location lists
+- :! shell execution
+- ! filter operator
+- :.! shell execution and replace range
+- enhanced mini-buffer
+- enhanced, configurable mode-line
+- theme system (also with a theme picker with preview)
+- more language support
+- more user documentation
+- lattice-tutor
+- transient like menu
+- compilation-mode
+
+* Plugins
+- Claude Code IDE
+- Org Mode
+- project.el
+
+* Issues
+- command line completion

@@ -29,6 +29,6 @@ impl App {
     /// Renderer call sites keep this thin wrapper until 5.5.G
     /// collapses App's match entirely.
     pub(super) fn maybe_reparse_syntax(&mut self) {
-        self.editor.maybe_reparse_syntax();
+        self.mutate_editor_with(move |e| e.maybe_reparse_syntax());
     }
 }

@@ -234,7 +234,9 @@ impl EditorView {
             platform = ks.modifiers.platform,
             "lattice-gpui: key down"
         );
-        if self.app.editor.popup_buffer.is_some()
+        // Slice 3c.final.B (group 3): popup gate via published
+        // substate (`render_state.popup.is_open()`).
+        if self.app.editor.render_state.load().popup.is_open()
             && (ks.key.eq_ignore_ascii_case("escape") || ks.key.eq_ignore_ascii_case("esc"))
         {
             tracing::debug!("lattice-gpui: dismissing popup overlay (Esc)");
@@ -264,7 +266,9 @@ impl EditorView {
         );
         cx.stop_propagation();
         cx.notify();
-        if self.app.editor.should_quit {
+        // Slice 3c.final.B (group 6): lifecycle read via published
+        // substate.
+        if self.app.editor.render_state.load().lifecycle.should_quit {
             tracing::info!("lattice-gpui: editor.should_quit set; closing application");
             cx.quit();
         }
@@ -349,16 +353,21 @@ impl EditorView {
         // start of `render`, which has been removed in this slice).
         let rs_guard = editor.render_state.load();
         let active_spans_guard = rs_guard.syntax.visible_spans.load();
-        let leaves = editor.pane_tree.leaves();
+        // Phase 5.8.AF.5 / Slice 3c.final.B (group 1): pane tree
+        // + buffer registry read through `rs_guard.panes` /
+        // `rs_guard.buffers` instead of `editor.X` directly.
+        let leaves = rs_guard.panes.tree.leaves();
         if pane_idx >= leaves.len() {
             return div().child(format!("(stale pane index {pane_idx})"));
         }
         let pane: &PaneState = &leaves[pane_idx];
         // Resolve the buffer's document handle. Inactive panes may
-        // reference buffers different from `editor.document`; lookup
-        // by buffer_id.
-        let snapshot_opt = editor
+        // reference buffers different from `editor.document`; the
+        // registry clone on `rs_guard.buffers` shares the editor's
+        // `Arc<Mutex<...>>` so the lookup sees the latest state.
+        let snapshot_opt = rs_guard
             .buffers
+            .registry
             .document_handle(pane.buffer_id)
             .map(|h| h.snapshot());
         let Some(snapshot) = snapshot_opt else {
@@ -428,13 +437,14 @@ impl EditorView {
         let gutter_width = total_lines.to_string().len();
 
         // 5.8.I: per-line severity lookup. URI for this pane's
-        // buffer comes from `editor.buffer_uris` (populated when
-        // LSP attaches). `None` means: unsaved scratch, no LSP
-        // attachment, or LSP-mode disabled for this buffer. The
-        // gutter then renders a blank sign column (one space) so
-        // the line-number alignment stays stable regardless of
-        // whether diagnostics are present.
-        let uri = editor.buffer_uris.get(&pane.buffer_id);
+        // buffer comes from `rs_guard.buffers.uris` (slice 3c.final.B
+        // group 1: published HashMap clone of `editor.buffer_uris`,
+        // populated when LSP attaches). `None` means: unsaved
+        // scratch, no LSP attachment, or LSP-mode disabled for this
+        // buffer. The gutter then renders a blank sign column (one
+        // space) so the line-number alignment stays stable
+        // regardless of whether diagnostics are present.
+        let uri = rs_guard.buffers.uris.get(&pane.buffer_id);
         // Phase 5.8.AF.5 / Slice 3a: read through the renderer's
         // `RenderState` contract instead of `editor.lsp_diagnostics`
         // directly. Symmetric with the TUI peer's
@@ -450,18 +460,35 @@ impl EditorView {
         // 5.8.N: severity glyph + colour come from host_theme so
         // `:set ui.diagnostics.*` overrides flow through identically
         // for both renderer peers.
-        let host_theme = editor.host_theme;
+        // Slice 3c.final.B (group 6): host theme via published
+        // top-level field. Theme is `Copy` so this is a plain
+        // struct move.
+        let host_theme = rs_guard.theme;
 
-        // Phase 5.8.AF.5 / Slice X3.full.2: gather per-row gutter
-        // metadata for the visible window. Caller of the element
-        // does the LSP / fold lookups so the element holds only
-        // owned values. `editor.line_inside_closed_fold` filters
-        // out lines hidden inside a closed fold (the fold-start
-        // row still renders, with a ► marker in column 0).
+        // Phase 5.8.AF.5 / Slice X3.full.2 + 3c.final.B (group 2):
+        // gather per-row gutter metadata for the visible window.
+        // Caller does the LSP / fold lookups so the element holds
+        // only owned values. Folds + foldenable now come from
+        // `rs_guard.active_document` rather than `editor.X` — the
+        // predicate is inlined here since the published `Arc<[Fold]>`
+        // doesn't carry the helper methods. Behaviour matches
+        // `Editor::line_inside_closed_fold` + `fold_start_at`
+        // (both gate on `option_cache.foldenable`).
+        let folds = &rs_guard.active_document.folds;
+        let foldenable = rs_guard.active_document.option_cache.foldenable;
+        let line_inside_closed_fold = |line: u32| -> bool {
+            foldenable
+                && folds
+                    .iter()
+                    .any(|f| f.closed && line > f.start_line && line <= f.end_line)
+        };
+        let fold_start_at = |line: u32| -> bool {
+            foldenable && folds.iter().any(|f| f.closed && f.start_line == line)
+        };
         let gutter_meta: Vec<crate::editor_element::GutterLineMeta> = (visible_start..visible_end)
-            .filter(|line_idx| !editor.line_inside_closed_fold(*line_idx as u32))
+            .filter(|line_idx| !line_inside_closed_fold(*line_idx as u32))
             .map(|line_idx| {
-                let fold_start = editor.fold_start_at(line_idx as u32).is_some();
+                let fold_start = fold_start_at(line_idx as u32);
                 let severity =
                     line_severity(line_idx as u32).map(|s| diagnostic_glyph_and_color(&host_theme, s));
                 crate::editor_element::GutterLineMeta {
@@ -488,19 +515,27 @@ impl EditorView {
         // LSP document-highlights (utf-16 columns) -- we convert
         // them here against actual line text so the element sees
         // only utf-8.
+        // Slice 3c.final.B (group 2): visual_range / current_match /
+        // all_matches / substitute_preview read through the published
+        // `rs_guard.active_document` snapshot instead of `editor.X`.
         let visual_range = if is_active {
-            editor.visual_selection_range()
+            rs_guard.active_document.visual_range
         } else {
             None
         };
-        let current_match = if is_active { editor.current_match } else { None };
+        let current_match = if is_active {
+            rs_guard.active_document.current_match
+        } else {
+            None
+        };
         let all_matches: Vec<lattice_core::protocol::position::Range> = if is_active {
-            editor.all_matches.clone()
+            rs_guard.active_document.all_matches.to_vec()
         } else {
             Vec::new()
         };
         let substitute_matches: Vec<lattice_core::protocol::position::Range> = if is_active {
-            editor
+            rs_guard
+                .active_document
                 .substitute_preview
                 .as_ref()
                 .map(|p| p.matches.to_vec())
@@ -550,7 +585,9 @@ impl EditorView {
             .unwrap_or_default();
         // Cursorline bg: host_theme drives `:set ui.cursor-line-bg`
         // overrides. Fallback Catppuccin surface0.
-        let cursorline_bg = editor.host_theme.cursor_line_bg.to_rgb_u32(0x313244);
+        // Slice 3c.final.B (group 6): reuse `host_theme` bound
+        // above from `rs_guard.theme`.
+        let cursorline_bg = host_theme.cursor_line_bg.to_rgb_u32(0x313244);
 
         // Slice X3.full.4: gather LSP inlay hints + diagnostic
         // underline ranges for this pane's buffer. Both arrive
@@ -779,11 +816,14 @@ impl Render for EditorView {
         let font_size_px = rem * 0.875; // text_sm()
         let estimated_row_px = font_size_px * 1.3; // matches EditorElement::line_height
         let total_rows = (f32::from(viewport_px.height) / estimated_row_px).floor() as i32;
+        // Slice 3c.final.B (group 3): picker read via published
+        // substate. Bind the Arc so the `as_deref()` borrow lives
+        // for the closure.
+        let picker_substate = self.app.editor.render_state.load().picker.clone();
         let picker_strip_rows: i32 = if picker_use_minibuffer {
-            self.app
-                .editor
-                .picker
-                .as_ref()
+            picker_substate
+                .state
+                .as_deref()
                 .map(|p| 1 + p.candidates.len().min(10) as i32) // 1 prompt + up to 10 cands
                 .unwrap_or(0)
         } else {
@@ -828,7 +868,9 @@ impl Render for EditorView {
         // host method handles the same-doc short-circuit + reparse
         // gating; this peer just makes the call so paint_pane can
         // read `editor.pane_highlights[idx]` for the inactive case.
-        self.app.editor.refresh_pane_highlights();
+        // Slice 3c.final.C: pane-highlight refresh via dispatch.
+        self.app
+            .dispatch_action(lattice_host::action::Action::RefreshPaneHighlights);
         let after_highlights = std::time::Instant::now();
         // Phase 5.8.AF.5 / Slice X1: `run_tick_pending` no longer
         // runs in the renderer body. The drain moved to
@@ -886,16 +928,23 @@ impl Render for EditorView {
 
         let theme = self.app.theme;
         // 5.8.H: render the pane tree. `paint_pane_tree` walks
-        // `editor.pane_tree.root()` recursively; each leaf paints
+        // `rs.panes.tree.root()` recursively; each leaf paints
         // via `paint_pane` with active/inactive style. The active
         // leaf gets the refreshed `visible_highlights` cache + a
         // visible cursor; inactive leaves show plain text + no
         // cursor (their own stashed `PaneState::cursor` is read
         // for the per-pane status coords but no visible marker is
         // painted).
-        let active_idx = self.app.editor.pane_tree.active_index();
+        //
+        // Slice 3c.final.B (group 1): pane tree read through
+        // the published `RenderState` instead of `editor.pane_tree`
+        // directly. `paint_pane` loads its own `rs_guard` for
+        // per-pane access; this load drives the recursion entry
+        // point and shares the same Arc across the render body.
+        let render_state = self.app.editor.render_state.load_full();
+        let active_idx = render_state.panes.tree.active_index();
         let document_area = self
-            .paint_pane_tree(self.app.editor.pane_tree.root(), &theme, active_idx)
+            .paint_pane_tree(render_state.panes.tree.root(), &theme, active_idx)
             .flex_grow();
         let after_paint = std::time::Instant::now();
 
@@ -991,8 +1040,10 @@ impl Render for EditorView {
         // the root. `picker_use_minibuffer` was already computed
         // at the top of `render` so the viewport-height
         // recompute could subtract the strip's rows.
+        // Slice 3c.final.B (group 3): picker via published
+        // substate; reuse `picker_substate` bound at top of render.
         let picker_overlay: Option<gpui::Div> = (!picker_use_minibuffer)
-            .then(|| self.app.editor.picker.as_ref())
+            .then(|| picker_substate.state.as_deref())
             .flatten()
             .map(|picker| {
             let max_visible = 30usize;
@@ -1123,8 +1174,9 @@ impl Render for EditorView {
         // adjacency. Built as a normal flex_col child (not an
         // absolute overlay) so it claims layout space rather
         // than floating over the buffer.
+        // Slice 3c.final.B (group 3): picker via published substate.
         let picker_minibuffer: Option<gpui::Div> = picker_use_minibuffer
-            .then(|| self.app.editor.picker.as_ref())
+            .then(|| picker_substate.state.as_deref())
             .flatten()
             .map(|picker| {
                 const MAX_VISIBLE: usize = 10;
@@ -1228,21 +1280,19 @@ impl Render for EditorView {
                     )
             });
 
-        // Phase 5.8.AE: read popup state from host editor instead
-        // of the renderer-local `popup_content` field. Title +
-        // body come from `editor.popup_help()`; highlights come
-        // from the buffer-local seeded at popup-open time.
-        let popup_overlay: Option<gpui::Div> = self.app.editor.popup_help().map(|buf| {
+        // Phase 5.8.AE + Slice 3c.final.B (group 3): read popup
+        // state via the published substate. The Arc-wrapped
+        // `HelpBuffer` + `help_highlights` slice live on
+        // `render_state.popup.X`; bind locally so the borrows live
+        // for the closure.
+        let popup_substate = self.app.editor.render_state.load().popup.clone();
+        let popup_overlay: Option<gpui::Div> = popup_substate.help.as_deref().map(|buf| {
             let title = buf.title.clone();
             let body_text = buf.content.as_string();
             // M.3.2.c.5: highlights live in buffer-locals keyed by the
-            // popup buffer id (see host's `Editor::popup_help_highlights`).
-            let highlights_owned: Vec<Vec<lattice_syntax::StyledSpan>> = self
-                .app
-                .editor
-                .popup_help_highlights()
-                .map(|h| h.to_vec())
-                .unwrap_or_default();
+            // popup buffer id; published as `popup.help_highlights`.
+            let highlights_owned: Vec<Vec<lattice_syntax::StyledSpan>> =
+                popup_substate.help_highlights.to_vec();
             let line_highlights: &[Vec<lattice_syntax::StyledSpan>] =
                 highlights_owned.as_slice();
             let body_lines: Vec<&str> = body_text.split('\n').collect();

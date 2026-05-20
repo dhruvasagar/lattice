@@ -48,7 +48,8 @@ impl App {
     /// Delegate retained for direct test callers in this file and
     /// for the `Effect::SnippetExpand` route through `App::apply`.
     pub fn do_snippet_expand_at_cursor(&mut self) {
-        self.editor.do_snippet_expand_at_cursor();
+        // Slice 3c.final.E.3: route through `mutate_editor`.
+        self.mutate_editor(|e| e.do_snippet_expand_at_cursor());
     }
 
     /// `<Tab>` while a snippet is active -- jump to the next
@@ -57,19 +58,19 @@ impl App {
     /// [`lattice_host::dispatch::Editor::do_snippet_next_placeholder`].
     /// Delegate retained for direct test callers in this file.
     pub fn do_snippet_next_placeholder(&mut self) {
-        self.editor.do_snippet_next_placeholder();
+        self.mutate_editor(|e| e.do_snippet_next_placeholder());
     }
 
     /// 5.5.G.8: body migrated to
     /// [`lattice_host::dispatch::Editor::do_snippet_prev_placeholder`].
     pub fn do_snippet_prev_placeholder(&mut self) {
-        self.editor.do_snippet_prev_placeholder();
+        self.mutate_editor(|e| e.do_snippet_prev_placeholder());
     }
 
     /// `:reload-snippets` -- 5.8.AF.3: body migrated to
     /// [`lattice_host::dispatch::Editor::do_reload_snippets`].
     pub fn do_reload_snippets(&mut self) {
-        self.editor.do_reload_snippets();
+        self.mutate_editor(|e| e.do_reload_snippets());
     }
 
     // 5.5.H: `move_cursor_to_snippet_group` retired (zero
@@ -80,12 +81,12 @@ impl App {
 impl App {
     pub fn do_completion_next(&mut self) {
         // Phase 5.8.AD.4: body migrated.
-        self.editor.do_completion_next();
+        self.mutate_editor(|e| e.do_completion_next());
     }
 
     pub fn do_completion_prev(&mut self) {
         // Phase 5.8.AD.4: body migrated.
-        self.editor.do_completion_prev();
+        self.mutate_editor(|e| e.do_completion_prev());
     }
 
     // 5.5.G.14: `do_completion_docs_scroll_down` /
@@ -104,8 +105,10 @@ impl App {
         trigger: &lattice_completion::CompletionTrigger,
     ) {
         // Phase 5.8.AD.4: body migrated.
-        self.editor
-            .populate_insert_completion_sync(state, buffer, trigger);
+        // Slice 3c.final.E.swap-followup: borrowed `&mut state`
+        // can't escape into a `Send + 'static` closure; direct call
+        // until host signature is refactored to own/return state.
+        self.editor.populate_insert_completion_sync(state, buffer, trigger);
     }
 
     /// Re-run matcher + ranker. Phase 5.8.AD.4: migrated.
@@ -113,6 +116,7 @@ impl App {
         &self,
         state: &mut lattice_completion::InsertCompletionState,
     ) {
+        // See note above re: borrowed `&mut state` + closure bounds.
         self.editor.refilter_insert_completion(state);
     }
 
@@ -126,7 +130,7 @@ impl App {
     /// LSP / snippets / path / tree-sitter follow in 4.2.g.2+.
     pub fn do_completion_trigger(&mut self) {
         // Phase 5.8.AD.4: body migrated.
-        self.editor.do_completion_trigger();
+        self.mutate_editor(|e| e.do_completion_trigger());
     }
 
     /// Insert-mode character key while the popup is open
@@ -140,6 +144,8 @@ impl App {
         // action queue; build a local one and drain into App's
         // `apply` loop afterwards.
         let mut out = lattice_host::dispatch::DispatchOutcome::default();
+        // Slice 3c.final.E.swap-followup: `&mut out` local can't
+        // escape into a `Send + 'static` closure.
         self.editor.do_completion_accept_then_insert(ch, &mut out);
         for follow_up in std::mem::take(&mut out.next_actions) {
             self.apply(follow_up);
@@ -149,7 +155,7 @@ impl App {
     /// Suffix of the top-ranked completion candidate for ghost
     /// text. Phase 5.8.AD.4: migrated.
     pub fn completion_ghost_text_suffix(&self) -> Option<String> {
-        self.editor.completion_ghost_text_suffix()
+        self.read_editor(move |e| e.completion_ghost_text_suffix())
     }
 
     /// Suffix of the top-ranked completion candidate that would
@@ -186,7 +192,7 @@ impl App {
     ///    cursor]` splice.
     pub fn do_completion_accept(&mut self) {
         // Phase 5.8.AD.4: body migrated.
-        self.editor.do_completion_accept();
+        self.mutate_editor(|e| e.do_completion_accept());
     }
 
     /// `<C-d>` inside the completion-popup minor mode.
@@ -198,18 +204,18 @@ impl App {
     /// resolve provider.
     pub fn do_completion_toggle_docs(&mut self) {
         // Phase 5.8.AD.4: body migrated.
-        self.editor.do_completion_toggle_docs();
+        self.mutate_editor(|e| e.do_completion_toggle_docs());
     }
 
     /// Build the docs body for the popup's currently-focused
     /// candidate. Phase 5.8.AD.4: migrated.
     pub(super) fn docs_body_for_selected(&self) -> Option<String> {
-        self.editor.docs_body_for_selected()
+        self.read_editor(move |e| e.docs_body_for_selected())
     }
 
     /// True when the focused candidate needs resolve. Phase 5.8.AD.4.
     pub(super) fn selected_needs_resolve(&self) -> bool {
-        self.editor.selected_needs_resolve()
+        self.read_editor(move |e| e.selected_needs_resolve())
     }
 
     /// On every Insert-mode text insertion, if the popup is
@@ -224,8 +230,7 @@ impl App {
     /// `outcome.next_actions` via the App-side `apply` loop.
     pub(crate) fn maybe_refresh_insert_completion_after_edit(&mut self) {
         let mut out = lattice_host::dispatch::DispatchOutcome::default();
-        self.editor
-            .maybe_refresh_insert_completion_after_edit(&mut out);
+        self.editor.maybe_refresh_insert_completion_after_edit(&mut out);
         for follow_up in std::mem::take(&mut out.next_actions) {
             self.apply(follow_up);
         }
@@ -238,7 +243,7 @@ impl App {
     // (`run_invocation` exit, `<Esc>` flush, snippet abort).
     #[allow(dead_code)]
     pub fn do_completion_cancel(&mut self) {
-        self.editor.do_completion_cancel();
+        self.mutate_editor(|e| e.do_completion_cancel());
     }
 
     /// CSM.K2: restrict the open completion popup to a single
@@ -250,12 +255,12 @@ impl App {
     /// clear the filter without losing the trigger context.
     pub fn do_completion_filter_to_source(&mut self, id: String) {
         // Phase 5.8.AD.4: body migrated.
-        self.editor.do_completion_filter_to_source(id);
+        self.mutate_editor(move |e| e.do_completion_filter_to_source(id));
     }
 
     /// CSM.K2: clear the active source filter. Phase 5.8.AD.4.
     pub fn do_completion_filter_clear(&mut self) {
-        self.editor.do_completion_filter_clear();
+        self.mutate_editor(|e| e.do_completion_filter_clear());
     }
 
     // Phase 5.8.AD.4: `refresh_docs_popup_for_selection`
@@ -266,7 +271,7 @@ impl App {
     /// body migrated to
     /// [`lattice_host::dispatch::Editor::snippet_variable_context`].
     pub(super) fn snippet_variable_context(&self) -> lattice_snippet::VariableContext {
-        self.editor.snippet_variable_context()
+        self.read_editor(move |e| e.snippet_variable_context())
     }
 
     /// CSM.5: resolve a candidate's snippet metadata by decoding
@@ -327,7 +332,7 @@ impl App {
     /// [`lattice_host::dispatch::Editor::active_language_id`].
     /// Delegate retained for App-side completion / LSP callers.
     pub(super) fn active_language_id(&self) -> String {
-        self.editor.active_language_id()
+        self.read_editor(move |e| e.active_language_id())
     }
 
     /// Effective completion config for `language` -- per-language

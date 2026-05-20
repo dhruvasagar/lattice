@@ -81,7 +81,8 @@ impl App {
     /// for oil edits (oil isn't an LSP-tracked buffer).
     /// 5.5.E.7.3: see [`lattice_host::dispatch::Editor::apply_edit_blocking`].
     pub(super) fn apply_edit_blocking(&mut self, edit: Edit) -> Result<AppliedEdit, RuntimeError> {
-        self.editor.apply_edit_blocking(edit)
+        // Slice 3c.final.E.2: route through `mutate_editor_with`.
+        self.mutate_editor_with(move |e| e.apply_edit_blocking(edit))
     }
 
     /// 5.5.E.7.3: see [`lattice_host::dispatch::Editor::apply_edit_batch_blocking`].
@@ -89,7 +90,8 @@ impl App {
         &mut self,
         edits: Vec<Edit>,
     ) -> Result<Vec<AppliedEdit>, RuntimeError> {
-        self.editor.apply_edit_batch_blocking(edits)
+        // Slice 3c.final.E.2: route through `mutate_editor_with`.
+        self.mutate_editor_with(move |e| e.apply_edit_batch_blocking(edits))
     }
 
     // 5.5.E.7.3: `apply_edit_to_oil` relocated to
@@ -105,7 +107,8 @@ impl App {
     /// directly for tighter assertions than `Action::Undo` permits.
     #[allow(dead_code)]
     pub(super) fn undo_blocking(&mut self) -> Result<Vec<AppliedEdit>, RuntimeError> {
-        self.editor.undo_blocking()
+        // Slice 3c.final.E.2: route through `mutate_editor_with`.
+        self.mutate_editor_with(|e| e.undo_blocking())
     }
 
     /// 5.5.E.7.3: see [`lattice_host::dispatch::Editor::redo_blocking`].
@@ -114,7 +117,8 @@ impl App {
     /// until tests / scripts that call it directly migrate.
     #[allow(dead_code)]
     pub(super) fn redo_blocking(&mut self) -> Result<Vec<AppliedEdit>, RuntimeError> {
-        self.editor.redo_blocking()
+        // Slice 3c.final.E.2: route through `mutate_editor_with`.
+        self.mutate_editor_with(|e| e.redo_blocking())
     }
 
     /// Vim's `J` / `gJ`: join the current line with the next. With
@@ -132,7 +136,8 @@ impl App {
     // 5.5.H -- bracketed-paste routes via `Action::PasteText`
     // through `Editor::dispatch`, no direct App caller remains.
     pub(super) fn do_paste(&mut self, before: bool) {
-        self.editor.do_paste(before);
+        // Slice 3c.final.E.2: route through `mutate_editor`.
+        self.mutate_editor(move |e| e.do_paste(before));
     }
 
     // 5.5.H: `do_paste_text`, `do_enter_block_visual_insert`,

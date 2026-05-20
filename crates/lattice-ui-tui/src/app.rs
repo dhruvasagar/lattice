@@ -303,6 +303,20 @@ pub struct App {
     /// the actor thread and read here -- identical contract,
     /// different writer.
     pub render_state: std::sync::Arc<arc_swap::ArcSwap<lattice_host::render_state::RenderState>>,
+    /// Phase 5.8.AF.5 / Slice 3c.final.E.1: renderer-owned clone
+    /// of the editor's `syntax_visible_spans_cell`. The cell is
+    /// the worker's output channel — written by
+    /// `lattice_host::highlights_worker::recompute`, read by
+    /// `FrameView::from_app`. Caching the `Arc` on App matches
+    /// the `render_state` pattern (slice 3c.atomic.A): pre-swap
+    /// this is a direct clone of `editor.syntax_visible_spans_cell`
+    /// at construction; post-swap the same Arc comes from the
+    /// actor handle. Reader code reads through this field instead
+    /// of `self.editor.syntax_visible_spans_cell` so the swap is
+    /// a one-line change to App's constructor.
+    pub syntax_visible_spans_cell: std::sync::Arc<
+        arc_swap::ArcSwap<lattice_host::render_state::VisibleSpans>,
+    >,
     /// Handle to the per-document actor (DESIGN.md §5.2.1, §5.7).
     /// The actor owns the writable `Document` (from `lattice-core`);
     /// mutations route through it; reads load a versioned snapshot.
@@ -929,14 +943,14 @@ pub use lattice_host::state::{
 impl std::fmt::Debug for App {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("App")
-            .field("cursor", &self.editor.cursor)
-            .field("scroll", &self.editor.scroll)
+            .field("cursor", &self.cursor())
+            .field("scroll", &self.ad().scroll)
             .field("should_quit", &self.editor.should_quit)
             .field("viewport_height", &self.editor.viewport_height)
-            .field("modal", &self.editor.modal)
-            .field("command_line", &self.editor.command_line)
+            .field("modal", &self.ad().modal)
+            .field("command_line", &self.command_line())
             .field("last_message", &self.editor.last_message)
-            .field("dirty", &self.editor.document.dirty())
+            .field("dirty", &self.ad().snapshot.dirty)
             .finish()
     }
 }
@@ -962,6 +976,134 @@ impl App {
         // `self.editor` field so 3c.atomic can sever the Editor
         // reference without disturbing reader call sites.
         self.render_state.load().active_document.clone()
+    }
+
+    /// Phase 5.8.AF.5 / Slice 3c.final.B (group 1): wait-free
+    /// snapshot of the pane-tree sub-state. Renderer code reads
+    /// `app.panes().tree.X()` instead of `app.editor.pane_tree.X()`.
+    /// Body matches `ad()` — one Arc clone off the same
+    /// `Arc<ArcSwap<RenderState>>` cell.
+    pub(crate) fn panes(
+        &self,
+    ) -> std::sync::Arc<lattice_host::render_state::PanesRenderState> {
+        self.render_state.load().panes.clone()
+    }
+
+    /// Phase 5.8.AF.5 / Slice 3c.final.B (group 1): wait-free
+    /// snapshot of the buffer-registry sub-state. Renderer code
+    /// reads `app.buffers().registry.X()` and
+    /// `app.buffers().uris.get(&id)` instead of reaching through
+    /// `app.editor.buffers.X()` / `app.editor.buffer_uris.get(...)`.
+    pub(crate) fn buffers(
+        &self,
+    ) -> std::sync::Arc<lattice_host::render_state::BuffersRenderState> {
+        self.render_state.load().buffers.clone()
+    }
+
+    /// Phase 5.8.AF.5 / Slice 3c.final.B (group 3): wait-free
+    /// snapshot of the picker sub-state. Renderer code reads
+    /// `app.picker_state().state.as_deref()` instead of
+    /// `app.editor.picker.as_ref()`. Named to avoid colliding with
+    /// the legacy `app.editor.picker` field name.
+    pub(crate) fn picker_state(
+        &self,
+    ) -> std::sync::Arc<lattice_host::render_state::PickerRenderState> {
+        self.render_state.load().picker.clone()
+    }
+
+    /// Phase 5.8.AF.5 / Slice 3c.final.B (group 3): wait-free
+    /// snapshot of the completion sub-state. Carries both the
+    /// in-buffer ghost popup (`insert`) and the cmdline
+    /// completion popup (`state`).
+    pub(crate) fn completion(
+        &self,
+    ) -> std::sync::Arc<lattice_host::render_state::CompletionRenderState> {
+        self.render_state.load().completion.clone()
+    }
+
+    /// Phase 5.8.AF.5 / Slice 3c.final.B (group 3): wait-free
+    /// snapshot of the popup sub-state. Renderer code reads
+    /// `app.popup().is_open()` / `.placement` / `.buffer_id`
+    /// instead of `app.editor.popup_buffer.is_some()` etc.
+    pub(crate) fn popup(
+        &self,
+    ) -> std::sync::Arc<lattice_host::render_state::PopupRenderState> {
+        self.render_state.load().popup.clone()
+    }
+
+    /// Phase 5.8.AF.5 / Slice 3c.final.E.2: routing helper for
+    /// editor mutations. Pre-swap: runs `f` against the in-process
+    /// `Editor` and publishes RenderState. Post-swap (when Editor
+    /// moves to the actor thread): the body delegates to
+    /// `self.editor_actor.mutate_blocking(Box::new(f))`. The
+    /// `Send + 'static` bounds are forward-compatible — every
+    /// caller already passes a closure that satisfies them today,
+    /// so the swap is a one-line change in this method's body.
+    /// Used to migrate `self.editor.X(args)` method call sites
+    /// across the renderer App.
+    pub(crate) fn mutate_editor<F>(&mut self, f: F)
+    where
+        F: FnOnce(&mut lattice_host::editor::Editor) + Send + 'static,
+    {
+        f(&mut self.editor);
+        self.read_editor(move |e| e.publish_render_state());
+    }
+
+    /// Variant of [`Self::mutate_editor`] for closures that
+    /// return a value (typically `Vec<RendererSignal>` from
+    /// host helpers). Same routing contract.
+    pub(crate) fn mutate_editor_with<F, R>(&mut self, f: F) -> R
+    where
+        F: FnOnce(&mut lattice_host::editor::Editor) -> R + Send + 'static,
+        R: Send + 'static,
+    {
+        let r = f(&mut self.editor);
+        self.read_editor(move |e| e.publish_render_state());
+        r
+    }
+
+    /// Slice 3c.final.E.swap: read-side helper for `&self`
+    /// methods that need to query editor state without mutating.
+    /// Pre-swap runs the closure against the in-process `Editor`;
+    /// post-swap the body becomes `self.editor_actor.with_editor(f)`.
+    pub(crate) fn read_editor<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&lattice_host::editor::Editor) -> R + Send + 'static,
+        R: Send + 'static,
+    {
+        f(&self.editor)
+    }
+
+    /// Slice 3c.final.E.5d: hot-field accessor for the active
+    /// document's cursor. Earns its place by call-site frequency
+    /// (rule of three: cursor has 8+ reader sites across
+    /// `dispatch`, `help`, `search`, `lsp`, the Debug impl). Post-
+    /// swap routes through `editor_actor.with_editor(|e| e.cursor)`
+    /// in one place instead of N. `Position` is `Copy` so this is
+    /// a value return, not an Arc clone.
+    pub(crate) fn cursor(&self) -> lattice_protocol::position::Position {
+        self.read_editor(|e| e.cursor)
+    }
+
+    /// Companion writer. Routes through `mutate_editor` so the
+    /// post-swap landing is a no-touch on call sites.
+    pub(crate) fn set_cursor(&mut self, pos: lattice_protocol::position::Position) {
+        self.mutate_editor(move |e| e.cursor = pos);
+    }
+
+    /// Slice 3c.final.E.5d: hot-field accessor for the active
+    /// document's buffer id. 5+ real reader sites across `lsp`,
+    /// `boot`, `lifecycle`. `BufferId` is `Copy`.
+    pub(crate) fn document_buffer_id(&self) -> crate::buffers::BufferId {
+        self.read_editor(|e| e.document_buffer_id)
+    }
+
+    /// Slice 3c.final.E.5d: hot-field accessor for the `:` line
+    /// command-buffer text. 5 reader sites across `cmdline`,
+    /// `search`, the Debug impl. Returns by value — `String`
+    /// clone — so the closure body is `Send + 'static`.
+    pub(crate) fn command_line(&self) -> String {
+        self.read_editor(|e| e.command_line.clone())
     }
 
     /// Thin renderer-side wrapper around
@@ -2545,7 +2687,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             app.buffer_uri(app.editor.document_buffer_id),
-            Some(&expected),
+            Some(expected),
             "path-bearing initial document must register URI eagerly"
         );
     }

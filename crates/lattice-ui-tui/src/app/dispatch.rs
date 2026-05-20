@@ -91,7 +91,7 @@ impl App {
     /// (`run_oil_invocation` / `run_read_only_motion` /
     /// `run_document_invocation`) are still hosted here.
     pub fn dispatch_blocking(&self, invocation: CommandInvocation) -> Result<Effect, RuntimeError> {
-        self.editor.dispatch_blocking(invocation)
+        self.read_editor(move |e| e.dispatch_blocking(invocation))
     }
 
     pub fn apply(&mut self, action: Action) {
@@ -148,9 +148,14 @@ impl App {
         // handled (motions resolve inside `editor.run_invocation`),
         // capturing after dispatch would compare the cursor to itself
         // and never trigger the dismiss.
-        let pre_active = self.editor.active_buffer;
-        let pre_cursor = self.editor.cursor;
-        let mut outcome = self.editor.dispatch(action.clone());
+        let pre_active = self.ad().buffer_kind;
+        let pre_cursor = self.cursor();
+        // Slice 3c.final.E.5d: pre-clone `action` so the closure
+        // can own its copy (needed for `Send + 'static`) while
+        // the outer `match action {}` at the tail still has access.
+        let action_for_dispatch = action.clone();
+        let mut outcome =
+            self.mutate_editor_with(move |e| e.dispatch(action_for_dispatch));
         // 5.5.G.23: drain any effects the host queued (e.g. from
         // host-side `Editor::run_invocation` producing
         // `Effect::SaveBuffer` / `Effect::OpenBuffer` / etc.). The host
@@ -179,7 +184,7 @@ impl App {
         // we don't keep firing actions against a tearing-down App.
         for follow_up in std::mem::take(&mut outcome.next_actions) {
             self.apply(follow_up);
-            if self.editor.should_quit {
+            if self.render_state.load().lifecycle.should_quit {
                 break;
             }
         }
@@ -339,7 +344,19 @@ impl App {
             // below.)
             | Action::LspDocumentSymbolRequest
             // 5.5.SNIPPET.1: `<C-x><C-s>` snippet expand migrated.
-            | Action::SnippetExpand => {}
+            | Action::SnippetExpand
+            // Phase 5.8.AF.5 / Slice 3c.final.C: renderer-side
+            // non-dispatch mutation lifts. Bodies live in
+            // `Editor::dispatch`'s match; the App wrapper just
+            // includes them in the grouped no-op band so the
+            // exhaustiveness check passes without splitting App's
+            // logic. Same pattern the other 5.5.G migrations use.
+            | Action::SetViewportHeight(_)
+            | Action::EnsureCursorVisible
+            | Action::RefreshPaneHighlights
+            | Action::DismissPopup
+            | Action::SetTerminalWidth(_)
+            | Action::AcknowledgeRedraw => {}
             // 5.5.LSP.5: workspace-symbol request migrated to
             // `Editor::dispatch`. Action carries the query string;
             // a data-bearing variant can't sit in the grouped
@@ -502,7 +519,7 @@ impl App {
             // App-side because do_help_follow_link reaches for
             // App-only link-target handlers (Source variant);
             // host short-circuits Help to no-op so App handles.
-            Action::FollowLink => match self.editor.active_buffer {
+            Action::FollowLink => match self.ad().buffer_kind {
                 BufferKind::Help => self.do_help_follow_link(),
                 BufferKind::Oil | BufferKind::FileTree | BufferKind::Document => {}
             },
@@ -526,7 +543,7 @@ impl App {
         // viewport and the restored (cursor, scroll) is already a
         // valid view -- it's the pair we captured pre-popup.
         let popup_dismissed = matches!(pre_active, BufferKind::Help)
-            && matches!(self.editor.active_buffer, BufferKind::Document);
+            && matches!(self.ad().buffer_kind, BufferKind::Document);
         if !popup_dismissed {
             self.ensure_cursor_visible();
         }
@@ -536,8 +553,8 @@ impl App {
         // and the doc cursor moved. Drop the popup -- it's
         // anchored to the prior symbol and is now stale.
         if popup_in_state_a
-            && self.editor.active_buffer == BufferKind::Document
-            && self.editor.cursor != pre_cursor
+            && self.ad().buffer_kind == BufferKind::Document
+            && self.cursor() != pre_cursor
         {
             self.dismiss_popup();
         }
@@ -568,7 +585,8 @@ impl App {
         // keystroke: see slice X1b (docs/dev/operations/
         // render-thread-discipline-remediation.md §X1b) for the
         // wake-bridge that closes that gap.
-        let tick_signals = self.editor.run_tick_pending();
+        // Slice 3c.final.E.3: route through `mutate_editor_with`.
+        let tick_signals = self.mutate_editor_with(|e| e.run_tick_pending());
         for signal in tick_signals {
             self.handle_renderer_signal(signal);
         }
@@ -594,8 +612,13 @@ impl App {
     /// `do_find_repeat`, `RepeatLastChange`) collapse on their own
     /// slice migration.
     pub(super) fn run_invocation(&mut self, inv: CommandInvocation) {
-        let mut out = lattice_host::dispatch::DispatchOutcome::default();
-        self.editor.run_invocation(inv, &mut out);
+        // Slice 3c.final.E.3: build `out` inside the closure and
+        // return it so the renderer can drain its effects/signals.
+        let mut out = self.mutate_editor_with(move |e| {
+            let mut out = lattice_host::dispatch::DispatchOutcome::default();
+            e.run_invocation(inv, &mut out);
+            out
+        });
         for effect in std::mem::take(&mut out.effects) {
             self.apply_effect_app_arms(effect);
         }
@@ -625,25 +648,29 @@ impl App {
     /// `run_invocation` router still routes here; collapses with
     /// the router on the keystone wire-up.
     fn run_oil_invocation(&mut self, inv: CommandInvocation) {
-        self.editor.run_oil_invocation(inv);
+        // Slice 3c.final.E.3: route through `mutate_editor`.
+        self.mutate_editor(move |e| e.run_oil_invocation(inv));
     }
 
     /// 5.5.G.23: body migrated to
     /// [`lattice_host::dispatch::Editor::run_file_tree_invocation`].
     fn run_file_tree_invocation(&mut self, inv: CommandInvocation) {
-        self.editor.run_file_tree_invocation(inv);
+        // Slice 3c.final.E.3: route through `mutate_editor`.
+        self.mutate_editor(move |e| e.run_file_tree_invocation(inv));
     }
 
     /// 5.5.G.23: body migrated to
     /// [`lattice_host::dispatch::Editor::run_help_invocation`].
     fn run_help_invocation(&mut self, inv: CommandInvocation) {
-        self.editor.run_help_invocation(inv);
+        // Slice 3c.final.E.3: route through `mutate_editor`.
+        self.mutate_editor(move |e| e.run_help_invocation(inv));
     }
 
     /// 5.5.G.23: body migrated to
     /// [`lattice_host::dispatch::Editor::run_read_only_motion`].
     fn run_read_only_motion(&mut self, inv: CommandInvocation) {
-        self.editor.run_read_only_motion(inv);
+        // Slice 3c.final.E.3: route through `mutate_editor`.
+        self.mutate_editor(move |e| e.run_read_only_motion(inv));
     }
 
     /// 5.5.G.23: body migrated to
@@ -652,8 +679,12 @@ impl App {
     /// (`do_play_macro`, `do_find_repeat`, etc.) collapse to host
     /// recursion on their own slice migration.
     fn run_document_invocation(&mut self, inv: CommandInvocation) {
-        let mut out = lattice_host::dispatch::DispatchOutcome::default();
-        self.editor.run_document_invocation(inv, &mut out);
+        // Slice 3c.final.E.3: build `out` inside the closure.
+        let mut out = self.mutate_editor_with(move |e| {
+            let mut out = lattice_host::dispatch::DispatchOutcome::default();
+            e.run_document_invocation(inv, &mut out);
+            out
+        });
         for effect in std::mem::take(&mut out.effects) {
             self.apply_effect_app_arms(effect);
         }
@@ -683,7 +714,9 @@ impl App {
         // dispatch wrapper drains via the renderer-coupled match arm
         // only — never re-running `handle_effect` and double-executing
         // host-migrated arms.
-        let outcome = self.editor.handle_effect(effect.clone());
+        // Slice 3c.final.E.3: route through `mutate_editor_with`.
+        let effect_for_host = effect.clone();
+        let outcome = self.mutate_editor_with(move |e| e.handle_effect(effect_for_host));
         self.apply_effect_app_arms(effect);
         for signal in outcome.renderer_signals {
             self.handle_renderer_signal(signal);
@@ -805,9 +838,9 @@ impl App {
             }
             Effect::LspLogClear { server_id } => self.do_lsp_log_clear(server_id.as_deref()),
             // 5.5.LSP.5: symbol helpers live on `Editor`.
-            Effect::LspDocumentSymbol => self.editor.lsp_document_symbol_request(),
+            Effect::LspDocumentSymbol => self.mutate_editor_with(move |e| e.lsp_document_symbol_request()),
             Effect::LspWorkspaceSymbol { query } => {
-                self.editor.lsp_workspace_symbol_request(&query)
+                self.mutate_editor_with(move |e| e.lsp_workspace_symbol_request(&query))
             }
             Effect::LspIncomingCalls => self.do_lsp_call_hierarchy_request(false),
             Effect::LspOutgoingCalls => self.do_lsp_call_hierarchy_request(true),
@@ -822,11 +855,11 @@ impl App {
             // live on `Editor`. The Effect routes here continue to
             // dispatch via `self.editor.<fn>()` until the Effect
             // table itself migrates.
-            Effect::LspSignatureHelp => self.editor.lsp_signature_help_request(),
-            Effect::LspComplete => self.editor.lsp_completion_request(),
+            Effect::LspSignatureHelp => self.mutate_editor_with(move |e| e.lsp_signature_help_request()),
+            Effect::LspComplete => self.mutate_editor_with(move |e| e.lsp_completion_request()),
             Effect::LspRename { new_name } => self.do_lsp_rename_request(&new_name),
             Effect::LspCodeAction => self.do_lsp_code_action_request(),
-            Effect::SnippetExpand => self.editor.do_snippet_expand_at_cursor(),
+            Effect::SnippetExpand => self.mutate_editor_with(move |e| e.do_snippet_expand_at_cursor()),
             Effect::ReloadSnippets => self.do_reload_snippets(),
             Effect::ToggleMode { mode_name } => self.toggle_mode_by_name(&mode_name),
             // 5.5.F.3: `DescribeEvents` / `DescribeEvent` /
@@ -880,8 +913,8 @@ impl App {
             // so the icon-glyph cells re-render. Oil reads the
             // toggle each frame and needs no rope work.
             RendererSignal::NerdFontsToggled => {
-                let nerd_fonts = self.editor.host_theme.nerd_fonts;
-                for id in self.editor.buffers.file_tree_ids() {
+                let nerd_fonts = self.render_state.load().theme.nerd_fonts;
+                for id in self.buffers().registry.file_tree_ids() {
                     self.set_file_tree_nerd_fonts(id, nerd_fonts);
                 }
             }

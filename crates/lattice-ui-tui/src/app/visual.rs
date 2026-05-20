@@ -31,7 +31,7 @@ impl App {
     // an LSP rename path) still call it. The delegate retires when
     // those helpers migrate host-side.
     pub(super) fn do_exit_visual(&mut self) {
-        self.editor.do_exit_visual();
+        self.mutate_editor_with(move |e| e.do_exit_visual());
     }
 }
 

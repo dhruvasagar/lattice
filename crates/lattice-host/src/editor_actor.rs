@@ -67,6 +67,22 @@ use crate::dispatch::{DispatchOutcome, RendererSignal};
 use crate::editor::Editor;
 use crate::render_state::RenderState;
 
+/// Error returned by the synchronous handle methods when the
+/// actor thread has shut down. Production code maps this to a
+/// fatal condition: the editor thread dying is unrecoverable.
+/// In tests, surfaces as a `panic!` via `unwrap` (acceptable —
+/// test fixtures keep the handle alive for their duration).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ActorGone;
+
+impl std::fmt::Display for ActorGone {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "editor actor thread has terminated")
+    }
+}
+
+impl std::error::Error for ActorGone {}
+
 /// Renderer-to-editor mailbox payload. Each variant corresponds
 /// to a way the renderer (or another task) drives the editor's
 /// state.
@@ -77,6 +93,58 @@ pub enum EditorCommand {
     /// are processed iteratively (same shape as
     /// [`crate::editor::Editor::dispatch`]'s caller-side drain).
     Apply(Action),
+    /// Synchronous variant of [`Self::Apply`]: dispatch the
+    /// action, then signal completion on `reply`. Phase 5.8.AF.5
+    /// / Slice 3c.final.E: used by the renderer's synchronous
+    /// `App::apply` wrapper so existing call sites that expect
+    /// to read editor-published state on the next line keep
+    /// working unchanged. The actor processes commands serially,
+    /// so awaiting this reply is a barrier — any previously-
+    /// queued commands (including signals) drain first.
+    ApplyAndReply {
+        action: Action,
+        reply: oneshot::Sender<()>,
+    },
+    /// Closure escape hatch (3c.final.E): run an arbitrary
+    /// mutation against `Editor` on the actor thread. Fire-and-
+    /// forget — no reply. Used by the renderer's `mutate_async`
+    /// helper for callsites that don't need a synchronous
+    /// barrier (e.g., LSP response handlers that simply stash a
+    /// cache and let the next publish flow downstream).
+    Mutate(Box<dyn FnOnce(&mut Editor) + Send>),
+    /// Synchronous variant of [`Self::Mutate`]: run the closure
+    /// against `Editor`, then signal completion. Used by the
+    /// majority of App-side helpers during the slice-E sweep;
+    /// the existing helper bodies move into the closure verbatim
+    /// and the caller blocks on `reply.recv()`. As helpers gain
+    /// typed `Action::*` variants over follow-up slices, their
+    /// callers retire `MutateAndReply` in favour of
+    /// `ApplyAndReply`.
+    MutateAndReply {
+        closure: Box<dyn FnOnce(&mut Editor) + Send>,
+        reply: oneshot::Sender<()>,
+    },
+    /// Read-side RPC (3c.final.E.swap): run a closure against
+    /// `&Editor` (immutable borrow) and reply with the boxed
+    /// result. The closure's return type is erased via
+    /// `Box<dyn Any + Send>` so the actor's command enum stays
+    /// non-generic; the caller's `with_editor<R>` helper
+    /// downcasts back to `R`. Used by every `&self`-receiver
+    /// helper on `App` / `GpuiApp` that previously did
+    /// `self.editor.X(...)` for a read.
+    Read {
+        closure: Box<dyn FnOnce(&Editor) -> Box<dyn std::any::Any + Send> + Send>,
+        reply: oneshot::Sender<Box<dyn std::any::Any + Send>>,
+    },
+    /// Read-and-mutate RPC (3c.final.E.swap): like `MutateAndReply`
+    /// but the closure returns a value. Used by `mutate_editor_with`
+    /// post-swap so closures returning `Vec<RendererSignal>` or
+    /// `Result<_, _>` still work. Same `Box<dyn Any>` erasure
+    /// pattern as [`Self::Read`].
+    MutateWithReply {
+        closure: Box<dyn FnOnce(&mut Editor) -> Box<dyn std::any::Any + Send> + Send>,
+        reply: oneshot::Sender<Box<dyn std::any::Any + Send>>,
+    },
     /// Apply a renderer-emitted `Effect` directly (bypasses
     /// dispatch). Used by Effect routers that already mapped
     /// the effect upstream.
@@ -183,12 +251,109 @@ impl EditorActorHandle {
         self.cmd_tx.send(cmd)
     }
 
-    /// Convenience: send an `Apply(action)` command.
+    /// Convenience: send an `Apply(action)` command. Fire-and-
+    /// forget — does not wait for completion. The renderer
+    /// keystroke handler uses this so the input loop returns
+    /// immediately; the dispatched action runs on the actor
+    /// thread and publishes RenderState when done (the existing
+    /// `paint_request` Notify wakes the GPUI peer's next paint).
     pub fn send_action(
         &self,
         action: Action,
     ) -> Result<(), mpsc::error::SendError<EditorCommand>> {
         self.send(EditorCommand::Apply(action))
+    }
+
+    /// Synchronous dispatch — blocks until the actor finishes
+    /// processing this action (and any cascade). Used by
+    /// `App::apply` so existing call sites that read editor-
+    /// derived state on the next line keep working. Returns
+    /// `Err` only if the actor died mid-await.
+    ///
+    /// Caller must NOT be inside a tokio runtime (the block_on
+    /// would panic). The renderer's main loop + App-side
+    /// helpers run on the renderer thread, which is non-tokio.
+    pub fn apply_blocking(&self, action: Action) -> Result<(), ActorGone> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.send(EditorCommand::ApplyAndReply {
+            action,
+            reply: reply_tx,
+        })
+        .map_err(|_| ActorGone)?;
+        reply_rx.blocking_recv().map_err(|_| ActorGone)
+    }
+
+    /// Closure escape hatch — synchronous: send the closure +
+    /// block until the actor runs it and publishes RS. Used by
+    /// App-side helpers during the slice-E sweep when the
+    /// helper's body mutates editor state directly. Each helper
+    /// wraps its body in one closure; the caller's read-back of
+    /// editor-derived state via `app.ad()` etc. sees the post-
+    /// mutation snapshot.
+    pub fn mutate_blocking(
+        &self,
+        closure: Box<dyn FnOnce(&mut Editor) + Send>,
+    ) -> Result<(), ActorGone> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.send(EditorCommand::MutateAndReply {
+            closure,
+            reply: reply_tx,
+        })
+        .map_err(|_| ActorGone)?;
+        reply_rx.blocking_recv().map_err(|_| ActorGone)
+    }
+
+    /// Closure escape hatch — fire-and-forget. For tokio task
+    /// callers that can't block (e.g., LSP response handlers).
+    pub fn mutate_async(
+        &self,
+        closure: Box<dyn FnOnce(&mut Editor) + Send>,
+    ) -> Result<(), ActorGone> {
+        self.send(EditorCommand::Mutate(closure))
+            .map_err(|_| ActorGone)
+    }
+
+    /// Read-side RPC (3c.final.E.swap): synchronously run a
+    /// closure against `&Editor` on the actor thread and return
+    /// the result. Used by every `&self`-receiver helper on
+    /// `App` / `GpuiApp` that needs to read editor state.
+    /// Internally uses `Box<dyn Any>` erasure to keep the
+    /// actor's command enum non-generic.
+    pub fn with_editor<R, F>(&self, f: F) -> R
+    where
+        R: Send + 'static,
+        F: FnOnce(&Editor) -> R + Send + 'static,
+    {
+        let (tx, rx) = oneshot::channel::<Box<dyn std::any::Any + Send>>();
+        let closure: Box<dyn FnOnce(&Editor) -> Box<dyn std::any::Any + Send> + Send> =
+            Box::new(move |e| Box::new(f(e)));
+        self.send(EditorCommand::Read {
+            closure,
+            reply: tx,
+        })
+        .expect("editor actor alive");
+        let any = rx.blocking_recv().expect("editor actor alive");
+        *any.downcast::<R>().expect("read RPC result type matches")
+    }
+
+    /// Sync mutate RPC with return value (3c.final.E.swap).
+    /// Used by `mutate_editor_with` post-swap: the closure
+    /// returns `R`; the actor publishes RS at its tail.
+    pub fn mutate_blocking_with<R, F>(&self, f: F) -> R
+    where
+        R: Send + 'static,
+        F: FnOnce(&mut Editor) -> R + Send + 'static,
+    {
+        let (tx, rx) = oneshot::channel::<Box<dyn std::any::Any + Send>>();
+        let closure: Box<dyn FnOnce(&mut Editor) -> Box<dyn std::any::Any + Send> + Send> =
+            Box::new(move |e| Box::new(f(e)));
+        self.send(EditorCommand::MutateWithReply {
+            closure,
+            reply: tx,
+        })
+        .expect("editor actor alive");
+        let any = rx.blocking_recv().expect("editor actor alive");
+        *any.downcast::<R>().expect("mutate RPC result type matches")
     }
 
     // ------------------------------------------------------------
@@ -367,6 +532,37 @@ async fn run_actor(
             EditorCommand::Apply(action) => {
                 let outcome = editor.dispatch(action);
                 drain_outcome(outcome, &mut editor, &signal_tx);
+            }
+            EditorCommand::ApplyAndReply { action, reply } => {
+                let outcome = editor.dispatch(action);
+                drain_outcome(outcome, &mut editor, &signal_tx);
+                // Signal completion after dispatch + cascade.
+                // Render-state already published by dispatch tail
+                // so the caller's next `render_state.load()` sees
+                // the new state.
+                let _ = reply.send(());
+            }
+            EditorCommand::Mutate(closure) => {
+                closure(&mut editor);
+                // The closure may or may not have published RS;
+                // for the renderer's read contract to hold, fire
+                // a publish here so the caller's next read sees
+                // any field mutation the closure made.
+                editor.publish_render_state();
+            }
+            EditorCommand::MutateAndReply { closure, reply } => {
+                closure(&mut editor);
+                editor.publish_render_state();
+                let _ = reply.send(());
+            }
+            EditorCommand::Read { closure, reply } => {
+                let any = closure(&editor);
+                let _ = reply.send(any);
+            }
+            EditorCommand::MutateWithReply { closure, reply } => {
+                let any = closure(&mut editor);
+                editor.publish_render_state();
+                let _ = reply.send(any);
             }
             EditorCommand::HandleEffect(effect) => {
                 let outcome = editor.handle_effect(effect);
@@ -603,6 +799,63 @@ mod tests {
             after.active_document.modal,
             lattice_grammar::ModalState::Insert
         ));
+    }
+
+    /// Slice 3c.final.E: `apply_blocking` dispatches the action,
+    /// blocks until the actor processes it, then returns. The
+    /// caller's next render_state read sees the post-dispatch
+    /// state.
+    #[test]
+    fn actor_apply_blocking_completes_synchronously() {
+        let editor = Editor::default();
+        let handle = spawn_editor_actor(editor);
+        let before = handle.render_state();
+        handle
+            .apply_blocking(Action::None)
+            .expect("apply blocking succeeds");
+        let after = handle.render_state();
+        assert!(
+            !Arc::ptr_eq(&before, &after),
+            "apply_blocking must publish a fresh RS before returning"
+        );
+    }
+
+    /// Slice 3c.final.E: `mutate_blocking` runs the closure and
+    /// fires `publish_render_state`. The mutation is visible
+    /// through the published RS after the call returns.
+    #[test]
+    fn actor_mutate_blocking_applies_closure_and_publishes() {
+        use lattice_protocol::position::Position;
+        let editor = Editor::default();
+        let handle = spawn_editor_actor(editor);
+        handle
+            .mutate_blocking(Box::new(|e| {
+                e.cursor = Position::new(9, 4);
+                e.scroll = 7;
+            }))
+            .expect("mutate blocking succeeds");
+        let rs = handle.render_state();
+        assert_eq!(rs.active_document.cursor, Position::new(9, 4));
+        assert_eq!(rs.active_document.scroll, 7);
+    }
+
+    /// Slice 3c.final.E: `mutate_async` is fire-and-forget; a
+    /// subsequent `apply_blocking` barrier ensures the mutation
+    /// has landed before the assertion.
+    #[test]
+    fn actor_mutate_async_applies_when_drained() {
+        use lattice_protocol::position::Position;
+        let editor = Editor::default();
+        let handle = spawn_editor_actor(editor);
+        handle
+            .mutate_async(Box::new(|e| e.cursor = Position::new(2, 1)))
+            .expect("mutate async succeeds");
+        // Barrier: serial command processing means this returns
+        // only after the prior Mutate runs.
+        handle
+            .apply_blocking(Action::None)
+            .expect("apply blocking barrier");
+        assert_eq!(handle.render_state().active_document.cursor, Position::new(2, 1));
     }
 
     #[test]

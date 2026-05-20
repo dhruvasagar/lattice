@@ -450,8 +450,6 @@ pub struct Editor {
     /// state when no text mutation has happened since the
     /// previous frame.
     pub last_parsed_text_version: u64,
-    /// Cache key validating visible_highlights contents.
-    pub visible_highlights_key: Option<crate::highlights::VisibleHighlightsKey>,
 
     /// Tree-sitter-shaped edit deltas accumulated since the
     /// last `maybe_reparse_syntax` call. Pushed by
@@ -472,17 +470,12 @@ pub struct Editor {
     pub document: DocumentHandle,
     pub snapshot_cache: SnapshotCache,
 
-    /// Per-line `StyledSpan`s for the currently visible
-    /// viewport, indexed from `[scroll, scroll +
-    /// viewport_height)`. Recomputed each frame by
-    /// `refresh_highlights` (called from the runtime before
-    /// drawing).
-    pub visible_highlights: Vec<Vec<StyledSpan>>,
     /// Per-frame snapshot of inactive panes' visible-window
     /// syntax highlights, keyed by pane index. Refreshed by
     /// `refresh_pane_highlights` before each draw so the
-    /// renderer can read via `&App`. The active pane uses
-    /// the live [`Self::visible_highlights`] field instead.
+    /// renderer can read via `&App`. The active pane reads
+    /// spans from [`Self::syntax_visible_spans_cell`] published
+    /// by the background `highlights_worker`.
     pub pane_highlights: std::collections::HashMap<usize, Vec<Vec<StyledSpan>>>,
     /// Active picker overlay. `None` outside picker mode.
     pub picker: Option<Picker>,

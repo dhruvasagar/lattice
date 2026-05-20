@@ -1067,10 +1067,16 @@ mod tests {
     fn backspace_after_popup_open_live_refilters() {
         let mut a = app_in_command_mode("describ");
         a.apply(Action::CommandLineCompleteOrAdvance);
+        // Phase 5.8.AF.6 / issue-3: opening the popup with multiple
+        // matches LCP-extends the cmdline (here from "describ" to
+        // "describe-"; every `describe-*` command shares that
+        // prefix). Backspace removes one byte off the EXTENDED
+        // cmdline -> "describe", not the pre-LCP "descri".
+        assert_eq!(a.editor.command_line, "describe-");
         let narrow_count = a.editor.completion_state.as_ref().unwrap().candidates.len();
         a.apply(Action::CommandLineBackspace);
         assert!(a.editor.completion_state.is_some());
-        assert_eq!(a.editor.command_line, "descri");
+        assert_eq!(a.editor.command_line, "describe");
         // Shorter prefix -> at least as many candidates.
         let widened = a.editor.completion_state.as_ref().unwrap().candidates.len();
         assert!(widened >= narrow_count);

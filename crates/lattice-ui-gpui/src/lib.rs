@@ -296,33 +296,15 @@ impl GpuiApp {
         self.editor.dismiss_popup();
     }
 
-    /// Refresh the active-document visible-spans cache. Phase
-    /// 5.8.G: routes through `Editor::refresh_highlights_window`
-    /// (host-side) so the GPUI peer shares the content-keyed
-    /// short-circuit + stale-snapshot HOLD with the TUI peer.
-    ///
-    /// The GPUI peer doesn't track folds yet (`fold_hash = 0`)
-    /// and doesn't have a per-frame viewport-height yet, so it
-    /// passes the document's full line count as the end. Once
-    /// pane splits + viewport tracking land (5.8.H+), this
-    /// updates to feed the active pane's viewport extent.
-    ///
-    /// Call this at the top of the renderer's per-frame paint
-    /// before reading `editor.visible_highlights`.
+    /// X2.6 compatibility shim: the background `highlights_worker`
+    /// now keeps the active-pane span cell up to date; the GPUI
+    /// peer no longer needs to drive a synchronous recompute. Kept
+    /// as a no-op so any external caller (smoke tests, demo code)
+    /// continues to compile. Production paint reads through
+    /// `render_state.syntax.visible_spans.load()`.
     pub fn refresh_highlights(&mut self) {
-        let syntax = self.editor.syntax.clone();
-        // 5.8.O: tighten the highlight range to the visible
-        // viewport (`[scroll, scroll + viewport_height)`) so the
-        // worker walks only what the user can see. For docs
-        // shorter than the viewport we clamp to line_count.
-        let line_count = self.editor.document.snapshot().buffer.line_count() as u32;
-        let end_line = self
-            .editor
-            .scroll
-            .saturating_add(self.editor.viewport_height.max(1))
-            .min(line_count);
-        self.editor
-            .refresh_highlights_window(syntax.as_ref(), end_line, 0);
+        // No-op; the worker subscribes to `Editor::highlight_wake`
+        // and republishes on every `publish_render_state`.
     }
 
     /// Auto-scroll the active pane so the cursor stays in the

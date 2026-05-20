@@ -2611,7 +2611,16 @@ fn compose_visible_lines_inner(
         let mut body = if is_messages_buffer {
             messages_line_spans(&line_text, &app.theme, buffer_w)
         } else {
-            let spans = app.highlights_for_buffer_line(line_idx);
+            // Slice X2.6: read worker-published spans through the
+            // FrameView snapshot (already loaded once in
+            // `FrameView::from_app`); legacy `app.editor.visible_highlights`
+            // + the `highlights_for_buffer_line` accessor were retired.
+            let scroll = view.app.ad().scroll;
+            let row = (line_idx >= scroll).then(|| (line_idx - scroll) as usize);
+            let spans: &[StyledSpan] = row
+                .and_then(|idx| view.visible_highlights.get(idx))
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
             render_styled_line(&line_text, spans, buffer_w)
         };
         // M.7.3.b: whitespace decoration pre-pass. Cheap when

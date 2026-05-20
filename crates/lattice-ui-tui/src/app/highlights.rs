@@ -1,149 +1,68 @@
 //! Tree-sitter syntax-highlight cache + per-frame refresh.
 //!
-//! `App` owns two caches that drive the renderer's coloured
-//! spans:
-//! - `visible_highlights` -- the active pane's spans for
-//!   `[scroll, scroll + viewport_height)`. Keyed by
-//!   `VisibleHighlightsKey` so a steady-state cursor blink
-//!   never re-walks the QueryCursor.
-//! - `pane_highlights` -- inactive Document panes' spans,
-//!   keyed by pane index. Recomputed only when the pane's
-//!   document text version drifts from its entry.
+//! Phase 5.8.AF.5 / Slice X2.6 retirement: the active-pane
+//! visible-spans cache (`Editor::visible_highlights` + its
+//! `VisibleHighlightsKey`) was deleted in favour of the worker-
+//! published `Editor::syntax_visible_spans_cell`
+//! (`lattice_host::highlights_worker`). Renderer paths now read
+//! directly from that cell via `render_state.syntax.visible_spans`;
+//! the App-side wrappers (`refresh_highlights`,
+//! `highlights_for_viewport_row`, `highlights_for_buffer_line`,
+//! `shift_highlights_for_edit`, `shift_spans_within_line`) were
+//! removed with their host-side equivalents.
 //!
-//! Methods that live here:
-//! - `refresh_highlights` (active-pane cache build /
-//!   stale-snapshot HOLD).
-//! - `refresh_pane_highlights` (inactive Document panes).
-//! - `highlights_for_viewport_row`,
-//!   `highlights_for_buffer_line` (read accessors the
-//!   renderer calls per row).
-//! - `shift_highlights_for_edit` /
-//!   `shift_spans_within_line` -- the post-edit pre-publish
-//!   cache shifters that keep spans line-aligned and
-//!   byte-aligned during the brief window before the
-//!   syntax worker publishes a fresh snapshot. Pure
-//!   ns-fast Vec splices.
-//! - `visible_buffer_line_extent` (helper that stretches
-//!   the highlight window past closed folds).
-//!
-//! What does NOT live here: the syntax actor itself
-//! (`lattice-syntax`), the QueryCursor walk
-//! (`Snapshot::highlight_lines`), the folds the extent
-//! helper consults (those live in `app/folds.rs`).
+//! What survives here:
+//! - `refresh_pane_highlights` -- inactive Document panes still
+//!   keep their own per-pane cache (the worker only publishes the
+//!   active pane's spans); thin wrapper around the host body.
+//! - `visible_buffer_line_extent` -- still used by inactive-pane
+//!   path to stretch the highlight window past closed folds.
 
 use lattice_syntax::StyledSpan;
 
-use super::{App, folds};
+use super::App;
 
-/// Cache key for `visible_highlights`. The renderer paints
-/// the spans every frame; the actual `highlight_lines`
-/// QueryCursor walk only fires when this key changes. So
-/// the cursor blinks but nothing else changes, so the key stays
-/// equal across frames and we never re-run the QueryCursor walk.
 impl App {
-    /// Slice C.3: keep `visible_highlights` line-aligned with the
-    /// current document immediately after an edit, before the
-    /// syntax worker publishes a fresh snapshot.
-    ///
-    /// `visible_highlights` is indexed by viewport row =
-    /// `buffer_line - scroll`. When an edit changes the line
-    /// count (line-delete, line-insert, multi-line replace), the
-    /// content at row N now corresponds to a different buffer
-    /// line than before, but the cached span entries don't shift
-    /// automatically. The renderer would paint pre-edit spans
-    /// onto post-edit content, producing the user-reported "old
-    /// span gaps appear as white characters on the new line"
-    /// flicker.
-    ///
-    /// Fix: derive the line-shift from the delta's positions and
-    /// apply it to `visible_highlights` as a Vec splice.
-    /// Lines above the edit are untouched. Lines at and below
-    /// the edit's start line are drained (delete) or padded with
-    /// empty placeholders (insert) -- but unchanged lines further
-    /// below still have correct spans at their NEW indices.
-    ///
-    /// Pure ns-fast: a Vec drain or insert of a few elements.
-    /// Only mutates the cache; doesn't touch the snapshot.
-    // 5.5.E.7.2: `App::shift_highlights_for_edit` deletes — sole
-    // prod caller (`App::publish_document_changed`) migrated host-
-    // side in E.7.2, so the App-side wrapper has zero remaining
-    // callers. Host body lives at
-    // [`lattice_host::dispatch::Editor::shift_highlights_for_edit`].
-
-    // 5.5.E.7.1: `shift_spans_within_line` relocated to
-    // [`lattice_host::dispatch::Editor::shift_spans_within_line`]
-    // (private host helper called only by
-    // `Editor::shift_highlights_for_edit`); App-side deleted entirely.
-
-    /// Refresh the active-pane visible-spans cache. Wraps the
-    /// `Snapshot::highlight_lines` walk with a content-keyed
-    /// short-circuit so steady-state frames pay roughly nothing.
-    ///
-    /// Cache key includes:
-    /// - `Arc::as_ptr` of the syntax snapshot (changes when the
-    ///   worker publishes a fresh tree).
-    /// - The snapshot's `text_version` (so post-publish edits
-    ///   that haven't reparsed yet still skip the walk -- see
-    ///   the HOLD path below).
-    /// - The viewport state (`scroll`, `viewport_height`).
-    /// - A fold hash (closed-fold changes alter the visible
-    ///   line set).
-    ///
-    /// On cache hit, returns immediately. On cache miss, decides
-    /// between recompute and HOLD: when the document has
-    /// advanced past the worker's published snapshot, the cached
-    /// spans (kept aligned by `shift_highlights_for_edit`) stay
-    /// in place until the worker publishes -- never paint
-    /// through an empty intermediate. Recomputing in that
-    /// window would walk against pre-edit data.
-    ///
-    /// Slice B.3 baseline: cache hit cost is one key compare +
-    /// fold hash (~50ns). Cache miss cost dominated by
-    /// `highlight_lines` (~178µs at 80 lines, rust grammar).
-    /// The cache hits ~100% in steady state (cursor blink, no
-    /// edits, no scroll), dropping per-frame cost from ~178µs
-    /// to noise floor.
-    ///
-    /// Implementation note: when the caller hasn't attached a
-    /// syntax handle (e.g. tests, boot before lang resolution),
-    /// the active pane's spans clear to empty and the key
-    /// resets, so the next reattach repopulates the cache.
-    /// Without this reset, an attach-then-detach-then-attach
-    /// pattern would compute against the new handle but key the
-    /// result against the old one, producing a stale cache hit.
-    /// Steady state (cursor blinking, no edit) → ~100% hit rate, dropping
-    /// per-frame cost from ~178µs to noise floor (key compare +
-    /// fold hash, ~50ns).
+    /// X2.6 compatibility shim: drives the worker's synchronous
+    /// `recompute` against the freshly-published `RenderState`.
+    /// Production paint paths go through the async worker (woken
+    /// by `Editor::highlight_wake` after every
+    /// `publish_render_state`); the sync version preserves the
+    /// pre-X2 contract that callers (tests, benches, anywhere off
+    /// the per-frame hot path) can force-fill the span cell and
+    /// immediately observe the result through
+    /// `render_state.syntax.visible_spans.load()`.
     pub fn refresh_highlights(&mut self) {
-        // 5.8.G: cache-key + HOLD + recompute logic lives host-
-        // side on `Editor::refresh_highlights_window`. App
-        // resolves the App-specific pieces (per-buffer syntax
-        // handle via buffer-locals routing, fold-aware end line,
-        // fold hash) and hands them in. Both renderer peers share
-        // the host body; the TUI peer adds folds + locals.
-        //
-        // M.3.2.c.4: route through the buffer-locals-backed
-        // accessor. For the active buffer this still resolves to
-        // `self.editor.syntax`; for future multi-buffer reads it
-        // routes through `buffer_locals`.
-        // 3c.atomic.D: read active-document state through the
-        // renderer-owned `render_state` cell. `refresh_highlights`
-        // runs in the TUI main loop after the apply/dispatch
-        // chain has published, so `ad` reflects the most recent
-        // active document. The fold list and the subsequent
-        // `refresh_highlights_window` mutation stay on the
-        // editor field -- folds aren't on ActiveDocumentRenderState
-        // yet, and the host method needs `&mut self`.
-        let ad = self.ad();
-        let syntax_handle = self
-            .document_syntax_for(ad.document_buffer_id)
-            .cloned();
-        let end = self
-            .visible_buffer_line_extent(ad.scroll, ad.viewport_height)
-            .saturating_add(1);
-        let fold_hash = folds::compute_fold_hash(&self.editor.folds);
-        self.editor
-            .refresh_highlights_window(syntax_handle.as_ref(), end, fold_hash);
+        // Publish first so the worker reads the latest viewport /
+        // scroll / fold-hash / text-version. (Production loop
+        // publishes once per dispatch; tests calling this in
+        // isolation need the explicit publish.)
+        self.editor.publish_render_state();
+        lattice_host::highlights_worker::recompute(
+            &self.editor.render_state,
+            &self.editor.syntax_visible_spans_cell,
+        );
+    }
+
+    /// X2.6 compatibility shim: returns the worker-published spans
+    /// for `line`, mapped through the active pane's `scroll`.
+    /// Renderer-internal code reads through `FrameView` instead
+    /// (already preloads the same Arc once per frame). This
+    /// accessor stays so test helpers + the few non-renderer
+    /// callers (e.g. fold-aware integration tests) don't break.
+    pub fn highlights_for_buffer_line(&self, line: u32) -> Vec<StyledSpan> {
+        let scroll = self.ad().scroll;
+        if line < scroll {
+            return Vec::new();
+        }
+        let offset = (line - scroll) as usize;
+        let rs = self.editor.render_state.load_full();
+        let spans = rs.syntax.visible_spans.load();
+        spans
+            .spans
+            .get(offset)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Last buffer-line index that ends up rendered when the
@@ -153,7 +72,7 @@ impl App {
     /// viewport has zero height or the buffer is empty -- the
     /// caller's `+1` then yields a non-empty range so
     /// `highlight_lines` doesn't short-circuit.
-    fn visible_buffer_line_extent(&self, scroll: u32, height: u32) -> u32 {
+    pub(crate) fn visible_buffer_line_extent(&self, scroll: u32, height: u32) -> u32 {
         let total_lines = self.editor.document.snapshot().buffer.line_count();
         if total_lines == 0 {
             return scroll;
@@ -188,462 +107,18 @@ impl App {
     /// when the document's `text_version` differs from the entry's
     /// cached version (cheap: one parse per inactive pane per
     /// changed document); the visible-window slice lands in
-    /// [`Self::pane_highlights`] keyed by pane index. The renderer
+    /// `Editor::pane_highlights` keyed by pane index. The renderer
     /// reads from there via `&App`.
     ///
-    /// Active pane is skipped (it uses [`Self::visible_highlights`]
-    /// directly). Panes whose document is the same as the active
-    /// document also fall through to `visible_highlights` -- a
-    /// single parse covers both panes.
+    /// Active pane is skipped (it uses the worker-published
+    /// `syntax_visible_spans_cell` directly via FrameView). Panes
+    /// whose document is the same as the active document also
+    /// fall through to the worker cell -- a single parse covers
+    /// both panes.
     pub fn refresh_pane_highlights(&mut self) {
         // 5.8.R: cache-rebuild body migrated to
         // `lattice_host::editor::Editor::refresh_pane_highlights`
-        // so the GPUI peer reaches the same path. Buffer-locals
-        // routing (`document_syntax_for`, version accessors) and
-        // mode types (`DocumentLastParsed*`,
-        // `DocumentLastSynced*`) already live host-side.
+        // so the GPUI peer reaches the same path.
         self.editor.refresh_pane_highlights();
-    }
-
-    /// Spans for the line at `viewport_row` (0-based, relative to the top of
-    /// the viewport). Empty slice if no syntax or the row is past EOF.
-    ///
-    /// Prefer [`Self::highlights_for_buffer_line`] when the renderer
-    /// is iterating the visible-line list under closed folds, since
-    /// `viewport_row` no longer maps to `scroll + row` once folds
-    /// hide interior lines.
-    pub fn highlights_for_viewport_row(&self, viewport_row: u32) -> &[StyledSpan] {
-        self.editor
-            .visible_highlights
-            .get(viewport_row as usize)
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
-    }
-
-    /// Spans for a specific buffer line. `refresh_highlights` populates
-    /// `visible_highlights` for the contiguous window
-    /// `[scroll, scroll + viewport_height)`; lines outside that window
-    /// (or far enough that the slot is missing) return an empty slice.
-    /// The renderer uses this for the active pane so closed folds
-    /// don't desync syntax styling -- viewport row 5 might be buffer
-    /// line 12 once a fold collapses lines 5..=11.
-    pub fn highlights_for_buffer_line(&self, line: u32) -> &[StyledSpan] {
-        // 3c.atomic.D: renderer-side read through `ad()`. The
-        // active pane's scroll is mirrored on
-        // `ActiveDocumentRenderState` and stays current across
-        // dispatch publishes.
-        let scroll = self.ad().scroll;
-        if line < scroll {
-            return &[];
-        }
-        let offset = (line - scroll) as usize;
-        self.editor
-            .visible_highlights
-            .get(offset)
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #![allow(clippy::unwrap_used, clippy::panic)]
-
-    use crate::app::Action;
-    use crate::app::test_helpers::{app_with, attach_test_syntax};
-    use lattice_protocol::edit::Edit;
-    use lattice_protocol::position::Position;
-
-    #[test]
-    fn refresh_highlights_caches_on_first_call() {
-        let mut a = app_with("fn main() {}", 5);
-        attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
-        assert!(a.editor.visible_highlights_key.is_none());
-        a.refresh_highlights();
-        assert!(a.editor.visible_highlights_key.is_some());
-    }
-
-    #[test]
-    fn refresh_highlights_clears_key_when_no_syntax() {
-        // No syntax handle attached -> visible_highlights_key
-        // stays None so a future syntax attach triggers a fresh
-        // recompute.
-        let mut a = app_with("fn main() {}", 5);
-        a.refresh_highlights();
-        assert!(a.editor.visible_highlights_key.is_none());
-        assert!(a.editor.visible_highlights.is_empty());
-    }
-
-    #[test]
-    fn refresh_highlights_cache_hit_on_unchanged_state() {
-        // Two consecutive calls with identical state. The second
-        // call's visible_highlights_key matches the first's, so
-        // visible_highlights doesn't need to be re-derived. The
-        // contract check: visible_highlights_key stays
-        // identical (same struct value) across the two calls.
-        let mut a = app_with("fn main() {}", 5);
-        attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
-        a.refresh_highlights();
-        let key1 = a.editor.visible_highlights_key;
-        a.refresh_highlights();
-        let key2 = a.editor.visible_highlights_key;
-        assert_eq!(key1, key2);
-    }
-
-    #[test]
-    fn refresh_highlights_cache_invalidates_on_scroll() {
-        let mut a = app_with("fn a() {}\nfn b() {}\nfn c() {}\nfn d() {}", 2);
-        attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
-        a.refresh_highlights();
-        let key1 = a.editor.visible_highlights_key;
-        a.editor.scroll = 2;
-        a.refresh_highlights();
-        let key2 = a.editor.visible_highlights_key;
-        assert_ne!(key1, key2, "scroll change must invalidate cache");
-    }
-
-    #[test]
-    fn refresh_highlights_cache_invalidates_on_viewport_resize() {
-        let mut a = app_with("fn main() {}", 5);
-        attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
-        a.refresh_highlights();
-        let key1 = a.editor.visible_highlights_key;
-        a.set_viewport_height(20);
-        a.refresh_highlights();
-        let key2 = a.editor.visible_highlights_key;
-        assert_ne!(key1, key2, "viewport resize must invalidate cache");
-    }
-
-    // ---- Regression tests for the three production bugs -------
-    //
-    // 1. Syntax worker silently dies because `Handle::try_current`
-    //    fails before the editor's main loop enters tokio context.
-    //    Symptom: edits never trigger reparses; spans stay anchored
-    //    to the seeded snapshot's bytes forever.
-    // 2. `<C-l>` clears `visible_highlights` but not the cache key,
-    //    so the next `refresh_highlights` finds the same key, hits
-    //    the cache, and returns the now-empty spans -- highlighting
-    //    visibly disappears until something else invalidates the
-    //    key (scroll change).
-    // 3. After an edit, the document advances but the syntax
-    //    worker may not have published yet. Pre-fix the cache key
-    //    only included the syntax snapshot's text_version; if the
-    //    snapshot was stale, the cache hit and stale spans got
-    //    painted on new bytes (positional staleness).
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn syntax_worker_actually_publishes_after_request_reparse() {
-        // Bug #1 regression: production callers MUST use
-        // `seeded_with_runtime`, otherwise the worker is never
-        // spawned and `request_reparse` sends to a dropped
-        // channel. This test exercises the worker round-trip
-        // end-to-end inside a real tokio context.
-        use lattice_core::Buffer;
-        use lattice_syntax::{Lang, Syntax, SyntaxHandle};
-        let mut syn = Syntax::for_language(Lang::Rust).unwrap().unwrap();
-        syn.parse_at("fn a() {}", 1);
-        let handle = SyntaxHandle::seeded_with_runtime(syn, &tokio::runtime::Handle::current());
-        let initial_version = handle.snapshot().text_version();
-        // Fire a reparse with a fresh buffer at version 2.
-        let new_buffer = Buffer::from_text("fn a() {}\nfn b() {}");
-        handle.request_reparse(initial_version, 2, new_buffer, Vec::new());
-        // Poll for the snapshot to update. With a real worker,
-        // this completes within milliseconds; we cap at 1 second
-        // so a regression to "worker never runs" fails fast.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
-        loop {
-            if handle.snapshot().text_version() == 2 {
-                break;
-            }
-            if std::time::Instant::now() > deadline {
-                panic!(
-                    "syntax worker did not publish a fresh snapshot within 1s -- \
-                     worker likely never spawned (bug #1 regression)"
-                );
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        }
-        // Confirm the new tree has both function items.
-        let snap = handle.snapshot();
-        let tree = snap.tree().unwrap();
-        assert_eq!(tree.root_node().child_count(), 2);
-    }
-
-    #[test]
-    fn redraw_screen_repopulates_visible_highlights() {
-        // Bug #2 regression: after `<C-l>`, the next
-        // `refresh_highlights` must recompute spans, not return
-        // the cleared (empty) spans via a cache hit.
-        let mut a = app_with("fn main() {}", 5);
-        attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
-        a.refresh_highlights();
-        let spans_before = a.editor.visible_highlights.clone();
-        assert!(!spans_before.is_empty());
-        // <C-l> should clear both spans + key.
-        a.apply(Action::RedrawScreen);
-        assert!(
-            a.editor.visible_highlights.is_empty(),
-            "<C-l> should clear visible_highlights synchronously"
-        );
-        assert!(
-            a.editor.visible_highlights_key.is_none(),
-            "<C-l> must clear the cache key too -- otherwise the next refresh hits cache"
-        );
-        // Next refresh must recompute, not hit cache and return
-        // the cleared spans.
-        a.refresh_highlights();
-        assert!(
-            !a.editor.visible_highlights.is_empty(),
-            "refresh_highlights after <C-l> must recompute spans -- bug-#2 regression"
-        );
-    }
-
-    #[test]
-    fn refresh_highlights_holds_spans_while_worker_catches_up() {
-        // Slice C.3: when document advances but syntax worker
-        // hasn't published yet, refresh_highlights must HOLD the
-        // existing visible_highlights instead of recomputing
-        // against stale data. Combined with shift_highlights_
-        // for_edit (which keeps line indices aligned), spans
-        // never go through an empty/wrong intermediate state --
-        // unchanged-content lines stay correctly highlighted
-        // continuously throughout the worker window.
-        let mut a = app_with("fn main() {}", 5);
-        attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
-        a.refresh_highlights();
-        assert!(!a.editor.visible_highlights.is_empty());
-        let line0_spans_before = a.editor.visible_highlights[0].clone();
-        // Apply an edit that adds a new line below line 0.
-        // Without a real worker (no tokio runtime in lib tests),
-        // the syntax snapshot stays at the old version -- the
-        // exact shape of the in-flight-worker window in
-        // production.
-        a.apply_edit_blocking(Edit::insert(Position::new(0, 12), "\nfn b() {}"))
-            .unwrap();
-        a.maybe_reparse_syntax();
-        a.refresh_highlights();
-        // Line 0's content is unchanged by the edit; its spans
-        // must be preserved. shift_highlights_for_edit inserted
-        // an empty placeholder at index 1 (the new line) without
-        // disturbing index 0.
-        assert!(
-            !a.editor.visible_highlights.is_empty(),
-            "refresh_highlights must NOT drop spans during the worker window"
-        );
-        assert_eq!(
-            a.editor.visible_highlights[0], line0_spans_before,
-            "line 0's spans must be preserved -- its content didn't change"
-        );
-        // The new line 1 has an empty placeholder spans entry
-        // (will be filled in when the worker publishes).
-        assert!(
-            a.editor.visible_highlights.len() >= 2,
-            "shift should have inserted a placeholder for the new line"
-        );
-    }
-
-    // ---- C.3 line-delete / line-insert shift regressions ------
-
-    #[test]
-    fn line_delete_shifts_visible_highlights_to_keep_below_lines_aligned() {
-        // User-reported scenario: "comments below the deleted
-        // line briefly turn white." Cause: visible_highlights[N]
-        // was for the OLD line at index N, painted on NEW line N
-        // (which is OLD line N+1 after delete). If OLD line N's
-        // spans had gaps (e.g. code spans), the gaps render as
-        // uncolored = white characters on the new content.
-        //
-        // Fix: shift_highlights_for_edit drains the deleted
-        // line's spans, so visible_highlights[N] is now what was
-        // at index N+1 -- correctly aligned with the new
-        // content at line N.
-        let mut a = app_with("fn a() {}\nfn b() {}\nfn c() {}\nfn d() {}", 10);
-        attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
-        a.refresh_highlights();
-        let line0_spans = a.editor.visible_highlights[0].clone();
-        let line2_spans_before_delete = a.editor.visible_highlights[2].clone();
-        // Delete the entire line 1 (`fn b() {}\n` at bytes
-        // [10..20]).
-        let range = lattice_protocol::Range::new(Position::new(1, 0), Position::new(2, 0));
-        a.apply_edit_blocking(Edit::delete(range)).unwrap();
-        // visible_highlights should have one fewer entry.
-        // Line 0's spans unchanged. Line 1 (post-delete) now
-        // has the spans that USED to be at index 2.
-        assert_eq!(a.editor.visible_highlights[0], line0_spans);
-        assert_eq!(
-            a.editor.visible_highlights[1], line2_spans_before_delete,
-            "line below the deleted line must inherit its prior spans -- \
-             this is what eliminates the gray->white->gray flicker"
-        );
-    }
-
-    #[test]
-    fn line_insert_at_end_preserves_start_line_spans() {
-        // `o` style insert: newline at end of current line.
-        // Pre-edit line content unchanged; the new line is
-        // appended below.
-        let mut a = app_with("fn main() {}", 10);
-        attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
-        a.refresh_highlights();
-        let line0_spans = a.editor.visible_highlights[0].clone();
-        // Insert "\nfn b() {}" at end of line 0 (byte 12).
-        a.apply_edit_blocking(Edit::insert(Position::new(0, 12), "\nfn b() {}"))
-            .unwrap();
-        // Line 0's spans preserved at index 0; empty
-        // placeholder inserted at index 1.
-        assert_eq!(a.editor.visible_highlights[0], line0_spans);
-        assert!(
-            a.editor.visible_highlights.len() >= 2,
-            "line insert should add a placeholder entry"
-        );
-        assert!(
-            a.editor.visible_highlights[1].is_empty(),
-            "new line's placeholder should be empty until worker publishes"
-        );
-    }
-
-    #[test]
-    fn line_insert_at_start_shifts_existing_spans_down() {
-        // `O` style insert: newline at start of current line.
-        // The existing line's content moves to the next index;
-        // the new (empty) line takes the original index.
-        let mut a = app_with("fn main() {}", 10);
-        attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
-        a.refresh_highlights();
-        let line0_spans = a.editor.visible_highlights[0].clone();
-        // Insert "\n" at start of line 0 (byte 0). After:
-        // line 0 = "" (new), line 1 = "fn main() {}" (old).
-        a.apply_edit_blocking(Edit::insert(Position::new(0, 0), "\n"))
-            .unwrap();
-        // visible_highlights[0] is now empty (placeholder for
-        // new line); visible_highlights[1] has the original
-        // spans.
-        assert!(
-            a.editor.visible_highlights[0].is_empty(),
-            "new empty line's placeholder at index 0"
-        );
-        assert_eq!(
-            a.editor.visible_highlights[1], line0_spans,
-            "original line content moved to index 1"
-        );
-    }
-
-    #[test]
-    fn inline_edit_byte_shifts_spans_on_affected_line() {
-        // Slice C.4: `>>` style indent — insert at line start —
-        // must byte-shift each span on the affected line by the
-        // inserted byte count. Without this, held spans paint
-        // colors on the new whitespace bytes and the recompute
-        // transitions to "default color on whitespace" --
-        // visible flicker. With this, spans line up with new
-        // byte positions on frame N+1, identical to what the
-        // recompute will produce on frame N+2 → no transition.
-        let mut a = app_with("fn main() {}", 10);
-        attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
-        a.refresh_highlights();
-        let len_before = a.editor.visible_highlights.len();
-        let line0_before = a.editor.visible_highlights[0].clone();
-        // Insert "    " at start of line 0 (mimics >> indent).
-        a.apply_edit_blocking(Edit::insert(Position::new(0, 0), "    "))
-            .unwrap();
-        // Line count unchanged; visible_highlights length stays.
-        assert_eq!(a.editor.visible_highlights.len(), len_before);
-        // Each span on line 0 should have shifted right by 4 --
-        // they were entirely after byte 0 (the edit point).
-        let line0_after = &a.editor.visible_highlights[0];
-        assert_eq!(
-            line0_after.len(),
-            line0_before.len(),
-            "no spans dropped (none crossed byte 0)"
-        );
-        for (before, after) in line0_before.iter().zip(line0_after.iter()) {
-            assert_eq!(after.start, before.start + 4, "start shifted by 4");
-            assert_eq!(after.end, before.end + 4, "end shifted by 4");
-            assert_eq!(after.style, before.style, "style preserved");
-        }
-    }
-
-    #[test]
-    fn inline_edit_byte_shifts_spans_after_edit_point_only() {
-        // Insert in the middle of a line shifts only spans whose
-        // start is at or past the edit point. Spans entirely
-        // before the edit are unchanged.
-        let mut a = app_with("fn main() { let x = 1; }", 10);
-        attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
-        a.refresh_highlights();
-        let line0_before = a.editor.visible_highlights[0].clone();
-        // Insert "abc" at byte 12 (between "{ " and "let").
-        a.apply_edit_blocking(Edit::insert(Position::new(0, 12), "abc"))
-            .unwrap();
-        let line0_after = &a.editor.visible_highlights[0];
-        // For each span, classify based on its position relative
-        // to byte 12. Spans with end <= 12 unchanged. Spans
-        // with start >= 12 shifted by +3.
-        for (before, after) in line0_before.iter().zip(line0_after.iter()) {
-            if before.end <= 12 {
-                assert_eq!(after.start, before.start, "before-edit span unchanged");
-                assert_eq!(after.end, before.end);
-            } else if before.start >= 12 {
-                assert_eq!(after.start, before.start + 3, "after-edit span shifted");
-                assert_eq!(after.end, before.end + 3);
-            }
-        }
-    }
-
-    #[test]
-    fn inline_edit_extends_crossing_span() {
-        // Span overlapping the edit point gets its end extended
-        // (or contracted) to track the resized content. Start
-        // stays put because the prefix bytes are preserved.
-        let mut a = app_with("fn longname() {}", 10);
-        attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
-        a.refresh_highlights();
-        // Find the span covering "longname" -- it crosses any
-        // mid-identifier insert.
-        let line0_before = a.editor.visible_highlights[0].clone();
-        // Insert "X" at byte 6 (mid-"longname": "long" + "X" +
-        // "name").
-        a.apply_edit_blocking(Edit::insert(Position::new(0, 6), "X"))
-            .unwrap();
-        let line0_after = &a.editor.visible_highlights[0];
-        // For each span, if it crossed byte 6, its end should
-        // have extended by 1 while start stayed.
-        for (before, after) in line0_before.iter().zip(line0_after.iter()) {
-            if before.start < 6 && before.end > 6 {
-                assert_eq!(after.start, before.start, "crossing span: start preserved");
-                assert_eq!(
-                    after.end,
-                    before.end + 1,
-                    "crossing span: end extended by 1"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn inline_delete_contracts_spans() {
-        // Delete bytes from a line: spans after the delete shift
-        // left; spans crossing the delete contract their end.
-        let mut a = app_with("fn main() { let xx = 1; }", 10);
-        attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
-        a.refresh_highlights();
-        let line0_before = a.editor.visible_highlights[0].clone();
-        // Delete byte 17 ("x" -- one of the two chars in "xx").
-        let range = lattice_protocol::Range::new(Position::new(0, 17), Position::new(0, 18));
-        a.apply_edit_blocking(Edit::delete(range)).unwrap();
-        let line0_after = &a.editor.visible_highlights[0];
-        for (before, after) in line0_before.iter().zip(line0_after.iter()) {
-            if before.end <= 17 {
-                assert_eq!(after.start, before.start, "before-delete span unchanged");
-                assert_eq!(after.end, before.end);
-            } else if before.start >= 18 {
-                assert_eq!(
-                    after.start,
-                    before.start - 1,
-                    "after-delete span shifted left"
-                );
-                assert_eq!(after.end, before.end - 1);
-            }
-        }
     }
 }

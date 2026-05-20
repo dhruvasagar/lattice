@@ -185,22 +185,34 @@ impl<'a> FrameView<'a> {
 /// stays wait-free behind its own `ArcSwap` (audit slice 2).
 pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) {
     // Vertico-style layout (DESIGN.md §5.11.3, §5.9.7): when the
-    // cmdline completion popup OR the picker is open, an extra row
-    // band sits below the cmdline holding the candidate list. The
-    // selected candidate sits visually adjacent to the prompt
-    // (above for completion, below for picker), alternatives
-    // fanning away. Without either open the layout is the standard
+    // cmdline completion popup OR the picker is open in
+    // minibuffer mode, an extra row band sits below the cmdline
+    // holding the candidate list. The selected candidate sits
+    // visually adjacent to the prompt (above for completion,
+    // below for picker), alternatives fanning away. Without
+    // either open the layout is the standard
     // buffer / mode-line / cmdline three.
     //
     // Picker takes precedence over completion when both are open
     // (only one is reachable interactively at a time, but the
     // ordering matters for layout sizing).
-    let picker_rows = app
-        .editor
-        .picker
-        .as_ref()
-        .map(|p| popup_height(p.candidates.len().max(1)))
-        .unwrap_or(0);
+    //
+    // `picker.display` (config) selects whether the picker uses
+    // this minibuffer-anchored layout or a centred popup overlay
+    // floating over the buffer. Default `"minibuffer"`. In
+    // `"popup"` mode the picker does NOT claim the cmdline row
+    // and does NOT allocate an extra band -- the centered
+    // overlay is drawn on top of the buffer area instead.
+    let picker_is_minibuffer = picker_display_is_minibuffer(app);
+    let picker_rows = if picker_is_minibuffer {
+        app.editor
+            .picker
+            .as_ref()
+            .map(|p| popup_height(p.candidates.len().max(1)))
+            .unwrap_or(0)
+    } else {
+        0
+    };
     let completion_rows = app
         .editor
         .completion_state
@@ -230,11 +242,11 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) {
 
     draw_panes(frame, chunks[0], app, snap);
     draw_mode_line(frame, chunks[1], app, snap);
-    // Picker query takes over the cmdline row when active; the
-    // user types in the picker's own query buffer, not the `:`
-    // line, so the cmdline / echo content is hidden until the
-    // picker dismisses.
-    if app.editor.picker.is_some() {
+    // Picker query claims the cmdline row only in minibuffer
+    // mode. In popup mode the cmdline / echo content stays
+    // visible and the picker query renders inside the overlay
+    // instead.
+    if app.editor.picker.is_some() && picker_is_minibuffer {
         draw_picker_prompt(frame, chunks[2], app);
     } else {
         draw_command_or_echo(frame, chunks[2], app);
@@ -256,11 +268,20 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) {
         draw_help_overlay(frame, chunks[0], app, snap);
     }
     // Picker candidate list (precedence over completion popup --
-    // only one is interactive at a time).
+    // only one is interactive at a time). Only the minibuffer
+    // display mode uses the bottom band; the popup mode draws
+    // its own self-contained overlay below.
     if picker_rows > 0 {
         draw_picker_candidates(frame, chunks[3], app);
     } else if completion_rows > 0 {
         draw_completion_popup(frame, chunks[3], app);
+    }
+    // Picker popup overlay -- only drawn when `picker.display`
+    // is `"popup"` and a picker is open. Floats centered over
+    // the buffer area (chunks[0]) so the user still sees the
+    // mode line and any echo / cmdline content underneath.
+    if app.editor.picker.is_some() && !picker_is_minibuffer {
+        draw_picker_overlay(frame, chunks[0], app);
     }
     // Insert-mode completion popup overlay (Phase 4.2.g.1).
     // Anchored at the cursor; floats over the buffer; doesn't
@@ -866,6 +887,130 @@ fn draw_picker_candidates(frame: &mut Frame, area: Rect, app: &App) {
         .collect();
     let para = Paragraph::new(visible);
     frame.render_widget(para, area);
+}
+
+/// Reads `picker.display` from the typed-options registry and
+/// returns `true` iff the user wants vertico-style (default).
+/// Unknown / missing values fall back to the design default
+/// rather than panicking -- consistency with the validator's
+/// behaviour at parse time.
+fn picker_display_is_minibuffer(app: &App) -> bool {
+    app.editor
+        .config
+        .get_typed::<lattice_config::core_options::PickerDisplay>()
+        .map(|s| s.as_str() != "popup")
+        .unwrap_or(true)
+}
+
+/// Centered overlay rendering of the picker for the
+/// `picker.display = "popup"` mode. Layout inside the overlay:
+///
+///   line 1: title (`p.title`) + count `(n / m)`
+///   line 2: prompt `> <query>`
+///   line 3: separator
+///   line 4..: candidate list (vertico-style, selected row
+///            at the top so the eye tracks from prompt to
+///            selection identically to minibuffer mode)
+///
+/// Sizing mirrors the help-popup convention so the picker
+/// feels like part of the same overlay family. The overlay is
+/// painted on top of [`Clear`] so buffer content underneath
+/// doesn't bleed through.
+fn draw_picker_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
+    let Some(p) = app.editor.picker.as_ref() else {
+        return;
+    };
+    // Cap width at 80 cells / 70% of the buffer area; cap
+    // height at 18 rows including the title + prompt + sep.
+    let cand_count = p.candidates.len().max(1) as u16;
+    let max_w = buffer_area.width.saturating_sub(4).min(80);
+    let max_h = buffer_area.height.saturating_sub(4).min(18);
+    let height = (cand_count + 3).min(max_h).max(5);
+    let width = max_w.max(40).min(buffer_area.width.saturating_sub(2));
+    let x = buffer_area.x + buffer_area.width.saturating_sub(width) / 2;
+    let y = buffer_area.y + buffer_area.height.saturating_sub(height) / 3;
+    let area = Rect {
+        x,
+        y,
+        width,
+        height,
+    };
+
+    frame.render_widget(Clear, area);
+    let block = Block::default().borders(Borders::ALL).title(format!(
+        " {}  ({} / {}) ",
+        p.title,
+        if p.candidates.is_empty() {
+            0
+        } else {
+            p.selected + 1
+        },
+        p.candidates.len(),
+    ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    // Slice inner into prompt (row 0) + separator (row 1) +
+    // candidate band (remaining). Constraints rather than
+    // hand-arithmetic so terminal resizes degrade cleanly.
+    let inner_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(vec![
+            Constraint::Length(1), // prompt
+            Constraint::Length(1), // separator
+            Constraint::Min(1),    // candidate list
+        ])
+        .split(inner);
+
+    let prompt = Paragraph::new(Line::from(vec![
+        Span::styled(
+            "> ",
+            TuiStyle::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(p.query.clone()),
+    ]));
+    frame.render_widget(prompt, inner_chunks[0]);
+
+    let sep_text = "─".repeat(inner_chunks[1].width as usize);
+    let sep = Paragraph::new(Line::from(Span::styled(
+        sep_text,
+        TuiStyle::default().fg(Color::DarkGray),
+    )));
+    frame.render_widget(sep, inner_chunks[1]);
+
+    let cand_area = inner_chunks[2];
+    if p.candidates.is_empty() {
+        let empty = Paragraph::new(Line::from(Span::styled(
+            "  (no matches)",
+            TuiStyle::default().fg(Color::DarkGray),
+        )));
+        frame.render_widget(empty, cand_area);
+        return;
+    }
+    let visible_count = cand_area.height as usize;
+    if visible_count == 0 {
+        return;
+    }
+    // Selected row stays at the TOP of the band -- same eye
+    // path as the minibuffer mode (prompt above, selection
+    // adjacent below).
+    let scroll = if p.selected < visible_count {
+        0
+    } else {
+        p.selected + 1 - visible_count
+    };
+    let visible: Vec<Line> = p
+        .candidates
+        .iter()
+        .enumerate()
+        .skip(scroll)
+        .take(visible_count)
+        .map(|(i, c)| candidate_to_line(c, i == p.selected, cand_area.width))
+        .collect();
+    let para = Paragraph::new(visible);
+    frame.render_widget(para, cand_area);
 }
 
 /// `BufferDisplay::Split` and future tab / window variants per

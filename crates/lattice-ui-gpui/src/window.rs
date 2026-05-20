@@ -125,6 +125,20 @@ fn style_at(spans: &[lattice_syntax::StyledSpan], byte: usize) -> SyntaxStyle {
     SyntaxStyle::Default
 }
 
+/// Reads the typed `picker.display` option and returns `true` iff
+/// the user wants the vertico-style minibuffer layout (default).
+/// Unknown / missing values fall back to the design default rather
+/// than panicking -- the validator already gates set-time. Matches
+/// the TUI peer's `picker_display_is_minibuffer` so both renderers
+/// agree on the same source of truth.
+fn picker_display_is_minibuffer(app: &GpuiApp) -> bool {
+    app.editor
+        .config
+        .get_typed::<lattice_config::core_options::PickerDisplay>()
+        .map(|s| s.as_str() != "popup")
+        .unwrap_or(true)
+}
+
 /// Resolve the diagnostic gutter glyph + colour for a severity by
 /// reading the host's `Theme` (the same source the TUI peer uses
 /// via `theme::diagnostic_glyph_and_style`). Returns the glyph
@@ -713,17 +727,48 @@ impl Render for EditorView {
         // text materialisation cost (`snapshot.text()` +
         // line split) -- the prime suspect for per-frame waste.
         let frame_start = std::time::Instant::now();
+        // Read `picker.display` early so the viewport-height
+        // recompute below can subtract the picker strip's rows
+        // from the buffer area when the picker is open in
+        // minibuffer mode. Re-derived later in the same render
+        // body for the overlay-vs-strip branch.
+        let picker_use_minibuffer = picker_display_is_minibuffer(&self.app);
         // 5.8.T: per-frame viewport-height recompute from the
-        // window's current pixel bounds. `text_sm` lands at ~16px
-        // per row in the default font; subtract a row for the
-        // status line + a row for the global minibuffer footer.
-        // `window.viewport_size()` returns `Size<Pixels>` (gpui
-        // 0.2.2). On resize, this picks up the new size on the
-        // next frame — no event subscription required.
+        // window's current pixel bounds. The row height MUST
+        // match what `EditorElement` actually paints with
+        // (`font_size * 1.3`) — using a smaller estimate
+        // overcounts visible rows, making `viewport_height` too
+        // large, which lets the cursor scroll past the visible
+        // area before the host's clamp triggers (Phase 5.8.AF.6
+        // QoL fix: cursor disappearing off the bottom edge).
+        //
+        // `text_sm` in GPUI is 0.875 rem and EditorElement uses
+        // a 1.3 line-height multiplier; deriving from
+        // `window.rem_size()` keeps the estimate in sync if the
+        // user later changes the rem base.
+        //
+        // `chrome_rows` shrinks the buffer area by however many
+        // non-buffer rows the column carries: the status row at
+        // the bottom is always 1; the picker minibuffer strip
+        // (prompt + candidate band) adds more rows when the
+        // user has `picker.display = "minibuffer"` and the
+        // picker is open.
         let viewport_px = window.viewport_size();
-        let estimated_row_px = 16.0_f32;
+        let rem = f32::from(window.rem_size());
+        let font_size_px = rem * 0.875; // text_sm()
+        let estimated_row_px = font_size_px * 1.3; // matches EditorElement::line_height
         let total_rows = (f32::from(viewport_px.height) / estimated_row_px).floor() as i32;
-        let chrome_rows = 2; // status line + minibuffer
+        let picker_strip_rows: i32 = if picker_use_minibuffer {
+            self.app
+                .editor
+                .picker
+                .as_ref()
+                .map(|p| 1 + p.candidates.len().min(10) as i32) // 1 prompt + up to 10 cands
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        let chrome_rows = 1 + picker_strip_rows; // status row + picker strip if any
         let new_viewport = (total_rows - chrome_rows).max(1) as u32;
         // 3c.atomic.H: route through `App::set_viewport_height`,
         // which clamps to >= 1, runs `ensure_cursor_visible`,
@@ -914,8 +959,22 @@ impl Render for EditorView {
                     )
             });
 
-        let picker_overlay: Option<gpui::Div> = self.app.editor.picker.as_ref().map(|picker| {
-            let max_visible = 20usize;
+        // `picker.display` selects the picker UI shape. `"popup"`
+        // floats a centred overlay over the buffer area; the
+        // default `"minibuffer"` mirrors the TUI vertico layout:
+        // the candidate band sits at the very bottom with the
+        // prompt row directly above it, both *below* the status
+        // row (the GPUI equivalent of the TUI mode-line / cmdline
+        // pair). The two modes are mutually exclusive -- only the
+        // one matching the config gets built and inserted into
+        // the root. `picker_use_minibuffer` was already computed
+        // at the top of `render` so the viewport-height
+        // recompute could subtract the strip's rows.
+        let picker_overlay: Option<gpui::Div> = (!picker_use_minibuffer)
+            .then(|| self.app.editor.picker.as_ref())
+            .flatten()
+            .map(|picker| {
+            let max_visible = 30usize;
             let total = picker.candidates.len();
             let window_start = picker
                 .selected
@@ -975,11 +1034,20 @@ impl Render for EditorView {
                     if let Some(bg) = row_bg { row.bg(bg) } else { row }
                 })
                 .collect();
+            // Width sizing: file pickers carry long paths (often
+            // 60+ chars) and `:picker grep` adds a path:line
+            // prefix column. The previous 720px cap clipped both.
+            // Targeting ~80% of typical window width with a
+            // generous min_w keeps annotation columns (kind /
+            // detail) visible without dominating the screen on
+            // ultrawides.
             div()
                 .flex()
                 .flex_col()
-                .max_w(px(720.0))
-                .max_h(px(440.0))
+                .min_w(px(720.0))
+                .w(px(1200.0))
+                .max_w(px(1400.0))
+                .max_h(px(640.0))
                 .p_4()
                 .bg(rgb(theme.popup_background))
                 .text_color(rgb(theme.foreground))
@@ -1025,6 +1093,119 @@ impl Render for EditorView {
                         .child("[ <C-n>/<C-p> navigate · <CR> accept · <Esc> cancel ]".to_string()),
                 )
         });
+
+        // Vertico-style minibuffer strip (matches TUI when
+        // `picker.display = "minibuffer"`). Two rows below the
+        // status line: prompt on top, candidate band below.
+        // Selected candidate sits at the top of the band so the
+        // eye path matches the TUI's prompt → selection
+        // adjacency. Built as a normal flex_col child (not an
+        // absolute overlay) so it claims layout space rather
+        // than floating over the buffer.
+        let picker_minibuffer: Option<gpui::Div> = picker_use_minibuffer
+            .then(|| self.app.editor.picker.as_ref())
+            .flatten()
+            .map(|picker| {
+                const MAX_VISIBLE: usize = 10;
+                let total = picker.candidates.len();
+                let visible_count = total.min(MAX_VISIBLE).max(1);
+                let scroll = if picker.selected < visible_count {
+                    0
+                } else {
+                    picker.selected + 1 - visible_count
+                };
+                let window_end = (scroll + visible_count).min(total);
+                let match_hl_fg = rgb(theme.cursor_background);
+                let cand_rows: Vec<gpui::Div> = if total == 0 {
+                    vec![div()
+                        .px_2()
+                        .text_color(rgb(theme.popup_border))
+                        .child("  (no matches)".to_string())]
+                } else {
+                    picker.candidates[scroll..window_end]
+                        .iter()
+                        .enumerate()
+                        .map(|(i, cand)| {
+                            let abs_idx = scroll + i;
+                            let selected = abs_idx == picker.selected;
+                            let row_bg = if selected {
+                                Some(rgb(theme.status_background))
+                            } else {
+                                None
+                            };
+                            let row_fg = if selected {
+                                rgb(theme.status_foreground)
+                            } else {
+                                rgb(theme.foreground)
+                            };
+                            let display = &cand.raw.display;
+                            if cand.match_ranges.is_empty() {
+                                let row = div().px_2().child(display.clone()).text_color(row_fg);
+                                return if let Some(bg) = row_bg { row.bg(bg) } else { row };
+                            }
+                            let in_match = |byte_idx: usize| -> bool {
+                                cand.match_ranges
+                                    .iter()
+                                    .any(|r| byte_idx >= r.start && byte_idx < r.end)
+                            };
+                            let cells: Vec<gpui::Div> = display
+                                .char_indices()
+                                .map(|(byte_idx, c)| {
+                                    let cell = div().child(c.to_string());
+                                    if in_match(byte_idx) {
+                                        cell.text_color(match_hl_fg)
+                                    } else {
+                                        cell.text_color(row_fg)
+                                    }
+                                })
+                                .collect();
+                            let row = div().px_2().flex().flex_row().children(cells);
+                            if let Some(bg) = row_bg { row.bg(bg) } else { row }
+                        })
+                        .collect()
+                };
+
+                let count = format!(
+                    "  ({} / {})",
+                    if total == 0 { 0 } else { picker.selected + 1 },
+                    total,
+                );
+                let prompt_row = div()
+                    .px_2()
+                    .flex()
+                    .flex_row()
+                    .bg(rgb(theme.background))
+                    .text_color(rgb(theme.foreground))
+                    .child(
+                        div()
+                            .text_color(rgb(theme.cursor_background))
+                            .child(format!("{}> ", picker.title)),
+                    )
+                    .child(div().child(picker.query.clone()))
+                    .child(
+                        div()
+                            .border_l_2()
+                            .border_color(rgb(theme.cursor_background))
+                            .child(" "),
+                    )
+                    .child(
+                        div()
+                            .text_color(rgb(theme.popup_border))
+                            .child(count),
+                    );
+
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(prompt_row)
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .bg(rgb(theme.background))
+                            .children(cand_rows),
+                    )
+            });
 
         // Phase 5.8.AE: read popup state from host editor instead
         // of the renderer-local `popup_content` field. Title +
@@ -1128,6 +1309,10 @@ impl Render for EditorView {
                     row
                 }
             });
+
+        if let Some(strip) = picker_minibuffer {
+            root = root.child(strip);
+        }
 
         if let Some(overlay) = picker_overlay {
             root = root.child(

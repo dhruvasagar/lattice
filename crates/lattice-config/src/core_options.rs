@@ -93,6 +93,16 @@ fn validate_completion_priority(i: &i64) -> Result<(), String> {
     }
 }
 
+#[allow(clippy::ptr_arg)]
+fn validate_picker_display(s: &String) -> Result<(), String> {
+    match s.as_str() {
+        "popup" | "minibuffer" => Ok(()),
+        other => Err(format!(
+            "picker.display must be one of `popup`/`minibuffer`, got `{other}`"
+        )),
+    }
+}
+
 // ---- Editor group: bare-named editor options ----
 //
 // Reserved namespace per `mode-architecture.md` §6.5.2 / §6.8.
@@ -445,6 +455,20 @@ crate::options! {
     /// style "yesterday's picks still float."
     #[name("picker.mru.persist")]
     pub PickerMruPersist: bool = true;
+
+    /// Where the picker UI is drawn. `"minibuffer"` renders
+    /// vertico-style: prompt sits on the cmdline row and the
+    /// candidate list fans above it (TUI) / above the status
+    /// line (GPUI), keeping the buffer fully visible.
+    /// `"popup"` renders a centred overlay floating over the
+    /// buffer area (terminal-friendly when narrow, common in
+    /// IDE-style editors). Behaviour is identical between the
+    /// TUI and GPUI peers so users carry the same muscle
+    /// memory across them. Future variants (`"split"`,
+    /// `"sidebar"`) may be added without breaking this key.
+    #[name("picker.display")]
+    #[validate(validate_picker_display)]
+    pub PickerDisplay: String = String::from("minibuffer");
 }
 
 // ---- LSP group: log + trace knobs ----
@@ -578,6 +602,48 @@ mod tests {
         let err = r.parse_and_set_command("tabstop=99").unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains("tabstop out of range [1, 32]: 99"));
+    }
+
+    #[test]
+    fn picker_display_default_is_minibuffer() {
+        let r = ConfigRegistry::new();
+        r.init_from_linkme();
+        assert_eq!(
+            r.get_typed::<PickerDisplay>().unwrap().as_str(),
+            "minibuffer"
+        );
+    }
+
+    #[test]
+    fn picker_display_accepts_popup_and_minibuffer() {
+        let r = ConfigRegistry::new();
+        r.init_from_linkme();
+        assert!(
+            r.set_typed::<PickerDisplay>(String::from("popup"))
+                .is_ok()
+        );
+        assert_eq!(
+            r.get_typed::<PickerDisplay>().unwrap().as_str(),
+            "popup"
+        );
+        assert!(
+            r.set_typed::<PickerDisplay>(String::from("minibuffer"))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn picker_display_rejects_unknown_value() {
+        let r = ConfigRegistry::new();
+        r.init_from_linkme();
+        let err = r
+            .set_typed::<PickerDisplay>(String::from("sidebar"))
+            .unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("picker.display must be one of"),
+            "unexpected error message: {msg}"
+        );
     }
 
     #[test]

@@ -38,6 +38,12 @@ lattice-syntax = { path = "../lattice-syntax" }
 # encapsulated behind `lattice-lsp` (which re-exports the named
 # types) so we don't gain a direct dep on the upstream crate.
 lattice-lsp = { path = "../lattice-lsp" }
+# Phase 5.8.AF.6: `picker.display` is a typed option read at
+# render time. Naming `PickerDisplay` requires this dep so the
+# renderer + host agree on the same option type (rather than
+# re-exporting through the host shim). Matches the TUI peer's
+# direct dep on lattice-config.
+lattice-config = { path = "../lattice-config" }
 
 # Zed's GPU-accelerated UI framework. Gated behind the `window`
 # feature so the scaffold types + tests build on every host

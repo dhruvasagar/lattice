@@ -3558,6 +3558,7 @@ dependencies = [
  "anyhow",
  "arc-swap",
  "gpui",
+ "lattice-config",
  "lattice-core",
  "lattice-grammar",
  "lattice-help",

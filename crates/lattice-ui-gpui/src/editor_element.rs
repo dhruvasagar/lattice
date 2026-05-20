@@ -785,7 +785,7 @@ impl Element for EditorElement {
 ///
 /// Saturating: `byte >= line.len()` returns the line's char count
 /// plus the sum of every inlay's `char_width`.
-fn byte_to_combined_col(line: &str, byte: usize, inlay_offsets: &[(u32, u32)]) -> usize {
+pub fn byte_to_combined_col(line: &str, byte: usize, inlay_offsets: &[(u32, u32)]) -> usize {
     let base = if byte >= line.len() {
         line.chars().count()
     } else {
@@ -875,7 +875,7 @@ fn paint_range_overlay(
 ///
 /// `inlays` MUST be sorted by `orig_byte` ascending. Trailing
 /// hints whose `orig_byte >= line.len()` paint at end-of-line.
-fn build_line_with_inlays(
+pub fn build_line_with_inlays(
     line: &str,
     spans: &[StyledSpan],
     inlays: &[(usize, &str)],

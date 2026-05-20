@@ -88,7 +88,17 @@ pub mod window;
 /// pane text via `ShapedLine::paint` -- replaces the per-char-Div
 /// element tree that dominated `paint_us`.
 #[cfg(feature = "window")]
+// Phase 5.8.AF.6 / Slice X5: `editor_element` is normally
+// crate-private (the only legitimate caller is `window::paint_pane`).
+// With `bench-internals` it becomes `pub` so the frame-budget
+// bench can call the pre-paint logic (`build_line_with_inlays`,
+// `byte_to_combined_col`, ...) without spinning up a real GPUI
+// window. The shaped-text + paint phases remain GPU-bound and
+// are not reachable from the bench surface.
+#[cfg(not(feature = "bench-internals"))]
 pub(crate) mod editor_element;
+#[cfg(feature = "bench-internals")]
+pub mod editor_element;
 
 #[cfg(feature = "window")]
 pub use window::{document_from_path, run};

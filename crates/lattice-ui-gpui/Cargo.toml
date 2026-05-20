@@ -79,6 +79,23 @@ default = []
 # in favour of the single `lattice` entry in lattice-cli; this
 # crate now ships only as a lib.
 window = ["dep:gpui"]
+# Phase 5.8.AF.6 / Slice X5: re-export `editor_element` internals
+# (build_line_with_inlays, byte_to_combined_col, run-collapse
+# helpers) so the frame-budget bench can call them without
+# requiring a real GPUI window. Pre-paint editor work is the
+# part we control under goal-#1; GPU shaping/painting is
+# hardware-bound and not the regression target.
+bench-internals = []
+
+[[bench]]
+name = "editor_element_frame"
+harness = false
+required-features = ["window", "bench-internals"]
+
+[dev-dependencies]
+criterion = { workspace = true }
+# X5 bench reaches into lattice_syntax::StyledSpan / Style.
+lattice-syntax = { path = "../lattice-syntax" }
 
 [lints]
 workspace = true

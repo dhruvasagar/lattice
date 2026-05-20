@@ -186,8 +186,40 @@ struct EditorView {
 
 impl EditorView {
     fn new(document: Document, cx: &mut Context<Self>) -> Self {
+        let app = GpuiApp::new(document);
+        // X1b: spawn the worker-paint-request bridge. The
+        // highlights worker fires `editor.paint_request.notify_one()`
+        // after every `WorkerDecision::Recomputed`; this future
+        // awaits each wake and calls `cx.notify()` so GPUI
+        // schedules a paint even when no user input is in flight.
+        // Without this bridge, an async worker recompute that
+        // finishes while the user is idle (e.g. final reparse
+        // after a held-key burst settles) would publish fresh
+        // spans into `syntax_visible_spans_cell` that nothing
+        // reads until the next keystroke -- breaking goal-#4
+        // asynchronicity (the renderer would effectively poll on
+        // keystrokes for worker output).
+        //
+        // `cx.spawn` runs the future on GPUI's foreground
+        // executor; the `AsyncWindowContext` argument lets us
+        // upgrade the weak entity handle and call `cx.notify()`.
+        // The future exits cleanly when the weak handle can't
+        // upgrade (window closed).
+        let paint_request = app.editor.paint_request.clone();
+        cx.spawn(async move |this, cx| {
+            loop {
+                paint_request.notified().await;
+                if this
+                    .update(cx, |_view, cx| cx.notify())
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
         Self {
-            app: GpuiApp::new(document),
+            app,
             focus_handle: cx.focus_handle(),
         }
     }

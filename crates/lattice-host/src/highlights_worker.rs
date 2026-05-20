@@ -62,7 +62,7 @@
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
-use tracing::trace;
+use tracing::{info, trace};
 
 use crate::editor::HighlightWake;
 use crate::render_state::{RenderState, VisibleHighlightsKey, VisibleSpans};
@@ -99,7 +99,21 @@ pub async fn run(
     render_state: Arc<ArcSwap<RenderState>>,
     wake: HighlightWake,
     spans_cell: Arc<ArcSwap<VisibleSpans>>,
+    paint_request: Arc<tokio::sync::Notify>,
 ) {
+    // X2 diagnostic (2026-05-19): held-j fix reported as
+    // ineffective post-X2. Promote startup + per-tick traces to
+    // INFO so the user's default RUST_LOG=info run surfaces
+    // whether the worker is alive and being driven by
+    // publish_render_state. Revert to trace! once we've
+    // confirmed the runtime behavior. Avoid the trace level
+    // because per-tick INFO spam during a held-key burst will
+    // crowd out other signal in the log.
+    info!(
+        target: "lattice_host::highlights_worker",
+        "highlights worker spawned (X2)"
+    );
+    let mut tick_count: u64 = 0;
     loop {
         // `notified().await` resolves when `notify_one()` is
         // called (or immediately if a permit is stored).
@@ -107,12 +121,40 @@ pub async fn run(
         // us once; we read the LATEST snapshot below, which
         // captures the full effect of the burst.
         wake.0.notified().await;
+        let t0 = std::time::Instant::now();
         let decision = recompute(&render_state, &spans_cell);
-        trace!(
-            target: "lattice_host::highlights_worker",
-            ?decision,
-            "highlights worker tick"
-        );
+        let elapsed_us = t0.elapsed().as_micros();
+        tick_count += 1;
+        // X1b: tell the renderer it has fresh data to paint.
+        // Only on Recomputed -- CacheHit / StaleSnapshotHold leave
+        // spans bit-identical / unchanged for the renderer's
+        // purposes, so waking the peer would be a wasted frame.
+        // `Clear` (language detach) is also a content change worth
+        // a paint.
+        if matches!(decision, WorkerDecision::Recomputed | WorkerDecision::Clear) {
+            paint_request.notify_one();
+        }
+        // First few ticks always INFO so we confirm the wake
+        // signal arrives; afterwards only INFO on Recomputed
+        // (the cache-miss path that does the actual tree-sitter
+        // walk — the cost X2 is supposed to move off-thread).
+        if tick_count <= 5 || matches!(decision, WorkerDecision::Recomputed) {
+            info!(
+                target: "lattice_host::highlights_worker",
+                tick = tick_count,
+                ?decision,
+                elapsed_us,
+                "highlights worker tick"
+            );
+        } else {
+            trace!(
+                target: "lattice_host::highlights_worker",
+                tick = tick_count,
+                ?decision,
+                elapsed_us,
+                "highlights worker tick"
+            );
+        }
     }
 }
 

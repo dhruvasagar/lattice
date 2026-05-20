@@ -585,10 +585,18 @@ impl Editor {
             std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
                 crate::render_state::RenderState::default(),
             ));
+        // X1b: paint-request signal. Created here so the worker
+        // (spawned below) and the Editor (constructed below) hold
+        // the same `Arc<Notify>`. The renderer peer subscribes to
+        // `editor.paint_request` and translates wakes to its own
+        // redraw mechanism (TUI: free via 100ms event poll; GPUI:
+        // foreground-executor future that calls `cx.notify()`).
+        let paint_request: std::sync::Arc<tokio::sync::Notify> = std::sync::Arc::default();
         runtime_handle.spawn(crate::highlights_worker::run(
             render_state_arc.clone(),
             highlight_wake.clone(),
             syntax_visible_spans_cell.clone(),
+            paint_request.clone(),
         ));
 
         Editor {
@@ -664,6 +672,7 @@ impl Editor {
             // construct fresh, unshared cells).
             highlight_wake,
             syntax_visible_spans_cell,
+            paint_request,
             lsp_log_event_rx: Some(lsp_log_event_rx),
             lsp_progress_event_rx: Some(lsp_progress_event_rx),
             pending_apply_edit_rx: Some(lsp_apply_edit_rx),

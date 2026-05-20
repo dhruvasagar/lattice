@@ -849,6 +849,17 @@ pub struct Editor {
     /// publishes.
     pub syntax_visible_spans_cell:
         std::sync::Arc<arc_swap::ArcSwap<crate::render_state::VisibleSpans>>,
+    /// Phase 5.8.AF.6 / Slice X1b: paint-request signal. The
+    /// highlights worker fires `paint_request.notify_one()` after
+    /// every `WorkerDecision::Recomputed` so renderer peers can
+    /// schedule a paint even when no user input was in flight.
+    /// `Notify` coalesces; bursts of recomputes wake the bridge
+    /// once and a single paint covers the latest spans. The TUI
+    /// peer's 100ms event-poll picks up the new cell naturally
+    /// (no bridge needed); the GPUI peer spawns a foreground-
+    /// executor future that awaits this Notify and calls
+    /// `cx.notify()` to schedule a render.
+    pub paint_request: std::sync::Arc<tokio::sync::Notify>,
     pub lsp_log_event_rx: Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspLogPushed>>,
     pub lsp_progress_event_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspProgressUpdate>>,

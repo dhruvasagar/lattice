@@ -549,15 +549,21 @@ impl App {
     /// another id is queued, open its picker on the same tick
     /// so the user sees the next prompt without a frame's gap.
     pub(crate) fn open_next_queued_show_message_request(&mut self) {
-        while let Some(next_id) = self.editor.lsp_show_message_request_queue.pop_front() {
-            if self
-                .editor
-                .lsp_pending_show_message_requests
-                .contains_key(&next_id)
-            {
-                self.open_show_message_request_picker(next_id);
-                return;
+        // Slice 3c.final.E.5e: pop valid IDs through a single
+        // closure so the loop body crosses the actor seam exactly
+        // once per attempt. The host-side closure pops + filters
+        // until it finds a still-pending request id (or exhausts
+        // the queue).
+        let next = self.mutate_editor_with(|e| {
+            while let Some(id) = e.lsp_show_message_request_queue.pop_front() {
+                if e.lsp_pending_show_message_requests.contains_key(&id) {
+                    return Some(id);
+                }
             }
+            None
+        });
+        if let Some(id) = next {
+            self.open_show_message_request_picker(id);
         }
     }
 
@@ -649,7 +655,10 @@ impl App {
         let Some(uri) = self.buffers().uris.get(&buffer_id).cloned() else {
             return;
         };
-        self.editor.lsp.flush(uri);
+        // Slice 3c.final.E.5e: `uri` is owned (cloned above);
+        // `LspBatchingSink::flush(&self, Uri)` so `read_editor`
+        // closure satisfies `&Editor` + `Send + 'static`.
+        self.read_editor(move |e| e.lsp.flush(uri));
     }
 
     /// 5.5.F.4.4: see [`lattice_host::dispatch::Editor::lsp_close_buffer`].

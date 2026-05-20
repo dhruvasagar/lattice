@@ -198,12 +198,15 @@ impl App {
         // shown, doc focused) is "hover-mode active + active is
         // Document"; State B (focused popup) is "active is Help"
         // -- the second clause stays as the State-A discriminator.
-        let popup_has_hover_mode = self
-            .editor
-            .popup_buffer
-            .and_then(|id| self.editor.active_modes.get(&id))
-            .map(|modes| modes.minors().contains(&crate::modes::HoverMode::mode_id()))
-            .unwrap_or(false);
+        // Slice 3c.final.E.5e: popup_buffer + active_modes lookup
+        // collapse into one `read_editor` closure so the chain
+        // crosses the actor seam atomically.
+        let popup_has_hover_mode = self.read_editor(|e| {
+            e.popup_buffer
+                .and_then(|id| e.active_modes.get(&id))
+                .map(|modes| modes.minors().contains(&crate::modes::HoverMode::mode_id()))
+                .unwrap_or(false)
+        });
         let popup_in_state_a = popup_has_hover_mode && pre_active == BufferKind::Document;
         match action {
             // Phase 5.5.C: helper-free arms moved to

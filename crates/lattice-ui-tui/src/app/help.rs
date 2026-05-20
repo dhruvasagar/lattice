@@ -238,21 +238,25 @@ impl App {
     /// first place, but a stale link from a prior render
     /// shouldn't crash. Echoes an info message.
     fn do_customize_edit(&mut self, name: &str) {
-        let Some(spec) = self.editor.config.lookup(name) else {
+        // Slice 3c.final.E.5e: spec is a `&dyn ConfigSpec` trait
+        // object borrowed from `editor.config`; can't escape the
+        // closure. Extract the owned values we need (formatted
+        // string + is_bool flag) inside the read.
+        let name_owned = name.to_string();
+        let Some((current, _is_bool)) = self.read_editor(move |e| {
+            e.config
+                .lookup(&name_owned)
+                .map(|spec| (spec.get_formatted(), spec.is_bool()))
+        }) else {
             self.set_message(EchoLevel::Error, format!("E518: Unknown option: {name}"));
             return;
         };
-        let current = spec.get_formatted();
         // For booleans, surface the `noNAME` alternative form
         // by prefilling without `=` -- the user can overwrite
         // with `noNAME` directly. For non-bool, prefill with
         // `name=current` so the user sees the value and can
         // edit it inline.
-        let prefill = if spec.is_bool() {
-            format!("set {name}={current}")
-        } else {
-            format!("set {name}={current}")
-        };
+        let prefill = format!("set {name}={current}");
         // Slice 3c.final.E.3: bundle both writes into one closure.
         self.mutate_editor(move |e| {
             e.command_line = prefill;
@@ -433,19 +437,25 @@ impl App {
                 // then fall back to the pane's id (in-pane case).
                 let popup_id = self.popup().buffer_id;
                 let pane_id = self.panes().tree.active().buffer_id;
-                let target_line = popup_id
-                    .and_then(|id| self.editor.buffer_locals.get(&id))
-                    .and_then(|locals| locals.get::<crate::modes::HelpAnchors>())
-                    .and_then(|anchors| anchors.0.iter().find(|a| a.name == slug).map(|a| a.line))
-                    .or_else(|| {
-                        self.editor
-                            .buffer_locals
-                            .get(&pane_id)
-                            .and_then(|locals| locals.get::<crate::modes::HelpAnchors>())
-                            .and_then(|anchors| {
-                                anchors.0.iter().find(|a| a.name == slug).map(|a| a.line)
+                // Slice 3c.final.E.5e: anchor resolution chains
+                // `buffer_locals.get(id)` -> `HelpAnchors` -> find;
+                // borrowed `&str` (`slug`) is cloned to owned for
+                // the `Send + 'static` closure, and the whole
+                // chain runs inside one read_editor call.
+                let slug_owned = slug.to_string();
+                let target_line = self.read_editor(move |e| {
+                    let find_in = |id: crate::buffers::BufferId| -> Option<u32> {
+                        e.buffer_locals
+                            .get(&id)
+                            .and_then(|l| l.get::<crate::modes::HelpAnchors>())
+                            .and_then(|a| {
+                                a.0.iter().find(|x| x.name == slug_owned).map(|x| x.line)
                             })
-                    });
+                    };
+                    popup_id
+                        .and_then(find_in)
+                        .or_else(|| find_in(pane_id))
+                });
                 if let Some(line) = target_line {
                     let buffer = self.active_text();
                     let len = line_byte_len(&buffer, line);
@@ -468,10 +478,11 @@ impl App {
                 // `do_edit` may have set an error message + bailed
                 // (e.g. permission denied). Don't try to jump in
                 // that case -- the message is already on screen.
-                if matches!(
-                    self.editor.last_message.as_ref().map(|m| m.level),
-                    Some(EchoLevel::Error)
-                ) {
+                // Slice 3c.final.E.5e: read `last_message.level`
+                // through `read_editor`.
+                let last_level = self
+                    .read_editor(|e| e.last_message.as_ref().map(|m| m.level));
+                if matches!(last_level, Some(EchoLevel::Error)) {
                     return;
                 }
                 // Source links carry 1-based line numbers (matching

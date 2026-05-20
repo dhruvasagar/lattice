@@ -279,7 +279,10 @@ impl App {
 
     pub(super) fn find_document_by_path(&self, path: &std::path::Path) -> Option<BufferId> {
         // 5.8.AA.j: migrated to host.
-        self.editor.find_document_by_path(path)
+        // Slice 3c.final.E.5e: clone `&Path` to owned `PathBuf` for
+        // the `Send + 'static` closure. `BufferId` is `Copy`.
+        let path = path.to_path_buf();
+        self.read_editor(move |e| e.find_document_by_path(&path))
     }
 
     /// Save the currently-active document's hot-path state
@@ -498,8 +501,11 @@ impl App {
     pub(crate) fn document_syntax_for(
         &self,
         id: BufferId,
-    ) -> Option<&lattice_syntax::SyntaxHandle> {
-        self.editor.document_syntax_for(id)
+    ) -> Option<lattice_syntax::SyntaxHandle> {
+        // Slice 3c.final.E.5e: returns owned `SyntaxHandle` (Clone;
+        // cheap -- inner Arc<ArcSwap<_>> bump + mpsc sender bump) so
+        // the `Send + 'static` closure body is satisfied.
+        self.read_editor(move |e| e.document_syntax_for(id).cloned())
     }
 
     /// Mode-owned fold list for `id`. Same active / inactive

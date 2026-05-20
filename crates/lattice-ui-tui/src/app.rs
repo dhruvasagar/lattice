@@ -942,15 +942,21 @@ pub use lattice_host::state::{
 
 impl std::fmt::Debug for App {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Slice 3c.final.E.5e: Debug reads route through RS
+        // accessors + `read_editor` so post-swap the Editor lives
+        // off-thread. `last_message` is cloned (`EchoMessage: Clone`).
+        let ad = self.ad();
+        let rs = self.render_state.load();
+        let last_message = self.read_editor(|e| e.last_message.clone());
         f.debug_struct("App")
             .field("cursor", &self.cursor())
-            .field("scroll", &self.ad().scroll)
-            .field("should_quit", &self.editor.should_quit)
-            .field("viewport_height", &self.editor.viewport_height)
-            .field("modal", &self.ad().modal)
+            .field("scroll", &ad.scroll)
+            .field("should_quit", &rs.lifecycle.should_quit)
+            .field("viewport_height", &ad.viewport_height)
+            .field("modal", &ad.modal)
             .field("command_line", &self.command_line())
-            .field("last_message", &self.editor.last_message)
-            .field("dirty", &self.ad().snapshot.dirty)
+            .field("last_message", &last_message)
+            .field("dirty", &ad.snapshot.dirty)
             .finish()
     }
 }

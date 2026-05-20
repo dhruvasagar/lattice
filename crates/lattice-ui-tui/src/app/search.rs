@@ -98,11 +98,15 @@ impl App {
             }
         }
 
-        self.editor.substitute_preview = Some(SubstitutePreview {
+        // Slice 3c.final.E.5e: SubstitutePreview is fully-owned
+        // (Vec<ProtoRange>, String, bool) so the `Send + 'static`
+        // closure body is satisfied.
+        let preview = SubstitutePreview {
             matches,
             replacement: parsed.replacement,
             global,
-        });
+        };
+        self.mutate_editor(move |e| e.substitute_preview = Some(preview));
     }
 
     /// Push every match of `regex` on `line` into `out`. Honours

@@ -82,36 +82,25 @@ use crate::{GpuiApp, GpuiTheme};
 // Slice X3.full.3 absorbs the popup into a shaped-line path; at
 // that point these helpers move into `editor_element` too.
 
-/// Map a `lattice_syntax::Style` to a Catppuccin Mocha hex
-/// palette value. Used by the popup-overlay renderer for
-/// per-char styled-Div construction.
+/// Adapter: host-canonical [`Theme::syntax_style`] -> packed 24-bit
+/// `0xRRGGBB`. Phase 5.8.AF.6 / issue-2 hoist: prior to this the
+/// GPUI peer carried its own Catppuccin Mocha hex table that
+/// diverged from the TUI's named-ANSI table. Both peers now route
+/// through `lattice_host::ui::theme::Theme::syntax_style`, so a
+/// single edit reflects everywhere.
+///
+/// `Theme::default()` is used today because per-instance theme
+/// customization for syntax styles isn't wired through the cmdline
+/// yet. The fallback when `fg` is unset is the Catppuccin Text
+/// (`0xcdd6f4`) — matches what `SyntaxStyle::Default` resolves to
+/// and what `EditorElement` paints on un-spanned bytes.
 fn syntax_color(style: SyntaxStyle) -> u32 {
-    match style {
-        SyntaxStyle::Default => 0xcdd6f4,
-        SyntaxStyle::Comment | SyntaxStyle::LineComment => 0x6c7086,
-        SyntaxStyle::String => 0xa6e3a1,
-        SyntaxStyle::Keyword => 0xcba6f7,
-        SyntaxStyle::Type => 0xf9e2af,
-        SyntaxStyle::Number => 0xfab387,
-        SyntaxStyle::Function => 0x89b4fa,
-        SyntaxStyle::Constant => 0xfab387,
-        SyntaxStyle::Variable => 0xcdd6f4,
-        SyntaxStyle::Operator => 0x94e2d5,
-        SyntaxStyle::Punctuation => 0x9399b2,
-        SyntaxStyle::Attribute => 0xf38ba8,
-        SyntaxStyle::Heading1 => 0xf38ba8,
-        SyntaxStyle::Heading2 => 0xfab387,
-        SyntaxStyle::Heading3 => 0xf9e2af,
-        SyntaxStyle::Heading4 => 0xa6e3a1,
-        SyntaxStyle::Heading5 => 0x89b4fa,
-        SyntaxStyle::Heading6 => 0xcba6f7,
-        SyntaxStyle::Bold => 0xeba0ac,
-        SyntaxStyle::Italic => 0xf5c2e7,
-        SyntaxStyle::Link => 0x89b4fa,
-        SyntaxStyle::Url => 0x74c7ec,
-        SyntaxStyle::MarkupRaw => 0x6c7086,
-        SyntaxStyle::Markup => 0x9399b2,
-    }
+    let host_default = lattice_host::ui::theme::Theme::default();
+    let host_style = host_default.syntax_style(style);
+    host_style
+        .fg
+        .map(|c| c.to_rgb_u32(0xcdd6f4))
+        .unwrap_or(0xcdd6f4)
 }
 
 /// Walk `spans` (one entry per line) and find the `Style` that

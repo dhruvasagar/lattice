@@ -4025,61 +4025,21 @@ fn render_help_line(line: &str, spans: &[lattice_syntax::StyledSpan]) -> Vec<Spa
     out
 }
 
+/// Adapter: host-canonical [`Theme::syntax_style`] -> ratatui
+/// [`TuiStyle`]. Phase 5.8.AF.6 / issue-2 hoist: prior to this both
+/// peers carried divergent SyntaxStyle->color tables (TUI named-
+/// ANSI, GPUI Catppuccin hex). Both peers now route through the
+/// host's canonical mapping so a single edit to the palette
+/// reflects in every renderer.
+///
+/// `Theme::default()` is used today because per-instance theme
+/// customization for syntax styles isn't wired through the cmdline
+/// yet (`:set ui.syntax.*` lands in a follow-up). When that lands
+/// the call site already in scope of `&App` can pass
+/// `&app.editor.host_theme` instead.
 fn style_to_tui(s: Style) -> TuiStyle {
-    match s {
-        Style::Default => TuiStyle::default(),
-        Style::Keyword => TuiStyle::default()
-            .fg(Color::Magenta)
-            .add_modifier(Modifier::BOLD),
-        Style::Type => TuiStyle::default().fg(Color::Cyan),
-        Style::String => TuiStyle::default().fg(Color::Green),
-        Style::Number => TuiStyle::default().fg(Color::Yellow),
-        Style::Function => TuiStyle::default().fg(Color::Blue),
-        Style::Constant => TuiStyle::default().fg(Color::LightYellow),
-        Style::Variable => TuiStyle::default(),
-        Style::Operator => TuiStyle::default().fg(Color::White),
-        Style::Punctuation => TuiStyle::default().fg(Color::Gray),
-        Style::Attribute => TuiStyle::default().fg(Color::LightMagenta),
-        Style::Comment | Style::LineComment => TuiStyle::default()
-            .fg(Color::DarkGray)
-            .add_modifier(Modifier::ITALIC),
-        // Markup styles (markdown / org / future rich-text modes).
-        // Headings cascade lighter / less-bold as level increases so
-        // a doc's structure is visually scannable. H1 is the heaviest;
-        // H6 is just bold-cyan.
-        Style::Heading1 => TuiStyle::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-        Style::Heading2 => TuiStyle::default()
-            .fg(Color::LightYellow)
-            .add_modifier(Modifier::BOLD),
-        Style::Heading3 => TuiStyle::default()
-            .fg(Color::LightBlue)
-            .add_modifier(Modifier::BOLD),
-        Style::Heading4 => TuiStyle::default()
-            .fg(Color::LightMagenta)
-            .add_modifier(Modifier::BOLD),
-        Style::Heading5 => TuiStyle::default()
-            .fg(Color::LightGreen)
-            .add_modifier(Modifier::BOLD),
-        Style::Heading6 => TuiStyle::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD),
-        Style::Bold => TuiStyle::default().add_modifier(Modifier::BOLD),
-        Style::Italic => TuiStyle::default().add_modifier(Modifier::ITALIC),
-        Style::Link => TuiStyle::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::UNDERLINED),
-        Style::Url => TuiStyle::default()
-            .fg(Color::Blue)
-            .add_modifier(Modifier::UNDERLINED),
-        Style::MarkupRaw => TuiStyle::default()
-            .fg(Color::LightCyan)
-            .add_modifier(Modifier::DIM),
-        Style::Markup => TuiStyle::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD),
-    }
+    let host_default = lattice_host::ui::theme::Theme::default();
+    crate::theme::host_style_to_ratatui(host_default.syntax_style(s))
 }
 
 #[cfg(test)]

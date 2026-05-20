@@ -74,35 +74,18 @@ use lattice_syntax::{Style as SyntaxStyle, StyledSpan};
 
 use crate::GpuiTheme;
 
-/// Catppuccin Mocha palette mapping for syntax styles. Kept in
-/// sync with `window::syntax_color` during the X3.full transition.
+/// Adapter: host-canonical [`Theme::syntax_style`] -> packed 24-bit
+/// `0xRRGGBB`. Phase 5.8.AF.6 / issue-2 hoist: identical body to
+/// `window::syntax_color` because both renderer paths must read the
+/// same canonical mapping; once `EditorElement` absorbs the popup
+/// overlay too, the helpers merge.
 fn syntax_color(style: SyntaxStyle) -> u32 {
-    match style {
-        SyntaxStyle::Default => 0xcdd6f4,
-        SyntaxStyle::Comment | SyntaxStyle::LineComment => 0x6c7086,
-        SyntaxStyle::String => 0xa6e3a1,
-        SyntaxStyle::Keyword => 0xcba6f7,
-        SyntaxStyle::Type => 0xf9e2af,
-        SyntaxStyle::Number => 0xfab387,
-        SyntaxStyle::Function => 0x89b4fa,
-        SyntaxStyle::Constant => 0xfab387,
-        SyntaxStyle::Variable => 0xcdd6f4,
-        SyntaxStyle::Operator => 0x94e2d5,
-        SyntaxStyle::Punctuation => 0x9399b2,
-        SyntaxStyle::Attribute => 0xf38ba8,
-        SyntaxStyle::Heading1 => 0xf38ba8,
-        SyntaxStyle::Heading2 => 0xfab387,
-        SyntaxStyle::Heading3 => 0xf9e2af,
-        SyntaxStyle::Heading4 => 0xa6e3a1,
-        SyntaxStyle::Heading5 => 0x89b4fa,
-        SyntaxStyle::Heading6 => 0xcba6f7,
-        SyntaxStyle::Bold => 0xeba0ac,
-        SyntaxStyle::Italic => 0xf5c2e7,
-        SyntaxStyle::Link => 0x89b4fa,
-        SyntaxStyle::Url => 0x74c7ec,
-        SyntaxStyle::MarkupRaw => 0x6c7086,
-        SyntaxStyle::Markup => 0x9399b2,
-    }
+    let host_default = lattice_host::ui::theme::Theme::default();
+    let host_style = host_default.syntax_style(style);
+    host_style
+        .fg
+        .map(|c| c.to_rgb_u32(0xcdd6f4))
+        .unwrap_or(0xcdd6f4)
 }
 
 fn style_at(spans: &[StyledSpan], byte: usize) -> SyntaxStyle {

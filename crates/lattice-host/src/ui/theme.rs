@@ -275,6 +275,71 @@ pub enum NamedColor {
     White,
 }
 
+impl Theme {
+    /// Renderer-neutral [`Style`] for a syntax-highlight category.
+    /// The canonical source of truth for `SyntaxStyle → visual style`
+    /// across all peers. Phase 5.8.AF.6 / issue-2 hoist: before this
+    /// landed the TUI and GPUI peers each carried their own divergent
+    /// mapping (TUI named-ANSI / GPUI Catppuccin hex). Both now read
+    /// through this method and adapt the returned host [`Style`] into
+    /// their renderer-native form.
+    ///
+    /// Palette: Catppuccin Mocha hex values (designed-for-readability
+    /// dark theme). Truecolor terminals render exact; 16-color
+    /// terminals get the ratatui closest-named fallback automatically.
+    /// Modifiers (bold / italic / underline) layer on top so even a
+    /// 16-color path retains the "this is a heading" / "this is a
+    /// link" structural cues.
+    pub fn syntax_style(&self, s: lattice_syntax::Style) -> Style {
+        use lattice_syntax::Style as S;
+        // Catppuccin Mocha — https://github.com/catppuccin/catppuccin
+        // Text       cdd6f4
+        // Subtext0   a6adc8
+        // Overlay2   9399b2
+        // Overlay0   6c7086
+        // Lavender   b4befe
+        // Blue       89b4fa
+        // Sapphire   74c7ec
+        // Sky        89dceb
+        // Teal       94e2d5
+        // Green      a6e3a1
+        // Yellow     f9e2af
+        // Peach      fab387
+        // Maroon     eba0ac
+        // Red        f38ba8
+        // Mauve      cba6f7
+        // Pink       f5c2e7
+        let rgb = |r: u8, g: u8, b: u8| Color::Rgb(r, g, b);
+        let style = |fg: Color| Style::empty().fg(fg);
+        match s {
+            S::Default => style(rgb(0xcd, 0xd6, 0xf4)),
+            S::Comment | S::LineComment => style(rgb(0x6c, 0x70, 0x86)).italic(),
+            S::String => style(rgb(0xa6, 0xe3, 0xa1)),
+            S::Keyword => style(rgb(0xcb, 0xa6, 0xf7)).bold(),
+            S::Type => style(rgb(0xf9, 0xe2, 0xaf)),
+            S::Number => style(rgb(0xfa, 0xb3, 0x87)),
+            S::Function => style(rgb(0x89, 0xb4, 0xfa)),
+            S::Constant => style(rgb(0xfa, 0xb3, 0x87)),
+            S::Variable => style(rgb(0xcd, 0xd6, 0xf4)),
+            S::Operator => style(rgb(0x94, 0xe2, 0xd5)),
+            S::Punctuation => style(rgb(0x93, 0x99, 0xb2)),
+            S::Attribute => style(rgb(0xf3, 0x8b, 0xa8)),
+            S::Heading1 => style(rgb(0xf3, 0x8b, 0xa8)).bold().underline(),
+            S::Heading2 => style(rgb(0xfa, 0xb3, 0x87)).bold(),
+            S::Heading3 => style(rgb(0xf9, 0xe2, 0xaf)).bold(),
+            S::Heading4 => style(rgb(0xa6, 0xe3, 0xa1)).bold(),
+            S::Heading5 => style(rgb(0x89, 0xb4, 0xfa)).bold(),
+            S::Heading6 => style(rgb(0xcb, 0xa6, 0xf7)).bold(),
+            S::Bold => style(rgb(0xeb, 0xa0, 0xac)).bold(),
+            S::Italic => style(rgb(0xf5, 0xc2, 0xe7)).italic(),
+            S::Link => style(rgb(0x89, 0xb4, 0xfa)).underline(),
+            S::Url => style(rgb(0x74, 0xc7, 0xec)).underline(),
+            S::MarkupRaw => style(rgb(0x6c, 0x70, 0x86)).dim(),
+            S::Markup => style(rgb(0x93, 0x99, 0xb2)).bold(),
+        }
+    }
+}
+
 impl Default for Theme {
     fn default() -> Self {
         // Defaults mirror `lattice-ui-tui::theme::Theme::default()`
@@ -443,5 +508,52 @@ mod tests {
     #[test]
     fn default_separator_is_box_drawing_vertical() {
         assert_eq!(Theme::default().pane_separator_vertical, '│');
+    }
+
+    // ---- Phase 5.8.AF.6 / issue-2: SyntaxStyle hoist ----
+
+    #[test]
+    fn syntax_style_keyword_carries_catppuccin_mauve_bold() {
+        let t = Theme::default();
+        let s = t.syntax_style(lattice_syntax::Style::Keyword);
+        assert_eq!(s.fg, Some(Color::Rgb(0xcb, 0xa6, 0xf7)));
+        assert!(s.modifiers.bold);
+    }
+
+    #[test]
+    fn syntax_style_comment_is_overlay0_italic() {
+        let t = Theme::default();
+        let s = t.syntax_style(lattice_syntax::Style::Comment);
+        assert_eq!(s.fg, Some(Color::Rgb(0x6c, 0x70, 0x86)));
+        assert!(s.modifiers.italic);
+        // Same shape for LineComment.
+        let line = t.syntax_style(lattice_syntax::Style::LineComment);
+        assert_eq!(line, s);
+    }
+
+    #[test]
+    fn syntax_style_link_underlines() {
+        let t = Theme::default();
+        let s = t.syntax_style(lattice_syntax::Style::Link);
+        assert!(s.modifiers.underline);
+    }
+
+    #[test]
+    fn syntax_style_default_uses_text_foreground() {
+        let t = Theme::default();
+        let s = t.syntax_style(lattice_syntax::Style::Default);
+        assert_eq!(s.fg, Some(Color::Rgb(0xcd, 0xd6, 0xf4)));
+    }
+
+    #[test]
+    fn syntax_style_returns_rgb_so_to_rgb_u32_is_lossless() {
+        // GPUI adapter chain MUST round-trip without falling back
+        // to the indexed/named lossy path -- otherwise the peer's
+        // colour drifts from what host_theme declared.
+        let t = Theme::default();
+        let s = t.syntax_style(lattice_syntax::Style::String);
+        let fg = s.fg.expect("string carries a foreground");
+        assert!(matches!(fg, Color::Rgb(_, _, _)));
+        assert_eq!(fg.to_rgb_u32(0), 0xa6e3a1);
     }
 }

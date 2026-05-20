@@ -414,6 +414,24 @@ mod tests {
     }
 
     #[test]
+    fn nested_path_arg_keeps_full_prefix_across_slash() {
+        // Repro for `:e crates/latt<Tab>` -- the slot detector
+        // must return prefix = "crates/latt" (NOT just "latt")
+        // so `gen:files` sees the directory part it needs to
+        // know which directory to read.
+        let r = fixture();
+        let line = "e crates/latt";
+        let slot = current_slot(line, line.len(), &r, &aliases);
+        match slot {
+            CommandLineSlot::Arg { prefix, command_name, .. } => {
+                assert_eq!(command_name, "ex:edit");
+                assert_eq!(prefix, "crates/latt", "prefix should retain dir part");
+            }
+            other => panic!("expected Arg(ex:edit, prefix=crates/latt), got {other:?}"),
+        }
+    }
+
+    #[test]
     fn cursor_in_middle_of_arg_truncates_prefix_at_cursor() {
         let r = fixture();
         // "describe-command motion" with cursor at byte 21 (just

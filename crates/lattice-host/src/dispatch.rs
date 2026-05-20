@@ -2379,14 +2379,45 @@ impl Editor {
     /// single candidate when `completion.auto_insert_single` is on
     /// and the compute yields exactly one match. Errors echo via
     /// `set_message`. The `<Tab>` path drives this entry point.
+    ///
+    /// On multiple matches the longest common prefix (LCP) of the
+    /// candidate texts is inserted into the cmdline before the
+    /// popup opens -- vim's `wildmode=longest:full` behaviour.
+    /// Gives visual feedback for partial completions (e.g.
+    /// `:e crates/latt<Tab>` extends to `:e crates/lattice-` when
+    /// every match shares that prefix) instead of leaving the
+    /// cmdline frozen at the user's typed text while the popup
+    /// silently lists alternatives.
     pub fn open_completion_popup(&mut self) {
         match self.compute_completion_state() {
-            Ok(state) => {
+            Ok(mut state) => {
                 if self.completion_auto_insert_single() && state.candidates.len() == 1 {
                     let chosen_text = state.candidates[0].raw.text.clone();
                     self.command_line
                         .replace_range(state.replace_start..self.command_line.len(), &chosen_text);
                     return;
+                }
+                // LCP insertion: extend the cmdline to the longest
+                // text shared by every candidate, when that's
+                // longer than what the user already typed for this
+                // slot. `replace_start..end` is the slot's prefix
+                // span; LCP must START WITH the existing prefix
+                // (the matcher already filtered, but mixing fuzzy
+                // matches with the LCP would surface non-prefix
+                // bytes -- the guard below skips the rewrite in
+                // that case).
+                let slot_prefix_len = self
+                    .command_line
+                    .len()
+                    .saturating_sub(state.replace_start);
+                let slot_prefix = self.command_line[state.replace_start..].to_string();
+                let lcp = longest_common_text_prefix(&state.candidates);
+                if lcp.len() > slot_prefix_len && lcp.starts_with(&slot_prefix) {
+                    self.command_line.replace_range(
+                        state.replace_start..self.command_line.len(),
+                        &lcp,
+                    );
+                    state.original_line = self.command_line.clone();
                 }
                 self.completion_state = Some(state);
             }
@@ -17872,6 +17903,44 @@ pub(crate) fn last_addressable_line(buf: &lattice_core::Buffer) -> u32 {
 /// (with same-as-last dedup); over-cap entries drain from the front.
 const COMMAND_HISTORY_CAP: usize = 100;
 
+/// 5.5.G.23.cmdline: longest common prefix across a candidate set.
+/// Compares the `text` field byte-by-byte and stops at the first
+/// divergence. Empty input -> empty string. Single-candidate input
+/// -> that candidate's text (callers should special-case the
+/// auto-insert path before reaching here). Used by
+/// `open_completion_popup` to extend the cmdline visually when the
+/// user's typed prefix could be deterministically extended without
+/// committing to any single candidate.
+fn longest_common_text_prefix(
+    candidates: &[lattice_completion::RenderedCandidate],
+) -> String {
+    let mut iter = candidates.iter();
+    let Some(first) = iter.next() else {
+        return String::new();
+    };
+    let first_text = first.raw.text.as_bytes();
+    let mut common_len = first_text.len();
+    for c in iter {
+        let bytes = c.raw.text.as_bytes();
+        let cap = common_len.min(bytes.len());
+        let mut i = 0;
+        while i < cap && first_text[i] == bytes[i] {
+            i += 1;
+        }
+        common_len = i;
+        if common_len == 0 {
+            break;
+        }
+    }
+    // Truncate at the last UTF-8 char boundary so a partial multi-
+    // byte sequence never makes it into command_line. ASCII-only
+    // candidates fast-path through this loop in one step.
+    while common_len > 0 && !first.raw.text.is_char_boundary(common_len) {
+        common_len -= 1;
+    }
+    first.raw.text[..common_len].to_string()
+}
+
 /// 5.5.G.23.cmdline: `<C-w>` — strip trailing whitespace from `s`,
 /// then strip the trailing non-whitespace run. v1 cursor is always
 /// at end-of-line; if mid-line editing lands later this should take
@@ -18518,6 +18587,61 @@ mod tests {
     /// `PartialEq`). Signals are produced at `:` / Effect-arm rate,
     /// not per-frame, so neither `String` cloning nor the `Box`
     /// allocation lands anywhere near the perf gate.
+    fn rendered(text: &str) -> lattice_completion::RenderedCandidate {
+        lattice_completion::RenderedCandidate::from_scored(
+            lattice_completion::ScoredCandidate {
+                raw: lattice_completion::candidate::RawCandidate::plain(
+                    text,
+                    lattice_completion::candidate::CandidateKind::Plain,
+                ),
+                score: lattice_completion::candidate::MatchScore::PREFIX,
+                match_ranges: Vec::new(),
+            },
+        )
+    }
+
+    #[test]
+    fn lcp_of_empty_candidate_set_is_empty_string() {
+        assert_eq!(longest_common_text_prefix(&[]), "");
+    }
+
+    #[test]
+    fn lcp_of_single_candidate_returns_full_text() {
+        let cs = vec![rendered("crates/lattice-config/")];
+        assert_eq!(longest_common_text_prefix(&cs), "crates/lattice-config/");
+    }
+
+    #[test]
+    fn lcp_extends_to_shared_prefix_across_candidates() {
+        // Repro for `:e crates/latt<Tab>` -- the user only typed
+        // `crates/latt` but all matches share the longer prefix
+        // `crates/lattice-`. LCP insertion gives the visible
+        // "completed" feedback the user expects.
+        let cs = vec![
+            rendered("crates/lattice-config/"),
+            rendered("crates/lattice-host/"),
+            rendered("crates/lattice-ui-tui/"),
+        ];
+        assert_eq!(longest_common_text_prefix(&cs), "crates/lattice-");
+    }
+
+    #[test]
+    fn lcp_truncates_at_utf8_char_boundary() {
+        // Multi-byte char split across candidates must not be
+        // sliced mid-codepoint into command_line.
+        let cs = vec![rendered("café"), rendered("car")];
+        let lcp = longest_common_text_prefix(&cs);
+        // 'c' + 'a' = 2 ASCII bytes shared; the 'f' vs 'r'
+        // divergence prevents reaching the multi-byte 'é'.
+        assert_eq!(lcp, "ca");
+    }
+
+    #[test]
+    fn lcp_empty_when_first_bytes_differ() {
+        let cs = vec![rendered("alpha"), rendered("beta")];
+        assert_eq!(longest_common_text_prefix(&cs), "");
+    }
+
     #[test]
     fn renderer_signal_is_clone() {
         fn assert_clone<T: Clone>(_: T) {}

@@ -337,6 +337,41 @@ mod tests {
     }
 
     #[test]
+    fn files_generator_completes_nested_path_with_slash() {
+        // Regression guard: FilesGenerator must walk the
+        // directory referenced by everything before the LAST `/`
+        // in the prefix and filter remaining entries by the
+        // basename suffix. Without this, `:e crates/latt<Tab>`
+        // would fail to surface any candidates.
+        let tmp =
+            std::env::temp_dir().join(format!("lattice-files-nested-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let sub = tmp.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        for n in ["alpha", "beta", "zeta"] {
+            std::fs::write(sub.join(n), "").unwrap();
+        }
+        let prev_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&tmp).unwrap();
+
+        let registry = CommandRegistry::new();
+        let document = Document::empty();
+        let buffer = document.buffer().clone();
+        let g = FilesGenerator;
+        let candidates = g.generate(&ctx_for("sub/al", &buffer, &registry));
+
+        std::env::set_current_dir(&prev_cwd).unwrap();
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        assert!(
+            candidates.iter().any(|c| c.text == "sub/alpha"),
+            "expected `sub/alpha` candidate, got {} candidates: {:?}",
+            candidates.len(),
+            candidates.iter().map(|c| &c.text).collect::<Vec<_>>(),
+        );
+    }
+
+    #[test]
     fn files_generator_returns_empty_for_nonexistent_directory() {
         let registry = CommandRegistry::new();
         let document = Document::empty();

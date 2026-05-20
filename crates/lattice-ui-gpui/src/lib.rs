@@ -84,6 +84,12 @@ pub mod gpui_chord;
 #[cfg(feature = "window")]
 pub mod window;
 
+/// Phase 5.8.AF.5 / Slice X3.full.1: custom GPUI `Element` rendering
+/// pane text via `ShapedLine::paint` -- replaces the per-char-Div
+/// element tree that dominated `paint_us`.
+#[cfg(feature = "window")]
+pub(crate) mod editor_element;
+
 #[cfg(feature = "window")]
 pub use window::{document_from_path, run};
 

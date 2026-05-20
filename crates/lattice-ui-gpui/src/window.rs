@@ -69,14 +69,22 @@ use lattice_core::Document;
 use lattice_core::ui::pane::{PaneNode, PaneState};
 use lattice_grammar::ModalState;
 use lattice_host::cursor_shape::CursorShape;
+use lattice_host::per_buffer_cache::PerBufferCacheExt;
 use lattice_syntax::Style as SyntaxStyle;
 
 use crate::{GpuiApp, GpuiTheme};
 
+// Phase 5.8.AF.5 / Slice X3.full.2: `CellStyle` + `run_to_cell`
+// (per-cell styled-Div construction) deleted -- replaced by the
+// shaping-layer logic in `crate::editor_element::build_text_runs`.
+// `syntax_color` + `style_at` are kept because the popup-overlay
+// renderer below still walks chars and emits one Div per cell.
+// Slice X3.full.3 absorbs the popup into a shaped-line path; at
+// that point these helpers move into `editor_element` too.
+
 /// Map a `lattice_syntax::Style` to a Catppuccin Mocha hex
-/// palette value. Phase 5.8.A: keeps the palette inline so
-/// the window can color highlighted spans without depending on
-/// any host-side palette plumbing yet.
+/// palette value. Used by the popup-overlay renderer for
+/// per-char styled-Div construction.
 fn syntax_color(style: SyntaxStyle) -> u32 {
     match style {
         SyntaxStyle::Default => 0xcdd6f4,
@@ -107,9 +115,7 @@ fn syntax_color(style: SyntaxStyle) -> u32 {
 }
 
 /// Walk `spans` (one entry per line) and find the `Style` that
-/// covers `byte`. Spans are non-overlapping so a linear scan is
-/// sufficient and matches what the TUI peer does for the same
-/// lookup.
+/// covers `byte`.
 fn style_at(spans: &[lattice_syntax::StyledSpan], byte: usize) -> SyntaxStyle {
     for span in spans {
         if byte >= span.start && byte < span.end {
@@ -117,89 +123,6 @@ fn style_at(spans: &[lattice_syntax::StyledSpan], byte: usize) -> SyntaxStyle {
         }
     }
     SyntaxStyle::Default
-}
-
-/// Phase 5.8.AF.5 / Slice X3: per-char styling signature used by
-/// `paint_pane`'s run-collapsing inner loop. Two adjacent chars
-/// with the same `CellStyle` render as a single styled div
-/// carrying a string of length N instead of N divs of length 1.
-///
-/// Fields are stripped to the colours that actually paint:
-///   - `fg`: text colour (Catppuccin palette u32);
-///   - `bg`: optional background colour (set by visual / search /
-///     substitute / doc-highlight overlays);
-///   - `underline`: optional bottom-border colour (set by diagnostic
-///     severity at this byte).
-///
-/// `PartialEq` is derived so `run.style == new_style` is one
-/// pointer-sized comparison. The compute fn collapses the
-/// substitute > visual > current_match > hlsearch > doc_highlight
-/// precedence stack into the final `(fg, bg)` pair so the loop
-/// doesn't re-walk the precedence per char.
-#[derive(Clone, Copy, PartialEq)]
-struct CellStyle {
-    fg: u32,
-    bg: Option<u32>,
-    underline: Option<u32>,
-}
-
-impl CellStyle {
-    #[allow(clippy::too_many_arguments)]
-    fn compute(
-        span_style: SyntaxStyle,
-        in_visual: bool,
-        in_current_match: bool,
-        in_hlsearch: bool,
-        in_substitute: bool,
-        in_doc_highlight: bool,
-        diagnostic_color: Option<u32>,
-        selection_bg: u32,
-        current_match_bg: u32,
-        current_match_fg: u32,
-        hlsearch_bg: u32,
-        substitute_bg: u32,
-        substitute_fg: u32,
-        doc_highlights_bg: u32,
-    ) -> Self {
-        // Overlay precedence (highest first):
-        //   substitute > visual > current_match > hlsearch > doc_highlight.
-        // `fg` defaults to the syntax colour; only substitute and
-        // current_match override it.
-        let syntax_fg = syntax_color(span_style);
-        let (fg, bg) = if in_substitute {
-            (substitute_fg, Some(substitute_bg))
-        } else if in_visual {
-            (syntax_fg, Some(selection_bg))
-        } else if in_current_match {
-            (current_match_fg, Some(current_match_bg))
-        } else if in_hlsearch {
-            (syntax_fg, Some(hlsearch_bg))
-        } else if in_doc_highlight {
-            (syntax_fg, Some(doc_highlights_bg))
-        } else {
-            (syntax_fg, None)
-        };
-        Self {
-            fg,
-            bg,
-            underline: diagnostic_color,
-        }
-    }
-}
-
-/// Render a collapsed run of same-styled chars as a single styled
-/// `gpui::Div` carrying the run's text. Mirrors what the per-char
-/// loop in pre-X3 `paint_pane` did for ONE char, but applied to
-/// the whole run.
-fn run_to_cell(style: CellStyle, text: String) -> gpui::Div {
-    let mut cell = div().text_color(rgb(style.fg)).child(text);
-    if let Some(bg) = style.bg {
-        cell = cell.bg(rgb(bg));
-    }
-    if let Some(uc) = style.underline {
-        cell = cell.border_b_2().border_color(rgb(uc));
-    }
-    cell
 }
 
 /// Resolve the diagnostic gutter glyph + colour for a severity by
@@ -423,8 +346,6 @@ impl EditorView {
         } else {
             pane.cursor
         };
-        let cursor_line = cursor.line as usize;
-        let cursor_byte = cursor.byte as usize;
         let split_t0 = std::time::Instant::now();
         let raw_lines: Vec<&str> = text.split('\n').collect();
         let split_us = split_t0.elapsed().as_micros() as u64;
@@ -461,54 +382,15 @@ impl EditorView {
         } else {
             None
         };
-        let cursor_fg = rgb(theme.cursor_foreground);
-        let cursor_bg = rgb(theme.cursor_background);
 
-        // Highlights:
-        //   - active pane: live cache (`visible_highlights`),
-        //     refreshed at render entry.
-        //   - inactive pane sharing the active doc: live cache
-        //     too — one parse covers both panes' visible windows.
-        //   - inactive pane with a *different* doc: per-pane cache
-        //     (`pane_highlights[pane_idx]`), refreshed at render
-        //     entry by `refresh_pane_highlights`.
-        let active_doc_id = if matches!(ad.buffer_kind, lattice_core::BufferKind::Document) {
-            Some(ad.document_buffer_id)
-        } else {
-            None
-        };
-        let same_doc_as_active = Some(pane.buffer_id) == active_doc_id;
-        let highlights: &[Vec<lattice_syntax::StyledSpan>] = if is_active || same_doc_as_active {
-            // X2.5: was `editor.visible_highlights.as_slice()`.
-            // Now reads the worker-published cell via the
-            // `rs_guard` + `active_spans_guard` bound at the top
-            // of paint_pane.
-            active_spans_guard.spans.as_slice()
-        } else {
-            editor
-                .pane_highlights
-                .get(&pane_idx)
-                .map(Vec::as_slice)
-                .unwrap_or(&[])
-        };
-
+        // Slice X3.full.2: the element always paints the active
+        // pane's `visible_spans`. Inactive panes whose buffer
+        // differs from the active doc currently paint with the
+        // active spans (visually-stale highlights) -- the
+        // pre-existing slice 1 limitation; the per-pane span
+        // cache resync into the element is a follow-up slice.
         let total_lines = raw_lines.len().max(1);
         let gutter_width = total_lines.to_string().len();
-        // 5.8.I / 5.8.U: gutter pad = 1 (fold marker column) +
-        // 1 (severity sign column) + N (line number width) + 1
-        // (trailing space).
-        let gutter_pad_len = 2 + gutter_width + 1;
-        let gutter_normal = rgb(0x9399b2); // Catppuccin overlay2.
-
-        let style_cursor_cell = |c: &str| -> gpui::Div {
-            let cell = div().child(c.to_string());
-            match cursor_shape {
-                Some(CursorShape::Block) => cell.bg(cursor_bg).text_color(cursor_fg),
-                Some(CursorShape::Bar) => cell.border_l_2().border_color(cursor_bg),
-                Some(CursorShape::Underline) => cell.border_b_2().border_color(cursor_bg),
-                None => cell,
-            }
-        };
 
         // 5.8.I: per-line severity lookup. URI for this pane's
         // buffer comes from `editor.buffer_uris` (populated when
@@ -530,483 +412,202 @@ impl EditorView {
             uri.and_then(|u| render_state.diagnostics.layer.line_severity(u, line_idx))
         };
 
-        // 5.8.J: per-line inlay hints. Read the buffer's
-        // `LspInlayHintCache`; collect hints whose
-        // `position.line == line_idx` for this paint. Hints are
-        // virtual text (don't affect cursor offset), rendered
-        // inline at their `position.character` byte offset in a
-        // dimmed overlay colour. v1 doesn't gate on
-        // `lsp-inlay-hint-mode` — if the cache exists, paint it
-        // (when the mode is off, the driver doesn't repopulate
-        // the cache, so the most-recent state is shown).
-        let inlay_hints_for_line: Box<dyn Fn(u32, &str) -> Vec<(usize, String)>> = {
-            // 5.8.AF.5 / Slice 3b.1: read inlay-hint cache
-            // through `RenderState.lsp.inlay_hints`. Symmetric
-            // with the TUI peer; the spawned LSP request task
-            // writes into the same underlying PerBufferCache.
-            use lattice_host::per_buffer_cache::PerBufferCacheExt;
-            let buffer_id = pane.buffer_id;
-            let rs = editor.render_state.load_full();
-            let cache_opt = rs.lsp.inlay_hints.get_for(buffer_id);
-            Box::new(
-                move |line_idx: u32, line_text: &str| -> Vec<(usize, String)> {
-                    let Some(cache) = cache_opt.as_ref() else {
-                        return Vec::new();
-                    };
-                    let mut hits: Vec<(usize, String)> = cache
-                        .hints
-                        .iter()
-                        .filter(|h| h.position.line == line_idx)
-                        .map(|h| {
-                            // 5.8.N: label flattening is renderer-
-                            // neutral; helper lives on lattice-lsp.
-                            let mut text = lattice_lsp::inlay_hint_label_text(&h.label);
-                            if h.padding_left.unwrap_or(false) {
-                                text.insert(0, ' ');
-                            }
-                            if h.padding_right.unwrap_or(false) {
-                                text.push(' ');
-                            }
-                            let byte_offset = lattice_lsp::position::utf16_column_to_utf8_byte(
-                                line_text,
-                                h.position.character,
-                            ) as usize;
-                            (byte_offset.min(line_text.len()), text)
-                        })
-                        .collect();
-                    hits.sort_by_key(|(off, _)| *off);
-                    hits
-                },
-            )
-        };
-
         // 5.8.N: severity glyph + colour come from host_theme so
         // `:set ui.diagnostics.*` overrides flow through identically
         // for both renderer peers.
         let host_theme = editor.host_theme;
-        let make_gutter = |line_idx: usize, is_cursor_line: bool, fold_marker: bool| -> gpui::Div {
-            // 5.8.I / 5.8.N: severity sign cell + line-number cell.
-            // Painted as children of a flex_row so each can carry
-            // its own colour.
-            let sev = line_severity(line_idx as u32);
-            let sign_cell: gpui::Div = match sev {
-                Some(s) => {
-                    let (glyph, color) = diagnostic_glyph_and_color(&host_theme, s);
-                    div().text_color(rgb(color)).child(glyph.to_string())
+
+        // Phase 5.8.AF.5 / Slice X3.full.2: gather per-row gutter
+        // metadata for the visible window. Caller of the element
+        // does the LSP / fold lookups so the element holds only
+        // owned values. `editor.line_inside_closed_fold` filters
+        // out lines hidden inside a closed fold (the fold-start
+        // row still renders, with a ► marker in column 0).
+        let gutter_meta: Vec<crate::editor_element::GutterLineMeta> = (visible_start..visible_end)
+            .filter(|line_idx| !editor.line_inside_closed_fold(*line_idx as u32))
+            .map(|line_idx| {
+                let fold_start = editor.fold_start_at(line_idx as u32).is_some();
+                let severity =
+                    line_severity(line_idx as u32).map(|s| diagnostic_glyph_and_color(&host_theme, s));
+                crate::editor_element::GutterLineMeta {
+                    line_idx: line_idx as u32,
+                    fold_start,
+                    severity,
                 }
-                None => div().child(" ".to_string()),
-            };
-            let label = format!("{:>width$} ", line_idx + 1, width = gutter_width);
-            let label_color = if is_cursor_line && is_active {
-                cursor_bg
-            } else {
-                gutter_normal
-            };
-            // 5.8.U: fold-start marker (►) sits in a third
-            // gutter cell, on the left of the severity sign.
-            // Lines that aren't a fold-start render a blank
-            // space in that column so alignment stays stable
-            // regardless of whether folds are present.
-            let fold_cell = if fold_marker {
-                div().text_color(rgb(0xfab387)).child("►".to_string())
-            } else {
-                div().child(" ".to_string())
-            };
-            div()
-                .flex()
-                .flex_row()
-                .child(fold_cell)
-                .child(sign_cell)
-                .child(div().text_color(label_color).child(label))
+            })
+            .collect();
+
+        // Active-pane cursor state. `None` on inactive panes so the
+        // element doesn't paint a cursor marker there.
+        let cursor_state = match (is_active, cursor_shape) {
+            (true, Some(shape)) => Some(crate::editor_element::CursorState {
+                line: cursor.line,
+                byte: cursor.byte,
+                shape,
+            }),
+            _ => None,
         };
 
-        // 5.8.J: dimmed Catppuccin overlay colour for inlay-hint
-        // virtual text. Matches the TUI peer's `inlay_hint_style`
-        // (subdued comment-like style).
-        let inlay_color = rgb(0x7f849c); // Catppuccin overlay1.
-
-        // 5.8.P: visual-mode selection range. `None` outside
-        // Visual mode; inactive panes never paint a selection
-        // since the visual range lives on `editor` (active pane).
-        // Selection background uses Catppuccin surface1 — a
-        // distinguishable highlight that doesn't fight syntax
-        // colours.
+        // Slice X3.full.3 decoration data. All `Range`s in host
+        // state are utf-8 byte coordinates; the lone exception is
+        // LSP document-highlights (utf-16 columns) -- we convert
+        // them here against actual line text so the element sees
+        // only utf-8.
         let visual_range = if is_active {
             editor.visual_selection_range()
         } else {
             None
         };
-        let selection_bg = rgb(0x45475a); // Catppuccin surface1
-        // 5.8.Q: hlsearch + current-match + substitute-preview
-        // overlays. All three are protocol `Range`s the host
-        // already maintains; the GPUI peer just paints them.
-        // `current_match` (primary hit) uses a stronger colour
-        // than `all_matches` (secondary hlsearch).
-        let current_match = if is_active {
-            editor.current_match
+        let current_match = if is_active { editor.current_match } else { None };
+        let all_matches: Vec<lattice_core::protocol::position::Range> = if is_active {
+            editor.all_matches.clone()
         } else {
-            None
+            Vec::new()
         };
-        let all_matches: &[lattice_core::protocol::position::Range] = if is_active {
-            editor.all_matches.as_slice()
-        } else {
-            &[]
-        };
-        let current_match_bg = rgb(0xf9e2af); // Catppuccin yellow
-        let current_match_fg = rgb(0x1e1e2e); // Catppuccin base (contrast on yellow)
-        let hlsearch_bg = rgb(0x6c7086); // Catppuccin overlay0
-
-        // Per-line predicate that clamps the half-open range to
-        // the actual line length so a linewise `u32::MAX` end
-        // byte covers exactly the real characters.
-        let byte_in_range = |range: &lattice_core::protocol::position::Range,
-                             line_idx: usize,
-                             byte_idx: usize,
-                             line_len: usize|
-         -> bool {
-            let li = line_idx as u32;
-            if li < range.start.line || li > range.end.line {
-                return false;
-            }
-            let start = if li == range.start.line {
-                range.start.byte as usize
-            } else {
-                0
-            };
-            let end = if li == range.end.line {
-                (range.end.byte as usize).min(line_len)
-            } else {
-                line_len
-            };
-            byte_idx >= start && byte_idx < end
-        };
-        let byte_in_visual = |line_idx: usize, byte_idx: usize, line_len: usize| -> bool {
-            visual_range
-                .as_ref()
-                .is_some_and(|r| byte_in_range(r, line_idx, byte_idx, line_len))
-        };
-        let byte_in_current_match = |line_idx: usize, byte_idx: usize, line_len: usize| -> bool {
-            current_match
-                .as_ref()
-                .is_some_and(|r| byte_in_range(r, line_idx, byte_idx, line_len))
-        };
-        let byte_in_any_match = |line_idx: usize, byte_idx: usize, line_len: usize| -> bool {
-            all_matches
-                .iter()
-                .any(|r| byte_in_range(r, line_idx, byte_idx, line_len))
-        };
-
-        // 5.8.V: LSP document-highlight overlay. Read
-        // `editor.lsp_document_highlights.highlights` — each entry
-        // is an `lsp_types::DocumentHighlight` with utf16 LSP
-        // positions. Convert to per-line byte ranges via
-        // `utf16_column_to_utf8_byte` keyed against the doc text.
-        // Painted with Catppuccin overlay0 (matches hlsearch
-        // intensity — a soft "related symbol" feel).
-        let doc_highlights_bg = rgb(0x585b70); // Catppuccin surface2 (soft accent)
-        // Phase 5.8.AF.5 / Slice 3b.0: read through the
-        // `RenderState.lsp.document_highlights` ArcSwap. The
-        // spawned LSP request task `.store()`s directly into the
-        // same underlying slot, so this `load_full()` sees the
-        // latest result without any tick-driven drain on the
-        // renderer thread. Symmetric with the TUI peer.
-        let rs = editor.render_state.load_full();
-        let dh_guard = rs.lsp.document_highlights.load_full();
-        let doc_highlight_in_buffer = |line_idx: usize, byte_idx: usize| -> bool {
-            let Some(cache) = dh_guard.as_deref() else {
-                return false;
-            };
-            // Only highlight when the cache is for this pane's
-            // buffer (the host pump keys highlights per buffer).
-            if cache.buffer_id != pane.buffer_id {
-                return false;
-            }
-            for h in cache.highlights.iter() {
-                let start = h.range.start;
-                let end = h.range.end;
-                let li = line_idx as u32;
-                if li < start.line || li > end.line {
-                    continue;
-                }
-                // utf16 → utf8 byte conversion is keyed by the
-                // line's text. For multi-line highlights, lines
-                // strictly between start/end are fully covered.
-                let line_text = raw_lines.get(line_idx).copied().unwrap_or("");
-                let start_byte = if li == start.line {
-                    lattice_lsp::position::utf16_column_to_utf8_byte(line_text, start.character)
-                        as usize
-                } else {
-                    0
-                };
-                let end_byte = if li == end.line {
-                    lattice_lsp::position::utf16_column_to_utf8_byte(line_text, end.character)
-                        as usize
-                } else {
-                    line_text.len()
-                };
-                if byte_idx >= start_byte && byte_idx < end_byte {
-                    return true;
-                }
-            }
-            false
-        };
-
-        // 5.8.S: substitute preview overlays. Read
-        // `editor.substitute_preview.matches` — the about-to-be-
-        // replaced ranges. Paint with a distinctive bg so the user
-        // sees the change before pressing Enter. Active pane only.
-        let substitute_matches: &[lattice_core::protocol::position::Range] = if is_active {
+        let substitute_matches: Vec<lattice_core::protocol::position::Range> = if is_active {
             editor
                 .substitute_preview
                 .as_ref()
-                .map(|p| p.matches.as_slice())
-                .unwrap_or(&[])
+                .map(|p| p.matches.to_vec())
+                .unwrap_or_default()
         } else {
-            &[]
+            Vec::new()
         };
-        let substitute_bg = rgb(0xf38ba8); // Catppuccin red — destructive preview
-        let substitute_fg = rgb(0x1e1e2e); // Catppuccin base — contrast on red
-        let byte_in_substitute = |line_idx: usize, byte_idx: usize, line_len: usize| -> bool {
-            substitute_matches
-                .iter()
-                .any(|r| byte_in_range(r, line_idx, byte_idx, line_len))
-        };
-
-        // 5.8.Q: cursorline background — paint a subtle row
-        // background on the active pane's cursor line so the
-        // user can locate the cursor at a glance. Read from
-        // host_theme.cursor_line_bg; if it's Color::Default the
-        // fallback is Catppuccin surface0 (close to bg, gentle).
+        // LSP document-highlights: utf-16 columns at the protocol
+        // boundary; convert to utf-8 byte offsets against the
+        // hit's host line text. Painted on any pane sharing the
+        // highlighted buffer (the per-buffer pump model).
+        let rs_for_dh = editor.render_state.load_full();
+        let dh_guard = rs_for_dh.lsp.document_highlights.load_full();
+        let doc_highlights: Vec<lattice_core::protocol::position::Range> = dh_guard
+            .as_deref()
+            .filter(|cache| cache.buffer_id == pane.buffer_id)
+            .map(|cache| {
+                cache
+                    .highlights
+                    .iter()
+                    .map(|h| {
+                        let start_line = h.range.start.line;
+                        let end_line = h.range.end.line;
+                        let start_text = raw_lines.get(start_line as usize).copied().unwrap_or("");
+                        let end_text = raw_lines.get(end_line as usize).copied().unwrap_or("");
+                        let start_byte = lattice_lsp::position::utf16_column_to_utf8_byte(
+                            start_text,
+                            h.range.start.character,
+                        );
+                        let end_byte = lattice_lsp::position::utf16_column_to_utf8_byte(
+                            end_text,
+                            h.range.end.character,
+                        );
+                        lattice_core::protocol::position::Range {
+                            start: lattice_core::protocol::position::Position {
+                                line: start_line,
+                                byte: start_byte,
+                            },
+                            end: lattice_core::protocol::position::Position {
+                                line: end_line,
+                                byte: end_byte,
+                            },
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        // Cursorline bg: host_theme drives `:set ui.cursor-line-bg`
+        // overrides. Fallback Catppuccin surface0.
         let cursorline_bg = editor.host_theme.cursor_line_bg.to_rgb_u32(0x313244);
 
-        // 5.8.AB.2: per-character diagnostic underline overlay.
-        // The TUI is limited to a colored gutter sign because
-        // ratatui can't paint sub-character decorations; GPUI
-        // can. Read the full diagnostic array for this pane's
-        // URI once per paint (wait-free `Arc<[Diagnostic]>` via
-        // `diagnostics_arc`), then a per-(line, byte) probe
-        // finds the most-severe overlapping diagnostic for the
-        // cell. Severity → colour mirrors the gutter sign so
-        // the underline tells the user *which* error/warning
-        // covers each token.
-        let diagnostics_arc = uri.and_then(|u| editor.lsp_diagnostics.diagnostics_arc(u));
-        let diagnostic_severity_at_byte = |line_idx: usize,
-                                           byte_idx: usize,
-                                           line_text: &str|
-         -> Option<lattice_lsp::DiagnosticSeverity> {
-            let arr = diagnostics_arc.as_ref()?;
-            let mut best: Option<lattice_lsp::DiagnosticSeverity> = None;
-            for d in arr.iter() {
-                let start = d.range.start;
-                let end = d.range.end;
-                let li = line_idx as u32;
-                if li < start.line || li > end.line {
-                    continue;
-                }
-                // Convert LSP utf-16 columns to utf-8 byte
-                // offsets keyed against the line text. For
-                // multi-line diagnostics the in-between lines
-                // are fully covered.
-                let start_byte = if li == start.line {
-                    lattice_lsp::position::utf16_column_to_utf8_byte(line_text, start.character)
-                        as usize
-                } else {
-                    0
-                };
-                let end_byte = if li == end.line {
-                    lattice_lsp::position::utf16_column_to_utf8_byte(line_text, end.character)
-                        as usize
-                } else {
-                    line_text.len()
-                };
-                // LSP "zero-width" diagnostics (start == end) are
-                // common for "missing X" errors — paint at least
-                // one char so the underline is visible.
-                let coverage_end = end_byte.max(start_byte + 1);
-                if byte_idx >= start_byte && byte_idx < coverage_end {
-                    // Lower severity rank wins (Error < Warning <
-                    // Info < Hint), matching the gutter sign's
-                    // most-severe rule.
-                    let rank = |s: lattice_lsp::DiagnosticSeverity| -> u8 {
-                        match s {
-                            lattice_lsp::DiagnosticSeverity::ERROR => 0,
-                            lattice_lsp::DiagnosticSeverity::WARNING => 1,
-                            lattice_lsp::DiagnosticSeverity::INFORMATION => 2,
-                            lattice_lsp::DiagnosticSeverity::HINT => 3,
-                            _ => 4,
+        // Slice X3.full.4: gather LSP inlay hints + diagnostic
+        // underline ranges for this pane's buffer. Both arrive
+        // in LSP coordinates (utf-16 character columns) and are
+        // converted to utf-8 bytes against the buffer's actual
+        // line text here, at the boundary. The element only sees
+        // utf-8.
+        let inlay_hints: Vec<crate::editor_element::InlayHintRow> = render_state
+            .lsp
+            .inlay_hints
+            .get_for(pane.buffer_id)
+            .map(|cache| {
+                cache
+                    .hints
+                    .iter()
+                    .map(|h| {
+                        let line_idx = h.position.line;
+                        let line_text =
+                            raw_lines.get(line_idx as usize).copied().unwrap_or("");
+                        let byte = lattice_lsp::position::utf16_column_to_utf8_byte(
+                            line_text,
+                            h.position.character,
+                        );
+                        let mut text = lattice_lsp::inlay_hint_label_text(&h.label);
+                        if h.padding_left.unwrap_or(false) {
+                            text.insert(0, ' ');
                         }
-                    };
-                    let sev = d.severity.unwrap_or(lattice_lsp::DiagnosticSeverity::HINT);
-                    best = Some(match best {
-                        Some(b) if rank(b) <= rank(sev) => b,
-                        _ => sev,
-                    });
-                }
-            }
-            best
-        };
-
-        // 5.8.O: walk only the visible window [visible_start,
-        // visible_end). `line_idx` is the ABSOLUTE buffer-line
-        // index so gutter labels, cursor maths, and highlight
-        // lookups stay 0-based against the document — not relative
-        // to the viewport.
-        // 5.8.U: skip lines hidden inside closed folds. The
-        // fold-start row still paints (with a ► marker prepended
-        // to the gutter); rows strictly inside the fold body are
-        // filtered out of the iteration.
-        let mut rows: Vec<gpui::Div> = (visible_start..visible_end)
-            .filter(|line_idx| !editor.line_inside_closed_fold(*line_idx as u32))
-            .map(|line_idx| {
-                let line = raw_lines[line_idx];
-                let fold_marker = editor.fold_start_at(line_idx as u32).is_some();
-                let is_cursor_line = line_idx == cursor_line;
-                // Phase 5.8.AF.5 / Slice 3c.atomic.M: index spans by
-                // buffer-line DELTA from `pane_scroll`, not by absolute
-                // buffer line. `highlight_lines(start, end)` returns
-                // `Vec<Vec<StyledSpan>>` where entry `i` covers absolute
-                // line `start + i` (per `lattice-syntax` docstring), so
-                // the lookup must subtract `pane_scroll`. Same lesson
-                // the TUI peer learned -- see
-                // `crates/lattice-ui-tui/src/render.rs:4971-4972`.
-                // Without this delta, every paint with `scroll > 0`
-                // either reads wrong-line spans or falls through to
-                // empty (`SyntaxStyle::Default` -> default text colour),
-                // which is what the user observes as "everything is
-                // just plain white".
-                let rel_line = (line_idx as u32).saturating_sub(pane_scroll) as usize;
-                let line_spans: &[lattice_syntax::StyledSpan] =
-                    highlights.get(rel_line).map(Vec::as_slice).unwrap_or(&[]);
-                // 5.8.J: pre-compute inlay hits for this line.
-                let hints = inlay_hints_for_line(line_idx as u32, line);
-                let mut hint_iter = hints.iter().peekable();
-                let mut cells: Vec<gpui::Div> = Vec::with_capacity(line.len() + 2 + hints.len());
-                cells.push(make_gutter(line_idx, is_cursor_line, fold_marker));
-                // Phase 5.8.AF.5 / Slice X3: collapse consecutive
-                // chars with identical styling into a single styled
-                // div carrying a string run, instead of one div per
-                // char. For a typical idle line (no visual, no
-                // search, no doc-highlight, syntax colour changes
-                // only at token boundaries), this cuts ~80 per-char
-                // divs down to ~10-15 per-run divs -- a 5-8x
-                // reduction in element-tree fan-out per line, and
-                // proportionally cheaper downstream GPUI layout +
-                // paint + composite. Visual output is identical:
-                // monospace font, each char in a run has the same
-                // fg/bg/underline, so concatenating into one string
-                // and applying the style to the run preserves
-                // appearance.
-                //
-                // Flush points (force a new run):
-                //   - inlay hint insertion at this byte;
-                //   - cursor char (renders as its own shaped cell);
-                //   - any field of `CellStyle` differs from the
-                //     current run.
-                let mut current_run: Option<(CellStyle, String)> = None;
-                let flush_run = |cells: &mut Vec<gpui::Div>,
-                                 run: &mut Option<(CellStyle, String)>| {
-                    if let Some((style, text)) = run.take() {
-                        cells.push(run_to_cell(style, text));
-                    }
-                };
-                for (byte_idx, c) in line.char_indices() {
-                    // 5.8.J: drain hints whose byte offset is at
-                    // or before this char — they render inline
-                    // before the char. `position.character`
-                    // typically sits on a token boundary so the
-                    // hint visually appears between tokens.
-                    while let Some(&&(off, _)) = hint_iter.peek() {
-                        if off <= byte_idx {
-                            flush_run(&mut cells, &mut current_run);
-                            let (_, text) = hint_iter.next().unwrap();
-                            cells.push(div().text_color(inlay_color).child(text.clone()));
-                        } else {
-                            break;
+                        if h.padding_right.unwrap_or(false) {
+                            text.push(' ');
                         }
-                    }
-                    let is_cursor = is_active && is_cursor_line && byte_idx == cursor_byte;
-                    if is_cursor {
-                        flush_run(&mut cells, &mut current_run);
-                        cells.push(style_cursor_cell(&c.to_string()));
-                        continue;
-                    }
-                    // Compute the per-char style signature. See
-                    // `CellStyle` + `compute_cell_style` at file
-                    // scope. Overlay precedence (substitute >
-                    // visual > current_match > hlsearch >
-                    // doc_highlight) lives there too.
-                    let in_visual = byte_in_visual(line_idx, byte_idx, line.len());
-                    let in_current_match = byte_in_current_match(line_idx, byte_idx, line.len());
-                    let in_hlsearch =
-                        !in_current_match && byte_in_any_match(line_idx, byte_idx, line.len());
-                    let in_substitute = byte_in_substitute(line_idx, byte_idx, line.len());
-                    let in_doc_highlight = doc_highlight_in_buffer(line_idx, byte_idx);
-                    let span_style = style_at(line_spans, byte_idx);
-                    let style = CellStyle::compute(
-                        span_style,
-                        in_visual,
-                        in_current_match,
-                        in_hlsearch,
-                        in_substitute,
-                        in_doc_highlight,
-                        diagnostic_severity_at_byte(line_idx, byte_idx, line)
-                            .map(|sev| diagnostic_glyph_and_color(&host_theme, sev).1),
-                        selection_bg.into(),
-                        current_match_bg.into(),
-                        current_match_fg.into(),
-                        hlsearch_bg.into(),
-                        substitute_bg.into(),
-                        substitute_fg.into(),
-                        doc_highlights_bg.into(),
-                    );
-                    match &mut current_run {
-                        Some((existing, buf)) if *existing == style => {
-                            buf.push(c);
+                        crate::editor_element::InlayHintRow {
+                            line: line_idx,
+                            byte,
+                            text,
                         }
-                        _ => {
-                            flush_run(&mut cells, &mut current_run);
-                            current_run = Some((style, c.to_string()));
-                        }
-                    }
-                }
-                flush_run(&mut cells, &mut current_run);
-                // 5.8.J: drain trailing hints positioned at or
-                // past EOL.
-                for (_, text) in hint_iter {
-                    cells.push(div().text_color(inlay_color).child(text.clone()));
-                }
-                if is_active && is_cursor_line && cursor_byte >= line.len() {
-                    cells.push(style_cursor_cell(" "));
-                }
-                // 5.8.Q: paint cursorline bg under the row when
-                // this is the active pane's cursor line. Per-cell
-                // overlays (visual / match) still layer on top
-                // because each cell carries its own bg.
-                let row = div().flex().flex_row().children(cells);
-                if is_active && is_cursor_line {
-                    row.bg(rgb(cursorline_bg))
-                } else {
-                    row
-                }
+                    })
+                    .collect()
             })
-            .collect();
+            .unwrap_or_default();
 
-        // 5.8.O: cursor-past-last-line marker only renders if the
-        // synthetic row falls within the visible viewport.
-        let cursor_past_last_line = is_active && cursor_line >= raw_lines.len();
-        let trailing_row_in_viewport = cursor_past_last_line
-            && cursor_line >= visible_start
-            && cursor_line < (visible_start + (viewport_height as usize));
-        if trailing_row_in_viewport {
-            let blank_gutter = div().child(" ".repeat(gutter_pad_len));
-            rows.push(
-                div()
-                    .flex()
-                    .flex_row()
-                    .child(blank_gutter)
-                    .child(style_cursor_cell(" ")),
-            );
-        }
+        // Diagnostic underlines: pull `Arc<[Diagnostic]>` for the
+        // pane's URI (`None` => unsaved scratch / no LSP /
+        // disabled). For each diagnostic, convert utf-16 → utf-8
+        // against the corresponding line, resolve severity →
+        // color via `diagnostic_glyph_and_color`.
+        let diagnostic_underlines: Vec<crate::editor_element::DiagnosticUnderline> = uri
+            .and_then(|u| render_state.diagnostics.layer.diagnostics_arc(u))
+            .map(|diags| {
+                diags
+                    .iter()
+                    .map(|d| {
+                        let start_line = d.range.start.line;
+                        let end_line = d.range.end.line;
+                        let start_text =
+                            raw_lines.get(start_line as usize).copied().unwrap_or("");
+                        let end_text =
+                            raw_lines.get(end_line as usize).copied().unwrap_or("");
+                        let start_byte = lattice_lsp::position::utf16_column_to_utf8_byte(
+                            start_text,
+                            d.range.start.character,
+                        );
+                        let end_byte = lattice_lsp::position::utf16_column_to_utf8_byte(
+                            end_text,
+                            d.range.end.character,
+                        );
+                        let color = d
+                            .severity
+                            .map(|s| diagnostic_glyph_and_color(&host_theme, s).1)
+                            // Unknown severity: fall back to overlay2
+                            // (matches `diagnostic_glyph_and_color`).
+                            .unwrap_or(0x9399b2);
+                        crate::editor_element::DiagnosticUnderline {
+                            range: lattice_core::protocol::position::Range {
+                                start: lattice_core::protocol::position::Position {
+                                    line: start_line,
+                                    byte: start_byte,
+                                },
+                                end: lattice_core::protocol::position::Position {
+                                    line: end_line,
+                                    byte: end_byte,
+                                },
+                            },
+                            color,
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Inlay color: Catppuccin overlay1; host-theme override
+        // hook lands when `host_theme.inlay_foreground` is added.
+        let inlay_color: u32 = 0x7f849c;
 
         // Per-pane status line at the pane's bottom. Format
         // matches the TUI's per-pane status: path + cursor coords.
@@ -1042,6 +643,38 @@ impl EditorView {
             (rgb(theme.status_background), rgb(theme.status_foreground))
         };
 
+        // Phase 5.8.AF.5 / Slice X3.full.2: pane body is one
+        // `EditorElement` that shapes + paints visible lines
+        // directly via `WindowTextSystem::shape_line` +
+        // `ShapedLine::paint`. The legacy `rows` Vec construction
+        // (one Div per cell, per line) was deleted in this slice;
+        // gutter + cursor moved into the element. Decoration
+        // backgrounds (selection / hlsearch / doc-highlight /
+        // cursorline / substitute) restore in slice X3.full.3;
+        // inlay-hint virtual text + per-cell diagnostic
+        // underlines restore in slice X3.full.4.
+        let editor_element = crate::editor_element::EditorElement {
+            pane_idx,
+            theme: *theme,
+            text: std::sync::Arc::new(text),
+            visible_spans: (*active_spans_guard).clone(),
+            scroll: pane_scroll,
+            viewport_height,
+            gutter: gutter_meta,
+            gutter_width,
+            cursor: cursor_state,
+            is_active,
+            visual_range,
+            current_match,
+            all_matches,
+            substitute_matches,
+            doc_highlights,
+            cursorline_bg,
+            inlay_hints,
+            diagnostic_underlines,
+            inlay_color,
+        };
+
         div()
             .flex()
             .flex_col()
@@ -1054,7 +687,7 @@ impl EditorView {
                     .flex()
                     .flex_col()
                     .overflow_hidden()
-                    .children(rows),
+                    .child(editor_element.into_any_element()),
             )
             .child(
                 div()

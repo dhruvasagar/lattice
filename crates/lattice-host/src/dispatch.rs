@@ -7187,6 +7187,93 @@ impl Editor {
         });
     }
 
+    /// Slice 3c.final.E.5e: reconcile the keymap-layer stack +
+    /// `completion-popup-mode` activation against the editor's
+    /// current popup / active-snippet state. Hoisted from the
+    /// renderer (`App::sync_keymap_overlays` +
+    /// `App::sync_completion_popup_mode_activation`) since the
+    /// body is pure editor-field manipulation -- no renderer-side
+    /// state is touched. The renderer-side wrappers become 1-line
+    /// `mutate_editor` delegates routing through the actor seam.
+    ///
+    /// Push order: pop everything, then push snippet (if active),
+    /// then popup (if active) -- popup's `LayerId` always sits
+    /// above snippet, preserving the legacy "popup precedes
+    /// snippet" gating in `input::translate`.
+    pub fn sync_keymap_overlays(&mut self) {
+        let want_popup = self.insert_completion.is_some();
+        let want_snippet = self.active_snippet.is_some();
+        let have_popup = self.completion_popup_layer.is_some();
+        let have_snippet = self.snippet_layer.is_some();
+
+        // CSM.K1: bring `completion-popup-mode` activation in line
+        // with `want_popup` (inlined from the prior App-side helper
+        // since this is the sole caller). Per-buffer scope: the
+        // popup belongs to the document the user is typing in.
+        let buffer_id = self.document_buffer_id;
+        let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
+        let popup_mode_id = lattice_mode::CompletionPopupMode::mode_id();
+        let mut active = self
+            .active_modes
+            .remove(&buffer_id)
+            .unwrap_or_default();
+        let currently = active.has_minor(popup_mode_id);
+        if want_popup && !currently {
+            let _ = self.mode_registry.activate_minor(
+                &mut active,
+                &self.mode_guards,
+                &self.config,
+                &self.event_bus,
+                &self.services,
+                proto_id,
+                popup_mode_id,
+                lattice_mode::CapabilitySet::empty(),
+            );
+        } else if !want_popup && currently {
+            let _ = self.mode_registry.deactivate_minor(
+                &mut active,
+                &self.mode_guards,
+                &self.event_bus,
+                proto_id,
+                popup_mode_id,
+            );
+        }
+        self.active_modes.insert(buffer_id, active);
+        // CSM.3: completion-popup-mode toggling counts as a
+        // mode-set change for the buffer -- recompute the
+        // active-sources cache so the engine reads a coherent
+        // snapshot.
+        self.recompute_active_completion_sources_for(buffer_id);
+
+        if want_popup == have_popup && want_snippet == have_snippet {
+            return;
+        }
+        // Re-stack: pop everything, then push in the canonical
+        // order (snippet first, popup second).
+        if let Some(id) = self.completion_popup_layer.take() {
+            self.keymap.pop_layer(id);
+        }
+        if let Some(id) = self.snippet_layer.take() {
+            self.keymap.pop_layer(id);
+        }
+        if want_snippet {
+            let id = self.keymap.push_layer(
+                crate::keymap_registry::PushLayerKind::MinorMode,
+                "active-snippet",
+                crate::keymap_insert::active_snippet_layer_bindings(&self.action_ids),
+            );
+            self.snippet_layer = Some(id);
+        }
+        if want_popup {
+            let id = self.keymap.push_layer(
+                crate::keymap_registry::PushLayerKind::MinorMode,
+                "completion-popup",
+                crate::keymap_insert::completion_popup_layer_bindings(&self.action_ids),
+            );
+            self.completion_popup_layer = Some(id);
+        }
+    }
+
     /// 5.5.F.5.1: rebuild the buffer-local `ActiveCompletionSources`
     /// snapshot from the buffer's currently-active major + minors.
     /// Called after every mode-lifecycle transition so the

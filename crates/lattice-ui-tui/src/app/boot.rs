@@ -132,47 +132,20 @@ impl App {
     ///
     /// Slice 8.f.
     pub fn sync_keymap_overlays(&mut self) {
-        let want_popup = self.editor.insert_completion.is_some();
-        let want_snippet = self.editor.active_snippet.is_some();
-        let have_popup = self.editor.completion_popup_layer.is_some();
-        let have_snippet = self.editor.snippet_layer.is_some();
-        // CSM.K1: `completion-popup-mode` minor reflects popup
-        // state (formerly `completion-mode` in CSM.2 -- renamed
-        // for the two-mode split where `completion-mode` is now
-        // the persistent buffer-participation gate). The
-        // keymap-overlay push / pop is the same diff applied to
-        // the keymap-registry side; reconcile both here so the
-        // two stay in lockstep.
-        self.sync_completion_popup_mode_activation(want_popup);
-        if want_popup == have_popup && want_snippet == have_snippet {
-            return;
-        }
-        // Re-stack: pop everything, then push in the canonical
-        // order (snippet first, popup second).
-        if let Some(id) = self.editor.completion_popup_layer.take() {
-            self.editor.keymap.pop_layer(id);
-        }
-        if let Some(id) = self.editor.snippet_layer.take() {
-            self.editor.keymap.pop_layer(id);
-        }
-        if want_snippet {
-            let id = self.editor.keymap.push_layer(
-                crate::keymap_registry::PushLayerKind::MinorMode,
-                "active-snippet",
-                crate::keymap_insert::active_snippet_layer_bindings(&self.editor.action_ids),
-            );
-            self.editor.snippet_layer = Some(id);
-        }
-        if want_popup {
-            let id = self.editor.keymap.push_layer(
-                crate::keymap_registry::PushLayerKind::MinorMode,
-                "completion-popup",
-                crate::keymap_insert::completion_popup_layer_bindings(&self.editor.action_ids),
-            );
-            self.editor.completion_popup_layer = Some(id);
-        }
+        // Slice 3c.final.E.5e: body hoisted to
+        // [`lattice_host::dispatch::Editor::sync_keymap_overlays`].
+        // Renderer delegates through `mutate_editor` so post-swap
+        // the closure crosses the actor channel like every other
+        // mutation.
+        self.mutate_editor(|e| e.sync_keymap_overlays());
     }
 
+    // Slice 3c.final.E.5e: `sync_completion_popup_mode_activation`
+    // retired -- inlined into
+    // [`lattice_host::dispatch::Editor::sync_keymap_overlays`]
+    // alongside its sole caller. Original doc-comment preserved
+    // for grep:
+    //
     /// CSM.K1: bring `completion-popup-mode`'s activation state
     /// on the active document buffer in line with `want_popup`.
     /// Called from `sync_keymap_overlays` so the transient
@@ -185,46 +158,7 @@ impl App {
     /// (`self.document_buffer_id()`); multi-document support
     /// activates this mode on whichever doc owns the popup at
     /// open time when that lands. Deactivation is symmetric.
-    fn sync_completion_popup_mode_activation(&mut self, want_popup: bool) {
-        let buffer_id = self.document_buffer_id();
-        let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
-        let mode_id = lattice_mode::CompletionPopupMode::mode_id();
-        let mut active = self
-            .editor
-            .active_modes
-            .remove(&buffer_id)
-            .unwrap_or_default();
-        let currently = active.has_minor(mode_id);
-        if want_popup && !currently {
-            let _ = self.editor.mode_registry.activate_minor(
-                &mut active,
-                &self.editor.mode_guards,
-                &self.editor.config,
-                &self.editor.event_bus,
-                &self.editor.services,
-                proto_id,
-                mode_id,
-                lattice_mode::CapabilitySet::empty(),
-            );
-        } else if !want_popup && currently {
-            let _ = self.editor.mode_registry.deactivate_minor(
-                &mut active,
-                &self.editor.mode_guards,
-                &self.editor.event_bus,
-                proto_id,
-                mode_id,
-            );
-        }
-        self.editor.active_modes.insert(buffer_id, active);
-        // CSM.3: a transition into / out of completion-popup-mode
-        // is a mode-set change for the buffer -- recompute the
-        // active-sources cache so the engine reads a coherent
-        // snapshot. (completion-popup-mode itself doesn't
-        // contribute sources; the recompute walks all active
-        // modes, so future source-contributing minors that
-        // toggle alongside still get picked up.)
-        self.recompute_active_completion_sources_for(buffer_id);
-    }
+    // (Body retired: inlined into the host-side method.)
 
     /// Re-derive `App.theme`'s renderer-specific `Style` values
     /// from the current `ui.*` option values in the config. Called

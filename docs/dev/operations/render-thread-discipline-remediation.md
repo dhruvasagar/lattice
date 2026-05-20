@@ -3,7 +3,7 @@
 **Status:** in progress — X1, X3 (partial), X4, X2 (renderer-hot-path cutover) landed; X2.6 (legacy field deletion), X1b (idle wake bridge), X5 (frame-budget bench) and the full-X3 (per-line styled-text element) still pending.
 **Started:** 2026-05-19.
 **Owners:** session-driven (Dhruva + Claude).
-**Successor work:** Phase 5.8.AF.5 / Slice 3c.final (Editor on its own thread). Resumes AFTER this remediation lands.
+**Successor work:** Phase 5.8.AF.5 / Slice 3c.final (Editor on its own thread). Plan in [`docs/dev/architecture/3c-final-editor-thread.md`](../architecture/3c-final-editor-thread.md). Resumes AFTER this remediation lands.
 
 ## 1. Why this exists
 

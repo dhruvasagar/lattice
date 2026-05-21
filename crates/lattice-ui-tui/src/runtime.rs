@@ -155,16 +155,18 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
         // motions / scroll / cursor visibility agree with what the
         // renderer actually paints.
         let size = terminal.size().context("query terminal size")?;
+        // Slice 3c.final.E.5j: picker / completion popup rows via
+        // published `picker_state()` / `completion()` sub-states.
         let extra_rows = app
-            .editor
-            .picker
-            .as_ref()
+            .picker_state()
+            .state
+            .as_deref()
             .map(|p| popup_height_for(p.candidates.len().max(1)))
             .unwrap_or(0)
             .max(
-                app.editor
-                    .completion_state
-                    .as_ref()
+                app.completion()
+                    .state
+                    .as_deref()
                     .map(|s| popup_height_for(s.candidates.len()))
                     .unwrap_or(0),
             );
@@ -218,7 +220,10 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
         // The Arc keeps the snapshot alive for the entire frame --
         // the actor is free to publish concurrently and the new
         // pointer is observed by next frame's load.
-        let frame_snap = app.editor.snapshot_cache.load_arc();
+        // Slice 3c.final.E.5j: per-frame snapshot read via the
+        // published `ad().snapshot` mirror (Arc-bump clone off the
+        // same source as `snapshot_cache.load_arc()`).
+        let frame_snap = app.ad().snapshot.clone();
         terminal
             .draw(|frame| draw_frame(frame, &app, &frame_snap))
             .context("draw frame")?;

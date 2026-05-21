@@ -531,11 +531,11 @@ impl App {
         request_id: u32,
         selected_index: Option<u32>,
     ) {
-        let Some(req) = self
-            .editor
-            .lsp_pending_show_message_requests
-            .remove(&request_id)
-        else {
+        // Slice 3c.final.E.5j: remove via `mutate_editor_with` so
+        // the owned `req` flows out of the editor borrow.
+        let Some(req) = self.mutate_editor_with(move |e| {
+            e.lsp_pending_show_message_requests.remove(&request_id)
+        }) else {
             return;
         };
         let selected = selected_index.and_then(|i| req.actions.get(i as usize).cloned());
@@ -852,13 +852,14 @@ impl App {
     /// `codeActionProvider` -- mirrors the choice the spawn task
     /// made when firing the original request.
     fn first_code_action_handle(&self) -> Option<lattice_lsp::ServerHandle> {
-        let uri = self
-            .editor
-            .buffer_uris
-            .get(&self.document_buffer_id())?;
-        self.editor
+        // Slice 3c.final.E.5j: buffer_uris + lsp.servers_for via
+        // published `buffers().uris` and `lsp().supervisor` sub-states.
+        let uri = self.buffers().uris.get(&self.document_buffer_id())?.clone();
+        self.render_state
+            .load()
             .lsp
-            .servers_for(uri)
+            .supervisor
+            .servers_for(&uri)
             .into_iter()
             .find(|h| h.capabilities().supports_code_action())
     }

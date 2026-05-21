@@ -69,7 +69,9 @@ impl App {
         // `active_modes[buffer]` and triggers the option-cache
         // recompute so `ResolvedOptions` reflects the major's
         // contributions (e.g. ReadOnly = true for Help).
-        app.activate_major_for_buffer_kind(app.editor.document_buffer_id, BufferKind::Document);
+        // Slice 3c.final.E.5j: doc-id via App accessor (slice E.5d
+        // rule-of-three helper) instead of direct `editor` field.
+        app.activate_major_for_buffer_kind(app.document_buffer_id(), BufferKind::Document);
         // Initial-document attach. Path-bearing buffers register
         // their URI eagerly (the URI is a deterministic
         // `uri_from_path`; LSP attach is async and doesn't gate
@@ -111,7 +113,10 @@ impl App {
         // / `lsp_*_mode_enabled_for` checks looking up state on
         // the wrong buffer id in render-only test fixtures that
         // skip dispatch.
-        app.editor.publish_render_state();
+        // Slice 3c.final.E.5j: route the boot-time initial publish
+        // through `mutate_editor` (its body publishes after the
+        // closure runs, so an empty closure does the publish for us).
+        app.mutate_editor(|_| {});
         app
     }
 

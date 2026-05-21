@@ -379,9 +379,11 @@ impl App {
         if !self.buffers().registry.contains_document(pane.buffer_id) {
             return "[no buffer]".to_string();
         }
+        // Slice 3c.final.E.5j: registry lookup via published
+        // `buffers()` sub-state.
         let label = self
-            .editor
-            .buffers
+            .buffers()
+            .registry
             .document_path(pane.buffer_id)
             .map(|p| p.display().to_string())
             .or_else(|| self.buffers().registry.name_of(pane.buffer_id))

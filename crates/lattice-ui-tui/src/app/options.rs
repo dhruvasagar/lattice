@@ -129,26 +129,10 @@ impl App {
         self.drain_option_changes();
     }
 
-    /// Set `foldenable` directly. Drains the cascade so the cache
-    /// reflects the new value before the caller observes it.
-    pub fn set_foldenable_for_test(&mut self, on: bool) {
-        let _ = self
-            .editor
-            .config
-            .set_typed::<lattice_config::FoldEnable>(on);
-        self.drain_option_changes();
-    }
-
-    /// Set `completion.auto_insert_single` directly. Drains the
-    /// cascade so the cache reflects the new value before the
-    /// caller observes it.
-    pub fn set_completion_auto_insert_single_for_test(&mut self, on: bool) {
-        let _ = self
-            .editor
-            .config
-            .set_typed::<lattice_config::CompletionAutoInsertSingle>(on);
-        self.drain_option_changes();
-    }
+    // Slice 3c.final.E.5j: `_for_test` config setters moved to
+    // `#[cfg(test)] impl App` below — every caller is in a
+    // `mod tests` block (folds.rs, app.rs, completion.rs), and
+    // production code uses the dispatch cascade via `:set`.
 
     /// Delegate to [`lattice_host::editor::Editor::rebuild_option_cache`].
     /// Phase 5.5.E.6 moved the body host-side; this wrapper exists
@@ -324,6 +308,28 @@ impl App {
 
 // Phase 5.8.AA.u: `parse_per_language_overrides_table` migrated to
 // `lattice_host::dispatch::parse_per_language_overrides_table`.
+
+// Slice 3c.final.E.5j — test-fixture surface for direct config
+// setters. Every caller is in a `mod tests` block; production
+// code uses the dispatch cascade via `:set`.
+#[cfg(test)]
+impl App {
+    pub fn set_foldenable_for_test(&mut self, on: bool) {
+        let _ = self
+            .editor
+            .config
+            .set_typed::<lattice_config::FoldEnable>(on);
+        self.drain_option_changes();
+    }
+
+    pub fn set_completion_auto_insert_single_for_test(&mut self, on: bool) {
+        let _ = self
+            .editor
+            .config
+            .set_typed::<lattice_config::CompletionAutoInsertSingle>(on);
+        self.drain_option_changes();
+    }
+}
 
 #[cfg(test)]
 mod tests {

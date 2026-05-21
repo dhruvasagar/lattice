@@ -210,19 +210,22 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) {
     // and does NOT allocate an extra band -- the centered
     // overlay is drawn on top of the buffer area instead.
     let picker_is_minibuffer = picker_display_is_minibuffer(app);
+    // Slice 3c.final.E.5j: picker / completion popup row counts
+    // read from the published `picker_state()` / `completion()`
+    // sub-states (already populated by slice B.3).
     let picker_rows = if picker_is_minibuffer {
-        app.editor
-            .picker
-            .as_ref()
+        app.picker_state()
+            .state
+            .as_deref()
             .map(|p| popup_height(p.candidates.len().max(1)))
             .unwrap_or(0)
     } else {
         0
     };
     let completion_rows = app
-        .editor
-        .completion_state
-        .as_ref()
+        .completion()
+        .state
+        .as_deref()
         .map(|s| popup_height(s.candidates.len()))
         .unwrap_or(0);
     let extra_rows = picker_rows.max(completion_rows);
@@ -914,11 +917,16 @@ fn draw_picker_candidates(frame: &mut Frame, area: Rect, app: &App) {
 /// rather than panicking -- consistency with the validator's
 /// behaviour at parse time.
 fn picker_display_is_minibuffer(app: &App) -> bool {
-    app.editor
-        .config
-        .get_typed::<lattice_config::core_options::PickerDisplay>()
-        .map(|s| s.as_str() != "popup")
-        .unwrap_or(true)
+    // Slice 3c.final.E.5j: route through `read_editor` so the
+    // config read doesn't carry an `&self.editor` borrow into the
+    // renderer thread. Per-frame call; post-actor-swap this becomes
+    // a sync mailbox round-trip (~µs), within frame budget.
+    app.read_editor(|e| {
+        e.config
+            .get_typed::<lattice_config::core_options::PickerDisplay>()
+            .map(|s| s.as_str() != "popup")
+            .unwrap_or(true)
+    })
 }
 
 /// Centered overlay rendering of the picker for the
@@ -1048,13 +1056,13 @@ fn draw_picker_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
 /// through `App::open_help_in_pane`), falls through to the
 /// HelpBuffer's own fields. Once M.3.2.c retires those fields
 /// the fallback becomes a fatal error condition.
-fn help_render_data<'a>(
-    app: &'a App,
+fn help_render_data(
+    app: &App,
     buffer_id: crate::buffers::BufferId,
-    _fallback: &'a crate::help::HelpBuffer,
+    _fallback: &crate::help::HelpBuffer,
 ) -> (
-    &'a [Vec<lattice_syntax::StyledSpan>],
-    &'a [crate::help::HelpLink],
+    Vec<Vec<lattice_syntax::StyledSpan>>,
+    Vec<crate::help::HelpLink>,
 ) {
     // M.3.2.c.5: production reads route through `buffer_locals`
     // exclusively. The `_fallback` parameter is retained for the
@@ -1064,16 +1072,23 @@ fn help_render_data<'a>(
     // synthetic test path constructed a help buffer without
     // seeding locals, in which case nothing to highlight or
     // follow.
-    let locals = app.editor.buffer_locals.get(&buffer_id);
-    let highlights = locals
-        .and_then(|l| l.get::<crate::modes::HelpHighlights>())
-        .map(|h| h.0.as_slice())
-        .unwrap_or(&[]);
-    let links = locals
-        .and_then(|l| l.get::<crate::modes::HelpLinks>())
-        .map(|h| h.0.as_slice())
-        .unwrap_or(&[]);
-    (highlights, links)
+    //
+    // Slice 3c.final.E.5j: route through `read_editor` so the
+    // buffer_locals read doesn't carry an `&Editor` borrow into
+    // the renderer thread. Returns owned `Vec` clones (each is
+    // small: a few hundred styled spans + ~10 links).
+    app.read_editor(move |e| {
+        let locals = e.buffer_locals.get(&buffer_id);
+        let highlights = locals
+            .and_then(|l| l.get::<crate::modes::HelpHighlights>())
+            .map(|h| h.0.clone())
+            .unwrap_or_default();
+        let links = locals
+            .and_then(|l| l.get::<crate::modes::HelpLinks>())
+            .map(|h| h.0.clone())
+            .unwrap_or_default();
+        (highlights, links)
+    })
 }
 
 fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App, snap: &DocumentSnapshot) {
@@ -1647,9 +1662,12 @@ fn draw_inactive_help(frame: &mut Frame, area: Rect, app: &App, pane: &crate::pa
     let viewport = area.height as usize;
     // Look up the help content via the registry id this pane
     // tracks; fall back to the popup slot for the legacy path.
+    // Slice 3c.final.E.5j: registry lookup via published `buffers()`
+    // sub-state (slice B.1's `BuffersRenderState.registry` is an
+    // Arc-bump clone of the same `BufferRegistry`).
     let Some(help) = app
-        .editor
-        .buffers
+        .buffers()
+        .registry
         .with_help(pane.buffer_id, |h| h.clone())
         .or_else(|| app.popup_help())
     else {
@@ -1846,32 +1864,38 @@ fn help_pane_status(app: &App, _pane: &crate::pane::PaneState) -> String {
 }
 
 fn file_tree_pane_status(app: &App, pane: &crate::pane::PaneState) -> String {
-    let root = app
-        .editor
-        .buffer_locals
-        .get(&pane.buffer_id)
-        .and_then(|locals| locals.get::<crate::modes::FileTreeRoot>())
-        .map(|r| r.0.clone());
+    // Slice 3c.final.E.5j: route the buffer_locals read through
+    // `read_editor`. Returns owned PathBuf.
+    let buffer_id = pane.buffer_id;
+    let root: Option<std::path::PathBuf> = app.read_editor(move |e| {
+        e.buffer_locals
+            .get(&buffer_id)
+            .and_then(|locals| locals.get::<crate::modes::FileTreeRoot>())
+            .map(|r| r.0.clone())
+    });
     root.map(|p| format!("[tree] {}", p.display()))
         .unwrap_or_else(|| "[tree]".to_string())
 }
 
 fn oil_pane_status(app: &App, pane: &crate::pane::PaneState) -> String {
+    // Slice 3c.final.E.5j: `with_oil` via published `buffers()` sub-
+    // state; OilDir buffer-local via `read_editor`.
     let dirty_opt = app
-        .editor
-        .buffers
+        .buffers()
+        .registry
         .with_oil(pane.buffer_id, |o| o.is_dirty());
     let Some(is_dirty) = dirty_opt else {
         return "[oil]".to_string();
     };
     let dirty = if is_dirty { " [+]" } else { "" };
-    let dir = app
-        .editor
-        .buffer_locals
-        .get(&pane.buffer_id)
-        .and_then(|locals| locals.get::<crate::modes::OilDir>())
-        .map(|d| d.0.display().to_string())
-        .unwrap_or_default();
+    let buffer_id = pane.buffer_id;
+    let dir: String = app.read_editor(move |e| {
+        e.buffer_locals
+            .get(&buffer_id)
+            .and_then(|locals| locals.get::<crate::modes::OilDir>())
+            .map(|d| d.0.display().to_string())
+            .unwrap_or_default()
+    });
     format!("[oil] {dir}{dirty}")
 }
 
@@ -2037,9 +2061,14 @@ fn draw_inactive_document(
     } else {
         None
     };
+    // Slice 3c.final.E.5j: pane_highlights read via `read_editor`.
+    // Returns owned `Option<Vec>` so the caller can fall through
+    // to the FrameView snapshot when missing.
+    let pane_highlights: Option<Vec<Vec<lattice_syntax::StyledSpan>>> =
+        app.read_editor(move |e| e.pane_highlights.get(&pane_idx).cloned());
     let highlights: Vec<Vec<lattice_syntax::StyledSpan>> =
-        if let Some(spans) = app.editor.pane_highlights.get(&pane_idx) {
-            spans.clone()
+        if let Some(spans) = pane_highlights {
+            spans
         } else if active_doc_id == Some(pane.buffer_id) && pane.scroll == app.ad().scroll {
             // Read from the FrameView snapshot rather than the
             // live `app.editor.visible_highlights` -- protects against
@@ -2137,9 +2166,11 @@ fn draw_file_tree_pane(
     pane: &crate::pane::PaneState,
     is_active: bool,
 ) {
+    // Slice 3c.final.E.5j: file-tree content via published
+    // `buffers()` sub-state.
     let Some(raw_text) = app
-        .editor
-        .buffers
+        .buffers()
+        .registry
         .with_file_tree(pane.buffer_id, |t| t.content.as_string())
     else {
         return;
@@ -2158,13 +2189,16 @@ fn draw_file_tree_pane(
     let theme = &app.theme;
     // M.3.2.c.5: entries live exclusively in the
     // FileTreeEntries buffer-local. Nothing to drift.
-    let entries: &[crate::file_tree::FileTreeEntry] = app
-        .editor
-        .buffer_locals
-        .get(&pane.buffer_id)
-        .and_then(|locals| locals.get::<crate::modes::FileTreeEntries>())
-        .map(|e| e.0.as_slice())
-        .unwrap_or(&[]);
+    // Slice 3c.final.E.5j: file-tree entries via `read_editor`;
+    // returns an owned Vec clone so the borrow doesn't escape.
+    let buffer_id = pane.buffer_id;
+    let entries: Vec<crate::file_tree::FileTreeEntry> = app.read_editor(move |e| {
+        e.buffer_locals
+            .get(&buffer_id)
+            .and_then(|locals| locals.get::<crate::modes::FileTreeEntries>())
+            .map(|en| en.0.clone())
+            .unwrap_or_default()
+    });
     let lines: Vec<Line> = raw_text
         .split('\n')
         .enumerate()
@@ -2221,13 +2255,15 @@ fn draw_oil_pane(
     let theme = &app.theme;
     // M.3.2.c.5: dir lives exclusively in the OilDir
     // buffer-local. No struct fallback; nothing to drift.
-    let dir = app
-        .editor
-        .buffer_locals
-        .get(&pane.buffer_id)
-        .and_then(|locals| locals.get::<crate::modes::OilDir>())
-        .map(|d| d.0.clone())
-        .unwrap_or_default();
+    // Slice 3c.final.E.5j: OilDir buffer-local via `read_editor`.
+    let buffer_id = pane.buffer_id;
+    let dir: std::path::PathBuf = app.read_editor(move |e| {
+        e.buffer_locals
+            .get(&buffer_id)
+            .and_then(|locals| locals.get::<crate::modes::OilDir>())
+            .map(|d| d.0.clone())
+            .unwrap_or_default()
+    });
     let lines: Vec<Line> = raw_text
         .split('\n')
         .enumerate()
@@ -2302,7 +2338,9 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
         //      (cursor in a `Chord` arg slot), show a softer
         //      `(chord)` tag so the user knows the cmdline is
         //      consuming raw key events as chord tokens.
-        let hint: Option<&'static str> = if app.editor.auto_submit_after_chord {
+        // Slice 3c.final.E.5j: auto_submit_after_chord via `read_editor`.
+        let auto_submit = app.read_editor(|e| e.auto_submit_after_chord);
+        let hint: Option<&'static str> = if auto_submit {
             Some("press a chord")
         } else if app.chord_capture_active() {
             Some("(chord)")
@@ -2342,12 +2380,15 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
             SearchDirection::Forward => '/',
             SearchDirection::Backward => '?',
         };
-        let pattern = app
-            .editor
-            .search_line
-            .as_ref()
-            .map(|s| s.pattern.as_str())
-            .unwrap_or("");
+        // Slice 3c.final.E.5j: search_line via `read_editor` —
+        // returns the owned pattern string (`String` is cheap to
+        // clone; the field is usually short).
+        let pattern: String = app.read_editor(|e| {
+            e.search_line
+                .as_ref()
+                .map(|s| s.pattern.clone())
+                .unwrap_or_default()
+        });
         let prompt = format!("{lead}{pattern}");
         let para = Paragraph::new(Line::from(prompt.clone()));
         frame.render_widget(para, area);
@@ -2358,11 +2399,18 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    let Some(msg) = &app.editor.last_message else {
+    // Slice 3c.final.E.5j: last_message via `read_editor` — returns
+    // an owned `(level, text)` tuple so the borrow doesn't escape.
+    let msg: Option<(EchoLevel, String)> = app.read_editor(|e| {
+        e.last_message
+            .as_ref()
+            .map(|m| (m.level, m.text.clone()))
+    });
+    let Some((level, text)) = msg else {
         // Nothing to show -- render nothing (the row stays blank).
         return;
     };
-    let style = match msg.level {
+    let style = match level {
         // Trace + Debug are below the default messages.filter
         // threshold and don't normally surface to the echo
         // area; if a record at one of these levels does reach
@@ -2374,7 +2422,7 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
             .fg(Color::Red)
             .add_modifier(Modifier::BOLD),
     };
-    let para = Paragraph::new(Line::from(vec![Span::styled(msg.text.clone(), style)]));
+    let para = Paragraph::new(Line::from(vec![Span::styled(text, style)]));
     frame.render_widget(para, area);
 }
 
@@ -2581,13 +2629,15 @@ fn compose_visible_lines_inner(
     // Slice 3c.final.B (group 1): active-pane buffer id via
     // `app.panes()`.
     let active_buffer = app.panes().tree.active().buffer_id;
-    let is_messages_buffer = app
-        .editor
-        .active_modes
-        .get(&active_buffer)
-        .and_then(|m| m.major())
-        .map(|m| m == lattice_mode::MessagesMode::mode_id())
-        .unwrap_or(false);
+    // Slice 3c.final.E.5j: active_modes lookup via `read_editor`.
+    // Returns the owned bool result so the borrow doesn't escape.
+    let is_messages_buffer = app.read_editor(move |e| {
+        e.active_modes
+            .get(&active_buffer)
+            .and_then(|m| m.major())
+            .map(|m| m == lattice_mode::MessagesMode::mode_id())
+            .unwrap_or(false)
+    });
     // §5.6.8 contract: one snapshot per frame, used for everything.
     // The snapshot was loaded by the runtime via
     // `app.editor.snapshot_cache.load_arc()` and threaded through.

@@ -271,7 +271,10 @@ impl GpuiApp {
         // `Default`-constructed `ActiveDocumentRenderState` until
         // the first keystroke fires -- the same boot-publish gap
         // the TUI peer closed in 3c.atomic.B.
-        app.editor.publish_render_state();
+        // Slice 3c.final.E.5j: route the boot-time initial publish
+        // through `mutate_editor` (its body publishes after the
+        // closure runs, so an empty closure does the publish for us).
+        app.mutate_editor(|_| {});
         app
     }
 

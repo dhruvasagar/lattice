@@ -343,38 +343,37 @@ impl App {
         // `open_popup` seeded under, so prefer it; fall back to
         // `pane.buffer_id` for the in-pane case (where the pane
         // was swapped to the registered help id).
+        // Slice 3c.final.E.5j: popup id via `popup()` RS accessor;
+        // buffer_locals lookup wrapped in `read_editor` (returns
+        // owned `Option<HelpLink>`).
         let active_help_id = self
-            .editor
-            .popup_buffer
+            .popup()
+            .buffer_id
             .unwrap_or_else(|| self.panes().tree.active().buffer_id);
-        let Some(link) = self
-            .editor
-            .buffer_locals
-            .get(&active_help_id)
-            .and_then(|locals| locals.get::<crate::modes::HelpLinks>())
-            .and_then(|hl| {
-                hl.0.iter()
-                    .find(|link| range_contains_position(&link.range, cursor))
-                    .cloned()
-            })
-            .or_else(|| {
-                // For in-pane help where popup_buffer != pane.buffer_id,
-                // try the pane's id too.
-                let pane_id = self.panes().tree.active().buffer_id;
-                if pane_id == active_help_id {
-                    return None;
-                }
-                self.editor
-                    .buffer_locals
-                    .get(&pane_id)
-                    .and_then(|locals| locals.get::<crate::modes::HelpLinks>())
-                    .and_then(|hl| {
-                        hl.0.iter()
-                            .find(|link| range_contains_position(&link.range, cursor))
-                            .cloned()
-                    })
-            })
-        else {
+        let pane_id = self.panes().tree.active().buffer_id;
+        let Some(link) = self.read_editor(move |e| {
+            e.buffer_locals
+                .get(&active_help_id)
+                .and_then(|locals| locals.get::<crate::modes::HelpLinks>())
+                .and_then(|hl| {
+                    hl.0.iter()
+                        .find(|link| range_contains_position(&link.range, cursor))
+                        .cloned()
+                })
+                .or_else(|| {
+                    if pane_id == active_help_id {
+                        return None;
+                    }
+                    e.buffer_locals
+                        .get(&pane_id)
+                        .and_then(|locals| locals.get::<crate::modes::HelpLinks>())
+                        .and_then(|hl| {
+                            hl.0.iter()
+                                .find(|link| range_contains_position(&link.range, cursor))
+                                .cloned()
+                        })
+                })
+        }) else {
             self.set_message(EchoLevel::Info, "no link under cursor".to_string());
             return;
         };

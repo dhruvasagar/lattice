@@ -205,7 +205,10 @@ impl EditorView {
         // upgrade the weak entity handle and call `cx.notify()`.
         // The future exits cleanly when the weak handle can't
         // upgrade (window closed).
-        let paint_request = app.editor.paint_request.clone();
+        // Slice 3c.final.E.5j: paint_request via `read_editor` so
+        // the renderer doesn't take a direct field borrow. The
+        // returned `Arc<Notify>` outlives the closure.
+        let paint_request = app.read_editor(|e| e.paint_request.clone());
         cx.spawn(async move |this, cx| {
             loop {
                 paint_request.notified().await;
@@ -236,7 +239,9 @@ impl EditorView {
         );
         // Slice 3c.final.B (group 3): popup gate via published
         // substate (`render_state.popup.is_open()`).
-        if self.app.editor.render_state.load().popup.is_open()
+        // Slice 3c.final.E.5j: read RS via `App::render_state` (App
+        // owns the same Arc, cloned at construction time).
+        if self.app.render_state.load().popup.is_open()
             && (ks.key.eq_ignore_ascii_case("escape") || ks.key.eq_ignore_ascii_case("esc"))
         {
             tracing::debug!("lattice-gpui: dismissing popup overlay (Esc)");
@@ -268,7 +273,7 @@ impl EditorView {
         cx.notify();
         // Slice 3c.final.B (group 6): lifecycle read via published
         // substate.
-        if self.app.editor.render_state.load().lifecycle.should_quit {
+        if self.app.render_state.load().lifecycle.should_quit {
             tracing::info!("lattice-gpui: editor.should_quit set; closing application");
             cx.quit();
         }
@@ -819,7 +824,7 @@ impl Render for EditorView {
         // Slice 3c.final.B (group 3): picker read via published
         // substate. Bind the Arc so the `as_deref()` borrow lives
         // for the closure.
-        let picker_substate = self.app.editor.render_state.load().picker.clone();
+        let picker_substate = self.app.render_state.load().picker.clone();
         let picker_strip_rows: i32 = if picker_use_minibuffer {
             picker_substate
                 .state
@@ -839,7 +844,10 @@ impl Render for EditorView {
         // paint-time reads of `ad().{viewport_height,scroll}`
         // would observe the previous frame's values. Same
         // publish gap the TUI peer fixed in 3c.atomic.D.
-        if new_viewport != self.app.editor.viewport_height {
+        // Slice 3c.final.E.5j: viewport_height read via published
+        // `ad()` mirror; `set_viewport_height` publishes RS as part
+        // of its body so the next-frame load observes the new value.
+        if new_viewport != self.app.ad().viewport_height {
             self.app.set_viewport_height(new_viewport);
         }
         let after_viewport = std::time::Instant::now();
@@ -906,20 +914,24 @@ impl Render for EditorView {
         // minibuffer; otherwise it shows the global modal label.
         // Per-pane path + cursor coords now live inside each
         // pane's own status line (built in `paint_pane`).
+        // Slice 3c.final.E.5j: cmdline + search-line text via
+        // `read_editor` — closures return owned `String`.
         let bottom_row: String = match modal {
-            ModalState::Command => format!(":{}", self.app.editor.command_line),
+            ModalState::Command => {
+                let line: String = self.app.read_editor(|e| e.command_line.clone());
+                format!(":{line}")
+            }
             ModalState::Search(dir) => {
                 let prefix = match dir {
                     lattice_grammar::SearchDirection::Forward => '/',
                     lattice_grammar::SearchDirection::Backward => '?',
                 };
-                let pattern = self
-                    .app
-                    .editor
-                    .search_line
-                    .as_ref()
-                    .map(|s| s.pattern.as_str())
-                    .unwrap_or("");
+                let pattern: String = self.app.read_editor(|e| {
+                    e.search_line
+                        .as_ref()
+                        .map(|s| s.pattern.clone())
+                        .unwrap_or_default()
+                });
                 format!("{prefix}{pattern}")
             }
             _ => format!("  {modal_label}"),
@@ -941,18 +953,20 @@ impl Render for EditorView {
         // directly. `paint_pane` loads its own `rs_guard` for
         // per-pane access; this load drives the recursion entry
         // point and shares the same Arc across the render body.
-        let render_state = self.app.editor.render_state.load_full();
+        // Slice 3c.final.E.5j: render-state load via App's own Arc
+        // (cloned from `editor.render_state` at construction time).
+        let render_state = self.app.render_state.load_full();
         let active_idx = render_state.panes.tree.active_index();
         let document_area = self
             .paint_pane_tree(render_state.panes.tree.root(), &theme, active_idx)
             .flex_grow();
         let after_paint = std::time::Instant::now();
 
-        let completion_overlay: Option<gpui::Div> = self
-            .app
-            .editor
-            .insert_completion
-            .as_ref()
+        // Slice 3c.final.E.5j: insert-completion via the published
+        // `completion().insert` sub-state (Arc-bump clone).
+        let insert_completion = self.app.render_state.load().completion.insert.clone();
+        let completion_overlay: Option<gpui::Div> = insert_completion
+            .as_deref()
             .filter(|ic| !ic.rendered.is_empty())
             .map(|ic| {
                 let max_visible = 10usize;
@@ -1285,7 +1299,7 @@ impl Render for EditorView {
         // `HelpBuffer` + `help_highlights` slice live on
         // `render_state.popup.X`; bind locally so the borrows live
         // for the closure.
-        let popup_substate = self.app.editor.render_state.load().popup.clone();
+        let popup_substate = self.app.render_state.load().popup.clone();
         let popup_overlay: Option<gpui::Div> = popup_substate.help.as_deref().map(|buf| {
             let title = buf.title.clone();
             let body_text = buf.content.as_string();

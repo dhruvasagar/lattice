@@ -548,6 +548,38 @@ mod tests {
         assert!(!p.candidates.is_empty());
     }
 
+    /// Slice 7g: `:picker lines` previews the line under the
+    /// selection — closes the past gap where preview only
+    /// fired for buffer switcher. The candidate's typed
+    /// `accept_action` (`JumpInBuffer`) drives the new
+    /// preview path; cursor moves to the row's line in
+    /// previewing mode (no position-history push).
+    #[test]
+    fn lines_picker_preview_moves_cursor_to_selected_line() {
+        let mut app = app_with("alpha\nbeta\ngamma\ndelta\nepsilon\n", 5);
+        app.open_picker("lines".into(), Vec::new());
+        let p = app.editor.picker.as_ref().expect("picker open");
+        assert!(p.candidates.len() >= 4);
+
+        // Move the picker selection to the 3rd line ("gamma").
+        // Picker selection is index-based; bump twice.
+        {
+            let picker = app.editor.picker.as_mut().unwrap();
+            picker.selected = 2;
+        }
+        // The cursor should still be at row 0 before preview.
+        assert_eq!(app.editor.cursor.line, 0);
+
+        let _signals = app.editor.preview_picker_selection();
+
+        // After preview, cursor sits on line 2 (the 3rd line,
+        // 0-indexed) — the JumpInBuffer action's line.
+        assert_eq!(
+            app.editor.cursor.line, 2,
+            "preview should move cursor to selected line via typed accept_action"
+        );
+    }
+
     /// Slice 7d.1: engine-shape sources registered via
     /// `CompletionRegistry::register_source` open through
     /// `:picker <id>`. Verifies the dual-lookup branch in

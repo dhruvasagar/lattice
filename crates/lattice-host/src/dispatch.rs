@@ -10229,19 +10229,49 @@ impl Editor {
     /// selected candidate's buffer in the active pane. No
     /// position-history push, no commit. Returns any signals
     /// emitted by the underlying activate_buffer_state tail.
+    /// Slice `3c.unify.preview-accept-driven` (7g).
+    /// Driven by the candidate's typed `accept_action` from
+    /// Design B (slice 7b). Each `AcceptAction` variant
+    /// declares its preview semantics:
+    ///
+    ///   - `SwitchBuffer` — activate the buffer
+    ///   - `JumpToFileLocation` — open file + position cursor
+    ///   - `JumpInBuffer` — activate buffer + position cursor
+    ///   - `OpenFile` — open in active pane
+    ///   - `OpenLspLog` / `OpenLspTraceLog` — activate log buffer
+    ///   - Side-effecting / stateful variants — no preview
+    ///
+    /// Closes the past LSP-references-preview gap (user
+    /// concern, 2026-05-21). `previewing` flag gates
+    /// `activate_buffer`'s side effects (mode-lifecycle
+    /// publishes, MRU bumps).
+    ///
+    /// Legacy fallback: if `accept_action` is unset (LSP
+    /// picker sources not yet migrated to set the field —
+    /// slices 9-17), reverts to the pre-7g buffer-switcher-
+    /// only path keyed on `RoutingPayload::Buffer`.
     pub fn preview_picker_selection(&mut self) -> Vec<RendererSignal> {
         let Some(picker) = self.picker.as_ref() else {
             return Vec::new();
         };
+        let Some(c) = picker.selected_candidate() else {
+            return Vec::new();
+        };
+        // Prefer the typed accept_action (set by all 10 first-
+        // party picker sources via 7b.1-7b.6, and any plugin
+        // source via SourceRegistration).
+        if let Some(action) = c.raw.accept_action.clone() {
+            return self.preview_accept_action(action);
+        }
+        // Legacy fallback for sources that don't set
+        // accept_action yet — preserves byte-identical pre-7g
+        // behaviour for LSP picker sources.
         if !matches!(
             picker.on_accept,
             lattice_picker::PickerAction::SwitchToBuffer
         ) {
             return Vec::new();
         }
-        let Some(c) = picker.selected_candidate() else {
-            return Vec::new();
-        };
         let Some(lattice_picker::RoutingPayload::Buffer { id: raw_id }) = picker.routing_for(c)
         else {
             return Vec::new();
@@ -10257,6 +10287,118 @@ impl Editor {
             self.activate_buffer_state()
         } else {
             Vec::new()
+        }
+    }
+
+    /// Slice 7g helper: apply a typed `AcceptAction` in
+    /// previewing mode. Each variant maps to its visual
+    /// effect; side-effecting / stateful variants short-
+    /// circuit with no preview.
+    fn preview_accept_action(
+        &mut self,
+        action: lattice_completion::AcceptAction,
+    ) -> Vec<RendererSignal> {
+        use lattice_completion::AcceptAction;
+        match action {
+            AcceptAction::SwitchBuffer { id } => {
+                let buf_id = BufferId(id.0);
+                if buf_id == self.active_pane_buffer_id() {
+                    return Vec::new();
+                }
+                self.previewing = true;
+                let needs_state = self.activate_buffer(buf_id);
+                self.previewing = false;
+                if needs_state {
+                    self.activate_buffer_state()
+                } else {
+                    Vec::new()
+                }
+            }
+            AcceptAction::JumpInBuffer {
+                buffer_id,
+                line,
+                col,
+            } => {
+                let id = BufferId(buffer_id.0);
+                self.previewing = true;
+                let needs_state = if id != self.active_pane_buffer_id() {
+                    self.activate_buffer(id)
+                } else {
+                    false
+                };
+                // Clamp + move cursor — same shape as the
+                // accept-time JumpInBuffer arm but without
+                // push_position_history.
+                let snap = self.document.snapshot();
+                let target_line = line.min(last_addressable_line(&snap.buffer));
+                let line_len = snap.buffer.line_byte_len(target_line);
+                let target_col = col.min(line_len);
+                self.cursor = lattice_protocol::Position::new(target_line, target_col);
+                self.previewing = false;
+                if needs_state {
+                    self.activate_buffer_state()
+                } else {
+                    Vec::new()
+                }
+            }
+            AcceptAction::JumpToFileLocation { path, line, col } => {
+                self.previewing = true;
+                let mut signals = Vec::new();
+                let same_buffer = self
+                    .document
+                    .path()
+                    .map(|p| p == path)
+                    .unwrap_or(false);
+                if !same_buffer {
+                    let outcome = self.do_edit(Some(path.clone()), false);
+                    match outcome {
+                        DoEditOutcome::Opened(s)
+                        | DoEditOutcome::Activated(s)
+                        | DoEditOutcome::Reloaded(s) => signals.extend(s),
+                        DoEditOutcome::Directory(_)
+                        | DoEditOutcome::NoFileName
+                        | DoEditOutcome::Failed => {}
+                    }
+                }
+                let snap = self.document.snapshot();
+                let target_line = line.min(last_addressable_line(&snap.buffer));
+                let line_len = snap.buffer.line_byte_len(target_line);
+                let target_col = col.min(line_len);
+                self.cursor = lattice_protocol::Position::new(target_line, target_col);
+                self.previewing = false;
+                signals
+            }
+            AcceptAction::OpenFile { path } => {
+                self.previewing = true;
+                let mut signals = Vec::new();
+                let outcome = self.do_edit(Some(path), false);
+                match outcome {
+                    DoEditOutcome::Opened(s)
+                    | DoEditOutcome::Activated(s)
+                    | DoEditOutcome::Reloaded(s) => signals.extend(s),
+                    DoEditOutcome::Directory(_)
+                    | DoEditOutcome::NoFileName
+                    | DoEditOutcome::Failed => {}
+                }
+                self.previewing = false;
+                signals
+            }
+            // Side-effecting / irreversible / stateful — no
+            // preview. The candidate stays selectable; preview
+            // just doesn't do anything visual.
+            AcceptAction::InvokeCommand { .. }
+            | AcceptAction::PasteRegister { .. }
+            | AcceptAction::JumpToMark { .. }
+            | AcceptAction::ExpandSnippet { .. }
+            | AcceptAction::OpenLspLog { .. }
+            | AcceptAction::OpenLspTraceLog { .. }
+            | AcceptAction::AcceptIndexedCompletion { .. }
+            | AcceptAction::AcceptIndexedCodeAction { .. }
+            | AcceptAction::AcceptIndexedCodeLens { .. }
+            | AcceptAction::AcceptColorPresentation { .. }
+            | AcceptAction::AcceptShowMessageAction { .. }
+            | AcceptAction::InsertText { .. }
+            | AcceptAction::Custom(_) => Vec::new(),
         }
     }
 

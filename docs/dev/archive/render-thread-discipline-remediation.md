@@ -7,10 +7,10 @@
 > [`../operations/benchmarks.md`](../operations/benchmarks.md) for
 > the resulting frame-budget figures. Archived 2026-05-21.
 
-**Status:** in progress — X1, X3 (partial), X4, X2 (renderer-hot-path cutover) landed; X2.6 (legacy field deletion), X1b (idle wake bridge), X5 (frame-budget bench) and the full-X3 (per-line styled-text element) still pending.
 **Started:** 2026-05-19.
+**Completed:** 2026-05-21.
 **Owners:** session-driven (Dhruva + Claude).
-**Successor work:** Phase 5.8.AF.5 / Slice 3c.final (Editor on its own thread). Plan in [`docs/dev/archive/3c-final-editor-thread.md`](./3c-final-editor-thread.md). Resumes AFTER this remediation lands.
+**Successor work:** Phase 5.8.AF.5 / Slice 3c.final (Editor on its own thread), itself completed via the `3c.final.E.swap` arc. Plan archived in [`docs/dev/archive/3c-final-editor-thread.md`](./3c-final-editor-thread.md).
 
 ## 1. Why this exists
 

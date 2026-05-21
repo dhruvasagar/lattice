@@ -284,14 +284,24 @@ pub use lattice_lsp::cache::{
 // marker are retained as Phase 5.6's `lattice-render` work may
 // reuse them.
 pub struct App {
-    /// Composition root for the renderer-agnostic editor state
-    /// (Phase 5.B.3 -- see
-    /// `docs/dev/architecture/phase-5b-app-design.md`). Empty
-    /// at the start of the migration; grows as per-cluster
-    /// commits relocate field clusters from `App` into
-    /// `Editor`. Host-level call sites that need only
-    /// renderer-agnostic state take `&mut Editor` directly;
-    /// renderer-side code reaches it via `app.editor`.
+    /// Composition root for the renderer-agnostic editor state.
+    ///
+    /// Slice 3c.final.E.swap: the field is cfg-gated. In
+    /// production builds (`cfg(not(test))`) the renderer holds
+    /// an [`EditorActorHandle`] — Editor lives on its own
+    /// thread and the renderer reaches it only through the
+    /// handle's blocking RPCs (`mutate_blocking`,
+    /// `with_editor`, `mutate_blocking_with`,
+    /// `apply_blocking`). In test builds (`cfg(test)`) the
+    /// field keeps the original direct-ownership shape so the
+    /// existing test fixtures (which mutate state without going
+    /// through the dispatch path) keep compiling. This is the
+    /// architectural realisation of paramount goal #4: the
+    /// `&mut Editor` type cannot escape the actor thread in
+    /// production, enforced by the type system.
+    #[cfg(not(test))]
+    pub editor_actor: lattice_host::editor_actor::EditorActorHandle,
+    #[cfg(test)]
     pub editor: lattice_host::editor::Editor,
     /// Phase 5.8.AF.5 / Slice 3c.atomic.A: renderer-owned clone
     /// of the editor's `Arc<ArcSwap<RenderState>>`. Lets the
@@ -971,7 +981,7 @@ impl App {
     /// severs the `Arc<Editor>` reference, the method body
     /// flips to read from a renderer-owned `render_state`
     /// field; call sites stay unchanged.
-    pub(crate) fn ad(
+    pub fn ad(
         &self,
     ) -> std::sync::Arc<lattice_host::render_state::ActiveDocumentRenderState> {
         // Slice 3c.atomic.A: read through the renderer-owned
@@ -989,7 +999,7 @@ impl App {
     /// `app.panes().tree.X()` instead of `app.editor.pane_tree.X()`.
     /// Body matches `ad()` — one Arc clone off the same
     /// `Arc<ArcSwap<RenderState>>` cell.
-    pub(crate) fn panes(
+    pub fn panes(
         &self,
     ) -> std::sync::Arc<lattice_host::render_state::PanesRenderState> {
         self.render_state.load().panes.clone()
@@ -1000,7 +1010,7 @@ impl App {
     /// reads `app.buffers().registry.X()` and
     /// `app.buffers().uris.get(&id)` instead of reaching through
     /// `app.editor.buffers.X()` / `app.editor.buffer_uris.get(...)`.
-    pub(crate) fn buffers(
+    pub fn buffers(
         &self,
     ) -> std::sync::Arc<lattice_host::render_state::BuffersRenderState> {
         self.render_state.load().buffers.clone()
@@ -1011,7 +1021,7 @@ impl App {
     /// `app.picker_state().state.as_deref()` instead of
     /// `app.editor.picker.as_ref()`. Named to avoid colliding with
     /// the legacy `app.editor.picker` field name.
-    pub(crate) fn picker_state(
+    pub fn picker_state(
         &self,
     ) -> std::sync::Arc<lattice_host::render_state::PickerRenderState> {
         self.render_state.load().picker.clone()
@@ -1021,7 +1031,7 @@ impl App {
     /// snapshot of the completion sub-state. Carries both the
     /// in-buffer ghost popup (`insert`) and the cmdline
     /// completion popup (`state`).
-    pub(crate) fn completion(
+    pub fn completion(
         &self,
     ) -> std::sync::Arc<lattice_host::render_state::CompletionRenderState> {
         self.render_state.load().completion.clone()
@@ -1031,7 +1041,7 @@ impl App {
     /// snapshot of the popup sub-state. Renderer code reads
     /// `app.popup().is_open()` / `.placement` / `.buffer_id`
     /// instead of `app.editor.popup_buffer.is_some()` etc.
-    pub(crate) fn popup(
+    pub fn popup(
         &self,
     ) -> std::sync::Arc<lattice_host::render_state::PopupRenderState> {
         self.render_state.load().popup.clone()
@@ -1047,37 +1057,61 @@ impl App {
     /// so the swap is a one-line change in this method's body.
     /// Used to migrate `self.editor.X(args)` method call sites
     /// across the renderer App.
-    pub(crate) fn mutate_editor<F>(&mut self, f: F)
+    pub fn mutate_editor<F>(&mut self, f: F)
     where
         F: FnOnce(&mut lattice_host::editor::Editor) + Send + 'static,
     {
-        f(&mut self.editor);
-        self.read_editor(move |e| e.publish_render_state());
+        #[cfg(not(test))]
+        {
+            self.editor_actor
+                .mutate_blocking(Box::new(f))
+                .expect("editor actor alive");
+        }
+        #[cfg(test)]
+        {
+            f(&mut self.editor);
+            self.editor.publish_render_state();
+        }
     }
 
     /// Variant of [`Self::mutate_editor`] for closures that
     /// return a value (typically `Vec<RendererSignal>` from
     /// host helpers). Same routing contract.
-    pub(crate) fn mutate_editor_with<F, R>(&mut self, f: F) -> R
+    pub fn mutate_editor_with<F, R>(&mut self, f: F) -> R
     where
         F: FnOnce(&mut lattice_host::editor::Editor) -> R + Send + 'static,
         R: Send + 'static,
     {
-        let r = f(&mut self.editor);
-        self.read_editor(move |e| e.publish_render_state());
-        r
+        #[cfg(not(test))]
+        {
+            self.editor_actor.mutate_blocking_with(f)
+        }
+        #[cfg(test)]
+        {
+            let r = f(&mut self.editor);
+            self.editor.publish_render_state();
+            r
+        }
     }
 
     /// Slice 3c.final.E.swap: read-side helper for `&self`
     /// methods that need to query editor state without mutating.
-    /// Pre-swap runs the closure against the in-process `Editor`;
-    /// post-swap the body becomes `self.editor_actor.with_editor(f)`.
-    pub(crate) fn read_editor<F, R>(&self, f: F) -> R
+    /// In production it routes through the actor handle's
+    /// `with_editor` blocking RPC; in tests it calls the closure
+    /// directly against the in-process Editor.
+    pub fn read_editor<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&lattice_host::editor::Editor) -> R + Send + 'static,
         R: Send + 'static,
     {
-        f(&self.editor)
+        #[cfg(not(test))]
+        {
+            self.editor_actor.with_editor(f)
+        }
+        #[cfg(test)]
+        {
+            f(&self.editor)
+        }
     }
 
     /// Slice 3c.final.E.5d: hot-field accessor for the active

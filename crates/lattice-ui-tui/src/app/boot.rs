@@ -27,96 +27,60 @@ use super::{App, BufferKind};
 impl App {
     pub fn new(document: Document) -> Self {
         // Phase 5.7.B.1: the renderer-neutral construction body
-        // moved to `lattice_host::editor::Editor::boot`. Both
-        // the TUI peer (this `App`) and the future GPUI peer
-        // call the same entry point; each wrapper supplies its
-        // own renderer-specific caches afterwards.
-        let editor = lattice_host::editor::Editor::boot(document);
+        // moved to `lattice_host::editor::Editor::boot`.
+        let mut editor = lattice_host::editor::Editor::boot(document);
         // Slice 3c.atomic.A: renderer-side clone of the editor's
-        // RenderState cell, captured before Editor moves. Once
-        // 3c.atomic flips the writer to an `EditorActorHandle`,
-        // the assignment swaps to the actor handle's exposed Arc;
-        // every renderer-side reader stays unchanged.
+        // RenderState cell, captured before Editor moves to the
+        // actor thread.
         let render_state = editor.render_state.clone();
-        // Slice 3c.final.E.1: cache the worker's output cell on
-        // App. Pre-swap: a direct clone of `editor.syntax_visible_spans_cell`.
-        // Post-swap (when Editor moves to the actor): the same Arc
-        // is exposed through the actor handle; the constructor line
-        // is the only place that changes.
+        // Slice 3c.final.E.1: clone the worker's output cell.
         let syntax_visible_spans_cell = editor.syntax_visible_spans_cell.clone();
+        // Slice 3c.final.E.swap: run boot-time setup directly on
+        // the owned Editor BEFORE handing it to the actor. Every
+        // call below resolves to a host-side method; the App-side
+        // wrappers that previously routed through `mutate_editor`
+        // would all funnel through the actor's mailbox, which
+        // doesn't exist yet at this point in construction.
+        editor.sync_host_theme_from_config();
+        editor.rebuild_option_cache();
+        let doc_buf = editor.document_buffer_id;
+        let _ = editor.activate_major_for_buffer_kind(doc_buf, BufferKind::Document);
+        editor.publish_document_opened_for_active();
+        editor.ensure_named_synthetic_document(
+            lattice_lsp::LSP_SUBSYSTEM_LOG_NAME,
+            lattice_lsp::modes::LspLogMode::mode_id(),
+            crate::app::App::SYNTHETIC_BUFFER_FLAGS,
+        );
+        editor.ensure_messages_buffer();
+        // Slice 3c.atomic.B: initial RS publish so `app.ad()`
+        // returns boot-time editor state, not the Default.
+        editor.publish_render_state();
+
+        // Slice 3c.final.E.swap: hand Editor to the actor thread
+        // (prod) or keep it inline (test). The cfg-gate is the
+        // architectural split — production code can only reach
+        // Editor through the actor handle's blocking RPCs, while
+        // test code retains direct field access for fixtures that
+        // mutate state without going through the dispatch path.
+        #[cfg(not(test))]
+        let editor_field = lattice_host::editor_actor::spawn_editor_actor(editor);
+        #[cfg(test)]
+        let editor_field = editor;
+
         let mut app = Self {
-            editor,
+            #[cfg(not(test))]
+            editor_actor: editor_field,
+            #[cfg(test)]
+            editor: editor_field,
             render_state,
             syntax_visible_spans_cell,
             pane_render_registry: crate::render::build_pane_render_registry(),
             theme: crate::theme::Theme::default(),
         };
-        // Sync derived theme styles from the freshly-registered
-        // ui.* options so the renderer's first frame uses the
-        // configured colors / separator (rather than the static
-        // Theme::default values).
-        app.sync_theme_from_config();
-        // Populate the hot-path option cache from canonical config
-        // values. Subsequent updates flow through the
-        // `Event::OptionChanged` cascade in
-        // `apply_option_cascade`.
-        app.rebuild_option_cache();
-        // M.3.1: activate the resolved major mode for the
-        // initial document buffer. `resolve_major_mode(kind,
-        // lang)` picks the right major (text-mode for
-        // Lang::Plain, rust-mode/python-mode/... for typed
-        // languages). The activation populates
-        // `active_modes[buffer]` and triggers the option-cache
-        // recompute so `ResolvedOptions` reflects the major's
-        // contributions (e.g. ReadOnly = true for Help).
-        // Slice 3c.final.E.5j: doc-id via App accessor (slice E.5d
-        // rule-of-three helper) instead of direct `editor` field.
-        app.activate_major_for_buffer_kind(app.document_buffer_id(), BufferKind::Document);
-        // Initial-document attach. Path-bearing buffers register
-        // their URI eagerly (the URI is a deterministic
-        // `uri_from_path`; LSP attach is async and doesn't gate
-        // the mapping) and publish `Event::DocumentOpened` --
-        // the attach driver wired in `Editor::boot` consumes it
-        // and submits to the supervisor on the LSP runtime, off
-        // the UI thread. Path-less scratch buffers publish
-        // nothing (no LSP work to drive) and the `buffer_uris`
-        // entry stays absent.
-        app.publish_document_opened_for_active();
-        // Slice B / B'.7: LSP subsystem creates its global
-        // `*lsp*` Document buffer eagerly at boot so `:b *lsp*`
-        // works before any record has flowed. Per-instance
-        // buffers (`*lsp:<server>:<workspace>*`,
-        // `*lsp:<server>:<workspace>:trace*`) are created lazily
-        // by the ex-command handlers (or by `:lsp-trace` toggle-
-        // on) through the same generic
-        // `ensure_named_synthetic_document` entry point. The
-        // name + mode-id come from `lattice-lsp`; the host adds
-        // no subsystem-specific create logic.
-        app.ensure_named_synthetic_document(
-            lattice_lsp::LSP_SUBSYSTEM_LOG_NAME,
-            lattice_lsp::modes::LspLogMode::mode_id(),
-            crate::app::App::SYNTHETIC_BUFFER_FLAGS,
-        );
-        // Slice E: `*messages*` follows the same pattern -- a
-        // Document buffer in the registry, read-only, owner-
-        // streamed via the MessagePushed event drain. Eager at
-        // boot so `:b *messages*` works from t=0.
-        app.ensure_messages_buffer();
-        // Slice 3c.atomic.B: prime the renderer-owned
-        // `render_state` cell with the boot-time editor state.
-        // Without this initial publish, `app.ad()` returns a
-        // `Default`-constructed `ActiveDocumentRenderState`
-        // (zero cursor, `BufferId::default()` document id, etc.)
-        // until the first dispatch fires -- which would surface
-        // as the renderer reading from an empty document on the
-        // first frame, and as `lsp_diagnostics_mode_enabled_for`
-        // / `lsp_*_mode_enabled_for` checks looking up state on
-        // the wrong buffer id in render-only test fixtures that
-        // skip dispatch.
-        // Slice 3c.final.E.5j: route the boot-time initial publish
-        // through `mutate_editor` (its body publishes after the
-        // closure runs, so an empty closure does the publish for us).
-        app.mutate_editor(|_| {});
+        // App-side post-actor setup: rebuild the cached TUI theme
+        // from the freshly-published `render_state.theme`. Reads
+        // the published RS (already primed above), no editor borrow.
+        app.rebuild_tui_theme();
         app
     }
 

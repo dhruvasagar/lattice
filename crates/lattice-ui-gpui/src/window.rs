@@ -121,11 +121,13 @@ fn style_at(spans: &[lattice_syntax::StyledSpan], byte: usize) -> SyntaxStyle {
 /// the TUI peer's `picker_display_is_minibuffer` so both renderers
 /// agree on the same source of truth.
 fn picker_display_is_minibuffer(app: &GpuiApp) -> bool {
-    app.editor
-        .config
-        .get_typed::<lattice_config::core_options::PickerDisplay>()
-        .map(|s| s.as_str() != "popup")
-        .unwrap_or(true)
+    // Slice 3c.final.E.swap: config read via `read_editor`.
+    app.read_editor(|e| {
+        e.config
+            .get_typed::<lattice_config::core_options::PickerDisplay>()
+            .map(|s| s.as_str() != "popup")
+            .unwrap_or(true)
+    })
 }
 
 /// Resolve the diagnostic gutter glyph + colour for a severity by
@@ -339,24 +341,12 @@ impl EditorView {
     /// its bottom (path + cursor coords), which keeps the visible
     /// boundary between panes legible without a hard chrome border.
     fn paint_pane(&self, pane_idx: usize, theme: &GpuiTheme, is_active: bool) -> gpui::Div {
-        let editor = &self.app.editor;
-        // 3c.atomic.H: active-document fields (cursor / scroll /
-        // viewport_height / modal / active_buffer /
-        // document_buffer_id) read through the published
-        // render-state cell. `editor.X` stays for fields not on
-        // `ActiveDocumentRenderState` -- pane_tree, buffers,
-        // pane_highlights, etc.
+        // Slice 3c.final.E.swap: paint reads route through the
+        // App's own `render_state` Arc (cloned from
+        // `editor.render_state` at construction). No `&Editor`
+        // borrow held across the function body.
         let ad = self.app.ad();
-        // Phase 5.8.AF.5 / Slice X2.5: read the active document's
-        // syntax spans through the worker-published cell. Two
-        // guards (outer RenderState Arc, inner VisibleSpans Arc)
-        // are bound to local variables for the duration of
-        // paint_pane so the slice borrow into `spans_guard.spans`
-        // stays valid. Wait-free; no parsing on the UI thread.
-        // Pre-X2 read `editor.visible_highlights` (UI-thread cache
-        // refreshed by `self.app.refresh_highlights()` at the
-        // start of `render`, which has been removed in this slice).
-        let rs_guard = editor.render_state.load();
+        let rs_guard = self.app.render_state.load();
         let active_spans_guard = rs_guard.syntax.visible_spans.load();
         // Phase 5.8.AF.5 / Slice 3c.final.B (group 1): pane tree
         // + buffer registry read through `rs_guard.panes` /
@@ -457,7 +447,8 @@ impl EditorView {
         // (~2ns); the returned snapshot's diagnostics layer is
         // internally `Arc<ArcSwap<...>>`-backed so the inner
         // `line_severity` call stays wait-free too.
-        let render_state = editor.render_state.load_full();
+        // Slice 3c.final.E.swap: render_state via App's own Arc.
+        let render_state = self.app.render_state.load_full();
         let line_severity = |line_idx: u32| -> Option<lattice_lsp::DiagnosticSeverity> {
             uri.and_then(|u| render_state.diagnostics.layer.line_severity(u, line_idx))
         };

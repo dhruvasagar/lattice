@@ -210,6 +210,13 @@ impl Renderer for GpuiRenderer {
 /// plus the renderer-neutral [`Editor`]. A future `lsp_file_watcher`
 /// field joins when the LSP runtime adapter for GPUI lands.
 pub struct GpuiApp {
+    /// Slice 3c.final.E.swap: cfg-gated. Production builds hold an
+    /// [`EditorActorHandle`]; test builds keep direct `Editor`
+    /// ownership for fixtures that mutate state without going
+    /// through the dispatch path. Same shape as TUI peer's `App`.
+    #[cfg(not(test))]
+    pub editor_actor: lattice_host::editor_actor::EditorActorHandle,
+    #[cfg(test)]
     pub editor: Editor,
     /// Phase 5.8.AF.5 / Slice 3c.atomic.K: renderer-side clone of
     /// the editor's `RenderState` cell. Parallel of the TUI peer's
@@ -251,30 +258,45 @@ impl GpuiApp {
     /// this peer will call the same methods via its own renderer-
     /// signal handler.
     pub fn new(document: Document) -> Self {
-        let editor = Editor::boot(document);
-        // Slice 3c.atomic.K: renderer-side clone of the editor's
-        // RenderState cell, captured before Editor moves. Mirrors
-        // the TUI peer's `App::new` (3c.atomic.A): once the
-        // actor-swap lands, this assignment swaps to the handle's
-        // exposed Arc; reader call sites stay unchanged.
+        let mut editor = Editor::boot(document);
         let render_state = editor.render_state.clone();
+        // Slice 3c.final.E.swap: run boot-time setup directly on
+        // the owned Editor BEFORE handing it to the actor. The
+        // finalize_boot body's host-routed work runs here as
+        // direct Editor calls. Renderer-side post-actor wiring
+        // (theme rebuild) runs after the App is built.
+        editor.rebuild_option_cache();
+        if editor.viewport_height == 0 {
+            editor.viewport_height = 30;
+        }
+        let doc_id = editor.document_buffer_id;
+        let _ = editor.activate_major_for_buffer_kind(doc_id, BufferKind::Document);
+        editor.publish_document_opened_for_active();
+        editor.ensure_subsystem_buffers();
+        let workspace_root = Editor::workspace_root_from_cwd();
+        let _ = editor.load_persistent_config(workspace_root.as_deref());
+        // Initial RS publish so `app.ad()` returns boot state.
+        editor.publish_render_state();
+
+        // Slice 3c.final.E.swap: hand Editor to the actor (prod)
+        // or keep inline (test).
+        #[cfg(not(test))]
+        let editor_field = lattice_host::editor_actor::spawn_editor_actor(editor);
+        #[cfg(test)]
+        let editor_field = editor;
+
         let mut app = Self {
-            editor,
+            #[cfg(not(test))]
+            editor_actor: editor_field,
+            #[cfg(test)]
+            editor: editor_field,
             render_state,
             theme: GpuiTheme::default(),
             pane_render_registry: GpuiPaneRenderRegistry::default(),
         };
-        app.finalize_boot();
-        // Slice 3c.atomic.K: prime the renderer-owned
-        // `render_state` cell with the post-finalize editor state.
-        // Without this initial publish, `app.ad()` returns a
-        // `Default`-constructed `ActiveDocumentRenderState` until
-        // the first keystroke fires -- the same boot-publish gap
-        // the TUI peer closed in 3c.atomic.B.
-        // Slice 3c.final.E.5j: route the boot-time initial publish
-        // through `mutate_editor` (its body publishes after the
-        // closure runs, so an empty closure does the publish for us).
-        app.mutate_editor(|_| {});
+        // App-side post-actor: rebuild the cached GPUI theme from
+        // the freshly-published `render_state.theme`.
+        app.rebuild_gpui_theme();
         app
     }
 
@@ -298,8 +320,17 @@ impl GpuiApp {
     where
         F: FnOnce(&mut Editor) + Send + 'static,
     {
-        f(&mut self.editor);
-        self.read_editor(move |e| e.publish_render_state());
+        #[cfg(not(test))]
+        {
+            self.editor_actor
+                .mutate_blocking(Box::new(f))
+                .expect("editor actor alive");
+        }
+        #[cfg(test)]
+        {
+            f(&mut self.editor);
+            self.editor.publish_render_state();
+        }
     }
 
     /// Variant for closures that return a value.
@@ -308,20 +339,34 @@ impl GpuiApp {
         F: FnOnce(&mut Editor) -> R + Send + 'static,
         R: Send + 'static,
     {
-        let r = f(&mut self.editor);
-        self.read_editor(move |e| e.publish_render_state());
-        r
+        #[cfg(not(test))]
+        {
+            self.editor_actor.mutate_blocking_with(f)
+        }
+        #[cfg(test)]
+        {
+            let r = f(&mut self.editor);
+            self.editor.publish_render_state();
+            r
+        }
     }
 
     /// Read-only helper -- parallels `App::read_editor` on the TUI
-    /// peer. Pre-swap runs against in-process `Editor`; post-swap
-    /// will route through `editor_actor.with_editor(f)`.
+    /// peer. In production routes through the actor handle's
+    /// `with_editor` blocking RPC; in tests calls directly.
     pub fn read_editor<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&Editor) -> R + Send + 'static,
         R: Send + 'static,
     {
-        f(&self.editor)
+        #[cfg(not(test))]
+        {
+            self.editor_actor.with_editor(f)
+        }
+        #[cfg(test)]
+        {
+            f(&self.editor)
+        }
     }
 
     /// Phase 5.8.AF.5 / Slice 3c.atomic.K: publishing wrapper
@@ -990,9 +1035,14 @@ impl GpuiApp {
                 inverted,
                 body,
             } => {
-                let mut out = lattice_host::dispatch::DispatchOutcome::default();
-                self.editor
-                    .do_global(&pattern, inverted, body.as_ref(), &mut out);
+                // Slice 3c.final.E.swap: build outcome inside the
+                // closure, return owned `DispatchOutcome` from
+                // `mutate_editor_with`. Same pattern as TUI edit.rs.
+                let mut out = self.mutate_editor_with(move |e| {
+                    let mut out = lattice_host::dispatch::DispatchOutcome::default();
+                    e.do_global(&pattern, inverted, body.as_ref(), &mut out);
+                    out
+                });
                 for eff in std::mem::take(&mut out.effects) {
                     self.apply_effect_gpui(eff);
                 }

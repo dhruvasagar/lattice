@@ -42,9 +42,13 @@ fn build_app(corpus: &str, viewport: u32) -> App {
     // Slice 3 / SyntaxActor: build a `Syntax`, parse synchronously,
     // wrap it in a `SyntaxHandle::seeded` so the bench sees an
     // already-populated snapshot from the first frame.
+    // Slice 3c.final.E.swap: bench routes through the actor-aware
+    // seam (`read_editor` / `mutate_editor`) instead of `&a.editor.X`.
     let mut syn = Syntax::for_language(Lang::Rust).unwrap().unwrap();
-    syn.parse(&a.editor.document.text());
-    a.editor.syntax = Some(lattice_syntax::SyntaxHandle::seeded(syn));
+    let doc_text = a.read_editor(|e| e.document.text().to_string());
+    syn.parse(&doc_text);
+    let handle = lattice_syntax::SyntaxHandle::seeded(syn);
+    a.mutate_editor(move |e| e.syntax = Some(handle));
     a.refresh_highlights();
     a
 }
@@ -54,7 +58,10 @@ fn build_app(corpus: &str, viewport: u32) -> App {
 /// would dominate the measurement and isn't representative of the
 /// real frame path (one load amortised across the whole compose).
 fn pinned_snapshot(app: &mut App) -> Arc<DocumentSnapshot> {
-    app.editor.snapshot_cache.load().clone()
+    // Slice 3c.final.E.swap: snapshot via the published `ad()`
+    // mirror (Arc-bump clone off the same source as
+    // `editor.snapshot_cache.load_arc()`).
+    app.ad().snapshot.clone()
 }
 
 fn frame_render_24(c: &mut Criterion) {

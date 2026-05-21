@@ -2541,8 +2541,10 @@ pub(crate) fn modeline_label(app: &App, snap: &DocumentSnapshot) -> String {
 /// the modified marker because the user can't "save" their
 /// streaming state.
 pub(crate) fn modeline_is_synthetic(app: &App) -> bool {
-    app.editor
-        .buffers
+    // Slice 3c.final.E.swap: registry lookup via published
+    // `buffers()` sub-state.
+    app.buffers()
+        .registry
         .name_of(app.ad().document_buffer_id)
         .is_some()
 }
@@ -3515,9 +3517,14 @@ pub(crate) fn diagnostics_on_line(
     let Some(uri) = app.buffer_uri(app.ad().document_buffer_id) else {
         return Vec::new();
     };
-    app.editor
-        .lsp_diagnostics
-        .diagnostics_on_line(&uri, line_idx)
+    // Slice 3c.final.E.swap: lsp_diagnostics read via read_editor.
+    // Returns an owned Vec (closure return type) so the borrow
+    // doesn't escape.
+    let uri_owned = uri.clone();
+    app.read_editor(move |e| {
+        e.lsp_diagnostics
+            .diagnostics_on_line(&uri_owned, line_idx)
+    })
 }
 
 /// M.7.3.b parameter bundle for the whitespace-decoration

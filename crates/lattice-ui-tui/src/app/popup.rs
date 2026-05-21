@@ -155,43 +155,13 @@ impl App {
         self.mutate_editor(move |e| e.seed_help_metadata_locals(buffer_id, metadata));
     }
 
-    /// M.3.2.c.5: read the parsed `[label](url)` links seeded into
-    /// the active popup's buffer-locals. Returns `None` when no
-    /// popup is open or the locals slot was not seeded.
-    pub fn popup_help_links(&self) -> Option<&[crate::help::HelpLink]> {
-        let id = self.popup().buffer_id?;
-        self.editor
-            .buffer_locals
-            .get(&id)
-            .and_then(|l| l.get::<crate::modes::HelpLinks>())
-            .map(|h| h.0.as_slice())
-    }
-
-    /// M.3.2.c.5: read the named anchors (heading slugs +
-    /// introspection-recorded anchors) seeded into the active
-    /// popup's buffer-locals. Returns `None` when no popup is
-    /// open or the locals slot was not seeded.
-    pub fn popup_help_anchors(&self) -> Option<&[crate::help::HelpAnchor]> {
-        let id = self.popup().buffer_id?;
-        self.editor
-            .buffer_locals
-            .get(&id)
-            .and_then(|l| l.get::<crate::modes::HelpAnchors>())
-            .map(|h| h.0.as_slice())
-    }
-
-    /// M.3.2.c.5: read the pre-computed per-line markdown highlight
-    /// spans seeded into the active popup's buffer-locals. Returns
-    /// `None` when no popup is open or the locals slot was not
-    /// seeded.
-    pub fn popup_help_highlights(&self) -> Option<&[Vec<lattice_syntax::StyledSpan>]> {
-        let id = self.popup().buffer_id?;
-        self.editor
-            .buffer_locals
-            .get(&id)
-            .and_then(|l| l.get::<crate::modes::HelpHighlights>())
-            .map(|h| h.0.as_slice())
-    }
+    // Slice 3c.final.E.swap: `popup_help_links`,
+    // `popup_help_anchors`, `popup_help_highlights` return
+    // borrowed slices off `editor.buffer_locals`; their only
+    // callers are in `#[cfg(test)] mod tests` blocks. Moved to
+    // the `#[cfg(test)] impl App` block at the bottom of this
+    // file. `active_popup_placement` same — only `display.rs` +
+    // `popup.rs` tests use it.
 
     /// Update the popup's placement in place. No-op when no popup
     /// is currently open. Used by callers that want to flip
@@ -238,11 +208,8 @@ impl App {
     /// shadowed the method via auto-deref; the rename keeps
     /// the method's intent (Option-returning gated accessor)
     /// distinct from the raw field.
-    pub fn active_popup_placement(&self) -> Option<PopupPlacement> {
-        self.editor
-            .popup_buffer
-            .map(|_| self.popup().placement)
-    }
+    // Slice 3c.final.E.swap: `active_popup_placement` moved to
+    // `#[cfg(test)] impl App` below — only test callers.
 
     /// Close the popup. Drops the popup's content slot, resets
     /// placement to default, and restores any focus state that
@@ -269,6 +236,39 @@ impl App {
     ) -> Option<R> {
         let id = self.popup().buffer_id?;
         self.editor.buffers.with_help_mut(id, f)
+    }
+
+    pub fn popup_help_links(&self) -> Option<&[crate::help::HelpLink]> {
+        let id = self.popup().buffer_id?;
+        self.editor
+            .buffer_locals
+            .get(&id)
+            .and_then(|l| l.get::<crate::modes::HelpLinks>())
+            .map(|h| h.0.as_slice())
+    }
+
+    pub fn popup_help_anchors(&self) -> Option<&[crate::help::HelpAnchor]> {
+        let id = self.popup().buffer_id?;
+        self.editor
+            .buffer_locals
+            .get(&id)
+            .and_then(|l| l.get::<crate::modes::HelpAnchors>())
+            .map(|h| h.0.as_slice())
+    }
+
+    pub fn popup_help_highlights(&self) -> Option<&[Vec<lattice_syntax::StyledSpan>]> {
+        let id = self.popup().buffer_id?;
+        self.editor
+            .buffer_locals
+            .get(&id)
+            .and_then(|l| l.get::<crate::modes::HelpHighlights>())
+            .map(|h| h.0.as_slice())
+    }
+
+    pub fn active_popup_placement(&self) -> Option<PopupPlacement> {
+        self.editor
+            .popup_buffer
+            .map(|_| self.popup().placement)
     }
 }
 

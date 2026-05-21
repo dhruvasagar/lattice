@@ -102,12 +102,28 @@ impl App {
     /// then `registry.get`) keeps the trait minimal: the host never
     /// sees the renderer-typed `PaneRenderProvider`.
     pub fn pane_render_provider(&self, buffer_id: BufferId) -> Option<&PaneRenderProvider> {
-        let mode = lattice_host::pane_render::resolve_pane_render_mode(
-            &self.editor,
-            buffer_id,
-            &self.pane_render_registry,
-        )?;
-        self.pane_render_registry.get(mode)
+        // Slice 3c.final.E.swap: snapshot the active mode chain
+        // through `read_editor` (closure returns owned
+        // `Option<(Vec<ModeId>, Option<ModeId>)>`), then walk it
+        // against the renderer's registry outside the closure
+        // (registry isn't `Send + 'static`). The two-step
+        // matches `resolve_pane_render_mode`'s prior semantics:
+        // minor modes (innermost first) win over major.
+        let modes: Option<(Vec<lattice_mode::ModeId>, Option<lattice_mode::ModeId>)> = self
+            .read_editor(move |e| {
+                e.active_modes
+                    .get(&buffer_id)
+                    .map(|m| (m.minors().to_vec(), m.major()))
+            });
+        let (minors, major) = modes?;
+        for minor_id in minors.iter().rev() {
+            if self.pane_render_registry.has_provider(*minor_id) {
+                return self.pane_render_registry.get(*minor_id);
+            }
+        }
+        major
+            .filter(|id| self.pane_render_registry.has_provider(*id))
+            .and_then(|id| self.pane_render_registry.get(id))
     }
 }
 

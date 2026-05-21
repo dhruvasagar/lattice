@@ -117,22 +117,9 @@ impl App {
     //      (foldmethod ⇒ recompute, ui.* ⇒ theme refresh, ...) match
     //      the user-driven path. ----
 
-    /// Set `foldmethod` directly. Drains the cascade afterwards
-    /// so the option cache + recompute_folds run synchronously
-    /// for the caller -- mirrors what production's `do_set` does
-    /// after the cmdline path.
-    pub fn set_foldmethod_for_test(&mut self, fm: FoldMethod) {
-        self.editor
-            .config
-            .set_typed::<lattice_config::FoldMethodOption>(fm)
-            .expect("set foldmethod");
-        self.drain_option_changes();
-    }
-
-    // Slice 3c.final.E.5j: `_for_test` config setters moved to
-    // `#[cfg(test)] impl App` below — every caller is in a
-    // `mod tests` block (folds.rs, app.rs, completion.rs), and
-    // production code uses the dispatch cascade via `:set`.
+    // Slice 3c.final.E.swap: `set_foldmethod_for_test` /
+    // `set_foldenable_for_test` / `set_completion_auto_insert_single_for_test`
+    // all live in the `#[cfg(test)] impl App` block below.
 
     /// Delegate to [`lattice_host::editor::Editor::rebuild_option_cache`].
     /// Phase 5.5.E.6 moved the body host-side; this wrapper exists
@@ -260,9 +247,12 @@ impl App {
         &mut self,
         full_path: &str,
     ) -> Option<toml::Table> {
-        self.editor
-            .pending_config_structural_sections
-            .remove(full_path)
+        // Slice 3c.final.E.swap: mutating map remove via the
+        // actor-routed seam.
+        let full_path = full_path.to_string();
+        self.mutate_editor_with(move |e| {
+            e.pending_config_structural_sections.remove(&full_path)
+        })
     }
 
     /// Iterate the dotted paths of every pending structural
@@ -272,13 +262,16 @@ impl App {
     /// callers typically follow up with
     /// `take_pending_structural_section(full)` mutating the map.
     pub(super) fn pending_structural_section_paths(&self, namespace: &str) -> Vec<String> {
+        // Slice 3c.final.E.swap: read map keys via the actor-
+        // routed seam. Returns owned Vec<String>.
         let prefix = format!("{namespace}.");
-        self.editor
-            .pending_config_structural_sections
-            .keys()
-            .filter(|k| k.starts_with(&prefix))
-            .cloned()
-            .collect()
+        self.read_editor(move |e| {
+            e.pending_config_structural_sections
+                .keys()
+                .filter(|k| k.starts_with(&prefix))
+                .cloned()
+                .collect()
+        })
     }
 
     /// Drain every `completion.per-language.<lang>` structural
@@ -327,6 +320,14 @@ impl App {
             .editor
             .config
             .set_typed::<lattice_config::CompletionAutoInsertSingle>(on);
+        self.drain_option_changes();
+    }
+
+    pub fn set_foldmethod_for_test(&mut self, fm: FoldMethod) {
+        self.editor
+            .config
+            .set_typed::<lattice_config::FoldMethodOption>(fm)
+            .expect("set foldmethod");
         self.drain_option_changes();
     }
 }

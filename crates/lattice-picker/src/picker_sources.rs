@@ -550,7 +550,13 @@ impl PickerSourceGenerator for LinesSource {
             let text = buffer.line(line).unwrap_or_default();
             let text = text.trim_end_matches('\n');
             let display = format!("{:>width$}: {}", line + 1, text, width = width);
-            let cand = RawCandidate::plain(display, CandidateKind::Plain);
+            let mut cand = RawCandidate::plain(display, CandidateKind::Plain);
+            // Slice 7b.4: typed accept payload.
+            cand.accept_action = Some(lattice_completion::AcceptAction::JumpInBuffer {
+                buffer_id: lattice_core::BufferId(buffer_id),
+                line: line as u32,
+                col: 0,
+            });
             pairs.push((
                 cand,
                 RoutingPayload::JumpInBuffer {
@@ -653,7 +659,13 @@ impl PickerSourceGenerator for JumpsSource {
                     entry.line + 1,
                     entry.col + 1,
                 );
-                let cand = RawCandidate::plain(display, CandidateKind::Plain);
+                let mut cand = RawCandidate::plain(display, CandidateKind::Plain);
+                // Slice 7b.4: typed accept payload.
+                cand.accept_action = Some(lattice_completion::AcceptAction::JumpInBuffer {
+                    buffer_id: lattice_core::BufferId(entry.buffer_id),
+                    line: entry.line,
+                    col: entry.col,
+                });
                 (
                     cand,
                     RoutingPayload::JumpInBuffer {
@@ -799,6 +811,11 @@ impl PickerSourceGenerator for CommandsSource {
                 );
                 let mut cand = RawCandidate::plain(row.user_facing.clone(), CandidateKind::Plain);
                 cand.display = display;
+                // Slice 7b.3: typed accept payload.
+                cand.accept_action = Some(lattice_completion::AcceptAction::InvokeCommand {
+                    id: row.canonical.clone(),
+                    args: Args::None,
+                });
                 (
                     cand,
                     RoutingPayload::InvokeCommand {
@@ -1358,7 +1375,13 @@ impl PickerSourceGenerator for OutlineSource {
             .iter()
             .map(|(name, line, col)| {
                 let display = format!("{:>width$}: {name}", line + 1, width = line_width,);
-                let cand = RawCandidate::plain(display, CandidateKind::Plain);
+                let mut cand = RawCandidate::plain(display, CandidateKind::Plain);
+                // Slice 7b.4: typed accept payload.
+                cand.accept_action = Some(lattice_completion::AcceptAction::JumpInBuffer {
+                    buffer_id: lattice_core::BufferId(buffer_id),
+                    line: *line,
+                    col: *col,
+                });
                 (
                     cand,
                     RoutingPayload::JumpInBuffer {

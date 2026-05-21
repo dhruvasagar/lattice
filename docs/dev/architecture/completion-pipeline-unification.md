@@ -476,6 +476,57 @@ differs. Plugins choose: register persistently if their data is
 synchronously enumerable, or construct transient registrations
 per-use if they need to await before opening the picker.
 
+### Picker preview unification (a Design B win)
+
+User concern raised mid-slice-7b (2026-05-21): "I want to
+confirm this design will not affect, or retain the preview
+feature. In the past I faced issues with the live preview as
+well, for instance lsp references preview did not preview the
+file at the line where the reference exists."
+
+**Current state (pre-7d):** preview is buffer-switcher-only.
+`Editor::preview_picker_selection` (dispatch.rs) hardcodes a
+`PickerAction::SwitchToBuffer` guard and bails for every other
+shape. Preview for `:picker lines`, `:picker jumps`, `:picker
+outline`, LSP references — all silently absent. Not a
+regression; missing functionality since the picker landed.
+
+**Through 7b-7c:** preview keeps working unchanged. The
+existing `RoutingPayload` parallel vec is still populated next
+to `accept_action`, so `picker.routing_for(c)` returns the same
+`RoutingPayload::Buffer { id }` it always did. Zero risk of
+preview regression while the parallel state lives.
+
+**At 7d (registry cutover):** preview migrates from
+RoutingPayload-driven to `accept_action`-driven. This is where
+the design gets BETTER for preview, because each `AcceptAction`
+variant naturally expresses its preview semantics:
+
+| AcceptAction variant | Preview behaviour |
+|---|---|
+| `OpenFile { path }` | Open in active pane in previewing mode |
+| `SwitchBuffer { id }` | Activate the buffer (today's only preview) |
+| `JumpToFileLocation { path, line, col }` | Open file + position cursor — **fixes LSP references/definitions/diagnostics preview** |
+| `JumpInBuffer { buffer_id, line, col }` | Activate buffer + position cursor — **fixes lines/jumps/outline preview** |
+| `OpenLspLog`, `OpenLspTraceLog` | Activate the log buffer |
+| `InvokeCommand`, `PasteRegister`, `JumpToMark`, `ExpandSnippet` | No preview (action is irreversible / side-effecting) |
+| `AcceptIndexed*`, `AcceptShowMessageAction` | No preview (stateful; would require apply-and-undo) |
+| `InsertText` | No preview (cmdline-completion; no picker context) |
+| `Custom` | Plugin-defined |
+
+The preview dispatch becomes a sibling `match` next to the
+accept dispatch — same shape, both reading the same typed
+`accept_action` field. The slice that makes preview universal
+slots into the post-7d cleanup as **slice 7g**:
+
+> `3c.unify.preview-accept-driven` — small — Migrate
+> `preview_picker_selection` from `routing_for`+
+> `PickerAction::SwitchToBuffer` guard to a typed match on
+> `candidate.accept_action`. Adds preview support for
+> JumpToFileLocation / JumpInBuffer / OpenFile (the
+> functionality the user has been missing). Preserved-behaviour
+> tests: existing buffer-switcher preview still fires.
+
 ### What's the minimum we MUST do
 
 For the v1 promise of **shared engine + plugin contract**, the

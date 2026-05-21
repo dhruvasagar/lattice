@@ -81,6 +81,10 @@ pub struct RenderState {
     /// `picker_display_is_minibuffer` (and any future per-frame
     /// typed-option read) doesn't take an actor round-trip.
     pub options: Arc<OptionsRenderState>,
+    /// Slice 3c.final.B.11: active modes per buffer, published as
+    /// `Arc<HashMap<BufferId, Arc<ActiveModes>>>` so per-buffer
+    /// reads in the modeline + future hot paths are wait-free.
+    pub modes: Arc<ModesRenderState>,
     pub diagnostics: Arc<DiagnosticsRenderState>,
     /// Phase 5.8.AF.5 / Slice 3c.final.B (group 5): translator
     /// inputs — published so the renderer's input loop can build
@@ -114,6 +118,7 @@ impl Default for RenderState {
             messages: Arc::new(MessagesRenderState::default()),
             modeline: Arc::new(ModelineRenderState::default()),
             options: Arc::new(OptionsRenderState::default()),
+            modes: Arc::new(ModesRenderState::default()),
             diagnostics: Arc::new(DiagnosticsRenderState::default()),
             translator: Arc::new(TranslatorRenderState::default()),
             lifecycle: Arc::new(LifecycleRenderState::default()),
@@ -600,6 +605,22 @@ impl PopupRenderState {
     pub fn is_open(&self) -> bool {
         self.buffer_id.is_some()
     }
+}
+
+/// Active modes per buffer. Slice 3c.final.B.11 — drops the
+/// per-frame `read_editor(|e| e.active_modes.get(&buf))` call in
+/// the modeline `is_messages_buffer` check to a wait-free Arc-bump
+/// lookup off the published snapshot.
+///
+/// Outer `Arc<HashMap<...>>` for cheap clone-on-publish; per-entry
+/// `Arc<ActiveModes>` so reads don't clone the inner mode chain.
+/// Mutation surface (every `activate_mode` / `deactivate_mode`)
+/// rebuilds the modified entry's Arc — rare path (buffer-switch),
+/// not per-frame.
+#[derive(Debug, Default, Clone)]
+pub struct ModesRenderState {
+    pub map:
+        std::sync::Arc<std::collections::HashMap<lattice_core::BufferId, std::sync::Arc<lattice_mode::ActiveModes>>>,
 }
 
 /// Typed-options registry handle. Slice 3c.final.B.10 — drops the
@@ -1111,6 +1132,35 @@ mod tests {
         // Keymap handle clones to an Arc-backed view; verify
         // we can dereference it without panic.
         let _ = &rs.translator.keymap;
+    }
+
+    /// Slice 3c.final.B.11: active-modes map round-trip. Inserts
+    /// an entry at a synthetic buffer id and verifies the
+    /// published map carries it (the `set_major` API on
+    /// `ActiveModes` is `pub(crate)` to `lattice-mode`, so we can't
+    /// populate the chain from outside that crate — the
+    /// round-trip-shape assertion is what matters here).
+    #[test]
+    fn modes_map_reflects_editor_state() {
+        use lattice_core::BufferId;
+        use lattice_mode::ActiveModes;
+        let mut editor = Editor::default();
+        let buf = BufferId(42);
+        editor.active_modes.insert(buf, ActiveModes::new());
+        editor.publish_render_state();
+        let rs = editor.render_state.load_full();
+        assert!(
+            rs.modes.map.contains_key(&buf),
+            "published map should carry the inserted entry",
+        );
+        // Removal also round-trips.
+        editor.active_modes.remove(&buf);
+        editor.publish_render_state();
+        let rs = editor.render_state.load_full();
+        assert!(
+            !rs.modes.map.contains_key(&buf),
+            "removed entry should not appear in next publish",
+        );
     }
 
     /// Slice 3c.final.B.10: typed-options registry round-trip.

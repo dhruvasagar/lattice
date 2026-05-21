@@ -1085,6 +1085,15 @@ impl App {
         self.render_state.load().options.clone()
     }
 
+    /// Slice 3c.final.B.11: published active-modes map.
+    /// `app.modes().map.get(&buf)` replaces
+    /// `read_editor(|e| e.active_modes.get(&buf).cloned())`.
+    pub fn modes(
+        &self,
+    ) -> std::sync::Arc<lattice_host::render_state::ModesRenderState> {
+        self.render_state.load().modes.clone()
+    }
+
     /// Phase 5.8.AF.5 / Slice 3c.final.E.2: routing helper for
     /// editor mutations. Pre-swap: runs `f` against the in-process
     /// `Editor` and publishes RenderState. Post-swap (when Editor

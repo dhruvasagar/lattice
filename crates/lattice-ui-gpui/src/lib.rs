@@ -329,6 +329,12 @@ impl GpuiApp {
         self.render_state.load().options.clone()
     }
 
+    /// Slice 3c.final.B.11: published active-modes map —
+    /// parallel of TUI peer's `App::modes()`.
+    pub fn modes(&self) -> Arc<lattice_host::render_state::ModesRenderState> {
+        self.render_state.load().modes.clone()
+    }
+
     /// Phase 5.8.AF.5 / Slice 3c.final.E.4: routing helpers for
     /// editor mutations. Same shape as the TUI peer's
     /// `App::mutate_editor` / `App::mutate_editor_with`. Pre-swap

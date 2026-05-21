@@ -2622,15 +2622,15 @@ fn compose_visible_lines_inner(
     // Slice 3c.final.B (group 1): active-pane buffer id via
     // `app.panes()`.
     let active_buffer = app.panes().tree.active().buffer_id;
-    // Slice 3c.final.E.5j: active_modes lookup via `read_editor`.
-    // Returns the owned bool result so the borrow doesn't escape.
-    let is_messages_buffer = app.read_editor(move |e| {
-        e.active_modes
-            .get(&active_buffer)
-            .and_then(|m| m.major())
-            .map(|m| m == lattice_mode::MessagesMode::mode_id())
-            .unwrap_or(false)
-    });
+    // Slice 3c.final.B.11: active_modes via published `modes()`
+    // sub-state — wait-free Arc-bump lookup, no actor round-trip.
+    let is_messages_buffer = app
+        .modes()
+        .map
+        .get(&active_buffer)
+        .and_then(|m| m.major())
+        .map(|m| m == lattice_mode::MessagesMode::mode_id())
+        .unwrap_or(false);
     // §5.6.8 contract: one snapshot per frame, used for everything.
     // The snapshot was loaded by the runtime via
     // `app.editor.snapshot_cache.load_arc()` and threaded through.

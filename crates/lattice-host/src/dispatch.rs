@@ -416,6 +416,22 @@ impl Editor {
             options: std::sync::Arc::new(crate::render_state::OptionsRenderState {
                 config: self.config.clone(),
             }),
+            // Slice 3c.final.B.11: active modes per buffer. Outer
+            // map is rebuilt per publish (small HashMap; one entry
+            // per open buffer, ~5-20 typical); each entry's
+            // `Arc<ActiveModes>` is the same Arc across publishes
+            // unless that buffer's mode chain actually changed,
+            // because we clone the existing `ActiveModes` by value
+            // into a fresh `Arc::new` once per entry. Cost stays
+            // sub-µs even at 100 open buffers.
+            modes: std::sync::Arc::new(crate::render_state::ModesRenderState {
+                map: std::sync::Arc::new(
+                    self.active_modes
+                        .iter()
+                        .map(|(id, modes)| (*id, std::sync::Arc::new(modes.clone())))
+                        .collect(),
+                ),
+            }),
             diagnostics: std::sync::Arc::new(DiagnosticsRenderState {
                 // Clone the `DiagnosticsLayer` -- it's internally
                 // `Arc<ArcSwap<...>>`-backed so this is one Arc

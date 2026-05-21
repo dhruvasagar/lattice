@@ -595,13 +595,13 @@ mod tests {
 
         // Build two candidates carrying typed accept_action.
         let mut a = RawCandidate::plain("alpha", CandidateKind::Plain);
-        a.accept_action = Some(AcceptAction::OpenFile {
+        a.accept_action = Some(Box::new(AcceptAction::OpenFile {
             path: std::path::PathBuf::from("/tmp/alpha"),
-        });
+        }));
         let mut b = RawCandidate::plain("beta", CandidateKind::Plain);
-        b.accept_action = Some(AcceptAction::OpenFile {
+        b.accept_action = Some(Box::new(AcceptAction::OpenFile {
             path: std::path::PathBuf::from("/tmp/beta"),
-        });
+        }));
 
         let reg = SourceRegistration {
             spec: SourceSpec {
@@ -629,7 +629,7 @@ mod tests {
         assert_eq!(p.candidates.len(), 2, "both candidates should survive");
         for cand in &p.candidates {
             assert!(matches!(
-                cand.raw.accept_action.as_ref().unwrap(),
+                cand.raw.accept_action.as_deref().unwrap(),
                 AcceptAction::OpenFile { .. }
             ));
         }
@@ -662,7 +662,7 @@ mod tests {
                 cand.raw.display
             );
             assert!(matches!(
-                cand.raw.accept_action.as_ref().unwrap(),
+                cand.raw.accept_action.as_deref().unwrap(),
                 lattice_completion::AcceptAction::SwitchBuffer { .. }
             ));
         }

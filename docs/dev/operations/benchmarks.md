@@ -28,6 +28,74 @@ target rather than just a slower number.
 
 ---
 
+## Post-3c.unify (slice 7 + 8, 2026-05-21)
+
+Snapshot after the slice-7 unification arc (7a-7g) closed:
+single source-registration contract (`SourceRegistration`),
+typed accept payload on every picker candidate
+(`RawCandidate::accept_action`), dual-registry lookup in
+`open_picker`, accept dispatch via `DefaultAcceptHandler`,
+preview unification (LSP-references-preview gap closed).
+
+**The architectural question this run answers:** does the
+unified-shape plumbing (carrying `Option<AcceptAction>` on every
+candidate that flows through the pipeline) regress picker
+filter performance? Initial measurement before slice 8's
+boxing optimisation showed +97% on the empty-query 5k case
+(774µs → 1.52ms) because `AcceptAction` is an enum carrying
+PathBuf / String / Args variants — its inline size dominated
+RawCandidate, doubling per-candidate memcpy through the
+matcher/ranker passes.
+
+Slice 8's fix: box the field
+(`accept_action: Option<Box<AcceptAction>>`). `Option<Box>` is
+8 bytes regardless of variant size. Cmdline-completion and
+insert-completion candidates leave the field `None` → null
+pointer → free. Picker candidates pay one heap alloc per row
+at construction, recovered ~10× over by smaller per-candidate
+memcpy during refilter (fires per keystroke).
+
+### Headline deltas
+
+| Bench                                   | Pre-arc baseline | Post-7 (inline) | Post-8 (boxed) | Δ vs baseline |
+|-----------------------------------------|------------------|-----------------|-----------------|----------------|
+| `picker::refilter/n=5000,query=""`      | 774µs            | 1.52ms (+97%)   | **801µs**       | +3.5%          |
+| `picker::refilter/n=5000,query="f"`     | 1.50ms           | 1.41ms (-6%)    | **1.43ms**      | -4.7%          |
+| `picker::refilter/n=5000,query="file_"` | 1.57ms           | 1.65ms (+5%)    | **1.61ms**      | +2.5%          |
+| `picker::refilter/n=500,query=""`       | ~60µs            | 60µs            | **60µs**        | flat           |
+| `picker::open_inline/5000`              | ~1.66ms          | 1.68ms          | **1.94ms**      | +17%           |
+| `picker::open_inline/500`               | ~132µs           | 130µs           | **127µs**       | -4%            |
+| `picker::mru_snapshot/5000`             | ~542µs           | 521µs           | **520µs**       | -4%            |
+
+**Verdict:** the refilter hot path (per-keystroke; the budget
+that matters for input latency) lands within noise of the
+pre-arc baseline. `open_inline/5000` shows +17% — the heap
+alloc per candidate at seat time. Acceptable because
+picker-open fires once per `:picker <name>` invocation, not
+per keystroke; user-perceived latency is dominated by the
+subsequent refilters.
+
+### Cost analysis
+
+Each `RawCandidate` carrying `accept_action: Some(...)` pays:
+  - 1 heap alloc at construction (~50ns × 5000 candidates =
+    ~250µs); the source of the open_inline/5000 +260µs delta.
+  - 8 bytes inline (Box ptr) instead of ~64 bytes inline
+    (largest variant: OpenLspLog with String + PathBuf).
+    Recovers ~280KB of memcpy per refilter at 5k scale.
+
+Net: refilter wins, open_inline pays. The trade is favourable
+because refilter fires per-keystroke and open_inline fires
+once per picker invocation.
+
+If/when `open_inline` becomes a hot enough complaint, the
+candidate-vec construction can move to a bumpalo arena (free
+all allocs at picker-close instead of per-candidate). Out of
+scope for slice 8; queued as `3c.unify.arena-candidates` if
+needed.
+
+---
+
 ## Post-3c.final.E.swap + B-extension (2026-05-21)
 
 Snapshot taken after the Phase 5.8.AF.5 / 3c.final arc closed:

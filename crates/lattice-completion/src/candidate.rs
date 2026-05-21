@@ -132,13 +132,25 @@ pub struct RawCandidate {
     /// handler. Surfaces that need typed dispatch set this at
     /// candidate-build time.
     ///
+    /// Boxed (slice 8): `AcceptAction` is a tagged enum
+    /// carrying PathBuf / String / Args among its variants —
+    /// its inline size dominates RawCandidate. Boxing keeps
+    /// `Option<Box<AcceptAction>>` at 8 bytes (None = null
+    /// pointer) so cmdline-completion + insert-completion
+    /// candidates (which leave it unset) don't pay the cost.
+    /// Picker candidates pay one heap alloc per row at
+    /// construction, recovered ~10× over by smaller per-
+    /// candidate memcpy during pipeline matcher/ranker passes
+    /// (picker::refilter/n=5000 measured 2× faster than the
+    /// inline shape — see benchmarks.md).
+    ///
     /// `#[serde(skip)]` because the `Custom` variant carries
     /// `Arc<dyn Any>` which isn't serializable; the rest of the
     /// candidate (text + display + data) round-trips through
     /// the cache, but the accept action is recomputed at the
     /// callsite when needed.
     #[serde(skip)]
-    pub accept_action: Option<crate::source_registration::AcceptAction>,
+    pub accept_action: Option<Box<crate::source_registration::AcceptAction>>,
 }
 
 impl RawCandidate {

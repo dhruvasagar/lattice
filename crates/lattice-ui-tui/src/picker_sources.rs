@@ -186,7 +186,7 @@ mod tests {
             // legacy routing payload (both encode the same id).
             let action = cand
                 .accept_action
-                .as_ref()
+                .as_deref()
                 .expect("BuffersSource sets accept_action on every candidate");
             let RoutingPayload::Buffer { id: routing_id } = routing else {
                 panic!("expected Buffer routing");

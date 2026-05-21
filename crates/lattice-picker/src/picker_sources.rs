@@ -324,9 +324,9 @@ impl PickerSourceGenerator for FilesSource {
                 );
                 let mut cand = RawCandidate::plain(display, CandidateKind::Plain);
                 // Slice 7b.2: typed accept payload.
-                cand.accept_action = Some(lattice_completion::AcceptAction::OpenFile {
+                cand.accept_action = Some(Box::new(lattice_completion::AcceptAction::OpenFile {
                     path: row.abs.clone(),
-                });
+                }));
                 (cand, RoutingPayload::OpenFile { path: row.abs })
             })
             .collect();
@@ -387,9 +387,9 @@ impl PickerSourceGenerator for RecentFilesSource {
                 let display = p.display().to_string();
                 let mut cand = RawCandidate::plain(display, CandidateKind::Plain);
                 // Slice 7b.2: typed accept payload.
-                cand.accept_action = Some(lattice_completion::AcceptAction::OpenFile {
+                cand.accept_action = Some(Box::new(lattice_completion::AcceptAction::OpenFile {
                     path: p.clone(),
-                });
+                }));
                 (cand, RoutingPayload::OpenFile { path: p.clone() })
             })
             .collect();
@@ -471,9 +471,9 @@ impl PickerSourceGenerator for BuffersSource {
                 // cutover drops the parallel routing vec once
                 // the host routes accept through
                 // DefaultAcceptHandler.
-                cand.accept_action = Some(lattice_completion::AcceptAction::SwitchBuffer {
+                cand.accept_action = Some(Box::new(lattice_completion::AcceptAction::SwitchBuffer {
                     id: lattice_core::BufferId(e.id),
-                });
+                }));
                 (cand, RoutingPayload::Buffer { id: e.id })
             })
             .collect();
@@ -552,11 +552,11 @@ impl PickerSourceGenerator for LinesSource {
             let display = format!("{:>width$}: {}", line + 1, text, width = width);
             let mut cand = RawCandidate::plain(display, CandidateKind::Plain);
             // Slice 7b.4: typed accept payload.
-            cand.accept_action = Some(lattice_completion::AcceptAction::JumpInBuffer {
+            cand.accept_action = Some(Box::new(lattice_completion::AcceptAction::JumpInBuffer {
                 buffer_id: lattice_core::BufferId(buffer_id),
                 line: line as u32,
                 col: 0,
-            });
+            }));
             pairs.push((
                 cand,
                 RoutingPayload::JumpInBuffer {
@@ -661,11 +661,11 @@ impl PickerSourceGenerator for JumpsSource {
                 );
                 let mut cand = RawCandidate::plain(display, CandidateKind::Plain);
                 // Slice 7b.4: typed accept payload.
-                cand.accept_action = Some(lattice_completion::AcceptAction::JumpInBuffer {
+                cand.accept_action = Some(Box::new(lattice_completion::AcceptAction::JumpInBuffer {
                     buffer_id: lattice_core::BufferId(entry.buffer_id),
                     line: entry.line,
                     col: entry.col,
-                });
+                }));
                 (
                     cand,
                     RoutingPayload::JumpInBuffer {
@@ -812,10 +812,10 @@ impl PickerSourceGenerator for CommandsSource {
                 let mut cand = RawCandidate::plain(row.user_facing.clone(), CandidateKind::Plain);
                 cand.display = display;
                 // Slice 7b.3: typed accept payload.
-                cand.accept_action = Some(lattice_completion::AcceptAction::InvokeCommand {
+                cand.accept_action = Some(Box::new(lattice_completion::AcceptAction::InvokeCommand {
                     id: row.canonical.clone(),
                     args: Args::None,
-                });
+                }));
                 (
                     cand,
                     RoutingPayload::InvokeCommand {
@@ -891,7 +891,7 @@ impl PickerSourceGenerator for RegistersSource {
                 let mut cand = RawCandidate::plain(display, CandidateKind::Plain);
                 // Slice 7b.5: typed accept payload.
                 cand.accept_action =
-                    Some(lattice_completion::AcceptAction::PasteRegister { name: ch });
+                    Some(Box::new(lattice_completion::AcceptAction::PasteRegister { name: ch }));
                 Some((cand, RoutingPayload::PasteRegister { name: ch }))
             })
             .collect();
@@ -957,7 +957,7 @@ impl PickerSourceGenerator for MarksSource {
                 let mut cand = RawCandidate::plain(display, CandidateKind::Plain);
                 // Slice 7b.5: typed accept payload.
                 cand.accept_action =
-                    Some(lattice_completion::AcceptAction::JumpToMark { name: *name });
+                    Some(Box::new(lattice_completion::AcceptAction::JumpToMark { name: *name }));
                 (cand, RoutingPayload::JumpToMark { name: *name })
             })
             .collect();
@@ -1088,11 +1088,11 @@ fn hits_to_pairs(hits: Vec<GrepHit>) -> crate::CandidateBatch {
             // Slice 7b.6: typed accept payload. Grep hits jump
             // to file:line:col — same shape as LSP references /
             // definitions / diagnostics → JumpToFileLocation.
-            cand.accept_action = Some(lattice_completion::AcceptAction::JumpToFileLocation {
+            cand.accept_action = Some(Box::new(lattice_completion::AcceptAction::JumpToFileLocation {
                 path: hit.path.clone(),
                 line: hit.line,
                 col: hit.col,
-            });
+            }));
             (
                 cand,
                 RoutingPayload::LspLocation {
@@ -1391,11 +1391,11 @@ impl PickerSourceGenerator for OutlineSource {
                 let display = format!("{:>width$}: {name}", line + 1, width = line_width,);
                 let mut cand = RawCandidate::plain(display, CandidateKind::Plain);
                 // Slice 7b.4: typed accept payload.
-                cand.accept_action = Some(lattice_completion::AcceptAction::JumpInBuffer {
+                cand.accept_action = Some(Box::new(lattice_completion::AcceptAction::JumpInBuffer {
                     buffer_id: lattice_core::BufferId(buffer_id),
                     line: *line,
                     col: *col,
-                });
+                }));
                 (
                     cand,
                     RoutingPayload::JumpInBuffer {

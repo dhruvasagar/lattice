@@ -10260,7 +10260,7 @@ impl Editor {
         // Prefer the typed accept_action (set by all 10 first-
         // party picker sources via 7b.1-7b.6, and any plugin
         // source via SourceRegistration).
-        if let Some(action) = c.raw.accept_action.clone() {
+        if let Some(action) = c.raw.accept_action.as_deref().cloned() {
             return self.preview_accept_action(action);
         }
         // Legacy fallback for sources that don't set

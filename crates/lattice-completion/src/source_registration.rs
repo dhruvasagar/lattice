@@ -143,7 +143,8 @@ impl AcceptHandler for DefaultAcceptHandler {
     fn accept(&self, candidate: &RawCandidate) -> Result<AcceptAction, String> {
         candidate
             .accept_action
-            .clone()
+            .as_deref()
+            .cloned()
             .ok_or_else(|| "candidate has no accept_action set".to_string())
     }
 }
@@ -576,9 +577,9 @@ mod tests {
     #[test]
     fn default_handler_returns_candidate_accept_action() {
         let mut c = RawCandidate::plain("buf:7", CandidateKind::Buffer);
-        c.accept_action = Some(AcceptAction::SwitchBuffer {
+        c.accept_action = Some(Box::new(AcceptAction::SwitchBuffer {
             id: lattice_core::BufferId(7),
-        });
+        }));
         let handler = DefaultAcceptHandler;
         let action = handler.accept(&c).expect("should succeed");
         assert!(matches!(action, AcceptAction::SwitchBuffer { .. }));

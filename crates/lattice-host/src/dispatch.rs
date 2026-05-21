@@ -410,6 +410,12 @@ impl Editor {
                     .map(|s| std::sync::Arc::from(s.pattern.as_str())),
                 search_direction: self.search_line.as_ref().map(|s| s.direction),
             }),
+            // Slice 3c.final.B.10: typed-options registry handle.
+            // The inner `ConfigRegistry` is already Arc-shared on
+            // the editor side, so the publish is one Arc clone.
+            options: std::sync::Arc::new(crate::render_state::OptionsRenderState {
+                config: self.config.clone(),
+            }),
             diagnostics: std::sync::Arc::new(DiagnosticsRenderState {
                 // Clone the `DiagnosticsLayer` -- it's internally
                 // `Arc<ArcSwap<...>>`-backed so this is one Arc

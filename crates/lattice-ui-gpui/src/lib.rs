@@ -323,6 +323,12 @@ impl GpuiApp {
         self.render_state.load().modeline.clone()
     }
 
+    /// Slice 3c.final.B.10: published typed-options registry —
+    /// parallel of TUI peer's `App::options()`.
+    pub fn options(&self) -> Arc<lattice_host::render_state::OptionsRenderState> {
+        self.render_state.load().options.clone()
+    }
+
     /// Phase 5.8.AF.5 / Slice 3c.final.E.4: routing helpers for
     /// editor mutations. Same shape as the TUI peer's
     /// `App::mutate_editor` / `App::mutate_editor_with`. Pre-swap

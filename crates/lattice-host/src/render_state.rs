@@ -76,6 +76,11 @@ pub struct RenderState {
     pub popup: Arc<PopupRenderState>,
     pub messages: Arc<MessagesRenderState>,
     pub modeline: Arc<ModelineRenderState>,
+    /// Slice 3c.final.B.10: typed-options registry published as a
+    /// wait-free Arc clone so the renderer's
+    /// `picker_display_is_minibuffer` (and any future per-frame
+    /// typed-option read) doesn't take an actor round-trip.
+    pub options: Arc<OptionsRenderState>,
     pub diagnostics: Arc<DiagnosticsRenderState>,
     /// Phase 5.8.AF.5 / Slice 3c.final.B (group 5): translator
     /// inputs — published so the renderer's input loop can build
@@ -108,6 +113,7 @@ impl Default for RenderState {
             popup: Arc::new(PopupRenderState::default()),
             messages: Arc::new(MessagesRenderState::default()),
             modeline: Arc::new(ModelineRenderState::default()),
+            options: Arc::new(OptionsRenderState::default()),
             diagnostics: Arc::new(DiagnosticsRenderState::default()),
             translator: Arc::new(TranslatorRenderState::default()),
             lifecycle: Arc::new(LifecycleRenderState::default()),
@@ -594,6 +600,16 @@ impl PopupRenderState {
     pub fn is_open(&self) -> bool {
         self.buffer_id.is_some()
     }
+}
+
+/// Typed-options registry handle. Slice 3c.final.B.10 — drops the
+/// per-frame `read_editor(|e| e.config.get_typed::<X>())` calls
+/// in `picker_display_is_minibuffer` and elsewhere to a wait-free
+/// Arc bump off the published snapshot. The inner `ConfigRegistry`
+/// is already Arc-shared, so a publish here is one Arc clone.
+#[derive(Debug, Default, Clone)]
+pub struct OptionsRenderState {
+    pub config: std::sync::Arc<lattice_config::ConfigRegistry>,
 }
 
 /// `*messages*` buffer + echo line state.
@@ -1095,6 +1111,20 @@ mod tests {
         // Keymap handle clones to an Arc-backed view; verify
         // we can dereference it without panic.
         let _ = &rs.translator.keymap;
+    }
+
+    /// Slice 3c.final.B.10: typed-options registry round-trip.
+    #[test]
+    fn options_registry_reflects_editor_state() {
+        let editor = Editor::default();
+        editor.publish_render_state();
+        let rs = editor.render_state.load_full();
+        // The published `config` Arc shares the registry identity
+        // with `editor.config` (one Arc::clone per publish).
+        assert!(
+            std::sync::Arc::ptr_eq(&rs.options.config, &editor.config),
+            "options.config should be the same Arc instance as editor.config",
+        );
     }
 
     /// Slice 3c.final.B.7: messages + modeline round-trip

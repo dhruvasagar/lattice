@@ -121,13 +121,13 @@ fn style_at(spans: &[lattice_syntax::StyledSpan], byte: usize) -> SyntaxStyle {
 /// the TUI peer's `picker_display_is_minibuffer` so both renderers
 /// agree on the same source of truth.
 fn picker_display_is_minibuffer(app: &GpuiApp) -> bool {
-    // Slice 3c.final.E.swap: config read via `read_editor`.
-    app.read_editor(|e| {
-        e.config
-            .get_typed::<lattice_config::core_options::PickerDisplay>()
-            .map(|s| s.as_str() != "popup")
-            .unwrap_or(true)
-    })
+    // Slice 3c.final.B.10: typed-options registry via published
+    // `options()` sub-state — wait-free Arc clone.
+    app.options()
+        .config
+        .get_typed::<lattice_config::core_options::PickerDisplay>()
+        .map(|s| s.as_str() != "popup")
+        .unwrap_or(true)
 }
 
 /// Resolve the diagnostic gutter glyph + colour for a severity by

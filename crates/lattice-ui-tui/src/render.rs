@@ -917,16 +917,14 @@ fn draw_picker_candidates(frame: &mut Frame, area: Rect, app: &App) {
 /// rather than panicking -- consistency with the validator's
 /// behaviour at parse time.
 fn picker_display_is_minibuffer(app: &App) -> bool {
-    // Slice 3c.final.E.5j: route through `read_editor` so the
-    // config read doesn't carry an `&self.editor` borrow into the
-    // renderer thread. Per-frame call; post-actor-swap this becomes
-    // a sync mailbox round-trip (~µs), within frame budget.
-    app.read_editor(|e| {
-        e.config
-            .get_typed::<lattice_config::core_options::PickerDisplay>()
-            .map(|s| s.as_str() != "popup")
-            .unwrap_or(true)
-    })
+    // Slice 3c.final.B.10: typed-options registry via published
+    // `options()` sub-state — wait-free Arc clone, no actor
+    // round-trip.
+    app.options()
+        .config
+        .get_typed::<lattice_config::core_options::PickerDisplay>()
+        .map(|s| s.as_str() != "popup")
+        .unwrap_or(true)
 }
 
 /// Centered overlay rendering of the picker for the

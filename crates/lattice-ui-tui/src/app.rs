@@ -1076,6 +1076,15 @@ impl App {
         self.render_state.load().modeline.clone()
     }
 
+    /// Slice 3c.final.B.10: published typed-options registry.
+    /// Replaces `read_editor(|e| e.config.get_typed::<X>())` —
+    /// caller does `app.options().config.get_typed::<X>()`.
+    pub fn options(
+        &self,
+    ) -> std::sync::Arc<lattice_host::render_state::OptionsRenderState> {
+        self.render_state.load().options.clone()
+    }
+
     /// Phase 5.8.AF.5 / Slice 3c.final.E.2: routing helper for
     /// editor mutations. Pre-swap: runs `f` against the in-process
     /// `Editor` and publishes RenderState. Post-swap (when Editor

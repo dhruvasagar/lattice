@@ -731,6 +731,17 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
     // count chars BETWEEN chord steps. The operator-pending stack
     // must survive the digit input.
     if !matches!(action, Action::AbsorbPartialChord(_) | Action::PushDigit(_)) {
+        // Investigation 2026-05-22: trace clears so we can see if
+        // partial_chord gets reset between keystrokes when it
+        // shouldn't (user reported `gg`/`dw` broken in production).
+        // info! so it lands in *messages* without setting RUST_LOG.
+        if !editor.partial_chord.is_empty() {
+            tracing::info!(
+                "[chord-trace] CLEAR partial_chord={:?} on action={:?}",
+                editor.partial_chord,
+                std::mem::discriminant(&action),
+            );
+        }
         editor.partial_chord.clear();
     }
     // 5.5.D: read-only-help guard. When a help buffer holds focus
@@ -802,6 +813,15 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
             // next keystroke runs through `dispatch_normal` with
             // this stack as prefix.
             editor.partial_chord.push(chord);
+            // Investigation 2026-05-22: trace absorbs so we can
+            // verify the partial_chord stack grows as expected
+            // across multi-key sequences (gg/dw/zz/etc.).
+            // info! so it lands in *messages* without setting RUST_LOG.
+            tracing::info!(
+                "[chord-trace] ABSORB chord={:?} partial_chord={:?}",
+                chord,
+                editor.partial_chord,
+            );
         }
         Action::PushDigit(d) => {
             // Accumulate one decimal digit into the pending count.

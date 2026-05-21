@@ -244,6 +244,16 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
                     let ad = app.ad();
                     // Slice 3c.final.E.4: via App-cached render_state.
                     let translator = app.render_state.load().translator.clone();
+                    // Investigation 2026-05-22: trace partial_chord
+                    // observed by ctx-build. Pairs with the
+                    // ABSORB/CLEAR traces in handle_action — the
+                    // three together show the full chord-stack
+                    // lifecycle across keystrokes.
+                    tracing::info!(
+                        "[chord-trace] KEY {:?} partial_chord_from_rs={:?}",
+                        k.code,
+                        translator.partial_chord,
+                    );
                     let ctx = TranslateContext {
                         modal: ad.modal,
                         builtins: &translator.builtins,

@@ -597,6 +597,18 @@ impl GpuiApp {
     /// equivalent yet; when the GPUI peer grows a cmdline this
     /// reads from the same shared editor state.
     pub fn dispatch_chord(&mut self, chord: KeyChord) -> DispatchOutcome {
+        // Investigation 2026-05-22: trace partial_chord at
+        // dispatch_chord entry so we can see if it survives
+        // publishes between keystrokes. info! so it lands in
+        // *messages* without needing RUST_LOG.
+        {
+            let pre_partial = self.render_state.load().translator.partial_chord.clone();
+            tracing::info!(
+                "[chord-trace] CHORD {:?} partial_chord_from_rs={:?}",
+                chord,
+                pre_partial,
+            );
+        }
         let action = {
             // Slice 3c.atomic.K: read value-typed TranslateContext
             // inputs through the published render-state snapshot

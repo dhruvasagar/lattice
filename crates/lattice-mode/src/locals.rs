@@ -116,7 +116,14 @@ pub(crate) trait LocalDyn: Any + Send + Sync {
     fn owner_mode(&self) -> &'static str;
     fn describe(&self) -> String;
     fn as_any(&self) -> &dyn Any;
+    // Designed-in API: `as_any_mut` for owner-mode in-place
+    // mutation, `into_any` for the `remove<T>` typed downcast.
+    // Both reach `pub(crate)` BufferLocals methods that aren't
+    // yet wired into an owner mode; flagging would penalise a
+    // deliberate completeness choice.
+    #[allow(dead_code)]
     fn as_any_mut(&mut self) -> &mut dyn Any;
+    #[allow(dead_code)]
     fn into_any(self: Box<Self>) -> Box<dyn Any + Send + Sync>;
 }
 
@@ -221,7 +228,8 @@ impl BufferLocals {
     /// owner mode during `on_activate` if it needs to mutate
     /// in place (avoids the take/restore dance). `pub(crate)`
     /// so external code goes through the context's checked
-    /// surface.
+    /// surface. Designed-in API: no owner-mode wired today.
+    #[allow(dead_code)]
     pub(crate) fn get_mut<T: BufferLocal>(&mut self) -> Option<&mut T> {
         self.map
             .get_mut(&TypeId::of::<T>())
@@ -230,6 +238,8 @@ impl BufferLocals {
 
     /// Remove and return the local of type `T`. `pub(crate)`
     /// so removal goes through the context's owner-mode check.
+    /// Designed-in API: no owner-mode wired today.
+    #[allow(dead_code)]
     pub(crate) fn remove<T: BufferLocal>(&mut self) -> Option<T> {
         let entry = self.map.remove(&TypeId::of::<T>())?;
         entry.into_any().downcast::<T>().ok().map(|b| *b)

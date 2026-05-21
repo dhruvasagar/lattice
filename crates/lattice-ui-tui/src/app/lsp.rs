@@ -2350,7 +2350,7 @@ mod tests {
     /// seating the updated decoded list in the cache.
     #[test]
     fn drain_semantic_tokens_delta_splices_and_redecodes() {
-        let mut a = app_with("fn main() {}\n", 5);
+        let a = app_with("fn main() {}\n", 5);
         let buffer_id = a.editor.document_buffer_id;
         // Seed an initial cache entry with one keyword token and
         // a `result_id` the delta will reference. Use a single

@@ -275,6 +275,7 @@ impl GpuiApp {
         editor.ensure_subsystem_buffers();
         let workspace_root = Editor::workspace_root_from_cwd();
         let _ = editor.load_persistent_config(workspace_root.as_deref());
+        editor.apply_per_language_toml_overrides();
         // Initial RS publish so `app.ad()` returns boot state.
         editor.publish_render_state();
 
@@ -421,88 +422,16 @@ impl GpuiApp {
         self.dispatch_action(lattice_host::action::Action::EnsureCursorVisible);
     }
 
-    /// Run the renderer-side post-boot helpers the TUI peer
-    /// runs at the tail of `App::new`. Phase 5.7.B.6 brings the
-    /// GPUI peer to the same boot end-state as the TUI peer
-    /// (without the synthetic-buffer seeding -- `*lsp*` and
-    /// `*messages*` will be lazy-created on first use until
-    /// `ensure_named_synthetic_document` /
-    /// `ensure_messages_buffer` migrate from `impl App` (TUI) to
-    /// `impl Editor`).
-    ///
-    /// What this currently does:
-    ///
-    /// 1. `editor.rebuild_option_cache()` — populate the hot-
-    ///    path option cache from the freshly-`init_from_linkme()`'d
-    ///    registry.
-    /// 2. `editor.activate_major_for_buffer_kind(document_buffer_id,
-    ///    Document)` — resolve + activate the appropriate major
-    ///    mode for the initial buffer (text-mode for plain,
-    ///    rust-mode / python-mode / ... for typed languages).
-    ///    This is what makes mode-contributed bindings reachable
-    ///    + option contributions visible.
-    /// 3. `editor.publish_document_opened_for_active()` — emit
-    ///    [`Event::DocumentOpened`] so LSP attach / project
-    ///    watcher / completion warmer subscribers see the
-    ///    buffer.
-    ///
-    /// `activate_major_for_buffer_kind` returns
-    /// `Vec<RendererSignal>` (`#[must_use]`); 5.7.B.6 discards
-    /// them. The signal handler is the 5.7.B.7 slice -- once it
-    /// lands, theme cascades + option cascades + structural
-    /// renderer notifications all propagate to GPUI caches.
-    fn finalize_boot(&mut self) {
-        // 5.7.B.12: rebuild the GPUI-typed theme cache from
-        // `editor.host_theme`. Body is currently a stub but
-        // wiring is in place for the `ThemeChanged` cascade.
-        self.rebuild_gpui_theme();
-        // Slice 3c.final.E.4: route through `mutate_editor`.
-        self.mutate_editor(|e| e.rebuild_option_cache());
-        // 5.8.O: seed viewport_height with a sensible default so
-        // the host-side cache key + cursor-scroll math work from
-        // t=0. The default matches the 720×480 boot window at
-        // roughly 16px per text row; a future slice hooks the
-        // gpui window resize event to recompute on resize.
-        // Slice 3c.final.E.5: boot seed via mutate_editor.
-        self.mutate_editor(|e| {
-            if e.viewport_height == 0 {
-                e.viewport_height = 30;
-            }
-        });
-        let doc_id = self.ad().document_buffer_id;
-        let signals = self
-            .mutate_editor_with(move |e| e.activate_major_for_buffer_kind(doc_id, BufferKind::Document));
-        for signal in signals {
-            self.handle_renderer_signal(signal);
-        }
-        // Slice 3c.final.E.4: route through `mutate_editor`.
-        self.mutate_editor(|e| e.publish_document_opened_for_active());
-        // 5.7.B.9: eager subsystem buffer seeding -- matches the
-        // tail of the TUI peer's `App::new`. Creates the `*lsp*`
-        // and `*messages*` Document buffers so `:b *lsp*` /
-        // `:b *messages*` resolve from t=0 instead of lazy-
-        // creating on first use. The subsystem-name +
-        // mode-id knowledge lives host-side (no need for the
-        // GPUI peer to depend on `lattice-lsp` directly).
-        // Slice 3c.final.E.4: route through `mutate_editor`.
-        self.mutate_editor(|e| e.ensure_subsystem_buffers());
-        // Phase 5.8.AA.u: load persistent TOML config from
-        // `~/.editor.config/lattice/lattice.toml` (user) +
-        // `<workspace>/.lattice/config.toml` (project). Reaches
-        // the same host method the TUI runtime calls, so a
-        // GPUI launch and a TUI launch from the same cwd
-        // produce identical Editor state on first frame. The
-        // returned signals always include `ThemeChanged`; we
-        // fan through the standard signal handler so the GPUI-
-        // typed theme cache rebuilds before the first paint.
-        let workspace_root = Editor::workspace_root_from_cwd();
-        let signals = self.mutate_editor_with(move |e| e.load_persistent_config(workspace_root.as_deref()));
-        for signal in signals {
-            self.handle_renderer_signal(signal);
-        }
-        // Slice 3c.final.E.4: route through `mutate_editor`.
-        self.mutate_editor(|e| e.apply_per_language_toml_overrides());
-    }
+    // Slice 3c.final.E.swap: `finalize_boot` retired. Its body
+    // (rebuild_option_cache / activate_major_for_buffer_kind /
+    // publish_document_opened_for_active / ensure_subsystem_buffers
+    // / load_persistent_config / apply_per_language_toml_overrides)
+    // was inlined into `GpuiApp::new`, running directly on the
+    // owned Editor BEFORE the actor spawns — the App-side
+    // wrappers would have funnelled through the actor mailbox
+    // which doesn't exist yet at that point in construction.
+    // `rebuild_gpui_theme` runs post-actor against the published
+    // RS theme.
 
     /// Renderer-side handler for the [`RendererSignal`] stream
     /// the host emits from option cascades + mode lifecycle

@@ -5,6 +5,18 @@
 //! an `Action`; `App::apply` consumes the action, dispatching motion / edit
 //! work through `lattice_grammar::execute()` where appropriate.
 //!
+//! Slice 3c.final.E.swap aftermath: many App-side delegate methods +
+//! free helper functions in this file are only reachable from
+//! `#[cfg(test)] mod tests` blocks; the production paint / dispatch
+//! paths route through the `mutate_editor` / `read_editor` seam or
+//! the published RS sub-states (`ad()`, `panes()`, `popup()`, ...).
+//! The `#![allow(dead_code)]` below acknowledges that test-only state
+//! without restructuring 30+ methods into `#[cfg(test)] impl App`
+//! blocks. A follow-up cleanup slice (`3c.final.E.cleanup`) can
+//! tighten this if the lint signal becomes load-bearing for catching
+//! genuine future dead code.
+#![allow(dead_code)]
+//!
 //! ## Module layout
 //!
 //! This file holds the `App` struct definition, the cross-feature data

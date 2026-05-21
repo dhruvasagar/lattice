@@ -241,6 +241,32 @@ pub fn builtin_topics() -> Arc<HelpTopicRegistry> {
         related_command_patterns: vec!["lsp".into()],
     });
     r.register(HelpTopic {
+        name: "lsp".into(),
+        summary: "LSP integration: servers, capabilities, attach lifecycle, \
+                  diagnostics, every `:lsp-*` command in context."
+            .into(),
+        body: HelpTopicBody::Static(include_str!("../../../docs/user/lsp.md")),
+        // Same `lsp` substring covers both topics; `topics_for_command`
+        // returns all matches, so `:describe-command lsp-format` will
+        // surface both `lsp` and `lsp-mode` see-also links.
+        related_command_patterns: vec!["lsp".into(), "diagnostic".into()],
+    });
+    r.register(HelpTopic {
+        name: "filetree-oil".into(),
+        summary: "File tree (read-only browse) and Oil (writable directory \
+                  listing): edit the buffer, `:w` runs the diff as filesystem \
+                  ops (rename / create / delete)."
+            .into(),
+        body: HelpTopicBody::Static(include_str!("../../../docs/user/filetree-oil.md")),
+        related_command_patterns: vec![
+            "filetree".into(),
+            "tree".into(),
+            "oil".into(),
+            "ex:Tree".into(),
+            "ex:Oil".into(),
+        ],
+    });
+    r.register(HelpTopic {
         name: "options".into(),
         summary: "Typed configuration: `:set` syntax, layered resolution \
                   (defaults / TOML / runtime / mode contributions / per-buffer), \
@@ -305,6 +331,53 @@ mod tests {
         let r = builtin_topics();
         assert!(r.lookup("folding").is_some());
         assert!(r.lookup("buffers").is_some());
+    }
+
+    #[test]
+    fn every_user_doc_in_docs_user_is_registered_as_a_topic() {
+        // Regression for the gap discovered post-3c.final.E.cleanup:
+        // `docs/user/lsp.md` and the new `docs/user/filetree-oil.md`
+        // existed on disk but weren't in the registry, so `:help lsp`
+        // (or `:help filetree-oil`) failed at runtime even though the
+        // user doc shipped with the source tree.
+        //
+        // This test walks every top-level `docs/user/*.md` and asserts
+        // each is registered as a topic. README.md is the "index"
+        // topic (registered under that name); every other file's
+        // topic name is its stem.
+        //
+        // The walk uses the workspace root via CARGO_MANIFEST_DIR ↦
+        // `<root>/crates/lattice-help` ↦ join `../../docs/user`.
+        let docs_user = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docs/user");
+        let r = builtin_topics();
+        let names: std::collections::HashSet<&str> = r.names().collect();
+        let mut missing: Vec<String> = Vec::new();
+        for entry in std::fs::read_dir(&docs_user).expect("docs/user readable") {
+            let entry = entry.expect("dir entry");
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("md") {
+                continue;
+            }
+            let stem = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .expect("md filename");
+            let topic_name = if stem == "README" { "index" } else { stem };
+            if !names.contains(topic_name) {
+                missing.push(format!(
+                    "{} (expected topic `{}`)",
+                    path.display(),
+                    topic_name
+                ));
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "user docs not registered as help topics — \
+             add a `r.register(...)` for each in `builtin_topics()`:\n  {}",
+            missing.join("\n  ")
+        );
     }
 
     #[test]

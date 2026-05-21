@@ -1,5 +1,12 @@
 # Phase 5 extraction audit
 
+> **Status: ✅ Completed.** This was the master plan for Phase 5
+> (splitting `lattice-ui-tui` into renderer-agnostic host + peer
+> renderers); the work landed across Phase 5.7.B and the subsequent
+> 5.8.* slices. Live state in [`../architecture/design.md`](../architecture/design.md)
+> §5.6 + §11, the slice ledger [`../operations/implementation.md`](../operations/implementation.md),
+> and `crates/lattice-ui-gpui/`. Archived 2026-05-21.
+
 Anchor: design.md §5.6 (rendering layered architecture), §11 (project layout), §13 Phase 5–6.
 
 This is the planning artefact for Phase 5. **It does not introduce any code change.** It establishes what's in `lattice-ui-tui` today, what's renderer-coupled versus renderer-agnostic, where each module lives after Phase 5, and the slice ordering that lets us get there without the editor breaking at any intermediate commit.

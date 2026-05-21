@@ -1,9 +1,16 @@
 # Render-thread discipline remediation (Phase 5.8.AF.5 / X-series)
 
+> **Status: ✅ Completed.** The X-series (X1, X1b, X2, X2.6, X2.9,
+> X3.full, X4, X5) all landed; the resulting renderer-thread
+> discipline is now compile-time enforced via the actor-handle swap
+> (slice 3c.final.E.swap). See
+> [`../operations/benchmarks.md`](../operations/benchmarks.md) for
+> the resulting frame-budget figures. Archived 2026-05-21.
+
 **Status:** in progress — X1, X3 (partial), X4, X2 (renderer-hot-path cutover) landed; X2.6 (legacy field deletion), X1b (idle wake bridge), X5 (frame-budget bench) and the full-X3 (per-line styled-text element) still pending.
 **Started:** 2026-05-19.
 **Owners:** session-driven (Dhruva + Claude).
-**Successor work:** Phase 5.8.AF.5 / Slice 3c.final (Editor on its own thread). Plan in [`docs/dev/architecture/3c-final-editor-thread.md`](../architecture/3c-final-editor-thread.md). Resumes AFTER this remediation lands.
+**Successor work:** Phase 5.8.AF.5 / Slice 3c.final (Editor on its own thread). Plan in [`docs/dev/archive/3c-final-editor-thread.md`](./3c-final-editor-thread.md). Resumes AFTER this remediation lands.
 
 ## 1. Why this exists
 

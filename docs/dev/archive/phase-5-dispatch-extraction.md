@@ -1,5 +1,10 @@
 # Phase 5.5 — Dispatch extraction (`App::apply` → `Editor::dispatch`)
 
+> **Status: ✅ Completed.** Planning artefact for the dispatch
+> extraction (`App::apply` → `Editor::dispatch`); the work landed
+> across Phase 5.5.G+. Live state in [`../architecture/design.md`](../architecture/design.md)
+> §5.2.1 (unified command/grammar dispatch). Archived 2026-05-21.
+
 Anchor: [`phase-5-extraction.md`](phase-5-extraction.md) (Phase 5 master plan), [`phase-5b-app-design.md`](phase-5b-app-design.md) (Option-E composition that this slice builds on), DESIGN.md §3 (three-layer architecture), §5.2 (modal engine), §5.7 (async runtime).
 
 ## Why this slice exists

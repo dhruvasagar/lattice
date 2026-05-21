@@ -23,7 +23,8 @@ counterpart.
 
 - [ ] `cargo build --release` succeeds without warnings
 - [ ] `cargo test --workspace` passes (current baseline:
-      ~1428 ui-tui tests, all 22 crates green)
+      1392 ui-tui + 257 host + 23 gpui tests; all 22 crates green
+      as of `3c.final.E.swap`)
 - [ ] `cargo clippy --workspace --all-targets` clean
 - [ ] `cargo fmt --all -- --check` clean
 - [ ] `RUSTDOCFLAGS=-D warnings cargo doc --no-deps --workspace` clean

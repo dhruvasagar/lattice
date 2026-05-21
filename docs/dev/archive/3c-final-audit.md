@@ -1,7 +1,14 @@
 # 3c.final.A — Renderer ↔ Editor read/write audit
 
+> **Status: ✅ Completed in slice 3c.final.E.swap (commit `6d89915`).**
+> The audit drove slices B (RS lifts), C (Action variants), and the
+> E series (call-site migrations + final swap). Every classified
+> site is now zero in production code. Follow-up perf work
+> catalogued in [`../operations/3c-final-b-extension.md`](../operations/3c-final-b-extension.md).
+> Archived 2026-05-21.
+
 **Status:** audit complete — 2026-05-20.
-**Predecessor:** `docs/dev/architecture/3c-final-editor-thread.md` §5 (slicing).
+**Predecessor:** `docs/dev/archive/3c-final-editor-thread.md` §5 (slicing).
 **Successor:** 3c.final.B (RenderState field additions), 3c.final.C (mutation→Action lifts).
 
 ## 0. Purpose
@@ -490,12 +497,12 @@ Open questions punted to subsequent slices:
 
 ## 8. References
 
-- `docs/dev/architecture/3c-final-editor-thread.md` (plan).
+- `docs/dev/archive/3c-final-editor-thread.md` (plan).
 - `crates/lattice-host/src/render_state.rs` (current
   sub-state shape).
 - `crates/lattice-ui-gpui/src/editor_element.rs` (GPUI per-pane
   snapshot type).
 - `crates/lattice-ui-tui/src/render.rs` L71-L163 (TUI FrameView
   + chain).
-- `docs/dev/operations/render-thread-discipline-remediation.md`
+- `docs/dev/archive/render-thread-discipline-remediation.md`
   (X-series successor pointer).

@@ -1,5 +1,9 @@
 # Phase 5.B.0 — App field audit
 
+> **Status: ✅ Completed.** Field-level audit of `App` confirming
+> ~99% renderer-agnostic. The migration completed by Phase 5.B.3.
+> Archived 2026-05-21.
+
 Anchor: [`phase-5-extraction.md`](phase-5-extraction.md). The plan committed to Option D (generic `App<R: Renderer>` with associated types). This doc is the field-level inventory that *confirms* what `R` needs to expose.
 
 **TL;DR.** App has ~200 fields. **Two** are renderer-specific. Every other field is pure data, lattice-host-natural, or pulls types from already-host-side crates (lattice-core, lattice-grammar, lattice-protocol, lattice-lsp, lattice-runtime, lattice-syntax, lattice-mode, lattice-config, lattice-picker, lattice-completion, lattice-snippet, lattice-help). The Renderer trait needs just two associated types:

@@ -1,5 +1,11 @@
 # M3 / Slice 8 -- `input.rs` binding census
 
+> **Status: ✅ Completed.** Inventory used to plan the trie-driven
+> dispatcher migration; every row round-tripped through the new
+> registry. User-facing keymap surface in
+> [`../../user/modal-editing.md`](../../user/modal-editing.md).
+> Archived 2026-05-21.
+
 Read-only inventory of every binding currently encoded in
 `crates/lattice-ui-tui/src/input.rs` (4365 lines, of which ~1165 are
 production code; the remainder are tests). Used to plan the

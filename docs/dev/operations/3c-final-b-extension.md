@@ -2,7 +2,7 @@
 
 **Status:** queued — to be sliced after `3c.final.E.swap` (already
 landed).
-**Predecessor:** `docs/dev/operations/3c-final-audit.md` §5 (slice
+**Predecessor:** `docs/dev/archive/3c-final-audit.md` §5 (slice
 B field enumeration); `implementation.md` slice ledger up to and
 including `3c.final.E.swap`.
 

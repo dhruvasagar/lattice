@@ -1,5 +1,13 @@
 # Slice 8.i Approach Memo -- Retiring the `bind_legacy` Bridge
 
+> **Status: ✅ Completed.** Approach memo for retiring the
+> `bind_legacy` keymap bridge. The trie-driven registry replaced
+> the legacy bindings; live keymap docs in
+> [`../architecture/keymap-architecture.md`](../architecture/keymap-architecture.md)
+> and the user-facing keymap surface in
+> [`../../user/modal-editing.md`](../../user/modal-editing.md).
+> Archived 2026-05-21.
+
 **Status:** draft, pre-implementation. This memo is the architecture
 artefact that has to land *before* slice 8.i code, per CLAUDE.md's
 "non-trivial design changes ship four artefacts together" rule.

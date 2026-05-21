@@ -1,5 +1,13 @@
 # lattice-ui-tui App Module Refactor (R.1.x)
 
+> **Status: ✅ Primary goal achieved (R.1.98 end-state).** The 17k-line
+> monolithic `impl App` block has been drained to ~2.5k lines of
+> production code + data types + cross-feature tests. The R.1.x slice
+> sequence is no longer driving new commits; the file numbers below
+> are accurate as of 3c.final.E.swap (2026-05-21). The "after R.1.x"
+> M.* mode-architecture migration this doc anticipated is now
+> tracked in [`../architecture/mode-architecture.md`](../architecture/mode-architecture.md) §10.
+
 Tracking doc for the long-running slice sequence that drains
 `crates/lattice-ui-tui/src/app.rs` into per-concern submodules
 under `crates/lattice-ui-tui/src/app/`. Each slice is one

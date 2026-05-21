@@ -6,9 +6,10 @@ Documentation lives in two trees with very different audiences:
 docs/
 ├── user/        ← reference for *using* lattice
 └── dev/         ← reference for *building* lattice
-    ├── architecture/   the design + the architectural specs
+    ├── architecture/   live design specs
     ├── operations/     implementation status, benchmarks, verification
-    └── notes/          historical session-scoped notes / migration plans
+    ├── notes/          ongoing tracking docs (lsp-features, ui-tui-refactor)
+    └── archive/        completed planning + audit artefacts (historical)
 ```
 
 ## user/
@@ -19,8 +20,11 @@ in-editor — the `<topic>.md` filename is the topic name.
 | Topic                      | File                                       |
 |----------------------------|--------------------------------------------|
 | Index / topic catalogue    | [user/README.md](user/README.md)           |
+| Modal editing              | [user/modal-editing.md](user/modal-editing.md) |
+| Ex-commands                | [user/ex-commands.md](user/ex-commands.md) |
 | Folding                    | [user/folding.md](user/folding.md)         |
 | Buffers + panes            | [user/buffers.md](user/buffers.md)         |
+| File tree & Oil            | [user/filetree-oil.md](user/filetree-oil.md) |
 | Languages                  | [user/languages.md](user/languages.md)     |
 | Insert completion          | [user/completion.md](user/completion.md)   |
 | Modes (major + minor)      | [user/modes.md](user/modes.md)             |
@@ -53,23 +57,28 @@ changing it.
 State-of-the-build artefacts. **Authoritative for "what is built
 right now."**
 
-| Doc                                                       | What it covers                                                  |
-|-----------------------------------------------------------|-----------------------------------------------------------------|
-| [implementation.md](dev/operations/implementation.md)     | The shipping ledger. What's done vs. spec'd, per slice.         |
-| [benchmarks.md](dev/operations/benchmarks.md)             | Latest measured perf numbers + how to reproduce them.           |
-| [verify.md](dev/operations/verify.md)                     | Manual verification checklist for end-to-end smoke testing.     |
+| Doc                                                                       | What it covers                                                  |
+|---------------------------------------------------------------------------|-----------------------------------------------------------------|
+| [implementation.md](dev/operations/implementation.md)                     | The shipping ledger. What's done vs. spec'd, per slice.         |
+| [benchmarks.md](dev/operations/benchmarks.md)                             | Latest measured perf numbers + how to reproduce them.           |
+| [verify.md](dev/operations/verify.md)                                     | Manual verification checklist for end-to-end smoke testing.     |
+| [3c-final-b-extension.md](dev/operations/3c-final-b-extension.md)         | Queued perf-driven RS lifts (post-actor-swap follow-up slices). |
 
 ## dev/notes/
 
-Session-scoped notes / migration plans / historical specs. Useful
-context but not authoritative.
+Ongoing tracking docs.
 
 | Doc                                                     | What it covers                                                         |
 |---------------------------------------------------------|------------------------------------------------------------------------|
-| [8i-approach.md](dev/notes/8i-approach.md)              | The slice 8.i refactor plan that produced today's `Action` model.       |
 | [lsp-features.md](dev/notes/lsp-features.md)            | LSP feature checklist with per-feature status notes.                    |
-| [m3-binding-census.md](dev/notes/m3-binding-census.md)  | The M.3 keymap binding census.                                          |
 | [ui-tui-refactor.md](dev/notes/ui-tui-refactor.md)      | The `lattice-ui-tui` decomposition into per-feature App submodules.     |
+
+## dev/archive/
+
+Historical planning + audit artefacts for work that has fully
+landed. Each file carries a `> **Status: ✅ Completed.**` banner
+pointing to the closing slice. See
+[`dev/archive/README.md`](dev/archive/README.md) for the index.
 
 ## When to read which
 

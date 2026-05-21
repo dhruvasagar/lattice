@@ -1,5 +1,9 @@
 # Phase 5.B — App architecture decision
 
+> **Status: ✅ Completed.** Architecture decision for the App
+> composition shape (Option D → Option E). The composition shape
+> landed in Phase 5.B.3. Archived 2026-05-21.
+
 Anchors: [`phase-5-extraction.md`](phase-5-extraction.md), [`phase-5b-app-fields.md`](phase-5b-app-fields.md).
 
 The field audit confirmed that ~99% of `App`'s ~200 fields are renderer-agnostic. The plan committed to Option D — a generic `App<R: Renderer>` struct in `lattice-host` parametrised over a host-side `Renderer` trait with two associated types. This doc records the architectural problem that surfaced *during* the 5.B.3 attempt to move the struct, and the pivot to Option E (composition) that resolved it.

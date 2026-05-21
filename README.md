@@ -7,10 +7,16 @@ and no shaping.
 
 > **Status:** Pre-1.0 / heavy development. Phases 0–4 of the design roadmap
 > are landed (foundation, modal engine, terminal UI, tree-sitter, LSP);
-> Phase 5 (GPU rendering + architectural asynchrony enforcement) is in
-> flight. The TUI and GPUI peers are both editable today against a live
-> LSP backend (rust-analyzer tested); the WASM plugin host arrives in
-> Phase 7. See [`docs/dev/operations/implementation.md`](docs/dev/operations/implementation.md)
+> **Phase 5 (GPU rendering + architectural asynchrony enforcement) is structurally complete** —
+> the Editor now runs on its own dedicated thread, the `&mut Editor` type
+> cannot escape that thread in production builds (compile-time enforced
+> via the `EditorActorHandle` swap, slice `3c.final.E.swap`), and both
+> TUI and GPUI peers are editable against a live LSP backend
+> (rust-analyzer tested). Outstanding Phase 5 work is perf-driven: queued
+> RenderState lifts in
+> [`docs/dev/operations/3c-final-b-extension.md`](docs/dev/operations/3c-final-b-extension.md).
+> The WASM plugin host arrives in Phase 7. See
+> [`docs/dev/operations/implementation.md`](docs/dev/operations/implementation.md)
 > for the per-feature ledger.
 
 ---
@@ -234,7 +240,7 @@ flipped `CancellationToken` within ~100 µs).
 | 2     | Terminal UI Bootstrap                  | ✅ done     |
 | 3     | Tree-sitter (Rust / Python / JS / MD)  | ✅ done     |
 | 4     | LSP                                    | ✅ done     |
-| 5     | GPU Rendering + architectural async    | 🚧 in flight (Phase 5.8.AF.5: TUI/GPUI parity + UI-thread relocation) |
+| 5     | GPU Rendering + architectural async    | ✅ structurally complete (Editor on its own thread via `EditorActorHandle`; goal #4 compile-time enforced). Perf B-extension lifts queued. |
 | 6     | Document Renderer + UI Components      | ⛔ planned  |
 | 7     | Plugin Host (WASM Component Model)     | ⛔ planned  |
 | 8     | Major / Minor Modes + Reference Plugins| ⛔ planned  |

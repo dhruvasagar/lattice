@@ -1,5 +1,12 @@
 # 3c.final — Editor on its own thread
 
+> **Status: ✅ Completed in slice 3c.final.E.swap (commit `6d89915`).**
+> This was the design proposal for moving Editor to its own thread.
+> The literal struct swap landed; the actor handle now backs every
+> production `App.editor_actor` field. Follow-up perf work catalogued
+> in [`../operations/3c-final-b-extension.md`](../operations/3c-final-b-extension.md).
+> Archived 2026-05-21.
+
 **Status:** design proposal — 2026-05-20.
 **Predecessor:** Phase 5.8.AF.5 / Slices X1, X1b, X2 (worker), X2.6, X2.9, X3.full, X5. All landed.
 **Goal:** Final enforcement of paramount goal #4 (asynchronicity) — the Editor runs on a dedicated thread; renderer peers communicate via typed message passing only.
@@ -106,7 +113,7 @@ Walk every renderer-thread `editor.*` read and classify:
 - **Returns owned data** — switch caller to receive cloned `Arc<…>` from RenderState.
 - **Needs a sync answer the Editor must compute** — these become the only blocking calls and need to be enumerated for slice E.
 
-Output: a checklist in `docs/dev/operations/3c-final-audit.md`. The starting set is small enough to walk in one session — `grep -rn 'self\.app\.editor\.\|app\.editor\.' crates/lattice-ui-*` is the exhaustive list.
+Output: a checklist in `docs/dev/archive/3c-final-audit.md`. The starting set is small enough to walk in one session — `grep -rn 'self\.app\.editor\.\|app\.editor\.' crates/lattice-ui-*` is the exhaustive list.
 
 ### 3c.final.B — Add the missing RenderState fields
 
@@ -178,6 +185,6 @@ This is the compile-time enforcement of paramount goal #4. Adding a sync host ca
 
 - `CLAUDE.md` paramount goals (especially #4).
 - `docs/dev/architecture/design.md` §3 (three-layer architecture), §5.7 (async runtime + threading).
-- `docs/dev/operations/render-thread-discipline-remediation.md` (X-series successor pointer).
+- `docs/dev/archive/render-thread-discipline-remediation.md` (X-series successor pointer).
 - `crates/lattice-host/src/render_state.rs` (the wait-free read contract this slice extends).
 - `crates/lattice-host/src/highlights_worker.rs` (existing model for off-thread work + Notify wake).

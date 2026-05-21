@@ -762,7 +762,7 @@ infrastructure** every future host integration sits on top of:
 ### Slice 8.i -- Retire the `bind_legacy` bridge
 
 The full approach memo lives at
-[`docs/../notes/8i-approach.md`](../notes/8i-approach.md): goal, the
+[`docs/../archive/8i-approach.md`](../archive/8i-approach.md): goal, the
 `Effect::AppAction(AppEffect)` carrier shape (option α), the
 type-hoisting decisions, and the sub-slice plan.
 
@@ -1139,6 +1139,6 @@ type-hoisting decisions, and the sub-slice plan.
 - `crates/lattice-ui-tui/src/input.rs` -- the legacy
   hand-rolled dispatcher (to be replaced incrementally
   through slices 8.d-g).
-- `docs/../notes/m3-binding-census.md` -- inventory of every existing
+- `docs/../archive/m3-binding-census.md` -- inventory of every existing
   built-in binding (one-time migration checklist; produced
   during planning).

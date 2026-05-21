@@ -1005,6 +1005,10 @@ mod tests {
         app.editor
             .pane_tree
             .split_active(crate::pane::SplitOrientation::Horizontal);
+        // Slice 3c.final.E.5i: `active_pane_content_height` reads
+        // the pane tree through `panes()` (RS-backed mirror), so
+        // direct `pane_tree` mutation needs an explicit publish.
+        app.editor.publish_render_state();
         let content = app.active_pane_content_height(20);
         // 20 / 2 = 10; minus status row = 9.
         assert_eq!(content, 9);

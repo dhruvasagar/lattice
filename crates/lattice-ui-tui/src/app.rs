@@ -1129,13 +1129,21 @@ impl App {
     /// 5.5.D moved the implementation into the host so renderer and
     /// non-renderer call sites share one code path. Existing
     /// `app.set_message(...)` call sites in tests / boot keep working
-    /// without churn; the body is just the delegation. The host-side
-    /// impl preserves the legacy two-step contract: write to the
-    /// echo-area slot + push to the bounded `*messages*` ring + emit a
-    /// typed [`lattice_runtime::MessagePushed`] event so per-App
-    /// isolation (one bus + ring per App) survives the move.
+    /// without churn; the body just routes through `mutate_editor`.
+    /// The host-side impl preserves the legacy two-step contract:
+    /// write to the echo-area slot + push to the bounded `*messages*`
+    /// ring + emit a typed [`lattice_runtime::MessagePushed`] event
+    /// so per-App isolation (one bus + ring per App) survives the
+    /// move.
     pub fn set_message(&mut self, level: EchoLevel, text: impl Into<String>) {
-        self.editor.set_message(level, text);
+        // Slice 3c.final.E.5i: materialize the `impl Into<String>`
+        // conversion eagerly outside the closure so the captured
+        // value is `Send + 'static`. Earlier E.5c attempt left this
+        // on direct `self.editor.X` because the trait bound on the
+        // impl arg isn't carried into the closure; the eager
+        // `.into()` sidesteps that.
+        let text: String = text.into();
+        self.mutate_editor(move |e| e.set_message(level, text));
     }
 }
 

@@ -163,8 +163,19 @@ impl App {
         // We call `apply_effect_app_arms` directly (NOT `apply_effect`)
         // because the host already called `handle_effect` host-side;
         // routing through `apply_effect` would double-apply.
-        let mut out = lattice_host::dispatch::DispatchOutcome::default();
-        self.editor.do_global(pattern, inverted, body, &mut out);
+        //
+        // Slice 3c.final.E.5i: clone the borrowed args to owned so
+        // the closure captures `Send + 'static`; build the
+        // `DispatchOutcome` inside the closure and return it from
+        // `mutate_editor_with` — same pattern slice E.3 documented
+        // for `&mut out` results.
+        let pattern = pattern.to_string();
+        let body = body.clone();
+        let mut out = self.mutate_editor_with(move |e| {
+            let mut out = lattice_host::dispatch::DispatchOutcome::default();
+            e.do_global(&pattern, inverted, &body, &mut out);
+            out
+        });
         for eff in std::mem::take(&mut out.effects) {
             self.apply_effect_app_arms(eff);
         }
@@ -200,8 +211,15 @@ impl App {
     /// (`LspOnTypeFormattingRequest`, `LspInsertCompletionRequest`)
     /// fire from the same dispatch loop.
     pub(super) fn do_insert_text(&mut self, s: &str) {
-        let mut out = lattice_host::dispatch::DispatchOutcome::default();
-        self.editor.do_insert_text(s, &mut out);
+        // Slice 3c.final.E.5i: clone the borrowed `s` to owned, build
+        // the `DispatchOutcome` inside the closure, return it from
+        // `mutate_editor_with`. Same pattern as `do_global`.
+        let s = s.to_string();
+        let mut out = self.mutate_editor_with(move |e| {
+            let mut out = lattice_host::dispatch::DispatchOutcome::default();
+            e.do_insert_text(&s, &mut out);
+            out
+        });
         for effect in std::mem::take(&mut out.effects) {
             self.apply_effect_app_arms(effect);
         }

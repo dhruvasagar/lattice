@@ -1195,6 +1195,10 @@ mod tests {
         let lines: Vec<String> = (0..50).map(|i| format!("line-{i}")).collect();
         install_help(&mut a, HelpContent::from_lines("size", lines));
         a.editor.popup_placement = crate::popup::PopupPlacement::CursorAnchored;
+        // Slice 3c.final.E.5i: `help_popup_inner_height` reads
+        // `popup_placement` through `popup()` (RS-backed mirror),
+        // so direct field mutation needs an explicit publish.
+        a.editor.publish_render_state();
         assert_eq!(a.help_popup_inner_height(60), Some(18));
     }
 

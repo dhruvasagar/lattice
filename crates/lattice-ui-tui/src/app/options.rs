@@ -200,8 +200,13 @@ impl App {
     ) -> std::sync::Arc<D::Value>
     where
         D::Value: Clone + Send + Sync + 'static,
+        D: 'static,
     {
-        self.editor.resolved_option::<D>(buffer)
+        // Slice 3c.final.E.5i: route through `read_editor`. `D` is
+        // a marker type-parameter (no per-instance state) and
+        // `BufferId` is `Copy`, so the closure satisfies
+        // `Send + 'static`. The host body's Arc lookup is wait-free.
+        self.read_editor(move |e| e.resolved_option::<D>(buffer))
     }
 
     /// Delegate to [`lattice_host::editor::Editor::do_set`]. Phase

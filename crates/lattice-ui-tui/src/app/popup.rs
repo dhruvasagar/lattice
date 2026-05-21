@@ -128,16 +128,15 @@ impl App {
         self.read_editor(move |e| e.popup_help())
     }
 
-    /// Mutable counterpart to [`Self::popup_help`]. The closure
-    /// runs under the registry lock; callers can mutate cursor /
-    /// scroll on the active popup buffer in place.
-    pub fn with_popup_help_mut<R>(
-        &mut self,
-        f: impl FnOnce(&mut crate::help::HelpBuffer) -> R,
-    ) -> Option<R> {
-        let id = self.popup().buffer_id?;
-        self.editor.buffers.with_help_mut(id, f)
-    }
+    // Slice 3c.final.E.5i: `with_popup_help_mut` moved to
+    // `#[cfg(test)] impl App` below — the `impl FnOnce(&mut
+    // HelpBuffer) -> R` arg is fundamentally incompatible with
+    // the `Send + 'static` closure bound of `mutate_editor` (the
+    // user-supplied `f` carries no Send bound, and adding one
+    // would propagate `Send` requirements onto every test
+    // fixture's local-borrow closure). Only callers are in
+    // app.rs's `mod tests` block (popup_help_mut_*); production
+    // code mutates popup buffers through the host directly.
 
     /// M.3.2.c.5: mirror parsed help metadata into the buffer-locals
     /// map for `buffer_id`. Idempotent (replace-on-collision). The
@@ -252,6 +251,24 @@ impl App {
     pub(crate) fn dismiss_popup(&mut self) {
         // Slice 3c.final.E.3: route through `mutate_editor`.
         self.mutate_editor(|e| e.dismiss_popup());
+    }
+}
+
+// Slice 3c.final.E.5i — test-fixture surface.
+//
+// `with_popup_help_mut` takes an `impl FnOnce(&mut HelpBuffer) -> R`
+// without a `Send + 'static` bound, so it can't route through the
+// `mutate_editor` seam without forcing that bound onto every test
+// caller. Tests are the only callers; keep the direct-field
+// access behind a cfg-gate.
+#[cfg(test)]
+impl App {
+    pub fn with_popup_help_mut<R>(
+        &mut self,
+        f: impl FnOnce(&mut crate::help::HelpBuffer) -> R,
+    ) -> Option<R> {
+        let id = self.popup().buffer_id?;
+        self.editor.buffers.with_help_mut(id, f)
     }
 }
 

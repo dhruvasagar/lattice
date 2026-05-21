@@ -127,14 +127,15 @@ impl App {
             width: 1,
             height: buffer_height as u16,
         };
-        // Slice 3c.final.E.2 note: pane_tree reads stay on
-        // `self.editor.pane_tree` here because the tests that
-        // exercise this function mutate `editor.pane_tree`
-        // directly without republishing RS. Migrating to
-        // `self.panes()` is a follow-up that also touches those
-        // tests (adds explicit `publish_render_state()` calls).
-        let rects = self.editor.pane_tree.compute_rects(area);
-        let active_idx = self.editor.pane_tree.active_index();
+        // Slice 3c.final.E.5i: pane_tree reads now route through
+        // the published `panes()` sub-state (RS-backed accessor;
+        // wait-free `Arc<PaneTree>` clone). Tests that mutate
+        // `editor.pane_tree` directly are updated to call
+        // `publish_render_state()` after the mutation so the
+        // accessor reflects the change.
+        let panes = self.panes();
+        let rects = panes.tree.compute_rects(area);
+        let active_idx = panes.tree.active_index();
         let multi = rects.len() > 1;
         let pane_h = rects
             .iter()
@@ -165,10 +166,9 @@ impl App {
         if !matches!(self.ad().buffer_kind, BufferKind::Help) {
             return None;
         }
-        // Slice 3c.final.E.2 note: pane_tree read stays on
-        // `self.editor` for test-publish-discipline reasons; see
-        // adjacent comment in `active_pane_content_height`.
-        if self.editor.pane_tree.active().buffer == BufferKind::Help {
+        // Slice 3c.final.E.5i: pane_tree + popup_placement reads
+        // route through `panes()` / `popup()` RS accessors.
+        if self.panes().tree.active().buffer == BufferKind::Help {
             return None;
         }
         let help = self.popup_help()?;
@@ -184,9 +184,7 @@ impl App {
             u16::MAX,
             buffer_h,
             line_count,
-            // Slice 3c.final.E.2 note: popup_placement read stays
-            // on `self.editor` (same test-publish-discipline reason).
-            self.editor.popup_placement,
+            self.popup().placement,
         );
         Some(u32::from(height).saturating_sub(2).max(1))
     }

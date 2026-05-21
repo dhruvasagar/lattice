@@ -140,10 +140,22 @@ impl App {
         if !matches!(self.ad().modal, ModalState::Command) {
             return;
         }
-        if let Some(state) = self.editor.completion_state.as_mut() {
-            if !state.candidates.is_empty() {
-                state.selected = (state.selected + 1) % state.candidates.len();
+        // Slice 3c.final.E.5i: advance the open popup's selection
+        // through `mutate_editor_with`; return `true` from the
+        // closure when the popup was open (outer body short-
+        // circuits) or `false` when there's no popup yet (the
+        // open-completion-popup path runs).
+        let advanced = self.mutate_editor_with(|e| {
+            if let Some(state) = e.completion_state.as_mut() {
+                if !state.candidates.is_empty() {
+                    state.selected = (state.selected + 1) % state.candidates.len();
+                }
+                true
+            } else {
+                false
             }
+        });
+        if advanced {
             return;
         }
         self.open_completion_popup();
@@ -243,12 +255,12 @@ impl App {
     /// `chord` arg is the only `Chord`-kinded arg in the registry;
     /// when `:map` / `:nnoremap` land they reuse this gate.
     pub fn chord_capture_active(&self) -> bool {
-        // Slice 3c.final.E.5d note: modal read stays on
-        // `self.editor` (not `self.ad().modal`) because tests
-        // mutate `editor.modal` directly without republishing
-        // RS, and this query runs without a preceding `apply`.
-        // Same precedent as `motions.rs` pane_tree reads.
-        if !matches!(self.editor.modal, ModalState::Command) {
+        // Slice 3c.final.E.5i: modal read now routes through the
+        // published `ad().modal` mirror. Tests that mutate
+        // `editor.modal` directly are updated to call
+        // `publish_render_state()` after the mutation so the
+        // mirror reflects the change.
+        if !matches!(self.ad().modal, ModalState::Command) {
             return false;
         }
         let line = self.command_line(); let line = line.as_str();
@@ -686,8 +698,13 @@ mod tests {
 
     #[test]
     fn chord_capture_active_only_when_in_chord_arg_slot() {
+        // Slice 3c.final.E.5i: `chord_capture_active` reads modal
+        // through `ad()` (RS-backed mirror), so direct field
+        // mutations need an explicit `publish_render_state()` to
+        // refresh the mirror.
         let mut a = app_with("xx", 10);
         a.editor.modal = ModalState::Command;
+        a.editor.publish_render_state();
         // Empty cmdline -> CommandName slot, not chord-capture.
         a.editor.command_line = String::new();
         assert!(!a.chord_capture_active());
@@ -704,6 +721,7 @@ mod tests {
         assert!(!a.chord_capture_active());
         // Outside Command modal, never active.
         a.editor.modal = ModalState::Normal;
+        a.editor.publish_render_state();
         a.editor.command_line = "describe-key ".into();
         assert!(!a.chord_capture_active());
     }
@@ -715,6 +733,7 @@ mod tests {
         // to alias-expand, so both forms switch into chord-capture.
         let mut a = app_with("xx", 10);
         a.editor.modal = ModalState::Command;
+        a.editor.publish_render_state();
         a.editor.command_line = "ex:describe-key ".into();
         assert!(a.chord_capture_active());
     }

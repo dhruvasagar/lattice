@@ -260,8 +260,44 @@ impl Editor {
     /// }
     /// ```
     pub fn dispatch(&mut self, action: Action) -> DispatchOutcome {
+        // Issue #20 (2026-05-22): floating-popup auto-dismiss on
+        // cursor motion. State-A semantics: popup shown,
+        // hover-mode active on the popup buffer, focus still on
+        // the Document. When the user moves the cursor, the popup
+        // is anchored to the prior symbol and becomes stale —
+        // dismiss it so the next K-press shows fresh hover.
+        //
+        // Hoisted from `lattice-ui-tui::app::dispatch::App::apply`
+        // so the GPUI peer (and any future peer) gets the same
+        // behaviour without duplicating the state machine.
+        //
+        // Capture pre-dispatch state. We compare AFTER `handle_action`
+        // returns to detect cursor motion attributable to this
+        // dispatch.
+        let popup_in_state_a = self.popup_buffer.is_some()
+            && self.active_buffer == BufferKind::Document
+            && self
+                .popup_buffer
+                .and_then(|id| self.active_modes.get(&id))
+                .map(|m| m.minors().contains(&lattice_mode::HoverMode::mode_id()))
+                .unwrap_or(false);
+        let pre_cursor = self.cursor;
+
         let mut out = DispatchOutcome::default();
         handle_action(self, action, &mut out);
+
+        // Auto-dismiss check. Requires:
+        //   - popup was in State A pre-dispatch
+        //   - active buffer still Document (didn't switch into
+        //     the popup via K-K focus chain — that's state B)
+        //   - cursor moved
+        if popup_in_state_a
+            && self.active_buffer == BufferKind::Document
+            && self.cursor != pre_cursor
+        {
+            self.dismiss_popup();
+        }
+
         // Phase 5.8.AF.5 / Slice 3a: publish the renderer's read
         // contract at the end of every dispatch. Naive rebuild
         // (every sub-state Arc is fresh); sub-states 3b/3c

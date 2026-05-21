@@ -265,12 +265,20 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) {
     } else {
         0
     };
-    let completion_rows = app
-        .completion()
-        .state
-        .as_deref()
-        .map(|s| popup_height(s.candidates.len()))
-        .unwrap_or(0);
+    // Slice 3c.gpui-cmdline-completion: cmdline-completion honors
+    // the same `picker.display` setting as the picker. In minibuffer
+    // mode it claims strip rows below the buffer area; in popup
+    // mode it floats centered over the buffer like the picker
+    // overlay, so the strip count is zero.
+    let completion_rows = if picker_is_minibuffer {
+        app.completion()
+            .state
+            .as_deref()
+            .map(|s| popup_height(s.candidates.len()))
+            .unwrap_or(0)
+    } else {
+        0
+    };
     let extra_rows = picker_rows.max(completion_rows);
 
     let constraints: Vec<Constraint> = if extra_rows > 0 {
@@ -336,6 +344,18 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) {
     // mode line and any echo / cmdline content underneath.
     if app.picker_state().state.is_some() && !picker_is_minibuffer {
         draw_picker_overlay(frame, chunks[0], app);
+    }
+    // Slice 3c.gpui-cmdline-completion: cmdline-completion popup
+    // overlay. Mutually exclusive with the picker (picker doesn't
+    // open during `:` typing).
+    if !picker_is_minibuffer
+        && app
+            .completion()
+            .state
+            .as_deref()
+            .is_some_and(|s| !s.candidates.is_empty())
+    {
+        draw_completion_overlay(frame, chunks[0], app);
     }
     // Insert-mode completion popup overlay (Phase 4.2.g.1).
     // Anchored at the cursor; floats over the buffer; doesn't
@@ -1081,6 +1101,62 @@ fn draw_picker_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
         .collect();
     let para = Paragraph::new(visible);
     frame.render_widget(para, cand_area);
+}
+
+/// Slice 3c.gpui-cmdline-completion: centered-overlay variant of
+/// the cmdline-completion popup. Activates when `picker.display
+/// = "popup"` and a `:` line completion is open. Mirrors
+/// `draw_picker_overlay` minus the title + separator + prompt
+/// rows — the cmdline at the bottom of the screen IS the prompt,
+/// so the overlay is candidate-band-only.
+fn draw_completion_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
+    let completion = app.completion();
+    let Some(state) = completion.state.as_deref() else {
+        return;
+    };
+    if state.candidates.is_empty() {
+        return;
+    }
+    let cand_count = state.candidates.len() as u16;
+    let max_w = buffer_area.width.saturating_sub(4).min(80);
+    let max_h = buffer_area.height.saturating_sub(4).min(18);
+    let height = (cand_count + 2).min(max_h).max(5);
+    let width = max_w.max(40).min(buffer_area.width.saturating_sub(2));
+    let x = buffer_area.x + buffer_area.width.saturating_sub(width) / 2;
+    let y = buffer_area.y + buffer_area.height.saturating_sub(height) / 3;
+    let area = Rect {
+        x,
+        y,
+        width,
+        height,
+    };
+    frame.render_widget(Clear, area);
+    let block = Block::default().borders(Borders::ALL).title(format!(
+        " completion  ({} / {}) ",
+        state.selected + 1,
+        state.candidates.len(),
+    ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let visible_count = inner.height as usize;
+    if visible_count == 0 {
+        return;
+    }
+    let scroll = if state.selected < visible_count {
+        0
+    } else {
+        state.selected + 1 - visible_count
+    };
+    let visible: Vec<Line> = state
+        .candidates
+        .iter()
+        .enumerate()
+        .skip(scroll)
+        .take(visible_count)
+        .map(|(i, c)| candidate_to_line(c, i == state.selected, inner.width))
+        .collect();
+    let para = Paragraph::new(visible);
+    frame.render_widget(para, inner);
 }
 
 /// `BufferDisplay::Split` and future tab / window variants per

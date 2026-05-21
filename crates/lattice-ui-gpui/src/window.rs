@@ -816,6 +816,13 @@ impl Render for EditorView {
         // substate. Bind the Arc so the `as_deref()` borrow lives
         // for the closure.
         let picker_substate = self.app.render_state.load().picker.clone();
+        // Slice 3c.gpui-cmdline-completion: cmdline-completion strip
+        // shares the same screen area as the picker minibuffer and
+        // honors the same `picker.display` setting. The two are
+        // mutually exclusive (picker doesn't activate during `:`
+        // typing). The strip has NO separate prompt row — the
+        // cmdline itself (bottom row) is the prompt.
+        let completion_substate = self.app.render_state.load().completion.clone();
         let picker_strip_rows: i32 = if picker_use_minibuffer {
             picker_substate
                 .state
@@ -825,7 +832,17 @@ impl Render for EditorView {
         } else {
             0
         };
-        let chrome_rows = 1 + picker_strip_rows; // status row + picker strip if any
+        let cmdline_completion_strip_rows: i32 = if picker_use_minibuffer {
+            completion_substate
+                .state
+                .as_deref()
+                .filter(|s| !s.candidates.is_empty())
+                .map(|s| s.candidates.len().min(10) as i32) // candidates only; cmdline is the prompt
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        let chrome_rows = 1 + picker_strip_rows + cmdline_completion_strip_rows;
         let new_viewport = (total_rows - chrome_rows).max(1) as u32;
         // 3c.atomic.H: route through `App::set_viewport_height`,
         // which clamps to >= 1, runs `ensure_cursor_visible`,
@@ -1278,6 +1295,150 @@ impl Render for EditorView {
                     )
             });
 
+        // Slice 3c.gpui-cmdline-completion: cmdline-completion
+        // minibuffer strip. Mirrors the picker minibuffer's shape
+        // (vertico-style candidate band) but omits the title /
+        // prompt row — the cmdline (`:cmd`) is the prompt. Honors
+        // the same `picker.display` setting so the two completion
+        // surfaces feel like one UI family.
+        let cmdline_completion_minibuffer: Option<gpui::Div> = picker_use_minibuffer
+            .then(|| completion_substate.state.as_deref())
+            .flatten()
+            .filter(|s| !s.candidates.is_empty())
+            .map(|state| {
+                const MAX_VISIBLE: usize = 10;
+                let total = state.candidates.len();
+                let visible_count = total.min(MAX_VISIBLE).max(1);
+                // Picker keeps the selected row at the top of the
+                // band; cmdline completion uses the same convention
+                // so the eye path is identical across the two
+                // surfaces.
+                let scroll = if state.selected < visible_count {
+                    0
+                } else {
+                    state.selected + 1 - visible_count
+                };
+                let window_end = (scroll + visible_count).min(total);
+                let match_hl_fg = rgb(theme.cursor_background);
+                let cand_rows: Vec<gpui::Div> = state.candidates[scroll..window_end]
+                    .iter()
+                    .enumerate()
+                    .map(|(i, cand)| {
+                        let abs_idx = scroll + i;
+                        let selected = abs_idx == state.selected;
+                        let row_bg = if selected {
+                            Some(rgb(theme.status_background))
+                        } else {
+                            None
+                        };
+                        let row_fg = if selected {
+                            rgb(theme.status_foreground)
+                        } else {
+                            rgb(theme.foreground)
+                        };
+                        let display = &cand.raw.display;
+                        if cand.match_ranges.is_empty() {
+                            let row = div().px_2().child(display.clone()).text_color(row_fg);
+                            return if let Some(bg) = row_bg { row.bg(bg) } else { row };
+                        }
+                        let in_match = |byte_idx: usize| -> bool {
+                            cand.match_ranges
+                                .iter()
+                                .any(|r| byte_idx >= r.start && byte_idx < r.end)
+                        };
+                        let cells: Vec<gpui::Div> = display
+                            .char_indices()
+                            .map(|(byte_idx, c)| {
+                                let cell = div().child(c.to_string());
+                                if in_match(byte_idx) {
+                                    cell.text_color(match_hl_fg)
+                                } else {
+                                    cell.text_color(row_fg)
+                                }
+                            })
+                            .collect();
+                        let row = div().px_2().flex().flex_row().children(cells);
+                        if let Some(bg) = row_bg { row.bg(bg) } else { row }
+                    })
+                    .collect();
+                div()
+                    .flex()
+                    .flex_col()
+                    .bg(rgb(theme.background))
+                    .children(cand_rows)
+            });
+
+        // Slice 3c.gpui-cmdline-completion: cmdline-completion
+        // popup overlay. Mirrors the picker overlay's centered
+        // float; activates when `picker.display = "popup"`. The
+        // band content is identical to the minibuffer variant.
+        let cmdline_completion_overlay: Option<gpui::Div> = (!picker_use_minibuffer)
+            .then(|| completion_substate.state.as_deref())
+            .flatten()
+            .filter(|s| !s.candidates.is_empty())
+            .map(|state| {
+                const MAX_VISIBLE: usize = 30;
+                let total = state.candidates.len();
+                let window_start = state
+                    .selected
+                    .saturating_sub(MAX_VISIBLE / 2)
+                    .min(total.saturating_sub(MAX_VISIBLE.min(total)));
+                let window_end = (window_start + MAX_VISIBLE).min(total);
+                let match_hl_fg = rgb(theme.cursor_background);
+                let visible_candidates: Vec<gpui::Div> = state.candidates[window_start..window_end]
+                    .iter()
+                    .enumerate()
+                    .map(|(i, cand)| {
+                        let abs_idx = window_start + i;
+                        let selected = abs_idx == state.selected;
+                        let row_bg = if selected {
+                            Some(rgb(theme.status_background))
+                        } else {
+                            None
+                        };
+                        let row_fg = if selected {
+                            rgb(theme.status_foreground)
+                        } else {
+                            rgb(theme.foreground)
+                        };
+                        let display = &cand.raw.display;
+                        if cand.match_ranges.is_empty() {
+                            let row = div().child(display.clone()).text_color(row_fg);
+                            return if let Some(bg) = row_bg { row.bg(bg) } else { row };
+                        }
+                        let in_match = |byte_idx: usize| -> bool {
+                            cand.match_ranges
+                                .iter()
+                                .any(|r| byte_idx >= r.start && byte_idx < r.end)
+                        };
+                        let cells: Vec<gpui::Div> = display
+                            .char_indices()
+                            .map(|(byte_idx, c)| {
+                                let cell = div().child(c.to_string());
+                                if in_match(byte_idx) {
+                                    cell.text_color(match_hl_fg)
+                                } else {
+                                    cell.text_color(row_fg)
+                                }
+                            })
+                            .collect();
+                        let row = div().flex().flex_row().children(cells);
+                        if let Some(bg) = row_bg { row.bg(bg) } else { row }
+                    })
+                    .collect();
+                div()
+                    .flex()
+                    .flex_col()
+                    .min_w(px(320.0))
+                    .max_w(px(720.0))
+                    .max_h(px(480.0))
+                    .p_2()
+                    .bg(rgb(theme.popup_background))
+                    .border_1()
+                    .border_color(rgb(theme.popup_border))
+                    .children(visible_candidates)
+            });
+
         // Phase 5.8.AE + Slice 3c.final.B (group 3): read popup
         // state via the published substate. The Arc-wrapped
         // `HelpBuffer` + `help_highlights` slice live on
@@ -1382,8 +1543,25 @@ impl Render for EditorView {
         if let Some(strip) = picker_minibuffer {
             root = root.child(strip);
         }
+        // Slice 3c.gpui-cmdline-completion: minibuffer strip + overlay.
+        // Mutually exclusive with the picker (the picker doesn't
+        // activate while typing in `:`).
+        if let Some(strip) = cmdline_completion_minibuffer {
+            root = root.child(strip);
+        }
 
         if let Some(overlay) = picker_overlay {
+            root = root.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .justify_center()
+                    .items_center()
+                    .child(overlay),
+            );
+        }
+        if let Some(overlay) = cmdline_completion_overlay {
             root = root.child(
                 div()
                     .absolute()

@@ -658,6 +658,42 @@ mod tests {
         assert_eq!(a.editor.command_line, "set number");
     }
 
+    /// Regression scaffold for the user-reported "completion is
+    /// broken" bug: simulates the full keystroke pipeline (`:`,
+    /// then each char, then `<Tab>`) instead of pre-staging modal
+    /// + command_line. If `tab_in_command_mode_opens_completion_popup`
+    /// passes but this fails, the bug lives in the
+    /// keystroke/translate/dispatch path, not in
+    /// `do_command_line_complete_or_advance` itself.
+    #[test]
+    fn typing_desc_then_tab_opens_completion_popup() {
+        let mut a = app_with("xx", 10);
+        // Enter cmdline mode via `:` keystroke.
+        a.apply(Action::EnterCommandLine);
+        assert_eq!(a.editor.modal, ModalState::Command);
+        // Append `desc`.
+        for c in "desc".chars() {
+            a.apply(Action::CommandLineAppend(c));
+        }
+        assert_eq!(a.editor.command_line, "desc");
+        // Tab — should open the completion popup with command-name
+        // candidates like `describe-command`, `describe-key`.
+        a.apply(Action::CommandLineCompleteOrAdvance);
+        let state = a
+            .editor
+            .completion_state
+            .as_ref()
+            .expect("popup should open after :desc<Tab>");
+        assert!(
+            state
+                .candidates
+                .iter()
+                .any(|c| c.raw.text == "describe-command"),
+            "candidates: {:?}",
+            state.candidates.iter().map(|c| &c.raw.text).collect::<Vec<_>>(),
+        );
+    }
+
     #[test]
     fn tab_in_command_mode_opens_completion_popup() {
         let mut a = app_in_command_mode("descri");

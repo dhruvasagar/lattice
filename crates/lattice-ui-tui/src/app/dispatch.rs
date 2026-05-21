@@ -1297,6 +1297,59 @@ mod tests {
     /// tests pass.
     ///
     /// This test mimics the production main_loop's exact ctx-build
+    /// REGRESSION TEST 2026-05-22. User reported gg/dw/zz/zt/zb
+    /// all broken in production. Root cause: GPUI (and TUI per-tick)
+    /// dispatches `Action::EnsureCursorVisible` between user
+    /// keystrokes. Without exempting it from the partial-chord clear
+    /// guard, EnsureCursorVisible wipes `partial_chord` ~10ms after
+    /// every ABSORB, so the second keystroke of every chord
+    /// sequence sees an empty stack.
+    ///
+    /// This test simulates the exact production sequence:
+    ///   keystroke g  →  ABSORB g  →  per-frame EnsureCursorVisible
+    ///   keystroke g  →  must STILL see partial=[g] in the RS.
+    ///
+    /// Before the fix: partial_chord=[] after the inter-keystroke
+    /// EnsureCursorVisible dispatch. After: partial_chord=[g].
+    #[test]
+    fn partial_chord_survives_inter_keystroke_ensure_cursor_visible() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut a = app_with("one\ntwo\nthree\nfour\nfive", 10);
+        // First g: absorbs into partial_chord.
+        press(&mut a, KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
+        assert_eq!(
+            a.editor.partial_chord.len(),
+            1,
+            "first `g` should populate partial_chord"
+        );
+
+        // Simulate GPUI's per-frame `ensure_cursor_in_viewport`
+        // dispatching `Action::EnsureCursorVisible` between
+        // user keystrokes.
+        a.apply(lattice_host::action::Action::EnsureCursorVisible);
+
+        // CRITICAL: partial_chord must SURVIVE this dispatch.
+        // Pre-fix: cleared to []. Post-fix: still [g].
+        assert_eq!(
+            a.editor.partial_chord.len(),
+            1,
+            "EnsureCursorVisible (renderer-housekeeping) must NOT clear partial_chord"
+        );
+        assert_eq!(
+            a.render_state.load().translator.partial_chord.len(),
+            1,
+            "Published RS must also retain partial_chord"
+        );
+
+        // Second g resolves gg.
+        press(&mut a, KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
+        assert_eq!(
+            a.editor.cursor.line, 0,
+            "gg should jump to line 0; partial_chord survived the inter-keystroke EnsureCursorVisible"
+        );
+    }
+
     /// code path — reading `partial_chord` from the published RS.
     /// If this test passes too, the divergence is elsewhere; if
     /// it fails, we've localised the bug to the publish layer.

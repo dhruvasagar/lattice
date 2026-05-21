@@ -730,16 +730,42 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
     // motion-count-after-operator (`d2w`, `2d3w`, `5gg`) accumulates
     // count chars BETWEEN chord steps. The operator-pending stack
     // must survive the digit input.
-    if !matches!(action, Action::AbsorbPartialChord(_) | Action::PushDigit(_)) {
+    //
+    // **Investigation fix 2026-05-22**: renderer-housekeeping actions
+    // are ALSO exempt. The GPUI peer dispatches
+    // `Action::EnsureCursorVisible` on every frame paint
+    // (`window.rs:952` → `ensure_cursor_in_viewport` →
+    // `dispatch_action(EnsureCursorVisible)`); without exempting it,
+    // partial_chord is cleared between keystrokes and EVERY
+    // multi-key chord (gg, dw, zz, zt, zb, ci{, df,, etc.) breaks.
+    // User-reported 2026-05-22 regression; root cause traced via
+    // the `[chord-trace]` info! lines added in commit c2d4ffe +
+    // d828990.
+    //
+    // The exempt set is "actions the renderer fires for its own
+    // bookkeeping that DON'T represent user-initiated chord
+    // resolution." Each of these MAY fire between user keystrokes
+    // (per-frame or per-tick), so they must not reset the chord
+    // stack. Other actions remain in the clear path so they
+    // correctly resolve / abort multi-key sequences.
+    let is_renderer_housekeeping = matches!(
+        action,
+        Action::EnsureCursorVisible
+            | Action::RefreshPaneHighlights
+            | Action::SetViewportHeight(_)
+            | Action::SetTerminalWidth(_)
+            | Action::AcknowledgeRedraw
+            | Action::None
+    );
+    if !matches!(action, Action::AbsorbPartialChord(_) | Action::PushDigit(_))
+        && !is_renderer_housekeeping
+    {
         // Investigation 2026-05-22: trace clears so we can see if
         // partial_chord gets reset between keystrokes when it
-        // shouldn't (user reported `gg`/`dw` broken in production).
-        // info! so it lands in *messages* without setting RUST_LOG.
+        // shouldn't. info! so it lands in *messages* without
+        // setting RUST_LOG. Removable once the fix above is
+        // proven stable.
         if !editor.partial_chord.is_empty() {
-            // Capture variant name without the heavy payload via
-            // Debug + take-first-token (Debug formats enum variants
-            // as `Variant { ... }` or `Variant(...)`, so the prefix
-            // up to whitespace/paren/brace is the variant name).
             let dbg = format!("{action:?}");
             let name: String = dbg
                 .chars()

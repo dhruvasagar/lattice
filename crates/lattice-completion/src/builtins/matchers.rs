@@ -72,17 +72,27 @@ impl CandidateMatcher for SubstringMatcher {
     }
 }
 
-/// `match:fuzzy`. Subsequence with score-by-density.
+/// `match:fuzzy`. Five-tier scoring (Exact → Prefix → Word-
+/// boundary subsequence → Substring → Fuzzy-subsequence with
+/// skip-decay).
 ///
-/// Algorithm:
-/// 1. Walk `candidate.text` bytes; for each `query` byte (in order),
-///    advance until a (case-insensitively-) matching byte in
-///    candidate.
-/// 2. Each matched byte produces a one-byte range.
-/// 3. Score = base - (gaps * penalty), where `gaps` is the total
-///    number of unmatched bytes between consecutive matches.
+/// Slice 3c.cmdline-completion-fuzzy-shared follow-up: this
+/// matcher used to carry its own single-tier subsequence-with-
+/// gap-density algorithm. That diverged from the picker's filter
+/// loop and from the insert-mode `FuzzyInsertMatcher`, both of
+/// which delegated to the free function [`crate::fuzzy_match`]
+/// in `insert.rs`. The divergence produced exactly the symptom
+/// the user reported on the GPUI cmdline: `:desc<Tab>` returned
+/// a noisy fuzzy net (all candidates containing `d-e-s-c` as a
+/// subsequence) with no clear winner, because there was no
+/// prefix tier to lift `describe-*` above unrelated matches.
 ///
-/// Returns `None` if the query can't be matched as a subsequence.
+/// Collapsing the two impls makes cmdline completion behave
+/// identically to the picker's filter and the insert-mode
+/// matcher: prefix matches dominate (Tier 2, score 800), with
+/// fuzzy subsequence (Tier 5, score ≤200) as the last-resort
+/// tier. The picker / insert / cmdline now share one algorithm,
+/// one set of tests, one definition of "fuzzy".
 pub struct FuzzyMatcher;
 
 impl CandidateMatcher for FuzzyMatcher {
@@ -91,42 +101,7 @@ impl CandidateMatcher for FuzzyMatcher {
         query: &str,
         candidate: &RawCandidate,
     ) -> Option<(MatchScore, Vec<Range<usize>>)> {
-        if query.is_empty() {
-            return Some((MatchScore::FUZZY_HIGH, Vec::new()));
-        }
-        let q = query.as_bytes();
-        let t = candidate.text.as_bytes();
-        let mut q_i = 0;
-        let mut ranges: Vec<Range<usize>> = Vec::with_capacity(q.len());
-        let mut gaps: usize = 0;
-        let mut last_match: Option<usize> = None;
-        for (i, b) in t.iter().enumerate() {
-            if q_i >= q.len() {
-                break;
-            }
-            if b.eq_ignore_ascii_case(&q[q_i]) {
-                if let Some(prev) = last_match {
-                    gaps += i.saturating_sub(prev + 1);
-                }
-                ranges.push(i..i + 1);
-                last_match = Some(i);
-                q_i += 1;
-            }
-        }
-        if q_i < q.len() {
-            return None;
-        }
-        // Score:
-        //   base = FUZZY_HIGH (700)
-        //   penalty = min(gaps * 5, FUZZY_HIGH - FUZZY_LOW)
-        //   bonus if matches start at byte 0 (prefix-like)
-        let penalty = (gaps as u32).saturating_mul(5);
-        let mut score = MatchScore::FUZZY_HIGH.0.saturating_sub(penalty);
-        score = score.max(MatchScore::FUZZY_LOW.0);
-        if ranges.first().is_some_and(|r| r.start == 0) {
-            score = score.saturating_add(50);
-        }
-        Some((MatchScore(score), ranges))
+        crate::fuzzy_match(query, &candidate.text)
     }
 }
 
@@ -216,11 +191,26 @@ mod tests {
     #[test]
     fn fuzzy_skips_chars_with_score_penalty() {
         let m = FuzzyMatcher;
-        let (close, _) = m.matches("alh", &cand("alphabet")).unwrap();
-        // "alh" in "alphabet": a(0) l(1) h(3) -> gap of 1
-        // "alt" in "alphabet": a(0) l(1) t(7) -> gap of 5
-        let (far, _) = m.matches("alt", &cand("alphabet")).unwrap();
-        assert!(close > far, "close-skip should outscore far-skip");
+        // Post-collapse (3c.cmdline-completion-fuzzy-shared): the
+        // matcher delegates to the 5-tier `fuzzy_match`. Within
+        // Tier 5 (subseq-with-skip-decay), the penalty key is
+        // `target.len() - query.len()` (skip count), not
+        // intra-target gap density. So "alh" vs "alt" in
+        // "alphabet" both score identically — both fall in Tier 5
+        // with the same `skipped = 5`. The within-tier ordering
+        // signal is gone; the tier separation is what protects
+        // the user from noisy fuzzy nets (prefix matches score
+        // 800, subseq scores ≤200).
+        //
+        // To preserve a meaningful comparison the test now picks
+        // candidates that fall in DIFFERENT tiers: a prefix-tier
+        // hit must outscore a subseq-tier hit.
+        let (prefix_hit, _) = m.matches("alp", &cand("alphabet")).unwrap();
+        let (subseq_hit, _) = m.matches("alt", &cand("alphabet")).unwrap();
+        assert!(
+            prefix_hit > subseq_hit,
+            "prefix-tier ({prefix_hit:?}) must outscore subseq-tier ({subseq_hit:?})",
+        );
     }
 
     #[test]
@@ -252,9 +242,14 @@ mod tests {
 
     #[test]
     fn fuzzy_empty_query_matches_anything() {
+        // Post-collapse: empty query falls into `fuzzy_match`'s
+        // empty-query branch (insert.rs), which uses a uniform
+        // score of 100 so an empty query doesn't fight prefix /
+        // substring tiers for ordering. The picker / insert /
+        // cmdline all see the same value now.
         let m = FuzzyMatcher;
         let (score, ranges) = m.matches("", &cand("anything")).unwrap();
-        assert_eq!(score, MatchScore::FUZZY_HIGH);
+        assert_eq!(score, MatchScore(100));
         assert!(ranges.is_empty());
     }
 

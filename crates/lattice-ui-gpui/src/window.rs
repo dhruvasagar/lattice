@@ -120,6 +120,50 @@ fn style_at(spans: &[lattice_syntax::StyledSpan], byte: usize) -> SyntaxStyle {
 /// than panicking -- the validator already gates set-time. Matches
 /// the TUI peer's `picker_display_is_minibuffer` so both renderers
 /// agree on the same source of truth.
+/// Issue #25 (2026-05-22): per-pane buffer-rows for multi-split
+/// support. Walks the pane tree and returns the MAXIMUM
+/// buffer-rows across all leaves, given the available rows for
+/// the tree's container and the per-leaf chrome cost
+/// (`.p_3()` + status row + status padding).
+///
+/// - `HorizontalSplit { top, bottom }` divides height between
+///   its two children (each gets half).
+/// - `VerticalSplit { left, right }` shares the full height
+///   (both children get the same vertical space).
+/// - `Leaf` consumes `per_leaf_chrome_px` from its allotted
+///   rows.
+///
+/// Taking the MAX guarantees the highlights worker computes
+/// enough lines for the largest pane (usually the active one).
+/// MIN would over-clamp the cursor in the smallest pane, but
+/// also under-compute spans for the largest pane — the worker
+/// reads `syntax.viewport_height` to decide how many lines to
+/// highlight. With MAX, the active pane (most commonly the
+/// largest) gets correct highlights. Smaller panes risk an
+/// off-screen cursor — that's an existing per-pane viewport
+/// limitation tracked separately; the single `viewport_height`
+/// can't simultaneously satisfy both correctness invariants
+/// without per-pane clamping.
+fn max_leaf_buffer_rows_px(
+    node: &lattice_core::ui::pane::PaneNode,
+    available_px: f32,
+    per_leaf_chrome_px: f32,
+) -> f32 {
+    use lattice_core::ui::pane::PaneNode;
+    match node {
+        PaneNode::Leaf(_) => (available_px - per_leaf_chrome_px).max(0.0),
+        PaneNode::HorizontalSplit { top, bottom } => {
+            let half = available_px / 2.0;
+            max_leaf_buffer_rows_px(top, half, per_leaf_chrome_px)
+                .max(max_leaf_buffer_rows_px(bottom, half, per_leaf_chrome_px))
+        }
+        PaneNode::VerticalSplit { left, right } => {
+            max_leaf_buffer_rows_px(left, available_px, per_leaf_chrome_px)
+                .max(max_leaf_buffer_rows_px(right, available_px, per_leaf_chrome_px))
+        }
+    }
+}
+
 fn picker_display_is_minibuffer(app: &GpuiApp) -> bool {
     // Slice 3c.final.B.10: typed-options registry via published
     // `options()` sub-state — wait-free Arc clone.
@@ -832,7 +876,31 @@ impl EditorView {
             pane_idx,
             theme: *theme,
             text: std::sync::Arc::new(text),
-            visible_spans: (*active_spans_guard).clone(),
+            // Issue #25 (2026-05-22): per-pane visible_spans for
+            // multi-split support. Active pane reads the live
+            // visible_spans cell (the highlights worker writes
+            // there continuously). Inactive panes read from
+            // `pane_highlights[pane_idx]` populated by the
+            // RefreshPaneHighlights dispatch fired in the render
+            // body. Empty when the cache hasn't refreshed yet
+            // (first frame after split); the renderer paints
+            // plain text in that case until the next frame.
+            visible_spans: if is_active {
+                (*active_spans_guard).clone()
+            } else {
+                let pane_spans = rs_guard
+                    .syntax
+                    .pane_highlights
+                    .get(&pane_idx)
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        std::sync::Arc::new(Vec::<Vec<lattice_syntax::StyledSpan>>::new())
+                    });
+                lattice_host::render_state::VisibleSpans {
+                    spans: (*pane_spans).clone(),
+                    computed_for_key: lattice_host::render_state::VisibleHighlightsKey::default(),
+                }
+            },
             scroll: pane_scroll,
             viewport_height,
             gutter: gutter_meta,
@@ -943,12 +1011,24 @@ impl Render for EditorView {
         let pane_status_row_px = estimated_row_px; // status text line
         let global_bottom_padding_px = rem * 0.25 * 2.0; // .py_1() = 0.5rem
         let global_bottom_row_px = estimated_row_px; // modeline / cmdline content
-        let chrome_px_total = pane_padding_px
-            + pane_status_padding_px
-            + pane_status_row_px
-            + global_bottom_padding_px
-            + global_bottom_row_px;
-        let chrome_rows_from_px = (chrome_px_total / estimated_row_px).ceil() as i32;
+        let per_leaf_chrome_px =
+            pane_padding_px + pane_status_padding_px + pane_status_row_px;
+        let global_chrome_px = global_bottom_padding_px + global_bottom_row_px;
+        // Issue #25 (2026-05-22): multi-pane viewport math.
+        // Single-pane code billed per_leaf_chrome ONCE; for
+        // horizontal splits each pane has its own .p_3 + status
+        // row stacked, so chrome multiplies. Walk the pane tree
+        // and return the MIN buffer-rows across all leaves so
+        // the global `viewport_height` is safe for the
+        // smallest pane (cursor stays visible in every pane
+        // post-split). Vertical splits share height — same
+        // chrome cost regardless of left/right count.
+        let avail_for_panes_px = f32::from(viewport_px.height) - global_chrome_px;
+        let pane_tree_root = self.app.render_state.load().panes.tree.root().clone();
+        let max_pane_buffer_px =
+            max_leaf_buffer_rows_px(&pane_tree_root, avail_for_panes_px, per_leaf_chrome_px);
+        let chrome_rows_from_px =
+            (total_rows - (max_pane_buffer_px / estimated_row_px).floor() as i32).max(0);
         // Slice 3c.final.B (group 3): picker read via published
         // substate. Bind the Arc so the `as_deref()` borrow lives
         // for the closure.

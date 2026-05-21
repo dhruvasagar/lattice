@@ -476,6 +476,72 @@ differs. Plugins choose: register persistently if their data is
 synchronously enumerable, or construct transient registrations
 per-use if they need to await before opening the picker.
 
+### Dual-registry decision (slice 7d.1)
+
+Slice 7 planning deferred the trait-shape question:
+`PickerSourceGenerator` takes `PickerContext` (surface-
+specific snapshots: active buffer, recent files, position
+history, marks, registers); `CandidateGenerator` takes
+`GenerateContext` (engine concepts: prefix, buffer, command
+registry). The two encode different problem domains.
+
+Three options were on the table at 7d.0 land time:
+
+  (a) **Decompose** `PickerSourceGenerator` so picker sources
+      impl `CandidateGenerator` directly. Requires either
+      bloating `GenerateContext` with surface concerns (breaks
+      engine/surface separation) or stripping picker sources
+      of context (breaks them).
+
+  (b) **Type-erase** the context via `Box<dyn Any>`. Ugly.
+
+  (c) **Two registries, one shared shape** —
+      `CompletionRegistry::sources` for engine-shape
+      registrations (cmdline-completion + plugin WIT + future
+      simple picker sources); `PickerRegistry` keeps the
+      surface-specific first-party sources that need
+      `PickerContext`. Same `SourceRegistration` bundle
+      serves both worlds.
+
+**Decision: (c).** Justification:
+
+- **Paramount #2 (extensibility) intact.** Plugins land via
+  `SourceRegistration` (engine-shape) through one WIT
+  interface. They don't get `PickerContext` access through WIT
+  — if they need richer context, they ask via separate WIT
+  calls. ONE plugin contract.
+
+- **Paramount #1 (performance) intact.** Dual-lookup at
+  `:picker <name>` invocation is two HashMap::get calls
+  (~20ns). Imperceptible.
+
+- **Engine stays focused.** `CandidateData` /
+  `GenerateContext` / the matcher / ranker / annotator
+  pipeline never learns about picker-surface concepts.
+
+- **Honest about the divergence.** Picker is a SURFACE that
+  needs surface-specific context. Pretending otherwise via
+  trait gymnastics violates heuristic #1 (best long-term fit
+  beats easy implementation).
+
+Slice 7d.1 wires the dual-lookup in `open_picker`:
+
+  1. Check `CompletionRegistry::source_by_id` first
+     (plugin + future engine-shape registrations).
+  2. Fall through to `PickerRegistry::lookup`
+     (first-party surface-specific sources).
+
+The 10 first-party picker sources continue to live in
+PickerRegistry. They're NOT migrated to
+`register_source(SourceRegistration)`. Migration would gain
+nothing — they need PickerContext.
+
+Future plugin picker sources that register via
+`SourceRegistration::PreSupplied` flow through the new path
+and get full DefaultAcceptHandler dispatch (from 7d.0).
+PickerContext-needing plugin sources would need a separate WIT
+interface — orthogonal to this arc.
+
 ### Picker preview unification (a Design B win)
 
 User concern raised mid-slice-7b (2026-05-21): "I want to

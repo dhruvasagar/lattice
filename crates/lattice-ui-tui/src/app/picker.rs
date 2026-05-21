@@ -548,6 +548,64 @@ mod tests {
         assert!(!p.candidates.is_empty());
     }
 
+    /// Slice 7d.1: engine-shape sources registered via
+    /// `CompletionRegistry::register_source` open through
+    /// `:picker <id>`. Verifies the dual-lookup branch in
+    /// `Editor::open_picker` consults CompletionRegistry first.
+    #[test]
+    fn open_picker_resolves_engine_shape_source_from_completion_registry() {
+        use lattice_completion::{
+            AcceptAction, CandidateKind, CandidateSourceKind, RawCandidate, SourceRegistration,
+            SourceSpec,
+        };
+
+        let mut app = app_with("hi\n", 5);
+
+        // Build two candidates carrying typed accept_action.
+        let mut a = RawCandidate::plain("alpha", CandidateKind::Plain);
+        a.accept_action = Some(AcceptAction::OpenFile {
+            path: std::path::PathBuf::from("/tmp/alpha"),
+        });
+        let mut b = RawCandidate::plain("beta", CandidateKind::Plain);
+        b.accept_action = Some(AcceptAction::OpenFile {
+            path: std::path::PathBuf::from("/tmp/beta"),
+        });
+
+        let reg = SourceRegistration {
+            spec: SourceSpec {
+                id: "test:engine-shape".to_string(),
+                doc: "smoke test for dual-lookup".to_string(),
+                args_schema: None,
+                live: false,
+            },
+            kind: CandidateSourceKind::PreSupplied(std::sync::Arc::new(vec![a, b])),
+            accept: None,
+            matcher_override: None,
+            ranker_overrides: Vec::new(),
+            annotator_extras: Vec::new(),
+        };
+        app.editor.completion_registry.register_source(reg);
+
+        // Open via the unified picker path.
+        app.open_picker("test:engine-shape".into(), Vec::new());
+
+        let p = app
+            .editor
+            .picker
+            .as_ref()
+            .expect("dual-lookup must seat the picker");
+        assert_eq!(p.candidates.len(), 2, "both candidates should survive");
+        for cand in &p.candidates {
+            assert!(matches!(
+                cand.raw.accept_action.as_ref().unwrap(),
+                AcceptAction::OpenFile { .. }
+            ));
+        }
+        // Source id stamp lets do_picker_accept route through
+        // the typed-action branch.
+        assert_eq!(p.source_id.as_deref(), Some("test:engine-shape"));
+    }
+
     /// Slice 7d.0: every candidate emitted by the first-party
     /// buffers source carries a typed `accept_action`. This is
     /// the production proof that 7b's accept_action plumbing

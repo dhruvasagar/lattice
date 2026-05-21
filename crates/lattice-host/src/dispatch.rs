@@ -4186,6 +4186,75 @@ impl Editor {
     /// initial query for `:picker grep TODO`-style submissions.
     ///
     /// Phase 5.8.AA.n: hoisted from TUI App.
+    /// Slice 7d.1: open a picker backed by an engine-shape
+    /// `SourceRegistration` from `CompletionRegistry`. Reuses
+    /// the existing seat path by synthesising `(raw, routing)`
+    /// pairs from each candidate's `accept_action`. The 7d.0
+    /// accept dispatch reads `accept_action` first, so the
+    /// synthesised routing is only consulted for MRU bonus
+    /// computation — candidates whose action doesn't have a
+    /// RoutingPayload counterpart (Custom / InsertText) just
+    /// skip MRU tracking.
+    pub fn open_picker_from_completion_source(
+        &mut self,
+        source: String,
+        kind: lattice_completion::CandidateSourceKind,
+        live: bool,
+    ) -> Vec<RendererSignal> {
+        let pairs: lattice_picker::CandidateBatch = match kind {
+            lattice_completion::CandidateSourceKind::PreSupplied(rows) => rows
+                .iter()
+                .filter_map(|raw| {
+                    let action = raw.accept_action.as_ref()?;
+                    let routing = accept_action_to_routing_payload(action)?;
+                    Some((raw.clone(), routing))
+                })
+                .collect(),
+            lattice_completion::CandidateSourceKind::Generator(_) => {
+                // Engine-shape generator sources need
+                // GenerateContext (prefix + buffer + command
+                // registry). Picker invocation doesn't have a
+                // user-typed prefix to drive generation — `open`
+                // is the zero-keystroke moment. The slice that
+                // wires this needs to either (a) seed an empty
+                // prefix, (b) accept that the result is empty
+                // until first keystroke triggers live refresh,
+                // or (c) treat Generator-kind picker sources as
+                // a separate `live` mode. Out of scope for 7d.1;
+                // log + bail.
+                self.set_message(
+                    EchoLevel::Error,
+                    format!(
+                        "picker: source `{source}` is Generator-kind; \
+                         not yet supported via :picker (slice 7d.2)"
+                    ),
+                );
+                return Vec::new();
+            }
+        };
+        // Mirror open_picker's PickerOpened event so listeners
+        // see the same shape regardless of registry origin.
+        self.event_bus
+            .publish_typed(lattice_picker::events::PickerOpened {
+                source_id: source.clone(),
+                ts: std::time::SystemTime::now(),
+            });
+        // Live mode mirrors PickerRegistry path. Engine-shape
+        // sources with `live: true` would need a refresh hook
+        // — out of scope for 7d.1, but the flag is honored so
+        // a future slice can wire it.
+        if live {
+            self.set_message(
+                EchoLevel::Warn,
+                format!(
+                    "picker: source `{source}` declares live=true; \
+                     refresh hook not yet supported via CompletionRegistry"
+                ),
+            );
+        }
+        self.seat_picker_from_pairs(source, pairs)
+    }
+
     pub fn seat_picker_from_pairs(
         &mut self,
         source: String,
@@ -4262,6 +4331,41 @@ impl Editor {
         source: String,
         args: Vec<String>,
     ) -> Vec<RendererSignal> {
+        // Slice `3c.unify.picker-registry-cutover` (7d.1):
+        // dual-lookup. First consult `CompletionRegistry::source_by_id`
+        // (engine-shape registrations: future plugin sources +
+        // any first-party source that doesn't need
+        // PickerContext). Fall through to `PickerRegistry` for
+        // the 10 first-party surface-specific sources.
+        //
+        // Engine-shape sources don't get a fresh `init(ctx,
+        // args)` invocation — their candidate set is either
+        // PreSupplied at registration time OR pulled via
+        // CandidateGenerator (which doesn't have PickerContext
+        // access, so picker-surface concerns can't influence
+        // generation). For PreSupplied, we seat directly. For
+        // Generator, return an error — engine-shape generator
+        // sources via picker need design work that doesn't
+        // belong in this slice.
+        //
+        // The dual-lookup is two HashMap::get calls (~20ns);
+        // the perceptible cost is zero. See design doc §
+        // "Dual-registry decision".
+        if let Some(reg) = self.completion_registry.source_by_id(&source) {
+            // `args` ignored — engine-shape sources are
+            // PreSupplied (registration-time) or
+            // Generator-pull (no args). If a future plugin
+            // source needs to take args, it consumes them in
+            // its own `register_source` invocation.
+            let _ = args;
+            // Clone what we need before letting the registry
+            // borrow go — `open_picker_from_completion_source`
+            // takes &mut self. Both `kind` variants are Arc-
+            // backed so the clone is cheap.
+            let kind = reg.kind.clone();
+            let live = reg.spec.live;
+            return self.open_picker_from_completion_source(source, kind, live);
+        }
         let Some(entry) = self.picker_registry.entry(&source) else {
             let known: Vec<&str> = self.picker_registry.ids().collect();
             let msg = if known.is_empty() {
@@ -18448,6 +18552,85 @@ pub fn picker_action_for(source: &str) -> lattice_picker::PickerAction {
         "buffers" => lattice_picker::PickerAction::SwitchToBuffer,
         _ => lattice_picker::PickerAction::OpenFile,
     }
+}
+
+/// Slice `3c.unify.picker-registry-cutover` (7d.1).
+/// Inverse of [`accept_action_to_outcome`]: build a
+/// `RoutingPayload` that *encodes the MRU identity* of an
+/// `AcceptAction`. Used when seating an engine-shape
+/// `SourceRegistration` (PreSupplied) into the Picker's
+/// pair-based candidate store — the picker needs ONE routing
+/// per candidate for MRU bonus computation, even though the
+/// 7d.0 accept dispatch reads `accept_action` directly.
+///
+/// For variants without a `RoutingPayload` counterpart
+/// (`Custom`, `InsertText`, stateful LSP), returns `None` —
+/// the seat path skips MRU bonus for those candidates (the
+/// candidate still shows up; just no recency boost).
+pub fn accept_action_to_routing_payload(
+    action: &lattice_completion::AcceptAction,
+) -> Option<lattice_picker::RoutingPayload> {
+    use lattice_completion::AcceptAction;
+    use lattice_picker::RoutingPayload;
+    Some(match action {
+        AcceptAction::OpenFile { path } => RoutingPayload::OpenFile { path: path.clone() },
+        AcceptAction::SwitchBuffer { id } => RoutingPayload::Buffer { id: id.0 },
+        AcceptAction::JumpInBuffer {
+            buffer_id,
+            line,
+            col,
+        } => RoutingPayload::JumpInBuffer {
+            buffer_id: buffer_id.0,
+            line: *line,
+            col: *col,
+        },
+        AcceptAction::JumpToFileLocation { path, line, col } => RoutingPayload::LspLocation {
+            path: path.clone(),
+            line: *line,
+            col: *col,
+        },
+        AcceptAction::InvokeCommand { id, args } => RoutingPayload::InvokeCommand {
+            id: id.clone(),
+            args: args.clone(),
+        },
+        AcceptAction::PasteRegister { name } => RoutingPayload::PasteRegister { name: *name },
+        AcceptAction::JumpToMark { name } => RoutingPayload::JumpToMark { name: *name },
+        AcceptAction::ExpandSnippet { id } => RoutingPayload::ExpandSnippet { id: id.clone() },
+        AcceptAction::OpenLspLog {
+            server_id,
+            workspace,
+        } => RoutingPayload::LspInstance {
+            server_id: server_id.clone(),
+            workspace: workspace.clone(),
+        },
+        AcceptAction::OpenLspTraceLog {
+            server_id,
+            workspace,
+        } => RoutingPayload::LspInstance {
+            server_id: server_id.clone(),
+            workspace: workspace.clone(),
+        },
+        AcceptAction::AcceptIndexedCompletion { token: _, index } => {
+            RoutingPayload::LspCompletion { index: *index }
+        }
+        AcceptAction::AcceptIndexedCodeAction { token: _, index } => {
+            RoutingPayload::LspCodeAction { index: *index }
+        }
+        AcceptAction::AcceptIndexedCodeLens { token: _, index } => {
+            RoutingPayload::LspCodeLens { index: *index }
+        }
+        AcceptAction::AcceptShowMessageAction {
+            request_id,
+            server_id: _,
+            index,
+        } => RoutingPayload::AcceptShowMessageAction {
+            request_id: *request_id,
+            action_index: *index,
+        },
+        AcceptAction::AcceptColorPresentation { .. }
+        | AcceptAction::InsertText { .. }
+        | AcceptAction::Custom(_) => return None,
+    })
 }
 
 /// Slice `3c.unify.picker-registry-cutover` (7d.0).

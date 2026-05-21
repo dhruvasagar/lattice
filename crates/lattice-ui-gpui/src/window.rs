@@ -895,6 +895,36 @@ impl Render for EditorView {
         let font_size_px = rem * 0.875; // text_sm()
         let estimated_row_px = font_size_px * 1.3; // matches EditorElement::line_height
         let total_rows = (f32::from(viewport_px.height) / estimated_row_px).floor() as i32;
+        // Issue #17 (2026-05-22): the previous calc subtracted
+        // exactly 1 row for the modeline/cmdline bottom strip and
+        // ignored every other piece of non-buffer chrome — `.p_3()`
+        // on the pane content (1.5rem top+bottom), `.py_1()` on
+        // the per-pane status row (~0.5rem), the status text line
+        // itself (~1 row), and `.py_1()` on the global bottom row
+        // (~0.5rem). Net: ~4 rows of chrome were billed as ~1.
+        // The buffer area over-claimed ~3 rows, so cursor jumps
+        // past G/}/etc. parked the cursor on rows actually painted
+        // under the modeline / pane status.
+        //
+        // Compute chrome in pixels (the honest unit) and convert
+        // to a row-equivalent via ceil() so we round up to a
+        // safe-but-snug viewport. Per-pane chrome scales with
+        // pane count via `flex_grow()` — each split pane carries
+        // its own .p_3 + status — but the global bottom row is
+        // single. For multi-pane, each pane's own chrome shrinks
+        // its rendered buffer area; this calculation reserves
+        // chrome for the active pane's view height.
+        let pane_padding_px = rem * 0.75 * 2.0; // .p_3() top + bottom = 1.5rem
+        let pane_status_padding_px = rem * 0.25 * 2.0; // .py_1() = 0.5rem
+        let pane_status_row_px = estimated_row_px; // status text line
+        let global_bottom_padding_px = rem * 0.25 * 2.0; // .py_1() = 0.5rem
+        let global_bottom_row_px = estimated_row_px; // modeline / cmdline content
+        let chrome_px_total = pane_padding_px
+            + pane_status_padding_px
+            + pane_status_row_px
+            + global_bottom_padding_px
+            + global_bottom_row_px;
+        let chrome_rows_from_px = (chrome_px_total / estimated_row_px).ceil() as i32;
         // Slice 3c.final.B (group 3): picker read via published
         // substate. Bind the Arc so the `as_deref()` borrow lives
         // for the closure.
@@ -925,7 +955,11 @@ impl Render for EditorView {
         } else {
             0
         };
-        let chrome_rows = 1 + picker_strip_rows + cmdline_completion_strip_rows;
+        // Issue #17 fix: chrome_rows derived from the pixel-
+        // accurate calculation above, NOT the prior `1 +
+        // picker_strip + cmdline_strip` undercount.
+        let chrome_rows =
+            chrome_rows_from_px + picker_strip_rows + cmdline_completion_strip_rows;
         let new_viewport = (total_rows - chrome_rows).max(1) as u32;
         // 3c.atomic.H: route through `App::set_viewport_height`,
         // which clamps to >= 1, runs `ensure_cursor_visible`,

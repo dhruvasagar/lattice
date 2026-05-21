@@ -542,6 +542,74 @@ and get full DefaultAcceptHandler dispatch (from 7d.0).
 PickerContext-needing plugin sources would need a separate WIT
 interface — orthogonal to this arc.
 
+### Slice 7e + 7f decisions (post-7d.1 retrospective)
+
+After 7d.1 landed the dual-registry shape, the optional
+cleanup slices (7e first-party relocation, 7f picker-crate
+audit) got reassessed. Both end up as no-op decisions for
+the reasons below.
+
+**7e `3c.unify.first-party-source-relocation` — DEFERRED indefinitely.**
+
+  The originally-imagined cleanup was: move
+  `FilesSource` / `BuffersSource` / `CommandsSource` / etc.
+  from `lattice-picker::picker_sources` into
+  `lattice-completion::builtins::sources` so cmdline-
+  completion can reuse them (`:e <Tab>` → FilesSource, etc.).
+
+  Auditing the 10 sources reveals that 9 of them genuinely
+  need `PickerContext` (active buffer, position history,
+  marks, registers, recent files, syntax symbols,
+  workspace root). The dual-registry decision in 7d.1
+  exists precisely to preserve PickerContext access for these.
+  Relocating them to `lattice-completion` would force moving
+  PickerContext too, undoing the engine/surface separation
+  7d.1 just settled.
+
+  The exception is `CommandsSource` — it only needs
+  `CommandRegistry` which is already in `lattice-grammar`.
+  Could in principle move. But:
+    - No consumer asks for it. Cmdline-completion's command
+      completion comes from `gen:commands` (separate impl).
+    - Migrating would cost more than it returns until a
+      consumer materialises.
+
+  Closed as "defer indefinitely; revisit if a consumer needs
+  source reuse across surfaces."
+
+**7f `3c.unify.picker-crate-audit` — KEEP `lattice-picker` as picker-surface crate.**
+
+  Post-7d.1 inventory of `lattice-picker`:
+
+    Surface state:
+      Picker, PickerMruIndex, PickerContext,
+      ActiveBufferSnapshot, BufferEntry, PositionEntry
+
+    Surface trait:
+      PickerSourceGenerator (4-method shape) + 10 first-
+      party impls
+
+    Surface registry:
+      PickerRegistry, PickerSourceSpec
+
+    Surface dispatch enums (retiring slowly):
+      RoutingPayload, PickerAction, PickerAcceptOutcome,
+      PickerInitResult
+
+    Surface-specific support:
+      mru.rs (frecency persistence), events.rs (typed
+      surface events), context.rs (snapshot translation)
+
+  This is substantive picker-surface code that doesn't
+  belong in `lattice-completion` (engine) or `lattice-host`
+  (which would become a kitchen sink — cmdline-completion's
+  surface code lives here, but folding picker too would
+  conflate two distinct surfaces).
+
+  Closed as "lattice-picker stays as a separate
+  picker-surface crate; parallel to cmdline-completion's
+  surface state living in lattice-host."
+
 ### Picker preview unification (a Design B win)
 
 User concern raised mid-slice-7b (2026-05-21): "I want to

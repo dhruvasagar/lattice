@@ -62,6 +62,7 @@ fn build_rs(
             fold_hash,
             text_version,
             visible_spans: cell.clone(),
+            pane_highlights: Arc::new(std::collections::HashMap::new()),
         }),
         ..RenderState::default()
     };
@@ -85,6 +86,7 @@ fn rebuild_rs(
             fold_hash,
             text_version,
             visible_spans: cell.clone(),
+            pane_highlights: Arc::new(std::collections::HashMap::new()),
         }),
         ..RenderState::default()
     };

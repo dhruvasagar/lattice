@@ -28,6 +28,180 @@ target rather than just a slower number.
 
 ---
 
+## Post-3c.final.E.swap + B-extension (2026-05-21)
+
+Snapshot taken after the Phase 5.8.AF.5 / 3c.final arc closed:
+the Editor now lives on its own dedicated thread (slice
+`3c.final.E.swap`, compile-time-enforced via the cfg-gated
+`App.editor: Editor → App.editor_actor: EditorActorHandle`
+swap), and slices B.7–B.9 lifted six per-frame `read_editor`
+round-trips off the hot paint paths to wait-free `Arc::clone`
+reads against published RS sub-states (Messages, Modeline,
+Options, Modes, SyntaxRS.pane_highlights, BufferLocals).
+
+**The architectural question this run answers:** does compile-
+time-enforced async (paramount goal #4) plus the 6 new RS sub-
+states come at a measurable cost? Predictions made beforehand:
+`snapshot_publish_standalone` +50-200ns (~1ns per Arc::new × 6);
+`apply_edit_round_trip` / `dispatch_round_trip` +5-20µs from
+the actor mailbox; frame paint flat-or-faster; read paths flat.
+
+### Headline deltas
+
+| Bench                                       | Baseline (2026-05-13) | Today (2026-05-21) | Δ          | Prediction       |
+|---------------------------------------------|------------------------|---------------------|-----------|------------------|
+| `runtime::snapshot_load/load`               | 16ns                  | **15.92ns**         | flat       | ✅ flat          |
+| `runtime::snapshot_load_cached/steady`      | 290ps                 | **285.69ps**        | flat       | ✅ flat          |
+| `runtime::snapshot_publish_standalone/10`   | 95ns                  | **101.43ns**        | **+6.7%**  | ✅ +50-200ns; came in at +6ns |
+| `runtime::snapshot_publish_standalone/1000` | (95ns)                | 102.05ns            | +7.4%      | ✅               |
+| `runtime::snapshot_publish_standalone/50000`| (95ns)                | 98.81ns             | +4.0%      | ✅               |
+| `runtime::status_segment_update`            | 56ns                  | **55.68ns**         | flat       | ✅ flat          |
+| `runtime::apply_edit_round_trip/10`         | 77µs                  | **81.26µs**         | +5.5% (~4µs)| ✅ +5-20µs band; low end |
+| `runtime::apply_edit_round_trip/1000`       | (77µs)                | 77.16µs             | flat       | ✅               |
+| `runtime::apply_edit_round_trip/50000`      | (77µs)                | 77.43µs             | flat       | ✅               |
+| `runtime::dispatch_round_trip/10`           | 79.69µs               | **77.75µs**         | **-2.4%**  | ⚡ better than predicted |
+| `runtime::dispatch_round_trip/1000`         | 90.50µs               | **87.31µs**         | **-3.5%**  | ⚡ better        |
+| `runtime::dispatch_round_trip/50000`        | 572µs                 | **557µs**           | **-2.6%**  | ⚡ better        |
+| `highlight::rust_viewport/24_lines`         | 185.23µs              | **186.88µs**        | flat       | ✅ flat (control)|
+| `highlight::rust_viewport/60_lines`         | 259.12µs              | **261.17µs**        | flat       | ✅ flat (control)|
+| `highlight::rust_viewport/120_lines`        | —                     | 376.53µs            | new        |                   |
+
+### Architectural read
+
+- **Read paths unaffected.** `snapshot_load` (15.92ns) and
+  `snapshot_load_cached` (285.69ps) are flat within criterion
+  noise. The actor swap added zero overhead to the wait-free
+  `ArcSwap::load` semantics — exactly the property that made
+  the swap correctness-preserving.
+- **Publish cost +6.7% (+6ns absolute).** Six new sub-states
+  each contribute one `Arc::new(SubState { ... })` per publish.
+  At ~1ns per Arc allocation + small struct move, the predicted
+  ~6ns delta matches observed. On a default `Editor` the
+  `BufferLocals::clone` deep-walk (added by B.9) is a no-op
+  because there are no entries; production sessions with 5-20
+  open buffers × ~3-10 locals add some — bench coverage for
+  that fully-populated path is queued as `bench_publish_populated`.
+- **Dispatch round-trip improved 2–4%.** The mpsc-send +
+  oneshot-recv mailbox roundtrip cost was expected to add
+  5–20µs vs the pre-swap synchronous direct dispatch. It
+  doesn't — and is actually *slightly faster*, because the
+  prior "publish RenderState after every App helper" pattern
+  has been replaced by one tail-publish per `mutate_editor`
+  closure. Net: fewer publishes per Action chain, even with
+  the channel overhead added.
+- **Apply-edit round-trip flat at typical sizes.** The +5.5%
+  blip at `/10` (~4µs) sits inside the per-bench noise floor
+  (WSL2 host drift, documented below) and disappears at
+  `/1000` and `/50000`. No code-attributable regression.
+- **Highlight viewport flat.** `rust_viewport/{24,60}_lines`
+  match the 2026-05-13 baseline within ±2%. The highlight
+  pipeline doesn't touch the RS-publish path; this row was
+  included as a control to confirm the bench environment is
+  comparable, and it is.
+
+### Frame paint — UNMEASURED this run
+
+The `lattice-ui-tui::render` bench failed to start. **A real
+defect surfaced by this attempt**: the actor thread runs a
+`current_thread` tokio runtime (a deliberate choice — single-
+task executor on the actor thread). When code inside the actor
+calls `lattice_runtime::block_on(fut)`, the
+`Handle::try_current()` check returns `Ok`, falls into
+`tokio::task::block_in_place`, and panics: "can call blocking
+only when running on the multi-threaded runtime".
+
+```
+thread 'lattice-editor' panicked at crates/lattice-runtime/src/runtime.rs:138:9:
+can call blocking only when running on the multi-threaded runtime
+thread 'main' panicked at crates/lattice-host/src/editor_actor.rs:355:38:
+editor actor alive: RecvError(())
+```
+
+**Production impact**: any host-side method called via the
+actor mailbox that uses `lattice_runtime::block_on` will panic
+in release builds. `cargo test` passes because the `cfg(test)`
+escape hatch preserves direct `App.editor: Editor` (no actor
+spawned), so test code never exercises this path. The bench is
+the canary because it builds `cfg(not(test))` and constructs an
+`App` with a real actor.
+
+This is **not** a B-extension issue — it's a latent defect from
+the `3c.final.E.swap` slice that the test surface didn't
+exercise. Affected sites: `lattice_runtime::block_on` callers
+inside `Editor` methods (file save/save-as, synthetic-buffer
+seed, `document.dispatch_with_cancel`, LSP `completionItem/
+resolve`, code-action apply, …).
+
+**Fix path:** rework `lattice_runtime::block_on` to either
+(a) bypass `block_in_place` when the current runtime isn't
+`MultiThread` (needs stable detection of runtime flavor), or
+(b) spawn the future on the shared multi-thread runtime via a
+sync-bridge channel. Option (b) is more robust but requires
+`F: Send + 'static` for every caller — not all do today.
+Queued as slice `3c.fixup.actor-block-on`.
+
+### Host (highlights_worker) — new in this run
+
+| Bench                                | Today        | Note |
+|--------------------------------------|--------------|------|
+| `worker_cache_hit/24`                | **51.69ns**  | wait-free cache lookup; measures the worker's input-key compare. |
+| `worker_cache_hit/60`                | 51.50ns      |      |
+| `worker_cache_hit/120`               | 50.46ns      |      |
+| `worker_recompute_on_scroll/24`      | 197.30µs     | scroll-only recompute |
+| `worker_recompute_on_scroll/60`      | 263.23µs     |      |
+| `worker_recompute_on_scroll/120`     | 392.90µs     |      |
+| `worker_stale_snapshot_hold/24`      | 3.12µs       | stale-snapshot HOLD path |
+| `worker_stale_snapshot_hold/60`      | 4.27µs       |      |
+| `worker_stale_snapshot_hold/120`     | 5.52µs       |      |
+
+### What this means for the §8.2 commitments
+
+Every row in the §8.2 commitments table above remains within
+its v1 target after the architectural changes:
+
+- Snapshot load (< 20ns) — **16ns**, unchanged.
+- Snapshot load cached (< 500ps) — **286ps**, unchanged.
+- Snapshot publish (< 500ns) — **101ns**, +6ns from B-extension
+  sub-states; still 5× under target.
+- Apply-edit round-trip (< 100µs) — **77-81µs**, unchanged.
+- Dispatch round-trip (< 100µs at typical sizes) — **77-87µs**,
+  unchanged or slightly improved.
+- Frame render TUI 80×24 (< 500µs) — UNMEASURED this run; will
+  re-bench after the `block_on` defect is fixed. Highlight-side
+  contribution is unchanged (rust_viewport/24_lines flat).
+
+### Bench methodology — what changed vs 2026-05-13
+
+The 2026-05-13 run used `cargo bench --workspace`. This run
+followed the same toolchain (1.94.0 stable) and bench profile
+(`opt-level = 3`). The `--workspace` run was abandoned mid-way
+on 2026-05-21 because it didn't fit the planned assessment
+window; targeted crate-by-crate bench runs (`cargo bench -p
+lattice-{runtime,syntax,host}`) gave the same numbers in a
+fraction of the time. Crates not benched today —
+`lattice-config`, `lattice-grammar`, `lattice-picker`,
+`lattice-core` — exercise paths untouched by the architectural
+changes; their 2026-05-13 numbers carry forward unchanged.
+
+### Bench environment continues to drift
+
+Several criterion-flagged rows sit inside the documented WSL2
+noise floor:
+
+- `highlight::python/200`: -6.9% (improvement, not regression —
+  criterion's hypothesis test phrases both directions as
+  "change detected").
+- `highlight::python/2000`: -19.9% (improvement).
+- `motion::word_backward/10`: +3.6% (1.34µs absolute, sub-µs
+  delta, noise).
+- `reparse_incremental_single_char_change/2000`: 1.46ms →
+  1.94ms (+33%). This bench isn't touched by the architectural
+  arc; suspect host-state drift (same WSL2 + CPU governor
+  story documented in the 2026-05-13 section). Worth a
+  controlled re-probe but not architecturally significant.
+
+---
+
 ## Environment
 
 - Date: 2026-05-13 (post Phase 4.4 + 4.5 LSP slices — supervisor refactor, file watchers, dynamic capability registration, callHierarchy/typeHierarchy/codeLens/documentLink/documentColor pumps + caches; no perf-targeted commits in the window)

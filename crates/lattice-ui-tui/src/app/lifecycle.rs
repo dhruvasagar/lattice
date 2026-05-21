@@ -508,65 +508,15 @@ impl App {
         self.read_editor(move |e| e.document_syntax_for(id).cloned())
     }
 
-    /// Mode-owned fold list for `id`. Same active / inactive
-    /// resolution as [`Self::document_syntax_for`]. Returns an
-    /// empty slice for buffers that have no folds yet (or for
-    /// non-document buffers).
-    #[allow(dead_code)]
-    pub(crate) fn document_folds_for(&self, id: BufferId) -> &[crate::app::Fold] {
-        // 3c.atomic.E: combined doc-id + buffer-kind read routes
-        // through the renderer-owned `ActiveDocumentRenderState`.
-        // `buffer_kind` is the published mirror of
-        // `editor.active_buffer` (see dispatch.rs:338). The
-        // active-path fold list itself stays on `editor.folds`
-        // -- folds aren't on the render-state surface yet.
-        let ad = self.ad();
-        if id == ad.document_buffer_id
-            && matches!(ad.buffer_kind, BufferKind::Document)
-        {
-            return &self.editor.folds;
-        }
-        self.editor
-            .buffer_locals
-            .get(&id)
-            .and_then(|l| l.get::<crate::modes::DocumentFolds>())
-            .map(|f| f.0.as_slice())
-            .unwrap_or(&[])
-    }
-
-    /// Mode-owned `last_parsed_text_version` for `id`.
-    #[allow(dead_code)]
-    pub(crate) fn document_last_parsed_text_version_for(&self, id: BufferId) -> u64 {
-        let ad = self.ad();
-        if id == ad.document_buffer_id
-            && matches!(ad.buffer_kind, BufferKind::Document)
-        {
-            return self.editor.last_parsed_text_version;
-        }
-        self.editor
-            .buffer_locals
-            .get(&id)
-            .and_then(|l| l.get::<crate::modes::DocumentLastParsedTextVersion>())
-            .map(|v| v.0)
-            .unwrap_or(0)
-    }
-
-    /// Mode-owned `last_synced_syntax_version` for `id`.
-    #[allow(dead_code)]
-    pub(crate) fn document_last_synced_syntax_version_for(&self, id: BufferId) -> u64 {
-        let ad = self.ad();
-        if id == ad.document_buffer_id
-            && matches!(ad.buffer_kind, BufferKind::Document)
-        {
-            return self.editor.last_synced_syntax_version;
-        }
-        self.editor
-            .buffer_locals
-            .get(&id)
-            .and_then(|l| l.get::<crate::modes::DocumentLastSyncedSyntaxVersion>())
-            .map(|v| v.0)
-            .unwrap_or(0)
-    }
+    // Slice 3c.final.E.5h: `document_folds_for`,
+    // `document_last_parsed_text_version_for`, and
+    // `document_last_synced_syntax_version_for` App-side
+    // delegates moved to the `#[cfg(test)] impl App` block at the
+    // bottom of this file — production code reaches the host-side
+    // copies (`Editor::document_folds_for` etc.) directly from
+    // `pane_highlights.rs`; only the `document_locals_*` test in
+    // this file's `mod tests` block still pokes them through the
+    // App. Same pattern as the completion.rs E.5g cleanup.
 
     pub(super) fn save_blocking(&mut self) -> Result<std::path::PathBuf, RuntimeError> {
         // Slice 3c.final.E.3: route through `mutate_editor_with`.
@@ -606,6 +556,54 @@ impl App {
 
     // 5.5.G.4: `do_redraw_screen` migrated to
     // [`lattice_host::dispatch::Editor`].
+}
+
+// Slice 3c.final.E.5h — test-fixture surface for mode-owned
+// document state. Same shape as the `#[cfg(test)] impl App`
+// blocks in `completion.rs` (E.5g) and `picker.rs` (E.5h):
+// production code reaches host-side copies; the wrappers here
+// exist so this file's `mod tests` block can poke the App-level
+// resolution path against a fully-built `App`.
+#[cfg(test)]
+impl App {
+    pub(crate) fn document_folds_for(&self, id: BufferId) -> &[crate::app::Fold] {
+        let ad = self.ad();
+        if id == ad.document_buffer_id && matches!(ad.buffer_kind, BufferKind::Document) {
+            return &self.editor.folds;
+        }
+        self.editor
+            .buffer_locals
+            .get(&id)
+            .and_then(|l| l.get::<crate::modes::DocumentFolds>())
+            .map(|f| f.0.as_slice())
+            .unwrap_or(&[])
+    }
+
+    pub(crate) fn document_last_parsed_text_version_for(&self, id: BufferId) -> u64 {
+        let ad = self.ad();
+        if id == ad.document_buffer_id && matches!(ad.buffer_kind, BufferKind::Document) {
+            return self.editor.last_parsed_text_version;
+        }
+        self.editor
+            .buffer_locals
+            .get(&id)
+            .and_then(|l| l.get::<crate::modes::DocumentLastParsedTextVersion>())
+            .map(|v| v.0)
+            .unwrap_or(0)
+    }
+
+    pub(crate) fn document_last_synced_syntax_version_for(&self, id: BufferId) -> u64 {
+        let ad = self.ad();
+        if id == ad.document_buffer_id && matches!(ad.buffer_kind, BufferKind::Document) {
+            return self.editor.last_synced_syntax_version;
+        }
+        self.editor
+            .buffer_locals
+            .get(&id)
+            .and_then(|l| l.get::<crate::modes::DocumentLastSyncedSyntaxVersion>())
+            .map(|v| v.0)
+            .unwrap_or(0)
+    }
 }
 
 #[cfg(test)]

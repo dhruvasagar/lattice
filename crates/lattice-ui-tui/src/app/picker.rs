@@ -25,28 +25,18 @@
 //! `lattice-picker` crate. This module is App's *workflow*
 //! layer above that.
 
-use crate::buffers::BufferId;
-
 use super::App;
-// `EchoLevel` only reaches the `#[cfg(any())]`-gated retired body.
-#[cfg(any())]
-use super::EchoLevel;
+
+// Slice 3c.final.E.5h: `BufferId` import dropped — it was only
+// reached from `_retired_do_picker_accept_body` (deleted) and the
+// now-host-resident accept routing arms. `build_picker_context`
+// + `bump_live_picker_debounce` App-side wrappers moved to the
+// `#[cfg(test)] impl App` block at the bottom of this file — all
+// surviving callers (picker_sources.rs test module + this file's
+// tests) live in test fixtures; production code in both renderer
+// peers reaches the host methods directly inside `Editor::dispatch`.
 
 impl App {
-    /// Build the snapshot the picker primitive hands to source
-    /// generators on each `:picker <source>` invocation.
-    ///
-    /// Phase 5.8.AA.s: body migrated to
-    /// [`lattice_host::dispatch::Editor::build_picker_context`].
-    /// This wrapper exists for the remaining App-side call sites
-    /// (test helpers, picker accept-resolve fallback); both
-    /// renderer peers reach the picker through the host method.
-    pub fn build_picker_context<'a>(
-        &'a self,
-        snap: &'a lattice_runtime::DocumentSnapshot,
-    ) -> lattice_picker::PickerContext<'a> {
-        self.editor.build_picker_context(snap)
-    }
 
     /// Translate a picker source's typed outcome into App-state
     /// mutation. Single dispatch site -- adding a new outcome
@@ -171,24 +161,11 @@ impl App {
         }
     }
 
-    /// Slice 2: bump the live-picker debounce deadline forward.
-    /// Called from the keystroke dispatch (`PickerAppend`,
-    /// `PickerBackspace`, and the cmdline-driven clear path).
-    /// No-op when no live picker is active. Each keystroke
-    /// pushes the deadline to `now + LIVE_PICKER_DEBOUNCE`; the
-    /// drain fires when `now >= deadline`.
-    /// 5.5.H: kept as `#[allow(dead_code)]` -- prod path was
-    /// inlined into the App-side picker keystroke arm by G.11
-    /// (the host returns a `RendererSignal` that the App matches
-    /// on), but two test sites in `app/picker.rs` still poke the
-    /// debounce directly to fast-forward time-driven assertions.
-    #[allow(dead_code)]
-    pub(crate) fn bump_live_picker_debounce(&mut self) {
-        let Some(state) = self.editor.live_picker_query.as_mut() else {
-            return;
-        };
-        state.debounce_until = Some(std::time::Instant::now() + crate::app::LIVE_PICKER_DEBOUNCE);
-    }
+    // Slice 3c.final.E.5h: `bump_live_picker_debounce` moved to
+    // `#[cfg(test)] impl App` below — the production path was
+    // inlined into the host's picker keystroke arm by G.11; only
+    // two test sites still poke the debounce directly to
+    // fast-forward time-driven assertions.
 
     /// Slice 2: main-loop drain for the live picker.
     ///
@@ -243,38 +220,11 @@ impl App {
         }
     }
 
-    /// If the picker is open and its action is
-    /// [`lattice_picker::PickerAction::SwitchToBuffer`], activate
-    /// the currently-selected candidate's buffer in the active
-    /// pane *as a preview* -- no position-history push, no
-    /// commit. Called after every selection change while a buffer
-    /// picker is open.
-    pub(super) fn preview_picker_selection(&mut self) {
-        let Some(picker) = self.editor.picker.as_ref() else {
-            return;
-        };
-        if !matches!(
-            picker.on_accept,
-            lattice_picker::PickerAction::SwitchToBuffer
-        ) {
-            return;
-        }
-        let Some(c) = picker.selected_candidate() else {
-            return;
-        };
-        let Some(lattice_picker::RoutingPayload::Buffer { id: raw_id }) = picker.routing_for(c)
-        else {
-            return;
-        };
-        let id = BufferId(*raw_id);
-        if id == self.active_pane_buffer_id() {
-            // Already showing this buffer; nothing to preview.
-            return;
-        }
-        self.mutate_editor(|e| e.previewing = true);
-        self.activate_buffer(id);
-        self.mutate_editor(|e| e.previewing = false);
-    }
+    // Slice 3c.final.E.5h: `App::preview_picker_selection`
+    // retired — zero callers anywhere. The host method
+    // (`Editor::preview_picker_selection`) is invoked directly
+    // from inside `Editor::dispatch` and returns its
+    // `Vec<RendererSignal>` through the outcome surface.
 
     /// Apply `Action::PickerDismiss` -- close the picker and, if
     /// a buffer-switch picker was previewing, restore the active
@@ -297,254 +247,13 @@ impl App {
         }
     }
 
-    #[cfg(any())]
-    fn _retired_do_picker_accept_body(&mut self) {
-        let Some(picker) = self.editor.picker.take() else {
-            return;
-        };
-        let Some(c) = picker.selected_candidate() else {
-            // Empty filter -- bail without acting (the picker is
-            // already gone since we `take()`d it). Restore the
-            // original buffer if we'd been previewing.
-            if let Some(origin) = picker.preview_origin {
-                self.mutate_editor(|e| e.previewing = true);
-                self.activate_buffer(BufferId(origin));
-                self.mutate_editor(|e| e.previewing = false);
-            }
-            return;
-        };
-        // Snapshot the typed routing payload (Phase 4.2.g.7
-        // polish). Pre-polish the dispatch parsed `c.raw.text`
-        // with per-action string parsers; now each candidate's
-        // `Extension { kind_id, payload }` indexes the picker's
-        // typed `routing_meta` sidecar.
-        let routing = match picker.routing_for(c).cloned() {
-            Some(r) => r,
-            None => {
-                self.set_message(
-                    EchoLevel::Error,
-                    "picker: candidate carries no routing payload".to_string(),
-                );
-                if let Some(origin) = picker.preview_origin {
-                    self.mutate_editor(|e| e.previewing = true);
-                    self.activate_buffer(BufferId(origin));
-                    self.mutate_editor(|e| e.previewing = false);
-                }
-                return;
-            }
-        };
-        // Trait-driven path: when the picker was seated via
-        // `:picker <source>` (slice 13), the source id is
-        // stamped on the Picker. Resolve the generator, call
-        // its `accept`, and translate the typed outcome.
-        if let Some(source_id) = picker.source_id.as_deref()
-            && let Some(generator) = self.editor.picker_registry.generator(source_id).cloned()
-        {
-            let source_id_owned = source_id.to_string();
-            let snap = self.ad().snapshot.clone();
-            let ctx = self.build_picker_context(&snap);
-            let outcome = match generator.accept(&ctx, &routing) {
-                Ok(o) => o,
-                Err(e) => {
-                    self.set_message(EchoLevel::Error, e);
-                    return;
-                }
-            };
-            drop(ctx);
-            drop(snap);
-            // Record MRU before applying the outcome so the
-            // identity captures the user's choice even if the
-            // outcome handler echoes an error mid-mutation
-            // (e.g. file no longer exists). Identity may be
-            // None for drift-prone routing payloads -- the
-            // record call silently skips those. `picker.mru.enabled`
-            // gates the whole path so users who disable MRU
-            // see no recording either.
-            let mru_enabled = self
-                .editor
-                .config
-                .get_typed::<lattice_config::core_options::PickerMruEnabled>()
-                .map(|b| *b)
-                .unwrap_or(true);
-            let identity = lattice_picker::routing_identity(&routing);
-            if mru_enabled && let Some(identity) = identity.as_deref() {
-                self.editor.picker_mru.record(&source_id_owned, identity);
-                self.persist_picker_mru_best_effort();
-            }
-            // Publish the typed accept event AFTER the MRU
-            // record so subscribers walking the event see a
-            // consistent "this is what just happened + the
-            // index is already up to date" snapshot.
-            // Plugin subscribers (Phase 7+) and future
-            // telemetry hooks subscribe to this; the MRU
-            // record stays on the direct path because it's
-            // load-bearing for the very next picker-open and
-            // bus delivery is queue-deferred.
-            self.editor
-                .event_bus
-                .publish_typed(lattice_picker::events::PickerAccepted {
-                    source_id: source_id_owned.clone(),
-                    identity,
-                    routing_payload_path: routing_payload_path(&routing),
-                    ts: std::time::SystemTime::now(),
-                });
-            self.apply_picker_outcome(outcome);
-            return;
-        }
-        // Legacy imperative path: `:b`, `:lsp-log`, multi-
-        // result LSP locations, completion / code-action
-        // pickers. Each routing variant has its own arm.
-        // Migration to the trait-driven path is per-source.
-        match routing {
-            lattice_picker::RoutingPayload::Buffer { id: raw_id } => {
-                let id = BufferId(raw_id);
-                // Already on the target via preview; no additional
-                // action needed beyond letting the picker drop.
-                if id != self.active_pane_buffer_id() {
-                    // M.4: honour `BufferDisplayCategory::PickerResult`.
-                    // For `Split(orientation)` this opens a new pane
-                    // and focuses it before the activation, matching
-                    // a user override like `:set picker-result.display
-                    // = split-h`. `ActivePane` (default) is a no-op.
-                    self.prepare_pane_for_picker_result();
-                    self.activate_buffer(id);
-                }
-            }
-            lattice_picker::RoutingPayload::LspInstance { server_id, .. } => {
-                match picker.on_accept {
-                    lattice_picker::PickerAction::OpenLspLog => {
-                        self.open_lsp_log_in_pane(&server_id);
-                    }
-                    lattice_picker::PickerAction::OpenLspTraceLog => {
-                        self.open_lsp_trace_log_in_pane(&server_id);
-                    }
-                    _ => {
-                        self.set_message(
-                            EchoLevel::Error,
-                            "picker: lsp-instance routing on non-lsp-log action".to_string(),
-                        );
-                    }
-                }
-            }
-            lattice_picker::RoutingPayload::LspLocation { path, line, col } => {
-                // If this picker came from a tag-intent nav
-                // (`gd` / `gD` / `gy` / `gI` multi-result),
-                // push the captured pre-jump origin onto the
-                // tag stack now -- the user has committed to
-                // a drill-down candidate. References /
-                // `:diagnostics` / symbol pickers don't set
-                // the origin so this is a no-op for them.
-                if let Some(origin) = self.editor.pending_tag_origin.take() {
-                    self.editor.tag_stack.push(origin);
-                }
-                // M.4: honour `BufferDisplayCategory::PickerResult`
-                // for the destination pane (split into a new sibling
-                // before the jump if the user has overridden to a
-                // `Split` display).
-                self.prepare_pane_for_picker_result();
-                self.jump_to_file_line_col(&path, line, col);
-            }
-            lattice_picker::RoutingPayload::LspCompletion { index } => {
-                let Some(items) = self.editor.pending_completion_items.take() else {
-                    return;
-                };
-                let Some(item) = items.into_iter().nth(index as usize) else {
-                    self.set_message(
-                        EchoLevel::Error,
-                        format!("picker: completion idx {index} out of range"),
-                    );
-                    return;
-                };
-                self.apply_lsp_completion_item(&item);
-            }
-            lattice_picker::RoutingPayload::LspCodeAction { index } => {
-                let Some(items) = self.editor.pending_code_action_items.take() else {
-                    return;
-                };
-                let handle = self.editor.pending_code_action_handle.take();
-                let Some(row) = items.into_iter().nth(index as usize) else {
-                    self.set_message(
-                        EchoLevel::Error,
-                        format!("picker: code-action idx {index} out of range"),
-                    );
-                    return;
-                };
-                self.apply_lsp_code_action(row, handle);
-            }
-            lattice_picker::RoutingPayload::OpenFile { path } => {
-                // M.4: honour `BufferDisplayCategory::PickerResult`
-                // for the destination pane (same hook the
-                // LspLocation arm uses).
-                self.prepare_pane_for_picker_result();
-                self.do_edit(Some(path), false);
-            }
-            lattice_picker::RoutingPayload::JumpInBuffer {
-                buffer_id,
-                line,
-                col,
-            } => {
-                // Legacy fallback only fires when a picker without
-                // a `source_id` emits JumpInBuffer. Today's
-                // emitters all set `source_id` (trait-driven path
-                // intercepts before reaching here), so this arm
-                // is reachability-guard only -- if it ever does
-                // fire, route it through the same outcome
-                // translator the trait path uses so the behavior
-                // doesn't diverge.
-                self.apply_picker_outcome(lattice_picker::PickerAcceptOutcome::JumpInBuffer {
-                    buffer_id,
-                    line,
-                    col,
-                });
-            }
-            lattice_picker::RoutingPayload::InvokeCommand { id, args } => {
-                // Reachability-guard for the same reason as
-                // `JumpInBuffer`: trait-driven sources set
-                // `source_id` and intercept above.
-                self.apply_picker_outcome(lattice_picker::PickerAcceptOutcome::InvokeCommand {
-                    id,
-                    args,
-                });
-            }
-            lattice_picker::RoutingPayload::PasteRegister { name } => {
-                self.apply_picker_outcome(lattice_picker::PickerAcceptOutcome::PasteRegister {
-                    name,
-                });
-            }
-            lattice_picker::RoutingPayload::JumpToMark { name } => {
-                self.apply_picker_outcome(lattice_picker::PickerAcceptOutcome::JumpToMark { name });
-            }
-            lattice_picker::RoutingPayload::ExpandSnippet { id } => {
-                self.apply_picker_outcome(lattice_picker::PickerAcceptOutcome::ExpandSnippet {
-                    id,
-                });
-            }
-            // 4.4.b: server-initiated showMessageRequest. Look
-            // up the inbound slot by `request_id`, ferry the
-            // selected `MessageActionItem` back over the
-            // oneshot, then drain the queue so the next pending
-            // SMR opens on the same tick (servers can pile up
-            // refresh / restart prompts after a config change).
-            lattice_picker::RoutingPayload::AcceptShowMessageAction {
-                request_id,
-                action_index,
-            } => {
-                self.finalize_show_message_request(request_id, Some(action_index));
-                self.open_next_queued_show_message_request();
-            }
-            // 4.5.d: accept one code lens. Resolve if needed,
-            // then route the lens's `command` through the
-            // originating server's `workspace/executeCommand`.
-            lattice_picker::RoutingPayload::LspCodeLens { index } => {
-                self.accept_lsp_code_lens(index);
-            }
-            // 4.5.e: splice the chosen color presentation into
-            // the buffer at the cached color range.
-            lattice_picker::RoutingPayload::ColorPresentation { index } => {
-                self.accept_lsp_color_presentation(index);
-            }
-        }
-    }
+    // Slice 3c.final.E.5h: `_retired_do_picker_accept_body`
+    // deleted. The function was held under `#[cfg(any())]` (i.e.
+    // never compiled) as a historical reference after G.11 moved
+    // the live do_picker_accept routing host-side. Git history
+    // (Phase 5.8.AF) is the canonical reference; carrying ~248
+    // lines of cfg-disabled code in the file just inflated the
+    // `self.editor.X` grep count without ever running.
 }
 
 // Phase 5.8.AF: `routing_payload_path` migrated to host.
@@ -556,6 +265,34 @@ impl App {
 // Phase 5.8.AC.1: `raw_buffer_candidates` migrated to
 // `lattice_host::dispatch::raw_buffer_candidates`. App-side
 // callers route through `editor.do_open_buffer_picker`.
+
+// Slice 3c.final.E.5h — test-fixture surface.
+//
+// Same shape as the `#[cfg(test)] impl App` block in
+// `app/completion.rs`: production code reaches the host methods
+// directly inside `Editor::dispatch`; the two wrappers below
+// exist so test fixtures (this file's `mod tests` + the
+// `picker_sources.rs` test module) can build a `PickerContext`
+// or fast-forward the live-picker debounce against a fully-built
+// `App`. When the actor-swap lands, each body flips to read via
+// the audit's planned `App::editor()` / `App::editor_mut()`
+// cfg-gated accessors.
+#[cfg(test)]
+impl App {
+    pub fn build_picker_context<'a>(
+        &'a self,
+        snap: &'a lattice_runtime::DocumentSnapshot,
+    ) -> lattice_picker::PickerContext<'a> {
+        self.editor.build_picker_context(snap)
+    }
+
+    pub(crate) fn bump_live_picker_debounce(&mut self) {
+        let Some(state) = self.editor.live_picker_query.as_mut() else {
+            return;
+        };
+        state.debounce_until = Some(std::time::Instant::now() + crate::app::LIVE_PICKER_DEBOUNCE);
+    }
+}
 
 #[cfg(test)]
 mod tests {

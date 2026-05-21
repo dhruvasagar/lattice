@@ -335,6 +335,14 @@ impl GpuiApp {
         self.render_state.load().modes.clone()
     }
 
+    /// Slice 3c.final.B.9: published buffer-locals map —
+    /// parallel of TUI peer's `App::buffer_locals()`.
+    pub fn buffer_locals(
+        &self,
+    ) -> Arc<lattice_host::render_state::BufferLocalsRenderState> {
+        self.render_state.load().buffer_locals.clone()
+    }
+
     /// Phase 5.8.AF.5 / Slice 3c.final.E.4: routing helpers for
     /// editor mutations. Same shape as the TUI peer's
     /// `App::mutate_editor` / `App::mutate_editor_with`. Pre-swap

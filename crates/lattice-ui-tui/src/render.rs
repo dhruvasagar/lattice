@@ -1066,27 +1066,25 @@ fn help_render_data(
     // exclusively. The `_fallback` parameter is retained for the
     // call-site signature stability (the popup overlay holds a
     // `&HelpBuffer` for cursor / scroll / line-count); empty
-    // slices on a missing locals entry are correct -- it means a
+    // vecs on a missing locals entry are correct -- it means a
     // synthetic test path constructed a help buffer without
     // seeding locals, in which case nothing to highlight or
     // follow.
     //
-    // Slice 3c.final.E.5j: route through `read_editor` so the
-    // buffer_locals read doesn't carry an `&Editor` borrow into
-    // the renderer thread. Returns owned `Vec` clones (each is
-    // small: a few hundred styled spans + ~10 links).
-    app.read_editor(move |e| {
-        let locals = e.buffer_locals.get(&buffer_id);
-        let highlights = locals
-            .and_then(|l| l.get::<crate::modes::HelpHighlights>())
-            .map(|h| h.0.clone())
-            .unwrap_or_default();
-        let links = locals
-            .and_then(|l| l.get::<crate::modes::HelpLinks>())
-            .map(|h| h.0.clone())
-            .unwrap_or_default();
-        (highlights, links)
-    })
+    // Slice 3c.final.B.9: read via published `buffer_locals()`
+    // sub-state — wait-free Arc-bump lookup. Clone the inner
+    // Vec bodies (small: a few hundred styled spans + ~10 links).
+    let locals_map = app.buffer_locals();
+    let locals = locals_map.map.get(&buffer_id);
+    let highlights = locals
+        .and_then(|l| l.get::<crate::modes::HelpHighlights>())
+        .map(|h| h.0.clone())
+        .unwrap_or_default();
+    let links = locals
+        .and_then(|l| l.get::<crate::modes::HelpLinks>())
+        .map(|h| h.0.clone())
+        .unwrap_or_default();
+    (highlights, links)
 }
 
 fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App, snap: &DocumentSnapshot) {
@@ -1862,15 +1860,13 @@ fn help_pane_status(app: &App, _pane: &crate::pane::PaneState) -> String {
 }
 
 fn file_tree_pane_status(app: &App, pane: &crate::pane::PaneState) -> String {
-    // Slice 3c.final.E.5j: route the buffer_locals read through
-    // `read_editor`. Returns owned PathBuf.
-    let buffer_id = pane.buffer_id;
-    let root: Option<std::path::PathBuf> = app.read_editor(move |e| {
-        e.buffer_locals
-            .get(&buffer_id)
-            .and_then(|locals| locals.get::<crate::modes::FileTreeRoot>())
-            .map(|r| r.0.clone())
-    });
+    // Slice 3c.final.B.9: buffer_locals via published map.
+    let locals_map = app.buffer_locals();
+    let root = locals_map
+        .map
+        .get(&pane.buffer_id)
+        .and_then(|locals| locals.get::<crate::modes::FileTreeRoot>())
+        .map(|r| r.0.clone());
     root.map(|p| format!("[tree] {}", p.display()))
         .unwrap_or_else(|| "[tree]".to_string())
 }
@@ -1886,14 +1882,14 @@ fn oil_pane_status(app: &App, pane: &crate::pane::PaneState) -> String {
         return "[oil]".to_string();
     };
     let dirty = if is_dirty { " [+]" } else { "" };
-    let buffer_id = pane.buffer_id;
-    let dir: String = app.read_editor(move |e| {
-        e.buffer_locals
-            .get(&buffer_id)
-            .and_then(|locals| locals.get::<crate::modes::OilDir>())
-            .map(|d| d.0.display().to_string())
-            .unwrap_or_default()
-    });
+    // Slice 3c.final.B.9: OilDir via published map.
+    let locals_map = app.buffer_locals();
+    let dir: String = locals_map
+        .map
+        .get(&pane.buffer_id)
+        .and_then(|locals| locals.get::<crate::modes::OilDir>())
+        .map(|d| d.0.display().to_string())
+        .unwrap_or_default();
     format!("[oil] {dir}{dirty}")
 }
 
@@ -2187,16 +2183,14 @@ fn draw_file_tree_pane(
     let theme = &app.theme;
     // M.3.2.c.5: entries live exclusively in the
     // FileTreeEntries buffer-local. Nothing to drift.
-    // Slice 3c.final.E.5j: file-tree entries via `read_editor`;
-    // returns an owned Vec clone so the borrow doesn't escape.
-    let buffer_id = pane.buffer_id;
-    let entries: Vec<crate::file_tree::FileTreeEntry> = app.read_editor(move |e| {
-        e.buffer_locals
-            .get(&buffer_id)
-            .and_then(|locals| locals.get::<crate::modes::FileTreeEntries>())
-            .map(|en| en.0.clone())
-            .unwrap_or_default()
-    });
+    // Slice 3c.final.B.9: file-tree entries via published map.
+    let locals_map = app.buffer_locals();
+    let entries: Vec<crate::file_tree::FileTreeEntry> = locals_map
+        .map
+        .get(&pane.buffer_id)
+        .and_then(|locals| locals.get::<crate::modes::FileTreeEntries>())
+        .map(|en| en.0.clone())
+        .unwrap_or_default();
     let lines: Vec<Line> = raw_text
         .split('\n')
         .enumerate()
@@ -2253,15 +2247,14 @@ fn draw_oil_pane(
     let theme = &app.theme;
     // M.3.2.c.5: dir lives exclusively in the OilDir
     // buffer-local. No struct fallback; nothing to drift.
-    // Slice 3c.final.E.5j: OilDir buffer-local via `read_editor`.
-    let buffer_id = pane.buffer_id;
-    let dir: std::path::PathBuf = app.read_editor(move |e| {
-        e.buffer_locals
-            .get(&buffer_id)
-            .and_then(|locals| locals.get::<crate::modes::OilDir>())
-            .map(|d| d.0.clone())
-            .unwrap_or_default()
-    });
+    // Slice 3c.final.B.9: OilDir buffer-local via published map.
+    let locals_map = app.buffer_locals();
+    let dir: std::path::PathBuf = locals_map
+        .map
+        .get(&pane.buffer_id)
+        .and_then(|locals| locals.get::<crate::modes::OilDir>())
+        .map(|d| d.0.clone())
+        .unwrap_or_default();
     let lines: Vec<Line> = raw_text
         .split('\n')
         .enumerate()

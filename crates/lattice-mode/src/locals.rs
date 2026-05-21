@@ -81,7 +81,13 @@ use std::collections::HashMap;
 /// `'static` bound: locals key on `TypeId`, which requires the
 /// type to be `'static`. `Send + Sync` so a buffer can be
 /// shared across threads.
-pub trait BufferLocal: Any + Send + Sync + 'static {
+/// Slice 3c.final.B.9: `Clone` is required so the typed-map
+/// can be deep-cloned for the `BufferLocalsRenderState` per-publish
+/// snapshot. Every existing impl is already a wrapper around
+/// Clone primitives (`Vec<T>` / `PathBuf` / scalars), so the bound
+/// adds no real constraint — just lets `LocalDyn::clone_box` work
+/// through the dyn trait object.
+pub trait BufferLocal: Any + Clone + Send + Sync + 'static {
     /// Public display name (`:describe-buffer` row label,
     /// debug logs). Convention: `<owner-mode-name>.<key>`,
     /// e.g. `"file-tree.entries"`. Not a registry key — locals
@@ -125,6 +131,11 @@ pub(crate) trait LocalDyn: Any + Send + Sync {
     fn as_any_mut(&mut self) -> &mut dyn Any;
     #[allow(dead_code)]
     fn into_any(self: Box<Self>) -> Box<dyn Any + Send + Sync>;
+    /// Slice 3c.final.B.9: clone the inner local into a fresh
+    /// `Box<dyn LocalDyn>` so [`BufferLocals`] (and the
+    /// `BufferLocalsRenderState` lift on top of it) can be
+    /// cloned per publish.
+    fn clone_box(&self) -> Box<dyn LocalDyn>;
 }
 
 impl<T: BufferLocal> LocalDyn for T {
@@ -148,6 +159,9 @@ impl<T: BufferLocal> LocalDyn for T {
     }
     fn into_any(self: Box<Self>) -> Box<dyn Any + Send + Sync> {
         self
+    }
+    fn clone_box(&self) -> Box<dyn LocalDyn> {
+        Box::new(self.clone())
     }
 }
 
@@ -178,6 +192,20 @@ impl std::fmt::Debug for BufferLocals {
         f.debug_struct("BufferLocals")
             .field("len", &self.map.len())
             .finish_non_exhaustive()
+    }
+}
+
+impl Clone for BufferLocals {
+    /// Slice 3c.final.B.9: walks the typed-map and `clone_box`'s
+    /// each entry so the whole `BufferLocals` can be deep-cloned
+    /// for `BufferLocalsRenderState` publishes.
+    fn clone(&self) -> Self {
+        let map = self
+            .map
+            .iter()
+            .map(|(k, v)| (*k, v.clone_box()))
+            .collect();
+        Self { map }
     }
 }
 
@@ -270,6 +298,7 @@ mod tests {
     use super::*;
 
     // Test fixture: one mode-owned local.
+    #[derive(Clone)]
     struct TestEntries(Vec<String>);
 
     impl BufferLocal for TestEntries {
@@ -282,6 +311,7 @@ mod tests {
     }
 
     // A second fixture for distinct-key tests.
+    #[derive(Clone)]
     struct OtherFixture(i64);
 
     impl BufferLocal for OtherFixture {

@@ -85,6 +85,11 @@ pub struct RenderState {
     /// `Arc<HashMap<BufferId, Arc<ActiveModes>>>` so per-buffer
     /// reads in the modeline + future hot paths are wait-free.
     pub modes: Arc<ModesRenderState>,
+    /// Slice 3c.final.B.9: buffer-locals per buffer, published as
+    /// `Arc<HashMap<BufferId, Arc<BufferLocals>>>` so the
+    /// modeline / help-render / file-tree / oil paint paths read
+    /// without an actor round-trip.
+    pub buffer_locals: Arc<BufferLocalsRenderState>,
     pub diagnostics: Arc<DiagnosticsRenderState>,
     /// Phase 5.8.AF.5 / Slice 3c.final.B (group 5): translator
     /// inputs — published so the renderer's input loop can build
@@ -119,6 +124,7 @@ impl Default for RenderState {
             modeline: Arc::new(ModelineRenderState::default()),
             options: Arc::new(OptionsRenderState::default()),
             modes: Arc::new(ModesRenderState::default()),
+            buffer_locals: Arc::new(BufferLocalsRenderState::default()),
             diagnostics: Arc::new(DiagnosticsRenderState::default()),
             translator: Arc::new(TranslatorRenderState::default()),
             lifecycle: Arc::new(LifecycleRenderState::default()),
@@ -615,6 +621,28 @@ impl PopupRenderState {
     pub fn is_open(&self) -> bool {
         self.buffer_id.is_some()
     }
+}
+
+/// Buffer-locals per buffer. Slice 3c.final.B.9 — drops the
+/// per-frame `read_editor(|e| e.buffer_locals.get(&buf).and_then(...))`
+/// chain in the modeline, help-render, file-tree, and oil paint
+/// paths to a wait-free Arc-bump lookup off the published
+/// snapshot.
+///
+/// Outer `Arc<HashMap<...>>` for cheap clone-on-publish; per-entry
+/// `Arc<BufferLocals>` so reads don't clone the typed-map body.
+/// Mutation surface (mode `on_activate` / `on_deactivate` setters,
+/// pulled-diagnostics writes, file-tree refresh) deep-clones each
+/// modified entry via `BufferLocals::clone` and replaces the Arc;
+/// reads stay wait-free under concurrent mutation.
+#[derive(Debug, Default, Clone)]
+pub struct BufferLocalsRenderState {
+    pub map: std::sync::Arc<
+        std::collections::HashMap<
+            lattice_core::BufferId,
+            std::sync::Arc<lattice_mode::BufferLocals>,
+        >,
+    >,
 }
 
 /// Active modes per buffer. Slice 3c.final.B.11 — drops the
@@ -1142,6 +1170,23 @@ mod tests {
         // Keymap handle clones to an Arc-backed view; verify
         // we can dereference it without panic.
         let _ = &rs.translator.keymap;
+    }
+
+    /// Slice 3c.final.B.9: buffer_locals map round-trip.
+    #[test]
+    fn buffer_locals_map_reflects_editor_state() {
+        use lattice_core::BufferId;
+        use lattice_mode::BufferLocals;
+        let mut editor = Editor::default();
+        let buf = BufferId(7);
+        editor.buffer_locals.insert(buf, BufferLocals::new());
+        editor.publish_render_state();
+        let rs = editor.render_state.load_full();
+        assert!(rs.buffer_locals.map.contains_key(&buf));
+        editor.buffer_locals.remove(&buf);
+        editor.publish_render_state();
+        let rs = editor.render_state.load_full();
+        assert!(!rs.buffer_locals.map.contains_key(&buf));
     }
 
     /// Slice 3c.final.B.8: pane_highlights map round-trip.

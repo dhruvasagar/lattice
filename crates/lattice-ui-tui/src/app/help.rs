@@ -343,37 +343,38 @@ impl App {
         // `open_popup` seeded under, so prefer it; fall back to
         // `pane.buffer_id` for the in-pane case (where the pane
         // was swapped to the registered help id).
-        // Slice 3c.final.E.5j: popup id via `popup()` RS accessor;
-        // buffer_locals lookup wrapped in `read_editor` (returns
-        // owned `Option<HelpLink>`).
+        // Slice 3c.final.B.9: popup id via `popup()` RS accessor;
+        // buffer_locals via published `buffer_locals()` sub-state.
         let active_help_id = self
             .popup()
             .buffer_id
             .unwrap_or_else(|| self.panes().tree.active().buffer_id);
         let pane_id = self.panes().tree.active().buffer_id;
-        let Some(link) = self.read_editor(move |e| {
-            e.buffer_locals
-                .get(&active_help_id)
-                .and_then(|locals| locals.get::<crate::modes::HelpLinks>())
-                .and_then(|hl| {
-                    hl.0.iter()
-                        .find(|link| range_contains_position(&link.range, cursor))
-                        .cloned()
-                })
-                .or_else(|| {
-                    if pane_id == active_help_id {
-                        return None;
-                    }
-                    e.buffer_locals
-                        .get(&pane_id)
-                        .and_then(|locals| locals.get::<crate::modes::HelpLinks>())
-                        .and_then(|hl| {
-                            hl.0.iter()
-                                .find(|link| range_contains_position(&link.range, cursor))
-                                .cloned()
-                        })
-                })
-        }) else {
+        let locals_map = self.buffer_locals();
+        let Some(link) = locals_map
+            .map
+            .get(&active_help_id)
+            .and_then(|locals| locals.get::<crate::modes::HelpLinks>())
+            .and_then(|hl| {
+                hl.0.iter()
+                    .find(|link| range_contains_position(&link.range, cursor))
+                    .cloned()
+            })
+            .or_else(|| {
+                if pane_id == active_help_id {
+                    return None;
+                }
+                locals_map
+                    .map
+                    .get(&pane_id)
+                    .and_then(|locals| locals.get::<crate::modes::HelpLinks>())
+                    .and_then(|hl| {
+                        hl.0.iter()
+                            .find(|link| range_contains_position(&link.range, cursor))
+                            .cloned()
+                    })
+            })
+        else {
             self.set_message(EchoLevel::Info, "no link under cursor".to_string());
             return;
         };
@@ -436,25 +437,20 @@ impl App {
                 // then fall back to the pane's id (in-pane case).
                 let popup_id = self.popup().buffer_id;
                 let pane_id = self.panes().tree.active().buffer_id;
-                // Slice 3c.final.E.5e: anchor resolution chains
-                // `buffer_locals.get(id)` -> `HelpAnchors` -> find;
-                // borrowed `&str` (`slug`) is cloned to owned for
-                // the `Send + 'static` closure, and the whole
-                // chain runs inside one read_editor call.
-                let slug_owned = slug.to_string();
-                let target_line = self.read_editor(move |e| {
-                    let find_in = |id: crate::buffers::BufferId| -> Option<u32> {
-                        e.buffer_locals
-                            .get(&id)
-                            .and_then(|l| l.get::<crate::modes::HelpAnchors>())
-                            .and_then(|a| {
-                                a.0.iter().find(|x| x.name == slug_owned).map(|x| x.line)
-                            })
-                    };
-                    popup_id
-                        .and_then(find_in)
-                        .or_else(|| find_in(pane_id))
-                });
+                // Slice 3c.final.B.9: anchor lookup via published
+                // `buffer_locals()` sub-state — wait-free Arc bump.
+                let locals_map = self.buffer_locals();
+                let find_in = |id: crate::buffers::BufferId| -> Option<u32> {
+                    locals_map
+                        .map
+                        .get(&id)
+                        .and_then(|l| l.get::<crate::modes::HelpAnchors>())
+                        .and_then(|a| {
+                            a.0.iter().find(|x| x.name == slug).map(|x| x.line)
+                        })
+                };
+                let target_line =
+                    popup_id.and_then(find_in).or_else(|| find_in(pane_id));
                 if let Some(line) = target_line {
                     let buffer = self.active_text();
                     let len = line_byte_len(&buffer, line);

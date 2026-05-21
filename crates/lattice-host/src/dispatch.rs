@@ -432,6 +432,22 @@ impl Editor {
                         .collect(),
                 ),
             }),
+            // Slice 3c.final.B.9: buffer-locals map. Deep-clones
+            // each entry's `BufferLocals` via the new `Clone`
+            // impl (which walks the typed-map and `clone_box`'s
+            // each Box<dyn LocalDyn>). Bounded by open-buffer
+            // count × per-buffer local count; ~5-20 buffers ×
+            // ~3-10 locals on a typical session. Each local is a
+            // wrapper around Clone primitives (Vec / PathBuf /
+            // scalars) so the deep-clone is cheap.
+            buffer_locals: std::sync::Arc::new(crate::render_state::BufferLocalsRenderState {
+                map: std::sync::Arc::new(
+                    self.buffer_locals
+                        .iter()
+                        .map(|(id, locals)| (*id, std::sync::Arc::new(locals.clone())))
+                        .collect(),
+                ),
+            }),
             diagnostics: std::sync::Arc::new(DiagnosticsRenderState {
                 // Clone the `DiagnosticsLayer` -- it's internally
                 // `Arc<ArcSwap<...>>`-backed so this is one Arc

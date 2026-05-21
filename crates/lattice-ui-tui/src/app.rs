@@ -1094,6 +1094,15 @@ impl App {
         self.render_state.load().modes.clone()
     }
 
+    /// Slice 3c.final.B.9: published buffer-locals map.
+    /// `app.buffer_locals().map.get(&buf).and_then(|l| l.get::<T>())`
+    /// replaces the equivalent `read_editor` chain.
+    pub fn buffer_locals(
+        &self,
+    ) -> std::sync::Arc<lattice_host::render_state::BufferLocalsRenderState> {
+        self.render_state.load().buffer_locals.clone()
+    }
+
     /// Phase 5.8.AF.5 / Slice 3c.final.E.2: routing helper for
     /// editor mutations. Pre-swap: runs `f` against the in-process
     /// `Editor` and publishes RenderState. Post-swap (when Editor

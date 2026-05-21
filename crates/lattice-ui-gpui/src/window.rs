@@ -543,7 +543,7 @@ impl EditorView {
         // boundary; convert to utf-8 byte offsets against the
         // hit's host line text. Painted on any pane sharing the
         // highlighted buffer (the per-buffer pump model).
-        let rs_for_dh = editor.render_state.load_full();
+        let rs_for_dh = self.app.render_state.load_full();
         let dh_guard = rs_for_dh.lsp.document_highlights.load_full();
         let doc_highlights: Vec<lattice_core::protocol::position::Range> = dh_guard
             .as_deref()

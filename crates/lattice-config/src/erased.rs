@@ -45,6 +45,16 @@ pub trait ErasedOption: Send + Sync {
     /// means free-form (no completion).
     fn enumerate_values(&self) -> std::option::Option<Vec<&'static str>>;
 
+    /// Enumerate valid string values + per-value doc strings.
+    /// Slice `3c.unify.option-doc-annotator` — drives the
+    /// marginalia column on `:set foo=<Tab>` completion. `None`
+    /// means free-form. Default impl wraps `enumerate_values`
+    /// with empty docs; rich-help types override on
+    /// `OptionType::enumerate_with_docs`.
+    fn enumerate_values_with_docs(
+        &self,
+    ) -> std::option::Option<Vec<crate::option_type::EnumeratedValue>>;
+
     /// Alternate name forms the cmdline accepts (`noNAME` for
     /// booleans). Drives `:set <Tab>` enumeration.
     fn name_forms(&self) -> Vec<String>;
@@ -107,6 +117,12 @@ impl<T: OptionType> ErasedOption for Option<T> {
 
     fn enumerate_values(&self) -> std::option::Option<Vec<&'static str>> {
         T::enumerate()
+    }
+
+    fn enumerate_values_with_docs(
+        &self,
+    ) -> std::option::Option<Vec<crate::option_type::EnumeratedValue>> {
+        T::enumerate_with_docs()
     }
 
     fn name_forms(&self) -> Vec<String> {

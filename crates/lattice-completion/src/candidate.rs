@@ -64,9 +64,22 @@ pub enum CandidateData {
         size: Option<u64>,
     },
     /// `gen:options` payload (typed options post-§5.12).
+    /// Emitted for option-name completion (`:set <Tab>`). `doc`
+    /// is `OptionDecl::DOC`.
     Option {
         name: String,
         current_value: String,
+        doc: String,
+    },
+    /// `gen:options` payload — value-completion mode.
+    /// Slice `3c.unify.option-doc-annotator`. Emitted for
+    /// `:set foo=<Tab>` when the option's `OptionType::enumerate`
+    /// returns Some. `doc` is `EnumeratedValue::doc` — per-value
+    /// help text the type chose to surface (empty when the type
+    /// hasn't overridden `enumerate_with_docs`).
+    OptionValue {
+        option_name: String,
+        value: String,
         doc: String,
     },
     /// `gen:chords` payload.

@@ -48,6 +48,11 @@ impl CandidateAnnotator for DocSnippetAnnotator {
         let snippet = match &c.raw.data {
             CandidateData::Command { doc, .. } => first_line(doc),
             CandidateData::Option { doc, .. } => first_line(doc),
+            // Slice `3c.unify.option-doc-annotator`: per-value
+            // doc surfaces in the marginalia column. Empty doc
+            // (when the type hasn't overridden
+            // `enumerate_with_docs`) annotates nothing.
+            CandidateData::OptionValue { doc, .. } => first_line(doc),
             CandidateData::Chord { doc, .. } => first_line(doc),
             CandidateData::File { path, .. } => path.display().to_string(),
             CandidateData::Register { preview, .. } => preview.clone(),

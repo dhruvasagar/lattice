@@ -13,6 +13,19 @@
 //! specific types (`FoldMethod`, `Color`) impl `OptionType` from
 //! their owning crate using the trait re-exported here.
 
+/// One enumerated value of an [`OptionType`], paired with its
+/// short help text. Returned by [`OptionType::enumerate_with_docs`]
+/// for the cmdline-completion marginalia column (slice
+/// `3c.unify.option-doc-annotator`). `doc` is the empty string
+/// when the type doesn't provide per-value documentation; the
+/// default impl of `enumerate_with_docs` returns one of these per
+/// `enumerate()` form with an empty doc.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EnumeratedValue {
+    pub form: &'static str,
+    pub doc: &'static str,
+}
+
 /// Surface contract for any value a typed [`crate::option::Option`] can
 /// hold. Implementors describe how their type round-trips through
 /// the user-facing `:set foo=value` syntax.
@@ -41,6 +54,27 @@ pub trait OptionType: Sized + Clone + Send + Sync + 'static {
     /// in the common case.
     fn enumerate() -> Option<Vec<&'static str>> {
         None
+    }
+
+    /// Optional: enumerate valid string forms WITH per-value doc
+    /// strings for the cmdline-completion marginalia column.
+    /// Default impl wraps [`Self::enumerate`] with empty docs;
+    /// types with rich help override.
+    ///
+    /// Slice `3c.unify.option-doc-annotator`: cmdline completion
+    /// surfaces these as right-aligned marginalia. Example
+    /// (foldmethod):
+    ///   `marker        Fold by markers ({{{...}}})`
+    ///   `indent        Fold by indent level`
+    ///   `manual        User-defined folds only`
+    ///   `syntax        Folds from tree-sitter syntax tree`
+    fn enumerate_with_docs() -> Option<Vec<EnumeratedValue>> {
+        Self::enumerate().map(|forms| {
+            forms
+                .into_iter()
+                .map(|form| EnumeratedValue { form, doc: "" })
+                .collect()
+        })
     }
 
     /// Optional: alternative *name* forms this type accepts for the

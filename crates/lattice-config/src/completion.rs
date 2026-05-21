@@ -46,17 +46,25 @@ impl CandidateGenerator for OptionsGenerator {
         if let Some(eq) = prefix.find('=') {
             // Value-completion mode. Look up the option to the
             // left of `=`, emit one candidate per known value.
+            // Slice `3c.unify.option-doc-annotator`: emit the
+            // `CandidateData::OptionValue` variant so the
+            // `DocSnippetAnnotator` populates the marginalia
+            // column from the type's per-value doc.
             let name = &prefix[..eq];
             if let Some(spec) = self.registry.lookup(name)
-                && let Some(values) = spec.enumerate_values()
+                && let Some(values) = spec.enumerate_values_with_docs()
             {
                 for v in values {
-                    let text = format!("{}={v}", spec.name());
+                    let text = format!("{}={}", spec.name(), v.form);
                     out.push(RawCandidate {
                         text: text.clone(),
                         display: text,
-                        kind: CandidateKind::Plain,
-                        data: CandidateData::Plain,
+                        kind: CandidateKind::Option,
+                        data: CandidateData::OptionValue {
+                            option_name: spec.name().to_string(),
+                            value: v.form.to_string(),
+                            doc: v.doc.to_string(),
+                        },
                         source: None,
                     });
                 }
@@ -65,20 +73,32 @@ impl CandidateGenerator for OptionsGenerator {
         }
         // Bare prefix: enumerate every option name + its alternate
         // forms (booleans add `noNAME`). The matcher fuzzy-filters.
+        // Slice `3c.unify.option-doc-annotator`: emit the
+        // `CandidateData::Option` variant so the
+        // `DocSnippetAnnotator` populates the marginalia column
+        // from `OptionDecl::DOC`.
         for spec in self.registry.iter() {
             out.push(RawCandidate {
                 text: spec.name().to_string(),
                 display: spec.name().to_string(),
-                kind: CandidateKind::Plain,
-                data: CandidateData::Plain,
+                kind: CandidateKind::Option,
+                data: CandidateData::Option {
+                    name: spec.name().to_string(),
+                    current_value: spec.get_formatted(),
+                    doc: spec.doc().to_string(),
+                },
                 source: None,
             });
             for alt in spec.name_forms() {
                 out.push(RawCandidate {
                     text: alt.clone(),
                     display: alt,
-                    kind: CandidateKind::Plain,
-                    data: CandidateData::Plain,
+                    kind: CandidateKind::Option,
+                    data: CandidateData::Option {
+                        name: spec.name().to_string(),
+                        current_value: spec.get_formatted(),
+                        doc: spec.doc().to_string(),
+                    },
                     source: None,
                 });
             }

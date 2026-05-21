@@ -548,6 +548,36 @@ mod tests {
         assert!(!p.candidates.is_empty());
     }
 
+    /// Slice 7d.0: every candidate emitted by the first-party
+    /// buffers source carries a typed `accept_action`. This is
+    /// the production proof that 7b's accept_action plumbing
+    /// survives the path through Picker::seat_with_routing /
+    /// Pipeline::match_and_rank — both stages operate on
+    /// `RawCandidate` and must preserve the field.
+    ///
+    /// If this regresses (e.g. a future refactor of
+    /// match_and_rank rebuilds RawCandidate without copying
+    /// accept_action), `do_picker_accept` would silently fall
+    /// back to the legacy trait path. This test catches that.
+    #[test]
+    fn buffers_picker_candidates_preserve_accept_action_after_seat() {
+        let mut app = app_with("hi\n", 5);
+        app.open_picker("buffers".into(), Vec::new());
+        let p = app.editor.picker.as_ref().expect("picker open");
+        assert!(!p.candidates.is_empty());
+        for cand in &p.candidates {
+            assert!(
+                cand.raw.accept_action.is_some(),
+                "buffers candidate missing accept_action after seat+refilter: {}",
+                cand.raw.display
+            );
+            assert!(matches!(
+                cand.raw.accept_action.as_ref().unwrap(),
+                lattice_completion::AcceptAction::SwitchBuffer { .. }
+            ));
+        }
+    }
+
     /// Slice 12: empty MRU `:picker recent` echoes the same
     /// message `:recent` does (closed picker, info echo).
     #[test]

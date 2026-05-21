@@ -15108,8 +15108,69 @@ impl Editor {
                 return Vec::new();
             }
         };
+        // Slice `3c.unify.picker-registry-cutover` (7d.0):
+        // typed-accept-action path. The 10 first-party picker
+        // sources (slices 7b.1-7b.6) set `accept_action` on
+        // every emitted candidate; DefaultAcceptHandler reads
+        // it, the translator converts to the host's
+        // PickerAcceptOutcome, dispatch runs identically.
+        //
+        // LSP picker sources don't set `accept_action` yet
+        // (slice 9+ migrates them) — they continue through the
+        // legacy trait-driven path below. The fallback also
+        // catches any new first-party source that forgets to
+        // set the field.
+        if let Some(action) = c.raw.accept_action.clone()
+            && let Some(source_id) = picker.source_id.as_deref()
+        {
+            // `AcceptHandler` trait import must be in scope for
+            // method dispatch. Inline use keeps the imports list
+            // at the file-top minimal.
+            use lattice_completion::AcceptHandler as _;
+            let handler = lattice_completion::DefaultAcceptHandler;
+            let resolved = match handler.accept(&c.raw) {
+                Ok(a) => a,
+                Err(e) => {
+                    self.set_message(EchoLevel::Error, e);
+                    return Vec::new();
+                }
+            };
+            // Defensive: the handler is supposed to return the
+            // same action we matched on, but a future custom
+            // AcceptHandler could differ. Use the handler's
+            // result, not the candidate field.
+            let _ = action; // touch to keep the binding meaningful in diffs
+            if let Some(outcome) = accept_action_to_outcome(resolved) {
+                let source_id_owned = source_id.to_string();
+                let mru_enabled = self
+                    .config
+                    .get_typed::<lattice_config::core_options::PickerMruEnabled>()
+                    .map(|b| *b)
+                    .unwrap_or(true);
+                let identity = lattice_picker::routing_identity(&routing);
+                if mru_enabled && let Some(identity) = identity.as_deref() {
+                    self.picker_mru.record(&source_id_owned, identity);
+                    self.persist_picker_mru_best_effort();
+                }
+                self.event_bus
+                    .publish_typed(lattice_picker::events::PickerAccepted {
+                        source_id: source_id_owned,
+                        identity,
+                        routing_payload_path: routing_payload_path(&routing),
+                        ts: std::time::SystemTime::now(),
+                    });
+                return self.apply_picker_outcome(outcome);
+            }
+            // `accept_action_to_outcome` returned None — the
+            // variant isn't covered by PickerAcceptOutcome yet
+            // (stateful LSP / cmdline / Custom). Fall through to
+            // the legacy trait path which DOES handle these
+            // shapes via PickerSourceGenerator::accept.
+        }
+
         // Trait-driven path: source id stamped on Picker. Resolve
-        // generator, accept, translate outcome.
+        // generator, accept, translate outcome. LSP picker
+        // sources go through here today.
         if let Some(source_id) = picker.source_id.as_deref()
             && let Some(generator) = self.picker_registry.generator(source_id).cloned()
         {
@@ -18387,6 +18448,67 @@ pub fn picker_action_for(source: &str) -> lattice_picker::PickerAction {
         "buffers" => lattice_picker::PickerAction::SwitchToBuffer,
         _ => lattice_picker::PickerAction::OpenFile,
     }
+}
+
+/// Slice `3c.unify.picker-registry-cutover` (7d.0).
+/// Translate a unified [`lattice_completion::AcceptAction`] into
+/// the host-internal [`lattice_picker::PickerAcceptOutcome`] for
+/// dispatch. The two enums encode the same concept; this fn is
+/// the bridge until 7e+ retires PickerAcceptOutcome entirely.
+///
+/// Returns `None` for variants that don't have a
+/// PickerAcceptOutcome counterpart today — stateful LSP actions
+/// (Indexed*, ShowMessageAction), the cmdline-only
+/// `InsertText`, and the plugin escape `Custom`. Callers fall
+/// back to the legacy trait-driven path in those cases (LSP
+/// sources don't set `accept_action` yet — slice 9+ migrates).
+pub fn accept_action_to_outcome(
+    action: lattice_completion::AcceptAction,
+) -> Option<lattice_picker::PickerAcceptOutcome> {
+    use lattice_completion::AcceptAction;
+    use lattice_picker::PickerAcceptOutcome;
+    Some(match action {
+        AcceptAction::OpenFile { path } => PickerAcceptOutcome::OpenFile { path },
+        AcceptAction::SwitchBuffer { id } => PickerAcceptOutcome::SwitchBuffer { buffer_id: id.0 },
+        AcceptAction::JumpInBuffer {
+            buffer_id,
+            line,
+            col,
+        } => PickerAcceptOutcome::JumpInBuffer {
+            buffer_id: buffer_id.0,
+            line,
+            col,
+        },
+        AcceptAction::JumpToFileLocation { path, line, col } => {
+            PickerAcceptOutcome::JumpToLocation { path, line, col }
+        }
+        AcceptAction::InvokeCommand { id, args } => {
+            PickerAcceptOutcome::InvokeCommand { id, args }
+        }
+        AcceptAction::PasteRegister { name } => PickerAcceptOutcome::PasteRegister { name },
+        AcceptAction::JumpToMark { name } => PickerAcceptOutcome::JumpToMark { name },
+        AcceptAction::ExpandSnippet { id } => PickerAcceptOutcome::ExpandSnippet { id },
+        AcceptAction::OpenLspLog {
+            server_id,
+            workspace: _,
+        } => PickerAcceptOutcome::OpenLspLog { server_id },
+        AcceptAction::OpenLspTraceLog {
+            server_id,
+            workspace: _,
+        } => PickerAcceptOutcome::OpenLspTraceLog { server_id },
+        // Stateful + cmdline + custom — not currently in
+        // PickerAcceptOutcome. Slices 9-17 (LSP source
+        // migrations) introduce these variants and grow
+        // PickerAcceptOutcome accordingly. Plugin Custom payloads
+        // need a separate dispatch helper too.
+        AcceptAction::AcceptIndexedCompletion { .. }
+        | AcceptAction::AcceptIndexedCodeAction { .. }
+        | AcceptAction::AcceptIndexedCodeLens { .. }
+        | AcceptAction::AcceptColorPresentation { .. }
+        | AcceptAction::AcceptShowMessageAction { .. }
+        | AcceptAction::InsertText { .. }
+        | AcceptAction::Custom(_) => return None,
+    })
 }
 
 /// Flatten a `WorkspaceEdit` into a per-file `Vec<(Uri,

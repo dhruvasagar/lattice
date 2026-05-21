@@ -580,8 +580,17 @@ impl EditorView {
 
         // Active-pane cursor state. `None` on inactive panes so the
         // element doesn't paint a cursor marker there.
-        let cursor_state = match (is_active, cursor_shape) {
-            (true, Some(shape)) => Some(crate::editor_element::CursorState {
+        //
+        // Issue #19/#21 (2026-05-22): also `None` when active_buffer
+        // is Help (State B: popup focused). The document pane is
+        // still painted, but the cursor is "inside" the popup
+        // conceptually. Hiding the document cursor signals to the
+        // user that focus has shifted, complementing the popup
+        // border-color change above.
+        let active_buffer_for_cursor = self.app.ad().buffer_kind;
+        let popup_owns_focus = active_buffer_for_cursor == lattice_core::BufferKind::Help;
+        let cursor_state = match (is_active, cursor_shape, popup_owns_focus) {
+            (true, Some(shape), false) => Some(crate::editor_element::CursorState {
                 line: cursor.line,
                 byte: cursor.byte,
                 shape,
@@ -1473,6 +1482,25 @@ impl Render for EditorView {
                     div().flex().flex_row().children(cells)
                 })
                 .collect();
+            // Issue #19/#21 (2026-05-22): visual focus indicator
+            // for State B (popup focused, active_buffer == Help).
+            // Host already flips active_buffer to Help on second
+            // K / on `:describe-*` open; GPUI just didn't show
+            // it. Brighten the border and add a "[focused]" hint
+            // when state-B is active so the user can SEE that
+            // their second K landed.
+            let active_buffer = self.app.ad().buffer_kind;
+            let popup_focused = active_buffer == lattice_core::BufferKind::Help;
+            let border_color = if popup_focused {
+                rgb(theme.cursor_background)
+            } else {
+                rgb(theme.popup_border)
+            };
+            let header_hint = if popup_focused {
+                " (focused — j/k to scroll, q/Esc to dismiss)"
+            } else {
+                " (K to focus, Esc to dismiss)"
+            };
             div()
                 .flex()
                 .flex_col()
@@ -1482,12 +1510,12 @@ impl Render for EditorView {
                 .bg(rgb(theme.popup_background))
                 .text_color(rgb(theme.foreground))
                 .border_2()
-                .border_color(rgb(theme.popup_border))
+                .border_color(border_color)
                 .child(
                     div()
                         .text_color(rgb(theme.popup_border))
                         .pb_2()
-                        .child(format!(" {title} "))
+                        .child(format!(" {title}{header_hint} "))
                         .child(div().child("───────────────".to_string())),
                 )
                 .child(

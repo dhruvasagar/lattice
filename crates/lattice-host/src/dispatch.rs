@@ -736,10 +736,19 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         // shouldn't (user reported `gg`/`dw` broken in production).
         // info! so it lands in *messages* without setting RUST_LOG.
         if !editor.partial_chord.is_empty() {
+            // Capture variant name without the heavy payload via
+            // Debug + take-first-token (Debug formats enum variants
+            // as `Variant { ... }` or `Variant(...)`, so the prefix
+            // up to whitespace/paren/brace is the variant name).
+            let dbg = format!("{action:?}");
+            let name: String = dbg
+                .chars()
+                .take_while(|c| !matches!(c, '(' | ' ' | '{' | ','))
+                .collect();
             tracing::info!(
-                "[chord-trace] CLEAR partial_chord={:?} on action={:?}",
+                "[chord-trace] CLEAR partial_chord={:?} on action={}",
                 editor.partial_chord,
-                std::mem::discriminant(&action),
+                name,
             );
         }
         editor.partial_chord.clear();

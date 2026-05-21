@@ -393,6 +393,23 @@ impl Editor {
                 terminal_width: self.terminal_width,
             }),
             theme: self.host_theme,
+            // Slice 3c.final.B.7: messages + modeline reads lifted
+            // off `read_editor` round-trips. `Arc::new` per publish
+            // keeps each sub-state's clone cheap (Arc bump only);
+            // inner `Arc<str>` / `Option<Arc<...>>` survive the
+            // outer Arc replacement without copying string bodies.
+            messages: std::sync::Arc::new(crate::render_state::MessagesRenderState {
+                last: self.last_message.clone().map(std::sync::Arc::new),
+            }),
+            modeline: std::sync::Arc::new(crate::render_state::ModelineRenderState {
+                cmdline_text: std::sync::Arc::from(self.command_line.as_str()),
+                auto_submit_hint: self.auto_submit_after_chord,
+                search_pattern: self
+                    .search_line
+                    .as_ref()
+                    .map(|s| std::sync::Arc::from(s.pattern.as_str())),
+                search_direction: self.search_line.as_ref().map(|s| s.direction),
+            }),
             diagnostics: std::sync::Arc::new(DiagnosticsRenderState {
                 // Clone the `DiagnosticsLayer` -- it's internally
                 // `Arc<ArcSwap<...>>`-backed so this is one Arc

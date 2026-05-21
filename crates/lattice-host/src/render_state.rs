@@ -598,17 +598,51 @@ impl PopupRenderState {
 
 /// `*messages*` buffer + echo line state.
 ///
-/// Slice 3a: empty placeholder. Slice 3b populates with the
-/// current echo level/text and the ring of messages.
+/// Slice 3c.final.B.7: populates the per-frame echo-area read.
+/// Renderers paint `last` as the bottom-row message (replacing the
+/// modeline when present). The full ring of messages stays
+/// host-side; only the surface the renderer paints lives here.
 #[derive(Debug, Default, Clone)]
-pub struct MessagesRenderState {}
+pub struct MessagesRenderState {
+    /// Last echo-area message — `None` when the row is blank.
+    /// Wrapped in `Arc` so the per-publish clone is one Arc bump
+    /// regardless of how long the text is.
+    pub last: Option<std::sync::Arc<crate::action::EchoMessage>>,
+}
 
-/// Modeline status (active mode chain, recording indicator,
-/// partial chord, search indicator).
+/// Modeline status (cmdline text, search indicator, mode hints).
 ///
-/// Slice 3a: empty placeholder. Slice 3b populates.
-#[derive(Debug, Default, Clone)]
-pub struct ModelineRenderState {}
+/// Slice 3c.final.B.7: populates the per-frame fields the
+/// renderer reads through `read_editor` today (cmdline text,
+/// search pattern + direction, auto-submit hint). The active mode
+/// chain remains via the existing `active_modes` lookup; future
+/// slices may lift that here too.
+#[derive(Debug, Clone)]
+pub struct ModelineRenderState {
+    /// Renderer-side cmdline text. `Arc<str>` so per-publish clone
+    /// is one Arc bump regardless of length.
+    pub cmdline_text: std::sync::Arc<str>,
+    /// `:describe-key<CR>` armed the chord-capture prompt; the
+    /// renderer paints a "press a chord" hint after the cursor.
+    pub auto_submit_hint: bool,
+    /// `/` or `?` search pattern; `None` when no search is in
+    /// flight. `Arc<str>` for the same reason as `cmdline_text`.
+    pub search_pattern: Option<std::sync::Arc<str>>,
+    /// `/` (forward) or `?` (backward); accompanies
+    /// `search_pattern` and is `None` whenever `search_pattern` is.
+    pub search_direction: Option<lattice_grammar::SearchDirection>,
+}
+
+impl Default for ModelineRenderState {
+    fn default() -> Self {
+        Self {
+            cmdline_text: std::sync::Arc::from(""),
+            auto_submit_hint: false,
+            search_pattern: None,
+            search_direction: None,
+        }
+    }
+}
 
 /// Renderer lifecycle flags published per tick.
 ///
@@ -1061,6 +1095,55 @@ mod tests {
         // Keymap handle clones to an Arc-backed view; verify
         // we can dereference it without panic.
         let _ = &rs.translator.keymap;
+    }
+
+    /// Slice 3c.final.B.7: messages + modeline round-trip
+    /// through the published snapshot.
+    #[test]
+    fn messages_and_modeline_reflect_editor_state() {
+        use crate::action::{EchoLevel, EchoMessage};
+        use crate::state::SearchLine;
+        use lattice_grammar::SearchDirection;
+        use lattice_protocol::position::Position;
+        let mut editor = Editor::default();
+
+        // Default: empty cmdline, no message, no search.
+        editor.publish_render_state();
+        let rs = editor.render_state.load_full();
+        assert!(rs.messages.last.is_none());
+        assert_eq!(rs.modeline.cmdline_text.as_ref(), "");
+        assert!(!rs.modeline.auto_submit_hint);
+        assert!(rs.modeline.search_pattern.is_none());
+        assert!(rs.modeline.search_direction.is_none());
+
+        // Populated.
+        editor.last_message = Some(EchoMessage {
+            text: "hello".to_string(),
+            level: EchoLevel::Info,
+        });
+        editor.command_line = "describe-key ".to_string();
+        editor.auto_submit_after_chord = true;
+        editor.search_line = Some(SearchLine {
+            direction: SearchDirection::Backward,
+            pattern: "needle".to_string(),
+            origin: Position::ZERO,
+        });
+        editor.publish_render_state();
+        let rs = editor.render_state.load_full();
+
+        let last = rs.messages.last.as_deref().expect("last set");
+        assert_eq!(last.text, "hello");
+        assert_eq!(last.level, EchoLevel::Info);
+        assert_eq!(rs.modeline.cmdline_text.as_ref(), "describe-key ");
+        assert!(rs.modeline.auto_submit_hint);
+        assert_eq!(
+            rs.modeline.search_pattern.as_deref(),
+            Some("needle"),
+        );
+        assert_eq!(
+            rs.modeline.search_direction,
+            Some(SearchDirection::Backward),
+        );
     }
 
     /// Slice 3c.final.B (group 6): lifecycle flags + theme

@@ -905,24 +905,17 @@ impl Render for EditorView {
         // minibuffer; otherwise it shows the global modal label.
         // Per-pane path + cursor coords now live inside each
         // pane's own status line (built in `paint_pane`).
-        // Slice 3c.final.E.5j: cmdline + search-line text via
-        // `read_editor` — closures return owned `String`.
+        // Slice 3c.final.B.7: cmdline + search-line via published
+        // `modeline()` sub-state — wait-free Arc clones.
+        let modeline = self.app.modeline();
         let bottom_row: String = match modal {
-            ModalState::Command => {
-                let line: String = self.app.read_editor(|e| e.command_line.clone());
-                format!(":{line}")
-            }
+            ModalState::Command => format!(":{}", modeline.cmdline_text),
             ModalState::Search(dir) => {
                 let prefix = match dir {
                     lattice_grammar::SearchDirection::Forward => '/',
                     lattice_grammar::SearchDirection::Backward => '?',
                 };
-                let pattern: String = self.app.read_editor(|e| {
-                    e.search_line
-                        .as_ref()
-                        .map(|s| s.pattern.clone())
-                        .unwrap_or_default()
-                });
+                let pattern = modeline.search_pattern.as_deref().unwrap_or("");
                 format!("{prefix}{pattern}")
             }
             _ => format!("  {modal_label}"),

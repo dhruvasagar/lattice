@@ -311,6 +311,18 @@ impl GpuiApp {
         self.render_state.load().active_document.clone()
     }
 
+    /// Slice 3c.final.B.7: published echo-area state — parallel
+    /// of TUI peer's `App::messages()`.
+    pub fn messages(&self) -> Arc<lattice_host::render_state::MessagesRenderState> {
+        self.render_state.load().messages.clone()
+    }
+
+    /// Slice 3c.final.B.7: published modeline + cmdline + search
+    /// state — parallel of TUI peer's `App::modeline()`.
+    pub fn modeline(&self) -> Arc<lattice_host::render_state::ModelineRenderState> {
+        self.render_state.load().modeline.clone()
+    }
+
     /// Phase 5.8.AF.5 / Slice 3c.final.E.4: routing helpers for
     /// editor mutations. Same shape as the TUI peer's
     /// `App::mutate_editor` / `App::mutate_editor_with`. Pre-swap

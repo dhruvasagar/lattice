@@ -2338,9 +2338,10 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
         //      (cursor in a `Chord` arg slot), show a softer
         //      `(chord)` tag so the user knows the cmdline is
         //      consuming raw key events as chord tokens.
-        // Slice 3c.final.E.5j: auto_submit_after_chord via `read_editor`.
-        let auto_submit = app.read_editor(|e| e.auto_submit_after_chord);
-        let hint: Option<&'static str> = if auto_submit {
+        // Slice 3c.final.B.7: auto_submit hint via published
+        // `modeline()` sub-state (wait-free Arc clone, no actor
+        // round-trip).
+        let hint: Option<&'static str> = if app.modeline().auto_submit_hint {
             Some("press a chord")
         } else if app.chord_capture_active() {
             Some("(chord)")
@@ -2380,15 +2381,10 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
             SearchDirection::Forward => '/',
             SearchDirection::Backward => '?',
         };
-        // Slice 3c.final.E.5j: search_line via `read_editor` —
-        // returns the owned pattern string (`String` is cheap to
-        // clone; the field is usually short).
-        let pattern: String = app.read_editor(|e| {
-            e.search_line
-                .as_ref()
-                .map(|s| s.pattern.clone())
-                .unwrap_or_default()
-        });
+        // Slice 3c.final.B.7: search pattern via published
+        // `modeline()` sub-state (Arc<str> clone, wait-free).
+        let modeline = app.modeline();
+        let pattern: &str = modeline.search_pattern.as_deref().unwrap_or("");
         let prompt = format!("{lead}{pattern}");
         let para = Paragraph::new(Line::from(prompt.clone()));
         frame.render_widget(para, area);
@@ -2399,17 +2395,14 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    // Slice 3c.final.E.5j: last_message via `read_editor` — returns
-    // an owned `(level, text)` tuple so the borrow doesn't escape.
-    let msg: Option<(EchoLevel, String)> = app.read_editor(|e| {
-        e.last_message
-            .as_ref()
-            .map(|m| (m.level, m.text.clone()))
-    });
-    let Some((level, text)) = msg else {
+    // Slice 3c.final.B.7: last message via published `messages()`
+    // sub-state — wait-free Arc clone.
+    let messages = app.messages();
+    let Some(msg) = messages.last.as_deref() else {
         // Nothing to show -- render nothing (the row stays blank).
         return;
     };
+    let level = msg.level;
     let style = match level {
         // Trace + Debug are below the default messages.filter
         // threshold and don't normally surface to the echo
@@ -2422,7 +2415,7 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
             .fg(Color::Red)
             .add_modifier(Modifier::BOLD),
     };
-    let para = Paragraph::new(Line::from(vec![Span::styled(text, style)]));
+    let para = Paragraph::new(Line::from(vec![Span::styled(msg.text.clone(), style)]));
     frame.render_widget(para, area);
 }
 

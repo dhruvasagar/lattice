@@ -1059,6 +1059,23 @@ impl App {
         self.render_state.load().popup.clone()
     }
 
+    /// Slice 3c.final.B.7: published echo-area state. Replaces
+    /// `read_editor(|e| e.last_message.clone())` in render.rs.
+    pub fn messages(
+        &self,
+    ) -> std::sync::Arc<lattice_host::render_state::MessagesRenderState> {
+        self.render_state.load().messages.clone()
+    }
+
+    /// Slice 3c.final.B.7: published modeline + cmdline + search
+    /// state. Replaces the per-frame `read_editor` calls for
+    /// `command_line`, `auto_submit_after_chord`, `search_line`.
+    pub fn modeline(
+        &self,
+    ) -> std::sync::Arc<lattice_host::render_state::ModelineRenderState> {
+        self.render_state.load().modeline.clone()
+    }
+
     /// Phase 5.8.AF.5 / Slice 3c.final.E.2: routing helper for
     /// editor mutations. Pre-swap: runs `f` against the in-process
     /// `Editor` and publishes RenderState. Post-swap (when Editor

@@ -20,10 +20,19 @@ use crate::traits::{
 
 /// One assembled pipeline for a single completion query. Built by
 /// the registry's slot resolver (or hand-built for tests).
+///
+/// Slice `3c.unify.ranker-stack`: the ranker slot is now a `Vec`
+/// so dimensions can compose. Each ranker in `rankers` runs in
+/// registration order, re-sorting the scored candidates by its
+/// own dimension. The downstream renderer sees the result of the
+/// LAST ranker — the chain shape is "earlier ranker establishes
+/// baseline ordering, later rankers refine within that". A future
+/// `MruRanker` will live alongside the builtin `ScoreRanker`
+/// without either becoming aware of the other.
 pub struct CompletionPipeline {
     pub generators: Vec<Arc<dyn CandidateGenerator>>,
     pub matcher: Arc<dyn CandidateMatcher>,
-    pub ranker: Arc<dyn CandidateRanker>,
+    pub rankers: Vec<Arc<dyn CandidateRanker>>,
     pub annotators: Vec<Arc<dyn CandidateAnnotator>>,
 }
 
@@ -72,8 +81,14 @@ impl CompletionPipeline {
             })
             .collect();
 
-        // 3. Rank.
-        self.ranker.rank(&mut scored);
+        // 3. Rank. Slice `3c.unify.ranker-stack`: chain of rankers,
+        // each re-sorting by its own dimension. Order matters —
+        // earlier rankers establish baseline order, later rankers
+        // refine within. Empty vec is a no-op (filter-only
+        // pipeline).
+        for r in &self.rankers {
+            r.rank(&mut scored);
+        }
 
         // 4. Annotate.
         let mut rendered: Vec<RenderedCandidate> = scored
@@ -101,7 +116,24 @@ impl CompletionPipeline {
     ) -> Option<Self> {
         let g = registry.generator(generator)?;
         let m = registry.matcher(registry.default_matcher?)?;
-        let r = registry.ranker(registry.default_ranker?)?;
+        // Slice `3c.unify.ranker-stack`: registry now holds an
+        // ordered list of default rankers. At least one is required
+        // (a pipeline with no rankers would short-circuit "filter
+        // only" semantics; we hold the line at "always rank by
+        // score" for now). Missing the entire default list is the
+        // configuration error.
+        if registry.default_rankers.is_empty() {
+            return None;
+        }
+        let rankers: Vec<_> = registry
+            .default_rankers
+            .iter()
+            .filter_map(|id| registry.ranker(*id))
+            .map(|r| r.inner.clone())
+            .collect();
+        if rankers.is_empty() {
+            return None;
+        }
         let annotators: Vec<_> = registry
             .default_annotators
             .iter()
@@ -111,7 +143,7 @@ impl CompletionPipeline {
         Some(Self {
             generators: vec![g.inner.clone()],
             matcher: m.inner.clone(),
-            ranker: r.inner.clone(),
+            rankers,
             annotators,
         })
     }
@@ -216,7 +248,7 @@ mod tests {
                 None,
             ))],
             matcher: Arc::new(PrefixMatch),
-            ranker: Arc::new(ScoreRank),
+            rankers: vec![Arc::new(ScoreRank)],
             annotators: vec![Arc::new(LengthAnno)],
         };
         let result = p.run(&ctx("alph", &buffer, &registry), "alph", &cache);
@@ -236,7 +268,7 @@ mod tests {
         let p = CompletionPipeline {
             generators: vec![generator.clone()],
             matcher: Arc::new(PrefixMatch),
-            ranker: Arc::new(ScoreRank),
+            rankers: vec![Arc::new(ScoreRank)],
             annotators: vec![],
         };
         let _ = p.run(&ctx("", &buffer, &registry), "", &cache);
@@ -256,7 +288,7 @@ mod tests {
         let p = CompletionPipeline {
             generators: vec![generator.clone()],
             matcher: Arc::new(PrefixMatch),
-            ranker: Arc::new(ScoreRank),
+            rankers: vec![Arc::new(ScoreRank)],
             annotators: vec![],
         };
         let _ = p.run(&ctx("", &buffer, &registry), "", &cache);
@@ -273,7 +305,7 @@ mod tests {
         let p = CompletionPipeline {
             generators: vec![Arc::new(CountingGen::new(vec!["foo", "bar", "baz"], None))],
             matcher: Arc::new(PrefixMatch),
-            ranker: Arc::new(ScoreRank),
+            rankers: vec![Arc::new(ScoreRank)],
             annotators: vec![],
         };
         let result = p.run(&ctx("ba", &buffer, &registry), "ba", &cache);
@@ -290,7 +322,7 @@ mod tests {
         let p = CompletionPipeline {
             generators: vec![Arc::new(CountingGen::new(vec!["alpha"], None))],
             matcher: Arc::new(PrefixMatch),
-            ranker: Arc::new(ScoreRank),
+            rankers: vec![Arc::new(ScoreRank)],
             annotators: vec![],
         };
         let result = p.run(&ctx("alp", &buffer, &registry), "alp", &cache);
@@ -306,7 +338,7 @@ mod tests {
         let p = CompletionPipeline {
             generators: vec![Arc::new(CountingGen::new(vec!["a", "b", "c"], None))],
             matcher: Arc::new(PrefixMatch),
-            ranker: Arc::new(ScoreRank),
+            rankers: vec![Arc::new(ScoreRank)],
             annotators: vec![],
         };
         let result = p.run(&ctx("", &buffer, &registry), "", &cache);

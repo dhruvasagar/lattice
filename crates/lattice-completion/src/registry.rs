@@ -79,8 +79,14 @@ pub struct CompletionRegistry {
     /// per-slot. User config (post-§5.12) sets this via
     /// `cmdline.matcher = "match:fuzzy"`.
     pub default_matcher: Option<MatcherId>,
-    /// Default ranker.
-    pub default_ranker: Option<RankerId>,
+    /// Default rankers, in chain order. Earlier rankers establish
+    /// baseline order; later rankers refine within. Slice
+    /// `3c.unify.ranker-stack` replaced `Option<RankerId>` with
+    /// `Vec<RankerId>` so dimensions (e.g. `ScoreRanker` then
+    /// `MruRanker`) compose without either becoming aware of the
+    /// other. Empty list ⇒ no rankers ⇒ `Pipeline::for_generator`
+    /// returns `None` (a configuration error).
+    pub default_rankers: Vec<RankerId>,
     /// Annotators that run on every candidate, in registration
     /// order. v1 has no priority field; plugins that need a
     /// specific position re-register existing annotators after
@@ -99,7 +105,7 @@ impl std::fmt::Debug for CompletionRegistry {
             .field("rankers", &self.rankers.len())
             .field("annotators", &self.annotators.len())
             .field("default_matcher", &self.default_matcher)
-            .field("default_ranker", &self.default_ranker)
+            .field("default_rankers", &self.default_rankers)
             .field("default_annotators", &self.default_annotators)
             .finish_non_exhaustive()
     }
@@ -387,7 +393,7 @@ mod tests {
     fn default_slots_start_unset() {
         let r = CompletionRegistry::new();
         assert!(r.default_matcher.is_none());
-        assert!(r.default_ranker.is_none());
+        assert!(r.default_rankers.is_empty());
         assert!(r.default_annotators.is_empty());
     }
 

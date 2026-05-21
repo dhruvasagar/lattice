@@ -82,7 +82,10 @@ pub fn populate(registry: &mut CompletionRegistry) -> CompletionBuiltins {
     // `match:substring` via `cmdline.matcher` once §5.12 typed
     // options lands.
     registry.default_matcher = Some(match_fuzzy);
-    registry.default_ranker = Some(rank_score);
+    // Slice `3c.unify.ranker-stack`: default ranker list (chain in
+    // registration order). One entry today (`rank_score`); a
+    // future `MruRanker` will stack here.
+    registry.default_rankers = vec![rank_score];
     registry.default_annotators = vec![anno_kind_label, anno_doc_snippet];
 
     CompletionBuiltins {
@@ -121,7 +124,7 @@ mod tests {
         // Q4: fuzzy is the v1 default. Configurable via
         // `cmdline.matcher` once typed options land.
         assert_eq!(r.default_matcher, Some(b.match_fuzzy));
-        assert_eq!(r.default_ranker, Some(b.rank_score));
+        assert_eq!(r.default_rankers, vec![b.rank_score]);
         assert_eq!(
             r.default_annotators,
             vec![b.anno_kind_label, b.anno_doc_snippet]

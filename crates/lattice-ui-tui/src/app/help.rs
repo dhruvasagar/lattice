@@ -473,10 +473,9 @@ impl App {
                 // `do_edit` may have set an error message + bailed
                 // (e.g. permission denied). Don't try to jump in
                 // that case -- the message is already on screen.
-                // Slice 3c.final.E.5e: read `last_message.level`
-                // through `read_editor`.
-                let last_level = self
-                    .read_editor(|e| e.last_message.as_ref().map(|m| m.level));
+                // Slice 3c.final.X.cleanup: read `last_message.level`
+                // via published `MessagesRenderState.last` (B.7).
+                let last_level = self.messages().last.as_ref().map(|m| m.level);
                 if matches!(last_level, Some(EchoLevel::Error)) {
                     return;
                 }
@@ -1543,6 +1542,7 @@ mod tests {
         let mut a = app_with("xx", 10);
         a.editor.command_line = "customize editor".into();
         a.editor.modal = ModalState::Command;
+        a.editor.publish_render_state();
         a.apply(Action::CommandLineSubmit);
         let h = a.popup_help().expect("customize editor");
         let body = h.content.as_string();
@@ -1646,6 +1646,7 @@ mod tests {
         let mut a = app_with("xx", 10);
         a.editor.command_line = "customize editor".into();
         a.editor.modal = ModalState::Command;
+        a.editor.publish_render_state();
         a.apply(Action::CommandLineSubmit);
         let popup_id = a.editor.popup_buffer.expect("customize editor open");
         // Find the customize-edit link for `tabstop`.
@@ -1683,6 +1684,7 @@ mod tests {
         let mut a = app_with("xx", 10);
         a.editor.command_line = "customize editor".into();
         a.editor.modal = ModalState::Command;
+        a.editor.publish_render_state();
         a.apply(Action::CommandLineSubmit);
         let popup_id = a.editor.popup_buffer.expect("editor view open");
         let link = a

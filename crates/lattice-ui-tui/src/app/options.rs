@@ -102,7 +102,15 @@ impl App {
         // `option_cache.foldenable`, and `option_cache` is already
         // mirrored on the published `ad()` substate. Skip the
         // actor RPC and read the mirror directly — wait-free.
-        self.ad().option_cache.foldenable
+        // cfg(test) escape hatch — see `App::cursor()`.
+        #[cfg(test)]
+        {
+            self.editor.foldenable()
+        }
+        #[cfg(not(test))]
+        {
+            self.ad().option_cache.foldenable
+        }
     }
 
     /// 5.5.G.23.cmdline: body migrated to

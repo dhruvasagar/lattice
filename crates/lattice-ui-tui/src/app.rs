@@ -969,7 +969,10 @@ impl std::fmt::Debug for App {
         // off-thread. `last_message` is cloned (`EchoMessage: Clone`).
         let ad = self.ad();
         let rs = self.render_state.load();
-        let last_message = self.read_editor(|e| e.last_message.clone());
+        // Slice 3c.final.X.cleanup: read from the published
+        // `MessagesRenderState.last` (slice B.7) instead of routing
+        // through the actor mailbox just to print Debug output.
+        let last_message = self.messages().last.as_deref().cloned();
         f.debug_struct("App")
             .field("cursor", &self.cursor())
             .field("scroll", &ad.scroll)
@@ -1181,7 +1184,24 @@ impl App {
     /// in one place instead of N. `Position` is `Copy` so this is
     /// a value return, not an Arc clone.
     pub(crate) fn cursor(&self) -> lattice_protocol::position::Position {
-        self.read_editor(|e| e.cursor)
+        // Slice 3c.final.X.cleanup: published on `ad().cursor` —
+        // wait-free Arc-bump read. Cursor changes always publish RS
+        // via the dispatch tail; per-keystroke readers (motions,
+        // edit, status redraw) now skip the actor mailbox.
+        //
+        // cfg(test) escape hatch reads from `self.editor.cursor`
+        // directly so tests that mutate `editor.cursor.X = Y`
+        // without `publish_render_state()` keep working. Production
+        // always goes through RS; tests preserve the "direct
+        // mutation is immediately visible" convention.
+        #[cfg(test)]
+        {
+            self.editor.cursor
+        }
+        #[cfg(not(test))]
+        {
+            self.ad().cursor
+        }
     }
 
     /// Companion writer. Routes through `mutate_editor` so the
@@ -1194,7 +1214,17 @@ impl App {
     /// document's buffer id. 5+ real reader sites across `lsp`,
     /// `boot`, `lifecycle`. `BufferId` is `Copy`.
     pub(crate) fn document_buffer_id(&self) -> crate::buffers::BufferId {
-        self.read_editor(|e| e.document_buffer_id)
+        // Slice 3c.final.X.cleanup: `BufferId` is `Copy` and mirrored
+        // on `ad().document_buffer_id`. cfg(test) escape hatch as
+        // per `cursor()` — see its docstring.
+        #[cfg(test)]
+        {
+            self.editor.document_buffer_id
+        }
+        #[cfg(not(test))]
+        {
+            self.ad().document_buffer_id
+        }
     }
 
     /// Slice 3c.final.E.5d: hot-field accessor for the `:` line
@@ -1202,7 +1232,19 @@ impl App {
     /// `search`, the Debug impl. Returns by value — `String`
     /// clone — so the closure body is `Send + 'static`.
     pub(crate) fn command_line(&self) -> String {
-        self.read_editor(|e| e.command_line.clone())
+        // Slice 3c.final.X.cleanup: read from the published
+        // `ModelineRenderState.cmdline_text` (slice B.7). The Arc<str>
+        // → String conversion is one heap copy, matching the prior
+        // `e.command_line.clone()` cost without the mailbox RPC.
+        // cfg(test) escape hatch as per `cursor()` — see its docstring.
+        #[cfg(test)]
+        {
+            self.editor.command_line.clone()
+        }
+        #[cfg(not(test))]
+        {
+            self.modeline().cmdline_text.to_string()
+        }
     }
 
     /// Slice 3c.final.E.5e: ExCommandRegistry accessor. Backed by
@@ -2197,6 +2239,7 @@ mod tests {
             .position(|f| f.start_line == 0)
             .expect("H1 fold");
         a.editor.folds[idx].closed = true;
+        a.editor.publish_render_state();
         // Sanity: the fold is closed and visible to the renderer.
         assert!(a.line_inside_closed_fold(1));
         assert!(a.fold_start_at(0).is_some());

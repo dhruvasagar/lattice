@@ -103,11 +103,19 @@ impl App {
     /// gates, so each saved actor RPC drops ~100µs off the frame
     /// budget.
     pub fn lsp_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        self.modes()
-            .map
-            .get(&buffer_id)
-            .map(|m| m.has_minor(lattice_lsp::modes::LspMode::mode_id()))
-            .unwrap_or(false)
+        // cfg(test) escape hatch — see `App::cursor()`.
+        #[cfg(test)]
+        {
+            self.editor.lsp_mode_enabled_for(buffer_id)
+        }
+        #[cfg(not(test))]
+        {
+            self.modes()
+                .map
+                .get(&buffer_id)
+                .map(|m| m.has_minor(lattice_lsp::modes::LspMode::mode_id()))
+                .unwrap_or(false)
+        }
     }
 
     /// M.6.0: is `mode_id` active on `buffer_id`? Generic minor-
@@ -159,12 +167,18 @@ impl App {
     /// Read by the publish-diagnostics paint pipeline and
     /// `:diag-next` / `:diag-prev` once M.6.3 wires the gate.
     pub fn lsp_diagnostics_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        // Slice 3c.extension.fold-rs: see `lsp_mode_enabled_for`.
-        self.modes()
-            .map
-            .get(&buffer_id)
-            .map(|m| m.has_minor(lattice_lsp::modes::LspDiagnosticsMode::mode_id()))
-            .unwrap_or(false)
+        #[cfg(test)]
+        {
+            self.editor.lsp_diagnostics_mode_enabled_for(buffer_id)
+        }
+        #[cfg(not(test))]
+        {
+            self.modes()
+                .map
+                .get(&buffer_id)
+                .map(|m| m.has_minor(lattice_lsp::modes::LspDiagnosticsMode::mode_id()))
+                .unwrap_or(false)
+        }
     }
 
     /// M.6.0: is `lsp-hover-mode` active on `buffer_id`? Read by
@@ -207,12 +221,18 @@ impl App {
     /// the bus (plugins can subscribe) but the modeline stays
     /// quiet for that buffer.
     pub fn lsp_progress_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        // Slice 3c.extension.fold-rs: see `lsp_mode_enabled_for`.
-        self.modes()
-            .map
-            .get(&buffer_id)
-            .map(|m| m.has_minor(lattice_lsp::modes::LspProgressMode::mode_id()))
-            .unwrap_or(false)
+        #[cfg(test)]
+        {
+            self.editor.lsp_progress_mode_enabled_for(buffer_id)
+        }
+        #[cfg(not(test))]
+        {
+            self.modes()
+                .map
+                .get(&buffer_id)
+                .map(|m| m.has_minor(lattice_lsp::modes::LspProgressMode::mode_id()))
+                .unwrap_or(false)
+        }
     }
 
     /// 4.4.e: is `lsp-document-highlight-mode` active on
@@ -220,12 +240,18 @@ impl App {
     /// `textDocument/documentHighlight` request issuance and
     /// the soft-highlight decoration overlay.
     pub fn lsp_document_highlight_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        // Slice 3c.extension.fold-rs: see `lsp_mode_enabled_for`.
-        self.modes()
-            .map
-            .get(&buffer_id)
-            .map(|m| m.has_minor(lattice_lsp::modes::LspDocumentHighlightMode::mode_id()))
-            .unwrap_or(false)
+        #[cfg(test)]
+        {
+            self.editor.lsp_document_highlight_mode_enabled_for(buffer_id)
+        }
+        #[cfg(not(test))]
+        {
+            self.modes()
+                .map
+                .get(&buffer_id)
+                .map(|m| m.has_minor(lattice_lsp::modes::LspDocumentHighlightMode::mode_id()))
+                .unwrap_or(false)
+        }
     }
 
     /// 4.4.e: is `lsp-selection-range-mode` active on
@@ -245,21 +271,33 @@ impl App {
     }
 
     pub fn lsp_inlay_hint_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        // Slice 3c.extension.fold-rs: see `lsp_mode_enabled_for`.
-        self.modes()
-            .map
-            .get(&buffer_id)
-            .map(|m| m.has_minor(lattice_lsp::modes::LspInlayHintMode::mode_id()))
-            .unwrap_or(false)
+        #[cfg(test)]
+        {
+            self.editor.lsp_inlay_hint_mode_enabled_for(buffer_id)
+        }
+        #[cfg(not(test))]
+        {
+            self.modes()
+                .map
+                .get(&buffer_id)
+                .map(|m| m.has_minor(lattice_lsp::modes::LspInlayHintMode::mode_id()))
+                .unwrap_or(false)
+        }
     }
 
     pub fn lsp_semantic_tokens_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        // Slice 3c.extension.fold-rs: see `lsp_mode_enabled_for`.
-        self.modes()
-            .map
-            .get(&buffer_id)
-            .map(|m| m.has_minor(lattice_lsp::modes::LspSemanticTokensMode::mode_id()))
-            .unwrap_or(false)
+        #[cfg(test)]
+        {
+            self.editor.lsp_semantic_tokens_mode_enabled_for(buffer_id)
+        }
+        #[cfg(not(test))]
+        {
+            self.modes()
+                .map
+                .get(&buffer_id)
+                .map(|m| m.has_minor(lattice_lsp::modes::LspSemanticTokensMode::mode_id()))
+                .unwrap_or(false)
+        }
     }
 
     /// M.5.4: shared gate for every LSP request entry point

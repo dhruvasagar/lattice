@@ -413,6 +413,7 @@ mod tests {
     fn enter_command_line_clears_buffer_and_sets_modal() {
         let mut a = app_with("abc", 10);
         a.editor.command_line = "stale".into();
+        a.editor.publish_render_state();
         a.editor.last_message = Some(EchoMessage {
             text: "stale".into(),
             level: EchoLevel::Info,
@@ -707,22 +708,27 @@ mod tests {
         a.editor.publish_render_state();
         // Empty cmdline -> CommandName slot, not chord-capture.
         a.editor.command_line = String::new();
+        a.editor.publish_render_state();
         assert!(!a.chord_capture_active());
         // Mid command-name slot.
         a.editor.command_line = "describe-key".into();
+        a.editor.publish_render_state();
         assert!(!a.chord_capture_active());
         // Now the cursor is past the space; arg slot is `chord`
         // with kind=Chord -> capture is active.
         a.editor.command_line = "describe-key ".into();
+        a.editor.publish_render_state();
         assert!(a.chord_capture_active());
         // describe-command's first arg is String, NOT Chord ->
         // no capture even though we're in an arg slot.
         a.editor.command_line = "describe-command ".into();
+        a.editor.publish_render_state();
         assert!(!a.chord_capture_active());
         // Outside Command modal, never active.
         a.editor.modal = ModalState::Normal;
         a.editor.publish_render_state();
         a.editor.command_line = "describe-key ".into();
+        a.editor.publish_render_state();
         assert!(!a.chord_capture_active());
     }
 
@@ -735,6 +741,7 @@ mod tests {
         a.editor.modal = ModalState::Command;
         a.editor.publish_render_state();
         a.editor.command_line = "ex:describe-key ".into();
+        a.editor.publish_render_state();
         assert!(a.chord_capture_active());
     }
 

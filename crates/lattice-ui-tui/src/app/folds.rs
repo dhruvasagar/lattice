@@ -71,7 +71,25 @@ impl App {
     /// [`lattice_host::dispatch::Editor::line_inside_closed_fold`]
     /// so the GPUI peer can reach the same check.
     pub fn line_inside_closed_fold(&self, line: u32) -> bool {
-        self.read_editor(move |e| e.line_inside_closed_fold(line))
+        // Slice 3c.final.X.cleanup: read folds from published
+        // `ad()` instead of via the actor seam. Editor::line_inside_closed_fold
+        // gates on `option_cache.foldenable` then walks `self.folds` —
+        // both are mirrored on `ActiveDocumentRenderState`.
+        // cfg(test) escape hatch — see `App::cursor()`.
+        #[cfg(test)]
+        {
+            self.editor.line_inside_closed_fold(line)
+        }
+        #[cfg(not(test))]
+        {
+            let ad = self.ad();
+            if !ad.option_cache.foldenable {
+                return false;
+            }
+            ad.folds
+                .iter()
+                .any(|f| f.closed && line > f.start_line && line <= f.end_line)
+        }
     }
 
     /// 5.5.G.23: body migrated to
@@ -81,11 +99,23 @@ impl App {
     /// `run_document_invocation` both still call it before the
     /// helper deletion sweep.
     pub fn fold_start_at(&self, line: u32) -> Option<Fold> {
-        // Slice 3c.final.E.5e: returns owned `Fold` (Copy) so the
-        // closure satisfies `Send + 'static`. Callers all use
-        // `if let Some(fold) = ...` / `.filter(|f| f.closed)` so
-        // the value-vs-borrow swap is source-compatible.
-        self.read_editor(move |e| e.fold_start_at(line).copied())
+        // Slice 3c.final.X.cleanup: read via published `ad().folds`.
+        // cfg(test) escape hatch — see `App::cursor()`.
+        #[cfg(test)]
+        {
+            self.editor.fold_start_at(line).copied()
+        }
+        #[cfg(not(test))]
+        {
+            let ad = self.ad();
+            if !ad.option_cache.foldenable {
+                return None;
+            }
+            ad.folds
+                .iter()
+                .find(|f| f.closed && f.start_line == line)
+                .copied()
+        }
     }
 
     /// 5.5.G.23: body migrated to
@@ -93,7 +123,20 @@ impl App {
     /// as a 1-line delegate; renderer call sites retire on the same
     /// sweep as `fold_start_at`.
     pub fn fold_start_at_any(&self, line: u32) -> Option<Fold> {
-        self.read_editor(move |e| e.fold_start_at_any(line).copied())
+        // Slice 3c.final.X.cleanup: read via published `ad().folds`.
+        // cfg(test) escape hatch — see `App::cursor()`.
+        #[cfg(test)]
+        {
+            self.editor.fold_start_at_any(line).copied()
+        }
+        #[cfg(not(test))]
+        {
+            let ad = self.ad();
+            if !ad.option_cache.foldenable {
+                return None;
+            }
+            ad.folds.iter().find(|f| f.start_line == line).copied()
+        }
     }
 
     /// 5.5.G.23: body migrated to
@@ -884,6 +927,7 @@ mod tests {
             closed: true,
             identity: None,
         });
+        a.editor.publish_render_state();
         assert!(!a.line_inside_closed_fold(0));
         // Start line is the summary, NOT inside.
         assert!(!a.line_inside_closed_fold(1));

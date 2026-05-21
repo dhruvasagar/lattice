@@ -555,18 +555,48 @@ impl Picker {
     /// instance rows. Caller (`App::open_lsp_picker`) snapshots the
     /// supervisor under its lock and hands the resulting tuples
     /// here. Refreshes the filter.
+    ///
+    /// Slice 15: stamps each candidate's `accept_action` based
+    /// on the picker's `on_accept` (OpenLspLog vs
+    /// OpenLspTraceLog) so the typed dispatch (7d.0) fires
+    /// instead of the legacy PickerAction match.
     pub fn set_lsp_instances(&mut self, rows: Vec<LspInstanceRow>) {
         let prefilter = match &self.source {
             PickerSource::LspInstances { prefilter } => prefilter.clone(),
             _ => None,
         };
+        let on_accept = self.on_accept;
         let items: Vec<(RawCandidate, RoutingPayload)> = rows
             .into_iter()
             .filter(|r| match &prefilter {
                 Some(want) => r.server_id == *want,
                 None => true,
             })
-            .map(|r| r.into_candidate_with_routing())
+            .map(|r| {
+                let (mut raw, routing) = r.into_candidate_with_routing();
+                if let RoutingPayload::LspInstance {
+                    ref server_id,
+                    ref workspace,
+                } = routing
+                {
+                    raw.accept_action = match on_accept {
+                        PickerAction::OpenLspLog => Some(Box::new(
+                            lattice_completion::AcceptAction::OpenLspLog {
+                                server_id: server_id.clone(),
+                                workspace: workspace.clone(),
+                            },
+                        )),
+                        PickerAction::OpenLspTraceLog => Some(Box::new(
+                            lattice_completion::AcceptAction::OpenLspTraceLog {
+                                server_id: server_id.clone(),
+                                workspace: workspace.clone(),
+                            },
+                        )),
+                        _ => None,
+                    };
+                }
+                (raw, routing)
+            })
             .collect();
         self.set_raw_candidates_with_routing(items);
     }
@@ -831,6 +861,21 @@ impl LspLocationRow {
             lattice_completion::CandidateKind::Plain,
         );
         raw.display = display;
+        // Slice 10: typed accept_action so LSP locations
+        // (references / definitions / declaration / type-defs /
+        // implementations / diagnostics) flow through 7d.0's
+        // DefaultAcceptHandler dispatch + 7g's typed preview.
+        // Closes the LSP-references-preview gap the user flagged
+        // (2026-05-21) — every LSP location picker now previews
+        // the file at the reference's line, not buffer-switcher
+        // only.
+        raw.accept_action = Some(Box::new(
+            lattice_completion::AcceptAction::JumpToFileLocation {
+                path: self.path.clone(),
+                line: self.line,
+                col: self.col,
+            },
+        ));
         let routing = RoutingPayload::LspLocation {
             path: self.path,
             line: self.line,

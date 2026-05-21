@@ -456,6 +456,16 @@ impl PickerSourceGenerator for BuffersSource {
                 );
                 let mut cand = RawCandidate::plain(format!("#{}", e.id), CandidateKind::Buffer);
                 cand.display = display;
+                // Slice 7b.1: typed accept payload on the
+                // candidate. Parallel to the existing
+                // RoutingPayload (still emitted for the picker's
+                // routing_meta lookup) — slice 7d's registry
+                // cutover drops the parallel routing vec once
+                // the host routes accept through
+                // DefaultAcceptHandler.
+                cand.accept_action = Some(lattice_completion::AcceptAction::SwitchBuffer {
+                    id: lattice_core::BufferId(e.id),
+                });
                 (cand, RoutingPayload::Buffer { id: e.id })
             })
             .collect();

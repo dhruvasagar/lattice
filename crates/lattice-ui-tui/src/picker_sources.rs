@@ -164,6 +164,43 @@ mod tests {
         );
     }
 
+    /// Slice 7b.1 probe: BuffersSource candidates carry the
+    /// typed `accept_action` (SwitchBuffer) — the
+    /// `DefaultAcceptHandler` reads it without the source
+    /// needing a custom handler impl. Parallel to the
+    /// existing RoutingPayload pair (kept alive through 7c).
+    #[test]
+    fn buffers_source_candidates_carry_typed_accept_action() {
+        use lattice_completion::{AcceptAction, AcceptHandler, DefaultAcceptHandler};
+
+        let app = app_with("hi\n", 5);
+        let snap = app.ad().snapshot.clone();
+        let ctx = app.build_picker_context(&snap);
+        let source = BuffersSource::new();
+        let result = source.init(&ctx, &[]).expect("inline");
+        let PickerInitResult::Inline(pairs) = result else {
+            panic!("expected Inline");
+        };
+        for (cand, routing) in &pairs {
+            // The candidate's typed accept must align with the
+            // legacy routing payload (both encode the same id).
+            let action = cand
+                .accept_action
+                .as_ref()
+                .expect("BuffersSource sets accept_action on every candidate");
+            let RoutingPayload::Buffer { id: routing_id } = routing else {
+                panic!("expected Buffer routing");
+            };
+            match action {
+                AcceptAction::SwitchBuffer { id } => assert_eq!(id.0, *routing_id),
+                other => panic!("expected SwitchBuffer, got {other:?}"),
+            }
+            // And DefaultAcceptHandler returns the same action.
+            let resolved = DefaultAcceptHandler.accept(cand).expect("handler ok");
+            assert_eq!(&resolved, action);
+        }
+    }
+
     #[test]
     fn first_party_generators_returns_all_built_in_sources() {
         let app = app_with("hi\n", 5);

@@ -104,6 +104,47 @@ impl CompletionPipeline {
     }
 }
 
+impl CompletionPipeline {
+    /// Slice `3c.unify.picker-via-pipeline`: shared match+rank
+    /// entry point for surfaces that have pre-computed candidates
+    /// and want the shared matcher + ranker machinery without
+    /// the generator / annotator ceremony.
+    ///
+    /// Used by:
+    ///   - Picker (`Picker::refilter`): pre-supplies `raw` via
+    ///     `Picker::set_raw_candidates_*`; pipeline holds picker-
+    ///     specific matcher (`FuzzyDisplayMatcher`) and rankers
+    ///     (`MruRanker` over the picker's bonus map).
+    ///   - LSP picker sources (future, slices 10-16): host
+    ///     pre-supplies rows from async LSP responses; pipeline
+    ///     holds the same picker shape.
+    ///
+    /// Skips the generator stage (callers have `raw` already) and
+    /// the annotator stage (callers without annotation pipelines
+    /// don't pay for it). Annotation-enabled callers can call
+    /// the full `Pipeline::run` once they have a `GenerateContext`,
+    /// or extend this method to take an annotators slice when a
+    /// concrete need surfaces.
+    pub fn match_and_rank(&self, query: &str, raw: &[RawCandidate]) -> Vec<RenderedCandidate> {
+        let mut scored: Vec<ScoredCandidate> = raw
+            .iter()
+            .filter_map(|c| {
+                self.matcher
+                    .matches(query, c)
+                    .map(|(score, ranges)| ScoredCandidate {
+                        raw: c.clone(),
+                        score,
+                        match_ranges: ranges,
+                    })
+            })
+            .collect();
+        for r in &self.rankers {
+            r.rank(&mut scored);
+        }
+        scored.into_iter().map(RenderedCandidate::from_scored).collect()
+    }
+}
+
 /// Helper that assembles a pipeline from the registry's current
 /// configuration plus the slot's generator. Returns `None` if any
 /// required piece (default matcher / default ranker / the

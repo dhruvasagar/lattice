@@ -33,6 +33,7 @@ pub mod slot;
 pub mod source;
 pub mod traits;
 
+pub use crate::builtins::matchers::{FuzzyDisplayMatcher, FuzzyMatcher, PrefixMatcher, SubstringMatcher};
 pub use crate::builtins::rankers::{AlphabeticalRanker, MruRanker, ScoreRanker};
 pub use crate::builtins::{CompletionBuiltins, populate};
 pub use crate::cache::GeneratorCache;

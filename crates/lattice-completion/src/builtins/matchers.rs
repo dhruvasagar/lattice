@@ -105,6 +105,29 @@ impl CandidateMatcher for FuzzyMatcher {
     }
 }
 
+/// `match:fuzzy-display`. Same 5-tier algorithm as [`FuzzyMatcher`]
+/// but matches against `candidate.display` instead of
+/// `candidate.text`.
+///
+/// Slice `3c.unify.picker-via-pipeline`: picker rows have
+/// `text` carrying a routing payload (e.g.
+/// `"<server_id>\t<workspace>"`) the user never sees, while
+/// `display` is the row's user-visible label. The picker has to
+/// match on `display`. This split (cmdline matches `text`, picker
+/// matches `display`) is now first-class: two matcher impls,
+/// same underlying `fuzzy_match` algorithm.
+pub struct FuzzyDisplayMatcher;
+
+impl CandidateMatcher for FuzzyDisplayMatcher {
+    fn matches(
+        &self,
+        query: &str,
+        candidate: &RawCandidate,
+    ) -> Option<(MatchScore, Vec<Range<usize>>)> {
+        crate::fuzzy_match(query, &candidate.display)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]

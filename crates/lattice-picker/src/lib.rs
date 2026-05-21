@@ -68,8 +68,8 @@ pub use source::{
 use std::path::PathBuf;
 
 use lattice_completion::{
-    CandidateData, CandidateRanker, MatchScore, MruRanker, RawCandidate, RenderedCandidate,
-    ScoredCandidate, fuzzy_match,
+    CandidateData, CompletionPipeline, FuzzyDisplayMatcher, MatchScore, MruRanker, RawCandidate,
+    RenderedCandidate,
 };
 
 /// `CandidateData::Extension { kind_id }` value the picker stamps
@@ -610,47 +610,37 @@ impl Picker {
             }
             return;
         }
-        // Slice `3c.unify.mru-promotion`: ranking is now delegated
-        // to a `MruRanker` instance from `lattice-completion`.
-        // The closure captures the picker's `mru_bonuses` Vec
-        // (snapshotted at the picker's open time by the host) and
-        // looks up per-candidate via the same index-in-CandidateData
-        // encoding `bonus_for_raw` decoded before. The ranker
-        // subsumes the prior "sort by `score + bonus` descending"
-        // logic, so the picker no longer carries the combine
-        // arithmetic inline.
+        // Slice `3c.unify.picker-via-pipeline`: picker filter +
+        // rank now flows through `CompletionPipeline::match_and_rank`,
+        // the shared match+rank entry point in `lattice-completion`.
+        //
+        // Picker-specific pipeline shape:
+        //   - matcher: `FuzzyDisplayMatcher` — picker rows match
+        //     on `display` (user-visible label), not `text` (which
+        //     carries the routing payload).
+        //   - rankers: `MruRanker` capturing the picker's bonus
+        //     map via the same index-in-CandidateData encoding the
+        //     prior inline path used. The ranker subsumes the
+        //     "sort by `score + bonus` descending" logic.
+        //   - generators: empty (picker pre-supplies `raw`).
+        //   - annotators: empty (picker has no annotations today;
+        //     slice 6 plumbs marginalia in).
         //
         // Score = match (0..1000) + mru_bonus (0..~110 typical).
         // Bonus sits below the tier delta between match tiers
         // (200 between FUZZY_LOW and SUBSTRING) so it functions
         // as a within-tier tie-breaker rather than a tier
         // override.
-        let mut scored: Vec<ScoredCandidate> = Vec::new();
-        for raw in &self.raw {
-            if let Some((score, ranges)) = fuzzy_match(&self.query, &raw.display) {
-                scored.push(ScoredCandidate {
-                    raw: raw.clone(),
-                    score,
-                    match_ranges: ranges,
-                });
-            }
-        }
-        // Build a ranker that closes over the bonus map. The
-        // bonus vec is small (per-candidate scalar f64) so the
-        // clone is cheap relative to the per-keystroke fuzzy
-        // match work above.
         let bonuses = self.mru_bonuses.clone();
-        let ranker = MruRanker::new(move |raw| bonus_for_raw(raw, &bonuses));
-        ranker.rank(&mut scored);
-        self.candidates = scored
-            .into_iter()
-            .map(|s| RenderedCandidate {
-                raw: s.raw,
-                score: s.score,
-                match_ranges: s.match_ranges,
-                annotations: Vec::new(),
-            })
-            .collect();
+        let pipeline = CompletionPipeline {
+            generators: Vec::new(),
+            matcher: std::sync::Arc::new(FuzzyDisplayMatcher),
+            rankers: vec![std::sync::Arc::new(MruRanker::new(move |raw| {
+                bonus_for_raw(raw, &bonuses)
+            }))],
+            annotators: Vec::new(),
+        };
+        self.candidates = pipeline.match_and_rank(&self.query, &self.raw);
         if self.selected >= self.candidates.len() {
             self.selected = self.candidates.len().saturating_sub(1);
         }

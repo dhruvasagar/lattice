@@ -559,6 +559,7 @@ impl Editor {
                         )
                     }),
                 placement: self.popup_placement,
+                anchor: self.popup_anchor,
             }),
             // Phase 5.8.AF.5 / Slice X2: syntax inputs the
             // highlights worker reads. The `visible_spans` cell is
@@ -1884,6 +1885,9 @@ impl Editor {
         self.popup_buffer = None;
         self.popup_back_stack.clear();
         self.popup_placement = lattice_core::ui::popup::PopupPlacement::default();
+        // 2026-05-22 popup-anchor: clear the anchor so a future
+        // re-open captures a fresh cursor position.
+        self.popup_anchor = None;
         // Restore pre-popup state if focus had moved into it
         // (State B for hover; in-pane mode for `:lsp-log` etc.).
         // State A (popup shown but never focused) leaves
@@ -12718,6 +12722,11 @@ impl Editor {
             data: BufferData::Help(buffer),
             name: None,
         });
+        // 2026-05-22 popup-anchor: capture current cursor BEFORE
+        // overwriting with the help buffer's stash. The CursorAnchored
+        // popup renderer reads this to paint the popup next to the
+        // symbol the user invoked from, even after motions.
+        self.popup_anchor = Some(self.cursor);
         self.popup_buffer = Some(buffer_id);
         self.popup_placement = placement;
         self.cursor = stash_cursor;
@@ -12749,6 +12758,11 @@ impl Editor {
             data: BufferData::Help(buffer),
             name: None,
         });
+        // 2026-05-22 popup-anchor: capture current cursor before
+        // any focus shuffle. Floating popups (State A) don't touch
+        // the cursor, but capturing here keeps the renderer's read
+        // path uniform between floating and focused popups.
+        self.popup_anchor = Some(self.cursor);
         self.popup_buffer = Some(buffer_id);
         self.popup_placement = placement;
         self.seed_help_metadata_locals(buffer_id, metadata);

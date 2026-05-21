@@ -390,6 +390,16 @@ pub struct Editor {
     /// property of the popup, not of whatever buffer happens
     /// to be its content.
     pub popup_placement: PopupPlacement,
+    /// Cursor position snapshot at popup-open time, used as
+    /// the anchor for `CursorAnchored` popups. Captured in
+    /// `open_floating_popup` / `open_popup` BEFORE any cursor
+    /// mutation so the renderer paints the popup at the
+    /// symbol the user pressed K on, not the cursor's current
+    /// position. Issue 2026-05-22 (third triage round): without
+    /// this the popup follows the cursor — moving with motions
+    /// rather than staying anchored. `None` when no popup is
+    /// open OR for centered popups (anchor irrelevant).
+    pub popup_anchor: Option<lattice_protocol::Position>,
     /// In-progress text in the `:` minibuffer. Populated
     /// only while `modal == ModalState::Command`.
     pub command_line: String,

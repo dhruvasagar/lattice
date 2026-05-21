@@ -599,6 +599,13 @@ pub struct PopupRenderState {
     pub help: Option<std::sync::Arc<lattice_help::HelpBuffer>>,
     pub help_highlights: std::sync::Arc<[Vec<lattice_syntax::StyledSpan>]>,
     pub placement: lattice_core::ui::popup::PopupPlacement,
+    /// 2026-05-22 popup-anchor: cursor position snapshotted at
+    /// popup-open time. CursorAnchored renderers read this so
+    /// the popup stays pinned to the symbol it was invoked from
+    /// instead of re-deriving from the active cursor every frame
+    /// (which made the popup follow motions). Both TUI and GPUI
+    /// peers consume the same field from the published RS.
+    pub anchor: Option<lattice_protocol::Position>,
 }
 
 impl Default for PopupRenderState {
@@ -610,6 +617,7 @@ impl Default for PopupRenderState {
                 Vec::<Vec<lattice_syntax::StyledSpan>>::new().into_boxed_slice(),
             ),
             placement: lattice_core::ui::popup::PopupPlacement::default(),
+            anchor: None,
         }
     }
 }

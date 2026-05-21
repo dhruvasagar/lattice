@@ -463,7 +463,12 @@ impl EditorView {
         let text_t0 = std::time::Instant::now();
         let text = snapshot.text();
         let text_us = text_t0.elapsed().as_micros() as u64;
-        let cursor = if is_active {
+        // 2026-05-22 issue #24 (cursor companion of pane_scroll
+        // below): when popup owns active_buffer, ad.cursor
+        // describes the popup buffer's cursor — the document
+        // pane's cursor must come from its stashed snapshot.
+        let popup_owns_active = ad.buffer_kind == lattice_core::BufferKind::Help;
+        let cursor = if is_active && !popup_owns_active {
             ad.cursor
         } else {
             pane.cursor
@@ -488,7 +493,17 @@ impl EditorView {
         // panes read their stashed `PaneState::scroll`. The
         // gutter, status, and cursor maths still work in terms of
         // absolute line indices — only the iter range tightens.
-        let pane_scroll = if is_active {
+        // 2026-05-22 issue #24: when active_buffer is Help, the
+        // popup has "stolen" ad.scroll / ad.cursor (they now
+        // describe the popup buffer's state, not the document
+        // pane's). The document pane is still painted underneath
+        // — its scroll should come from the stashed `pane.scroll`
+        // captured at popup-open via `snapshot_active_pane`,
+        // NOT from ad.scroll. Without this guard, opening
+        // `:describe-buffer` scrolled the background document to
+        // line 0 (the help buffer's initial scroll).
+        let popup_owns_active = ad.buffer_kind == lattice_core::BufferKind::Help;
+        let pane_scroll = if is_active && !popup_owns_active {
             ad.scroll
         } else {
             pane.scroll
@@ -1629,10 +1644,20 @@ impl Render for EditorView {
                         .child(overlay),
                 ),
                 PopupPlacement::CursorAnchored => {
+                    // 2026-05-22 popup-anchor: use the cursor
+                    // SNAPSHOT captured at popup-open time
+                    // (`popup_substate.anchor`) instead of the
+                    // live `ad.cursor`. Otherwise the popup
+                    // follows cursor motions (regression
+                    // reported in third triage round). Fall
+                    // back to `ad.cursor` defensively for the
+                    // pre-anchor-field state (None when boot is
+                    // still mid-publish).
                     let ad = self.app.ad();
+                    let anchor = popup_substate.anchor.unwrap_or(ad.cursor);
                     let cursor_screen_row =
-                        ad.cursor.line.saturating_sub(ad.scroll) as f32;
-                    let cursor_byte_col = ad.cursor.byte as f32;
+                        anchor.line.saturating_sub(ad.scroll) as f32;
+                    let cursor_byte_col = anchor.byte as f32;
                     let glyph_advance_px = font_size_px * 0.6;
                     // Pane's `.p_3()` adds 0.75rem padding before
                     // the editor element starts; account for it

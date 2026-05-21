@@ -6314,6 +6314,14 @@ impl Editor {
                     lattice_completion::CandidateKind::Plain,
                 );
                 raw.display = format!("{}. {}", i + 1, act.title);
+                // Slice 16: typed accept_action.
+                raw.accept_action = Some(Box::new(
+                    lattice_completion::AcceptAction::AcceptShowMessageAction {
+                        request_id,
+                        server_id: server_id.clone(),
+                        index: i as u32,
+                    },
+                ));
                 (
                     raw,
                     lattice_picker::RoutingPayload::AcceptShowMessageAction {
@@ -6820,6 +6828,21 @@ impl Editor {
                             Some(d) => format!("{} {}  {d}", item.kind_glyph, item.label),
                             None => format!("{} {}", item.kind_glyph, item.label),
                         };
+                        // Slice 11: typed accept_action. Host's
+                        // pending_completion_items is a single-
+                        // slot Option<Vec<_>>; using AcceptToken(0)
+                        // until host grows multi-slot token-keyed
+                        // pending tables. accept_action_to_outcome
+                        // returns None for AcceptIndexedCompletion
+                        // today → falls through to the legacy
+                        // PickerAction path. No behaviour change;
+                        // candidates ready for future migration.
+                        c.accept_action = Some(Box::new(
+                            lattice_completion::AcceptAction::AcceptIndexedCompletion {
+                                token: lattice_completion::AcceptToken::new(0),
+                                index: i as u32,
+                            },
+                        ));
                         (
                             c,
                             lattice_picker::RoutingPayload::LspCompletion { index: i as u32 },
@@ -7118,6 +7141,13 @@ impl Editor {
                             lattice_completion::CandidateKind::Plain,
                         );
                         c.display = format!("{} {}", item.kind_glyph, item.title);
+                        // Slice 12: typed accept_action.
+                        c.accept_action = Some(Box::new(
+                            lattice_completion::AcceptAction::AcceptIndexedCodeAction {
+                                token: lattice_completion::AcceptToken::new(0),
+                                index: i as u32,
+                            },
+                        ));
                         (
                             c,
                             lattice_picker::RoutingPayload::LspCodeAction { index: i as u32 },
@@ -14250,6 +14280,13 @@ impl Editor {
                     lattice_completion::CandidateKind::Plain,
                 );
                 c.display = display;
+                // Slice 13: typed accept_action.
+                c.accept_action = Some(Box::new(
+                    lattice_completion::AcceptAction::AcceptIndexedCodeLens {
+                        token: lattice_completion::AcceptToken::new(0),
+                        index: i as u32,
+                    },
+                ));
                 (
                     c,
                     lattice_picker::RoutingPayload::LspCodeLens { index: i as u32 },
@@ -14416,6 +14453,13 @@ impl Editor {
                     lattice_completion::CandidateKind::Plain,
                 );
                 c.display = p.label.clone();
+                // Slice 14: typed accept_action.
+                c.accept_action = Some(Box::new(
+                    lattice_completion::AcceptAction::AcceptColorPresentation {
+                        token: lattice_completion::AcceptToken::new(0),
+                        index: i as u32,
+                    },
+                ));
                 (
                     c,
                     lattice_picker::RoutingPayload::ColorPresentation { index: i as u32 },

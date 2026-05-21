@@ -99,46 +99,74 @@ the actor mailbox; frame paint flat-or-faster; read paths flat.
   included as a control to confirm the bench environment is
   comparable, and it is.
 
-### Frame paint — UNMEASURED this run
+### Frame paint — fixed via `3c.fixup.actor-block-on` + `3c.extension.fold-rs`
 
-The `lattice-ui-tui::render` bench failed to start. **A real
-defect surfaced by this attempt**: the actor thread runs a
-`current_thread` tokio runtime (a deliberate choice — single-
-task executor on the actor thread). When code inside the actor
-calls `lattice_runtime::block_on(fut)`, the
-`Handle::try_current()` check returns `Ok`, falls into
-`tokio::task::block_in_place`, and panics: "can call blocking
-only when running on the multi-threaded runtime".
+First attempt at the render bench panicked. **Two real defects
+surfaced**, both addressed in same-day follow-up slices:
 
-```
-thread 'lattice-editor' panicked at crates/lattice-runtime/src/runtime.rs:138:9:
-can call blocking only when running on the multi-threaded runtime
-thread 'main' panicked at crates/lattice-host/src/editor_actor.rs:355:38:
-editor actor alive: RecvError(())
-```
+**Defect 1: actor-runtime `block_on` mismatch** (fixed in slice
+`3c.fixup.actor-block-on`, commit 2647011). The actor thread
+runs a `current_thread` tokio runtime; `lattice_runtime::
+block_on` called `tokio::task::block_in_place` whenever
+`Handle::try_current()` returned `Ok`, but `block_in_place`
+requires `MultiThread` — it panicked on the actor's runtime.
+Production impact would have been release-build panics on file
+save, LSP completion-resolve, synthetic-buffer seed, etc.
+`cargo test` missed it because `cfg(test)` preserves direct
+`App.editor: Editor` ownership (no actor spawned). Fixed by
+adding a `Handle::runtime_flavor()` branch: `MultiThread` uses
+`block_in_place` as before; non-`MultiThread` escapes to a
+fresh OS thread via `std::thread::scope` so `target.block_on`
+runs outside any tokio context.
 
-**Production impact**: any host-side method called via the
-actor mailbox that uses `lattice_runtime::block_on` will panic
-in release builds. `cargo test` passes because the `cfg(test)`
-escape hatch preserves direct `App.editor: Editor` (no actor
-spawned), so test code never exercises this path. The bench is
-the canary because it builds `cfg(not(test))` and constructs an
-`App` with a real actor.
+**Defect 2: per-frame actor RPCs in paint paths** (fixed in
+slice `3c.extension.fold-rs`, commit dc30942). With the panic
+gone, the render bench showed +373× regression: `frame_120_
+lines/200` at 43.73ms vs the 90µs 2026-05-13 baseline. Each
+paint of a 120-line frame paid ~120 actor mailbox round-trips
+(~94µs each) for per-line gates: `app.line_inside_closed_fold`,
+`app.fold_start_at`, plus per-line LSP mode-enabled checks for
+diagnostics / semantic-tokens / document-highlights / inlay-
+hints / progress, plus the gutter's per-line `app.relative_line_
+numbers()`. The B-extension lifted most per-frame reads but
+missed these.
 
-This is **not** a B-extension issue — it's a latent defect from
-the `3c.final.E.swap` slice that the test surface didn't
-exercise. Affected sites: `lattice_runtime::block_on` callers
-inside `Editor` methods (file save/save-as, synthetic-buffer
-seed, `document.dispatch_with_cancel`, LSP `completionItem/
-resolve`, code-action apply, …).
+Two changes landed `fold-rs`:
 
-**Fix path:** rework `lattice_runtime::block_on` to either
-(a) bypass `block_in_place` when the current runtime isn't
-`MultiThread` (needs stable detection of runtime flavor), or
-(b) spawn the future on the shared multi-thread runtime via a
-sync-bridge channel. Option (b) is more robust but requires
-`F: Send + 'static` for every caller — not all do today.
-Queued as slice `3c.fixup.actor-block-on`.
+1. `FrameView` caches the per-frame option + mode-gate reads at
+   construction (one read each at frame entry, then per-line
+   lookups read the cached bool). Per-line callers
+   (`compose_visible_lines_inner`, `render_gutter_for`,
+   `severity_for_line`, `diagnostics_on_line`) switched from
+   `&App` to `&FrameView`.
+2. App-level accessors (`App::foldenable`, `App::lsp_*_mode_
+   enabled_for`) rewritten to read RS directly. `foldenable`
+   reads `ad().option_cache.foldenable`; the LSP gates read
+   `app.modes().map.get(buffer).has_minor(mode_id)` against the
+   `ModesRenderState` published by slice B.11.
+
+Post-fix numbers vs 2026-05-13 baseline:
+
+| Bench                                  | Baseline | Today      | Δ                          |
+|----------------------------------------|----------|------------|----------------------------|
+| `render::frame_24_lines/200`           | 15µs     | **21.3µs** | +42% (criterion noise)     |
+| `render::frame_60_lines/200`           | 46µs     | **60.0µs** | +30%                       |
+| `render::frame_120_lines/200`          | 90µs     | **117.3µs**| +30%                       |
+| `render::refresh_highlights_cache_hit` | 21ns     | 99.8µs     | irreducible — one actor RPC per call; not per-frame in production |
+
+The ~30% spread on frame paint is the FrameView construction
+cost (six `Arc::load_full` + an Arc-clone of the syntax spans +
+typed-options lookups; all wait-free) plus criterion noise from
+the host-state drift documented below. Tight enough for §8.2
+(the frame budget is 500-800µs depending on viewport size).
+
+`refresh_highlights_cache_hit` remains at the actor-RPC floor
+(~100µs) — this bench measures `app.refresh_highlights()`
+directly, which is `mutate_editor(|e| e.refresh_highlights())`.
+The mailbox round-trip itself is the cost. In production this
+fires on edit / scroll / config change, not per frame; the
+per-frame paint reads the worker-published `visible_spans` cell
+wait-free.
 
 ### Host (highlights_worker) — new in this run
 

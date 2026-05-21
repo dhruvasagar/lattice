@@ -241,6 +241,48 @@ pub struct EditorActorHandle {
     join: Option<std::thread::JoinHandle<()>>,
 }
 
+/// Runtime-flavor-aware `oneshot::Receiver::blocking_recv`.
+///
+/// Slice `3c.fixup.actor-sync-rpc` (companion to
+/// `3c.fixup.actor-block-on` in `lattice-runtime/src/runtime.rs`).
+/// The sync-RPC methods below (`apply_blocking`, `mutate_blocking`,
+/// `mutate_blocking_with`, `with_editor`) all park the caller's
+/// thread on a `oneshot::Receiver` until the actor replies. Tokio's
+/// `blocking_recv` panics with
+///   "Cannot block the current thread from within a runtime"
+/// when called from inside an async context.
+///
+/// The GPUI peer's main thread hosts a tokio runtime (current-thread,
+/// for `tokio_main`-style entry); any App-side helper that reaches
+/// the actor seam from that thread previously panicked at startup.
+/// Caught by `cargo run --features window` on 2026-05-21; the fix
+/// follows the same three-arm pattern as
+/// `lattice_runtime::block_on`:
+///
+///   1. No current handle — direct `blocking_recv()` (the previous
+///      contract).
+///   2. MultiThread runtime — relinquish the worker via
+///      `task::block_in_place(|| rx.blocking_recv())`.
+///   3. Non-MultiThread runtime (the GPUI main thread case) —
+///      escape to a fresh OS thread via `std::thread::scope` and
+///      do the blocking recv there, outside any tokio context.
+fn safe_blocking_recv<T: Send>(
+    rx: oneshot::Receiver<T>,
+) -> Result<T, oneshot::error::RecvError> {
+    use tokio::runtime::{Handle, RuntimeFlavor};
+    match Handle::try_current() {
+        Ok(handle) if matches!(handle.runtime_flavor(), RuntimeFlavor::MultiThread) => {
+            tokio::task::block_in_place(|| rx.blocking_recv())
+        }
+        Ok(_) => std::thread::scope(|s| {
+            s.spawn(|| rx.blocking_recv())
+                .join()
+                .expect("nested-blocking_recv bridge thread completed")
+        }),
+        Err(_) => rx.blocking_recv(),
+    }
+}
+
 impl EditorActorHandle {
     /// Send a command to the editor actor. Returns `Err` only
     /// when the actor has already shut down (channel closed).
@@ -270,9 +312,9 @@ impl EditorActorHandle {
     /// derived state on the next line keep working. Returns
     /// `Err` only if the actor died mid-await.
     ///
-    /// Caller must NOT be inside a tokio runtime (the block_on
-    /// would panic). The renderer's main loop + App-side
-    /// helpers run on the renderer thread, which is non-tokio.
+    /// Safe to call from inside or outside a tokio runtime:
+    /// `safe_blocking_recv` selects the right wait path based on
+    /// the current runtime flavor (see its docstring).
     pub fn apply_blocking(&self, action: Action) -> Result<(), ActorGone> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.send(EditorCommand::ApplyAndReply {
@@ -280,7 +322,7 @@ impl EditorActorHandle {
             reply: reply_tx,
         })
         .map_err(|_| ActorGone)?;
-        reply_rx.blocking_recv().map_err(|_| ActorGone)
+        safe_blocking_recv(reply_rx).map_err(|_| ActorGone)
     }
 
     /// Closure escape hatch — synchronous: send the closure +
@@ -300,7 +342,8 @@ impl EditorActorHandle {
             reply: reply_tx,
         })
         .map_err(|_| ActorGone)?;
-        reply_rx.blocking_recv().map_err(|_| ActorGone)
+        // Slice 3c.fixup.actor-sync-rpc: runtime-flavor-aware wait.
+        safe_blocking_recv(reply_rx).map_err(|_| ActorGone)
     }
 
     /// Closure escape hatch — fire-and-forget. For tokio task
@@ -332,7 +375,8 @@ impl EditorActorHandle {
             reply: tx,
         })
         .expect("editor actor alive");
-        let any = rx.blocking_recv().expect("editor actor alive");
+        // Slice 3c.fixup.actor-sync-rpc: runtime-flavor-aware wait.
+        let any = safe_blocking_recv(rx).expect("editor actor alive");
         *any.downcast::<R>().expect("read RPC result type matches")
     }
 
@@ -352,7 +396,8 @@ impl EditorActorHandle {
             reply: tx,
         })
         .expect("editor actor alive");
-        let any = rx.blocking_recv().expect("editor actor alive");
+        // Slice 3c.fixup.actor-sync-rpc: runtime-flavor-aware wait.
+        let any = safe_blocking_recv(rx).expect("editor actor alive");
         *any.downcast::<R>().expect("mutate RPC result type matches")
     }
 

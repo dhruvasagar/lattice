@@ -18,16 +18,16 @@ divergent infrastructure today. Audit of duplication after slice
 `3c.cmdline-completion-fuzzy-shared` (`71d3063`) which unified
 the fuzzy-match algorithm:
 
-| Concern | Picker | Cmdline-completion | Status |
-|---------|--------|--------------------|---------|
-| Fuzzy-match algorithm | `fuzzy_match` (5-tier) | `fuzzy_match` (5-tier) | **shared** (slice 71d3063) |
-| Row rendering (TUI) | `candidate_to_line` | `candidate_to_line` | **shared** |
-| Row rendering (GPUI) | inline per-cell builder | mirror of picker's (slice d38110b) | **structural parity** |
-| Filter loop | inline in `Picker::filter()` | `CompletionPipeline::run()` | **duplicated** |
-| Score model | `match_score + mru_bonus`, combined sort | match_score only | **MRU only in picker** |
-| Annotations (kind, doc, ...) | none | populated by annotator pipeline; rendered by TUI; not yet rendered by GPUI | **only in cmdline; GPUI render gap** |
-| Source pattern | candidates pre-supplied at `open()` | generator picked by slot detection | **two patterns** |
-| Plugin extension surface | none today | `CompletionRegistry` traits (generator, matcher, ranker, annotator) | **only cmdline today** |
+| Concern                      | Picker                                   | Cmdline-completion                                                         | Status                               |
+|------------------------------|------------------------------------------|----------------------------------------------------------------------------|--------------------------------------|
+| Fuzzy-match algorithm        | `fuzzy_match` (5-tier)                   | `fuzzy_match` (5-tier)                                                     | **shared** (slice 71d3063)           |
+| Row rendering (TUI)          | `candidate_to_line`                      | `candidate_to_line`                                                        | **shared**                           |
+| Row rendering (GPUI)         | inline per-cell builder                  | mirror of picker's (slice d38110b)                                         | **structural parity**                |
+| Filter loop                  | inline in `Picker::filter()`             | `CompletionPipeline::run()`                                                | **duplicated**                       |
+| Score model                  | `match_score + mru_bonus`, combined sort | match_score only                                                           | **MRU only in picker**               |
+| Annotations (kind, doc, ...) | none                                     | populated by annotator pipeline; rendered by TUI; not yet rendered by GPUI | **only in cmdline; GPUI render gap** |
+| Source pattern               | candidates pre-supplied at `open()`      | generator picked by slot detection                                         | **two patterns**                     |
+| Plugin extension surface     | none today                               | `CompletionRegistry` traits (generator, matcher, ranker, annotator)        | **only cmdline today**               |
 
 The shared parts (match algorithm, row layout) are now consolidated.
 The unshared parts (filter loop, MRU, annotations, generator-source
@@ -241,6 +241,162 @@ Equivalent for `:set <Tab>` (option name completion), pulling
    relativenumber  Show line numbers relative to cursor
    ...
 ```
+
+## LSP-registered picker sources
+
+Audit of host-side picker openings reveals a SECOND construction
+pattern beyond the first-party generator-driven sources
+(`FilesSource`, `BuffersSource`, `CommandsSource`, etc.):
+
+| LSP picker | Trigger | Pattern |
+|------------|---------|---------|
+| References / definitions / impls / type-defs / declaration | `gr` / `gd` / `gI` / `gy` / `gD` | **Host-pre-supplied** — async LSP response builds `Vec<LspLocationRow>`; host calls `open_lsp_locations_picker(title, locations)` which builds a `Picker::new(_, PickerSource::LspLocations, PickerAction::JumpToLspLocation)` |
+| Diagnostics workspace list | `:diagnostics` | Host-pre-supplied via `open_lsp_locations_picker` |
+| LSP completion items popup | post-completion-request | Host-pre-supplied (`PickerAction::AcceptLspCompletion`) |
+| LSP code actions | `:code-actions` / `gA` | Host-pre-supplied (`PickerAction::AcceptLspCodeAction`) |
+| LSP code lens | `:lsp-code-lens` | Host-pre-supplied (`PickerAction::AcceptLspCodeLens`) |
+| Color presentation | `:lsp-color-presentation` | Host-pre-supplied (`PickerAction::AcceptColorPresentation`) |
+| LSP server instances | `:lsp-log` / `:lsp-trace-log` / `:lsp-server-log` | Host walks supervisor's actor table; `PickerSource::LspInstances` |
+| `window/showMessageRequest` | server-initiated | Host-pre-supplied (`PickerSource::LspShowMessageRequest`) |
+
+This is fundamentally different from the generator-pull pattern.
+Rows come from **async LSP responses**, computed host-side,
+seeded into the picker at construction. There's no per-keystroke
+"generate" call — only filter against the seeded rows.
+
+### Two source kinds, one substrate
+
+The `SourceRegistration` substrate (slice 7) must therefore admit
+both shapes:
+
+```rust
+pub enum CandidateSource {
+    /// Pull-based — `generate(ctx)` runs per `Pipeline::run`.
+    /// First-party uses: Files, Buffers, Commands, Marks, Jumps.
+    /// Plugin uses: anything synchronously enumerable.
+    Generator(Arc<dyn CandidateGenerator>),
+
+    /// Push-based — caller supplies the candidate set at picker-
+    /// open time (typically from an async response). The pipeline
+    /// treats the supplied Vec as a fixed input and runs only
+    /// match + rank + annotate stages.
+    /// First-party uses: every LSP picker.
+    /// Plugin uses: anything async / network-driven.
+    PreSupplied(Arc<Vec<RawCandidate>>),
+}
+```
+
+The `Pipeline::run` body becomes:
+
+```rust
+let raw = match &self.source {
+    Generator(g) => g.generate(ctx),         // existing
+    PreSupplied(rows) => rows.as_ref().clone(), // new
+};
+// match + rank + annotate stages unchanged
+```
+
+This is a SMALL extension to the pipeline. The match-and-rank-and-
+annotate machinery doesn't care where `raw` came from.
+
+### What LSP picker migration looks like
+
+For each LSP picker:
+
+1. **Replace special-case row type with `CandidateData` variant.**
+   Today `Picker::set_lsp_locations(Vec<LspLocationRow>)` stores a
+   typed Vec. After migration the rows become
+   `Vec<RawCandidate>` where each candidate carries
+   `data: CandidateData::LspLocation { path, line, col, preview }`.
+
+2. **Replace `PickerAction` enum dispatch with candidate-carried
+   accept handler.** The runtime dispatch `match action {
+   JumpToLspLocation => ..., AcceptLspCompletion => ... }` is
+   today's source of cross-cutting coupling. The migration makes
+   the accept handler part of the source registration:
+
+   ```rust
+   pub struct SourceRegistration {
+       pub name: &'static str,
+       pub source: CandidateSource,
+       pub accept: Arc<dyn AcceptHandler>,
+       // matcher / ranker / annotator defaults...
+   }
+   ```
+
+   `AcceptHandler::accept(&self, candidate: &RawCandidate, ctx:
+   &mut EditorCtx)` does what the matching `PickerAction` does
+   today. The accept dispatch becomes one indirect call per
+   accept instead of a host-side match arm.
+
+3. **Pipe annotations through the annotator stage.** LSP locations
+   already have marginalia (the line preview). Today it's stored
+   directly on `LspLocationRow.marginalia` and rendered specially.
+   After migration the preview becomes a regular annotation
+   populated by an `LspLocationPreviewAnnotator` (or carried
+   directly in `RawCandidate.data` and surfaced by a generic
+   marginalia annotator).
+
+### What this costs in slices
+
+The 8-slice plan I outlined earlier was scoped to **filter-loop
+unification + marginalia + plugin substrate**. The LSP picker
+migration is a SEPARATE refactor with its own scope. Adding it
+to the plan:
+
+| # | Slice | Effort |
+|---|-------|--------|
+| 9 | `3c.unify.candidate-source-kind` | small | Add `CandidateSource::{Generator, PreSupplied}` to the pipeline. The match-and-rank-and-annotate machinery already handles `Vec<RawCandidate>` uniformly. |
+| 10 | `3c.unify.lsp-locations-via-candidatedata` | medium | Replace `PickerSource::LspLocations` + `set_lsp_locations()` with `CandidateData::LspLocation`. One picker variant at a time (references, then definitions, then impls...) to keep slices small. |
+| 11 | `3c.unify.lsp-completion-picker` | small | Same migration for the completion-items popup. |
+| 12 | `3c.unify.lsp-code-actions-picker` | small | Same for code-actions. |
+| 13 | `3c.unify.lsp-code-lens-picker` | small | Same for code-lens. |
+| 14 | `3c.unify.lsp-color-presentation` | small | Same for color-presentation. |
+| 15 | `3c.unify.lsp-instances-picker` | small | Migrate `:lsp-log` etc. — same substrate, different `CandidateData::LspServerInstance` variant. |
+| 16 | `3c.unify.lsp-show-message-request` | small | Migrate `window/showMessageRequest` picker. |
+| 17 | `3c.unify.accept-handler-promotion` | medium | Once all special-case PickerAction variants are migrated, replace the `PickerAction` enum with the `AcceptHandler` trait. Drop the runtime `match action` dispatch on the host. |
+
+Slices 9-17 land AFTER 1-7 and can be sliced independently — each
+single-picker migration is a green commit on its own. Slice 17
+is the final cleanup that retires the `PickerAction` enum once
+nobody references it.
+
+### What's the minimum we MUST do
+
+For the v1 promise of **shared engine + plugin contract**, the
+required slices are:
+
+- **1-3** (Pipeline-as-engine, picker filter through pipeline)
+- **9** (`CandidateSource` kind admits both Generator and
+  PreSupplied)
+- **7** (`SourceRegistration` with both source kinds)
+
+Everything else (4-6 marginalia, 10-17 LSP migration) is
+incremental polish. The LSP pickers KEEP WORKING from slice 1
+onwards — their filter loop runs through Pipeline; their accept
+dispatch goes through `PickerAction` as-is. The migration to
+`AcceptHandler` is a separate quality-of-life refactor.
+
+### Plugin implication: both source kinds must be exposed via WIT
+
+A future plugin adding a network-driven picker source (workspace
+symbols, GitHub issues, JIRA tickets) wants `PreSupplied` because
+the network call should run before opening the picker, not on every
+keystroke. The WIT API sketched above maps:
+
+```wit
+register-source: func(name: string, source: candidate-source);
+
+variant candidate-source {
+    generator(generator),
+    pre-supplied(list<candidate>),
+}
+```
+
+A plugin that needs a network call wraps it in
+`pre-supplied(await fetch_results(query))` — same source-
+registration entry point, plugin is in control of when async work
+happens.
 
 ## Plugin extensibility implications
 

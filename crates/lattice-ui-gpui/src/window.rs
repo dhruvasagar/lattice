@@ -130,6 +130,89 @@ fn picker_display_is_minibuffer(app: &GpuiApp) -> bool {
         .unwrap_or(true)
 }
 
+/// Slice `3c.unify.gpui-annotation-render`: shared candidate-row
+/// builder for the picker (minibuffer + overlay) and cmdline-
+/// completion (minibuffer + overlay) surfaces. Replaces four
+/// near-identical inline row builders.
+///
+/// Layout: `[display + match highlights]   [annotations]` —
+/// candidate text on the left, annotations right-aligned in a
+/// dimmer colour. Matches the TUI peer's `candidate_to_line`
+/// shape. Empty `annotations` → no right column (no extra width
+/// reserved, no two-space gap).
+///
+/// `padded`: when true, applies `px_2()` for the strip variants
+/// that need horizontal padding. The overlay variants paint
+/// inside a bordered container that already has its own padding.
+fn paint_candidate_row(
+    cand: &lattice_completion::RenderedCandidate,
+    selected: bool,
+    theme: &GpuiTheme,
+    padded: bool,
+) -> gpui::Div {
+    let match_hl_fg = rgb(theme.cursor_background);
+    let row_bg = if selected {
+        Some(rgb(theme.status_background))
+    } else {
+        None
+    };
+    let row_fg = if selected {
+        rgb(theme.status_foreground)
+    } else {
+        rgb(theme.foreground)
+    };
+    // Annotations get a dimmer colour so they don't compete with
+    // the candidate text. On a selected row the foreground stays
+    // legible against the status background; on unselected rows
+    // we use `popup_border` (mid-grey in most themes) for the
+    // marginalia-on-default-bg.
+    let annotation_fg = if selected {
+        rgb(theme.foreground)
+    } else {
+        rgb(theme.popup_border)
+    };
+    let display = &cand.raw.display;
+
+    // Left side: display text with optional per-char match
+    // highlighting. Fast path: no match ranges → single child
+    // (empty-query "show all" hits this every row).
+    let display_div: gpui::Div = if cand.match_ranges.is_empty() {
+        div().child(display.clone()).text_color(row_fg)
+    } else {
+        let in_match = |byte_idx: usize| -> bool {
+            cand.match_ranges
+                .iter()
+                .any(|r| byte_idx >= r.start && byte_idx < r.end)
+        };
+        let cells: Vec<gpui::Div> = display
+            .char_indices()
+            .map(|(byte_idx, c)| {
+                let cell = div().child(c.to_string());
+                if in_match(byte_idx) {
+                    cell.text_color(match_hl_fg)
+                } else {
+                    cell.text_color(row_fg)
+                }
+            })
+            .collect();
+        div().flex().flex_row().children(cells)
+    };
+
+    // Wrap: flex row, justify space-between so annotation floats
+    // right. No annotation → display sits alone (justify_between
+    // is a no-op for single children).
+    let annotation_text = cand.annotations.join("  ");
+    let mut row = div().flex().flex_row().justify_between().w_full();
+    if padded {
+        row = row.px_2();
+    }
+    row = row.child(display_div);
+    if !annotation_text.is_empty() {
+        row = row.child(div().text_color(annotation_fg).child(annotation_text));
+    }
+    if let Some(bg) = row_bg { row.bg(bg) } else { row }
+}
+
 /// Resolve the diagnostic gutter glyph + colour for a severity by
 /// reading the host's `Theme` (the same source the TUI peer uses
 /// via `theme::diagnostic_glyph_and_style`). Returns the glyph
@@ -1074,51 +1157,17 @@ impl Render for EditorView {
             // per-character spans mid-row; GPUI walks the byte
             // sequence and emits one cell-div per char with the
             // matched ones tinted. `match_ranges` is half-open
-            // byte ranges into `raw.display` (the renderer's
-            // canonical row text).
-            let match_hl_fg = rgb(theme.cursor_background);
+            // Slice 3c.unify.gpui-annotation-render: rows now flow
+            // through the shared `paint_candidate_row` helper that
+            // also paints the right-aligned annotations column.
+            // `padded: false` — the overlay container below
+            // applies its own `.p_2()`.
             let visible_candidates: Vec<gpui::Div> = picker.candidates[window_start..window_end]
                 .iter()
                 .enumerate()
                 .map(|(i, cand)| {
                     let abs_idx = window_start + i;
-                    let selected = abs_idx == picker.selected;
-                    let row_bg = if selected {
-                        Some(rgb(theme.status_background))
-                    } else {
-                        None
-                    };
-                    let row_fg = if selected {
-                        rgb(theme.status_foreground)
-                    } else {
-                        rgb(theme.foreground)
-                    };
-                    let display = &cand.raw.display;
-                    // Fast path: no matches → single child, no
-                    // per-cell loop. Empty-query "show all" rows
-                    // hit this branch every time.
-                    if cand.match_ranges.is_empty() {
-                        let row = div().child(display.clone()).text_color(row_fg);
-                        return if let Some(bg) = row_bg { row.bg(bg) } else { row };
-                    }
-                    let in_match = |byte_idx: usize| -> bool {
-                        cand.match_ranges
-                            .iter()
-                            .any(|r| byte_idx >= r.start && byte_idx < r.end)
-                    };
-                    let cells: Vec<gpui::Div> = display
-                        .char_indices()
-                        .map(|(byte_idx, c)| {
-                            let cell = div().child(c.to_string());
-                            if in_match(byte_idx) {
-                                cell.text_color(match_hl_fg)
-                            } else {
-                                cell.text_color(row_fg)
-                            }
-                        })
-                        .collect();
-                    let row = div().flex().flex_row().children(cells);
-                    if let Some(bg) = row_bg { row.bg(bg) } else { row }
+                    paint_candidate_row(cand, abs_idx == picker.selected, &theme, false)
                 })
                 .collect();
             // Width sizing: file pickers carry long paths (often
@@ -1203,7 +1252,11 @@ impl Render for EditorView {
                     picker.selected + 1 - visible_count
                 };
                 let window_end = (scroll + visible_count).min(total);
-                let match_hl_fg = rgb(theme.cursor_background);
+                // Slice 3c.unify.gpui-annotation-render: minibuffer
+                // strip rows go through the shared
+                // `paint_candidate_row` helper. `padded: true` —
+                // strip has no surrounding container with its own
+                // horizontal padding.
                 let cand_rows: Vec<gpui::Div> = if total == 0 {
                     vec![div()
                         .px_2()
@@ -1215,40 +1268,12 @@ impl Render for EditorView {
                         .enumerate()
                         .map(|(i, cand)| {
                             let abs_idx = scroll + i;
-                            let selected = abs_idx == picker.selected;
-                            let row_bg = if selected {
-                                Some(rgb(theme.status_background))
-                            } else {
-                                None
-                            };
-                            let row_fg = if selected {
-                                rgb(theme.status_foreground)
-                            } else {
-                                rgb(theme.foreground)
-                            };
-                            let display = &cand.raw.display;
-                            if cand.match_ranges.is_empty() {
-                                let row = div().px_2().child(display.clone()).text_color(row_fg);
-                                return if let Some(bg) = row_bg { row.bg(bg) } else { row };
-                            }
-                            let in_match = |byte_idx: usize| -> bool {
-                                cand.match_ranges
-                                    .iter()
-                                    .any(|r| byte_idx >= r.start && byte_idx < r.end)
-                            };
-                            let cells: Vec<gpui::Div> = display
-                                .char_indices()
-                                .map(|(byte_idx, c)| {
-                                    let cell = div().child(c.to_string());
-                                    if in_match(byte_idx) {
-                                        cell.text_color(match_hl_fg)
-                                    } else {
-                                        cell.text_color(row_fg)
-                                    }
-                                })
-                                .collect();
-                            let row = div().px_2().flex().flex_row().children(cells);
-                            if let Some(bg) = row_bg { row.bg(bg) } else { row }
+                            paint_candidate_row(
+                                cand,
+                                abs_idx == picker.selected,
+                                &theme,
+                                true,
+                            )
                         })
                         .collect()
                 };
@@ -1319,46 +1344,15 @@ impl Render for EditorView {
                     state.selected + 1 - visible_count
                 };
                 let window_end = (scroll + visible_count).min(total);
-                let match_hl_fg = rgb(theme.cursor_background);
+                // Slice 3c.unify.gpui-annotation-render: shared row
+                // builder. `padded: true` for the minibuffer
+                // strip variant.
                 let cand_rows: Vec<gpui::Div> = state.candidates[scroll..window_end]
                     .iter()
                     .enumerate()
                     .map(|(i, cand)| {
                         let abs_idx = scroll + i;
-                        let selected = abs_idx == state.selected;
-                        let row_bg = if selected {
-                            Some(rgb(theme.status_background))
-                        } else {
-                            None
-                        };
-                        let row_fg = if selected {
-                            rgb(theme.status_foreground)
-                        } else {
-                            rgb(theme.foreground)
-                        };
-                        let display = &cand.raw.display;
-                        if cand.match_ranges.is_empty() {
-                            let row = div().px_2().child(display.clone()).text_color(row_fg);
-                            return if let Some(bg) = row_bg { row.bg(bg) } else { row };
-                        }
-                        let in_match = |byte_idx: usize| -> bool {
-                            cand.match_ranges
-                                .iter()
-                                .any(|r| byte_idx >= r.start && byte_idx < r.end)
-                        };
-                        let cells: Vec<gpui::Div> = display
-                            .char_indices()
-                            .map(|(byte_idx, c)| {
-                                let cell = div().child(c.to_string());
-                                if in_match(byte_idx) {
-                                    cell.text_color(match_hl_fg)
-                                } else {
-                                    cell.text_color(row_fg)
-                                }
-                            })
-                            .collect();
-                        let row = div().px_2().flex().flex_row().children(cells);
-                        if let Some(bg) = row_bg { row.bg(bg) } else { row }
+                        paint_candidate_row(cand, abs_idx == state.selected, &theme, true)
                     })
                     .collect();
                 div()
@@ -1384,46 +1378,15 @@ impl Render for EditorView {
                     .saturating_sub(MAX_VISIBLE / 2)
                     .min(total.saturating_sub(MAX_VISIBLE.min(total)));
                 let window_end = (window_start + MAX_VISIBLE).min(total);
-                let match_hl_fg = rgb(theme.cursor_background);
+                // Slice 3c.unify.gpui-annotation-render: shared row
+                // builder. `padded: false` — overlay container
+                // applies its own `.p_2()`.
                 let visible_candidates: Vec<gpui::Div> = state.candidates[window_start..window_end]
                     .iter()
                     .enumerate()
                     .map(|(i, cand)| {
                         let abs_idx = window_start + i;
-                        let selected = abs_idx == state.selected;
-                        let row_bg = if selected {
-                            Some(rgb(theme.status_background))
-                        } else {
-                            None
-                        };
-                        let row_fg = if selected {
-                            rgb(theme.status_foreground)
-                        } else {
-                            rgb(theme.foreground)
-                        };
-                        let display = &cand.raw.display;
-                        if cand.match_ranges.is_empty() {
-                            let row = div().child(display.clone()).text_color(row_fg);
-                            return if let Some(bg) = row_bg { row.bg(bg) } else { row };
-                        }
-                        let in_match = |byte_idx: usize| -> bool {
-                            cand.match_ranges
-                                .iter()
-                                .any(|r| byte_idx >= r.start && byte_idx < r.end)
-                        };
-                        let cells: Vec<gpui::Div> = display
-                            .char_indices()
-                            .map(|(byte_idx, c)| {
-                                let cell = div().child(c.to_string());
-                                if in_match(byte_idx) {
-                                    cell.text_color(match_hl_fg)
-                                } else {
-                                    cell.text_color(row_fg)
-                                }
-                            })
-                            .collect();
-                        let row = div().flex().flex_row().children(cells);
-                        if let Some(bg) = row_bg { row.bg(bg) } else { row }
+                        paint_candidate_row(cand, abs_idx == state.selected, &theme, false)
                     })
                     .collect();
                 div()

@@ -16,6 +16,11 @@ description = "Peer GPUI renderer for lattice — host-neutral substrate driving
 lattice-host = { path = "../lattice-host" }
 lattice-core = { path = "../lattice-core" }
 lattice-mode = { path = "../lattice-mode" }
+# Slice 3c.unify.gpui-annotation-render: `paint_candidate_row`
+# names `RenderedCandidate` directly so picker + cmdline-
+# completion rows can render the right-aligned annotations
+# column. Matches the TUI peer's `candidate_to_line` shape.
+lattice-completion = { path = "../lattice-completion" }
 # 5.7.B.4: the binary's status-line renders `ModalState::*`
 # labels (Normal / Insert / Visual / ...). The type lives in
 # `lattice-grammar`; host doesn't re-export it (grammar is the

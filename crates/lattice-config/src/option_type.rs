@@ -148,6 +148,22 @@ impl OptionType for bool {
         Some(vec!["true", "false"])
     }
 
+    fn enumerate_with_docs() -> Option<Vec<EnumeratedValue>> {
+        // Slice `3c.unify.option-docs-builtin`: per-value
+        // marginalia for boolean options. Negation via
+        // `:set noNAME` is handled by `name_forms` above.
+        Some(vec![
+            EnumeratedValue {
+                form: "true",
+                doc: "Enable this option",
+            },
+            EnumeratedValue {
+                form: "false",
+                doc: "Disable this option",
+            },
+        ])
+    }
+
     fn name_forms(canonical: &str) -> Vec<String> {
         vec![format!("no{canonical}")]
     }

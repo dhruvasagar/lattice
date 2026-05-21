@@ -127,75 +127,52 @@ pub enum BufferDisplayCategory {
     PickerResult,
 }
 
-/// User-facing override for a [`BufferDisplay`]. Each
-/// [`BufferDisplayCategory`] gets a typed option keyed
-/// `<category>.display` whose value is one of these variants;
-/// the App's resolver maps the variant to the matching
-/// `BufferDisplay`. `Default` means "use the built-in default
-/// for this category" -- the fallback when the user hasn't
-/// set the option explicitly.
-///
-/// Flat (non-parametric) shape so the typed-options system can
-/// store + parse it as one scalar; the parametric
-/// `BufferDisplay` variants (`Popup(PopupPlacement)`,
-/// `Split(SplitOrientation)`) are flattened here as
-/// `PopupCentered` / `PopupCursor` / `SplitHorizontal` /
-/// `SplitVertical`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum BufferDisplayPreference {
-    /// Use the category's built-in default (per
-    /// [`default_display`]). The implicit value when no
-    /// override has been set.
-    #[default]
-    Default,
-    /// Centred focused popup (focus moves into the popup).
-    PopupCentered,
-    /// Cursor-anchored focused popup.
-    PopupCursor,
-    /// Cursor-anchored *floating* popup (doc keeps focus,
-    /// popup auto-dismisses on cursor motion -- the hover
-    /// shape).
-    FloatingCursor,
-    /// Replace the active pane's buffer.
-    ActivePane,
-    /// Horizontal split alongside the active pane.
-    SplitHorizontal,
-    /// Vertical split alongside the active pane.
-    SplitVertical,
+crate::labeled_enum! {
+    /// User-facing override for a [`BufferDisplay`]. Each
+    /// [`BufferDisplayCategory`] gets a typed option keyed
+    /// `<category>.display` whose value is one of these variants;
+    /// the App's resolver maps the variant to the matching
+    /// `BufferDisplay`. `Default` means "use the built-in default
+    /// for this category" — the fallback when the user hasn't
+    /// set the option explicitly.
+    ///
+    /// Flat (non-parametric) shape so the typed-options system
+    /// can store + parse it as one scalar; the parametric
+    /// `BufferDisplay` variants (`Popup(PopupPlacement)`,
+    /// `Split(SplitOrientation)`) are flattened here as
+    /// `PopupCentered` / `PopupCursor` / `SplitHorizontal` /
+    /// `SplitVertical`.
+    ///
+    /// Slice `3c.unify.option-docs-builtin` migrated this enum
+    /// to `labeled_enum!` — adding a new display preference is
+    /// now one line; `label` / `parse_label` / `doc` / `all` are
+    /// derived automatically.
+    pub enum BufferDisplayPreference {
+        /// The implicit value when no override has been set.
+        #[default]
+        Default = "default"
+            => "Use the category's built-in default",
+        /// Centred focused popup (focus moves into the popup).
+        /// Accepts `popup` as an alias of `popup-centered`.
+        PopupCentered = "popup-centered" | "popup"
+            => "Centred focused popup (focus moves into the popup)",
+        PopupCursor = "popup-cursor"
+            => "Cursor-anchored focused popup",
+        /// Doc keeps focus, popup auto-dismisses on cursor
+        /// motion (the hover shape). `floating` is the canonical
+        /// short alias.
+        FloatingCursor = "floating-cursor" | "floating"
+            => "Cursor-anchored floating popup (auto-dismisses on cursor motion)",
+        ActivePane = "active-pane" | "pane"
+            => "Replace the active pane's buffer",
+        SplitHorizontal = "split-h" | "split" | "split-horizontal"
+            => "Horizontal split alongside the active pane",
+        SplitVertical = "split-v" | "split-vertical"
+            => "Vertical split alongside the active pane",
+    }
 }
 
 impl BufferDisplayPreference {
-    /// Canonical string label used by `:set <category>.display=...`
-    /// parsing + the `:set <category>.display?` echo.
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Default => "default",
-            Self::PopupCentered => "popup-centered",
-            Self::PopupCursor => "popup-cursor",
-            Self::FloatingCursor => "floating-cursor",
-            Self::ActivePane => "active-pane",
-            Self::SplitHorizontal => "split-h",
-            Self::SplitVertical => "split-v",
-        }
-    }
-
-    /// Parse a `<category>.display=value` payload.
-    pub fn parse_label(value: &str) -> Result<Self, String> {
-        match value {
-            "default" => Ok(Self::Default),
-            "popup" | "popup-centered" => Ok(Self::PopupCentered),
-            "popup-cursor" => Ok(Self::PopupCursor),
-            "floating" | "floating-cursor" => Ok(Self::FloatingCursor),
-            "active-pane" | "pane" => Ok(Self::ActivePane),
-            "split" | "split-h" | "split-horizontal" => Ok(Self::SplitHorizontal),
-            "split-v" | "split-vertical" => Ok(Self::SplitVertical),
-            other => Err(format!(
-                "expected `default` / `popup-centered` / `popup-cursor` / \
-                 `floating-cursor` / `active-pane` / `split-h` / `split-v`, got `{other}`"
-            )),
-        }
-    }
-
     /// Map to the concrete [`BufferDisplay`] for the given
     /// `category`. `Default` falls through to
     /// [`default_display`]; any explicit variant returns its

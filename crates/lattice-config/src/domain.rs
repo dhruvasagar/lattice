@@ -14,7 +14,7 @@
 use lattice_core::FoldMethod;
 use lattice_core::ui::display::BufferDisplayPreference;
 
-use crate::option_type::OptionType;
+use crate::option_type::{EnumeratedValue, OptionType};
 
 impl OptionType for BufferDisplayPreference {
     fn parse(s: &str) -> Result<Self, String> {
@@ -40,6 +40,23 @@ impl OptionType for BufferDisplayPreference {
             "split-v",
         ])
     }
+
+    fn enumerate_with_docs() -> Option<Vec<EnumeratedValue>> {
+        // Slice `3c.unify.option-docs-builtin`: per-value
+        // marginalia pulled from the variant's own `doc()`
+        // accessor in `lattice-core`. Adding a new variant
+        // requires extending `label` / `doc` / `all` together;
+        // this method picks the docs up automatically.
+        Some(
+            BufferDisplayPreference::all()
+                .iter()
+                .map(|v| EnumeratedValue {
+                    form: v.label(),
+                    doc: v.doc(),
+                })
+                .collect(),
+        )
+    }
 }
 
 impl OptionType for FoldMethod {
@@ -60,6 +77,23 @@ impl OptionType for FoldMethod {
         // `:set foldmethod=<Tab>` shows the same candidates;
         // `lsp` (4.4.f) appended at the end.
         Some(vec!["manual", "indent", "markdown", "syntax", "lsp"])
+    }
+
+    fn enumerate_with_docs() -> Option<Vec<EnumeratedValue>> {
+        // Slice `3c.unify.option-docs-builtin`: per-value
+        // marginalia pulled from the variant's own `doc()`
+        // accessor in `lattice-core`. Adding a new fold method
+        // requires extending `label` / `doc` / `all` together;
+        // this method picks the docs up automatically.
+        Some(
+            FoldMethod::all()
+                .iter()
+                .map(|v| EnumeratedValue {
+                    form: v.label(),
+                    doc: v.doc(),
+                })
+                .collect(),
+        )
     }
 }
 

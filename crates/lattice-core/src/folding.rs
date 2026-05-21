@@ -6,64 +6,42 @@
 //! closed, identity)`; the gutter glyph + summary-line text are
 //! rendering concerns layered on top.
 
-/// `:set foldmethod=...` (DESIGN.md §15:18, C.2;
-/// `docs/user/folding.md`). Decides which provider feeds the
-/// per-buffer fold list.
-///
-/// - `Manual` -- only user `zf` ranges, no auto-recompute.
-/// - `Indent` -- universal indent walker.
-/// - `Markdown` -- ATX heading nesting (`*.md`).
-/// - `Syntax` -- tree-sitter scope queries; cascades to `Markdown`
-///   for `.md` buffers and `Indent` otherwise when the tree-sitter
-///   provider has nothing to offer.
-/// - `Lsp` -- 4.4.f: feeds from `textDocument/foldingRange`.
-///   Async: the per-tick pump fires the request when the buffer's
-///   document version changes; the response lands in a per-buffer
-///   cache and triggers a recompute. Cascades to `Syntax` when no
-///   attached server advertises the capability (so `:set
-///   foldmethod=lsp` is still useful in mixed-language workspaces).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum FoldMethod {
-    #[default]
-    Manual,
-    Indent,
-    Markdown,
-    Syntax,
-    Lsp,
-}
-
-impl FoldMethod {
-    /// Canonical string label used by `:set foldmethod=...` parsing
-    /// + the `:set foldmethod?` echo.
-    pub fn label(self) -> &'static str {
-        match self {
-            FoldMethod::Manual => "manual",
-            FoldMethod::Indent => "indent",
-            FoldMethod::Markdown => "markdown",
-            FoldMethod::Syntax => "syntax",
-            FoldMethod::Lsp => "lsp",
-        }
-    }
-
-    /// Parse a `foldmethod=value` payload. Used by the typed
-    /// options registry (`OptionType::parse`); also the raw entry
-    /// point if anything wants to convert a label without going
-    /// through the registry.
+crate::labeled_enum! {
+    /// `:set foldmethod=...` (DESIGN.md §15:18, C.2;
+    /// `docs/user/folding.md`). Decides which provider feeds the
+    /// per-buffer fold list.
     ///
-    /// Error message preserves the wording the pre-typed-options
-    /// setter produced so the migration is byte-identical from
-    /// the user's perspective.
-    pub fn parse_label(value: &str) -> Result<Self, String> {
-        match value {
-            "manual" => Ok(FoldMethod::Manual),
-            "indent" => Ok(FoldMethod::Indent),
-            "markdown" => Ok(FoldMethod::Markdown),
-            "syntax" => Ok(FoldMethod::Syntax),
-            "lsp" => Ok(FoldMethod::Lsp),
-            other => Err(format!(
-                "expected `manual`, `indent`, `markdown`, `syntax`, or `lsp`, got `{other}`"
-            )),
-        }
+    /// Each variant's marginalia doc (right of `=>`) is what
+    /// appears in `:set foldmethod=<Tab>`. Variant-level `///`
+    /// docs are for API/rustdoc consumers. Slice
+    /// `3c.unify.option-docs-builtin` migrated this enum to
+    /// `labeled_enum!` — adding a new fold method is now one
+    /// line; the `label` / `parse_label` / `doc` / `all`
+    /// accessors are derived automatically.
+    pub enum FoldMethod {
+        /// Only user `zf` ranges, no auto-recompute.
+        #[default]
+        Manual = "manual"
+            => "User-defined folds only (zf to create, zd to delete)",
+        /// Universal indent walker.
+        Indent = "indent"
+            => "Fold by indent level",
+        /// ATX heading nesting (`*.md`).
+        Markdown = "markdown"
+            => "Fold by markdown headings (#, ##, ###, …)",
+        /// Tree-sitter scope queries; cascades to `Markdown` for
+        /// `.md` buffers and `Indent` otherwise when the tree-
+        /// sitter provider has nothing to offer.
+        Syntax = "syntax"
+            => "Folds from the tree-sitter syntax tree",
+        /// 4.4.f: feeds from `textDocument/foldingRange`. Async:
+        /// the per-tick pump fires the request when the buffer's
+        /// document version changes; the response lands in a
+        /// per-buffer cache and triggers a recompute. Cascades to
+        /// `Syntax` when no attached server advertises the
+        /// capability.
+        Lsp = "lsp"
+            => "Folds from LSP `textDocument/foldingRange`",
     }
 }
 

@@ -3,6 +3,14 @@
 //! This crate owns the actor-protected document model. It is content-type
 //! agnostic; tree-sitter, LSP, plugin, and rendering concerns live elsewhere.
 
+// `labeled_enum!` lives at the top so its `#[macro_export]` is
+// visible to the modules below that consume it (`folding`,
+// `ui::display`). `#[macro_use]` makes the macro callable inside
+// the crate without `use`; the `#[macro_export]` attribute on the
+// macro itself exposes it to downstream crates.
+#[macro_use]
+pub mod labeled_enum;
+
 pub mod buffer;
 pub mod buffers;
 pub mod document;

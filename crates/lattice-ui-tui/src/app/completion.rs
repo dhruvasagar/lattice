@@ -18,28 +18,27 @@
 //!   (fires `completionItem/resolve` when the new
 //!   candidate has no cached body).
 //!
-//! What does NOT live here yet (deferred to a later slice):
-//! - `do_completion_trigger` (entry point to opening the
-//!   popup; couples with LSP completion-request).
-//! - `do_completion_accept` / `do_completion_accept_then_insert`
-//!   (apply paths -- LSP textEdit, snippet expansion, freq
-//!   bump).
-//! - `do_completion_toggle_docs` (entangled with the resolve
-//!   request flow).
-//! - LSP completion request / drain / apply, the
-//!   `populate_*` and `refilter_*` helpers, snippet expansion.
-//!
 //! What does NOT live here at all: the completion provider
 //! registry, source plugins, snippet parser -- those live
-//! in `crate::completion` / `crate::snippet`.
+//! in `crate::completion` / `crate::snippet`. The actual
+//! popup state machine (`populate_*`, `refilter_*`,
+//! `do_completion_trigger`, accept paths, `expand_snippet`,
+//! LSP request/drain/apply) lives host-side in
+//! `lattice_host::dispatch::Editor`; the methods in this file
+//! are renderer-thread delegates that route through the
+//! `mutate_editor` / `read_editor` seam.
 
-use lattice_core::Buffer;
+use super::App;
+
+// Slice 3c.final.E.5g: `Position`, `SnippetCandidateMeta`, and
+// `EffectiveCompletionConfig` are reached only from the
+// `#[cfg(test)] impl App` block + the `mod tests` block below.
+#[cfg(test)]
 use lattice_protocol::position::Position;
-
-use super::{App, SnippetCandidateMeta};
-
-// Phase 5.8.AD.4: `EffectiveCompletionConfig` migrated to host.
-pub(crate) use lattice_host::dispatch::EffectiveCompletionConfig;
+#[cfg(test)]
+use super::SnippetCandidateMeta;
+#[cfg(test)]
+use lattice_host::dispatch::EffectiveCompletionConfig;
 
 impl App {
     /// `<C-x><C-s>` -- direct snippet expansion (Phase 4.2.g.4).
@@ -93,32 +92,12 @@ impl App {
     // `do_completion_docs_scroll_up` migrated to
     // [`lattice_host::dispatch::Editor`].
 
-    /// Run sync sources against the supplied state, populating
-    /// `state.raw` and re-running matcher + ranker so
-    /// `state.rendered` reflects the current `query`. Async
-    /// sources (LSP) hook into `state.raw` directly via
-    /// host-side channels in 4.2.g.2.
-    pub(super) fn populate_insert_completion_sync(
-        &mut self,
-        state: &mut lattice_completion::InsertCompletionState,
-        buffer: &Buffer,
-        trigger: &lattice_completion::CompletionTrigger,
-    ) {
-        // Phase 5.8.AD.4: body migrated.
-        // Slice 3c.final.E.swap-followup: borrowed `&mut state`
-        // can't escape into a `Send + 'static` closure; direct call
-        // until host signature is refactored to own/return state.
-        self.editor.populate_insert_completion_sync(state, buffer, trigger);
-    }
-
-    /// Re-run matcher + ranker. Phase 5.8.AD.4: migrated.
-    pub(super) fn refilter_insert_completion(
-        &self,
-        state: &mut lattice_completion::InsertCompletionState,
-    ) {
-        // See note above re: borrowed `&mut state` + closure bounds.
-        self.editor.refilter_insert_completion(state);
-    }
+    // Slice 3c.final.E.5g: `populate_insert_completion_sync` +
+    // `refilter_insert_completion` App-side delegates retired.
+    // `populate_*` had no callers (host invokes its own version
+    // inside `Editor::do_completion_trigger`); `refilter_*` is
+    // test-fixture surface, now in the `#[cfg(test)] impl App`
+    // block below.
 
     // Phase 5.8.AD.4: `completion_total_bonus` migrated to host.
 
@@ -133,24 +112,10 @@ impl App {
         self.mutate_editor(|e| e.do_completion_trigger());
     }
 
-    /// Insert-mode character key while the popup is open
-    /// (Phase 4.2.g.7 commit-char polish). Accepts the focused
-    /// candidate THEN inserts `ch` when `ch` is in the
-    /// effective commit-char set; otherwise inserts `ch`
-    /// plainly so the popup refilters as usual.
-    pub fn do_completion_accept_then_insert(&mut self, ch: char) {
-        // Phase 5.8.AD.4: body migrated. The host method takes a
-        // `&mut DispatchOutcome` for the insert-text follow-up
-        // action queue; build a local one and drain into App's
-        // `apply` loop afterwards.
-        let mut out = lattice_host::dispatch::DispatchOutcome::default();
-        // Slice 3c.final.E.swap-followup: `&mut out` local can't
-        // escape into a `Send + 'static` closure.
-        self.editor.do_completion_accept_then_insert(ch, &mut out);
-        for follow_up in std::mem::take(&mut out.next_actions) {
-            self.apply(follow_up);
-        }
-    }
+    // Slice 3c.final.E.5g: `do_completion_accept_then_insert`
+    // App-side delegate moved to `#[cfg(test)] impl App` below
+    // — only test fixtures call it; production path goes through
+    // the host directly inside `Editor::dispatch`.
 
     /// Suffix of the top-ranked completion candidate for ghost
     /// text. Phase 5.8.AD.4: migrated.
@@ -218,23 +183,14 @@ impl App {
         self.read_editor(move |e| e.selected_needs_resolve())
     }
 
-    /// On every Insert-mode text insertion, if the popup is
-    /// open: re-derive the live query from
-    /// `buffer[anchor..cursor]` and re-filter. If the cursor
-    /// has moved outside the popup's anchor range, dismiss
-    /// the popup (the user typed something that took them
-    /// past the word boundary).
-    /// 5.5.G.23.insert: body migrated to
-    /// [`lattice_host::dispatch::Editor::maybe_refresh_insert_completion_after_edit`].
-    /// Retained as a delegate; LSP `isIncomplete` re-fires flow through
-    /// `outcome.next_actions` via the App-side `apply` loop.
-    pub(crate) fn maybe_refresh_insert_completion_after_edit(&mut self) {
-        let mut out = lattice_host::dispatch::DispatchOutcome::default();
-        self.editor.maybe_refresh_insert_completion_after_edit(&mut out);
-        for follow_up in std::mem::take(&mut out.next_actions) {
-            self.apply(follow_up);
-        }
-    }
+    // Slice 3c.final.E.5g:
+    // `maybe_refresh_insert_completion_after_edit` App-side
+    // delegate retired — zero callers anywhere. The host
+    // version (`Editor::maybe_refresh_insert_completion_after_edit`)
+    // is invoked directly inside `Editor::dispatch` after edit
+    // application; LSP `isIncomplete` follow-up Actions flow
+    // through `DispatchOutcome::next_actions` on the dispatch
+    // tail like every other deferred action.
 
     // 5.5.G.14: body migrated to
     // [`lattice_host::dispatch::Editor::do_completion_cancel`].
@@ -274,58 +230,16 @@ impl App {
         self.read_editor(move |e| e.snippet_variable_context())
     }
 
-    /// CSM.5: resolve a candidate's snippet metadata by decoding
-    /// the payload (snippet name) and looking up in
-    /// `App.snippet_registry`. Replaces the old sidecar-indexed
-    /// path -- snippet candidates now carry their stable name
-    /// rather than a vec-index that breaks on refilter.
-    pub(super) fn snippet_meta_for(
-        &self,
-        candidate: &lattice_completion::RenderedCandidate,
-    ) -> Option<SnippetCandidateMeta> {
-        // Phase 5.8.AD.4: body migrated.
-        self.editor.snippet_meta_for(candidate)
-    }
+    // Slice 3c.final.E.5g: `snippet_meta_for` App-side delegate
+    // moved to `#[cfg(test)] impl App` below — only test fixtures
+    // call it; production path is `Editor::snippet_meta_for`
+    // invoked from inside `Editor::do_completion_accept`.
 
-    /// Expand a parsed snippet body at the popup's anchor.
-    /// Renders the body (variables resolved against the
-    /// active buffer's context), splices the resulting text
-    /// over `[anchor, cursor]`, sets up an `ActiveSnippet`,
-    /// and moves the cursor to the first tabstop's range.
-    /// Pure-literal snippets (no tabstops) skip the active-
-    /// snippet step and just leave the cursor at end-of-insert.
-    /// Expand a snippet body alongside LSP `additionalTextEdits`
-    /// as one undo unit (Phase 4.2.g.7 polish).
-    ///
-    /// Coalesces the auto-import edits the server sent back
-    /// with the snippet body's main splice into a single
-    /// `apply_edit_batch_blocking` call -- one `<C-z>` reverts
-    /// both. The main edit's position is recovered from the
-    /// `Vec<AppliedEdit>` (its index in the reverse-sorted
-    /// batch) so the active-snippet origin tracks the
-    /// post-batch buffer state correctly.
-    ///
-    /// Returns `Err(message)` when the batch apply fails; the
-    /// caller surfaces it via `set_message`. On success the
-    /// active-snippet bookkeeping mirrors `expand_snippet` --
-    /// focus the first tabstop, set `active_snippet`, etc.
-    pub(super) fn expand_snippet_with_lsp_edits(
-        &mut self,
-        body: &lattice_snippet::SnippetBody,
-        anchor: Position,
-        additional: Vec<lattice_lsp::lsp_types::TextEdit>,
-    ) -> Result<(), String> {
-        // Phase 5.8.AD.4: body migrated.
-        self.editor.expand_snippet_with_lsp_edits(body, anchor, additional)
-    }
-
-    /// 5.5.SNIPPET.1: body migrated to
-    /// [`lattice_host::dispatch::Editor::expand_snippet`]. Delegate
-    /// retained for App-side callers (`expand_snippet_with_lsp_edits`,
-    /// snippet picker accept, completion accept).
-    pub(super) fn expand_snippet(&mut self, body: &lattice_snippet::SnippetBody, anchor: Position) {
-        self.editor.expand_snippet(body, anchor);
-    }
+    // Slice 3c.final.E.5g: `expand_snippet_with_lsp_edits` +
+    // `expand_snippet` App-side delegates retired — zero callers
+    // anywhere. The host versions are invoked directly from
+    // `Editor::do_completion_accept` and the snippet picker
+    // accept arm.
 
     /// Active buffer's snippet language id. 5.5.SNIPPET.1: body
     /// migrated to
@@ -335,13 +249,50 @@ impl App {
         self.read_editor(move |e| e.active_language_id())
     }
 
-    /// Effective completion config for `language` -- per-language
-    /// override lays over the global typed option which lays
-    /// over the spec fallback. Used at every producer-side
-    /// enforcement seam (sync source filter, LSP fan-out, the
-    /// `auto_insert_single` check at popup-open).
+    // Slice 3c.final.E.5g: `effective_completion_for` App-side
+    // delegate moved to `#[cfg(test)] impl App` below — host-side
+    // call sites (`Editor::do_completion_trigger`,
+    // `Editor::do_completion_accept`, etc.) reach the host
+    // method directly; only test fixtures need an App-side
+    // delegate.
+}
+
+// Slice 3c.final.E.5g — test-fixture surface.
+//
+// These four delegates have no production callers; their bodies
+// are reached directly inside `Editor::dispatch` for the
+// production paths. Tests still need to poke the host method
+// against a fully-built `App`, so the delegates survive behind a
+// `#[cfg(test)]` gate. Once `App.editor: Editor` becomes
+// `App.editor_actor: EditorActorHandle` (the slice-E.swap
+// follow-up), each body flips to read through the audit's
+// planned `App::editor()` / `App::editor_mut()` cfg-gated
+// accessors.
+#[cfg(test)]
+impl App {
+    pub(super) fn refilter_insert_completion(
+        &self,
+        state: &mut lattice_completion::InsertCompletionState,
+    ) {
+        self.editor.refilter_insert_completion(state);
+    }
+
+    pub fn do_completion_accept_then_insert(&mut self, ch: char) {
+        let mut out = lattice_host::dispatch::DispatchOutcome::default();
+        self.editor.do_completion_accept_then_insert(ch, &mut out);
+        for follow_up in std::mem::take(&mut out.next_actions) {
+            self.apply(follow_up);
+        }
+    }
+
+    pub(super) fn snippet_meta_for(
+        &self,
+        candidate: &lattice_completion::RenderedCandidate,
+    ) -> Option<SnippetCandidateMeta> {
+        self.editor.snippet_meta_for(candidate)
+    }
+
     pub(crate) fn effective_completion_for(&self, language: &str) -> EffectiveCompletionConfig {
-        // Phase 5.8.AD.4: body migrated.
         self.editor.effective_completion_for(language)
     }
 }

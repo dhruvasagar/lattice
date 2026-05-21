@@ -239,11 +239,17 @@ fn translate_command(chord: KeyChord, completion_open: bool, _chord_capture: boo
     // explicit, but if we reach here the overlay is off.
 
     // The completion popup claims a small set of keys first
-    // (Tab / S-Tab / Enter / Esc) -- two-stage Esc per DESIGN.md
-    // §5.11.3 Q6: first Esc dismisses the popup, second cancels
-    // the command line. Other keys fall through; appending text
-    // implicitly dismisses the popup (the App handler clears
-    // `completion_state` on every typed char).
+    // (Tab / S-Tab / Enter / Esc / C-n / C-p) -- two-stage Esc
+    // per DESIGN.md §5.11.3 Q6: first Esc dismisses the popup,
+    // second cancels the command line. Other keys fall through;
+    // appending text implicitly dismisses the popup (the App
+    // handler clears `completion_state` on every typed char).
+    //
+    // Issue #22 (2026-05-22): `<C-n>` / `<C-p>` symmetrical with
+    // picker's `translate_picker` (`Action::PickerSelectNext` /
+    // `PickerSelectPrev` for the same chords). User reported
+    // these were unbound in cmdline completion; only Tab / S-Tab
+    // worked. Now both pairs navigate identically.
     if completion_open {
         match chord.key {
             KeyKind::Special(SpecialKey::Tab) => {
@@ -252,6 +258,12 @@ fn translate_command(chord: KeyChord, completion_open: bool, _chord_capture: boo
                 } else {
                     Action::CommandLineCompleteOrAdvance
                 };
+            }
+            KeyKind::Char('n') if chord.mods.ctrl() => {
+                return Action::CommandLineCompleteOrAdvance;
+            }
+            KeyKind::Char('p') if chord.mods.ctrl() => {
+                return Action::CommandLineCompletePrev;
             }
             KeyKind::Special(SpecialKey::Enter) => return Action::CommandLineAcceptCompletion,
             KeyKind::Special(SpecialKey::Esc) => return Action::CommandLineDismissCompletion,

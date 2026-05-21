@@ -361,6 +361,121 @@ single-picker migration is a green commit on its own. Slice 17
 is the final cleanup that retires the `PickerAction` enum once
 nobody references it.
 
+### LSP cross-check: the design that survives
+
+Verified against the host's existing LSP accept paths in
+`dispatch.rs::do_picker_accept` (slice 7a planning, 2026-05-21).
+Two patterns emerged:
+
+**Stateless accept (the majority):** the candidate's data
+field carries everything needed to dispatch. Examples:
+  - Files → `OpenFile { path }`
+  - Buffers → `SwitchBuffer { id }`
+  - LSP locations → `JumpToFileLocation { path, line, col }`
+  - Commands → `InvokeCommand { id, args }`
+  - Registers / Marks / Snippets — same shape
+
+**Stateful accept (LSP request-bound):** the candidate carries
+only an INDEX into a host-side ephemeral table. Accept dispatch
+looks up the actual item from `Editor::pending_*_items` and
+applies it. Examples:
+  - `RoutingPayload::LspCompletion { index }` → look up in
+    `pending_completion_items`, splice into buffer.
+  - `RoutingPayload::LspCodeAction { index }` → look up in
+    `pending_code_action_items`, resolve, apply WorkspaceEdit.
+  - `LspCodeLens`, `ColorPresentation` — same pattern.
+  - `AcceptShowMessageAction { request_id, ... }` → look up
+    pending SMR oneshot, reply.
+
+### Implication: AcceptHandler is stateless
+
+The cross-check tells us the AcceptHandler trait does NOT need
+host state access. State lookup happens at dispatch time (where
+the Editor is in scope, just like today). The handler is a
+pure function:
+
+```rust
+pub trait AcceptHandler: Send + Sync {
+    fn accept(&self, candidate: &RawCandidate) -> AcceptAction;
+}
+```
+
+`AcceptAction` is a rename + cleanup of today's `RoutingPayload`
+enum:
+
+```rust
+pub enum AcceptAction {
+    // Stateless (candidate's CandidateData carries the payload)
+    OpenFile { path: PathBuf },
+    SwitchBuffer { id: BufferId },
+    JumpToFileLocation { path: PathBuf, line: u32, col: u32 },
+    JumpInBuffer { buffer_id: BufferId, line: u32, col: u32 },
+    InvokeCommand { id: CommandId, args: ArgsValue },
+    PasteRegister { name: char },
+    JumpToMark { name: char },
+    ExpandSnippet { id: SnippetId },
+
+    // Stateful (token + index; host resolves)
+    AcceptIndexedCompletion { token: AcceptToken, index: u32 },
+    AcceptIndexedCodeAction  { token: AcceptToken, index: u32 },
+    AcceptIndexedCodeLens    { token: AcceptToken, index: u32 },
+    AcceptColorPresentation  { token: AcceptToken, index: u32 },
+    AcceptShowMessageAction  { request_id: u32, server_id: String, index: u32 },
+
+    // For cmdline-completion (currently inline; explicit now)
+    InsertText { text: String, replace_start: usize },
+
+    // Plugin extension
+    Custom(Box<dyn Any + Send + Sync>),
+}
+```
+
+`AcceptToken` is a type-erased opaque marker (`u64` or `Uuid`)
+the host uses to look up the right pending table. Avoids
+proliferating per-LSP-feature enum variants in `AcceptAction`.
+
+### SourceRegistration shape (cross-check-validated)
+
+```rust
+pub struct SourceRegistration {
+    pub spec: SourceSpec,                  // id, doc, args, live flag
+    pub kind: CandidateSourceKind,         // pull or push
+    pub accept: Option<Arc<dyn AcceptHandler>>,
+    pub matcher_override: Option<MatcherId>,
+    pub ranker_overrides: Vec<RankerId>,
+    pub annotator_extras: Vec<AnnotatorId>,
+}
+
+pub enum CandidateSourceKind {
+    /// Pull — `generate(ctx)` runs per `Pipeline::run`.
+    /// First-party Files / Buffers / Commands / Lines / Jumps /
+    /// Marks / Registers / Outline / RecentFiles / Grep.
+    /// Plugins doing synchronous enumeration.
+    Generator(Arc<dyn CandidateGenerator>),
+
+    /// Push — candidate set is given at registration time.
+    /// First-party LSP pickers (references / definitions /
+    /// completion / code-actions / code-lens / color /
+    /// instances / SMR). Plugins doing async fetch.
+    PreSupplied(Arc<Vec<RawCandidate>>),
+}
+```
+
+### Two registration lifecycles
+
+The LSP cross-check also surfaced that not every source is
+boot-registered:
+
+| Lifecycle | Examples | How |
+|-----------|----------|-----|
+| **Persistent** (registered at boot, lives until shutdown) | Files, Buffers, Commands, all the static first-party sources | `CompletionRegistry::register_source(SourceRegistration)` at boot |
+| **Transient** (created per-use, dropped after accept/dismiss) | All LSP pickers; plugin async-fetch sources | Host builds a `SourceRegistration` on the spot from the async response, passes directly to `Picker::open_with(reg)` |
+
+The shape (`SourceRegistration`) is identical. Only the lifetime
+differs. Plugins choose: register persistently if their data is
+synchronously enumerable, or construct transient registrations
+per-use if they need to await before opening the picker.
+
 ### What's the minimum we MUST do
 
 For the v1 promise of **shared engine + plugin contract**, the

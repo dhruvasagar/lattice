@@ -296,6 +296,7 @@ mod tests {
                 fold_hash,
                 text_version,
                 visible_spans: cell.clone(),
+                pane_highlights: Arc::new(std::collections::HashMap::new()),
             }),
             ..RenderState::default()
         };
@@ -370,6 +371,7 @@ mod tests {
                 fold_hash: 1, // changed -> key differs from cache
                 text_version: 2, // doc advanced
                 visible_spans: cell.clone(),
+                pane_highlights: Arc::new(std::collections::HashMap::new()),
             }),
             ..RenderState::default()
         };

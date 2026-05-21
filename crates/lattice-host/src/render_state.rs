@@ -488,6 +488,15 @@ pub struct SyntaxRenderState {
     /// from `Editor::syntax_visible_spans_cell`), so the worker's
     /// writes survive subsequent publishes.
     pub visible_spans: Arc<arc_swap::ArcSwap<VisibleSpans>>,
+    /// Slice 3c.final.B.8: per-pane span cache published as
+    /// `Arc<HashMap<pane_idx, Arc<Vec<Vec<StyledSpan>>>>>`.
+    /// Outer Arc is the per-publish handle (cheap clone); inner
+    /// `Arc<Vec<...>>` so a per-pane lookup is one more Arc bump
+    /// without cloning the spans. The cache is owner-streamed by
+    /// `refresh_pane_highlights` — the publish step here just
+    /// surfaces the current snapshot to renderer threads.
+    pub pane_highlights:
+        Arc<std::collections::HashMap<usize, Arc<Vec<Vec<lattice_syntax::StyledSpan>>>>>,
 }
 
 impl Default for SyntaxRenderState {
@@ -500,6 +509,7 @@ impl Default for SyntaxRenderState {
             fold_hash: 0,
             text_version: 0,
             visible_spans: Arc::new(arc_swap::ArcSwap::from_pointee(VisibleSpans::default())),
+            pane_highlights: Arc::new(std::collections::HashMap::new()),
         }
     }
 }
@@ -1132,6 +1142,31 @@ mod tests {
         // Keymap handle clones to an Arc-backed view; verify
         // we can dereference it without panic.
         let _ = &rs.translator.keymap;
+    }
+
+    /// Slice 3c.final.B.8: pane_highlights map round-trip.
+    #[test]
+    fn pane_highlights_reflect_editor_state() {
+        let mut editor = Editor::default();
+        // Insert a synthetic span set for pane index 1 (the test
+        // doesn't care about the span content; only the shape +
+        // map round-trip matters).
+        editor
+            .pane_highlights
+            .insert(1, vec![vec![], vec![]]);
+        editor.publish_render_state();
+        let rs = editor.render_state.load_full();
+        let spans = rs
+            .syntax
+            .pane_highlights
+            .get(&1)
+            .expect("pane 1 entry");
+        assert_eq!(spans.len(), 2);
+        // Removal also round-trips.
+        editor.pane_highlights.remove(&1);
+        editor.publish_render_state();
+        let rs = editor.render_state.load_full();
+        assert!(!rs.syntax.pane_highlights.contains_key(&1));
     }
 
     /// Slice 3c.final.B.11: active-modes map round-trip. Inserts

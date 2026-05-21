@@ -528,6 +528,20 @@ impl Editor {
                 fold_hash: crate::folds::compute_fold_hash(&self.folds),
                 text_version: self.document.text_version(),
                 visible_spans: self.syntax_visible_spans_cell.clone(),
+                // Slice 3c.final.B.8: per-pane span snapshot map.
+                // Outer Arc is built per publish (small HashMap,
+                // typically 0-4 entries on multi-pane layouts);
+                // each entry's `Arc<Vec<...>>` is fresh because
+                // we move the inner Vec into a new Arc on each
+                // publish. Mutation surface (`refresh_pane_highlights`
+                // / split / pane-buffer-change) is rare relative
+                // to per-frame reads.
+                pane_highlights: std::sync::Arc::new(
+                    self.pane_highlights
+                        .iter()
+                        .map(|(idx, spans)| (*idx, std::sync::Arc::new(spans.clone())))
+                        .collect(),
+                ),
             }),
             ..RenderState::default()
         }

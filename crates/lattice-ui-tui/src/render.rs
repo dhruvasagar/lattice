@@ -2059,14 +2059,14 @@ fn draw_inactive_document(
     } else {
         None
     };
-    // Slice 3c.final.E.5j: pane_highlights read via `read_editor`.
-    // Returns owned `Option<Vec>` so the caller can fall through
-    // to the FrameView snapshot when missing.
-    let pane_highlights: Option<Vec<Vec<lattice_syntax::StyledSpan>>> =
-        app.read_editor(move |e| e.pane_highlights.get(&pane_idx).cloned());
+    // Slice 3c.final.B.8: pane_highlights via published `syntax()`
+    // sub-state — wait-free Arc-bump lookup. Inner `Arc<Vec<...>>`
+    // means we can hold the spans without cloning the vec body.
+    let rs = app.render_state.load();
+    let pane_highlights = rs.syntax.pane_highlights.get(&pane_idx).cloned();
     let highlights: Vec<Vec<lattice_syntax::StyledSpan>> =
         if let Some(spans) = pane_highlights {
-            spans
+            (*spans).clone()
         } else if active_doc_id == Some(pane.buffer_id) && pane.scroll == app.ad().scroll {
             // Read from the FrameView snapshot rather than the
             // live `app.editor.visible_highlights` -- protects against
@@ -3508,14 +3508,14 @@ pub(crate) fn diagnostics_on_line(
     let Some(uri) = app.buffer_uri(app.ad().document_buffer_id) else {
         return Vec::new();
     };
-    // Slice 3c.final.E.swap: lsp_diagnostics read via read_editor.
-    // Returns an owned Vec (closure return type) so the borrow
-    // doesn't escape.
-    let uri_owned = uri.clone();
-    app.read_editor(move |e| {
-        e.lsp_diagnostics
-            .diagnostics_on_line(&uri_owned, line_idx)
-    })
+    // Slice 3c.final.B.8: read via the already-published
+    // `diagnostics.layer` sub-state — wait-free against the
+    // supervisor's `ArcSwap`-backed snapshot. No actor round-trip.
+    app.render_state
+        .load()
+        .diagnostics
+        .layer
+        .diagnostics_on_line(&uri, line_idx)
 }
 
 /// M.7.3.b parameter bundle for the whitespace-decoration

@@ -542,6 +542,69 @@ and get full DefaultAcceptHandler dispatch (from 7d.0).
 PickerContext-needing plugin sources would need a separate WIT
 interface — orthogonal to this arc.
 
+### Slice 17 — PickerAction retirement (queued post-arc)
+
+The original slice 17 plan said "retire `PickerAction` enum
+once nobody references it." Post-9-16 audit shows the path
+forward but the actual retirement requires a follow-up arc:
+
+**Where PickerAction still fires today:**
+
+  - Picker construction (`Picker::new(_, _, on_accept)`).
+    Every host-side picker open passes a PickerAction tag.
+    Used by the picker to influence behaviour (e.g.
+    `set_lsp_instances` reads `self.on_accept` to stamp
+    OpenLspLog vs OpenLspTraceLog accept_action).
+  - Legacy imperative match in `do_picker_accept` (the
+    fallback after the typed-action branch). Reachable today
+    only for stateful LSP pickers — `accept_action_to_outcome`
+    returns None for AcceptIndexed* / AcceptColorPresentation
+    / AcceptShowMessageAction.
+  - Preview fallback path in `preview_picker_selection`
+    (checks `picker.on_accept == SwitchToBuffer`).
+
+**What it would take to fully retire:**
+
+  1. Grow `PickerAcceptOutcome` with 3 new variants
+     (ApplyLspCodeLens, ApplyColorPresentation,
+     ApplyShowMessageAction) — mirrors what the legacy match
+     calls today.
+  2. Grow `accept_action_to_outcome` to map AcceptIndexed* +
+     AcceptColorPresentation + AcceptShowMessageAction to
+     those new outcome variants.
+  3. Grow `apply_picker_outcome` with matching arms that do
+     what the legacy match does (take from pending tables,
+     apply via existing host methods).
+  4. Delete the legacy imperative match in
+     `do_picker_accept`.
+  5. Remove `Picker::new`'s `on_accept: PickerAction`
+     parameter — sources now determine accept via the typed
+     `accept_action` on each candidate, not via a picker-
+     level enum.
+  6. Audit and delete remaining PickerAction references
+     (~30 sites in host + ui-tui).
+  7. Delete `PickerAction` enum + `PickerAcceptOutcome` may
+     also retire if every variant has an AcceptAction
+     counterpart.
+
+**Why deferred:** the arc's paramount-goal value has shipped:
+
+  - Unified plugin contract via SourceRegistration (7a-7c).
+  - Typed accept dispatch via DefaultAcceptHandler (7d.0).
+  - Dual-registry lookup (7d.1).
+  - Preview unification — closes the LSP-references-preview
+    gap (7g + 10 + 15).
+  - LSP location + instance pickers carry typed
+    accept_action (10 + 15).
+  - LSP stateful pickers carry typed accept_action
+    (forward-compatible; 11-14 + 16).
+
+The remaining work is internal hygiene — visible only to
+contributors, not to end users. Slot as
+`3c.unify.picker-action-retirement` for a future arc once
+multi-slot AcceptToken-keyed pending tables are needed for
+other reasons (e.g. concurrent LSP pickers).
+
 ### Slice 7e + 7f decisions (post-7d.1 retrospective)
 
 After 7d.1 landed the dual-registry shape, the optional

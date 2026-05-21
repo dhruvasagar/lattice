@@ -355,11 +355,21 @@ impl Editor {
         // share the first-installed layer, which is fine because
         // tests use the per-test layer constructor for unit
         // coverage rather than relying on the global install.
+        //
+        // 2026-05-22 messages-overhaul: read initial filter from
+        // the runtime's `boot_log_level` (set by the CLI from
+        // -v/-q/--log-level flags before App::new runs). Falls
+        // back to "info" when unset (library / test callers).
+        // The subscriber composes a fmt layer + MessagesLayer so
+        // tracing events land in BOTH stderr and `*messages*`.
+        // Live-editable via `:set messages.filter=<level>`.
         let messages_ring = Arc::new(std::sync::Mutex::new(MessagesRing::default()));
+        let initial_filter =
+            lattice_runtime::boot_log_level().unwrap_or_else(|| "info".to_string());
         let _ = lattice_runtime::install_messages_subscriber(
             messages_ring.clone(),
             event_bus.clone(),
-            "info",
+            &initial_filter,
         );
         // Wire the logger's publisher to the same bus. The
         // closure captures an Arc<EventBus> clone so the

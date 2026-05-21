@@ -3298,6 +3298,7 @@ dependencies = [
  "anyhow",
  "clap",
  "lattice-core",
+ "lattice-runtime",
  "lattice-ui-gpui",
  "lattice-ui-tui",
  "tokio",

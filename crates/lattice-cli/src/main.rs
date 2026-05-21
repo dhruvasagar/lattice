@@ -56,23 +56,80 @@ struct Cli {
     /// Mutually exclusive with `--gui`.
     #[arg(long, conflicts_with = "gui")]
     tui: bool,
+
+    /// Increase log verbosity. Default is `info`; `-v` bumps to
+    /// `debug`, `-vv` to `trace`. Mutually-additive with
+    /// `--quiet` / `--log-level` (later wins).
+    ///
+    /// Logs land in BOTH the in-editor `*messages*` buffer
+    /// (open with `:messages`) and stderr. Adjust live with
+    /// `:set messages.filter=<level>`.
+    #[arg(short = 'v', long = "verbose", action = clap::ArgAction::Count)]
+    verbose: u8,
+
+    /// Decrease log verbosity. `-q` drops to `warn`, `-qq` to
+    /// `error`. Mutually-additive with `--verbose` / `--log-level`.
+    #[arg(short = 'q', long = "quiet", action = clap::ArgAction::Count)]
+    quiet: u8,
+
+    /// Explicit log level override. Accepts `error` / `warn` /
+    /// `info` / `debug` / `trace`, or a full
+    /// `tracing-subscriber::EnvFilter` directive (e.g.
+    /// `lattice_lsp=debug,lattice_host=info`). Wins over
+    /// `-v` / `-q` when both are passed.
+    #[arg(long = "log-level", value_name = "LEVEL")]
+    log_level: Option<String>,
+}
+
+/// Resolve the final log-level directive from CLI flags +
+/// env override. Precedence (last wins):
+///   1. Default: `info`.
+///   2. `-v` / `-q` counts shift relative to info.
+///   3. `--log-level=...` overrides absolutely.
+///   4. Pre-existing `LATTICE_LOG` env var trumps flags so
+///      `LATTICE_LOG=trace lattice file.txt` works without
+///      remembering the CLI flag name.
+fn compute_log_level(cli: &Cli) -> String {
+    // 4: caller-supplied env wins outright.
+    if let Ok(env) = std::env::var("LATTICE_LOG") {
+        if !env.is_empty() {
+            return env;
+        }
+    }
+    // 3: explicit --log-level overrides verbose/quiet.
+    if let Some(spec) = cli.log_level.as_deref() {
+        return spec.to_string();
+    }
+    // 2: verbose/quiet count shifts. Levels in ascending order:
+    //    error < warn < info < debug < trace
+    //    info index = 2; -v bumps +1, -q drops -1.
+    let levels = ["error", "warn", "info", "debug", "trace"];
+    let info_idx: i32 = 2;
+    let shift = i32::from(cli.verbose) - i32::from(cli.quiet);
+    let idx = (info_idx + shift).clamp(0, (levels.len() - 1) as i32) as usize;
+    levels[idx].to_string()
 }
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<()> {
-    // Tracing subscriber: per-keystroke debug output lands on stderr when
-    // `RUST_LOG=lattice_ui_gpui=debug` (or any module-targeted filter) is
-    // set. With no env var the default filter (`info`) keeps the binary
-    // quiet for normal use. `try_init` is idempotent — safe if a hook /
-    // test framework already installed a subscriber.
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .try_init();
-
     let cli = Cli::parse();
+
+    // 2026-05-22 messages-overhaul: removed the prior
+    // `tracing_subscriber::fmt().try_init()` install — it won the
+    // global subscriber race and silenced `*messages*`. The
+    // composed fmt+MessagesLayer subscriber installed by
+    // `install_messages_subscriber` (in editor_boot) now provides
+    // BOTH the stderr stream AND the in-editor `*messages*`
+    // surface from a single subscriber.
+    //
+    // CLI computes the boot-time log level from flags + env and
+    // hands it to the runtime via `set_boot_log_level`; editor_boot
+    // calls `boot_log_level()` inside the install path. Using a
+    // `OnceLock<String>` setter avoids `std::env::set_var` (denied
+    // by `#![deny(unsafe_code)]` and unsafe-flagged in recent
+    // Rust).
+    let level = compute_log_level(&cli);
+    lattice_runtime::set_boot_log_level(level);
 
     let document = match cli.file {
         Some(path) => {

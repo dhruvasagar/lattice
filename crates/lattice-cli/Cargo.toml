@@ -12,6 +12,11 @@ path = "src/main.rs"
 [dependencies]
 lattice-core = { path = "../lattice-core" }
 lattice-ui-tui = { path = "../lattice-ui-tui" }
+# 2026-05-22 messages-overhaul: CLI calls `set_boot_log_level`
+# to hand the -v/-q/--log-level flags to the boot-installed
+# tracing subscriber. Avoids `std::env::set_var` (denied by
+# `#![deny(unsafe_code)]`).
+lattice-runtime = { path = "../lattice-runtime" }
 # 5.9 / 5.8.M: optional GPUI peer renderer. Off by default so
 # `cargo build -p lattice-cli` and `cargo test -p lattice-cli` stay
 # headless-friendly (no system-display-lib link required). Enable

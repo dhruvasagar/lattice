@@ -138,6 +138,34 @@ impl Visit for MessageVisitor {
 /// no-op after the first install instead of panicking.
 static GLOBAL_INSTALLED: OnceLock<()> = OnceLock::new();
 
+/// Process-wide log-level override set by the CLI before
+/// `install_messages_subscriber` runs. `lattice-cli::main`
+/// computes the level from `-v`/`-q`/`--log-level` flags and
+/// calls [`set_boot_log_level`]; `editor_boot.rs` calls
+/// [`boot_log_level`] inside the install path.
+///
+/// `OnceLock<String>` (not an env var) because the
+/// `lattice-cli` crate denies `unsafe_code` and modern Rust
+/// flags `std::env::set_var` as unsafe (env mutations aren't
+/// thread-safe). A process-wide `OnceLock` is the
+/// equivalent-but-safe mechanism for set-once boot config.
+static BOOT_LOG_LEVEL: OnceLock<String> = OnceLock::new();
+
+/// CLI sets the boot-time log level before constructing the
+/// editor. Idempotent — second call no-ops. The first set
+/// wins (matching `tokio::main` -> `App::new` ordering).
+pub fn set_boot_log_level(level: impl Into<String>) {
+    let _ = BOOT_LOG_LEVEL.set(level.into());
+}
+
+/// `editor_boot` reads the boot-time log level when calling
+/// [`install_messages_subscriber`]. Returns `None` when the
+/// CLI didn't set one (typical for tests + library callers);
+/// boot falls back to `"info"`.
+pub fn boot_log_level() -> Option<String> {
+    BOOT_LOG_LEVEL.get().cloned()
+}
+
 /// Reload-handle for the `EnvFilter` that gates which events
 /// the `MessagesLayer` captures. Stored at install time so
 /// `:set messages.filter=...` can swap the filter live via
@@ -180,10 +208,25 @@ pub fn install_messages_subscriber(
     let env_filter = EnvFilter::try_new(initial_filter)
         .unwrap_or_else(|_| EnvFilter::try_new("info").expect("`info` is a valid EnvFilter spec"));
     let (filter_layer, handle) = reload::Layer::new(env_filter);
-    let layer = MessagesLayer::new(ring, bus);
+    let messages_layer = MessagesLayer::new(ring, bus);
+    // 2026-05-22 messages-overhaul: compose a fmt layer alongside
+    // MessagesLayer so every event ALSO mirrors to stderr. Users
+    // get the `*messages*` buffer for in-editor inspection AND
+    // the stderr stream for tail-ing in a separate terminal / log
+    // redirect. The shared `filter_layer` gates both — adjusting
+    // `messages.filter` (or `LATTICE_LOG`) at boot changes the
+    // verbosity for both surfaces uniformly.
+    //
+    // Previously main.rs installed `tracing_subscriber::fmt().try_init()`
+    // which WON the global subscriber race; this install
+    // silently failed, leaving `*messages*` empty in production.
+    // Removing main.rs's separate install and composing the fmt
+    // layer here makes both surfaces work via one subscriber.
+    let fmt_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
     let subscriber = tracing_subscriber::registry()
         .with(filter_layer)
-        .with(layer);
+        .with(messages_layer)
+        .with(fmt_layer);
     match tracing::subscriber::set_global_default(subscriber) {
         Ok(()) => {
             let _ = GLOBAL_INSTALLED.set(());

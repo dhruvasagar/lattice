@@ -95,8 +95,19 @@ impl App {
     /// M.5.2 (auto-activation hook), M.5.3 (lifecycle), and
     /// M.5.4+ (gates) have a single accessor to consume.
     /// 5.5.F.5.1: see [`lattice_host::dispatch::Editor::lsp_mode_enabled_for`].
+    ///
+    /// Slice 3c.extension.fold-rs: route through the published
+    /// `ModesRenderState` (B.11) instead of `read_editor`. Per-frame
+    /// hot path — every paint queries this for the diagnostics /
+    /// semantic-token / document-highlight / inlay-hint / progress
+    /// gates, so each saved actor RPC drops ~100µs off the frame
+    /// budget.
     pub fn lsp_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        self.read_editor(move |e| e.lsp_mode_enabled_for(buffer_id))
+        self.modes()
+            .map
+            .get(&buffer_id)
+            .map(|m| m.has_minor(lattice_lsp::modes::LspMode::mode_id()))
+            .unwrap_or(false)
     }
 
     /// M.6.0: is `mode_id` active on `buffer_id`? Generic minor-
@@ -148,7 +159,12 @@ impl App {
     /// Read by the publish-diagnostics paint pipeline and
     /// `:diag-next` / `:diag-prev` once M.6.3 wires the gate.
     pub fn lsp_diagnostics_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        self.read_editor(move |e| e.lsp_diagnostics_mode_enabled_for(buffer_id))
+        // Slice 3c.extension.fold-rs: see `lsp_mode_enabled_for`.
+        self.modes()
+            .map
+            .get(&buffer_id)
+            .map(|m| m.has_minor(lattice_lsp::modes::LspDiagnosticsMode::mode_id()))
+            .unwrap_or(false)
     }
 
     /// M.6.0: is `lsp-hover-mode` active on `buffer_id`? Read by
@@ -191,7 +207,12 @@ impl App {
     /// the bus (plugins can subscribe) but the modeline stays
     /// quiet for that buffer.
     pub fn lsp_progress_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        self.read_editor(move |e| e.lsp_progress_mode_enabled_for(buffer_id))
+        // Slice 3c.extension.fold-rs: see `lsp_mode_enabled_for`.
+        self.modes()
+            .map
+            .get(&buffer_id)
+            .map(|m| m.has_minor(lattice_lsp::modes::LspProgressMode::mode_id()))
+            .unwrap_or(false)
     }
 
     /// 4.4.e: is `lsp-document-highlight-mode` active on
@@ -199,7 +220,12 @@ impl App {
     /// `textDocument/documentHighlight` request issuance and
     /// the soft-highlight decoration overlay.
     pub fn lsp_document_highlight_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        self.read_editor(move |e| e.lsp_document_highlight_mode_enabled_for(buffer_id))
+        // Slice 3c.extension.fold-rs: see `lsp_mode_enabled_for`.
+        self.modes()
+            .map
+            .get(&buffer_id)
+            .map(|m| m.has_minor(lattice_lsp::modes::LspDocumentHighlightMode::mode_id()))
+            .unwrap_or(false)
     }
 
     /// 4.4.e: is `lsp-selection-range-mode` active on
@@ -219,11 +245,21 @@ impl App {
     }
 
     pub fn lsp_inlay_hint_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        self.read_editor(move |e| e.lsp_inlay_hint_mode_enabled_for(buffer_id))
+        // Slice 3c.extension.fold-rs: see `lsp_mode_enabled_for`.
+        self.modes()
+            .map
+            .get(&buffer_id)
+            .map(|m| m.has_minor(lattice_lsp::modes::LspInlayHintMode::mode_id()))
+            .unwrap_or(false)
     }
 
     pub fn lsp_semantic_tokens_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
-        self.read_editor(move |e| e.lsp_semantic_tokens_mode_enabled_for(buffer_id))
+        // Slice 3c.extension.fold-rs: see `lsp_mode_enabled_for`.
+        self.modes()
+            .map
+            .get(&buffer_id)
+            .map(|m| m.has_minor(lattice_lsp::modes::LspSemanticTokensMode::mode_id()))
+            .unwrap_or(false)
     }
 
     /// M.5.4: shared gate for every LSP request entry point
@@ -1810,6 +1846,7 @@ mod tests {
             )
             .expect("activate lsp-mode");
         a.editor.active_modes.insert(id, active);
+        a.editor.publish_render_state();
         assert!(a.lsp_mode_enabled_for(id));
     }
 

@@ -98,7 +98,11 @@ impl App {
     /// 1-line delegate while the renderer's gutter + motions still
     /// reach the App surface.
     pub fn foldenable(&self) -> bool {
-        self.read_editor(move |e| e.foldenable())
+        // Slice 3c.extension.fold-rs: `Editor::foldenable()` reads
+        // `option_cache.foldenable`, and `option_cache` is already
+        // mirrored on the published `ad()` substate. Skip the
+        // actor RPC and read the mirror directly — wait-free.
+        self.ad().option_cache.foldenable
     }
 
     /// 5.5.G.23.cmdline: body migrated to

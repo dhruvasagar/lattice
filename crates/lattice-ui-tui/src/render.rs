@@ -77,6 +77,26 @@ pub struct FrameView<'a> {
     /// buffer's setting in `from_app`. Reading this through the
     /// view lets per-pane render paths route consistently.
     pub relative_line_numbers: bool,
+    /// Slice 3c.extension.fold-rs: cache `foldenable` at view
+    /// construction. Prior to this, `view.line_inside_closed_fold`
+    /// and friends called `self.app.foldenable()` per line, each
+    /// triggering an actor mailbox round-trip (~µs–tens-of-µs).
+    /// One pre-cached bool per frame replaces 120+ RPCs in the
+    /// compose loop.
+    pub foldenable: bool,
+    /// Slice 3c.extension.fold-rs: per-frame LSP-mode gates,
+    /// cached once at `FrameView::from_app` so the compose loop's
+    /// per-line decoration checks don't pay actor-RPC cost. Each
+    /// is one `read_editor` at frame entry; a 120-row paint that
+    /// previously triggered 120× per-line RPC for
+    /// `app.lsp_semantic_tokens_mode_enabled_for(...)` now reads
+    /// `view.lsp_semantic_tokens_enabled` directly.
+    pub lsp_mode_enabled: bool,
+    pub lsp_diagnostics_enabled: bool,
+    pub lsp_semantic_tokens_enabled: bool,
+    pub lsp_document_highlight_enabled: bool,
+    pub lsp_inlay_hint_enabled: bool,
+    pub lsp_progress_enabled: bool,
 }
 
 impl<'a> FrameView<'a> {
@@ -99,6 +119,12 @@ impl<'a> FrameView<'a> {
         // populated the cell ran on the worker, not the UI thread.
         let rs = app.render_state.load_full();
         let spans = rs.syntax.visible_spans.load();
+        // Slice 3c.extension.fold-rs: pre-cache per-frame option +
+        // mode-gate reads. One `read_editor` each at frame entry
+        // (~7 RPCs total per frame) replaces N actor RPCs in the
+        // per-line compose loop. The active document id is needed
+        // for the mode-gate checks.
+        let doc_id = rs.active_document.document_buffer_id;
         Self {
             app,
             // Slice 3c.final.B (group 2): folds already published as
@@ -108,6 +134,13 @@ impl<'a> FrameView<'a> {
             visible_highlights: Arc::from(spans.spans.clone().into_boxed_slice()),
             show_line_numbers: app.show_line_numbers(),
             relative_line_numbers: app.relative_line_numbers(),
+            foldenable: app.foldenable(),
+            lsp_mode_enabled: app.lsp_mode_enabled_for(doc_id),
+            lsp_diagnostics_enabled: app.lsp_diagnostics_mode_enabled_for(doc_id),
+            lsp_semantic_tokens_enabled: app.lsp_semantic_tokens_mode_enabled_for(doc_id),
+            lsp_document_highlight_enabled: app.lsp_document_highlight_mode_enabled_for(doc_id),
+            lsp_inlay_hint_enabled: app.lsp_inlay_hint_mode_enabled_for(doc_id),
+            lsp_progress_enabled: app.lsp_progress_mode_enabled_for(doc_id),
         }
     }
 
@@ -131,6 +164,16 @@ impl<'a> FrameView<'a> {
             visible_highlights: Arc::from(spans.spans.clone().into_boxed_slice()),
             show_line_numbers: app.show_line_numbers_for(buffer_id),
             relative_line_numbers: app.relative_line_numbers_for(buffer_id),
+            // Slice 3c.extension.fold-rs: per-buffer cache. The
+            // mode gates resolve against `buffer_id` (the pane's
+            // buffer, possibly different from the active doc).
+            foldenable: app.foldenable(),
+            lsp_mode_enabled: app.lsp_mode_enabled_for(buffer_id),
+            lsp_diagnostics_enabled: app.lsp_diagnostics_mode_enabled_for(buffer_id),
+            lsp_semantic_tokens_enabled: app.lsp_semantic_tokens_mode_enabled_for(buffer_id),
+            lsp_document_highlight_enabled: app.lsp_document_highlight_mode_enabled_for(buffer_id),
+            lsp_inlay_hint_enabled: app.lsp_inlay_hint_mode_enabled_for(buffer_id),
+            lsp_progress_enabled: app.lsp_progress_mode_enabled_for(buffer_id),
         }
     }
 
@@ -140,7 +183,7 @@ impl<'a> FrameView<'a> {
     /// of folds can't go out of sync with the snapshot it took
     /// at chain entry.
     pub fn fold_start_at_any(&self, line: u32) -> Option<&Fold> {
-        if !self.app.foldenable() {
+        if !self.foldenable {
             return None;
         }
         self.folds.iter().find(|f| f.start_line == line)
@@ -150,7 +193,7 @@ impl<'a> FrameView<'a> {
     /// folds at `line`. Reads from the frozen `view.folds`
     /// snapshot.
     pub fn fold_start_at(&self, line: u32) -> Option<&Fold> {
-        if !self.app.foldenable() {
+        if !self.foldenable {
             return None;
         }
         self.folds.iter().find(|f| f.closed && f.start_line == line)
@@ -159,7 +202,7 @@ impl<'a> FrameView<'a> {
     /// Mirror of [`App::line_inside_closed_fold`] reading from
     /// the snapshot.
     pub fn line_inside_closed_fold(&self, line: u32) -> bool {
-        if !self.app.foldenable() {
+        if !self.foldenable {
             return false;
         }
         self.folds
@@ -2655,14 +2698,14 @@ fn compose_visible_lines_inner(
     let mut visible: Vec<u32> = Vec::with_capacity(height as usize);
     let mut buf_line = app.ad().scroll;
     while visible.len() < height as usize && buf_line < total_lines {
-        if app.line_inside_closed_fold(buf_line) {
+        // Slice 3c.extension.fold-rs: use view.X (wait-free) instead
+        // of app.X (per-line actor RPC).
+        if view.line_inside_closed_fold(buf_line) {
             buf_line += 1;
             continue;
         }
         visible.push(buf_line);
-        // If this is a fold start, jump past the fold's interior in the
-        // next iteration (the interior is hidden).
-        if let Some(fold) = app.fold_start_at(buf_line) {
+        if let Some(fold) = view.fold_start_at(buf_line) {
             buf_line = fold.end_line + 1;
         } else {
             buf_line += 1;
@@ -2725,7 +2768,7 @@ fn compose_visible_lines_inner(
         // ` ┄ N lines folded` suffix AFTER overlay processing, so
         // visual selection / hlsearch / current_match still paint
         // the heading correctly.
-        let closed_fold_at_start = app.fold_start_at(line_idx).filter(|f| f.closed).map(|f| {
+        let closed_fold_at_start = view.fold_start_at(line_idx).filter(|f| f.closed).map(|f| {
             // The "N lines folded" suffix should reflect the
             // user's perception of how much content collapsed
             // onto this single visible row -- including any
@@ -2756,7 +2799,7 @@ fn compose_visible_lines_inner(
             .lsp
             .semantic_tokens
             .get_for(app.ad().document_buffer_id)
-            && app.lsp_semantic_tokens_mode_enabled_for(app.ad().document_buffer_id)
+            && view.lsp_semantic_tokens_enabled
         {
             for tok in cache.tokens.iter().filter(|t| t.line == line_idx) {
                 let start =
@@ -2822,7 +2865,7 @@ fn compose_visible_lines_inner(
         // modifier composes with any prior bg / fg overlays
         // (visual / hlsearch / current_match) -- all four can
         // co-exist on a single span without conflict.
-        for d in diagnostics_on_line(app, snap, line_idx) {
+        for d in diagnostics_on_line(view, snap, line_idx) {
             let start = if d.range.start.line == line_idx {
                 (d.range.start.character as usize).min(line_len)
             } else {
@@ -2863,7 +2906,7 @@ fn compose_visible_lines_inner(
         let dh_guard = rs.lsp.document_highlights.load_full();
         if let Some(cache) = dh_guard.as_deref()
             && cache.buffer_id == app.ad().document_buffer_id
-            && app.lsp_document_highlight_mode_enabled_for(app.ad().document_buffer_id)
+            && view.lsp_document_highlight_enabled
         {
             for h in &cache.highlights {
                 let start_line = h.range.start.line;
@@ -2904,7 +2947,7 @@ fn compose_visible_lines_inner(
         // scope from the semantic-tokens reader above.)
         let rs = app.render_state.load();
         if let Some(cache) = rs.lsp.inlay_hints.get_for(app.ad().document_buffer_id)
-            && app.lsp_inlay_hint_mode_enabled_for(app.ad().document_buffer_id)
+            && view.lsp_inlay_hint_enabled
         {
             let mut on_line: Vec<&lattice_lsp::lsp_types::InlayHint> = cache
                 .hints
@@ -3020,7 +3063,7 @@ fn compose_visible_lines_inner(
         // one cell of gutter width on every frame -- visible
         // even when no diagnostics exist so the layout doesn't
         // shift when one arrives.
-        let severity_cell = render_diagnostic_severity_cell(app, snap, line_idx);
+        let severity_cell = render_diagnostic_severity_cell(view, snap, line_idx);
         out.push(combine_prefixed(vec![severity_cell], gutter, body));
     }
     out
@@ -3409,11 +3452,15 @@ fn render_gutter_for(view: &FrameView<'_>, line_idx: u32, width: u32) -> Span<'s
             TuiStyle::default().fg(Color::DarkGray),
         );
     }
+    // Slice 3c.extension.fold-rs: use view.relative_line_numbers
+    // (cached at frame entry) instead of app.relative_line_numbers()
+    // — this gutter function runs once per visible line.
     let app = view.app;
-    if !app.relative_line_numbers() || line_idx == app.ad().cursor.line {
+    let cursor_line = app.ad().cursor.line;
+    if !view.relative_line_numbers || line_idx == cursor_line {
         return render_gutter(line_idx, width, glyph);
     }
-    let dist = line_idx.abs_diff(app.ad().cursor.line);
+    let dist = line_idx.abs_diff(cursor_line);
     let n = dist.to_string();
     Span::styled(
         format_gutter_cell(&n, width, glyph),
@@ -3433,13 +3480,13 @@ const DIAG_GUTTER_WIDTH: u32 = 1;
 /// diagnostic touches the line, or a single space styled
 /// dim-darkgray when nothing's there.
 fn render_diagnostic_severity_cell(
-    app: &App,
+    view: &FrameView<'_>,
     snap: &DocumentSnapshot,
     line_idx: u32,
 ) -> Span<'static> {
-    let theme = &app.theme;
+    let theme = &view.app.theme;
     let blank = Span::styled(" ".to_string(), TuiStyle::default());
-    let Some(severity) = severity_for_line(app, snap, line_idx) else {
+    let Some(severity) = severity_for_line(view, snap, line_idx) else {
         return blank;
     };
     let (glyph, style) = crate::theme::diagnostic_glyph_and_style(theme, severity);
@@ -3458,19 +3505,17 @@ fn render_diagnostic_severity_cell(
 /// - the buffer has no LSP attachment, or
 /// - no diagnostic touches the line.
 pub(crate) fn severity_for_line(
-    app: &App,
+    view: &FrameView<'_>,
     _snap: &DocumentSnapshot,
     line_idx: u32,
 ) -> Option<DiagnosticSeverity> {
-    // M.6.3: gate on `lsp-diagnostics-mode` (which implies
-    // `lsp-mode` -- a sub-mode can't be active without the
-    // umbrella, by M.6.1 cascade). Replaces the umbrella-only
-    // gate so users can `:disable lsp-diagnostics-mode` to
-    // suppress just the visual surface while keeping other
-    // LSP features (hover / completion / nav) live.
-    if !app.lsp_diagnostics_mode_enabled_for(app.ad().document_buffer_id) {
+    // Slice 3c.extension.fold-rs: gate on cached
+    // `view.lsp_diagnostics_enabled` instead of per-line
+    // `app.lsp_diagnostics_mode_enabled_for(...)` actor RPC.
+    if !view.lsp_diagnostics_enabled {
         return None;
     }
+    let app = view.app;
     let uri = app.buffer_uri(app.ad().document_buffer_id)?;
     // Phase 5.8.AF.5 / Slice 3a: read through the renderer's
     // `RenderState` contract instead of `editor.lsp_diagnostics`
@@ -3488,16 +3533,18 @@ pub(crate) fn severity_for_line(
 /// (M.5.6); the diagnostics layer keeps storing data when the
 /// mode is off, but the renderer pretends none exist.
 pub(crate) fn diagnostics_on_line(
-    app: &App,
+    view: &FrameView<'_>,
     _snap: &DocumentSnapshot,
     line_idx: u32,
 ) -> Vec<LspDiagnostic> {
-    // M.6.3: gate on `lsp-diagnostics-mode` (matches
-    // `severity_for_line` -- the inline-underline overlay
-    // and the gutter glyph share the same surface).
-    if !app.lsp_diagnostics_mode_enabled_for(app.ad().document_buffer_id) {
+    // Slice 3c.extension.fold-rs: gate on the cached
+    // `view.lsp_diagnostics_enabled` instead of the prior
+    // per-line `app.lsp_diagnostics_mode_enabled_for(...)`
+    // actor RPC.
+    if !view.lsp_diagnostics_enabled {
         return Vec::new();
     }
+    let app = view.app;
     let Some(uri) = app.buffer_uri(app.ad().document_buffer_id) else {
         return Vec::new();
     };
@@ -5080,6 +5127,7 @@ mod tests {
             .position(|f| f.start_line == 0)
             .expect("heading fold");
         app.editor.folds[idx].closed = true;
+        app.editor.publish_render_state();
         let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
         let row0 = line_text(&lines[0]);
         // Heading text is preserved.
@@ -5100,6 +5148,7 @@ mod tests {
             .position(|f| f.start_line == 0)
             .expect("heading fold");
         app.editor.folds[idx].closed = true;
+        app.editor.publish_render_state();
         let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
         let blob: String = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
         assert!(!blob.contains("hidden1"), "interior leaked: {blob}");
@@ -5187,6 +5236,7 @@ mod tests {
             .position(|f| f.start_line == 0)
             .expect("heading fold");
         app.editor.folds[idx].closed = true;
+        app.editor.publish_render_state();
         // Slice 3c.final.B (group 2): publish after direct
         // `editor.folds[idx].closed` mutation.
         app.editor.publish_render_state();
@@ -5222,6 +5272,7 @@ mod tests {
             .position(|f| f.start_line == 0)
             .expect("struct fold");
         app.editor.folds[idx].closed = true;
+        app.editor.publish_render_state();
         let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 4, 80);
         // Row 0: heading + " ┄ N lines folded".
         // Row 1: the post-fold statement -- correct content, not
@@ -5276,6 +5327,7 @@ mod tests {
             .position(|f| f.start_line == 0)
             .expect("fold");
         app.editor.folds[idx].closed = true;
+        app.editor.publish_render_state();
         app.editor.cursor = lattice_protocol::position::Position::new(0, 0);
         app.apply(crate::app::Action::EnterVisual(VisualKind::Linewise));
         let sel = Selection {

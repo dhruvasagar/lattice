@@ -1287,6 +1287,78 @@ mod tests {
         assert_eq!(a.editor.cursor.line, 0);
     }
 
+    /// User reported 2026-05-22: `gg` does nothing in the
+    /// production TUI binary but `press_chars(&mut a, "gg")`
+    /// (the existing test) passes. Hypothesis: `press_chars` reads
+    /// `partial_chord` from `&app.editor.partial_chord` directly,
+    /// but `runtime.rs::main_loop` reads from
+    /// `app.render_state.load().translator.partial_chord`. If the
+    /// publish layer is out of sync, production fails while
+    /// tests pass.
+    ///
+    /// This test mimics the production main_loop's exact ctx-build
+    /// code path — reading `partial_chord` from the published RS.
+    /// If this test passes too, the divergence is elsewhere; if
+    /// it fails, we've localised the bug to the publish layer.
+    #[test]
+    fn gg_through_published_rs_matches_runtime_main_loop() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut a = app_with("one\ntwo\nthree\nfour\nfive", 10);
+        // Park cursor on last line via `G` so gg has visible work.
+        for _ in 0..4 {
+            press_chars(&mut a, "j");
+        }
+        assert_eq!(a.editor.cursor.line, 4, "cursor parks on last line");
+
+        // Press `g` twice using the SAME ctx-build code path
+        // runtime.rs main_loop uses. Reads partial_chord from
+        // published RS each time.
+        fn press_g_via_rs(a: &mut App) {
+            let ad = a.ad();
+            let translator = a.render_state.load().translator.clone();
+            let ctx = crate::input::TranslateContext {
+                modal: ad.modal,
+                builtins: &translator.builtins,
+                pending_count: ad.pending_count,
+                op_count: ad.op_count,
+                recording_macro: ad.macro_recording,
+                active_buffer: ad.buffer_kind,
+                completion_open: ad.completion_open,
+                chord_capture: a.chord_capture_active(),
+                picker_open: ad.picker_open,
+                insert_completion_open: a.completion_popup_active(),
+                snippet_active: ad.snippet_active,
+                keymap: &translator.keymap,
+                partial_chord: &translator.partial_chord,
+            };
+            let action = crate::input::translate(
+                ctx,
+                KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE),
+            );
+            a.apply(action);
+        }
+        press_g_via_rs(&mut a);
+        // After first `g`: partial_chord should be [g] in BOTH
+        // sources (editor field AND published RS).
+        assert_eq!(
+            a.editor.partial_chord.len(),
+            1,
+            "editor.partial_chord populated after first g"
+        );
+        assert_eq!(
+            a.render_state.load().translator.partial_chord.len(),
+            1,
+            "RS.translator.partial_chord populated after first g — \
+             this is what runtime.rs reads"
+        );
+        press_g_via_rs(&mut a);
+        assert_eq!(
+            a.editor.cursor.line, 0,
+            "gg via production code path should jump to line 0"
+        );
+    }
+
     #[test]
     fn key_harness_df_delim_deletes_up_to_match() {
         let mut a = app_with("alpha, beta, gamma", 10);

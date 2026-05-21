@@ -888,7 +888,10 @@ impl PickerSourceGenerator for RegistersSource {
                 // need a richer routing variant.
                 let ch = name.chars().next()?;
                 let display = format!("\"{name:<2} {preview}");
-                let cand = RawCandidate::plain(display, CandidateKind::Plain);
+                let mut cand = RawCandidate::plain(display, CandidateKind::Plain);
+                // Slice 7b.5: typed accept payload.
+                cand.accept_action =
+                    Some(lattice_completion::AcceptAction::PasteRegister { name: ch });
                 Some((cand, RoutingPayload::PasteRegister { name: ch }))
             })
             .collect();
@@ -951,7 +954,10 @@ impl PickerSourceGenerator for MarksSource {
             .iter()
             .map(|(name, pos)| {
                 let display = format!("'{name:<2} {}:{}", pos.line + 1, pos.byte + 1);
-                let cand = RawCandidate::plain(display, CandidateKind::Plain);
+                let mut cand = RawCandidate::plain(display, CandidateKind::Plain);
+                // Slice 7b.5: typed accept payload.
+                cand.accept_action =
+                    Some(lattice_completion::AcceptAction::JumpToMark { name: *name });
                 (cand, RoutingPayload::JumpToMark { name: *name })
             })
             .collect();
@@ -1078,7 +1084,15 @@ fn hits_to_pairs(hits: Vec<GrepHit>) -> crate::CandidateBatch {
                 hit.col + 1,
                 hit.preview.trim_start(),
             );
-            let cand = RawCandidate::plain(display, CandidateKind::Plain);
+            let mut cand = RawCandidate::plain(display, CandidateKind::Plain);
+            // Slice 7b.6: typed accept payload. Grep hits jump
+            // to file:line:col — same shape as LSP references /
+            // definitions / diagnostics → JumpToFileLocation.
+            cand.accept_action = Some(lattice_completion::AcceptAction::JumpToFileLocation {
+                path: hit.path.clone(),
+                line: hit.line,
+                col: hit.col,
+            });
             (
                 cand,
                 RoutingPayload::LspLocation {

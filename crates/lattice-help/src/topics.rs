@@ -333,6 +333,62 @@ mod tests {
         assert!(r.lookup("buffers").is_some());
     }
 
+    /// Soft binary-size budget for embedded user docs. When the total
+    /// size of `docs/user/*.md` exceeds this threshold, this test
+    /// fails and forces a re-evaluation of the `include_str!`-based
+    /// embedding model.
+    ///
+    /// Rationale (see `docs/dev/operations/embedded-docs-budget.md`):
+    /// every user doc is currently `include_str!`'d uncompressed into
+    /// the binary, which gives the editor the "works offline, no
+    /// filesystem layout assumption" property (paramount goal). The
+    /// cost is linear in doc volume. At 166 KB of markdown today,
+    /// the cost is ~0.5-1.5% of a typical release binary — invisible.
+    /// At 3× that (500 KB) the cost becomes visible; that's the
+    /// trigger to switch to compressed-embed (gzip/deflate, ~5×
+    /// reduction) before the bloat is real.
+    ///
+    /// **Action when this test fails:** pick one of the options
+    /// in `docs/dev/operations/embedded-docs-budget.md` (compress,
+    /// feature-gate, lazy-load) and implement it. Do NOT just bump
+    /// the budget number.
+    const EMBEDDED_DOCS_BUDGET_BYTES: u64 = 512 * 1024;
+
+    #[test]
+    fn embedded_user_docs_stay_under_size_budget() {
+        let docs_user = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docs/user");
+        let mut total: u64 = 0;
+        let mut per_file: Vec<(String, u64)> = Vec::new();
+        for entry in std::fs::read_dir(&docs_user).expect("docs/user readable") {
+            let entry = entry.expect("dir entry");
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("md") {
+                continue;
+            }
+            let meta = std::fs::metadata(&path).expect("stat md file");
+            total += meta.len();
+            per_file.push((
+                path.file_name().unwrap().to_string_lossy().into_owned(),
+                meta.len(),
+            ));
+        }
+        per_file.sort_by(|a, b| b.1.cmp(&a.1));
+        let detail = per_file
+            .iter()
+            .map(|(n, s)| format!("    {:>7} B  {}", s, n))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            total <= EMBEDDED_DOCS_BUDGET_BYTES,
+            "embedded user docs total {total} B exceeds budget of \
+             {budget} B. Time to switch from `include_str!` to a \
+             compressed-embed scheme — see \
+             `docs/dev/operations/embedded-docs-budget.md`. Per-file:\n{detail}",
+            budget = EMBEDDED_DOCS_BUDGET_BYTES,
+        );
+    }
+
     #[test]
     fn every_user_doc_in_docs_user_is_registered_as_a_topic() {
         // Regression for the gap discovered post-3c.final.E.cleanup:

@@ -1154,6 +1154,103 @@ mod tests {
         assert_eq!(app.editor.modal, ModalState::Insert);
     }
 
+    /// Test-coverage gap user flagged 2026-05-21: chord sequences
+    /// like `gg` had no GPUI end-to-end test. The TUI peer covers
+    /// the keymap-handler layer (key_harness_gg_jumps_to_first_line)
+    /// but GPUI's specific dispatch_keystroke path — including
+    /// partial_chord publish + reload between keys — wasn't
+    /// exercised.
+    ///
+    /// This test drives `gg` through `dispatch_keystroke`, the
+    /// SAME path GPUI's `on_key_down` uses. If `partial_chord`
+    /// doesn't survive the publish-and-reload cycle between the
+    /// two `g` presses, the second `g` won't see the first one
+    /// as prefix and dispatch will fail.
+    #[test]
+    fn gpui_dispatch_keystroke_handles_gg_chord_sequence() {
+        // Seed a multi-line document so `gg` has somewhere to
+        // jump to.
+        let doc = Document::from_text("alpha\nbeta\ngamma\ndelta\nepsilon\n");
+        let mut app = GpuiApp::new(doc);
+        // Move cursor down 2 lines so `gg` has work to do.
+        app.dispatch_keystroke("j", false, false, false, false);
+        app.dispatch_keystroke("j", false, false, false, false);
+        assert_eq!(
+            app.editor.cursor.line, 2,
+            "cursor should be on line 2 before gg"
+        );
+
+        // First `g`: should absorb into partial_chord, NOT execute.
+        let outcome1 = app.dispatch_keystroke("g", false, false, false, false);
+        assert!(outcome1.is_some(), "first `g` should dispatch");
+        assert_eq!(
+            app.editor.partial_chord.len(),
+            1,
+            "first `g` should populate partial_chord"
+        );
+        assert_eq!(
+            app.editor.cursor.line, 2,
+            "first `g` alone should NOT move the cursor"
+        );
+
+        // Verify the published RS reflects the partial_chord update
+        // — this is the key invariant. If RS still shows empty
+        // partial_chord, the second `g` won't find the prefix and
+        // dispatch silently fails.
+        assert_eq!(
+            app.render_state.load().translator.partial_chord.len(),
+            1,
+            "published RS must observe the partial_chord update before next keystroke"
+        );
+
+        // Second `g`: with [g] as prefix, trie resolves gg →
+        // motion:goto-first-line.
+        let outcome2 = app.dispatch_keystroke("g", false, false, false, false);
+        assert!(outcome2.is_some(), "second `g` should dispatch");
+        assert_eq!(
+            app.editor.cursor.line, 0,
+            "gg should jump to line 0; got line {}",
+            app.editor.cursor.line
+        );
+        assert!(
+            app.editor.partial_chord.is_empty(),
+            "partial_chord should clear after gg resolves"
+        );
+    }
+
+    /// Test-coverage gap (sibling to gg): `zz` / `zt` / `zb`.
+    /// These also live behind a chord-prefix state machine; the
+    /// `z` keystroke absorbs into partial_chord, then the second
+    /// keystroke (`z`/`t`/`b`) selects the action.
+    #[test]
+    fn gpui_dispatch_keystroke_handles_zz_chord_sequence() {
+        // Long enough document that zz centering would be
+        // observable (we don't assert viewport position, just
+        // that the action dispatched and partial_chord clears).
+        let doc = Document::from_text(&"line\n".repeat(20));
+        let mut app = GpuiApp::new(doc);
+
+        let outcome1 = app.dispatch_keystroke("z", false, false, false, false);
+        assert!(outcome1.is_some(), "first `z` should dispatch");
+        assert_eq!(
+            app.editor.partial_chord.len(),
+            1,
+            "first `z` should populate partial_chord"
+        );
+        assert_eq!(
+            app.render_state.load().translator.partial_chord.len(),
+            1,
+            "published RS must observe the z partial_chord update"
+        );
+
+        let outcome2 = app.dispatch_keystroke("z", false, false, false, false);
+        assert!(outcome2.is_some(), "second `z` should dispatch");
+        assert!(
+            app.editor.partial_chord.is_empty(),
+            "partial_chord should clear after zz resolves"
+        );
+    }
+
     /// Slice 3c.atomic.K: `GpuiApp::ad()` reflects the modal
     /// transition driven by dispatch. Proves the renderer-side
     /// publish chain (`dispatch_chord` → `dispatch_action` →

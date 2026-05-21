@@ -84,6 +84,17 @@ impl CandidateRanker for MruRanker {
         // cmdline / palette surfaces where predictable A-Z
         // ordering helps. MruRanker is for surfaces that want
         // recency-weighted insertion-order behavior.
+        //
+        // Note: the bonus lookup fires twice per sort comparison
+        // (a's bonus and b's bonus). For picker-scale inputs
+        // (5k candidates) that's ~130k Arc<dyn Fn> calls per
+        // refilter. Precompute-into-pair-vec was experimentally
+        // worse (extra Vec rebuild + ScoredCandidate move pass
+        // overshadowed the saved lookup calls on the empty-query
+        // hot path). The simple `sort_by`-with-lookup wins
+        // empirically; documented here so future maintainers
+        // don't re-attempt the same optimization without
+        // benchmarking the empty-query case.
         scored.sort_by(|a, b| {
             let ba = a.score.get() as f64 + (self.bonus_lookup)(&a.raw);
             let bb = b.score.get() as f64 + (self.bonus_lookup)(&b.raw);

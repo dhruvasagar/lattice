@@ -6094,4 +6094,46 @@ mod tests {
             }
         }
     }
+
+    /// Slice 3c.extension.fold-rs.test: regression scaffold.
+    ///
+    /// Catches the class of bug that fold-rs fixed: per-frame paint
+    /// paths reaching the actor mailbox via `read_editor` /
+    /// `mutate_editor`. The previous regression
+    /// (`frame_120_lines/200` going from 90µs to 43.73ms because
+    /// 120 per-line `read_editor` calls crept into
+    /// `compose_visible_lines_inner`) would have been caught here.
+    ///
+    /// **Why the bound is 0**: every per-frame paint read must go
+    /// through wait-free RS accessors (`ad()`, `panes()`, `popup()`,
+    /// `modes()`, `buffer_locals()`, `render_state.load().X`). The
+    /// `App::{read,mutate,mutate_with}_editor` seam is for cold-
+    /// path App helpers (LSP autopilots, picker accept tails, ex-
+    /// command bodies), never the paint loop.
+    ///
+    /// If a future change adds a `read_editor` call inside
+    /// `compose_visible_lines` or any of its callees, this test
+    /// flips red — the fix is to either lift the read to RS or
+    /// route through a FrameView-cached value.
+    #[test]
+    fn compose_visible_lines_makes_zero_actor_calls() {
+        let app = app_with("a\nb\nc\nd\ne\nf\ng\nh\ni\nj\n", 10);
+        let snap = app.ad().snapshot.clone();
+        // Warm any one-time setup the test fixture itself does
+        // (theme construction, FrameView's first publish read,
+        // tree-sitter seeding) so the snapshot we take just
+        // before `compose_visible_lines` reflects steady state.
+        let _warmup = compose_visible_lines(&app, &snap, 10, 80);
+        let before = crate::actor_call_counter::snapshot();
+        let _lines = compose_visible_lines(&app, &snap, 10, 80);
+        let after = crate::actor_call_counter::snapshot();
+        let delta = after - before;
+        assert_eq!(
+            delta, 0,
+            "compose_visible_lines made {delta} actor-seam calls; \
+             paint paths must read RS, not route through \
+             read_editor / mutate_editor. See slice \
+             3c.extension.fold-rs for the migration recipe.",
+        );
+    }
 }

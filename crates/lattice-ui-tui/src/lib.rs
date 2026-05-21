@@ -27,6 +27,7 @@
 //! engine drives input through `CommandInvocation`s instead of the
 //! hardcoded `Action` enum used here.
 
+pub mod actor_call_counter;
 pub mod app;
 // Phase 5.2: HOST modules migrated to `lattice-host`. The
 // `pub use` here preserves every existing

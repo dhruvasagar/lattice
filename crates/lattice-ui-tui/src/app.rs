@@ -1117,6 +1117,7 @@ impl App {
     where
         F: FnOnce(&mut lattice_host::editor::Editor) + Send + 'static,
     {
+        crate::actor_call_counter::bump();
         #[cfg(not(test))]
         {
             self.editor_actor
@@ -1138,6 +1139,7 @@ impl App {
         F: FnOnce(&mut lattice_host::editor::Editor) -> R + Send + 'static,
         R: Send + 'static,
     {
+        crate::actor_call_counter::bump();
         #[cfg(not(test))]
         {
             self.editor_actor.mutate_blocking_with(f)
@@ -1160,6 +1162,7 @@ impl App {
         F: FnOnce(&lattice_host::editor::Editor) -> R + Send + 'static,
         R: Send + 'static,
     {
+        crate::actor_call_counter::bump();
         #[cfg(not(test))]
         {
             self.editor_actor.with_editor(f)

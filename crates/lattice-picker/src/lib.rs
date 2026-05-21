@@ -67,7 +67,10 @@ pub use source::{
 
 use std::path::PathBuf;
 
-use lattice_completion::{CandidateData, MatchScore, RawCandidate, RenderedCandidate, fuzzy_match};
+use lattice_completion::{
+    CandidateData, CandidateRanker, MatchScore, MruRanker, RawCandidate, RenderedCandidate,
+    ScoredCandidate, fuzzy_match,
+};
 
 /// `CandidateData::Extension { kind_id }` value the picker stamps
 /// on every candidate it builds. Each candidate's payload bytes
@@ -607,36 +610,44 @@ impl Picker {
             }
             return;
         }
+        // Slice `3c.unify.mru-promotion`: ranking is now delegated
+        // to a `MruRanker` instance from `lattice-completion`.
+        // The closure captures the picker's `mru_bonuses` Vec
+        // (snapshotted at the picker's open time by the host) and
+        // looks up per-candidate via the same index-in-CandidateData
+        // encoding `bonus_for_raw` decoded before. The ranker
+        // subsumes the prior "sort by `score + bonus` descending"
+        // logic, so the picker no longer carries the combine
+        // arithmetic inline.
+        //
         // Score = match (0..1000) + mru_bonus (0..~110 typical).
         // Bonus sits below the tier delta between match tiers
         // (200 between FUZZY_LOW and SUBSTRING) so it functions
         // as a within-tier tie-breaker rather than a tier
-        // override. The matcher's stable string score still
-        // dominates; MRU floats recently-used candidates within
-        // their tier.
-        let mut scored: Vec<(RawCandidate, MatchScore, Vec<std::ops::Range<usize>>, f64)> =
-            Vec::new();
+        // override.
+        let mut scored: Vec<ScoredCandidate> = Vec::new();
         for raw in &self.raw {
             if let Some((score, ranges)) = fuzzy_match(&self.query, &raw.display) {
-                let bonus = bonus_for_raw(raw, &self.mru_bonuses);
-                scored.push((raw.clone(), score, ranges, bonus));
+                scored.push(ScoredCandidate {
+                    raw: raw.clone(),
+                    score,
+                    match_ranges: ranges,
+                });
             }
         }
-        // Stable sort by combined score descending. Equal-
-        // combined-score candidates retain insertion order so
-        // host-supplied ordering (alternate-buffer-to-bottom
-        // float, jumps newest-first) still works.
-        scored.sort_by(|a, b| {
-            let ka = a.1.get() as f64 + a.3;
-            let kb = b.1.get() as f64 + b.3;
-            kb.partial_cmp(&ka).unwrap_or(std::cmp::Ordering::Equal)
-        });
+        // Build a ranker that closes over the bonus map. The
+        // bonus vec is small (per-candidate scalar f64) so the
+        // clone is cheap relative to the per-keystroke fuzzy
+        // match work above.
+        let bonuses = self.mru_bonuses.clone();
+        let ranker = MruRanker::new(move |raw| bonus_for_raw(raw, &bonuses));
+        ranker.rank(&mut scored);
         self.candidates = scored
             .into_iter()
-            .map(|(raw, score, match_ranges, _bonus)| RenderedCandidate {
-                raw,
-                score,
-                match_ranges,
+            .map(|s| RenderedCandidate {
+                raw: s.raw,
+                score: s.score,
+                match_ranges: s.match_ranges,
                 annotations: Vec::new(),
             })
             .collect();

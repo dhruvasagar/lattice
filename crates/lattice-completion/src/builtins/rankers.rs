@@ -1,6 +1,8 @@
 //! Built-in rankers (DESIGN.md §5.11.3).
 
-use crate::candidate::ScoredCandidate;
+use std::sync::Arc;
+
+use crate::candidate::{RawCandidate, ScoredCandidate};
 use crate::traits::CandidateRanker;
 
 /// `rank:score`. Default v1 ranker. Sorts by descending score with
@@ -25,6 +27,68 @@ pub struct AlphabeticalRanker;
 impl CandidateRanker for AlphabeticalRanker {
     fn rank(&self, scored: &mut Vec<ScoredCandidate>) {
         scored.sort_by(|a, b| a.raw.text.cmp(&b.raw.text));
+    }
+}
+
+/// `rank:mru`. Combines the matcher's `MatchScore` with a per-
+/// candidate bonus (frecency / recency / MRU-style) supplied by
+/// the caller. Bonus is added to the score; the result is
+/// re-sorted descending with alphabetical tie-break.
+///
+/// Slice `3c.unify.mru-promotion`: promoted from
+/// `lattice-picker`'s inline `combined = score + bonus`
+/// arithmetic to a first-class `CandidateRanker` impl. The
+/// bonus lookup is a caller-supplied closure so different
+/// surfaces can choose their identity scheme:
+///
+///   - Picker decodes the index encoded in
+///     `CandidateData::Extension` (the existing
+///     parallel-bonus-vec scheme).
+///   - Cmdline-completion (future) can look up by candidate text
+///     in a `HashMap<String, f64>` derived from the host's MRU
+///     index at filter time.
+///   - Plugins supply their own lookup against whatever identity
+///     scheme they prefer.
+///
+/// `MruRanker` subsumes the `ScoreRanker` behavior (it sorts by
+/// score when every bonus is 0.0), so the typical pipeline
+/// composition is `rankers: vec![Arc::new(MruRanker::new(...))]`
+/// — not stacking `[ScoreRanker, MruRanker]` which would just be
+/// a wasted first sort.
+pub struct MruRanker {
+    bonus_lookup: Arc<dyn Fn(&RawCandidate) -> f64 + Send + Sync>,
+}
+
+impl MruRanker {
+    /// `bonus_lookup(raw)` returns the candidate's MRU bonus —
+    /// a non-negative f64 added to its `MatchScore.get() as f64`
+    /// for ranking. Returning 0.0 means "no MRU history; rank
+    /// purely by match score."
+    pub fn new(
+        bonus_lookup: impl Fn(&RawCandidate) -> f64 + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            bonus_lookup: Arc::new(bonus_lookup),
+        }
+    }
+}
+
+impl CandidateRanker for MruRanker {
+    fn rank(&self, scored: &mut Vec<ScoredCandidate>) {
+        // Stable sort: equal-combined-score candidates retain
+        // their input order. Picker callers depend on this for
+        // host-supplied ordering (e.g. buffer switcher's
+        // alternate-buffer-to-bottom float, jumps-newest-first,
+        // workspace symbols in depth order). NO alphabetical
+        // tie-break here — that's `ScoreRanker`'s convention for
+        // cmdline / palette surfaces where predictable A-Z
+        // ordering helps. MruRanker is for surfaces that want
+        // recency-weighted insertion-order behavior.
+        scored.sort_by(|a, b| {
+            let ba = a.score.get() as f64 + (self.bonus_lookup)(&a.raw);
+            let bb = b.score.get() as f64 + (self.bonus_lookup)(&b.raw);
+            bb.partial_cmp(&ba).unwrap_or(std::cmp::Ordering::Equal)
+        });
     }
 }
 

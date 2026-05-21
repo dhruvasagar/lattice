@@ -322,7 +322,11 @@ impl PickerSourceGenerator for FilesSource {
                     perms = perms_width,
                     size = size_width,
                 );
-                let cand = RawCandidate::plain(display, CandidateKind::Plain);
+                let mut cand = RawCandidate::plain(display, CandidateKind::Plain);
+                // Slice 7b.2: typed accept payload.
+                cand.accept_action = Some(lattice_completion::AcceptAction::OpenFile {
+                    path: row.abs.clone(),
+                });
                 (cand, RoutingPayload::OpenFile { path: row.abs })
             })
             .collect();
@@ -381,7 +385,11 @@ impl PickerSourceGenerator for RecentFilesSource {
             .iter()
             .map(|p| {
                 let display = p.display().to_string();
-                let cand = RawCandidate::plain(display, CandidateKind::Plain);
+                let mut cand = RawCandidate::plain(display, CandidateKind::Plain);
+                // Slice 7b.2: typed accept payload.
+                cand.accept_action = Some(lattice_completion::AcceptAction::OpenFile {
+                    path: p.clone(),
+                });
                 (cand, RoutingPayload::OpenFile { path: p.clone() })
             })
             .collect();

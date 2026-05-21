@@ -115,8 +115,37 @@ impl std::fmt::Debug for CandidateSourceKind {
 ///
 /// See the design doc § "Implication: AcceptHandler is
 /// stateless" for the cross-check that validated this shape.
+///
+/// **Return type.** `Result<AcceptAction, String>` mirrors
+/// today's `PickerSourceGenerator::accept -> SourceResult<...>`.
+/// `Err` flows to the host's error echo; the source stays alive.
+/// Most picker sources will use [`DefaultAcceptHandler`] which
+/// reads `RawCandidate::accept_action` set at candidate-build
+/// time — the per-source impl is only needed when accept needs
+/// context-dependent transformation.
 pub trait AcceptHandler: Send + Sync {
-    fn accept(&self, candidate: &RawCandidate) -> AcceptAction;
+    fn accept(&self, candidate: &RawCandidate) -> Result<AcceptAction, String>;
+}
+
+/// Default handler: reads `RawCandidate::accept_action` set at
+/// candidate-build time. Covers every picker source whose
+/// candidates carry their action directly — which is the
+/// expected case after slice 7b.
+///
+/// Sources only need their own [`AcceptHandler`] impl when the
+/// accept action depends on context the candidate doesn't
+/// carry — e.g. a source that pivots on the current major
+/// mode, or one that wants to transform the action based on
+/// modifier keys at accept time.
+pub struct DefaultAcceptHandler;
+
+impl AcceptHandler for DefaultAcceptHandler {
+    fn accept(&self, candidate: &RawCandidate) -> Result<AcceptAction, String> {
+        candidate
+            .accept_action
+            .clone()
+            .ok_or_else(|| "candidate has no accept_action set".to_string())
+    }
 }
 
 /// What the host should do when the user accepts a candidate.
@@ -139,7 +168,14 @@ pub trait AcceptHandler: Send + Sync {
 /// handler returns `Custom(Box::new(MyType { ... }))`; the
 /// plugin's matching dispatch handler downcasts to `MyType`
 /// and applies its own logic.
-#[derive(Debug)]
+// PartialEq for AcceptAction is hand-implemented below
+// (`Custom` carries `Arc<dyn Any>` which can't be compared
+// structurally — pointer-equality is the only sensible
+// fallback). The rest of the variants derive structural
+// equality via the helper enum's auto-generated arms; we just
+// override the Custom arm. Hand-rolling the impl over deriving
+// keeps the equality semantics explicit.
+#[derive(Debug, Clone)]
 pub enum AcceptAction {
     // -------- Stateless: candidate carries the full payload --------
     /// Hand `path` to `App::do_edit(Some(path), false)`.
@@ -261,16 +297,155 @@ pub enum AcceptAction {
     Custom(CustomAcceptPayload),
 }
 
+impl PartialEq for AcceptAction {
+    fn eq(&self, other: &Self) -> bool {
+        use AcceptAction::*;
+        match (self, other) {
+            (OpenFile { path: a }, OpenFile { path: b }) => a == b,
+            (SwitchBuffer { id: a }, SwitchBuffer { id: b }) => a == b,
+            (
+                JumpToFileLocation {
+                    path: pa,
+                    line: la,
+                    col: ca,
+                },
+                JumpToFileLocation {
+                    path: pb,
+                    line: lb,
+                    col: cb,
+                },
+            ) => pa == pb && la == lb && ca == cb,
+            (
+                JumpInBuffer {
+                    buffer_id: ba,
+                    line: la,
+                    col: ca,
+                },
+                JumpInBuffer {
+                    buffer_id: bb,
+                    line: lb,
+                    col: cb,
+                },
+            ) => ba == bb && la == lb && ca == cb,
+            (
+                InvokeCommand { id: ia, args: aa },
+                InvokeCommand { id: ib, args: ab },
+            ) => ia == ib && aa == ab,
+            (PasteRegister { name: a }, PasteRegister { name: b }) => a == b,
+            (JumpToMark { name: a }, JumpToMark { name: b }) => a == b,
+            (ExpandSnippet { id: a }, ExpandSnippet { id: b }) => a == b,
+            (
+                OpenLspLog {
+                    server_id: sa,
+                    workspace: wa,
+                },
+                OpenLspLog {
+                    server_id: sb,
+                    workspace: wb,
+                },
+            ) => sa == sb && wa == wb,
+            (
+                OpenLspTraceLog {
+                    server_id: sa,
+                    workspace: wa,
+                },
+                OpenLspTraceLog {
+                    server_id: sb,
+                    workspace: wb,
+                },
+            ) => sa == sb && wa == wb,
+            (
+                AcceptIndexedCompletion {
+                    token: ta,
+                    index: ia,
+                },
+                AcceptIndexedCompletion {
+                    token: tb,
+                    index: ib,
+                },
+            ) => ta == tb && ia == ib,
+            (
+                AcceptIndexedCodeAction {
+                    token: ta,
+                    index: ia,
+                },
+                AcceptIndexedCodeAction {
+                    token: tb,
+                    index: ib,
+                },
+            ) => ta == tb && ia == ib,
+            (
+                AcceptIndexedCodeLens {
+                    token: ta,
+                    index: ia,
+                },
+                AcceptIndexedCodeLens {
+                    token: tb,
+                    index: ib,
+                },
+            ) => ta == tb && ia == ib,
+            (
+                AcceptColorPresentation {
+                    token: ta,
+                    index: ia,
+                },
+                AcceptColorPresentation {
+                    token: tb,
+                    index: ib,
+                },
+            ) => ta == tb && ia == ib,
+            (
+                AcceptShowMessageAction {
+                    request_id: ra,
+                    server_id: sa,
+                    index: ia,
+                },
+                AcceptShowMessageAction {
+                    request_id: rb,
+                    server_id: sb,
+                    index: ib,
+                },
+            ) => ra == rb && sa == sb && ia == ib,
+            (
+                InsertText {
+                    text: ta,
+                    replace_start: ra,
+                },
+                InsertText {
+                    text: tb,
+                    replace_start: rb,
+                },
+            ) => ta == tb && ra == rb,
+            // Custom: opaque Arc<dyn Any>. Pointer-equality is
+            // the only sensible compare. Two different Arc
+            // instances of equivalent data compare !=; that's
+            // intentional — equality on type-erased data isn't
+            // meaningful without downcasting.
+            (Custom(a), Custom(b)) => Arc::ptr_eq(&a.0, &b.0),
+            _ => false,
+        }
+    }
+}
+
 /// Opaque payload for `AcceptAction::Custom`. Wrapper exists
-/// to give `AcceptAction` a `Debug` impl that doesn't try to
-/// format `dyn Any`. Not `Clone` — plugins that need clonable
-/// payloads should wrap their type in `Arc<MyType>` and store
-/// `Arc<MyType>` inside the Box.
-pub struct CustomAcceptPayload(pub Box<dyn std::any::Any + Send + Sync>);
+/// to give `AcceptAction` `Debug` + `Clone` impls that don't
+/// require the inner type to expose those bounds.
+///
+/// Uses `Arc` (not `Box`) so `AcceptAction: Clone` works —
+/// cloning a `Custom` bumps the inner Arc's refcount. The host
+/// downcasts via `Arc::downcast::<MyType>()` (or the
+/// `Arc<dyn Any>` equivalent) at dispatch time.
+pub struct CustomAcceptPayload(pub Arc<dyn std::any::Any + Send + Sync>);
 
 impl std::fmt::Debug for CustomAcceptPayload {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "CustomAcceptPayload(<opaque>)")
+    }
+}
+
+impl Clone for CustomAcceptPayload {
+    fn clone(&self) -> Self {
+        Self(Arc::clone(&self.0))
     }
 }
 
@@ -363,10 +538,24 @@ mod tests {
     /// print without panicking.
     #[test]
     fn accept_action_custom_payload_debug_prints() {
-        let action = AcceptAction::Custom(CustomAcceptPayload(Box::new(42_i32)));
+        let action = AcceptAction::Custom(CustomAcceptPayload(Arc::new(42_i32)));
         let s = format!("{action:?}");
         assert!(s.contains("Custom"));
         assert!(s.contains("opaque"));
+    }
+
+    /// `AcceptAction` is Clone — Custom variant clones via Arc
+    /// refcount bump.
+    #[test]
+    fn accept_action_clones() {
+        let inner = Arc::new(7_i32);
+        let a = AcceptAction::Custom(CustomAcceptPayload(inner.clone()));
+        let b = a.clone();
+        // Both still print as opaque; the underlying Arc has
+        // refcount >= 2.
+        let _ = format!("{a:?}");
+        let _ = format!("{b:?}");
+        assert!(Arc::strong_count(&inner) >= 3);
     }
 
     /// `AcceptToken` is Ord + Hash so the host can use it as a
@@ -380,6 +569,30 @@ mod tests {
         set.insert(a);
         set.insert(b);
         assert_eq!(set.len(), 2);
+    }
+
+    /// `DefaultAcceptHandler` reads `RawCandidate::accept_action`
+    /// when present.
+    #[test]
+    fn default_handler_returns_candidate_accept_action() {
+        let mut c = RawCandidate::plain("buf:7", CandidateKind::Buffer);
+        c.accept_action = Some(AcceptAction::SwitchBuffer {
+            id: lattice_core::BufferId(7),
+        });
+        let handler = DefaultAcceptHandler;
+        let action = handler.accept(&c).expect("should succeed");
+        assert!(matches!(action, AcceptAction::SwitchBuffer { .. }));
+    }
+
+    /// `DefaultAcceptHandler` errors when the candidate carries
+    /// no `accept_action` — the host echoes the error and the
+    /// source stays alive.
+    #[test]
+    fn default_handler_errors_when_action_missing() {
+        let c = RawCandidate::plain("plain", CandidateKind::Plain);
+        let handler = DefaultAcceptHandler;
+        let err = handler.accept(&c).unwrap_err();
+        assert!(err.contains("no accept_action"));
     }
 
     /// Stateless variants round-trip through Debug.

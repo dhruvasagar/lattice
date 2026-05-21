@@ -49,6 +49,7 @@ impl CandidateGenerator for ModesGenerator {
                 kind: CandidateKind::Plain,
                 data: CandidateData::Plain,
                 source: None,
+                accept_action: None,
             })
             .collect();
         out.sort_by(|a, b| a.text.cmp(&b.text));
@@ -70,6 +71,7 @@ impl CandidateGenerator for EventsGenerator {
                 kind: CandidateKind::Plain,
                 data: CandidateData::Plain,
                 source: None,
+                accept_action: None,
             })
             .collect();
         out.sort_by(|a, b| a.text.cmp(&b.text));
@@ -92,6 +94,7 @@ impl CandidateGenerator for LogLevelsGenerator {
                 kind: CandidateKind::Plain,
                 data: CandidateData::Plain,
                 source: None,
+                accept_action: None,
             })
             .collect()
     }
@@ -127,6 +130,7 @@ impl CandidateGenerator for PickerSourcesGenerator {
                 kind: CandidateKind::Plain,
                 data: CandidateData::Plain,
                 source: None,
+                accept_action: None,
             })
             .collect()
     }
@@ -158,6 +162,7 @@ impl CandidateGenerator for LspServersGenerator {
                 kind: CandidateKind::Plain,
                 data: CandidateData::Plain,
                 source: None,
+                accept_action: None,
             })
             .collect()
     }
@@ -189,6 +194,7 @@ impl CandidateGenerator for CustomizeNamesGenerator {
                 kind: CandidateKind::Plain,
                 data: CandidateData::Plain,
                 source: None,
+                accept_action: None,
             });
         }
         if let Some(registry) = self.registry.upgrade() {
@@ -199,6 +205,7 @@ impl CandidateGenerator for CustomizeNamesGenerator {
                     kind: CandidateKind::Plain,
                     data: CandidateData::Plain,
                     source: None,
+                    accept_action: None,
                 });
             }
         }

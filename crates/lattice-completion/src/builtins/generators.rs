@@ -62,6 +62,7 @@ impl CandidateGenerator for CommandsGenerator {
                         source: spec.source.clone(),
                     },
                     source: None,
+                    accept_action: None,
                 })
             })
             .collect();
@@ -147,6 +148,7 @@ impl CandidateGenerator for FilesGenerator {
                     size,
                 },
                 source: None,
+                accept_action: None,
             });
         }
         out.sort_by(|a, b| a.text.cmp(&b.text));

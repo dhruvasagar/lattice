@@ -108,6 +108,7 @@ mod tests {
             kind: CandidateKind::Plain,
             data: CandidateData::Plain,
             source: None,
+            accept_action: None,
         }
     }
 

@@ -66,6 +66,7 @@ impl CandidateGenerator for OptionsGenerator {
                             doc: v.doc.to_string(),
                         },
                         source: None,
+                        accept_action: None,
                     });
                 }
             }
@@ -88,6 +89,7 @@ impl CandidateGenerator for OptionsGenerator {
                     doc: spec.doc().to_string(),
                 },
                 source: None,
+                accept_action: None,
             });
             for alt in spec.name_forms() {
                 out.push(RawCandidate {
@@ -100,6 +102,7 @@ impl CandidateGenerator for OptionsGenerator {
                         doc: spec.doc().to_string(),
                     },
                     source: None,
+                    accept_action: None,
                 });
             }
         }

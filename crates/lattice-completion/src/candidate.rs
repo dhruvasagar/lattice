@@ -121,12 +121,31 @@ pub struct RawCandidate {
     /// in `:help completion-sources`.
     #[serde(default)]
     pub source: Option<crate::insert::SourceId>,
+    /// What the host should do if the user accepts this
+    /// candidate. Slice `3c.unify.picker-generator-trait-unify`
+    /// (7b.0): adds a typed accept payload to the candidate so
+    /// `AcceptHandler` impls can be stateless — the default
+    /// handler (`source_registration::DefaultAcceptHandler`)
+    /// just clones this field. `None` ⇒ default behaviour:
+    /// cmdline replaces `cmdline[replace_start..]` with `text`;
+    /// picker echoes "no accept_action set" via the default
+    /// handler. Surfaces that need typed dispatch set this at
+    /// candidate-build time.
+    ///
+    /// `#[serde(skip)]` because the `Custom` variant carries
+    /// `Arc<dyn Any>` which isn't serializable; the rest of the
+    /// candidate (text + display + data) round-trips through
+    /// the cache, but the accept action is recomputed at the
+    /// callsite when needed.
+    #[serde(skip)]
+    pub accept_action: Option<crate::source_registration::AcceptAction>,
 }
 
 impl RawCandidate {
     /// Convenience for plain text candidates with no metadata.
-    /// Leaves `source` unset; insert-mode producers chain
-    /// [`Self::with_source`] to tag themselves.
+    /// Leaves `source` + `accept_action` unset; insert-mode
+    /// producers chain [`Self::with_source`] to tag themselves;
+    /// picker generators set `accept_action` per row.
     pub fn plain(text: impl Into<String>, kind: CandidateKind) -> Self {
         let text = text.into();
         Self {
@@ -135,6 +154,7 @@ impl RawCandidate {
             kind,
             data: CandidateData::Plain,
             source: None,
+            accept_action: None,
         }
     }
 

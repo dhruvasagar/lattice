@@ -84,6 +84,7 @@ mod tests {
                 kind,
                 data,
                 source: None,
+                accept_action: None,
             },
             score: MatchScore::PERFECT,
             match_ranges: Vec::new(),

@@ -155,6 +155,7 @@ impl CandidateGenerator for HelpTopicsGenerator {
                 kind: CandidateKind::Plain,
                 data: CandidateData::Plain,
                 source: None,
+                accept_action: None,
             })
             .collect()
     }

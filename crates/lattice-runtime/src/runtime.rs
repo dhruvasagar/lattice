@@ -112,32 +112,70 @@ where
     lsp_runtime().spawn(future)
 }
 
-/// Sync-to-async bridge. Forwards to the shared runtime's
-/// `block_on`. Used by the TUI input loop and by App methods that
-/// need to wait on a [`crate::Pending`] from outside an async
-/// context.
+/// Sync-to-async bridge. Forwards to the shared multi-thread
+/// runtime's `block_on`. Used by the TUI input loop and by App
+/// methods that need to wait on a [`crate::Pending`] from outside
+/// an async context.
 ///
-/// **Nested-runtime safety**: when called from inside another
-/// tokio runtime (e.g. from the editor's `#[tokio::main]` body
-/// per slice C.1), naively calling `block_on` would panic with
-/// "Cannot start a runtime from within a runtime". Wrapping in
-/// [`tokio::task::block_in_place`] tells tokio to relinquish the
-/// current task's worker so other tasks keep running while we
-/// block. The shared runtime itself is a separate instance from
-/// any caller-side runtime, so its `block_on` is allowed once
-/// `block_in_place` has cleared the way.
+/// **Three execution contexts** to handle:
 ///
-/// On a non-tokio caller (sync `main`, sync test) the
-/// `try_current` check fails and we fall through to the direct
-/// `block_on` -- no overhead.
-pub fn block_on<F: std::future::Future>(fut: F) -> F::Output {
+/// 1. **Non-tokio caller** (sync `main`, sync test): no current
+///    handle, fall through to `target.block_on(fut)` directly.
+/// 2. **Multi-thread tokio caller** (e.g. spawned task on the
+///    shared LSP runtime): relinquish the worker via
+///    [`tokio::task::block_in_place`] so other tasks keep running
+///    while we block on `target`.
+/// 3. **Non-multi-thread tokio caller** (e.g. the editor actor's
+///    dedicated `current_thread` runtime per slice
+///    `3c.final.E.swap`): `block_in_place` panics here because
+///    the current runtime isn't `MultiThread`; we instead escape
+///    to a fresh OS thread via [`std::thread::scope`] and drive
+///    the future on `target` from outside any tokio context.
+///
+/// The third case is the fix for slice `3c.fixup.actor-block-on`:
+/// before this, `block_on` calls from inside the editor actor's
+/// runtime (file save, `document.dispatch_with_cancel`, LSP
+/// completion-resolve, code-action apply, synthetic-buffer seed)
+/// panicked with "can call blocking only when running on the
+/// multi-threaded runtime" — caught only by `cargo bench`
+/// (release builds), not by `cargo test` (which preserves direct
+/// `App.editor: Editor` via the `cfg(test)` escape hatch and
+/// thus never spawns the actor).
+///
+/// **Send bound**: `F: Send` + `F::Output: Send` are required by
+/// `std::thread::scope` in the third case. Every existing caller
+/// satisfies these (Arc-backed handles, owned move-captures); if
+/// a future caller doesn't, the type system catches it at the
+/// call site.
+pub fn block_on<F>(fut: F) -> F::Output
+where
+    F: std::future::Future + Send,
+    F::Output: Send,
+{
     let target = shared_runtime();
-    if Handle::try_current().is_ok() {
-        // Already inside some runtime -- relinquish the worker
-        // before driving `fut` on `target`.
-        tokio::task::block_in_place(|| target.block_on(fut))
-    } else {
-        target.block_on(fut)
+    match Handle::try_current() {
+        Ok(handle)
+            if matches!(handle.runtime_flavor(), tokio::runtime::RuntimeFlavor::MultiThread) =>
+        {
+            // Already inside a multi-thread runtime -- relinquish
+            // the worker before driving `fut` on `target`.
+            tokio::task::block_in_place(|| target.block_on(fut))
+        }
+        Ok(_) => {
+            // Inside a non-multi-thread runtime (e.g. the editor
+            // actor's `current_thread`). `block_in_place` would
+            // panic; re-entering `target.block_on` from inside
+            // the current runtime would also panic. Escape to a
+            // fresh OS thread (no tokio context) so `target.block_on`
+            // runs cleanly. `std::thread::scope` lets us borrow
+            // non-`'static` data from the future without copying.
+            std::thread::scope(|s| {
+                s.spawn(|| target.block_on(fut))
+                    .join()
+                    .expect("nested-block_on bridge thread completed")
+            })
+        }
+        Err(_) => target.block_on(fut),
     }
 }
 

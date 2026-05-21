@@ -6136,4 +6136,92 @@ mod tests {
              3c.extension.fold-rs for the migration recipe.",
         );
     }
+
+    /// Slice 3c.final.X.cleanup: modeline-text builder must read
+    /// only published RS (cmdline_text / cursor / cwd / etc).
+    /// Companion to `compose_visible_lines_makes_zero_actor_calls`.
+    #[test]
+    fn modeline_label_makes_zero_actor_calls() {
+        let app = app_with("a\nb\nc\nd\ne\n", 10);
+        let snap = app.ad().snapshot.clone();
+        let _warmup = modeline_label(&app, &snap);
+        let before = crate::actor_call_counter::snapshot();
+        let _label = modeline_label(&app, &snap);
+        let after = crate::actor_call_counter::snapshot();
+        let delta = after - before;
+        assert_eq!(
+            delta, 0,
+            "modeline_label made {delta} actor-seam calls; \
+             modeline must read RS, not route through read_editor.",
+        );
+    }
+
+    /// Slice 3c.final.X.cleanup: pane-status text builder also
+    /// counts as a per-frame paint path (drawn once per pane per
+    /// frame in horizontal-split layouts).
+    #[test]
+    fn pane_status_label_makes_zero_actor_calls() {
+        let app = app_with("a\nb\nc\nd\ne\n", 10);
+        let pane = app.panes().tree.active().clone();
+        let _warmup = app.pane_status_label(&pane);
+        let before = crate::actor_call_counter::snapshot();
+        let _label = app.pane_status_label(&pane);
+        let after = crate::actor_call_counter::snapshot();
+        let delta = after - before;
+        assert_eq!(
+            delta, 0,
+            "pane_status_label made {delta} actor-seam calls; \
+             status-line paths must read RS, not route through \
+             read_editor.",
+        );
+    }
+
+    /// Slice 3c.final.X.cleanup: `App::apply(Action::None)` is the
+    /// keystroke entry point's minimum-work path. It MUST go
+    /// through the actor seam — the dispatch itself is a mutation —
+    /// but extra RPCs there stack up at typing rate. This test
+    /// caps the count so future additions surface as a red bar.
+    ///
+    /// Post-X.cleanup baseline: 5 RPCs per `Action::None` keystroke.
+    /// Sources, all on the apply tail:
+    ///
+    ///   1. `mutate_editor_with(|e| e.dispatch(action))`
+    ///      — the unavoidable command-dispatch into the actor.
+    ///   2. `ensure_cursor_visible()`
+    ///      — clamps scroll to keep cursor in viewport.
+    ///   3. `maybe_reparse_syntax()`
+    ///      — tree-sitter incremental reparse gate.
+    ///   4. `sync_keymap_overlays()`
+    ///      — Insert-mode minor-mode keymap layer sync.
+    ///   5. `mutate_editor_with(|e| e.run_tick_pending())`
+    ///      — drains LSP / event / mode-lifecycle results.
+    ///
+    /// Each is ~94µs through the actor mailbox; 5 × 94µs ≈ 470µs
+    /// per keystroke ≈ 6% of the 8ms-at-120Hz budget. Not great,
+    /// not yet a fire — items 2/3/4 are wait-free-checkable and
+    /// could become "check via RS, mutate-only-on-change" in a
+    /// follow-up `3c.extension.apply-tail-rs` slice.
+    ///
+    /// Bound: ≤ 6 gives one slot of headroom for a future
+    /// addition; if a change pushes it past 6 the right move is
+    /// to lift the new read to RS, not to raise the bound.
+    #[test]
+    fn apply_noop_action_makes_bounded_actor_calls() {
+        let mut app = app_with("a\nb\n", 10);
+        // Warmup — first apply may pay one-time setup.
+        app.apply(lattice_host::action::Action::None);
+        let before = crate::actor_call_counter::snapshot();
+        app.apply(lattice_host::action::Action::None);
+        let after = crate::actor_call_counter::snapshot();
+        let delta = after - before;
+        assert!(
+            delta <= 6,
+            "App::apply(Action::None) made {delta} actor-seam calls; \
+             keystroke entry path must stay <= 6 (baseline 5). \
+             If you need to raise this you've added a per-keystroke \
+             RPC — consider RS-lifting first. See slice \
+             3c.final.X.cleanup for the convention and the apply-tail \
+             RPC inventory.",
+        );
+    }
 }

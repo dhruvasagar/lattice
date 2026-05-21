@@ -75,6 +75,20 @@ pub struct CompletionRegistry {
     rankers: HashMap<RankerId, RegisteredRanker>,
     annotators: HashMap<AnnotatorId, RegisteredAnnotator>,
 
+    /// Slice `3c.unify.source-registration-bundle` (7c). Stores
+    /// `SourceRegistration` bundles keyed by their stable id
+    /// (`SourceSpec::id`). Picker + cmdline-completion both
+    /// look up by id when invoked. First-party sources are
+    /// registered at boot; LSP / plugin async-fetch sources
+    /// are constructed transiently and passed directly to
+    /// `Picker::open_with` (NOT stored here — registry is for
+    /// persistent registrations only).
+    ///
+    /// Slice 7d does the cutover from the parallel
+    /// `lattice_picker::PickerRegistry` (`:picker <name>`
+    /// lookup → `source_by_id`).
+    sources: HashMap<String, crate::source_registration::SourceRegistration>,
+
     /// Default matcher used by every pipeline unless overridden
     /// per-slot. User config (post-§5.12) sets this via
     /// `cmdline.matcher = "match:fuzzy"`.
@@ -104,6 +118,7 @@ impl std::fmt::Debug for CompletionRegistry {
             .field("matchers", &self.matchers.len())
             .field("rankers", &self.rankers.len())
             .field("annotators", &self.annotators.len())
+            .field("sources", &self.sources.len())
             .field("default_matcher", &self.default_matcher)
             .field("default_rankers", &self.default_rankers)
             .field("default_annotators", &self.default_annotators)
@@ -160,6 +175,47 @@ impl CompletionRegistry {
     ) -> AnnotatorId {
         let source = capture_builtin_source();
         self.insert_annotator(name, doc, std::sync::Arc::new(a), source)
+    }
+
+    /// Slice `3c.unify.source-registration-bundle` (7c).
+    /// Register a [`crate::SourceRegistration`] bundle —
+    /// substrate for picker + cmdline-completion + plugin
+    /// sources. Keys on [`SourceSpec::id`](
+    /// crate::source_registration::SourceSpec::id); a
+    /// duplicate id overwrites the previous entry (last
+    /// registration wins, matching the convention that user
+    /// init.rs overrides built-ins).
+    ///
+    /// No host wiring in 7c — 7d's registry cutover migrates
+    /// `:picker <name>` lookup from `PickerRegistry` to
+    /// [`Self::source_by_id`]. Until then, registrations land
+    /// here but nothing consumes them in production code.
+    pub fn register_source(&mut self, reg: crate::source_registration::SourceRegistration) {
+        let id = reg.spec.id.clone();
+        self.sources.insert(id, reg);
+    }
+
+    /// Look up a registered source by its id.
+    pub fn source_by_id(
+        &self,
+        id: &str,
+    ) -> Option<&crate::source_registration::SourceRegistration> {
+        self.sources.get(id)
+    }
+
+    /// Iterate all registered sources in HashMap order.
+    /// Callers that need deterministic ordering should sort by
+    /// `spec.id` themselves; v1 doesn't dictate ordering at
+    /// the registry layer.
+    pub fn sources(
+        &self,
+    ) -> impl Iterator<Item = &crate::source_registration::SourceRegistration> {
+        self.sources.values()
+    }
+
+    /// Number of registered sources.
+    pub fn source_count(&self) -> usize {
+        self.sources.len()
     }
 
     // ---- pub(crate) insert_* -- explicit-source path for the
@@ -405,5 +461,91 @@ mod tests {
         r.default_annotators.push(a1);
         r.default_annotators.push(a2);
         assert_eq!(r.default_annotators, vec![a1, a2]);
+    }
+
+    // ---- Slice 7c: SourceRegistration storage ----
+
+    /// Smoke test: register a SourceRegistration and look it
+    /// back up. `Default` is fine for the stub registration
+    /// because every field is independent.
+    #[test]
+    fn register_source_round_trips_by_id() {
+        use crate::candidate::{CandidateKind, RawCandidate};
+        use crate::source_registration::{
+            CandidateSourceKind, SourceRegistration, SourceSpec,
+        };
+
+        let mut r = CompletionRegistry::new();
+        assert_eq!(r.source_count(), 0);
+
+        let rows = vec![RawCandidate::plain("hello", CandidateKind::Plain)];
+        let reg = SourceRegistration {
+            spec: SourceSpec {
+                id: "test:smoke".to_string(),
+                doc: "smoke test source".to_string(),
+                args_schema: None,
+                live: false,
+            },
+            kind: CandidateSourceKind::PreSupplied(std::sync::Arc::new(rows)),
+            accept: None,
+            matcher_override: None,
+            ranker_overrides: Vec::new(),
+            annotator_extras: Vec::new(),
+        };
+        r.register_source(reg);
+
+        assert_eq!(r.source_count(), 1);
+        let looked_up = r.source_by_id("test:smoke").expect("must be registered");
+        assert_eq!(looked_up.spec.id, "test:smoke");
+        assert_eq!(looked_up.spec.doc, "smoke test source");
+        assert!(matches!(
+            looked_up.kind,
+            CandidateSourceKind::PreSupplied(_)
+        ));
+        assert!(r.source_by_id("nope").is_none());
+    }
+
+    /// Duplicate id overwrites — last-write-wins. Matches the
+    /// convention that user init.rs can override a built-in
+    /// source's behaviour by re-registering under the same id.
+    #[test]
+    fn register_source_last_write_wins_on_duplicate_id() {
+        use crate::source_registration::{
+            CandidateSourceKind, SourceRegistration, SourceSpec,
+        };
+
+        let mut r = CompletionRegistry::new();
+        let first = SourceRegistration {
+            spec: SourceSpec {
+                id: "test:dup".to_string(),
+                doc: "first".to_string(),
+                args_schema: None,
+                live: false,
+            },
+            kind: CandidateSourceKind::PreSupplied(std::sync::Arc::new(Vec::new())),
+            accept: None,
+            matcher_override: None,
+            ranker_overrides: Vec::new(),
+            annotator_extras: Vec::new(),
+        };
+        let second = SourceRegistration {
+            spec: SourceSpec {
+                id: "test:dup".to_string(),
+                doc: "second".to_string(),
+                args_schema: None,
+                live: true,
+            },
+            kind: CandidateSourceKind::PreSupplied(std::sync::Arc::new(Vec::new())),
+            accept: None,
+            matcher_override: None,
+            ranker_overrides: Vec::new(),
+            annotator_extras: Vec::new(),
+        };
+        r.register_source(first);
+        r.register_source(second);
+        assert_eq!(r.source_count(), 1);
+        let looked_up = r.source_by_id("test:dup").expect("must be registered");
+        assert_eq!(looked_up.spec.doc, "second");
+        assert!(looked_up.spec.live);
     }
 }

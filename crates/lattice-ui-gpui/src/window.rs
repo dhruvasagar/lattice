@@ -1573,15 +1573,58 @@ impl Render for EditorView {
             root = root.child(div().absolute().top_8().right_4().child(overlay));
         }
         if let Some(overlay) = popup_overlay {
-            root = root.child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .flex()
-                    .justify_center()
-                    .items_center()
-                    .child(overlay),
-            );
+            // Issue #18 (2026-05-22): respect
+            // `popup_substate.placement` — the host already publishes
+            // Centered vs CursorAnchored per-popup (hover/sigHelp
+            // use CursorAnchored; `:describe-*` / `:lsp-status`
+            // etc. use Centered). The old code unconditionally
+            // centered every popup, which broke hover (`K`) UX:
+            // the docs appeared in the middle of the screen
+            // instead of next to the symbol under the cursor.
+            //
+            // For CursorAnchored: compute pixel position from the
+            // cursor's (line - scroll, byte) screen coordinates +
+            // the pane's `.p_3()` padding. The shape mirrors the
+            // EditorElement's own glyph positioning
+            // (`glyph_advance = font_size * 0.6`,
+            //  `line_height = font_size * 1.3`).
+            let placement = popup_substate.placement;
+            use lattice_core::ui::popup::PopupPlacement;
+            root = match placement {
+                PopupPlacement::Centered => root.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .flex()
+                        .justify_center()
+                        .items_center()
+                        .child(overlay),
+                ),
+                PopupPlacement::CursorAnchored => {
+                    let ad = self.app.ad();
+                    let cursor_screen_row =
+                        ad.cursor.line.saturating_sub(ad.scroll) as f32;
+                    let cursor_byte_col = ad.cursor.byte as f32;
+                    let glyph_advance_px = font_size_px * 0.6;
+                    // Pane's `.p_3()` adds 0.75rem padding before
+                    // the editor element starts; account for it
+                    // so popup x/y align with painted glyphs.
+                    let pane_pad_px = rem * 0.75;
+                    // Anchor the popup BELOW the cursor row by
+                    // default (line_height tall), so it doesn't
+                    // cover the symbol the user pressed K on.
+                    let top_px =
+                        pane_pad_px + (cursor_screen_row + 1.0) * estimated_row_px;
+                    let left_px = pane_pad_px + cursor_byte_col * glyph_advance_px;
+                    root.child(
+                        div()
+                            .absolute()
+                            .top(px(top_px))
+                            .left(px(left_px))
+                            .child(overlay),
+                    )
+                }
+            };
         }
         // Phase 5.8.AF.5 / Slice 3c.atomic.L: per-frame budget log.
         // `after_paint` was captured immediately after

@@ -323,7 +323,26 @@ impl Element for EditorElement {
         let font = text_style.font();
         let font_size = text_style.font_size.to_pixels(window.rem_size());
         let line_height: Pixels = font_size * 1.3;
-        let glyph_advance: Pixels = font_size * 0.6;
+        // Measure the actual advance width of one monospace cell by
+        // shaping a reference character. GPUI's LineLayoutCache
+        // memoises the result, so this shape call costs one hash
+        // lookup after the first frame. Fallback to the 0.6
+        // approximation if shaping fails (shouldn't happen for any
+        // real font, but keeps the renderer non-panicking).
+        let glyph_advance: Pixels = {
+            let ref_run = TextRun {
+                len: 1,
+                font: font.clone(),
+                color: gpui::Rgba::default().into(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            window
+                .text_system()
+                .shape_line(SharedString::from("M"), font_size, &[ref_run], None)
+                .width
+        };
         let gutter_chars: usize = if self.gutter.is_empty() {
             0
         } else {

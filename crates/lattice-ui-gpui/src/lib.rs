@@ -160,6 +160,18 @@ pub struct GpuiTheme {
     pub popup_background: u32,
     /// Popup-overlay border / accent color.
     pub popup_border: u32,
+    /// Issue #35 (2026-05-22): picker match-range highlight
+    /// color. Painted on the substring of each candidate that
+    /// matched the query. Catppuccin Mocha peach by default —
+    /// distinct from `foreground` so matches actually pop
+    /// (previously used `cursor_background` which equals
+    /// `foreground` in the default palette and made matches
+    /// invisible).
+    pub picker_match_highlight: u32,
+    /// Picker marginalia (annotation / kind glyph) color.
+    /// Mid-grey by default so it doesn't compete with the
+    /// candidate text.
+    pub picker_marginalia_fg: u32,
 }
 
 impl Default for GpuiTheme {
@@ -183,6 +195,15 @@ impl Default for GpuiTheme {
             popup_background: 0x181825,
             // Catppuccin Mocha lavender (accent).
             popup_border: 0xb4befe,
+            // Issue #35: Catppuccin Mocha peach — bright accent
+            // distinct from `foreground` (text). Highly
+            // visible against both light and dark backgrounds.
+            picker_match_highlight: 0xfab387,
+            // Catppuccin Mocha overlay1 — mid-grey for
+            // marginalia / annotations. Softer than
+            // `popup_border` (which doubles as the popup
+            // accent) so kind glyphs don't dominate the row.
+            picker_marginalia_fg: 0x7f849c,
         }
     }
 }

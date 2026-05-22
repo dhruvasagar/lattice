@@ -879,15 +879,31 @@ fn candidate_to_line<'a>(
     } else {
         TuiStyle::default()
     };
+    // Issue #35 (2026-05-22): match highlight stays cyan+bold.
+    // TUI's hardcoded palette is the 16-color baseline (works
+    // even on Linux ttys without true-color). Theme-driven
+    // override queued — bringing the GPUI peer's
+    // `picker_match_highlight` to ratatui needs the host
+    // Theme abstraction wired through here (separate slice).
     let match_style = TuiStyle::default()
         .fg(Color::Cyan)
         .add_modifier(Modifier::BOLD);
+    // Kind glyph style — dim grey so it doesn't compete with
+    // the candidate text. On the selected row we lift it
+    // slightly to stay legible.
+    let kind_style = if selected {
+        row_style.fg(Color::Gray)
+    } else {
+        row_style.fg(Color::DarkGray)
+    };
 
-    // Build spans: text with match-range highlighting, then padding,
-    // then annotations on the right.
+    // Build spans: kind glyph (issue #35), text with match-range
+    // highlighting, then padding, then annotations on the right.
     let text = &c.raw.display;
     let mut spans: Vec<Span<'a>> = Vec::new();
     spans.push(Span::styled(prefix, row_style));
+    // Issue #35: left-margin kind glyph + space separator.
+    spans.push(Span::styled(format!("{} ", c.raw.kind.glyph()), kind_style));
 
     // Walk text + match_ranges to paint runs.
     let mut cursor = 0usize;

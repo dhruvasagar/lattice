@@ -43,6 +43,30 @@ pub enum CandidateKind {
     Extension(u32),
 }
 
+impl CandidateKind {
+    /// Issue #35 (2026-05-22): one-char ASCII glyph for picker
+    /// marginalia. The renderer paints this in the left
+    /// margin of each picker row so the user can scan the
+    /// candidate list by kind. ASCII fallback chosen so it
+    /// works even when nerd-fonts are off; the icon system
+    /// (Phase 5.6.7) may layer a richer sprite on top later.
+    pub fn glyph(&self) -> char {
+        match self {
+            CandidateKind::Command => ':',
+            CandidateKind::Option => '=',
+            CandidateKind::File => 'f',
+            CandidateKind::Directory => 'd',
+            CandidateKind::Pattern => '/',
+            CandidateKind::Buffer => 'b',
+            CandidateKind::Register => '"',
+            CandidateKind::Mark => '\'',
+            CandidateKind::Chord => '@',
+            CandidateKind::Plain => '·',
+            CandidateKind::Extension(_) => '+',
+        }
+    }
+}
+
 /// Generator-supplied metadata travelling alongside the candidate.
 /// Annotators read this to produce display text without re-querying
 /// the underlying registry. Plugin generators stash their own

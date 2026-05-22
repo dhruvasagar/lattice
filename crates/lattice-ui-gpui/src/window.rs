@@ -241,7 +241,13 @@ fn paint_candidate_row(
     theme: &GpuiTheme,
     padded: bool,
 ) -> gpui::Div {
-    let match_hl_fg = rgb(theme.cursor_background);
+    // Issue #35 (2026-05-22): match highlight now uses
+    // `picker_match_highlight` (Catppuccin peach by default,
+    // distinct from `foreground`). Previously used
+    // `cursor_background` which is identical to `foreground`
+    // in the Catppuccin Mocha defaults — match highlights
+    // were invisible.
+    let match_hl_fg = rgb(theme.picker_match_highlight);
     let row_bg = if selected {
         Some(rgb(theme.status_background))
     } else {
@@ -252,15 +258,14 @@ fn paint_candidate_row(
     } else {
         rgb(theme.foreground)
     };
-    // Annotations get a dimmer colour so they don't compete with
-    // the candidate text. On a selected row the foreground stays
-    // legible against the status background; on unselected rows
-    // we use `popup_border` (mid-grey in most themes) for the
-    // marginalia-on-default-bg.
-    let annotation_fg = if selected {
+    // Marginalia (kind glyph on the left + annotations on the
+    // right) uses `picker_marginalia_fg`. The selected-row
+    // case bumps to a slightly brighter shade so it stays
+    // legible against the status background.
+    let marginalia_fg = if selected {
         rgb(theme.foreground)
     } else {
-        rgb(theme.popup_border)
+        rgb(theme.picker_marginalia_fg)
     };
     let display = &cand.raw.display;
 
@@ -297,9 +302,20 @@ fn paint_candidate_row(
     if padded {
         row = row.px_2();
     }
-    row = row.child(display_div);
+    // Issue #35 (2026-05-22): left-margin kind glyph (one
+    // ASCII char) so the user can scan candidates by kind
+    // (`f` = file, `b` = buffer, `:` = command, etc.). Sits
+    // in `marginalia_fg` so it doesn't compete with the
+    // display text.
+    let kind_glyph = format!("{} ", cand.raw.kind.glyph());
+    let left = div()
+        .flex()
+        .flex_row()
+        .child(div().text_color(marginalia_fg).child(kind_glyph))
+        .child(display_div);
+    row = row.child(left);
     if !annotation_text.is_empty() {
-        row = row.child(div().text_color(annotation_fg).child(annotation_text));
+        row = row.child(div().text_color(marginalia_fg).child(annotation_text));
     }
     if let Some(bg) = row_bg { row.bg(bg) } else { row }
 }

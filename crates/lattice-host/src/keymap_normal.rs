@@ -415,6 +415,30 @@ pub fn register_normal_bindings(handle: &KeymapHandle, builtins: &Builtins, acti
         CommandInvocation::of(builtins.line_up.0).with_count(lattice_grammar::command::Count(10)),
         source(),
     );
+    // Issue #29 slice 3 (2026-05-22): tab navigation aliases.
+    // `<C-PageDown>` = next tab; `<C-PageUp>` = previous tab.
+    // Standard GUI/terminal binding many users expect alongside
+    // `gt` / `gT`.
+    handle.bind(
+        layer,
+        mode,
+        &[ChordPattern::Literal(KeyChord {
+            key: KeyKind::Special(SpecialKey::PageDown),
+            mods: KeyMods::CTRL,
+        })],
+        CommandInvocation::of(actions.next_tab),
+        source(),
+    );
+    handle.bind(
+        layer,
+        mode,
+        &[ChordPattern::Literal(KeyChord {
+            key: KeyKind::Special(SpecialKey::PageUp),
+            mods: KeyMods::CTRL,
+        })],
+        CommandInvocation::of(actions.prev_tab),
+        source(),
+    );
 
     // ---- Slice 8.g.ii: `g_` family.
     //

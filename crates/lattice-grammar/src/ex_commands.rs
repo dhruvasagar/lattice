@@ -448,14 +448,26 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
     );
     let _tab_new = registry.register_ex_command(
         "ex:tabnew",
-        "Open a new tab.",
+        "Open a new tab (optionally with `<path>`).",
         ExCommandSpec {
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::AppAction(AppEffect::NewTab))),
-            args_schema: vec![],
+            parse_args: Box::new(parse_optional_path),
+            apply: Box::new(|ctx| match &ctx.args {
+                Args::String(path) if !path.is_empty() => {
+                    Ok(Effect::AppAction(AppEffect::NewTabAt(path.clone())))
+                }
+                _ => Ok(Effect::AppAction(AppEffect::NewTab)),
+            }),
+            args_schema: vec![ArgSpec {
+                name: "path",
+                kind: ArgKind::String,
+                doc: "Optional file path to open in the new tab",
+                prompt: "",
+                default: ArgDefault::None,
+                completion: Some("gen:files"),
+            }],
             surface_form: SurfaceForm::Keyword,
         },
     );
@@ -469,6 +481,46 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             parse_args: Box::new(parse_no_args),
             apply: Box::new(|_| Ok(Effect::AppAction(AppEffect::CloseTab))),
             args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let _tab_only = registry.register_ex_command(
+        "ex:tabonly",
+        "Close every tab except the active one.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::AppAction(AppEffect::OnlyTab))),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    // `:tabmove [N]` — optional positional u32 arg. Missing
+    // (or 0) means "move to last position" (mirrors vim).
+    // Stored as Args::String for the parsed-int text since
+    // Args has no Int variant; apply re-parses.
+    let _tab_move = registry.register_ex_command(
+        "ex:tabmove",
+        "Move the active tab to position N (1-indexed; default last).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_tabmove_arg),
+            apply: Box::new(|ctx| {
+                let n: u32 = match &ctx.args {
+                    Args::String(s) => s.parse::<u32>().unwrap_or(0),
+                    _ => 0,
+                };
+                Ok(Effect::AppAction(AppEffect::MoveTab(n)))
+            }),
+            args_schema: vec![ArgSpec::required(
+                "n",
+                ArgKind::Int,
+                "Target position (1-indexed; 0 = last)",
+            )],
             surface_form: SurfaceForm::Keyword,
         },
     );
@@ -1615,6 +1667,24 @@ fn parse_optional_path(rest: &str, _bang: bool) -> GrammarResult<Args> {
     } else {
         Ok(Args::String(trimmed.to_string()))
     }
+}
+
+/// `:tabmove [N]` parser (issue #29 slice 3). Optional
+/// positional integer; missing → `0` (vim's "move to last").
+/// Stored as `Args::String` because `Args` has no Int variant;
+/// the apply closure re-parses.
+fn parse_tabmove_arg(rest: &str, _bang: bool) -> GrammarResult<Args> {
+    let trimmed = rest.trim();
+    if trimmed.is_empty() {
+        return Ok(Args::String("0".to_string()));
+    }
+    // Validate it's a non-negative integer before passing on.
+    trimmed.parse::<u32>().map_err(|e| {
+        CommandError::BadArgs(format!(
+            ":tabmove arg must be a non-negative integer: {e}"
+        ))
+    })?;
+    Ok(Args::String(trimmed.to_string()))
 }
 
 fn parse_required_string(rest: &str, _bang: bool) -> GrammarResult<Args> {

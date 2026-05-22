@@ -1480,6 +1480,10 @@ mod tests {
 
                         match rest {
                             "Space" => KeyEvent::new(KeyCode::Char(' '), KeyModifiers::CONTROL),
+                            // Issue #29 slice 3 (2026-05-22): Ctrl-modified
+                            // PageUp / PageDown for tab navigation.
+                            "PageUp" => KeyEvent::new(KeyCode::PageUp, KeyModifiers::CONTROL),
+                            "PageDown" => KeyEvent::new(KeyCode::PageDown, KeyModifiers::CONTROL),
                             _ => match rest.chars().next() {
                                 Some(c) => KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL),
                                 None => continue,

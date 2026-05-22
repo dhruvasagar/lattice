@@ -1747,14 +1747,30 @@ impl Render for EditorView {
                 .text_color(rgb(theme.status_foreground));
             for (idx, item) in tabs_rs.items.iter().enumerate() {
                 let label = format!(" {} {} ", idx + 1, item.label);
-                let cell = if idx == tabs_rs.active {
+                // Slice 3 (2026-05-22): mouse click → switch
+                // tab. The click handler dispatches
+                // `Action::GoToTab(idx + 1)` so the same
+                // semantic path used by `{N}gt` flows through
+                // the host's `do_goto_tab`. Per-cell click
+                // listener — no global tabline event-routing
+                // needed.
+                let target_n = (idx + 1) as u32;
+                let mut cell = if idx == tabs_rs.active {
                     div()
                         .bg(rgb(theme.cursor_background))
                         .text_color(rgb(theme.cursor_foreground))
-                        .child(label)
                 } else {
-                    div().child(label)
+                    div()
                 };
+                cell = cell.child(label).on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(move |this, _event, _window, cx| {
+                        this.app.dispatch_action(
+                            lattice_host::action::Action::GoToTab(target_n),
+                        );
+                        cx.notify();
+                    }),
+                );
                 row = row.child(cell);
             }
             Some(row)

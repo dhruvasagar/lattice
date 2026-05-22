@@ -295,7 +295,10 @@ impl App {
             | Action::PrevTab
             | Action::GoToTab(_)
             | Action::NewTab
+            | Action::NewTabAt(_)
             | Action::CloseTab
+            | Action::OnlyTab
+            | Action::MoveTab(_)
             // 5.5.G.6: pure-editor mark-history arms migrated.
             | Action::WalkMarkHistoryBack
             | Action::WalkMarkHistoryForward

@@ -479,8 +479,17 @@ pub enum Action {
     GoToTab(u32),
     /// `:tabnew` — new empty tab (scratch buffer).
     NewTab,
+    /// `:tabnew <path>` — new tab opening `path`.
+    NewTabAt(String),
     /// `:tabclose` — close active tab (no-op when only one tab).
     CloseTab,
+    /// `:tabonly` — close every tab except the active one.
+    OnlyTab,
+    /// `:tabmove [N]` — move the active tab to position N
+    /// (1-indexed). Negative or omitted N is handled by the
+    /// ex-command parser; the runtime value here is the
+    /// resolved target index.
+    MoveTab(u32),
     /// `<C-w>=` -- reset every split's ratio to 0.5 (equalize all
     /// panes). Issue #28 (2026-05-22).
     EqualizePanes,

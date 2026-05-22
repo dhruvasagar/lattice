@@ -371,6 +371,9 @@ fn build_default_keymap() -> Vec<KeymapEntry> {
         // Issue #29 (2026-05-22): tab navigation.
         keymap_entry! { mode: AfterG, chord: "gt", doc: "Switch to the next tab (or {N}gt for absolute tab N)" },
         keymap_entry! { mode: AfterG, chord: "gT", doc: "Switch to the previous tab" },
+        // Issue #29 slice 3: tab navigation aliases.
+        keymap_entry! { mode: Normal, chord: "<C-PageDown>", doc: "Switch to the next tab (alias of gt)" },
+        keymap_entry! { mode: Normal, chord: "<C-PageUp>", doc: "Switch to the previous tab (alias of gT)" },
         keymap_entry! { mode: AfterG, chord: "gJ", doc: "Join lines without inserting a space" },
         keymap_entry! { mode: AfterG, chord: "g;", doc: "Walk named-mark history backward" },
         keymap_entry! { mode: AfterG, chord: "g,", doc: "Walk named-mark history forward" },

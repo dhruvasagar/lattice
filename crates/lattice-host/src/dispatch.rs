@@ -1056,7 +1056,10 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         Action::PrevTab => editor.do_prev_tab(),
         Action::GoToTab(n) => editor.do_goto_tab(n),
         Action::NewTab => editor.do_new_tab(),
+        Action::NewTabAt(path) => editor.do_new_tab_at(std::path::PathBuf::from(path)),
         Action::CloseTab => editor.do_close_tab(),
+        Action::OnlyTab => editor.do_only_tab(),
+        Action::MoveTab(n) => editor.do_move_tab(n),
         Action::GrowPaneHeight => {
             editor
                 .pane_tree
@@ -2459,7 +2462,10 @@ impl Editor {
             AppEffect::PrevTab => out.next_actions.push(Action::PrevTab),
             AppEffect::GoToTab(n) => out.next_actions.push(Action::GoToTab(n)),
             AppEffect::NewTab => out.next_actions.push(Action::NewTab),
+            AppEffect::NewTabAt(path) => out.next_actions.push(Action::NewTabAt(path)),
             AppEffect::CloseTab => out.next_actions.push(Action::CloseTab),
+            AppEffect::OnlyTab => out.next_actions.push(Action::OnlyTab),
+            AppEffect::MoveTab(n) => out.next_actions.push(Action::MoveTab(n)),
             AppEffect::CompletionNext => out.next_actions.push(Action::CompletionNext),
             AppEffect::CompletionPrev => out.next_actions.push(Action::CompletionPrev),
             AppEffect::CompletionAccept => out.next_actions.push(Action::CompletionAccept),
@@ -11835,6 +11841,18 @@ impl Editor {
         self.active_tab = insert_at;
     }
 
+    /// `:tabnew <path>` — open `path` in a new tab. Creates
+    /// the new tab first (so the file open lands in it), then
+    /// delegates to `do_edit` which handles open-or-create and
+    /// LSP attach signals.
+    pub fn do_new_tab_at(&mut self, path: std::path::PathBuf) {
+        self.do_new_tab();
+        // do_edit echoes its own success/failure message and
+        // queues LSP attach signals via DoEditOutcome::Opened.
+        // The signals are read by the renderer at dispatch tail.
+        let _ = self.do_edit(Some(path), false);
+    }
+
     /// `:tabclose` — close the active tab. No-op when only one
     /// tab is open (the editor is never tab-less, mirroring
     /// vim).
@@ -11857,6 +11875,48 @@ impl Editor {
         drop(take);
         self.active_tab = new_active;
         self.load_active_pane();
+    }
+
+    /// `:tabonly` — close every tab except the active one. No-op
+    /// when only one tab is open.
+    pub fn do_only_tab(&mut self) {
+        if self.tabs.len() <= 1 {
+            self.set_message(EchoLevel::Warn, "Already only one tab".to_string());
+            return;
+        }
+        // Snapshot the active slot's id + label (live tree is on
+        // editor.pane_tree). Drop every other slot.
+        let active = self.active_tab;
+        let active_slot = std::mem::take(&mut self.tabs[active]);
+        self.tabs.clear();
+        self.tabs.push(active_slot);
+        self.active_tab = 0;
+    }
+
+    /// `:tabmove [N]` — move the active tab to position N
+    /// (1-indexed). `n == 0` or `n > tabs.len()` clamps to the
+    /// last position. The live `pane_tree` stays put — only the
+    /// `tabs` vec is reordered, and `active_tab` is updated to
+    /// the new position so `pane_tree` keeps tracking it.
+    pub fn do_move_tab(&mut self, n: u32) {
+        let len = self.tabs.len();
+        if len <= 1 {
+            return;
+        }
+        let target = if n == 0 {
+            len - 1
+        } else {
+            ((n as usize).saturating_sub(1)).min(len - 1)
+        };
+        let from = self.active_tab;
+        if target == from {
+            return;
+        }
+        let slot = self.tabs.remove(from);
+        self.tabs.insert(target, slot);
+        self.active_tab = target;
+        // pane_tree remains live and unchanged — it tracks the
+        // active tab regardless of position in the vec.
     }
 
     /// Internal: switch from `self.active_tab` to `target`.

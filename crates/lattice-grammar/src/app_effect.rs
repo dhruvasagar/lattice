@@ -423,8 +423,14 @@ pub enum AppEffect {
     GoToTab(u32),
     /// `:tabnew` — new empty tab.
     NewTab,
+    /// `:tabnew <path>` — new tab opening `path`.
+    NewTabAt(String),
     /// `:tabclose` — close active tab.
     CloseTab,
+    /// `:tabonly` — close every tab except the active one.
+    OnlyTab,
+    /// `:tabmove [N]` — move active tab to position N (1-indexed).
+    MoveTab(u32),
     /// Issue #28 (2026-05-22): `<C-w>=` — reset every split's
     /// ratio to 0.5.
     EqualizePanes,

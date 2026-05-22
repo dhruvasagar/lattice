@@ -154,6 +154,12 @@ pub struct ActionIds {
     pub prev_tab: CommandId,
     pub new_tab: CommandId,
     pub close_tab: CommandId,
+    /// Slice 3 (2026-05-22): tabonly + tabmove. `tabmove`'s
+    /// numeric target is carried by the dispatched
+    /// `Action::MoveTab(u32)` payload; the CommandId here just
+    /// names the action for keymap binding + plugin lookup.
+    pub only_tab: CommandId,
+    pub move_tab: CommandId,
     /// Slice 8.i.4.e: completion-popup overlay actions
     /// (registered into a minor-mode layer pushed when the
     /// popup opens; popped on close). Each ID is the typed
@@ -835,6 +841,22 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "`:tabclose`: close the active tab.",
             AppEffect::CloseTab,
         ),
+        only_tab: register_simple(
+            registry,
+            "action:only-tab",
+            "`:tabonly`: close every tab except the active one.",
+            AppEffect::OnlyTab,
+        ),
+        // move-tab carries no fixed target; the dispatch path
+        // surfaces it via the count-aware `Action::MoveTab(n)`
+        // payload. Registered with MoveTab(0) (= move to last)
+        // as a sensible no-arg default.
+        move_tab: register_simple(
+            registry,
+            "action:move-tab",
+            "`:tabmove [N]`: move the active tab to position N (default last).",
+            AppEffect::MoveTab(0),
+        ),
         completion_next: register_simple(
             registry,
             "action:completion-next",
@@ -1196,6 +1218,8 @@ mod tests {
             (ids.prev_tab, "action:prev-tab"),
             (ids.new_tab, "action:new-tab"),
             (ids.close_tab, "action:close-tab"),
+            (ids.only_tab, "action:only-tab"),
+            (ids.move_tab, "action:move-tab"),
             (ids.completion_next, "action:completion-next"),
             (ids.completion_prev, "action:completion-prev"),
             (ids.completion_accept, "action:completion-accept"),

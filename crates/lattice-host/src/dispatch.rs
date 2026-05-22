@@ -13237,26 +13237,49 @@ impl Editor {
     ) -> Vec<RendererSignal> {
         use lattice_core::ui::pane::SplitOrientation;
         use lattice_picker::OpenTarget;
+        // Issue #37 (2026-05-22): consume the preview-origin
+        // handoff. Non-Default targets restore the origin
+        // buffer to the active pane BEFORE splitting / tabbing
+        // so the source pane retains its pre-preview state.
+        let preview_origin = std::mem::take(&mut self.pending_picker_preview_origin);
+        let mut signals = Vec::new();
+        let restore_preview_origin = |this: &mut Editor, sigs: &mut Vec<RendererSignal>| {
+            if let Some(origin) = preview_origin
+                && origin != this.active_pane_buffer_id()
+            {
+                this.previewing = true;
+                let needs_state = this.activate_buffer(origin);
+                this.previewing = false;
+                if needs_state {
+                    sigs.extend(this.activate_buffer_state());
+                }
+            }
+        };
         match target {
             OpenTarget::Default => {
+                // Default routes through the preference
+                // machinery; preview restoration for the Split
+                // preference is handled inside
+                // prepare_pane_for_picker_result so the
+                // restore happens uniformly there.
                 self.prepare_pane_for_picker_result();
-                Vec::new()
             }
             OpenTarget::Split => {
+                restore_preview_origin(self, &mut signals);
                 self.snapshot_active_pane();
                 let new_idx = self.pane_tree.split_active(SplitOrientation::Horizontal);
                 self.pane_tree.set_active(new_idx);
                 self.load_active_pane();
-                Vec::new()
             }
             OpenTarget::VSplit => {
+                restore_preview_origin(self, &mut signals);
                 self.snapshot_active_pane();
                 let new_idx = self.pane_tree.split_active(SplitOrientation::Vertical);
                 self.pane_tree.set_active(new_idx);
                 self.load_active_pane();
-                Vec::new()
             }
             OpenTarget::Tab => {
+                restore_preview_origin(self, &mut signals);
                 // do_new_tab snapshots / mem::swaps the active
                 // pane tree and inserts a new tab whose single
                 // pane points at the current buffer. The caller
@@ -13264,9 +13287,9 @@ impl Editor {
                 // activate_buffer to replace it with the picker
                 // target.
                 self.do_new_tab();
-                Vec::new()
             }
         }
+        signals
     }
 
     /// Apply the `PickerResult` display preference to the active
@@ -13276,6 +13299,22 @@ impl Editor {
         let display = self.resolve_display(BufferDisplayCategory::PickerResult);
         match display {
             BufferDisplay::Split(orientation) => {
+                // Issue #37 (2026-05-22): the active pane is
+                // currently showing the picker's PREVIEW
+                // buffer (the candidate). Without restoring,
+                // the split inherits the preview into both
+                // halves — origin pane loses ORIG. Restore
+                // ORIG to the active pane before splitting so
+                // the post-split layout shows ORIG | candidate.
+                let preview_origin =
+                    std::mem::take(&mut self.pending_picker_preview_origin);
+                if let Some(origin) = preview_origin
+                    && origin != self.active_pane_buffer_id()
+                {
+                    self.previewing = true;
+                    let _needs_state = self.activate_buffer(origin);
+                    self.previewing = false;
+                }
                 self.snapshot_active_pane();
                 let new_idx = self.pane_tree.split_active(orientation);
                 self.pane_tree.set_active(new_idx);
@@ -13283,7 +13322,12 @@ impl Editor {
             }
             BufferDisplay::ActivePane
             | BufferDisplay::Popup(_)
-            | BufferDisplay::FloatingPopup(_) => {}
+            | BufferDisplay::FloatingPopup(_) => {
+                // No split = preview becomes the accept. The
+                // origin handoff is consumed here so the field
+                // doesn't leak into a later accept.
+                self.pending_picker_preview_origin = None;
+            }
         }
     }
 
@@ -15878,6 +15922,14 @@ impl Editor {
         let Some(picker) = self.picker.take() else {
             return Vec::new();
         };
+        // Issue #37 (2026-05-22): stash picker's preview_origin
+        // so `prepare_open_target_pane` /
+        // `prepare_pane_for_picker_result` can restore the
+        // origin buffer to the active pane BEFORE
+        // splitting/tabbing. Otherwise the preview leaks:
+        // both halves of a `<C-s>` split show the candidate,
+        // the origin pane loses ORIG.
+        self.pending_picker_preview_origin = picker.preview_origin.map(BufferId);
         let Some(c) = picker.selected_candidate() else {
             if let Some(origin) = picker.preview_origin {
                 self.previewing = true;

@@ -497,6 +497,23 @@ pub struct Editor {
     /// / JumpToLocation). `Default` for `<CR>`.
     pub picker_open_target: lattice_picker::OpenTarget,
 
+    /// Issue #37 (2026-05-22): preview-restore handoff during
+    /// picker accept. When the picker live-previews the
+    /// selected candidate, the candidate's buffer is activated
+    /// in the active pane — replacing the buffer that was
+    /// there before the picker opened. If the accept then
+    /// SPLITS or creates a new TAB, both halves inherit the
+    /// preview and the original buffer is lost from the
+    /// source pane.
+    ///
+    /// `do_picker_accept` writes the picker's `preview_origin`
+    /// here at entry. `prepare_open_target_pane` consumes it
+    /// via `mem::take` and, for non-Default targets,
+    /// re-activates the origin buffer in the active pane
+    /// BEFORE splitting / tab-creating so the source pane
+    /// shows the original buffer afterwards.
+    pub pending_picker_preview_origin: Option<lattice_core::BufferId>,
+
     /// Handle to the per-document actor and its snapshot cache.
     pub document: DocumentHandle,
     pub snapshot_cache: SnapshotCache,

@@ -463,6 +463,26 @@ pub fn register_normal_bindings(handle: &KeymapHandle, builtins: &Builtins, acti
         CommandInvocation::of(actions.reselect_last_visual),
         source(),
     );
+    // Issue #29 (2026-05-22): `gt` next tab, `gT` previous tab.
+    // For `{N}gt` (absolute tab target), the count is picked
+    // up via the existing chord-count prefix mechanism — the
+    // handler `do_goto_tab` reads the count off the dispatched
+    // action's payload (set by the count-override hook in
+    // dispatch.rs when `count.is_some()`).
+    handle.bind(
+        layer,
+        mode,
+        &[g.clone(), lit_char('t')],
+        CommandInvocation::of(actions.next_tab),
+        source(),
+    );
+    handle.bind(
+        layer,
+        mode,
+        &[g.clone(), lit_char('T')],
+        CommandInvocation::of(actions.prev_tab),
+        source(),
+    );
     handle.bind(
         layer,
         mode,

@@ -471,6 +471,16 @@ pub enum Action {
     NextPane,
     /// `<C-w>W` -- cycle to the previous pane.
     PrevPane,
+    /// Issue #29 (2026-05-22): vim's `gt` — next tab.
+    NextTab,
+    /// Vim's `gT` — previous tab.
+    PrevTab,
+    /// Vim's `{N}gt` — switch to tab N (1-indexed; clamped).
+    GoToTab(u32),
+    /// `:tabnew` — new empty tab (scratch buffer).
+    NewTab,
+    /// `:tabclose` — close active tab (no-op when only one tab).
+    CloseTab,
     /// `<C-w>=` -- reset every split's ratio to 0.5 (equalize all
     /// panes). Issue #28 (2026-05-22).
     EqualizePanes,

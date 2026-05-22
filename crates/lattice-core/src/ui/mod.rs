@@ -11,3 +11,4 @@ pub mod display;
 pub mod icons;
 pub mod pane;
 pub mod popup;
+pub mod tab;

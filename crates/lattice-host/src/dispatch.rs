@@ -1050,6 +1050,12 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
             // dispatch's tail.
             editor.pane_tree.equalize_ratios();
         }
+        // Issue #29 (2026-05-22): tab navigation + management.
+        Action::NextTab => editor.do_next_tab(),
+        Action::PrevTab => editor.do_prev_tab(),
+        Action::GoToTab(n) => editor.do_goto_tab(n),
+        Action::NewTab => editor.do_new_tab(),
+        Action::CloseTab => editor.do_close_tab(),
         Action::GrowPaneHeight => {
             editor
                 .pane_tree
@@ -2447,6 +2453,12 @@ impl Editor {
             AppEffect::ShrinkPaneHeight => out.next_actions.push(Action::ShrinkPaneHeight),
             AppEffect::GrowPaneWidth => out.next_actions.push(Action::GrowPaneWidth),
             AppEffect::ShrinkPaneWidth => out.next_actions.push(Action::ShrinkPaneWidth),
+            // Issue #29 (2026-05-22): tab navigation + management.
+            AppEffect::NextTab => out.next_actions.push(Action::NextTab),
+            AppEffect::PrevTab => out.next_actions.push(Action::PrevTab),
+            AppEffect::GoToTab(n) => out.next_actions.push(Action::GoToTab(n)),
+            AppEffect::NewTab => out.next_actions.push(Action::NewTab),
+            AppEffect::CloseTab => out.next_actions.push(Action::CloseTab),
             AppEffect::CompletionNext => out.next_actions.push(Action::CompletionNext),
             AppEffect::CompletionPrev => out.next_actions.push(Action::CompletionPrev),
             AppEffect::CompletionAccept => out.next_actions.push(Action::CompletionAccept),
@@ -11653,6 +11665,145 @@ impl Editor {
         let _new_idx = self.pane_tree.split_active(orientation);
     }
 
+    // ============================================================
+    // Issue #29 (2026-05-22): tab pages.
+    //
+    // Semantics: `editor.pane_tree` always represents the active
+    // tab's panes. `editor.tabs[i].panes` holds inactive tabs'
+    // stashed trees; the active tab's slot has a default-empty
+    // placeholder.
+    //
+    // Switch protocol:
+    //   1. Snapshot active pane state (cursor/scroll) onto the
+    //      active pane's PaneState — same as pane navigation.
+    //   2. `mem::swap` editor.pane_tree with tabs[old_active].panes
+    //      (stashes the live tree into the slot).
+    //   3. `mem::swap` editor.pane_tree with tabs[new_active].panes
+    //      (loads the target tab's tree into pane_tree).
+    //   4. Update editor.active_tab.
+    //   5. Load active pane state (cursor/scroll) from the newly-
+    //      live tree's active PaneState.
+    // ============================================================
+
+    /// `gt` — switch to the next tab (wrapping). No-op when
+    /// only one tab.
+    pub fn do_next_tab(&mut self) {
+        let n = self.tabs.len();
+        if n <= 1 {
+            return;
+        }
+        let target = (self.active_tab + 1) % n;
+        self.do_switch_to_tab(target);
+    }
+
+    /// `gT` — switch to the previous tab (wrapping).
+    pub fn do_prev_tab(&mut self) {
+        let n = self.tabs.len();
+        if n <= 1 {
+            return;
+        }
+        let target = if self.active_tab == 0 {
+            n - 1
+        } else {
+            self.active_tab - 1
+        };
+        self.do_switch_to_tab(target);
+    }
+
+    /// `{N}gt` — go to tab N (1-indexed). Clamped to
+    /// `1..=tabs.len()`. `n == 0` is treated as "next" per
+    /// vim's quirky default.
+    pub fn do_goto_tab(&mut self, n: u32) {
+        if n == 0 {
+            return self.do_next_tab();
+        }
+        let target = ((n as usize).saturating_sub(1)).min(self.tabs.len().saturating_sub(1));
+        if target == self.active_tab {
+            return;
+        }
+        self.do_switch_to_tab(target);
+    }
+
+    /// `:tabnew` — open a new tab containing a single scratch
+    /// pane viewing a fresh empty buffer. The new tab is
+    /// inserted right AFTER the current tab and becomes active.
+    pub fn do_new_tab(&mut self) {
+        // Stash the live tree onto the current tab's slot.
+        self.snapshot_active_pane();
+        let active = self.active_tab;
+        std::mem::swap(&mut self.pane_tree, &mut self.tabs[active].panes);
+
+        // Build a fresh tab with a single pane viewing the
+        // same buffer as currently active. Vim's `:tabnew` (no
+        // arg) opens an EMPTY unnamed buffer; matching that
+        // requires creating a scratch buffer here, which
+        // touches the buffer registry. For slice 1 we open a
+        // new tab pointing at the CURRENT document — users get
+        // a fresh pane layout for the same file. `:tabnew
+        // <path>` will be added in slice 3 when ex-command
+        // arg parsing for tabs lands.
+        let initial_pane = lattice_core::ui::pane::PaneState {
+            id: lattice_core::ui::pane::PaneId::next(),
+            buffer: self.active_buffer,
+            buffer_id: self.pane_tree.active().buffer_id,
+            cursor: self.cursor,
+            scroll: self.scroll,
+            viewport_height: self.viewport_height,
+            viewport_width: 0,
+        };
+        let mut new_panes = lattice_core::ui::pane::PaneTree::single(initial_pane);
+        std::mem::swap(&mut self.pane_tree, &mut new_panes);
+        // `new_panes` now holds the default-empty placeholder
+        // (what was previously the stash for the current tab).
+        // Drop it — the new tab slot uses its own default.
+        drop(new_panes);
+
+        let new_slot = lattice_core::ui::tab::TabSlot::new();
+        // Insert right after the active tab.
+        let insert_at = self.active_tab + 1;
+        self.tabs.insert(insert_at, new_slot);
+        self.active_tab = insert_at;
+    }
+
+    /// `:tabclose` — close the active tab. No-op when only one
+    /// tab is open (the editor is never tab-less, mirroring
+    /// vim).
+    pub fn do_close_tab(&mut self) {
+        if self.tabs.len() <= 1 {
+            self.set_message(EchoLevel::Warn, "Already only one tab".to_string());
+            return;
+        }
+        // Discard the live tree (it belongs to the tab being
+        // closed). Pick the new active: the tab immediately to
+        // the left if we're not at index 0, otherwise the new
+        // index-0 (was index-1 before removal).
+        let closing = self.active_tab;
+        self.tabs.remove(closing);
+        let new_active = if closing == 0 { 0 } else { closing - 1 };
+        // Move target's stashed panes into live.
+        let mut take = std::mem::take(&mut self.tabs[new_active].panes);
+        std::mem::swap(&mut self.pane_tree, &mut take);
+        // `take` (previously live, soon to be discarded) drops.
+        drop(take);
+        self.active_tab = new_active;
+        self.load_active_pane();
+    }
+
+    /// Internal: switch from `self.active_tab` to `target`.
+    /// `target` must be a valid tab index and != active_tab.
+    fn do_switch_to_tab(&mut self, target: usize) {
+        debug_assert!(target < self.tabs.len());
+        debug_assert!(target != self.active_tab);
+        self.snapshot_active_pane();
+        let from = self.active_tab;
+        // Stash live tree to old slot.
+        std::mem::swap(&mut self.pane_tree, &mut self.tabs[from].panes);
+        // Load target tree into live.
+        std::mem::swap(&mut self.pane_tree, &mut self.tabs[target].panes);
+        self.active_tab = target;
+        self.load_active_pane();
+    }
+
     /// `<C-w>c` -- close the active pane; the first surviving
     /// pane becomes active. No-op when only one pane is open.
     pub fn do_close_pane(&mut self) {
@@ -19278,6 +19429,19 @@ impl Editor {
         inv: lattice_grammar::CommandInvocation,
         out: &mut DispatchOutcome,
     ) {
+        // Issue #29 (2026-05-22): `{N}gt` — when `next_tab` is
+        // invoked with count > 1, treat it as absolute tab N
+        // (vim's semantic). Count-less `gt` falls through to
+        // the normal AppEffect::NextTab path. Done BEFORE the
+        // registry-lookup branch so the count is consumed
+        // before `execute(...)` discards it.
+        if inv.command == self.action_ids.next_tab {
+            let count = inv.count.map(|c| c.0).unwrap_or(0);
+            if count > 1 {
+                self.do_goto_tab(count);
+                return;
+            }
+        }
         if let Some(spec) = self.registry.lookup(inv.command)
             && matches!(spec.kind, lattice_grammar::CommandKind::Action)
         {

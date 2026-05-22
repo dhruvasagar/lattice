@@ -415,6 +415,16 @@ pub enum AppEffect {
     /// previous pane. Promoted from `Action::PrevPane` in
     /// slice 8.i.4.d.
     PrevPane,
+    /// Issue #29 (2026-05-22): vim's `gt` — next tab.
+    NextTab,
+    /// Vim's `gT` — previous tab.
+    PrevTab,
+    /// Vim's `{N}gt` — switch to tab N (1-indexed; clamped).
+    GoToTab(u32),
+    /// `:tabnew` — new empty tab.
+    NewTab,
+    /// `:tabclose` — close active tab.
+    CloseTab,
     /// Issue #28 (2026-05-22): `<C-w>=` — reset every split's
     /// ratio to 0.5.
     EqualizePanes,

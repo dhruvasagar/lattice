@@ -25,6 +25,7 @@
 
 use crate::args::{ArgDefault, ArgKind, ArgSpec, ArgValue, Args};
 use crate::command::LatencyClass;
+use crate::AppEffect;
 use crate::effect::{Effect, SubstituteScope};
 use crate::error::{CommandError, GrammarResult};
 use crate::range::Range;
@@ -411,6 +412,62 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             accepts_range: false,
             parse_args: Box::new(parse_no_args),
             apply: Box::new(|_| Ok(Effect::BufferNext)),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    // Issue #29 (2026-05-22): tab management ex-commands.
+    // Each returns Effect::AppAction wrapping the matching
+    // AppEffect; the host's apply_app_effect pushes the
+    // matching Action onto out.next_actions.
+    let _tab_next = registry.register_ex_command(
+        "ex:tabnext",
+        "Switch to the next tab (`:tabn[ext]`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::AppAction(AppEffect::NextTab))),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let _tab_prev = registry.register_ex_command(
+        "ex:tabprev",
+        "Switch to the previous tab (`:tabp[rev]`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::AppAction(AppEffect::PrevTab))),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let _tab_new = registry.register_ex_command(
+        "ex:tabnew",
+        "Open a new tab.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::AppAction(AppEffect::NewTab))),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let _tab_close = registry.register_ex_command(
+        "ex:tabclose",
+        "Close the active tab.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::AppAction(AppEffect::CloseTab))),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },

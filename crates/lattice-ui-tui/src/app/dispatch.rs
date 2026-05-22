@@ -290,6 +290,12 @@ impl App {
             | Action::ShrinkPaneHeight
             | Action::GrowPaneWidth
             | Action::ShrinkPaneWidth
+            // Issue #29 (2026-05-22): tabs. Host-resident.
+            | Action::NextTab
+            | Action::PrevTab
+            | Action::GoToTab(_)
+            | Action::NewTab
+            | Action::CloseTab
             // 5.5.G.6: pure-editor mark-history arms migrated.
             | Action::WalkMarkHistoryBack
             | Action::WalkMarkHistoryForward

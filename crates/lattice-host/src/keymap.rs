@@ -368,6 +368,9 @@ fn build_default_keymap() -> Vec<KeymapEntry> {
         keymap_entry! { mode: AfterG, chord: "gu", doc: "Lowercase operator", cmd: "operator:lower" },
         keymap_entry! { mode: AfterG, chord: "g~", doc: "Toggle-case operator", cmd: "operator:toggle-case" },
         keymap_entry! { mode: AfterG, chord: "gv", doc: "Re-enter Visual with last selection" },
+        // Issue #29 (2026-05-22): tab navigation.
+        keymap_entry! { mode: AfterG, chord: "gt", doc: "Switch to the next tab (or {N}gt for absolute tab N)" },
+        keymap_entry! { mode: AfterG, chord: "gT", doc: "Switch to the previous tab" },
         keymap_entry! { mode: AfterG, chord: "gJ", doc: "Join lines without inserting a space" },
         keymap_entry! { mode: AfterG, chord: "g;", doc: "Walk named-mark history backward" },
         keymap_entry! { mode: AfterG, chord: "g,", doc: "Walk named-mark history forward" },

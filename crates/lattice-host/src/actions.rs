@@ -149,6 +149,11 @@ pub struct ActionIds {
     pub shrink_pane_height: CommandId,
     pub grow_pane_width: CommandId,
     pub shrink_pane_width: CommandId,
+    /// Issue #29 (2026-05-22): tab management IDs.
+    pub next_tab: CommandId,
+    pub prev_tab: CommandId,
+    pub new_tab: CommandId,
+    pub close_tab: CommandId,
     /// Slice 8.i.4.e: completion-popup overlay actions
     /// (registered into a minor-mode layer pushed when the
     /// popup opens; popped on close). Each ID is the typed
@@ -805,6 +810,31 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "Vim's `<C-w><`: shrink the active pane horizontally.",
             AppEffect::ShrinkPaneWidth,
         ),
+        // Issue #29 (2026-05-22): tab management.
+        next_tab: register_simple(
+            registry,
+            "action:next-tab",
+            "Vim's `gt`: switch to the next tab.",
+            AppEffect::NextTab,
+        ),
+        prev_tab: register_simple(
+            registry,
+            "action:prev-tab",
+            "Vim's `gT`: switch to the previous tab.",
+            AppEffect::PrevTab,
+        ),
+        new_tab: register_simple(
+            registry,
+            "action:new-tab",
+            "`:tabnew`: open a new tab.",
+            AppEffect::NewTab,
+        ),
+        close_tab: register_simple(
+            registry,
+            "action:close-tab",
+            "`:tabclose`: close the active tab.",
+            AppEffect::CloseTab,
+        ),
         completion_next: register_simple(
             registry,
             "action:completion-next",
@@ -1161,6 +1191,11 @@ mod tests {
             (ids.shrink_pane_height, "action:shrink-pane-height"),
             (ids.grow_pane_width, "action:grow-pane-width"),
             (ids.shrink_pane_width, "action:shrink-pane-width"),
+            // Issue #29 (2026-05-22): tab management.
+            (ids.next_tab, "action:next-tab"),
+            (ids.prev_tab, "action:prev-tab"),
+            (ids.new_tab, "action:new-tab"),
+            (ids.close_tab, "action:close-tab"),
             (ids.completion_next, "action:completion-next"),
             (ids.completion_prev, "action:completion-prev"),
             (ids.completion_accept, "action:completion-accept"),

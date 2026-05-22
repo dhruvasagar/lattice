@@ -473,8 +473,21 @@ pub struct Editor {
     /// request so the worker can verify edits apply to the
     /// correct tree baseline.
     pub last_synced_syntax_version: u64,
-    /// Pane tree (DESIGN.md §5.9).
+    /// Pane tree (DESIGN.md §5.9). Always represents the
+    /// ACTIVE tab's panes — when switching tabs we
+    /// `mem::swap` between this field and `tabs[target].panes`.
     pub pane_tree: PaneTree,
+
+    /// Issue #29 (2026-05-22): tab pages. Each `TabSlot` carries
+    /// one tab's pane tree + optional label. The active tab's
+    /// `panes` field is a default placeholder while live — its
+    /// real tree sits on `editor.pane_tree`. Inactive tabs hold
+    /// the full stashed tree. Always non-empty; default boot
+    /// state is one tab whose pane_tree matches `editor.pane_tree`.
+    pub tabs: Vec<lattice_core::ui::tab::TabSlot>,
+    /// Index of the active tab in `tabs`. Always valid (clamped
+    /// on tab close).
+    pub active_tab: usize,
 
     /// Handle to the per-document actor and its snapshot cache.
     pub document: DocumentHandle,

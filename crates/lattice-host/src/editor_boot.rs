@@ -652,6 +652,12 @@ impl Editor {
             completion_registry,
             completion_state: None,
             pane_tree,
+            // Issue #29 (2026-05-22): boot with one tab. The
+            // slot's `panes` is a default placeholder; the real
+            // pane tree above is live on `editor.pane_tree`.
+            // `TabSlot::new` mints a fresh TabId.
+            tabs: vec![lattice_core::ui::tab::TabSlot::new()],
+            active_tab: 0,
             document,
             snapshot_cache,
             document_buffer_id,

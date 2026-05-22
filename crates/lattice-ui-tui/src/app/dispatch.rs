@@ -554,7 +554,10 @@ impl App {
             // host short-circuits Help to no-op so App handles.
             Action::FollowLink => match self.ad().buffer_kind {
                 BufferKind::Help => self.do_help_follow_link(),
-                BufferKind::Oil | BufferKind::FileTree | BufferKind::Document => {}
+                BufferKind::Oil
+                | BufferKind::FileTree
+                | BufferKind::Document
+                | BufferKind::Terminal => {}
             },
             // Phase 5.8.AF: migrated to host (consumed = true).
             Action::OilNavigateUp => {}

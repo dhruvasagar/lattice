@@ -245,6 +245,10 @@ pub fn major_mode_id_for_buffer_kind(kind: BufferKind) -> Option<ModeId> {
         BufferKind::Help => Some(lattice_syntax::MarkdownMode::mode_id()),
         BufferKind::FileTree => Some(FileTreeMode::mode_id()),
         BufferKind::Oil => Some(OilMode::mode_id()),
+        // Terminal: T1 has no major mode. T2 introduces
+        // `terminal-mode` (the major that owns Normal-in-terminal
+        // grammar + the Terminal-Insert sub-state).
+        BufferKind::Terminal => None,
     }
 }
 
@@ -257,7 +261,10 @@ pub fn major_mode_id_for_buffer_kind(kind: BufferKind) -> Option<ModeId> {
 pub fn default_minor_mode_id_for_buffer_kind(kind: BufferKind) -> Option<ModeId> {
     match kind {
         BufferKind::Help => Some(HelpMode::mode_id()),
-        BufferKind::Document | BufferKind::FileTree | BufferKind::Oil => None,
+        BufferKind::Document
+        | BufferKind::FileTree
+        | BufferKind::Oil
+        | BufferKind::Terminal => None,
     }
 }
 
@@ -292,7 +299,10 @@ pub fn auto_activated_minors_for_buffer_kind(kind: BufferKind) -> Vec<ModeId> {
         // Read-only kinds: nothing to add. (`help-mode` /
         // `oil-mode` / `file-tree-mode` are already activated
         // via their major's default-minor path.)
-        BufferKind::Help | BufferKind::FileTree | BufferKind::Oil => Vec::new(),
+        BufferKind::Help
+        | BufferKind::FileTree
+        | BufferKind::Oil
+        | BufferKind::Terminal => Vec::new(),
     }
 }
 

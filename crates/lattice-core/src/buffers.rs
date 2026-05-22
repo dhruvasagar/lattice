@@ -44,14 +44,27 @@ pub enum BufferKind {
     /// `:w` diffs the rope against its snapshot and executes
     /// renames/deletes/creates on disk.
     Oil,
+    /// PTY-backed terminal buffer (issue #40, T1 / Terminal-mode).
+    /// Owns a child process via `lattice-terminal::PtyHandle`; the
+    /// reader task publishes `TerminalSnapshot`s the renderer paints
+    /// as a cell grid. Two sub-states (T2): Normal-in-terminal (vim
+    /// motions over the scrollback) and Terminal-Insert (keystrokes
+    /// encoded → PTY stdin). NOT editable via the standard rope
+    /// operator path — `is_read_only()` returns true so the
+    /// operator dispatcher leaves it alone.
+    Terminal,
 }
 
 impl BufferKind {
     /// Whether mutating operators (delete, change, paste, insert)
     /// are accepted on this kind. Only [`BufferKind::Document`] and
-    /// [`BufferKind::Oil`] are writable.
+    /// [`BufferKind::Oil`] are writable; Terminal mutates via its
+    /// own PTY-stdin path, not through rope operators.
     pub fn is_read_only(self) -> bool {
-        matches!(self, BufferKind::Help | BufferKind::FileTree)
+        matches!(
+            self,
+            BufferKind::Help | BufferKind::FileTree | BufferKind::Terminal
+        )
     }
 
     /// Short label for echo-area diagnostics.
@@ -61,6 +74,7 @@ impl BufferKind {
             BufferKind::Help => "help",
             BufferKind::FileTree => "file-tree",
             BufferKind::Oil => "oil",
+            BufferKind::Terminal => "terminal",
         }
     }
 }

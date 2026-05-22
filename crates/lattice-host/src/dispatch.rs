@@ -1176,7 +1176,7 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
             BufferKind::FileTree => {
                 _out.renderer_signals.extend(editor.dismiss_file_tree());
             }
-            BufferKind::Document | BufferKind::Oil => {}
+            BufferKind::Document | BufferKind::Oil | BufferKind::Terminal => {}
         },
         // 5.5.G.13: pure-editor command-line arms. `EnterCommandLine`
         // opens the `:` line, clears any in-flight completion popup,
@@ -1372,7 +1372,7 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
                 let signals = editor.do_file_tree_follow();
                 _out.renderer_signals.extend(signals);
             }
-            BufferKind::Help | BufferKind::Document => {}
+            BufferKind::Help | BufferKind::Document | BufferKind::Terminal => {}
         },
     }
     // 5.8.AF.3 closeout: every renderer-neutral `Action` is now
@@ -1852,9 +1852,10 @@ impl Editor {
     pub fn active_buffer_id(&self) -> BufferId {
         match self.active_buffer {
             BufferKind::Help => self.popup_buffer.unwrap_or(self.document_buffer_id),
-            BufferKind::Document | BufferKind::FileTree | BufferKind::Oil => {
-                self.pane_tree.active().buffer_id
-            }
+            BufferKind::Document
+            | BufferKind::FileTree
+            | BufferKind::Oil
+            | BufferKind::Terminal => self.pane_tree.active().buffer_id,
         }
     }
 
@@ -1901,6 +1902,14 @@ impl Editor {
                 .buffers
                 .with_oil(self.active_pane_buffer_id(), |o| o.content.clone())
                 .unwrap_or_else(|| self.document.snapshot().buffer.clone()),
+            // Terminal content lives in cell-grid form, not in a
+            // rope. Operator / motion paths that hit
+            // `active_text` are read-only on Terminal kind anyway;
+            // returning an empty buffer is a safe no-op for the
+            // text consumers (count-by-line, search, etc.) and
+            // T3's scrollback navigation will dispatch off the
+            // TerminalSnapshot directly.
+            BufferKind::Terminal => lattice_core::Buffer::default(),
         }
     }
 
@@ -1921,6 +1930,10 @@ impl Editor {
                 .buffers
                 .with_oil(self.active_pane_buffer_id(), |o| o.cursor)
                 .unwrap_or(self.cursor),
+            // Terminal: T1 has no scrollback cursor yet. T3 will
+            // introduce scrollback-view position; until then,
+            // return self.cursor so motion code has a sane value.
+            BufferKind::Terminal => self.cursor,
         }
     }
 
@@ -11626,11 +11639,13 @@ impl Editor {
         let popup_help_id = self.popup_buffer;
         let reachable = |e: &PositionEntry| -> bool {
             match e.buffer {
-                BufferKind::Document | BufferKind::FileTree => self.buffers.contains(e.buffer_id),
+                BufferKind::Document
+                | BufferKind::FileTree
+                | BufferKind::Oil
+                | BufferKind::Terminal => self.buffers.contains(e.buffer_id),
                 BufferKind::Help => {
                     self.buffers.contains_help(e.buffer_id) || popup_help_id == Some(e.buffer_id)
                 }
-                BufferKind::Oil => self.buffers.contains(e.buffer_id),
             }
         };
         let combined = |e: &PositionEntry| pred(e) && reachable(e);
@@ -11691,6 +11706,16 @@ impl Editor {
                     self.pane_tree.active_mut().buffer = BufferKind::Oil;
                     self.pane_tree.active_mut().buffer_id = entry.buffer_id;
                     self.clamp_cursor_to_active_buffer();
+                }
+            }
+            BufferKind::Terminal => {
+                // T1: position history entries for terminal
+                // buffers just re-activate the buffer; the
+                // scrollback cursor model lands in T3.
+                if self.buffers.contains(entry.buffer_id) {
+                    self.active_buffer = BufferKind::Terminal;
+                    self.pane_tree.active_mut().buffer = BufferKind::Terminal;
+                    self.pane_tree.active_mut().buffer_id = entry.buffer_id;
                 }
             }
         }
@@ -17064,6 +17089,13 @@ impl Editor {
                         id.0, dir
                     ));
                 }
+                BufferKind::Terminal => {
+                    let label = row.name.clone().unwrap_or_else(|| "[shell]".to_string());
+                    lines.push(format!(
+                        "  {active_marker}{listed_marker} #{:<3} term     {label}",
+                        id.0
+                    ));
+                }
             }
         }
         lattice_help::HelpContent::from_lines("buffers", lines)
@@ -17677,6 +17709,11 @@ impl Editor {
                 });
             }
             BufferKind::Document => {}
+            // Terminal: nothing to stash beyond the pane state
+            // captured below (cursor/scroll on pane). T3
+            // introduces a scrollback-cursor model that may
+            // need its own stash here.
+            BufferKind::Terminal => {}
         }
         let active = self.pane_tree.active_mut();
         active.cursor = cursor;
@@ -17813,6 +17850,17 @@ impl Editor {
             }
             BufferKind::Oil => {
                 self.activate_oil(id);
+                false
+            }
+            BufferKind::Terminal => {
+                // T1: minimal activation — flip active_buffer
+                // + update the active pane's buffer_id. No
+                // mode-state plumbing yet; T2/T3 layer
+                // sub-mode + scrollback.
+                self.active_buffer = BufferKind::Terminal;
+                let pane = self.pane_tree.active_mut();
+                pane.buffer = BufferKind::Terminal;
+                pane.buffer_id = id;
                 false
             }
         }

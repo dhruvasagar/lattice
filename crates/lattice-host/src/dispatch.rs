@@ -1824,6 +1824,26 @@ impl Editor {
         self.pane_tree.active().buffer_id
     }
 
+    /// Issue #37 followup (2026-05-22): central picker-attach
+    /// helper. Sets `preview_origin` to the active buffer id
+    /// at picker-open time (when unset) so the accept-time
+    /// restore knows what buffer was there BEFORE any
+    /// preview activated a candidate.
+    ///
+    /// Previously only the buffer picker (`:b`) populated
+    /// preview_origin. Files / recent / grep / etc. left it
+    /// as None — so picker live-preview opened the candidate
+    /// file in the active pane, and on `<C-s>` accept both
+    /// halves of the split inherited the candidate (origin
+    /// pane lost ORIG). Centralizing here fixes every picker
+    /// at once.
+    pub fn set_active_picker(&mut self, mut p: lattice_picker::Picker) {
+        if p.preview_origin.is_none() {
+            p.preview_origin = Some(self.active_pane_buffer_id().0);
+        }
+        self.picker = Some(p);
+    }
+
     /// Identity of the buffer whose state the input dispatcher
     /// currently routes to. Document / file-tree / oil all return the
     /// active pane's id; Help routes through the popup overlay slot
@@ -3840,7 +3860,7 @@ impl Editor {
             lattice_picker::PickerAction::JumpToLspLocation,
         );
         p.set_lsp_locations(rows);
-        self.picker = Some(p);
+        self.set_active_picker(p);
     }
 
     /// Drain queued `ReferencesOutcome`s. Multi-result outcomes
@@ -3999,7 +4019,7 @@ impl Editor {
                     lattice_picker::PickerAction::JumpToLspLocation,
                 );
                 p.set_lsp_locations(picker_rows);
-                self.picker = Some(p);
+                self.set_active_picker(p);
             }
         }
     }
@@ -4473,7 +4493,7 @@ impl Editor {
         if source == "buffers" {
             picker.preview_origin = Some(self.active_pane_buffer_id().0);
         }
-        self.picker = Some(picker);
+        self.set_active_picker(picker);
         if source == "buffers" {
             self.preview_picker_selection()
         } else {
@@ -6504,7 +6524,7 @@ impl Editor {
             lattice_picker::PickerAction::AcceptShowMessageAction,
         );
         p.set_raw_candidates_with_routing(items);
-        self.picker = Some(p);
+        self.set_active_picker(p);
     }
 
     /// 4.2.f: drain `completionItem/resolve` responses; fold the
@@ -7020,7 +7040,7 @@ impl Editor {
                     lattice_picker::PickerAction::AcceptLspCompletion,
                 );
                 p.set_raw_candidates_with_routing(pairs);
-                self.picker = Some(p);
+                self.set_active_picker(p);
             }
         }
     }
@@ -7327,7 +7347,7 @@ impl Editor {
                     lattice_picker::PickerAction::AcceptLspCodeAction,
                 );
                 p.set_raw_candidates_with_routing(pairs);
-                self.picker = Some(p);
+                self.set_active_picker(p);
                 Vec::new()
             }
         }
@@ -14843,7 +14863,7 @@ impl Editor {
             lattice_picker::PickerAction::AcceptLspCodeLens,
         );
         p.set_raw_candidates_with_routing(pairs);
-        self.picker = Some(p);
+        self.set_active_picker(p);
     }
 
     /// 4.5.d: accept a code lens by `index` (the routing
@@ -15016,7 +15036,7 @@ impl Editor {
             lattice_picker::PickerAction::AcceptColorPresentation,
         );
         p.set_raw_candidates_with_routing(pairs);
-        self.picker = Some(p);
+        self.set_active_picker(p);
     }
 
     /// 4.5.e: accept one color presentation by index. Phase 5.8.AD.2.
@@ -15209,7 +15229,7 @@ impl Editor {
             on_accept,
         );
         p.set_lsp_instances(rows);
-        self.picker = Some(p);
+        self.set_active_picker(p);
     }
 
     /// `]d` / `:diag-next` / `:cnext` -- move the cursor to the
@@ -16215,7 +16235,7 @@ impl Editor {
         let pairs = raw_buffer_candidates(&self.buffers, &self.buffer_locals, active);
         p.set_raw_candidates_with_routing(pairs);
         p.preview_origin = Some(active.0);
-        self.picker = Some(p);
+        self.set_active_picker(p);
         // Preview-activate the initial (alternate-buffer)
         // selection so opening the picker immediately shows what
         // `<CR>` would land on.
@@ -18521,7 +18541,7 @@ impl Editor {
             lattice_picker::PickerAction::JumpToLspLocation,
         );
         p.set_lsp_locations(rows);
-        self.picker = Some(p);
+        self.set_active_picker(p);
     }
 
     /// 5.5.F.6: shared row formatter for the customize views.

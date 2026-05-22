@@ -16003,15 +16003,22 @@ impl Editor {
                     routing_payload_path: routing_payload_path(&routing),
                     ts: std::time::SystemTime::now(),
                 });
+            self.picker_open_target = target;
             return self.apply_picker_outcome(outcome);
         }
-        // Legacy imperative path.
+        // Legacy imperative path. Issue #33 (2026-05-22): also
+        // honor the open-target override here — buffers picker
+        // (`:b`) uses RoutingPayload::Buffer which never sets
+        // accept_action, so it falls through to this arm
+        // bypassing apply_picker_outcome's target handling.
         let mut signals = Vec::new();
         match routing {
             lattice_picker::RoutingPayload::Buffer { id: raw_id } => {
                 let id = BufferId(raw_id);
-                if id != self.active_pane_buffer_id() {
-                    self.prepare_pane_for_picker_result();
+                if id != self.active_pane_buffer_id()
+                    || !matches!(target, lattice_picker::OpenTarget::Default)
+                {
+                    signals.extend(self.prepare_open_target_pane(target));
                     let needs_state = self.activate_buffer(id);
                     if needs_state {
                         signals.extend(self.activate_buffer_state());
@@ -16038,7 +16045,7 @@ impl Editor {
                 if let Some(origin) = self.pending_tag_origin.take() {
                     self.tag_stack.push(origin);
                 }
-                self.prepare_pane_for_picker_result();
+                signals.extend(self.prepare_open_target_pane(target));
                 signals.extend(self.jump_to_file_line_col(&path, line, col));
             }
             lattice_picker::RoutingPayload::LspCompletion { index } => {
@@ -16069,7 +16076,7 @@ impl Editor {
                 signals.extend(self.apply_lsp_code_action(row, handle));
             }
             lattice_picker::RoutingPayload::OpenFile { path } => {
-                self.prepare_pane_for_picker_result();
+                signals.extend(self.prepare_open_target_pane(target));
                 let outcome = self.do_edit(Some(path), false);
                 match outcome {
                     DoEditOutcome::Opened(s)
@@ -16084,6 +16091,12 @@ impl Editor {
                 line,
                 col,
             } => {
+                // Issue #33: restore target so apply_picker_outcome's
+                // mem::take observes it. JumpInBuffer is file-
+                // targeting; non-file legacy outcomes
+                // (InvokeCommand / PasteRegister / JumpToMark)
+                // below don't need the restore — target is moot.
+                self.picker_open_target = target;
                 signals.extend(self.apply_picker_outcome(
                     lattice_picker::PickerAcceptOutcome::JumpInBuffer {
                         buffer_id,

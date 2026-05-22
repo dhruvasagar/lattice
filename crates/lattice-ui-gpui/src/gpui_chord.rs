@@ -142,6 +142,59 @@ pub fn from_keystroke(
         return Some(KeyChord::new(KeyKind::Special(sk), mods));
     }
 
+    // Issue (2026-05-22): GPUI reports symbolic keys by NAME,
+    // not by literal character. `<C-w>=` arrived as
+    // `key="equal"` which previously fell into the
+    // "multi-char unrecognised" early-return below, dropping
+    // the entire chord. The same affected `+`/`-`/`>`/`<` and
+    // every other symbolic chord (`:` etc.). Map common names
+    // to their literal char form so the keymap trie (which
+    // binds `lit_char('=')`) finds them.
+    let symbol_char: Option<char> = match lower.as_str() {
+        "equal" => Some('='),
+        "plus" => Some('+'),
+        "minus" | "hyphen" => Some('-'),
+        "greater" | "greaterthan" => Some('>'),
+        "less" | "lessthan" => Some('<'),
+        "comma" => Some(','),
+        "period" | "dot" => Some('.'),
+        "slash" => Some('/'),
+        "backslash" => Some('\\'),
+        "semicolon" => Some(';'),
+        "colon" => Some(':'),
+        "apostrophe" | "quote" => Some('\''),
+        "doublequote" | "quotedbl" => Some('"'),
+        "grave" | "backtick" => Some('`'),
+        "tilde" => Some('~'),
+        "bracketleft" | "leftbracket" => Some('['),
+        "bracketright" | "rightbracket" => Some(']'),
+        "braceleft" | "leftbrace" => Some('{'),
+        "braceright" | "rightbrace" => Some('}'),
+        "parenleft" | "leftparen" => Some('('),
+        "parenright" | "rightparen" => Some(')'),
+        "exclam" | "exclamation" => Some('!'),
+        "at" => Some('@'),
+        "numbersign" | "hash" => Some('#'),
+        "dollar" => Some('$'),
+        "percent" => Some('%'),
+        "asciicircum" | "caret" => Some('^'),
+        "ampersand" => Some('&'),
+        "asterisk" | "star" => Some('*'),
+        "underscore" => Some('_'),
+        "bar" | "pipe" => Some('|'),
+        "question" => Some('?'),
+        _ => None,
+    };
+    if let Some(c) = symbol_char {
+        // Apply the same shift-stripping rule as literal chars
+        // — the name already encodes the shifted form
+        // (`plus` = shift+equal, `greater` = shift+period).
+        if !mods.ctrl() && !mods.alt() && mods.shift() {
+            mods = mods.without(KeyMods::SHIFT);
+        }
+        return Some(KeyChord::new(KeyKind::Char(c), mods));
+    }
+
     // Printable character. Must be exactly one char.
     let mut chars = key.chars();
     let c = chars.next()?;

@@ -1169,7 +1169,8 @@ impl Render for EditorView {
         // maximize stopped working, alt+tab was the only way
         // in. Diff-then-send fixes it: in steady state (no
         // resize) the loop fires 0 commands.
-        let current_leaves = rs_guard.panes.tree.leaves();
+        let current_rs = self.app.render_state.load();
+        let current_leaves = current_rs.panes.tree.leaves();
         for (idx, rows, cols) in &pane_geometries {
             let needs_update = current_leaves
                 .get(*idx)

@@ -1,0 +1,119 @@
+//! `spawn` — fork a child process under a fresh pseudo-tty.
+//! Returns the [`PtyHandle`] (writer + resize) and the
+//! published `Arc<ArcSwap<TerminalSnapshot>>` cell the
+//! renderer reads from.
+//!
+//! T1 (2026-05-22): the reader task is a "drain bytes, build
+//! a naive snapshot" stub (no full VT/xterm parsing yet).
+//! T2 swaps in `alacritty_terminal::Term`; the crate's
+//! published interface is unchanged.
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use arc_swap::ArcSwap;
+use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+use thiserror::Error;
+
+use crate::handle::PtyHandle;
+use crate::reader::spawn_reader;
+use crate::snapshot::TerminalSnapshot;
+
+/// Inputs to [`spawn`].
+#[derive(Debug, Clone)]
+pub struct SpawnConfig {
+    /// Path of the program to exec (e.g. `/usr/bin/zsh`,
+    /// `/bin/sh`, `cargo`).
+    pub program: String,
+    /// Arguments for the program (excluding argv[0]).
+    pub args: Vec<String>,
+    /// Spawn working directory. `None` = inherit parent's cwd.
+    pub cwd: Option<PathBuf>,
+    /// Initial PTY size (rows, cols).
+    pub rows: u16,
+    pub cols: u16,
+}
+
+#[derive(Debug, Error)]
+pub enum SpawnError {
+    #[error("pty open failed: {0}")]
+    OpenPty(String),
+    #[error("child spawn failed: {0}")]
+    SpawnChild(String),
+    #[error("take writer failed: {0}")]
+    TakeWriter(String),
+    #[error("clone reader failed: {0}")]
+    CloneReader(String),
+}
+
+/// Successful spawn handles.
+pub struct SpawnHandles {
+    pub pty: PtyHandle,
+    pub snapshot: Arc<ArcSwap<TerminalSnapshot>>,
+    /// Task handle for the reader; aborted on drop. Hold for
+    /// the lifetime of the terminal buffer to keep the reader
+    /// running.
+    pub reader_task: tokio::task::JoinHandle<()>,
+}
+
+/// Spawn a child under a PTY. Returns:
+/// - `PtyHandle` for writing keystrokes + resizing.
+/// - `Arc<ArcSwap<TerminalSnapshot>>` for the renderer to
+///   `.load()` each frame.
+/// - Reader task handle (aborted when the caller drops it).
+pub fn spawn(config: SpawnConfig) -> Result<SpawnHandles, SpawnError> {
+    let SpawnConfig {
+        program,
+        args,
+        cwd,
+        rows,
+        cols,
+    } = config;
+
+    let pty_system = native_pty_system();
+    let pair = pty_system
+        .openpty(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|e| SpawnError::OpenPty(e.to_string()))?;
+
+    let mut cmd = CommandBuilder::new(&program);
+    for arg in &args {
+        cmd.arg(arg);
+    }
+    if let Some(cwd_path) = cwd {
+        cmd.cwd(cwd_path);
+    }
+
+    // Spawn the child on the slave side of the pair.
+    let _child = pair
+        .slave
+        .spawn_command(cmd)
+        .map_err(|e| SpawnError::SpawnChild(e.to_string()))?;
+    // Drop the slave on the parent side immediately after
+    // spawn — the child inherited its own copy via dup2.
+    drop(pair.slave);
+
+    // Pull the writer + reader sides out of the master.
+    let writer = pair
+        .master
+        .take_writer()
+        .map_err(|e| SpawnError::TakeWriter(e.to_string()))?;
+    let reader = pair
+        .master
+        .try_clone_reader()
+        .map_err(|e| SpawnError::CloneReader(e.to_string()))?;
+
+    let handle = PtyHandle::new(pair.master, writer, rows, cols);
+    let snapshot = Arc::new(ArcSwap::from_pointee(TerminalSnapshot::empty()));
+    let reader_task = spawn_reader(reader, Arc::clone(&snapshot), rows, cols);
+
+    Ok(SpawnHandles {
+        pty: handle,
+        snapshot,
+        reader_task,
+    })
+}

@@ -1,0 +1,32 @@
+//! lattice-terminal: PTY-backed terminal-buffer substrate.
+//!
+//! Issue #40 / Terminal-mode T1 (2026-05-22). See
+//! `docs/dev/architecture/terminal-mode.md` for the design
+//! and `docs/dev/operations/terminal-mode-plan.md` for the
+//! slice breakdown.
+//!
+//! # Surface (T1)
+//!
+//! - [`PtyHandle`]: writer + resize + kill for the master pty
+//!   side. Cheap to clone (Arc-backed).
+//! - [`TerminalSnapshot`]: renderer-facing immutable view of
+//!   the cell grid + cursor + title. Read via
+//!   `ArcSwap::load()` on the hot paint path.
+//! - [`spawn`]: spawns a child process under a fresh PTY,
+//!   returns the writer handle + the published snapshot cell.
+//!   The reader task is spawned automatically and runs until
+//!   the child exits or the handle is dropped.
+//!
+//! Input encoding (`<C-c>` → `\x03` etc.) is wired in T2.
+//! Scrollback navigation + Visual yank land in T3.
+
+pub mod cell;
+pub mod handle;
+pub mod reader;
+pub mod snapshot;
+pub mod spawner;
+
+pub use cell::{Cell, CellAttrs, CursorShape, NamedColor, TerminalColor};
+pub use handle::{PtyHandle, PtyHandleError};
+pub use snapshot::TerminalSnapshot;
+pub use spawner::{SpawnConfig, SpawnError, spawn};

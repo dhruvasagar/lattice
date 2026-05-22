@@ -1,0 +1,25 @@
+[package]
+name = "lattice-terminal"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+# Terminal state machine + grid (T1, 2026-05-22). alacritty_terminal
+# is the VT/xterm parser + cell-grid library extracted from
+# alacritty — pure Rust, battle-tested (alacritty, Zed, neovide).
+# NOT alacritty the app — does not read alacritty config.
+alacritty_terminal = "0.26"
+# Cross-platform PTY: Unix forkpty + macOS forkpty + Windows
+# ConPTY behind one trait. Spawns the child + returns Read/Write
+# halves of the master fd.
+portable-pty = "0.9"
+arc-swap = "1.7"
+parking_lot = "0.12"
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

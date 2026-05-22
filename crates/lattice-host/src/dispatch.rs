@@ -16274,6 +16274,77 @@ impl Editor {
             return;
         }
         self.load_active_pane();
+        // Issue #38 (2026-05-22): swap editor.document to
+        // follow the destination pane's buffer_id. The active
+        // pane paints from `editor.document.snapshot()`
+        // (published as `ad().snapshot`); without this swap,
+        // two panes showing different buffers become entangled
+        // — the active pane always shows whichever buffer
+        // editor.document was last set to. Symptom: "splits
+        // are not independent".
+        self.sync_active_document_to_pane();
+    }
+
+    /// Issue #38 (2026-05-22): swap `editor.document` /
+    /// `document_buffer_id` / `snapshot_cache` and per-document
+    /// mode state to follow the active pane's buffer_id.
+    ///
+    /// Called from `activate_pane` after `load_active_pane`
+    /// has restored the pane's cursor/scroll. Unlike
+    /// `activate_document`, this does NOT touch the pane state
+    /// and does NOT reset cursor — the pane's view stays
+    /// exactly as it was when last active.
+    ///
+    /// No-op when:
+    /// - The active pane isn't a Document (Help / Oil / FileTree
+    ///   have their own dispatch paths).
+    /// - The pane's buffer_id already matches
+    ///   `self.document_buffer_id` (the common case).
+    /// - The buffer registry has no document handle for the id
+    ///   (defensive — shouldn't happen in practice).
+    fn sync_active_document_to_pane(&mut self) {
+        let pane = *self.pane_tree.active();
+        if !matches!(pane.buffer, BufferKind::Document) {
+            return;
+        }
+        if pane.buffer_id == self.document_buffer_id {
+            return;
+        }
+        let Some(handle) = self.buffers.document_handle(pane.buffer_id) else {
+            return;
+        };
+        // Stash OLD document's mode state.
+        self.snapshot_active_document();
+        // Swap to NEW document handle.
+        self.document = handle;
+        self.snapshot_cache = self.document.snapshot_cache();
+        self.document_buffer_id = pane.buffer_id;
+        let id = pane.buffer_id;
+        self.syntax = self
+            .buffer_locals
+            .get(&id)
+            .and_then(|l| l.get::<crate::modes::DocumentSyntax>())
+            .and_then(|s| s.0.clone());
+        self.last_parsed_text_version = self
+            .buffer_locals
+            .get(&id)
+            .and_then(|l| l.get::<crate::modes::DocumentLastParsedTextVersion>())
+            .map(|v| v.0)
+            .unwrap_or(0);
+        self.last_synced_syntax_version = self
+            .buffer_locals
+            .get(&id)
+            .and_then(|l| l.get::<crate::modes::DocumentLastSyncedSyntaxVersion>())
+            .map(|v| v.0)
+            .unwrap_or(0);
+        self.folds = self
+            .buffer_locals
+            .get(&id)
+            .and_then(|l| l.get::<crate::modes::DocumentFolds>())
+            .map(|f| f.0.clone())
+            .unwrap_or_default();
+        // active_buffer was already set by load_active_pane
+        // (pane.buffer = BufferKind::Document).
     }
 }
 

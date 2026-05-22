@@ -940,10 +940,10 @@ impl EditorView {
                     .unwrap_or_else(|| {
                         std::sync::Arc::new(Vec::<Vec<lattice_syntax::StyledSpan>>::new())
                     });
-                lattice_host::render_state::VisibleSpans {
+                std::sync::Arc::new(lattice_host::render_state::VisibleSpans {
                     spans: (*pane_spans).clone(),
                     computed_for_key: lattice_host::render_state::VisibleHighlightsKey::default(),
-                }
+                })
             },
             scroll: pane_scroll,
             viewport_height,

@@ -77,8 +77,9 @@ pub use handle::{DocumentHandle, spawn_document};
 pub use lattice_grammar::CancellationToken;
 pub use messages::{MessagePushed, MessageRecord, MessagesRing};
 pub use messages_subscriber::{
-    MessagesFilterReloadError, MessagesLayer, boot_log_level, install_messages_subscriber,
-    reload_messages_filter, set_boot_log_level,
+    MessagesFilterReloadError, MessagesLayer, boot_log_level, boot_stderr_enabled,
+    install_messages_subscriber, reload_messages_filter, set_boot_log_level,
+    set_boot_stderr_enabled,
 };
 pub use pending::{InvocationId, Pending, RuntimeError};
 pub use runtime::{block_on, shared_runtime, spawn_task};

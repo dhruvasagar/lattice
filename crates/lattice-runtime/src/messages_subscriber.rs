@@ -166,6 +166,32 @@ pub fn boot_log_level() -> Option<String> {
     BOOT_LOG_LEVEL.get().cloned()
 }
 
+/// Process-wide flag set by the CLI before App::new to tell
+/// the runtime whether to enable the fmt-to-stderr layer.
+/// `Some(true)` ⇒ enable; `Some(false)` ⇒ disable;
+/// `None` ⇒ runtime falls back to its default (currently
+/// `true` to preserve previous behaviour for library callers
+/// that don't set it).
+///
+/// Issue #36 (2026-05-22): TUI sets this to `false` because
+/// stderr IS the terminal it paints into. GPUI sets to
+/// `true` (stderr is a separate stream).
+static BOOT_STDERR_ENABLED: OnceLock<bool> = OnceLock::new();
+
+/// CLI sets the boot-time stderr-enabled flag before
+/// constructing the editor. Idempotent — second call no-ops.
+pub fn set_boot_stderr_enabled(enabled: bool) {
+    let _ = BOOT_STDERR_ENABLED.set(enabled);
+}
+
+/// `editor_boot` reads the boot-time stderr-enabled flag.
+/// Returns `None` when the CLI didn't set one (test paths
+/// and library callers); editor_boot falls back to `false`
+/// (safe — never accidentally corrupt a TUI screen).
+pub fn boot_stderr_enabled() -> Option<bool> {
+    BOOT_STDERR_ENABLED.get().copied()
+}
+
 /// Reload-handle for the `EnvFilter` that gates which events
 /// the `MessagesLayer` captures. Stored at install time so
 /// `:set messages.filter=...` can swap the filter live via
@@ -201,6 +227,7 @@ pub fn install_messages_subscriber(
     ring: Arc<Mutex<MessagesRing>>,
     bus: Arc<EventBus>,
     initial_filter: &str,
+    stderr_enabled: bool,
 ) -> bool {
     if GLOBAL_INSTALLED.get().is_some() {
         return false;
@@ -209,25 +236,36 @@ pub fn install_messages_subscriber(
         .unwrap_or_else(|_| EnvFilter::try_new("info").expect("`info` is a valid EnvFilter spec"));
     let (filter_layer, handle) = reload::Layer::new(env_filter);
     let messages_layer = MessagesLayer::new(ring, bus);
-    // 2026-05-22 messages-overhaul: compose a fmt layer alongside
-    // MessagesLayer so every event ALSO mirrors to stderr. Users
-    // get the `*messages*` buffer for in-editor inspection AND
-    // the stderr stream for tail-ing in a separate terminal / log
-    // redirect. The shared `filter_layer` gates both — adjusting
-    // `messages.filter` (or `LATTICE_LOG`) at boot changes the
-    // verbosity for both surfaces uniformly.
+    // The `*messages*` buffer ALWAYS captures every event.
+    // The fmt layer (stderr writer) is OPTIONAL.
     //
-    // Previously main.rs installed `tracing_subscriber::fmt().try_init()`
-    // which WON the global subscriber race; this install
-    // silently failed, leaving `*messages*` empty in production.
-    // Removing main.rs's separate install and composing the fmt
-    // layer here makes both surfaces work via one subscriber.
-    let fmt_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
-    let subscriber = tracing_subscriber::registry()
-        .with(filter_layer)
-        .with(messages_layer)
-        .with(fmt_layer);
-    match tracing::subscriber::set_global_default(subscriber) {
+    // Issue #36 (2026-05-22): TUI peers must NOT enable
+    // stderr — stderr IS the terminal ratatui paints into,
+    // so every `tracing::*` event blits a stray line over
+    // the screen until the next full redraw. The caller
+    // passes `stderr_enabled = false` for TUI; GPUI passes
+    // `true` (its stderr is a separate stream).
+    //
+    // `LATTICE_STDERR=1` (CLI flag) forces fmt ON regardless
+    // for users running TUI with `2>tracing.log` redirection.
+    //
+    // Either way, `*messages*` is the canonical surface —
+    // open with `:messages` to inspect events without leaving
+    // the editor.
+    let install_result = if stderr_enabled {
+        let fmt_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
+        let subscriber = tracing_subscriber::registry()
+            .with(filter_layer)
+            .with(messages_layer)
+            .with(fmt_layer);
+        tracing::subscriber::set_global_default(subscriber)
+    } else {
+        let subscriber = tracing_subscriber::registry()
+            .with(filter_layer)
+            .with(messages_layer);
+        tracing::subscriber::set_global_default(subscriber)
+    };
+    match install_result {
         Ok(()) => {
             let _ = GLOBAL_INSTALLED.set(());
             let _ = FILTER_HANDLE.set(handle);

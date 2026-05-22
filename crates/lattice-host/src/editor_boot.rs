@@ -366,10 +366,19 @@ impl Editor {
         let messages_ring = Arc::new(std::sync::Mutex::new(MessagesRing::default()));
         let initial_filter =
             lattice_runtime::boot_log_level().unwrap_or_else(|| "info".to_string());
+        // Issue #36 (2026-05-22): TUI peers must NOT enable
+        // stderr — stderr IS the terminal ratatui paints into.
+        // CLI sets `boot_stderr_enabled` based on the selected
+        // renderer (false for TUI; true for GPUI). Library
+        // callers / tests that don't set it get the safe
+        // default (false — never accidentally corrupt a TUI
+        // screen).
+        let stderr_enabled = lattice_runtime::boot_stderr_enabled().unwrap_or(false);
         let _ = lattice_runtime::install_messages_subscriber(
             messages_ring.clone(),
             event_bus.clone(),
             &initial_filter,
+            stderr_enabled,
         );
         // Wire the logger's publisher to the same bus. The
         // closure captures an Arc<EventBus> clone so the

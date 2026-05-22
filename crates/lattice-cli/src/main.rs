@@ -79,6 +79,21 @@ struct Cli {
     /// `-v` / `-q` when both are passed.
     #[arg(long = "log-level", value_name = "LEVEL")]
     log_level: Option<String>,
+
+    /// Issue #36 (2026-05-22): force-enable stderr tracing
+    /// output even in TUI mode. By default the TUI peer
+    /// disables stderr writes because stderr IS the terminal
+    /// ratatui paints into — every `tracing::*` event would
+    /// blit a stray line over the screen. This flag is for
+    /// users who run TUI with `lattice 2>tracing.log` to
+    /// capture events to a file. The GPUI peer always has
+    /// stderr enabled (its stderr is a separate stream).
+    ///
+    /// In any case the `*messages*` buffer ALWAYS captures
+    /// events; this flag only controls the EXTRA stderr
+    /// write.
+    #[arg(long = "stderr-logs")]
+    stderr_logs: bool,
 }
 
 /// Resolve the final log-level directive from CLI flags +
@@ -130,6 +145,14 @@ async fn main() -> Result<()> {
     // Rust).
     let level = compute_log_level(&cli);
     lattice_runtime::set_boot_log_level(level);
+
+    // Issue #36 (2026-05-22): gate the fmt-to-stderr layer.
+    // TUI's stderr is the editor terminal — every event
+    // would blit a stray line over ratatui's paint. Defaults
+    // OFF for TUI, ON for GPUI. `--stderr-logs` forces ON
+    // (e.g. `lattice --tui --stderr-logs 2>tracing.log`).
+    let stderr_enabled = cli.stderr_logs || cli.gui;
+    lattice_runtime::set_boot_stderr_enabled(stderr_enabled);
 
     let document = match cli.file {
         Some(path) => {

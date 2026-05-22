@@ -1,22 +1,35 @@
 * Features
-- Terminal
-- Quickfix / Location lists
-- :! shell execution
-- ! filter operator
-- :.! shell execution and replace range
-- enhanced mini-buffer
-- enhanced, configurable mode-line
-- theme system (also with a theme picker with preview)
-- more language support
-- more user documentation
-- lattice-tutor
-- transient like menu
-- compilation-mode
+- [ ] Terminal
+- [ ] diffing
+- [ ] themes
+- [ ] Quickfix / Location lists
+- [ ] :! shell execution
+- [ ] ! filter operator
+- [ ] :.! shell execution and replace range
+- [ ] enhanced mini-buffer
+- [ ] enhanced, configurable mode-line
+- [ ] theme system (also with a theme picker with preview)
+- [ ] more language support
+- [ ] more user documentation
+- [ ] lattice-tutor
+- [ ] transient like menu
+- [ ] compilation-mode
+- [ ] surround operator
+- [ ] argument operator
+- [ ] borderless gui windows
+- [ ] DAP
 
 * Plugins
-- Claude Code IDE
-- Org Mode
-- project.el
+- [ ] Claude Code IDE
+- [ ] Org Mode
+- [ ] project.el
 
 * Issues
-- command line completion
+- [X] GUI: cursor scrolls past viewport
+- [X] command line completion
+  - [X] file completion for `:e` is broken
+- [ ] `describe-*` functions open a popup, but the focus is not within them
+- [X] <C-n>, <C-p> for completions
+- [ ] popup focus
+- [X] `gg`, `zz`, `zt`, `zb` don't work
+- [ ] Mouse click on window does not work, no focus, can't maximize

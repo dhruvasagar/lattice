@@ -1120,17 +1120,26 @@ impl Render for EditorView {
             glyph_advance_px,
             &mut pane_geometries,
         );
-        // Fire `set_pane_viewport` per leaf. The host's actor
-        // handler writes onto `PaneState[idx]` and (for the
-        // active leaf) mirrors height into
-        // `Editor::viewport_height`. Each call publishes RS at
-        // the tail. Per-frame cost: O(leaves) actor RPCs;
-        // typical pane counts (1-4) make this negligible. If
-        // pane geometry changes frequently this could be
-        // batched into one command — out of scope for the
-        // single-leaf-was-already-fine case.
+        // Issue #27 (2026-05-22): fire `set_pane_viewport` per
+        // leaf ONLY when the geometry actually changes vs. what's
+        // already published. The unconditional per-frame fire
+        // (the prior shape) sent N actor RPCs per frame, each
+        // calling `publish_render_state`. At 60fps with 1 pane
+        // that's 60 publishes/sec for no reason; with 4 panes,
+        // 240/sec. The flood blocked the GPUI main thread —
+        // mouse click no longer focused the window, drag /
+        // maximize stopped working, alt+tab was the only way
+        // in. Diff-then-send fixes it: in steady state (no
+        // resize) the loop fires 0 commands.
+        let current_leaves = rs_guard.panes.tree.leaves();
         for (idx, rows, cols) in &pane_geometries {
-            self.app.set_pane_viewport(*idx, *rows, *cols);
+            let needs_update = current_leaves
+                .get(*idx)
+                .map(|l| l.viewport_height != *rows || l.viewport_width != *cols)
+                .unwrap_or(true);
+            if needs_update {
+                self.app.set_pane_viewport(*idx, *rows, *cols);
+            }
         }
         // total_rows + the old chrome_rows / new_viewport
         // arithmetic retires; `set_pane_viewport` carries the

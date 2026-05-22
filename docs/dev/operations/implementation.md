@@ -77,12 +77,94 @@ Reasons this ordering wins:
 | 9     | Rich Buffer Rendering                 | ⛔ not started           | Per-line shaped path, Fenwick height index                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | 10    | Polish + v1.0                         | ⛔ not started           | `*scratch:rust*` live-eval workflow (§10), accessibility, packaging, themes                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 
-Active focus: **Phase 4 (LSP) wind-down → Phase 7 (Plugin Host)
-on deck.** Phases 4.1–4.5 are wire-and-host complete; the
-remaining LSP rows are all "strong-reason defer at the trigger
-UX layer" (linkedEditingRange, inlineValue, inlineCompletion,
-willRename/willDelete, inlayHint/resolve) -- each blocked on
-host UX design that doesn't belong inside Phase 4.
+Active focus: **Phase 5.8 GPUI polish + feature parity** (most
+recent block of work, 2026-05-22 — see "Recent Phase 5.8 polish
+slices" below). **Phase 4 (LSP) wind-down complete** at the
+wire+host layer (4.5 ✅; 5 trigger-UX rows strong-reason
+deferred). **Phase 7 (Plugin Host) on deck** as the next
+architectural step.
+
+Recent Phase 5.8 polish slices (2026-05-22)
+-------------------------------------------
+
+A two-day burst of user-driven bug fixes + small features
+brought the GPUI peer to functional parity with TUI for the
+window-management surface. Each slice is a single commit:
+
+- **#16** (`cb63f11`) — vim chord clear-guard fixed: `gg`,
+  `zz`, `zt`, `zb`, `dw` etc. broke when `EnsureCursorVisible`
+  cleared `partial_chord` between keystrokes. Renderer-housekeeping
+  actions now exempt from the clear-guard. Regression tests
+  landed.
+- **#17** (`835a6d5`) — GPUI viewport chrome math: pixel-
+  accurate calc of pane padding + status row + global bottom
+  padding so cursor doesn't park under modeline.
+- **#18** (`525f2f3`) — LSP popup placement: GPUI honors
+  `PopupPlacement::CursorAnchored` instead of always centring.
+- **#19 / #21** (`4d29ace`) — State-B popup focus visual
+  indicator (brighter border + hidden document cursor +
+  header hint).
+- **#20** (`039881c`) — hover popup auto-dismiss on cursor
+  motion hoisted into `Editor::dispatch` (works in both peers).
+- **#22** (`ade38c6`) — cmdline-completion `<C-n>` / `<C-p>`
+  symmetric with picker.
+- **#23 / messages overhaul** (`e5cf4d2`) — tracing routed
+  to BOTH stderr AND `*messages*` buffer via composed fmt +
+  MessagesLayer; CLI `-v` / `-q` / `--log-level` flags via
+  `set_boot_log_level`.
+- **#24** (`60c619e`) — `:describe-buffer` no longer scrolls
+  background document: GPUI uses `pane.scroll` / `pane.cursor`
+  when popup owns active_buffer.
+- **#25** (`100c33f`) — multi-pane viewport math + per-pane
+  `visible_spans` so highlights work after splits.
+- **#26 / popup-anchor** (`60c619e`) — popup pinned to the
+  symbol it was invoked from (CursorAnchored reads
+  `popup_substate.anchor`, not live `ad.cursor`).
+- **per-pane viewport** (`a446382`) — `PaneState.viewport_height`
+  + `PaneState.viewport_width`, set per-leaf by the
+  renderer's per-frame layout pass; replaces the single
+  global `Editor::viewport_height`. Active leaf's height is
+  auto-mirrored back into `Editor::viewport_height` for the
+  cursor-clamp / highlights-worker code paths.
+- **#27** (`e91298a`, `cb0111d`) — critical mouse-focus
+  regression: `set_pane_viewport` was firing N actor RPCs
+  per frame, flooding the actor and blocking the GPUI main
+  thread. Diff-then-send so steady state fires 0 commands.
+- **#28** (`3204029`) — split ratios (`<C-w>=`, `<C-w>+`,
+  `<C-w>-`, `<C-w>>`, `<C-w><`); `PaneNode::*Split` gains a
+  `ratio: f32` field; ratio-aware `compute_rects_recursive`
+  + GPUI `collect_pane_geometries`.
+- **#29 tabs slice 1** (`57a3978`) — `TabId` / `TabSlot` /
+  `Editor.tabs` + Action variants (NextTab / PrevTab /
+  GoToTab / NewTab / CloseTab) + chord bindings (`gt`, `gT`,
+  `{N}gt`) + ex commands (`:tabnew`, `:tabnext`, `:tabprev`,
+  `:tabclose`). Count plumbing via `run_invocation` intercept.
+- **#29 tabs slice 2** (`b19d228`) — tabline rendering in
+  both peers; new `Tabline` option group + `tabline.show`
+  typed-enum (`never` / `auto` / `always`).
+- **#29 tabs slice 3** (`f138661`) — `:tabonly`, `:tabmove`,
+  `:tabnew <path>`, GPUI mouse-click on tab, `<C-PageDown>` /
+  `<C-PageUp>` aliases.
+- **#32 picker open-target** (`ea7891e`) — picker `<C-s>` /
+  `<C-v>` / `<C-t>` open file candidate in split / vsplit /
+  tab; one-shot override via `picker_open_target` field with
+  `mem::take` at `do_picker_accept` entry + restore-before-call
+  pattern for all 7 inner `apply_picker_outcome` sites.
+  Regression test: `picker_open_target_resets_after_no_op_accept`.
+- **#33 picker legacy-path + GPUI symbolic-key adapter**
+  (`ea1e546`) — GPUI's `keystroke.key` uses names like
+  `"equal"` / `"plus"` / `"greater"`; added symbol-name map
+  so `<C-w>=` etc. resolve. Picker's legacy imperative arms
+  (`:b` buffer picker uses these) now also honor the
+  open-target override.
+- **Font config** (`a224e52`) — `ui.font_family` /
+  `ui.font_size` options; GPUI cursor alignment fix.
+
+Plugin-facing API surface preserved at four layers across all
+slices: Editor methods (`do_*_tab`, `do_split_pane`, etc.);
+typed `Action` variants; `AppEffect` variants; named
+`CommandId`s (`action:next-tab`, `action:picker-accept-in-split`,
+etc.). Plugin authors compose by any of the four.
 
 The natural next architectural step is **Phase 7 (Plugin
 Host)**: paramount goal #2 (extensibility) is the most-deferred
@@ -1682,17 +1764,18 @@ Workspace tests as of the last commit. Coverage by crate:
 
 | Crate                            | Tests |
 |----------------------------------|-------|
-| lattice-protocol                 | 30    |
-| lattice-core (incl. integration) | 86    |
-| lattice-grammar                  | 183   |
-| lattice-completion               | 117   |
-| lattice-config                   | 57    |
-| lattice-syntax                   | 13    |
-| lattice-runtime                  | 35    |
-| lattice-lsp                      | 32    |
-| lattice-ui-tui                   | 1410  |
-| lattice-host                     | 228   |
-| lattice-ui-gpui                  | 21    |
+| lattice-protocol                 | 39    |
+| lattice-core (incl. integration) | 128   |
+| lattice-grammar                  | 191   |
+| lattice-completion               | 124   |
+| lattice-config                   | 118   |
+| lattice-syntax                   | 82    |
+| lattice-runtime                  | 43    |
+| lattice-lsp                      | 183   |
+| lattice-picker                   | 48    |
+| lattice-ui-tui                   | 1403  |
+| lattice-host                     | 263   |
+| lattice-ui-gpui                  | 25    |
 
 Plus criterion benches for hot paths (search, buffer, motions, operators,
 runtime actor) — see `docs/benchmarks.md` for the latest numbers.

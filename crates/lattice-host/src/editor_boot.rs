@@ -539,6 +539,12 @@ impl Editor {
             buffer_id: document_buffer_id,
             cursor: Position::ZERO,
             scroll: 0,
+            // Populated by the renderer's per-frame layout pass
+            // (Issue #25, 2026-05-22). Zero at boot is safe — the
+            // first frame's `set_viewport_*` calls update before
+            // any motion / ensure-visible reads.
+            viewport_height: 0,
+            viewport_width: 0,
         };
         let pane_tree = PaneTree::single(initial_pane);
 

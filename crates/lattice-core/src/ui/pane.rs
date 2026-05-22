@@ -58,6 +58,24 @@ pub struct PaneState {
     /// First visible line in the pane. Loaded into `App::scroll`
     /// when active.
     pub scroll: u32,
+    /// Per-pane visible-buffer height in screen rows. Issue #25
+    /// (2026-05-22): replaces the single `Editor::viewport_height`
+    /// global as the source of truth for each pane. Each leaf
+    /// gets its own height set by the renderer's per-frame
+    /// layout pass; the highlights worker reads
+    /// `active_pane.viewport_height` (mirrored into
+    /// `Editor::viewport_height`) so it computes the right
+    /// number of lines for the active pane, and
+    /// `ensure_cursor_visible` clamps against the active pane's
+    /// actual painted area regardless of how the tree is split.
+    pub viewport_height: u32,
+    /// Per-pane visible-buffer width in screen columns. Issue
+    /// #25 follow-up: vertical splits halve the width — without
+    /// per-pane width, line-wrap / clip math mismeasures the
+    /// cursor's end-of-line position in narrower panes. Set by
+    /// the same per-frame layout pass that populates
+    /// `viewport_height`.
+    pub viewport_width: u32,
 }
 
 /// Internal node of the pane tree. Leaves reference a `PaneState`
@@ -495,6 +513,8 @@ mod tests {
             buffer_id: BufferId(1),
             cursor: Position::ZERO,
             scroll: 0,
+            viewport_height: 0,
+            viewport_width: 0,
         }
     }
 

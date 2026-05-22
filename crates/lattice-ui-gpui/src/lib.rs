@@ -417,6 +417,36 @@ impl GpuiApp {
         self.dispatch_action(lattice_host::action::Action::SetViewportHeight(height));
     }
 
+    /// Issue #25 (2026-05-22): per-pane geometry hand-off. The
+    /// renderer's per-frame layout pass fires one of these per
+    /// leaf in the pane tree. Production routes through the
+    /// editor actor's typed `SetPaneViewport` command;
+    /// cfg(test) mutates the in-process editor directly
+    /// (parallels the `mutate_editor_with` pattern). The
+    /// host's handler writes onto `PaneState[idx]` and mirrors
+    /// the active leaf's height into `Editor::viewport_height`
+    /// for cursor-clamp + highlights worker.
+    pub fn set_pane_viewport(&mut self, idx: usize, rows: u32, cols: u32) {
+        #[cfg(not(test))]
+        {
+            let _ = self.editor_actor.set_pane_viewport(idx, rows, cols);
+        }
+        #[cfg(test)]
+        {
+            let active_idx = self.editor.pane_tree.active_index();
+            let leaves = self.editor.pane_tree.leaves_mut();
+            if idx < leaves.len() {
+                leaves[idx].viewport_height = rows.max(1);
+                leaves[idx].viewport_width = cols.max(1);
+            }
+            if idx == active_idx {
+                self.editor.viewport_height = rows.max(1);
+                self.editor.ensure_cursor_visible();
+            }
+            self.editor.publish_render_state();
+        }
+    }
+
     /// Dismiss any active help popup. Phase 5.8.AE: routes
     /// through the host's `dismiss_popup` so popup state lands
     /// uniformly across both peers. Slice 3c.final.C: now goes

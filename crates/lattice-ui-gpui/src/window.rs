@@ -120,46 +120,90 @@ fn style_at(spans: &[lattice_syntax::StyledSpan], byte: usize) -> SyntaxStyle {
 /// than panicking -- the validator already gates set-time. Matches
 /// the TUI peer's `picker_display_is_minibuffer` so both renderers
 /// agree on the same source of truth.
-/// Issue #25 (2026-05-22): per-pane buffer-rows for multi-split
-/// support. Walks the pane tree and returns the MAXIMUM
-/// buffer-rows across all leaves, given the available rows for
-/// the tree's container and the per-leaf chrome cost
-/// (`.p_3()` + status row + status padding).
+/// Issue #25 (2026-05-22): per-pane geometry collector. Walks
+/// the pane tree distributing the container's pixel rectangle
+/// to each leaf based on split orientation, then converts each
+/// leaf's allocated pixels into `(rows, cols)` for the host's
+/// `PaneState.viewport_height` / `viewport_width` fields.
 ///
-/// - `HorizontalSplit { top, bottom }` divides height between
-///   its two children (each gets half).
-/// - `VerticalSplit { left, right }` shares the full height
-///   (both children get the same vertical space).
-/// - `Leaf` consumes `per_leaf_chrome_px` from its allotted
-///   rows.
+/// - `HorizontalSplit { top, bottom }` divides HEIGHT between
+///   children; both get the full width.
+/// - `VerticalSplit { left, right }` divides WIDTH between
+///   children; both get the full height.
+/// - `Leaf` consumes per-leaf chrome (status row + py + p_3
+///   padding vertically; p_3 padding horizontally), converts
+///   to row/col count via `row_px` / `col_px`.
 ///
-/// Taking the MAX guarantees the highlights worker computes
-/// enough lines for the largest pane (usually the active one).
-/// MIN would over-clamp the cursor in the smallest pane, but
-/// also under-compute spans for the largest pane — the worker
-/// reads `syntax.viewport_height` to decide how many lines to
-/// highlight. With MAX, the active pane (most commonly the
-/// largest) gets correct highlights. Smaller panes risk an
-/// off-screen cursor — that's an existing per-pane viewport
-/// limitation tracked separately; the single `viewport_height`
-/// can't simultaneously satisfy both correctness invariants
-/// without per-pane clamping.
-fn max_leaf_buffer_rows_px(
+/// Each leaf's `(pane_idx, rows, cols)` is pushed into `out`.
+/// The caller fires `editor_actor.set_pane_viewport(idx, rows,
+/// cols)` once per entry — the host writes per-pane values
+/// into PaneState and mirrors the active pane's height into
+/// `Editor::viewport_height` for cursor-clamp / highlights
+/// worker.
+fn collect_pane_geometries(
     node: &lattice_core::ui::pane::PaneNode,
-    available_px: f32,
-    per_leaf_chrome_px: f32,
-) -> f32 {
+    available_w_px: f32,
+    available_h_px: f32,
+    per_leaf_v_chrome_px: f32,
+    per_leaf_h_chrome_px: f32,
+    row_px: f32,
+    col_px: f32,
+    out: &mut Vec<(usize, u32, u32)>,
+) {
     use lattice_core::ui::pane::PaneNode;
     match node {
-        PaneNode::Leaf(_) => (available_px - per_leaf_chrome_px).max(0.0),
+        PaneNode::Leaf(idx) => {
+            let usable_h = (available_h_px - per_leaf_v_chrome_px).max(0.0);
+            let usable_w = (available_w_px - per_leaf_h_chrome_px).max(0.0);
+            let rows = (usable_h / row_px).floor().max(1.0) as u32;
+            let cols = (usable_w / col_px).floor().max(1.0) as u32;
+            out.push((*idx, rows, cols));
+        }
         PaneNode::HorizontalSplit { top, bottom } => {
-            let half = available_px / 2.0;
-            max_leaf_buffer_rows_px(top, half, per_leaf_chrome_px)
-                .max(max_leaf_buffer_rows_px(bottom, half, per_leaf_chrome_px))
+            let half_h = available_h_px / 2.0;
+            collect_pane_geometries(
+                top,
+                available_w_px,
+                half_h,
+                per_leaf_v_chrome_px,
+                per_leaf_h_chrome_px,
+                row_px,
+                col_px,
+                out,
+            );
+            collect_pane_geometries(
+                bottom,
+                available_w_px,
+                half_h,
+                per_leaf_v_chrome_px,
+                per_leaf_h_chrome_px,
+                row_px,
+                col_px,
+                out,
+            );
         }
         PaneNode::VerticalSplit { left, right } => {
-            max_leaf_buffer_rows_px(left, available_px, per_leaf_chrome_px)
-                .max(max_leaf_buffer_rows_px(right, available_px, per_leaf_chrome_px))
+            let half_w = available_w_px / 2.0;
+            collect_pane_geometries(
+                left,
+                half_w,
+                available_h_px,
+                per_leaf_v_chrome_px,
+                per_leaf_h_chrome_px,
+                row_px,
+                col_px,
+                out,
+            );
+            collect_pane_geometries(
+                right,
+                half_w,
+                available_h_px,
+                per_leaf_v_chrome_px,
+                per_leaf_h_chrome_px,
+                row_px,
+                col_px,
+                out,
+            );
         }
     }
 }
@@ -1006,29 +1050,16 @@ impl Render for EditorView {
         // single. For multi-pane, each pane's own chrome shrinks
         // its rendered buffer area; this calculation reserves
         // chrome for the active pane's view height.
-        let pane_padding_px = rem * 0.75 * 2.0; // .p_3() top + bottom = 1.5rem
+        let pane_padding_v_px = rem * 0.75 * 2.0; // .p_3() top + bottom = 1.5rem
+        let pane_padding_h_px = rem * 0.75 * 2.0; // .p_3() left + right = 1.5rem
         let pane_status_padding_px = rem * 0.25 * 2.0; // .py_1() = 0.5rem
         let pane_status_row_px = estimated_row_px; // status text line
         let global_bottom_padding_px = rem * 0.25 * 2.0; // .py_1() = 0.5rem
         let global_bottom_row_px = estimated_row_px; // modeline / cmdline content
-        let per_leaf_chrome_px =
-            pane_padding_px + pane_status_padding_px + pane_status_row_px;
-        let global_chrome_px = global_bottom_padding_px + global_bottom_row_px;
-        // Issue #25 (2026-05-22): multi-pane viewport math.
-        // Single-pane code billed per_leaf_chrome ONCE; for
-        // horizontal splits each pane has its own .p_3 + status
-        // row stacked, so chrome multiplies. Walk the pane tree
-        // and return the MIN buffer-rows across all leaves so
-        // the global `viewport_height` is safe for the
-        // smallest pane (cursor stays visible in every pane
-        // post-split). Vertical splits share height — same
-        // chrome cost regardless of left/right count.
-        let avail_for_panes_px = f32::from(viewport_px.height) - global_chrome_px;
-        let pane_tree_root = self.app.render_state.load().panes.tree.root().clone();
-        let max_pane_buffer_px =
-            max_leaf_buffer_rows_px(&pane_tree_root, avail_for_panes_px, per_leaf_chrome_px);
-        let chrome_rows_from_px =
-            (total_rows - (max_pane_buffer_px / estimated_row_px).floor() as i32).max(0);
+        let per_leaf_v_chrome_px =
+            pane_padding_v_px + pane_status_padding_px + pane_status_row_px;
+        let per_leaf_h_chrome_px = pane_padding_h_px;
+        let global_chrome_v_px = global_bottom_padding_px + global_bottom_row_px;
         // Slice 3c.final.B (group 3): picker read via published
         // substate. Bind the Arc so the `as_deref()` borrow lives
         // for the closure.
@@ -1059,26 +1090,51 @@ impl Render for EditorView {
         } else {
             0
         };
-        // Issue #17 fix: chrome_rows derived from the pixel-
-        // accurate calculation above, NOT the prior `1 +
-        // picker_strip + cmdline_strip` undercount.
-        let chrome_rows =
-            chrome_rows_from_px + picker_strip_rows + cmdline_completion_strip_rows;
-        let new_viewport = (total_rows - chrome_rows).max(1) as u32;
-        // 3c.atomic.H: route through `App::set_viewport_height`,
-        // which clamps to >= 1, runs `ensure_cursor_visible`,
-        // AND publishes a fresh render-state. The previous form
-        // wrote the field directly and then called
-        // `ensure_cursor_in_viewport` without publishing -- so
-        // paint-time reads of `ad().{viewport_height,scroll}`
-        // would observe the previous frame's values. Same
-        // publish gap the TUI peer fixed in 3c.atomic.D.
-        // Slice 3c.final.E.5j: viewport_height read via published
-        // `ad()` mirror; `set_viewport_height` publishes RS as part
-        // of its body so the next-frame load observes the new value.
-        if new_viewport != self.app.ad().viewport_height {
-            self.app.set_viewport_height(new_viewport);
+        // Issue #25 (2026-05-22): per-pane viewport_height +
+        // viewport_width via `collect_pane_geometries`. Replaces
+        // the prior single-global `set_viewport_height` call.
+        // Each leaf gets its own geometry; the host mirrors the
+        // active leaf's height into `Editor::viewport_height`
+        // for cursor-clamp + highlights worker.
+        //
+        // Available height for the pane tree subtracts BOTH the
+        // global bottom chrome (modeline + py_1) AND the picker /
+        // cmdline-completion strips (which sit above the
+        // modeline when minibuffer-mode picker is open).
+        let glyph_advance_px = font_size_px * 0.6;
+        let strip_rows_px = (picker_strip_rows + cmdline_completion_strip_rows) as f32
+            * estimated_row_px;
+        let avail_h_px =
+            (f32::from(viewport_px.height) - global_chrome_v_px - strip_rows_px).max(0.0);
+        let avail_w_px = f32::from(viewport_px.width);
+        let pane_tree_root = self.app.render_state.load().panes.tree.root().clone();
+        let mut pane_geometries: Vec<(usize, u32, u32)> = Vec::new();
+        collect_pane_geometries(
+            &pane_tree_root,
+            avail_w_px,
+            avail_h_px,
+            per_leaf_v_chrome_px,
+            per_leaf_h_chrome_px,
+            estimated_row_px,
+            glyph_advance_px,
+            &mut pane_geometries,
+        );
+        // Fire `set_pane_viewport` per leaf. The host's actor
+        // handler writes onto `PaneState[idx]` and (for the
+        // active leaf) mirrors height into
+        // `Editor::viewport_height`. Each call publishes RS at
+        // the tail. Per-frame cost: O(leaves) actor RPCs;
+        // typical pane counts (1-4) make this negligible. If
+        // pane geometry changes frequently this could be
+        // batched into one command — out of scope for the
+        // single-leaf-was-already-fine case.
+        for (idx, rows, cols) in &pane_geometries {
+            self.app.set_pane_viewport(*idx, *rows, *cols);
         }
+        // total_rows + the old chrome_rows / new_viewport
+        // arithmetic retires; `set_pane_viewport` carries the
+        // per-pane truth.
+        let _ = total_rows;
         let after_viewport = std::time::Instant::now();
         // 5.8.O: keep the cursor inside the viewport before any
         // paint reads `editor.scroll`. Auto-scrolls if the cursor

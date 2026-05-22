@@ -208,6 +208,19 @@ pub enum EditorCommand {
     /// into one atomic command so the renderer's per-frame "tell
     /// editor the pane size" hand-off is a single `cmd_tx.send`.
     SetViewportHeight(u32),
+    /// Per-pane geometry update. Issue #25 (2026-05-22): the
+    /// renderer's per-frame layout pass walks the pane tree and
+    /// fires one of these per leaf with the leaf's computed
+    /// height + width in screen rows / columns. The host stores
+    /// them on `PaneState`; the active leaf's viewport_height
+    /// is mirrored into `Editor::viewport_height` for the
+    /// cursor-clamp + highlights-worker code paths that don't
+    /// carry a pane index. Publishes RS at the tail.
+    SetPaneViewport {
+        idx: usize,
+        height: u32,
+        width: u32,
+    },
 }
 
 /// Renderer-side handle to the editor actor.
@@ -461,6 +474,20 @@ impl EditorActorHandle {
         self.send(EditorCommand::SetViewportHeight(height))
     }
 
+    /// Issue #25 (2026-05-22): per-pane geometry setter. The
+    /// renderer's per-frame layout pass walks the pane tree and
+    /// fires one of these per leaf. The active leaf's height is
+    /// auto-mirrored into `Editor::viewport_height` for cursor
+    /// clamp + highlights worker.
+    pub fn set_pane_viewport(
+        &self,
+        idx: usize,
+        height: u32,
+        width: u32,
+    ) -> Result<(), mpsc::error::SendError<EditorCommand>> {
+        self.send(EditorCommand::SetPaneViewport { idx, height, width })
+    }
+
     /// Drain a single pending signal from the editor's
     /// signal stream. Returns `None` when the queue is empty
     /// (steady-state on most frames). Called per-frame by the
@@ -643,6 +670,25 @@ async fn run_actor(
                 // may adjust `scroll`), publish once at the tail.
                 editor.viewport_height = h.max(1);
                 editor.ensure_cursor_visible();
+                editor.publish_render_state();
+            }
+            EditorCommand::SetPaneViewport { idx, height, width } => {
+                // Issue #25 (2026-05-22): write per-pane geometry
+                // onto the leaf and, when this is the active pane,
+                // mirror its height into `Editor::viewport_height`
+                // so cursor-clamp + highlights-worker keep reading
+                // a single value but it now always reflects the
+                // active pane's actual painted area.
+                let active_idx = editor.pane_tree.active_index();
+                let leaves = editor.pane_tree.leaves_mut();
+                if idx < leaves.len() {
+                    leaves[idx].viewport_height = height.max(1);
+                    leaves[idx].viewport_width = width.max(1);
+                }
+                if idx == active_idx {
+                    editor.viewport_height = height.max(1);
+                    editor.ensure_cursor_visible();
+                }
                 editor.publish_render_state();
             }
         }

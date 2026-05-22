@@ -45,6 +45,14 @@ fn validate_color(s: &String) -> Result<(), String> {
     parse_color(s).map(|_| ())
 }
 
+fn validate_font_size(n: &i64) -> Result<(), String> {
+    if *n >= 4 && *n <= 96 {
+        Ok(())
+    } else {
+        Err(format!("ui.font_size must be in range [4, 96], got {n}"))
+    }
+}
+
 // Group binding: TUI-specific UI options under the `appearance`
 // group (theme / colors / sprite icons). User customizes via
 // `:customize appearance`.
@@ -90,6 +98,27 @@ lattice_config::options! {
     /// Pick this if you see `?` boxes in the file tree / oil.
     #[name("ui.nerd_fonts")]
     pub UiNerdFonts: bool = false;
+
+    /// Font family used by the GPUI (native window) renderer.
+    /// Accepts a single font family name. The font MUST be a
+    /// monospace typeface — proportional fonts produce incorrect
+    /// cursor placement because the advance-width measurement
+    /// assumes all glyphs share the same cell width.
+    ///
+    /// macOS ships "Menlo" (system monospace since 10.6). Other
+    /// common choices: "Monaco", "JetBrains Mono", "Fira Code",
+    /// "Cascadia Code", "Hack". The TUI renderer does not read
+    /// this option — its font is configured in the terminal
+    /// emulator.
+    #[name("ui.font_family")]
+    pub UiFontFamily: String = String::from("Menlo");
+
+    /// Font size in points for the GPUI (native window) renderer.
+    /// Must be a positive integer. The TUI renderer ignores this
+    /// option — font size is controlled by the terminal emulator.
+    #[name("ui.font_size")]
+    #[validate(validate_font_size)]
+    pub UiFontSize: i64 = 14;
 }
 
 #[cfg(test)]

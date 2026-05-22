@@ -62,8 +62,8 @@
 use anyhow::{Context as _, Result};
 use gpui::{
     App, AppContext, Application, Bounds, Context, FocusHandle, Focusable, InteractiveElement,
-    IntoElement, KeyDownEvent, ParentElement, Render, Styled, Window, WindowBounds, WindowOptions,
-    div, px, rgb, size,
+    IntoElement, KeyDownEvent, ParentElement, Render, SharedString, Styled, TextRun, Window,
+    WindowBounds, WindowOptions, div, font, px, rgb, size,
 };
 use lattice_core::Document;
 use lattice_core::ui::pane::{PaneNode, PaneState};
@@ -921,7 +921,7 @@ impl EditorView {
         // underlines restore in slice X3.full.4.
         let editor_element = crate::editor_element::EditorElement {
             pane_idx,
-            theme: *theme,
+            theme: theme.clone(),
             text: std::sync::Arc::new(text),
             // Issue #25 (2026-05-22): per-pane visible_spans for
             // multi-split support. Active pane reads the live
@@ -1105,7 +1105,30 @@ impl Render for EditorView {
         // global bottom chrome (modeline + py_1) AND the picker /
         // cmdline-completion strips (which sit above the
         // modeline when minibuffer-mode picker is open).
-        let glyph_advance_px = font_size_px * 0.6;
+        // Measure the actual cell advance by shaping a reference
+        // character; GPUI's LineLayoutCache makes it O(1) after the
+        // first frame. Used both for pane column geometry and
+        // cursor-anchored popup placement so the two are consistent.
+        // Clone font family before the block so the immutable borrow of
+        // self.app drops before the mutable borrows below.
+        let font_family_for_advance = self.app.theme.font_family.clone();
+        let glyph_advance_px = {
+            let ref_font = font(font_family_for_advance);
+            let ref_run = TextRun {
+                len: 1,
+                font: ref_font,
+                color: gpui::Rgba::default().into(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            f32::from(
+                window
+                    .text_system()
+                    .shape_line(SharedString::from("M"), px(font_size_px), &[ref_run], None)
+                    .width,
+            )
+        };
         let strip_rows_px = (picker_strip_rows + cmdline_completion_strip_rows) as f32
             * estimated_row_px;
         let avail_h_px =
@@ -1229,7 +1252,7 @@ impl Render for EditorView {
         };
         let bottom_is_minibuffer = matches!(modal, ModalState::Command | ModalState::Search(_));
 
-        let theme = self.app.theme;
+        let theme = self.app.theme.clone();
         // 5.8.H: render the pane tree. `paint_pane_tree` walks
         // `rs.panes.tree.root()` recursively; each leaf paints
         // via `paint_pane` with active/inactive style. The active
@@ -1706,7 +1729,7 @@ impl Render for EditorView {
             .bg(rgb(theme.background))
             .text_color(rgb(theme.foreground))
             .text_sm()
-            .font_family("DejaVu Sans Mono")
+            .font_family(theme.font_family.clone())
             .child(document_area)
             .child({
                 let row = div()
@@ -1776,10 +1799,9 @@ impl Render for EditorView {
             //
             // For CursorAnchored: compute pixel position from the
             // cursor's (line - scroll, byte) screen coordinates +
-            // the pane's `.p_3()` padding. The shape mirrors the
-            // EditorElement's own glyph positioning
-            // (`glyph_advance = font_size * 0.6`,
-            //  `line_height = font_size * 1.3`).
+            // the pane's `.p_3()` padding. Uses the same
+            // `glyph_advance_px` measured above so popup x aligns
+            // with the character columns EditorElement paints.
             let placement = popup_substate.placement;
             use lattice_core::ui::popup::PopupPlacement;
             root = match placement {
@@ -1807,7 +1829,6 @@ impl Render for EditorView {
                     let cursor_screen_row =
                         anchor.line.saturating_sub(ad.scroll) as f32;
                     let cursor_byte_col = anchor.byte as f32;
-                    let glyph_advance_px = font_size_px * 0.6;
                     // Pane's `.p_3()` adds 0.75rem padding before
                     // the editor element starts; account for it
                     // so popup x/y align with painted glyphs.

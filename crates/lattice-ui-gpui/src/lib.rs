@@ -130,8 +130,15 @@ pub use window::{document_from_path, run};
 /// `0xRRGGBB` hex so it builds without the `window` feature (no
 /// transitive `gpui` link). The binary converts to `gpui::Rgba`
 /// at render time via `gpui::rgb(theme.background)`.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct GpuiTheme {
+    /// Font family name for the editor window. Must be a monospace
+    /// typeface. Configurable via `ui.font_family`; defaults to
+    /// "Menlo" (built-in macOS monospace). Updated by
+    /// `rebuild_gpui_theme` on every `RendererSignal::ThemeChanged`.
+    pub font_family: String,
+    /// Font size in points. Configurable via `ui.font_size`.
+    pub font_size_pt: u32,
     /// Main document background.
     pub background: u32,
     /// Main document foreground (text + non-cursor chars).
@@ -158,6 +165,8 @@ pub struct GpuiTheme {
 impl Default for GpuiTheme {
     fn default() -> Self {
         Self {
+            font_family: String::from("Menlo"),
+            font_size_pt: 14,
             // Catppuccin Mocha base.
             background: 0x1e1e2e,
             // Catppuccin Mocha text.
@@ -719,6 +728,20 @@ impl GpuiApp {
         // role: thin accent line between visual regions).
         if let Some(fg) = host.pane_separator.fg {
             self.theme.popup_border = fg.to_rgb_u32(defaults.popup_border);
+        }
+        // Font family + size: read live from the published options
+        // config so `:set ui.font_family=...` takes effect on the
+        // next frame without restarting.
+        let config = &self.render_state.load().options.config;
+        if let Some(family) = config
+            .get_typed::<lattice_host::ui::theme_options::UiFontFamily>()
+        {
+            self.theme.font_family = (**family).to_owned();
+        }
+        if let Some(size) = config
+            .get_typed::<lattice_host::ui::theme_options::UiFontSize>()
+        {
+            self.theme.font_size_pt = (*size).max(4).min(96) as u32;
         }
     }
 

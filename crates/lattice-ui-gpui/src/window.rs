@@ -294,11 +294,16 @@ fn paint_candidate_row(
         div().flex().flex_row().children(cells)
     };
 
-    // Wrap: flex row, justify space-between so annotation floats
-    // right. No annotation → display sits alone (justify_between
-    // is a no-op for single children).
+    // Issue #35-followup (2026-05-22): user reported the
+    // marginalia floated to the far-right edge in maximized
+    // windows. Previously `justify_between().w_full()` pushed
+    // annotations across the whole screen; now annotations
+    // sit right after the display text with a small gap.
+    // The row's `w_full` is kept ONLY so the selected-row bg
+    // fills the strip; child layout is natural (no
+    // justify_between).
     let annotation_text = cand.annotations.join("  ");
-    let mut row = div().flex().flex_row().justify_between().w_full();
+    let mut row = div().flex().flex_row().w_full();
     if padded {
         row = row.px_2();
     }
@@ -308,14 +313,19 @@ fn paint_candidate_row(
     // in `marginalia_fg` so it doesn't compete with the
     // display text.
     let kind_glyph = format!("{} ", cand.raw.kind.glyph());
-    let left = div()
-        .flex()
-        .flex_row()
+    row = row
         .child(div().text_color(marginalia_fg).child(kind_glyph))
         .child(display_div);
-    row = row.child(left);
     if !annotation_text.is_empty() {
-        row = row.child(div().text_color(marginalia_fg).child(annotation_text));
+        // 2-space gap after the display text, then the
+        // annotation. Sits close to the candidate rather
+        // than at the screen edge.
+        row = row.child(
+            div()
+                .text_color(marginalia_fg)
+                .ml_2()
+                .child(annotation_text),
+        );
     }
     if let Some(bg) = row_bg { row.bg(bg) } else { row }
 }

@@ -528,6 +528,27 @@ crate::options! {
     pub MessagesFilter: String = String::from("info");
 }
 
+// Issue #29 (2026-05-22): tabline group — `tabline.show`
+// controls when the tab strip is visible. Mirrors vim's
+// `:set showtabline` (0/1/2) but uses readable labels.
+crate::options! {
+    group = crate::Tabline;
+
+    /// When to paint the tabline at the top of the screen.
+    ///
+    /// - `never`  — never show the tabline (no row reserved).
+    /// - `auto`   — show only when more than one tab is open
+    ///              (default; matches vim's `showtabline=1`).
+    /// - `always` — always show, even for one tab.
+    ///
+    /// Live-editable via `:set tabline.show=<value>`. The
+    /// renderer's per-frame layout pass reads the published
+    /// value when deciding how much vertical space to reserve.
+    #[name("tabline.show")]
+    pub TablineShowOption: lattice_core::ui::tab::TablineShow =
+        lattice_core::ui::tab::TablineShow::Auto;
+}
+
 // M.2.0c: `CoreOptions` struct and `register_core_options`
 // helper retired. Built-in options self-register via the
 // macro-generated `register_fn` thunks (`OPTION_DECLS` linkme

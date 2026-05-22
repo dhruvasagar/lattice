@@ -26,6 +26,23 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::ui::pane::PaneTree;
 
+crate::labeled_enum! {
+    /// `:set tabline.show=...` (issue #29, 2026-05-22). Controls
+    /// when the tabline row is visible at the top of the screen.
+    ///
+    /// Mirrors vim's `:set showtabline` (`0` / `1` / `2`) but
+    /// uses readable labels.
+    pub enum TablineShow {
+        /// Never paint the tabline (no row reserved).
+        Never = "never" => "Never show the tabline",
+        /// Auto: show only when more than one tab is open.
+        #[default]
+        Auto = "auto" => "Show only when multiple tabs are open",
+        /// Always paint the tabline, even for a single tab.
+        Always = "always" => "Always show the tabline",
+    }
+}
+
 /// Process-monotonic tab id. Stable across reorder / close.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct TabId(pub u32);

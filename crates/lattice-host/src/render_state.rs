@@ -91,6 +91,10 @@ pub struct RenderState {
     /// without an actor round-trip.
     pub buffer_locals: Arc<BufferLocalsRenderState>,
     pub diagnostics: Arc<DiagnosticsRenderState>,
+    /// Issue #29 (2026-05-22): tab pages snapshot. Per-tab
+    /// labels + active idx + the resolved `show`-decision so
+    /// both peers paint the tabline from the same source.
+    pub tabs: Arc<TabsRenderState>,
     /// Phase 5.8.AF.5 / Slice 3c.final.B (group 5): translator
     /// inputs — published so the renderer's input loop can build
     /// a `TranslateContext` from owned snapshots instead of
@@ -126,6 +130,7 @@ impl Default for RenderState {
             modes: Arc::new(ModesRenderState::default()),
             buffer_locals: Arc::new(BufferLocalsRenderState::default()),
             diagnostics: Arc::new(DiagnosticsRenderState::default()),
+            tabs: Arc::new(TabsRenderState::default()),
             translator: Arc::new(TranslatorRenderState::default()),
             lifecycle: Arc::new(LifecycleRenderState::default()),
             theme: crate::ui::theme::Theme::default(),
@@ -345,6 +350,41 @@ impl Default for PanesRenderState {
     fn default() -> Self {
         Self {
             tree: std::sync::Arc::new(lattice_core::ui::pane::PaneTree::default()),
+        }
+    }
+}
+
+/// Issue #29 (2026-05-22): published per-frame tab snapshot.
+/// Carries the user-visible label for each tab + the active
+/// index + the resolved visibility decision (`auto` ⇒ Multi-
+/// or-zero already evaluated by the publisher).
+#[derive(Debug, Clone)]
+pub struct TabsRenderState {
+    /// One entry per tab. Index parallels `Editor::tabs`.
+    pub items: std::sync::Arc<[TabRenderItem]>,
+    /// Active tab index (mirror of `Editor::active_tab`).
+    pub active: usize,
+    /// Whether the tabline should be rendered this frame. The
+    /// publisher evaluates `tabline.show` × `tabs.len()` and
+    /// stores the final decision so both peers don't re-derive.
+    pub visible: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct TabRenderItem {
+    pub id: lattice_core::ui::tab::TabId,
+    /// User-visible label. Derived by the publisher from the
+    /// tab's `label` override or, when None, from the active
+    /// pane's buffer name (basename of path, or `[scratch]`).
+    pub label: std::sync::Arc<str>,
+}
+
+impl Default for TabsRenderState {
+    fn default() -> Self {
+        Self {
+            items: std::sync::Arc::from([]),
+            active: 0,
+            visible: false,
         }
     }
 }

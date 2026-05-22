@@ -281,8 +281,15 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) {
     };
     let extra_rows = picker_rows.max(completion_rows);
 
+    // Issue #29 (2026-05-22): tabline row at the top. Visibility
+    // is resolved by the publisher (`build_tabs_render_state`)
+    // based on `tabline.show` × tabs.len().
+    let tabline_visible = app.render_state.load().tabs.visible;
+    let tabline_rows: u16 = if tabline_visible { 1 } else { 0 };
+
     let constraints: Vec<Constraint> = if extra_rows > 0 {
         vec![
+            Constraint::Length(tabline_rows),      // tabline (0 or 1)
             Constraint::Min(1),                    // buffer
             Constraint::Length(1),                 // mode line
             Constraint::Length(1),                 // cmdline / picker query
@@ -290,6 +297,7 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) {
         ]
     } else {
         vec![
+            Constraint::Length(tabline_rows),
             Constraint::Min(1),
             Constraint::Length(1),
             Constraint::Length(1),
@@ -300,16 +308,21 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) {
         .constraints(constraints)
         .split(frame.area());
 
-    draw_panes(frame, chunks[0], app, snap);
-    draw_mode_line(frame, chunks[1], app, snap);
+    // Tabline at chunks[0] (length=0 when invisible draws
+    // nothing); panes/modeline/cmdline indices shift by one.
+    if tabline_visible {
+        draw_tabline(frame, chunks[0], app);
+    }
+    draw_panes(frame, chunks[1], app, snap);
+    draw_mode_line(frame, chunks[2], app, snap);
     // Picker query claims the cmdline row only in minibuffer
     // mode. In popup mode the cmdline / echo content stays
     // visible and the picker query renders inside the overlay
     // instead.
     if app.picker_state().state.is_some() && picker_is_minibuffer {
-        draw_picker_prompt(frame, chunks[2], app);
+        draw_picker_prompt(frame, chunks[3], app);
     } else {
-        draw_command_or_echo(frame, chunks[2], app);
+        draw_command_or_echo(frame, chunks[3], app);
     }
     // Help popup overlay -- painted whenever a popup_buffer is
     // set AND the active pane isn't already showing it as an
@@ -327,23 +340,23 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) {
     // `app.panes()` instead of `app.editor.pane_tree.X()`.
     let active_pane_kind = app.panes().tree.active().buffer;
     if app.popup().is_open() && active_pane_kind != crate::buffers::BufferKind::Help {
-        draw_help_overlay(frame, chunks[0], app, snap);
+        draw_help_overlay(frame, chunks[1], app, snap);
     }
     // Picker candidate list (precedence over completion popup --
     // only one is interactive at a time). Only the minibuffer
     // display mode uses the bottom band; the popup mode draws
     // its own self-contained overlay below.
     if picker_rows > 0 {
-        draw_picker_candidates(frame, chunks[3], app);
+        draw_picker_candidates(frame, chunks[4], app);
     } else if completion_rows > 0 {
-        draw_completion_popup(frame, chunks[3], app);
+        draw_completion_popup(frame, chunks[4], app);
     }
     // Picker popup overlay -- only drawn when `picker.display`
     // is `"popup"` and a picker is open. Floats centered over
     // the buffer area (chunks[0]) so the user still sees the
     // mode line and any echo / cmdline content underneath.
     if app.picker_state().state.is_some() && !picker_is_minibuffer {
-        draw_picker_overlay(frame, chunks[0], app);
+        draw_picker_overlay(frame, chunks[1], app);
     }
     // Slice 3c.gpui-cmdline-completion: cmdline-completion popup
     // overlay. Mutually exclusive with the picker (picker doesn't
@@ -355,14 +368,14 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) {
             .as_deref()
             .is_some_and(|s| !s.candidates.is_empty())
     {
-        draw_completion_overlay(frame, chunks[0], app);
+        draw_completion_overlay(frame, chunks[1], app);
     }
     // Insert-mode completion popup overlay (Phase 4.2.g.1).
     // Anchored at the cursor; floats over the buffer; doesn't
     // claim the cmdline row (so echoes can still appear).
     // Painted last so it sits on top of any pane-area widgets.
     if app.completion_popup_active() {
-        draw_insert_completion_popup(frame, chunks[0], app, snap);
+        draw_insert_completion_popup(frame, chunks[1], app, snap);
         // Side documentation popup (Phase 4.2.g.3) -- only
         // rendered when the user has flipped it on with
         // `<C-d>`. Anchored right of the candidate popup
@@ -370,9 +383,39 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) {
         if let Some(state) = app.completion().insert.as_deref()
             && state.doc_popup.is_some()
         {
-            draw_insert_completion_docs_popup(frame, chunks[0], app, snap);
+            draw_insert_completion_docs_popup(frame, chunks[1], app, snap);
         }
     }
+}
+
+/// Issue #29 (2026-05-22): paint the tabline row. Reads the
+/// published `TabsRenderState` (labels + active idx) and
+/// renders ` [N] {label} ` per tab, brightening the active
+/// one with `cursor_background` / `cursor_foreground`. Lines
+/// truncate horizontally at the area's right edge — overflow
+/// disappears (real vim does the same).
+fn draw_tabline(frame: &mut Frame, area: Rect, app: &App) {
+    use ratatui::text::{Line, Span};
+    use ratatui::widgets::Paragraph;
+    let tabs = app.render_state.load().tabs.clone();
+    let active_style = app.theme.pane_status_active;
+    let inactive_style = app.theme.pane_status_inactive;
+    let mut spans: Vec<Span<'static>> = Vec::with_capacity(tabs.items.len() * 2);
+    for (idx, item) in tabs.items.iter().enumerate() {
+        let label = format!(" {} {} ", idx + 1, item.label);
+        let style = if idx == tabs.active {
+            active_style
+        } else {
+            inactive_style
+        };
+        spans.push(Span::styled(label, style));
+        // Separator between tabs (only between, not trailing).
+        if idx + 1 < tabs.items.len() {
+            spans.push(Span::styled(" ".to_string(), inactive_style));
+        }
+    }
+    let line = Line::from(spans);
+    frame.render_widget(Paragraph::new(line), area);
 }
 
 /// Total rows the popup occupies (no borders -- vertico-style;

@@ -97,6 +97,42 @@ impl OptionType for FoldMethod {
     }
 }
 
+// Issue #29 (2026-05-22): tabline.show enum option.
+impl OptionType for lattice_core::ui::tab::TablineShow {
+    fn parse(s: &str) -> Result<Self, String> {
+        lattice_core::ui::tab::TablineShow::parse_label(s)
+    }
+
+    fn format(&self) -> String {
+        self.label().to_string()
+    }
+
+    fn type_label() -> &'static str {
+        "tabline-show"
+    }
+
+    fn enumerate() -> Option<Vec<&'static str>> {
+        Some(
+            lattice_core::ui::tab::TablineShow::all()
+                .iter()
+                .map(|v| v.label())
+                .collect(),
+        )
+    }
+
+    fn enumerate_with_docs() -> Option<Vec<EnumeratedValue>> {
+        Some(
+            lattice_core::ui::tab::TablineShow::all()
+                .iter()
+                .map(|v| EnumeratedValue {
+                    form: v.label(),
+                    doc: v.doc(),
+                })
+                .collect(),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]

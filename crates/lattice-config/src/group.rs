@@ -209,6 +209,14 @@ impl OptionGroup for Messages {
     const DOC: &'static str = "Echo-area + `*messages*` buffer + tracing bridge.";
 }
 
+/// Tabline (tab strip at the top of the screen). Issue #29
+/// (2026-05-22).
+pub struct Tabline;
+impl OptionGroup for Tabline {
+    const NAME: &'static str = "tabline";
+    const DOC: &'static str = "Tabline (vim-style tab strip).";
+}
+
 // linkme submissions for the built-in groups.
 // Each submission registers one group's metadata; the registry's
 // startup loader walks GROUP_DECLS and panics on duplicate names.
@@ -251,6 +259,9 @@ static APPEARANCE_GROUP_LINK: &OptionGroupMetadata =
 
 #[linkme::distributed_slice(GROUP_DECLS)]
 static MESSAGES_GROUP_LINK: &OptionGroupMetadata = &OptionGroupMetadata::for_group::<Messages>();
+
+#[linkme::distributed_slice(GROUP_DECLS)]
+static TABLINE_GROUP_LINK: &OptionGroupMetadata = &OptionGroupMetadata::for_group::<Tabline>();
 
 // Compile-time naming-rule assertions for the built-in groups.
 // Verifies the `groups!` macro convention even though these

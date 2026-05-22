@@ -493,6 +493,7 @@ impl Editor {
                 // snapshot.
                 layer: self.lsp_diagnostics.clone(),
             }),
+            tabs: std::sync::Arc::new(self.build_tabs_render_state()),
             // Slice 3b.0/3b.1: clone the per-subsystem cache
             // slot Arcs. Cheap (one Arc bump each) and shares the
             // underlying ArcSwap/PerBufferCache with the editor's
@@ -11684,6 +11685,75 @@ impl Editor {
     //   5. Load active pane state (cursor/scroll) from the newly-
     //      live tree's active PaneState.
     // ============================================================
+
+    /// Issue #29 (2026-05-22): build the published
+    /// `TabsRenderState` for this frame. Reads `tabs`,
+    /// `active_tab`, the `tabline.show` option, and resolves
+    /// per-tab labels (override → active pane buffer basename
+    /// → `[scratch]` fallback).
+    fn build_tabs_render_state(&self) -> crate::render_state::TabsRenderState {
+        use crate::render_state::{TabRenderItem, TabsRenderState};
+        // tabline.show is a global option; use config.get_typed
+        // directly (not resolved_option) because publish runs
+        // in test fixtures too — fall back to default rather
+        // than panic when the option isn't registered (test
+        // path that boots without linkme submissions).
+        let show = self
+            .config
+            .get_typed::<lattice_config::TablineShowOption>()
+            .map(|arc| *arc)
+            .unwrap_or(lattice_core::ui::tab::TablineShow::Auto);
+        let visible = match show {
+            lattice_core::ui::tab::TablineShow::Never => false,
+            lattice_core::ui::tab::TablineShow::Always => true,
+            lattice_core::ui::tab::TablineShow::Auto => self.tabs.len() > 1,
+        };
+        let items: Vec<TabRenderItem> = self
+            .tabs
+            .iter()
+            .enumerate()
+            .map(|(idx, slot)| {
+                let label = if let Some(custom) = slot.label.as_deref() {
+                    std::sync::Arc::<str>::from(custom)
+                } else {
+                    // Derive from the active pane's buffer
+                    // name. Active tab's panes live on
+                    // `editor.pane_tree`; inactive tabs hold
+                    // them on the slot.
+                    let buffer_id = if idx == self.active_tab {
+                        self.pane_tree.active().buffer_id
+                    } else {
+                        slot.panes.active().buffer_id
+                    };
+                    let derived = self.buffer_label_for_tab(buffer_id);
+                    std::sync::Arc::<str>::from(derived)
+                };
+                TabRenderItem { id: slot.id, label }
+            })
+            .collect();
+        TabsRenderState {
+            items: items.into(),
+            active: self.active_tab,
+            visible,
+        }
+    }
+
+    /// Issue #29: derive a tab label from a buffer's name.
+    /// Returns the basename of a file path, `[scratch]` for
+    /// the empty unnamed document, or the buffer's name verbatim
+    /// for non-document buffers.
+    fn buffer_label_for_tab(&self, buffer_id: lattice_core::BufferId) -> String {
+        if let Some(name) = self.buffers.name_of(buffer_id) {
+            // basename
+            let path = std::path::Path::new(name.as_str());
+            return path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| name.to_string());
+        }
+        "[scratch]".to_string()
+    }
 
     /// `gt` — switch to the next tab (wrapping). No-op when
     /// only one tab.

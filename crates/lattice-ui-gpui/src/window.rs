@@ -1131,8 +1131,20 @@ impl Render for EditorView {
         };
         let strip_rows_px = (picker_strip_rows + cmdline_completion_strip_rows) as f32
             * estimated_row_px;
-        let avail_h_px =
-            (f32::from(viewport_px.height) - global_chrome_v_px - strip_rows_px).max(0.0);
+        // Issue #29 (2026-05-22): tabline claims one row at the
+        // top when visible — subtract from available so per-pane
+        // geometries see the correct buffer height.
+        let tabline_visible = self.app.render_state.load().tabs.visible;
+        let tabline_h_px = if tabline_visible {
+            estimated_row_px
+        } else {
+            0.0
+        };
+        let avail_h_px = (f32::from(viewport_px.height)
+            - global_chrome_v_px
+            - strip_rows_px
+            - tabline_h_px)
+            .max(0.0);
         let avail_w_px = f32::from(viewport_px.width);
         let pane_tree_root = self.app.render_state.load().panes.tree.root().clone();
         let mut pane_geometries: Vec<(usize, u32, u32)> = Vec::new();
@@ -1720,6 +1732,36 @@ impl Render for EditorView {
                 )
         });
 
+        // Issue #29 (2026-05-22): tabline strip. Visibility is
+        // resolved by the publisher's `build_tabs_render_state`
+        // based on `tabline.show` × tabs.len(). When visible,
+        // the strip sits ABOVE document_area; the row's vertical
+        // cost is accounted for in `collect_pane_geometries`
+        // via `tabline_h_px`.
+        let tabs_rs = self.app.render_state.load().tabs.clone();
+        let tabline_element = if tabs_rs.visible {
+            let mut row = div()
+                .flex()
+                .flex_row()
+                .bg(rgb(theme.status_background))
+                .text_color(rgb(theme.status_foreground));
+            for (idx, item) in tabs_rs.items.iter().enumerate() {
+                let label = format!(" {} {} ", idx + 1, item.label);
+                let cell = if idx == tabs_rs.active {
+                    div()
+                        .bg(rgb(theme.cursor_background))
+                        .text_color(rgb(theme.cursor_foreground))
+                        .child(label)
+                } else {
+                    div().child(label)
+                };
+                row = row.child(cell);
+            }
+            Some(row)
+        } else {
+            None
+        };
+
         let mut root = div()
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::on_key_down))
@@ -1729,7 +1771,11 @@ impl Render for EditorView {
             .bg(rgb(theme.background))
             .text_color(rgb(theme.foreground))
             .text_sm()
-            .font_family(theme.font_family.clone())
+            .font_family(theme.font_family.clone());
+        if let Some(tabline) = tabline_element {
+            root = root.child(tabline);
+        }
+        root = root
             .child(document_area)
             .child({
                 let row = div()

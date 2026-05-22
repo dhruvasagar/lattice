@@ -149,6 +149,12 @@ pub struct ActionIds {
     pub shrink_pane_height: CommandId,
     pub grow_pane_width: CommandId,
     pub shrink_pane_width: CommandId,
+    /// Issue #32 (2026-05-22): picker open-target override
+    /// CommandIds. `<C-s>` / `<C-v>` / `<C-t>` on picker
+    /// overlays bind to these.
+    pub picker_accept_in_split: CommandId,
+    pub picker_accept_in_vsplit: CommandId,
+    pub picker_accept_in_tab: CommandId,
     /// Issue #29 (2026-05-22): tab management IDs.
     pub next_tab: CommandId,
     pub prev_tab: CommandId,
@@ -817,6 +823,25 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             AppEffect::ShrinkPaneWidth,
         ),
         // Issue #29 (2026-05-22): tab management.
+        // Issue #32 (2026-05-22): picker open-target overrides.
+        picker_accept_in_split: register_simple(
+            registry,
+            "action:picker-accept-in-split",
+            "Picker `<C-s>`: accept candidate in a horizontal split.",
+            AppEffect::PickerAcceptInSplit,
+        ),
+        picker_accept_in_vsplit: register_simple(
+            registry,
+            "action:picker-accept-in-vsplit",
+            "Picker `<C-v>`: accept candidate in a vertical split.",
+            AppEffect::PickerAcceptInVSplit,
+        ),
+        picker_accept_in_tab: register_simple(
+            registry,
+            "action:picker-accept-in-tab",
+            "Picker `<C-t>`: accept candidate in a new tab.",
+            AppEffect::PickerAcceptInTab,
+        ),
         next_tab: register_simple(
             registry,
             "action:next-tab",
@@ -1214,6 +1239,10 @@ mod tests {
             (ids.grow_pane_width, "action:grow-pane-width"),
             (ids.shrink_pane_width, "action:shrink-pane-width"),
             // Issue #29 (2026-05-22): tab management.
+            // Issue #32 (2026-05-22): picker open-target overrides.
+            (ids.picker_accept_in_split, "action:picker-accept-in-split"),
+            (ids.picker_accept_in_vsplit, "action:picker-accept-in-vsplit"),
+            (ids.picker_accept_in_tab, "action:picker-accept-in-tab"),
             (ids.next_tab, "action:next-tab"),
             (ids.prev_tab, "action:prev-tab"),
             (ids.new_tab, "action:new-tab"),

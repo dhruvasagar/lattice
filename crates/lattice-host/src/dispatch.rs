@@ -1320,6 +1320,21 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         // run. App's match arms below are grouped no-ops so each
         // action consumes a single mutation point host-side
         // without double-invoking.
+        Action::PickerAcceptInSplit => {
+            editor.picker_open_target = lattice_picker::OpenTarget::Split;
+            let signals = editor.do_picker_accept();
+            _out.renderer_signals.extend(signals);
+        }
+        Action::PickerAcceptInVSplit => {
+            editor.picker_open_target = lattice_picker::OpenTarget::VSplit;
+            let signals = editor.do_picker_accept();
+            _out.renderer_signals.extend(signals);
+        }
+        Action::PickerAcceptInTab => {
+            editor.picker_open_target = lattice_picker::OpenTarget::Tab;
+            let signals = editor.do_picker_accept();
+            _out.renderer_signals.extend(signals);
+        }
         Action::PickerAccept => {
             let signals = editor.do_picker_accept();
             _out.renderer_signals.extend(signals);
@@ -2466,6 +2481,9 @@ impl Editor {
             AppEffect::CloseTab => out.next_actions.push(Action::CloseTab),
             AppEffect::OnlyTab => out.next_actions.push(Action::OnlyTab),
             AppEffect::MoveTab(n) => out.next_actions.push(Action::MoveTab(n)),
+            AppEffect::PickerAcceptInSplit => out.next_actions.push(Action::PickerAcceptInSplit),
+            AppEffect::PickerAcceptInVSplit => out.next_actions.push(Action::PickerAcceptInVSplit),
+            AppEffect::PickerAcceptInTab => out.next_actions.push(Action::PickerAcceptInTab),
             AppEffect::CompletionNext => out.next_actions.push(Action::CompletionNext),
             AppEffect::CompletionPrev => out.next_actions.push(Action::CompletionPrev),
             AppEffect::CompletionAccept => out.next_actions.push(Action::CompletionAccept),
@@ -13199,6 +13217,58 @@ impl Editor {
         pref.resolve(category)
     }
 
+    /// Issue #32 (2026-05-22): set up the destination pane for
+    /// a picker accept according to the chord-supplied target
+    /// override:
+    ///
+    /// - `Default` → use the user's `PickerResult` display
+    ///               preference (`prepare_pane_for_picker_result`).
+    /// - `Split`   → horizontal split, focus on new pane.
+    /// - `VSplit`  → vertical split, focus on new pane.
+    /// - `Tab`     → new tab containing one pane (current buffer);
+    ///               focus on new tab.
+    ///
+    /// Returns renderer signals from the tab-create path (the
+    /// split paths don't emit any). Plugin-callable directly via
+    /// `editor.prepare_open_target_pane(target)`.
+    pub fn prepare_open_target_pane(
+        &mut self,
+        target: lattice_picker::OpenTarget,
+    ) -> Vec<RendererSignal> {
+        use lattice_core::ui::pane::SplitOrientation;
+        use lattice_picker::OpenTarget;
+        match target {
+            OpenTarget::Default => {
+                self.prepare_pane_for_picker_result();
+                Vec::new()
+            }
+            OpenTarget::Split => {
+                self.snapshot_active_pane();
+                let new_idx = self.pane_tree.split_active(SplitOrientation::Horizontal);
+                self.pane_tree.set_active(new_idx);
+                self.load_active_pane();
+                Vec::new()
+            }
+            OpenTarget::VSplit => {
+                self.snapshot_active_pane();
+                let new_idx = self.pane_tree.split_active(SplitOrientation::Vertical);
+                self.pane_tree.set_active(new_idx);
+                self.load_active_pane();
+                Vec::new()
+            }
+            OpenTarget::Tab => {
+                // do_new_tab snapshots / mem::swaps the active
+                // pane tree and inserts a new tab whose single
+                // pane points at the current buffer. The caller
+                // (apply_picker_outcome) then runs do_edit /
+                // activate_buffer to replace it with the picker
+                // target.
+                self.do_new_tab();
+                Vec::new()
+            }
+        }
+    }
+
     /// Apply the `PickerResult` display preference to the active
     /// pane *before* a picker jump / buffer-switch runs. Phase 5.8.AD.6.
     pub fn prepare_pane_for_picker_result(&mut self) {
@@ -13258,10 +13328,15 @@ impl Editor {
         outcome: lattice_picker::PickerAcceptOutcome,
     ) -> Vec<RendererSignal> {
         use lattice_picker::PickerAcceptOutcome::*;
+        // Issue #32 (2026-05-22): consume the open-target
+        // override AT ENTRY so even nested apply paths see
+        // Default. The four file-targeting arms below honor it
+        // via `prepare_open_target_pane`; the rest ignore.
+        let target = std::mem::take(&mut self.picker_open_target);
         let mut signals = Vec::new();
         match outcome {
             OpenFile { path } => {
-                self.prepare_pane_for_picker_result();
+                signals.extend(self.prepare_open_target_pane(target));
                 let outcome = self.do_edit(Some(path), false);
                 match outcome {
                     DoEditOutcome::Opened(s)
@@ -13273,8 +13348,10 @@ impl Editor {
             }
             SwitchBuffer { buffer_id } => {
                 let id = BufferId(buffer_id);
-                if id != self.active_pane_buffer_id() {
-                    self.prepare_pane_for_picker_result();
+                if id != self.active_pane_buffer_id()
+                    || !matches!(target, lattice_picker::OpenTarget::Default)
+                {
+                    signals.extend(self.prepare_open_target_pane(target));
                     let needs_state = self.activate_buffer(id);
                     if needs_state {
                         signals.extend(self.activate_buffer_state());
@@ -13288,8 +13365,10 @@ impl Editor {
             } => {
                 self.push_position_history(self.cursor, crate::state::PositionSource::PluginPush);
                 let id = BufferId(buffer_id);
-                if id != self.active_pane_buffer_id() {
-                    self.prepare_pane_for_picker_result();
+                if id != self.active_pane_buffer_id()
+                    || !matches!(target, lattice_picker::OpenTarget::Default)
+                {
+                    signals.extend(self.prepare_open_target_pane(target));
                     let needs_state = self.activate_buffer(id);
                     if needs_state {
                         signals.extend(self.activate_buffer_state());
@@ -13302,7 +13381,7 @@ impl Editor {
                 self.cursor = lattice_protocol::Position::new(line, col);
             }
             JumpToLocation { path, line, col } => {
-                self.prepare_pane_for_picker_result();
+                signals.extend(self.prepare_open_target_pane(target));
                 signals.extend(self.jump_to_file_line_col(&path, line, col));
             }
             OpenLspLog { server_id } => self.open_lsp_log_in_pane(&server_id),
@@ -15784,6 +15863,18 @@ impl Editor {
     /// including the trait-driven generator path + MRU recording
     /// + event-bus publish + legacy routing arms.
     pub fn do_picker_accept(&mut self) -> Vec<RendererSignal> {
+        // Issue #32 (2026-05-22): consume the open-target
+        // override AT ENTRY so every early-return path (no
+        // candidate, no routing, generator error, ...) leaves
+        // the field reset to Default. The override MUST be one-
+        // shot — a `<C-s>` followed by a no-candidate accept
+        // path must NOT leak into the next `<CR>` press. The
+        // local `target` is Copy; we re-install it on the
+        // field immediately before each `apply_picker_outcome`
+        // call so the inner `std::mem::take` there observes
+        // the right value. Net invariant: after `do_picker_accept`
+        // returns, `self.picker_open_target == Default`.
+        let target = std::mem::take(&mut self.picker_open_target);
         let Some(picker) = self.picker.take() else {
             return Vec::new();
         };
@@ -15867,6 +15958,7 @@ impl Editor {
                         routing_payload_path: routing_payload_path(&routing),
                         ts: std::time::SystemTime::now(),
                     });
+                self.picker_open_target = target;
                 return self.apply_picker_outcome(outcome);
             }
             // `accept_action_to_outcome` returned None — the
@@ -19899,5 +19991,32 @@ mod tests {
         // surface in this module's diff.
         let out = DispatchOutcome::default();
         assert!(out.renderer_signals.is_empty());
+    }
+
+    /// Issue #32 (2026-05-22): one-shot guarantee for picker
+    /// open-target overrides. After ANY call to
+    /// `do_picker_accept` — happy or error path — the
+    /// `picker_open_target` field must be back to Default so
+    /// the next `<CR>` press uses the user's preference, not
+    /// the previous `<C-s>` override.
+    ///
+    /// This test exercises the "no candidate, early return"
+    /// path: set the target, dispatch accept with no picker
+    /// open, verify the field resets.
+    #[test]
+    fn picker_open_target_resets_after_no_op_accept() {
+        let document = lattice_core::Document::empty();
+        let mut editor = crate::editor::Editor::boot(document);
+        editor.picker_open_target = lattice_picker::OpenTarget::Split;
+        // No picker is open ⇒ do_picker_accept's first guard
+        // hits `self.picker.take()` returning None, early-
+        // returns. The target MUST still reset.
+        let _ = editor.do_picker_accept();
+        assert_eq!(
+            editor.picker_open_target,
+            lattice_picker::OpenTarget::Default,
+            "picker_open_target must reset after every do_picker_accept call \
+             (slice 32 one-shot guarantee)"
+        );
     }
 }

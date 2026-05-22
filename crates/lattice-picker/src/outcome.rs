@@ -13,6 +13,28 @@ use std::path::PathBuf;
 
 use lattice_grammar::args::Args;
 
+/// Issue #32 (2026-05-22): where a picker's file-opening
+/// outcome should land. `<CR>` uses `Default` and the host's
+/// preference (typically the active pane). `<C-s>` / `<C-v>` /
+/// `<C-t>` override to a split / vsplit / new tab respectively.
+///
+/// Only the file-targeting outcome arms (`OpenFile`,
+/// `SwitchBuffer`, `JumpInBuffer`, `JumpToLocation`) honor
+/// this. Non-file outcomes (commands, registers, snippets,
+/// LSP code actions) ignore it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum OpenTarget {
+    /// `<CR>` — host preference (active pane by default).
+    #[default]
+    Default,
+    /// `<C-s>` — open in a new horizontal split below.
+    Split,
+    /// `<C-v>` — open in a new vertical split to the right.
+    VSplit,
+    /// `<C-t>` — open in a brand-new tab.
+    Tab,
+}
+
 /// Result of `PickerSourceGenerator::accept`. The host
 /// pattern-matches and runs the corresponding mutation.
 ///

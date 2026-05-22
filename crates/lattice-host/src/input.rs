@@ -328,6 +328,13 @@ fn translate_picker(chord: KeyChord) -> Action {
             // C-u clears the query in one stroke (vim's cmdline
             // shortcut, applied here for consistency).
             KeyKind::Char('u') => Action::PickerBackspace, // approximate; per-char today
+            // Issue #32 (2026-05-22): open candidate file in
+            // split / vsplit / tab. File-targeting outcomes
+            // route through the override; non-file outcomes
+            // ignore it (same as `<CR>`).
+            KeyKind::Char('s') => Action::PickerAcceptInSplit,
+            KeyKind::Char('v') => Action::PickerAcceptInVSplit,
+            KeyKind::Char('t') => Action::PickerAcceptInTab,
             _ => Action::None,
         };
     }

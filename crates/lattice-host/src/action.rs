@@ -407,6 +407,14 @@ pub enum Action {
     /// Run the picker's accept action against the selected
     /// candidate and dismiss.
     PickerAccept,
+    /// Issue #32 (2026-05-22): `<C-s>` — accept candidate,
+    /// opening files in a horizontal split. Non-file outcomes
+    /// ignore the override.
+    PickerAcceptInSplit,
+    /// `<C-v>` — accept candidate in a vertical split.
+    PickerAcceptInVSplit,
+    /// `<C-t>` — accept candidate in a new tab.
+    PickerAcceptInTab,
     /// Drop the picker without acting on any candidate.
     PickerDismiss,
 

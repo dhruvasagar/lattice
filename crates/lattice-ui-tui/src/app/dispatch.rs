@@ -299,6 +299,11 @@ impl App {
             | Action::CloseTab
             | Action::OnlyTab
             | Action::MoveTab(_)
+            // Issue #32 (2026-05-22): picker open-target overrides.
+            // Host-resident bodies; grouped no-op here.
+            | Action::PickerAcceptInSplit
+            | Action::PickerAcceptInVSplit
+            | Action::PickerAcceptInTab
             // 5.5.G.6: pure-editor mark-history arms migrated.
             | Action::WalkMarkHistoryBack
             | Action::WalkMarkHistoryForward

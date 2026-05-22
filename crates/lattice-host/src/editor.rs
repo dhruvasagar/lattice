@@ -489,6 +489,14 @@ pub struct Editor {
     /// on tab close).
     pub active_tab: usize,
 
+    /// Issue #32 (2026-05-22): override for the next picker
+    /// accept's open routing. Set by `<C-s>` / `<C-v>` / `<C-t>`
+    /// chords on picker overlays before dispatching the accept;
+    /// read + cleared by `apply_picker_outcome` for the file-
+    /// targeting variants (OpenFile / SwitchBuffer / JumpInBuffer
+    /// / JumpToLocation). `Default` for `<CR>`.
+    pub picker_open_target: lattice_picker::OpenTarget,
+
     /// Handle to the per-document actor and its snapshot cache.
     pub document: DocumentHandle,
     pub snapshot_cache: SnapshotCache,

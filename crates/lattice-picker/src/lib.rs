@@ -59,7 +59,7 @@ pub use mru::{
     DEFAULT_CAP_PER_NAMESPACE, DEFAULT_HALF_LIFE, MruEntry, MruKey, MruPersistError,
     PickerMruIndex, bonus_of, default_persist_path, routing_identity,
 };
-pub use outcome::PickerAcceptOutcome;
+pub use outcome::{OpenTarget, PickerAcceptOutcome};
 pub use source::{
     CandidateBatch, CandidateFuture, CandidateStream, PickerInitResult, PickerRegistry,
     PickerSourceGenerator, PickerSourceSpec, SourceResult,

@@ -431,6 +431,13 @@ pub enum AppEffect {
     OnlyTab,
     /// `:tabmove [N]` — move active tab to position N (1-indexed).
     MoveTab(u32),
+    /// Issue #32 (2026-05-22): picker open-target overrides.
+    /// `<C-s>` — accept selected candidate in horizontal split.
+    PickerAcceptInSplit,
+    /// `<C-v>` — accept selected candidate in vertical split.
+    PickerAcceptInVSplit,
+    /// `<C-t>` — accept selected candidate in new tab.
+    PickerAcceptInTab,
     /// Issue #28 (2026-05-22): `<C-w>=` — reset every split's
     /// ratio to 0.5.
     EqualizePanes,

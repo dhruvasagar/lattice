@@ -88,16 +88,34 @@ pub enum PaneNode {
     /// [`PaneTree::leaves`].
     Leaf(usize),
     /// Two panes stacked top + bottom (a horizontal cut).
+    /// `ratio` is the top child's share of the total height,
+    /// clamped to `MIN_SPLIT_RATIO..=MAX_SPLIT_RATIO`. Default
+    /// 0.5 = even split. Issue #28 (2026-05-22): `<C-w>=`
+    /// resets every ratio to 0.5; `<C-w>+` / `<C-w>-` nudge
+    /// the nearest HorizontalSplit ancestor's ratio.
     HorizontalSplit {
         top: Box<PaneNode>,
         bottom: Box<PaneNode>,
+        ratio: f32,
     },
     /// Two panes side by side left + right (a vertical cut).
+    /// `ratio` is the left child's share of the total width.
+    /// `<C-w>>` / `<C-w><` nudge the nearest VerticalSplit
+    /// ancestor's ratio.
     VerticalSplit {
         left: Box<PaneNode>,
         right: Box<PaneNode>,
+        ratio: f32,
     },
 }
+
+/// Default split ratio for newly-created splits. 0.5 = even.
+pub const DEFAULT_SPLIT_RATIO: f32 = 0.5;
+/// Clamp bounds: keep both children visible, never let one
+/// collapse to zero. Matches vim's `window_min_height`
+/// philosophy.
+pub const MIN_SPLIT_RATIO: f32 = 0.05;
+pub const MAX_SPLIT_RATIO: f32 = 0.95;
 
 /// Manual `Default` (tuple variants can't use `#[default]`).
 /// Default = `Leaf(0)`, matching the `PaneTree::single`
@@ -125,11 +143,11 @@ impl PaneNode {
     pub fn for_each_leaf(&self, visit: &mut impl FnMut(usize)) {
         match self {
             PaneNode::Leaf(idx) => visit(*idx),
-            PaneNode::HorizontalSplit { top, bottom } => {
+            PaneNode::HorizontalSplit { top, bottom, .. } => {
                 top.for_each_leaf(visit);
                 bottom.for_each_leaf(visit);
             }
-            PaneNode::VerticalSplit { left, right } => {
+            PaneNode::VerticalSplit { left, right, .. } => {
                 left.for_each_leaf(visit);
                 right.for_each_leaf(visit);
             }
@@ -147,11 +165,11 @@ impl PaneNode {
                 true
             }
             PaneNode::Leaf(_) => false,
-            PaneNode::HorizontalSplit { top, bottom } => {
+            PaneNode::HorizontalSplit { top, bottom, .. } => {
                 top.replace_leaf(target_idx, replacement.clone())
                     || bottom.replace_leaf(target_idx, replacement)
             }
-            PaneNode::VerticalSplit { left, right } => {
+            PaneNode::VerticalSplit { left, right, .. } => {
                 left.replace_leaf(target_idx, replacement.clone())
                     || right.replace_leaf(target_idx, replacement)
             }
@@ -164,7 +182,7 @@ impl PaneNode {
     fn remove_leaf(&mut self, target_idx: usize) -> bool {
         match self {
             PaneNode::Leaf(_) => false,
-            PaneNode::HorizontalSplit { top, bottom } => {
+            PaneNode::HorizontalSplit { top, bottom, .. } => {
                 if matches!(**top, PaneNode::Leaf(idx) if idx == target_idx) {
                     let survivor = (**bottom).clone();
                     *self = survivor;
@@ -177,7 +195,7 @@ impl PaneNode {
                     top.remove_leaf(target_idx) || bottom.remove_leaf(target_idx)
                 }
             }
-            PaneNode::VerticalSplit { left, right } => {
+            PaneNode::VerticalSplit { left, right, .. } => {
                 if matches!(**left, PaneNode::Leaf(idx) if idx == target_idx) {
                     let survivor = (**right).clone();
                     *self = survivor;
@@ -325,10 +343,12 @@ impl PaneTree {
             SplitOrientation::Horizontal => PaneNode::HorizontalSplit {
                 top: Box::new(PaneNode::Leaf(active_idx)),
                 bottom: Box::new(PaneNode::Leaf(new_idx)),
+                ratio: DEFAULT_SPLIT_RATIO,
             },
             SplitOrientation::Vertical => PaneNode::VerticalSplit {
                 left: Box::new(PaneNode::Leaf(active_idx)),
                 right: Box::new(PaneNode::Leaf(new_idx)),
+                ratio: DEFAULT_SPLIT_RATIO,
             },
         };
         let replaced = self.root.replace_leaf(active_idx, split);
@@ -358,6 +378,36 @@ impl PaneTree {
         // that polish in a follow-up.
         self.active = 0;
         true
+    }
+
+    /// Issue #28 (2026-05-22): walk the tree and reset every
+    /// split's ratio to [`DEFAULT_SPLIT_RATIO`] (0.5). Vim's
+    /// `<C-w>=`. Returns `true` if any ratio actually changed,
+    /// so the renderer can skip the publish when there's
+    /// nothing to do.
+    pub fn equalize_ratios(&mut self) -> bool {
+        equalize_recursive(&mut self.root)
+    }
+
+    /// Issue #28: adjust the ratio of the nearest split-of-the-
+    /// requested-orientation containing the active pane. Vim's
+    /// `<C-w>+` / `<C-w>-` (HorizontalSplit) / `<C-w>>` /
+    /// `<C-w><` (VerticalSplit). `delta` is added to the
+    /// current ratio (positive = grow active side); clamped to
+    /// [MIN_SPLIT_RATIO, MAX_SPLIT_RATIO]. Returns `true` if a
+    /// ratio was found and changed.
+    ///
+    /// "Active side" semantics: if the active leaf is in the
+    /// `top` (or `left`) child, growing means increasing the
+    /// ratio (top/left gets bigger). If active is in `bottom`
+    /// (or `right`), growing means DECREASING the ratio.
+    pub fn resize_active_split(
+        &mut self,
+        orientation: SplitOrientation,
+        delta: f32,
+    ) -> bool {
+        let active = self.active;
+        resize_active_recursive(&mut self.root, active, orientation, delta).is_some()
     }
 
     /// Navigate cardinally from the active pane. Returns the new
@@ -438,29 +488,29 @@ impl PaneTree {
 fn compute_rects_recursive(node: &PaneNode, area: PaneRect, out: &mut Vec<(usize, PaneRect)>) {
     match node {
         PaneNode::Leaf(idx) => out.push((*idx, area)),
-        PaneNode::HorizontalSplit { top, bottom } => {
-            let half = area.height / 2;
+        PaneNode::HorizontalSplit { top, bottom, ratio } => {
+            let top_h = ((area.height as f32) * *ratio).round() as u16;
             let top_rect = PaneRect {
-                height: half,
+                height: top_h,
                 ..area
             };
             let bot_rect = PaneRect {
-                y: area.y + half,
-                height: area.height - half,
+                y: area.y + top_h,
+                height: area.height.saturating_sub(top_h),
                 ..area
             };
             compute_rects_recursive(top, top_rect, out);
             compute_rects_recursive(bottom, bot_rect, out);
         }
-        PaneNode::VerticalSplit { left, right } => {
-            let half = area.width / 2;
+        PaneNode::VerticalSplit { left, right, ratio } => {
+            let left_w = ((area.width as f32) * *ratio).round() as u16;
             let left_rect = PaneRect {
-                width: half,
+                width: left_w,
                 ..area
             };
             let right_rect = PaneRect {
-                x: area.x + half,
-                width: area.width - half,
+                x: area.x + left_w,
+                width: area.width.saturating_sub(left_w),
                 ..area
             };
             compute_rects_recursive(left, left_rect, out);
@@ -472,6 +522,104 @@ fn compute_rects_recursive(node: &PaneNode, area: PaneRect, out: &mut Vec<(usize
 /// Rewrite `Leaf(idx)` references in the tree to account for a
 /// vector removal at `removed_idx`: every index `> removed_idx`
 /// shifts down by one.
+/// Issue #28: recursive helper for `PaneTree::equalize_ratios`.
+/// Resets every split node's ratio to `DEFAULT_SPLIT_RATIO`.
+/// Returns `true` if any ratio changed.
+fn equalize_recursive(node: &mut PaneNode) -> bool {
+    match node {
+        PaneNode::Leaf(_) => false,
+        PaneNode::HorizontalSplit {
+            top,
+            bottom,
+            ratio,
+        } => {
+            let changed = (*ratio - DEFAULT_SPLIT_RATIO).abs() > f32::EPSILON;
+            *ratio = DEFAULT_SPLIT_RATIO;
+            let l = equalize_recursive(top);
+            let r = equalize_recursive(bottom);
+            changed || l || r
+        }
+        PaneNode::VerticalSplit {
+            left,
+            right,
+            ratio,
+        } => {
+            let changed = (*ratio - DEFAULT_SPLIT_RATIO).abs() > f32::EPSILON;
+            *ratio = DEFAULT_SPLIT_RATIO;
+            let l = equalize_recursive(left);
+            let r = equalize_recursive(right);
+            changed || l || r
+        }
+    }
+}
+
+/// Issue #28: recursive helper for `PaneTree::resize_active_split`.
+/// Returns `Some(())` if the active leaf was found AND a
+/// matching-orientation ancestor was hit; `None` otherwise so
+/// the caller can decide whether to no-op.
+///
+/// Walks top-down. At each split node, recurses into both
+/// sides asking "did you contain the active leaf?". When a
+/// child returns "yes, but no orientation-matching ancestor
+/// upstream", this node — if its orientation matches —
+/// applies the delta. The first matching ancestor on the path
+/// up from the active leaf wins.
+fn resize_active_recursive(
+    node: &mut PaneNode,
+    active: usize,
+    orientation: SplitOrientation,
+    delta: f32,
+) -> Option<()> {
+    match node {
+        PaneNode::Leaf(idx) if *idx == active => Some(()),
+        PaneNode::Leaf(_) => None,
+        PaneNode::HorizontalSplit {
+            top,
+            bottom,
+            ratio,
+        } => {
+            // active was in `top` ⇒ grow = positive delta;
+            // active was in `bottom` ⇒ grow = negate delta.
+            if resize_active_recursive(top, active, orientation, delta).is_some() {
+                if matches!(orientation, SplitOrientation::Horizontal) {
+                    *ratio = (*ratio + delta).clamp(MIN_SPLIT_RATIO, MAX_SPLIT_RATIO);
+                    return Some(());
+                }
+                return Some(());
+            }
+            if resize_active_recursive(bottom, active, orientation, delta).is_some() {
+                if matches!(orientation, SplitOrientation::Horizontal) {
+                    *ratio = (*ratio - delta).clamp(MIN_SPLIT_RATIO, MAX_SPLIT_RATIO);
+                    return Some(());
+                }
+                return Some(());
+            }
+            None
+        }
+        PaneNode::VerticalSplit {
+            left,
+            right,
+            ratio,
+        } => {
+            if resize_active_recursive(left, active, orientation, delta).is_some() {
+                if matches!(orientation, SplitOrientation::Vertical) {
+                    *ratio = (*ratio + delta).clamp(MIN_SPLIT_RATIO, MAX_SPLIT_RATIO);
+                    return Some(());
+                }
+                return Some(());
+            }
+            if resize_active_recursive(right, active, orientation, delta).is_some() {
+                if matches!(orientation, SplitOrientation::Vertical) {
+                    *ratio = (*ratio - delta).clamp(MIN_SPLIT_RATIO, MAX_SPLIT_RATIO);
+                    return Some(());
+                }
+                return Some(());
+            }
+            None
+        }
+    }
+}
+
 fn rewrite_indices_after_remove(node: &mut PaneNode, removed_idx: usize) {
     match node {
         PaneNode::Leaf(idx) => {
@@ -479,11 +627,11 @@ fn rewrite_indices_after_remove(node: &mut PaneNode, removed_idx: usize) {
                 *idx -= 1;
             }
         }
-        PaneNode::HorizontalSplit { top, bottom } => {
+        PaneNode::HorizontalSplit { top, bottom, .. } => {
             rewrite_indices_after_remove(top, removed_idx);
             rewrite_indices_after_remove(bottom, removed_idx);
         }
-        PaneNode::VerticalSplit { left, right } => {
+        PaneNode::VerticalSplit { left, right, .. } => {
             rewrite_indices_after_remove(left, removed_idx);
             rewrite_indices_after_remove(right, removed_idx);
         }

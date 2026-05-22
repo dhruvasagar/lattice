@@ -1044,6 +1044,32 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         }
         Action::ClosePane => editor.do_close_pane(),
         Action::NavigatePane(dir) => editor.do_navigate_pane(dir),
+        Action::EqualizePanes => {
+            // Issue #28 (2026-05-22): <C-w>= — reset every
+            // split's ratio to 0.5. Publish handled by
+            // dispatch's tail.
+            editor.pane_tree.equalize_ratios();
+        }
+        Action::GrowPaneHeight => {
+            editor
+                .pane_tree
+                .resize_active_split(lattice_core::ui::pane::SplitOrientation::Horizontal, 0.05);
+        }
+        Action::ShrinkPaneHeight => {
+            editor
+                .pane_tree
+                .resize_active_split(lattice_core::ui::pane::SplitOrientation::Horizontal, -0.05);
+        }
+        Action::GrowPaneWidth => {
+            editor
+                .pane_tree
+                .resize_active_split(lattice_core::ui::pane::SplitOrientation::Vertical, 0.05);
+        }
+        Action::ShrinkPaneWidth => {
+            editor
+                .pane_tree
+                .resize_active_split(lattice_core::ui::pane::SplitOrientation::Vertical, -0.05);
+        }
         Action::NextPane => {
             let target = editor.pane_tree.next_pane();
             editor.activate_pane(target);
@@ -2415,6 +2441,12 @@ impl Editor {
             AppEffect::NavigatePane(dir) => out.next_actions.push(Action::NavigatePane(dir)),
             AppEffect::NextPane => out.next_actions.push(Action::NextPane),
             AppEffect::PrevPane => out.next_actions.push(Action::PrevPane),
+            // Issue #28 (2026-05-22): split-ratio adjustment.
+            AppEffect::EqualizePanes => out.next_actions.push(Action::EqualizePanes),
+            AppEffect::GrowPaneHeight => out.next_actions.push(Action::GrowPaneHeight),
+            AppEffect::ShrinkPaneHeight => out.next_actions.push(Action::ShrinkPaneHeight),
+            AppEffect::GrowPaneWidth => out.next_actions.push(Action::GrowPaneWidth),
+            AppEffect::ShrinkPaneWidth => out.next_actions.push(Action::ShrinkPaneWidth),
             AppEffect::CompletionNext => out.next_actions.push(Action::CompletionNext),
             AppEffect::CompletionPrev => out.next_actions.push(Action::CompletionPrev),
             AppEffect::CompletionAccept => out.next_actions.push(Action::CompletionAccept),

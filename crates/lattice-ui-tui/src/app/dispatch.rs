@@ -283,6 +283,13 @@ impl App {
             | Action::NavigatePane(_)
             | Action::NextPane
             | Action::PrevPane
+            // Issue #28 (2026-05-22): pane-resize / equalize.
+            // Host-resident bodies; grouped no-op here.
+            | Action::EqualizePanes
+            | Action::GrowPaneHeight
+            | Action::ShrinkPaneHeight
+            | Action::GrowPaneWidth
+            | Action::ShrinkPaneWidth
             // 5.5.G.6: pure-editor mark-history arms migrated.
             | Action::WalkMarkHistoryBack
             | Action::WalkMarkHistoryForward

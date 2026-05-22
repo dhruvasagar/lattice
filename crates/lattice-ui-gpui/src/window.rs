@@ -159,12 +159,14 @@ fn collect_pane_geometries(
             let cols = (usable_w / col_px).floor().max(1.0) as u32;
             out.push((*idx, rows, cols));
         }
-        PaneNode::HorizontalSplit { top, bottom } => {
-            let half_h = available_h_px / 2.0;
+        PaneNode::HorizontalSplit { top, bottom, ratio } => {
+            // Issue #28: ratio-aware split (0.5 = even).
+            let top_h = available_h_px * *ratio;
+            let bot_h = available_h_px - top_h;
             collect_pane_geometries(
                 top,
                 available_w_px,
-                half_h,
+                top_h,
                 per_leaf_v_chrome_px,
                 per_leaf_h_chrome_px,
                 row_px,
@@ -174,7 +176,7 @@ fn collect_pane_geometries(
             collect_pane_geometries(
                 bottom,
                 available_w_px,
-                half_h,
+                bot_h,
                 per_leaf_v_chrome_px,
                 per_leaf_h_chrome_px,
                 row_px,
@@ -182,11 +184,12 @@ fn collect_pane_geometries(
                 out,
             );
         }
-        PaneNode::VerticalSplit { left, right } => {
-            let half_w = available_w_px / 2.0;
+        PaneNode::VerticalSplit { left, right, ratio } => {
+            let left_w = available_w_px * *ratio;
+            let right_w = available_w_px - left_w;
             collect_pane_geometries(
                 left,
-                half_w,
+                left_w,
                 available_h_px,
                 per_leaf_v_chrome_px,
                 per_leaf_h_chrome_px,
@@ -196,7 +199,7 @@ fn collect_pane_geometries(
             );
             collect_pane_geometries(
                 right,
-                half_w,
+                right_w,
                 available_h_px,
                 per_leaf_v_chrome_px,
                 per_leaf_h_chrome_px,
@@ -478,7 +481,7 @@ impl EditorView {
     fn paint_pane_tree(&self, node: &PaneNode, theme: &GpuiTheme, active_idx: usize) -> gpui::Div {
         match node {
             PaneNode::Leaf(idx) => self.paint_pane(*idx, theme, *idx == active_idx),
-            PaneNode::HorizontalSplit { top, bottom } => div()
+            PaneNode::HorizontalSplit { top, bottom, .. } => div()
                 .flex()
                 .flex_col()
                 .flex_grow()
@@ -490,7 +493,7 @@ impl EditorView {
                         .border_color(rgb(theme.popup_border)),
                 )
                 .child(self.paint_pane_tree(bottom, theme, active_idx).flex_grow()),
-            PaneNode::VerticalSplit { left, right } => div()
+            PaneNode::VerticalSplit { left, right, .. } => div()
                 .flex()
                 .flex_row()
                 .flex_grow()

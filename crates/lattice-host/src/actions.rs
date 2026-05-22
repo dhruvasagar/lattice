@@ -143,6 +143,12 @@ pub struct ActionIds {
     pub navigate_pane_right: CommandId,
     pub next_pane: CommandId,
     pub prev_pane: CommandId,
+    /// Issue #28 (2026-05-22): split-ratio adjustment IDs.
+    pub equalize_panes: CommandId,
+    pub grow_pane_height: CommandId,
+    pub shrink_pane_height: CommandId,
+    pub grow_pane_width: CommandId,
+    pub shrink_pane_width: CommandId,
     /// Slice 8.i.4.e: completion-popup overlay actions
     /// (registered into a minor-mode layer pushed when the
     /// popup opens; popped on close). Each ID is the typed
@@ -768,6 +774,37 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "Vim's `<C-w>W`: cycle focus to the previous pane.",
             AppEffect::PrevPane,
         ),
+        // Issue #28 (2026-05-22): split-ratio adjustment.
+        equalize_panes: register_simple(
+            registry,
+            "action:equalize-panes",
+            "Vim's `<C-w>=`: reset every split's ratio to 0.5.",
+            AppEffect::EqualizePanes,
+        ),
+        grow_pane_height: register_simple(
+            registry,
+            "action:grow-pane-height",
+            "Vim's `<C-w>+`: grow the active pane vertically.",
+            AppEffect::GrowPaneHeight,
+        ),
+        shrink_pane_height: register_simple(
+            registry,
+            "action:shrink-pane-height",
+            "Vim's `<C-w>-`: shrink the active pane vertically.",
+            AppEffect::ShrinkPaneHeight,
+        ),
+        grow_pane_width: register_simple(
+            registry,
+            "action:grow-pane-width",
+            "Vim's `<C-w>>`: grow the active pane horizontally.",
+            AppEffect::GrowPaneWidth,
+        ),
+        shrink_pane_width: register_simple(
+            registry,
+            "action:shrink-pane-width",
+            "Vim's `<C-w><`: shrink the active pane horizontally.",
+            AppEffect::ShrinkPaneWidth,
+        ),
         completion_next: register_simple(
             registry,
             "action:completion-next",
@@ -1118,6 +1155,12 @@ mod tests {
             (ids.navigate_pane_right, "action:navigate-pane-right"),
             (ids.next_pane, "action:next-pane"),
             (ids.prev_pane, "action:prev-pane"),
+            // Issue #28 (2026-05-22): split-ratio adjustment.
+            (ids.equalize_panes, "action:equalize-panes"),
+            (ids.grow_pane_height, "action:grow-pane-height"),
+            (ids.shrink_pane_height, "action:shrink-pane-height"),
+            (ids.grow_pane_width, "action:grow-pane-width"),
+            (ids.shrink_pane_width, "action:shrink-pane-width"),
             (ids.completion_next, "action:completion-next"),
             (ids.completion_prev, "action:completion-prev"),
             (ids.completion_accept, "action:completion-accept"),

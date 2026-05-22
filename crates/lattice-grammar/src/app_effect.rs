@@ -415,6 +415,17 @@ pub enum AppEffect {
     /// previous pane. Promoted from `Action::PrevPane` in
     /// slice 8.i.4.d.
     PrevPane,
+    /// Issue #28 (2026-05-22): `<C-w>=` — reset every split's
+    /// ratio to 0.5.
+    EqualizePanes,
+    /// `<C-w>+` — grow the active pane vertically.
+    GrowPaneHeight,
+    /// `<C-w>-` — shrink the active pane vertically.
+    ShrinkPaneHeight,
+    /// `<C-w>>` — grow the active pane horizontally.
+    GrowPaneWidth,
+    /// `<C-w><` — shrink the active pane horizontally.
+    ShrinkPaneWidth,
     /// Completion-popup overlay: focus the next entry. Promoted
     /// from `Action::CompletionNext` in slice 8.i.4.e.
     CompletionNext,

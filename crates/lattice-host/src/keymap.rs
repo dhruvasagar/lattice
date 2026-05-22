@@ -357,6 +357,12 @@ fn build_default_keymap() -> Vec<KeymapEntry> {
         keymap_entry! { mode: AfterCtrlW, chord: "<C-w>l", doc: "Navigate to pane on the right" },
         keymap_entry! { mode: AfterCtrlW, chord: "<C-w>w", doc: "Cycle to next pane" },
         keymap_entry! { mode: AfterCtrlW, chord: "<C-w>W", doc: "Cycle to previous pane" },
+        // Issue #28 (2026-05-22): split ratio adjustment.
+        keymap_entry! { mode: AfterCtrlW, chord: "<C-w>=", doc: "Equalize all split ratios (reset to 50/50)" },
+        keymap_entry! { mode: AfterCtrlW, chord: "<C-w>+", doc: "Grow active pane vertically" },
+        keymap_entry! { mode: AfterCtrlW, chord: "<C-w>-", doc: "Shrink active pane vertically" },
+        keymap_entry! { mode: AfterCtrlW, chord: "<C-w>>", doc: "Grow active pane horizontally" },
+        keymap_entry! { mode: AfterCtrlW, chord: "<C-w><", doc: "Shrink active pane horizontally" },
         // ---- After-g sub-commands ----
         keymap_entry! { mode: AfterG, chord: "gU", doc: "Uppercase operator -- prefix to motion/text-object; doubled = current line", cmd: "operator:upper" },
         keymap_entry! { mode: AfterG, chord: "gu", doc: "Lowercase operator", cmd: "operator:lower" },

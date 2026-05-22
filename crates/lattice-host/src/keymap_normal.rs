@@ -1029,6 +1029,12 @@ fn register_ctrl_w_sub_tree(handle: &KeymapHandle, actions: &ActionIds) {
             ],
             actions.prev_pane,
         ),
+        // Issue #28 (2026-05-22): split-ratio adjustment.
+        (&[lit_char('=')], actions.equalize_panes),
+        (&[lit_char('+')], actions.grow_pane_height),
+        (&[lit_char('-')], actions.shrink_pane_height),
+        (&[lit_char('>')], actions.grow_pane_width),
+        (&[lit_char('<')], actions.shrink_pane_width),
     ];
     for (chords, action_id) in bare_table {
         for chord in chords.iter() {

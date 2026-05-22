@@ -471,6 +471,19 @@ pub enum Action {
     NextPane,
     /// `<C-w>W` -- cycle to the previous pane.
     PrevPane,
+    /// `<C-w>=` -- reset every split's ratio to 0.5 (equalize all
+    /// panes). Issue #28 (2026-05-22).
+    EqualizePanes,
+    /// `<C-w>+` -- grow the active pane vertically (nudge the
+    /// nearest HorizontalSplit ancestor's ratio).
+    GrowPaneHeight,
+    /// `<C-w>-` -- shrink the active pane vertically.
+    ShrinkPaneHeight,
+    /// `<C-w>>` -- grow the active pane horizontally (nudge the
+    /// nearest VerticalSplit ancestor's ratio).
+    GrowPaneWidth,
+    /// `<C-w><` -- shrink the active pane horizontally.
+    ShrinkPaneWidth,
 
     // ---- Help buffer (DESIGN.md §5.11, §5.9) ----
     //

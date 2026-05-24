@@ -657,11 +657,19 @@ impl Element for EditorElement {
                                 q.layer,
                                 lattice_host::render_state::OverlayLayer::Substitute
                             ) {
-                                quads.push((
-                                    q.col_start,
-                                    q.col_end,
-                                    color_for_layer(q.layer),
-                                ));
+                                let cs = byte_to_combined_col(
+                                    line_text,
+                                    q.source_byte_start as usize,
+                                    inlay_offsets,
+                                ) as u32;
+                                let ce = byte_to_combined_col(
+                                    line_text,
+                                    q.source_byte_end as usize,
+                                    inlay_offsets,
+                                ) as u32;
+                                if ce > cs {
+                                    quads.push((cs, ce, color_for_layer(q.layer)));
+                                }
                             }
                         }
                     } else {

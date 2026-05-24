@@ -278,12 +278,15 @@ pub fn recompute(
         &key,
     );
 
+    // Perf plan D.1: wrap the freshly-built `Vec`s in `Arc<[T]>` at
+    // the cell-store boundary so subsequent HOLD / B.1 reuse paths
+    // can clone the outer Arc instead of the inner Vec.
     spans_cell.store(Arc::new(VisibleSpans {
-        spans,
+        spans: Arc::from(spans.into_boxed_slice()),
         computed_for_key: key,
     }));
     rows_cell.store(Arc::new(VisibleRows {
-        rows,
+        rows: Arc::from(rows.into_boxed_slice()),
         computed_for_key: key,
     }));
     WorkerDecision::Recomputed
@@ -512,7 +515,7 @@ mod tests {
     fn recompute_with_no_handle_clears_spans() {
         let rs: ArcSwap<RenderState> = ArcSwap::from_pointee(RenderState::default());
         let cell: ArcSwap<VisibleSpans> = ArcSwap::from_pointee(VisibleSpans {
-            spans: vec![Vec::new()],
+            spans: Arc::from(vec![Vec::new()].into_boxed_slice()),
             computed_for_key: VisibleHighlightsKey {
                 snapshot_ptr: 0xdead,
                 ..Default::default()
@@ -832,7 +835,7 @@ mod tests {
         let prev_key = key(0xdead, 1, 10);
         let prev_rows_vec = build_rows(&source, 10, &prev_spans);
         let prev = VisibleRows {
-            rows: prev_rows_vec.clone(),
+            rows: Arc::from(prev_rows_vec.clone().into_boxed_slice()),
             computed_for_key: prev_key,
         };
         // New frame: viewport [12..22) — overlap [12..20).
@@ -873,7 +876,7 @@ mod tests {
         let spans = fake_styled(10, 4);
         let prev_rows_vec = build_rows(&source_a, 5, &spans);
         let prev = VisibleRows {
-            rows: prev_rows_vec.clone(),
+            rows: Arc::from(prev_rows_vec.clone().into_boxed_slice()),
             computed_for_key: key(0xa11, 1, 5),
         };
         // New snapshot_ptr differs ⇒ no reuse, rebuild from source_b.

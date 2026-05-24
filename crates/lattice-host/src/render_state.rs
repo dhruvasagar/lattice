@@ -604,10 +604,26 @@ pub struct VisibleHighlightsKey {
 ///
 /// `computed_for_key` carries the inputs that produced these
 /// spans so the worker can skip recompute on identical keys.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct VisibleSpans {
-    pub spans: Vec<Vec<lattice_syntax::StyledSpan>>,
+    /// Perf plan D.1: `Arc<[T]>` instead of `Vec<T>` so the HOLD
+    /// path's clone collapses to a single Arc bump instead of
+    /// allocating a fresh `Vec<Vec<StyledSpan>>` per stale-snapshot
+    /// wake. Held-key bursts can hit HOLD on every wake while the
+    /// parser catches up; the previous `Vec` clone was measured at
+    /// +32-75% on `worker_stale_snapshot_hold` after A.2a/B.1
+    /// landed (rows + spans both cloned per HOLD).
+    pub spans: Arc<[Vec<lattice_syntax::StyledSpan>]>,
     pub computed_for_key: VisibleHighlightsKey,
+}
+
+impl Default for VisibleSpans {
+    fn default() -> Self {
+        Self {
+            spans: Arc::from(Vec::<Vec<lattice_syntax::StyledSpan>>::new().into_boxed_slice()),
+            computed_for_key: VisibleHighlightsKey::default(),
+        }
+    }
 }
 
 /// One coloured run within a [`RowPrepaint`]'s `combined` text.
@@ -672,10 +688,25 @@ pub struct RowPrepaint {
 /// — the legacy cell stays so the TUI peer's existing `StyledSpan`
 /// grid path keeps working without an adapter slice. GPUI consumes
 /// `rows`; TUI keeps reading `spans` (migration deferred).
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct VisibleRows {
-    pub rows: Vec<RowPrepaint>,
+    /// Perf plan D.1: `Arc<[T]>` for the same reason as
+    /// [`VisibleSpans::spans`]. HOLD reuses the prior rows via one
+    /// Arc bump instead of cloning every `RowPrepaint` (each carries
+    /// a `Box<str>` + `Vec<RowRun>` — non-trivial allocs at 120
+    /// rows). The bench `worker_stale_snapshot_hold/120` measured
+    /// +75% with the per-element `Vec` clone; this collapses it.
+    pub rows: Arc<[RowPrepaint]>,
     pub computed_for_key: VisibleHighlightsKey,
+}
+
+impl Default for VisibleRows {
+    fn default() -> Self {
+        Self {
+            rows: Arc::from(Vec::<RowPrepaint>::new().into_boxed_slice()),
+            computed_for_key: VisibleHighlightsKey::default(),
+        }
+    }
 }
 
 /// Active picker's render-side projection.

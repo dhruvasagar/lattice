@@ -1019,8 +1019,15 @@ impl EditorView {
                     .unwrap_or_else(|| {
                         std::sync::Arc::new(Vec::<Vec<lattice_syntax::StyledSpan>>::new())
                     });
+                // Perf plan D.1: `VisibleSpans.spans` is now
+                // `Arc<[Vec<StyledSpan>]>`. The pane cache still
+                // stores `Arc<Vec<Vec<StyledSpan>>>` (host-side
+                // shape unchanged), so we clone its inner Vec into
+                // a fresh `Arc<[T]>` here. A future slice could
+                // migrate `pane_highlights` storage to match,
+                // collapsing this clone to an Arc bump.
                 lattice_host::render_state::VisibleSpans {
-                    spans: (*pane_spans).clone(),
+                    spans: (*pane_spans).clone().into(),
                     computed_for_key: lattice_host::render_state::VisibleHighlightsKey::default(),
                 }
                 .into()

@@ -146,7 +146,10 @@ impl<'a> FrameView<'a> {
             // `Arc<[Fold]>` on the active-document substate; one Arc
             // clone replaces the prior `Vec::clone + into_boxed_slice`.
             folds: rs.active_document.folds.clone(),
-            visible_highlights: Arc::from(spans.spans.clone().into_boxed_slice()),
+            // Perf plan D.1: `spans.spans` is now `Arc<[Vec<StyledSpan>]>`
+            // so the chain that used to clone the Vec + box-slice it +
+            // re-Arc it collapses to a single Arc bump.
+            visible_highlights: spans.spans.clone(),
             show_line_numbers: app.show_line_numbers(),
             relative_line_numbers: app.relative_line_numbers(),
             foldenable,
@@ -186,7 +189,10 @@ impl<'a> FrameView<'a> {
             // `Arc<[Fold]>` on the active-document substate; one Arc
             // clone replaces the prior `Vec::clone + into_boxed_slice`.
             folds: rs.active_document.folds.clone(),
-            visible_highlights: Arc::from(spans.spans.clone().into_boxed_slice()),
+            // Perf plan D.1: `spans.spans` is now `Arc<[Vec<StyledSpan>]>`
+            // so the chain that used to clone the Vec + box-slice it +
+            // re-Arc it collapses to a single Arc bump.
+            visible_highlights: spans.spans.clone(),
             show_line_numbers: app.show_line_numbers_for(buffer_id),
             relative_line_numbers: app.relative_line_numbers_for(buffer_id),
             // Slice 3c.extension.fold-rs: per-buffer cache. The

@@ -54,9 +54,14 @@ use crate::app::{App, EchoLevel, Fold};
 ///   directly through this borrowed reference.
 /// - `folds: Arc<[Fold]>` -- frozen snapshot. Replaces direct
 ///   `app.editor.folds.iter()` reads.
-/// - `visible_highlights: Arc<[Vec<StyledSpan>]>` -- frozen
-///   viewport highlight grid. Replaces direct
-///   `app.editor.visible_highlights[...]` reads.
+/// - `visible_rows: Arc<VisibleRows>` -- frozen viewport pre-paint
+///   snapshot from the worker. Source spans for each visible row
+///   live inside `rows[i].runs` as `RowRun::Source` variants;
+///   inlay text is woven into `rows[i].combined` with `Inlay`
+///   runs marking each splice. Replaces the legacy
+///   `visible_highlights: Arc<[Vec<StyledSpan>]>` reader
+///   (perf-plan A.2b.2b: TUI peer drops the `visible_spans`
+///   reader for the active pane).
 /// - `show_line_numbers: bool` -- cached typed-options value.
 ///   The typed-options ArcSwap read is wait-free per call, but
 ///   caching once per chain keeps gutter computation
@@ -71,7 +76,15 @@ use crate::app::{App, EchoLevel, Fold};
 pub struct FrameView<'a> {
     pub app: &'a App,
     pub folds: Arc<[Fold]>,
-    pub visible_highlights: Arc<[Vec<StyledSpan>]>,
+    /// Perf plan A.2 slice A.2b.2b: worker-published pre-paint
+    /// rows for the active document's viewport. `rows[i].runs`
+    /// carries source-text style runs (and inlay runs woven in
+    /// by the worker); the compose loop derives per-row
+    /// `StyledSpan`s from this via [`source_spans_from_runs`].
+    /// One Arc bump per `from_app` / `for_buffer` call; the
+    /// underlying `VisibleRows` is owned by the worker's
+    /// `ArcSwap` cell, so the snapshot read is wait-free.
+    pub visible_rows: Arc<lattice_host::render_state::VisibleRows>,
     pub show_line_numbers: bool,
     /// M.4: resolved per-pane in `for_buffer`; tracks the active
     /// buffer's setting in `from_app`. Reading this through the
@@ -123,14 +136,16 @@ impl<'a> FrameView<'a> {
     /// lock; the App's main loop owns the underlying vecs and
     /// the snapshot is consistent at the moment `from_app` runs.
     pub fn from_app(app: &'a App) -> Self {
-        // Phase 5.8.AF.5 / Slice X2.5: read syntax spans from the
-        // worker-published cell instead of the (legacy) UI-thread
-        // `editor.visible_highlights` mirror. The clone here is
-        // unavoidable — the FrameView snapshot decouples from the
-        // App for thread-safe rendering — but the parse that
-        // populated the cell ran on the worker, not the UI thread.
+        // Perf plan A.2 slice A.2b.2b: read the worker-published
+        // pre-paint rows instead of the legacy `visible_spans`
+        // cell. `RowPrepaint.runs` carries source-style runs
+        // (with inlay runs woven in at the same byte offsets the
+        // overlay code used to splice from `rs.syntax.inlay_hints`),
+        // so the compose loop derives per-row `StyledSpan`s from
+        // this single source of truth — the visible_spans reader
+        // is gone from the active-pane path.
         let rs = app.render_state.load_full();
-        let spans = rs.syntax.visible_spans.load();
+        let rows = rs.syntax.visible_rows.load_full();
         // Slice 3c.extension.fold-rs: pre-cache per-frame option +
         // mode-gate reads. One `read_editor` each at frame entry
         // (~7 RPCs total per frame) replaces N actor RPCs in the
@@ -151,10 +166,9 @@ impl<'a> FrameView<'a> {
             // `Arc<[Fold]>` on the active-document substate; one Arc
             // clone replaces the prior `Vec::clone + into_boxed_slice`.
             folds: rs.active_document.folds.clone(),
-            // Perf plan D.1: `spans.spans` is now `Arc<[Vec<StyledSpan>]>`
-            // so the chain that used to clone the Vec + box-slice it +
-            // re-Arc it collapses to a single Arc bump.
-            visible_highlights: spans.spans.clone(),
+            // A.2b.2b: one Arc bump; the worker owns the underlying
+            // `VisibleRows` (writes via `ArcSwap::store`).
+            visible_rows: rows,
             show_line_numbers: app.show_line_numbers(),
             relative_line_numbers: app.relative_line_numbers(),
             foldenable,
@@ -174,10 +188,10 @@ impl<'a> FrameView<'a> {
     /// stay tied to the active doc (inactive panes pull their own
     /// per-pane span snapshots through `app.editor.pane_highlights`).
     pub fn for_buffer(app: &'a App, buffer_id: crate::buffers::BufferId) -> Self {
-        // X2.5: same migration as `from_app` — read spans through
-        // the worker-published cell, not the legacy UI-thread field.
+        // A.2b.2b: same migration as `from_app` — read pre-paint
+        // rows through the worker-published cell.
         let rs = app.render_state.load_full();
-        let spans = rs.syntax.visible_spans.load();
+        let rows = rs.syntax.visible_rows.load_full();
         let foldenable = app.foldenable();
         // Perf plan C: same one-per-frame index as `from_app`. The
         // fold snapshot is doc-scoped (`active_document.folds`); the
@@ -193,10 +207,8 @@ impl<'a> FrameView<'a> {
             // `Arc<[Fold]>` on the active-document substate; one Arc
             // clone replaces the prior `Vec::clone + into_boxed_slice`.
             folds: rs.active_document.folds.clone(),
-            // Perf plan D.1: `spans.spans` is now `Arc<[Vec<StyledSpan>]>`
-            // so the chain that used to clone the Vec + box-slice it +
-            // re-Arc it collapses to a single Arc bump.
-            visible_highlights: spans.spans.clone(),
+            // A.2b.2b: one Arc bump (worker owns the cell).
+            visible_rows: rows,
             show_line_numbers: app.show_line_numbers_for(buffer_id),
             relative_line_numbers: app.relative_line_numbers_for(buffer_id),
             // Slice 3c.extension.fold-rs: per-buffer cache. The
@@ -245,6 +257,42 @@ impl<'a> FrameView<'a> {
     pub fn line_inside_closed_fold(&self, line: u32) -> bool {
         self.fold_index.line_inside_closed_fold(line)
     }
+}
+
+/// Perf plan A.2 slice A.2b.2b: derive `StyledSpan`s for a row's
+/// SOURCE text from the worker-published `RowPrepaint.runs`.
+/// Inlay runs are skipped — they cover `combined`-bytes that are
+/// not in the source line, so they don't appear in the
+/// styled-spans partition.
+///
+/// The result partitions the source line's utf-8 bytes
+/// exhaustively (sum of `Source.len` == source line byte length);
+/// the existing compose-loop overlays (which all index by source
+/// byte offsets) consume it identically to the legacy
+/// `view.visible_highlights[row]` slice.
+///
+/// One allocation per visible row; bounded by `viewport_height`
+/// (~120 at the captured baselines, typically <60). Could be
+/// eliminated by changing the compose loop to walk `&[RowRun]`
+/// directly with a Source-only filter, but that's a much larger
+/// surgery — A.2b.3 can re-bench and prioritise it if needed.
+fn source_spans_from_runs(
+    runs: &[lattice_host::render_state::RowRun],
+) -> Vec<StyledSpan> {
+    use lattice_host::render_state::RowRun;
+    let mut out: Vec<StyledSpan> = Vec::with_capacity(runs.len());
+    let mut cursor: usize = 0;
+    for r in runs {
+        if let RowRun::Source { len, style } = r {
+            let start = cursor;
+            let end = start + (*len as usize);
+            out.push(StyledSpan { start, end, style: *style });
+            cursor = end;
+        }
+        // Inlay runs cover `combined`-bytes that aren't part of the
+        // source line — don't advance the source cursor for them.
+    }
+    out
 }
 
 /// Render one terminal frame.
@@ -2304,9 +2352,13 @@ fn draw_inactive_document(
     //  1. `pane_highlights[idx]` when the pane has a different
     //     document than the active pane (refreshed by
     //     `refresh_pane_highlights`).
-    //  2. `visible_highlights` when the panes share a document
-    //     AND the inactive pane's scroll matches the active's
-    //     (avoids a redundant parse).
+    //  2. Derived from the worker's `visible_rows` when the panes
+    //     share a document AND the inactive pane's scroll matches
+    //     the active's (avoids a redundant parse). A.2b.2b: the
+    //     fallback used to clone `view.visible_highlights` —
+    //     `visible_rows.runs` now carries the same source spans
+    //     (`source_spans_from_runs` filters the Source variants
+    //     and the per-row partition matches the legacy shape).
     //  3. Empty otherwise -- plain text, no syntax. Acceptable
     //     for the rare same-doc-different-scroll case.
     let active_doc_id = if matches!(
@@ -2326,11 +2378,15 @@ fn draw_inactive_document(
         if let Some(spans) = pane_highlights {
             (*spans).clone()
         } else if active_doc_id == Some(pane.buffer_id) && pane.scroll == app.ad().scroll {
-            // Read from the FrameView snapshot rather than the
-            // live `app.editor.visible_highlights` -- protects against
-            // a multi-thread renderer racing with App's
-            // `refresh_highlights`.
-            view.visible_highlights.iter().cloned().collect()
+            // A.2b.2b: derive per-row Source spans from the worker's
+            // `visible_rows`. Each row contributes one `Vec<StyledSpan>`
+            // to the output (same shape the legacy
+            // `view.visible_highlights.iter().cloned()` produced).
+            view.visible_rows
+                .rows
+                .iter()
+                .map(|r| source_spans_from_runs(&r.runs))
+                .collect()
         } else {
             Vec::new()
         };
@@ -2961,17 +3017,30 @@ fn compose_visible_lines_inner(
         let mut body = if is_messages_buffer {
             messages_line_spans(&line_text, &app.theme, buffer_w)
         } else {
-            // Slice X2.6: read worker-published spans through the
-            // FrameView snapshot (already loaded once in
-            // `FrameView::from_app`); legacy `app.editor.visible_highlights`
-            // + the `highlights_for_buffer_line` accessor were retired.
+            // Perf plan A.2 slice A.2b.2b: derive per-row source
+            // spans from the worker-published `visible_rows.runs`
+            // (Source variants only). The legacy
+            // `view.visible_highlights[row]` reader is gone; the
+            // worker is now the single source of truth for both
+            // peers' span partitions, and the source spans
+            // partition the LINE TEXT exhaustively (Inlay runs
+            // cover combined-bytes that aren't in line_text).
+            //
+            // Inlay text is still spliced into the body in a
+            // post-overlay pass below (using `rs.syntax.inlay_hints`
+            // — A.2b.2). Migrating that splice path into the
+            // pre-overlay body so we'd source `combined` directly
+            // requires byte-coordinate remap helpers on every
+            // overlay; the cleaner shape is deferred until a
+            // bench shows it's worth the surgery.
             let scroll = view.app.ad().scroll;
             let row = (line_idx >= scroll).then(|| (line_idx - scroll) as usize);
-            let spans: &[StyledSpan] = row
-                .and_then(|idx| view.visible_highlights.get(idx))
-                .map(Vec::as_slice)
+            let row_runs: &[lattice_host::render_state::RowRun] = row
+                .and_then(|idx| view.visible_rows.rows.get(idx))
+                .map(|p| p.runs.as_slice())
                 .unwrap_or(&[]);
-            render_styled_line(&line_text, spans, buffer_w)
+            let derived_spans = source_spans_from_runs(row_runs);
+            render_styled_line(&line_text, &derived_spans, buffer_w)
         };
         // M.7.3.b: whitespace decoration pre-pass. Cheap when
         // `show_whitespace` is off (single bool check); when
@@ -5212,6 +5281,66 @@ mod tests {
         // Spans should be split so "world" is its own span; we look for the
         // match style's signature in the debug dump.
         assert!(dump.contains("world"), "rendered: {dump}");
+    }
+
+    // ---- Perf plan A.2 slice A.2b.2b: source_spans_from_runs ----
+
+    /// Empty input → empty output, no surprises.
+    #[test]
+    fn source_spans_from_runs_empty_input_yields_empty() {
+        let out = source_spans_from_runs(&[]);
+        assert!(out.is_empty());
+    }
+
+    /// Source-only runs round-trip into a partition of the source
+    /// line: `start`/`end` are byte offsets into the source text
+    /// (cumulative `len`s); style matches the run.
+    #[test]
+    fn source_spans_from_runs_source_only_partitions_source_bytes() {
+        use lattice_host::render_state::RowRun;
+        let runs = vec![
+            RowRun::Source { len: 3, style: Style::Keyword },
+            RowRun::Source { len: 5, style: Style::Default },
+            RowRun::Source { len: 2, style: Style::Function },
+        ];
+        let out = source_spans_from_runs(&runs);
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0], StyledSpan { start: 0, end: 3, style: Style::Keyword });
+        assert_eq!(out[1], StyledSpan { start: 3, end: 8, style: Style::Default });
+        assert_eq!(out[2], StyledSpan { start: 8, end: 10, style: Style::Function });
+    }
+
+    /// Inlay runs are skipped without advancing the source cursor
+    /// — the spans partition the SOURCE text, not the woven
+    /// `combined`. Two Source(3) runs split by an Inlay(5) still
+    /// produce contiguous spans [0..3, 3..6) in source-byte space.
+    #[test]
+    fn source_spans_from_runs_skips_inlay_without_advancing_cursor() {
+        use lattice_host::render_state::RowRun;
+        let runs = vec![
+            RowRun::Source { len: 3, style: Style::Keyword },
+            RowRun::Inlay { len: 5 }, // splice — NOT in source line
+            RowRun::Source { len: 3, style: Style::Default },
+        ];
+        let out = source_spans_from_runs(&runs);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0], StyledSpan { start: 0, end: 3, style: Style::Keyword });
+        assert_eq!(out[1], StyledSpan { start: 3, end: 6, style: Style::Default });
+    }
+
+    /// Leading inlay (e.g. trailing inlay on prior line semantic
+    /// — not typical for source-attached hints, but possible)
+    /// doesn't shift source-byte offsets.
+    #[test]
+    fn source_spans_from_runs_leading_inlay_keeps_first_source_at_zero() {
+        use lattice_host::render_state::RowRun;
+        let runs = vec![
+            RowRun::Inlay { len: 4 },
+            RowRun::Source { len: 5, style: Style::Default },
+        ];
+        let out = source_spans_from_runs(&runs);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0], StyledSpan { start: 0, end: 5, style: Style::Default });
     }
 
     // ---- Visual selection rendering ----

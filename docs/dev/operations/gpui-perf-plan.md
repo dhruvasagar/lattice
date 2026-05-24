@@ -25,8 +25,8 @@ Twelve slices shipped (A.4, F, A.3, C + follow-up, A.1, A.2a, B.1, D.1, E.1, E.2
 | E.1 — Pre-bucket overlay quads    | done   | `928754c` | Moves per-row × per-layer math from paint to prepaint.             |
 | E.2.α — Prepaint bench coverage   | done   | `f8aa713` | Extended `editor_element_frame` with E.1 overlay surface; numbers below. |
 | A.2b.1 — Publish `syntax.inlay_hints` | done | `377f635` | Publish-time gated + flattened inlay list on `SyntaxRenderState`. |
-| A.2b.2 — Worker weaves inlays + GPUI gate drop + TUI source-of-truth swap | done | — | `RowRun` → enum (`Source` / `Inlay`); `RowPrepaint.inlay_offsets`; `VisibleHighlightsKey.inlay_version` axis; GPUI active-pane fast path is unconditional; TUI reads `rs.syntax.inlay_hints` instead of raw LSP cache. |
-| A.2b.2b — TUI compose loop migrates to `visible_rows` | pending | — | Compose loop reads `RowPrepaint.combined` + `runs` + `inlay_offsets`; drops `visible_spans` reader for active pane. |
+| A.2b.2 — Worker weaves inlays + GPUI gate drop + TUI source-of-truth swap | done | `02403a8` | `RowRun` → enum (`Source` / `Inlay`); `RowPrepaint.inlay_offsets`; `VisibleHighlightsKey.inlay_version` axis; GPUI active-pane fast path is unconditional; TUI reads `rs.syntax.inlay_hints` instead of raw LSP cache. |
+| A.2b.2b — TUI `FrameView` reads `visible_rows` | done | — | `FrameView.visible_rows` replaces `visible_highlights`; `source_spans_from_runs` derives per-row `StyledSpan`s from `RowPrepaint.runs` (Source-only). Active-pane compose loop + inactive-pane fallback both migrated. Post-overlay inlay splice still in place pending byte-coordinate remap (deferred). |
 | A.2b.3 — Re-bench inlay weave     | pending | —         | Confirm GPUI prepaint surface drops 3–5× per the A.2.α projection; update baselines. |
 | B.2 — Overlay precompute on worker | deferred | —      | Blocked behind A.2b.2b (interval lists want the same row-shaped structure). |
 | B.4 — Identity-preserving sub-state Arc publish | deferred | — | Lower priority; bench impact unmeasured.                |
@@ -34,9 +34,9 @@ Twelve slices shipped (A.4, F, A.3, C + follow-up, A.1, A.2a, B.1, D.1, E.1, E.2
 | E.2 — Element-tree reuse          | pending | —         | Needs investigation pass on `EditorView::render` notify cadence.   |
 
 Known pre-existing gaps (not introduced by this plan, called out so they're not lost):
-- TUI compose loop still reads `visible_spans` for the active pane (A.2b.2b will close this).
 - `syntax_color` host-theme wiring still uses `Theme::default()`; A.2 is style-tagged so the cache survives theme switch, but the worker's RGB fallback is wrong.
 - `pane_highlights` inner storage isn't `Arc<[T]>` yet — one remaining D.1-style clone in `window.rs` pane fallback.
+- TUI inlay splice still runs as a post-overlay pass (using `rs.syntax.inlay_hints` since A.2b.2). Migrating it INTO the pre-overlay body so we source `combined` directly requires byte-coordinate remap helpers for every overlay (substitute / hlsearch / current_match / visual / semantic-tokens). Bench A.2b.3 will reveal whether that's worth the surgery.
 
 ## Captured baselines (2026-05-24, post-D.1)
 
@@ -158,9 +158,12 @@ Rationale:
 - Existing TUI inlay tests stay green (`inlay_hint_overlay_splices_virtual_text`, `inlay_hint_overlay_suppressed_when_mode_off`) — they exercise the new source-of-truth path end-to-end.
 - Pre-existing renderer behaviour preserved: inactive panes still render their own per-buffer inlay hints via the legacy `build_line_with_inlays` path.
 
-### A.2b.2b — TUI compose loop migrates to `visible_rows` [pending]
-- Active-pane `compose_visible_lines` reads `RowPrepaint.combined` + `runs` + `inlay_offsets` instead of `view.visible_highlights` + raw line text + post-hoc inlay splice. Drops `visible_spans` reader for the active pane.
-- Inactive pane (`draw_inactive_document`) keeps `pane_highlights` — the worker only publishes rows for the active document.
+### A.2b.2b — TUI `FrameView` reads `visible_rows` [pending commit]
+- `FrameView.visible_highlights: Arc<[Vec<StyledSpan>]>` removed; replaced by `FrameView.visible_rows: Arc<VisibleRows>`. Both constructors (`from_app`, `for_buffer`) now `load_full()` the worker's `visible_rows` cell instead of the legacy `visible_spans` cell.
+- New helper `source_spans_from_runs(&[RowRun]) -> Vec<StyledSpan>` derives per-row source spans from `RowPrepaint.runs`, filtering out `Inlay` variants. The result partitions the SOURCE line's utf-8 bytes exhaustively (so the existing overlay code — which indexes by source byte — consumes it identically to the legacy slice).
+- Active-pane `compose_visible_lines_inner`: replaced the `view.visible_highlights[row]` lookup with a derived `source_spans_from_runs(&row.runs)`. Inactive-pane `draw_inactive_document`: same-doc-same-scroll fallback now derives spans from `view.visible_rows.rows.iter().map(...)` instead of cloning the legacy slice.
+- Post-overlay inlay splice (using `rs.syntax.inlay_hints`) stays as-is. Sourcing `combined` directly into the pre-overlay body would require byte-coordinate remap helpers on every overlay layer; deferred until A.2b.3 says it's worth the surgery.
+- 4 new render-side tests on `source_spans_from_runs` (empty / source-only / inlay-skip / leading-inlay).
 - Closes the "TUI drops `visible_spans` reader" goal that A.2b was originally scoped to deliver.
 
 ### A.2b.3 — Re-bench inlay weave [pending]
@@ -194,12 +197,14 @@ Rationale:
 - **Investigation findings** that informed scope: render() has 4 `cx.notify()` callers (worker bridge, popup-dismiss, on_key_down, tab click) — input-driven cadence, no over-fire. Conditional overlay-block construction is already correct (E/F/G/H/I `return None` and skip when state is `None`). The remaining cost surfaces (per-char `div()` cells in popup / picker / completion overlays; tabline label `SharedString` churn; `render_state.load()` micro-churn) are real but only active during overlay-open frames or sub-µs in steady state.
 
 ### E.2.* — Remaining sub-slices [bench-justified ordering]
-1. **A.2b.2b** (TUI compose loop → `visible_rows`) — closes the "TUI drops `visible_spans` reader" goal; lets the worker be the single source of truth for inlay weaving across both peers.
-2. **A.2b.3** (re-bench) — capture inlay-weave savings now that GPUI's `line_has_inlays` gate is gone; verify the 3–5× projection.
-3. **E.2.a** (promote popup overlay body to a shared `OverlayElement`) — only matters while popup is open; defer until someone profiles popup-open frames and finds them hot.
-4. **E.2.b / c** (same fix for picker / completion overlays) — same justification as E.2.a; smaller surface.
-5. **E.2.d** (tabline `SharedString` identity reuse) — every frame; tiny win; defer.
-6. **E.2.e** (consolidate `render_state.load*()` in render + paint_pane) — sub-µs; skip unless cleanup pressure arises.
+1. **A.2b.3** (re-bench) — capture inlay-weave savings now that GPUI's `line_has_inlays` gate is gone AND the TUI `FrameView` reads `visible_rows`; verify the 3–5× projection.
+2. **E.2.a** (promote popup overlay body to a shared `OverlayElement`) — only matters while popup is open; defer until someone profiles popup-open frames and finds them hot.
+3. **E.2.b / c** (same fix for picker / completion overlays) — same justification as E.2.a; smaller surface.
+4. **E.2.d** (tabline `SharedString` identity reuse) — every frame; tiny win; defer.
+5. **E.2.e** (consolidate `render_state.load*()` in render + paint_pane) — sub-µs; skip unless cleanup pressure arises.
+
+Also queued (out of E-series but on the perf-plan tail):
+- **TUI inlay pre-weave** — fold the post-overlay inlay splice INTO the pre-overlay body so the TUI sources `combined` directly. Needs byte-coordinate remap helpers on every overlay; only worth it if the bench shows the splice is hot.
 
 ## Instrumentation
 

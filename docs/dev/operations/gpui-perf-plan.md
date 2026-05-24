@@ -9,7 +9,7 @@ Dominant costs from traces (pre-plan):
 
 ## Status as of 2026-05-24
 
-Nine slices shipped (A.4, F, A.3, C + follow-up, A.1, A.2a, B.1, D.1, E.1). The plan's `ensure_us` and `highlights_us` UI-thread costs have been attacked: ensure work is gated and fold geometry is O(log); the worker now publishes pre-painted rows via `Arc<[T]>` so the renderer's HOLD path is O(1) regardless of viewport size; and overlay quads are pre-bucketed in prepaint so paint is an allocation-free walk.
+Ten slices shipped (A.4, F, A.3, C + follow-up, A.1, A.2a, B.1, D.1, E.1, E.2.α). The plan's `ensure_us` and `highlights_us` UI-thread costs have been attacked: ensure work is gated and fold geometry is O(log); the worker now publishes pre-painted rows via `Arc<[T]>` so the renderer's HOLD path is O(1) regardless of viewport size; overlay quads are pre-bucketed in prepaint so paint is an allocation-free walk; and the renderer-thread prepaint phase now has bench coverage that justifies the next slice (A.2b — inlay weave on worker) over further E-series work.
 
 | Slice                             | Status | Commit    | Notes                                                              |
 |-----------------------------------|--------|-----------|--------------------------------------------------------------------|
@@ -23,7 +23,8 @@ Nine slices shipped (A.4, F, A.3, C + follow-up, A.1, A.2a, B.1, D.1, E.1). The 
 | B.1 — Dirty-row cache in worker   | done   | `12c330b` | Reuses `RowPrepaint` when snapshot + text_version unchanged.       |
 | D.1 — `Arc<[T]>` publish types    | done   | `cc0ffb7` | Closed the bench regression D.1 was scoped to fix.                 |
 | E.1 — Pre-bucket overlay quads    | done   | `928754c` | Moves per-row × per-layer math from paint to prepaint.             |
-| A.2b — Inlay weave on worker      | deferred | —       | Would lift the `line_has_inlays` fast-path restriction.            |
+| E.2.α — Prepaint bench coverage   | done   | `f8aa713` | Extended `editor_element_frame` with E.1 overlay surface; numbers below. |
+| A.2b — Inlay weave on worker      | bench-justified | — | Inlay weave costs 3–5× the overlay weave on the prepaint bench — next bench-prioritised slice. |
 | B.2 — Overlay precompute on worker | deferred | —      | Blocked behind A.2b.                                               |
 | B.4 — Identity-preserving sub-state Arc publish | deferred | — | Lower priority; bench impact unmeasured.                |
 | D.* — rayon / SmallVec / bump-alloc | dropped | —       | Bench review (below) didn't justify the impl cost.                 |
@@ -54,7 +55,25 @@ Reproduce: `cargo bench -q --bench highlights_worker`. Numbers are criterion med
 
 `recompute_on_scroll` scales with rows by construction (one row composed per visible line) but inherits a ~6–7% bonus from D.1's reduced clone churn. `cache_hit` is unchanged — D.1 had no path to short-circuit further when the key matches.
 
-**Caveat — what we don't yet measure.** The plan's headline `ensure_us` / `highlights_us` are UI-thread costs, not worker costs. The worker bench above is what we own; a GPUI `frame_us` bench is the gap called out in the acceptance gates and not closed yet. Until that lands, ship-side claims about `ensure_us` improvement from A.3 + C rest on the trace evidence in the corresponding commits, not on a regression-gated benchmark.
+**Caveat — what we don't yet measure.** The plan's headline `ensure_us` / `highlights_us` are UI-thread costs, not worker costs. The worker bench above is what we own; the renderer-thread prepaint bench below (E.2.α) covers the editor-element prepaint surface. A **true full-frame `frame_us` bench** (shaping + `paint_quad` submission + GPU layout) **is not feasible headlessly** — gpui 0.2.2 doesn't expose a `TestAppContext` on our build, so the paint phase has to be measured via manual `RUST_LOG=lattice_gpui::perf=debug --features profile-frames` traces. Ship-side claims about `ensure_us` improvement from A.3 + C rest on trace evidence in those commits, not on a regression-gated benchmark.
+
+### Renderer-thread prepaint baselines (2026-05-24, post-E.1)
+
+Reproduce: `cargo bench -q -p lattice-ui-gpui --features window,bench-internals --bench editor_element_frame -- --quick --noplot`. Three bench groups cover the editor-element prepaint surface — what the renderer thread does per visible row before any `shape_line` or `paint_quad` call.
+
+| Bench group                              | viewport 24 | viewport 60 | viewport 120 | Shape   |
+|------------------------------------------|-------------|-------------|--------------|---------|
+| `editor_element_frame_pre_paint`         | 21.6 µs     | 52.1 µs     | 99.0 µs      | O(rows) |
+| `editor_element_frame_with_inlays`       | 26.7 µs     | 59.0 µs     | 126.1 µs     | O(rows) |
+| `editor_element_frame_with_overlays`     | 22.4 µs     | 53.1 µs     | 103.8 µs     | O(rows) |
+
+**Read-out:**
+
+- **Base pre-paint** is 99 µs at viewport 120 — well under the 1 ms budget the bench's header text targets. At 120 Hz the 8 ms frame budget has plenty of headroom on the prepaint phase.
+- **Overlay weave (E.1's surface)** adds ~5 µs at viewport 120 (~5%) — `push_range_quads` walks four overlay layers with ~17 synthetic ranges (5 doc-highlights + 10 hlsearch + 1 visual + 1 substitute). At ~40 ns / row the per-row overlay cost is negligible; any future E.2.* sub-slice targeting overlays would need to find a much bigger inefficiency than this to justify implementation cost.
+- **Inlay weave** adds 5/7/23 µs across viewports (the per-row splicing cost climbs with span count and inlay count). This is **3–5× heavier than the overlay surface** and gives A.2b (inlay weave on worker) bench-justified priority over any further E-series work on the prepaint phase.
+
+**What's NOT in these numbers:** shaping (cosmic-text via `WindowTextSystem::shape_line`) and `paint_quad` submission. Both happen inside the actual `EditorElement::prepaint` / `EditorElement::paint` methods that require a real `Window`. The bench reaches the *helpers* (`build_line_with_inlays`, `byte_to_combined_col`, `push_range_quads`) via the `bench-internals` feature; the framework methods themselves can't be called headlessly. Regressions to those phases need manual `profile-frames` traces.
 
 ### Bench-driven D scope reduction
 
@@ -146,9 +165,18 @@ Rationale:
 - `paint_range_overlay` removed; replaced by `push_range_quads` (same intersection logic, pushes tuples instead of painting).
 - 8 new unit tests on `push_range_quads` cover rows outside range, single-line clipping, multi-line start/middle/end rows, inlay-shifted columns, empty ranges, and layering preservation.
 
-### E.2 — Element-tree reuse [pending]
-- `EditorView::render` (800+ lines, runs every `cx.notify`) is the candidate for sub-element reuse.
-- Needs an investigation pass before scoping: which sub-elements rebuild unnecessarily; whether the notify cadence is over-firing.
+### E.2.α — Prepaint bench coverage [`f8aa713`]
+- Extended `benches/editor_element_frame.rs` with `editor_element_frame_with_overlays`: per-row `push_range_quads` for 5 doc-highlights + 10 hlsearch + 1 visual + 1 substitute, across viewports 24 / 60 / 120.
+- Required exposing `push_range_quads` as `pub` (it stays `pub(crate)`-visible in default builds via the module's `pub(crate) mod` gating; `pub` in default builds; full `pub` reach only under `bench-internals`).
+- Captured baselines (above) confirm the prepaint phase is well under budget at viewport 120 (~104 µs with overlays) and that inlay weave dominates overlay weave 3–5×.
+- **Investigation findings** that informed scope: render() has 4 `cx.notify()` callers (worker bridge, popup-dismiss, on_key_down, tab click) — input-driven cadence, no over-fire. Conditional overlay-block construction is already correct (E/F/G/H/I `return None` and skip when state is `None`). The remaining cost surfaces (per-char `div()` cells in popup / picker / completion overlays; tabline label `SharedString` churn; `render_state.load()` micro-churn) are real but only active during overlay-open frames or sub-µs in steady state.
+
+### E.2.* — Remaining sub-slices [bench-justified ordering]
+1. **A.2b** (inlay weave on worker) — re-prioritised above remaining E.2 work; bench shows inlay weave is 3–5× the overlay cost. Lifts the `line_has_inlays` fast-path restriction in GPUI's prepaint and lets the TUI peer drop its `visible_spans` reader.
+2. **E.2.a** (promote popup overlay body to a shared `OverlayElement`) — only matters while popup is open; defer until someone profiles popup-open frames and finds them hot.
+3. **E.2.b / c** (same fix for picker / completion overlays) — same justification as E.2.a; smaller surface.
+4. **E.2.d** (tabline `SharedString` identity reuse) — every frame; tiny win; defer.
+5. **E.2.e** (consolidate `render_state.load*()` in render + paint_pane) — sub-µs; skip unless cleanup pressure arises.
 
 ## Instrumentation
 
@@ -161,7 +189,9 @@ Each gate requires: reference machine class, fixed corpus, release-profile build
 
 - Idle: `frame_us < 3 ms`.
 - Keystrokes (medium corpus — define once, e.g. `syntax.rs` ~8 kLOC, 150 visible rows, default theme): p50 < 6 ms, p95 < 8 ms, p99 < 10 ms.
-- Regression gate: `benches/highlights_worker.rs` is wired in CI for the worker hot path (baselines above). A GPUI `frame_us` bench for the UI side is **not yet wired** — outstanding.
+- Regression gate (worker hot path): `benches/highlights_worker.rs` is wired in CI for compile + baseline-recording on main pushes (`ci.yml:155, :179`). Baselines above.
+- Regression gate (renderer-thread prepaint): `benches/editor_element_frame.rs` is wired the same way. Three groups cover the prepaint surface; E.2.α baselines above.
+- **Gap (paint phase):** shaping + `paint_quad` + GPU layout aren't bench-gateable headlessly (no `TestAppContext` on gpui 0.2.2). Regressions there need manual `profile-frames` traces, not CI numbers.
 
 ## Implementation pointers
 

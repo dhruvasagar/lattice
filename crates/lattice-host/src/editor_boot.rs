@@ -616,6 +616,16 @@ impl Editor {
         let syntax_visible_rows_cell: std::sync::Arc<
             arc_swap::ArcSwap<crate::render_state::VisibleRows>,
         > = std::sync::Arc::default();
+        // Perf plan B.2 slice B.2.a: parallel cell carrying the
+        // worker's per-row pre-bucketed static-overlay quads
+        // (doc_highlight / all_matches / substitute). Same
+        // same-Arc-identity construction as
+        // `syntax_visible_rows_cell` so the worker's `.store()`
+        // is observable through `RenderState.load_full()` across
+        // later publishes.
+        let syntax_static_overlay_quads_cell: std::sync::Arc<
+            arc_swap::ArcSwap<crate::render_state::StaticOverlayQuads>,
+        > = std::sync::Arc::default();
         let render_state_arc: std::sync::Arc<arc_swap::ArcSwap<crate::render_state::RenderState>> =
             std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
                 crate::render_state::RenderState::default(),
@@ -632,6 +642,7 @@ impl Editor {
             highlight_wake.clone(),
             syntax_visible_spans_cell.clone(),
             syntax_visible_rows_cell.clone(),
+            syntax_static_overlay_quads_cell.clone(),
             paint_request.clone(),
         ));
 
@@ -715,6 +726,7 @@ impl Editor {
             highlight_wake,
             syntax_visible_spans_cell,
             syntax_visible_rows_cell,
+            syntax_static_overlay_quads_cell,
             paint_request,
             lsp_log_event_rx: Some(lsp_log_event_rx),
             lsp_progress_event_rx: Some(lsp_progress_event_rx),

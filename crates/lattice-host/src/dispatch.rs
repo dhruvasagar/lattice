@@ -369,6 +369,30 @@ impl Editor {
         // byte-aligned with the published list by construction and
         // avoids the worker having to re-hash on every wake.
         let (inlay_hints, inlay_version_val) = self.build_active_inlay_hints();
+        // Perf plan B.2 slice B.2.a: pre-convert the active buffer's
+        // LSP document-highlights from utf-16 char ranges to utf-8
+        // byte ranges at publish time so the worker can bucket them
+        // directly. Empty when no cache / buffer mismatch / no LSP —
+        // the steady-state no-highlight path stays on a cheap branch.
+        let doc_highlights_arc = self.build_active_doc_highlights_utf8();
+        // Substitute-preview matches — already utf-8. Materialise to
+        // a slice for the version hash; the publisher also re-wraps
+        // the SubstitutePreview below on `active_document.substitute_preview`
+        // for the cursor-coupled consumers that still read it directly.
+        let substitute_matches_for_hash: Vec<lattice_protocol::position::Range> = self
+            .substitute_preview
+            .as_ref()
+            .map(|p| p.matches.clone())
+            .unwrap_or_default();
+        // Hash all three static-overlay layers into one version axis
+        // so the worker's overlay-bucket cache invalidates whenever
+        // any of them changes. The hash is byte-aligned with the
+        // published lists by construction (same fold over same data).
+        let static_overlay_version_val = static_overlay_state_version(
+            &doc_highlights_arc,
+            &self.all_matches,
+            &substitute_matches_for_hash,
+        );
         // Start from the empty `Default` snapshot, then override
         // each sub-state whose backing source has been wired up.
         // Slice 3a wires only `diagnostics`; Slice 3b/3c add
@@ -633,9 +657,82 @@ impl Editor {
                 // list by construction.
                 inlay_hints,
                 inlay_version: inlay_version_val,
+                // Perf plan B.2 slice B.2.a: clone the worker's
+                // overlay-quads cell into the publish so renderers
+                // read the worker's latest write via
+                // `rs.syntax.static_overlay_quads.load()`. Same Arc
+                // identity as the cell the worker holds.
+                static_overlay_quads: self.syntax_static_overlay_quads_cell.clone(),
+                doc_highlights: doc_highlights_arc,
+                static_overlay_version: static_overlay_version_val,
             }),
             ..RenderState::default()
         }
+    }
+
+    /// Perf plan B.2 slice B.2.a: build the active buffer's LSP
+    /// document-highlight list with utf-16 char ranges pre-converted
+    /// to utf-8 byte ranges, in the same coordinate space the
+    /// worker uses to bucket overlays.
+    ///
+    /// Empty when:
+    /// - no `documentHighlight` cache exists yet (no response,
+    ///   `:lsp-highlight-cursor-mode` off, or LSP not attached),
+    /// - the cache's `buffer_id` doesn't match the active buffer
+    ///   (a stale response that raced a buffer switch).
+    ///
+    /// Skips any highlight whose start/end line falls outside the
+    /// active buffer's current line count — defends against stale
+    /// LSP responses against a since-deleted line range.
+    fn build_active_doc_highlights_utf8(
+        &self,
+    ) -> std::sync::Arc<[lattice_protocol::position::Range]> {
+        let dh_guard = self.lsp_document_highlights.load_full();
+        let Some(cache) = dh_guard.as_deref() else {
+            return std::sync::Arc::from(
+                Vec::<lattice_protocol::position::Range>::new().into_boxed_slice(),
+            );
+        };
+        if cache.buffer_id != self.document_buffer_id {
+            return std::sync::Arc::from(
+                Vec::<lattice_protocol::position::Range>::new().into_boxed_slice(),
+            );
+        }
+        let snapshot = self.document.snapshot();
+        let total_lines = snapshot.buffer.line_count();
+        let mut out: Vec<lattice_protocol::position::Range> =
+            Vec::with_capacity(cache.highlights.len());
+        for h in &cache.highlights {
+            let start_line = h.range.start.line;
+            let end_line = h.range.end.line;
+            if start_line >= total_lines || end_line >= total_lines {
+                continue;
+            }
+            let start_text = snapshot
+                .buffer
+                .line(start_line)
+                .unwrap_or_default();
+            let end_text = snapshot.buffer.line(end_line).unwrap_or_default();
+            let start_byte = lattice_lsp::position::utf16_column_to_utf8_byte(
+                &start_text,
+                h.range.start.character,
+            );
+            let end_byte = lattice_lsp::position::utf16_column_to_utf8_byte(
+                &end_text,
+                h.range.end.character,
+            );
+            out.push(lattice_protocol::position::Range {
+                start: lattice_protocol::position::Position {
+                    line: start_line,
+                    byte: start_byte,
+                },
+                end: lattice_protocol::position::Position {
+                    line: end_line,
+                    byte: end_byte,
+                },
+            });
+        }
+        std::sync::Arc::from(out.into_boxed_slice())
     }
 
     /// Phase 5.8.AF.5 / Slice 3a. Build a fresh `RenderState`

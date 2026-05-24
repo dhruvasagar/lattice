@@ -355,6 +355,14 @@ pub struct App {
     pub syntax_visible_rows_cell: std::sync::Arc<
         arc_swap::ArcSwap<lattice_host::render_state::VisibleRows>,
     >,
+    /// Perf plan B.2 slice B.2.a: renderer-owned clone of the
+    /// editor's `syntax_static_overlay_quads_cell`. Same role +
+    /// stability rationale as `syntax_visible_rows_cell` — the
+    /// TUI App keeps a clone so `refresh_highlights` can pass
+    /// the 4th `recompute` argument without an actor round-trip.
+    pub syntax_static_overlay_quads_cell: std::sync::Arc<
+        arc_swap::ArcSwap<lattice_host::render_state::StaticOverlayQuads>,
+    >,
     /// Handle to the per-document actor (DESIGN.md §5.2.1, §5.7).
     /// The actor owns the writable `Document` (from `lattice-core`);
     /// mutations route through it; reads load a versioned snapshot.

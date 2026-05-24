@@ -39,6 +39,9 @@ impl App {
         // so `refresh_highlights` can pass the 3rd `recompute`
         // argument without an actor round-trip.
         let syntax_visible_rows_cell = editor.syntax_visible_rows_cell.clone();
+        // Perf plan B.2 slice B.2.a: static-overlay-quads cell clone.
+        let syntax_static_overlay_quads_cell =
+            editor.syntax_static_overlay_quads_cell.clone();
         // Slice 3c.final.E.swap: run boot-time setup directly on
         // the owned Editor BEFORE handing it to the actor. Every
         // call below resolves to a host-side method; the App-side
@@ -79,6 +82,7 @@ impl App {
             render_state,
             syntax_visible_spans_cell,
             syntax_visible_rows_cell,
+            syntax_static_overlay_quads_cell,
             pane_render_registry: crate::render::build_pane_render_registry(),
             theme: crate::theme::Theme::default(),
         };

@@ -212,6 +212,16 @@ pub(crate) struct EditorElement {
     /// byte ranges by the caller (utf-16→utf-8 happens at the
     /// boundary).
     pub(crate) doc_highlights: Vec<lattice_core::protocol::position::Range>,
+    /// Perf plan B.2 slice B.2.a: worker-produced per-row
+    /// pre-bucketed static-overlay quads (doc_highlight,
+    /// all_matches, substitute). `Some` for the active pane
+    /// (consumed in prepaint as the base of
+    /// `overlay_quads_per_row`); `None` for inactive panes
+    /// (which fall through to the legacy per-frame
+    /// `push_range_quads` walk for the only static layer they
+    /// paint — doc_highlight).
+    pub(crate) worker_static_overlay_quads:
+        Option<std::sync::Arc<lattice_host::render_state::StaticOverlayQuads>>,
     /// Background colour for the cursor line
     /// (`host_theme.cursor_line_bg` resolved by the caller, fallback
     /// Catppuccin surface0).
@@ -531,19 +541,150 @@ impl Element for EditorElement {
         let current_match = &self.current_match;
         let visual_range = &self.visual_range;
         let substitute_matches = &self.substitute_matches;
+        // Perf plan B.2 slice B.2.a: active pane consumes the
+        // worker's pre-bucketed static quads as the base of
+        // `overlay_quads_per_row` and only walks the cursor-coupled
+        // layers (`current_match`, `visual_range`) per frame.
+        // Inactive panes fall through to the legacy per-frame walk
+        // for the only static layer they paint — doc_highlight.
+        let worker_static_overlay_quads: Option<&[Vec<lattice_host::render_state::RowOverlayQuad>]> =
+            self.worker_static_overlay_quads
+                .as_ref()
+                .map(|q| q.quads.as_ref());
+        let color_for_layer = |layer: lattice_host::render_state::OverlayLayer| -> u32 {
+            match layer {
+                lattice_host::render_state::OverlayLayer::DocHighlight => 0x585b70,
+                lattice_host::render_state::OverlayLayer::AllMatches => 0x6c7086,
+                lattice_host::render_state::OverlayLayer::Substitute => 0xf38ba8,
+            }
+        };
         let overlay_quads_for_row =
-            |line_idx: u32, line_text: &str, inlay_offsets: &[(u32, u32)]| -> Vec<(u32, u32, u32)> {
-                let mut quads = Vec::new();
-                push_range_quads(&mut quads, doc_highlights, line_idx, line_text, inlay_offsets, 0x585b70);
+            |line_idx: u32,
+             rel_row: usize,
+             line_text: &str,
+             inlay_offsets: &[(u32, u32)]|
+             -> Vec<(u32, u32, u32)> {
+                let mut quads: Vec<(u32, u32, u32)> = Vec::new();
                 if is_active {
-                    push_range_quads(&mut quads, all_matches, line_idx, line_text, inlay_offsets, 0x6c7086);
+                    // Worker bucket carries doc_highlight + all_matches +
+                    // substitute already in combined-column space.
+                    // Splice cursor-coupled layers in between AllMatches
+                    // and Substitute to preserve the original precedence
+                    // (doc_highlight → all_matches → current_match →
+                    // visual → substitute).
+                    if let Some(rows) = worker_static_overlay_quads
+                        && let Some(row) = rows.get(rel_row)
+                    {
+                        for q in row {
+                            match q.layer {
+                                lattice_host::render_state::OverlayLayer::DocHighlight
+                                | lattice_host::render_state::OverlayLayer::AllMatches => {
+                                    quads.push((
+                                        q.col_start,
+                                        q.col_end,
+                                        color_for_layer(q.layer),
+                                    ));
+                                }
+                                lattice_host::render_state::OverlayLayer::Substitute => {
+                                    // Defer substitute until after the
+                                    // cursor-coupled layers are pushed.
+                                }
+                            }
+                        }
+                    } else {
+                        // Worker bucket missing (boot before first
+                        // recompute, or buffer mismatch). Fall back to
+                        // the legacy per-frame walk so static overlays
+                        // still paint correctly.
+                        push_range_quads(
+                            &mut quads,
+                            doc_highlights,
+                            line_idx,
+                            line_text,
+                            inlay_offsets,
+                            color_for_layer(
+                                lattice_host::render_state::OverlayLayer::DocHighlight,
+                            ),
+                        );
+                        push_range_quads(
+                            &mut quads,
+                            all_matches,
+                            line_idx,
+                            line_text,
+                            inlay_offsets,
+                            color_for_layer(
+                                lattice_host::render_state::OverlayLayer::AllMatches,
+                            ),
+                        );
+                    }
                     if let Some(r) = current_match {
-                        push_range_quads(&mut quads, std::slice::from_ref(r), line_idx, line_text, inlay_offsets, 0xf9e2af);
+                        push_range_quads(
+                            &mut quads,
+                            std::slice::from_ref(r),
+                            line_idx,
+                            line_text,
+                            inlay_offsets,
+                            0xf9e2af,
+                        );
                     }
                     if let Some(r) = visual_range {
-                        push_range_quads(&mut quads, std::slice::from_ref(r), line_idx, line_text, inlay_offsets, 0x45475a);
+                        push_range_quads(
+                            &mut quads,
+                            std::slice::from_ref(r),
+                            line_idx,
+                            line_text,
+                            inlay_offsets,
+                            0x45475a,
+                        );
                     }
-                    push_range_quads(&mut quads, substitute_matches, line_idx, line_text, inlay_offsets, 0xf38ba8);
+                    // Push the deferred substitute layer last so it
+                    // sits on top of cursor + visual per the original
+                    // precedence. Worker bucket again preferred; legacy
+                    // walk fallback if no bucket exists.
+                    if let Some(rows) = worker_static_overlay_quads
+                        && let Some(row) = rows.get(rel_row)
+                    {
+                        for q in row {
+                            if matches!(
+                                q.layer,
+                                lattice_host::render_state::OverlayLayer::Substitute
+                            ) {
+                                quads.push((
+                                    q.col_start,
+                                    q.col_end,
+                                    color_for_layer(q.layer),
+                                ));
+                            }
+                        }
+                    } else {
+                        push_range_quads(
+                            &mut quads,
+                            substitute_matches,
+                            line_idx,
+                            line_text,
+                            inlay_offsets,
+                            color_for_layer(
+                                lattice_host::render_state::OverlayLayer::Substitute,
+                            ),
+                        );
+                    }
+                } else {
+                    // Inactive pane: only doc_highlight is painted
+                    // (the other static layers + cursor-coupled
+                    // layers are active-pane state). Bucket isn't
+                    // available for inactive panes; per-frame walk
+                    // stays on the cheap N path (doc_highlight is
+                    // capped tiny by the LSP response).
+                    push_range_quads(
+                        &mut quads,
+                        doc_highlights,
+                        line_idx,
+                        line_text,
+                        inlay_offsets,
+                        color_for_layer(
+                            lattice_host::render_state::OverlayLayer::DocHighlight,
+                        ),
+                    );
                 }
                 quads
             };
@@ -583,7 +724,7 @@ impl Element for EditorElement {
                     }
                 };
                 let diag_segs = diag_segments_for_row(line_idx as u32, line, &inlay_offsets);
-                let overlay_quads = overlay_quads_for_row(line_idx as u32, line, &inlay_offsets);
+                let overlay_quads = overlay_quads_for_row(line_idx as u32, rel, line, &inlay_offsets);
                 shaped_text.push(shaped);
                 row_meta.push((line_idx as u32, line.to_string()));
                 inlay_offsets_per_row.push(inlay_offsets);
@@ -616,7 +757,7 @@ impl Element for EditorElement {
                     }
                 };
                 let diag_segs = diag_segments_for_row(meta.line_idx, line, &inlay_offsets);
-                let overlay_quads = overlay_quads_for_row(meta.line_idx, line, &inlay_offsets);
+                let overlay_quads = overlay_quads_for_row(meta.line_idx, rel, line, &inlay_offsets);
                 shaped_text.push(shaped);
                 row_meta.push((meta.line_idx, line.to_string()));
                 inlay_offsets_per_row.push(inlay_offsets);

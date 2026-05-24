@@ -597,6 +597,13 @@ impl EditorView {
         // legacy `visible_spans` path that reads from
         // `pane_highlights` (per-pane StyledSpan cache).
         let active_rows_guard = rs_guard.syntax.visible_rows.load();
+        // Perf plan B.2 slice B.2.a: worker's per-row pre-bucketed
+        // static-overlay quads (doc_highlight / all_matches /
+        // substitute). Active pane consumes this directly; inactive
+        // panes fall through to the legacy per-frame bucket (only
+        // doc_highlight is painted for them and N is small).
+        let active_overlay_quads_guard =
+            rs_guard.syntax.static_overlay_quads.load();
         // Phase 5.8.AF.5 / Slice 3c.final.B (group 1): pane tree
         // + buffer registry read through `rs_guard.panes` /
         // `rs_guard.buffers` instead of `editor.X` directly.
@@ -1042,6 +1049,15 @@ impl EditorView {
                 (*active_rows_guard).clone()
             } else {
                 std::sync::Arc::new(lattice_host::render_state::VisibleRows::default())
+            },
+            // Perf plan B.2 slice B.2.a: active pane consumes the
+            // worker's static-overlay bucket; inactive panes keep
+            // the per-frame `push_range_quads` path (only
+            // doc_highlight is painted there and N is small).
+            worker_static_overlay_quads: if render_active {
+                Some((*active_overlay_quads_guard).clone())
+            } else {
+                None
             },
             scroll: pane_scroll,
             viewport_height,

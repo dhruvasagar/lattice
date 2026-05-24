@@ -574,6 +574,45 @@ pub struct SyntaxRenderState {
     /// hit). Built by the publisher in the same pass that builds
     /// `inlay_hints` so the two stay aligned by construction.
     pub inlay_version: u64,
+    /// Perf plan B.2: worker-published output cell for per-row
+    /// pre-bucketed STATIC overlay quads (doc_highlight,
+    /// all_matches, substitute). Same nested
+    /// `Arc<ArcSwap<...>>` shape as `visible_rows` so the worker
+    /// can swap a fresh bucket without rebuilding the outer
+    /// `RenderState`. Inner `Arc` identity is the per-cell handle
+    /// cloned from `Editor::syntax_static_overlay_quads_cell` at
+    /// every publish.
+    ///
+    /// Active-pane only — inactive panes keep the legacy
+    /// per-frame bucket path in their renderer (the worker only
+    /// pre-paints the active pane's window). Cursor-coupled
+    /// layers (`visual_range`, `current_match`) are merged in by
+    /// the renderer at prepaint time; they're cheap per-row
+    /// (one range each) and would force a worker wake on every
+    /// cursor blink if pushed off-thread.
+    pub static_overlay_quads: Arc<arc_swap::ArcSwap<StaticOverlayQuads>>,
+    /// Perf plan B.2: active document's LSP document-highlight
+    /// ranges, pre-converted from utf-16 columns to utf-8 byte
+    /// offsets at publish time. The worker consumes this list
+    /// directly when bucketing the `DocHighlight` layer instead
+    /// of forcing the renderer to repeat the per-frame
+    /// conversion against the snapshot text. Empty when the
+    /// active buffer has no highlights or the LSP isn't attached
+    /// — matches the steady-state no-highlight path on a single
+    /// cheap branch. Parallels [`Self::inlay_hints`] (A.2b.1).
+    pub doc_highlights: Arc<[lattice_protocol::position::Range]>,
+    /// Perf plan B.2: content hash of the static-overlay payload
+    /// (doc_highlights + all_matches + substitute_matches).
+    /// Paired with
+    /// [`VisibleHighlightsKey::static_overlay_version`] so the
+    /// worker invalidates its overlay bucket when any layer
+    /// changes (search query bump, LSP response, substitute
+    /// input edit). Independent from `inlay_version` so search
+    /// churn doesn't invalidate the row cache and vice versa.
+    /// Built by the publisher from the same payload in
+    /// [`static_overlay_state_version`] so the hash stays
+    /// byte-aligned with the published list.
+    pub static_overlay_version: u64,
     /// Slice 3c.final.B.8: per-pane span cache published as
     /// `Arc<HashMap<pane_idx, Arc<Vec<Vec<StyledSpan>>>>>`.
     /// Outer Arc is the per-publish handle (cheap clone); inner
@@ -598,6 +637,13 @@ impl Default for SyntaxRenderState {
             visible_rows: Arc::new(arc_swap::ArcSwap::from_pointee(VisibleRows::default())),
             inlay_hints: Arc::from(Vec::<InlayHintRow>::new().into_boxed_slice()),
             inlay_version: 0,
+            static_overlay_quads: Arc::new(arc_swap::ArcSwap::from_pointee(
+                StaticOverlayQuads::default(),
+            )),
+            doc_highlights: Arc::from(
+                Vec::<lattice_protocol::position::Range>::new().into_boxed_slice(),
+            ),
+            static_overlay_version: 0,
             pane_highlights: Arc::new(std::collections::HashMap::new()),
         }
     }
@@ -629,6 +675,15 @@ pub struct VisibleHighlightsKey {
     pub viewport_height: u32,
     pub fold_hash: u64,
     pub inlay_version: u64,
+    /// Perf plan B.2: content hash of the static-overlay payload
+    /// (doc_highlights + all_matches + substitute_matches). Bumps
+    /// independently from `inlay_version` so a search-query change
+    /// invalidates the overlay bucket without forcing a row
+    /// recompose, and an inlay arrival doesn't invalidate the
+    /// overlay bucket. Built from
+    /// [`static_overlay_state_version`] at publish time so the
+    /// hash and the payload stay aligned by construction.
+    pub static_overlay_version: u64,
 }
 
 /// Worker-published syntax highlight spans for the active
@@ -792,6 +847,80 @@ impl Default for VisibleRows {
     }
 }
 
+/// Perf plan B.2: overlay layer tag carried on each per-row
+/// pre-bucketed quad in [`StaticOverlayQuads`]. The renderer uses
+/// the tag to interleave cursor-coupled layers (`current_match`,
+/// `visual_range`) at the right precedence at prepaint time:
+///
+/// ```text
+/// doc_highlight  →  all_matches  →  current_match  →  visual  →  substitute
+/// ```
+///
+/// Push order = paint order = visual precedence (`paint_quad`
+/// overwrites; later quads in each row's Vec win).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverlayLayer {
+    /// LSP `textDocument/documentHighlight` ranges — symbol
+    /// occurrences under the cursor. Cursor-settle cadence (the
+    /// LSP returns a new response after the cursor lands on a
+    /// new symbol); we treat it as static across cursor blinks.
+    DocHighlight,
+    /// `hlsearch` matches across the active document. Bumps on
+    /// `text_version` edits and search-query changes.
+    AllMatches,
+    /// `:s/pat/repl/` preview overlay. Bumps as the substitute
+    /// command line is typed.
+    Substitute,
+}
+
+/// Perf plan B.2: one pre-bucketed static-overlay quad inside a
+/// row of [`StaticOverlayQuads`]. Coordinates are in
+/// **combined-column space** — char columns in the row's
+/// `combined` text including inlay splices (the same coordinate
+/// space that GPUI's `byte_to_combined_col` emits). Renderers
+/// consume them directly without re-running the byte→col
+/// conversion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RowOverlayQuad {
+    pub layer: OverlayLayer,
+    pub col_start: u32,
+    pub col_end: u32,
+}
+
+/// Perf plan B.2: worker-published per-row pre-bucketed
+/// static-overlay quads for the active pane's visible window.
+///
+/// `quads[i]` is the per-row tagged quad list for visible line
+/// `i` (i.e. doc line `scroll + i`). Each entry tags its overlay
+/// layer ([`OverlayLayer`]) so the renderer can interleave
+/// cursor-coupled layers (`current_match`, `visual_range`) in
+/// the right precedence order at prepaint time.
+///
+/// Active-pane only — inactive panes keep the legacy per-frame
+/// bucket path. The cell is published on every `recompute`
+/// alongside [`VisibleRows`] but invalidates on its own axis
+/// ([`VisibleHighlightsKey::static_overlay_version`]) so a
+/// search-query bump doesn't force a row recompose, and vice
+/// versa.
+#[derive(Debug, Clone)]
+pub struct StaticOverlayQuads {
+    /// `Arc<[T]>` per the D.1 pattern — HOLD / partial-reuse
+    /// paths bump the outer Arc instead of cloning the per-row
+    /// `Vec`s. Typical viewport (120 rows) × typical quads/row
+    /// (≤ a few per layer) keeps this comfortably small.
+    pub quads: Arc<[Vec<RowOverlayQuad>]>,
+    pub computed_for_key: VisibleHighlightsKey,
+}
+
+impl Default for StaticOverlayQuads {
+    fn default() -> Self {
+        Self {
+            quads: Arc::from(Vec::<Vec<RowOverlayQuad>>::new().into_boxed_slice()),
+            computed_for_key: VisibleHighlightsKey::default(),
+        }
+    }
+}
+
 /// Perf plan A.2 slice A.2b.2: content hash of a flattened inlay-
 /// hint list. Stable per-payload (same vec → same hash) so it can
 /// drive [`VisibleHighlightsKey::inlay_version`] for the worker's
@@ -814,6 +943,51 @@ pub fn inlay_hints_version(rows: &[InlayHintRow]) -> u64 {
         r.byte.hash(&mut h);
         r.text.hash(&mut h);
     }
+    h.finish()
+}
+
+/// Perf plan B.2: content hash of the three static-overlay layer
+/// payloads. Drives [`VisibleHighlightsKey::static_overlay_version`]
+/// for the worker's overlay-bucket invalidation. All-empty payloads
+/// hash to 0 so the steady-state no-overlay path stays on a single
+/// cheap branch (matches the `static_overlay_version: 0` default).
+///
+/// Each layer is tagged with a distinct discriminator byte
+/// (0 / 1 / 2) before its ranges are folded in so the SAME range
+/// list appearing in different layers produces distinct hashes —
+/// avoids accidental cross-layer collisions.
+///
+/// Implementation is a fold over each range's `(start.line,
+/// start.byte, end.line, end.byte)` quadruple using
+/// `DefaultHasher` (SipHash 1-3, suitable for non-cryptographic
+/// versioning). For the bounded sizes the editor enforces
+/// (`max_hits` caps `all_matches` at 1000; doc_highlights /
+/// substitute lists are typically <50) this is sub-µs once per
+/// publish.
+pub fn static_overlay_state_version(
+    doc_highlights: &[lattice_protocol::position::Range],
+    all_matches: &[lattice_protocol::position::Range],
+    substitute_matches: &[lattice_protocol::position::Range],
+) -> u64 {
+    use std::hash::{Hash, Hasher};
+    if doc_highlights.is_empty() && all_matches.is_empty() && substitute_matches.is_empty() {
+        return 0;
+    }
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let fold_layer = |h: &mut std::collections::hash_map::DefaultHasher,
+                      tag: u8,
+                      ranges: &[lattice_protocol::position::Range]| {
+        tag.hash(h);
+        for r in ranges {
+            r.start.line.hash(h);
+            r.start.byte.hash(h);
+            r.end.line.hash(h);
+            r.end.byte.hash(h);
+        }
+    };
+    fold_layer(&mut h, 0, doc_highlights);
+    fold_layer(&mut h, 1, all_matches);
+    fold_layer(&mut h, 2, substitute_matches);
     h.finish()
 }
 

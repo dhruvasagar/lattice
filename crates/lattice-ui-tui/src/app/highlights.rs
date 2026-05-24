@@ -53,6 +53,9 @@ impl App {
             // Perf plan A.2 slice A.2a: worker writes the
             // pre-paint rows cell on every recompute too.
             &self.syntax_visible_rows_cell,
+            // Perf plan B.2 slice B.2.a: worker also publishes
+            // the static-overlay quads bucket per recompute.
+            &self.syntax_static_overlay_quads_cell,
         );
     }
 

@@ -912,6 +912,17 @@ pub struct Editor {
     /// the TUI compose loop to `visible_rows` is a follow-up.
     pub syntax_visible_rows_cell:
         std::sync::Arc<arc_swap::ArcSwap<crate::render_state::VisibleRows>>,
+    /// Perf plan B.2 slice B.2.a: parallel cell carrying the
+    /// worker's per-row pre-bucketed static-overlay quads
+    /// (doc_highlight / all_matches / substitute) for the active
+    /// pane's visible window. Same stability rationale as
+    /// `syntax_visible_rows_cell`: the Arc identity lives on
+    /// `Editor` so `build_render_state` clones it into every
+    /// snapshot; the worker writes directly and renderer peers
+    /// read the latest write via the published Arc without a
+    /// republish round-trip.
+    pub syntax_static_overlay_quads_cell:
+        std::sync::Arc<arc_swap::ArcSwap<crate::render_state::StaticOverlayQuads>>,
     /// Phase 5.8.AF.6 / Slice X1b: paint-request signal. The
     /// highlights worker fires `paint_request.notify_one()` after
     /// every `WorkerDecision::Recomputed` so renderer peers can

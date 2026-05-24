@@ -66,8 +66,8 @@ use tracing::{info, trace};
 
 use crate::editor::HighlightWake;
 use crate::render_state::{
-    InlayHintRow, RenderState, RowPrepaint, RowRun, VisibleHighlightsKey, VisibleRows,
-    VisibleSpans,
+    InlayHintRow, OverlayLayer, RenderState, RowOverlayQuad, RowPrepaint, RowRun,
+    StaticOverlayQuads, VisibleHighlightsKey, VisibleRows, VisibleSpans,
 };
 
 /// Recompute decision the worker takes on a wake. Visible for
@@ -103,6 +103,7 @@ pub async fn run(
     wake: HighlightWake,
     spans_cell: Arc<ArcSwap<VisibleSpans>>,
     rows_cell: Arc<ArcSwap<VisibleRows>>,
+    static_overlay_quads_cell: Arc<ArcSwap<StaticOverlayQuads>>,
     paint_request: Arc<tokio::sync::Notify>,
 ) {
     // X2 diagnostic (2026-05-19): held-j fix reported as
@@ -126,7 +127,12 @@ pub async fn run(
         // captures the full effect of the burst.
         wake.0.notified().await;
         let t0 = std::time::Instant::now();
-        let decision = recompute(&render_state, &spans_cell, &rows_cell);
+        let decision = recompute(
+            &render_state,
+            &spans_cell,
+            &rows_cell,
+            &static_overlay_quads_cell,
+        );
         let elapsed_us = t0.elapsed().as_micros();
         tick_count += 1;
         // X1b: tell the renderer it has fresh data to paint.
@@ -171,6 +177,7 @@ pub fn recompute(
     render_state: &ArcSwap<RenderState>,
     spans_cell: &ArcSwap<VisibleSpans>,
     rows_cell: &ArcSwap<VisibleRows>,
+    static_overlay_quads_cell: &ArcSwap<StaticOverlayQuads>,
 ) -> WorkerDecision {
     let rs = render_state.load_full();
     let syntax = &rs.syntax;
@@ -188,6 +195,10 @@ pub fn recompute(
         // the rows cell so the GPUI peer drops any stale prepaints
         // on language detach.
         rows_cell.store(Arc::new(VisibleRows::default()));
+        // Perf plan B.2 slice B.2.a: mirror the clear into the
+        // static-overlay quads cell so renderers drop any stale
+        // overlay buckets on language detach.
+        static_overlay_quads_cell.store(Arc::new(StaticOverlayQuads::default()));
         return WorkerDecision::Clear;
     };
 
@@ -201,6 +212,7 @@ pub fn recompute(
         viewport_height: syntax.viewport_height,
         fold_hash: syntax.fold_hash,
         inlay_version: syntax.inlay_version,
+        static_overlay_version: syntax.static_overlay_version,
     };
 
     let existing = spans_cell.load_full();
@@ -231,6 +243,17 @@ pub fn recompute(
             computed_for_key: key,
         };
         rows_cell.store(Arc::new(held_rows));
+        // Perf plan B.2 slice B.2.a: HOLD also preserves the
+        // static-overlay bucket. The bucket is derived from the
+        // rows (which we're holding) + the published static-overlay
+        // payload; both are stable across the HOLD wake. Advance
+        // the key to match the rows/spans cells.
+        let existing_quads = static_overlay_quads_cell.load_full();
+        let held_quads = StaticOverlayQuads {
+            quads: existing_quads.quads.clone(),
+            computed_for_key: key,
+        };
+        static_overlay_quads_cell.store(Arc::new(held_quads));
         return WorkerDecision::StaleSnapshotHold;
     }
 
@@ -289,6 +312,34 @@ pub fn recompute(
         &key,
     );
 
+    // Perf plan B.2 slice B.2.a: bucket the published static-overlay
+    // layer payloads into per-row quad lists. Coordinates are in
+    // combined-column space (matches the renderer's
+    // `push_range_quads` output bit-for-bit). Empty payloads
+    // short-circuit to empty buckets — keeps the steady-state
+    // no-overlay path cheap. Bucket happens BEFORE the cell stores
+    // below so the rows borrow doesn't outlive the per-row column
+    // walk.
+    let substitute_storage: Vec<lattice_protocol::position::Range>;
+    let substitute_matches: &[lattice_protocol::position::Range] = match rs
+        .active_document
+        .substitute_preview
+        .as_ref()
+    {
+        Some(prev) => {
+            substitute_storage = prev.matches.to_vec();
+            &substitute_storage
+        }
+        None => &[],
+    };
+    let static_overlay_quads = bucket_static_overlays(
+        &rows,
+        start,
+        &syntax.doc_highlights,
+        &rs.active_document.all_matches,
+        substitute_matches,
+    );
+
     // Perf plan D.1: wrap the freshly-built `Vec`s in `Arc<[T]>` at
     // the cell-store boundary so subsequent HOLD / B.1 reuse paths
     // can clone the outer Arc instead of the inner Vec.
@@ -298,6 +349,10 @@ pub fn recompute(
     }));
     rows_cell.store(Arc::new(VisibleRows {
         rows: Arc::from(rows.into_boxed_slice()),
+        computed_for_key: key,
+    }));
+    static_overlay_quads_cell.store(Arc::new(StaticOverlayQuads {
+        quads: Arc::from(static_overlay_quads.into_boxed_slice()),
         computed_for_key: key,
     }));
     WorkerDecision::Recomputed
@@ -472,6 +527,165 @@ fn build_rows(
         byte_off = (line_end + 1).min(source.len());
     }
     rows
+}
+
+/// Perf plan B.2 slice B.2.a: bucket the three static-overlay
+/// layer payloads (`doc_highlights`, `all_matches`,
+/// `substitute_matches`) into per-row [`RowOverlayQuad`] lists.
+///
+/// `rows[i]` is the worker's pre-built row for visible buffer line
+/// `start + i`. Output `quads[i]` carries every layer's ranges
+/// that intersect the row, in fixed precedence order
+/// `DocHighlight → AllMatches → Substitute`. The renderer
+/// interleaves the cursor-coupled layers (`visual`, `current_match`)
+/// at prepaint between `AllMatches` and `Substitute`.
+///
+/// Coordinates are in **combined-column space** — chars in the
+/// row's `combined` text including inlay splices. The walk mirrors
+/// `lattice_ui_gpui::editor_element::push_range_quads` exactly so
+/// renderer-side merge code can consume the bucket bit-identical
+/// to its own per-frame walk.
+///
+/// Empty payloads on all three layers skip the bucket entirely —
+/// returns an empty `Vec` and the renderer's overlay path stays on
+/// the cheap "no static overlays" branch.
+fn bucket_static_overlays(
+    rows: &[RowPrepaint],
+    start: u32,
+    doc_highlights: &[lattice_protocol::position::Range],
+    all_matches: &[lattice_protocol::position::Range],
+    substitute_matches: &[lattice_protocol::position::Range],
+) -> Vec<Vec<RowOverlayQuad>> {
+    if doc_highlights.is_empty() && all_matches.is_empty() && substitute_matches.is_empty() {
+        return Vec::new();
+    }
+    let mut out: Vec<Vec<RowOverlayQuad>> = Vec::with_capacity(rows.len());
+    for (i, row) in rows.iter().enumerate() {
+        let line_idx = start + i as u32;
+        let line_text = source_line_from_row(row);
+        let mut quads: Vec<RowOverlayQuad> = Vec::new();
+        push_layer_quads(
+            &mut quads,
+            doc_highlights,
+            OverlayLayer::DocHighlight,
+            line_idx,
+            &line_text,
+            &row.inlay_offsets,
+        );
+        push_layer_quads(
+            &mut quads,
+            all_matches,
+            OverlayLayer::AllMatches,
+            line_idx,
+            &line_text,
+            &row.inlay_offsets,
+        );
+        push_layer_quads(
+            &mut quads,
+            substitute_matches,
+            OverlayLayer::Substitute,
+            line_idx,
+            &line_text,
+            &row.inlay_offsets,
+        );
+        out.push(quads);
+    }
+    out
+}
+
+/// Reconstruct the source-only line text from a row's `combined`
+/// (which may include inlay splices). Walks the row's `runs`
+/// partition and concatenates only the `Source` slices in order.
+///
+/// Allocates a fresh `String` per row — same shape as the
+/// renderer's `row_meta.line_text` build, but kept local to the
+/// bucket helper so this allocation only happens when at least
+/// one static-overlay layer is non-empty (we early-return above
+/// when all three are empty).
+fn source_line_from_row(row: &RowPrepaint) -> String {
+    let mut out = String::with_capacity(row.combined.len());
+    let mut cursor: usize = 0;
+    for r in &row.runs {
+        let end = cursor + r.len() as usize;
+        if let RowRun::Source { .. } = r {
+            // SAFETY: `runs` is built from valid utf-8 boundaries
+            // (the worker's `weave_row` splices at char_indices
+            // positions); slicing here is utf-8 safe.
+            out.push_str(&row.combined[cursor..end]);
+        }
+        cursor = end;
+    }
+    out
+}
+
+/// Push one layer's intersecting ranges into `out` as tagged
+/// `RowOverlayQuad`s in combined-column space. Mirrors
+/// `editor_element::push_range_quads` semantics:
+///
+/// - rows outside `[r.start.line, r.end.line]` are skipped,
+/// - the row's start/end bytes clamp to the source line length,
+/// - `byte_to_combined_col_worker` shifts by every inlay whose
+///   `orig_byte <= byte` (same rule the renderer uses).
+///
+/// Empty / zero-width ranges drop without emitting a quad.
+fn push_layer_quads(
+    out: &mut Vec<RowOverlayQuad>,
+    ranges: &[lattice_protocol::position::Range],
+    layer: OverlayLayer,
+    line_idx: u32,
+    line_text: &str,
+    inlay_offsets: &[(u32, u32)],
+) {
+    let line_len = line_text.len();
+    for r in ranges {
+        if line_idx < r.start.line || line_idx > r.end.line {
+            continue;
+        }
+        let start_byte = if line_idx == r.start.line {
+            (r.start.byte as usize).min(line_len)
+        } else {
+            0
+        };
+        let end_byte = if line_idx == r.end.line {
+            (r.end.byte as usize).min(line_len)
+        } else {
+            line_len
+        };
+        if end_byte <= start_byte {
+            continue;
+        }
+        let col_start =
+            byte_to_combined_col_worker(line_text, start_byte, inlay_offsets) as u32;
+        let col_end = byte_to_combined_col_worker(line_text, end_byte, inlay_offsets) as u32;
+        if col_end <= col_start {
+            continue;
+        }
+        out.push(RowOverlayQuad { layer, col_start, col_end });
+    }
+}
+
+/// Worker-local mirror of `lattice_ui_gpui::editor_element::
+/// byte_to_combined_col`. Kept inline here so the worker doesn't
+/// depend on the renderer crate; the two MUST stay in sync — if
+/// either changes its inlay-shift rule, both must move (the
+/// renderer reads worker-produced quads byte-identical to its own
+/// walk).
+fn byte_to_combined_col_worker(
+    line: &str,
+    byte: usize,
+    inlay_offsets: &[(u32, u32)],
+) -> usize {
+    let base = if byte >= line.len() {
+        line.chars().count()
+    } else {
+        line[..byte].chars().count()
+    };
+    let inlay_shift: usize = inlay_offsets
+        .iter()
+        .filter(|(orig, _)| (*orig as usize) <= byte)
+        .map(|(_, w)| *w as usize)
+        .sum();
+    base + inlay_shift
 }
 
 /// Bucket a flat inlay-hints list into a per-visible-line vector,
@@ -699,7 +913,9 @@ mod tests {
             },
         });
         let rows_cell: ArcSwap<VisibleRows> = ArcSwap::from_pointee(VisibleRows::default());
-        let decision = recompute(&rs, &cell, &rows_cell);
+        let overlay_cell: ArcSwap<StaticOverlayQuads> =
+            ArcSwap::from_pointee(StaticOverlayQuads::default());
+        let decision = recompute(&rs, &cell, &rows_cell, &overlay_cell);
         assert_eq!(decision, WorkerDecision::Clear);
         let after = cell.load();
         assert!(after.spans.is_empty());
@@ -728,6 +944,7 @@ mod tests {
         Arc<lattice_syntax::SyntaxHandle>,
         Arc<arc_swap::ArcSwap<VisibleSpans>>,
         Arc<arc_swap::ArcSwap<VisibleRows>>,
+        Arc<arc_swap::ArcSwap<StaticOverlayQuads>>,
     ) {
         let mut s = lattice_syntax::Syntax::for_language(lattice_syntax::Lang::Rust)
             .unwrap()
@@ -736,6 +953,9 @@ mod tests {
         let handle = Arc::new(lattice_syntax::SyntaxHandle::seeded(s));
         let cell = Arc::new(arc_swap::ArcSwap::from_pointee(VisibleSpans::default()));
         let rows_cell = Arc::new(arc_swap::ArcSwap::from_pointee(VisibleRows::default()));
+        let overlay_cell = Arc::new(arc_swap::ArcSwap::from_pointee(
+            StaticOverlayQuads::default(),
+        ));
         let rs = RenderState {
             syntax: Arc::new(crate::render_state::SyntaxRenderState {
                 syntax_handle: Some(handle.clone()),
@@ -750,11 +970,16 @@ mod tests {
                     Vec::<crate::render_state::InlayHintRow>::new().into_boxed_slice(),
                 ),
                 inlay_version: 0,
+                static_overlay_quads: overlay_cell.clone(),
+                doc_highlights: Arc::from(
+                    Vec::<lattice_protocol::position::Range>::new().into_boxed_slice(),
+                ),
+                static_overlay_version: 0,
                 pane_highlights: Arc::new(std::collections::HashMap::new()),
             }),
             ..RenderState::default()
         };
-        (ArcSwap::from_pointee(rs), handle, cell, rows_cell)
+        (ArcSwap::from_pointee(rs), handle, cell, rows_cell, overlay_cell)
     }
 
     /// Cache miss path: with a current snapshot and a fresh
@@ -762,8 +987,8 @@ mod tests {
     /// publishes the resulting spans into the cell.
     #[test]
     fn recompute_with_current_snapshot_publishes_spans() {
-        let (rs, _h, cell, rows_cell) = rs_with_rust("fn main() {}", 0, 5, 0, 1, None);
-        let decision = recompute(&rs, &cell, &rows_cell);
+        let (rs, _h, cell, rows_cell, overlay_cell) = rs_with_rust("fn main() {}", 0, 5, 0, 1, None);
+        let decision = recompute(&rs, &cell, &rows_cell, &overlay_cell);
         assert_eq!(decision, WorkerDecision::Recomputed);
         let after = cell.load();
         assert!(!after.spans.is_empty(), "expected spans for `fn main`");
@@ -784,10 +1009,10 @@ mod tests {
     /// `CacheHit` without re-walking or churning the cell.
     #[test]
     fn recompute_with_unchanged_key_is_cache_hit() {
-        let (rs, _h, cell, rows_cell) = rs_with_rust("fn main() {}", 0, 5, 0, 1, None);
-        assert_eq!(recompute(&rs, &cell, &rows_cell), WorkerDecision::Recomputed);
+        let (rs, _h, cell, rows_cell, overlay_cell) = rs_with_rust("fn main() {}", 0, 5, 0, 1, None);
+        assert_eq!(recompute(&rs, &cell, &rows_cell, &overlay_cell), WorkerDecision::Recomputed);
         let first_ptr = Arc::as_ptr(&cell.load_full());
-        assert_eq!(recompute(&rs, &cell, &rows_cell), WorkerDecision::CacheHit);
+        assert_eq!(recompute(&rs, &cell, &rows_cell, &overlay_cell), WorkerDecision::CacheHit);
         let second_ptr = Arc::as_ptr(&cell.load_full());
         assert_eq!(
             first_ptr, second_ptr,
@@ -805,9 +1030,12 @@ mod tests {
     #[test]
     fn recompute_with_stale_snapshot_holds_spans() {
         // Snapshot parsed against text_version = 1.
-        let (rs_initial, handle, cell, rows_cell) =
+        let (rs_initial, handle, cell, rows_cell, overlay_cell) =
             rs_with_rust("fn main() {}", 0, 5, 0, 1, None);
-        assert_eq!(recompute(&rs_initial, &cell, &rows_cell), WorkerDecision::Recomputed);
+        assert_eq!(
+            recompute(&rs_initial, &cell, &rows_cell, &overlay_cell),
+            WorkerDecision::Recomputed
+        );
         let computed_spans = cell.load().spans.clone();
         assert!(!computed_spans.is_empty(), "preconditions ok");
 
@@ -831,12 +1059,17 @@ mod tests {
                     Vec::<crate::render_state::InlayHintRow>::new().into_boxed_slice(),
                 ),
                 inlay_version: 0,
+                static_overlay_quads: overlay_cell.clone(),
+                doc_highlights: Arc::from(
+                    Vec::<lattice_protocol::position::Range>::new().into_boxed_slice(),
+                ),
+                static_overlay_version: 0,
                 pane_highlights: Arc::new(std::collections::HashMap::new()),
             }),
             ..RenderState::default()
         };
         let stale = ArcSwap::from_pointee(stale_rs);
-        let decision = recompute(&stale, &cell, &rows_cell);
+        let decision = recompute(&stale, &cell, &rows_cell, &overlay_cell);
         assert_eq!(decision, WorkerDecision::StaleSnapshotHold);
         // Spans preserved bit-identical.
         let after = cell.load();
@@ -859,8 +1092,8 @@ mod tests {
         // highlight line 0. Override end to 4 so the walk
         // covers every line.
         let text = "fn a() {}\nfn b() {}\nfn c() {}\nfn d() {}\n";
-        let (rs, _h, cell, rows_cell) = rs_with_rust(text, 0, 1, 0, 1, Some(4));
-        assert_eq!(recompute(&rs, &cell, &rows_cell), WorkerDecision::Recomputed);
+        let (rs, _h, cell, rows_cell, overlay_cell) = rs_with_rust(text, 0, 1, 0, 1, Some(4));
+        assert_eq!(recompute(&rs, &cell, &rows_cell, &overlay_cell), WorkerDecision::Recomputed);
         let after = cell.load();
         assert!(
             after.spans.len() >= 4,
@@ -888,9 +1121,11 @@ mod tests {
         let rs: ArcSwap<RenderState> = ArcSwap::from_pointee(RenderState::default());
         let cell: ArcSwap<VisibleSpans> = ArcSwap::from_pointee(VisibleSpans::default());
         let rows_cell: ArcSwap<VisibleRows> = ArcSwap::from_pointee(VisibleRows::default());
-        assert_eq!(recompute(&rs, &cell, &rows_cell), WorkerDecision::Clear);
+        let overlay_cell: ArcSwap<StaticOverlayQuads> =
+            ArcSwap::from_pointee(StaticOverlayQuads::default());
+        assert_eq!(recompute(&rs, &cell, &rows_cell, &overlay_cell), WorkerDecision::Clear);
         let first = Arc::as_ptr(&cell.load_full());
-        assert_eq!(recompute(&rs, &cell, &rows_cell), WorkerDecision::Clear);
+        assert_eq!(recompute(&rs, &cell, &rows_cell, &overlay_cell), WorkerDecision::Clear);
         let second = Arc::as_ptr(&cell.load_full());
         // The second `Clear` should NOT have allocated a new Arc:
         // when published spans are already empty + key default,
@@ -898,6 +1133,132 @@ mod tests {
         assert_eq!(
             first, second,
             "redundant Clear must not churn the spans Arc"
+        );
+    }
+
+    // ---- Perf plan B.2 slice B.2.a: static-overlay bucket tests ----
+
+    /// Helper: build a `RowPrepaint` with the given source text and
+    /// no inlay splices. Source bytes pass through to `combined`;
+    /// runs collapse to a single Default Source run.
+    fn row_no_inlays(line_text: &str) -> RowPrepaint {
+        weave_row(line_text, &[], &[])
+    }
+
+    fn pos(line: u32, byte: u32) -> lattice_protocol::position::Position {
+        lattice_protocol::position::Position { line, byte }
+    }
+    fn rng(sl: u32, sb: u32, el: u32, eb: u32) -> lattice_protocol::position::Range {
+        lattice_protocol::position::Range {
+            start: pos(sl, sb),
+            end: pos(el, eb),
+        }
+    }
+
+    /// Empty payloads on all three layers short-circuit to an empty
+    /// bucket — keeps the steady-state no-overlay path cheap.
+    #[test]
+    fn bucket_static_overlays_all_empty_returns_empty() {
+        let rows = vec![row_no_inlays("let x = 1;")];
+        let out = bucket_static_overlays(&rows, 0, &[], &[], &[]);
+        assert!(out.is_empty());
+    }
+
+    /// Single-line range on each layer: the per-row bucket carries
+    /// one tagged quad per layer in fixed precedence order.
+    #[test]
+    fn bucket_static_overlays_tags_each_layer() {
+        let rows = vec![row_no_inlays("hello world")];
+        let dh = vec![rng(0, 0, 0, 5)]; // covers "hello"
+        let am = vec![rng(0, 6, 0, 11)]; // covers "world"
+        let sb = vec![rng(0, 0, 0, 11)]; // covers all
+        let out = bucket_static_overlays(&rows, 0, &dh, &am, &sb);
+        assert_eq!(out.len(), 1);
+        let row = &out[0];
+        // Three quads, one per layer, in precedence order.
+        assert_eq!(row.len(), 3);
+        assert!(matches!(row[0].layer, OverlayLayer::DocHighlight));
+        assert_eq!((row[0].col_start, row[0].col_end), (0, 5));
+        assert!(matches!(row[1].layer, OverlayLayer::AllMatches));
+        assert_eq!((row[1].col_start, row[1].col_end), (6, 11));
+        assert!(matches!(row[2].layer, OverlayLayer::Substitute));
+        assert_eq!((row[2].col_start, row[2].col_end), (0, 11));
+    }
+
+    /// Rows outside a range's `[start.line, end.line]` get an empty
+    /// quad list.
+    #[test]
+    fn bucket_static_overlays_skips_rows_outside_range() {
+        let rows = vec![row_no_inlays("a"), row_no_inlays("b"), row_no_inlays("c")];
+        let dh = vec![rng(1, 0, 1, 1)]; // only line 1
+        let out = bucket_static_overlays(&rows, 0, &dh, &[], &[]);
+        assert_eq!(out.len(), 3);
+        assert!(out[0].is_empty());
+        assert_eq!(out[1].len(), 1);
+        assert!(out[2].is_empty());
+    }
+
+    /// Inlay shift on a row: a range from byte 0..3 in source
+    /// translates to col_start=0, col_end=3+inlay_width after
+    /// `byte_to_combined_col_worker`. Mirrors the GPUI peer's
+    /// `byte_to_combined_col` rule (inlay shifts apply when
+    /// `orig_byte <= byte`).
+    #[test]
+    fn bucket_static_overlays_inlay_shifts_columns() {
+        let mut row = weave_row("hello", &[], &[(0, ":")]);
+        // Sanity: leading inlay shifts every byte by 1 char.
+        assert_eq!(row.combined.as_ref(), ":hello");
+        // Make sure inlay_offsets are present.
+        assert_eq!(row.inlay_offsets.as_ref(), &[(0u32, 1u32)][..]);
+        // Re-wrap so we can hand to the bucket helper.
+        row.inlay_offsets = std::sync::Arc::from(vec![(0u32, 1u32)].into_boxed_slice());
+        let rows = vec![row];
+        let dh = vec![rng(0, 0, 0, 3)]; // first 3 source bytes → cols 1..4
+        let out = bucket_static_overlays(&rows, 0, &dh, &[], &[]);
+        let row = &out[0];
+        assert_eq!(row.len(), 1);
+        assert_eq!((row[0].col_start, row[0].col_end), (1, 4));
+    }
+
+    /// Multi-line range crossing the row in the middle: covers
+    /// the row's full source line.
+    #[test]
+    fn bucket_static_overlays_multi_line_middle_row_full_line() {
+        let rows = vec![
+            row_no_inlays("first"),
+            row_no_inlays("middle"),
+            row_no_inlays("last"),
+        ];
+        let dh = vec![rng(0, 2, 2, 1)];
+        let out = bucket_static_overlays(&rows, 0, &dh, &[], &[]);
+        assert_eq!(out.len(), 3);
+        // Row 0: from byte 2 to end → cols 2..5.
+        assert_eq!((out[0][0].col_start, out[0][0].col_end), (2, 5));
+        // Row 1: full line → cols 0..6.
+        assert_eq!((out[1][0].col_start, out[1][0].col_end), (0, 6));
+        // Row 2: from 0 to byte 1 → cols 0..1.
+        assert_eq!((out[2][0].col_start, out[2][0].col_end), (0, 1));
+    }
+
+    /// `static_overlay_state_version` is deterministic per payload
+    /// and bumps on any layer change; cross-layer permutations
+    /// don't collide.
+    #[test]
+    fn static_overlay_state_version_is_stable_and_distinct() {
+        use crate::render_state::static_overlay_state_version;
+        let a = vec![rng(0, 0, 0, 3)];
+        let b = vec![rng(0, 0, 0, 5)];
+        // All empty → 0.
+        assert_eq!(static_overlay_state_version(&[], &[], &[]), 0);
+        // Deterministic.
+        assert_eq!(
+            static_overlay_state_version(&a, &b, &[]),
+            static_overlay_state_version(&a, &b, &[])
+        );
+        // Layer permutation → distinct (a in dh vs a in all_matches).
+        assert_ne!(
+            static_overlay_state_version(&a, &[], &[]),
+            static_overlay_state_version(&[], &a, &[])
         );
     }
 
@@ -1106,6 +1467,7 @@ mod tests {
             viewport_height: 0,
             fold_hash: 0,
             inlay_version: 0,
+            static_overlay_version: 0,
         }
     }
 
@@ -1237,6 +1599,7 @@ mod tests {
             viewport_height: 0,
             fold_hash: 0,
             inlay_version: 42,
+            static_overlay_version: 0,
         };
         let prev_rows_vec = build_rows(&source, 0, &spans, &no_inlays(spans.len()));
         let prev = VisibleRows {
@@ -1266,8 +1629,8 @@ mod tests {
     /// the two cells if they need to.
     #[test]
     fn recompute_publishes_rows_alongside_spans() {
-        let (rs, _h, cell, rows_cell) = rs_with_rust("fn main() {}", 0, 5, 0, 1, None);
-        assert_eq!(recompute(&rs, &cell, &rows_cell), WorkerDecision::Recomputed);
+        let (rs, _h, cell, rows_cell, overlay_cell) = rs_with_rust("fn main() {}", 0, 5, 0, 1, None);
+        assert_eq!(recompute(&rs, &cell, &rows_cell, &overlay_cell), WorkerDecision::Recomputed);
         let rows = rows_cell.load_full();
         assert!(!rows.rows.is_empty(), "rows must be populated on Recomputed");
         // computed_for_key matches the spans cell — same recompute.
@@ -1310,6 +1673,9 @@ mod tests {
         let handle = Arc::new(lattice_syntax::SyntaxHandle::seeded(s));
         let cell = Arc::new(arc_swap::ArcSwap::from_pointee(VisibleSpans::default()));
         let rows_cell = Arc::new(arc_swap::ArcSwap::from_pointee(VisibleRows::default()));
+        let overlay_cell = Arc::new(arc_swap::ArcSwap::from_pointee(
+            StaticOverlayQuads::default(),
+        ));
         let hints: Vec<InlayHintRow> = vec![InlayHintRow {
             line: 0,
             byte: 7, // between `main` and `(`
@@ -1329,12 +1695,17 @@ mod tests {
                 visible_rows: rows_cell.clone(),
                 inlay_hints: hints_arc,
                 inlay_version,
+                static_overlay_quads: overlay_cell.clone(),
+                doc_highlights: Arc::from(
+                    Vec::<lattice_protocol::position::Range>::new().into_boxed_slice(),
+                ),
+                static_overlay_version: 0,
                 pane_highlights: Arc::new(std::collections::HashMap::new()),
             }),
             ..RenderState::default()
         };
         let rs = ArcSwap::from_pointee(rs_state);
-        assert_eq!(recompute(&rs, &cell, &rows_cell), WorkerDecision::Recomputed);
+        assert_eq!(recompute(&rs, &cell, &rows_cell, &overlay_cell), WorkerDecision::Recomputed);
         let published = rows_cell.load_full();
         let row0 = &published.rows[0];
         assert!(

@@ -25,7 +25,7 @@ use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_ma
 
 use lattice_host::highlights_worker::{WorkerDecision, recompute};
 use lattice_host::render_state::{
-    InlayHintRow, RenderState, SyntaxRenderState, VisibleRows, VisibleSpans,
+    InlayHintRow, RenderState, StaticOverlayQuads, SyntaxRenderState, VisibleRows, VisibleSpans,
 };
 
 fn rust_corpus(n_fns: usize) -> String {
@@ -49,6 +49,7 @@ fn build_rs(
     Arc<lattice_syntax::SyntaxHandle>,
     Arc<ArcSwap<VisibleSpans>>,
     Arc<ArcSwap<VisibleRows>>,
+    Arc<ArcSwap<StaticOverlayQuads>>,
 ) {
     let mut s = lattice_syntax::Syntax::for_language(lattice_syntax::Lang::Rust)
         .unwrap()
@@ -57,6 +58,7 @@ fn build_rs(
     let handle = Arc::new(lattice_syntax::SyntaxHandle::seeded(s));
     let cell = Arc::new(ArcSwap::from_pointee(VisibleSpans::default()));
     let rows_cell = Arc::new(ArcSwap::from_pointee(VisibleRows::default()));
+    let overlay_cell = Arc::new(ArcSwap::from_pointee(StaticOverlayQuads::default()));
     let rs = RenderState {
         syntax: Arc::new(SyntaxRenderState {
             syntax_handle: Some(handle.clone()),
@@ -69,17 +71,23 @@ fn build_rs(
             visible_rows: rows_cell.clone(),
             inlay_hints: Arc::from(Vec::<InlayHintRow>::new().into_boxed_slice()),
             inlay_version: 0,
+            static_overlay_quads: overlay_cell.clone(),
+            doc_highlights: Arc::from(
+                Vec::<lattice_protocol::position::Range>::new().into_boxed_slice(),
+            ),
+            static_overlay_version: 0,
             pane_highlights: Arc::new(std::collections::HashMap::new()),
         }),
         ..RenderState::default()
     };
-    (ArcSwap::from_pointee(rs), handle, cell, rows_cell)
+    (ArcSwap::from_pointee(rs), handle, cell, rows_cell, overlay_cell)
 }
 
 fn rebuild_rs(
     handle: &Arc<lattice_syntax::SyntaxHandle>,
     cell: &Arc<ArcSwap<VisibleSpans>>,
     rows_cell: &Arc<ArcSwap<VisibleRows>>,
+    overlay_cell: &Arc<ArcSwap<StaticOverlayQuads>>,
     scroll: u32,
     viewport_height: u32,
     fold_hash: u64,
@@ -97,6 +105,11 @@ fn rebuild_rs(
             visible_rows: rows_cell.clone(),
             inlay_hints: Arc::from(Vec::<InlayHintRow>::new().into_boxed_slice()),
             inlay_version: 0,
+            static_overlay_quads: overlay_cell.clone(),
+            doc_highlights: Arc::from(
+                Vec::<lattice_protocol::position::Range>::new().into_boxed_slice(),
+            ),
+            static_overlay_version: 0,
             pane_highlights: Arc::new(std::collections::HashMap::new()),
         }),
         ..RenderState::default()
@@ -108,10 +121,10 @@ fn cache_hit_bench(c: &mut Criterion) {
     let mut g = c.benchmark_group("worker_cache_hit");
     for viewport in [24u32, 60, 120] {
         let corpus = rust_corpus(2000);
-        let (rs, _h, cell, rows_cell) = build_rs(&corpus, 0, viewport, 0, 1);
+        let (rs, _h, cell, rows_cell, overlay_cell) = build_rs(&corpus, 0, viewport, 0, 1);
         // Prime once so subsequent calls take the CacheHit path.
         assert_eq!(
-            recompute(&rs, &cell, &rows_cell),
+            recompute(&rs, &cell, &rows_cell, &overlay_cell),
             WorkerDecision::Recomputed
         );
         g.bench_with_input(
@@ -119,7 +132,12 @@ fn cache_hit_bench(c: &mut Criterion) {
             &(),
             |bencher, _| {
                 bencher.iter(|| {
-                    let d = recompute(black_box(&rs), black_box(&cell), black_box(&rows_cell));
+                    let d = recompute(
+                        black_box(&rs),
+                        black_box(&cell),
+                        black_box(&rows_cell),
+                        black_box(&overlay_cell),
+                    );
                     debug_assert_eq!(d, WorkerDecision::CacheHit);
                 });
             },
@@ -136,7 +154,7 @@ fn recompute_bench(c: &mut Criterion) {
     let mut g = c.benchmark_group("worker_recompute_on_scroll");
     for viewport in [24u32, 60, 120] {
         let corpus = rust_corpus(2000);
-        let (_rs0, handle, cell, rows_cell) = build_rs(&corpus, 0, viewport, 0, 1);
+        let (_rs0, handle, cell, rows_cell, overlay_cell) = build_rs(&corpus, 0, viewport, 0, 1);
         g.bench_with_input(
             BenchmarkId::from_parameter(viewport),
             &(),
@@ -144,8 +162,22 @@ fn recompute_bench(c: &mut Criterion) {
                 let mut scroll: u32 = 0;
                 bencher.iter(|| {
                     scroll = (scroll + 1) % 100;
-                    let rs = rebuild_rs(&handle, &cell, &rows_cell, scroll, viewport, 0, 1);
-                    let d = recompute(black_box(&rs), black_box(&cell), black_box(&rows_cell));
+                    let rs = rebuild_rs(
+                        &handle,
+                        &cell,
+                        &rows_cell,
+                        &overlay_cell,
+                        scroll,
+                        viewport,
+                        0,
+                        1,
+                    );
+                    let d = recompute(
+                        black_box(&rs),
+                        black_box(&cell),
+                        black_box(&rows_cell),
+                        black_box(&overlay_cell),
+                    );
                     debug_assert!(matches!(
                         d,
                         WorkerDecision::Recomputed | WorkerDecision::CacheHit
@@ -167,12 +199,13 @@ fn stale_hold_bench(c: &mut Criterion) {
     let mut g = c.benchmark_group("worker_stale_snapshot_hold");
     for viewport in [24u32, 60, 120] {
         let corpus = rust_corpus(500);
-        let (rs_initial, handle, cell, rows_cell) = build_rs(&corpus, 0, viewport, 0, 1);
+        let (rs_initial, handle, cell, rows_cell, overlay_cell) =
+            build_rs(&corpus, 0, viewport, 0, 1);
         // Prime the cell with computed spans so HOLD has spans
         // to preserve (the realistic state during a held-j
         // edit stream).
         assert_eq!(
-            recompute(&rs_initial, &cell, &rows_cell),
+            recompute(&rs_initial, &cell, &rows_cell, &overlay_cell),
             WorkerDecision::Recomputed
         );
         let mut fold_hash: u64 = 0;
@@ -182,8 +215,22 @@ fn stale_hold_bench(c: &mut Criterion) {
             |bencher, _| {
                 bencher.iter(|| {
                     fold_hash = fold_hash.wrapping_add(1);
-                    let rs = rebuild_rs(&handle, &cell, &rows_cell, 0, viewport, fold_hash, 2);
-                    let d = recompute(black_box(&rs), black_box(&cell), black_box(&rows_cell));
+                    let rs = rebuild_rs(
+                        &handle,
+                        &cell,
+                        &rows_cell,
+                        &overlay_cell,
+                        0,
+                        viewport,
+                        fold_hash,
+                        2,
+                    );
+                    let d = recompute(
+                        black_box(&rs),
+                        black_box(&cell),
+                        black_box(&rows_cell),
+                        black_box(&overlay_cell),
+                    );
                     debug_assert_eq!(d, WorkerDecision::StaleSnapshotHold);
                 });
             },

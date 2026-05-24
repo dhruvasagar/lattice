@@ -407,10 +407,9 @@ impl EditorView {
         // upgrade the weak entity handle and call `cx.notify()`.
         // The future exits cleanly when the weak handle can't
         // upgrade (window closed).
-        // Slice 3c.final.E.5j: paint_request via `read_editor` so
-        // the renderer doesn't take a direct field borrow. The
-        // returned `Arc<Notify>` outlives the closure.
-        let paint_request = app.read_editor(|e| e.paint_request.clone());
+        // Slice 3c.final.B-extension: paint_request cached on GpuiApp
+        // at boot (no read_editor round-trip — wait-free Arc clone).
+        let paint_request = app.paint_request.clone();
         cx.spawn(async move |this, cx| {
             loop {
                 paint_request.notified().await;

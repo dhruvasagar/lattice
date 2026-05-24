@@ -71,6 +71,10 @@ tracing.workspace = true
 # Same primitive the host uses for the wait-free publish path; the
 # renderer just needs the `ArcSwap` type to spell the field.
 arc-swap = { workspace = true }
+# Slice 3c.final.B-extension: `GpuiApp.paint_request` is an
+# `Arc<tokio::sync::Notify>` cloned from `Editor` at boot so
+# `EditorView::new` avoids a `read_editor` round-trip.
+tokio = { workspace = true, features = ["sync"] }
 
 [features]
 default = []

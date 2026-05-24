@@ -259,6 +259,11 @@ pub struct GpuiApp {
     pub render_state: Arc<arc_swap::ArcSwap<RenderState>>,
     pub theme: GpuiTheme,
     pub pane_render_registry: GpuiPaneRenderRegistry,
+    /// Slice 3c.final.B-extension: `paint_request` cloned at boot so
+    /// `EditorView::new` can subscribe without a `read_editor` round-trip.
+    /// The `Arc<Notify>` is shared with the highlights worker; wakes
+    /// propagate to GPUI's foreground executor via `cx.notify()`.
+    pub paint_request: std::sync::Arc<tokio::sync::Notify>,
     // Phase 5.8.AE: `popup_content` retired. Popup state is
     // unified in `editor.popup_buffer` (+ buffer-locals for
     // links/anchors/highlights). The binary's render reads
@@ -309,6 +314,10 @@ impl GpuiApp {
         // Initial RS publish so `app.ad()` returns boot state.
         editor.publish_render_state();
 
+        // Clone before the actor consumes the editor so EditorView::new
+        // can subscribe without a read_editor round-trip.
+        let paint_request = editor.paint_request.clone();
+
         // Slice 3c.final.E.swap: hand Editor to the actor (prod)
         // or keep inline (test).
         #[cfg(not(test))]
@@ -324,6 +333,7 @@ impl GpuiApp {
             render_state,
             theme: GpuiTheme::default(),
             pane_render_registry: GpuiPaneRenderRegistry::default(),
+            paint_request,
         };
         // App-side post-actor: rebuild the cached GPUI theme from
         // the freshly-published `render_state.theme`.

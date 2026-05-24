@@ -495,6 +495,25 @@ impl FoldIndex {
         self.closed.binary_search_by_key(&line, |(s, _)| *s).is_ok()
     }
 
+    /// `(start, end)` of the closed fold starting at `line`, or
+    /// `None` if no closed fold starts there. Mirrors
+    /// `Editor::fold_start_at(line)` but yields just the row range
+    /// the renderer + fold-aware viewport math actually need —
+    /// `&Fold` would force us to hold a `Vec<Fold>` snapshot in the
+    /// index, while two `u32`s are 8 bytes per entry and cache-
+    /// friendly. Used by `Editor::fold_aware_highlight_end_line`
+    /// to advance `buf_line` past a closed fold in the viewport
+    /// stretch loop.
+    pub fn closed_fold_at(&self, line: u32) -> Option<(u32, u32)> {
+        if !self.foldenable {
+            return None;
+        }
+        self.closed
+            .binary_search_by_key(&line, |(s, _)| *s)
+            .ok()
+            .map(|i| self.closed[i])
+    }
+
     /// True iff `line` falls strictly inside the interior of some closed
     /// fold (`start_line < line <= end_line`). Matches the existing
     /// `Editor::line_inside_closed_fold` semantics.
@@ -1094,6 +1113,30 @@ impl Buffer {
         assert!(idx.line_inside_closed_fold(6));
         assert!(idx.line_inside_closed_fold(8));
         assert!(!idx.line_inside_closed_fold(9));
+    }
+
+    #[test]
+    fn fold_index_closed_fold_at_returns_range_only_for_closed_starts() {
+        // Closed folds get their (start, end) back; open folds and
+        // non-start lines return None even if their start coincides
+        // with another fold's interior.
+        let folds = vec![closed(2, 5), open(8, 12), closed(15, 20)];
+        let idx = FoldIndex::from_folds(&folds, true);
+        assert_eq!(idx.closed_fold_at(2), Some((2, 5)));
+        assert_eq!(idx.closed_fold_at(15), Some((15, 20)));
+        // Open fold's start: None (closed-only accessor).
+        assert_eq!(idx.closed_fold_at(8), None);
+        // Non-start lines (interior or unrelated): None.
+        assert_eq!(idx.closed_fold_at(3), None);
+        assert_eq!(idx.closed_fold_at(0), None);
+        assert_eq!(idx.closed_fold_at(100), None);
+    }
+
+    #[test]
+    fn fold_index_closed_fold_at_respects_foldenable_off() {
+        let folds = vec![closed(2, 5)];
+        let idx = FoldIndex::from_folds(&folds, false);
+        assert_eq!(idx.closed_fold_at(2), None);
     }
 
     #[test]

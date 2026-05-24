@@ -9504,19 +9504,27 @@ impl Editor {
         if total_lines == 0 {
             return None;
         }
+        // Perf plan C follow-up: build a fold lookup index once at
+        // function entry. The loop below used to call
+        // `self.line_inside_closed_fold(buf_line)` + `self.fold_start_at(buf_line)`
+        // per iteration, each O(folds). With the index, the per-iter
+        // cost drops to O(log folds); construction is O(folds) and
+        // runs once. For a 150-row viewport with 50 folds, the
+        // per-publish cost drops from ~15 000 ops to ~300 ops.
+        let fold_idx = crate::folds::FoldIndex::from_folds(&self.folds, self.foldenable());
         let mut buf_line = self.scroll;
         let mut row: u32 = 0;
         let mut last = self.scroll;
         while row < self.viewport_height && buf_line < total_lines {
-            if self.line_inside_closed_fold(buf_line) {
+            if fold_idx.line_inside_closed_fold(buf_line) {
                 last = buf_line;
                 buf_line += 1;
                 continue;
             }
             last = buf_line;
-            if let Some(fold) = self.fold_start_at(buf_line) {
-                last = fold.end_line;
-                buf_line = fold.end_line + 1;
+            if let Some((_, end_line)) = fold_idx.closed_fold_at(buf_line) {
+                last = end_line;
+                buf_line = end_line + 1;
             } else {
                 buf_line += 1;
             }

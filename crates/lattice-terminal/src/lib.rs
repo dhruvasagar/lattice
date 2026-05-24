@@ -20,13 +20,15 @@
 //! Input encoding (`<C-c>` → `\x03` etc.) is wired in T2.
 //! Scrollback navigation + Visual yank land in T3.
 
+pub mod buffer;
 pub mod cell;
 pub mod handle;
 pub mod reader;
 pub mod snapshot;
 pub mod spawner;
 
+pub use buffer::TerminalBuffer;
 pub use cell::{Cell, CellAttrs, CursorShape, NamedColor, TerminalColor};
 pub use handle::{PtyHandle, PtyHandleError};
 pub use snapshot::TerminalSnapshot;
-pub use spawner::{SpawnConfig, SpawnError, spawn};
+pub use spawner::{spawn, SpawnConfig, SpawnError};

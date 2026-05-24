@@ -56,6 +56,8 @@
 //! Focused design doc:
 //! `docs/dev/architecture/phase-5-dispatch-extraction.md`.
 
+use std::sync::Arc;
+
 use lattice_core::{BufferKind, Fold, FoldMethod};
 use lattice_grammar::ModalState;
 use lattice_grammar::VisualKind;
@@ -65,6 +67,7 @@ use lattice_grammar::register::Register;
 use lattice_protocol::Event;
 use lattice_protocol::selection::{Selection, SelectionSet, VisualMode};
 use lattice_runtime::{MessagePushed, block_on};
+use lattice_terminal::TerminalBuffer;
 
 use crate::action::{Action, EchoLevel, FindKind};
 use crate::buffers::BufferId;
@@ -1057,6 +1060,7 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         Action::GoToTab(n) => editor.do_goto_tab(n),
         Action::NewTab => editor.do_new_tab(),
         Action::NewTabAt(path) => editor.do_new_tab_at(std::path::PathBuf::from(path)),
+        Action::TerminalSpawn(cmd) => editor.do_terminal_spawn(cmd),
         Action::CloseTab => editor.do_close_tab(),
         Action::OnlyTab => editor.do_only_tab(),
         Action::MoveTab(n) => editor.do_move_tab(n),
@@ -2511,6 +2515,7 @@ impl Editor {
             AppEffect::GoToTab(n) => out.next_actions.push(Action::GoToTab(n)),
             AppEffect::NewTab => out.next_actions.push(Action::NewTab),
             AppEffect::NewTabAt(path) => out.next_actions.push(Action::NewTabAt(path)),
+            AppEffect::TerminalSpawn(cmd) => out.next_actions.push(Action::TerminalSpawn(cmd)),
             AppEffect::CloseTab => out.next_actions.push(Action::CloseTab),
             AppEffect::OnlyTab => out.next_actions.push(Action::OnlyTab),
             AppEffect::MoveTab(n) => out.next_actions.push(Action::MoveTab(n)),
@@ -11866,6 +11871,115 @@ impl Editor {
     /// `:tabnew` — open a new tab containing a single scratch
     /// pane viewing a fresh empty buffer. The new tab is
     /// inserted right AFTER the current tab and becomes active.
+    /// Issue #40 / Terminal-mode T1 (2026-05-22): spawn a
+    /// PTY-backed shell + activate as a new buffer.
+    ///
+    /// `cmd_line` = `None` → user's `$SHELL` (or `/bin/sh`).
+    /// `Some("cargo test")` → tokenized on whitespace and
+    /// exec'd as program + args. T4 will respect
+    /// `terminal.shell` / `terminal.cwd` typed options;
+    /// T1 uses sensible defaults.
+    ///
+    /// Side effects:
+    /// - Insert a new `BufferEntry { kind: Terminal, data:
+    ///   Terminal(TerminalBuffer) }` into the buffer registry
+    ///   with a fresh id.
+    /// - Activate the new buffer in the active pane (T4
+    ///   may honor `terminal.display`).
+    /// - On spawn failure: echo an error; no buffer created.
+    pub fn do_terminal_spawn(&mut self, cmd_line: Option<String>) {
+        // Resolve program + args.
+        let (program, args) = match cmd_line.as_deref().map(str::trim) {
+            Some(s) if !s.is_empty() => {
+                // Naive whitespace split. T4 swaps in
+                // shell-words parsing if users want quoted
+                // args.
+                let mut parts = s.split_whitespace().map(|p| p.to_string());
+                let program = parts.next().unwrap();
+                let args: Vec<String> = parts.collect();
+                (program, args)
+            }
+            _ => {
+                let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+                (shell, Vec::new())
+            }
+        };
+
+        // Spawn cwd: parent of active document's file path
+        // when known, else process cwd.
+        let cwd = self
+            .document
+            .path()
+            .and_then(|p| p.parent().map(|p| p.to_path_buf()));
+
+        // Use the active pane's published viewport_height /
+        // viewport_width when available; fall back to vim's
+        // 24 × 80 default for the very first frame.
+        let pane = self.pane_tree.active();
+        let rows = pane.viewport_height.max(1).min(u16::MAX as u32) as u16;
+        let cols = pane.viewport_width.max(1).min(u16::MAX as u32) as u16;
+        let rows = if rows == 0 { 24 } else { rows };
+        let cols = if cols == 0 { 80 } else { cols };
+
+        let cfg = lattice_terminal::SpawnConfig {
+            program: program.clone(),
+            args: args.clone(),
+            cwd: cwd.clone(),
+            rows,
+            cols,
+        };
+
+        let handles = match lattice_terminal::spawn(cfg) {
+            Ok(h) => h,
+            Err(e) => {
+                self.set_message(
+                    EchoLevel::Error,
+                    format!("terminal: spawn failed: {e}"),
+                );
+                return;
+            }
+        };
+
+        // Buffer label = the program name (basename of
+        // the first segment), with args appended.
+        let prog_basename = std::path::Path::new(&program)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(&program)
+            .to_string();
+        let label = if args.is_empty() {
+            format!("[{prog_basename}]")
+        } else {
+            format!("[{} {}]", prog_basename, args.join(" "))
+        };
+
+        let id = BufferId::next();
+        let entry = TerminalBuffer {
+            id,
+            pty: Arc::new(handles.pty),
+            label: label.clone(),
+            cwd,
+            snapshot: handles.snapshot,
+            created_at: std::time::SystemTime::now(),
+        };
+        self.buffers.insert(crate::buffer_registry::BufferEntry {
+            id,
+            flags: lattice_core::BufferFlags {
+                listed: true,
+                hidden: false,
+            },
+            data: crate::buffer_registry::BufferData::Terminal(entry),
+            name: Some(label),
+        });
+
+        // Activate in the active pane.
+        let _ = self.activate_buffer(id);
+        self.set_message(
+            EchoLevel::Info,
+            format!("terminal: spawned `{program}` (#{} )", id.0),
+        );
+    }
+
     pub fn do_new_tab(&mut self) {
         // Stash the live tree onto the current tab's slot.
         self.snapshot_active_pane();
@@ -18894,6 +19008,10 @@ pub fn raw_buffer_candidates(
                     format!("oil{active_marker}"),
                 )
             }
+            BufferData::Terminal(t) => (
+                format!("#{:<3} {}", id.0, t.label),
+                format!("term{active_marker}"),
+            ),
         };
         rows.push((id, listed, body, kind_label));
     });
@@ -19012,6 +19130,7 @@ pub fn picker_buffer_entry(
                 .unwrap_or_else(|| "[no dir]".to_string());
             ("oil".to_string(), dir, title, false)
         }
+        BufferData::Terminal(t) => ("term".to_string(), None, t.label.clone(), false),
     };
     lattice_picker::BufferEntry {
         id,

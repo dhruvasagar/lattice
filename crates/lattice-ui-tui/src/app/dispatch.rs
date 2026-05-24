@@ -297,6 +297,8 @@ impl App {
             | Action::NewTab
             | Action::NewTabAt(_)
             | Action::CloseTab
+            // Issue #40 / Terminal-mode T1: host-resident.
+            | Action::TerminalSpawn(_)
             | Action::OnlyTab
             | Action::MoveTab(_)
             // Issue #32 (2026-05-22): picker open-target overrides.

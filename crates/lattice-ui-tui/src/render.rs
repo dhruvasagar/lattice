@@ -1972,6 +1972,15 @@ fn draw_pane_content(
         (provider.render)(frame, content_rect, app, snap, pane, is_active, idx);
         return;
     }
+    // Issue #40 / Terminal-mode T1: paint the terminal cell
+    // grid when the pane's buffer is a Terminal. T2/T3 will
+    // promote this to a pane-render provider registered by
+    // `terminal-mode` (the major mode); T1 keeps it inline
+    // since terminal-mode doesn't exist yet.
+    if matches!(pane.buffer, crate::buffers::BufferKind::Terminal) {
+        draw_terminal_pane(frame, content_rect, app, pane);
+        return;
+    }
     // Default path: document buffer. The active branch reads the
     // live `app.editor.cursor` / `app.editor.scroll`; the inactive one reads the
     // pane's stashed cursor + scroll.
@@ -1980,6 +1989,45 @@ fn draw_pane_content(
     } else {
         draw_inactive_document(frame, content_rect, app, pane, idx);
     }
+}
+
+/// Issue #40 / Terminal-mode T1: paint the terminal cell grid
+/// from the published `TerminalSnapshot`. T1 ignores the
+/// per-cell fg/bg/attrs and renders monochrome — T2 wires
+/// alacritty_terminal's real SGR colors via the same path.
+fn draw_terminal_pane(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    pane: &crate::pane::PaneState,
+) {
+    use ratatui::text::{Line, Span};
+    use ratatui::widgets::Paragraph;
+    let rs = app.render_state.load();
+    let snap_arc = match rs
+        .buffers
+        .registry
+        .with_terminal(pane.buffer_id, |t| t.snapshot.load_full())
+    {
+        Some(s) => s,
+        None => {
+            let p = Paragraph::new(Line::from(Span::raw("(terminal buffer unavailable)")));
+            frame.render_widget(p, area);
+            return;
+        }
+    };
+    let rows_to_paint = area.height.min(snap_arc.rows);
+    let cols_to_paint = area.width.min(snap_arc.cols);
+    let mut lines: Vec<Line> = Vec::with_capacity(rows_to_paint as usize);
+    for row in 0..rows_to_paint {
+        let mut s = String::with_capacity(cols_to_paint as usize);
+        for col in 0..cols_to_paint {
+            s.push(snap_arc.cell_at(row, col).ch);
+        }
+        lines.push(Line::from(Span::raw(s)));
+    }
+    let para = Paragraph::new(lines);
+    frame.render_widget(para, area);
 }
 
 /// M.4: per-mode pane-render adapters. Each adapter has the

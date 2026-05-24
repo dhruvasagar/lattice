@@ -377,6 +377,10 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     ("tabedit", "ex:tabnew"),
     ("tabc", "ex:tabclose"),
     ("tabclose", "ex:tabclose"),
+    // Issue #40 / Terminal-mode T1 (2026-05-22).
+    ("term", "ex:terminal"),
+    ("terminal", "ex:terminal"),
+    ("tnew", "ex:terminal"),
     ("tabo", "ex:tabonly"),
     ("tabonly", "ex:tabonly"),
     ("tabm", "ex:tabmove"),

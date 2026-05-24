@@ -51,6 +51,7 @@ use crate::buffers::{BufferFlags, BufferId, BufferKind};
 use crate::file_tree::FileTreeBuffer;
 use crate::help::HelpBuffer;
 use crate::oil::OilBuffer;
+use lattice_terminal::buffer::TerminalBuffer;
 
 /// Per-document registry payload. Each entry carries the actor
 /// handle plus per-document tree-sitter `Syntax` state, fold
@@ -112,6 +113,7 @@ impl BufferEntry {
             BufferData::FileTree(_) => BufferKind::FileTree,
             BufferData::Help(_) => BufferKind::Help,
             BufferData::Oil(_) => BufferKind::Oil,
+            BufferData::Terminal(_) => BufferKind::Terminal
         }
     }
 
@@ -170,6 +172,20 @@ impl BufferEntry {
             _ => None,
         }
     }
+
+    pub fn terminal(&self) -> Option<&TerminalBuffer> {
+        match &self.data {
+            BufferData::Terminal(t) => Some(t),
+            _ => None,
+        }
+    }
+
+    pub fn terminal_mut(&mut self) -> Option<&mut TerminalBuffer> {
+        match &mut self.data {
+            BufferData::Terminal(t) => Some(t),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -187,6 +203,7 @@ pub enum BufferData {
     Help(HelpBuffer),
     /// Flat editable directory listing (oil.nvim-style).
     Oil(OilBuffer),
+    Terminal(TerminalBuffer),
 }
 
 #[derive(Debug, Default)]
@@ -595,6 +612,16 @@ impl BufferRegistry {
     pub fn with_oil_mut<R>(&self, id: BufferId, f: impl FnOnce(&mut OilBuffer) -> R) -> Option<R> {
         let mut inner = lock_inner(&self.inner);
         inner.by_id.get_mut(&id).and_then(|e| e.oil_mut()).map(f)
+    }
+
+    pub fn with_terminal<R>(&self, id: BufferId, f: impl FnOnce(&TerminalBuffer) -> R) -> Option<R> {
+        let inner = lock_inner(&self.inner);
+        inner.by_id.get(&id).and_then(|e| e.terminal()).map(f)
+    }
+
+    pub fn with_terminal_mut<R>(&self, id: BufferId, f: impl FnOnce(&mut TerminalBuffer) -> R) -> Option<R> {
+        let mut inner = lock_inner(&self.inner);
+        inner.by_id.get_mut(&id).and_then(|e| e.terminal_mut()).map(f)
     }
 
     /// Run `f` against every entry under the registry lock.

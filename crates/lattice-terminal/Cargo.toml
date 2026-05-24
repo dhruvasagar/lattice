@@ -15,11 +15,14 @@ alacritty_terminal = "0.26"
 # ConPTY behind one trait. Spawns the child + returns Read/Write
 # halves of the master fd.
 portable-pty = "0.9"
-arc-swap = "1.7"
 parking_lot = "0.12"
 tokio = { workspace = true }
+arc-swap = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
+lattice-core = { path = "../lattice-core" }
+lattice-runtime = { path = "../lattice-runtime" }
+lattice-protocol = { path = "../lattice-protocol" }
 
 [lints]
 workspace = true

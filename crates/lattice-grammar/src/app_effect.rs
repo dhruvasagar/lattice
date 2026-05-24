@@ -425,6 +425,9 @@ pub enum AppEffect {
     NewTab,
     /// `:tabnew <path>` — new tab opening `path`.
     NewTabAt(String),
+    /// Issue #40 / Terminal-mode T1 (2026-05-22):
+    /// `:terminal [cmd]` — spawn a PTY-backed shell.
+    TerminalSpawn(Option<String>),
     /// `:tabclose` — close active tab.
     CloseTab,
     /// `:tabonly` — close every tab except the active one.

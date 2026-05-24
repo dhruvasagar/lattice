@@ -314,6 +314,12 @@ pub fn builtin_topics() -> Arc<HelpTopicRegistry> {
             "global".into(),
         ],
     });
+    r.register(HelpTopic {
+        name: "terminal".into(),
+        summary: "Terminal".into(),
+        body: HelpTopicBody::Static(include_str!("../../../docs/user/terminal.md")),
+        related_command_patterns: vec!["terminal".into(), "tnew".into(), "tabterminal".into()],
+    });
     Arc::new(r)
 }
 
@@ -357,8 +363,7 @@ mod tests {
 
     #[test]
     fn embedded_user_docs_stay_under_size_budget() {
-        let docs_user = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../docs/user");
+        let docs_user = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/user");
         let mut total: u64 = 0;
         let mut per_file: Vec<(String, u64)> = Vec::new();
         for entry in std::fs::read_dir(&docs_user).expect("docs/user readable") {
@@ -405,8 +410,7 @@ mod tests {
         //
         // The walk uses the workspace root via CARGO_MANIFEST_DIR ↦
         // `<root>/crates/lattice-help` ↦ join `../../docs/user`.
-        let docs_user = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../docs/user");
+        let docs_user = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/user");
         let r = builtin_topics();
         let names: std::collections::HashSet<&str> = r.names().collect();
         let mut missing: Vec<String> = Vec::new();

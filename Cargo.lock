@@ -3454,6 +3454,7 @@ dependencies = [
  "lattice-runtime",
  "lattice-snippet",
  "lattice-syntax",
+ "lattice-terminal",
  "notify",
  "serde_json",
  "streaming-iterator",
@@ -3599,6 +3600,9 @@ version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
  "arc-swap",
+ "lattice-core",
+ "lattice-protocol",
+ "lattice-runtime",
  "parking_lot",
  "portable-pty",
  "thiserror 2.0.18",

@@ -45,6 +45,16 @@ pub struct PtyHandle {
     inner: Arc<PtyHandleInner>,
 }
 
+impl std::fmt::Debug for PtyHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (rows, cols) = self.size();
+        f.debug_struct("PtyHandle")
+            .field("rows", &rows)
+            .field("cols", &cols)
+            .finish()
+    }
+}
+
 impl PtyHandle {
     /// Construct from the post-spawn pieces. Called by
     /// [`crate::spawner::spawn`] only.
@@ -102,4 +112,36 @@ impl PtyHandle {
     pub fn size(&self) -> (u16, u16) {
         *self.inner.last_size.lock()
     }
+
+    // /// Close the PTY master (child sees SIGHUP); dropping the
+    // /// FD typically terminates the subprocess.
+    // pub fn kill(&self) -> Result<(), PtyHandleError> {
+    //     // 1) Flush any pending writes
+    //     if let Err(e) = self.inner.writer.lock().flush() {
+    //         return Err(PtyHandleError::Write(e));
+    //     }
+
+    //     // 2) Dropping the master FD by replacing it with a no-op
+    //     //    will close the PTY. Child should exit on SIGHUP.
+    //     //    If you need SIGKILL, you must store the Child handle.
+    //     let mut master = self.inner.master.lock();
+    //     // Replace with an empty dummy so the old MasterPty is dropped:
+    //     *master = {
+    //         use portable_pty::PtySize;
+    //         // Create a closed pseudo-pty master as a no-op stub
+    //         let dummy = Box::new(
+    //             portable_pty::native_pty_system()
+    //                 .openpty(PtySize {
+    //                     rows: 0,
+    //                     cols: 0,
+    //                     pixel_width: 0,
+    //                     pixel_height: 0,
+    //                 })
+    //                 .unwrap()
+    //                 .master,
+    //         );
+    //         dummy
+    //     };
+    //     Ok(())
+    // }
 }

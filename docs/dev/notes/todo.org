@@ -1,28 +1,27 @@
 * Features
 - [ ] Terminal
 - [ ] diffing
-- [ ] themes
+- [ ] Theme System (also with a theme picker with preview)
 - [ ] Quickfix / Location lists
 - [ ] :! shell execution
 - [ ] ! filter operator
 - [ ] :.! shell execution and replace range
 - [ ] enhanced mini-buffer
 - [ ] enhanced, configurable mode-line
-- [ ] theme system (also with a theme picker with preview)
-- [ ] more language support
-- [ ] more user documentation
-- [ ] lattice-tutor
+- [ ] language support
 - [ ] transient like menu
 - [ ] compilation-mode
 - [ ] surround operator
 - [ ] argument operator
 - [ ] borderless gui windows
 - [ ] DAP
+- [X] Picker to add <C-s>, <C-v>, <C-t> to open file under cursor in a
+  split, vertical split or tab. This will override
 
 * Plugins
+- [ ] project.el
 - [ ] Claude Code IDE
 - [ ] Org Mode
-- [ ] project.el
 
 * Issues
 - [X] GUI: cursor scrolls past viewport
@@ -32,4 +31,10 @@
 - [X] <C-n>, <C-p> for completions
 - [ ] popup focus
 - [X] `gg`, `zz`, `zt`, `zb` don't work
-- [ ] Mouse click on window does not work, no focus, can't maximize
+- [X] Mouse click on window does not work, no focus, can't maximize
+- [ ] Picker UI improve colors for matching, marginalia
+
+* Documentation
+- [ ] lattice-tutor
+- [ ] Update readme for instructions on how to compile application for
+  gui. Document dependencies. Provide a script to help automate it.

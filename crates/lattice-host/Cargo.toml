@@ -45,6 +45,10 @@ lattice-completion = { path = "../lattice-completion" }
 lattice-mode = { path = "../lattice-mode" }
 lattice-picker = { path = "../lattice-picker" }
 lattice-lsp = { path = "../lattice-lsp" }
+# T1 (2026-05-22): terminal-mode substrate. PtyHandle +
+# TerminalSnapshot for BufferData::Terminal storage; `spawn`
+# called by Editor::do_terminal_spawn.
+lattice-terminal = { path = "../lattice-terminal" }
 lattice-config = { path = "../lattice-config" }
 # Phase 5.2: keymap_registry uses `arc_swap::ArcSwap` for the
 # lock-free keymap snapshot the input dispatcher reads each

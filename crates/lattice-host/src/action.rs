@@ -489,6 +489,12 @@ pub enum Action {
     NewTab,
     /// `:tabnew <path>` — new tab opening `path`.
     NewTabAt(String),
+    /// Issue #40 / Terminal-mode T1 (2026-05-22):
+    /// `:terminal [cmd]` — spawn a shell (or `cmd` if given)
+    /// under a fresh PTY and activate as a new terminal
+    /// buffer. None ⇒ spawn the user's shell from
+    /// `terminal.shell` (default `$SHELL` else `/bin/sh`).
+    TerminalSpawn(Option<String>),
     /// `:tabclose` — close active tab (no-op when only one tab).
     CloseTab,
     /// `:tabonly` — close every tab except the active one.

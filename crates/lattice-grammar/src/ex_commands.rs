@@ -484,6 +484,33 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    // Issue #40 / Terminal-mode T1: `:terminal [cmd]` opens a
+    // PTY-backed shell buffer (T2 wires keystroke input).
+    let _terminal = registry.register_ex_command(
+        "ex:terminal",
+        "Open a PTY-backed shell buffer (optionally running `<cmd>`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_optional_path),
+            apply: Box::new(|ctx| match &ctx.args {
+                Args::String(s) if !s.is_empty() => {
+                    Ok(Effect::AppAction(AppEffect::TerminalSpawn(Some(s.clone()))))
+                }
+                _ => Ok(Effect::AppAction(AppEffect::TerminalSpawn(None))),
+            }),
+            args_schema: vec![ArgSpec {
+                name: "cmd",
+                kind: ArgKind::String,
+                doc: "Optional command line (default: $SHELL or /bin/sh)",
+                prompt: "",
+                default: ArgDefault::None,
+                completion: None,
+            }],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
     let _tab_only = registry.register_ex_command(
         "ex:tabonly",
         "Close every tab except the active one.",

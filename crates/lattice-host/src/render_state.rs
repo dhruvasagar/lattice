@@ -646,6 +646,13 @@ pub struct PopupRenderState {
     /// (which made the popup follow motions). Both TUI and GPUI
     /// peers consume the same field from the published RS.
     pub anchor: Option<lattice_protocol::Position>,
+    /// Document scroll at popup-open time. Used by CursorAnchored
+    /// renderers to convert `anchor.line` (document coordinates)
+    /// into a screen row without being confused by State B, where
+    /// `active_document.scroll` reflects the POPUP's scroll
+    /// rather than the document's. Fixed once at open; survives
+    /// the State A → B transition.
+    pub doc_scroll_at_anchor: u32,
 }
 
 impl Default for PopupRenderState {
@@ -658,6 +665,7 @@ impl Default for PopupRenderState {
             ),
             placement: lattice_core::ui::popup::PopupPlacement::default(),
             anchor: None,
+            doc_scroll_at_anchor: 0,
         }
     }
 }

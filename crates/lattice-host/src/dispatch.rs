@@ -564,6 +564,7 @@ impl Editor {
                     }),
                 placement: self.popup_placement,
                 anchor: self.popup_anchor,
+                doc_scroll_at_anchor: self.popup_doc_scroll_at_anchor,
             }),
             // Phase 5.8.AF.5 / Slice X2: syntax inputs the
             // highlights worker reads. The `visible_spans` cell is
@@ -1976,6 +1977,7 @@ impl Editor {
         // 2026-05-22 popup-anchor: clear the anchor so a future
         // re-open captures a fresh cursor position.
         self.popup_anchor = None;
+        self.popup_doc_scroll_at_anchor = 0;
         // Restore pre-popup state if focus had moved into it
         // (State B for hover; in-pane mode for `:lsp-log` etc.).
         // State A (popup shown but never focused) leaves
@@ -13217,6 +13219,7 @@ impl Editor {
         // popup renderer reads this to paint the popup next to the
         // symbol the user invoked from, even after motions.
         self.popup_anchor = Some(self.cursor);
+        self.popup_doc_scroll_at_anchor = self.scroll;
         self.popup_buffer = Some(buffer_id);
         self.popup_placement = placement;
         self.cursor = stash_cursor;
@@ -13253,6 +13256,7 @@ impl Editor {
         // the cursor, but capturing here keeps the renderer's read
         // path uniform between floating and focused popups.
         self.popup_anchor = Some(self.cursor);
+        self.popup_doc_scroll_at_anchor = self.scroll;
         self.popup_buffer = Some(buffer_id);
         self.popup_placement = placement;
         self.seed_help_metadata_locals(buffer_id, metadata);

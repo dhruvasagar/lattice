@@ -1687,45 +1687,68 @@ impl Render for EditorView {
             let line_highlights: &[Vec<lattice_syntax::StyledSpan>] =
                 highlights_owned.as_slice();
             let body_lines: Vec<&str> = body_text.split('\n').collect();
+
+            // When the popup is focused (State B), ad().scroll and
+            // ad().cursor describe the popup buffer's scroll/cursor so
+            // we can show the right content window and a cursor indicator.
+            let ad = self.app.ad();
+            let popup_focused = ad.buffer_kind == lattice_core::BufferKind::Help;
+            // Max visible lines in the 400px body with 1.3× line-height.
+            const MAX_POPUP_LINES: usize = 18;
+            let popup_scroll = if popup_focused { ad.scroll as usize } else { 0 };
+            let cursor_doc_line = if popup_focused {
+                Some(ad.cursor.line as usize)
+            } else {
+                None
+            };
+
             let popup_lines: Vec<gpui::Div> = body_lines
                 .iter()
                 .enumerate()
+                .skip(popup_scroll)
+                .take(MAX_POPUP_LINES)
                 .map(|(idx, line)| {
+                    let is_cursor_line = cursor_doc_line == Some(idx);
                     let spans: &[lattice_syntax::StyledSpan] =
                         line_highlights.get(idx).map(Vec::as_slice).unwrap_or(&[]);
-                    if spans.is_empty() {
-                        return div().child(line.to_string());
+                    let content = if spans.is_empty() {
+                        div().child(line.to_string())
+                    } else {
+                        let cells: Vec<gpui::Div> = line
+                            .char_indices()
+                            .map(|(byte_idx, c)| {
+                                let style = style_at(spans, byte_idx);
+                                div()
+                                    .text_color(rgb(syntax_color(style)))
+                                    .child(c.to_string())
+                            })
+                            .collect();
+                        div().flex().flex_row().children(cells)
+                    };
+                    // Cursor-line highlight: invert background so the user
+                    // can see where j/k will move. Only applies in State B.
+                    if is_cursor_line {
+                        div()
+                            .flex()
+                            .flex_row()
+                            .bg(rgb(theme.cursor_background))
+                            .text_color(rgb(theme.cursor_foreground))
+                            .child(content)
+                    } else {
+                        div().child(content)
                     }
-                    let cells: Vec<gpui::Div> = line
-                        .char_indices()
-                        .map(|(byte_idx, c)| {
-                            let style = style_at(spans, byte_idx);
-                            div()
-                                .text_color(rgb(syntax_color(style)))
-                                .child(c.to_string())
-                        })
-                        .collect();
-                    div().flex().flex_row().children(cells)
                 })
                 .collect();
-            // Issue #19/#21 (2026-05-22): visual focus indicator
-            // for State B (popup focused, active_buffer == Help).
-            // Host already flips active_buffer to Help on second
-            // K / on `:describe-*` open; GPUI just didn't show
-            // it. Brighten the border and add a "[focused]" hint
-            // when state-B is active so the user can SEE that
-            // their second K landed.
-            let active_buffer = self.app.ad().buffer_kind;
-            let popup_focused = active_buffer == lattice_core::BufferKind::Help;
+
             let border_color = if popup_focused {
                 rgb(theme.cursor_background)
             } else {
                 rgb(theme.popup_border)
             };
             let header_hint = if popup_focused {
-                " (focused — j/k to scroll, q/Esc to dismiss)"
+                " (j/k scroll · q/Esc dismiss)"
             } else {
-                " (K to focus, Esc to dismiss)"
+                " (K to focus · Esc dismiss)"
             };
             div()
                 .flex()
@@ -1750,12 +1773,6 @@ impl Render for EditorView {
                         .flex_col()
                         .overflow_hidden()
                         .children(popup_lines),
-                )
-                .child(
-                    div()
-                        .pt_2()
-                        .text_color(rgb(theme.popup_border))
-                        .child("[ Esc to dismiss ]".to_string()),
                 )
         });
 
@@ -1915,8 +1932,11 @@ impl Render for EditorView {
                     // still mid-publish).
                     let ad = self.app.ad();
                     let anchor = popup_substate.anchor.unwrap_or(ad.cursor);
+                    // Use doc_scroll_at_anchor (fixed at popup-open time)
+                    // rather than ad.scroll: in State B, ad.scroll is the
+                    // POPUP's scroll, causing a frame-jump on second K.
                     let cursor_screen_row =
-                        anchor.line.saturating_sub(ad.scroll) as f32;
+                        anchor.line.saturating_sub(popup_substate.doc_scroll_at_anchor) as f32;
                     let cursor_byte_col = anchor.byte as f32;
                     // Pane's `.p_3()` adds 0.75rem padding before
                     // the editor element starts; account for it

@@ -400,6 +400,11 @@ pub struct Editor {
     /// rather than staying anchored. `None` when no popup is
     /// open OR for centered popups (anchor irrelevant).
     pub popup_anchor: Option<lattice_protocol::Position>,
+    /// Document scroll captured at popup-open time so
+    /// CursorAnchored renderers can convert `popup_anchor.line`
+    /// to a screen row in State B (where `self.scroll` is the
+    /// POPUP's scroll, not the document's).
+    pub popup_doc_scroll_at_anchor: u32,
     /// In-progress text in the `:` minibuffer. Populated
     /// only while `modal == ModalState::Command`.
     pub command_line: String,

@@ -434,6 +434,102 @@ pub fn compute_fold_hash(folds: &[Fold]) -> u64 {
     h.finish()
 }
 
+/// O(log folds) lookup index built once per frame (or per publish) over
+/// a snapshot of the active document's folds.
+///
+/// Perf plan C. Renderers used to call
+/// `folds.iter().any(|f| ...)` per visible line in the gutter compose
+/// loop — `O(rows × folds)` per pane per frame. With this index the
+/// per-line check drops to a partition-point binary search plus a
+/// constant-time fast path for the common non-overlapping case.
+///
+/// Build cost is `O(folds)`; for the typical buffer with <50 folds
+/// it's <1 µs. The build is intentionally per-frame on the renderer
+/// side (no host-side caching / invalidation discipline) — the saving
+/// is the per-line walk, not the construction.
+///
+/// Fold semantics (paramount goal #3, vim parity):
+/// - `closed_fold_start_at(line)` is true iff `line == f.start_line`
+///   for some closed fold `f`.
+/// - `line_inside_closed_fold(line)` is true iff
+///   `f.start_line < line && line <= f.end_line` for some closed fold.
+///   Start lines are NOT inside (vim renders the heading row).
+/// - `fold_start_at_any(line)` covers open + closed folds. Used by
+///   the gutter glyph provider (open-fold caret vs closed-fold chevron).
+#[derive(Debug, Clone, Default)]
+pub struct FoldIndex {
+    /// Closed-fold `(start_line, end_line)` pairs sorted by `start_line`.
+    /// Two `u32`s fit in 8 bytes — cache-friendly linear / binary walks.
+    closed: Vec<(u32, u32)>,
+    /// All-fold `start_line`s (open + closed) sorted ascending.
+    all_starts: Vec<u32>,
+    /// `:set foldenable` cached at build time so every predicate is a
+    /// single bool branch ahead of any vec walk; the user-facing
+    /// behaviour of all three predicates collapses to `false` when
+    /// foldenable is off, exactly matching the existing `Editor::*`
+    /// helpers in `dispatch.rs`.
+    foldenable: bool,
+}
+
+impl FoldIndex {
+    /// Build an index from a fold snapshot. `O(folds)` — one filter +
+    /// two sorts.
+    pub fn from_folds(folds: &[Fold], foldenable: bool) -> Self {
+        let mut closed: Vec<(u32, u32)> = folds
+            .iter()
+            .filter(|f| f.closed)
+            .map(|f| (f.start_line, f.end_line))
+            .collect();
+        closed.sort_unstable_by_key(|(s, _)| *s);
+        let mut all_starts: Vec<u32> = folds.iter().map(|f| f.start_line).collect();
+        all_starts.sort_unstable();
+        Self { closed, all_starts, foldenable }
+    }
+
+    /// True iff `line` is the start row of a closed fold. Matches
+    /// `Editor::fold_start_at(line).is_some()` semantics.
+    pub fn closed_fold_start_at(&self, line: u32) -> bool {
+        if !self.foldenable {
+            return false;
+        }
+        self.closed.binary_search_by_key(&line, |(s, _)| *s).is_ok()
+    }
+
+    /// True iff `line` falls strictly inside the interior of some closed
+    /// fold (`start_line < line <= end_line`). Matches the existing
+    /// `Editor::line_inside_closed_fold` semantics.
+    pub fn line_inside_closed_fold(&self, line: u32) -> bool {
+        if !self.foldenable {
+            return false;
+        }
+        // `closed` is sorted by start_line ascending. The rightmost
+        // entry with `start < line` is the most-recently-opened
+        // candidate; for non-overlapping folds (the common case) it
+        // is also the only candidate that can enclose `line`.
+        let idx = self.closed.partition_point(|(s, _)| *s < line);
+        if idx == 0 {
+            return false;
+        }
+        // Fast path: innermost (or only) candidate. Constant time.
+        if self.closed[idx - 1].1 >= line {
+            return true;
+        }
+        // Slow path: only reachable when folds overlap (rare —
+        // e.g. user manually `:fold`s overlapping ranges). Bounded
+        // by `idx`, but in practice walks a tiny prefix.
+        self.closed[..idx - 1].iter().any(|(_, e)| line <= *e)
+    }
+
+    /// True iff `line` is the start row of any fold (open or closed).
+    /// Mirrors `Editor::fold_start_at_any(line).is_some()`.
+    pub fn fold_start_at_any(&self, line: u32) -> bool {
+        if !self.foldenable {
+            return false;
+        }
+        self.all_starts.binary_search(&line).is_ok()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -867,5 +963,151 @@ impl Buffer {
         // does ship one; the inline grammar doesn't, and we don't
         // expose Lang::MarkdownInline as a top-level language.)
         let _ = s.tree();
+    }
+
+    // ---- FoldIndex (perf plan C) ---------------------------------
+
+    fn closed(start: u32, end: u32) -> Fold {
+        Fold { start_line: start, end_line: end, closed: true, identity: None }
+    }
+    fn open(start: u32, end: u32) -> Fold {
+        Fold { start_line: start, end_line: end, closed: false, identity: None }
+    }
+
+    #[test]
+    fn fold_index_empty_returns_false_everywhere() {
+        let idx = FoldIndex::from_folds(&[], true);
+        assert!(!idx.line_inside_closed_fold(0));
+        assert!(!idx.line_inside_closed_fold(10));
+        assert!(!idx.closed_fold_start_at(0));
+        assert!(!idx.fold_start_at_any(0));
+    }
+
+    #[test]
+    fn fold_index_respects_foldenable_off() {
+        // Even with closed folds present, foldenable=false makes
+        // every predicate return false — matches the existing
+        // Editor::* helpers.
+        let folds = vec![closed(5, 10)];
+        let idx = FoldIndex::from_folds(&folds, false);
+        assert!(!idx.line_inside_closed_fold(7));
+        assert!(!idx.closed_fold_start_at(5));
+        assert!(!idx.fold_start_at_any(5));
+    }
+
+    #[test]
+    fn fold_index_matches_naive_lookup_on_non_overlapping() {
+        let folds = vec![closed(2, 5), open(8, 12), closed(15, 20)];
+        let idx = FoldIndex::from_folds(&folds, true);
+        // Naive walk for the same predicates, asserting parity at
+        // every line in the relevant range.
+        let naive_inside = |line: u32| -> bool {
+            folds
+                .iter()
+                .any(|f| f.closed && line > f.start_line && line <= f.end_line)
+        };
+        let naive_closed_start = |line: u32| -> bool {
+            folds.iter().any(|f| f.closed && f.start_line == line)
+        };
+        let naive_any_start = |line: u32| -> bool {
+            folds.iter().any(|f| f.start_line == line)
+        };
+        for line in 0..25 {
+            assert_eq!(
+                idx.line_inside_closed_fold(line),
+                naive_inside(line),
+                "line_inside parity at line {line}"
+            );
+            assert_eq!(
+                idx.closed_fold_start_at(line),
+                naive_closed_start(line),
+                "closed_start parity at line {line}"
+            );
+            assert_eq!(
+                idx.fold_start_at_any(line),
+                naive_any_start(line),
+                "any_start parity at line {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn fold_index_handles_nested_closed_folds() {
+        // Outer + inner both closed. The semantics — matching the
+        // existing `Editor::line_inside_closed_fold` — are: `inside`
+        // is true iff ANY closed fold has `start < line && line <= end`.
+        // For a `(0..=10, 3..=7)` nested layout, the inner's start
+        // line (3) IS inside the outer (because `0 < 3 && 3 <= 10`)
+        // — the renderer hides it as part of the outer fold's body.
+        // Only the outer's heading (line 0) and lines past the outer's
+        // end escape.
+        let folds = vec![closed(0, 10), closed(3, 7)];
+        let idx = FoldIndex::from_folds(&folds, true);
+        assert!(!idx.line_inside_closed_fold(0), "outer start row stays visible");
+        for line in 1..=10 {
+            assert!(
+                idx.line_inside_closed_fold(line),
+                "line {line} should be inside the outer fold (0..=10)"
+            );
+        }
+        assert!(!idx.line_inside_closed_fold(11), "past outer end");
+    }
+
+    #[test]
+    fn fold_index_handles_sibling_nested_only_inner_closed() {
+        // Outer open + inner closed. Inside the inner range: hidden.
+        // Outside the inner range: outer is open, so visible.
+        let folds = vec![open(0, 10), closed(3, 7)];
+        let idx = FoldIndex::from_folds(&folds, true);
+        for line in 0..=3 {
+            assert!(
+                !idx.line_inside_closed_fold(line),
+                "line {line} should be visible (outer open, before inner start)"
+            );
+        }
+        for line in 4..=7 {
+            assert!(
+                idx.line_inside_closed_fold(line),
+                "line {line} should be inside the closed inner (3..=7)"
+            );
+        }
+        for line in 8..=11 {
+            assert!(
+                !idx.line_inside_closed_fold(line),
+                "line {line} should be visible (outer open, past inner end)"
+            );
+        }
+    }
+
+    #[test]
+    fn fold_index_handles_overlapping_closed_folds_via_slow_path() {
+        // Overlapping (rare — manually created) folds should still
+        // report `inside` for any line covered by either. The
+        // partition-point fast path exits early on the rightmost
+        // candidate; this test exercises the slow-path fallback.
+        let folds = vec![closed(0, 8), closed(2, 4)];
+        let idx = FoldIndex::from_folds(&folds, true);
+        // Line 6: outside the inner (2..=4) but inside the outer
+        // (0..=8). The rightmost candidate by start (inner, idx-1)
+        // has end=4, so the fast path returns false; the slow path
+        // walks left and finds the outer.
+        assert!(idx.line_inside_closed_fold(6));
+        assert!(idx.line_inside_closed_fold(8));
+        assert!(!idx.line_inside_closed_fold(9));
+    }
+
+    #[test]
+    fn fold_index_open_folds_excluded_from_inside_check() {
+        let folds = vec![open(0, 10)];
+        let idx = FoldIndex::from_folds(&folds, true);
+        // Open folds don't hide content — `inside` only applies to
+        // CLOSED folds.
+        for line in 0..=10 {
+            assert!(!idx.line_inside_closed_fold(line));
+        }
+        assert!(!idx.closed_fold_start_at(0));
+        // ...but the start row is still a fold start (for the gutter
+        // glyph that distinguishes open vs closed).
+        assert!(idx.fold_start_at_any(0));
     }
 }

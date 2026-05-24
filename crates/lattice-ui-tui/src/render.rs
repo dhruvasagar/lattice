@@ -84,6 +84,13 @@ pub struct FrameView<'a> {
     /// One pre-cached bool per frame replaces 120+ RPCs in the
     /// compose loop.
     pub foldenable: bool,
+    /// Perf plan C: O(log folds) lookup index built once per frame
+    /// from `folds + foldenable`. The compose loop's per-line
+    /// `line_inside_closed_fold` check used to walk every fold per
+    /// row (`iter().any(...)` — O(rows × folds)); via this index it
+    /// becomes a partition-point binary search with a constant-time
+    /// fast path for the common non-overlapping case.
+    pub fold_index: lattice_host::folds::FoldIndex,
     /// Slice 3c.extension.fold-rs: per-frame LSP-mode gates,
     /// cached once at `FrameView::from_app` so the compose loop's
     /// per-line decoration checks don't pay actor-RPC cost. Each
@@ -125,6 +132,14 @@ impl<'a> FrameView<'a> {
         // per-line compose loop. The active document id is needed
         // for the mode-gate checks.
         let doc_id = rs.active_document.document_buffer_id;
+        let foldenable = app.foldenable();
+        // Perf plan C: build the index once per frame from the same
+        // snapshot the renderer reads. Both peers go through this
+        // path now; build cost is O(folds) (<1 µs for typical files).
+        let fold_index = lattice_host::folds::FoldIndex::from_folds(
+            &rs.active_document.folds,
+            foldenable,
+        );
         Self {
             app,
             // Slice 3c.final.B (group 2): folds already published as
@@ -134,7 +149,8 @@ impl<'a> FrameView<'a> {
             visible_highlights: Arc::from(spans.spans.clone().into_boxed_slice()),
             show_line_numbers: app.show_line_numbers(),
             relative_line_numbers: app.relative_line_numbers(),
-            foldenable: app.foldenable(),
+            foldenable,
+            fold_index,
             lsp_mode_enabled: app.lsp_mode_enabled_for(doc_id),
             lsp_diagnostics_enabled: app.lsp_diagnostics_mode_enabled_for(doc_id),
             lsp_semantic_tokens_enabled: app.lsp_semantic_tokens_mode_enabled_for(doc_id),
@@ -155,6 +171,15 @@ impl<'a> FrameView<'a> {
         // the worker-published cell, not the legacy UI-thread field.
         let rs = app.render_state.load_full();
         let spans = rs.syntax.visible_spans.load();
+        let foldenable = app.foldenable();
+        // Perf plan C: same one-per-frame index as `from_app`. The
+        // fold snapshot is doc-scoped (`active_document.folds`); the
+        // gate keyed on `foldenable` collapses every predicate to
+        // `false` when folding is off — match the `from_app` path.
+        let fold_index = lattice_host::folds::FoldIndex::from_folds(
+            &rs.active_document.folds,
+            foldenable,
+        );
         Self {
             app,
             // Slice 3c.final.B (group 2): folds already published as
@@ -167,7 +192,8 @@ impl<'a> FrameView<'a> {
             // Slice 3c.extension.fold-rs: per-buffer cache. The
             // mode gates resolve against `buffer_id` (the pane's
             // buffer, possibly different from the active doc).
-            foldenable: app.foldenable(),
+            foldenable,
+            fold_index,
             lsp_mode_enabled: app.lsp_mode_enabled_for(buffer_id),
             lsp_diagnostics_enabled: app.lsp_diagnostics_mode_enabled_for(buffer_id),
             lsp_semantic_tokens_enabled: app.lsp_semantic_tokens_mode_enabled_for(buffer_id),
@@ -201,13 +227,14 @@ impl<'a> FrameView<'a> {
 
     /// Mirror of [`App::line_inside_closed_fold`] reading from
     /// the snapshot.
+    ///
+    /// Perf plan C: routes through the per-frame
+    /// [`lattice_host::folds::FoldIndex`] so the per-line cost in
+    /// compose loops drops from O(folds) to O(log folds) amortized
+    /// constant. The `foldenable` short-circuit is baked into the
+    /// index at construction time — no extra branch here.
     pub fn line_inside_closed_fold(&self, line: u32) -> bool {
-        if !self.foldenable {
-            return false;
-        }
-        self.folds
-            .iter()
-            .any(|f| f.closed && line > f.start_line && line <= f.end_line)
+        self.fold_index.line_inside_closed_fold(line)
     }
 }
 

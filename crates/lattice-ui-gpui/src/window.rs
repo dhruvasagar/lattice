@@ -733,21 +733,20 @@ impl EditorView {
         // doesn't carry the helper methods. Behaviour matches
         // `Editor::line_inside_closed_fold` + `fold_start_at`
         // (both gate on `option_cache.foldenable`).
-        let folds = &rs_guard.active_document.folds;
-        let foldenable = rs_guard.active_document.option_cache.foldenable;
-        let line_inside_closed_fold = |line: u32| -> bool {
-            foldenable
-                && folds
-                    .iter()
-                    .any(|f| f.closed && line > f.start_line && line <= f.end_line)
-        };
-        let fold_start_at = |line: u32| -> bool {
-            foldenable && folds.iter().any(|f| f.closed && f.start_line == line)
-        };
+        // Perf plan C: build a fold lookup index once per pane (build
+        // cost O(folds), typically <1 µs). The two predicates below
+        // used to walk the entire fold list per visible line —
+        // O(rows × folds) per pane per frame. The index drops the
+        // per-line check to a partition-point binary search with a
+        // constant-time fast path for non-overlapping folds.
+        let fold_index = lattice_host::folds::FoldIndex::from_folds(
+            &rs_guard.active_document.folds,
+            rs_guard.active_document.option_cache.foldenable,
+        );
         let gutter_meta: Vec<crate::editor_element::GutterLineMeta> = (visible_start..visible_end)
-            .filter(|line_idx| !line_inside_closed_fold(*line_idx as u32))
+            .filter(|line_idx| !fold_index.line_inside_closed_fold(*line_idx as u32))
             .map(|line_idx| {
-                let fold_start = fold_start_at(line_idx as u32);
+                let fold_start = fold_index.closed_fold_start_at(line_idx as u32);
                 let severity =
                     line_severity(line_idx as u32).map(|s| diagnostic_glyph_and_color(&host_theme, s));
                 crate::editor_element::GutterLineMeta {

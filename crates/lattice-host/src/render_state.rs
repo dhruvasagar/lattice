@@ -566,6 +566,14 @@ pub struct SyntaxRenderState {
     /// document's line text; `text` already has `padding_left`
     /// / `padding_right` spaces baked in at the publish boundary.
     pub inlay_hints: Arc<[InlayHintRow]>,
+    /// Perf plan A.2 slice A.2b.2: content hash of `inlay_hints`.
+    /// Paired with [`VisibleHighlightsKey::inlay_version`] so the
+    /// worker invalidates its row cache when the inlay payload
+    /// changes (arrivals, mode-gate flip, label edits). Stable
+    /// across pure-scroll ticks (same payload → same hash → cache
+    /// hit). Built by the publisher in the same pass that builds
+    /// `inlay_hints` so the two stay aligned by construction.
+    pub inlay_version: u64,
     /// Slice 3c.final.B.8: per-pane span cache published as
     /// `Arc<HashMap<pane_idx, Arc<Vec<Vec<StyledSpan>>>>>`.
     /// Outer Arc is the per-publish handle (cheap clone); inner
@@ -589,6 +597,7 @@ impl Default for SyntaxRenderState {
             visible_spans: Arc::new(arc_swap::ArcSwap::from_pointee(VisibleSpans::default())),
             visible_rows: Arc::new(arc_swap::ArcSwap::from_pointee(VisibleRows::default())),
             inlay_hints: Arc::from(Vec::<InlayHintRow>::new().into_boxed_slice()),
+            inlay_version: 0,
             pane_highlights: Arc::new(std::collections::HashMap::new()),
         }
     }
@@ -605,6 +614,13 @@ impl Default for SyntaxRenderState {
 ///
 /// Migrated from `crates/lattice-host/src/highlights.rs` in X2;
 /// the renderer's read contract is now the canonical owner.
+///
+/// Perf plan A.2 slice A.2b.2: `inlay_version` axis — a content
+/// hash of the gated `SyntaxRenderState.inlay_hints` payload. When
+/// inlays arrive, change, or the mode-gate flips, the hash bumps
+/// and the worker recomposes rows so the inlay splice stays
+/// current. Stable across pure-scroll / cursor-blink ticks (the
+/// hash is recomputed from the same payload).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct VisibleHighlightsKey {
     pub snapshot_ptr: usize,
@@ -612,6 +628,7 @@ pub struct VisibleHighlightsKey {
     pub scroll: u32,
     pub viewport_height: u32,
     pub fold_hash: u64,
+    pub inlay_version: u64,
 }
 
 /// Worker-published syntax highlight spans for the active
@@ -648,11 +665,12 @@ impl Default for VisibleSpans {
 
 /// One coloured run within a [`RowPrepaint`]'s `combined` text.
 ///
-/// Perf plan A.2. Carries the [`lattice_syntax::Style`] tag, NOT
-/// a baked RGB colour — the resolved palette lives on
-/// [`crate::ui::theme::Theme`] (published per-frame in
-/// [`RenderState::theme`]), and renderers resolve `style → Rgba`
-/// at paint time. The reasons for the tag, not the colour:
+/// Perf plan A.2. Carries either a [`lattice_syntax::Style`] tag
+/// for source bytes or an `Inlay` discriminant for inlay-spliced
+/// bytes. Runs are NOT baked to RGB — the resolved palette lives
+/// on [`crate::ui::theme::Theme`] (published per-frame in
+/// [`RenderState::theme`]) and renderers map `style → Rgba` at
+/// paint time. Reasons for the tag, not the colour:
 ///
 /// - A theme switch doesn't invalidate the worker's cache (only
 ///   the colour resolution at paint changes; the run topology
@@ -661,38 +679,83 @@ impl Default for VisibleSpans {
 ///   `Theme::default()` fallback that silently breaks user themes.
 /// - The cache key on [`VisibleHighlightsKey`] doesn't need a
 ///   theme hash; runs are stable across theme changes.
+///
+/// Slice A.2b.2 promoted this from a struct to an enum so the
+/// worker can mark inlay-text bytes distinctly. Consumers map
+/// `Inlay` to their inlay-virtual-text colour (resolved from
+/// `RenderState.theme` on the GPUI side; a TuiStyle modifier on
+/// the TUI side) without having to track byte ranges separately.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RowRun {
-    /// Number of bytes in this run inside the row's `combined` text.
-    /// Runs partition `combined` exhaustively; sum of `len`s equals
-    /// `combined.len()`.
-    pub len: u32,
-    /// Style tag from the highlight grammar. `Style::Default` for
-    /// runs that fall outside any tree-sitter capture (plain text,
-    /// punctuation that no theme styles, etc.).
-    pub style: lattice_syntax::Style,
+pub enum RowRun {
+    /// Source-text run carrying a tree-sitter style tag.
+    Source {
+        /// Number of utf-8 bytes in this run inside `combined`.
+        len: u32,
+        /// Style tag from the highlight grammar. `Style::Default`
+        /// for runs that fall outside any tree-sitter capture.
+        style: lattice_syntax::Style,
+    },
+    /// Inlay-virtual-text run inserted by the worker from
+    /// [`SyntaxRenderState::inlay_hints`]. Carries only the byte
+    /// length; the colour is consumer-resolved.
+    Inlay {
+        /// Number of utf-8 bytes of inlay text in this run.
+        len: u32,
+    },
+}
+
+impl RowRun {
+    /// Byte length of this run inside the row's `combined` text.
+    /// Convenience accessor so consumers don't need to match every
+    /// time the partition is walked. (Clippy: paired enums often
+    /// also expose `is_empty`, but `RowRun::Inlay { len: 0 }`
+    /// would be a worker bug — the partition is built with the
+    /// invariant that every run is non-empty, so an `is_empty`
+    /// would be misleading.)
+    #[allow(clippy::len_without_is_empty)]
+    pub fn len(&self) -> u32 {
+        match self {
+            RowRun::Source { len, .. } | RowRun::Inlay { len } => *len,
+        }
+    }
 }
 
 /// One visible row pre-painted by the highlights worker for the
 /// active pane.
 ///
 /// Perf plan A.2 slice A.2a. Carries the combined text the renderer
-/// shapes/paints plus the colour-run partition over it. In A.2b
-/// (follow-up) this will gain `inlay_offsets` + `byte_to_combined_col`
-/// for the inlay-weave path; for now, `combined` always equals the
-/// source line text and orig-byte → combined-column is identity.
+/// shapes/paints plus the colour-run partition over it.
+///
+/// Slice A.2b.2: `combined` now includes inlay text spliced in at
+/// the byte boundaries published on
+/// [`SyntaxRenderState::inlay_hints`]. The partition `runs`
+/// distinguishes source bytes ([`RowRun::Source`]) from inlay
+/// bytes ([`RowRun::Inlay`]) so consumers can colour them
+/// independently. `inlay_offsets` records where the splices
+/// happened so cursor / decoration code can remap utf-8 byte
+/// offsets in the original line onto column positions in
+/// `combined` (the analogue of GPUI's `byte_to_combined_col`).
 ///
 /// Storage choices:
 /// - `combined: Box<str>` — one heap allocation per row, sized to
-///   the line. `Box<str>` over `String` shaves the unused capacity
-///   word and signals immutability. Bounded by `viewport_height`
-///   (typically <200 rows × <200 chars = <40 kB per recompute).
-/// - `runs: Vec<RowRun>` — adjacent-equal runs merged at build
-///   time so the partition is minimal.
+///   the line + inlays. `Box<str>` over `String` shaves the unused
+///   capacity word and signals immutability. Bounded by
+///   `viewport_height` (typically <200 rows × <200 chars = <40 kB
+///   per recompute).
+/// - `runs: Vec<RowRun>` — adjacent-equal Source runs merged at
+///   build time; Inlay runs always break the merge so the consumer
+///   can colour them distinctly.
+/// - `inlay_offsets: Arc<[(u32, u32)]>` — one entry per spliced
+///   inlay: `(orig_byte, char_width)`. `orig_byte` is the utf-8
+///   offset into the SOURCE line where the inlay was inserted
+///   (NOT into `combined`); `char_width` is the inlay text's
+///   character count. `Arc<[T]>` so the HOLD reuse path on the
+///   worker bumps an Arc instead of cloning the inner Vec.
 #[derive(Debug, Default, Clone)]
 pub struct RowPrepaint {
     pub combined: Box<str>,
     pub runs: Vec<RowRun>,
+    pub inlay_offsets: Arc<[(u32, u32)]>,
 }
 
 /// Worker-published pre-painted rows for the active pane's visible
@@ -727,6 +790,31 @@ impl Default for VisibleRows {
             computed_for_key: VisibleHighlightsKey::default(),
         }
     }
+}
+
+/// Perf plan A.2 slice A.2b.2: content hash of a flattened inlay-
+/// hint list. Stable per-payload (same vec → same hash) so it can
+/// drive [`VisibleHighlightsKey::inlay_version`] for the worker's
+/// row-cache invalidation. Empty list hashes to 0 — matches the
+/// `inlay_version: 0` default and keeps the steady-state no-hint
+/// path on a single cheap branch.
+///
+/// Implementation is a fold over each row's `(line, byte, text)`
+/// triple using the default `DefaultHasher` (SipHash 1-3, suitable
+/// for non-cryptographic versioning). For the typical viewport of
+/// <200 hints this is sub-µs once per publish.
+pub fn inlay_hints_version(rows: &[InlayHintRow]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    if rows.is_empty() {
+        return 0;
+    }
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for r in rows {
+        r.line.hash(&mut h);
+        r.byte.hash(&mut h);
+        r.text.hash(&mut h);
+    }
+    h.finish()
 }
 
 /// One inlay-hint row published on

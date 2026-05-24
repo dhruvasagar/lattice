@@ -69,7 +69,7 @@ use gpui::{
     point, px, rgb, size,
 };
 use lattice_host::cursor_shape::CursorShape;
-use lattice_host::render_state::VisibleSpans;
+use lattice_host::render_state::{RowRun, VisibleSpans};
 use lattice_syntax::{Style as SyntaxStyle, StyledSpan};
 
 use crate::GpuiTheme;
@@ -273,6 +273,14 @@ pub(crate) struct EditorElementPrepaintState {
     /// cursor block stays under the right glyph, etc.). Empty
     /// vector when the row has no inlays. Length matches
     /// `shaped_text`.
+    ///
+    /// Currently only read inside `prepaint` (cursor + diagnostic +
+    /// overlay segments all derive their column-remap from these
+    /// offsets and pre-bake the final column tuples). The field is
+    /// preserved on the prepaint state so future per-row read paths
+    /// (e.g. hover-on-inlay, click-to-jump) can access it without
+    /// changing the struct shape.
+    #[allow(dead_code)]
     inlay_offsets_per_row: Vec<Vec<(u32, u32)>>,
     /// Per-visible-row diagnostic underline segments (slice
     /// X3.full.4). Each entry is `(col_start, col_end_exclusive,
@@ -421,39 +429,52 @@ impl Element for EditorElement {
                 (shaped, inlay_offsets)
             };
 
-        // Perf plan A.2 slice A.2a: prepaint fast path. When the
-        // worker has published a `RowPrepaint` for this line AND no
-        // inlay hints land on it (A.2b will weave inlays into rows
-        // and lift that condition), skip `build_line_with_inlays`
-        // entirely. We build `TextRun`s by iterating the worker's
-        // pre-collapsed `RowRun`s once (`O(runs)`) instead of
-        // walking `line_len × spans` characters per row. The
-        // shaping call itself stays — it's hardware-bound on the
-        // text system and not the perf-plan A.2 target.
+        // Perf plan A.2 slice A.2a + A.2b.2: prepaint fast path.
+        // When the worker has published a `RowPrepaint` for this
+        // line, skip `build_line_with_inlays` entirely. We build
+        // `TextRun`s by iterating the worker's pre-collapsed runs
+        // once (`O(runs)`) instead of walking `line_len × spans`
+        // characters per row. The shaping call itself stays — it's
+        // hardware-bound on the text system and not the perf-plan
+        // A.2 target.
+        //
+        // Slice A.2b.2 lifted the A.2a `line_has_inlays` gate: the
+        // worker now weaves `syntax.inlay_hints` into `row.combined`
+        // and tags inlay-text bytes with `RowRun::Inlay`. The
+        // active-pane path therefore takes this fast path
+        // unconditionally and returns `row.inlay_offsets` so the
+        // overlay/cursor remap logic stays correct. Inactive panes
+        // still hit the legacy `shape_row` branch because
+        // `visible_rows` is active-pane-only by design.
+        let inlay_color = self.inlay_color;
         let shape_row_from_prepaint =
             |row: &lattice_host::render_state::RowPrepaint,
              window: &mut Window|
-             -> ShapedLine {
+             -> (ShapedLine, Vec<(u32, u32)>) {
                 let mut runs: Vec<TextRun> = Vec::with_capacity(row.runs.len());
                 for r in &row.runs {
-                    let color = syntax_color(r.style);
-                    runs.push(make_run_with_color(color, r.len as usize, &font));
+                    let (color, len_bytes) = match r {
+                        RowRun::Source { style, len } => {
+                            (syntax_color(*style), *len as usize)
+                        }
+                        RowRun::Inlay { len } => (inlay_color, *len as usize),
+                    };
+                    runs.push(make_run_with_color(color, len_bytes, &font));
                 }
-                window.text_system().shape_line(
+                let shaped = window.text_system().shape_line(
                     SharedString::from(row.combined.to_string()),
                     font_size,
                     &runs,
                     None,
-                )
+                );
+                // `row.inlay_offsets: Arc<[(u32, u32)]>` — copy into
+                // the per-row `Vec<(u32, u32)>` the prepaint state
+                // carries. Typical row has 0–3 entries, so the copy
+                // is negligible; future work could switch the prepaint
+                // state itself to `Arc<[T]>` to share the same Arc.
+                let offsets: Vec<(u32, u32)> = row.inlay_offsets.iter().copied().collect();
+                (shaped, offsets)
             };
-        // True iff this line has any inlay hint — gates the
-        // prepaint fast path until A.2b adds inlay weaving on the
-        // worker side. Linear scan over `sorted_inlays`; the list
-        // is small in typical buffers (hundreds at worst) and the
-        // closure is invoked once per visible row.
-        let line_has_inlays = |line_idx: u32| -> bool {
-            sorted_inlays.iter().any(|h| h.line == line_idx)
-        };
 
         // Per-row diagnostic-segment computation. Walks
         // `self.diagnostic_underlines` against (line_idx, line_text,
@@ -543,11 +564,15 @@ impl Element for EditorElement {
                 let rel = line_idx.saturating_sub(self.scroll as usize);
                 let prepaint_row = self.visible_rows.rows.get(rel);
                 let (shaped, inlay_offsets) = match prepaint_row {
-                    Some(row) if !line_has_inlays(line_idx as u32) => {
-                        // A.2a fast path: pre-painted, no inlays.
-                        (shape_row_from_prepaint(row, window), Vec::new())
+                    Some(row) => {
+                        // A.2a / A.2b.2 fast path: worker-prepainted
+                        // row with inlays already woven in. Active
+                        // pane only — inactive panes pass a
+                        // `VisibleRows::default()` so this match
+                        // always falls through for them.
+                        shape_row_from_prepaint(row, window)
                     }
-                    _ => {
+                    None => {
                         let line_spans: &[StyledSpan] = self
                             .visible_spans
                             .spans
@@ -575,11 +600,12 @@ impl Element for EditorElement {
                 let rel = line_idx.saturating_sub(self.scroll as usize);
                 let prepaint_row = self.visible_rows.rows.get(rel);
                 let (shaped, inlay_offsets) = match prepaint_row {
-                    Some(row) if !line_has_inlays(meta.line_idx) => {
-                        // A.2a fast path: pre-painted, no inlays.
-                        (shape_row_from_prepaint(row, window), Vec::new())
+                    Some(row) => {
+                        // A.2a / A.2b.2 fast path: worker-prepainted
+                        // row with inlays already woven in.
+                        shape_row_from_prepaint(row, window)
                     }
-                    _ => {
+                    None => {
                         let line_spans: &[StyledSpan] = self
                             .visible_spans
                             .spans

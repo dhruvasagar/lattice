@@ -66,7 +66,8 @@ use tracing::{info, trace};
 
 use crate::editor::HighlightWake;
 use crate::render_state::{
-    RenderState, RowPrepaint, RowRun, VisibleHighlightsKey, VisibleRows, VisibleSpans,
+    InlayHintRow, RenderState, RowPrepaint, RowRun, VisibleHighlightsKey, VisibleRows,
+    VisibleSpans,
 };
 
 /// Recompute decision the worker takes on a wake. Visible for
@@ -199,6 +200,7 @@ pub fn recompute(
         scroll: syntax.scroll,
         viewport_height: syntax.viewport_height,
         fold_hash: syntax.fold_hash,
+        inlay_version: syntax.inlay_version,
     };
 
     let existing = spans_cell.load_full();
@@ -264,16 +266,25 @@ pub fn recompute(
     // Perf plan B.1 (dirty-row recomposition): pass the previously
     // published rows + their key so `build_rows_with_cache` can
     // reuse `RowPrepaint`s for any absolute line that's still in
-    // view when `(snapshot_ptr, syntax_text_version)` are
-    // unchanged. On the scroll-only path (the dominant held-j
+    // view when `(snapshot_ptr, syntax_text_version, inlay_version)`
+    // are unchanged. On the scroll-only path (the dominant held-j
     // case) every overlapping line skips the per-line text fetch
-    // + collapse, dropping `build_rows` cost from O(viewport) to
+    // + weave, dropping `build_rows` cost from O(viewport) to
     // O(scroll_delta).
+    //
+    // Slice A.2b.2: bucket the published `inlay_hints` per absolute
+    // line so the per-row weave is `O(inlays_on_line)`. Bucket cost
+    // is `O(n)` over the published list (typically <200 hints).
+    // Skipped entirely when the list is empty — the dominant
+    // no-LSP / no-inlay case stays on the cold A.2a path.
+    let inlay_hints = syntax.inlay_hints.clone();
+    let inlays_by_line = bucket_inlays_by_line(&inlay_hints);
     let prev_rows = rows_cell.load_full();
     let rows = build_rows_with_cache(
         snap.source(),
         start,
         &spans,
+        &inlays_by_line,
         &prev_rows,
         &key,
     );
@@ -294,38 +305,46 @@ pub fn recompute(
 
 /// Perf plan B.1 (dirty-row recomposition). Wraps [`build_rows`]
 /// with a per-absolute-line reuse path: when the previous publish
-/// was against the same `(snapshot_ptr, syntax_text_version)`
-/// (the source bytes are bit-identical), the prepaints for any
-/// absolute line that's still in view are reused as-is. Only
-/// newly-visible lines hit `build_rows` for the per-line memchr
-/// scan + `into_boxed_str` alloc + `collapse_runs` walk.
+/// was against the same
+/// `(snapshot_ptr, syntax_text_version, inlay_version)` (the
+/// source bytes AND the inlay payload are bit-identical), the
+/// prepaints for any absolute line that's still in view are reused
+/// as-is. Only newly-visible lines hit [`build_rows`] for the
+/// per-line memchr scan + `into_boxed_str` alloc + `weave_row`
+/// walk.
 ///
-/// The dominant held-j scroll case (snapshot + version unchanged,
-/// scroll deltas by 1) reuses ~99% of rows; build cost collapses
-/// from `O(viewport_height)` to `O(scroll_delta)`.
+/// The dominant held-j scroll case (snapshot + version + inlay
+/// payload unchanged, scroll deltas by 1) reuses ~99% of rows;
+/// build cost collapses from `O(viewport_height)` to
+/// `O(scroll_delta)`.
 ///
-/// The cache only kicks in for `(snapshot_ptr, text_version)` parity
-/// — every other key axis (fold_hash, viewport_height, scroll) is
-/// allowed to differ. Mismatched axes change WHICH absolute lines
-/// are visible but not the per-absolute-line content. When the
-/// snapshot or version flips (any edit), we fall through to the
-/// from-scratch path so the published rows reflect the new source.
+/// The cache only kicks in for the source-affecting axes
+/// (`snapshot_ptr`, `syntax_text_version`, `inlay_version`).
+/// Every other key axis (fold_hash, viewport_height, scroll) is
+/// allowed to differ — they change WHICH absolute lines are
+/// visible but not the per-absolute-line content. When any source
+/// axis flips, we fall through to the from-scratch path so the
+/// published rows reflect the new content.
 fn build_rows_with_cache(
     source: &[u8],
     start: u32,
     styled_spans: &[Vec<lattice_syntax::StyledSpan>],
+    inlays_by_line: &[Vec<(u32, &str)>],
     prev_rows: &VisibleRows,
     new_key: &VisibleHighlightsKey,
 ) -> Vec<RowPrepaint> {
     // Bail to the cold path on any source-affecting input change.
     // `snapshot_ptr` flips on every reparse-produced snapshot;
     // `syntax_text_version` flips on edits even when the parser
-    // re-uses an Arc'd Tree. Either change means line content (or
-    // line count, or byte offsets) may differ.
-    let snapshot_match = prev_rows.computed_for_key.snapshot_ptr == new_key.snapshot_ptr
-        && prev_rows.computed_for_key.syntax_text_version == new_key.syntax_text_version;
-    if !snapshot_match || prev_rows.rows.is_empty() {
-        return build_rows(source, start, styled_spans);
+    // re-uses an Arc'd Tree; `inlay_version` flips on any inlay
+    // payload change (arrival, edit, mode-gate flip). Any of those
+    // means line content (line count, byte offsets, woven runs)
+    // may differ.
+    let source_match = prev_rows.computed_for_key.snapshot_ptr == new_key.snapshot_ptr
+        && prev_rows.computed_for_key.syntax_text_version == new_key.syntax_text_version
+        && prev_rows.computed_for_key.inlay_version == new_key.inlay_version;
+    if !source_match || prev_rows.rows.is_empty() {
+        return build_rows(source, start, styled_spans, inlays_by_line);
     }
 
     // Find the byte offset of the FIRST newly-visible line so we
@@ -392,9 +411,8 @@ fn build_rows_with_cache(
             .map(|n| line_start + n)
             .unwrap_or(source.len());
         let line_text = std::str::from_utf8(&source[line_start..line_end]).unwrap_or("");
-        let combined: Box<str> = line_text.into();
-        let runs = collapse_runs(line_spans, combined.len() as u32);
-        rows.push(RowPrepaint { combined, runs });
+        let line_inlays = inlays_by_line.get(i).map(Vec::as_slice).unwrap_or(&[]);
+        rows.push(weave_row(line_text, line_spans, line_inlays));
         // Advance the seek cache past this line so the next cold
         // row picks up O(1) after.
         byte_off_cache = Some((abs_line + 1, (line_end + 1).min(source.len())));
@@ -407,17 +425,21 @@ fn build_rows_with_cache(
 /// `styled_spans[i]` is the per-line highlight slice for buffer
 /// line `start + i`. Walks `source` once to find the byte offset
 /// of `start`, then materialises each visible line as a
-/// `Box<str>` plus its collapsed `RowRun` partition. `source` is
-/// the SyntaxSnapshot's bytes — same bytes the spans index into —
+/// `Box<str>` plus its run partition. `source` is the
+/// `SyntaxSnapshot`'s bytes — same bytes the spans index into —
 /// so the row text and span offsets stay aligned even if the
 /// document snapshot has raced ahead of the syntax parse.
 ///
-/// Inlay weave is deferred to A.2b — `combined` always equals the
-/// source line text in A.2a.
+/// Slice A.2b.2: `inlays_by_line[i]` carries the sorted inlay
+/// list for visible line `i` (empty when no inlays land on the
+/// line). [`weave_row`] splices each inlay into `combined` at its
+/// `byte` offset and records the splice on the row's
+/// `inlay_offsets`. Empty inlay slices skip the weave overhead.
 fn build_rows(
     source: &[u8],
     start: u32,
     styled_spans: &[Vec<lattice_syntax::StyledSpan>],
+    inlays_by_line: &[Vec<(u32, &str)>],
 ) -> Vec<RowPrepaint> {
     // Seek to the byte offset of line `start`. `memchr` is SIMD-
     // accelerated; for a 1MB file at line ~1000 the seek is sub-µs
@@ -439,33 +461,188 @@ fn build_rows(
         }
     }
     let mut rows: Vec<RowPrepaint> = Vec::with_capacity(styled_spans.len());
-    for line_spans in styled_spans {
+    for (i, line_spans) in styled_spans.iter().enumerate() {
         let line_end = memchr::memchr(b'\n', &source[byte_off..])
             .map(|n| byte_off + n)
             .unwrap_or(source.len());
         let line_bytes = &source[byte_off..line_end];
         let line_text = std::str::from_utf8(line_bytes).unwrap_or("");
-        let combined: Box<str> = line_text.into();
-        let runs = collapse_runs(line_spans, combined.len() as u32);
-        rows.push(RowPrepaint { combined, runs });
+        let line_inlays = inlays_by_line.get(i).map(Vec::as_slice).unwrap_or(&[]);
+        rows.push(weave_row(line_text, line_spans, line_inlays));
         byte_off = (line_end + 1).min(source.len());
     }
     rows
 }
 
-/// Collapse adjacent equal-`Style` spans into a minimal `RowRun`
+/// Bucket a flat inlay-hints list into a per-visible-line vector,
+/// each bucket sorted ascending by byte offset. Output length is
+/// always `(end - start) as usize` so callers can index by visible-
+/// row offset without bounds-checking.
+///
+/// Filters out hints whose line falls outside the visible window —
+/// inlays beyond the viewport never need a per-row vector even if
+/// they're in the published payload.
+fn bucket_inlays_by_line(
+    inlay_hints: &[InlayHintRow],
+) -> Vec<Vec<(u32, &str)>> {
+    if inlay_hints.is_empty() {
+        return Vec::new();
+    }
+    // Find the max visible line in the payload + 1 to size the
+    // output. Caller passes the spans-indexed slice through, so the
+    // buckets are at most `viewport_height` entries; we lazily size
+    // by max-line + 1 to avoid an extra parameter.
+    let max_line = inlay_hints.iter().map(|h| h.line).max().unwrap_or(0);
+    let mut buckets: Vec<Vec<(u32, &str)>> = vec![Vec::new(); (max_line as usize) + 1];
+    for h in inlay_hints {
+        buckets[h.line as usize].push((h.byte, h.text.as_str()));
+    }
+    for b in &mut buckets {
+        b.sort_by_key(|(off, _)| *off);
+    }
+    buckets
+}
+
+/// Per-row weave: splice inlay-virtual-text into `line_text` at
+/// each inlay's byte offset, partitioning the result into Source
+/// / Inlay runs and recording each splice on `inlay_offsets` so
+/// consumers can remap byte offsets onto column positions in the
+/// combined output.
+///
+/// - Empty `line_inlays` + empty `line_spans` yields a single
+///   `Source { Default, line_text.len() }` run (or no runs on an
+///   empty line) and no offsets.
+/// - Adjacent equal-style Source bytes merge; Inlay runs always
+///   break the merge so consumers can colour them distinctly.
+/// - Trailing inlays (`orig_byte >= line_text.len()`) splice at
+///   end-of-line — matches the GPUI `build_line_with_inlays`
+///   contract.
+fn weave_row(
+    line_text: &str,
+    line_spans: &[lattice_syntax::StyledSpan],
+    line_inlays: &[(u32, &str)],
+) -> RowPrepaint {
+    // Fast path: no inlays. Build combined + Source-only run
+    // partition without the splice machinery. Matches the A.2a
+    // shape with the new enum variant wrapper.
+    if line_inlays.is_empty() {
+        let combined: Box<str> = line_text.into();
+        let runs = collapse_source_runs(line_spans, combined.len() as u32);
+        return RowPrepaint {
+            combined,
+            runs,
+            inlay_offsets: Arc::from(Vec::<(u32, u32)>::new().into_boxed_slice()),
+        };
+    }
+
+    let inlay_byte_total: usize = line_inlays.iter().map(|(_, t)| t.len()).sum();
+    let mut combined = String::with_capacity(line_text.len() + inlay_byte_total);
+    let mut runs: Vec<RowRun> = Vec::with_capacity(line_spans.len() + line_inlays.len() * 2);
+    let mut inlay_offsets: Vec<(u32, u32)> = Vec::with_capacity(line_inlays.len());
+
+    // Pending Source run accumulator. We hold off pushing until we
+    // see a different style or an Inlay break so adjacent equal-
+    // style chars collapse into one run.
+    let mut pending_style: Option<lattice_syntax::Style> = None;
+    let mut pending_len: u32 = 0;
+
+    let flush_pending = |runs: &mut Vec<RowRun>,
+                         pending_style: &mut Option<lattice_syntax::Style>,
+                         pending_len: &mut u32| {
+        if let Some(style) = pending_style.take() {
+            if *pending_len > 0 {
+                runs.push(RowRun::Source { len: *pending_len, style });
+            }
+            *pending_len = 0;
+        }
+    };
+
+    let mut inlay_idx = 0usize;
+    for (orig_byte, ch) in line_text.char_indices() {
+        // Splice inlays whose `orig_byte` lands at or before this
+        // char. Multiple inlays at the same byte run in input order.
+        while inlay_idx < line_inlays.len()
+            && (line_inlays[inlay_idx].0 as usize) <= orig_byte
+        {
+            let (off, text) = line_inlays[inlay_idx];
+            let char_width = text.chars().count() as u32;
+            inlay_offsets.push((off, char_width));
+            // Inlay breaks the pending Source run.
+            flush_pending(&mut runs, &mut pending_style, &mut pending_len);
+            combined.push_str(text);
+            runs.push(RowRun::Inlay { len: text.len() as u32 });
+            inlay_idx += 1;
+        }
+        let style = style_at_byte(line_spans, orig_byte);
+        let mut buf = [0u8; 4];
+        let encoded = ch.encode_utf8(&mut buf);
+        combined.push_str(encoded);
+        match pending_style {
+            Some(prev) if prev == style => {
+                pending_len += encoded.len() as u32;
+            }
+            Some(_) => {
+                flush_pending(&mut runs, &mut pending_style, &mut pending_len);
+                pending_style = Some(style);
+                pending_len = encoded.len() as u32;
+            }
+            None => {
+                pending_style = Some(style);
+                pending_len = encoded.len() as u32;
+            }
+        }
+    }
+    // Trailing inlays at/past EOL.
+    while inlay_idx < line_inlays.len() {
+        let (off, text) = line_inlays[inlay_idx];
+        let char_width = text.chars().count() as u32;
+        inlay_offsets.push((off, char_width));
+        flush_pending(&mut runs, &mut pending_style, &mut pending_len);
+        combined.push_str(text);
+        runs.push(RowRun::Inlay { len: text.len() as u32 });
+        inlay_idx += 1;
+    }
+    flush_pending(&mut runs, &mut pending_style, &mut pending_len);
+
+    RowPrepaint {
+        combined: combined.into_boxed_str(),
+        runs,
+        inlay_offsets: Arc::from(inlay_offsets.into_boxed_slice()),
+    }
+}
+
+/// Resolve the highlight style at a given utf-8 byte offset inside
+/// `line_spans`. Returns `Style::Default` for bytes that fall
+/// outside every styled span (whitespace, punctuation that no
+/// theme styles, etc.).
+fn style_at_byte(
+    line_spans: &[lattice_syntax::StyledSpan],
+    byte: usize,
+) -> lattice_syntax::Style {
+    for s in line_spans {
+        if byte >= s.start && byte < s.end {
+            return s.style;
+        }
+    }
+    lattice_syntax::Style::Default
+}
+
+/// Collapse `line_spans` into a minimal Source-only `RowRun`
 /// partition covering the row's `combined` text exhaustively.
 ///
-/// - Empty `line_spans` yields a single `Style::Default` run of
-///   length `combined_len` (so renderers always have a valid
+/// - Empty `line_spans` yields a single `Source { Default,
+///   combined_len }` run (so renderers always have a valid
 ///   partition to walk).
 /// - Gaps between spans (uncovered byte ranges between `prev.end`
-///   and `next.start`) are filled with `Style::Default` runs so
-///   `sum(runs[*].len) == combined_len`.
+///   and `next.start`) are filled with `Source { Default, _ }`
+///   runs so `sum(runs[*].len()) == combined_len`.
 /// - Spans whose end exceeds `combined_len` are clamped — the
 ///   highlight grammar can produce one-past-the-end ranges on
 ///   blank lines and we don't want to overflow.
-fn collapse_runs(line_spans: &[lattice_syntax::StyledSpan], combined_len: u32) -> Vec<RowRun> {
+fn collapse_source_runs(
+    line_spans: &[lattice_syntax::StyledSpan],
+    combined_len: u32,
+) -> Vec<RowRun> {
     if combined_len == 0 {
         return Vec::new();
     }
@@ -476,13 +653,13 @@ fn collapse_runs(line_spans: &[lattice_syntax::StyledSpan], combined_len: u32) -
         if len == 0 {
             return;
         }
-        if let Some(last) = runs.last_mut() {
-            if last.style == style {
-                last.len += len;
-                return;
-            }
+        if let Some(RowRun::Source { style: prev_style, len: prev_len }) = runs.last_mut()
+            && *prev_style == style
+        {
+            *prev_len += len;
+            return;
         }
-        runs.push(RowRun { len, style });
+        runs.push(RowRun::Source { len, style });
     };
 
     for s in line_spans {
@@ -572,6 +749,7 @@ mod tests {
                 inlay_hints: Arc::from(
                     Vec::<crate::render_state::InlayHintRow>::new().into_boxed_slice(),
                 ),
+                inlay_version: 0,
                 pane_highlights: Arc::new(std::collections::HashMap::new()),
             }),
             ..RenderState::default()
@@ -652,6 +830,7 @@ mod tests {
                 inlay_hints: Arc::from(
                     Vec::<crate::render_state::InlayHintRow>::new().into_boxed_slice(),
                 ),
+                inlay_version: 0,
                 pane_highlights: Arc::new(std::collections::HashMap::new()),
             }),
             ..RenderState::default()
@@ -722,28 +901,30 @@ mod tests {
         );
     }
 
-    // ---- Perf plan A.2 slice A.2a: VisibleRows-specific tests ----
+    // ---- Perf plan A.2 slice A.2a / A.2b.2: row build tests -----
 
-    /// `collapse_runs` produces a minimal partition: empty input
-    /// yields a single Default run covering the whole row; spans
-    /// covering everything yield exactly one styled run.
+    /// `collapse_source_runs` produces a minimal partition: empty
+    /// input yields a single Default Source run covering the whole
+    /// row; spans covering everything yield exactly one styled run.
     #[test]
-    fn collapse_runs_empty_input_yields_single_default_run() {
-        // No styled spans → one Default run spanning the row.
-        let runs = collapse_runs(&[], 10);
+    fn collapse_source_runs_empty_input_yields_single_default_run() {
+        // No styled spans → one Default Source run spanning the row.
+        let runs = collapse_source_runs(&[], 10);
         assert_eq!(runs.len(), 1);
-        assert_eq!(runs[0].len, 10);
-        assert_eq!(runs[0].style, lattice_syntax::Style::Default);
+        assert!(matches!(
+            runs[0],
+            RowRun::Source { len: 10, style: lattice_syntax::Style::Default }
+        ));
 
         // Empty row → no runs at all (nothing to paint).
-        let runs_empty = collapse_runs(&[], 0);
+        let runs_empty = collapse_source_runs(&[], 0);
         assert!(runs_empty.is_empty());
     }
 
     /// Adjacent equal-style spans merge into one run; gaps fill
     /// with Default; the sum of run lengths covers the row.
     #[test]
-    fn collapse_runs_merges_and_fills_gaps() {
+    fn collapse_source_runs_merges_and_fills_gaps() {
         use lattice_syntax::{Style, StyledSpan};
         let spans = vec![
             StyledSpan { start: 0, end: 2, style: Style::Keyword },
@@ -752,18 +933,134 @@ mod tests {
             StyledSpan { start: 6, end: 9, style: Style::Function },
             // gap [9..10) → Default
         ];
-        let runs = collapse_runs(&spans, 10);
+        let runs = collapse_source_runs(&spans, 10);
         assert_eq!(
             runs,
             vec![
-                RowRun { len: 4, style: Style::Keyword },
-                RowRun { len: 2, style: Style::Default },
-                RowRun { len: 3, style: Style::Function },
-                RowRun { len: 1, style: Style::Default },
+                RowRun::Source { len: 4, style: Style::Keyword },
+                RowRun::Source { len: 2, style: Style::Default },
+                RowRun::Source { len: 3, style: Style::Function },
+                RowRun::Source { len: 1, style: Style::Default },
             ]
         );
-        let total: u32 = runs.iter().map(|r| r.len).sum();
+        let total: u32 = runs.iter().map(|r| r.len()).sum();
         assert_eq!(total, 10, "runs must partition combined exhaustively");
+    }
+
+    // ---- Perf plan A.2 slice A.2b.2: weave_row tests ------------
+
+    /// `weave_row` with no inlays produces the same shape as the
+    /// no-inlay fast path on `collapse_source_runs`: combined ==
+    /// line_text, runs == Source partition, empty offsets.
+    #[test]
+    fn weave_row_no_inlays_matches_collapse_source_runs() {
+        use lattice_syntax::{Style, StyledSpan};
+        let spans = vec![StyledSpan { start: 0, end: 3, style: Style::Keyword }];
+        let row = weave_row("let x = 1;", &spans, &[]);
+        assert_eq!(row.combined.as_ref(), "let x = 1;");
+        assert!(row.inlay_offsets.is_empty());
+        let total: u32 = row.runs.iter().map(|r| r.len()).sum();
+        assert_eq!(total, "let x = 1;".len() as u32);
+        // First run is Keyword (Source); rest are Source Default.
+        assert!(matches!(row.runs[0], RowRun::Source { style: Style::Keyword, .. }));
+        assert!(row.runs.iter().all(|r| matches!(r, RowRun::Source { .. })));
+    }
+
+    /// Mid-line inlay: spliced before the byte offset, recorded on
+    /// `inlay_offsets`, run partition includes an `Inlay` variant.
+    #[test]
+    fn weave_row_splices_mid_line_inlay() {
+        let line = "let x = 1;";
+        let inlays: Vec<(u32, &str)> = vec![(5, ": i32")];
+        let row = weave_row(line, &[], &inlays);
+        assert_eq!(row.combined.as_ref(), "let x: i32 = 1;");
+        assert_eq!(row.inlay_offsets.as_ref(), &[(5u32, 5u32)][..]);
+        // Run shape: Source(5, Default) -> Inlay(5) -> Source(5, Default).
+        // The two Source runs DO NOT merge because the Inlay run breaks them.
+        assert_eq!(row.runs.len(), 3);
+        assert!(matches!(row.runs[0], RowRun::Source { len: 5, .. }));
+        assert!(matches!(row.runs[1], RowRun::Inlay { len: 5 }));
+        assert!(matches!(row.runs[2], RowRun::Source { len: 5, .. }));
+    }
+
+    /// Trailing inlay (orig_byte >= line.len()) splices at EOL.
+    #[test]
+    fn weave_row_trailing_inlay_appended_at_eol() {
+        let line = "fn foo()";
+        let inlays: Vec<(u32, &str)> = vec![(line.len() as u32, " -> i32")];
+        let row = weave_row(line, &[], &inlays);
+        assert_eq!(row.combined.as_ref(), "fn foo() -> i32");
+        assert_eq!(row.inlay_offsets.as_ref(), &[(8u32, 7u32)][..]);
+        // Source(8, Default) -> Inlay(7).
+        assert_eq!(row.runs.len(), 2);
+        assert!(matches!(row.runs[0], RowRun::Source { len: 8, .. }));
+        assert!(matches!(row.runs[1], RowRun::Inlay { len: 7 }));
+    }
+
+    /// Multiple inlays on the same row: each is recorded and
+    /// spliced; partition stays exhaustive over `combined`.
+    /// Splice semantics match the GPUI peer: inlay text is
+    /// inserted BEFORE the byte at `orig_byte`, so to land after a
+    /// name like `a` the hint's byte must point AT the character
+    /// just past `a` (the comma here).
+    #[test]
+    fn weave_row_multiple_inlays_sorted_by_byte() {
+        // Bytes: l=0 e=1 t=2 ' '=3 (=4 a=5 ,=6 ' '=7 b=8 )=9 ...
+        // Splicing before byte 6 puts the inlay between `a` and `,`;
+        // before byte 9 puts it between `b` and `)`.
+        let line = "let (a, b) = pair;";
+        let inlays: Vec<(u32, &str)> = vec![(6, ": i32"), (9, ": i32")];
+        let row = weave_row(line, &[], &inlays);
+        assert_eq!(row.combined.as_ref(), "let (a: i32, b: i32) = pair;");
+        assert_eq!(row.inlay_offsets.len(), 2);
+        let total: u32 = row.runs.iter().map(|r| r.len()).sum();
+        assert_eq!(total, row.combined.len() as u32);
+    }
+
+    /// Empty line with no inlays yields no runs (matches A.2a).
+    #[test]
+    fn weave_row_empty_line_no_inlays_yields_no_runs() {
+        let row = weave_row("", &[], &[]);
+        assert!(row.combined.is_empty());
+        assert!(row.runs.is_empty());
+        assert!(row.inlay_offsets.is_empty());
+    }
+
+    /// Empty line with a trailing inlay still emits an Inlay run.
+    #[test]
+    fn weave_row_empty_line_with_inlay_emits_inlay_only() {
+        let inlays: Vec<(u32, &str)> = vec![(0, "// hint")];
+        let row = weave_row("", &[], &inlays);
+        assert_eq!(row.combined.as_ref(), "// hint");
+        assert_eq!(row.runs.len(), 1);
+        assert!(matches!(row.runs[0], RowRun::Inlay { len: 7 }));
+        assert_eq!(row.inlay_offsets.as_ref(), &[(0u32, 7u32)][..]);
+    }
+
+    /// `bucket_inlays_by_line` groups by line and sorts within a
+    /// bucket by byte ascending.
+    #[test]
+    fn bucket_inlays_by_line_groups_and_sorts() {
+        let hints = vec![
+            InlayHintRow { line: 0, byte: 5, text: "a".into() },
+            InlayHintRow { line: 2, byte: 1, text: "b".into() },
+            InlayHintRow { line: 0, byte: 2, text: "c".into() }, // earlier byte than first on line 0
+        ];
+        let buckets = bucket_inlays_by_line(&hints);
+        assert_eq!(buckets.len(), 3); // lines 0..=2
+        // Line 0: two entries sorted by byte (2 then 5).
+        assert_eq!(buckets[0], vec![(2u32, "c"), (5u32, "a")]);
+        // Line 1: empty.
+        assert!(buckets[1].is_empty());
+        // Line 2: single entry.
+        assert_eq!(buckets[2], vec![(1u32, "b")]);
+    }
+
+    /// Empty input → empty output, no allocation surprises.
+    #[test]
+    fn bucket_inlays_by_line_empty_input_returns_empty() {
+        let buckets = bucket_inlays_by_line(&[]);
+        assert!(buckets.is_empty());
     }
 
     // ---- Perf plan B.1: dirty-row recomposition tests -----------
@@ -808,7 +1105,14 @@ mod tests {
             scroll,
             viewport_height: 0,
             fold_hash: 0,
+            inlay_version: 0,
         }
+    }
+
+    /// Convenience: the empty inlays argument matching a viewport
+    /// of `n` visible rows.
+    fn no_inlays(n: usize) -> Vec<Vec<(u32, &'static str)>> {
+        vec![Vec::new(); n]
     }
 
     /// Cold path — no prior rows. Every line is materialised from
@@ -819,12 +1123,14 @@ mod tests {
         let spans = fake_styled(10, 4);
         let prev = VisibleRows::default();
         let new_key = key(0xdead, 1, 0);
-        let cached = build_rows_with_cache(&source, 0, &spans, &prev, &new_key);
-        let cold = build_rows(&source, 0, &spans);
+        let inlays = no_inlays(spans.len());
+        let cached = build_rows_with_cache(&source, 0, &spans, &inlays, &prev, &new_key);
+        let cold = build_rows(&source, 0, &spans, &inlays);
         assert_eq!(cached.len(), cold.len());
         for (a, b) in cached.iter().zip(cold.iter()) {
             assert_eq!(a.combined, b.combined);
             assert_eq!(a.runs, b.runs);
+            assert_eq!(a.inlay_offsets, b.inlay_offsets);
         }
     }
 
@@ -839,7 +1145,7 @@ mod tests {
         // Previous frame: viewport [10..20).
         let prev_spans = fake_styled(10, 4);
         let prev_key = key(0xdead, 1, 10);
-        let prev_rows_vec = build_rows(&source, 10, &prev_spans);
+        let prev_rows_vec = build_rows(&source, 10, &prev_spans, &no_inlays(prev_spans.len()));
         let prev = VisibleRows {
             rows: Arc::from(prev_rows_vec.clone().into_boxed_slice()),
             computed_for_key: prev_key,
@@ -847,7 +1153,14 @@ mod tests {
         // New frame: viewport [12..22) — overlap [12..20).
         let new_spans = fake_styled(10, 4);
         let new_key = key(0xdead, 1, 12);
-        let new_rows = build_rows_with_cache(&source, 12, &new_spans, &prev, &new_key);
+        let new_rows = build_rows_with_cache(
+            &source,
+            12,
+            &new_spans,
+            &no_inlays(new_spans.len()),
+            &prev,
+            &new_key,
+        );
         assert_eq!(new_rows.len(), 10);
         // Reuse window: new_rows[0..8] == prev_rows_vec[2..10].
         for i in 0..8 {
@@ -858,7 +1171,8 @@ mod tests {
         }
         // Cold tail: new_rows[8..10] must match cold build for
         // absolute lines [20..22).
-        let cold_tail = build_rows(&source, 20, &fake_styled(2, 4));
+        let cold_tail_spans = fake_styled(2, 4);
+        let cold_tail = build_rows(&source, 20, &cold_tail_spans, &no_inlays(cold_tail_spans.len()));
         assert_eq!(new_rows[8].combined, cold_tail[0].combined);
         assert_eq!(new_rows[9].combined, cold_tail[1].combined);
     }
@@ -880,14 +1194,21 @@ mod tests {
             v
         };
         let spans = fake_styled(10, 4);
-        let prev_rows_vec = build_rows(&source_a, 5, &spans);
+        let prev_rows_vec = build_rows(&source_a, 5, &spans, &no_inlays(spans.len()));
         let prev = VisibleRows {
             rows: Arc::from(prev_rows_vec.clone().into_boxed_slice()),
             computed_for_key: key(0xa11, 1, 5),
         };
         // New snapshot_ptr differs ⇒ no reuse, rebuild from source_b.
         let new_key = key(0xb22, 1, 5);
-        let new_rows = build_rows_with_cache(&source_b, 5, &spans, &prev, &new_key);
+        let new_rows = build_rows_with_cache(
+            &source_b,
+            5,
+            &spans,
+            &no_inlays(spans.len()),
+            &prev,
+            &new_key,
+        );
         // New rows must reflect source_b (uppercase), not the cached
         // source_a rows.
         assert_ne!(new_rows[0].combined, prev_rows_vec[0].combined);
@@ -899,6 +1220,45 @@ mod tests {
             "expected uppercase from source_b; got {:?}",
             new_rows[0].combined
         );
+    }
+
+    /// Slice A.2b.2: `inlay_version` change invalidates the cache
+    /// — even with snapshot_ptr + text_version + scroll all equal,
+    /// a different inlay_version on the new key MUST force a full
+    /// rebuild so the woven rows reflect the new inlay payload.
+    #[test]
+    fn build_rows_with_cache_falls_back_on_inlay_version_change() {
+        let source = fake_source(20, 4);
+        let spans = fake_styled(10, 4);
+        let prev_key = VisibleHighlightsKey {
+            snapshot_ptr: 0xdead,
+            syntax_text_version: 1,
+            scroll: 0,
+            viewport_height: 0,
+            fold_hash: 0,
+            inlay_version: 42,
+        };
+        let prev_rows_vec = build_rows(&source, 0, &spans, &no_inlays(spans.len()));
+        let prev = VisibleRows {
+            rows: Arc::from(prev_rows_vec.clone().into_boxed_slice()),
+            computed_for_key: prev_key,
+        };
+        // New key: same everything except inlay_version bumped.
+        // Even if the rebuilt rows happen to match (no inlays still
+        // visible) the path must take the cold rebuild, not the
+        // reuse short-circuit. Use spy-able output by changing the
+        // per-line inlay list so the woven content differs.
+        let new_key = VisibleHighlightsKey { inlay_version: 99, ..prev_key };
+        let mut new_inlays: Vec<Vec<(u32, &str)>> = no_inlays(spans.len());
+        new_inlays[0].push((1, ">>"));
+        let new_rows = build_rows_with_cache(&source, 0, &spans, &new_inlays, &prev, &new_key);
+        // First row picked up the new inlay (proves cold path ran).
+        assert!(
+            new_rows[0].combined.contains(">>"),
+            "expected new inlay woven in; got {:?}",
+            new_rows[0].combined
+        );
+        assert!(!new_rows[0].inlay_offsets.is_empty());
     }
 
     /// Recompute also publishes pre-paint rows alongside spans,
@@ -915,16 +1275,82 @@ mod tests {
         // First row's combined text matches the source line.
         assert_eq!(rows.rows[0].combined.as_ref(), "fn main() {}");
         // Run partition covers the whole line.
-        let total: u32 = rows.rows[0].runs.iter().map(|r| r.len).sum();
+        let total: u32 = rows.rows[0].runs.iter().map(|r| r.len()).sum();
         assert_eq!(total, 12);
-        // At least one run is a Keyword or Function (the `fn` token).
+        // At least one Source run is Keyword or Function (the `fn` token).
         assert!(
-            rows.rows[0]
-                .runs
-                .iter()
-                .any(|r| matches!(r.style, lattice_syntax::Style::Keyword | lattice_syntax::Style::Function)),
-            "expected a Keyword/Function run; got {:?}",
+            rows.rows[0].runs.iter().any(|r| matches!(
+                r,
+                RowRun::Source {
+                    style: lattice_syntax::Style::Keyword | lattice_syntax::Style::Function,
+                    ..
+                }
+            )),
+            "expected a Keyword/Function Source run; got {:?}",
             rows.rows[0].runs
         );
+        // No inlays in this fixture.
+        assert!(rows.rows[0].inlay_offsets.is_empty());
+    }
+
+    /// Slice A.2b.2: `recompute` consumes `syntax.inlay_hints` and
+    /// splices them into the row composition. With one inlay on
+    /// line 0, the published row's `combined` carries the splice
+    /// and `inlay_offsets` records it.
+    #[test]
+    fn recompute_weaves_published_inlay_hints_into_rows() {
+        // Manually construct a SyntaxRenderState carrying one inlay
+        // hint, so the bench-style helper isn't bypassed and the
+        // weave path runs end-to-end.
+        let mut s = lattice_syntax::Syntax::for_language(lattice_syntax::Lang::Rust)
+            .unwrap()
+            .expect("rust grammar available in test build");
+        let text = "fn main() {}\n";
+        s.parse_at(text, 1);
+        let handle = Arc::new(lattice_syntax::SyntaxHandle::seeded(s));
+        let cell = Arc::new(arc_swap::ArcSwap::from_pointee(VisibleSpans::default()));
+        let rows_cell = Arc::new(arc_swap::ArcSwap::from_pointee(VisibleRows::default()));
+        let hints: Vec<InlayHintRow> = vec![InlayHintRow {
+            line: 0,
+            byte: 7, // between `main` and `(`
+            text: " <- entry".into(),
+        }];
+        let hints_arc: Arc<[InlayHintRow]> = Arc::from(hints.into_boxed_slice());
+        let inlay_version = crate::render_state::inlay_hints_version(&hints_arc);
+        let rs_state = RenderState {
+            syntax: Arc::new(crate::render_state::SyntaxRenderState {
+                syntax_handle: Some(handle.clone()),
+                scroll: 0,
+                viewport_height: 5,
+                end_line_override: None,
+                fold_hash: 0,
+                text_version: 1,
+                visible_spans: cell.clone(),
+                visible_rows: rows_cell.clone(),
+                inlay_hints: hints_arc,
+                inlay_version,
+                pane_highlights: Arc::new(std::collections::HashMap::new()),
+            }),
+            ..RenderState::default()
+        };
+        let rs = ArcSwap::from_pointee(rs_state);
+        assert_eq!(recompute(&rs, &cell, &rows_cell), WorkerDecision::Recomputed);
+        let published = rows_cell.load_full();
+        let row0 = &published.rows[0];
+        assert!(
+            row0.combined.contains(" <- entry"),
+            "expected inlay text spliced into combined; got {:?}",
+            row0.combined
+        );
+        assert_eq!(row0.inlay_offsets.as_ref(), &[(7u32, 9u32)][..]);
+        // At least one Inlay run is present.
+        assert!(
+            row0.runs.iter().any(|r| matches!(r, RowRun::Inlay { .. })),
+            "expected an Inlay run; got {:?}",
+            row0.runs
+        );
+        // Cache key carries the bumped inlay_version.
+        assert_eq!(published.computed_for_key.inlay_version, inlay_version);
+        assert_ne!(inlay_version, 0, "non-empty hints must hash to non-zero");
     }
 }

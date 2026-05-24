@@ -102,7 +102,12 @@ pub struct FrameView<'a> {
     pub lsp_diagnostics_enabled: bool,
     pub lsp_semantic_tokens_enabled: bool,
     pub lsp_document_highlight_enabled: bool,
-    pub lsp_inlay_hint_enabled: bool,
+    /// Slice A.2b.2: inlay-hint mode gate moved to publish-time
+    /// (`Editor::build_active_inlay_hints` returns an empty list
+    /// when the mode is off). The compose loop no longer reads
+    /// this field; `rs.syntax.inlay_hints` is already gated, so
+    /// `is_empty()` on the published list is the cheap fast-path
+    /// check.
     pub lsp_progress_enabled: bool,
 }
 
@@ -158,7 +163,6 @@ impl<'a> FrameView<'a> {
             lsp_diagnostics_enabled: app.lsp_diagnostics_mode_enabled_for(doc_id),
             lsp_semantic_tokens_enabled: app.lsp_semantic_tokens_mode_enabled_for(doc_id),
             lsp_document_highlight_enabled: app.lsp_document_highlight_mode_enabled_for(doc_id),
-            lsp_inlay_hint_enabled: app.lsp_inlay_hint_mode_enabled_for(doc_id),
             lsp_progress_enabled: app.lsp_progress_mode_enabled_for(doc_id),
         }
     }
@@ -204,7 +208,6 @@ impl<'a> FrameView<'a> {
             lsp_diagnostics_enabled: app.lsp_diagnostics_mode_enabled_for(buffer_id),
             lsp_semantic_tokens_enabled: app.lsp_semantic_tokens_mode_enabled_for(buffer_id),
             lsp_document_highlight_enabled: app.lsp_document_highlight_mode_enabled_for(buffer_id),
-            lsp_inlay_hint_enabled: app.lsp_inlay_hint_mode_enabled_for(buffer_id),
             lsp_progress_enabled: app.lsp_progress_mode_enabled_for(buffer_id),
         }
     }
@@ -3146,51 +3149,37 @@ fn compose_visible_lines_inner(
                 body = apply_match_overlay(body, start, end, document_highlight_style(h.kind));
             }
         }
-        // 4.4.g: `inlayHint` virtual-text overlay. Walks the
-        // per-buffer hint cache filtering to hints on this
-        // row; each hint's label splices into the line at the
-        // hint's utf-16-converted byte offset. Spliced AFTER
-        // diagnostic underline + match overlays so those style
-        // the buffer's real text and the hint sits visually
-        // beside it, not as part of it. Iterate in *reverse*
-        // position order so earlier splices don't shift the
-        // byte offsets of later ones.
-        // 5.8.AF.5 / Slice 3b.1: read inlay-hint cache through
-        // `RenderState.lsp.inlay_hints`. The spawned LSP request
-        // task `.insert_for`s directly into the same underlying
-        // `PerBufferCache`, so this read sees fresh data without
-        // any UI-thread drain. (`PerBufferCacheExt` already in
-        // scope from the semantic-tokens reader above.)
+        // Perf plan A.2 slice A.2b.2: `inlayHint` virtual-text
+        // overlay reads from `rs.syntax.inlay_hints` — the
+        // publish-time gated + flattened list with
+        // `padding_left/right` already baked in and the utf-16
+        // column already converted to utf-8 bytes. The mode gate,
+        // per-buffer-cache lookup, label flatten, and column
+        // conversion all moved off the per-line hot loop onto
+        // dispatch (once per publish). Filters per row by `line`;
+        // splices in reverse byte order so earlier splices don't
+        // shift later ones.
+        //
+        // Full migration of the active-pane compose loop onto
+        // `rs.syntax.visible_rows` (which would also drop this
+        // post-hoc splice — the worker would already have woven
+        // it) is deferred to slice A.2b.2b. This slice keeps the
+        // existing Span-mutation chain intact and just collapses
+        // the inlay source-of-truth to the canonical one.
         let rs = app.render_state.load();
-        if let Some(cache) = rs.lsp.inlay_hints.get_for(app.ad().document_buffer_id)
-            && view.lsp_inlay_hint_enabled
-        {
-            let mut on_line: Vec<&lattice_lsp::lsp_types::InlayHint> = cache
-                .hints
+        if !rs.syntax.inlay_hints.is_empty() {
+            let mut on_line: Vec<&lattice_host::render_state::InlayHintRow> = rs
+                .syntax
+                .inlay_hints
                 .iter()
-                .filter(|h| h.position.line == line_idx)
+                .filter(|h| h.line == line_idx)
                 .collect();
-            on_line.sort_by(|a, b| b.position.character.cmp(&a.position.character));
+            on_line.sort_by(|a, b| b.byte.cmp(&a.byte));
             for h in on_line {
-                let mut text = inlay_hint_label_text(&h.label);
-                // LSP `paddingLeft` / `paddingRight` produce a
-                // leading / trailing space character on the
-                // hint. Cheap to honor; cosmetic but matches
-                // what other editors render.
-                if h.padding_left.unwrap_or(false) {
-                    text.insert(0, ' ');
-                }
-                if h.padding_right.unwrap_or(false) {
-                    text.push(' ');
-                }
-                let byte_offset = lattice_lsp::position::utf16_column_to_utf8_byte(
-                    &line_text,
-                    h.position.character,
-                ) as usize;
                 body = splice_virtual_text_into_spans(
                     body,
-                    byte_offset.min(line_len),
-                    text,
+                    (h.byte as usize).min(line_len),
+                    h.text.clone(),
                     inlay_hint_style(),
                 );
             }
@@ -3600,10 +3589,13 @@ fn apply_semantic_token_modifiers(mut style: TuiStyle, modifiers: &[String]) -> 
     style
 }
 
-// 5.8.N: `inlay_hint_label_text` migrated to
-// `lattice_lsp::inlay_hint_label_text` (LSP-type natural op,
-// renderer-neutral). Imported below where call sites need it.
-use lattice_lsp::inlay_hint_label_text;
+// Slice A.2b.2: `inlay_hint_label_text` is no longer imported here
+// — the per-line splice block previously called it to flatten LSP
+// inlay-hint labels, but that flattening now happens once per
+// publish on the host (`Editor::build_active_inlay_hints`) and the
+// renderer reads `rs.syntax.inlay_hints` with the text already
+// flattened. The function still exists at `lattice_lsp::
+// inlay_hint_label_text` for any other callers.
 
 /// Trailing-side padding cells between the gutter's content and the
 /// buffer column. The fold glyph still occupies one of those cells

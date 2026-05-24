@@ -68,6 +68,7 @@ fn build_rs(
             visible_spans: cell.clone(),
             visible_rows: rows_cell.clone(),
             inlay_hints: Arc::from(Vec::<InlayHintRow>::new().into_boxed_slice()),
+            inlay_version: 0,
             pane_highlights: Arc::new(std::collections::HashMap::new()),
         }),
         ..RenderState::default()
@@ -95,6 +96,7 @@ fn rebuild_rs(
             visible_spans: cell.clone(),
             visible_rows: rows_cell.clone(),
             inlay_hints: Arc::from(Vec::<InlayHintRow>::new().into_boxed_slice()),
+            inlay_version: 0,
             pane_highlights: Arc::new(std::collections::HashMap::new()),
         }),
         ..RenderState::default()

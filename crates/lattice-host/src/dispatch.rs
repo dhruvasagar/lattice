@@ -361,6 +361,14 @@ impl Editor {
     /// rebuild method retires.
     pub fn build_render_state(&self) -> crate::render_state::RenderState {
         use crate::render_state::*;
+        // Perf plan A.2 slice A.2b.2: build the gated inlay-hint
+        // list once and pair it with its content hash. The hash
+        // becomes the `VisibleHighlightsKey.inlay_version` axis the
+        // worker uses to invalidate row composition; computing it
+        // here (instead of inside the worker) keeps the value
+        // byte-aligned with the published list by construction and
+        // avoids the worker having to re-hash on every wake.
+        let (inlay_hints, inlay_version_val) = self.build_active_inlay_hints();
         // Start from the empty `Default` snapshot, then override
         // each sub-state whose backing source has been wired up.
         // Slice 3a wires only `diagnostics`; Slice 3b/3c add
@@ -612,11 +620,19 @@ impl Editor {
                 // syntax-input contract. Empty when the
                 // `lsp-inlay-hint-mode` minor mode is off for this
                 // buffer, when no LSP is attached, or when no hints
-                // have arrived. The worker (A.2b.2) splices `text`
-                // into row composition at `byte`; consumers that
-                // already had inlays in hand (GPUI window.rs) will
-                // collapse to this list in A.2b.2.
-                inlay_hints: self.build_active_inlay_hints(),
+                // have arrived.
+                //
+                // Slice A.2b.2: `inlay_version` is a content hash of
+                // the gated list, paired with
+                // `VisibleHighlightsKey.inlay_version` so the worker
+                // invalidates row cache on payload change but stays
+                // hot through pure-scroll / cursor-blink ticks (same
+                // payload → same hash). `build_active_inlay_hints`
+                // returns both so they are built from one cache scan
+                // — keeps the hash byte-aligned with the published
+                // list by construction.
+                inlay_hints,
+                inlay_version: inlay_version_val,
             }),
             ..RenderState::default()
         }
@@ -6269,16 +6285,20 @@ impl Editor {
     /// the per-pane render path (window.rs / TUI render.rs were
     /// doing the same flattening every frame) onto the dispatch
     /// tail where it runs once per publish.
-    fn build_active_inlay_hints(&self) -> Arc<[crate::render_state::InlayHintRow]> {
+    fn build_active_inlay_hints(
+        &self,
+    ) -> (Arc<[crate::render_state::InlayHintRow]>, u64) {
         use crate::per_buffer_cache::PerBufferCacheExt;
+        let empty: Arc<[crate::render_state::InlayHintRow]> =
+            Arc::from(Vec::<crate::render_state::InlayHintRow>::new().into_boxed_slice());
         if !self.lsp_inlay_hint_mode_enabled_for(self.document_buffer_id) {
-            return Arc::from(Vec::<crate::render_state::InlayHintRow>::new().into_boxed_slice());
+            return (empty, 0);
         }
         let Some(cache) = self.lsp_inlay_hints_cache.get_for(self.document_buffer_id) else {
-            return Arc::from(Vec::<crate::render_state::InlayHintRow>::new().into_boxed_slice());
+            return (empty, 0);
         };
         if cache.hints.is_empty() {
-            return Arc::from(Vec::<crate::render_state::InlayHintRow>::new().into_boxed_slice());
+            return (empty, 0);
         }
         let snapshot = self.document.snapshot();
         let total_lines: u32 = snapshot.buffer.line_count();
@@ -6310,7 +6330,8 @@ impl Editor {
                 }
             })
             .collect();
-        Arc::from(rows.into_boxed_slice())
+        let version = crate::render_state::inlay_hints_version(&rows);
+        (Arc::from(rows.into_boxed_slice()), version)
     }
 
     /// 4.4.g: per-tick `inlayHint` pump. Fires when the mode is

@@ -1810,15 +1810,25 @@ impl Editor {
     /// viewport_height)`. No-op when `viewport_height == 0` (the
     /// renderer hasn't recorded a draw yet).
     pub fn ensure_cursor_visible(&mut self) {
-        if self.viewport_height == 0 {
+        // When the popup is focused (State B) the visible window is
+        // MAX_POPUP_LINES tall, not the document viewport.  Using
+        // viewport_height here caused the popup cursor to never scroll
+        // beyond the first ~50 lines even though the popup only shows 30.
+        const POPUP_VIEWPORT_HEIGHT: u32 = 30;
+        let effective_height = if self.active_buffer == lattice_core::BufferKind::Help {
+            POPUP_VIEWPORT_HEIGHT
+        } else {
+            self.viewport_height
+        };
+        if effective_height == 0 {
             return;
         }
         if self.cursor.line < self.scroll {
             self.scroll = self.cursor.line;
         }
-        let bottom = self.scroll + self.viewport_height - 1;
+        let bottom = self.scroll + effective_height - 1;
         if self.cursor.line > bottom {
-            self.scroll = self.cursor.line + 1 - self.viewport_height;
+            self.scroll = self.cursor.line + 1 - effective_height;
         }
     }
 
@@ -7508,6 +7518,10 @@ impl Editor {
         let logger = self.lsp_logger.clone();
         let request_started = std::time::Instant::now();
         let request_uri = uri.as_str().to_string();
+        // X1b: notify GPUI after the async hover result arrives so the
+        // first `K` renders the popup without waiting for the next
+        // keystroke to trigger run_tick_pending().
+        let paint_notify = self.paint_request.clone();
         lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
             // Snapshot the attached handles under the supervisor
             // lock, then drop it before awaiting any per-server
@@ -7515,6 +7529,7 @@ impl Editor {
             let handles: Vec<lattice_lsp::ServerHandle> = { lsp.servers_for(&uri) };
             if handles.is_empty() {
                 let _ = tx.send(lattice_lsp::cache::HoverOutcome::NoServers);
+                paint_notify.notify_one();
                 return;
             }
             let mut tried = 0usize;
@@ -7558,6 +7573,7 @@ impl Editor {
                                 ),
                             );
                             let _ = tx.send(lattice_lsp::cache::HoverOutcome::Body(body));
+                            paint_notify.notify_one();
                             return;
                         }
                         // Server replied but the body's empty.
@@ -7591,6 +7607,7 @@ impl Editor {
             let _ = tx.send(lattice_lsp::cache::HoverOutcome::NoBody {
                 servers_tried: tried,
             });
+            paint_notify.notify_one();
         });
     }
 

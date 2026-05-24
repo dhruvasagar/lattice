@@ -63,7 +63,6 @@
 //! snapshot + cursor) follows in 5.7.B.3 / 5.7.B.4.
 
 use lattice_core::{BufferKind, Document};
-use lattice_host::Renderer;
 use lattice_host::action::Action;
 use lattice_host::chord::KeyChord;
 use lattice_host::dispatch::{DispatchOutcome, RendererSignal};
@@ -71,6 +70,7 @@ use lattice_host::editor::Editor;
 use lattice_host::input::TranslateContext;
 use lattice_host::pane_render::ProviderLookup;
 use lattice_host::render_state::{ActiveDocumentRenderState, RenderState};
+use lattice_host::Renderer;
 use lattice_mode::ModeId;
 use std::sync::Arc;
 
@@ -377,9 +377,7 @@ impl GpuiApp {
 
     /// Slice 3c.final.B.9: published buffer-locals map —
     /// parallel of TUI peer's `App::buffer_locals()`.
-    pub fn buffer_locals(
-        &self,
-    ) -> Arc<lattice_host::render_state::BufferLocalsRenderState> {
+    pub fn buffer_locals(&self) -> Arc<lattice_host::render_state::BufferLocalsRenderState> {
         self.render_state.load().buffer_locals.clone()
     }
 
@@ -617,7 +615,8 @@ impl GpuiApp {
                     title = %content.buffer.title,
                     "DisplayBuffer signal: routing through editor.display_buffer"
                 );
-                let (_id, mode_signals) = self.mutate_editor_with(move |e| e.display_buffer(content, category));
+                let (_id, mode_signals) =
+                    self.mutate_editor_with(move |e| e.display_buffer(content, category));
                 // Mode-activate signals don't recurse meaningfully
                 // for the popup paths (no further DisplayBuffer);
                 // drain through the handler so any ThemeChanged
@@ -673,7 +672,7 @@ impl GpuiApp {
         // *messages* without needing RUST_LOG.
         {
             let pre_partial = self.render_state.load().translator.partial_chord.clone();
-            tracing::info!(
+            tracing::debug!(
                 "[chord-trace] CHORD {:?} partial_chord_from_rs={:?}",
                 chord,
                 pre_partial,
@@ -764,14 +763,10 @@ impl GpuiApp {
         // config so `:set ui.font_family=...` takes effect on the
         // next frame without restarting.
         let config = &self.render_state.load().options.config;
-        if let Some(family) = config
-            .get_typed::<lattice_host::ui::theme_options::UiFontFamily>()
-        {
+        if let Some(family) = config.get_typed::<lattice_host::ui::theme_options::UiFontFamily>() {
             self.theme.font_family = (**family).to_owned();
         }
-        if let Some(size) = config
-            .get_typed::<lattice_host::ui::theme_options::UiFontSize>()
-        {
+        if let Some(size) = config.get_typed::<lattice_host::ui::theme_options::UiFontSize>() {
             self.theme.font_size_pt = (*size).max(4).min(96) as u32;
         }
     }
@@ -1002,9 +997,7 @@ impl GpuiApp {
             Effect::LspOutgoingCalls => {
                 self.mutate_editor(|e| e.do_lsp_call_hierarchy_request(true))
             }
-            Effect::LspSupertypes => {
-                self.mutate_editor(|e| e.do_lsp_type_hierarchy_request(false))
-            }
+            Effect::LspSupertypes => self.mutate_editor(|e| e.do_lsp_type_hierarchy_request(false)),
             Effect::LspSubtypes => self.mutate_editor(|e| e.do_lsp_type_hierarchy_request(true)),
             Effect::LspMoniker => self.mutate_editor(|e| e.do_lsp_moniker_request()),
             Effect::OpenLspLog { server_id } => {
@@ -1018,9 +1011,7 @@ impl GpuiApp {
             }
             Effect::LspServerLogListing => self.mutate_editor(|e| e.do_lsp_server_log_listing()),
             Effect::LspCodeLens => self.mutate_editor(|e| e.do_lsp_code_lens_picker()),
-            Effect::LspColorPresentation => {
-                self.mutate_editor(|e| e.do_lsp_color_presentation())
-            }
+            Effect::LspColorPresentation => self.mutate_editor(|e| e.do_lsp_color_presentation()),
             // Phase 5.8.AD.4: completion / signature / snippet
             // entry points are host-resident; both peers reach
             // them through the same dispatch.
@@ -1036,7 +1027,8 @@ impl GpuiApp {
             // Phase 5.8.AD.5: describe / hover / tutor / customize
             // entries now host-resident.
             Effect::OpenHelpTopic { topic } => {
-                let signals = self.mutate_editor_with(move |e| e.do_open_help_topic(topic.as_deref()));
+                let signals =
+                    self.mutate_editor_with(move |e| e.do_open_help_topic(topic.as_deref()));
                 for s in signals {
                     self.handle_renderer_signal(s);
                 }

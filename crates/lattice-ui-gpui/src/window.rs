@@ -584,7 +584,12 @@ impl EditorView {
         // describes the popup buffer's cursor — the document
         // pane's cursor must come from its stashed snapshot.
         let popup_owns_active = ad.buffer_kind == lattice_core::BufferKind::Help;
-        let cursor = if is_active && !popup_owns_active {
+        // When the popup has focus the document pane should look
+        // inactive — no cursorline, no selection, no active status
+        // bar — the same appearance it has when a different pane has
+        // focus.
+        let render_active = is_active && !popup_owns_active;
+        let cursor = if render_active {
             ad.cursor
         } else {
             pane.cursor
@@ -592,7 +597,7 @@ impl EditorView {
         let split_t0 = std::time::Instant::now();
         let raw_lines: Vec<&str> = text.split('\n').collect();
         let split_us = split_t0.elapsed().as_micros() as u64;
-        tracing::info!(
+        tracing::debug!(
             target: "lattice_gpui::perf",
             pane_idx,
             is_active,
@@ -618,8 +623,7 @@ impl EditorView {
         // NOT from ad.scroll. Without this guard, opening
         // `:describe-buffer` scrolled the background document to
         // line 0 (the help buffer's initial scroll).
-        let popup_owns_active = ad.buffer_kind == lattice_core::BufferKind::Help;
-        let pane_scroll = if is_active && !popup_owns_active {
+        let pane_scroll = if render_active {
             ad.scroll
         } else {
             pane.scroll
@@ -630,7 +634,7 @@ impl EditorView {
             .saturating_add(viewport_height as usize)
             .min(raw_lines.len());
 
-        let cursor_shape = if is_active {
+        let cursor_shape = if render_active {
             Some(CursorShape::for_mode(ad.modal))
         } else {
             None
@@ -718,10 +722,8 @@ impl EditorView {
         // conceptually. Hiding the document cursor signals to the
         // user that focus has shifted, complementing the popup
         // border-color change above.
-        let active_buffer_for_cursor = self.app.ad().buffer_kind;
-        let popup_owns_focus = active_buffer_for_cursor == lattice_core::BufferKind::Help;
-        let cursor_state = match (is_active, cursor_shape, popup_owns_focus) {
-            (true, Some(shape), false) => Some(crate::editor_element::CursorState {
+        let cursor_state = match (render_active, cursor_shape) {
+            (true, Some(shape)) => Some(crate::editor_element::CursorState {
                 line: cursor.line,
                 byte: cursor.byte,
                 shape,
@@ -737,22 +739,22 @@ impl EditorView {
         // Slice 3c.final.B (group 2): visual_range / current_match /
         // all_matches / substitute_preview read through the published
         // `rs_guard.active_document` snapshot instead of `editor.X`.
-        let visual_range = if is_active {
+        let visual_range = if render_active {
             rs_guard.active_document.visual_range
         } else {
             None
         };
-        let current_match = if is_active {
+        let current_match = if render_active {
             rs_guard.active_document.current_match
         } else {
             None
         };
-        let all_matches: Vec<lattice_core::protocol::position::Range> = if is_active {
+        let all_matches: Vec<lattice_core::protocol::position::Range> = if render_active {
             rs_guard.active_document.all_matches.to_vec()
         } else {
             Vec::new()
         };
-        let substitute_matches: Vec<lattice_core::protocol::position::Range> = if is_active {
+        let substitute_matches: Vec<lattice_core::protocol::position::Range> = if render_active {
             rs_guard
                 .active_document
                 .substitute_preview
@@ -928,7 +930,7 @@ impl EditorView {
                 }
             });
         let status_line = format!("  {path_label}   L:{}  C:{}", cursor.line + 1, cursor.byte);
-        let (status_bg, status_fg) = if is_active {
+        let (status_bg, status_fg) = if render_active {
             (rgb(theme.cursor_background), rgb(theme.cursor_foreground))
         } else {
             (rgb(theme.status_background), rgb(theme.status_foreground))
@@ -957,7 +959,7 @@ impl EditorView {
             // body. Empty when the cache hasn't refreshed yet
             // (first frame after split); the renderer paints
             // plain text in that case until the next frame.
-            visible_spans: if is_active {
+            visible_spans: if render_active {
                 (*active_spans_guard).clone()
             } else {
                 let pane_spans = rs_guard
@@ -979,7 +981,7 @@ impl EditorView {
             gutter: gutter_meta,
             gutter_width,
             cursor: cursor_state,
-            is_active,
+            is_active: render_active,
             visual_range,
             current_match,
             all_matches,
@@ -1965,11 +1967,19 @@ impl Render for EditorView {
                     // the editor element starts; account for it
                     // so popup x/y align with painted glyphs.
                     let pane_pad_px = rem * 0.75;
-                    // Anchor the popup BELOW the cursor row by
-                    // default (line_height tall), so it doesn't
-                    // cover the symbol the user pressed K on.
-                    let top_px =
-                        pane_pad_px + (cursor_screen_row + 1.0) * estimated_row_px;
+                    // Prefer placing below the cursor row; flip above
+                    // when the popup would extend beyond the viewport.
+                    const POPUP_MAX_H: f32 = 600.0;
+                    let below_top = pane_pad_px + (cursor_screen_row + 1.0) * estimated_row_px;
+                    let viewport_h = f32::from(viewport_px.height);
+                    let top_px = if below_top + POPUP_MAX_H > viewport_h {
+                        // Not enough room below — anchor above the cursor row.
+                        let above_top =
+                            pane_pad_px + cursor_screen_row * estimated_row_px - POPUP_MAX_H;
+                        above_top.max(0.0)
+                    } else {
+                        below_top
+                    };
                     let left_px = pane_pad_px + cursor_byte_col * glyph_advance_px;
                     root.child(
                         div()
@@ -1987,7 +1997,7 @@ impl Render for EditorView {
         // assembly + return) is folded into the `tail_us` bucket.
         // Enable with `RUST_LOG=lattice_gpui::perf=info`.
         let frame_us = frame_start.elapsed().as_micros() as u64;
-        tracing::info!(
+        tracing::debug!(
             target: "lattice_gpui::perf",
             frame_us,
             viewport_us = (after_viewport - frame_start).as_micros() as u64,

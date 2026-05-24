@@ -335,6 +335,7 @@ pub fn recompute(
     let static_overlay_quads = bucket_static_overlays(
         &rows,
         start,
+        snap.source(),
         &syntax.doc_highlights,
         &rs.active_document.all_matches,
         substitute_matches,
@@ -552,6 +553,7 @@ fn build_rows(
 fn bucket_static_overlays(
     rows: &[RowPrepaint],
     start: u32,
+    source: &[u8],
     doc_highlights: &[lattice_protocol::position::Range],
     all_matches: &[lattice_protocol::position::Range],
     substitute_matches: &[lattice_protocol::position::Range],
@@ -559,84 +561,52 @@ fn bucket_static_overlays(
     if doc_highlights.is_empty() && all_matches.is_empty() && substitute_matches.is_empty() {
         return Vec::new();
     }
-    let mut out: Vec<Vec<RowOverlayQuad>> = Vec::with_capacity(rows.len());
-    for (i, row) in rows.iter().enumerate() {
-        let line_idx = start + i as u32;
-        let line_text = source_line_from_row(row);
-        let mut quads: Vec<RowOverlayQuad> = Vec::new();
-        push_layer_quads(
-            &mut quads,
-            doc_highlights,
-            OverlayLayer::DocHighlight,
-            line_idx,
-            &line_text,
-            &row.inlay_offsets,
-        );
-        push_layer_quads(
-            &mut quads,
-            all_matches,
-            OverlayLayer::AllMatches,
-            line_idx,
-            &line_text,
-            &row.inlay_offsets,
-        );
-        push_layer_quads(
-            &mut quads,
-            substitute_matches,
-            OverlayLayer::Substitute,
-            line_idx,
-            &line_text,
-            &row.inlay_offsets,
-        );
-        out.push(quads);
-    }
-    out
-}
-
-/// Reconstruct the source-only line text from a row's `combined`
-/// (which may include inlay splices). Walks the row's `runs`
-/// partition and concatenates only the `Source` slices in order.
-///
-/// Allocates a fresh `String` per row — same shape as the
-/// renderer's `row_meta.line_text` build, but kept local to the
-/// bucket helper so this allocation only happens when at least
-/// one static-overlay layer is non-empty (we early-return above
-/// when all three are empty).
-fn source_line_from_row(row: &RowPrepaint) -> String {
-    let mut out = String::with_capacity(row.combined.len());
-    let mut cursor: usize = 0;
-    for r in &row.runs {
-        let end = cursor + r.len() as usize;
-        if let RowRun::Source { .. } = r {
-            // SAFETY: `runs` is built from valid utf-8 boundaries
-            // (the worker's `weave_row` splices at char_indices
-            // positions); slicing here is utf-8 safe.
-            out.push_str(&row.combined[cursor..end]);
+    // Seek to `start`'s byte offset once, then advance per-row via
+    // memchr so per-row line_len lookups stay O(line_len) instead of
+    // O(scroll + i) like the renderer's per-frame walk used to be.
+    let mut byte_off: usize = 0;
+    let mut line_no: u32 = 0;
+    while line_no < start && byte_off < source.len() {
+        match memchr::memchr(b'\n', &source[byte_off..]) {
+            Some(nl) => {
+                byte_off += nl + 1;
+                line_no += 1;
+            }
+            None => {
+                byte_off = source.len();
+                break;
+            }
         }
-        cursor = end;
+    }
+    let mut out: Vec<Vec<RowOverlayQuad>> = Vec::with_capacity(rows.len());
+    for i in 0..rows.len() {
+        let line_idx = start + i as u32;
+        let line_end = memchr::memchr(b'\n', &source[byte_off..])
+            .map(|n| byte_off + n)
+            .unwrap_or(source.len());
+        let line_len = line_end - byte_off;
+        let mut quads: Vec<RowOverlayQuad> = Vec::new();
+        push_layer_quads(&mut quads, doc_highlights, OverlayLayer::DocHighlight, line_idx, line_len);
+        push_layer_quads(&mut quads, all_matches, OverlayLayer::AllMatches, line_idx, line_len);
+        push_layer_quads(&mut quads, substitute_matches, OverlayLayer::Substitute, line_idx, line_len);
+        out.push(quads);
+        byte_off = (line_end + 1).min(source.len());
     }
     out
 }
 
 /// Push one layer's intersecting ranges into `out` as tagged
-/// `RowOverlayQuad`s in combined-column space. Mirrors
-/// `editor_element::push_range_quads` semantics:
-///
-/// - rows outside `[r.start.line, r.end.line]` are skipped,
-/// - the row's start/end bytes clamp to the source line length,
-/// - `byte_to_combined_col_worker` shifts by every inlay whose
-///   `orig_byte <= byte` (same rule the renderer uses).
-///
-/// Empty / zero-width ranges drop without emitting a quad.
+/// `RowOverlayQuad`s in **source utf-8 byte space**. Mirrors
+/// `editor_element::push_range_quads`'s line-bounds / byte-clamp
+/// rules, just without the byte→col conversion (the renderer does
+/// that on consumption — see [`RowOverlayQuad`] docs).
 fn push_layer_quads(
     out: &mut Vec<RowOverlayQuad>,
     ranges: &[lattice_protocol::position::Range],
     layer: OverlayLayer,
     line_idx: u32,
-    line_text: &str,
-    inlay_offsets: &[(u32, u32)],
+    line_len: usize,
 ) {
-    let line_len = line_text.len();
     for r in ranges {
         if line_idx < r.start.line || line_idx > r.end.line {
             continue;
@@ -654,38 +624,12 @@ fn push_layer_quads(
         if end_byte <= start_byte {
             continue;
         }
-        let col_start =
-            byte_to_combined_col_worker(line_text, start_byte, inlay_offsets) as u32;
-        let col_end = byte_to_combined_col_worker(line_text, end_byte, inlay_offsets) as u32;
-        if col_end <= col_start {
-            continue;
-        }
-        out.push(RowOverlayQuad { layer, col_start, col_end });
+        out.push(RowOverlayQuad {
+            layer,
+            source_byte_start: start_byte as u32,
+            source_byte_end: end_byte as u32,
+        });
     }
-}
-
-/// Worker-local mirror of `lattice_ui_gpui::editor_element::
-/// byte_to_combined_col`. Kept inline here so the worker doesn't
-/// depend on the renderer crate; the two MUST stay in sync — if
-/// either changes its inlay-shift rule, both must move (the
-/// renderer reads worker-produced quads byte-identical to its own
-/// walk).
-fn byte_to_combined_col_worker(
-    line: &str,
-    byte: usize,
-    inlay_offsets: &[(u32, u32)],
-) -> usize {
-    let base = if byte >= line.len() {
-        line.chars().count()
-    } else {
-        line[..byte].chars().count()
-    };
-    let inlay_shift: usize = inlay_offsets
-        .iter()
-        .filter(|(orig, _)| (*orig as usize) <= byte)
-        .map(|(_, w)| *w as usize)
-        .sum();
-    base + inlay_shift
 }
 
 /// Bucket a flat inlay-hints list into a per-visible-line vector,
@@ -1160,7 +1104,7 @@ mod tests {
     #[test]
     fn bucket_static_overlays_all_empty_returns_empty() {
         let rows = vec![row_no_inlays("let x = 1;")];
-        let out = bucket_static_overlays(&rows, 0, &[], &[], &[]);
+        let out = bucket_static_overlays(&rows, 0, b"let x = 1;", &[], &[], &[]);
         assert!(out.is_empty());
     }
 
@@ -1169,20 +1113,21 @@ mod tests {
     #[test]
     fn bucket_static_overlays_tags_each_layer() {
         let rows = vec![row_no_inlays("hello world")];
+        let src = b"hello world";
         let dh = vec![rng(0, 0, 0, 5)]; // covers "hello"
         let am = vec![rng(0, 6, 0, 11)]; // covers "world"
         let sb = vec![rng(0, 0, 0, 11)]; // covers all
-        let out = bucket_static_overlays(&rows, 0, &dh, &am, &sb);
+        let out = bucket_static_overlays(&rows, 0, src, &dh, &am, &sb);
         assert_eq!(out.len(), 1);
         let row = &out[0];
         // Three quads, one per layer, in precedence order.
         assert_eq!(row.len(), 3);
         assert!(matches!(row[0].layer, OverlayLayer::DocHighlight));
-        assert_eq!((row[0].col_start, row[0].col_end), (0, 5));
+        assert_eq!((row[0].source_byte_start, row[0].source_byte_end), (0, 5));
         assert!(matches!(row[1].layer, OverlayLayer::AllMatches));
-        assert_eq!((row[1].col_start, row[1].col_end), (6, 11));
+        assert_eq!((row[1].source_byte_start, row[1].source_byte_end), (6, 11));
         assert!(matches!(row[2].layer, OverlayLayer::Substitute));
-        assert_eq!((row[2].col_start, row[2].col_end), (0, 11));
+        assert_eq!((row[2].source_byte_start, row[2].source_byte_end), (0, 11));
     }
 
     /// Rows outside a range's `[start.line, end.line]` get an empty
@@ -1190,34 +1135,33 @@ mod tests {
     #[test]
     fn bucket_static_overlays_skips_rows_outside_range() {
         let rows = vec![row_no_inlays("a"), row_no_inlays("b"), row_no_inlays("c")];
+        let src = b"a\nb\nc";
         let dh = vec![rng(1, 0, 1, 1)]; // only line 1
-        let out = bucket_static_overlays(&rows, 0, &dh, &[], &[]);
+        let out = bucket_static_overlays(&rows, 0, src, &dh, &[], &[]);
         assert_eq!(out.len(), 3);
         assert!(out[0].is_empty());
         assert_eq!(out[1].len(), 1);
         assert!(out[2].is_empty());
     }
 
-    /// Inlay shift on a row: a range from byte 0..3 in source
-    /// translates to col_start=0, col_end=3+inlay_width after
-    /// `byte_to_combined_col_worker`. Mirrors the GPUI peer's
-    /// `byte_to_combined_col` rule (inlay shifts apply when
-    /// `orig_byte <= byte`).
+    /// Source-byte coordinates pass through unchanged regardless of
+    /// any inlay-text splices on the row — the bucket emits raw
+    /// source bytes; renderers apply their own coordinate transform
+    /// at prepaint time (GPUI: byte→combined-col; TUI: source bytes
+    /// directly).
     #[test]
-    fn bucket_static_overlays_inlay_shifts_columns() {
-        let mut row = weave_row("hello", &[], &[(0, ":")]);
-        // Sanity: leading inlay shifts every byte by 1 char.
+    fn bucket_static_overlays_emits_source_bytes_not_combined() {
+        let row = weave_row("hello", &[], &[(0, ":")]);
+        // Sanity: leading inlay shifts combined by 1 but source
+        // bytes are unchanged.
         assert_eq!(row.combined.as_ref(), ":hello");
-        // Make sure inlay_offsets are present.
-        assert_eq!(row.inlay_offsets.as_ref(), &[(0u32, 1u32)][..]);
-        // Re-wrap so we can hand to the bucket helper.
-        row.inlay_offsets = std::sync::Arc::from(vec![(0u32, 1u32)].into_boxed_slice());
         let rows = vec![row];
-        let dh = vec![rng(0, 0, 0, 3)]; // first 3 source bytes → cols 1..4
-        let out = bucket_static_overlays(&rows, 0, &dh, &[], &[]);
+        let src = b"hello";
+        let dh = vec![rng(0, 0, 0, 3)]; // first 3 source bytes
+        let out = bucket_static_overlays(&rows, 0, src, &dh, &[], &[]);
         let row = &out[0];
         assert_eq!(row.len(), 1);
-        assert_eq!((row[0].col_start, row[0].col_end), (1, 4));
+        assert_eq!((row[0].source_byte_start, row[0].source_byte_end), (0, 3));
     }
 
     /// Multi-line range crossing the row in the middle: covers
@@ -1229,15 +1173,16 @@ mod tests {
             row_no_inlays("middle"),
             row_no_inlays("last"),
         ];
+        let src = b"first\nmiddle\nlast";
         let dh = vec![rng(0, 2, 2, 1)];
-        let out = bucket_static_overlays(&rows, 0, &dh, &[], &[]);
+        let out = bucket_static_overlays(&rows, 0, src, &dh, &[], &[]);
         assert_eq!(out.len(), 3);
-        // Row 0: from byte 2 to end → cols 2..5.
-        assert_eq!((out[0][0].col_start, out[0][0].col_end), (2, 5));
-        // Row 1: full line → cols 0..6.
-        assert_eq!((out[1][0].col_start, out[1][0].col_end), (0, 6));
-        // Row 2: from 0 to byte 1 → cols 0..1.
-        assert_eq!((out[2][0].col_start, out[2][0].col_end), (0, 1));
+        // Row 0: from byte 2 to end → 2..5.
+        assert_eq!((out[0][0].source_byte_start, out[0][0].source_byte_end), (2, 5));
+        // Row 1: full line → 0..6.
+        assert_eq!((out[1][0].source_byte_start, out[1][0].source_byte_end), (0, 6));
+        // Row 2: from 0 to byte 1 → 0..1.
+        assert_eq!((out[2][0].source_byte_start, out[2][0].source_byte_end), (0, 1));
     }
 
     /// `static_overlay_state_version` is deterministic per payload

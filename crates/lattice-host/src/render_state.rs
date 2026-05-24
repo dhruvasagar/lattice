@@ -875,16 +875,22 @@ pub enum OverlayLayer {
 
 /// Perf plan B.2: one pre-bucketed static-overlay quad inside a
 /// row of [`StaticOverlayQuads`]. Coordinates are in
-/// **combined-column space** — char columns in the row's
-/// `combined` text including inlay splices (the same coordinate
-/// space that GPUI's `byte_to_combined_col` emits). Renderers
-/// consume them directly without re-running the byte→col
-/// conversion.
+/// **source utf-8 byte space** — the byte offsets into the SOURCE
+/// line text (NOT into `RowPrepaint.combined`).
+///
+/// Why source-byte and not combined-column: both renderer peers
+/// already do their own coordinate transforms (GPUI runs
+/// `byte_to_combined_col` for cursor / diagnostic underlines per
+/// frame; TUI uses source bytes directly for overlay application).
+/// Publishing in source-byte space lets the TUI consume the bucket
+/// without any reverse mapping, and the per-quad conversion GPUI
+/// pays on prepaint is cheap (one `chars().count()` walk on a
+/// single line, amortised over a handful of quads per row).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RowOverlayQuad {
     pub layer: OverlayLayer,
-    pub col_start: u32,
-    pub col_end: u32,
+    pub source_byte_start: u32,
+    pub source_byte_end: u32,
 }
 
 /// Perf plan B.2: worker-published per-row pre-bucketed

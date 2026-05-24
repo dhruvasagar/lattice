@@ -2967,6 +2967,21 @@ fn compose_visible_lines_inner(
     let visual_range = visual_selection_range(app);
     let block = visual_block_extents(app);
 
+    // Perf plan B.2 slice B.2.b: load the worker's per-row pre-
+    // bucketed static-overlay quads once for the whole frame
+    // instead of walking `app.ad().all_matches` and
+    // `substitute_preview.matches` per row × per match. Active
+    // pane only — when the bucket is empty (boot before first
+    // recompute or non-active pane), per-row code falls back to
+    // the legacy walk. DocHighlight stays on the per-row walk
+    // because the TUI's per-quad style is keyed off
+    // `DocumentHighlightKind` which the bucket doesn't carry.
+    let active_overlay_quads_for_frame = {
+        let rs = app.render_state.load();
+        rs.syntax.static_overlay_quads.load_full()
+    };
+    let frame_scroll = app.ad().scroll;
+
     // Build the visible-buffer-line ordering: starting from `scroll`,
     // skip lines inside closed folds, taking up to `height` entries.
     // Bound the walk by `total_lines` from ropey -- O(1).
@@ -3132,13 +3147,36 @@ fn compose_visible_lines_inner(
         {
             body = apply_match_overlay(body, overlay_start, overlay_end, visual_style());
         }
-        // Hlsearch overlay: every other occurrence of the search pattern,
-        // softer than the current_match style.
-        for &range in app.ad().all_matches.iter() {
-            if let Some((overlay_start, overlay_end)) =
-                match_overlay_range(range, line_idx, line_len)
-            {
-                body = apply_match_overlay(body, overlay_start, overlay_end, hlsearch_style());
+        // Perf plan B.2 slice B.2.b: hlsearch (`all_matches`) overlay
+        // now reads from the worker's per-row bucket. The bucket is
+        // indexed by visible-row offset from `scroll` (= worker's
+        // recompute `start`), so for buffer line `line_idx` the row
+        // index is `line_idx - frame_scroll`. Bucket is empty
+        // pre-first-recompute or for non-active panes; in those cases
+        // we fall back to the legacy per-frame walk so search hits
+        // still paint correctly through the warm-up window.
+        let bucket_row: Option<&Vec<lattice_host::render_state::RowOverlayQuad>> =
+            (line_idx >= frame_scroll)
+                .then(|| (line_idx - frame_scroll) as usize)
+                .and_then(|idx| active_overlay_quads_for_frame.quads.get(idx));
+        if let Some(row_quads) = bucket_row {
+            for q in row_quads {
+                if matches!(q.layer, lattice_host::render_state::OverlayLayer::AllMatches) {
+                    let start = (q.source_byte_start as usize).min(line_len);
+                    let end = (q.source_byte_end as usize).min(line_len);
+                    if start < end {
+                        body = apply_match_overlay(body, start, end, hlsearch_style());
+                    }
+                }
+            }
+        } else {
+            for &range in app.ad().all_matches.iter() {
+                if let Some((overlay_start, overlay_end)) =
+                    match_overlay_range(range, line_idx, line_len)
+                {
+                    body =
+                        apply_match_overlay(body, overlay_start, overlay_end, hlsearch_style());
+                }
             }
         }
         if let Some(range) = app.ad().current_match
@@ -3257,7 +3295,31 @@ fn compose_visible_lines_inner(
         // the about-to-be-replaced ranges in a strike-through-ish
         // style so the user sees what will change before they hit
         // Enter. Distinct from hlsearch's plain match highlight.
-        if let Some(preview) = app.ad().substitute_preview.as_ref() {
+        //
+        // Perf plan B.2 slice B.2.b: consume the worker bucket's
+        // Substitute layer when available; legacy walk as fallback.
+        if let Some(row_quads) = bucket_row {
+            let mut found_any = false;
+            for q in row_quads {
+                if matches!(q.layer, lattice_host::render_state::OverlayLayer::Substitute) {
+                    let start = (q.source_byte_start as usize).min(line_len);
+                    let end = (q.source_byte_end as usize).min(line_len);
+                    if start < end {
+                        body = apply_match_overlay(
+                            body,
+                            start,
+                            end,
+                            substitute_preview_style(),
+                        );
+                        found_any = true;
+                    }
+                }
+            }
+            // If the worker bucket existed but had no substitute
+            // quads, that's accurate state — no substitute preview is
+            // active. Don't fall back to per-frame walk.
+            let _ = found_any;
+        } else if let Some(preview) = app.ad().substitute_preview.as_ref() {
             for &range in preview.matches.iter() {
                 if let Some((overlay_start, overlay_end)) =
                     match_overlay_range(range, line_idx, line_len)

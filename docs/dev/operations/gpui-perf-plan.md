@@ -9,7 +9,7 @@ Dominant costs from traces (pre-plan):
 
 ## Status as of 2026-05-25
 
-Fourteen slices shipped (A.4, F, A.3, C + follow-up, A.1, A.2a, B.1, D.1, E.1, E.2.α, A.2b.1, A.2b.2, A.2b.2b, A.2b.3). The plan's `ensure_us` and `highlights_us` UI-thread costs have been attacked: ensure work is gated and fold geometry is O(log); the worker now publishes pre-painted rows via `Arc<[T]>` with inlays already woven in so the GPUI fast path consumes `VisibleRows` unconditionally; the TUI peer reads the same `visible_rows` cell via `source_spans_from_runs`; overlay quads are pre-bucketed in prepaint so paint is an allocation-free walk. The active-pane inlay-weave hop is now architectural-only — the helpers (`build_line_with_inlays`) still serve inactive panes, and benches confirm no regression from moving the splice to the worker (worker `recompute_on_scroll` is flat-to-slightly-improved; GPUI helpers flat).
+Seventeen slices shipped (A.4, F, A.3, C + follow-up, A.1, A.2a, B.1, D.1, E.1, E.2.α, A.2b.1, A.2b.2, A.2b.2b, A.2b.3, B.2.a, B.2.b, B.2.c). The plan's `ensure_us` and `highlights_us` UI-thread costs have been attacked: ensure work is gated and fold geometry is O(log); the worker now publishes pre-painted rows via `Arc<[T]>` with inlays already woven in so the GPUI fast path consumes `VisibleRows` unconditionally; the TUI peer reads the same `visible_rows` cell via `source_spans_from_runs`; the worker also pre-buckets the three static overlay layers (doc_highlight / all_matches / substitute) per row, so both renderer peers' active-pane prepaint paths read pre-computed quads instead of walking N_overlay × V_row intersections each frame. The active-pane overlay weave is now off the UI thread on both peers; high-N hlsearch (1000-match scale) no longer carries the O(N × V) per-frame tail-risk it had at A.2b.3.
 
 | Slice                             | Status | Commit    | Notes                                                              |
 |-----------------------------------|--------|-----------|--------------------------------------------------------------------|
@@ -28,7 +28,9 @@ Fourteen slices shipped (A.4, F, A.3, C + follow-up, A.1, A.2a, B.1, D.1, E.1, E
 | A.2b.2 — Worker weaves inlays + GPUI gate drop + TUI source-of-truth swap | done | `02403a8` | `RowRun` → enum (`Source` / `Inlay`); `RowPrepaint.inlay_offsets`; `VisibleHighlightsKey.inlay_version` axis; GPUI active-pane fast path is unconditional; TUI reads `rs.syntax.inlay_hints` instead of raw LSP cache. |
 | A.2b.2b — TUI `FrameView` reads `visible_rows` | done | `8e659f3` | `FrameView.visible_rows` replaces `visible_highlights`; `source_spans_from_runs` derives per-row `StyledSpan`s from `RowPrepaint.runs` (Source-only). Active-pane compose loop + inactive-pane fallback both migrated. Post-overlay inlay splice still in place pending byte-coordinate remap (deferred). |
 | A.2b.3 — Re-bench inlay weave     | done    | —         | Worker `recompute_on_scroll` flat-to-slightly-improved vs post-D.1 (−3.7% to −5.8%); GPUI helpers flat (still serve inactive panes). Active-pane fast-path savings are architectural; no helper bench captures them. Numbers below. |
-| B.2 — Overlay precompute on worker | deferred | —      | Blocked behind A.2b.2b (interval lists want the same row-shaped structure). |
+| B.2.a — Worker buckets static overlays (publish + GPUI swap) | done | `abcf81c` | `RowOverlayQuad` per row carries layer + source-byte coords; `static_overlay_quads_cell` published per recompute; `static_overlay_version` axis on `VisibleHighlightsKey`; GPUI active pane consumes worker bucket + only walks cursor-coupled layers per frame. |
+| B.2.b — TUI consumer swap | done | `de60cfd` | TUI compose loop reads worker bucket for AllMatches + Substitute; DocHighlight stays per-frame (kind-coloring needs `DocumentHighlightKind` the bucket doesn't carry). Also: source-byte coord refactor so both peers consume the same bucket shape. |
+| B.2.c — Re-bench overlay weave | done | — | Worker `recompute_on_scroll` +7–11% (bucket walk cost moved off UI thread to worker — architecturally correct, amortised across many frames per recompute); GPUI helpers flat. Numbers below. |
 | B.4 — Identity-preserving sub-state Arc publish | deferred | — | Lower priority; bench impact unmeasured.                |
 | D.* — rayon / SmallVec / bump-alloc | dropped | —       | Bench review (below) didn't justify the impl cost.                 |
 | E.2 — Element-tree reuse          | pending | —         | Needs investigation pass on `EditorView::render` notify cadence.   |
@@ -105,6 +107,35 @@ Re-run after A.2b.1 / A.2b.2 / A.2b.2b landed. Worker bench in isolation (the pa
 - **Worker is no-regression.** The per-row `weave_row` fast path (empty `line_inlays` → reuse `collapse_source_runs`) and the new `inlay_version` cache axis cost nothing measurable on the no-inlay corpus. `recompute_on_scroll` is actually 3–6% faster than the post-D.1 baseline, likely from the cache reuse loop tightening up under the new code layout. The `stale_snapshot_hold` axis is flat at ~2.7 µs as designed (D.1's HOLD-is-O(1) win is preserved).
 - **GPUI helpers are flat.** This is the important re-framing of the E.2.α "3–5× drop" projection: the bench measures the *helpers* (`build_line_with_inlays`) which are still called by inactive panes. The active-pane production path no longer goes through those helpers — `EditorElement::prepaint` consumes pre-woven `RowPrepaint`s from `VisibleRows` via `shape_row_from_prepaint`. That architectural savings doesn't show up in the helper bench because the helper still exists and still gets benched. A future `editor_element_frame_active_pane_inlays` bench (calling `shape_row_from_prepaint` directly on a worker-produced `VisibleRows` fixture) would close the visibility gap; deferred until someone actually needs to gate that path.
 - **Net for A.2b:** the inlay-weave cost moved from per-frame on the renderer to once-per-recompute on the worker, with measurement-confirmed no regression. The architectural goal (drop the `line_has_inlays` UI-thread gate; both renderer peers consume the same pre-woven rows) is met; the projected helper-level savings was a category error — the helpers don't disappear, they just stop running on the hot path.
+
+### Captured baselines (2026-05-25, post-B.2)
+
+Re-run after B.2.a / B.2.b landed. Worker bench in isolation (parallel-run with the GPUI bench showed ~14–19 % noise — discarded once isolated re-run confirmed the smaller, true delta).
+
+| Worker bench                       | Post-A.2b.2b | Post-B.2 | Δ vs post-A.2b.2b |
+|------------------------------------|--------------|----------|-------------------|
+| `worker_cache_hit/24`              | ~49 ns       | 52 ns    | +6 %              |
+| `worker_cache_hit/60`              | 49.5 ns      | 52 ns    | +5 %              |
+| `worker_cache_hit/120`             | 49.1 ns      | 50 ns    | flat              |
+| `worker_recompute_on_scroll/24`    | 185.4 µs     | 199.9 µs | +7.8 %            |
+| `worker_recompute_on_scroll/60`    | 260.0 µs     | 282.5 µs | +8.7 %            |
+| `worker_recompute_on_scroll/120`   | 374.7 µs     | 415.7 µs | +10.9 %           |
+| `worker_stale_snapshot_hold/24`    | 2.85 µs      | 2.91 µs  | +2 %              |
+| `worker_stale_snapshot_hold/60`    | 2.62 µs      | 2.91 µs  | +11 %             |
+| `worker_stale_snapshot_hold/120`   | 2.65 µs      | 2.87 µs  | +8 %              |
+
+| GPUI prepaint bench (viewport 120)       | Post-A.2b.2b | Post-B.2 | Δ      |
+|------------------------------------------|--------------|----------|--------|
+| `editor_element_frame_pre_paint`         | 104.3 µs     | 90.1 µs  | −14 %  |
+| `editor_element_frame_with_inlays`       | 130.2 µs     | 118.6 µs | −9 %   |
+| `editor_element_frame_with_overlays`     | 94.0 µs      | 89.9 µs  | −4 %   |
+
+**Read-out:**
+
+- **Worker bench regression is real, ~7–11 % on the recompute path.** Comes from the new per-recompute work: build static-overlay bucket (early-return when all three layers empty, but the `bucket_static_overlays` call + the `snap.source()` access + the `static_overlay_quads_cell.store(Arc::new(...))` aren't free), plus the extra `static_overlay_version` field on `VisibleHighlightsKey` and a third Arc<ArcSwap<...>> field on `SyntaxRenderState`. This is **architecturally correct** — every µs added on the worker thread is a µs removed from the UI thread per frame. The worker tick fires once per text/scroll/edit change; the renderer fires every paint. Amortising the bucket cost across many frames per recompute is the entire point.
+- **GPUI helper bench is flat-to-better.** Same E.2.α caveat: the bench measures `push_range_quads` directly, which is now only called for inactive panes (active pane reads worker bucket). The bench keeps that helper warm; the active-pane production path no longer runs it for the three static layers.
+- **Where the win actually lands** — the headline payoff isn't on either of these benches but on the renderer's active-pane prepaint when `all_matches` is large. Pre-B.2 the GPUI peer's `overlay_quads_for_row` walked `[5 doc_highlights, 10 hlsearch, 1 substitute]` × every visible row each frame; a 1000-match hlsearch scaled to ~1 ms/frame at viewport 120 (O(N × V) intersection checks). Post-B.2 the worker emits ≤ a few quads per visible row pre-bucketed in source-byte space; renderer just walks the small per-row list. The TUI peer gets the same architectural win for the same two layers (hlsearch + substitute). DocHighlight stays per-frame on TUI because the bucket doesn't carry `DocumentHighlightKind` (kind-coloured styles).
+- **Not bench-gated.** Adding a fixture that proves the high-N win (`editor_element_frame_active_pane_with_worker_bucket`, populated with 1000 synthetic hlsearch matches + a worker-bucket fixture) would close the gap. Deferred until someone needs the regression gate for that code path; the production path is correct and the cost surface moved as planned.
 
 ### Bench-driven D scope reduction
 
@@ -199,8 +230,29 @@ Rationale:
 - **Outcome:** worker flat-to-slightly-improved (−3.7% to −5.8% on `recompute_on_scroll`); GPUI helper benches flat (helpers still serve inactive panes). The "3–5× drop" projection from E.2.α was a category error — the helpers don't go away, they just stop running on the active-pane hot path. To bench the active-pane production fast path directly, a future bench would call `shape_row_from_prepaint` on a worker-produced `VisibleRows` fixture; deferred (the path is gated to a known O(rows) walk over a `Box<str> + Vec<RowRun>` already covered by the worker bench).
 - Pre-existing TUI test flakes (`help_motion_clamps_to_last_line`, `help_gg_and_capital_g_route_through_grammar`, `popup_with_long_content_scrolls_when_cursor_descends`, intermittent LSP tests) re-confirmed under full-suite load; all pass in isolation. Unchanged by A.2b.
 
+### B.2.a — Worker buckets static overlays + GPUI swap [`abcf81c`]
+- New types on `render_state`:
+  - `OverlayLayer` enum (`DocHighlight` / `AllMatches` / `Substitute`) tags each pre-bucketed quad so renderers can interleave cursor-coupled layers (`visual`, `current_match`) at the right precedence.
+  - `RowOverlayQuad { layer, source_byte_start, source_byte_end }` — source utf-8 byte coordinates (see B.2.b below for the coordinate-system rationale).
+  - `StaticOverlayQuads { quads: Arc<[Vec<RowOverlayQuad>]>, computed_for_key }` published on a new `Arc<ArcSwap<...>>` cell parallel to `visible_rows`.
+- `SyntaxRenderState` gets three new fields: `static_overlay_quads` (worker output cell), `doc_highlights: Arc<[Range]>` (utf-16 → utf-8 pre-converted at publish time so worker doesn't repeat per recompute), and `static_overlay_version: u64` (content hash of all three layer payloads — bumps independently from `inlay_version`).
+- `VisibleHighlightsKey.static_overlay_version` axis added; Clear / HOLD / Recompute branches all keep the overlay cell in lock-step with `rows` / `spans`.
+- Worker `bucket_static_overlays(rows, start, source, dh, all, sub)` walks every row × every layer in fixed precedence; early-return on all-three-empty keeps the steady-state no-overlay path cheap.
+- GPUI `editor_element` consumes the worker bucket as the base of `overlay_quads_per_row` for the active pane; renderer per-frame walks only `current_match` + `visual_range`. Inactive panes fall through to the legacy per-frame `push_range_quads` for the only layer they paint (DocHighlight) — bucket is active-pane only by design.
+- Worker test additions: 6 new tests on `bucket_static_overlays` + the version hash. 28 highlights_worker tests pass.
+
+### B.2.b — TUI consumer swap + source-byte refactor [`de60cfd`] + [`89bfd2b`]
+- **Coordinate refactor.** B.2.a published quads in combined-column space (chars after inlay splicing) — GPUI-friendly but doesn't translate cleanly to the TUI (which applies overlays in source-byte space against the un-spliced body). Source-byte coords let both peers consume the same bucket; GPUI converts source-byte → combined-col per quad at prepaint via the existing `byte_to_combined_col` helper (~60 ns × ≤ a few quads/row × 120 rows ≈ 15 µs/frame worst case).
+- **TUI consumer.** `compose_visible_lines_inner` loads the worker bucket once per frame and walks the per-row tagged list for `AllMatches` + `Substitute` layers. Legacy per-frame walks of `app.ad().all_matches` and `substitute_preview.matches` are gone for the active pane.
+- **DocHighlight stays per-frame on TUI.** The TUI styles each highlight by `DocumentHighlightKind` (Read = green-ish, Write = red-ish, Text/None = blue-ish); the worker bucket doesn't carry kind data. N is small (typically ≤ tens) so the per-frame walk has no measurable cost. A future B.2.x could extend `RowOverlayQuad` with a `kind` tag if a profile-frames trace flags this path.
+- Fix-up commit `89bfd2b` caught the deferred-substitute branch in GPUI that the source-byte refactor missed (compiled fine in cargo check; the bench build with `--features bench-internals` exercised the closure and failed).
+
+### B.2.c — Re-bench overlay weave [done]
+- Numbers captured in "Captured baselines (2026-05-25, post-B.2)" above. Worker `recompute_on_scroll` +7–11 %; GPUI helper bench flat-to-better (the helpers stay benched but the active-pane production path no longer calls them for static layers).
+- **Outcome:** B.2 moves the bucket cost from per-frame on the renderer to per-recompute on the worker, with measurement-confirmed regression on the worker (architecturally correct — amortised across many frames per recompute) and architectural drop in renderer per-frame overlay-walk cost. High-N tail-risk (1000-match hlsearch) drops from ~1 ms/frame to negligible; the bench can't directly show this because the synthetic bench uses 10 hlsearch matches and operates through helpers the active pane no longer touches.
+- Pre-existing TUI flakes (`help_motion_clamps_to_last_line`, `help_gg_and_capital_g_route_through_grammar`, `popup_with_long_content_scrolls_when_cursor_descends`) unchanged.
+
 ### B (remaining) — Incremental caches
-- **B.2** — Overlay layers as interval lists; compose static overlays (doc-highlight, search, substitute) once on worker. Blocked behind A.2b.2b (interval lists want the same row-shaped structure).
 - **B.3** — N/A. GPUI's `LineLayoutCache` already provides shape-line reuse keyed on `(font_id, size, text)`; an explicit LRU is duplication.
 - **B.4** — Identity-preserving Arc publish for unchanged `RenderState` sub-states. Today every dispatch rebuilds every sub-state Arc even when nothing changed (`render_state.rs` comment: `substate_identity_changes_naively_per_publication`). Deferred — bench impact unmeasured; lower priority.
 
@@ -251,11 +303,11 @@ Each gate requires: reference machine class, fixed corpus, release-profile build
 
 ## Implementation pointers
 
-- `lattice-host/src/highlights_worker.rs` — builds + publishes precomposed rows; A.2b.2 added the per-row `weave_row` + `bucket_inlays_by_line` splice that produces `RowRun::Source` / `RowRun::Inlay` runs + `inlay_offsets`; B.2 will add overlay intervals; will need to pull theme from `RenderState.theme` (not `Theme::default()`).
-- `lattice-host/src/render_state.rs` — `VisibleRows` / `RowPrepaint` / `RowRun` (now enum) types; `Arc<[T]>` storage; `Default` impls construct empty Arc; `VisibleHighlightsKey.inlay_version` axis paired with `inlay_hints_version()` content hash.
+- `lattice-host/src/highlights_worker.rs` — builds + publishes precomposed rows; A.2b.2 added the per-row `weave_row` + `bucket_inlays_by_line` splice that produces `RowRun::Source` / `RowRun::Inlay` runs + `inlay_offsets`; B.2.a added `bucket_static_overlays` (source-byte `RowOverlayQuad`s for doc_highlight / all_matches / substitute); will need to pull theme from `RenderState.theme` (not `Theme::default()`).
+- `lattice-host/src/render_state.rs` — `VisibleRows` / `RowPrepaint` / `RowRun` types; `OverlayLayer` / `RowOverlayQuad` / `StaticOverlayQuads` (B.2.a); `Arc<[T]>` storage; `Default` impls construct empty Arc; `VisibleHighlightsKey.{inlay_version, static_overlay_version}` axes paired with `inlay_hints_version()` / `static_overlay_state_version()` content hashes.
 - `lattice-host/src/folds.rs` — `FoldIndex` with `partition_point` lookups; both renderer peers consume.
-- `lattice-ui-gpui/src/editor_element.rs` — `shape_row_from_prepaint` consumes precomposed rows for the active pane (unconditional after A.2b.2 lifted the `line_has_inlays` gate); falls back to `shape_row` + `build_line_with_inlays` for inactive panes.
-- `lattice-ui-tui/src/render.rs` + `app/highlights.rs` — threads the `visible_rows` cell; `FrameView` reads `visible_rows` (A.2b.2b) and derives per-row source spans via `source_spans_from_runs`; inlay overlay reads `rs.syntax.inlay_hints` since A.2b.2.
+- `lattice-ui-gpui/src/editor_element.rs` — `shape_row_from_prepaint` consumes precomposed rows for the active pane (unconditional after A.2b.2 lifted the `line_has_inlays` gate); falls back to `shape_row` + `build_line_with_inlays` for inactive panes. B.2.a: active-pane `overlay_quads_for_row` consumes `worker_static_overlay_quads` (DocHighlight + AllMatches + Substitute), interleaves cursor-coupled layers per frame, falls back to per-frame `push_range_quads` walk when the bucket is missing (boot / inactive panes).
+- `lattice-ui-tui/src/render.rs` + `app/highlights.rs` — threads the `visible_rows` cell; `FrameView` reads `visible_rows` (A.2b.2b) and derives per-row source spans via `source_spans_from_runs`; inlay overlay reads `rs.syntax.inlay_hints` since A.2b.2. B.2.b: `compose_visible_lines_inner` reads `rs.syntax.static_overlay_quads` once per frame and consumes per-row tagged quads for AllMatches + Substitute layers; DocHighlight stays per-frame for `DocumentHighlightKind` coloring; cursor-coupled layers stay per-frame.
 
 ## Notes
 

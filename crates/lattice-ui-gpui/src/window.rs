@@ -569,16 +569,13 @@ impl EditorView {
                 .p_3()
                 .child(format!("(buffer {:?} unavailable)", pane.buffer_id));
         };
-        // Phase 5.8.AF.5 / Slice 3c.atomic.L: instrument the
-        // suspected per-frame waste site -- `snapshot.text()` is
-        // a full rope-to-String copy and `split('\n').collect()`
-        // builds a `Vec<&str>` over it. For a 100KB file that's
-        // hundreds of KB of allocation per pane per frame.
-        // `lattice_runtime::DocumentSnapshot::text` docstring
-        // explicitly warns against calling on the hot path.
-        let text_t0 = std::time::Instant::now();
-        let text = snapshot.text();
-        let text_us = text_t0.elapsed().as_micros() as u64;
+        // Stage A.1 [DONE]: full `snapshot.text()` + `split('\n')`
+        // materialisation removed; visible rows are pulled from the
+        // rope below. The 3c.atomic.L timing scaffold that surrounded
+        // that work is now gated behind `profile-frames` (perf plan
+        // A.4) — see the `frame_us` block at the end of `render`.
+        #[cfg(feature = "profile-frames")]
+        let text_us: u64 = 0;
         // 2026-05-22 issue #24 (cursor companion of pane_scroll
         // below): when popup owns active_buffer, ad.cursor
         // describes the popup buffer's cursor — the document
@@ -594,17 +591,18 @@ impl EditorView {
         } else {
             pane.cursor
         };
-        let split_t0 = std::time::Instant::now();
-        let raw_lines: Vec<&str> = text.split('\n').collect();
-        let split_us = split_t0.elapsed().as_micros() as u64;
+        let total_lines_u32 = snapshot.buffer.line_count();
+        let total_lines = total_lines_u32 as usize;
+        // we will fill raw_lines after computing visible_start/end
+        #[cfg(feature = "profile-frames")]
         tracing::debug!(
             target: "lattice_gpui::perf",
             pane_idx,
             is_active,
-            text_bytes = text.len() as u64,
-            line_count = raw_lines.len() as u64,
+            text_bytes = snapshot.buffer.byte_len(),
+            line_count = total_lines_u32 as u64,
             text_us,
-            split_us,
+            split_us = 0u64,
             "paint_pane text materialisation"
         );
         // 5.8.O: clip the visible window to `[scroll, scroll +
@@ -629,11 +627,16 @@ impl EditorView {
             pane.scroll
         };
         let viewport_height = ad.viewport_height.max(1);
-        let visible_start = (pane_scroll as usize).min(raw_lines.len());
+        let visible_start = (pane_scroll as usize).min(total_lines);
         let visible_end = (pane_scroll as usize)
             .saturating_add(viewport_height as usize)
-            .min(raw_lines.len());
+            .min(total_lines);
 
+        // Stage A.1: materialise only visible lines into a small Vec<String>.
+        let mut raw_lines: Vec<String> = Vec::with_capacity(visible_end.saturating_sub(visible_start));
+        for li in visible_start..visible_end {
+            raw_lines.push(snapshot.buffer.line(li as u32).unwrap_or_default());
+        }
         let cursor_shape = if render_active {
             Some(CursorShape::for_mode(ad.modal))
         } else {
@@ -646,8 +649,8 @@ impl EditorView {
         // active spans (visually-stale highlights) -- the
         // pre-existing slice 1 limitation; the per-pane span
         // cache resync into the element is a follow-up slice.
-        let total_lines = raw_lines.len().max(1);
-        let gutter_width = total_lines.to_string().len();
+        let total_lines_for_gutter = total_lines.max(1);
+        let gutter_width = total_lines_for_gutter.to_string().len();
 
         // 5.8.I: per-line severity lookup. URI for this pane's
         // buffer comes from `rs_guard.buffers.uris` (slice 3c.final.B
@@ -780,14 +783,14 @@ impl EditorView {
                     .map(|h| {
                         let start_line = h.range.start.line;
                         let end_line = h.range.end.line;
-                        let start_text = raw_lines.get(start_line as usize).copied().unwrap_or("");
-                        let end_text = raw_lines.get(end_line as usize).copied().unwrap_or("");
+                        let start_text = if (start_line as usize) < total_lines { snapshot.buffer.line(start_line).unwrap_or_default() } else { String::new() };
+                        let end_text = if (end_line as usize) < total_lines { snapshot.buffer.line(end_line).unwrap_or_default() } else { String::new() };
                         let start_byte = lattice_lsp::position::utf16_column_to_utf8_byte(
-                            start_text,
+                            &start_text,
                             h.range.start.character,
                         );
                         let end_byte = lattice_lsp::position::utf16_column_to_utf8_byte(
-                            end_text,
+                            &end_text,
                             h.range.end.character,
                         );
                         lattice_core::protocol::position::Range {
@@ -826,10 +829,9 @@ impl EditorView {
                     .iter()
                     .map(|h| {
                         let line_idx = h.position.line;
-                        let line_text =
-                            raw_lines.get(line_idx as usize).copied().unwrap_or("");
+                        let line_text = if (line_idx as usize) < total_lines { snapshot.buffer.line(line_idx).unwrap_or_default() } else { String::new() };
                         let byte = lattice_lsp::position::utf16_column_to_utf8_byte(
-                            line_text,
+                            &line_text,
                             h.position.character,
                         );
                         let mut text = lattice_lsp::inlay_hint_label_text(&h.label);
@@ -862,16 +864,14 @@ impl EditorView {
                     .map(|d| {
                         let start_line = d.range.start.line;
                         let end_line = d.range.end.line;
-                        let start_text =
-                            raw_lines.get(start_line as usize).copied().unwrap_or("");
-                        let end_text =
-                            raw_lines.get(end_line as usize).copied().unwrap_or("");
+                        let start_text = if (start_line as usize) < total_lines { snapshot.buffer.line(start_line).unwrap_or_default() } else { String::new() };
+                        let end_text = if (end_line as usize) < total_lines { snapshot.buffer.line(end_line).unwrap_or_default() } else { String::new() };
                         let start_byte = lattice_lsp::position::utf16_column_to_utf8_byte(
-                            start_text,
+                            &start_text,
                             d.range.start.character,
                         );
                         let end_byte = lattice_lsp::position::utf16_column_to_utf8_byte(
-                            end_text,
+                            &end_text,
                             d.range.end.character,
                         );
                         let color = d
@@ -949,7 +949,7 @@ impl EditorView {
         let editor_element = crate::editor_element::EditorElement {
             pane_idx,
             theme: theme.clone(),
-            text: std::sync::Arc::new(text),
+            text: std::sync::Arc::new(String::new()),
             // Issue #25 (2026-05-22): per-pane visible_spans for
             // multi-split support. Active pane reads the live
             // visible_spans cell (the highlights worker writes
@@ -1030,6 +1030,7 @@ impl Render for EditorView {
         // paint). One per-pane debug-line covers the document
         // text materialisation cost (`snapshot.text()` +
         // line split) -- the prime suspect for per-frame waste.
+        #[cfg(feature = "profile-frames")]
         let frame_start = std::time::Instant::now();
         // Read `picker.display` early so the viewport-height
         // recompute below can subtract the picker strip's rows
@@ -1211,6 +1212,7 @@ impl Render for EditorView {
         // arithmetic retires; `set_pane_viewport` carries the
         // per-pane truth.
         let _ = total_rows;
+        #[cfg(feature = "profile-frames")]
         let after_viewport = std::time::Instant::now();
         // 5.8.O: keep the cursor inside the viewport before any
         // paint reads `editor.scroll`. Auto-scrolls if the cursor
@@ -1220,6 +1222,7 @@ impl Render for EditorView {
         // where the viewport size didn't change but the cursor
         // moved past the existing window.
         self.app.ensure_cursor_in_viewport();
+        #[cfg(feature = "profile-frames")]
         let after_ensure = std::time::Instant::now();
         // Phase 5.8.AF.5 / Slice X2.5: the per-frame
         // `self.app.refresh_highlights()` call has been removed.
@@ -1240,6 +1243,7 @@ impl Render for EditorView {
         // Slice 3c.final.C: pane-highlight refresh via dispatch.
         self.app
             .dispatch_action(lattice_host::action::Action::RefreshPaneHighlights);
+        #[cfg(feature = "profile-frames")]
         let after_highlights = std::time::Instant::now();
         // Phase 5.8.AF.5 / Slice X1: `run_tick_pending` no longer
         // runs in the renderer body. The drain moved to
@@ -1251,6 +1255,7 @@ impl Render for EditorView {
         // re-introduced the violation -- audit per
         // `docs/dev/operations/render-thread-discipline-remediation.md`
         // §7 before merging.
+        #[cfg(feature = "profile-frames")]
         let after_tick = std::time::Instant::now();
         // Phase 5.8.AA.p/r/t: every per-tick drain (hover,
         // definitions, code-actions, live-picker, ...) is now
@@ -1314,6 +1319,7 @@ impl Render for EditorView {
         let document_area = self
             .paint_pane_tree(render_state.panes.tree.root(), &theme, active_idx)
             .flex_grow();
+        #[cfg(feature = "profile-frames")]
         let after_paint = std::time::Instant::now();
 
         // Slice 3c.final.E.5j: insert-completion via the published
@@ -1995,19 +2001,28 @@ impl Render for EditorView {
         // `after_paint` was captured immediately after
         // `paint_pane_tree` returned; the remaining work (overlay
         // assembly + return) is folded into the `tail_us` bucket.
-        // Enable with `RUST_LOG=lattice_gpui::perf=info`.
-        let frame_us = frame_start.elapsed().as_micros() as u64;
-        tracing::debug!(
-            target: "lattice_gpui::perf",
-            frame_us,
-            viewport_us = (after_viewport - frame_start).as_micros() as u64,
-            ensure_us = (after_ensure - after_viewport).as_micros() as u64,
-            highlights_us = (after_highlights - after_ensure).as_micros() as u64,
-            tick_us = (after_tick - after_highlights).as_micros() as u64,
-            paint_us = (after_paint - after_tick).as_micros() as u64,
-            tail_us = (frame_start.elapsed() - (after_paint - frame_start)).as_micros() as u64,
-            "frame budget"
-        );
+        //
+        // Perf plan A.4: the timing captures + the `tracing::debug!`
+        // emission are gated behind the `profile-frames` cargo
+        // feature so default release builds skip both the
+        // `clock_gettime` syscalls and the format machinery. Build
+        // with `--features profile-frames` and
+        // `RUST_LOG=lattice_gpui::perf=debug` when capturing a trace.
+        #[cfg(feature = "profile-frames")]
+        {
+            let frame_us = frame_start.elapsed().as_micros() as u64;
+            tracing::debug!(
+                target: "lattice_gpui::perf",
+                frame_us,
+                viewport_us = (after_viewport - frame_start).as_micros() as u64,
+                ensure_us = (after_ensure - after_viewport).as_micros() as u64,
+                highlights_us = (after_highlights - after_ensure).as_micros() as u64,
+                tick_us = (after_tick - after_highlights).as_micros() as u64,
+                paint_us = (after_paint - after_tick).as_micros() as u64,
+                tail_us = (frame_start.elapsed() - (after_paint - frame_start)).as_micros() as u64,
+                "frame budget"
+            );
+        }
         root
     }
 }

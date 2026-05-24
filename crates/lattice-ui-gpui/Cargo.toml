@@ -95,6 +95,12 @@ window = ["dep:gpui"]
 # part we control under goal-#1; GPU shaping/painting is
 # hardware-bound and not the regression target.
 bench-internals = []
+# GPUI perf plan A.4: gate the per-frame budget instrumentation
+# (Instant::now captures + `tracing::debug!(target = "lattice_gpui::perf", ...)`
+# lines) so default release builds skip the format machinery and the
+# clock_gettime syscalls. Enable with `--features profile-frames` when
+# capturing a trace; off by default.
+profile-frames = []
 
 [[bench]]
 name = "editor_element_frame"

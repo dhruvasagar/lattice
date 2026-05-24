@@ -136,8 +136,14 @@ syn = { version = "2", features = ["full", "extra-traits"] }
 quote = "1"
 proc-macro2 = "1"
 
-# Logging
-tracing = "0.1"
+# Logging.
+# Perf plan F: `release_max_level_debug` compile-time strips `trace!`
+# (and the dispatch + format machinery behind it) in release builds.
+# `debug!` and above stay live so production users can still flip
+# `RUST_LOG=lattice_host=debug` for diagnosis without rebuilding.
+# A.4's `lattice-ui-gpui/profile-frames` feature continues to gate
+# the per-frame DEBUG hot-path calls a level below this.
+tracing = { version = "0.1", features = ["release_max_level_debug"] }
 # `env-filter` enables `EnvFilter` for msg-mode.2's
 # `messages.filter` typed option (live-editable directive parser).
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -170,6 +176,33 @@ tree-sitter-md = "0.3"
 insta = "1.43"
 proptest = "1.7"
 criterion = { version = "0.5", default-features = false, features = ["plotters", "cargo_bench_support"] }
+
+[profile.release]
+# Perf plan F. Targets the GPUI peer's <3 ms idle frame / <6 ms p50
+# keystroke budget by giving LLVM enough whole-program context to
+# devirtualise + inline across crate boundaries, and by stripping the
+# unwind landing pads (paramount goal #1: keystroke -> glyph <= 8 ms
+# at 120 Hz).
+#
+# Trade-offs accepted:
+# - `codegen-units = 1` lengthens release link time; we eat it because
+#   release is shipped infrequently and CI's hot incremental builds
+#   stay on the dev profile.
+# - `panic = "abort"` rules out unwinding; verified no non-test
+#   `catch_unwind` exists in the workspace (config registry's two sites
+#   are inside `#[test]` blocks which run under [profile.test]).
+# - `lto = "thin"` chosen over "fat" to keep link time bounded while
+#   still getting cross-crate inlining; revisit "fat" if profiling
+#   shows residual indirect-call hot paths.
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+# Keep line tables so production panics still report file:line; the
+# `strip = "symbols"` setting drops the heavy DWARF tables but leaves
+# the cheap unwind metadata Rust needs for backtraces.
+debug = "line-tables-only"
 
 [workspace.lints.rust]
 # `deny` (not `forbid`) so a hot-path module can opt in via

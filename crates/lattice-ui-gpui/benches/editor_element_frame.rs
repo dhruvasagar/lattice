@@ -24,7 +24,10 @@
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 
-use lattice_ui_gpui::editor_element::{build_line_with_inlays, byte_to_combined_col};
+use lattice_core::protocol::position::{Position, Range};
+use lattice_ui_gpui::editor_element::{
+    build_line_with_inlays, byte_to_combined_col, push_range_quads,
+};
 
 /// Synthetic Rust-like line ~80 chars long with two styled
 /// regions (a keyword and a type) so the per-character `style_at`
@@ -160,5 +163,112 @@ fn frame_budget_with_inlays(c: &mut Criterion) {
     g.finish();
 }
 
-criterion_group!(frame, frame_budget, frame_budget_with_inlays);
+/// Perf-plan slice E.2.α: bench coverage for the E.1 surface
+/// (`push_range_quads`). Simulates the renderer-thread overlay
+/// workload during an active search + visual selection on a
+/// rust-shaped buffer:
+///
+/// - 5 doc-highlight ranges (LSP symbol-highlight on a frequently
+///   used identifier).
+/// - 10 hlsearch matches (`/handler` style hit spread).
+/// - 1 visual range spanning ~half the viewport (mid-edit
+///   selection).
+/// - 1 substitute-preview range (`:s/.../.../`).
+///
+/// Per row, all five layers feed through `push_range_quads` in
+/// the fixed precedence order the prepaint walk uses. Result Vec
+/// is reused across iterations (the production loop also amortises
+/// across the prepaint pass) so the bench measures the per-row
+/// math, not the alloc.
+fn frame_budget_with_overlays(c: &mut Criterion) {
+    let font = gpui::font("monospace");
+    let inlay_color: u32 = 0x7f849c;
+
+    let mut g = c.benchmark_group("editor_element_frame_with_overlays");
+    for viewport in [24usize, 60, 120] {
+        g.bench_with_input(
+            BenchmarkId::from_parameter(viewport),
+            &viewport,
+            |bencher, &n_rows| {
+                let lines: Vec<String> = (0..n_rows).map(rust_line).collect();
+                let all_spans: Vec<Vec<lattice_syntax::StyledSpan>> =
+                    lines.iter().map(|l| styled_spans(l)).collect();
+                // Synthetic overlay loads. Distribute matches across
+                // the viewport so most rows see at least one
+                // intersection (the production worst case during an
+                // active search).
+                let doc_highlights: Vec<Range> = (0..5)
+                    .map(|i| {
+                        let row = (i * n_rows / 5) as u32;
+                        Range::new(Position::new(row, 3), Position::new(row, 14))
+                    })
+                    .collect();
+                let all_matches: Vec<Range> = (0..10)
+                    .map(|i| {
+                        let row = (i * n_rows / 10) as u32;
+                        Range::new(Position::new(row, 20), Position::new(row, 27))
+                    })
+                    .collect();
+                let visual = [Range::new(
+                    Position::new(0, 0),
+                    Position::new((n_rows / 2) as u32, 0),
+                )];
+                let substitute = [Range::new(
+                    Position::new((n_rows / 3) as u32, 5),
+                    Position::new((n_rows / 3) as u32, 12),
+                )];
+                let mut quads: Vec<(u32, u32, u32)> = Vec::with_capacity(16);
+                bencher.iter(|| {
+                    for (i, line) in lines.iter().enumerate() {
+                        let line_idx = i as u32;
+                        let spans = &all_spans[i];
+                        // Run the post-E.1 prepaint path: shape +
+                        // collapse + per-row overlay pre-bucket.
+                        let (text, runs, offsets) =
+                            build_line_with_inlays(line, spans, &[], &font, inlay_color);
+                        black_box(&text);
+                        black_box(&runs);
+                        quads.clear();
+                        push_range_quads(
+                            &mut quads,
+                            &doc_highlights,
+                            line_idx,
+                            line,
+                            &offsets,
+                            0x585b70,
+                        );
+                        push_range_quads(
+                            &mut quads,
+                            &all_matches,
+                            line_idx,
+                            line,
+                            &offsets,
+                            0x6c7086,
+                        );
+                        push_range_quads(
+                            &mut quads, &visual, line_idx, line, &offsets, 0x45475a,
+                        );
+                        push_range_quads(
+                            &mut quads,
+                            &substitute,
+                            line_idx,
+                            line,
+                            &offsets,
+                            0xf38ba8,
+                        );
+                        black_box(&quads);
+                    }
+                });
+            },
+        );
+    }
+    g.finish();
+}
+
+criterion_group!(
+    frame,
+    frame_budget,
+    frame_budget_with_inlays,
+    frame_budget_with_overlays
+);
 criterion_main!(frame);

@@ -880,7 +880,7 @@ pub fn byte_to_combined_col(line: &str, byte: usize, inlay_offsets: &[(u32, u32)
 /// re-shapes the covered text with a different `TextRun`; the bg
 /// alone is enough to make matches visible against the syntax
 /// palette.
-fn push_range_quads(
+pub fn push_range_quads(
     out: &mut Vec<(u32, u32, u32)>,
     ranges: &[lattice_core::protocol::position::Range],
     line_idx: u32,

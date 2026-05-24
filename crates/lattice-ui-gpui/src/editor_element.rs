@@ -280,6 +280,20 @@ pub(crate) struct EditorElementPrepaintState {
     /// Pre-computed in `prepaint` so `paint` is a simple walk +
     /// `paint_quad`. Length matches `shaped_text`.
     diagnostic_segments_per_row: Vec<Vec<(u32, u32, u32)>>,
+    /// Per-visible-row overlay quads (perf-plan slice E.1). Each
+    /// entry is `(col_start, col_end_exclusive, color)` in
+    /// combined-column space — same shape as
+    /// `diagnostic_segments_per_row`. Built in `prepaint` by
+    /// walking the five overlay layers in fixed precedence
+    /// (doc_highlights → all_matches → current_match → visual →
+    /// substitute) so `paint` is a single allocation-free quad
+    /// emit per row. `paint_quad` overwrites (no blending in gpui
+    /// 0.2.2), so later quads in each row's `Vec` win visually —
+    /// preserving the layering order the previous per-row × per-
+    /// layer loop encoded. Inactive panes only carry doc-highlight
+    /// quads (the other layers are active-pane state). Length
+    /// matches `shaped_text`.
+    overlay_quads_per_row: Vec<Vec<(u32, u32, u32)>>,
 }
 
 impl IntoElement for EditorElement {
@@ -368,6 +382,8 @@ impl Element for EditorElement {
         let mut inlay_offsets_per_row: Vec<Vec<(u32, u32)>> =
             Vec::with_capacity(row_capacity);
         let mut diagnostic_segments_per_row: Vec<Vec<(u32, u32, u32)>> =
+            Vec::with_capacity(row_capacity);
+        let mut overlay_quads_per_row: Vec<Vec<(u32, u32, u32)>> =
             Vec::with_capacity(row_capacity);
 
         // Slice X3.full.4: precompute per-line inlay-hint lists,
@@ -477,6 +493,40 @@ impl Element for EditorElement {
                 segs
             };
 
+        // Perf-plan slice E.1: per-row overlay quads. Walks the
+        // five overlay layers in fixed precedence and emits
+        // `(col_start, col_end, color)` tuples — same shape as
+        // `diagnostic_segments_per_row`. Layering is encoded by
+        // push order: `paint_quad` overwrites, so the last quad
+        // pushed for a given (col, row) wins visually. Doc-
+        // highlights paint on every pane that shares the active
+        // buffer; the other four layers are active-pane state.
+        // Replaces the prior per-row × per-layer
+        // `paint_range_overlay` calls that ran on the hot paint
+        // loop.
+        let is_active = self.is_active;
+        let doc_highlights = &self.doc_highlights;
+        let all_matches = &self.all_matches;
+        let current_match = &self.current_match;
+        let visual_range = &self.visual_range;
+        let substitute_matches = &self.substitute_matches;
+        let overlay_quads_for_row =
+            |line_idx: u32, line_text: &str, inlay_offsets: &[(u32, u32)]| -> Vec<(u32, u32, u32)> {
+                let mut quads = Vec::new();
+                push_range_quads(&mut quads, doc_highlights, line_idx, line_text, inlay_offsets, 0x585b70);
+                if is_active {
+                    push_range_quads(&mut quads, all_matches, line_idx, line_text, inlay_offsets, 0x6c7086);
+                    if let Some(r) = current_match {
+                        push_range_quads(&mut quads, std::slice::from_ref(r), line_idx, line_text, inlay_offsets, 0xf9e2af);
+                    }
+                    if let Some(r) = visual_range {
+                        push_range_quads(&mut quads, std::slice::from_ref(r), line_idx, line_text, inlay_offsets, 0x45475a);
+                    }
+                    push_range_quads(&mut quads, substitute_matches, line_idx, line_text, inlay_offsets, 0xf38ba8);
+                }
+                quads
+            };
+
         if self.gutter.is_empty() {
             // Slice 1 fallback (no gutter metadata supplied):
             // walk the visible window directly. Folds aren't
@@ -508,10 +558,12 @@ impl Element for EditorElement {
                     }
                 };
                 let diag_segs = diag_segments_for_row(line_idx as u32, line, &inlay_offsets);
+                let overlay_quads = overlay_quads_for_row(line_idx as u32, line, &inlay_offsets);
                 shaped_text.push(shaped);
                 row_meta.push((line_idx as u32, line.to_string()));
                 inlay_offsets_per_row.push(inlay_offsets);
                 diagnostic_segments_per_row.push(diag_segs);
+                overlay_quads_per_row.push(overlay_quads);
             }
         } else {
             // Gutter-driven walk: caller already pre-filtered the
@@ -538,10 +590,12 @@ impl Element for EditorElement {
                     }
                 };
                 let diag_segs = diag_segments_for_row(meta.line_idx, line, &inlay_offsets);
+                let overlay_quads = overlay_quads_for_row(meta.line_idx, line, &inlay_offsets);
                 shaped_text.push(shaped);
                 row_meta.push((meta.line_idx, line.to_string()));
                 inlay_offsets_per_row.push(inlay_offsets);
                 diagnostic_segments_per_row.push(diag_segs);
+                overlay_quads_per_row.push(overlay_quads);
 
                 let gutter_text = format_gutter_text(meta, self.gutter_width);
                 let gutter_runs = build_gutter_runs(&gutter_text, meta, font.clone());
@@ -629,6 +683,7 @@ impl Element for EditorElement {
             row_meta,
             inlay_offsets_per_row,
             diagnostic_segments_per_row,
+            overlay_quads_per_row,
         }
     }
 
@@ -671,97 +726,25 @@ impl Element for EditorElement {
                 window.paint_quad(fill(row_bounds, rgb(self.cursorline_bg)));
             }
         }
-        // Per-line range overlays (active pane only). Doc-highlight
-        // paints on every pane that shares the active buffer; the
-        // caller decides what to populate.
-        for (row_idx, (line_idx, line_text)) in prepaint.row_meta.iter().enumerate() {
-            let row_y = bounds.origin.y + line_height * (row_idx as f32);
-            // Slice X3.full.4: each row's inlay offsets feed
-            // overlay col-math so decoration backgrounds reflow
-            // around inlay virtual text alongside the spliced
-            // shaped line.
-            let row_inlays: &[(u32, u32)] = prepaint
-                .inlay_offsets_per_row
-                .get(row_idx)
-                .map(Vec::as_slice)
-                .unwrap_or(&[]);
-            // doc_highlight is the only overlay that paints on
-            // inactive panes (its caller only populates the field
-            // for the buffer that has highlights pumped).
-            paint_range_overlay(
-                window,
-                &self.doc_highlights,
-                *line_idx,
-                line_text,
-                row_inlays,
-                text_origin_x,
-                row_y,
-                advance,
-                line_height,
-                0x585b70, // Catppuccin surface2 (doc-highlight bg).
-            );
-            if !self.is_active {
+        // Per-line range overlays (perf-plan slice E.1). Quads
+        // were pre-built in `prepaint` (see
+        // `overlay_quads_per_row` + `push_range_quads`); paint
+        // here is an allocation-free walk that mirrors the
+        // diagnostic-underline loop below. Layering order is
+        // encoded by push order in the inner Vec — `paint_quad`
+        // overwrites, so later quads win visually.
+        for (row_idx, quads) in prepaint.overlay_quads_per_row.iter().enumerate() {
+            if quads.is_empty() {
                 continue;
             }
-            // hlsearch (all_matches): softer overlay0 bg under all
-            // search hits; current_match overrides on its range.
-            paint_range_overlay(
-                window,
-                &self.all_matches,
-                *line_idx,
-                line_text,
-                row_inlays,
-                text_origin_x,
-                row_y,
-                advance,
-                line_height,
-                0x6c7086, // Catppuccin overlay0.
-            );
-            // current_match: stronger yellow bg.
-            if let Some(r) = &self.current_match {
-                paint_range_overlay(
-                    window,
-                    std::slice::from_ref(r),
-                    *line_idx,
-                    line_text,
-                    row_inlays,
-                    text_origin_x,
-                    row_y,
-                    advance,
-                    line_height,
-                    0xf9e2af, // Catppuccin yellow.
-                );
+            let row_y = bounds.origin.y + line_height * (row_idx as f32);
+            for (col_start, col_end, color) in quads {
+                let quad_x = text_origin_x + advance * (*col_start as f32);
+                let quad_w = advance * ((*col_end - *col_start) as f32);
+                let quad_bounds =
+                    Bounds::new(point(quad_x, row_y), size(quad_w, line_height));
+                window.paint_quad(fill(quad_bounds, rgb(*color)));
             }
-            // visual_range: surface1 bg under the selection.
-            if let Some(r) = &self.visual_range {
-                paint_range_overlay(
-                    window,
-                    std::slice::from_ref(r),
-                    *line_idx,
-                    line_text,
-                    row_inlays,
-                    text_origin_x,
-                    row_y,
-                    advance,
-                    line_height,
-                    0x45475a, // Catppuccin surface1.
-                );
-            }
-            // substitute preview: top-layer red bg (destructive
-            // preview always wins so the user sees what's about to
-            // change).
-            paint_range_overlay(
-                window,
-                &self.substitute_matches,
-                *line_idx,
-                line_text,
-                row_inlays,
-                text_origin_x,
-                row_y,
-                advance,
-                line_height,
-                0xf38ba8, // Catppuccin red.
-            );
         }
 
         // Gutter.
@@ -879,28 +862,30 @@ pub fn byte_to_combined_col(line: &str, byte: usize, inlay_offsets: &[(u32, u32)
     base + inlay_shift
 }
 
-/// Paint a coloured quad behind every `ranges[i]` that intersects
-/// `line_idx`'s row. `line_text` + `inlay_offsets` drive the utf-8
-/// byte → combined-char-column conversion (monospace advance
-/// assumption matches the cursor and gutter maths).
+/// Push a `(col_start, col_end_exclusive, color)` tuple for every
+/// `ranges[i]` that intersects `line_idx`'s row, in combined-column
+/// space (i.e. after inlay-offset splicing). Same shape as
+/// `diagnostic_segments_per_row`. `line_text` + `inlay_offsets`
+/// drive the utf-8 byte → combined-char-column conversion
+/// (monospace advance assumption matches the cursor + gutter maths).
 ///
-/// Slice X3.full.3 paints BACKGROUNDS only -- the underlying syntax
-/// colours of the text remain unchanged. Vim's classic
+/// Perf-plan slice E.1 moves this work from the hot paint loop
+/// (formerly `paint_range_overlay`) into `prepaint`, so the
+/// painter just walks pre-built tuples without re-computing
+/// intersections or byte-to-column conversions per frame.
+///
+/// Slice X3.full.3 paints BACKGROUNDS only — the underlying
+/// syntax colours of the text remain unchanged. Vim's classic
 /// "current_match inverts fg" is deferred until a slice that
 /// re-shapes the covered text with a different `TextRun`; the bg
 /// alone is enough to make matches visible against the syntax
 /// palette.
-#[allow(clippy::too_many_arguments)]
-fn paint_range_overlay(
-    window: &mut gpui::Window,
+fn push_range_quads(
+    out: &mut Vec<(u32, u32, u32)>,
     ranges: &[lattice_core::protocol::position::Range],
     line_idx: u32,
     line_text: &str,
     inlay_offsets: &[(u32, u32)],
-    text_origin_x: gpui::Pixels,
-    row_y: gpui::Pixels,
-    advance: gpui::Pixels,
-    line_height: gpui::Pixels,
     color: u32,
 ) {
     let line_len = line_text.len();
@@ -921,18 +906,12 @@ fn paint_range_overlay(
         if end_byte <= start_byte {
             continue;
         }
-        let col_start = byte_to_combined_col(line_text, start_byte, inlay_offsets);
-        let col_end = byte_to_combined_col(line_text, end_byte, inlay_offsets);
+        let col_start = byte_to_combined_col(line_text, start_byte, inlay_offsets) as u32;
+        let col_end = byte_to_combined_col(line_text, end_byte, inlay_offsets) as u32;
         if col_end <= col_start {
             continue;
         }
-        let quad_x = text_origin_x + advance * (col_start as f32);
-        let quad_w = advance * ((col_end - col_start) as f32);
-        let quad_bounds = gpui::Bounds::new(
-            gpui::point(quad_x, row_y),
-            gpui::size(quad_w, line_height),
-        );
-        window.paint_quad(gpui::fill(quad_bounds, gpui::rgb(color)));
+        out.push((col_start, col_end, color));
     }
 }
 
@@ -1293,5 +1272,93 @@ mod tests {
             build_line_with_inlays(line, &[], &inlays, &gpui::font("monospace"), 0x7f849c);
         assert_eq!(combined, "fn foo() -> i32");
         assert_eq!(offsets, vec![(line.len() as u32, 7)]);
+    }
+
+    // --- Slice E.1 — push_range_quads (overlay-quad pre-bucket) ---
+
+    use lattice_core::protocol::position::{Position, Range};
+
+    fn range(start_line: u32, start_byte: u32, end_line: u32, end_byte: u32) -> Range {
+        Range {
+            start: Position::new(start_line, start_byte),
+            end: Position::new(end_line, end_byte),
+        }
+    }
+
+    #[test]
+    fn push_range_quads_skips_rows_outside_range() {
+        let line_text = "hello world";
+        let mut out = Vec::new();
+        let ranges = [range(5, 0, 5, 5)];
+        push_range_quads(&mut out, &ranges, 3, line_text, &[], 0xaaaaaa);
+        push_range_quads(&mut out, &ranges, 7, line_text, &[], 0xaaaaaa);
+        assert!(out.is_empty(), "rows outside the range emit no quads");
+    }
+
+    #[test]
+    fn push_range_quads_single_line_range_clipped_to_bytes() {
+        let line_text = "hello world";
+        let mut out = Vec::new();
+        // Range covers bytes 6..11 ("world").
+        push_range_quads(&mut out, &[range(2, 6, 2, 11)], 2, line_text, &[], 0xbeef);
+        assert_eq!(out, vec![(6, 11, 0xbeef)]);
+    }
+
+    #[test]
+    fn push_range_quads_multi_line_range_uses_full_line_in_middle() {
+        let line_text = "abcdef";
+        let mut out = Vec::new();
+        // Range spans lines 4..=6; line 5 is fully covered.
+        push_range_quads(&mut out, &[range(4, 2, 6, 3)], 5, line_text, &[], 1);
+        assert_eq!(out, vec![(0, 6, 1)], "middle row gets [0, line_len) cols");
+    }
+
+    #[test]
+    fn push_range_quads_multi_line_range_start_row_uses_start_byte() {
+        let line_text = "abcdef";
+        let mut out = Vec::new();
+        push_range_quads(&mut out, &[range(4, 2, 6, 3)], 4, line_text, &[], 2);
+        assert_eq!(out, vec![(2, 6, 2)], "start row spans [start_byte, line_len)");
+    }
+
+    #[test]
+    fn push_range_quads_multi_line_range_end_row_uses_end_byte() {
+        let line_text = "abcdef";
+        let mut out = Vec::new();
+        push_range_quads(&mut out, &[range(4, 2, 6, 3)], 6, line_text, &[], 3);
+        assert_eq!(out, vec![(0, 3, 3)], "end row spans [0, end_byte)");
+    }
+
+    #[test]
+    fn push_range_quads_inlay_shifts_columns() {
+        // Line "ab|cd" where a 2-char inlay is spliced before
+        // byte 2; range 1..3 → cols 1..5 in combined space
+        // (1 + 2 inlay chars before the closing byte).
+        let line_text = "abcd";
+        let inlay_offsets = [(2u32, 2u32)];
+        let mut out = Vec::new();
+        push_range_quads(&mut out, &[range(0, 1, 0, 3)], 0, line_text, &inlay_offsets, 0x42);
+        assert_eq!(out, vec![(1, 5, 0x42)]);
+    }
+
+    #[test]
+    fn push_range_quads_empty_range_skipped() {
+        let line_text = "abc";
+        let mut out = Vec::new();
+        push_range_quads(&mut out, &[range(0, 2, 0, 2)], 0, line_text, &[], 9);
+        assert!(out.is_empty(), "end_byte == start_byte emits nothing");
+    }
+
+    #[test]
+    fn push_range_quads_layering_preserved_by_push_order() {
+        // Two layers stacked on the same row in order A, B; the
+        // walk emits A then B so the painter (which overwrites
+        // last-wins) draws B on top of A. The pre-bucket
+        // preserves this contract by appending without sorting.
+        let line_text = "hello";
+        let mut out = Vec::new();
+        push_range_quads(&mut out, &[range(0, 0, 0, 5)], 0, line_text, &[], 0xa);
+        push_range_quads(&mut out, &[range(0, 1, 0, 4)], 0, line_text, &[], 0xb);
+        assert_eq!(out, vec![(0, 5, 0xa), (1, 4, 0xb)]);
     }
 }

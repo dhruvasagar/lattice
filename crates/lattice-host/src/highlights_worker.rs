@@ -260,7 +260,23 @@ pub fn recompute(
     // spans index into — keeps the byte offsets and the row text
     // aligned even if `active_document.snapshot` has advanced past
     // the syntax version while the worker is mid-recompute.
-    let rows = build_rows(snap.source(), start, &spans);
+    //
+    // Perf plan B.1 (dirty-row recomposition): pass the previously
+    // published rows + their key so `build_rows_with_cache` can
+    // reuse `RowPrepaint`s for any absolute line that's still in
+    // view when `(snapshot_ptr, syntax_text_version)` are
+    // unchanged. On the scroll-only path (the dominant held-j
+    // case) every overlapping line skips the per-line text fetch
+    // + collapse, dropping `build_rows` cost from O(viewport) to
+    // O(scroll_delta).
+    let prev_rows = rows_cell.load_full();
+    let rows = build_rows_with_cache(
+        snap.source(),
+        start,
+        &spans,
+        &prev_rows,
+        &key,
+    );
 
     spans_cell.store(Arc::new(VisibleSpans {
         spans,
@@ -271,6 +287,116 @@ pub fn recompute(
         computed_for_key: key,
     }));
     WorkerDecision::Recomputed
+}
+
+/// Perf plan B.1 (dirty-row recomposition). Wraps [`build_rows`]
+/// with a per-absolute-line reuse path: when the previous publish
+/// was against the same `(snapshot_ptr, syntax_text_version)`
+/// (the source bytes are bit-identical), the prepaints for any
+/// absolute line that's still in view are reused as-is. Only
+/// newly-visible lines hit `build_rows` for the per-line memchr
+/// scan + `into_boxed_str` alloc + `collapse_runs` walk.
+///
+/// The dominant held-j scroll case (snapshot + version unchanged,
+/// scroll deltas by 1) reuses ~99% of rows; build cost collapses
+/// from `O(viewport_height)` to `O(scroll_delta)`.
+///
+/// The cache only kicks in for `(snapshot_ptr, text_version)` parity
+/// — every other key axis (fold_hash, viewport_height, scroll) is
+/// allowed to differ. Mismatched axes change WHICH absolute lines
+/// are visible but not the per-absolute-line content. When the
+/// snapshot or version flips (any edit), we fall through to the
+/// from-scratch path so the published rows reflect the new source.
+fn build_rows_with_cache(
+    source: &[u8],
+    start: u32,
+    styled_spans: &[Vec<lattice_syntax::StyledSpan>],
+    prev_rows: &VisibleRows,
+    new_key: &VisibleHighlightsKey,
+) -> Vec<RowPrepaint> {
+    // Bail to the cold path on any source-affecting input change.
+    // `snapshot_ptr` flips on every reparse-produced snapshot;
+    // `syntax_text_version` flips on edits even when the parser
+    // re-uses an Arc'd Tree. Either change means line content (or
+    // line count, or byte offsets) may differ.
+    let snapshot_match = prev_rows.computed_for_key.snapshot_ptr == new_key.snapshot_ptr
+        && prev_rows.computed_for_key.syntax_text_version == new_key.syntax_text_version;
+    if !snapshot_match || prev_rows.rows.is_empty() {
+        return build_rows(source, start, styled_spans);
+    }
+
+    // Find the byte offset of the FIRST newly-visible line so we
+    // only memchr-scan the gap. For pure scroll forwards/backwards
+    // the gap is `scroll_delta` lines; for no scroll change it's
+    // empty (every line is reused). The reuse window in absolute
+    // line space is `[max(new_start, prev_start), min(new_end, prev_end))`.
+    let prev_start = prev_rows.computed_for_key.scroll;
+    let prev_len = prev_rows.rows.len() as u32;
+    let new_len = styled_spans.len() as u32;
+
+    let reuse_lo = start.max(prev_start);
+    let reuse_hi = (start + new_len).min(prev_start + prev_len);
+
+    let mut rows: Vec<RowPrepaint> = Vec::with_capacity(styled_spans.len());
+
+    // Tracks the source-byte offset of the next line we still need
+    // to MATERIALISE (not reuse). Initially points at `start` but
+    // is recomputed lazily — we only pay for the seek when we
+    // actually hit a non-reuse row.
+    let mut byte_off_cache: Option<(u32, usize)> = None;
+    let seek_to = |line_no: u32, cache: &mut Option<(u32, usize)>| -> usize {
+        // Linear walk from the cached position (or from 0). For
+        // forward scroll the cached position is just past the last
+        // built row's start, so this is O(scroll_delta) per row.
+        let (mut at_line, mut at_byte) = cache.unwrap_or((0, 0));
+        if at_line > line_no {
+            // Backward seek: walk from 0. Rare path; bench cases
+            // never hit it because scroll deltas are small.
+            at_line = 0;
+            at_byte = 0;
+        }
+        while at_line < line_no && at_byte < source.len() {
+            match memchr::memchr(b'\n', &source[at_byte..]) {
+                Some(nl) => {
+                    at_byte += nl + 1;
+                    at_line += 1;
+                }
+                None => {
+                    at_byte = source.len();
+                    break;
+                }
+            }
+        }
+        *cache = Some((at_line, at_byte));
+        at_byte
+    };
+
+    for (i, line_spans) in styled_spans.iter().enumerate() {
+        let abs_line = start + i as u32;
+        if abs_line >= reuse_lo && abs_line < reuse_hi {
+            // Cache hit: clone the prior `RowPrepaint`. `Box<str>`
+            // clone is one alloc + memcpy of the line text; could
+            // be eliminated by switching to `Arc<str>` if this
+            // shows up in profile-frames data (`Arc::clone` is one
+            // refcount bump).
+            let prev_rel = (abs_line - prev_start) as usize;
+            rows.push(prev_rows.rows[prev_rel].clone());
+            continue;
+        }
+        // Cold path: materialise this row.
+        let line_start = seek_to(abs_line, &mut byte_off_cache);
+        let line_end = memchr::memchr(b'\n', &source[line_start..])
+            .map(|n| line_start + n)
+            .unwrap_or(source.len());
+        let line_text = std::str::from_utf8(&source[line_start..line_end]).unwrap_or("");
+        let combined: Box<str> = line_text.into();
+        let runs = collapse_runs(line_spans, combined.len() as u32);
+        rows.push(RowPrepaint { combined, runs });
+        // Advance the seek cache past this line so the next cold
+        // row picks up O(1) after.
+        byte_off_cache = Some((abs_line + 1, (line_end + 1).min(source.len())));
+    }
+    rows
 }
 
 /// Build `RowPrepaint`s for the worker's `recompute` output.
@@ -629,6 +755,141 @@ mod tests {
         );
         let total: u32 = runs.iter().map(|r| r.len).sum();
         assert_eq!(total, 10, "runs must partition combined exhaustively");
+    }
+
+    // ---- Perf plan B.1: dirty-row recomposition tests -----------
+
+    fn fake_styled(line_count: usize, line_byte_len: usize) -> Vec<Vec<lattice_syntax::StyledSpan>> {
+        // One Default span per line covering [0, len). The
+        // worker's `collapse_runs` will fold this into one
+        // `Default` run per row — fine for cache-identity checks.
+        (0..line_count)
+            .map(|_| {
+                vec![lattice_syntax::StyledSpan {
+                    start: 0,
+                    end: line_byte_len,
+                    style: lattice_syntax::Style::Default,
+                }]
+            })
+            .collect()
+    }
+
+    fn fake_source(line_count: usize, line_byte_len: usize) -> Vec<u8> {
+        // Each line is `line_byte_len` ASCII chars + a newline. The
+        // last line gets no trailing newline so total_lines matches
+        // `line_count`.
+        let mut s = String::with_capacity(line_count * (line_byte_len + 1));
+        for i in 0..line_count {
+            // Use the line index modulo a small alphabet so we can
+            // detect mis-mapped reuse (if a cached row from line 7
+            // ends up at line 9, the text will differ).
+            let ch = (b'a' + (i as u8 % 26)) as char;
+            s.extend(std::iter::repeat(ch).take(line_byte_len));
+            if i + 1 < line_count {
+                s.push('\n');
+            }
+        }
+        s.into_bytes()
+    }
+
+    fn key(snapshot_ptr: usize, text_version: u64, scroll: u32) -> VisibleHighlightsKey {
+        VisibleHighlightsKey {
+            snapshot_ptr,
+            syntax_text_version: text_version,
+            scroll,
+            viewport_height: 0,
+            fold_hash: 0,
+        }
+    }
+
+    /// Cold path — no prior rows. Every line is materialised from
+    /// scratch; result must equal `build_rows`.
+    #[test]
+    fn build_rows_with_cache_no_prior_matches_cold_path() {
+        let source = fake_source(20, 4);
+        let spans = fake_styled(10, 4);
+        let prev = VisibleRows::default();
+        let new_key = key(0xdead, 1, 0);
+        let cached = build_rows_with_cache(&source, 0, &spans, &prev, &new_key);
+        let cold = build_rows(&source, 0, &spans);
+        assert_eq!(cached.len(), cold.len());
+        for (a, b) in cached.iter().zip(cold.iter()) {
+            assert_eq!(a.combined, b.combined);
+            assert_eq!(a.runs, b.runs);
+        }
+    }
+
+    /// Snapshot/version match + scroll-forward delta: rows in the
+    /// overlap window must be byte-identical to the prior frame's
+    /// rows (proves the reuse path is wired). Rows past the overlap
+    /// are freshly built and must match the cold path for those
+    /// indices.
+    #[test]
+    fn build_rows_with_cache_reuses_overlap_on_scroll_forward() {
+        let source = fake_source(50, 4);
+        // Previous frame: viewport [10..20).
+        let prev_spans = fake_styled(10, 4);
+        let prev_key = key(0xdead, 1, 10);
+        let prev_rows_vec = build_rows(&source, 10, &prev_spans);
+        let prev = VisibleRows {
+            rows: prev_rows_vec.clone(),
+            computed_for_key: prev_key,
+        };
+        // New frame: viewport [12..22) — overlap [12..20).
+        let new_spans = fake_styled(10, 4);
+        let new_key = key(0xdead, 1, 12);
+        let new_rows = build_rows_with_cache(&source, 12, &new_spans, &prev, &new_key);
+        assert_eq!(new_rows.len(), 10);
+        // Reuse window: new_rows[0..8] == prev_rows_vec[2..10].
+        for i in 0..8 {
+            assert_eq!(
+                new_rows[i].combined, prev_rows_vec[i + 2].combined,
+                "reuse mismatch at rel {i}"
+            );
+        }
+        // Cold tail: new_rows[8..10] must match cold build for
+        // absolute lines [20..22).
+        let cold_tail = build_rows(&source, 20, &fake_styled(2, 4));
+        assert_eq!(new_rows[8].combined, cold_tail[0].combined);
+        assert_eq!(new_rows[9].combined, cold_tail[1].combined);
+    }
+
+    /// Snapshot/version change ⇒ full cold rebuild even when
+    /// scroll/viewport are identical. Proves we never serve stale
+    /// rows from a different source.
+    #[test]
+    fn build_rows_with_cache_falls_back_on_snapshot_change() {
+        let source_a = fake_source(20, 4);
+        let source_b = {
+            // Same shape but every byte differs (uppercase).
+            let mut v = fake_source(20, 4);
+            v.iter_mut().for_each(|b| {
+                if (b'a'..=b'z').contains(b) {
+                    *b -= 32;
+                }
+            });
+            v
+        };
+        let spans = fake_styled(10, 4);
+        let prev_rows_vec = build_rows(&source_a, 5, &spans);
+        let prev = VisibleRows {
+            rows: prev_rows_vec.clone(),
+            computed_for_key: key(0xa11, 1, 5),
+        };
+        // New snapshot_ptr differs ⇒ no reuse, rebuild from source_b.
+        let new_key = key(0xb22, 1, 5);
+        let new_rows = build_rows_with_cache(&source_b, 5, &spans, &prev, &new_key);
+        // New rows must reflect source_b (uppercase), not the cached
+        // source_a rows.
+        assert_ne!(new_rows[0].combined, prev_rows_vec[0].combined);
+        assert!(
+            new_rows[0]
+                .combined
+                .chars()
+                .all(|c| c.is_ascii_uppercase()),
+            "expected uppercase from source_b; got {:?}",
+            new_rows[0].combined
+        );
     }
 
     /// Recompute also publishes pre-paint rows alongside spans,

@@ -1692,11 +1692,17 @@ impl Render for EditorView {
             // we can show the right content window and a cursor indicator.
             let ad = self.app.ad();
             let popup_focused = ad.buffer_kind == lattice_core::BufferKind::Help;
-            // Max visible lines in the 400px body with 1.3× line-height.
-            const MAX_POPUP_LINES: usize = 18;
+            // Max visible lines sized for the expanded 600px body.
+            const MAX_POPUP_LINES: usize = 30;
             let popup_scroll = if popup_focused { ad.scroll as usize } else { 0 };
             let cursor_doc_line = if popup_focused {
                 Some(ad.cursor.line as usize)
+            } else {
+                None
+            };
+            // Byte offset within the cursor line (for a char-wide block cursor).
+            let cursor_byte = if popup_focused {
+                Some(ad.cursor.byte as usize)
             } else {
                 None
             };
@@ -1710,7 +1716,37 @@ impl Render for EditorView {
                     let is_cursor_line = cursor_doc_line == Some(idx);
                     let spans: &[lattice_syntax::StyledSpan] =
                         line_highlights.get(idx).map(Vec::as_slice).unwrap_or(&[]);
-                    let content = if spans.is_empty() {
+
+                    if is_cursor_line {
+                        // Render a character-wide block cursor at cursor_byte.
+                        let cb = cursor_byte.unwrap_or(0);
+                        let mut cells: Vec<gpui::Div> = line
+                            .char_indices()
+                            .map(|(byte_idx, c)| {
+                                let syntax_style = style_at(spans, byte_idx);
+                                if byte_idx == cb {
+                                    div()
+                                        .bg(rgb(theme.cursor_background))
+                                        .text_color(rgb(theme.cursor_foreground))
+                                        .child(c.to_string())
+                                } else {
+                                    div()
+                                        .text_color(rgb(syntax_color(syntax_style)))
+                                        .child(c.to_string())
+                                }
+                            })
+                            .collect();
+                        // Cursor past end-of-line: append a space block.
+                        if cb >= line.len() {
+                            cells.push(
+                                div()
+                                    .bg(rgb(theme.cursor_background))
+                                    .text_color(rgb(theme.cursor_foreground))
+                                    .child(" ".to_string()),
+                            );
+                        }
+                        div().flex().flex_row().children(cells)
+                    } else if spans.is_empty() {
                         div().child(line.to_string())
                     } else {
                         let cells: Vec<gpui::Div> = line
@@ -1723,18 +1759,6 @@ impl Render for EditorView {
                             })
                             .collect();
                         div().flex().flex_row().children(cells)
-                    };
-                    // Cursor-line highlight: invert background so the user
-                    // can see where j/k will move. Only applies in State B.
-                    if is_cursor_line {
-                        div()
-                            .flex()
-                            .flex_row()
-                            .bg(rgb(theme.cursor_background))
-                            .text_color(rgb(theme.cursor_foreground))
-                            .child(content)
-                    } else {
-                        div().child(content)
                     }
                 })
                 .collect();
@@ -1752,8 +1776,8 @@ impl Render for EditorView {
             div()
                 .flex()
                 .flex_col()
-                .max_w(px(640.0))
-                .max_h(px(400.0))
+                .max_w(px(900.0))
+                .max_h(px(600.0))
                 .p_4()
                 .bg(rgb(theme.popup_background))
                 .text_color(rgb(theme.foreground))

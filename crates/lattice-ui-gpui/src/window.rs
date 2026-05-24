@@ -378,12 +378,53 @@ fn diagnostic_glyph_and_color(
 // peers map the host shape to their native cursor primitive.
 // Re-imported via `use` at the top of the file.
 
+/// Per-frame ensure-work gate keys (perf plan A.3).
+///
+/// `EditorView::render` used to fire `ensure_cursor_in_viewport()`
+/// and `dispatch_action(RefreshPaneHighlights)` unconditionally every
+/// frame. Both dispatches walk the full `publish_render_state` tail
+/// (rebuilding every sub-state `Arc`, notifying the highlights worker,
+/// nudging `paint_request`) regardless of whether the underlying
+/// inputs changed — the dominant slice of `ensure_us` in the trace
+/// data the perf plan opens with.
+///
+/// Each key captures the inputs that would actually change the
+/// dispatch's effect. When the current frame's key matches the stored
+/// one, the dispatch is skipped — paramount goal #1 (sub-frame input
+/// latency).
+///
+/// `cursor_snap_key` is stored as the POST-dispatch key so the cache
+/// settles in one frame after a snap (the dispatch mutates `scroll`,
+/// which is part of the key; storing the pre-dispatch key would
+/// re-fire on the next frame for a guaranteed no-op).
+///
+/// `pane_refresh_key` uses `Arc::as_ptr(&pane_tree)` as a cheap
+/// identity probe: the tree Arc is rebuilt by `publish_render_state`
+/// whenever any pane state (buffer_id, scroll, split, focus) changes.
+/// Trade-off: if an *inactive* pane's document text version advances
+/// (rare — typically only on LSP edits in an unfocused buffer), the
+/// gate stays closed until the next pane switch. The user can't see
+/// stale highlights on a pane they're not focused on; the moment they
+/// switch focus, `active_idx` changes → key changes → refresh fires.
+#[derive(Default)]
+struct EnsureGateCache {
+    cursor_snap_key: Option<(
+        lattice_core::protocol::position::Position,
+        u32,
+        u32,
+        lattice_core::BufferKind,
+    )>,
+    pane_refresh_key: Option<(usize, usize, lattice_core::BufferId)>,
+}
+
 /// The renderer-side composition root rendered as a GPUI
 /// `Entity`. Holds the [`GpuiApp`] + a [`FocusHandle`] so the
 /// window's key events actually route to our dispatcher.
 struct EditorView {
     app: GpuiApp,
     focus_handle: FocusHandle,
+    /// Perf plan A.3: per-frame ensure-work delta cache.
+    ensure_gate: EnsureGateCache,
 }
 
 impl EditorView {
@@ -425,6 +466,7 @@ impl EditorView {
         Self {
             app,
             focus_handle: cx.focus_handle(),
+            ensure_gate: EnsureGateCache::default(),
         }
     }
 
@@ -1221,7 +1263,31 @@ impl Render for EditorView {
         // `ensure_cursor_visible`, but this also covers the case
         // where the viewport size didn't change but the cursor
         // moved past the existing window.
-        self.app.ensure_cursor_in_viewport();
+        //
+        // Perf plan A.3 cursor_snap gate: skip the dispatch when
+        // the inputs (cursor, scroll, viewport_height, active
+        // buffer kind) haven't changed since the post-dispatch
+        // state we last cached. The stored key is the POST-
+        // dispatch value so the cache settles in one frame
+        // after a snap mutates `scroll`. First frame always runs
+        // (cache starts at `None`).
+        let pre_ad = self.app.render_state.load().active_document.clone();
+        let cursor_key = (
+            pre_ad.cursor,
+            pre_ad.scroll,
+            pre_ad.viewport_height,
+            pre_ad.buffer_kind,
+        );
+        if self.ensure_gate.cursor_snap_key != Some(cursor_key) {
+            self.app.ensure_cursor_in_viewport();
+            let post_ad = self.app.render_state.load().active_document.clone();
+            self.ensure_gate.cursor_snap_key = Some((
+                post_ad.cursor,
+                post_ad.scroll,
+                post_ad.viewport_height,
+                post_ad.buffer_kind,
+            ));
+        }
         #[cfg(feature = "profile-frames")]
         let after_ensure = std::time::Instant::now();
         // Phase 5.8.AF.5 / Slice X2.5: the per-frame
@@ -1241,8 +1307,25 @@ impl Render for EditorView {
         // gating; this peer just makes the call so paint_pane can
         // read `editor.pane_highlights[idx]` for the inactive case.
         // Slice 3c.final.C: pane-highlight refresh via dispatch.
-        self.app
-            .dispatch_action(lattice_host::action::Action::RefreshPaneHighlights);
+        //
+        // Perf plan A.3 inactive_pane_refresh gate: skip when the
+        // pane-tree identity, active pane index, and active doc id
+        // are all unchanged. `Arc::as_ptr` is a cheap identity probe
+        // — `publish_render_state` rebuilds the pane-tree Arc on any
+        // pane-state change (split/close/scroll/buffer-id swap), so
+        // ptr equality is a sound "nothing relevant changed" gate.
+        // Trade-off documented on `EnsureGateCache::pane_refresh_key`.
+        let rs_for_pane = self.app.render_state.load();
+        let pane_key = (
+            std::sync::Arc::as_ptr(&rs_for_pane.panes.tree) as usize,
+            rs_for_pane.panes.tree.active_index(),
+            rs_for_pane.active_document.document_buffer_id,
+        );
+        if self.ensure_gate.pane_refresh_key != Some(pane_key) {
+            self.app
+                .dispatch_action(lattice_host::action::Action::RefreshPaneHighlights);
+            self.ensure_gate.pane_refresh_key = Some(pane_key);
+        }
         #[cfg(feature = "profile-frames")]
         let after_highlights = std::time::Instant::now();
         // Phase 5.8.AF.5 / Slice X1: `run_tick_pending` no longer

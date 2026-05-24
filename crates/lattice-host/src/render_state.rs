@@ -547,6 +547,25 @@ pub struct SyntaxRenderState {
     /// The TUI peer still reads `visible_spans` until its compose
     /// loop migrates; both cells are populated on every recompute.
     pub visible_rows: Arc<arc_swap::ArcSwap<VisibleRows>>,
+    /// Perf plan A.2 slice A.2b.1: active document's flattened
+    /// inlay-hint list, pre-gated by the buffer's
+    /// `lsp-inlay-hint-mode` enable-flag. Populated once per
+    /// publish from `Editor::lsp_inlay_hints_cache` for the active
+    /// document; empty when the mode is off, no LSP, or no hints
+    /// have arrived yet.
+    ///
+    /// Why on `SyntaxRenderState` and not `LspRenderState`:
+    /// inlays are an INPUT to the syntax worker's row composition
+    /// (A.2b.2). The worker walks this list to splice inlay text
+    /// into `RowPrepaint.combined`; downstream readers (GPUI's
+    /// active-pane prepaint) consume the woven rows. The raw
+    /// per-buffer LSP cache stays on `lsp.inlay_hints` for the
+    /// inactive-pane fallback path that flattens its own list.
+    ///
+    /// Coordinates: `byte` is a utf-8 offset against the active
+    /// document's line text; `text` already has `padding_left`
+    /// / `padding_right` spaces baked in at the publish boundary.
+    pub inlay_hints: Arc<[InlayHintRow]>,
     /// Slice 3c.final.B.8: per-pane span cache published as
     /// `Arc<HashMap<pane_idx, Arc<Vec<Vec<StyledSpan>>>>>`.
     /// Outer Arc is the per-publish handle (cheap clone); inner
@@ -569,6 +588,7 @@ impl Default for SyntaxRenderState {
             text_version: 0,
             visible_spans: Arc::new(arc_swap::ArcSwap::from_pointee(VisibleSpans::default())),
             visible_rows: Arc::new(arc_swap::ArcSwap::from_pointee(VisibleRows::default())),
+            inlay_hints: Arc::from(Vec::<InlayHintRow>::new().into_boxed_slice()),
             pane_highlights: Arc::new(std::collections::HashMap::new()),
         }
     }
@@ -707,6 +727,34 @@ impl Default for VisibleRows {
             computed_for_key: VisibleHighlightsKey::default(),
         }
     }
+}
+
+/// One inlay-hint row published on
+/// [`SyntaxRenderState::inlay_hints`].
+///
+/// Perf plan A.2 slice A.2b.1. Caller flattens the LSP
+/// [`InlayHintLabel`](lattice_lsp::lsp_types::InlayHintLabel) to a
+/// plain string and pre-applies `padding_left` / `padding_right`
+/// spacing; consumers splice `text` into shaped lines at `byte`
+/// (utf-8 byte offset into the original line's text) without
+/// further label processing.
+///
+/// The renderer-side type (`lattice_ui_gpui::editor_element::InlayHintRow`)
+/// is a re-export of this struct so the two peers exchange the same
+/// shape across the published `RenderState`.
+///
+/// Sort order is the publisher's responsibility — A.2b.1 publishes
+/// in the same order the LSP cache stores hints (insertion order);
+/// the worker re-sorts by `(line, byte)` during its row-weave pass.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InlayHintRow {
+    /// 0-based buffer-line index.
+    pub line: u32,
+    /// 0-based utf-8 byte offset into that line's text.
+    pub byte: u32,
+    /// Pre-flattened label with `padding_left` / `padding_right`
+    /// applied.
+    pub text: String,
 }
 
 /// Active picker's render-side projection.
@@ -1175,6 +1223,75 @@ mod tests {
         );
         assert_eq!(cache.highlights[0].range.start.line, 1);
     }
+
+    /// Perf plan A.2 slice A.2b.1: `syntax.inlay_hints` is empty
+    /// by default — no LSP cache entries, no mode toggle,
+    /// `Editor::default()` straight off the constructor.
+    #[test]
+    fn syntax_inlay_hints_empty_on_default_editor() {
+        let editor = Editor::default();
+        editor.publish_render_state();
+        let rs = editor.render_state.load();
+        assert!(
+            rs.syntax.inlay_hints.is_empty(),
+            "expected empty inlay_hints on default editor; got {} entries",
+            rs.syntax.inlay_hints.len()
+        );
+    }
+
+    /// Perf plan A.2 slice A.2b.1: even with hints in the LSP
+    /// cache, `syntax.inlay_hints` stays empty while the
+    /// `lsp-inlay-hint-mode` minor mode is OFF for the active
+    /// buffer. The publish-time gate is the same one the
+    /// renderer used to evaluate per-pane — moved off the hot
+    /// path onto dispatch.
+    #[test]
+    fn syntax_inlay_hints_empty_when_mode_disabled() {
+        use crate::per_buffer_cache::PerBufferCacheExt;
+        use lattice_lsp::cache::LspInlayHintCache;
+        use lattice_lsp::lsp_types::{InlayHint, InlayHintLabel, Position as LspPosition};
+        let editor = Editor::default();
+        editor.lsp_inlay_hints_cache.insert_for(
+            editor.document_buffer_id,
+            LspInlayHintCache {
+                document_version: editor.document.snapshot().version,
+                hints: vec![InlayHint {
+                    position: LspPosition {
+                        line: 0,
+                        character: 0,
+                    },
+                    label: InlayHintLabel::String(": i32".into()),
+                    kind: None,
+                    text_edits: None,
+                    tooltip: None,
+                    padding_left: None,
+                    padding_right: None,
+                    data: None,
+                }],
+                requested_first_line: 0,
+                requested_last_line: u32::MAX,
+            },
+        );
+        // Mode is OFF (Editor::default's `active_modes` doesn't
+        // include `lsp-inlay-hint-mode`) — gate must drop the
+        // hint despite the cache being non-empty.
+        editor.publish_render_state();
+        let rs = editor.render_state.load();
+        assert!(
+            rs.syntax.inlay_hints.is_empty(),
+            "expected empty inlay_hints when mode is off; got {} entries",
+            rs.syntax.inlay_hints.len()
+        );
+    }
+
+    // Happy-path coverage (cache populated, mode enabled, hints
+    // flattened with padding + utf-16 → utf-8 conversion) is
+    // exercised at the App layer by
+    // `lattice_ui_tui::render::tests::inlay_hint_overlay_splices_virtual_text`
+    // and will gain a direct worker-level test in A.2b.2 (the
+    // worker will read `syntax.inlay_hints` and splice into
+    // `RowPrepaint`; that path is unit-testable without an
+    // `editor_boot` fixture).
 
     /// Identity-preservation contract for unrelated sub-states.
     ///

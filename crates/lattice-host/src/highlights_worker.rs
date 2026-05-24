@@ -569,6 +569,9 @@ mod tests {
                 text_version,
                 visible_spans: cell.clone(),
                 visible_rows: rows_cell.clone(),
+                inlay_hints: Arc::from(
+                    Vec::<crate::render_state::InlayHintRow>::new().into_boxed_slice(),
+                ),
                 pane_highlights: Arc::new(std::collections::HashMap::new()),
             }),
             ..RenderState::default()
@@ -646,6 +649,9 @@ mod tests {
                 text_version: 2, // doc advanced
                 visible_spans: cell.clone(),
                 visible_rows: rows_cell.clone(),
+                inlay_hints: Arc::from(
+                    Vec::<crate::render_state::InlayHintRow>::new().into_boxed_slice(),
+                ),
                 pane_highlights: Arc::new(std::collections::HashMap::new()),
             }),
             ..RenderState::default()

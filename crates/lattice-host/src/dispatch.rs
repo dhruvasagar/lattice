@@ -607,6 +607,16 @@ impl Editor {
                         .map(|(idx, spans)| (*idx, std::sync::Arc::new(spans.clone())))
                         .collect(),
                 ),
+                // Perf plan A.2 slice A.2b.1: pre-gate + flatten
+                // the active document's LSP inlay hints into the
+                // syntax-input contract. Empty when the
+                // `lsp-inlay-hint-mode` minor mode is off for this
+                // buffer, when no LSP is attached, or when no hints
+                // have arrived. The worker (A.2b.2) splices `text`
+                // into row composition at `byte`; consumers that
+                // already had inlays in hand (GPUI window.rs) will
+                // collapse to this list in A.2b.2.
+                inlay_hints: self.build_active_inlay_hints(),
             }),
             ..RenderState::default()
         }
@@ -6231,6 +6241,76 @@ impl Editor {
                 }
             }
         });
+    }
+
+    /// Perf plan A.2 slice A.2b.1. Flatten the active document's
+    /// LSP inlay-hint cache into the publish-ready
+    /// [`crate::render_state::InlayHintRow`] list for
+    /// `SyntaxRenderState::inlay_hints`.
+    ///
+    /// Returns an empty `Arc<[_]>` when:
+    /// - the buffer's `lsp-inlay-hint-mode` minor mode is off,
+    /// - no LSP cache entry exists for the buffer (no server, or
+    ///   no successful `textDocument/inlayHint` response yet), or
+    /// - the cache entry contains zero hints.
+    ///
+    /// Each retained hint is converted to utf-8 byte coordinates
+    /// against the active document's line text and the LSP label
+    /// is flattened via [`lattice_lsp::inlay_hint_label_text`] with
+    /// `padding_left` / `padding_right` baked in. Order matches the
+    /// cache's insertion order; downstream consumers re-sort by
+    /// `(line, byte)` if they need a specific traversal order
+    /// (worker, A.2b.2).
+    ///
+    /// Called once per `build_render_state`. Cost is `O(n)` over
+    /// the cache hint count (`n` typically under 200 for the
+    /// viewport plus overscan window) plus one
+    /// `snapshot.buffer.line` lookup per hint. The work shifts off
+    /// the per-pane render path (window.rs / TUI render.rs were
+    /// doing the same flattening every frame) onto the dispatch
+    /// tail where it runs once per publish.
+    fn build_active_inlay_hints(&self) -> Arc<[crate::render_state::InlayHintRow]> {
+        use crate::per_buffer_cache::PerBufferCacheExt;
+        if !self.lsp_inlay_hint_mode_enabled_for(self.document_buffer_id) {
+            return Arc::from(Vec::<crate::render_state::InlayHintRow>::new().into_boxed_slice());
+        }
+        let Some(cache) = self.lsp_inlay_hints_cache.get_for(self.document_buffer_id) else {
+            return Arc::from(Vec::<crate::render_state::InlayHintRow>::new().into_boxed_slice());
+        };
+        if cache.hints.is_empty() {
+            return Arc::from(Vec::<crate::render_state::InlayHintRow>::new().into_boxed_slice());
+        }
+        let snapshot = self.document.snapshot();
+        let total_lines: u32 = snapshot.buffer.line_count();
+        let rows: Vec<crate::render_state::InlayHintRow> = cache
+            .hints
+            .iter()
+            .map(|h| {
+                let line_idx = h.position.line;
+                let line_text = if line_idx < total_lines {
+                    snapshot.buffer.line(line_idx).unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                let byte = lattice_lsp::position::utf16_column_to_utf8_byte(
+                    &line_text,
+                    h.position.character,
+                );
+                let mut text = lattice_lsp::inlay_hint_label_text(&h.label);
+                if h.padding_left.unwrap_or(false) {
+                    text.insert(0, ' ');
+                }
+                if h.padding_right.unwrap_or(false) {
+                    text.push(' ');
+                }
+                crate::render_state::InlayHintRow {
+                    line: line_idx,
+                    byte,
+                    text,
+                }
+            })
+            .collect();
+        Arc::from(rows.into_boxed_slice())
     }
 
     /// 4.4.g: per-tick `inlayHint` pump. Fires when the mode is

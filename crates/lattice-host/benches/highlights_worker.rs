@@ -24,7 +24,9 @@ use arc_swap::ArcSwap;
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 
 use lattice_host::highlights_worker::{WorkerDecision, recompute};
-use lattice_host::render_state::{RenderState, SyntaxRenderState, VisibleRows, VisibleSpans};
+use lattice_host::render_state::{
+    InlayHintRow, RenderState, SyntaxRenderState, VisibleRows, VisibleSpans,
+};
 
 fn rust_corpus(n_fns: usize) -> String {
     let mut s = String::with_capacity(n_fns * 80);
@@ -65,6 +67,7 @@ fn build_rs(
             text_version,
             visible_spans: cell.clone(),
             visible_rows: rows_cell.clone(),
+            inlay_hints: Arc::from(Vec::<InlayHintRow>::new().into_boxed_slice()),
             pane_highlights: Arc::new(std::collections::HashMap::new()),
         }),
         ..RenderState::default()
@@ -91,6 +94,7 @@ fn rebuild_rs(
             text_version,
             visible_spans: cell.clone(),
             visible_rows: rows_cell.clone(),
+            inlay_hints: Arc::from(Vec::<InlayHintRow>::new().into_boxed_slice()),
             pane_highlights: Arc::new(std::collections::HashMap::new()),
         }),
         ..RenderState::default()

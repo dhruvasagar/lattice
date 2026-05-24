@@ -9,7 +9,7 @@ Dominant costs from traces (pre-plan):
 
 ## Status as of 2026-05-24
 
-Eight slices shipped (A.4, F, A.3, C + follow-up, A.1, A.2a, B.1, D.1). The plan's `ensure_us` and `highlights_us` UI-thread costs have been attacked: ensure work is gated and fold geometry is O(log); the worker now publishes pre-painted rows via `Arc<[T]>` so the renderer's HOLD path is O(1) regardless of viewport size.
+Nine slices shipped (A.4, F, A.3, C + follow-up, A.1, A.2a, B.1, D.1, E.1). The plan's `ensure_us` and `highlights_us` UI-thread costs have been attacked: ensure work is gated and fold geometry is O(log); the worker now publishes pre-painted rows via `Arc<[T]>` so the renderer's HOLD path is O(1) regardless of viewport size; and overlay quads are pre-bucketed in prepaint so paint is an allocation-free walk.
 
 | Slice                             | Status | Commit    | Notes                                                              |
 |-----------------------------------|--------|-----------|--------------------------------------------------------------------|
@@ -22,11 +22,12 @@ Eight slices shipped (A.4, F, A.3, C + follow-up, A.1, A.2a, B.1, D.1). The plan
 | A.2a — Worker pre-paint (active)  | done   | `c55ba36` | Publishes `VisibleRows`; GPUI consumes via `shape_row_from_prepaint`. |
 | B.1 — Dirty-row cache in worker   | done   | `12c330b` | Reuses `RowPrepaint` when snapshot + text_version unchanged.       |
 | D.1 — `Arc<[T]>` publish types    | done   | `cc0ffb7` | Closed the bench regression D.1 was scoped to fix.                 |
+| E.1 — Pre-bucket overlay quads    | done   | `928754c` | Moves per-row × per-layer math from paint to prepaint.             |
 | A.2b — Inlay weave on worker      | deferred | —       | Would lift the `line_has_inlays` fast-path restriction.            |
 | B.2 — Overlay precompute on worker | deferred | —      | Blocked behind A.2b.                                               |
 | B.4 — Identity-preserving sub-state Arc publish | deferred | — | Lower priority; bench impact unmeasured.                |
 | D.* — rayon / SmallVec / bump-alloc | dropped | —       | Bench review (below) didn't justify the impl cost.                 |
-| E  — Render niceties              | pending | —         | Overlay quad batching + element-tree reuse.                        |
+| E.2 — Element-tree reuse          | pending | —         | Needs investigation pass on `EditorView::render` notify cadence.   |
 
 Known pre-existing gaps (not introduced by this plan, called out so they're not lost):
 - TUI compose loop still reads `visible_spans` — should migrate to `visible_rows` once A.2b lands.
@@ -138,9 +139,16 @@ Rationale:
 
 ### D (remaining) — dropped, see bench-driven D scope reduction above.
 
-### E — Render niceties [pending]
-- Batch overlay quads (currently emitted per-row).
-- Avoid rebuilding element trees where GPUI allows.
+### E.1 — Pre-bucket overlay quads [`928754c`]
+- Five overlay layers (doc_highlight → all_matches → current_match → visual → substitute) resolve to `(col_start, col_end, color)` tuples in `prepaint`, mirroring `diagnostic_segments_per_row`.
+- `paint` becomes an allocation-free walk over `overlay_quads_per_row` — no `byte_to_combined_col` or per-range intersection checks per frame.
+- Layering precedence preserved by push order in each row's Vec (`paint_quad` overwrites, last push wins). Inactive panes carry only doc_highlight quads; the `is_active` gate moves into the pre-bucket closure rather than firing per row.
+- `paint_range_overlay` removed; replaced by `push_range_quads` (same intersection logic, pushes tuples instead of painting).
+- 8 new unit tests on `push_range_quads` cover rows outside range, single-line clipping, multi-line start/middle/end rows, inlay-shifted columns, empty ranges, and layering preservation.
+
+### E.2 — Element-tree reuse [pending]
+- `EditorView::render` (800+ lines, runs every `cx.notify`) is the candidate for sub-element reuse.
+- Needs an investigation pass before scoping: which sub-elements rebuild unnecessarily; whether the notify cadence is over-firing.
 
 ## Instrumentation
 

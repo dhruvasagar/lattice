@@ -65,7 +65,9 @@ use arc_swap::ArcSwap;
 use tracing::{info, trace};
 
 use crate::editor::HighlightWake;
-use crate::render_state::{RenderState, VisibleHighlightsKey, VisibleSpans};
+use crate::render_state::{
+    RenderState, RowPrepaint, RowRun, VisibleHighlightsKey, VisibleRows, VisibleSpans,
+};
 
 /// Recompute decision the worker takes on a wake. Visible for
 /// testing; the production loop calls [`recompute`] directly.
@@ -99,6 +101,7 @@ pub async fn run(
     render_state: Arc<ArcSwap<RenderState>>,
     wake: HighlightWake,
     spans_cell: Arc<ArcSwap<VisibleSpans>>,
+    rows_cell: Arc<ArcSwap<VisibleRows>>,
     paint_request: Arc<tokio::sync::Notify>,
 ) {
     // X2 diagnostic (2026-05-19): held-j fix reported as
@@ -122,7 +125,7 @@ pub async fn run(
         // captures the full effect of the burst.
         wake.0.notified().await;
         let t0 = std::time::Instant::now();
-        let decision = recompute(&render_state, &spans_cell);
+        let decision = recompute(&render_state, &spans_cell, &rows_cell);
         let elapsed_us = t0.elapsed().as_micros();
         tick_count += 1;
         // X1b: tell the renderer it has fresh data to paint.
@@ -166,6 +169,7 @@ pub async fn run(
 pub fn recompute(
     render_state: &ArcSwap<RenderState>,
     spans_cell: &ArcSwap<VisibleSpans>,
+    rows_cell: &ArcSwap<VisibleRows>,
 ) -> WorkerDecision {
     let rs = render_state.load_full();
     let syntax = &rs.syntax;
@@ -179,6 +183,10 @@ pub fn recompute(
             return WorkerDecision::Clear;
         }
         spans_cell.store(Arc::new(VisibleSpans::default()));
+        // Perf plan A.2 slice A.2a: mirror the spans clear into
+        // the rows cell so the GPUI peer drops any stale prepaints
+        // on language detach.
+        rows_cell.store(Arc::new(VisibleRows::default()));
         return WorkerDecision::Clear;
     };
 
@@ -212,6 +220,15 @@ pub fn recompute(
             computed_for_key: key,
         };
         spans_cell.store(Arc::new(held));
+        // Mirror the HOLD on the rows cell: preserve existing rows,
+        // advance the key so we don't retry every wake against the
+        // same stale combo.
+        let existing_rows = rows_cell.load_full();
+        let held_rows = VisibleRows {
+            rows: existing_rows.rows.clone(),
+            computed_for_key: key,
+        };
+        rows_cell.store(Arc::new(held_rows));
         return WorkerDecision::StaleSnapshotHold;
     }
 
@@ -232,11 +249,130 @@ pub fn recompute(
         .saturating_add(syntax.viewport_height.max(1));
     let end = syntax.end_line_override.unwrap_or(default_end).max(default_end);
     let spans = snap.highlight_lines(start, end).unwrap_or_default();
+
+    // Perf plan A.2 slice A.2a: build pre-paint rows from the same
+    // styled-spans output. Each row carries the source line text +
+    // a style-tagged run partition (adjacent equal styles merged).
+    // Theme resolution happens on the renderer at paint time so
+    // theme switches don't invalidate this cache (see RowRun docs).
+    //
+    // Source bytes come from the SAME `SyntaxSnapshot` the styled
+    // spans index into — keeps the byte offsets and the row text
+    // aligned even if `active_document.snapshot` has advanced past
+    // the syntax version while the worker is mid-recompute.
+    let rows = build_rows(snap.source(), start, &spans);
+
     spans_cell.store(Arc::new(VisibleSpans {
         spans,
         computed_for_key: key,
     }));
+    rows_cell.store(Arc::new(VisibleRows {
+        rows,
+        computed_for_key: key,
+    }));
     WorkerDecision::Recomputed
+}
+
+/// Build `RowPrepaint`s for the worker's `recompute` output.
+///
+/// `styled_spans[i]` is the per-line highlight slice for buffer
+/// line `start + i`. Walks `source` once to find the byte offset
+/// of `start`, then materialises each visible line as a
+/// `Box<str>` plus its collapsed `RowRun` partition. `source` is
+/// the SyntaxSnapshot's bytes — same bytes the spans index into —
+/// so the row text and span offsets stay aligned even if the
+/// document snapshot has raced ahead of the syntax parse.
+///
+/// Inlay weave is deferred to A.2b — `combined` always equals the
+/// source line text in A.2a.
+fn build_rows(
+    source: &[u8],
+    start: u32,
+    styled_spans: &[Vec<lattice_syntax::StyledSpan>],
+) -> Vec<RowPrepaint> {
+    // Seek to the byte offset of line `start`. `memchr` is SIMD-
+    // accelerated; for a 1MB file at line ~1000 the seek is sub-µs
+    // on contemporary x86_64. If profile-frames data shows this
+    // dominating recompute, cache a per-snapshot newline-offsets
+    // vector (one u32 per line).
+    let mut byte_off: usize = 0;
+    let mut line_no: u32 = 0;
+    while line_no < start && byte_off < source.len() {
+        match memchr::memchr(b'\n', &source[byte_off..]) {
+            Some(nl) => {
+                byte_off += nl + 1;
+                line_no += 1;
+            }
+            None => {
+                byte_off = source.len();
+                break;
+            }
+        }
+    }
+    let mut rows: Vec<RowPrepaint> = Vec::with_capacity(styled_spans.len());
+    for line_spans in styled_spans {
+        let line_end = memchr::memchr(b'\n', &source[byte_off..])
+            .map(|n| byte_off + n)
+            .unwrap_or(source.len());
+        let line_bytes = &source[byte_off..line_end];
+        let line_text = std::str::from_utf8(line_bytes).unwrap_or("");
+        let combined: Box<str> = line_text.into();
+        let runs = collapse_runs(line_spans, combined.len() as u32);
+        rows.push(RowPrepaint { combined, runs });
+        byte_off = (line_end + 1).min(source.len());
+    }
+    rows
+}
+
+/// Collapse adjacent equal-`Style` spans into a minimal `RowRun`
+/// partition covering the row's `combined` text exhaustively.
+///
+/// - Empty `line_spans` yields a single `Style::Default` run of
+///   length `combined_len` (so renderers always have a valid
+///   partition to walk).
+/// - Gaps between spans (uncovered byte ranges between `prev.end`
+///   and `next.start`) are filled with `Style::Default` runs so
+///   `sum(runs[*].len) == combined_len`.
+/// - Spans whose end exceeds `combined_len` are clamped — the
+///   highlight grammar can produce one-past-the-end ranges on
+///   blank lines and we don't want to overflow.
+fn collapse_runs(line_spans: &[lattice_syntax::StyledSpan], combined_len: u32) -> Vec<RowRun> {
+    if combined_len == 0 {
+        return Vec::new();
+    }
+    let mut runs: Vec<RowRun> = Vec::with_capacity(line_spans.len().max(1));
+    let mut cursor: u32 = 0;
+
+    let push = |runs: &mut Vec<RowRun>, style: lattice_syntax::Style, len: u32| {
+        if len == 0 {
+            return;
+        }
+        if let Some(last) = runs.last_mut() {
+            if last.style == style {
+                last.len += len;
+                return;
+            }
+        }
+        runs.push(RowRun { len, style });
+    };
+
+    for s in line_spans {
+        let start = (s.start as u32).min(combined_len);
+        let end = (s.end as u32).min(combined_len);
+        if end <= start {
+            continue;
+        }
+        if start > cursor {
+            // Uncovered gap before this span — fill with Default.
+            push(&mut runs, lattice_syntax::Style::Default, start - cursor);
+        }
+        push(&mut runs, s.style, end - start);
+        cursor = end;
+    }
+    if cursor < combined_len {
+        push(&mut runs, lattice_syntax::Style::Default, combined_len - cursor);
+    }
+    runs
 }
 
 #[cfg(test)]
@@ -256,7 +392,8 @@ mod tests {
                 ..Default::default()
             },
         });
-        let decision = recompute(&rs, &cell);
+        let rows_cell: ArcSwap<VisibleRows> = ArcSwap::from_pointee(VisibleRows::default());
+        let decision = recompute(&rs, &cell, &rows_cell);
         assert_eq!(decision, WorkerDecision::Clear);
         let after = cell.load();
         assert!(after.spans.is_empty());
@@ -269,6 +406,10 @@ mod tests {
     /// Slice X2.9 tests use this to exercise the full
     /// `recompute` decision tree without needing a tokio
     /// runtime.
+    ///
+    /// Perf plan A.2 slice A.2a: helper now also returns the
+    /// parallel `VisibleRows` cell so tests can assert the
+    /// pre-paint pipeline alongside the spans one.
     fn rs_with_rust(
         text: &str,
         scroll: u32,
@@ -280,6 +421,7 @@ mod tests {
         ArcSwap<RenderState>,
         Arc<lattice_syntax::SyntaxHandle>,
         Arc<arc_swap::ArcSwap<VisibleSpans>>,
+        Arc<arc_swap::ArcSwap<VisibleRows>>,
     ) {
         let mut s = lattice_syntax::Syntax::for_language(lattice_syntax::Lang::Rust)
             .unwrap()
@@ -287,6 +429,7 @@ mod tests {
         s.parse_at(text, text_version);
         let handle = Arc::new(lattice_syntax::SyntaxHandle::seeded(s));
         let cell = Arc::new(arc_swap::ArcSwap::from_pointee(VisibleSpans::default()));
+        let rows_cell = Arc::new(arc_swap::ArcSwap::from_pointee(VisibleRows::default()));
         let rs = RenderState {
             syntax: Arc::new(crate::render_state::SyntaxRenderState {
                 syntax_handle: Some(handle.clone()),
@@ -296,11 +439,12 @@ mod tests {
                 fold_hash,
                 text_version,
                 visible_spans: cell.clone(),
+                visible_rows: rows_cell.clone(),
                 pane_highlights: Arc::new(std::collections::HashMap::new()),
             }),
             ..RenderState::default()
         };
-        (ArcSwap::from_pointee(rs), handle, cell)
+        (ArcSwap::from_pointee(rs), handle, cell, rows_cell)
     }
 
     /// Cache miss path: with a current snapshot and a fresh
@@ -308,8 +452,8 @@ mod tests {
     /// publishes the resulting spans into the cell.
     #[test]
     fn recompute_with_current_snapshot_publishes_spans() {
-        let (rs, _h, cell) = rs_with_rust("fn main() {}", 0, 5, 0, 1, None);
-        let decision = recompute(&rs, &cell);
+        let (rs, _h, cell, rows_cell) = rs_with_rust("fn main() {}", 0, 5, 0, 1, None);
+        let decision = recompute(&rs, &cell, &rows_cell);
         assert_eq!(decision, WorkerDecision::Recomputed);
         let after = cell.load();
         assert!(!after.spans.is_empty(), "expected spans for `fn main`");
@@ -330,10 +474,10 @@ mod tests {
     /// `CacheHit` without re-walking or churning the cell.
     #[test]
     fn recompute_with_unchanged_key_is_cache_hit() {
-        let (rs, _h, cell) = rs_with_rust("fn main() {}", 0, 5, 0, 1, None);
-        assert_eq!(recompute(&rs, &cell), WorkerDecision::Recomputed);
+        let (rs, _h, cell, rows_cell) = rs_with_rust("fn main() {}", 0, 5, 0, 1, None);
+        assert_eq!(recompute(&rs, &cell, &rows_cell), WorkerDecision::Recomputed);
         let first_ptr = Arc::as_ptr(&cell.load_full());
-        assert_eq!(recompute(&rs, &cell), WorkerDecision::CacheHit);
+        assert_eq!(recompute(&rs, &cell, &rows_cell), WorkerDecision::CacheHit);
         let second_ptr = Arc::as_ptr(&cell.load_full());
         assert_eq!(
             first_ptr, second_ptr,
@@ -351,8 +495,9 @@ mod tests {
     #[test]
     fn recompute_with_stale_snapshot_holds_spans() {
         // Snapshot parsed against text_version = 1.
-        let (rs_initial, handle, cell) = rs_with_rust("fn main() {}", 0, 5, 0, 1, None);
-        assert_eq!(recompute(&rs_initial, &cell), WorkerDecision::Recomputed);
+        let (rs_initial, handle, cell, rows_cell) =
+            rs_with_rust("fn main() {}", 0, 5, 0, 1, None);
+        assert_eq!(recompute(&rs_initial, &cell, &rows_cell), WorkerDecision::Recomputed);
         let computed_spans = cell.load().spans.clone();
         assert!(!computed_spans.is_empty(), "preconditions ok");
 
@@ -371,12 +516,13 @@ mod tests {
                 fold_hash: 1, // changed -> key differs from cache
                 text_version: 2, // doc advanced
                 visible_spans: cell.clone(),
+                visible_rows: rows_cell.clone(),
                 pane_highlights: Arc::new(std::collections::HashMap::new()),
             }),
             ..RenderState::default()
         };
         let stale = ArcSwap::from_pointee(stale_rs);
-        let decision = recompute(&stale, &cell);
+        let decision = recompute(&stale, &cell, &rows_cell);
         assert_eq!(decision, WorkerDecision::StaleSnapshotHold);
         // Spans preserved bit-identical.
         let after = cell.load();
@@ -399,8 +545,8 @@ mod tests {
         // highlight line 0. Override end to 4 so the walk
         // covers every line.
         let text = "fn a() {}\nfn b() {}\nfn c() {}\nfn d() {}\n";
-        let (rs, _h, cell) = rs_with_rust(text, 0, 1, 0, 1, Some(4));
-        assert_eq!(recompute(&rs, &cell), WorkerDecision::Recomputed);
+        let (rs, _h, cell, rows_cell) = rs_with_rust(text, 0, 1, 0, 1, Some(4));
+        assert_eq!(recompute(&rs, &cell, &rows_cell), WorkerDecision::Recomputed);
         let after = cell.load();
         assert!(
             after.spans.len() >= 4,
@@ -427,9 +573,10 @@ mod tests {
     fn repeated_clear_is_idempotent() {
         let rs: ArcSwap<RenderState> = ArcSwap::from_pointee(RenderState::default());
         let cell: ArcSwap<VisibleSpans> = ArcSwap::from_pointee(VisibleSpans::default());
-        assert_eq!(recompute(&rs, &cell), WorkerDecision::Clear);
+        let rows_cell: ArcSwap<VisibleRows> = ArcSwap::from_pointee(VisibleRows::default());
+        assert_eq!(recompute(&rs, &cell, &rows_cell), WorkerDecision::Clear);
         let first = Arc::as_ptr(&cell.load_full());
-        assert_eq!(recompute(&rs, &cell), WorkerDecision::Clear);
+        assert_eq!(recompute(&rs, &cell, &rows_cell), WorkerDecision::Clear);
         let second = Arc::as_ptr(&cell.load_full());
         // The second `Clear` should NOT have allocated a new Arc:
         // when published spans are already empty + key default,
@@ -437,6 +584,77 @@ mod tests {
         assert_eq!(
             first, second,
             "redundant Clear must not churn the spans Arc"
+        );
+    }
+
+    // ---- Perf plan A.2 slice A.2a: VisibleRows-specific tests ----
+
+    /// `collapse_runs` produces a minimal partition: empty input
+    /// yields a single Default run covering the whole row; spans
+    /// covering everything yield exactly one styled run.
+    #[test]
+    fn collapse_runs_empty_input_yields_single_default_run() {
+        // No styled spans → one Default run spanning the row.
+        let runs = collapse_runs(&[], 10);
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].len, 10);
+        assert_eq!(runs[0].style, lattice_syntax::Style::Default);
+
+        // Empty row → no runs at all (nothing to paint).
+        let runs_empty = collapse_runs(&[], 0);
+        assert!(runs_empty.is_empty());
+    }
+
+    /// Adjacent equal-style spans merge into one run; gaps fill
+    /// with Default; the sum of run lengths covers the row.
+    #[test]
+    fn collapse_runs_merges_and_fills_gaps() {
+        use lattice_syntax::{Style, StyledSpan};
+        let spans = vec![
+            StyledSpan { start: 0, end: 2, style: Style::Keyword },
+            StyledSpan { start: 2, end: 4, style: Style::Keyword }, // adjacent, same → merges
+            // gap [4..6) → Default
+            StyledSpan { start: 6, end: 9, style: Style::Function },
+            // gap [9..10) → Default
+        ];
+        let runs = collapse_runs(&spans, 10);
+        assert_eq!(
+            runs,
+            vec![
+                RowRun { len: 4, style: Style::Keyword },
+                RowRun { len: 2, style: Style::Default },
+                RowRun { len: 3, style: Style::Function },
+                RowRun { len: 1, style: Style::Default },
+            ]
+        );
+        let total: u32 = runs.iter().map(|r| r.len).sum();
+        assert_eq!(total, 10, "runs must partition combined exhaustively");
+    }
+
+    /// Recompute also publishes pre-paint rows alongside spans,
+    /// keyed identically so downstream consumers can correlate
+    /// the two cells if they need to.
+    #[test]
+    fn recompute_publishes_rows_alongside_spans() {
+        let (rs, _h, cell, rows_cell) = rs_with_rust("fn main() {}", 0, 5, 0, 1, None);
+        assert_eq!(recompute(&rs, &cell, &rows_cell), WorkerDecision::Recomputed);
+        let rows = rows_cell.load_full();
+        assert!(!rows.rows.is_empty(), "rows must be populated on Recomputed");
+        // computed_for_key matches the spans cell — same recompute.
+        assert_eq!(rows.computed_for_key, cell.load_full().computed_for_key);
+        // First row's combined text matches the source line.
+        assert_eq!(rows.rows[0].combined.as_ref(), "fn main() {}");
+        // Run partition covers the whole line.
+        let total: u32 = rows.rows[0].runs.iter().map(|r| r.len).sum();
+        assert_eq!(total, 12);
+        // At least one run is a Keyword or Function (the `fn` token).
+        assert!(
+            rows.rows[0]
+                .runs
+                .iter()
+                .any(|r| matches!(r.style, lattice_syntax::Style::Keyword | lattice_syntax::Style::Function)),
+            "expected a Keyword/Function run; got {:?}",
+            rows.rows[0].runs
         );
     }
 }

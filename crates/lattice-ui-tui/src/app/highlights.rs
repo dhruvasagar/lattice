@@ -50,6 +50,9 @@ impl App {
         lattice_host::highlights_worker::recompute(
             &self.render_state,
             &self.syntax_visible_spans_cell,
+            // Perf plan A.2 slice A.2a: worker writes the
+            // pre-paint rows cell on every recompute too.
+            &self.syntax_visible_rows_cell,
         );
     }
 

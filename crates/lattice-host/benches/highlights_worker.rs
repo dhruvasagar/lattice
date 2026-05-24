@@ -24,7 +24,7 @@ use arc_swap::ArcSwap;
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 
 use lattice_host::highlights_worker::{WorkerDecision, recompute};
-use lattice_host::render_state::{RenderState, SyntaxRenderState, VisibleSpans};
+use lattice_host::render_state::{RenderState, SyntaxRenderState, VisibleRows, VisibleSpans};
 
 fn rust_corpus(n_fns: usize) -> String {
     let mut s = String::with_capacity(n_fns * 80);
@@ -46,6 +46,7 @@ fn build_rs(
     ArcSwap<RenderState>,
     Arc<lattice_syntax::SyntaxHandle>,
     Arc<ArcSwap<VisibleSpans>>,
+    Arc<ArcSwap<VisibleRows>>,
 ) {
     let mut s = lattice_syntax::Syntax::for_language(lattice_syntax::Lang::Rust)
         .unwrap()
@@ -53,6 +54,7 @@ fn build_rs(
     s.parse_at(text, text_version);
     let handle = Arc::new(lattice_syntax::SyntaxHandle::seeded(s));
     let cell = Arc::new(ArcSwap::from_pointee(VisibleSpans::default()));
+    let rows_cell = Arc::new(ArcSwap::from_pointee(VisibleRows::default()));
     let rs = RenderState {
         syntax: Arc::new(SyntaxRenderState {
             syntax_handle: Some(handle.clone()),
@@ -62,16 +64,18 @@ fn build_rs(
             fold_hash,
             text_version,
             visible_spans: cell.clone(),
+            visible_rows: rows_cell.clone(),
             pane_highlights: Arc::new(std::collections::HashMap::new()),
         }),
         ..RenderState::default()
     };
-    (ArcSwap::from_pointee(rs), handle, cell)
+    (ArcSwap::from_pointee(rs), handle, cell, rows_cell)
 }
 
 fn rebuild_rs(
     handle: &Arc<lattice_syntax::SyntaxHandle>,
     cell: &Arc<ArcSwap<VisibleSpans>>,
+    rows_cell: &Arc<ArcSwap<VisibleRows>>,
     scroll: u32,
     viewport_height: u32,
     fold_hash: u64,
@@ -86,6 +90,7 @@ fn rebuild_rs(
             fold_hash,
             text_version,
             visible_spans: cell.clone(),
+            visible_rows: rows_cell.clone(),
             pane_highlights: Arc::new(std::collections::HashMap::new()),
         }),
         ..RenderState::default()
@@ -97,15 +102,18 @@ fn cache_hit_bench(c: &mut Criterion) {
     let mut g = c.benchmark_group("worker_cache_hit");
     for viewport in [24u32, 60, 120] {
         let corpus = rust_corpus(2000);
-        let (rs, _h, cell) = build_rs(&corpus, 0, viewport, 0, 1);
+        let (rs, _h, cell, rows_cell) = build_rs(&corpus, 0, viewport, 0, 1);
         // Prime once so subsequent calls take the CacheHit path.
-        assert_eq!(recompute(&rs, &cell), WorkerDecision::Recomputed);
+        assert_eq!(
+            recompute(&rs, &cell, &rows_cell),
+            WorkerDecision::Recomputed
+        );
         g.bench_with_input(
             BenchmarkId::from_parameter(viewport),
             &(),
             |bencher, _| {
                 bencher.iter(|| {
-                    let d = recompute(black_box(&rs), black_box(&cell));
+                    let d = recompute(black_box(&rs), black_box(&cell), black_box(&rows_cell));
                     debug_assert_eq!(d, WorkerDecision::CacheHit);
                 });
             },
@@ -122,7 +130,7 @@ fn recompute_bench(c: &mut Criterion) {
     let mut g = c.benchmark_group("worker_recompute_on_scroll");
     for viewport in [24u32, 60, 120] {
         let corpus = rust_corpus(2000);
-        let (_rs0, handle, cell) = build_rs(&corpus, 0, viewport, 0, 1);
+        let (_rs0, handle, cell, rows_cell) = build_rs(&corpus, 0, viewport, 0, 1);
         g.bench_with_input(
             BenchmarkId::from_parameter(viewport),
             &(),
@@ -130,8 +138,8 @@ fn recompute_bench(c: &mut Criterion) {
                 let mut scroll: u32 = 0;
                 bencher.iter(|| {
                     scroll = (scroll + 1) % 100;
-                    let rs = rebuild_rs(&handle, &cell, scroll, viewport, 0, 1);
-                    let d = recompute(black_box(&rs), black_box(&cell));
+                    let rs = rebuild_rs(&handle, &cell, &rows_cell, scroll, viewport, 0, 1);
+                    let d = recompute(black_box(&rs), black_box(&cell), black_box(&rows_cell));
                     debug_assert!(matches!(
                         d,
                         WorkerDecision::Recomputed | WorkerDecision::CacheHit
@@ -153,11 +161,14 @@ fn stale_hold_bench(c: &mut Criterion) {
     let mut g = c.benchmark_group("worker_stale_snapshot_hold");
     for viewport in [24u32, 60, 120] {
         let corpus = rust_corpus(500);
-        let (rs_initial, handle, cell) = build_rs(&corpus, 0, viewport, 0, 1);
+        let (rs_initial, handle, cell, rows_cell) = build_rs(&corpus, 0, viewport, 0, 1);
         // Prime the cell with computed spans so HOLD has spans
         // to preserve (the realistic state during a held-j
         // edit stream).
-        assert_eq!(recompute(&rs_initial, &cell), WorkerDecision::Recomputed);
+        assert_eq!(
+            recompute(&rs_initial, &cell, &rows_cell),
+            WorkerDecision::Recomputed
+        );
         let mut fold_hash: u64 = 0;
         g.bench_with_input(
             BenchmarkId::from_parameter(viewport),
@@ -165,8 +176,8 @@ fn stale_hold_bench(c: &mut Criterion) {
             |bencher, _| {
                 bencher.iter(|| {
                     fold_hash = fold_hash.wrapping_add(1);
-                    let rs = rebuild_rs(&handle, &cell, 0, viewport, fold_hash, 2);
-                    let d = recompute(black_box(&rs), black_box(&cell));
+                    let rs = rebuild_rs(&handle, &cell, &rows_cell, 0, viewport, fold_hash, 2);
+                    let d = recompute(black_box(&rs), black_box(&cell), black_box(&rows_cell));
                     debug_assert_eq!(d, WorkerDecision::StaleSnapshotHold);
                 });
             },

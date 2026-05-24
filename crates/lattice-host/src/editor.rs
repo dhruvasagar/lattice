@@ -902,6 +902,16 @@ pub struct Editor {
     /// publishes.
     pub syntax_visible_spans_cell:
         std::sync::Arc<arc_swap::ArcSwap<crate::render_state::VisibleSpans>>,
+    /// Perf plan A.2 slice A.2a: parallel cell carrying the worker's
+    /// pre-painted [`crate::render_state::VisibleRows`] output for
+    /// the GPUI peer's per-frame consumption. Same stability
+    /// rationale as `syntax_visible_spans_cell`: the Arc identity
+    /// lives on `Editor` so `build_render_state` clones it into
+    /// every snapshot; the worker holds a sibling clone and writes
+    /// directly. TUI keeps reading `visible_spans`; migration of
+    /// the TUI compose loop to `visible_rows` is a follow-up.
+    pub syntax_visible_rows_cell:
+        std::sync::Arc<arc_swap::ArcSwap<crate::render_state::VisibleRows>>,
     /// Phase 5.8.AF.6 / Slice X1b: paint-request signal. The
     /// highlights worker fires `paint_request.notify_one()` after
     /// every `WorkerDecision::Recomputed` so renderer peers can

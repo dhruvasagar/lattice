@@ -3455,6 +3455,7 @@ dependencies = [
  "lattice-snippet",
  "lattice-syntax",
  "lattice-terminal",
+ "memchr",
  "notify",
  "serde_json",
  "streaming-iterator",

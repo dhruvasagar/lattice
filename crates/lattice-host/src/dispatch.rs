@@ -586,6 +586,13 @@ impl Editor {
                 fold_hash: crate::folds::compute_fold_hash(&self.folds),
                 text_version: self.document.text_version(),
                 visible_spans: self.syntax_visible_spans_cell.clone(),
+                // Perf plan A.2 slice A.2a: parallel pre-paint cell
+                // for the GPUI peer. Cloned from
+                // `self.syntax_visible_rows_cell` so its Arc identity
+                // matches the handle the worker writes to — every
+                // publish surfaces the worker's latest write without
+                // a republish round-trip.
+                visible_rows: self.syntax_visible_rows_cell.clone(),
                 // Slice 3c.final.B.8: per-pane span snapshot map.
                 // Outer Arc is built per publish (small HashMap,
                 // typically 0-4 entries on multi-pane layouts);

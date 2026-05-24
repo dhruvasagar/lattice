@@ -35,6 +35,10 @@ impl App {
         let render_state = editor.render_state.clone();
         // Slice 3c.final.E.1: clone the worker's output cell.
         let syntax_visible_spans_cell = editor.syntax_visible_spans_cell.clone();
+        // Perf plan A.2 slice A.2a: parallel pre-paint cell clone
+        // so `refresh_highlights` can pass the 3rd `recompute`
+        // argument without an actor round-trip.
+        let syntax_visible_rows_cell = editor.syntax_visible_rows_cell.clone();
         // Slice 3c.final.E.swap: run boot-time setup directly on
         // the owned Editor BEFORE handing it to the actor. Every
         // call below resolves to a host-side method; the App-side
@@ -74,6 +78,7 @@ impl App {
             editor: editor_field,
             render_state,
             syntax_visible_spans_cell,
+            syntax_visible_rows_cell,
             pane_render_registry: crate::render::build_pane_render_registry(),
             theme: crate::theme::Theme::default(),
         };

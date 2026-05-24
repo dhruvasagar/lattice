@@ -606,6 +606,16 @@ impl Editor {
         let syntax_visible_spans_cell: std::sync::Arc<
             arc_swap::ArcSwap<crate::render_state::VisibleSpans>,
         > = std::sync::Arc::default();
+        // Perf plan A.2 slice A.2a: parallel pre-paint cell created
+        // here so the worker (spawned below), the Editor field, and
+        // the `SyntaxRenderState.visible_rows` clone on every
+        // `publish_render_state` all share the SAME `Arc` identity.
+        // Without this shared identity the worker's `.store()`
+        // would not be observable through `RenderState.load_full()`
+        // after later publishes.
+        let syntax_visible_rows_cell: std::sync::Arc<
+            arc_swap::ArcSwap<crate::render_state::VisibleRows>,
+        > = std::sync::Arc::default();
         let render_state_arc: std::sync::Arc<arc_swap::ArcSwap<crate::render_state::RenderState>> =
             std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
                 crate::render_state::RenderState::default(),
@@ -621,6 +631,7 @@ impl Editor {
             render_state_arc.clone(),
             highlight_wake.clone(),
             syntax_visible_spans_cell.clone(),
+            syntax_visible_rows_cell.clone(),
             paint_request.clone(),
         ));
 
@@ -703,6 +714,7 @@ impl Editor {
             // construct fresh, unshared cells).
             highlight_wake,
             syntax_visible_spans_cell,
+            syntax_visible_rows_cell,
             paint_request,
             lsp_log_event_rx: Some(lsp_log_event_rx),
             lsp_progress_event_rx: Some(lsp_progress_event_rx),

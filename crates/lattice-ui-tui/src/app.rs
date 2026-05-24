@@ -339,6 +339,22 @@ pub struct App {
     pub syntax_visible_spans_cell: std::sync::Arc<
         arc_swap::ArcSwap<lattice_host::render_state::VisibleSpans>,
     >,
+    /// Perf plan A.2 slice A.2a: renderer-owned clone of the
+    /// editor's parallel `syntax_visible_rows_cell`. Same role +
+    /// stability rationale as `syntax_visible_spans_cell` (see
+    /// docs above) — the TUI App keeps a clone so the actor swap
+    /// can re-point this without touching every reader.
+    ///
+    /// The TUI compose loop does not yet consume `VisibleRows`
+    /// (its existing `StyledSpan` grid path stays via
+    /// `syntax_visible_spans_cell`); this cell is plumbed so the
+    /// host worker can write through it on every recompute and so
+    /// `refresh_highlights` can pass the 3rd `recompute` argument
+    /// without an actor round-trip. TUI migration to read
+    /// `visible_rows` directly is a follow-up slice.
+    pub syntax_visible_rows_cell: std::sync::Arc<
+        arc_swap::ArcSwap<lattice_host::render_state::VisibleRows>,
+    >,
     /// Handle to the per-document actor (DESIGN.md §5.2.1, §5.7).
     /// The actor owns the writable `Document` (from `lattice-core`);
     /// mutations route through it; reads load a versioned snapshot.

@@ -161,8 +161,19 @@ pub(crate) struct EditorElement {
     /// splits on `\n` inside `prepaint`.
     pub(crate) text: Arc<String>,
     /// Worker-published spans. `spans[i]` covers absolute buffer
-    /// line `scroll + i`.
+    /// line `scroll + i`. Fallback path — used when `visible_rows`
+    /// doesn't carry a prepaint for a line, when a line has inlay
+    /// hints (which aren't woven into rows yet, A.2b), or for the
+    /// inactive-pane render where the worker only publishes for the
+    /// active document.
     pub(crate) visible_spans: Arc<VisibleSpans>,
+    /// Perf plan A.2 slice A.2a: worker-published pre-paint rows
+    /// for the active pane. When present (and the line has no
+    /// inlays), the prepaint fast path in `prepaint` skips the
+    /// per-line `build_line_with_inlays` walk and shapes directly
+    /// from `row.combined` + `row.runs`. Empty / None ⇒ fallback
+    /// to the `visible_spans` path above.
+    pub(crate) visible_rows: Arc<lattice_host::render_state::VisibleRows>,
     /// Pane scroll (top visible doc line index, 0-based).
     pub(crate) scroll: u32,
     /// Visible viewport height in lines.
@@ -394,6 +405,40 @@ impl Element for EditorElement {
                 (shaped, inlay_offsets)
             };
 
+        // Perf plan A.2 slice A.2a: prepaint fast path. When the
+        // worker has published a `RowPrepaint` for this line AND no
+        // inlay hints land on it (A.2b will weave inlays into rows
+        // and lift that condition), skip `build_line_with_inlays`
+        // entirely. We build `TextRun`s by iterating the worker's
+        // pre-collapsed `RowRun`s once (`O(runs)`) instead of
+        // walking `line_len × spans` characters per row. The
+        // shaping call itself stays — it's hardware-bound on the
+        // text system and not the perf-plan A.2 target.
+        let shape_row_from_prepaint =
+            |row: &lattice_host::render_state::RowPrepaint,
+             window: &mut Window|
+             -> ShapedLine {
+                let mut runs: Vec<TextRun> = Vec::with_capacity(row.runs.len());
+                for r in &row.runs {
+                    let color = syntax_color(r.style);
+                    runs.push(make_run_with_color(color, r.len as usize, &font));
+                }
+                window.text_system().shape_line(
+                    SharedString::from(row.combined.to_string()),
+                    font_size,
+                    &runs,
+                    None,
+                )
+            };
+        // True iff this line has any inlay hint — gates the
+        // prepaint fast path until A.2b adds inlay weaving on the
+        // worker side. Linear scan over `sorted_inlays`; the list
+        // is small in typical buffers (hundreds at worst) and the
+        // closure is invoked once per visible row.
+        let line_has_inlays = |line_idx: u32| -> bool {
+            sorted_inlays.iter().any(|h| h.line == line_idx)
+        };
+
         // Per-row diagnostic-segment computation. Walks
         // `self.diagnostic_underlines` against (line_idx, line_text,
         // inlay_offsets); returns (col_start, col_end_excl, color)
@@ -446,14 +491,22 @@ impl Element for EditorElement {
             for line_idx in visible_start..visible_end {
                 let line = raw_lines[line_idx];
                 let rel = line_idx.saturating_sub(self.scroll as usize);
-                let line_spans: &[StyledSpan] = self
-                    .visible_spans
-                    .spans
-                    .get(rel)
-                    .map(Vec::as_slice)
-                    .unwrap_or(&[]);
-                let (shaped, inlay_offsets) =
-                    shape_row(line, line_spans, line_idx as u32, window);
+                let prepaint_row = self.visible_rows.rows.get(rel);
+                let (shaped, inlay_offsets) = match prepaint_row {
+                    Some(row) if !line_has_inlays(line_idx as u32) => {
+                        // A.2a fast path: pre-painted, no inlays.
+                        (shape_row_from_prepaint(row, window), Vec::new())
+                    }
+                    _ => {
+                        let line_spans: &[StyledSpan] = self
+                            .visible_spans
+                            .spans
+                            .get(rel)
+                            .map(Vec::as_slice)
+                            .unwrap_or(&[]);
+                        shape_row(line, line_spans, line_idx as u32, window)
+                    }
+                };
                 let diag_segs = diag_segments_for_row(line_idx as u32, line, &inlay_offsets);
                 shaped_text.push(shaped);
                 row_meta.push((line_idx as u32, line.to_string()));
@@ -468,14 +521,22 @@ impl Element for EditorElement {
                 let line_idx = meta.line_idx as usize;
                 let line = raw_lines.get(line_idx).copied().unwrap_or("");
                 let rel = line_idx.saturating_sub(self.scroll as usize);
-                let line_spans: &[StyledSpan] = self
-                    .visible_spans
-                    .spans
-                    .get(rel)
-                    .map(Vec::as_slice)
-                    .unwrap_or(&[]);
-                let (shaped, inlay_offsets) =
-                    shape_row(line, line_spans, meta.line_idx, window);
+                let prepaint_row = self.visible_rows.rows.get(rel);
+                let (shaped, inlay_offsets) = match prepaint_row {
+                    Some(row) if !line_has_inlays(meta.line_idx) => {
+                        // A.2a fast path: pre-painted, no inlays.
+                        (shape_row_from_prepaint(row, window), Vec::new())
+                    }
+                    _ => {
+                        let line_spans: &[StyledSpan] = self
+                            .visible_spans
+                            .spans
+                            .get(rel)
+                            .map(Vec::as_slice)
+                            .unwrap_or(&[]);
+                        shape_row(line, line_spans, meta.line_idx, window)
+                    }
+                };
                 let diag_segs = diag_segments_for_row(meta.line_idx, line, &inlay_offsets);
                 shaped_text.push(shaped);
                 row_meta.push((meta.line_idx, line.to_string()));

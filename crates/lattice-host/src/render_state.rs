@@ -534,6 +534,19 @@ pub struct SyntaxRenderState {
     /// from `Editor::syntax_visible_spans_cell`), so the worker's
     /// writes survive subsequent publishes.
     pub visible_spans: Arc<arc_swap::ArcSwap<VisibleSpans>>,
+    /// Perf plan A.2 slice A.2a: parallel cell publishing pre-painted
+    /// rows for the active pane. Same nested `Arc<ArcSwap<...>>`
+    /// shape as `visible_spans` so the worker can swap a fresh
+    /// `VisibleRows` without rebuilding the outer `RenderState`.
+    /// Inner `Arc` identity is the same per-cell handle cloned from
+    /// `Editor::syntax_visible_rows_cell` at every publish.
+    ///
+    /// GPUI's `editor_element` consumes this via
+    /// `rs.syntax.visible_rows.load()` — the prepainted rows save
+    /// per-frame composition on the UI thread (paramount goal #1).
+    /// The TUI peer still reads `visible_spans` until its compose
+    /// loop migrates; both cells are populated on every recompute.
+    pub visible_rows: Arc<arc_swap::ArcSwap<VisibleRows>>,
     /// Slice 3c.final.B.8: per-pane span cache published as
     /// `Arc<HashMap<pane_idx, Arc<Vec<Vec<StyledSpan>>>>>`.
     /// Outer Arc is the per-publish handle (cheap clone); inner
@@ -555,6 +568,7 @@ impl Default for SyntaxRenderState {
             fold_hash: 0,
             text_version: 0,
             visible_spans: Arc::new(arc_swap::ArcSwap::from_pointee(VisibleSpans::default())),
+            visible_rows: Arc::new(arc_swap::ArcSwap::from_pointee(VisibleRows::default())),
             pane_highlights: Arc::new(std::collections::HashMap::new()),
         }
     }
@@ -593,6 +607,74 @@ pub struct VisibleHighlightsKey {
 #[derive(Debug, Default, Clone)]
 pub struct VisibleSpans {
     pub spans: Vec<Vec<lattice_syntax::StyledSpan>>,
+    pub computed_for_key: VisibleHighlightsKey,
+}
+
+/// One coloured run within a [`RowPrepaint`]'s `combined` text.
+///
+/// Perf plan A.2. Carries the [`lattice_syntax::Style`] tag, NOT
+/// a baked RGB colour — the resolved palette lives on
+/// [`crate::ui::theme::Theme`] (published per-frame in
+/// [`RenderState::theme`]), and renderers resolve `style → Rgba`
+/// at paint time. The reasons for the tag, not the colour:
+///
+/// - A theme switch doesn't invalidate the worker's cache (only
+///   the colour resolution at paint changes; the run topology
+///   doesn't).
+/// - The worker stays theme-independent — no `Theme` reads, no
+///   `Theme::default()` fallback that silently breaks user themes.
+/// - The cache key on [`VisibleHighlightsKey`] doesn't need a
+///   theme hash; runs are stable across theme changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RowRun {
+    /// Number of bytes in this run inside the row's `combined` text.
+    /// Runs partition `combined` exhaustively; sum of `len`s equals
+    /// `combined.len()`.
+    pub len: u32,
+    /// Style tag from the highlight grammar. `Style::Default` for
+    /// runs that fall outside any tree-sitter capture (plain text,
+    /// punctuation that no theme styles, etc.).
+    pub style: lattice_syntax::Style,
+}
+
+/// One visible row pre-painted by the highlights worker for the
+/// active pane.
+///
+/// Perf plan A.2 slice A.2a. Carries the combined text the renderer
+/// shapes/paints plus the colour-run partition over it. In A.2b
+/// (follow-up) this will gain `inlay_offsets` + `byte_to_combined_col`
+/// for the inlay-weave path; for now, `combined` always equals the
+/// source line text and orig-byte → combined-column is identity.
+///
+/// Storage choices:
+/// - `combined: Box<str>` — one heap allocation per row, sized to
+///   the line. `Box<str>` over `String` shaves the unused capacity
+///   word and signals immutability. Bounded by `viewport_height`
+///   (typically <200 rows × <200 chars = <40 kB per recompute).
+/// - `runs: Vec<RowRun>` — adjacent-equal runs merged at build
+///   time so the partition is minimal.
+#[derive(Debug, Default, Clone)]
+pub struct RowPrepaint {
+    pub combined: Box<str>,
+    pub runs: Vec<RowRun>,
+}
+
+/// Worker-published pre-painted rows for the active pane's visible
+/// window.
+///
+/// Perf plan A.2 slice A.2a. `rows[i]` corresponds to buffer line
+/// `start + i` where `start` is the worker's recompute scroll input.
+/// Empty `rows` (the `Default`) means no rows yet — the renderer
+/// paints from its rope fallback path until the first worker tick
+/// lands.
+///
+/// Published in a second `ArcSwap` cell alongside [`VisibleSpans`]
+/// — the legacy cell stays so the TUI peer's existing `StyledSpan`
+/// grid path keeps working without an adapter slice. GPUI consumes
+/// `rows`; TUI keeps reading `spans` (migration deferred).
+#[derive(Debug, Default, Clone)]
+pub struct VisibleRows {
+    pub rows: Vec<RowPrepaint>,
     pub computed_for_key: VisibleHighlightsKey,
 }
 

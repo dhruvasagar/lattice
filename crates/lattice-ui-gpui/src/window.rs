@@ -589,6 +589,14 @@ impl EditorView {
         let ad = self.app.ad();
         let rs_guard = self.app.render_state.load();
         let active_spans_guard = rs_guard.syntax.visible_spans.load();
+        // Perf plan A.2 slice A.2a: load the parallel pre-paint
+        // rows cell so the EditorElement can hit its prepaint fast
+        // path. Inactive panes share the active doc's rows when
+        // their buffer matches (rare); when buffers differ, rows
+        // stays empty and `paint_pane` falls through to the
+        // legacy `visible_spans` path that reads from
+        // `pane_highlights` (per-pane StyledSpan cache).
+        let active_rows_guard = rs_guard.syntax.visible_rows.load();
         // Phase 5.8.AF.5 / Slice 3c.final.B (group 1): pane tree
         // + buffer registry read through `rs_guard.panes` /
         // `rs_guard.buffers` instead of `editor.X` directly.
@@ -1016,6 +1024,17 @@ impl EditorView {
                     computed_for_key: lattice_host::render_state::VisibleHighlightsKey::default(),
                 }
                 .into()
+            },
+            // Perf plan A.2 slice A.2a: active pane consumes the
+            // worker's prepainted rows. Inactive panes get an empty
+            // `VisibleRows` so the EditorElement's fast-path check
+            // (`prepaint_row.is_some()`) short-circuits and falls
+            // through to the `visible_spans` path above — which
+            // reads from `pane_highlights` for inactive panes.
+            visible_rows: if render_active {
+                (*active_rows_guard).clone()
+            } else {
+                std::sync::Arc::new(lattice_host::render_state::VisibleRows::default())
             },
             scroll: pane_scroll,
             viewport_height,

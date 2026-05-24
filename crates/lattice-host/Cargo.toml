@@ -98,6 +98,12 @@ globset = { workspace = true }
 # patterns host-side via the same fancy-regex engine that backs
 # `/` and `?` in `lattice-core::search`.
 fancy-regex = { workspace = true }
+# Perf plan A.2: `highlights_worker::build_rows` SIMD-scans the
+# SyntaxSnapshot source bytes for newline offsets to extract
+# per-line text without copying. `memchr` is already a transitive
+# dep via tree-sitter; promoting it to a direct dep gives us
+# `memchr::memchr` without going through that re-export.
+memchr = { workspace = true }
 
 [dev-dependencies]
 # Phase 5.8.AF.6 / Slice X2.9: highlights worker bench

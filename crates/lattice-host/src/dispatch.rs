@@ -2076,26 +2076,25 @@ impl Editor {
     /// Scroll so [`Self::cursor`] is inside `[scroll, scroll +
     /// viewport_height)`. No-op when `viewport_height == 0` (the
     /// renderer hasn't recorded a draw yet).
+    ///
+    /// Both peers feed the active pane's content height into
+    /// `set_viewport_height` per frame — for help popups
+    /// (`active_buffer == Help`) the TUI runtime substitutes
+    /// `help_popup_inner_height(...)` for the doc-area height so
+    /// the popup-focused cursor scrolls against the popup's
+    /// inner window rather than the full pane. The host trusts
+    /// the active viewport_height here without re-deriving a
+    /// popup-specific cap.
     pub fn ensure_cursor_visible(&mut self) {
-        // When the popup is focused (State B) the visible window is
-        // MAX_POPUP_LINES tall, not the document viewport.  Using
-        // viewport_height here caused the popup cursor to never scroll
-        // beyond the first ~50 lines even though the popup only shows 30.
-        const POPUP_VIEWPORT_HEIGHT: u32 = 30;
-        let effective_height = if self.active_buffer == lattice_core::BufferKind::Help {
-            POPUP_VIEWPORT_HEIGHT
-        } else {
-            self.viewport_height
-        };
-        if effective_height == 0 {
+        if self.viewport_height == 0 {
             return;
         }
         if self.cursor.line < self.scroll {
             self.scroll = self.cursor.line;
         }
-        let bottom = self.scroll + effective_height - 1;
+        let bottom = self.scroll + self.viewport_height - 1;
         if self.cursor.line > bottom {
-            self.scroll = self.cursor.line + 1 - effective_height;
+            self.scroll = self.cursor.line + 1 - self.viewport_height;
         }
     }
 

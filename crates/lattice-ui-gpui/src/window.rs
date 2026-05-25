@@ -1170,13 +1170,54 @@ impl EditorView {
                     pane.buffer_id.0, snap.rows, snap.cols,
                 ));
         }
+        // Build rows, splicing the cursor cell into its row as
+        // a reverse-video span (block-style; cursor-shape /
+        // visibility are honored in T2.b once
+        // `alacritty_terminal` is wired). The row is rendered as
+        // three runs: pre-cursor text, cursor cell (bg=fg /
+        // fg=bg), post-cursor text. T1's monochrome render
+        // limits us to the global fg/bg; per-cell SGR colours
+        // land with the alacritty_terminal swap.
+        let cursor_row = snap.cursor_row;
+        let cursor_col = snap.cursor_col;
+        let cursor_visible = snap.cursor_visible
+            && cursor_row < snap.rows
+            && cursor_col < snap.cols;
         let mut rows: Vec<gpui::Div> = Vec::with_capacity(snap.rows as usize);
         for r in 0..snap.rows {
-            let mut s = String::with_capacity(snap.cols as usize);
+            let mut row_text = String::with_capacity(snap.cols as usize);
             for c in 0..snap.cols {
-                s.push(snap.cell_at(r, c).ch);
+                row_text.push(snap.cell_at(r, c).ch);
             }
-            rows.push(div().child(SharedString::from(s)));
+            if cursor_visible && r == cursor_row {
+                // Split the row at the cursor column. Use
+                // char_indices so multi-byte UTF-8 doesn't
+                // panic the slice.
+                let split = row_text
+                    .char_indices()
+                    .nth(cursor_col as usize)
+                    .map(|(i, _)| i)
+                    .unwrap_or(row_text.len());
+                let (pre, rest) = row_text.split_at(split);
+                let mut chars = rest.chars();
+                let cursor_ch = chars.next().unwrap_or(' ').to_string();
+                let post: String = chars.collect();
+                rows.push(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .child(div().child(SharedString::from(pre.to_string())))
+                        .child(
+                            div()
+                                .bg(rgb(theme.foreground))
+                                .text_color(rgb(theme.background))
+                                .child(SharedString::from(cursor_ch)),
+                        )
+                        .child(div().child(SharedString::from(post))),
+                );
+            } else {
+                rows.push(div().child(SharedString::from(row_text)));
+            }
         }
         let mut col = div()
             .flex()
@@ -1186,11 +1227,10 @@ impl EditorView {
             .bg(rgb(theme.background))
             .text_color(rgb(theme.foreground))
             // Inherit the GPUI theme's font_family (the root
-            // sets it too). Hardcoding "monospace" here was
-            // wrong: GPUI resolves font_family against the
-            // app's registered font set, and "monospace" is
-            // not a CSS-style generic — it's an exact family
-            // name lookup.
+            // sets it too). Hardcoding "monospace" was wrong:
+            // GPUI resolves font_family against the app's
+            // registered font set; "monospace" is not a
+            // CSS-style generic — it's an exact family lookup.
             .font_family(theme.font_family.clone());
         for row in rows {
             col = col.child(row);

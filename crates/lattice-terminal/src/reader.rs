@@ -14,17 +14,31 @@
 
 use std::io::Read;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use arc_swap::ArcSwap;
 
 use crate::cell::Cell;
 use crate::snapshot::TerminalSnapshot;
 
-/// Throttle: rebuild + publish a snapshot at most every 16 ms
-/// (≈60 Hz). Programs that spew thousands of lines/sec
-/// (cargo build, npm install, `cat huge.log`) would otherwise
-/// dominate the render thread.
+/// Coalesce window: after publishing a snapshot, sleep this
+/// long before reading more. Bytes arriving during the sleep
+/// accumulate in the kernel pipe buffer and get drained into
+/// the grid by the next `reader.read()`, so a high-throughput
+/// program (cargo build, `cat huge.log`) batches into ~60
+/// publishes/sec instead of one per syscall. The trade-off:
+/// up to one window of latency between byte arrival and
+/// publish.
+///
+/// Pre-2026-05-25: this was a *skip-when-recent* guard at the
+/// publish site (`if now - last_publish < window { skip }`).
+/// That eats the *tail* of a burst — the last read after a
+/// shell command's response + new-prompt burst gets buffered
+/// into the grid but never published, because the reader then
+/// blocks on the next read with nothing to wake it. The
+/// symptom was "I have to press a key again to see the
+/// response". Switched to "always publish, then sleep" so the
+/// tail is never stranded.
 const REFRESH_WINDOW: Duration = Duration::from_millis(16);
 
 /// Spawn the reader task. Returns its `JoinHandle` so the
@@ -48,7 +62,6 @@ pub fn spawn_reader(
         );
         let mut grid = TerminalGrid::new(rows, cols);
         let mut buf = [0u8; 32 * 1024];
-        let mut last_publish = Instant::now() - REFRESH_WINDOW;
         let mut seq: u64 = 0;
         let mut total_bytes: u64 = 0;
         loop {
@@ -80,23 +93,26 @@ pub fn spawn_reader(
                 );
             }
             grid.advance(&buf[..n]);
-            let now = Instant::now();
-            if now.duration_since(last_publish) >= REFRESH_WINDOW {
-                last_publish = now;
-                seq += 1;
-                snapshot.store(Arc::new(grid.to_snapshot(seq)));
-                if let Some(n) = paint_request.as_ref() {
-                    // Wake event-driven renderers (GPUI) so
-                    // they repaint on new terminal output;
-                    // per-tick renderers (TUI) observe the
-                    // store on their next tick and don't
-                    // depend on this notify.
-                    n.notify_one();
-                }
+            // Always publish — no skip-when-recent. The skip
+            // would strand the tail of a burst (the response
+            // + new-prompt after a shell command) until the
+            // user's next keystroke.
+            seq += 1;
+            snapshot.store(Arc::new(grid.to_snapshot(seq)));
+            if let Some(n) = paint_request.as_ref() {
+                // Wake event-driven renderers (GPUI). Per-tick
+                // renderers (TUI) observe the store on their
+                // next tick.
+                n.notify_one();
             }
+            // Coalesce future bursts into ~60Hz batches.
+            // During the sleep, kernel pipe-buffers any new
+            // bytes the child writes; the next read drains
+            // them all in one go.
+            std::thread::sleep(REFRESH_WINDOW);
         }
         // Final publish so the renderer sees the very last
-        // bytes even if they arrived mid-throttle-window.
+        // bytes even when the loop exited mid-window.
         seq += 1;
         snapshot.store(Arc::new(grid.to_snapshot(seq)));
         if let Some(n) = paint_request.as_ref() {

@@ -2085,6 +2085,7 @@ fn draw_terminal_pane(
     app: &App,
     pane: &crate::pane::PaneState,
 ) {
+    use ratatui::style::{Modifier, Style};
     use ratatui::text::{Line, Span};
     use ratatui::widgets::Paragraph;
     let rs = app.render_state.load();
@@ -2102,13 +2103,41 @@ fn draw_terminal_pane(
     };
     let rows_to_paint = area.height.min(snap_arc.rows);
     let cols_to_paint = area.width.min(snap_arc.cols);
+    let cursor_row = snap_arc.cursor_row;
+    let cursor_col = snap_arc.cursor_col;
+    let cursor_visible =
+        snap_arc.cursor_visible && cursor_row < rows_to_paint && cursor_col < cols_to_paint;
     let mut lines: Vec<Line> = Vec::with_capacity(rows_to_paint as usize);
     for row in 0..rows_to_paint {
-        let mut s = String::with_capacity(cols_to_paint as usize);
-        for col in 0..cols_to_paint {
-            s.push(snap_arc.cell_at(row, col).ch);
+        if cursor_visible && row == cursor_row {
+            // Split the row into pre-cursor / cursor-cell /
+            // post-cursor spans. The cursor cell uses
+            // `REVERSED` so it stands out against the
+            // monochrome cell text (T1's render budget); the
+            // alacritty_terminal swap will replace this with
+            // proper SGR + cursor-shape rendering.
+            let mut pre = String::with_capacity(cursor_col as usize);
+            for col in 0..cursor_col {
+                pre.push(snap_arc.cell_at(row, col).ch);
+            }
+            let cur_ch = snap_arc.cell_at(row, cursor_col).ch.to_string();
+            let mut post =
+                String::with_capacity((cols_to_paint - cursor_col - 1).max(0) as usize);
+            for col in (cursor_col + 1)..cols_to_paint {
+                post.push(snap_arc.cell_at(row, col).ch);
+            }
+            lines.push(Line::from(vec![
+                Span::raw(pre),
+                Span::styled(cur_ch, Style::default().add_modifier(Modifier::REVERSED)),
+                Span::raw(post),
+            ]));
+        } else {
+            let mut s = String::with_capacity(cols_to_paint as usize);
+            for col in 0..cols_to_paint {
+                s.push(snap_arc.cell_at(row, col).ch);
+            }
+            lines.push(Line::from(Span::raw(s)));
         }
-        lines.push(Line::from(Span::raw(s)));
     }
     let para = Paragraph::new(lines);
     frame.render_widget(para, area);

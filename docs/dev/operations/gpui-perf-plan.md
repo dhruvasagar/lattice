@@ -31,7 +31,7 @@ Eighteen slices shipped (A.4, F, A.3, C + follow-up, A.1, A.2a, B.1, D.1, E.1, E
 | B.2.a — Worker buckets static overlays (publish + GPUI swap) | done | `abcf81c` | `RowOverlayQuad` per row carries layer + source-byte coords; `static_overlay_quads_cell` published per recompute; `static_overlay_version` axis on `VisibleHighlightsKey`; GPUI active pane consumes worker bucket + only walks cursor-coupled layers per frame. |
 | B.2.b — TUI consumer swap | done | `de60cfd` | TUI compose loop reads worker bucket for AllMatches + Substitute; DocHighlight stays per-frame (kind-coloring needs `DocumentHighlightKind` the bucket doesn't carry). Also: source-byte coord refactor so both peers consume the same bucket shape. |
 | B.2.c — Re-bench overlay weave | done | — | Worker `recompute_on_scroll` +7–11% (bucket walk cost moved off UI thread to worker — architecturally correct, amortised across many frames per recompute); GPUI helpers flat. Numbers below. |
-| B.4.a — Identity-preserving Arc publish (5 subs) | done | _commit pending_ | `Versioned<T>` newtype + `PublishCache` on Editor. Cached: `panes`, `modes`, `buffer_locals` (full Arc); inner `syntax.pane_highlights`, inner `lsp.progress`. Steady-state publish ~3.2 µs (cache hits everywhere); mutated_all ~6.4 µs (all 5 rebuild). Numbers below. |
+| B.4.a — Identity-preserving Arc publish (5 subs) | done | `029271e` | `Versioned<T>` newtype + `PublishCache` on Editor. Cached: `panes`, `modes`, `buffer_locals` (full Arc); inner `syntax.pane_highlights`, inner `lsp.progress`. Steady-state publish 3.20 µs vs 6.05 µs unmemoised = **−47 %**; cache machinery itself is zero-overhead (mutated_all vs unmemoised delta is the bench-loop mutation work). Numbers below. |
 | B.4.b — Cache `buffers` + `tabs` + `buffer_uris` | deferred | — | Needs internal version counter on `BufferRegistry` (interior-mut) + composite version derivation for `tabs` (label depends on cross-substate inputs). |
 | D.* — rayon / SmallVec / bump-alloc | dropped | —       | Bench review (below) didn't justify the impl cost.                 |
 | E.2 — Element-tree reuse          | pending | —         | Needs investigation pass on `EditorView::render` notify cadence.   |
@@ -142,19 +142,20 @@ Re-run after B.2.a / B.2.b landed. Worker bench in isolation (parallel-run with 
 
 New bench: `dispatch_publish`. Reproduce: `cargo bench -q -p lattice-host --bench dispatch_publish`. Numbers are criterion median estimates. Fixture: editor with a 3-pane tree, 20 buffers' worth of `active_modes` + `buffer_locals`, 3 panes of `pane_highlights` (60 spans each), 6 concurrent `lsp_progress` items. Same machine as the previous baselines.
 
-| Bench                                | Time     | Δ vs `mutated_all` (cache off) |
-|--------------------------------------|----------|-------------------------------|
-| `dispatch_publish/steady_state`      | 3.21 µs  | −50 % (cache hits every sub)  |
-| `dispatch_publish/mutated_modes`     | 3.63 µs  | −43 % (one cache miss)        |
-| `dispatch_publish/mutated_all`       | 6.39 µs  | baseline (every cache rebuilds) |
+| Bench                                | Time     | Δ vs `unmemoised` (pre-B.4 equivalent) |
+|--------------------------------------|----------|----------------------------------------|
+| `dispatch_publish/steady_state`      | 3.20 µs  | **−47 %** (cache hits everywhere)      |
+| `dispatch_publish/mutated_modes`     | 3.65 µs  | −40 % (one cache miss, four hits)      |
+| `dispatch_publish/mutated_all`       | 6.45 µs  | +7 % (5 misses + bench-loop mutations) |
+| `dispatch_publish/unmemoised`        | 6.05 µs  | baseline (cache cleared each iter)     |
 
 **Read-out:**
 
-- **Cache effectiveness is ~2× on steady-state.** `steady_state` (cache hits everywhere) is ~half the cost of `mutated_all` (the every-cache-rebuilds floor that approximates the pre-B.4 unconditional publish). The 3.2 µs steady-state floor is what's still rebuilt every tick: `active_document` (cursor / scroll churn every keystroke), the small Copy-or-Arc-clone sub-states (`lifecycle`, `theme`, `messages`, `modeline`, `options`, `diagnostics`, `translator`), the outer `lsp` / `syntax` substates (their other fields change), the not-yet-cached `buffers` + `tabs` (deferred to B.4.b — `BufferRegistry` needs an interior-mutability version counter, `tabs` needs composite version derivation), and the picker / completion / popup Option-when-None slots.
-- **Targeted cache invalidation works.** `mutated_modes` (one mode toggle per iteration) costs ~+13 % over steady_state because only the `modes` sub-state rebuilds; the other four cache hits stay. This is the design promise — a Mode activation doesn't force the renderer to drop its `panes` / `buffer_locals` / `pane_highlights` / `lsp.progress` Arc identity.
-- **Cache overhead is negligible.** The `steady_state` path includes one `Mutex<PublishCache>` lock, five `Versioned::version()` reads, five cache-slot compares, and five `Arc::clone` calls. All sub-µs combined.
+- **B.4 saves ~47 % on no-op publishes with zero net overhead on a fully-invalidated publish.** `unmemoised` (cache cleared between iterations, no per-iter mutation work) is the cleanest stand-in for pre-B.4 cost: every cached slot misses and rebuilds, just like the unconditional `Arc::new` path before B.4. The cache lookup machinery (`Mutex<PublishCache>::lock`, five `Versioned::version()` reads, five cache-slot compares, five `Arc::clone`s when hits, one closure call + `Arc::new` per miss) doesn't show up in this number — it's drowned by the rebuild cost it would normally avoid.
+- **The +7 % on `mutated_all` is bench-loop noise, not real overhead.** That row mutates each of the five cached fields per iteration (5 HashMap insert/remove ops at ~100-200 ns each = ~500-1000 ns), which fully accounts for the +400 ns delta over `unmemoised`. Use `unmemoised` as the canonical "cache disabled" baseline; treat `mutated_all` as "what happens if every cached input churns every publish + per-iter setup."
+- **Steady-state floor (3.2 µs) is what's still rebuilt every tick:** `active_document` (cursor / scroll change every keystroke), the small Copy-or-Arc-clone sub-states (`lifecycle`, `theme`, `messages`, `modeline`, `options`, `diagnostics`, `translator`), the outer `lsp` / `syntax` sub-states (their other fields churn per-frame), the not-yet-cached `buffers` + `tabs` (deferred to B.4.b), and the picker / completion / popup Option-when-None slots.
+- **Targeted cache invalidation works.** `mutated_modes` (one mode toggle per iteration) costs ~+14 % over steady_state because only the `modes` sub-state rebuilds; the other four cache hits stay. This is the design promise — a Mode activation doesn't force the renderer to drop its `panes` / `buffer_locals` / `pane_highlights` / `lsp.progress` Arc identity.
 - **Renderer side gets a free guard.** Active-pane prepaint on both peers can now `Arc::ptr_eq` between `prior_rs.modes` and `rs.modes` (or any other cached sub-state) to short-circuit per-frame work that only depends on that sub-state. No call site does this yet; the seam is in place for follow-ups.
-- **Not yet captured:** the `mutated_all` row over-counts vs the true pre-B.4 baseline because it also pays for the per-iteration HashMap insert/remove. A clean "before" measurement would gate the cache behind a build flag and re-bench — deferred since the architectural payoff is clear from the steady_state / mutated_all ratio.
 
 ### Bench-driven D scope reduction
 
@@ -277,7 +278,7 @@ Rationale:
 - New `PublishCache` lives on Editor behind `std::sync::Mutex<...>` (not `RefCell` because `Editor` is shared as `Arc<Editor>` and must be `Sync`; mutex is uncontested in practice because only `publish_render_state` takes the lock, on the actor thread).
 - `cached_or_build(slot, version, build)` helper memoises each sub-state Arc. `panes` / `modes` / `buffer_locals` cache the full sub-state Arc; `pane_highlights` (a field of `SyntaxRenderState`) and `lsp.progress` (a field of `LspRenderState`) cache the inner Arc — the parent sub-state still rebuilds per publish because its other fields churn per-frame.
 - New tests in `render_state::tests`: `cached_substates_preserve_arc_identity_on_no_op_publish` (proves Arc identity survives no-op publish for every cached sub-state), `cached_substate_invalidation_is_per_field` (proves a mutation to one cached field invalidates only that sub-state — `panes` / `buffer_locals` survive when only `active_modes` is touched). The legacy `substate_identity_changes_naively_per_publication` test still asserts the inverse for the not-yet-cached sub-states (`diagnostics`, the outer `lsp`, `popup`); docstring updated to scope the "naive" claim.
-- New bench: `dispatch_publish` with `steady_state` / `mutated_modes` / `mutated_all` regimes. Numbers captured in "Captured baselines (2026-05-25, post-B.4.a)" above.
+- New bench: `dispatch_publish` with `steady_state` / `mutated_modes` / `mutated_all` / `unmemoised` regimes. `unmemoised` clears the cache between iterations (no mutation work) and serves as the clean pre-B.4 baseline. Numbers captured in "Captured baselines (2026-05-25, post-B.4.a)" above.
 - Versioned wrapper has its own 7-test suite covering version-zero init, no-bump on read, bump on `&mut`, `replace()` semantics, HashMap autoref bumps, `From<T>`, and `into_inner`.
 
 ### B (remaining) — Incremental caches

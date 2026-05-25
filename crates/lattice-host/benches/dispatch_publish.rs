@@ -16,8 +16,16 @@
 //!
 //! - `mutated_all` — publish, dirty all five cached fields,
 //!   publish. Worst case for the cache (every slot rebuilds).
-//!   Should still be roughly the legacy (pre-B.4) cost; this
-//!   number is the bench's "no improvement" floor.
+//!   Note: this row also pays for the bench-loop mutation work
+//!   (5 HashMap insert/remove ops per iteration) so it
+//!   over-counts vs the true pre-B.4 cost. Use `unmemoised`
+//!   below for the clean comparison.
+//!
+//! - `unmemoised` — publish, then clear the cache before the
+//!   next publish so every slot misses. No per-iteration
+//!   mutation work; this approximates the pre-B.4 cost of an
+//!   unconditional rebuild as closely as the bench can without
+//!   reverting the cache implementation.
 //!
 //! Run:
 //!
@@ -168,5 +176,32 @@ fn mutated_all(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, steady_state, mutated_modes, mutated_all);
+fn unmemoised(c: &mut Criterion) {
+    let mut group = c.benchmark_group("dispatch_publish");
+    let editor = populated_editor();
+    editor.publish_render_state();
+
+    group.bench_function("unmemoised", |b| {
+        b.iter(|| {
+            // Force every cached sub-state to miss without doing
+            // any per-iteration mutation work — pre-B.4 equivalent.
+            editor
+                .publish_cache
+                .lock()
+                .expect("publish_cache mutex poisoned")
+                .clear();
+            editor.publish_render_state();
+            black_box(editor.render_state.load_full());
+        });
+    });
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    steady_state,
+    mutated_modes,
+    mutated_all,
+    unmemoised
+);
 criterion_main!(benches);

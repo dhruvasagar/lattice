@@ -2091,7 +2091,7 @@ fn draw_terminal_pane(
     use ratatui::widgets::Paragraph;
     use lattice_terminal::{CellAttrs, NamedColor as TermNamed, TerminalColor};
     let rs = app.render_state.load();
-    let (snap_arc, current_match, visual, all_matches) = match rs
+    let (snap_arc, current_match, visual, all_matches, nav_cursor) = match rs
         .buffers
         .registry
         .with_terminal(pane.buffer_id, |t| {
@@ -2100,6 +2100,7 @@ fn draw_terminal_pane(
                 t.current_match,
                 t.visual,
                 t.all_matches.clone(),
+                t.nav_cursor,
             )
         }) {
         Some(p) => p,
@@ -2111,10 +2112,25 @@ fn draw_terminal_pane(
     };
     let rows_to_paint = area.height.min(snap_arc.rows);
     let cols_to_paint = area.width.min(snap_arc.cols);
-    let cursor_row = snap_arc.cursor_row;
-    let cursor_col = snap_arc.cursor_col;
-    let cursor_visible =
-        snap_arc.cursor_visible && cursor_row < rows_to_paint && cursor_col < cols_to_paint;
+    // 2026-05-25: nav_cursor overrides the PTY cursor in
+    // Normal-in-terminal so the user sees a "you are here"
+    // marker that j / k / etc. moves. When nav_cursor is None
+    // we fall back to the live PTY cursor (the snapshot's
+    // cursor_row/col).
+    let (cursor_row, cursor_col, cursor_visible) = if let Some((nav_l, nav_c)) = nav_cursor {
+        let off = snap_arc.scroll_offset as i32;
+        let row = nav_l + off;
+        if (0..rows_to_paint as i32).contains(&row) && nav_c < cols_to_paint {
+            (row as u16, nav_c, true)
+        } else {
+            (0, 0, false)
+        }
+    } else {
+        let r = snap_arc.cursor_row;
+        let c = snap_arc.cursor_col;
+        let v = snap_arc.cursor_visible && r < rows_to_paint && c < cols_to_paint;
+        (r, c, v)
+    };
     // T2 substrate swap (2026-05-25): per-cell SGR colors from
     // alacritty's grid. Map `TerminalColor` → ratatui's `Color`;
     // `Default` stays as `Color::Reset` so the terminal renders

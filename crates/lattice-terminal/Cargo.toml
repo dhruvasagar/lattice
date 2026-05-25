@@ -35,5 +35,14 @@ lattice-protocol = { path = "../lattice-protocol" }
 lattice-config = { path = "../lattice-config" }
 lattice-mode = { path = "../lattice-mode" }
 
+# 2026-05-25: SIGKILL the child on TerminalBuffer::Drop so the
+# reader's blocking read() returns and the editor can exit
+# cleanly. portable-pty's default ChildKiller sends SIGHUP which
+# isn't sufficient on every shell / environment (WSL2, captured
+# stty, etc.); SIGKILL via libc::kill(pid, SIGKILL) is the
+# guaranteed wake.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [lints]
 workspace = true

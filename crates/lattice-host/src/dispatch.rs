@@ -159,6 +159,16 @@ pub struct DispatchOutcome {
 /// and 5.5.E ([`Self::ThemeChanged`]); the variants exist from
 /// 5.5.A so the type surface is fixed before any consumer composes
 /// against it.
+/// 2026-05-25: target for [`Editor::do_terminal_nav_goto`].
+/// Pulled out into a public enum so the gg / G chord paths
+/// have a self-documenting argument rather than a bool /
+/// magic-number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NavTarget {
+    Top,
+    Bottom,
+}
+
 #[derive(Debug, Clone)]
 pub enum RendererSignal {
     /// The host's neutral [`crate::ui::theme::Theme`] changed
@@ -12654,10 +12664,13 @@ impl Editor {
         // T3.b.3: drop the search match highlight when the
         // user enters Insert — they're about to type which
         // pushes the matched cells off-screen anyway, and the
-        // stale overlay would be visually confusing.
+        // stale overlay would be visually confusing. 2026-05-25:
+        // also clear nav_cursor so the next return to Normal
+        // starts from the live PTY cursor.
         let _ = self.buffers.with_terminal_mut(buf_id, |t| {
             t.current_match = None;
             t.all_matches.clear();
+            t.nav_cursor = None;
         });
         let _ = self.activate_mode_by_id(
             buf_id,
@@ -12698,6 +12711,71 @@ impl Editor {
         let buf_id = self.active_pane_buffer_id();
         let _ = self.buffers.with_terminal_mut(buf_id, |t| {
             t.insert_exit_pending = true;
+        });
+    }
+
+    /// 2026-05-25: move the Normal-in-terminal navigation
+    /// cursor by `(dy, dx)`. Initializes nav_cursor to the live
+    /// PTY cursor on first move; clamps to grid bounds;
+    /// auto-scrolls the viewport when the cursor leaves the
+    /// visible window. Also syncs the Visual head when a
+    /// Visual session is in flight, so j/k inside Visual
+    /// extends the selection via the cursor naturally.
+    pub fn do_terminal_nav_move(&mut self, buf_id: BufferId, dy: i32, dx: i32) {
+        let _ = self.buffers.with_terminal_mut(buf_id, |t| {
+            let cols = t.snapshot.load().cols;
+            let (top, bot) = t.term.line_bounds();
+            let (cur_l, cur_c) = t.nav_cursor.unwrap_or_else(|| {
+                let snap = t.snapshot.load();
+                if snap.scroll_offset == 0 {
+                    (t.term.cursor_line(), 0)
+                } else {
+                    (-(snap.scroll_offset as i32), 0)
+                }
+            });
+            let new_l = (cur_l + dy).clamp(top, bot);
+            let new_c = (cur_c as i32 + dx)
+                .max(0)
+                .min(cols.saturating_sub(1) as i32) as u16;
+            t.nav_cursor = Some((new_l, new_c));
+            if let Some(v) = t.visual.as_mut() {
+                v.head_line = new_l;
+                v.head_col = new_c;
+            }
+            // Bring cursor into view if needed.
+            let snap = t.snapshot.load();
+            let top_visible = -(snap.scroll_offset as i32);
+            let bot_visible = top_visible + snap.rows as i32 - 1;
+            if new_l < top_visible {
+                t.term.scroll_to_line(new_l);
+            } else if new_l > bot_visible {
+                let target = new_l - (snap.rows as i32 - 1);
+                t.term.scroll_to_line(target.max(top));
+            } else {
+                // Republish so the cursor overlay repaints.
+                t.term.scroll(lattice_terminal::TerminalScrollKind::Delta(0));
+            }
+        });
+    }
+
+    /// 2026-05-25: jump the Normal-in-terminal navigation
+    /// cursor to top / bottom of scrollback. Pairs with
+    /// `do_terminal_nav_move` for the gg / G chords.
+    pub fn do_terminal_nav_goto(&mut self, buf_id: BufferId, target: NavTarget) {
+        let _ = self.buffers.with_terminal_mut(buf_id, |t| {
+            let (top, bot) = t.term.line_bounds();
+            let new_l = match target {
+                NavTarget::Top => top,
+                NavTarget::Bottom => bot,
+            };
+            let new_c = t.nav_cursor.map(|(_, c)| c).unwrap_or(0);
+            t.nav_cursor = Some((new_l, new_c));
+            if let Some(v) = t.visual.as_mut() {
+                v.head_line = new_l;
+                v.head_col = new_c;
+            }
+            // Snap viewport so the cursor row is visible.
+            t.term.scroll_to_line(new_l);
         });
     }
 
@@ -21250,51 +21328,87 @@ impl Editor {
             None
         };
         if let Some(kind) = enter_visual_kind {
-            let line = self
+            // 2026-05-25: Visual entry uses the nav_cursor as the
+            // anchor when set; otherwise falls back to the live
+            // PTY cursor (at the live edge) or the topmost visible
+            // row (when scrolled into history).
+            let (anchor_line, anchor_col) = self
                 .buffers
                 .with_terminal(buf_id, |t| {
-                    let snap = t.snapshot.load();
-                    if snap.scroll_offset == 0 {
-                        t.term.cursor_line()
+                    if let Some((l, c)) = t.nav_cursor {
+                        (l, c)
                     } else {
-                        -(snap.scroll_offset as i32)
+                        let snap = t.snapshot.load();
+                        if snap.scroll_offset == 0 {
+                            (t.term.cursor_line(), 0u16)
+                        } else {
+                            (-(snap.scroll_offset as i32), 0u16)
+                        }
                     }
                 })
-                .unwrap_or(0);
+                .unwrap_or((0, 0));
             let _ = self.buffers.with_terminal_mut(buf_id, |t| {
                 t.visual = Some(lattice_terminal::TerminalVisualState {
                     kind,
-                    anchor_line: line,
-                    anchor_col: 0,
-                    head_line: line,
-                    head_col: 0,
+                    anchor_line,
+                    anchor_col,
+                    head_line: anchor_line,
+                    head_col: anchor_col,
                 });
+                // Pin nav_cursor to the visual head so subsequent
+                // updates stay in sync.
+                t.nav_cursor = Some((anchor_line, anchor_col));
             });
             let _ = self.buffers.with_terminal(buf_id, |t| {
                 t.term.scroll(Sk::Delta(0));
             });
             return;
         }
-        // Match against the canonical motion / action ids the
-        // Normal-mode keymap binds. The match is exhaustive over
-        // "things that make sense for a scrollback view" — every
-        // other invocation falls through to the read-only echo.
-        let kind = if cmd == self.builtins.line_down.0 {
-            Some(Sk::Delta(-(count as i32)))
+        // 2026-05-25: Normal-in-terminal navigation cursor.
+        // j / k / gg / G / h / l move the nav_cursor; the
+        // viewport auto-scrolls when the cursor leaves the
+        // visible window. This makes Visual entry land on the
+        // user's actual reading position and gives them a
+        // visible "you are here" marker.
+        let nav_dy = if cmd == self.builtins.line_down.0 {
+            Some(count as i32)
         } else if cmd == self.builtins.line_up.0 {
-            Some(Sk::Delta(count as i32))
-        } else if cmd == self.builtins.goto_first_line.0 {
-            Some(Sk::Top)
-        } else if cmd == self.builtins.goto_last_line.0 {
-            Some(Sk::Bottom)
-        } else if cmd == self.action_ids.page_down {
+            Some(-(count as i32))
+        } else if cmd == self.action_ids.scroll_line_down {
+            Some(1)
+        } else if cmd == self.action_ids.scroll_line_up {
+            Some(-1)
+        } else {
+            None
+        };
+        let nav_dx = if cmd == self.builtins.char_right.0 {
+            Some(count as i32)
+        } else if cmd == self.builtins.char_left.0 {
+            Some(-(count as i32))
+        } else {
+            None
+        };
+        if nav_dy.is_some() || nav_dx.is_some() {
+            self.do_terminal_nav_move(buf_id, nav_dy.unwrap_or(0), nav_dx.unwrap_or(0));
+            return;
+        }
+        if cmd == self.builtins.goto_first_line.0 {
+            self.do_terminal_nav_goto(buf_id, NavTarget::Top);
+            return;
+        }
+        if cmd == self.builtins.goto_last_line.0 {
+            self.do_terminal_nav_goto(buf_id, NavTarget::Bottom);
+            return;
+        }
+        // Page motions keep their scroll semantics (no
+        // nav_cursor anchoring — vim's `<C-d>` / `<C-u>` are
+        // half-page jumps that re-anchor the cursor too;
+        // implementing that fully needs viewport height. For now
+        // keep them as pure viewport scrolls.)
+        let kind = if cmd == self.action_ids.page_down {
             Some(Sk::PageDown)
         } else if cmd == self.action_ids.page_up {
             Some(Sk::PageUp)
-        } else if cmd == self.action_ids.scroll_line_down {
-            Some(Sk::Delta(-1))
-        } else if cmd == self.action_ids.scroll_line_up {
-            Some(Sk::Delta(1))
         } else {
             None
         };

@@ -1180,9 +1180,10 @@ impl EditorView {
                 t.current_match,
                 t.visual,
                 t.all_matches.clone(),
+                t.nav_cursor,
             )
         });
-        let Some((snap, current_match, visual, all_matches)) = snap_opt else {
+        let Some((snap, current_match, visual, all_matches, nav_cursor)) = snap_opt else {
             let placeholder = div()
                 .bg(rgb(theme.background))
                 .text_color(rgb(theme.foreground))
@@ -1301,11 +1302,23 @@ impl EditorView {
         // shaping engine from running once per cell when the
         // shell paints in uniform blocks (which is the common
         // case — the prompt, output text, etc.).
-        let cursor_row = snap.cursor_row;
-        let cursor_col = snap.cursor_col;
-        let cursor_visible = snap.cursor_visible
-            && cursor_row < snap.rows
-            && cursor_col < snap.cols;
+        // 2026-05-25: nav_cursor overrides the PTY cursor in
+        // Normal-in-terminal so the user sees where j / k / etc.
+        // is moving. Matches the TUI peer's logic.
+        let (cursor_row, cursor_col, cursor_visible) = if let Some((nav_l, nav_c)) = nav_cursor {
+            let off = snap.scroll_offset as i32;
+            let row = nav_l + off;
+            if (0..snap.rows as i32).contains(&row) && nav_c < snap.cols {
+                (row as u16, nav_c, true)
+            } else {
+                (0, 0, false)
+            }
+        } else {
+            let r = snap.cursor_row;
+            let c = snap.cursor_col;
+            let v = snap.cursor_visible && r < snap.rows && c < snap.cols;
+            (r, c, v)
+        };
         #[derive(Clone, Copy, PartialEq, Eq)]
         struct CellStyle {
             fg: u32,

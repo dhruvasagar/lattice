@@ -51,6 +51,16 @@ pub struct TerminalBuffer {
     /// confirm key (`<C-n>` → exit) or any other key (which
     /// emits `\x1c` plus that key's PTY bytes).
     pub insert_exit_pending: bool,
+    /// 2026-05-25: Normal-in-terminal navigation cursor in
+    /// alacritty grid coords (line: negative = history;
+    /// positive = live screen; col: cell column). `None` means
+    /// "snap to live PTY cursor" — the initial state and what
+    /// EnterTerminalInsert resets to. Set on the first
+    /// `j` / `k` / `h` / `l` / `gg` / `G` and tracked
+    /// thereafter. Renderers paint a block cursor at this
+    /// position when set; Visual entry uses it as the initial
+    /// anchor / head.
+    pub nav_cursor: Option<(i32, u16)>,
     /// T3.b.3 (2026-05-25): every regex match across the grid
     /// for the current search pattern. Populated alongside
     /// `current_match` in submit_search / repeat_search and
@@ -75,6 +85,12 @@ pub struct TerminalBuffer {
     /// can `take()` and call the &mut method on the inner
     /// killer (the trait isn't object-safe with shared refs).
     child_killer: Option<Box<dyn portable_pty::ChildKiller + Send + Sync>>,
+    /// 2026-05-25: child PID, used by Drop on Unix as a SIGKILL
+    /// fallback when portable_pty's SIGHUP-based `kill()` doesn't
+    /// terminate the child fast enough (some shells / environments
+    /// don't honour SIGHUP within the actor runtime's Drop window).
+    /// `None` when the platform doesn't expose the PID.
+    child_pid: Option<u32>,
 }
 
 impl Drop for TerminalBuffer {
@@ -88,6 +104,26 @@ impl Drop for TerminalBuffer {
         // its own it does not unblock the read.
         if let Some(mut killer) = self.child_killer.take() {
             let _ = killer.kill();
+        }
+        // 2026-05-25: SIGHUP via portable_pty is not always
+        // sufficient — some shells / environments (WSL2, child
+        // with SIGHUP trap, etc.) ignore it or take too long
+        // to act, and the actor runtime's Drop waits for the
+        // reader's blocking task. SIGKILL is the guaranteed
+        // wake. Unix-only; on Windows the portable_pty
+        // TerminateProcess path above is already authoritative.
+        #[cfg(unix)]
+        if let Some(pid) = self.child_pid.take() {
+            // Workspace lint denies unsafe; the libc FFI call
+            // is the only viable way to guarantee SIGKILL
+            // delivery (portable_pty only exposes SIGHUP),
+            // and the call is straightforward: PID + signal.
+            // Passing a non-running PID returns ESRCH which we
+            // ignore (the child may already have exited).
+            #[allow(unsafe_code)]
+            unsafe {
+                libc::kill(pid as libc::pid_t, libc::SIGKILL);
+            }
         }
         self.reader_abort.abort();
     }
@@ -186,6 +222,7 @@ impl TerminalBuffer {
             term,
             reader_task,
             child_killer,
+            child_pid,
         } = handles;
         Self {
             id,
@@ -199,9 +236,11 @@ impl TerminalBuffer {
             last_visual: None,
             all_matches: Vec::new(),
             insert_exit_pending: false,
+            nav_cursor: None,
             created_at: std::time::SystemTime::now(),
             reader_abort: reader_task.abort_handle(),
             child_killer: Some(child_killer),
+            child_pid,
         }
     }
 

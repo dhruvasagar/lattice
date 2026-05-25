@@ -3607,6 +3607,7 @@ dependencies = [
  "lattice-mode",
  "lattice-protocol",
  "lattice-runtime",
+ "libc",
  "parking_lot",
  "portable-pty",
  "thiserror 2.0.18",

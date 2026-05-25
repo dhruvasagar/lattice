@@ -3054,11 +3054,21 @@ fn active_lsp_segment(app: &App) -> String {
 /// `pane_status_label`'s fallback so the global modeline and
 /// per-pane status line agree on synthetic-buffer labels.
 pub(crate) fn modeline_label(app: &App, snap: &DocumentSnapshot) -> String {
+    let ad = app.ad();
     snap.path()
         .map(|p| p.display().to_string())
         // Slice 3c.final.B (group 1): registry lookup via
         // `app.buffers()`.
-        .or_else(|| app.buffers().registry.name_of(app.ad().document_buffer_id))
+        //
+        // 2026-05-25: try the active *pane* buffer first so
+        // non-Document panes (Terminal, FileTree, Oil, ...)
+        // surface their registered name ("[zsh]", "[oil]", ...)
+        // rather than falling back to the previously-active
+        // Document's id (which gives `[no name]` when the
+        // pane never had one). Documents land on the same
+        // path because their pane id == document id.
+        .or_else(|| app.buffers().registry.name_of(ad.active_pane_buffer_id))
+        .or_else(|| app.buffers().registry.name_of(ad.document_buffer_id))
         .unwrap_or_else(|| "[no name]".to_string())
 }
 
@@ -3093,21 +3103,9 @@ fn draw_mode_line(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnaps
     let pos = format!("{}:{}", app.ad().cursor.line + 1, app.ad().cursor.byte);
     let lang = Lang::detect_from_path(snap.path()).label();
     let mode_label = app.modal_label();
-    // 2026-05-25: when active buffer is a Terminal, append the
-    // running program basename ("zsh", "bash", "cargo") so the
-    // modeline answers "what's running here" without renderers
-    // reaching into the buffer registry.
-    let ad = app.ad();
-    let prog = ad.terminal_program_name.as_ref();
-    let mode_label_owned: String = if !prog.is_empty() {
-        format!("{mode_label} {prog}")
-    } else {
-        mode_label.to_string()
-    };
-    drop(ad);
     let lsp_segment = active_lsp_segment(app);
 
-    let left = format!("[{mode_label_owned}] {dirty} {path}");
+    let left = format!("[{mode_label}] {dirty} {path}");
     let right = if lsp_segment.is_empty() {
         format!("{pos}  {lang}")
     } else {

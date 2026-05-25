@@ -1204,12 +1204,17 @@ impl EditorView {
         );
         // Status label format matches the document path's
         // `  {path}   L:{row}  C:{col}` shape so the per-pane
-        // bar reads the same regardless of buffer kind. T2 will
-        // promote the placeholder name to the spawn command /
-        // shell once the terminal buffer registry tracks it.
+        // bar reads the same regardless of buffer kind. 2026-05-25:
+        // prefer the registry `name` slot ("[zsh]", "[bash]", …)
+        // populated at spawn time, falling back to the legacy
+        // `terminal #N` form when the buffer hasn't been named.
+        let name_label = rs_guard
+            .buffers
+            .registry
+            .name_of(pane.buffer_id)
+            .unwrap_or_else(|| format!("[terminal #{}]", pane.buffer_id.0));
         let status_text = format!(
-            "  [terminal #{}]   R:{}  C:{}",
-            pane.buffer_id.0,
+            "  {name_label}   R:{}  C:{}",
             snap.cursor_row + 1,
             snap.cursor_col,
         );
@@ -1227,8 +1232,8 @@ impl EditorView {
                 .text_color(rgb(theme.foreground))
                 .font_family(theme.font_family.clone())
                 .child(format!(
-                    "[terminal #{} — {}×{} — waiting for first output]",
-                    pane.buffer_id.0, snap.rows, snap.cols,
+                    "{name_label} — {}×{} — waiting for first output",
+                    snap.rows, snap.cols,
                 ))
                 .into_any_element();
             return (placeholder, status_text);
@@ -1790,28 +1795,23 @@ impl Render for EditorView {
         let ad = self.app.ad();
         let modal = ad.modal;
 
-        // 2026-05-25: terminal buffers override the modal label so
-        // the bottom row reads `TERMINAL-INSERT zsh` rather than
-        // surfacing the (always-`Normal`) underlying modal. The
-        // running program basename is published on the active-doc
-        // render-state at dispatch time — renderers never reach
-        // into the buffer registry from the paint loop.
-        let modal_label: String = if matches!(
+        // 2026-05-25: terminal panes surface `TERMINAL-INSERT` /
+        // `TERMINAL-VISUAL` / `TERMINAL` on the bottom row in
+        // place of the underlying modal (which stays `Normal`
+        // while terminal-insert-mode owns input). The running
+        // program basename is rendered as the buffer *name*
+        // by `pane_status_label` (registry lookup); we don't
+        // repeat it here.
+        let modal_label: &str = if matches!(
             ad.buffer_kind,
-            lattice_core::BufferKind::Terminal
+            lattice_core::BufferKind::Terminal,
         ) {
-            let base = if ad.terminal_insert_active {
+            if ad.terminal_insert_active {
                 "TERMINAL-INSERT"
             } else if ad.terminal_visual_active {
                 "TERMINAL-VISUAL"
             } else {
                 "TERMINAL"
-            };
-            let prog = ad.terminal_program_name.as_ref();
-            if prog.is_empty() {
-                base.to_string()
-            } else {
-                format!("{base} {prog}")
             }
         } else {
             match modal {
@@ -1823,7 +1823,6 @@ impl Render for EditorView {
                 ModalState::Search(_) => "SEARCH",
                 ModalState::Replace => "REPLACE",
             }
-            .to_string()
         };
         drop(ad);
         // 5.8.C / 5.8.H: bottom global row. In Command/Search

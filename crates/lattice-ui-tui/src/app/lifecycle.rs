@@ -371,13 +371,20 @@ impl App {
         if let Some(provider) = self.pane_render_provider(pane.buffer_id) {
             return (provider.status)(self, pane);
         }
-        // Default path: document buffer. Label resolution is
-        // `path -> registry name -> "[no name]"`. The registry's
-        // `name` slot carries synthetic labels for buffers without
-        // a physical file (`*lsp*`, `*messages*`, ...); for
-        // path-backed Documents it stays None and the path wins.
+        // 2026-05-25: non-Document panes without a registered
+        // [[PaneRenderProvider]] (Terminal today) fall through to
+        // the default path. Honour the registry `name` slot when
+        // the buffer exists — Terminal buffers register a label
+        // like `[zsh]` at spawn — instead of bailing out with the
+        // generic "[no buffer]" marker. The document branch below
+        // still gates `contains_document` for the path / dirty
+        // lookups, which only apply to Documents.
         if !self.buffers().registry.contains_document(pane.buffer_id) {
-            return "[no buffer]".to_string();
+            return self
+                .buffers()
+                .registry
+                .name_of(pane.buffer_id)
+                .unwrap_or_else(|| "[no buffer]".to_string());
         }
         // Slice 3c.final.E.5j: registry lookup via published
         // `buffers()` sub-state.

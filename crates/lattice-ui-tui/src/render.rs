@@ -4646,8 +4646,20 @@ fn cursor_screen_position_at(
     // the prefix `line[..cursor.byte]` -- handles ASCII (1:1),
     // Latin-1 / Greek / Cyrillic (multi-byte but 1 cell), CJK and
     // emoji (1-4 bytes, 2 cells).
-    // Cursor column = severity_cell + gutter + display column.
-    let col = DIAG_GUTTER_WIDTH + gutter_w + display_col_for_byte(&snap.buffer, cursor);
+    //
+    // 2026-05-26: LSP inlay hints render inline via
+    // `splice_virtual_text_into_spans` (compose loop) but live
+    // outside the source-byte axis. Cursor column has to add the
+    // cumulative display width of every inlay on this line whose
+    // anchor byte sits at-or-before `cursor.byte`, mirroring the
+    // GPUI peer's `byte_to_combined_col` shift. Without it, `$`
+    // (and every motion past an inlay) lands cells short of the
+    // glyph it logically points at.
+    let rs_st = view.app.render_state.load();
+    let inlay_hints = &rs_st.syntax.inlay_hints;
+    let col = DIAG_GUTTER_WIDTH
+        + gutter_w
+        + display_col_for_byte(&snap.buffer, cursor, inlay_hints);
     Some((
         area.x.saturating_add(col.try_into().unwrap_or(u16::MAX)),
         area.y
@@ -4659,7 +4671,20 @@ fn cursor_screen_position_at(
 /// `pos.line`. Falls back to `pos.byte` when the line is missing
 /// or the byte index lands past the line end (so the cursor still
 /// renders at a sensible position rather than disappearing).
-fn display_col_for_byte(buffer: &lattice_core::Buffer, pos: lattice_protocol::Position) -> u32 {
+///
+/// 2026-05-26: `inlay_hints` is the publish-time
+/// `rs.syntax.inlay_hints` slice. Every hint on `pos.line` whose
+/// anchor byte is `<= pos.byte` shifts the cursor by its label's
+/// display width — the same accounting the compose loop applies
+/// when it splices the inlay text into the row. Mirrors the GPUI
+/// peer's `byte_to_combined_col` (the `inlay_offsets <= byte`
+/// filter there). Pass an empty slice to skip the shift (the
+/// pre-inlay behaviour).
+fn display_col_for_byte(
+    buffer: &lattice_core::Buffer,
+    pos: lattice_protocol::Position,
+    inlay_hints: &[lattice_host::render_state::InlayHintRow],
+) -> u32 {
     use unicode_width::UnicodeWidthStr;
 
     let line = match buffer.line(pos.line) {
@@ -4676,7 +4701,18 @@ fn display_col_for_byte(buffer: &lattice_core::Buffer, pos: lattice_protocol::Po
     while byte > 0 && !line.is_char_boundary(byte) {
         byte -= 1;
     }
-    UnicodeWidthStr::width(&line[..byte]) as u32
+    let base = UnicodeWidthStr::width(&line[..byte]) as u32;
+    // Inlay shift: cumulative display width of every hint on
+    // `pos.line` with `hint.byte <= cursor.byte`. The `<=`
+    // matches the splice site (`splice_virtual_text_into_spans`
+    // inserts BEFORE the char at `hint.byte`, so the cursor at
+    // that same byte sits AFTER the inlay).
+    let inlay_shift: u32 = inlay_hints
+        .iter()
+        .filter(|h| h.line == pos.line && (h.byte as usize) <= byte)
+        .map(|h| UnicodeWidthStr::width(h.text.as_str()) as u32)
+        .sum();
+    base + inlay_shift
 }
 
 /// Project a link's label range onto a single rendered line.
@@ -5106,6 +5142,55 @@ mod tests {
         // severity_cell (1) + gutter_width(1)=4 + 3 = 8.
         assert_eq!(pos.0, 8);
         assert_eq!(pos.1, 0);
+    }
+
+    #[test]
+    fn display_col_for_byte_shifts_by_inlay_widths_at_or_before_cursor() {
+        // 2026-05-26 regression guard. Inlay hints render inline
+        // via `splice_virtual_text_into_spans`, but
+        // `display_col_for_byte` historically returned the source-
+        // prefix width only — so the cursor lagged the rendered
+        // line by the cumulative inlay width once any inlay sat
+        // at or before `cursor.byte`. Mirrors GPUI's
+        // `byte_to_combined_col` semantics.
+        let app = app_with("let x = 42\n", 5);
+        let inlays = [
+            lattice_host::render_state::InlayHintRow {
+                line: 0,
+                byte: 5, // after `let x`, before ` =`
+                text: ": i32".to_string(),
+            },
+        ];
+        // Cursor before the inlay anchor: no shift.
+        let before = display_col_for_byte(
+            &app.ad().snapshot.buffer,
+            lattice_protocol::Position::new(0, 4),
+            &inlays,
+        );
+        assert_eq!(before, 4, "shift must not apply before inlay anchor");
+        // Cursor at the inlay anchor: shift applies (splice is
+        // BEFORE the source char at the anchor).
+        let at = display_col_for_byte(
+            &app.ad().snapshot.buffer,
+            lattice_protocol::Position::new(0, 5),
+            &inlays,
+        );
+        assert_eq!(at, 5 + 5, "shift applies at the inlay anchor");
+        // Cursor past the inlay anchor (e.g. `$` to last byte):
+        // same shift.
+        let eol = display_col_for_byte(
+            &app.ad().snapshot.buffer,
+            lattice_protocol::Position::new(0, 9),
+            &inlays,
+        );
+        assert_eq!(eol, 9 + 5, "shift carries through to EOL");
+        // Empty inlay slice: behaviour matches the pre-inlay path.
+        let no_inlay = display_col_for_byte(
+            &app.ad().snapshot.buffer,
+            lattice_protocol::Position::new(0, 9),
+            &[],
+        );
+        assert_eq!(no_inlay, 9);
     }
 
     #[test]

@@ -696,28 +696,38 @@ impl App {
     /// the router on the keystone wire-up.
     fn run_oil_invocation(&mut self, inv: CommandInvocation) {
         // Slice 3c.final.E.3: route through `mutate_editor`.
-        self.mutate_editor(move |e| e.run_oil_invocation(inv));
+        // 2026-05-26: host returns `bool` (handled flag) for the
+        // per-kind-first dispatch reorder; discard it here since
+        // App-side direct callers don't fall back to a grammar
+        // gate — they only invoke the runner when the buffer kind
+        // is already established.
+        self.mutate_editor(move |e| {
+            let _ = e.run_oil_invocation(inv);
+        });
     }
 
     /// 5.5.G.23: body migrated to
     /// [`lattice_host::dispatch::Editor::run_file_tree_invocation`].
     fn run_file_tree_invocation(&mut self, inv: CommandInvocation) {
-        // Slice 3c.final.E.3: route through `mutate_editor`.
-        self.mutate_editor(move |e| e.run_file_tree_invocation(inv));
+        self.mutate_editor(move |e| {
+            let _ = e.run_file_tree_invocation(inv);
+        });
     }
 
     /// 5.5.G.23: body migrated to
     /// [`lattice_host::dispatch::Editor::run_help_invocation`].
     fn run_help_invocation(&mut self, inv: CommandInvocation) {
-        // Slice 3c.final.E.3: route through `mutate_editor`.
-        self.mutate_editor(move |e| e.run_help_invocation(inv));
+        self.mutate_editor(move |e| {
+            let _ = e.run_help_invocation(inv);
+        });
     }
 
     /// 5.5.G.23: body migrated to
     /// [`lattice_host::dispatch::Editor::run_read_only_motion`].
     fn run_read_only_motion(&mut self, inv: CommandInvocation) {
-        // Slice 3c.final.E.3: route through `mutate_editor`.
-        self.mutate_editor(move |e| e.run_read_only_motion(inv));
+        self.mutate_editor(move |e| {
+            let _ = e.run_read_only_motion(inv);
+        });
     }
 
     /// 5.5.G.23: body migrated to

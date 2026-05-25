@@ -54,6 +54,7 @@ pub(super) fn press(app: &mut App, event: crossterm::event::KeyEvent) {
         terminal_esc_exits: ad.terminal_esc_exits,
         terminal_app_cursor_keys: ad.terminal_app_cursor_keys,
         terminal_insert_exit_pending: ad.terminal_insert_exit_pending,
+        terminal_visual_active: ad.terminal_visual_active,
         keymap: &app.editor.keymap,
         partial_chord: &app.editor.partial_chord,
     };

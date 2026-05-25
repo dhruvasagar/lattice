@@ -709,6 +709,7 @@ impl GpuiApp {
                 terminal_esc_exits: ad.terminal_esc_exits,
                 terminal_app_cursor_keys: ad.terminal_app_cursor_keys,
                 terminal_insert_exit_pending: ad.terminal_insert_exit_pending,
+                terminal_visual_active: ad.terminal_visual_active,
                 keymap: &translator.keymap,
                 partial_chord: &translator.partial_chord,
             };

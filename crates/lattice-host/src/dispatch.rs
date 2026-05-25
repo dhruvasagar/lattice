@@ -17443,7 +17443,23 @@ impl Editor {
     /// current cursor, seeding `document.selections` with a
     /// zero-width anchor=head selection so `Range::Selection`
     /// dispatch picks up the cursor immediately.
+    ///
+    /// 2026-05-25: Terminal buffers don't carry a document
+    /// selection set — their Visual lives on `TerminalBuffer.visual`
+    /// and is painted by the terminal pane renderer. Without
+    /// this branch, `v` on a Terminal flipped `self.modal` to
+    /// `Visual(_)` (which then routed the next keystroke through
+    /// `dispatch_visual` instead of `run_terminal_invocation`)
+    /// and updated the document's selections — neither of which
+    /// the user could see, since the renderer only reads
+    /// `t.visual` for terminal panes. Delegate to the
+    /// terminal-side helper so modal stays Normal and the
+    /// terminal grammar keeps owning subsequent motion keys.
     pub fn do_enter_visual(&mut self, kind: lattice_grammar::VisualKind) {
+        if matches!(self.active_buffer, BufferKind::Terminal) {
+            self.do_terminal_enter_visual(kind);
+            return;
+        }
         self.modal = ModalState::Visual(kind);
         self.visual_anchor = Some(self.cursor);
         let sel = lattice_protocol::selection::Selection {
@@ -17452,6 +17468,55 @@ impl Editor {
             visual: Some(visual_kind_to_mode(kind)),
         };
         self.set_selections_blocking(lattice_protocol::selection::SelectionSet::single(sel));
+    }
+
+    /// 2026-05-25: terminal-side Visual entry. Mirrors the
+    /// inline body that previously lived in
+    /// `run_terminal_invocation`'s `enter_visual_*` arm so both
+    /// the keymap path (`Action::Invoke(enter_visual_*) →
+    /// AppEffect::EnterVisual → Action::EnterVisual`) and any
+    /// future direct callers land on the same `t.visual`
+    /// initialiser. Modal stays Normal — the renderer keys off
+    /// `t.visual.is_some()` (published as
+    /// `terminal_visual_active`) to flip the modeline label and
+    /// paint per-cell highlights.
+    pub fn do_terminal_enter_visual(&mut self, kind: lattice_grammar::VisualKind) {
+        use lattice_terminal::{TerminalScrollKind as Sk, VisualKind as Vk};
+        let buf_id = self.active_pane_buffer_id();
+        let kind = match kind {
+            lattice_grammar::VisualKind::Charwise => Vk::Char,
+            lattice_grammar::VisualKind::Linewise => Vk::Line,
+            lattice_grammar::VisualKind::Blockwise => Vk::Block,
+        };
+        let (anchor_line, anchor_col) = self
+            .buffers
+            .with_terminal(buf_id, |t| {
+                if let Some((l, c)) = t.nav_cursor {
+                    (l, c)
+                } else {
+                    let snap = t.snapshot.load();
+                    if snap.scroll_offset == 0 {
+                        (t.term.cursor_line(), 0u16)
+                    } else {
+                        (-(snap.scroll_offset as i32), 0u16)
+                    }
+                }
+            })
+            .unwrap_or((0, 0));
+        let _ = self.buffers.with_terminal_mut(buf_id, |t| {
+            t.visual = Some(lattice_terminal::TerminalVisualState {
+                kind,
+                anchor_line,
+                anchor_col,
+                head_line: anchor_line,
+                head_col: anchor_col,
+            });
+            t.nav_cursor = Some((anchor_line, anchor_col));
+        });
+        let _ = self.buffers.with_terminal(buf_id, |t| {
+            t.term.scroll(Sk::Delta(0));
+        });
+        self.publish_render_state();
     }
 
     /// `<Esc>` from Visual (and the post-operator-on-selection path)
@@ -21351,40 +21416,20 @@ impl Editor {
             None
         };
         if let Some(kind) = enter_visual_kind {
-            // 2026-05-25: Visual entry uses the nav_cursor as the
-            // anchor when set; otherwise falls back to the live
-            // PTY cursor (at the live edge) or the topmost visible
-            // row (when scrolled into history).
-            let (anchor_line, anchor_col) = self
-                .buffers
-                .with_terminal(buf_id, |t| {
-                    if let Some((l, c)) = t.nav_cursor {
-                        (l, c)
-                    } else {
-                        let snap = t.snapshot.load();
-                        if snap.scroll_offset == 0 {
-                            (t.term.cursor_line(), 0u16)
-                        } else {
-                            (-(snap.scroll_offset as i32), 0u16)
-                        }
-                    }
-                })
-                .unwrap_or((0, 0));
-            let _ = self.buffers.with_terminal_mut(buf_id, |t| {
-                t.visual = Some(lattice_terminal::TerminalVisualState {
-                    kind,
-                    anchor_line,
-                    anchor_col,
-                    head_line: anchor_line,
-                    head_col: anchor_col,
-                });
-                // Pin nav_cursor to the visual head so subsequent
-                // updates stay in sync.
-                t.nav_cursor = Some((anchor_line, anchor_col));
-            });
-            let _ = self.buffers.with_terminal(buf_id, |t| {
-                t.term.scroll(Sk::Delta(0));
-            });
+            // 2026-05-25: Visual entry delegates to the
+            // host-side `do_terminal_enter_visual` helper so the
+            // Action-path entry (`v` → `Action::Invoke(...)` →
+            // grammar → `AppEffect::EnterVisual` →
+            // `Action::EnterVisual` → `do_enter_visual` →
+            // here) and any future direct call site share one
+            // initialiser. Map the grammar's `VisualKind` to
+            // the terminal-side enum before dispatch.
+            let grammar_kind = match kind {
+                Vk::Char => lattice_grammar::VisualKind::Charwise,
+                Vk::Line => lattice_grammar::VisualKind::Linewise,
+                Vk::Block => lattice_grammar::VisualKind::Blockwise,
+            };
+            self.do_terminal_enter_visual(grammar_kind);
             return;
         }
         // 2026-05-25: Normal-in-terminal navigation cursor.

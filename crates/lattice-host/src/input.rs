@@ -108,6 +108,13 @@ pub struct TranslateContext<'a> {
     /// translate layer routes the next keystroke into the
     /// chord-resolution branch instead of the normal encoder.
     pub terminal_insert_exit_pending: bool,
+    /// 2026-05-25: true when the active Terminal buffer holds
+    /// an in-flight Visual selection (`t.visual.is_some()`).
+    /// Terminal-Visual lives on the buffer (modal stays Normal)
+    /// so the `<Esc>` / `v` exit chords don't come through
+    /// `keymap_visual`'s `ExitVisual` bindings; this layer
+    /// short-circuits them when the flag is set.
+    pub terminal_visual_active: bool,
     /// Layered keymap registry (DESIGN.md §5.2.3, audit
     /// slice 8.c -- 8.d). `translate` consults this instead
     /// of the per-mode hand-rolled `match` tables one slice
@@ -301,6 +308,24 @@ pub fn translate(ctx: TranslateContext<'_>, chord: KeyChord) -> Action {
         && !chord.mods.ctrl()
         && !chord.mods.alt()
     {
+        // 2026-05-25: terminal-Visual exit. Visual lives on the
+        // buffer (modal stays Normal), so `keymap_visual`'s
+        // `ExitVisual` bindings never fire. Intercept the four
+        // vim-standard exits here when terminal-Visual is in
+        // flight: `<Esc>`, `v`, `V`, `<C-v>`. The Ctrl-V case
+        // is below the !mods.ctrl() guard, so handle it after
+        // the gate.
+        if ctx.terminal_visual_active {
+            match chord.key {
+                KeyKind::Special(crate::chord::SpecialKey::Esc) => {
+                    return Action::ExitVisual;
+                }
+                KeyKind::Char('v') | KeyKind::Char('V') => {
+                    return Action::ExitVisual;
+                }
+                _ => {}
+            }
+        }
         match chord.key {
             KeyKind::Char('i')
             | KeyKind::Char('a')
@@ -310,6 +335,20 @@ pub fn translate(ctx: TranslateContext<'_>, chord: KeyChord) -> Action {
             }
             _ => {}
         }
+    }
+    // 2026-05-25: `<C-v>` toggle for blockwise terminal-Visual.
+    // Sits outside the `!ctrl()` gate above so the Ctrl modifier
+    // bit doesn't disqualify it.
+    if matches!(ctx.active_buffer, BufferKind::Terminal)
+        && !ctx.terminal_insert_active
+        && ctx.terminal_visual_active
+        && matches!(ctx.modal, ModalState::Normal)
+        && ctx.partial_chord.is_empty()
+        && chord.mods.ctrl()
+        && !chord.mods.alt()
+        && matches!(chord.key, KeyKind::Char('v'))
+    {
+        return Action::ExitVisual;
     }
 
     match ctx.modal {

@@ -997,6 +997,106 @@ pub fn static_overlay_state_version(
     h.finish()
 }
 
+/// Perf plan B.4: identity-preserving sub-state cache.
+///
+/// `Editor::build_render_state` rebuilds every sub-state `Arc`
+/// from scratch on every publish today. Most publishes don't
+/// touch most sub-states (cursor moves, scroll, etc. only update
+/// `active_document`), so the inner allocations and deep clones
+/// for the rest are wasted.
+///
+/// This struct lives behind `Editor::publish_cache` (a
+/// `std::sync::Mutex<PublishCache>` because `Editor` is shared as
+/// `Arc<Editor>` and therefore must be `Sync`). The mutex is
+/// uncontested in practice — only `build_render_state` takes the
+/// lock, and only the actor thread calls it.
+///
+/// Each slot pairs a `u64` version (captured from the
+/// corresponding `Versioned<T>` field on `Editor` at the moment
+/// the cached Arc was built) with the cached `Arc<SubState>`.
+/// On the next publish, if the field's current version matches
+/// the cached version, the cached Arc is reused (same Arc
+/// identity preserved across the publish — `Arc::ptr_eq` returns
+/// true). Otherwise the slot is rebuilt and the new
+/// `(version, Arc)` pair is stored.
+///
+/// **Targeted sub-states (B.4.a):**
+///
+/// - `panes` — full sub-state Arc. Mutates on
+///   `pane_tree.split_active` / `close_active` / `set_active` /
+///   tab swap; otherwise stable.
+/// - `modes` — full sub-state Arc. Mutates on `activate_mode` /
+///   `deactivate_mode`; otherwise stable.
+/// - `buffer_locals` — full sub-state Arc. Mutates on the few
+///   `buffer_locals.entry(...).or_default()` / `.insert` / `.remove`
+///   sites; otherwise stable. Largest savings because the per-entry
+///   clone deep-walks the typed-map.
+/// - `pane_highlights_map` — INNER `Arc<HashMap<...>>` of the
+///   syntax sub-state. The outer `SyntaxRenderState` Arc rebuilds
+///   every publish (its other fields churn per-frame), but the
+///   per-pane spans map can be reused.
+/// - `lsp_progress` — INNER `Arc<HashMap<...>>` of the `lsp`
+///   sub-state. Same shape as `pane_highlights_map`; saves the
+///   HashMap clone when no `$/progress` event fired.
+///
+/// Deferred to B.4.b: `buffers` (registry has its own
+/// interior-mutability layer; needs an internal version counter),
+/// `buffer_uris` map, `tabs` (label depends on cross-substate
+/// inputs — composite version derivation).
+#[derive(Debug, Default)]
+pub struct PublishCache {
+    pub panes: Option<(u64, std::sync::Arc<PanesRenderState>)>,
+    pub modes: Option<(u64, std::sync::Arc<ModesRenderState>)>,
+    pub buffer_locals: Option<(u64, std::sync::Arc<BufferLocalsRenderState>)>,
+    pub pane_highlights_map: Option<(
+        u64,
+        std::sync::Arc<
+            std::collections::HashMap<usize, std::sync::Arc<Vec<Vec<lattice_syntax::StyledSpan>>>>,
+        >,
+    )>,
+    pub lsp_progress: Option<(
+        u64,
+        std::sync::Arc<
+            std::collections::HashMap<
+                (std::sync::Arc<str>, String),
+                lattice_lsp::LspProgressUpdate,
+            >,
+        >,
+    )>,
+}
+
+impl PublishCache {
+    /// Reset every slot. Useful in tests that want a clean
+    /// baseline; production code never needs this (a version
+    /// mismatch already triggers rebuild).
+    pub fn clear(&mut self) {
+        *self = Self::default();
+    }
+}
+
+/// Perf plan B.4: cache-or-build helper for the sub-state Arc
+/// memoisation in `build_render_state`. Returns the cached Arc
+/// when `current_version` matches the version stored in `slot`;
+/// otherwise calls `build`, stores the result, and returns it.
+///
+/// Inlined into a single helper so each cached sub-state is one
+/// line at the call site instead of the same `if let Some((v, arc))
+/// = ... { ... } else { ... }` pattern repeated five times.
+pub fn cached_or_build<T, F: FnOnce() -> std::sync::Arc<T>>(
+    slot: &mut Option<(u64, std::sync::Arc<T>)>,
+    current_version: u64,
+    build: F,
+) -> std::sync::Arc<T> {
+    if let Some((v, arc)) = slot.as_ref() {
+        if *v == current_version {
+            return arc.clone();
+        }
+    }
+    let next = build();
+    *slot = Some((current_version, next.clone()));
+    next
+}
+
 /// One inlay-hint row published on
 /// [`SyntaxRenderState::inlay_hints`].
 ///
@@ -1561,26 +1661,117 @@ mod tests {
     // `RowPrepaint`; that path is unit-testable without an
     // `editor_boot` fixture).
 
-    /// Identity-preservation contract for unrelated sub-states.
+    /// Non-cached sub-states still rebuild Arc-fresh per publish.
     ///
-    /// Slice 3a is naive (every sub-state is freshly `Arc::new`d
-    /// per publication), so we DO NOT yet expect identity
-    /// preservation between calls. Document the contract so
-    /// the Slice 3b/3c rewrite knows what's expected.
+    /// Perf plan B.4 introduced the per-sub-state cache for
+    /// `panes` / `modes` / `buffer_locals` plus the inner-Arc
+    /// memoisation for `syntax.pane_highlights` and `lsp.progress`.
+    /// The other sub-states — `diagnostics`, the outer `lsp`,
+    /// `popup`, and the cursor-coupled `active_document` — still
+    /// rebuild on every publish because their inputs change every
+    /// tick (or because the savings haven't been measured worth the
+    /// surface). This test pins the current behaviour for the
+    /// non-cached set: Arc identity changes per publication.
     ///
-    /// This test asserts the current behaviour: every sub-state
-    /// Arc identity changes per publication. When dirty-bit
-    /// optimisation lands, flip the assertion to `ptr_eq`.
+    /// The positive contract for the CACHED set lives in
+    /// [`cached_substates_preserve_arc_identity_on_no_op_publish`].
     #[test]
     fn substate_identity_changes_naively_per_publication() {
         let editor = Editor::default();
         let a = editor.render_state.load_full();
         editor.publish_render_state();
         let b = editor.render_state.load_full();
-        // Slice 3a: naive — every sub-state Arc is fresh.
+        // These sub-states are not cached by B.4 — Arc identity
+        // changes per publication.
         assert!(!std::sync::Arc::ptr_eq(&a.diagnostics, &b.diagnostics));
         assert!(!std::sync::Arc::ptr_eq(&a.lsp, &b.lsp));
         assert!(!std::sync::Arc::ptr_eq(&a.popup, &b.popup));
+    }
+
+    /// Perf plan B.4: identity-preserving Arc publish for the
+    /// cached sub-states.
+    ///
+    /// On a no-op republish (publish twice with no mutation
+    /// between), every cached sub-state's `Arc` survives — same
+    /// pointer, no allocation. This is the wait-free read seam's
+    /// new contract: renderers can short-circuit per-pane /
+    /// per-mode work by comparing `Arc::ptr_eq` on consecutive
+    /// frames.
+    ///
+    /// Covers:
+    /// - `panes` (outer `Arc<PanesRenderState>`)
+    /// - `modes` (outer `Arc<ModesRenderState>`)
+    /// - `buffer_locals` (outer `Arc<BufferLocalsRenderState>`)
+    /// - `syntax.pane_highlights` (inner per-pane spans map Arc)
+    /// - `lsp.progress` (inner progress HashMap Arc)
+    #[test]
+    fn cached_substates_preserve_arc_identity_on_no_op_publish() {
+        let editor = Editor::default();
+        editor.publish_render_state();
+        let a = editor.render_state.load_full();
+        editor.publish_render_state();
+        let b = editor.render_state.load_full();
+        // Full sub-state caches.
+        assert!(
+            std::sync::Arc::ptr_eq(&a.panes, &b.panes),
+            "panes sub-state should reuse its Arc when pane_tree.version() hasn't moved"
+        );
+        assert!(
+            std::sync::Arc::ptr_eq(&a.modes, &b.modes),
+            "modes sub-state should reuse its Arc when active_modes.version() hasn't moved"
+        );
+        assert!(
+            std::sync::Arc::ptr_eq(&a.buffer_locals, &b.buffer_locals),
+            "buffer_locals sub-state should reuse its Arc when buffer_locals.version() hasn't moved"
+        );
+        // Inner-Arc caches (parent SyntaxRenderState / LspRenderState
+        // still rebuild because their other fields churn per-frame).
+        assert!(
+            std::sync::Arc::ptr_eq(&a.syntax.pane_highlights, &b.syntax.pane_highlights),
+            "syntax.pane_highlights inner Arc should be reused when pane_highlights.version() hasn't moved"
+        );
+        assert!(
+            std::sync::Arc::ptr_eq(&a.lsp.progress, &b.lsp.progress),
+            "lsp.progress inner Arc should be reused when lsp_progress.version() hasn't moved"
+        );
+    }
+
+    /// Perf plan B.4: mutating one cached input invalidates ONLY
+    /// that sub-state's cached Arc; the others survive.
+    ///
+    /// Touching `editor.active_modes` (via DerefMut) bumps the
+    /// modes-version counter; the next `build_render_state` rebuilds
+    /// the `modes` sub-state but leaves `panes` / `buffer_locals`
+    /// alone — their versions haven't moved, so the cache hits.
+    #[test]
+    fn cached_substate_invalidation_is_per_field() {
+        use lattice_core::BufferId;
+        use lattice_mode::ActiveModes;
+        let mut editor = Editor::default();
+        editor.publish_render_state();
+        let a = editor.render_state.load_full();
+        // Touch active_modes through DerefMut: insert bumps the
+        // wrapped HashMap's version counter once.
+        editor
+            .active_modes
+            .insert(BufferId(99), ActiveModes::default());
+        editor.publish_render_state();
+        let b = editor.render_state.load_full();
+        // `modes` invalidated (version bumped).
+        assert!(
+            !std::sync::Arc::ptr_eq(&a.modes, &b.modes),
+            "modes Arc must rebuild after `active_modes.insert` bumps the version"
+        );
+        // `panes` and `buffer_locals` untouched — Arc identity
+        // preserved.
+        assert!(
+            std::sync::Arc::ptr_eq(&a.panes, &b.panes),
+            "panes Arc must survive a mutation to a different sub-state"
+        );
+        assert!(
+            std::sync::Arc::ptr_eq(&a.buffer_locals, &b.buffer_locals),
+            "buffer_locals Arc must survive a mutation to a different sub-state"
+        );
     }
 
     /// Slice 3c.final.B (group 1): publishing a `RenderState`
@@ -1593,7 +1784,7 @@ mod tests {
     fn panes_substate_reflects_pane_tree() {
         use lattice_core::ui::pane::{PaneState, PaneTree, SplitOrientation};
         let mut editor = Editor::default();
-        editor.pane_tree = PaneTree::single(PaneState::default());
+        editor.pane_tree = crate::versioned::Versioned::new(PaneTree::single(PaneState::default()));
         editor.pane_tree.split_active(SplitOrientation::Vertical);
         editor.pane_tree.set_active(1);
         editor.publish_render_state();

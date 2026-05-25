@@ -666,7 +666,10 @@ impl Editor {
                 s.register(lsp_logger.clone());
                 Arc::new(s)
             },
-            buffer_locals,
+            // Perf plan B.4: wrap the seeded HashMap so the
+            // buffer_locals sub-state cache can detect when no
+            // mutation has fired between publishes.
+            buffer_locals: crate::versioned::Versioned::new(buffer_locals),
             help_topics,
             registry,
             event_bus: event_bus.clone(),
@@ -682,7 +685,10 @@ impl Editor {
             },
             completion_registry,
             completion_state: None,
-            pane_tree,
+            // Perf plan B.4: wrap in `Versioned` so per-publish
+            // identity tracking starts at version 0; subsequent
+            // pane-tree mutations bump it via `DerefMut`.
+            pane_tree: crate::versioned::Versioned::new(pane_tree),
             // Issue #29 (2026-05-22): boot with one tab. The
             // slot's `panes` is a default placeholder; the real
             // pane tree above is live on `editor.pane_tree`.

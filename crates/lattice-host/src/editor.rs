@@ -70,6 +70,7 @@ use crate::buffers::BufferId;
 use crate::chord::KeyChord;
 use crate::keymap_registry::{KeymapHandle, LayerId};
 use crate::pane::PaneTree;
+use crate::versioned::Versioned;
 use crate::state::{
     CompletionState, LastFind, LastSearch, LastVisual, LivePickerQueryState, MacroRecording,
     OptionCache, PendingBlockInsert, PendingPickerInit, PositionEntry, PrevPaneState, ReplaceEntry,
@@ -242,6 +243,18 @@ impl std::fmt::Debug for HighlightWake {
 
 #[derive(Debug, Default)]
 pub struct Editor {
+    /// Perf plan B.4: identity-preserving sub-state cache for
+    /// `build_render_state`. Cached `Arc<SubState>` slots keyed
+    /// by the `u64` version captured from the corresponding
+    /// `Versioned<T>` field. `std::sync::Mutex` (not `RefCell`)
+    /// because `Editor` is shared across threads as `Arc<Editor>`
+    /// and therefore must be `Sync`; uncontested in practice
+    /// because only `build_render_state` (called on the actor
+    /// thread) takes the lock. See
+    /// [`crate::render_state::PublishCache`] for the slot
+    /// inventory and rebuild contract.
+    pub publish_cache: std::sync::Mutex<crate::render_state::PublishCache>,
+
     /// Completed macro recordings keyed by register name.
     /// Replays go through the dispatch layer's `PlayMacro`
     /// action handler. v1 records `Action` streams; insert-
@@ -481,7 +494,13 @@ pub struct Editor {
     /// Pane tree (DESIGN.md §5.9). Always represents the
     /// ACTIVE tab's panes — when switching tabs we
     /// `mem::swap` between this field and `tabs[target].panes`.
-    pub pane_tree: PaneTree,
+    /// Perf plan B.4: wrapped in [`Versioned`] so the panes
+    /// sub-state cache in `build_render_state` can reuse its prior
+    /// `Arc<PanesRenderState>` when the tree hasn't moved since the
+    /// last publish. `Deref` reads (e.g. `editor.pane_tree.active()`)
+    /// do NOT bump; `DerefMut` accesses (split/close/set_active)
+    /// fire one `u64` increment.
+    pub pane_tree: Versioned<PaneTree>,
 
     /// Issue #29 (2026-05-22): tab pages. Each `TabSlot` carries
     /// one tab's pane tree + optional label. The active tab's
@@ -529,7 +548,12 @@ pub struct Editor {
     /// renderer can read via `&App`. The active pane reads
     /// spans from [`Self::syntax_visible_spans_cell`] published
     /// by the background `highlights_worker`.
-    pub pane_highlights: std::collections::HashMap<usize, Vec<Vec<StyledSpan>>>,
+    /// Perf plan B.4: wrapped in [`Versioned`] so the
+    /// per-pane-highlights inner Arc on the syntax sub-state can
+    /// be reused across publishes when no pane has rebuilt its
+    /// spans. `refresh_pane_highlights`'s single `.insert` site
+    /// autorefs `&mut self.pane_highlights` and bumps automatically.
+    pub pane_highlights: Versioned<std::collections::HashMap<usize, Vec<Vec<StyledSpan>>>>,
     /// Active picker overlay. `None` outside picker mode.
     pub picker: Option<Picker>,
     /// Manual folds. v1 supports non-nested folds defined by line range.
@@ -581,12 +605,23 @@ pub struct Editor {
     /// spawned lifecycle task inserts from a worker thread.
     pub mode_guards: GuardStoreHandle,
     /// Per-buffer active modes (major + minors).
-    pub active_modes: HashMap<BufferId, ActiveModes>,
+    ///
+    /// Perf plan B.4: wrapped in [`Versioned`] so the modes
+    /// sub-state cache can reuse its prior Arc across publishes
+    /// when no mode toggle has fired. The `.insert` / `.remove`
+    /// sites in dispatch autoref `&mut self.active_modes`, which
+    /// bumps the version once per mutation.
+    pub active_modes: Versioned<HashMap<BufferId, ActiveModes>>,
     /// Per-buffer mode-owned local state. Modes populate
     /// locals via the `BufferLocal` typed-map during
     /// `on_activate`; the App routes `&mut BufferLocals`
     /// into the registry's activation methods.
-    pub buffer_locals: HashMap<BufferId, BufferLocals>,
+    ///
+    /// Perf plan B.4: wrapped in [`Versioned`] for the same reason
+    /// as `active_modes` — most publishes don't touch
+    /// `buffer_locals`, so the deep typed-map clone in
+    /// `build_render_state` can be avoided via Arc reuse.
+    pub buffer_locals: Versioned<HashMap<BufferId, BufferLocals>>,
     /// Per-buffer mode-resolved options cache. Refreshed
     /// eagerly on mode toggle and option write.
     pub resolved_options: HashMap<BufferId, ResolvedOptions>,
@@ -768,7 +803,12 @@ pub struct Editor {
     /// `(server_id, token)`. `Begin` inserts; `Report`
     /// updates; `End` removes. The modeline picks the most
     /// recent active entry to surface.
-    pub lsp_progress: HashMap<(Arc<str>, String), lattice_lsp::LspProgressUpdate>,
+    /// Perf plan B.4: wrapped in [`Versioned`]. `$/progress` events
+    /// fire at a moderate cadence (~10/s during compile bursts),
+    /// but most publish ticks don't see any change; the inner
+    /// HashMap clone in `build_render_state` can be elided via
+    /// the lsp.progress sub-state cache.
+    pub lsp_progress: Versioned<HashMap<(Arc<str>, String), lattice_lsp::LspProgressUpdate>>,
     /// Cached `textDocument/selectionRange` chain for the
     /// smart-expansion operator.
     pub lsp_selection_chain: Option<LspSelectionChain>,

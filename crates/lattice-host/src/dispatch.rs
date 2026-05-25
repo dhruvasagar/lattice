@@ -393,6 +393,96 @@ impl Editor {
             &self.all_matches,
             &substitute_matches_for_hash,
         );
+        // Perf plan B.4: identity-preserving sub-state cache lookup.
+        // Capture the per-field versions BEFORE taking the cache
+        // lock so the lock window stays narrow; rebuild closures
+        // re-borrow `self` for the small number of fields each one
+        // touches (different fields than `publish_cache`, so no
+        // borrow conflict).
+        let panes_v = self.pane_tree.version();
+        let modes_v = self.active_modes.version();
+        let buffer_locals_v = self.buffer_locals.version();
+        let pane_highlights_v = self.pane_highlights.version();
+        let lsp_progress_v = self.lsp_progress.version();
+        let (panes_arc, modes_arc, buffer_locals_arc, pane_highlights_map_arc, lsp_progress_map_arc) = {
+            let mut cache = self
+                .publish_cache
+                .lock()
+                .expect("publish_cache mutex poisoned");
+            let panes_arc = crate::render_state::cached_or_build(
+                &mut cache.panes,
+                panes_v,
+                || {
+                    // Same shape as the legacy unconditional path —
+                    // clone the inner `PaneTree` (not the wrapper)
+                    // through `Deref` so the sub-state holds
+                    // `Arc<PaneTree>`.
+                    std::sync::Arc::new(PanesRenderState {
+                        tree: std::sync::Arc::new((*self.pane_tree).clone()),
+                    })
+                },
+            );
+            let modes_arc = crate::render_state::cached_or_build(
+                &mut cache.modes,
+                modes_v,
+                || {
+                    std::sync::Arc::new(crate::render_state::ModesRenderState {
+                        map: std::sync::Arc::new(
+                            self.active_modes
+                                .iter()
+                                .map(|(id, modes)| (*id, std::sync::Arc::new(modes.clone())))
+                                .collect(),
+                        ),
+                    })
+                },
+            );
+            let buffer_locals_arc = crate::render_state::cached_or_build(
+                &mut cache.buffer_locals,
+                buffer_locals_v,
+                || {
+                    std::sync::Arc::new(crate::render_state::BufferLocalsRenderState {
+                        map: std::sync::Arc::new(
+                            self.buffer_locals
+                                .iter()
+                                .map(|(id, locals)| (*id, std::sync::Arc::new(locals.clone())))
+                                .collect(),
+                        ),
+                    })
+                },
+            );
+            // Inner-Arc memoisation: the outer `SyntaxRenderState`
+            // still rebuilds per publish (its other fields churn
+            // per-frame), but the per-pane spans map is reused when
+            // no pane has rebuilt its spans.
+            let pane_highlights_map_arc = crate::render_state::cached_or_build(
+                &mut cache.pane_highlights_map,
+                pane_highlights_v,
+                || {
+                    std::sync::Arc::new(
+                        self.pane_highlights
+                            .iter()
+                            .map(|(idx, spans)| (*idx, std::sync::Arc::new(spans.clone())))
+                            .collect(),
+                    )
+                },
+            );
+            // Inner-Arc memoisation: same shape as pane_highlights —
+            // outer `LspRenderState` still rebuilds; the inner
+            // progress HashMap is reused when no $/progress event
+            // fired between publishes.
+            let lsp_progress_map_arc = crate::render_state::cached_or_build(
+                &mut cache.lsp_progress,
+                lsp_progress_v,
+                || std::sync::Arc::new((*self.lsp_progress).clone()),
+            );
+            (
+                panes_arc,
+                modes_arc,
+                buffer_locals_arc,
+                pane_highlights_map_arc,
+                lsp_progress_map_arc,
+            )
+        };
         // Start from the empty `Default` snapshot, then override
         // each sub-state whose backing source has been wired up.
         // Slice 3a wires only `diagnostics`; Slice 3b/3c add
@@ -487,38 +577,16 @@ impl Editor {
             options: std::sync::Arc::new(crate::render_state::OptionsRenderState {
                 config: self.config.clone(),
             }),
-            // Slice 3c.final.B.11: active modes per buffer. Outer
-            // map is rebuilt per publish (small HashMap; one entry
-            // per open buffer, ~5-20 typical); each entry's
-            // `Arc<ActiveModes>` is the same Arc across publishes
-            // unless that buffer's mode chain actually changed,
-            // because we clone the existing `ActiveModes` by value
-            // into a fresh `Arc::new` once per entry. Cost stays
-            // sub-µs even at 100 open buffers.
-            modes: std::sync::Arc::new(crate::render_state::ModesRenderState {
-                map: std::sync::Arc::new(
-                    self.active_modes
-                        .iter()
-                        .map(|(id, modes)| (*id, std::sync::Arc::new(modes.clone())))
-                        .collect(),
-                ),
-            }),
-            // Slice 3c.final.B.9: buffer-locals map. Deep-clones
-            // each entry's `BufferLocals` via the new `Clone`
-            // impl (which walks the typed-map and `clone_box`'s
-            // each Box<dyn LocalDyn>). Bounded by open-buffer
-            // count × per-buffer local count; ~5-20 buffers ×
-            // ~3-10 locals on a typical session. Each local is a
-            // wrapper around Clone primitives (Vec / PathBuf /
-            // scalars) so the deep-clone is cheap.
-            buffer_locals: std::sync::Arc::new(crate::render_state::BufferLocalsRenderState {
-                map: std::sync::Arc::new(
-                    self.buffer_locals
-                        .iter()
-                        .map(|(id, locals)| (*id, std::sync::Arc::new(locals.clone())))
-                        .collect(),
-                ),
-            }),
+            // Perf plan B.4: cached `Arc<ModesRenderState>` reused
+            // across publishes when `active_modes.version()` hasn't
+            // moved. Build closure (above) preserves the legacy
+            // per-entry deep-clone shape.
+            modes: modes_arc,
+            // Perf plan B.4: cached `Arc<BufferLocalsRenderState>`.
+            // This is the biggest single saving — the deep-clone of
+            // every `BufferLocals` typed-map fires only on
+            // mutation, not on every publish.
+            buffer_locals: buffer_locals_arc,
             diagnostics: std::sync::Arc::new(DiagnosticsRenderState {
                 // Clone the `DiagnosticsLayer` -- it's internally
                 // `Arc<ArcSwap<...>>`-backed so this is one Arc
@@ -550,7 +618,11 @@ impl Editor {
                 // Supervisor handle is `Arc<ArcSwap<...>>`-backed so
                 // `Clone` is one Arc bump and `servers_for(uri)` stays
                 // wait-free on the renderer side.
-                progress: std::sync::Arc::new(self.lsp_progress.clone()),
+                // Perf plan B.4: inner Arc cached in publish_cache;
+                // outer `LspRenderState` still rebuilds (its other
+                // Arc fields are independent) but the HashMap clone
+                // is elided when no $/progress event fired.
+                progress: lsp_progress_map_arc,
                 supervisor: self.lsp.clone(),
             }),
             // Phase 5.8.AF.5 / Slice 3c.final.B (group 1): panes
@@ -565,9 +637,10 @@ impl Editor {
             // sub-µs; later slices can migrate to an inner-cell
             // `Arc<HashMap<...>>` on the editor side if the
             // registry grows large.
-            panes: std::sync::Arc::new(PanesRenderState {
-                tree: std::sync::Arc::new(self.pane_tree.clone()),
-            }),
+            // Perf plan B.4: cached `Arc<PanesRenderState>` reused
+            // across publishes when `pane_tree.version()` hasn't
+            // moved.
+            panes: panes_arc,
             buffers: std::sync::Arc::new(BuffersRenderState {
                 registry: self.buffers.clone(),
                 uris: std::sync::Arc::new(self.buffer_uris.clone()),
@@ -625,20 +698,12 @@ impl Editor {
                 // publish surfaces the worker's latest write without
                 // a republish round-trip.
                 visible_rows: self.syntax_visible_rows_cell.clone(),
-                // Slice 3c.final.B.8: per-pane span snapshot map.
-                // Outer Arc is built per publish (small HashMap,
-                // typically 0-4 entries on multi-pane layouts);
-                // each entry's `Arc<Vec<...>>` is fresh because
-                // we move the inner Vec into a new Arc on each
-                // publish. Mutation surface (`refresh_pane_highlights`
-                // / split / pane-buffer-change) is rare relative
-                // to per-frame reads.
-                pane_highlights: std::sync::Arc::new(
-                    self.pane_highlights
-                        .iter()
-                        .map(|(idx, spans)| (*idx, std::sync::Arc::new(spans.clone())))
-                        .collect(),
-                ),
+                // Perf plan B.4: inner Arc cached in publish_cache;
+                // outer `SyntaxRenderState` still rebuilds (its
+                // worker cells, scroll, viewport, fold_hash all
+                // churn per-publish), but the per-pane spans map is
+                // reused when no pane has rebuilt its spans.
+                pane_highlights: pane_highlights_map_arc,
                 // Perf plan A.2 slice A.2b.1: pre-gate + flatten
                 // the active document's LSP inlay hints into the
                 // syntax-input contract. Empty when the
@@ -12216,7 +12281,12 @@ impl Editor {
         // Stash the live tree onto the current tab's slot.
         self.snapshot_active_pane();
         let active = self.active_tab;
-        std::mem::swap(&mut self.pane_tree, &mut self.tabs[active].panes);
+        // Perf plan B.4: `*self.pane_tree` derefs through DerefMut
+        // on the `Versioned` wrapper, bumping its version exactly
+        // once for the swap. The inner `PaneTree` is swapped with
+        // the tab slot's plain `PaneTree`; no version travels with
+        // it.
+        std::mem::swap(&mut *self.pane_tree, &mut self.tabs[active].panes);
 
         // Build a fresh tab with a single pane viewing the
         // same buffer as currently active. Vim's `:tabnew` (no
@@ -12237,7 +12307,7 @@ impl Editor {
             viewport_width: 0,
         };
         let mut new_panes = lattice_core::ui::pane::PaneTree::single(initial_pane);
-        std::mem::swap(&mut self.pane_tree, &mut new_panes);
+        std::mem::swap(&mut *self.pane_tree, &mut new_panes);
         // `new_panes` now holds the default-empty placeholder
         // (what was previously the stash for the current tab).
         // Drop it — the new tab slot uses its own default.
@@ -12279,7 +12349,7 @@ impl Editor {
         let new_active = if closing == 0 { 0 } else { closing - 1 };
         // Move target's stashed panes into live.
         let mut take = std::mem::take(&mut self.tabs[new_active].panes);
-        std::mem::swap(&mut self.pane_tree, &mut take);
+        std::mem::swap(&mut *self.pane_tree, &mut take);
         // `take` (previously live, soon to be discarded) drops.
         drop(take);
         self.active_tab = new_active;
@@ -12336,9 +12406,9 @@ impl Editor {
         self.snapshot_active_pane();
         let from = self.active_tab;
         // Stash live tree to old slot.
-        std::mem::swap(&mut self.pane_tree, &mut self.tabs[from].panes);
+        std::mem::swap(&mut *self.pane_tree, &mut self.tabs[from].panes);
         // Load target tree into live.
-        std::mem::swap(&mut self.pane_tree, &mut self.tabs[target].panes);
+        std::mem::swap(&mut *self.pane_tree, &mut self.tabs[target].panes);
         self.active_tab = target;
         self.load_active_pane();
     }
@@ -15865,7 +15935,10 @@ impl Editor {
         }
         let mut sent = 0usize;
         let mut skipped_non_cancellable = 0usize;
-        for ((sid, token), update) in &self.lsp_progress {
+        // Perf plan B.4: explicit deref through the `Versioned`
+        // wrapper because `&Versioned<HashMap<...>>` doesn't impl
+        // `IntoIterator`. `&*` calls `Deref`, no version bump.
+        for ((sid, token), update) in &*self.lsp_progress {
             if !allowed.contains(sid.as_ref()) {
                 continue;
             }

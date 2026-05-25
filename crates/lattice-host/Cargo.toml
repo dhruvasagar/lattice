@@ -115,5 +115,13 @@ criterion = { workspace = true }
 name = "highlights_worker"
 harness = false
 
+# Perf plan B.4: measures the dispatch publish path. Captures the
+# steady-state (no-op) publish cost where the sub-state cache
+# should reuse every cached `Arc` and the build cost where it
+# rebuilds them. See `benches/dispatch_publish.rs`.
+[[bench]]
+name = "dispatch_publish"
+harness = false
+
 [lints]
 workspace = true

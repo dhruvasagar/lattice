@@ -86,6 +86,12 @@ pub mod messages;
 pub mod synthetic_buffers;
 pub mod ui;
 
+// Perf plan B.4: tiny newtype wrapper that bumps a `u64` version
+// on every `DerefMut` access. Drives the identity-preserving Arc
+// publish in `render_state` so unchanged sub-states reuse their
+// prior Arc across publishes.
+pub mod versioned;
+
 // Re-export the host-side Renderer trait at the crate root for
 // the conventional `lattice_host::Renderer` path renderer
 // crates use when implementing.

@@ -5812,9 +5812,8 @@ mod tests {
     ) {
         use std::str::FromStr;
         let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
-        app.editor
-            .buffer_uris
-            .insert(app.ad().document_buffer_id, uri.clone());
+        let doc_id = app.ad().document_buffer_id;
+        app.editor.buffer_uris.insert(doc_id, uri.clone());
         // Activate lsp-mode so the M.5.6 render gate doesn't
         // suppress what we're about to paint. Idempotent: tests
         // that have already toggled it on no-op here.
@@ -5933,9 +5932,8 @@ mod tests {
         // Seed a URI so the mode gate's URI check passes (the
         // overlay also checks lsp_document_highlight_mode).
         let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
-        app.editor
-            .buffer_uris
-            .insert(app.ad().document_buffer_id, uri);
+        let doc_id = app.ad().document_buffer_id;
+        app.editor.buffer_uris.insert(doc_id, uri);
         if !app.lsp_mode_enabled_for(app.ad().document_buffer_id) {
             app.toggle_mode_by_name("lsp-mode");
         }
@@ -6012,9 +6010,8 @@ mod tests {
         use std::str::FromStr;
         let mut app = app_with("let x = 1;\n", 5);
         let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
-        app.editor
-            .buffer_uris
-            .insert(app.ad().document_buffer_id, uri);
+        let doc_id = app.ad().document_buffer_id;
+        app.editor.buffer_uris.insert(doc_id, uri);
         if !app.lsp_mode_enabled_for(app.ad().document_buffer_id) {
             app.toggle_mode_by_name("lsp-mode");
         }
@@ -6067,9 +6064,8 @@ mod tests {
         use std::str::FromStr;
         let mut app = app_with("fn main() {}\n", 5);
         let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
-        app.editor
-            .buffer_uris
-            .insert(app.ad().document_buffer_id, uri);
+        let doc_id = app.ad().document_buffer_id;
+        app.editor.buffer_uris.insert(doc_id, uri);
         if !app.lsp_mode_enabled_for(app.ad().document_buffer_id) {
             app.toggle_mode_by_name("lsp-mode");
         }
@@ -6135,9 +6131,8 @@ mod tests {
         use std::str::FromStr;
         let mut app = app_with("fn main() {}\n", 5);
         let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
-        app.editor
-            .buffer_uris
-            .insert(app.ad().document_buffer_id, uri);
+        let doc_id = app.ad().document_buffer_id;
+        app.editor.buffer_uris.insert(doc_id, uri);
         if !app.lsp_mode_enabled_for(app.ad().document_buffer_id) {
             app.toggle_mode_by_name("lsp-mode");
         }
@@ -6185,9 +6180,8 @@ mod tests {
         use std::str::FromStr;
         let mut app = app_with("let x = 1;\n", 5);
         let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
-        app.editor
-            .buffer_uris
-            .insert(app.ad().document_buffer_id, uri);
+        let doc_id = app.ad().document_buffer_id;
+        app.editor.buffer_uris.insert(doc_id, uri);
         if !app.lsp_mode_enabled_for(app.ad().document_buffer_id) {
             app.toggle_mode_by_name("lsp-mode");
         }
@@ -6239,9 +6233,8 @@ mod tests {
         use std::str::FromStr;
         let mut app = app_with("let x = x;\n", 5);
         let uri = lattice_lsp::Uri::from_str("file:///tmp/x.rs").unwrap();
-        app.editor
-            .buffer_uris
-            .insert(app.ad().document_buffer_id, uri);
+        let doc_id = app.ad().document_buffer_id;
+        app.editor.buffer_uris.insert(doc_id, uri);
         if !app.lsp_mode_enabled_for(app.ad().document_buffer_id) {
             app.toggle_mode_by_name("lsp-mode");
         }
@@ -6380,9 +6373,8 @@ mod tests {
         // returns an empty handle list, so the indicator stays empty.
         let fake_uri =
             <lattice_lsp::Uri as std::str::FromStr>::from_str("file:///tmp/x.rs").unwrap();
-        app.editor
-            .buffer_uris
-            .insert(app.ad().document_buffer_id, fake_uri);
+        let doc_id = app.ad().document_buffer_id;
+        app.editor.buffer_uris.insert(doc_id, fake_uri);
         assert_eq!(active_lsp_segment(&app), "");
     }
 

@@ -693,7 +693,10 @@ impl Editor {
             // slot's `panes` is a default placeholder; the real
             // pane tree above is live on `editor.pane_tree`.
             // `TabSlot::new` mints a fresh TabId.
-            tabs: vec![lattice_core::ui::tab::TabSlot::new()],
+            // Perf plan B.4.b: wrap in `Versioned` so version
+            // starts at 0; subsequent tab list mutations bump via
+            // DerefMut autoref.
+            tabs: crate::versioned::Versioned::new(vec![lattice_core::ui::tab::TabSlot::new()]),
             active_tab: 0,
             document,
             snapshot_cache,

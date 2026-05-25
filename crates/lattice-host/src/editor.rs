@@ -508,7 +508,13 @@ pub struct Editor {
     /// real tree sits on `editor.pane_tree`. Inactive tabs hold
     /// the full stashed tree. Always non-empty; default boot
     /// state is one tab whose pane_tree matches `editor.pane_tree`.
-    pub tabs: Vec<lattice_core::ui::tab::TabSlot>,
+    /// Perf plan B.4.b: wrapped in [`Versioned`] so the tabs
+    /// sub-state cache can detect when the tab list shape changes
+    /// (push / remove / reorder). The composite cache key for
+    /// `tabs` also includes `active_tab`, `pane_tree.version()`,
+    /// and `buffers.version()` because label resolution reads
+    /// across all four inputs.
+    pub tabs: Versioned<Vec<lattice_core::ui::tab::TabSlot>>,
     /// Index of the active tab in `tabs`. Always valid (clamped
     /// on tab close).
     pub active_tab: usize,
@@ -978,7 +984,11 @@ pub struct Editor {
     pub lsp_progress_event_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::LspProgressUpdate>>,
     pub lsp_config_tree: toml::Table,
-    pub buffer_uris: HashMap<BufferId, lattice_lsp::Uri>,
+    /// Perf plan B.4.b: wrapped in [`Versioned`] so the buffers
+    /// sub-state cache can elide the per-publish HashMap clone.
+    /// Mutators (`buffer_uris.insert/remove`) autoref `&mut`,
+    /// fire `DerefMut`, and bump.
+    pub buffer_uris: Versioned<HashMap<BufferId, lattice_lsp::Uri>>,
     // ---- LSP server-initiated channels ----
     pub pending_apply_edit_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<lattice_lsp::InboundApplyEdit>>,

@@ -215,9 +215,48 @@ struct BufferRegistryInner {
 /// internally; the registry is `Clone` so the App's
 /// `BufferStore` service impl can hold a clone for cross-thread
 /// access.
+///
+/// Perf plan B.4.b: carries an `AtomicU64` version counter
+/// alongside the inner. Every mutating method (`insert`, `remove`,
+/// `set_flags`, `set_name`, and every `with_*_mut` closure
+/// accessor) bumps it. `Versioned<T>`'s `DerefMut` discipline can't
+/// fire here because the registry uses interior mutability —
+/// callers take `&self` rather than `&mut self`, so autoref through
+/// `DerefMut` is impossible. The atomic is shared via the same
+/// `Arc<...>` clone as `inner` so every registry handle sees the
+/// same counter; `Clone` is one Arc bump for the pair.
+///
+/// `version()` is the read API. The `BuffersRenderState` /
+/// `TabsRenderState` caches on `Editor::publish_cache` compare
+/// against the prior captured value to decide cache reuse vs.
+/// rebuild.
 #[derive(Clone, Debug, Default)]
 pub struct BufferRegistry {
     inner: Arc<Mutex<BufferRegistryInner>>,
+    /// Perf plan B.4.b: monotonic version. Bumped by every
+    /// mutating method on `BufferRegistry`. `AtomicU64` is
+    /// `Default` (=0) so this slot composes with the existing
+    /// `#[derive(Default)]` without an explicit `Default` impl.
+    version: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl BufferRegistry {
+    /// Perf plan B.4.b: monotonic mutation counter. Read by the
+    /// publish cache (see [`crate::render_state::PublishCache`])
+    /// to decide whether the cached `buffers` / `tabs` Arcs can be
+    /// reused across publishes. `Relaxed` ordering is fine because
+    /// the publish path runs on the actor thread; we only need the
+    /// counter to advance after a mutation, not to synchronise
+    /// memory order with other writers.
+    pub fn version(&self) -> u64 {
+        self.version.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    #[inline]
+    fn bump_version(&self) {
+        self.version
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 fn lock_inner(inner: &Arc<Mutex<BufferRegistryInner>>) -> MutexGuard<'_, BufferRegistryInner> {
@@ -233,10 +272,19 @@ impl BufferRegistry {
 
     pub fn insert(&self, entry: BufferEntry) {
         lock_inner(&self.inner).by_id.insert(entry.id, entry);
+        // Perf plan B.4.b: bump after the mutation so the publish
+        // cache sees the new state on its next sub-state check.
+        self.bump_version();
     }
 
     pub fn remove(&self, id: BufferId) -> Option<BufferEntry> {
-        lock_inner(&self.inner).by_id.remove(&id)
+        let removed = lock_inner(&self.inner).by_id.remove(&id);
+        // Only bump on an actual removal so a no-op `remove` of a
+        // non-existent id doesn't invalidate the cache.
+        if removed.is_some() {
+            self.bump_version();
+        }
+        removed
     }
 
     // ---- Owned-return reads ------------------------------
@@ -277,13 +325,20 @@ impl BufferRegistry {
     /// `listed` on `:setlocal nobuflisted` once that lands).
     pub fn set_flags(&self, id: BufferId, flags: BufferFlags) -> bool {
         let mut inner = lock_inner(&self.inner);
-        match inner.by_id.get_mut(&id) {
+        let updated = match inner.by_id.get_mut(&id) {
             Some(e) => {
                 e.flags = flags;
                 true
             }
             None => false,
+        };
+        // Drop the lock before bumping the atomic — the version is
+        // a separate Arc and doesn't need the inner lock.
+        drop(inner);
+        if updated {
+            self.bump_version();
         }
+        updated
     }
 
     /// Rename the entry's synthetic `name` slot. Used by the
@@ -291,13 +346,18 @@ impl BufferRegistry {
     /// gets renamed `*lsp:rust:/path*` → `*lsp:rust:/path (exited)*`.
     pub fn set_name(&self, id: BufferId, name: Option<String>) -> bool {
         let mut inner = lock_inner(&self.inner);
-        match inner.by_id.get_mut(&id) {
+        let updated = match inner.by_id.get_mut(&id) {
             Some(e) => {
                 e.name = name;
                 true
             }
             None => false,
+        };
+        drop(inner);
+        if updated {
+            self.bump_version();
         }
+        updated
     }
 
     /// Kind-specific convenience: clone the `DocumentHandle` for
@@ -541,13 +601,26 @@ impl BufferRegistry {
     }
 
     /// Mutable variant of [`Self::with_entry`].
+    ///
+    /// Perf plan B.4.b: conservatively bumps the version after the
+    /// closure runs, even if the closure didn't actually mutate.
+    /// Over-bumping causes a one-time cache miss on the next
+    /// publish — safe and bounded — versus the alternative of
+    /// missing a real mutation, which would leave stale Arcs
+    /// visible to renderers indefinitely.
     pub fn with_entry_mut<R>(
         &self,
         id: BufferId,
         f: impl FnOnce(&mut BufferEntry) -> R,
     ) -> Option<R> {
-        let mut inner = lock_inner(&self.inner);
-        inner.by_id.get_mut(&id).map(f)
+        let result = {
+            let mut inner = lock_inner(&self.inner);
+            inner.by_id.get_mut(&id).map(f)
+        };
+        if result.is_some() {
+            self.bump_version();
+        }
+        result
     }
 
     pub fn with_document<R>(&self, id: BufferId, f: impl FnOnce(&DocumentEntry) -> R) -> Option<R> {
@@ -560,12 +633,26 @@ impl BufferRegistry {
         id: BufferId,
         f: impl FnOnce(&mut DocumentEntry) -> R,
     ) -> Option<R> {
-        let mut inner = lock_inner(&self.inner);
-        inner
-            .by_id
-            .get_mut(&id)
-            .and_then(|e| e.document_mut())
-            .map(f)
+        // Perf plan B.4.b: document-entry mutations don't affect
+        // the published `BuffersRenderState` fields directly (kind /
+        // name / flags). They do invalidate the registry-derived
+        // tabs label only if a name changes — which goes through
+        // the dedicated `set_name`, not through `with_document_mut`.
+        // We still bump because plugin code could conceivably edit
+        // the wrong field through a closure; conservatism is cheaper
+        // than a hard-to-find staleness bug.
+        let result = {
+            let mut inner = lock_inner(&self.inner);
+            inner
+                .by_id
+                .get_mut(&id)
+                .and_then(|e| e.document_mut())
+                .map(f)
+        };
+        if result.is_some() {
+            self.bump_version();
+        }
+        result
     }
 
     pub fn with_help<R>(&self, id: BufferId, f: impl FnOnce(&HelpBuffer) -> R) -> Option<R> {
@@ -578,8 +665,14 @@ impl BufferRegistry {
         id: BufferId,
         f: impl FnOnce(&mut HelpBuffer) -> R,
     ) -> Option<R> {
-        let mut inner = lock_inner(&self.inner);
-        inner.by_id.get_mut(&id).and_then(|e| e.help_mut()).map(f)
+        let result = {
+            let mut inner = lock_inner(&self.inner);
+            inner.by_id.get_mut(&id).and_then(|e| e.help_mut()).map(f)
+        };
+        if result.is_some() {
+            self.bump_version();
+        }
+        result
     }
 
     pub fn with_file_tree<R>(
@@ -596,12 +689,18 @@ impl BufferRegistry {
         id: BufferId,
         f: impl FnOnce(&mut FileTreeBuffer) -> R,
     ) -> Option<R> {
-        let mut inner = lock_inner(&self.inner);
-        inner
-            .by_id
-            .get_mut(&id)
-            .and_then(|e| e.file_tree_mut())
-            .map(f)
+        let result = {
+            let mut inner = lock_inner(&self.inner);
+            inner
+                .by_id
+                .get_mut(&id)
+                .and_then(|e| e.file_tree_mut())
+                .map(f)
+        };
+        if result.is_some() {
+            self.bump_version();
+        }
+        result
     }
 
     pub fn with_oil<R>(&self, id: BufferId, f: impl FnOnce(&OilBuffer) -> R) -> Option<R> {
@@ -610,8 +709,14 @@ impl BufferRegistry {
     }
 
     pub fn with_oil_mut<R>(&self, id: BufferId, f: impl FnOnce(&mut OilBuffer) -> R) -> Option<R> {
-        let mut inner = lock_inner(&self.inner);
-        inner.by_id.get_mut(&id).and_then(|e| e.oil_mut()).map(f)
+        let result = {
+            let mut inner = lock_inner(&self.inner);
+            inner.by_id.get_mut(&id).and_then(|e| e.oil_mut()).map(f)
+        };
+        if result.is_some() {
+            self.bump_version();
+        }
+        result
     }
 
     pub fn with_terminal<R>(&self, id: BufferId, f: impl FnOnce(&TerminalBuffer) -> R) -> Option<R> {
@@ -620,8 +725,14 @@ impl BufferRegistry {
     }
 
     pub fn with_terminal_mut<R>(&self, id: BufferId, f: impl FnOnce(&mut TerminalBuffer) -> R) -> Option<R> {
-        let mut inner = lock_inner(&self.inner);
-        inner.by_id.get_mut(&id).and_then(|e| e.terminal_mut()).map(f)
+        let result = {
+            let mut inner = lock_inner(&self.inner);
+            inner.by_id.get_mut(&id).and_then(|e| e.terminal_mut()).map(f)
+        };
+        if result.is_some() {
+            self.bump_version();
+        }
+        result
     }
 
     /// Run `f` against every entry under the registry lock.

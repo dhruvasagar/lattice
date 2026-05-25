@@ -404,7 +404,42 @@ impl Editor {
         let buffer_locals_v = self.buffer_locals.version();
         let pane_highlights_v = self.pane_highlights.version();
         let lsp_progress_v = self.lsp_progress.version();
-        let (panes_arc, modes_arc, buffer_locals_arc, pane_highlights_map_arc, lsp_progress_map_arc) = {
+        // Perf plan B.4.b: `buffers` keyed on `buffer_uris.version()`
+        // alone — the registry inside the cached `BuffersRenderState`
+        // is `Arc<Mutex<...>>`-backed, so renderers see current
+        // registry state through the SAME registry handle even when
+        // the outer Arc is reused.
+        let buffers_v = self.buffer_uris.version();
+        // Perf plan B.4.b: composite key for `tabs`. Folds four
+        // contributing inputs into one `u64` via a SipHash13 walk so
+        // the cache slot keeps the same `(u64, Arc<T>)` shape as the
+        // others. Each input independently invalidates the cache:
+        // - `tabs.version()` — list shape changes (`do_new_tab`,
+        //   `do_close_tab`, `do_move_tab`, etc.).
+        // - `active_tab` — `do_switch_to_tab` reassigns it directly
+        //   (no Versioned wrapper); included as a raw input.
+        // - `pane_tree.version()` — active pane's buffer changes
+        //   the active tab's label.
+        // - `self.buffers.version()` — any buffer name change
+        //   (or insert/remove) flips a tab's resolved label.
+        let tabs_input_v = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            self.tabs.version().hash(&mut h);
+            (self.active_tab as u64).hash(&mut h);
+            self.pane_tree.version().hash(&mut h);
+            self.buffers.version().hash(&mut h);
+            h.finish()
+        };
+        let (
+            panes_arc,
+            modes_arc,
+            buffer_locals_arc,
+            pane_highlights_map_arc,
+            lsp_progress_map_arc,
+            buffers_arc,
+            tabs_arc,
+        ) = {
             let mut cache = self
                 .publish_cache
                 .lock()
@@ -475,12 +510,36 @@ impl Editor {
                 lsp_progress_v,
                 || std::sync::Arc::new((*self.lsp_progress).clone()),
             );
+            // Perf plan B.4.b: full `Arc<BuffersRenderState>` cached.
+            // The `registry` clone is one Arc bump (cheap); the win
+            // is on the `buffer_uris.clone()` HashMap allocation.
+            let buffers_arc = crate::render_state::cached_or_build(
+                &mut cache.buffers,
+                buffers_v,
+                || {
+                    std::sync::Arc::new(BuffersRenderState {
+                        registry: self.buffers.clone(),
+                        uris: std::sync::Arc::new((*self.buffer_uris).clone()),
+                    })
+                },
+            );
+            // Perf plan B.4.b: full `Arc<TabsRenderState>` cached.
+            // Saves the `build_tabs_render_state` walk per no-op
+            // publish (label resolution per tab + tabline-show
+            // option read).
+            let tabs_arc = crate::render_state::cached_or_build(
+                &mut cache.tabs,
+                tabs_input_v,
+                || std::sync::Arc::new(self.build_tabs_render_state()),
+            );
             (
                 panes_arc,
                 modes_arc,
                 buffer_locals_arc,
                 pane_highlights_map_arc,
                 lsp_progress_map_arc,
+                buffers_arc,
+                tabs_arc,
             )
         };
         // Start from the empty `Default` snapshot, then override
@@ -596,7 +655,11 @@ impl Editor {
                 // snapshot.
                 layer: self.lsp_diagnostics.clone(),
             }),
-            tabs: std::sync::Arc::new(self.build_tabs_render_state()),
+            // Perf plan B.4.b: cached `Arc<TabsRenderState>` reused
+            // across publishes when the composite tabs key
+            // (tabs.version + active_tab + pane_tree.version +
+            // buffers.version) is unchanged.
+            tabs: tabs_arc,
             // Slice 3b.0/3b.1: clone the per-subsystem cache
             // slot Arcs. Cheap (one Arc bump each) and shares the
             // underlying ArcSwap/PerBufferCache with the editor's
@@ -641,10 +704,13 @@ impl Editor {
             // across publishes when `pane_tree.version()` hasn't
             // moved.
             panes: panes_arc,
-            buffers: std::sync::Arc::new(BuffersRenderState {
-                registry: self.buffers.clone(),
-                uris: std::sync::Arc::new(self.buffer_uris.clone()),
-            }),
+            // Perf plan B.4.b: cached `Arc<BuffersRenderState>`
+            // reused across publishes when `buffer_uris.version()`
+            // is unchanged. Registry mutations don't invalidate
+            // this cache because the registry is `Arc<Mutex<>>`-
+            // backed; the cached Arc's registry handle still sees
+            // current state via the shared mutex.
+            buffers: buffers_arc,
             // Slice 3c.final.B (group 3): picker / completion /
             // popup snapshots. Each `Arc::new` per publish; the
             // option-wrapped slots collapse to `None` (no clone)

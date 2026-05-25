@@ -1020,7 +1020,9 @@ pub fn static_overlay_state_version(
 /// true). Otherwise the slot is rebuilt and the new
 /// `(version, Arc)` pair is stored.
 ///
-/// **Targeted sub-states (B.4.a):**
+/// **Targeted sub-states:**
+///
+/// B.4.a (5 subs):
 ///
 /// - `panes` — full sub-state Arc. Mutates on
 ///   `pane_tree.split_active` / `close_active` / `set_active` /
@@ -1039,10 +1041,20 @@ pub fn static_overlay_state_version(
 ///   sub-state. Same shape as `pane_highlights_map`; saves the
 ///   HashMap clone when no `$/progress` event fired.
 ///
-/// Deferred to B.4.b: `buffers` (registry has its own
-/// interior-mutability layer; needs an internal version counter),
-/// `buffer_uris` map, `tabs` (label depends on cross-substate
-/// inputs — composite version derivation).
+/// B.4.b (3 subs):
+///
+/// - `buffers` — full `Arc<BuffersRenderState>`. Keyed on
+///   `buffer_uris.version()` alone. The inner `registry` field is
+///   `Arc<Mutex<...>>`-backed so the SAME registry handle inside a
+///   reused Arc still sees current state — no version dependency
+///   on registry mutations needed for this sub-state's cache
+///   hit/miss decision. Saves the `buffer_uris.clone()` HashMap
+///   allocation per no-op publish.
+/// - `tabs` — full `Arc<TabsRenderState>`. Composite key over
+///   `tabs.version()` (tab list shape) + `active_tab` (per-publish
+///   read) + `pane_tree.version()` (active pane's buffer) +
+///   `buffers.version()` (label-resolving names). Saves the
+///   `build_tabs_render_state` walk per no-op publish.
 #[derive(Debug, Default)]
 pub struct PublishCache {
     pub panes: Option<(u64, std::sync::Arc<PanesRenderState>)>,
@@ -1063,6 +1075,13 @@ pub struct PublishCache {
             >,
         >,
     )>,
+    /// Perf plan B.4.b: keyed on `buffer_uris.version()` only.
+    pub buffers: Option<(u64, std::sync::Arc<BuffersRenderState>)>,
+    /// Perf plan B.4.b: keyed on a composite of `tabs.version()`,
+    /// `active_tab`, `pane_tree.version()`, `buffers.version()`.
+    /// The composite is encoded into one `u64` via a small fold so
+    /// the cache slot shape stays uniform with the other entries.
+    pub tabs: Option<(u64, std::sync::Arc<TabsRenderState>)>,
 }
 
 impl PublishCache {
@@ -1698,10 +1717,12 @@ mod tests {
     /// per-mode work by comparing `Arc::ptr_eq` on consecutive
     /// frames.
     ///
-    /// Covers:
+    /// Covers (B.4.a + B.4.b):
     /// - `panes` (outer `Arc<PanesRenderState>`)
     /// - `modes` (outer `Arc<ModesRenderState>`)
     /// - `buffer_locals` (outer `Arc<BufferLocalsRenderState>`)
+    /// - `buffers` (outer `Arc<BuffersRenderState>`)
+    /// - `tabs` (outer `Arc<TabsRenderState>`)
     /// - `syntax.pane_highlights` (inner per-pane spans map Arc)
     /// - `lsp.progress` (inner progress HashMap Arc)
     #[test]
@@ -1711,7 +1732,7 @@ mod tests {
         let a = editor.render_state.load_full();
         editor.publish_render_state();
         let b = editor.render_state.load_full();
-        // Full sub-state caches.
+        // Full sub-state caches (B.4.a).
         assert!(
             std::sync::Arc::ptr_eq(&a.panes, &b.panes),
             "panes sub-state should reuse its Arc when pane_tree.version() hasn't moved"
@@ -1724,6 +1745,15 @@ mod tests {
             std::sync::Arc::ptr_eq(&a.buffer_locals, &b.buffer_locals),
             "buffer_locals sub-state should reuse its Arc when buffer_locals.version() hasn't moved"
         );
+        // Full sub-state caches (B.4.b).
+        assert!(
+            std::sync::Arc::ptr_eq(&a.buffers, &b.buffers),
+            "buffers sub-state should reuse its Arc when buffer_uris.version() hasn't moved"
+        );
+        assert!(
+            std::sync::Arc::ptr_eq(&a.tabs, &b.tabs),
+            "tabs sub-state should reuse its Arc when its composite key hasn't moved"
+        );
         // Inner-Arc caches (parent SyntaxRenderState / LspRenderState
         // still rebuild because their other fields churn per-frame).
         assert!(
@@ -1733,6 +1763,49 @@ mod tests {
         assert!(
             std::sync::Arc::ptr_eq(&a.lsp.progress, &b.lsp.progress),
             "lsp.progress inner Arc should be reused when lsp_progress.version() hasn't moved"
+        );
+    }
+
+    /// Perf plan B.4.b: a registry-only mutation (no buffer_uris
+    /// change) preserves the `buffers` sub-state cache, but
+    /// invalidates the `tabs` cache because tab labels depend on
+    /// `buffers.name_of(...)`.
+    #[test]
+    fn buffers_substate_survives_registry_only_mutation_but_tabs_invalidates() {
+        use crate::buffer_registry::{BufferData, BufferEntry};
+        use crate::buffers::BufferFlags;
+        use crate::file_tree::FileTreeBuffer;
+        use lattice_core::BufferId;
+        let editor = Editor::default();
+        editor.publish_render_state();
+        let a = editor.render_state.load_full();
+        // Registry mutation only — buffer_uris untouched.
+        let id = BufferId(7_777);
+        editor.buffers.insert(BufferEntry {
+            id,
+            name: Some("*scratch-versioned-test*".to_string()),
+            flags: BufferFlags::default(),
+            data: BufferData::FileTree(FileTreeBuffer {
+                id,
+                content: lattice_core::Buffer::empty(),
+                cursor: lattice_protocol::position::Position::ZERO,
+                scroll: 0,
+            }),
+        });
+        editor.publish_render_state();
+        let b = editor.render_state.load_full();
+        // `buffers` cache survives because `buffer_uris.version()`
+        // didn't move — the inner registry handle still sees the
+        // newly inserted buffer through the shared Arc<Mutex<...>>.
+        assert!(
+            std::sync::Arc::ptr_eq(&a.buffers, &b.buffers),
+            "buffers Arc should survive a registry-only mutation when buffer_uris didn't change"
+        );
+        // `tabs` cache invalidates because the composite key
+        // includes `buffers.version()`, which bumped on `insert`.
+        assert!(
+            !std::sync::Arc::ptr_eq(&a.tabs, &b.tabs),
+            "tabs Arc must rebuild after a buffer insert (tab labels depend on registry names)"
         );
     }
 

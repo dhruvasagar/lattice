@@ -46,8 +46,10 @@ use lattice_mode::{ActiveModes, BufferLocals};
 
 /// Build an editor with a populated state so per-publish costs are
 /// non-trivial: a multi-pane tree, several buffers' worth of
-/// active_modes + buffer_locals, and a non-empty pane_highlights /
-/// lsp_progress map. Mirrors a mid-size editing session.
+/// active_modes + buffer_locals, a non-empty pane_highlights /
+/// lsp_progress map, plus B.4.b-relevant load: 20 `buffer_uris`
+/// (matching the active_modes count — typical LSP-attached session)
+/// and 4 open tabs. Mirrors a mid-size editing session.
 fn populated_editor() -> Editor {
     let mut editor = Editor::default();
     let mut tree = PaneTree::single(PaneState::default());
@@ -59,6 +61,14 @@ fn populated_editor() -> Editor {
         let id = BufferId(i);
         editor.active_modes.insert(id, ActiveModes::default());
         editor.buffer_locals.insert(id, BufferLocals::new());
+        // B.4.b: realistic buffer_uris population. Skips the
+        // synthetic / unnamed scratch buffers but covers any
+        // file-backed buffer the LSP would attach to.
+        let uri = <lattice_lsp::Uri as std::str::FromStr>::from_str(
+            &format!("file:///tmp/bench/file_{}.rs", i),
+        )
+        .expect("synthetic file URI parses");
+        editor.buffer_uris.insert(id, uri);
     }
 
     for pane_idx in 0..3 {
@@ -84,6 +94,15 @@ fn populated_editor() -> Editor {
             },
         );
     }
+
+    // B.4.b: 4 tabs (1 default + 3 extras) so the `tabs` cache
+    // saves the build_tabs_render_state walk on no-op publishes.
+    for _ in 0..3 {
+        editor
+            .tabs
+            .push(lattice_core::ui::tab::TabSlot::new());
+    }
+
     editor
 }
 

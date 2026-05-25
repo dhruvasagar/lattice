@@ -49,6 +49,11 @@ lattice-lsp = { path = "../lattice-lsp" }
 # re-exporting through the host shim). Matches the TUI peer's
 # direct dep on lattice-config.
 lattice-config = { path = "../lattice-config" }
+# T2 substrate swap (2026-05-25): terminal-cell color +
+# attribute types (`TerminalColor`, `NamedColor`, `CellAttrs`)
+# pattern-matched by `build_terminal_inner` to translate the
+# alacritty-published snapshot to gpui `Rgba` + text styling.
+lattice-terminal = { path = "../lattice-terminal" }
 
 # Zed's GPU-accelerated UI framework. Gated behind the `window`
 # feature so the scaffold types + tests build on every host

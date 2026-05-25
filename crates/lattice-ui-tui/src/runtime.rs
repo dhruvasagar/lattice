@@ -104,8 +104,17 @@ fn teardown(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
 /// convention (Block for command-language modes, Bar for Insert /
 /// Command-line, Underscore for Replace) lives once on the host
 /// (5.8.N); this peer just maps to crossterm's primitive.
-fn cursor_style_for(modal: ModalState) -> SetCursorStyle {
+///
+/// Terminal-mode T2.b (2026-05-25): when the active buffer is a
+/// Terminal AND `terminal-insert-mode` is active, the shape
+/// flips to `SteadyBar` even though `ModalState` stays `Normal`
+/// (TerminalInsert is a minor mode, not a separate modal
+/// variant). The Normal-in-terminal state keeps `SteadyBlock`.
+fn cursor_style_for(modal: ModalState, terminal_insert_active: bool) -> SetCursorStyle {
     use lattice_host::cursor_shape::CursorShape;
+    if terminal_insert_active {
+        return SetCursorStyle::SteadyBar;
+    }
     match CursorShape::for_mode(modal) {
         CursorShape::Block => SetCursorStyle::SteadyBlock,
         CursorShape::Bar => SetCursorStyle::SteadyBar,
@@ -125,7 +134,13 @@ fn popup_height_for(candidate_count: usize) -> usize {
 }
 
 fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) -> Result<()> {
-    let mut last_modal: Option<ModalState> = None;
+    // Terminal-mode T2.b (2026-05-25): cursor-style cache now keys
+    // off `(modal, terminal_insert_active)` since TerminalInsert is
+    // a minor mode that doesn't flip `ModalState`. Without the
+    // minor-mode bit in the cache key, entering / leaving
+    // Terminal-Insert wouldn't re-push the cursor style and the
+    // user would see a stale block where a bar belongs.
+    let mut last_cursor_inputs: Option<(ModalState, bool)> = None;
     // Slice 3c.final.B (group 6): lifecycle read via published
     // substate. `should_quit` flips from inside dispatch (`:q`,
     // `:wq`, `:qa!`) which republishes at its tail, so the next
@@ -205,13 +220,20 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
         // violation B1 closed for the TUI peer.
         app.refresh_pane_highlights();
 
-        // Push the cursor shape only when modal changes -- terminals
-        // accept these every frame, but emitting on every iteration adds
-        // a few bytes of escape sequence to the stream that isn't free.
-        if last_modal != Some(app.ad().modal) {
-            execute!(terminal.backend_mut(), cursor_style_for(app.ad().modal))
-                .context("set cursor style")?;
-            last_modal = Some(app.ad().modal);
+        // Push the cursor shape only when the inputs change --
+        // terminals accept these every frame, but emitting on every
+        // iteration adds a few bytes of escape sequence to the
+        // stream that isn't free. Cache key includes both `modal`
+        // and `terminal_insert_active` so the bar / block flip on
+        // entering / leaving TerminalInsert re-pushes.
+        let cursor_inputs = (app.ad().modal, app.ad().terminal_insert_active);
+        if last_cursor_inputs != Some(cursor_inputs) {
+            execute!(
+                terminal.backend_mut(),
+                cursor_style_for(cursor_inputs.0, cursor_inputs.1)
+            )
+            .context("set cursor style")?;
+            last_cursor_inputs = Some(cursor_inputs);
         }
 
         // §5.6.8: one Cache::load per frame for the active document.
@@ -267,6 +289,9 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
                         insert_completion_open: app.completion_popup_active(),
                         snippet_active: ad.snippet_active,
                         terminal_insert_active: ad.terminal_insert_active,
+                        terminal_esc_exits: ad.terminal_esc_exits,
+                        terminal_app_cursor_keys: ad.terminal_app_cursor_keys,
+                        terminal_insert_exit_pending: ad.terminal_insert_exit_pending,
                         keymap: &translator.keymap,
                         partial_chord: &translator.partial_chord,
                     };
@@ -300,7 +325,7 @@ mod tests {
     #[test]
     fn normal_mode_uses_block_cursor() {
         assert!(matches!(
-            cursor_style_for(ModalState::Normal),
+            cursor_style_for(ModalState::Normal, false),
             SetCursorStyle::SteadyBlock
         ));
     }
@@ -308,7 +333,7 @@ mod tests {
     #[test]
     fn insert_mode_uses_bar_cursor() {
         assert!(matches!(
-            cursor_style_for(ModalState::Insert),
+            cursor_style_for(ModalState::Insert, false),
             SetCursorStyle::SteadyBar
         ));
     }
@@ -316,7 +341,7 @@ mod tests {
     #[test]
     fn visual_charwise_uses_block_cursor() {
         assert!(matches!(
-            cursor_style_for(ModalState::Visual(VisualKind::Charwise)),
+            cursor_style_for(ModalState::Visual(VisualKind::Charwise), false),
             SetCursorStyle::SteadyBlock
         ));
     }
@@ -324,7 +349,7 @@ mod tests {
     #[test]
     fn visual_linewise_uses_block_cursor() {
         assert!(matches!(
-            cursor_style_for(ModalState::Visual(VisualKind::Linewise)),
+            cursor_style_for(ModalState::Visual(VisualKind::Linewise), false),
             SetCursorStyle::SteadyBlock
         ));
     }
@@ -332,7 +357,7 @@ mod tests {
     #[test]
     fn operator_pending_uses_block_cursor() {
         assert!(matches!(
-            cursor_style_for(ModalState::OperatorPending),
+            cursor_style_for(ModalState::OperatorPending, false),
             SetCursorStyle::SteadyBlock
         ));
     }
@@ -340,7 +365,7 @@ mod tests {
     #[test]
     fn replace_mode_uses_underscore_cursor() {
         assert!(matches!(
-            cursor_style_for(ModalState::Replace),
+            cursor_style_for(ModalState::Replace, false),
             SetCursorStyle::SteadyUnderScore
         ));
     }
@@ -348,7 +373,7 @@ mod tests {
     #[test]
     fn command_mode_uses_bar_cursor() {
         assert!(matches!(
-            cursor_style_for(ModalState::Command),
+            cursor_style_for(ModalState::Command, false),
             SetCursorStyle::SteadyBar
         ));
     }
@@ -356,12 +381,30 @@ mod tests {
     #[test]
     fn search_mode_uses_bar_cursor() {
         assert!(matches!(
-            cursor_style_for(ModalState::Search(SearchDirection::Forward)),
+            cursor_style_for(ModalState::Search(SearchDirection::Forward), false),
             SetCursorStyle::SteadyBar
         ));
         assert!(matches!(
-            cursor_style_for(ModalState::Search(SearchDirection::Backward)),
+            cursor_style_for(ModalState::Search(SearchDirection::Backward), false),
             SetCursorStyle::SteadyBar
+        ));
+    }
+
+    /// Terminal-mode T2.b: `terminal_insert_active` forces the
+    /// shape to `SteadyBar` regardless of `ModalState` (which
+    /// stays `Normal` because TerminalInsert is a minor mode).
+    /// Normal-in-terminal (insert-active = false) stays
+    /// `SteadyBlock` so the user can tell at a glance which
+    /// sub-state they're in.
+    #[test]
+    fn terminal_insert_minor_mode_overrides_to_bar() {
+        assert!(matches!(
+            cursor_style_for(ModalState::Normal, true),
+            SetCursorStyle::SteadyBar
+        ));
+        assert!(matches!(
+            cursor_style_for(ModalState::Normal, false),
+            SetCursorStyle::SteadyBlock
         ));
     }
 }

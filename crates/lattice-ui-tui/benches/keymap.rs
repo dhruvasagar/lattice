@@ -483,6 +483,9 @@ fn translate_ctx<'a>(
         insert_completion_open: false,
         snippet_active: false,
         terminal_insert_active: false,
+        terminal_esc_exits: false,
+        terminal_app_cursor_keys: false,
+        terminal_insert_exit_pending: false,
         keymap,
         partial_chord,
     }

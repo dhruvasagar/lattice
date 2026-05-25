@@ -61,9 +61,9 @@
 
 use anyhow::{Context as _, Result};
 use gpui::{
-    App, AppContext, Application, Bounds, Context, FocusHandle, Focusable, InteractiveElement,
-    IntoElement, KeyDownEvent, ParentElement, Render, SharedString, Styled, TextRun, Window,
-    WindowBounds, WindowOptions, div, font, px, rgb, size,
+    AnyElement, App, AppContext, Application, Bounds, Context, FocusHandle, Focusable,
+    InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render, SharedString, Styled,
+    TextRun, Window, WindowBounds, WindowOptions, div, font, px, rgb, size,
 };
 use lattice_core::Document;
 use lattice_core::ui::pane::{PaneNode, PaneState};
@@ -577,6 +577,52 @@ impl EditorView {
 
     /// Paint a single pane. Active pane uses `editor.cursor` +
     /// `editor.visible_highlights` (refreshed at the top of
+    /// Shared pane chrome (2026-05-25): wraps `inner` content with
+    /// the per-pane structural layout — flex-column outer that
+    /// `flex_grow`s into the parent allocation and `overflow_hidden`s
+    /// excess content, an inner padded content slot for the buffer
+    /// painter, and the per-pane status bar at the bottom. Applied
+    /// uniformly to every buffer kind (document, terminal, oil,
+    /// file-tree, ...) so no kind can render past its allocated
+    /// vertical space and bleed into the modeline / cmdline
+    /// [[feedback_buffers_no_special_case]].
+    fn pane_chrome(
+        inner: AnyElement,
+        status_text: String,
+        render_active: bool,
+        theme: &GpuiTheme,
+    ) -> gpui::Div {
+        let (status_bg, status_fg) = if render_active {
+            (rgb(theme.cursor_background), rgb(theme.cursor_foreground))
+        } else {
+            (rgb(theme.status_background), rgb(theme.status_foreground))
+        };
+        div()
+            .flex()
+            .flex_col()
+            .flex_grow()
+            .overflow_hidden()
+            .child(
+                div()
+                    .flex_grow()
+                    .p_3()
+                    .flex()
+                    .flex_col()
+                    .overflow_hidden()
+                    .child(inner),
+            )
+            .child(
+                div()
+                    .bg(status_bg)
+                    .text_color(status_fg)
+                    .px_2()
+                    .py_1()
+                    .flex()
+                    .flex_row()
+                    .child(div().child(status_text)),
+            )
+    }
+
     /// render); inactive panes use the stashed `PaneState::cursor`
     /// and no highlights. Each pane gets its own status line at
     /// its bottom (path + cursor coords), which keeps the visible
@@ -613,14 +659,26 @@ impl EditorView {
         }
         let pane: &PaneState = &leaves[pane_idx];
         // Issue #40 / Terminal-mode T1: paint terminal-kind panes
-        // from the PTY-reader's published `TerminalSnapshot`. The
-        // branch lives inline (matching the TUI peer) until
-        // terminal-mode registers itself as a pane-render provider
-        // in T2; the renderer only touches `TerminalSnapshot`
-        // accessors so the `lattice-terminal` substrate stays
-        // decoupled.
+        // from the PTY-reader's published `TerminalSnapshot`. T2
+        // promotes the inner-content build to a pane-render
+        // provider registered by `terminal-mode`; until then the
+        // dispatch lives inline. Critically — content is returned
+        // as an AnyElement that flows through the same
+        // [`Self::pane_chrome`] wrapper as every other buffer kind
+        // so the modeline / cmdline / per-pane status bar always
+        // reserves its row, no kind-specific layout
+        // [[feedback_buffers_no_special_case]].
         if matches!(pane.buffer, lattice_core::BufferKind::Terminal) {
-            return self.paint_terminal_pane(pane, &rs_guard, theme, is_active);
+            // T2.b: the cursor cell renders as a left vertical
+            // bar in Terminal-Insert and as a full bg/fg-swap
+            // block in Normal-in-terminal. Only the active pane
+            // honours `terminal_insert_active`; inactive panes
+            // always paint the block so the user can still see
+            // where each shell's cursor sits.
+            let insert_active = is_active && ad.terminal_insert_active;
+            let (inner, status_text) =
+                self.build_terminal_inner(pane, &rs_guard, theme, insert_active);
+            return Self::pane_chrome(inner, status_text, is_active, theme);
         }
         // Resolve the buffer's document handle. Inactive panes may
         // reference buffers different from `editor.document`; the
@@ -996,11 +1054,10 @@ impl EditorView {
                 }
             });
         let status_line = format!("  {path_label}   L:{}  C:{}", cursor.line + 1, cursor.byte);
-        let (status_bg, status_fg) = if render_active {
-            (rgb(theme.cursor_background), rgb(theme.cursor_foreground))
-        } else {
-            (rgb(theme.status_background), rgb(theme.status_foreground))
-        };
+        // Status-bar fg/bg colours are picked inside `pane_chrome`
+        // off `render_active` so every kind goes through one
+        // styling path; the document arm no longer derives them
+        // locally.
 
         // Phase 5.8.AF.5 / Slice X3.full.2: pane body is one
         // `EditorElement` that shapes + paints visible lines
@@ -1086,58 +1143,55 @@ impl EditorView {
             inlay_color,
         };
 
-        div()
-            .flex()
-            .flex_col()
-            .flex_grow()
-            .overflow_hidden()
-            .child(
-                div()
-                    .flex_grow()
-                    .p_3()
-                    .flex()
-                    .flex_col()
-                    .overflow_hidden()
-                    .child(editor_element.into_any_element()),
-            )
-            .child(
-                div()
-                    .bg(status_bg)
-                    .text_color(status_fg)
-                    .px_2()
-                    .py_1()
-                    .flex()
-                    .flex_row()
-                    .child(div().child(status_line)),
-            )
+        Self::pane_chrome(
+            editor_element.into_any_element(),
+            status_line,
+            render_active,
+            theme,
+        )
     }
 
-    /// Issue #40 / Terminal-mode T1: paint a terminal-kind pane
-    /// from the `TerminalSnapshot` published by the PTY reader
-    /// task. T1 renders monochrome cell text only; T2 layers SGR
-    /// colors + cursor-shape + alt-screen handling once
-    /// alacritty_terminal is wired into `lattice-terminal::reader`.
+    /// Issue #40 / Terminal-mode T1: build the inner content of a
+    /// terminal-kind pane from the `TerminalSnapshot` published
+    /// by the PTY reader task. T1 renders monochrome cell text
+    /// only; T2 layers SGR colors + cursor-shape + alt-screen
+    /// handling once alacritty_terminal is wired into
+    /// `lattice-terminal::reader`.
+    ///
+    /// Returns the inner pane content + a status-bar label. The
+    /// caller wraps both via [`Self::pane_chrome`] so the
+    /// terminal's vertical extent is bounded by the standard
+    /// pane chrome and can never render past the modeline
+    /// [[feedback_buffers_no_special_case]].
     ///
     /// The substrate stays decoupled: this helper touches only
     /// `TerminalSnapshot`'s public accessors (`rows`, `cols`,
     /// `cell_at`) — no reader / grid internals.
-    fn paint_terminal_pane(
+    fn build_terminal_inner(
         &self,
         pane: &PaneState,
         rs_guard: &lattice_host::render_state::RenderState,
         theme: &GpuiTheme,
-        _is_active: bool,
-    ) -> gpui::Div {
-        let snap_opt = rs_guard
-            .buffers
-            .registry
-            .with_terminal(pane.buffer_id, |t| t.snapshot.load_full());
-        let Some(snap) = snap_opt else {
-            return div()
-                .p_3()
+        insert_active: bool,
+    ) -> (AnyElement, String) {
+        let snap_opt = rs_guard.buffers.registry.with_terminal(pane.buffer_id, |t| {
+            (
+                t.snapshot.load_full(),
+                t.current_match,
+                t.visual,
+                t.all_matches.clone(),
+            )
+        });
+        let Some((snap, current_match, visual, all_matches)) = snap_opt else {
+            let placeholder = div()
                 .bg(rgb(theme.background))
                 .text_color(rgb(theme.foreground))
-                .child(format!("(terminal #{} unavailable)", pane.buffer_id.0));
+                .child(format!("(terminal #{} unavailable)", pane.buffer_id.0))
+                .into_any_element();
+            return (
+                placeholder,
+                format!("  [terminal #{} unavailable]", pane.buffer_id.0),
+            );
         };
         tracing::trace!(
             target: "lattice_gpui::terminal",
@@ -1145,7 +1199,18 @@ impl EditorView {
             rows = snap.rows,
             cols = snap.cols,
             seq = snap.seq,
-            "paint_terminal_pane: loaded snapshot",
+            "build_terminal_inner: loaded snapshot",
+        );
+        // Status label format matches the document path's
+        // `  {path}   L:{row}  C:{col}` shape so the per-pane
+        // bar reads the same regardless of buffer kind. T2 will
+        // promote the placeholder name to the spawn command /
+        // shell once the terminal buffer registry tracks it.
+        let status_text = format!(
+            "  [terminal #{}]   R:{}  C:{}",
+            pane.buffer_id.0,
+            snap.cursor_row + 1,
+            snap.cursor_col,
         );
         // Diagnostic placeholder while the reader hasn't
         // published its first frame: a string of spaces renders
@@ -1156,68 +1221,253 @@ impl EditorView {
         // visible; the actual cell grid replaces it on the
         // first non-zero seq.
         if snap.seq == 0 {
-            return div()
-                .flex()
-                .flex_col()
-                .flex_grow()
-                .overflow_hidden()
+            let placeholder = div()
                 .bg(rgb(theme.background))
                 .text_color(rgb(theme.foreground))
                 .font_family(theme.font_family.clone())
-                .p_3()
                 .child(format!(
                     "[terminal #{} — {}×{} — waiting for first output]",
                     pane.buffer_id.0, snap.rows, snap.cols,
-                ));
+                ))
+                .into_any_element();
+            return (placeholder, status_text);
         }
-        // Build rows, splicing the cursor cell into its row as
-        // a reverse-video span (block-style; cursor-shape /
-        // visibility are honored in T2.b once
-        // `alacritty_terminal` is wired). The row is rendered as
-        // three runs: pre-cursor text, cursor cell (bg=fg /
-        // fg=bg), post-cursor text. T1's monochrome render
-        // limits us to the global fg/bg; per-cell SGR colours
-        // land with the alacritty_terminal swap.
+        // T2 substrate swap (2026-05-25): per-cell SGR colors
+        // from alacritty's grid. The xterm-default 16-colour
+        // palette is hardcoded here so unthemed terminals look
+        // identical to a real xterm; a future slice promotes
+        // these to the host theme so users can re-skin the
+        // terminal palette without recompiling.
+        use lattice_terminal::{CellAttrs, NamedColor as TermNamed, TerminalColor};
+        const ANSI_PALETTE: [u32; 16] = [
+            0x000000, 0xcd0000, 0x00cd00, 0xcdcd00, 0x0000ee, 0xcd00cd, 0x00cdcd, 0xe5e5e5,
+            0x7f7f7f, 0xff0000, 0x00ff00, 0xffff00, 0x5c5cff, 0xff00ff, 0x00ffff, 0xffffff,
+        ];
+        let default_fg = theme.foreground;
+        let default_bg = theme.background;
+        // Map `TerminalColor::Indexed(16..=255)` (the xterm
+        // 256-colour palette beyond the 16 named entries) to its
+        // RGB approximation per the xterm spec: indices 16..=231
+        // form a 6×6×6 cube; 232..=255 a 24-step grayscale ramp.
+        fn indexed_to_rgb(i: u8) -> u32 {
+            if (i as usize) < ANSI_PALETTE.len() {
+                return ANSI_PALETTE[i as usize];
+            }
+            if i >= 232 {
+                let lvl = 8 + 10 * (i - 232) as u32;
+                return (lvl << 16) | (lvl << 8) | lvl;
+            }
+            let n = (i - 16) as u32;
+            let r = (n / 36) % 6;
+            let g = (n / 6) % 6;
+            let b = n % 6;
+            let scale = |v: u32| if v == 0 { 0 } else { 55 + 40 * v };
+            (scale(r) << 16) | (scale(g) << 8) | scale(b)
+        }
+        let term_to_rgb = move |c: TerminalColor, is_fg: bool| -> u32 {
+            match c {
+                TerminalColor::Default => {
+                    if is_fg { default_fg } else { default_bg }
+                }
+                TerminalColor::Named(n) => {
+                    let idx = match n {
+                        TermNamed::Black => 0,
+                        TermNamed::Red => 1,
+                        TermNamed::Green => 2,
+                        TermNamed::Yellow => 3,
+                        TermNamed::Blue => 4,
+                        TermNamed::Magenta => 5,
+                        TermNamed::Cyan => 6,
+                        TermNamed::White => 7,
+                        TermNamed::BrightBlack => 8,
+                        TermNamed::BrightRed => 9,
+                        TermNamed::BrightGreen => 10,
+                        TermNamed::BrightYellow => 11,
+                        TermNamed::BrightBlue => 12,
+                        TermNamed::BrightMagenta => 13,
+                        TermNamed::BrightCyan => 14,
+                        TermNamed::BrightWhite => 15,
+                    };
+                    ANSI_PALETTE[idx]
+                }
+                TerminalColor::Indexed(i) => indexed_to_rgb(i),
+                TerminalColor::Rgb(r, g, b) => {
+                    ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
+                }
+            }
+        };
+        // Coalesce adjacent cells with identical (fg, bg, attrs)
+        // into a single styled `div` per run. Saves the GPU
+        // shaping engine from running once per cell when the
+        // shell paints in uniform blocks (which is the common
+        // case — the prompt, output text, etc.).
         let cursor_row = snap.cursor_row;
         let cursor_col = snap.cursor_col;
         let cursor_visible = snap.cursor_visible
             && cursor_row < snap.rows
             && cursor_col < snap.cols;
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        struct CellStyle {
+            fg: u32,
+            bg: u32,
+            attrs: CellAttrs,
+            cursor: bool, // true = cursor cell (forces its own run)
+            highlight: bool, // T3.b.3: search-match cell
+        }
+        // T3.b.3: translate the current_match's alacritty grid
+        // line into the visible-window row coords. Same shape
+        // as the TUI peer's `match_overlay`.
+        let match_overlay = current_match.and_then(|h| {
+            let row = h.line + snap.scroll_offset as i32;
+            if (0..snap.rows as i32).contains(&row) {
+                let c_start = h.column;
+                let c_end = h
+                    .column
+                    .saturating_add(h.len.min(u16::MAX as u32) as u16)
+                    .min(snap.cols);
+                Some((row as u16, c_start, c_end))
+            } else {
+                None
+            }
+        });
+        // T3.b.2 / T3.b.2.b: Visual selection predicate. Same
+        // shape as the TUI peer.
+        let visual_state = visual;
         let mut rows: Vec<gpui::Div> = Vec::with_capacity(snap.rows as usize);
         for r in 0..snap.rows {
-            let mut row_text = String::with_capacity(snap.cols as usize);
+            let mut row_div = div().flex().flex_row();
+            let mut run_text = String::with_capacity(snap.cols as usize);
+            let mut run_style: Option<CellStyle> = None;
+            let flush =
+                |row_div: gpui::Div,
+                 text: &mut String,
+                 style: Option<CellStyle>|
+                 -> gpui::Div {
+                    if text.is_empty() {
+                        return row_div;
+                    }
+                    let style = style.unwrap_or(CellStyle {
+                        fg: default_fg,
+                        bg: default_bg,
+                        attrs: CellAttrs::default(),
+                        cursor: false,
+                        highlight: false,
+                    });
+                    // Build the styled run div. Cursor cells get
+                    // shape-specific treatment (block vs beam);
+                    // every other run honours fg/bg/attrs. Match
+                    // highlights paint a fg/bg swap (same as the
+                    // block-cursor look) — vim's match colour
+                    // would be cleaner once the host theme grows
+                    // a `match_background` slot.
+                    let mut span = div();
+                    let attrs = style.attrs;
+                    if style.cursor && insert_active {
+                        // Beam cursor: vertical bar on the left edge
+                        // of the cell.
+                        span = span.border_l_2().border_color(rgb(style.fg));
+                    } else if style.cursor {
+                        // Block cursor: swap fg/bg.
+                        span = span.bg(rgb(style.fg)).text_color(rgb(style.bg));
+                    } else if style.highlight {
+                        // T3.b.3: search match — invert fg/bg.
+                        span = span.bg(rgb(style.fg)).text_color(rgb(style.bg));
+                    } else {
+                        span = span.text_color(rgb(style.fg));
+                        if style.bg != default_bg {
+                            span = span.bg(rgb(style.bg));
+                        }
+                    }
+                    // Attribute-style approximations. GPUI's
+                    // div doesn't expose every text decoration
+                    // yet; map what's there.
+                    if attrs.underline {
+                        span = span.border_b_1().border_color(rgb(style.fg));
+                    }
+                    let final_div = span.child(SharedString::from(std::mem::take(text)));
+                    row_div.child(final_div)
+                };
             for c in 0..snap.cols {
-                row_text.push(snap.cell_at(r, c).ch);
+                let cell = snap.cell_at(r, c);
+                let is_cursor = cursor_visible && r == cursor_row && c == cursor_col;
+                let mut fg_color = term_to_rgb(cell.fg, true);
+                let mut bg_color = term_to_rgb(cell.bg, false);
+                if cell.attrs.reverse {
+                    std::mem::swap(&mut fg_color, &mut bg_color);
+                }
+                let highlight_match = match_overlay
+                    .map(|(m_row, c_start, c_end)| r == m_row && c >= c_start && c < c_end)
+                    .unwrap_or(false);
+                // T3.b.3 hlsearch: any of the all_matches whose
+                // grid line maps to this visible row. Softer
+                // highlight than `current_match` — we use a
+                // less aggressive bg tint (currently same as
+                // match for v1; theme-slot polish later).
+                let highlight_hlsearch = !all_matches.is_empty() && {
+                    let off = snap.scroll_offset as i32;
+                    let cell_line = r as i32 - off;
+                    all_matches.iter().any(|h| {
+                        if h.line != cell_line {
+                            return false;
+                        }
+                        let c_start = h.column;
+                        let c_end = h
+                            .column
+                            .saturating_add(h.len.min(u16::MAX as u32) as u16);
+                        c >= c_start && c < c_end
+                    })
+                };
+                let highlight_visual = visual_state
+                    .map(|v| {
+                        use lattice_terminal::VisualKind as Vk;
+                        let off = snap.scroll_offset as i32;
+                        let cell_line = r as i32 - off;
+                        match v.kind {
+                            Vk::Line => {
+                                let (lo, hi) = v.line_range();
+                                cell_line >= lo && cell_line <= hi
+                            }
+                            Vk::Block => {
+                                let (lo, hi) = v.line_range();
+                                let (lo_c, hi_c) = v.block_col_range();
+                                cell_line >= lo
+                                    && cell_line <= hi
+                                    && c >= lo_c
+                                    && c <= hi_c
+                            }
+                            Vk::Char => {
+                                let ((sl, sc), (el, ec)) = v.char_endpoints();
+                                if sl == el {
+                                    cell_line == sl && c >= sc && c <= ec
+                                } else if cell_line == sl {
+                                    c >= sc
+                                } else if cell_line == el {
+                                    c <= ec
+                                } else {
+                                    cell_line > sl && cell_line < el
+                                }
+                            }
+                        }
+                    })
+                    .unwrap_or(false);
+                let highlight = highlight_match || highlight_visual || highlight_hlsearch;
+                let style = CellStyle {
+                    fg: fg_color,
+                    bg: bg_color,
+                    attrs: cell.attrs,
+                    cursor: is_cursor,
+                    highlight,
+                };
+                if Some(style) == run_style {
+                    run_text.push(cell.ch);
+                } else {
+                    row_div = flush(row_div, &mut run_text, run_style);
+                    run_text.push(cell.ch);
+                    run_style = Some(style);
+                }
             }
-            if cursor_visible && r == cursor_row {
-                // Split the row at the cursor column. Use
-                // char_indices so multi-byte UTF-8 doesn't
-                // panic the slice.
-                let split = row_text
-                    .char_indices()
-                    .nth(cursor_col as usize)
-                    .map(|(i, _)| i)
-                    .unwrap_or(row_text.len());
-                let (pre, rest) = row_text.split_at(split);
-                let mut chars = rest.chars();
-                let cursor_ch = chars.next().unwrap_or(' ').to_string();
-                let post: String = chars.collect();
-                rows.push(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .child(div().child(SharedString::from(pre.to_string())))
-                        .child(
-                            div()
-                                .bg(rgb(theme.foreground))
-                                .text_color(rgb(theme.background))
-                                .child(SharedString::from(cursor_ch)),
-                        )
-                        .child(div().child(SharedString::from(post))),
-                );
-            } else {
-                rows.push(div().child(SharedString::from(row_text)));
-            }
+            row_div = flush(row_div, &mut run_text, run_style);
+            rows.push(row_div);
         }
         let mut col = div()
             .flex()
@@ -1235,7 +1485,7 @@ impl EditorView {
         for row in rows {
             col = col.child(row);
         }
-        col
+        (col.into_any_element(), status_text)
     }
 }
 

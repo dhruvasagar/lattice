@@ -85,6 +85,20 @@ fn validate_scrolloff(i: &i64) -> Result<(), String> {
     }
 }
 
+fn validate_terminal_scrollback_lines(i: &i64) -> Result<(), String> {
+    if *i < 0 {
+        Err(format!(
+            "terminal.scrollback-lines must be >= 0 (use 0 to disable scrollback), got {i}"
+        ))
+    } else if *i > 1_000_000 {
+        Err(format!(
+            "terminal.scrollback-lines capped at 1_000_000 (≈ 80 MB of cells); got {i}"
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 fn validate_completion_priority(i: &i64) -> Result<(), String> {
     if (0..=9999).contains(i) {
         Ok(())
@@ -562,6 +576,43 @@ crate::options! {
     #[name("tabline.show")]
     pub TablineShowOption: lattice_core::ui::tab::TablineShow =
         lattice_core::ui::tab::TablineShow::Auto;
+}
+
+// Terminal-mode T2.b.0 (2026-05-25): terminal group — knobs that
+// affect every PTY-backed buffer. `terminal.esc-exits` is the
+// first; T2.b/T4 grow the group with `terminal.shell`,
+// `terminal.scrollback-lines`, `terminal.refresh-hz`, etc.
+crate::options! {
+    group = crate::Terminal;
+
+    /// When `true`, pressing `<Esc>` inside Terminal-Insert exits
+    /// back to Normal-in-terminal (so `:q`, motions, and the rest
+    /// of the vim grammar are reachable without the `<C-\><C-n>`
+    /// chord). When `false`, `<Esc>` encodes to `\x1b` and goes
+    /// to the PTY — nested programs (vim, htop, less) keep their
+    /// own Esc semantics.
+    ///
+    /// Default `true`: matches the table-stakes terminal UX of
+    /// modern editors (VS Code, Helix). Power users running vim
+    /// inside `:terminal` flip it off and use `<C-\><C-n>` to
+    /// exit (added by T2.c).
+    #[name("terminal.esc-exits")]
+    pub TerminalEscExits: bool = true;
+
+    /// Maximum scrollback ring size (lines). Set to `0` to
+    /// disable scrollback entirely (saves RAM on long-running
+    /// terminals with chatty output). Default `10000` matches
+    /// the user-facing `docs/user/terminal.md` table and what
+    /// most modern terminal emulators ship with.
+    ///
+    /// Capped at 1_000_000 — beyond that the ring's memory
+    /// footprint dwarfs every other editor allocation and the
+    /// search hot path slows to a crawl. Users who genuinely
+    /// want unbounded history should pipe the output to a file
+    /// instead and `:e` it as a Document buffer.
+    #[name("terminal.scrollback-lines")]
+    #[validate(validate_terminal_scrollback_lines)]
+    pub TerminalScrollbackLines: i64 = 10_000;
 }
 
 // M.2.0c: `CoreOptions` struct and `register_core_options`

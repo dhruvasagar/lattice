@@ -51,6 +51,9 @@ pub(super) fn press(app: &mut App, event: crossterm::event::KeyEvent) {
         insert_completion_open: app.completion_popup_active(),
         snippet_active: ad.snippet_active,
         terminal_insert_active: ad.terminal_insert_active,
+        terminal_esc_exits: ad.terminal_esc_exits,
+        terminal_app_cursor_keys: ad.terminal_app_cursor_keys,
+        terminal_insert_exit_pending: ad.terminal_insert_exit_pending,
         keymap: &app.editor.keymap,
         partial_chord: &app.editor.partial_chord,
     };

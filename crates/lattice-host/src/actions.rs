@@ -166,6 +166,10 @@ pub struct ActionIds {
     /// names the action for keymap binding + plugin lookup.
     pub only_tab: CommandId,
     pub move_tab: CommandId,
+    /// T4 (2026-05-25): `<C-w>T` — move the active pane to a
+    /// fresh tab. Dispatched as `Action::MovePaneToNewTab`
+    /// (handler in `Editor::do_move_pane_to_new_tab`).
+    pub move_pane_to_new_tab: CommandId,
     /// Slice 8.i.4.e: completion-popup overlay actions
     /// (registered into a minor-mode layer pushed when the
     /// popup opens; popped on close). Each ID is the typed
@@ -882,6 +886,12 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "`:tabmove [N]`: move the active tab to position N (default last).",
             AppEffect::MoveTab(0),
         ),
+        move_pane_to_new_tab: register_simple(
+            registry,
+            "action:move-pane-to-new-tab",
+            "`<C-w>T`: move the active pane to a fresh tab.",
+            AppEffect::MovePaneToNewTab,
+        ),
         completion_next: register_simple(
             registry,
             "action:completion-next",
@@ -1249,6 +1259,7 @@ mod tests {
             (ids.close_tab, "action:close-tab"),
             (ids.only_tab, "action:only-tab"),
             (ids.move_tab, "action:move-tab"),
+            (ids.move_pane_to_new_tab, "action:move-pane-to-new-tab"),
             (ids.completion_next, "action:completion-next"),
             (ids.completion_prev, "action:completion-prev"),
             (ids.completion_accept, "action:completion-accept"),

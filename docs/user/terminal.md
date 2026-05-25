@@ -64,29 +64,64 @@ terminal.cwd=document` (default — document's path's parent).
 
 ---
 
-## Two modes inside a terminal
+## Three sub-states inside a terminal
 
-A terminal buffer has two sub-states — same idea as vim's
-`:terminal`. The mode-line shows which one you're in.
+A terminal buffer has three sub-states. The mode-line shows
+which one you're in.
 
 ### Normal-in-terminal — `-- TERMINAL --`
 
-This is the **default when you focus a terminal pane**. Vim's
-grammar applies to the **scrollback** (the historical output),
-NOT to the shell:
+The **default when you focus a terminal pane**. Vim's grammar
+runs against the **scrollback** (the historical output), not
+against the shell:
 
-- `j` / `k` / `gg` / `G` / `0` / `$` — move the cursor through
-  history
-- `/pattern` / `?pattern` / `n` / `N` — search the output
-- `v` / `V` / `<C-v>` — Visual mode for selection
-- `y` — copy the selection into a register
-- `<C-o>` / `<C-i>` — jump list works across terminal buffers
+- `j` / `k` — scroll one row toward older / newer output
+- `<C-d>` / `<C-u>` — half-page down / up; `<C-f>` / `<C-b>`
+  page; `<C-e>` / `<C-y>` line-step (matches document
+  semantics)
+- `gg` / `G` — jump to top of scrollback / back to the live edge
+- `/pattern<CR>` / `?pattern<CR>` — search forward / backward
+  across the full grid (visible + history); viewport jumps to
+  the first match
+- `n` / `N` — walk to next / previous match
+- `v` / `V` / `<C-v>` — Visual mode (see below)
+- `<C-o>` / `<C-i>` — jump list works across terminal buffers;
+  returning to a terminal restores the scrollback row you were
+  on, not the live edge
 - `<C-w>` family — window navigation (split / move / resize /
   close)
-- All your usual modal grammar
+- All of your usual modal grammar that doesn't mutate text
 
-The shell receives **nothing**. Whatever the shell is doing
-(prompt, running program, etc.) continues independently.
+The shell receives **nothing** while you're in
+Normal-in-terminal. Whatever the shell is doing (prompt,
+running program, etc.) continues independently.
+
+### Terminal-Visual — `-- TERMINAL-VISUAL --`
+
+`v` (charwise), `V` (linewise), or `<C-v>` (blockwise) enters
+Visual on the terminal's cell grid. The anchor lands at the
+live cursor row (or the top of the visible window when you're
+scrolled into history); `h` / `j` / `k` / `l` extends the head
+in the obvious direction. `gg` / `G` extends the head to the
+top / bottom of scrollback.
+
+- `y` copies the selection into the unnamed register (or
+  `"ay` into named register `a`); the entry kind matches the
+  Visual flavour (charwise / linewise / blockwise) so
+  cross-buffer paste lands correctly.
+- `<Esc>` cancels without copying.
+- `gv` reselects the prior terminal Visual session.
+
+Each kind picks the right shape:
+- **Linewise (`V`)** — whole rows; trailing cell padding is
+  trimmed when yanked.
+- **Charwise (`v`)** — exact `(line, col)` start through
+  `(line, col)` end, inclusive. Multi-line selections include
+  the tail of the start row, full rows between, and the head
+  of the end row (vim's shape).
+- **Blockwise (`<C-v>`)** — column-aligned rectangle; cells
+  inside the box are extracted with column alignment
+  preserved so paste re-applies block-shape into a document.
 
 ### Terminal-Insert — `-- TERMINAL-INSERT --`
 
@@ -94,13 +129,19 @@ This is **active typing**. Keystrokes encode to the shell
 exactly as a normal terminal would.
 
 To enter: `i` / `a` / `I` / `A` (any of vim's Insert-entering
-chords).
+chords — all four are equivalent inside a terminal because the
+shell owns the cursor; T2.b — landed).
 
 To exit:
-- **`<C-\><C-n>`** — vim convention, the always-on escape
-  hatch.
-- **`<Esc>`** — also exits (unless your shell binds Esc and
-  you've set `:set terminal.esc_exits=false`).
+- **`<Esc>`** — default. Exits Terminal-Insert and drops you
+  into Normal-in-terminal. Disable with
+  `:set terminal.esc-exits=false` when you run nested programs
+  (vim, htop, less) that want Esc themselves.
+- **`<C-\><C-n>`** — two-key chord (vim convention). `<C-\>`
+  alone arms the chord; the next `<C-n>` confirms the exit.
+  Any other key after `<C-\>` sends `\x1c` to the PTY plus
+  that key's normal bytes, so a stray `<C-\>` doesn't lose
+  input.
 
 In Terminal-Insert mode:
 
@@ -122,11 +163,54 @@ while you're navigating.
 
 ---
 
+## Scrollback
+
+Lattice keeps a per-terminal scrollback ring sized by
+`terminal.scrollback-lines` (default `10000`, set to `0` to
+disable). Bytes that roll off the live screen go into the
+ring; `j` / `k` / `<C-u>` / `<C-d>` / `gg` walk it.
+
+- The modeline includes a `scroll_offset` indicator when you're
+  not at the live edge so you can tell at a glance you're
+  viewing history.
+- Pressing `i` / `a` / `I` / `A` to enter Terminal-Insert
+  snaps the view back to the live edge before activating Insert
+  — matches vim's `:terminal`.
+
+## Search
+
+`/pattern<CR>` searches forward across the full grid (visible
++ scrollback); `?pattern<CR>` searches backward. The viewport
+jumps to the matching row and the matched cells light up:
+
+- The **current match** paints with strong reverse-video.
+- **All other matches** in the visible window paint with an
+  underline (`hlsearch`-style).
+- `n` walks to the next match, `N` walks the other way.
+- `<Esc>` from the search line, entering Insert, or running a
+  new search clears the highlight.
+
+The regex syntax is the same as the document path
+(`fancy-regex`), so `\v` / `\c` / lookarounds all work.
+
+## Resize
+
+Resizing a terminal pane (via `<C-w>+` / `<C-w>-` / window
+resize / split-ratio changes) propagates the new geometry to
+both the alacritty grid and the underlying PTY, so the child
+sees `SIGWINCH` and re-lays-out its UI. Fullscreen programs
+(vim, htop, less) repaint automatically.
+
 ## Mouse
 
-If the program running in the terminal (`htop`, `vim`, `tmux`,
-etc.) has enabled mouse support, mouse clicks and scrolls pass
-through to the program. Defaults to `auto`:
+**Status:** Not yet implemented. Mouse passthrough — forwarding
+clicks / scrolls to programs that have enabled an xterm mouse
+mode (`htop`, `vim`, `tmux`, …) — is queued as its own slice
+(needs the mouse-event encoder + per-renderer event capture +
+the `terminal.mouse-passthrough` option). Today, mouse events
+in a terminal buffer are ignored.
+
+Once it lands, defaults will be `auto`:
 
 - `auto` — pass mouse events to the program when it has enabled
   a mouse mode.
@@ -169,7 +253,7 @@ editable with `:set`:
 | `terminal.enter_insert_on_open` | bool | `true` | Auto-enter Terminal-Insert when `:terminal` runs |
 | `terminal.exit_on_process_exit` | bool | `false` | Auto-close the buffer when the child exits |
 | `terminal.mouse_passthrough` | enum | `auto` | Mouse events → program: `auto`, `on`, or `off` |
-| `terminal.esc_exits` | bool | `true` | `<Esc>` exits Terminal-Insert |
+| `terminal.esc-exits` | bool | `true` | `<Esc>` exits Terminal-Insert (T2.b.0 — landed). Set `false` if you run nested vim / htop inside the terminal and want Esc to reach them instead. |
 
 Options apply to **new** terminals. Existing terminals keep
 their boot-time config.

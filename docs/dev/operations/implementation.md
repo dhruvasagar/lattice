@@ -1096,6 +1096,88 @@ snapshot_post_publish_read at 10/1k/50k lines).
 
 ---
 
+## Terminal-mode (issue #40, 2026-05-22 → 2026-05-25)
+
+Plan + tracker live in
+[`terminal-mode-plan.md`](terminal-mode-plan.md); design in
+[`../architecture/terminal-mode.md`](../architecture/terminal-mode.md).
+Capsule summary so this ledger stands alone:
+
+- ✅ **T1** — PTY spawn (`portable-pty`); homegrown cell-grid
+  reader; new `BufferKind::Terminal` integrated everywhere
+  buffers flow (`:terminal` / `:tnew`, picker `<C-s>` / `<C-v>` / `<C-t>`,
+  pane-render dispatch, modeline / tabline / `:ls`); `:bd!`
+  kills the child.
+- ✅ **T2 (substrate)** — homegrown reader retired; alacritty's
+  `Term` + `vte::Parser` is the engine. SGR colours (named /
+  256 / truecolor), alt-screen, cursor visibility, DECCKM all
+  honoured. Cells published with proper `TerminalColor` /
+  `CellAttrs`; both renderers (TUI / GPUI) paint per-cell
+  fg/bg with adjacent-run coalescing.
+- ✅ **T2.a / T2.b / T2.b.0 / T2.c** — `TerminalInsertMode`
+  minor mode; full ANSI encoder (printable + Enter/Tab/Backspace
+  + arrows + Home/End/PgUp/PgDn + Insert/Delete + F1–F12 +
+  Alt-prefix + xterm `1;<n>` modifier parameter);
+  `i`/`a`/`I`/`A` entry; `<Esc>` exit gated by
+  `terminal.esc-exits` (default `true`); modeline
+  `TERMINAL-INSERT`; `<C-c>` exemption sends SIGINT. T2.c
+  (2026-05-25): `<C-w>` window-prefix in Normal-in-terminal
+  works via the standard keymap (MotionAdapter cleanup);
+  `<C-w>` WERASE inside Insert via the encoder's
+  `ctrl_char_byte('w')`; `<C-\><C-n>` two-key chord (`<C-\>`
+  arms, `<C-n>` confirms; anything else sends `\x1c` + that
+  key's PTY bytes); DECCKM bit propagates via
+  `SharedTerm::cursor_keys_application_mode` →
+  `key_to_ansi_with_mode(_, true)` so arrow keys flip to SS3
+  when programs enable application-cursor-keys.
+- ✅ **T3 (scrollback + nav + copy)** —
+  `terminal.scrollback-lines` typed option (default 10k);
+  alacritty history ring sized through it; `SharedTerm` handle
+  shared between reader + dispatch; snapshot publishes
+  `scroll_offset` / `scrollback_rows`. **MotionAdapter cleanup**
+  retired every kind-specific branch from the translate layer:
+  standard Normal-mode keymap flows through
+  `Editor::run_terminal_invocation` (a peer of
+  `run_help_invocation` / `run_oil_invocation`) which routes
+  `line_down` / `line_up` / `goto_first_line` /
+  `goto_last_line` / `page_down` / `page_up` /
+  `scroll_line_down` / `scroll_line_up` to
+  `SharedTerm::scroll`. Search: `/pattern<CR>` / `?pattern<CR>`
+  / `n` / `N` use `SharedTerm::find_match` (forward / backward)
+  and `find_all_matches` for `hlsearch`. Current match paints
+  reverse-video; all matches in the visible window paint with
+  underline. Visual: `v` / `V` / `<C-v>` enter charwise /
+  linewise / blockwise on the cell grid; `h`/`j`/`k`/`l`/`gg`/`G`
+  extend; `y` yanks with matching `YankKind` so cross-buffer
+  paste handles correctly; `<Esc>` cancels; `gv` reselects.
+  Modeline `TERMINAL-VISUAL`. Snap-to-live-edge on Insert
+  entry. Jump-list (`<C-o>` / `<C-i>`) restores the recorded
+  scroll position when landing back on a Terminal entry
+  (`PositionEntry::terminal_scroll_offset`).
+- ✅ **T4 polish (4/5)** (2026-05-25) — Resize wired in
+  `editor_actor::SetPaneViewport`: on pane geometry change,
+  `SharedTerm::resize` updates the alacritty grid + republishes
+  the snapshot, and `PtyHandle::resize` triggers SIGWINCH so
+  the child re-lays-out. `<C-w>T` (move-pane-to-new-tab)
+  landed: new `Action::MovePaneToNewTab` +
+  `AppEffect::MovePaneToNewTab` + `do_move_pane_to_new_tab`
+  handler (closes pane in current tab when >1 leaves, then
+  opens a fresh tab holding the same `BufferId` at the same
+  cursor / scroll; no-op echo when the pane is the only one
+  in its tab). `:tabterminal [cmd]` (alias `:tabterm`)
+  registered as `ex:tabterminal` →
+  `AppEffect::TerminalSpawnInNewTab` → `do_new_tab` +
+  `TerminalSpawn(cmd)`. `:bd!` already kills the child via
+  the existing `TerminalBuffer::Drop` impl (abort reader →
+  close PTY master → SIGHUP).
+- Queued: T4.2 mouse passthrough (own slice — needs
+  mouse-encoder + per-renderer event capture + the
+  `terminal.mouse-passthrough` option); T5 plugin surface
+  (Phase 7+); word-motions (`w`/`b`/`e`) in Terminal Visual;
+  dedicated theme slots (`ui.match-background`,
+  `ui.visual-background`) so renderers can distinguish
+  match / selection backgrounds.
+
 ## In-progress
 
 **Phase 4.2 navigation -- 9/12 shipped + 1 partial.**

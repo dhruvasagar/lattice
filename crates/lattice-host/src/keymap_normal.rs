@@ -1079,6 +1079,8 @@ fn register_ctrl_w_sub_tree(handle: &KeymapHandle, actions: &ActionIds) {
         (&[lit_char('-')], actions.shrink_pane_height),
         (&[lit_char('>')], actions.grow_pane_width),
         (&[lit_char('<')], actions.shrink_pane_width),
+        // T4 (2026-05-25): `<C-w>T` — move active pane to new tab.
+        (&[lit_char('T')], actions.move_pane_to_new_tab),
     ];
     for (chords, action_id) in bare_table {
         for chord in chords.iter() {

@@ -681,6 +681,7 @@ async fn run_actor(
                 // active pane's actual painted area.
                 let active_idx = editor.pane_tree.active_index();
                 let leaves = editor.pane_tree.leaves_mut();
+                let pane_kind = leaves.get(idx).map(|l| (l.buffer, l.buffer_id));
                 if idx < leaves.len() {
                     leaves[idx].viewport_height = height.max(1);
                     leaves[idx].viewport_width = width.max(1);
@@ -688,6 +689,19 @@ async fn run_actor(
                 if idx == active_idx {
                     editor.viewport_height = height.max(1);
                     editor.ensure_cursor_visible();
+                }
+                // T4.1 (2026-05-25): when the pane hosts a
+                // terminal, propagate the new geometry to both
+                // the alacritty grid (via SharedTerm::resize)
+                // and the PTY (via PtyHandle::resize) so the
+                // child sees a SIGWINCH and re-lays-out its UI.
+                if let Some((lattice_core::BufferKind::Terminal, buf_id)) = pane_kind {
+                    let rows = height.max(1).min(u16::MAX as u32) as u16;
+                    let cols = width.max(1).min(u16::MAX as u32) as u16;
+                    let _ = editor.buffers.with_terminal(buf_id, |t| {
+                        t.term.resize(rows, cols);
+                        let _ = t.pty.resize(rows, cols);
+                    });
                 }
                 editor.publish_render_state();
             }

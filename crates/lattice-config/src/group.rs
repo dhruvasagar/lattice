@@ -217,6 +217,15 @@ impl OptionGroup for Tabline {
     const DOC: &'static str = "Tabline (vim-style tab strip).";
 }
 
+/// Terminal-mode (PTY-backed shell buffer) options. Added with
+/// T2.b.0 (`terminal.esc-exits`); T2.b/T4 grow the group with
+/// `terminal.shell`, `terminal.scrollback-lines`, etc.
+pub struct Terminal;
+impl OptionGroup for Terminal {
+    const NAME: &'static str = "terminal";
+    const DOC: &'static str = "PTY-backed terminal buffer.";
+}
+
 // linkme submissions for the built-in groups.
 // Each submission registers one group's metadata; the registry's
 // startup loader walks GROUP_DECLS and panics on duplicate names.
@@ -263,6 +272,10 @@ static MESSAGES_GROUP_LINK: &OptionGroupMetadata = &OptionGroupMetadata::for_gro
 #[linkme::distributed_slice(GROUP_DECLS)]
 static TABLINE_GROUP_LINK: &OptionGroupMetadata = &OptionGroupMetadata::for_group::<Tabline>();
 
+#[linkme::distributed_slice(GROUP_DECLS)]
+static TERMINAL_GROUP_LINK: &OptionGroupMetadata =
+    &OptionGroupMetadata::for_group::<Terminal>();
+
 // Compile-time naming-rule assertions for the built-in groups.
 // Verifies the `groups!` macro convention even though these
 // groups are hand-written: no built-in group's name ends in
@@ -280,6 +293,7 @@ const _: () = {
     assert!(!ends_with_mode_suffix(Oil::NAME));
     assert!(!ends_with_mode_suffix(Help::NAME));
     assert!(!ends_with_mode_suffix(Appearance::NAME));
+    assert!(!ends_with_mode_suffix(Terminal::NAME));
 };
 
 #[cfg(test)]

@@ -2062,7 +2062,7 @@ fn draw_pane_content(
     // `terminal-mode` (the major mode); T1 keeps it inline
     // since terminal-mode doesn't exist yet.
     if matches!(pane.buffer, crate::buffers::BufferKind::Terminal) {
-        draw_terminal_pane(frame, content_rect, app, pane);
+        draw_terminal_pane(frame, content_rect, app, pane, is_active);
         return;
     }
     // Default path: document buffer. The active branch reads the
@@ -2084,17 +2084,25 @@ fn draw_terminal_pane(
     area: Rect,
     app: &App,
     pane: &crate::pane::PaneState,
+    is_active: bool,
 ) {
-    use ratatui::style::{Modifier, Style};
+    use ratatui::style::{Color as TuiColor, Modifier, Style};
     use ratatui::text::{Line, Span};
     use ratatui::widgets::Paragraph;
+    use lattice_terminal::{CellAttrs, NamedColor as TermNamed, TerminalColor};
     let rs = app.render_state.load();
-    let snap_arc = match rs
+    let (snap_arc, current_match, visual, all_matches) = match rs
         .buffers
         .registry
-        .with_terminal(pane.buffer_id, |t| t.snapshot.load_full())
-    {
-        Some(s) => s,
+        .with_terminal(pane.buffer_id, |t| {
+            (
+                t.snapshot.load_full(),
+                t.current_match,
+                t.visual,
+                t.all_matches.clone(),
+            )
+        }) {
+        Some(p) => p,
         None => {
             let p = Paragraph::new(Line::from(Span::raw("(terminal buffer unavailable)")));
             frame.render_widget(p, area);
@@ -2107,40 +2115,211 @@ fn draw_terminal_pane(
     let cursor_col = snap_arc.cursor_col;
     let cursor_visible =
         snap_arc.cursor_visible && cursor_row < rows_to_paint && cursor_col < cols_to_paint;
+    // T2 substrate swap (2026-05-25): per-cell SGR colors from
+    // alacritty's grid. Map `TerminalColor` → ratatui's `Color`;
+    // `Default` stays as `Color::Reset` so the terminal renders
+    // the cell with its own fg/bg defaults (which honor the
+    // user's terminal theme). Adjacent identical-style cells
+    // get coalesced into one Span so we don't pay the per-cell
+    // diff cost.
+    fn term_to_tui(c: TerminalColor) -> TuiColor {
+        match c {
+            TerminalColor::Default => TuiColor::Reset,
+            TerminalColor::Named(n) => match n {
+                TermNamed::Black => TuiColor::Black,
+                TermNamed::Red => TuiColor::Red,
+                TermNamed::Green => TuiColor::Green,
+                TermNamed::Yellow => TuiColor::Yellow,
+                TermNamed::Blue => TuiColor::Blue,
+                TermNamed::Magenta => TuiColor::Magenta,
+                TermNamed::Cyan => TuiColor::Cyan,
+                TermNamed::White => TuiColor::Gray,
+                TermNamed::BrightBlack => TuiColor::DarkGray,
+                TermNamed::BrightRed => TuiColor::LightRed,
+                TermNamed::BrightGreen => TuiColor::LightGreen,
+                TermNamed::BrightYellow => TuiColor::LightYellow,
+                TermNamed::BrightBlue => TuiColor::LightBlue,
+                TermNamed::BrightMagenta => TuiColor::LightMagenta,
+                TermNamed::BrightCyan => TuiColor::LightCyan,
+                TermNamed::BrightWhite => TuiColor::White,
+            },
+            TerminalColor::Indexed(i) => TuiColor::Indexed(i),
+            TerminalColor::Rgb(r, g, b) => TuiColor::Rgb(r, g, b),
+        }
+    }
+    let style_for_cell = |fg: TerminalColor, bg: TerminalColor, attrs: CellAttrs| -> Style {
+        let mut s = Style::default().fg(term_to_tui(fg)).bg(term_to_tui(bg));
+        let mut m = Modifier::empty();
+        if attrs.bold {
+            m |= Modifier::BOLD;
+        }
+        if attrs.italic {
+            m |= Modifier::ITALIC;
+        }
+        if attrs.underline {
+            m |= Modifier::UNDERLINED;
+        }
+        if attrs.reverse {
+            m |= Modifier::REVERSED;
+        }
+        if attrs.dim {
+            m |= Modifier::DIM;
+        }
+        if attrs.strikethrough {
+            m |= Modifier::CROSSED_OUT;
+        }
+        if !m.is_empty() {
+            s = s.add_modifier(m);
+        }
+        s
+    };
+    // Terminal-mode T2.b (2026-05-25): the active pane drives the
+    // ratatui hardware cursor at the terminal's grid position, so
+    // the user sees a real terminal cursor with the right shape
+    // (block in Normal-in-terminal, bar in Terminal-Insert — set
+    // by `runtime::cursor_style_for`). The cell-reverse splice
+    // stays on inactive panes since the hardware cursor can only
+    // be in one place at a time.
+    let paint_cursor_cell = cursor_visible && !is_active;
+    // T3.b.3: translate the current_match's alacritty grid
+    // line into the snapshot's visible-window row coordinates.
+    // `snap.scroll_offset` is the number of rows scrolled back
+    // from the live edge; the topmost visible row corresponds
+    // to alacritty `Line(-scroll_offset)`. A match at grid
+    // line `L` therefore lands at visible row `L + scroll_offset`.
+    let match_overlay = current_match.and_then(|h| {
+        let row = h.line + snap_arc.scroll_offset as i32;
+        if (0..rows_to_paint as i32).contains(&row) {
+            let col_start = h.column;
+            let col_end = h
+                .column
+                .saturating_add(h.len.min(u16::MAX as u32) as u16)
+                .min(cols_to_paint);
+            Some((row as u16, col_start, col_end))
+        } else {
+            None
+        }
+    });
+    // T3.b.2 / T3.b.2.b: Visual selection predicate. Walks
+    // each cell and asks "is this in the selection?" based on
+    // kind. Char + block need col-precision so the row-range
+    // shortcut isn't enough.
+    let visual_state = visual;
     let mut lines: Vec<Line> = Vec::with_capacity(rows_to_paint as usize);
     for row in 0..rows_to_paint {
-        if cursor_visible && row == cursor_row {
-            // Split the row into pre-cursor / cursor-cell /
-            // post-cursor spans. The cursor cell uses
-            // `REVERSED` so it stands out against the
-            // monochrome cell text (T1's render budget); the
-            // alacritty_terminal swap will replace this with
-            // proper SGR + cursor-shape rendering.
-            let mut pre = String::with_capacity(cursor_col as usize);
-            for col in 0..cursor_col {
-                pre.push(snap_arc.cell_at(row, col).ch);
+        // Coalesce consecutive cells with identical Style into
+        // single Spans. Saves the renderer from constructing N
+        // styled spans per row; for un-coloured shells (default
+        // fg/bg everywhere) it collapses back to one span per
+        // line.
+        let mut spans: Vec<Span> = Vec::new();
+        let mut run_text = String::with_capacity(cols_to_paint as usize);
+        let mut run_style: Option<Style> = None;
+        for col in 0..cols_to_paint {
+            let cell = snap_arc.cell_at(row, col);
+            let mut style = style_for_cell(cell.fg, cell.bg, cell.attrs);
+            // Splice the cursor cell on inactive panes (active
+            // pane uses the hardware cursor).
+            if paint_cursor_cell && row == cursor_row && col == cursor_col {
+                style = style.add_modifier(Modifier::REVERSED);
             }
-            let cur_ch = snap_arc.cell_at(row, cursor_col).ch.to_string();
-            let mut post =
-                String::with_capacity((cols_to_paint - cursor_col - 1).max(0) as usize);
-            for col in (cursor_col + 1)..cols_to_paint {
-                post.push(snap_arc.cell_at(row, col).ch);
+            // T3.b.3: paint the current match cell range with
+            // a reverse-video overlay. Hlsearch-style softer
+            // overlay for all_matches lands below; we apply
+            // current_match last so it wins style precedence
+            // on the row it occupies.
+            if !all_matches.is_empty() {
+                let off = snap_arc.scroll_offset as i32;
+                let cell_line = row as i32 - off;
+                for h in &all_matches {
+                    if h.line == cell_line {
+                        let c_start = h.column;
+                        let c_end = h
+                            .column
+                            .saturating_add(h.len.min(u16::MAX as u32) as u16);
+                        if col >= c_start && col < c_end {
+                            style = style.add_modifier(Modifier::UNDERLINED);
+                            break;
+                        }
+                    }
+                }
             }
-            lines.push(Line::from(vec![
-                Span::raw(pre),
-                Span::styled(cur_ch, Style::default().add_modifier(Modifier::REVERSED)),
-                Span::raw(post),
-            ]));
-        } else {
-            let mut s = String::with_capacity(cols_to_paint as usize);
-            for col in 0..cols_to_paint {
-                s.push(snap_arc.cell_at(row, col).ch);
+            if let Some((m_row, c_start, c_end)) = match_overlay {
+                if row == m_row && col >= c_start && col < c_end {
+                    style = style.add_modifier(Modifier::REVERSED);
+                }
             }
-            lines.push(Line::from(Span::raw(s)));
+            // T3.b.2 / T3.b.2.b: paint Visual selection
+            // cells with REVERSED. Per-kind predicate so
+            // charwise / blockwise paint the right cell shape;
+            // linewise covers full rows.
+            if let Some(v) = visual_state {
+                use lattice_terminal::VisualKind as Vk;
+                let off = snap_arc.scroll_offset as i32;
+                let cell_line = row as i32 - off;
+                let in_sel = match v.kind {
+                    Vk::Line => {
+                        let (lo, hi) = v.line_range();
+                        cell_line >= lo && cell_line <= hi
+                    }
+                    Vk::Block => {
+                        let (lo, hi) = v.line_range();
+                        let (lo_c, hi_c) = v.block_col_range();
+                        cell_line >= lo
+                            && cell_line <= hi
+                            && col >= lo_c
+                            && col <= hi_c
+                    }
+                    Vk::Char => {
+                        let ((sl, sc), (el, ec)) = v.char_endpoints();
+                        if sl == el {
+                            cell_line == sl && col >= sc && col <= ec
+                        } else if cell_line == sl {
+                            col >= sc
+                        } else if cell_line == el {
+                            col <= ec
+                        } else {
+                            cell_line > sl && cell_line < el
+                        }
+                    }
+                };
+                if in_sel {
+                    style = style.add_modifier(Modifier::REVERSED);
+                }
+            }
+            match run_style {
+                Some(prev) if prev == style => {
+                    run_text.push(cell.ch);
+                }
+                _ => {
+                    if !run_text.is_empty() {
+                        spans.push(Span::styled(
+                            std::mem::take(&mut run_text),
+                            run_style.unwrap_or_default(),
+                        ));
+                    }
+                    run_text.push(cell.ch);
+                    run_style = Some(style);
+                }
+            }
         }
+        if !run_text.is_empty() {
+            spans.push(Span::styled(run_text, run_style.unwrap_or_default()));
+        }
+        lines.push(Line::from(spans));
     }
     let para = Paragraph::new(lines);
     frame.render_widget(para, area);
+    // Place the hardware cursor on the active pane only —
+    // ratatui's frame.set_cursor_position drives the terminal's
+    // single hardware cursor, so multi-pane setups would race
+    // without the active gate. Out-of-area positions are clamped
+    // so a stale snapshot can't park the cursor outside the pane.
+    if is_active && cursor_visible {
+        let screen_x = area.x.saturating_add(cursor_col).min(area.x + area.width.saturating_sub(1));
+        let screen_y = area.y.saturating_add(cursor_row).min(area.y + area.height.saturating_sub(1));
+        frame.set_cursor_position((screen_x, screen_y));
+    }
 }
 
 /// M.4: per-mode pane-render adapters. Each adapter has the

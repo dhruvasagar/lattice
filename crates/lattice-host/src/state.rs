@@ -77,6 +77,12 @@ pub struct OptionCache {
     pub whitespace_leading: Option<char>,
     pub whitespace_space: Option<char>,
     pub whitespace_eol: Option<char>,
+    /// Terminal-mode T2.b.0 (2026-05-25): cached
+    /// `terminal.esc-exits`. Default `true` so test fixtures
+    /// using `Editor::default()` (no `init_from_linkme`) get
+    /// the production semantics without panicking on an
+    /// unregistered option lookup.
+    pub terminal_esc_exits: bool,
 }
 
 impl Default for OptionCache {
@@ -98,6 +104,7 @@ impl Default for OptionCache {
             whitespace_leading: Some('·'),
             whitespace_space: None,
             whitespace_eol: None,
+            terminal_esc_exits: true,
         }
     }
 }
@@ -137,6 +144,13 @@ pub struct PositionEntry {
     pub source: PositionSource,
     pub buffer: BufferKind,
     pub buffer_id: BufferId,
+    /// T3.b.3 (2026-05-25): scrollback row the user was viewing
+    /// when the entry was pushed. Only meaningful for
+    /// `BufferKind::Terminal` entries — Document jumps ignore
+    /// it. `0` = live edge. Restored by `<C-o>` / `<C-i>` when
+    /// landing back on a Terminal so the user returns to the
+    /// row they were studying.
+    pub terminal_scroll_offset: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

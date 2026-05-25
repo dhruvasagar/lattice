@@ -3601,6 +3601,7 @@ version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
  "arc-swap",
+ "fancy-regex",
  "lattice-config",
  "lattice-core",
  "lattice-mode",
@@ -3630,6 +3631,7 @@ dependencies = [
  "lattice-lsp",
  "lattice-mode",
  "lattice-syntax",
+ "lattice-terminal",
  "tokio",
  "tracing",
 ]
@@ -3658,6 +3660,7 @@ dependencies = [
  "lattice-runtime",
  "lattice-snippet",
  "lattice-syntax",
+ "lattice-terminal",
  "linkme",
  "notify",
  "ratatui",

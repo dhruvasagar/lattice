@@ -511,6 +511,33 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    // T4 (2026-05-25): `:tabterminal [cmd]` — open a new tab
+    // with a PTY-backed shell. Sugar for `:tabnew | :terminal`.
+    let _tab_terminal = registry.register_ex_command(
+        "ex:tabterminal",
+        "Open a new tab containing a PTY-backed shell buffer.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_optional_path),
+            apply: Box::new(|ctx| match &ctx.args {
+                Args::String(s) if !s.is_empty() => Ok(Effect::AppAction(
+                    AppEffect::TerminalSpawnInNewTab(Some(s.clone())),
+                )),
+                _ => Ok(Effect::AppAction(AppEffect::TerminalSpawnInNewTab(None))),
+            }),
+            args_schema: vec![ArgSpec {
+                name: "cmd",
+                kind: ArgKind::String,
+                doc: "Optional command line (default: $SHELL or /bin/sh)",
+                prompt: "",
+                default: ArgDefault::None,
+                completion: None,
+            }],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
     let _tab_only = registry.register_ex_command(
         "ex:tabonly",
         "Close every tab except the active one.",

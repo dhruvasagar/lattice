@@ -321,14 +321,98 @@ progress here:
     (printable + Enter/Tab/Backspace/Esc + Ctrl-A..Z) +
     `i` entry, `<C-\>` exit, modeline indicator,
     `<C-c>` exemption inside Insert (2026-05-25)
-  - [ ] T2.b — Full encoder (arrows, F-keys, Alt-prefix,
-    DECCKM); `a`/`I`/`A` entry; `<Esc>` exit gated by
-    `terminal.esc_exits`
-  - [ ] T2.c — `<C-w>` Window-prefix in Normal-in-terminal,
-    `<C-w>` WERASE inside Insert, `<C-\><C-n>` two-key exit
-    chord (replaces the T2.a single-key approximation)
-- [ ] T3 — Scrollback + nav + copy
-- [ ] T4 — Polish
+  - [X] T2.b.0 — `<Esc>` exit gated by `terminal.esc-exits`
+    typed option (default `true`); option published to
+    `OptionCache` + `ActiveDocumentRenderState` so the
+    translate branch is one Arc-load away (2026-05-25)
+  - [X] T2.b — Full encoder (arrows, Home/End, PgUp/PgDn,
+    Insert/Delete, F1–F12, Alt-prefix, modified arrows /
+    F-keys via xterm `1;<n>` parameter); `a` / `I` / `A`
+    entry from Normal-in-terminal collapses to
+    `EnterTerminalInsert`. DECCKM (application-cursor-keys)
+    mode plumbed through `key_to_ansi_with_mode(_, true)` and
+    test-locked, but the production caller pins it `false`
+    until the alacritty_terminal swap surfaces the per-
+    terminal mode bit (2026-05-25)
+  - [X] T2.c — (2026-05-25) `<C-w>` Window-prefix in
+    Normal-in-terminal works automatically via the MotionAdapter
+    cleanup (standard keymap binds `<C-w>j`/etc. to
+    `navigate_pane_*`, which dispatches outside
+    `run_terminal_invocation`). `<C-w>` WERASE inside Insert
+    works automatically via the encoder's `ctrl_char_byte('w')`
+    mapping to `0x17`. `<C-\><C-n>` two-key chord landed:
+    `<C-\>` arms via new `Action::TerminalArmExitChord` +
+    `TerminalBuffer::insert_exit_pending` flag; the next key
+    resolves to either exit (`<C-n>`) or `\x1c` + that key's
+    PTY bytes (anything else). DECCKM bit propagates via
+    `SharedTerm::cursor_keys_application_mode` →
+    `TranslateContext::terminal_app_cursor_keys` →
+    `key_to_ansi_with_mode(_, true)`, so arrow keys flip to
+    SS3 when programs like vim / less / htop enable
+    application-cursor-keys.
+- [X] T3 — Scrollback + nav + copy (2026-05-25)
+  - [X] T3.a — alacritty `Term` + history ring (default 10k via
+    `terminal.scrollback-lines`); `SharedTerm` handle shared
+    between reader + dispatch; snapshot carries
+    `scroll_offset` / `scrollback_rows`. `j` / `k` / `gg` / `G`
+    / `<C-d>` / `<C-u>` / `<C-f>` / `<C-b>` / `<C-e>` / `<C-y>`
+    dispatch through `Editor::run_terminal_invocation` — same
+    keymap as documents, kind-aware runner picks the substrate.
+    The MotionAdapter cleanup removed every kind-specific
+    branch from the translate layer.
+  - [X] T3.b.1 — Search forward / backward across the full
+    grid via `SharedTerm::find_match`; viewport jumps to the
+    matched row. `/pattern<CR>`, `?pattern<CR>`, `n` / `N`
+    routed through the existing search-mode minibuffer.
+  - [X] T3.b.2 — Linewise Visual + yank (`V` / `j` / `k` /
+    `y` / `<Esc>`); modeline shows `TERMINAL-VISUAL`.
+  - [X] T3.b.2.b — Charwise (`v`) + blockwise (`<C-v>`)
+    Visual; `h` / `l` extends `head_col`; per-kind yank with
+    matching `YankKind` so cross-buffer paste handles
+    correctly.
+  - [X] T3.b.3 — `hlsearch`-style all-matches overlay
+    (underlined cells via `find_all_matches`); `gv` reselects
+    the prior terminal Visual; jump-list (`<C-o>` / `<C-i>`)
+    restores the recorded `scroll_offset` when landing back
+    on a Terminal entry. Search-match highlight cleared by
+    `<Esc>` from `/` and on `EnterTerminalInsert`.
+  - Queued: word motions (`w` / `b` / `e`) in Visual over
+    cells; theme slot for a dedicated `match_background` /
+    `visual_background` (today both reuse REVERSED /
+    UNDERLINED).
+- 🚧 T4 — Polish (4/5 sub-items shipped 2026-05-25; mouse
+  passthrough deferred to its own slice)
+  - [X] T4.1 — Resize: pane viewport change propagates to
+    alacritty grid (`SharedTerm::resize`) and the PTY
+    (`PtyHandle::resize`) so the child sees SIGWINCH and
+    re-lays-out. Wired in `editor_actor::EditorCommand::SetPaneViewport`.
+  - [X] T4.3 — `<C-w>T`: move active pane to fresh tab. New
+    `Action::MovePaneToNewTab` + `AppEffect::MovePaneToNewTab`
+    + `do_move_pane_to_new_tab` handler that closes the pane
+    in the current tab and opens a new tab holding the same
+    `BufferId` at the same cursor / scroll. No-op echo when
+    the pane is the only one in its tab.
+  - [X] T4.4 — `:tabterminal [cmd]` (aliases `:tabterm`):
+    sugar for `:tabnew | :terminal`. Registered as
+    `ex:tabterminal` in the grammar; folds to `do_new_tab`
+    then `TerminalSpawn(cmd)` via the new
+    `AppEffect::TerminalSpawnInNewTab(_)` variant.
+  - [X] T4.5 — `:bd!` confirms via the existing
+    `TerminalBuffer::Drop` impl: dropping the buffer aborts
+    the reader task → closes the PTY master fd → child gets
+    SIGHUP. No new code needed.
+  - [ ] T4.2 — Mouse passthrough. Substantial (own slice):
+    typed option `terminal.mouse-passthrough`, mouse-encoder
+    in `lattice-terminal`, per-renderer mouse-event capture
+    in TUI (crossterm `EnableMouseCapture`) + GPUI
+    (mouse-down/up/move handlers), Term mode bit propagation
+    so passthrough only fires when the program enabled a
+    mouse mode (`ESC [ ? 1000 h` etc.).
+- ⛔ T5 — Plugin surface (Phase 7+)
+- ⛔ Polish: word motions (`w` / `b` / `e`) in Terminal
+  Visual; dedicated theme slots (`ui.match-background`,
+  `ui.visual-background`) so renderers can distinguish
+  selection bg from search-match bg.
 - [ ] T5 — Plugin surface (Phase 7+)
 
 Mark as `[X]` and commit hash once landed.

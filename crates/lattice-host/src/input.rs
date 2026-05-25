@@ -89,6 +89,25 @@ pub struct TranslateContext<'a> {
     /// `Action::TerminalInput` instead of going through the
     /// modal-state dispatchers.
     pub terminal_insert_active: bool,
+    /// Terminal-mode T2.b.0 (2026-05-25): resolved value of the
+    /// `terminal.esc-exits` typed option for the active pane's
+    /// buffer. When `true` and `terminal_insert_active` is also
+    /// true, `<Esc>` emits `Action::ExitTerminalInsert` instead
+    /// of encoding to `\x1b` for the PTY. Users running nested
+    /// vim / htop inside the terminal flip the option off and
+    /// use `<C-\><C-n>` (T2.c) to exit.
+    pub terminal_esc_exits: bool,
+    /// Terminal-mode T2.c (2026-05-25): DECCKM mode bit
+    /// (application-cursor-keys) from the active terminal's
+    /// alacritty `Term`. Threaded into
+    /// `keymap_terminal::key_to_ansi_with_mode` so arrow keys
+    /// encode as SS3 (`ESC O A`) vs CSI (`ESC [ A`).
+    pub terminal_app_cursor_keys: bool,
+    /// Terminal-mode T2.c (2026-05-25): `<C-\>` exit chord is
+    /// armed and waiting for the confirm key. When set, the
+    /// translate layer routes the next keystroke into the
+    /// chord-resolution branch instead of the normal encoder.
+    pub terminal_insert_exit_pending: bool,
     /// Layered keymap registry (DESIGN.md §5.2.3, audit
     /// slice 8.c -- 8.d). `translate` consults this instead
     /// of the per-mode hand-rolled `match` tables one slice
@@ -138,21 +157,52 @@ pub fn translate(ctx: TranslateContext<'_>, chord: KeyChord) -> Action {
     if ctx.terminal_insert_active
         && matches!(ctx.active_buffer, BufferKind::Terminal)
     {
-        if chord == KeyChord::ctrl('\\') {
-            // The `<C-\>` half of the exit sequence. T2.a
-            // approximation: emit `ExitTerminalInsert` directly.
-            // T2.c upgrades to "two-key armed" so the next
-            // chord (`<C-n>`) confirms the exit and a stray
-            // `<C-n>` after some other key still encodes to
-            // `\x0e` (shell's next-history).
-            return Action::ExitTerminalInsert;
-        }
-        if let Some(bytes) = crate::keymap_terminal::key_to_ansi(&chord) {
+        // Terminal-mode T2.c (2026-05-25): two-key exit chord.
+        // If we're already in "armed" state (previous key was
+        // `<C-\>`) the next keystroke resolves the chord:
+        //   - `<C-n>` confirms the exit
+        //   - anything else: send `\x1c` (the lost `<C-\>`)
+        //     plus the chord's normal PTY bytes
+        // Either way the arming clears (handled by the
+        // `Action::ExitTerminalInsert` / `Action::TerminalInput`
+        // dispatch arms).
+        if ctx.terminal_insert_exit_pending {
+            if chord == KeyChord::ctrl('n') {
+                return Action::ExitTerminalInsert;
+            }
+            let mut bytes = vec![0x1c];
+            if let Some(b) = crate::keymap_terminal::key_to_ansi_with_mode(
+                &chord,
+                ctx.terminal_app_cursor_keys,
+            ) {
+                bytes.extend(b);
+            }
             return Action::TerminalInput(bytes);
         }
-        // Unmapped special key (e.g. arrow keys in T2.a) —
-        // silent no-op so the user isn't stuck. T2.b removes
-        // this branch by fleshing out the encoder.
+        if chord == KeyChord::ctrl('\\') {
+            // Arm the chord; second key resolves above.
+            return Action::TerminalArmExitChord;
+        }
+        // Terminal-mode T2.b.0 (2026-05-25): `<Esc>` exit gated
+        // by `terminal.esc-exits` (default true). When off, Esc
+        // falls through to the encoder and reaches the PTY as
+        // `\x1b` so nested programs (vim, htop, less) keep their
+        // own Esc semantics.
+        if ctx.terminal_esc_exits
+            && matches!(chord.key, KeyKind::Special(SpecialKey::Esc))
+            && chord.mods.is_empty()
+        {
+            return Action::ExitTerminalInsert;
+        }
+        // T2.c (2026-05-25): encode with DECCKM awareness so
+        // arrow keys flip to SS3 when the program has flipped
+        // application-cursor-keys mode.
+        if let Some(bytes) = crate::keymap_terminal::key_to_ansi_with_mode(
+            &chord,
+            ctx.terminal_app_cursor_keys,
+        ) {
+            return Action::TerminalInput(bytes);
+        }
         return Action::None;
     }
 
@@ -219,22 +269,46 @@ pub fn translate(ctx: TranslateContext<'_>, chord: KeyChord) -> Action {
         }
     }
 
-    // Terminal-mode T2.a (2026-05-25) — Normal-in-terminal
-    // buffer-local bindings. `i` enters `terminal-insert-mode`
-    // (so subsequent keystrokes encode to PTY input via the
-    // earlier short-circuit). T2.b adds `a` / `I` / `A` here;
+    // Terminal-mode T2.a / T2.b (2026-05-25) — Normal-in-terminal
+    // buffer-local bindings. Vim's full insert-entry set
+    // (`i`/`a`/`I`/`A`) all funnel through one action because
+    // the terminal grid has no "before/after column" or "BOL/EOL"
+    // semantics — the shell owns the cursor, and the moment we
+    // hand control back, every keystroke flows to the PTY.
+    // Documenting the four chords keeps muscle memory honest
+    // (users coming from vim's `:terminal` instinctively type
+    // `a` to mean "insert"), but the resulting action is the same.
     // T2.c adds `<C-w>` window-prefix routing. Other keys fall
     // through to the standard normal-mode grammar (the
     // scrollback-motion path lands in T3).
+    // Terminal-mode T3 (2026-05-25, MotionAdapter refactor): the
+    // only kind-specific interception in `translate` for Terminal
+    // buffers is the Insert-entry chord. Every other motion /
+    // action keystroke (j / k / G / gg / <C-d> / <C-u> / <C-f> /
+    // <C-b> / <C-e> / <C-y>) flows through the standard
+    // Normal-mode keymap → `Editor::run_invocation` →
+    // `run_terminal_invocation`. The substrate-aware
+    // translation from "the line_down motion" to "scroll the
+    // alacritty grid" lives on the runner, not on this layer.
+    // (`i` / `a` / `I` / `A` stay here because they switch
+    // *minor mode*, which is a renderer-layer concern: the
+    // translate layer needs to start encoding subsequent
+    // keystrokes to ANSI immediately.)
     if matches!(ctx.active_buffer, BufferKind::Terminal)
         && !ctx.terminal_insert_active
         && matches!(ctx.modal, ModalState::Normal)
         && ctx.partial_chord.is_empty()
+        && !chord.mods.ctrl()
+        && !chord.mods.alt()
     {
-        if let KeyKind::Char('i') = chord.key {
-            if !chord.mods.ctrl() && !chord.mods.alt() {
+        match chord.key {
+            KeyKind::Char('i')
+            | KeyKind::Char('a')
+            | KeyKind::Char('I')
+            | KeyKind::Char('A') => {
                 return Action::EnterTerminalInsert;
             }
+            _ => {}
         }
     }
 

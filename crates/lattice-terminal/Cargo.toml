@@ -11,6 +11,11 @@ license.workspace = true
 # alacritty — pure Rust, battle-tested (alacritty, Zed, neovide).
 # NOT alacritty the app — does not read alacritty config.
 alacritty_terminal = "0.26"
+# T3.b (2026-05-25): the SharedTerm search helper compiles
+# user-provided patterns; same regex engine the document path
+# uses so `\v` / `\c` / etc. behave identically across buffer
+# kinds.
+fancy-regex = { workspace = true }
 # Cross-platform PTY: Unix forkpty + macOS forkpty + Windows
 # ConPTY behind one trait. Spawns the child + returns Read/Write
 # halves of the master fd.

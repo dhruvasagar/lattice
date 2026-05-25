@@ -428,6 +428,13 @@ pub enum AppEffect {
     /// Issue #40 / Terminal-mode T1 (2026-05-22):
     /// `:terminal [cmd]` — spawn a PTY-backed shell.
     TerminalSpawn(Option<String>),
+    /// T4 (2026-05-25): `:tabterminal [cmd]` — open a fresh
+    /// tab and spawn a PTY-backed shell in it. Handler does
+    /// `do_new_tab` then `do_terminal_spawn(cmd)`.
+    TerminalSpawnInNewTab(Option<String>),
+    /// T4 (2026-05-25): `<C-w>T` — move the active pane to a
+    /// fresh tab. Handler in `Editor::do_move_pane_to_new_tab`.
+    MovePaneToNewTab,
     /// `:tabclose` — close active tab.
     CloseTab,
     /// `:tabonly` — close every tab except the active one.

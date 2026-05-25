@@ -226,6 +226,39 @@ pub struct ActiveDocumentRenderState {
     /// `Action::TerminalInput`) instead of running them through
     /// the normal-in-terminal vim grammar.
     pub terminal_insert_active: bool,
+    /// Terminal-mode T2.b.0 (2026-05-25): resolved value of the
+    /// `terminal.esc-exits` typed option. Mirrored into the
+    /// render state so the input translator can build its
+    /// `TranslateContext` from the published snapshot rather
+    /// than reaching into `editor.config` per keystroke. When
+    /// `true`, `<Esc>` while `terminal_insert_active` emits
+    /// `Action::ExitTerminalInsert` instead of encoding to
+    /// `\x1b` for the PTY.
+    pub terminal_esc_exits: bool,
+    /// Terminal-mode T3.b.2 (2026-05-25): `true` when the
+    /// active Terminal buffer has a linewise Visual selection
+    /// in flight (i.e. `TerminalBuffer::visual.is_some()`).
+    /// Drives the modeline label (`TERMINAL-VISUAL`) and the
+    /// translate-layer routing for `j` / `k` (extend head vs
+    /// scroll viewport) without renderers having to reach into
+    /// the buffer registry themselves.
+    pub terminal_visual_active: bool,
+    /// Terminal-mode T2.c (2026-05-25): DECCKM bit read from
+    /// the active terminal's alacritty `Term`. When `true`,
+    /// the translate layer feeds it to
+    /// `keymap_terminal::key_to_ansi_with_mode` so arrow keys
+    /// encode as SS3 (`ESC O A`) rather than CSI
+    /// (`ESC [ A`). Programs like vim / less / htop / fzf
+    /// flip this with `ESC [ ? 1 h`.
+    pub terminal_app_cursor_keys: bool,
+    /// Terminal-mode T2.c (2026-05-25): `true` between the
+    /// `<C-\>` arming chord and the subsequent confirm key.
+    /// When set, the next translate call routes:
+    ///   - `<C-n>` → `ExitTerminalInsert`
+    ///   - any other chord → encode `\x1c` + the chord's
+    ///     normal PTY bytes
+    /// Cleared by both paths so the next chord starts fresh.
+    pub terminal_insert_exit_pending: bool,
     /// Phase 5.8.AF.5 / Slice 3c.final.B (group 2): folds for
     /// the active document. Renderers read
     /// `rs.active_document.folds` instead of `app.editor.folds`.
@@ -285,6 +318,10 @@ impl Default for ActiveDocumentRenderState {
             picker_open: false,
             snippet_active: false,
             terminal_insert_active: false,
+            terminal_esc_exits: true,
+            terminal_visual_active: false,
+            terminal_app_cursor_keys: false,
+            terminal_insert_exit_pending: false,
             folds: Arc::from(Vec::<lattice_core::Fold>::new().into_boxed_slice()),
             all_matches: Arc::from(
                 Vec::<lattice_protocol::position::Range>::new().into_boxed_slice(),

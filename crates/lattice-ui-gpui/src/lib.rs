@@ -706,6 +706,9 @@ impl GpuiApp {
                 insert_completion_open,
                 snippet_active: ad.snippet_active,
                 terminal_insert_active: ad.terminal_insert_active,
+                terminal_esc_exits: ad.terminal_esc_exits,
+                terminal_app_cursor_keys: ad.terminal_app_cursor_keys,
+                terminal_insert_exit_pending: ad.terminal_insert_exit_pending,
                 keymap: &translator.keymap,
                 partial_chord: &translator.partial_chord,
             };

@@ -188,6 +188,8 @@ impl App {
         if matches!(ad.buffer_kind, lattice_core::BufferKind::Terminal) {
             return if ad.terminal_insert_active {
                 "TERMINAL-INSERT"
+            } else if ad.terminal_visual_active {
+                "TERMINAL-VISUAL"
             } else {
                 "TERMINAL"
             };

@@ -28,9 +28,10 @@ pub mod reader;
 pub mod snapshot;
 pub mod spawner;
 
-pub use buffer::TerminalBuffer;
+pub use buffer::{TerminalBuffer, TerminalVisualState, VisualKind};
 pub use cell::{Cell, CellAttrs, CursorShape, NamedColor, TerminalColor};
 pub use handle::{PtyHandle, PtyHandleError};
 pub use modes::{register_terminal_modes, TerminalInsertMode, TerminalMode};
+pub use reader::{GridSearchHit, SearchDir, SharedTerm, TerminalScrollKind};
 pub use snapshot::TerminalSnapshot;
 pub use spawner::{spawn, SpawnConfig, SpawnError};

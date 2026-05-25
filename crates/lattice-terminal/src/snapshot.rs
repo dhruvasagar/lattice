@@ -32,6 +32,18 @@ pub struct TerminalSnapshot {
     /// screen" buffer (vim, less, htop, etc.). Renderers can
     /// use this to disable the modeline-scrollback indicator.
     pub alt_screen: bool,
+    /// T3 (2026-05-25): rows scrolled back from the live edge.
+    /// `0` = live; positive values expose scrollback. Renderers
+    /// surface this on the modeline so the user can tell at a
+    /// glance they're viewing history.
+    pub scroll_offset: u32,
+    /// T3 (2026-05-25): current number of rows held in
+    /// scrollback (history that has scrolled off the live
+    /// screen). Grows as rows roll off; bounded by the
+    /// configured `terminal.scrollback-lines`. Used by the
+    /// modeline / status line to render a "row N of M"
+    /// indicator and to gate scroll-up motions.
+    pub scrollback_rows: u32,
     /// Monotonic per-terminal frame counter.
     pub seq: u64,
 }
@@ -55,6 +67,8 @@ impl TerminalSnapshot {
             cursor_shape: CursorShape::Block,
             title: None,
             alt_screen: false,
+            scroll_offset: 0,
+            scrollback_rows: 0,
             seq: 0,
         }
     }

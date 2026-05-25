@@ -515,6 +515,24 @@ pub enum Action {
     /// (and, T2.b, optionally `<Esc>` when `terminal.esc_exits`
     /// is true).
     ExitTerminalInsert,
+    /// Terminal-mode T3 (2026-05-25): re-position the active
+    /// terminal's scrollback viewport. Emitted by Normal-in-
+    /// terminal motions (`j`/`k`/`<C-d>`/`<C-u>`/`gg`/`G`).
+    /// No-op when the active buffer is not a Terminal.
+    TerminalScroll(lattice_terminal::TerminalScrollKind),
+    /// Terminal-mode T2.c (2026-05-25): user pressed `<C-\>` in
+    /// Terminal-Insert; arm the two-key exit chord on the
+    /// active terminal buffer. The next keystroke resolves it
+    /// (`<C-n>` exits; anything else sends `\x1c` + that key
+    /// to the PTY). Cleared automatically by the
+    /// `ExitTerminalInsert` / `TerminalInput` arms.
+    TerminalArmExitChord,
+    /// T4 (2026-05-25): `<C-w>T` — move the active pane (and
+    /// its buffer) to a fresh tab. Vim convention. The
+    /// previous tab loses the pane via the standard close-pane
+    /// path; the new tab opens with a single pane referencing
+    /// the same `BufferId`.
+    MovePaneToNewTab,
     /// `:tabclose` — close active tab (no-op when only one tab).
     CloseTab,
     /// `:tabonly` — close every tab except the active one.

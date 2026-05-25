@@ -587,6 +587,51 @@ impl Editor {
                         m.is_active(lattice_terminal::TerminalInsertMode::mode_id())
                     })
                     .unwrap_or(false),
+                // Terminal-mode T2.b.0: published so translate
+                // can branch on the option without reaching into
+                // `editor.config` per keystroke. Read off the
+                // hot-path option cache (rebuilt by
+                // `rebuild_option_cache` whenever the option
+                // changes) so test fixtures using
+                // `Editor::default()` get the hardcoded fallback
+                // without panicking on an unregistered lookup.
+                // [[feedback_buffers_no_special_case]] —
+                // published uniformly regardless of buffer kind.
+                terminal_esc_exits: self.option_cache.terminal_esc_exits,
+                // Terminal-mode T3.b.2: derived from the active
+                // pane's buffer registry entry. Renderers and
+                // the modeline label key off this rather than
+                // reaching into the registry per frame.
+                terminal_visual_active: matches!(
+                    self.active_buffer,
+                    BufferKind::Terminal
+                ) && self
+                    .buffers
+                    .with_terminal(self.active_pane_buffer_id(), |t| t.visual.is_some())
+                    .unwrap_or(false),
+                // Terminal-mode T2.c: DECCKM bit from the active
+                // terminal's alacritty Term, snapshot'd so
+                // translate can read it without locking per
+                // keystroke. Sticks at `false` on non-Terminal
+                // buffers (irrelevant there).
+                terminal_app_cursor_keys: matches!(
+                    self.active_buffer,
+                    BufferKind::Terminal
+                ) && self
+                    .buffers
+                    .with_terminal(self.active_pane_buffer_id(), |t| {
+                        t.term.cursor_keys_application_mode()
+                    })
+                    .unwrap_or(false),
+                // Terminal-mode T2.c: <C-\> arming flag for the
+                // two-key exit chord.
+                terminal_insert_exit_pending: matches!(
+                    self.active_buffer,
+                    BufferKind::Terminal
+                ) && self
+                    .buffers
+                    .with_terminal(self.active_pane_buffer_id(), |t| t.insert_exit_pending)
+                    .unwrap_or(false),
                 // Slice 3c.final.B (group 2): active-document
                 // decoration fields. Renderers read these
                 // through the published snapshot instead of
@@ -1339,6 +1384,9 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         Action::TerminalInput(bytes) => editor.do_terminal_input(&bytes),
         Action::EnterTerminalInsert => editor.do_enter_terminal_insert(),
         Action::ExitTerminalInsert => editor.do_exit_terminal_insert(),
+        Action::TerminalScroll(kind) => editor.do_terminal_scroll(kind),
+        Action::TerminalArmExitChord => editor.do_terminal_arm_exit_chord(),
+        Action::MovePaneToNewTab => editor.do_move_pane_to_new_tab(),
         Action::CloseTab => editor.do_close_tab(),
         Action::OnlyTab => editor.do_only_tab(),
         Action::MoveTab(n) => editor.do_move_tab(n),
@@ -2813,6 +2861,16 @@ impl Editor {
             AppEffect::NewTab => out.next_actions.push(Action::NewTab),
             AppEffect::NewTabAt(path) => out.next_actions.push(Action::NewTabAt(path)),
             AppEffect::TerminalSpawn(cmd) => out.next_actions.push(Action::TerminalSpawn(cmd)),
+            // T4 (2026-05-25): :tabterminal — fold to do_new_tab
+            // + TerminalSpawn so the tab handler runs synchronously
+            // before the terminal spawn lands its buffer in it.
+            AppEffect::TerminalSpawnInNewTab(cmd) => {
+                self.do_new_tab();
+                out.next_actions.push(Action::TerminalSpawn(cmd));
+            }
+            AppEffect::MovePaneToNewTab => {
+                out.next_actions.push(Action::MovePaneToNewTab);
+            }
             AppEffect::CloseTab => out.next_actions.push(Action::CloseTab),
             AppEffect::OnlyTab => out.next_actions.push(Action::OnlyTab),
             AppEffect::MoveTab(n) => out.next_actions.push(Action::MoveTab(n)),
@@ -11243,6 +11301,65 @@ impl Editor {
                 return;
             }
         };
+        // T3.b (2026-05-25): terminal buffers run search across
+        // the alacritty grid (live screen + scrollback) rather
+        // than against `active_text` (which is empty for
+        // terminals — kind-specific text would leak the grid
+        // into the document subsystem). Route via SharedTerm's
+        // grid walker; on hit, scroll the viewport to the
+        // matching row + remember the pattern for `n` / `N`.
+        if matches!(self.active_buffer, BufferKind::Terminal) {
+            let buf_id = self.active_pane_buffer_id();
+            let dir = match line.direction {
+                lattice_grammar::SearchDirection::Forward => {
+                    lattice_terminal::SearchDir::Forward
+                }
+                lattice_grammar::SearchDirection::Backward => {
+                    lattice_terminal::SearchDir::Backward
+                }
+            };
+            let hit = self
+                .buffers
+                .with_terminal(buf_id, |t| t.term.find_match(&regex, dir))
+                .flatten();
+            // T3.b.3: collect every match so renderers can paint
+            // the hlsearch-style softer overlay over all
+            // occurrences in the visible window.
+            let all = self
+                .buffers
+                .with_terminal(buf_id, |t| t.term.find_all_matches(&regex))
+                .unwrap_or_default();
+            match hit {
+                Some(h) => {
+                    let _ = self.buffers.with_terminal(buf_id, |t| {
+                        t.term.scroll_to_line(h.line);
+                    });
+                    let _ = self.buffers.with_terminal_mut(buf_id, |t| {
+                        t.current_match = Some(h);
+                        t.all_matches = all;
+                    });
+                    self.last_search = Some(crate::state::LastSearch {
+                        pattern: line.pattern,
+                        direction: line.direction,
+                    });
+                }
+                None => {
+                    let _ = self.buffers.with_terminal_mut(buf_id, |t| {
+                        t.current_match = None;
+                        t.all_matches.clear();
+                    });
+                    self.set_message(
+                        EchoLevel::Error,
+                        format!("E486: Pattern not found: {}", line.pattern),
+                    );
+                    self.last_search = Some(crate::state::LastSearch {
+                        pattern: line.pattern,
+                        direction: line.direction,
+                    });
+                }
+            }
+            return;
+        }
         let dir = match line.direction {
             lattice_grammar::SearchDirection::Forward => lattice_core::search::Direction::Forward,
             lattice_grammar::SearchDirection::Backward => lattice_core::search::Direction::Backward,
@@ -11311,6 +11428,16 @@ impl Editor {
         }
         self.current_match = None;
         self.all_matches.clear();
+        // T3.b.3: also clear the terminal-buffer match overlay
+        // when the user aborts the search line. Vim's `<Esc>`
+        // out of `/` leaves no decoration; match this.
+        if matches!(self.active_buffer, BufferKind::Terminal) {
+            let buf_id = self.active_pane_buffer_id();
+            let _ = self.buffers.with_terminal_mut(buf_id, |t| {
+                t.current_match = None;
+                t.all_matches.clear();
+            });
+        }
         self.modal = ModalState::Normal;
     }
 
@@ -11336,12 +11463,6 @@ impl Editor {
                 lattice_grammar::SearchDirection::Backward
             }
         };
-        let dir = match direction {
-            lattice_grammar::SearchDirection::Forward => lattice_core::search::Direction::Forward,
-            lattice_grammar::SearchDirection::Backward => lattice_core::search::Direction::Backward,
-        };
-        let buffer = self.active_text();
-        let from = step_byte(&buffer, self.cursor, direction);
         let regex = match compile_search_pattern(&last.pattern) {
             Ok(r) => r,
             Err(msg) => {
@@ -11350,6 +11471,55 @@ impl Editor {
                 return;
             }
         };
+        // T3.b: terminal `n` / `N` walks the grid via SharedTerm
+        // rather than the empty `active_text` rope. Re-uses the
+        // same regex object and just flips direction. Wraps
+        // implicitly — `find_match` always scans the full grid,
+        // so the next match in `direction` order is found
+        // regardless of current viewport.
+        if matches!(self.active_buffer, BufferKind::Terminal) {
+            let buf_id = self.active_pane_buffer_id();
+            let term_dir = match direction {
+                lattice_grammar::SearchDirection::Forward => {
+                    lattice_terminal::SearchDir::Forward
+                }
+                lattice_grammar::SearchDirection::Backward => {
+                    lattice_terminal::SearchDir::Backward
+                }
+            };
+            let hit = self
+                .buffers
+                .with_terminal(buf_id, |t| t.term.find_match(&regex, term_dir))
+                .flatten();
+            let all = self
+                .buffers
+                .with_terminal(buf_id, |t| t.term.find_all_matches(&regex))
+                .unwrap_or_default();
+            match hit {
+                Some(h) => {
+                    let _ = self.buffers.with_terminal(buf_id, |t| {
+                        t.term.scroll_to_line(h.line);
+                    });
+                    let _ = self.buffers.with_terminal_mut(buf_id, |t| {
+                        t.current_match = Some(h);
+                        t.all_matches = all;
+                    });
+                }
+                None => {
+                    self.set_message(
+                        EchoLevel::Error,
+                        format!("E486: Pattern not found: {}", last.pattern),
+                    );
+                }
+            }
+            return;
+        }
+        let dir = match direction {
+            lattice_grammar::SearchDirection::Forward => lattice_core::search::Direction::Forward,
+            lattice_grammar::SearchDirection::Backward => lattice_core::search::Direction::Backward,
+        };
+        let buffer = self.active_text();
+        let from = step_byte(&buffer, self.cursor, direction);
         match lattice_core::search::find(
             &buffer,
             &regex,
@@ -12105,13 +12275,20 @@ impl Editor {
                 }
             }
             BufferKind::Terminal => {
-                // T1: position history entries for terminal
-                // buffers just re-activate the buffer; the
-                // scrollback cursor model lands in T3.
+                // T3.b.3: restore the scrollback row the user
+                // was viewing when this entry was pushed. Re-
+                // activates the buffer + scrolls the alacritty
+                // grid to the recorded display_offset. Falls
+                // back to the live edge for entries pushed
+                // before the field existed (offset = 0).
                 if self.buffers.contains(entry.buffer_id) {
                     self.active_buffer = BufferKind::Terminal;
                     self.pane_tree.active_mut().buffer = BufferKind::Terminal;
                     self.pane_tree.active_mut().buffer_id = entry.buffer_id;
+                    let target_line = -(entry.terminal_scroll_offset as i32);
+                    let _ = self.buffers.with_terminal(entry.buffer_id, |t| {
+                        t.term.scroll_to_line(target_line);
+                    });
                 }
             }
         }
@@ -12324,12 +12501,23 @@ impl Editor {
         let rows = rows_u32.min(u16::MAX as u32) as u16;
         let cols = cols_u32.min(u16::MAX as u32) as u16;
 
+        // T3 (2026-05-25): resolve `terminal.scrollback-lines`
+        // off the active pane's cascade. The option validator
+        // bounds the value to `[0, 1_000_000]`, but clamp to u32
+        // here too so the cast is total. `0` disables scrollback
+        // in alacritty entirely (saves RAM).
+        let scrollback_lines = (*self.resolved_option::<lattice_config::TerminalScrollbackLines>(
+            self.active_pane_buffer_id(),
+        ))
+        .max(0)
+        .min(u32::MAX as i64) as u32;
         let cfg = lattice_terminal::SpawnConfig {
             program: program.clone(),
             args: args.clone(),
             cwd: cwd.clone(),
             rows,
             cols,
+            scrollback_lines,
             // Wire the editor's shared paint-request notifier so
             // event-driven renderers (GPUI) repaint when the
             // reader publishes new terminal output. Same wake
@@ -12410,6 +12598,14 @@ impl Editor {
             return;
         }
         let buf_id = self.active_pane_buffer_id();
+        // T2.c: every TerminalInput clears the `<C-\>` arming
+        // flag. The translate-layer chord branch already
+        // includes the `\x1c` lost-prefix in `bytes` when this
+        // path fires from the armed state, so clearing here is
+        // safe — the next chord starts fresh.
+        let _ = self.buffers.with_terminal_mut(buf_id, |t| {
+            t.insert_exit_pending = false;
+        });
         let result = self
             .buffers
             .with_terminal(buf_id, |t| t.pty.write(bytes));
@@ -12434,15 +12630,35 @@ impl Editor {
         }
     }
 
-    /// Terminal-mode T2.a: activate `terminal-insert-mode` on
-    /// the active Terminal buffer. Handler for
-    /// `Action::EnterTerminalInsert`. No-op if the active
-    /// buffer is not a Terminal.
+    /// Terminal-mode T2.a / T3 (2026-05-25): activate
+    /// `terminal-insert-mode` on the active Terminal buffer.
+    /// Handler for `Action::EnterTerminalInsert`. No-op if the
+    /// active buffer is not a Terminal.
+    ///
+    /// T3 addition: snap the scrollback viewport to the live
+    /// edge before activating the minor mode. Matches vim's
+    /// `:terminal` behaviour — entering Insert while scrolled
+    /// into history restores live-edge focus instead of leaving
+    /// the user typing at the PTY prompt while looking at stale
+    /// rows. Cheap call (one alacritty `scroll_display(Bottom)`
+    /// + one snapshot republish); no-op when already at the
+    /// live edge.
     pub fn do_enter_terminal_insert(&mut self) {
         if !matches!(self.active_buffer, BufferKind::Terminal) {
             return;
         }
         let buf_id = self.active_pane_buffer_id();
+        let _ = self.buffers.with_terminal(buf_id, |t| {
+            t.term.scroll(lattice_terminal::TerminalScrollKind::Bottom);
+        });
+        // T3.b.3: drop the search match highlight when the
+        // user enters Insert — they're about to type which
+        // pushes the matched cells off-screen anyway, and the
+        // stale overlay would be visually confusing.
+        let _ = self.buffers.with_terminal_mut(buf_id, |t| {
+            t.current_match = None;
+            t.all_matches.clear();
+        });
         let _ = self.activate_mode_by_id(
             buf_id,
             lattice_terminal::TerminalInsertMode::mode_id(),
@@ -12458,10 +12674,49 @@ impl Editor {
             return;
         }
         let buf_id = self.active_pane_buffer_id();
+        // T2.c: clear the arming flag whenever we leave Insert
+        // (the `<C-\><C-n>` confirm path leaves it set; other
+        // exit paths also benefit from a clean slate).
+        let _ = self.buffers.with_terminal_mut(buf_id, |t| {
+            t.insert_exit_pending = false;
+        });
         let _ = self.deactivate_mode_by_id(
             buf_id,
             lattice_terminal::TerminalInsertMode::mode_id(),
         );
+    }
+
+    /// T2.c (2026-05-25): handler for `Action::TerminalArmExitChord`.
+    /// Sets the buffer's `insert_exit_pending` flag so the next
+    /// keystroke goes through the chord-resolution branch in
+    /// translate. No-op when the active buffer is not a
+    /// Terminal.
+    pub fn do_terminal_arm_exit_chord(&mut self) {
+        if !matches!(self.active_buffer, BufferKind::Terminal) {
+            return;
+        }
+        let buf_id = self.active_pane_buffer_id();
+        let _ = self.buffers.with_terminal_mut(buf_id, |t| {
+            t.insert_exit_pending = true;
+        });
+    }
+
+    /// Terminal-mode T3 (2026-05-25): re-position the
+    /// scrollback viewport on the active Terminal buffer.
+    /// Handler for `Action::TerminalScroll`. Routes through
+    /// `SharedTerm::scroll`, which locks the alacritty `Term`,
+    /// calls `scroll_display`, and republishes a fresh
+    /// snapshot so the renderer paints history without waiting
+    /// for the next PTY byte. No-op when the active buffer is
+    /// not a Terminal or the buffer registry doesn't know it.
+    pub fn do_terminal_scroll(&mut self, kind: lattice_terminal::TerminalScrollKind) {
+        if !matches!(self.active_buffer, BufferKind::Terminal) {
+            return;
+        }
+        let buf_id = self.active_pane_buffer_id();
+        let _ = self
+            .buffers
+            .with_terminal(buf_id, |t| t.term.scroll(kind));
     }
 
     pub fn do_new_tab(&mut self) {
@@ -12505,6 +12760,58 @@ impl Editor {
         let insert_at = self.active_tab + 1;
         self.tabs.insert(insert_at, new_slot);
         self.active_tab = insert_at;
+    }
+
+    /// T4 (2026-05-25): `<C-w>T` — move the active pane to a
+    /// fresh tab. Closes the pane in the current tab (only
+    /// when there's >1 pane — otherwise the buffer is already
+    /// alone in a tab and the operation is a no-op echo) and
+    /// opens a new tab containing the same buffer at the same
+    /// cursor / scroll position.
+    pub fn do_move_pane_to_new_tab(&mut self) {
+        if self.pane_tree.leaves().len() <= 1 {
+            self.set_message(
+                EchoLevel::Info,
+                "only one pane in this tab — nothing to move".to_string(),
+            );
+            return;
+        }
+        // Capture the active pane's buffer + view state BEFORE
+        // anything mutates.
+        let pane = self.pane_tree.active();
+        let captured_kind = pane.buffer;
+        let captured_id = pane.buffer_id;
+        let captured_cursor = self.cursor;
+        let captured_scroll = self.scroll;
+        let captured_height = self.viewport_height;
+        // Close the active pane in the current tab. Focus
+        // shifts to a sibling automatically.
+        self.do_close_pane();
+        // Create a new tab whose single pane references the
+        // captured buffer. Models on `do_new_tab` but plants
+        // the *captured* buffer rather than the current active.
+        self.snapshot_active_pane();
+        let active = self.active_tab;
+        std::mem::swap(&mut *self.pane_tree, &mut self.tabs[active].panes);
+        let initial_pane = lattice_core::ui::pane::PaneState {
+            id: lattice_core::ui::pane::PaneId::next(),
+            buffer: captured_kind,
+            buffer_id: captured_id,
+            cursor: captured_cursor,
+            scroll: captured_scroll,
+            viewport_height: captured_height,
+            viewport_width: 0,
+        };
+        let mut new_panes = lattice_core::ui::pane::PaneTree::single(initial_pane);
+        std::mem::swap(&mut *self.pane_tree, &mut new_panes);
+        drop(new_panes);
+        let new_slot = lattice_core::ui::tab::TabSlot::new();
+        let insert_at = self.active_tab + 1;
+        self.tabs.insert(insert_at, new_slot);
+        self.active_tab = insert_at;
+        self.active_buffer = captured_kind;
+        self.cursor = captured_cursor;
+        self.scroll = captured_scroll;
     }
 
     /// `:tabnew <path>` — open `path` in a new tab. Creates
@@ -17065,11 +17372,55 @@ impl Editor {
         self.set_selections_blocking(lattice_protocol::selection::SelectionSet::single(
             lattice_protocol::selection::Selection::cursor(self.cursor),
         ));
+        // T3.b.2 / T3.b.3: clear any terminal-buffer Visual
+        // state but stash it onto `last_visual` so `gv` can
+        // reselect. Visual on a terminal lives on the buffer
+        // (not `ModalState`), so the document-side reset above
+        // doesn't touch it.
+        if matches!(self.active_buffer, BufferKind::Terminal) {
+            let buf_id = self.active_pane_buffer_id();
+            let _ = self.buffers.with_terminal_mut(buf_id, |t| {
+                if let Some(prev) = t.visual.take() {
+                    t.last_visual = Some(prev);
+                }
+            });
+            let _ = self.buffers.with_terminal(buf_id, |t| {
+                t.term.scroll(lattice_terminal::TerminalScrollKind::Delta(0));
+            });
+        }
     }
 
     /// `gv` -- restore the prior selection captured by `do_exit_visual`,
     /// or echo an error if there's no captured visual to reselect.
     pub fn do_reselect_visual(&mut self) {
+        // T3.b.3: terminal buffers cache their prior Visual on
+        // `TerminalBuffer.last_visual`. Restore from there
+        // before falling through to the document path.
+        if matches!(self.active_buffer, BufferKind::Terminal) {
+            let buf_id = self.active_pane_buffer_id();
+            let restored = self.buffers.with_terminal_mut(buf_id, |t| {
+                if let Some(prev) = t.last_visual {
+                    t.visual = Some(prev);
+                    true
+                } else {
+                    false
+                }
+            });
+            match restored {
+                Some(true) => {
+                    let _ = self.buffers.with_terminal(buf_id, |t| {
+                        t.term.scroll(lattice_terminal::TerminalScrollKind::Delta(0));
+                    });
+                }
+                _ => {
+                    self.set_message(
+                        EchoLevel::Error,
+                        "no previous visual selection".to_string(),
+                    );
+                }
+            }
+            return;
+        }
         let Some(last) = self.last_visual else {
             self.set_message(EchoLevel::Error, "no previous visual selection".to_string());
             return;
@@ -17336,8 +17687,9 @@ impl Editor {
     pub fn rebuild_option_cache(&mut self) {
         use lattice_config::{
             CompletionAutoInsertSingle, CursorLine, FoldEnable, FoldMethodOption, IgnoreCase,
-            Number, RelativeNumber, Scrolloff, Tabstop, Whitespace, WhitespaceEol,
-            WhitespaceLeading, WhitespaceSpace, WhitespaceTab, WhitespaceTrailing, Wrap,
+            Number, RelativeNumber, Scrolloff, Tabstop, TerminalEscExits, Whitespace,
+            WhitespaceEol, WhitespaceLeading, WhitespaceSpace, WhitespaceTab, WhitespaceTrailing,
+            Wrap,
         };
         let buffer = self.document_buffer_id;
         // M.7.3.a: parse a typed-option `String` into a single
@@ -17361,6 +17713,7 @@ impl Editor {
             whitespace_leading: glyph(&self.resolved_option::<WhitespaceLeading>(buffer)),
             whitespace_space: glyph(&self.resolved_option::<WhitespaceSpace>(buffer)),
             whitespace_eol: glyph(&self.resolved_option::<WhitespaceEol>(buffer)),
+            terminal_esc_exits: *self.resolved_option::<TerminalEscExits>(buffer),
         };
     }
 
@@ -18422,11 +18775,24 @@ impl Editor {
         if self.position_history_cursor < self.position_history.len() {
             self.position_history.truncate(self.position_history_cursor);
         }
+        // T3.b.3: capture the terminal scrollback offset on
+        // push so `<C-o>` back to this entry can restore the
+        // viewport row the user was looking at, not the live
+        // edge. Zero for non-terminal buffers (ignored on
+        // restore).
+        let terminal_scroll_offset = if matches!(buffer, BufferKind::Terminal) {
+            self.buffers
+                .with_terminal(buffer_id, |t| t.snapshot.load().scroll_offset)
+                .unwrap_or(0)
+        } else {
+            0
+        };
         self.position_history.push(PositionEntry {
             position: pos,
             source,
             buffer,
             buffer_id,
+            terminal_scroll_offset,
         });
         if self.position_history.len() > POSITION_HISTORY_CAP {
             self.position_history.remove(0);
@@ -20558,6 +20924,10 @@ impl Editor {
             self.run_file_tree_invocation(inv);
             return;
         }
+        if matches!(self.active_buffer, BufferKind::Terminal) {
+            self.run_terminal_invocation(inv);
+            return;
+        }
         self.run_document_invocation(inv, out);
     }
 
@@ -20668,6 +21038,280 @@ impl Editor {
     /// scroll-aware visibility) are identical. Non-motion command
     /// classes (operators, text-objects, ex bodies that reach
     /// here) echo "buffer is read-only" and bail.
+    /// Terminal-mode T3 (2026-05-25): motion / action dispatcher
+    /// for Terminal-active buffers. Plays the same architectural
+    /// role as [`Self::run_help_invocation`] /
+    /// [`Self::run_oil_invocation`] /
+    /// [`Self::run_file_tree_invocation`]: the substrate-specific
+    /// runner that translates the kind-agnostic grammar invocation
+    /// into the operations the substrate actually supports.
+    ///
+    /// For terminals, "the substrate" is the alacritty grid:
+    /// - Vertical motions (`line_down` / `line_up`) and the
+    ///   ctrl-d / ctrl-u / ctrl-e / ctrl-y / ctrl-f / ctrl-b
+    ///   family translate to scrollback movement
+    ///   (`SharedTerm::scroll`).
+    /// - `gg` / `G` (`goto_first_line` / `goto_last_line`) jump
+    ///   to top / bottom of the scrollback ring.
+    /// - Insert-entry motions (i / a / I / A) emit
+    ///   `EnterTerminalInsert` via the translate layer; they
+    ///   never reach this runner.
+    /// - Anything else (horizontal motions, operators,
+    ///   text-objects, edits) is a no-op with a read-only echo,
+    ///   matching what vim's `:terminal` does.
+    ///
+    /// This replaces the special-case interception in
+    /// `crates/lattice-host/src/input.rs::translate` introduced
+    /// by T3.a: the keymap stays kind-agnostic (`j` → `line_down`
+    /// motion for every buffer); only the runner differs.
+    pub fn run_terminal_invocation(&mut self, inv: lattice_grammar::CommandInvocation) {
+        use lattice_terminal::{TerminalScrollKind as Sk, VisualKind as Vk};
+        self.pending_count = 0;
+        self.op_count = 0;
+        let pending_register = self.pending_register.take();
+        let buf_id = self.active_pane_buffer_id();
+        let count = inv.count.map(|c| c.0).unwrap_or(1).max(1);
+        let cmd = inv.command;
+        // T3.b.2 / T3.b.2.b: handle Visual-active state first.
+        // Visual entry / no-Visual scrollback nav fall through
+        // below.
+        let visual = self
+            .buffers
+            .with_terminal(buf_id, |t| t.visual)
+            .flatten();
+        if let Some(visual) = visual {
+            // Vertical motion: extend head_line, scroll viewport
+            // to keep it visible.
+            if cmd == self.builtins.line_down.0 || cmd == self.builtins.line_up.0 {
+                let delta = if cmd == self.builtins.line_down.0 {
+                    count as i32
+                } else {
+                    -(count as i32)
+                };
+                let (top, bot) = self
+                    .buffers
+                    .with_terminal(buf_id, |t| t.term.line_bounds())
+                    .unwrap_or((0, 0));
+                let new_head = (visual.head_line + delta).clamp(top, bot);
+                let _ = self.buffers.with_terminal_mut(buf_id, |t| {
+                    if let Some(v) = t.visual.as_mut() {
+                        v.head_line = new_head;
+                    }
+                });
+                let _ = self.buffers.with_terminal(buf_id, |t| {
+                    let snap = t.snapshot.load();
+                    let top_visible = -(snap.scroll_offset as i32);
+                    let bot_visible = top_visible + snap.rows as i32 - 1;
+                    if new_head < top_visible {
+                        t.term.scroll_to_line(new_head);
+                    } else if new_head > bot_visible {
+                        let target = new_head - (snap.rows as i32 - 1);
+                        t.term.scroll_to_line(target.max(top));
+                    } else {
+                        t.term.scroll(Sk::Delta(0));
+                    }
+                });
+                return;
+            }
+            // T3.b.2.b: horizontal motion in char/block Visual.
+            // Linewise Visual ignores col motion (matches vim).
+            if (cmd == self.builtins.char_left.0 || cmd == self.builtins.char_right.0)
+                && !matches!(visual.kind, Vk::Line)
+            {
+                let delta = if cmd == self.builtins.char_right.0 {
+                    count as i32
+                } else {
+                    -(count as i32)
+                };
+                let cols = self
+                    .buffers
+                    .with_terminal(buf_id, |t| t.snapshot.load().cols)
+                    .unwrap_or(0);
+                let new_col = (visual.head_col as i32 + delta)
+                    .max(0)
+                    .min(cols.saturating_sub(1) as i32) as u16;
+                let _ = self.buffers.with_terminal_mut(buf_id, |t| {
+                    if let Some(v) = t.visual.as_mut() {
+                        v.head_col = new_col;
+                    }
+                });
+                let _ = self.buffers.with_terminal(buf_id, |t| {
+                    t.term.scroll(Sk::Delta(0));
+                });
+                return;
+            }
+            if cmd == self.builtins.goto_last_line.0 {
+                let (_, bot) = self
+                    .buffers
+                    .with_terminal(buf_id, |t| t.term.line_bounds())
+                    .unwrap_or((0, 0));
+                let _ = self.buffers.with_terminal_mut(buf_id, |t| {
+                    if let Some(v) = t.visual.as_mut() {
+                        v.head_line = bot;
+                    }
+                });
+                let _ = self.buffers.with_terminal(buf_id, |t| {
+                    t.term.scroll(Sk::Bottom);
+                });
+                return;
+            }
+            if cmd == self.builtins.goto_first_line.0 {
+                let (top, _) = self
+                    .buffers
+                    .with_terminal(buf_id, |t| t.term.line_bounds())
+                    .unwrap_or((0, 0));
+                let _ = self.buffers.with_terminal_mut(buf_id, |t| {
+                    if let Some(v) = t.visual.as_mut() {
+                        v.head_line = top;
+                    }
+                });
+                let _ = self.buffers.with_terminal(buf_id, |t| {
+                    t.term.scroll(Sk::Top);
+                });
+                return;
+            }
+            if cmd == self.builtins.yank.0 {
+                // T3.b.2.b: per-kind yank — linewise / charwise
+                // / blockwise route to distinct substrate
+                // helpers so the register entry shape matches
+                // what `p` will paste later.
+                let (text, kind, summary) = match visual.kind {
+                    Vk::Line => {
+                        let (lo, hi) = visual.line_range();
+                        let t = self
+                            .buffers
+                            .with_terminal(buf_id, |t| t.term.line_range_text(lo, hi))
+                            .unwrap_or_default();
+                        (
+                            t,
+                            lattice_grammar::YankKind::Linewise,
+                            format!("{} line(s)", (hi - lo + 1).max(1)),
+                        )
+                    }
+                    Vk::Char => {
+                        let ((s_line, s_col), (e_line, e_col)) = visual.char_endpoints();
+                        let t = self
+                            .buffers
+                            .with_terminal(buf_id, |t| {
+                                t.term.char_range_text(s_line, s_col, e_line, e_col)
+                            })
+                            .unwrap_or_default();
+                        let len = t.chars().count();
+                        (t, lattice_grammar::YankKind::Charwise, format!("{} char(s)", len))
+                    }
+                    Vk::Block => {
+                        let (lo, hi) = visual.line_range();
+                        let (lo_c, hi_c) = visual.block_col_range();
+                        let t = self
+                            .buffers
+                            .with_terminal(buf_id, |t| {
+                                t.term.block_range_text(lo, hi, lo_c, hi_c)
+                            })
+                            .unwrap_or_default();
+                        (
+                            t,
+                            lattice_grammar::YankKind::Blockwise,
+                            format!(
+                                "{} rows × {} cols",
+                                (hi - lo + 1).max(1),
+                                (hi_c - lo_c + 1) as u32,
+                            ),
+                        )
+                    }
+                };
+                let register = pending_register
+                    .unwrap_or(lattice_grammar::register::Register::Unnamed);
+                self.store_yank(register, text, kind);
+                let _ = self.buffers.with_terminal_mut(buf_id, |t| {
+                    if let Some(prev) = t.visual.take() {
+                        t.last_visual = Some(prev);
+                    }
+                });
+                let _ = self.buffers.with_terminal(buf_id, |t| {
+                    t.term.scroll(Sk::Delta(0));
+                });
+                self.set_message(EchoLevel::Info, format!("yanked {summary}"));
+                return;
+            }
+            return;
+        }
+        // T3.b.2 / T3.b.2.b: Visual entry — sets the initial
+        // anchor + head from either the live cursor (when at
+        // live edge) or the topmost visible row (when scrolled
+        // into history). Charwise / blockwise pin the col to 0
+        // for now; user moves head with `h` / `l` after entry.
+        let enter_visual_kind = if cmd == self.action_ids.enter_visual_linewise {
+            Some(Vk::Line)
+        } else if cmd == self.action_ids.enter_visual_charwise {
+            Some(Vk::Char)
+        } else if cmd == self.action_ids.enter_visual_blockwise {
+            Some(Vk::Block)
+        } else {
+            None
+        };
+        if let Some(kind) = enter_visual_kind {
+            let line = self
+                .buffers
+                .with_terminal(buf_id, |t| {
+                    let snap = t.snapshot.load();
+                    if snap.scroll_offset == 0 {
+                        t.term.cursor_line()
+                    } else {
+                        -(snap.scroll_offset as i32)
+                    }
+                })
+                .unwrap_or(0);
+            let _ = self.buffers.with_terminal_mut(buf_id, |t| {
+                t.visual = Some(lattice_terminal::TerminalVisualState {
+                    kind,
+                    anchor_line: line,
+                    anchor_col: 0,
+                    head_line: line,
+                    head_col: 0,
+                });
+            });
+            let _ = self.buffers.with_terminal(buf_id, |t| {
+                t.term.scroll(Sk::Delta(0));
+            });
+            return;
+        }
+        // Match against the canonical motion / action ids the
+        // Normal-mode keymap binds. The match is exhaustive over
+        // "things that make sense for a scrollback view" — every
+        // other invocation falls through to the read-only echo.
+        let kind = if cmd == self.builtins.line_down.0 {
+            Some(Sk::Delta(-(count as i32)))
+        } else if cmd == self.builtins.line_up.0 {
+            Some(Sk::Delta(count as i32))
+        } else if cmd == self.builtins.goto_first_line.0 {
+            Some(Sk::Top)
+        } else if cmd == self.builtins.goto_last_line.0 {
+            Some(Sk::Bottom)
+        } else if cmd == self.action_ids.page_down {
+            Some(Sk::PageDown)
+        } else if cmd == self.action_ids.page_up {
+            Some(Sk::PageUp)
+        } else if cmd == self.action_ids.scroll_line_down {
+            Some(Sk::Delta(-1))
+        } else if cmd == self.action_ids.scroll_line_up {
+            Some(Sk::Delta(1))
+        } else {
+            None
+        };
+        if let Some(kind) = kind {
+            let _ = self.buffers.with_terminal(buf_id, |t| t.term.scroll(kind));
+            return;
+        }
+        // Drop into the same read-only echo path Help / FileTree
+        // use so the user gets a consistent message for
+        // edit-class invocations on a terminal buffer.
+        if let Some(spec) = self.registry.lookup(cmd)
+            && !matches!(spec.kind, lattice_grammar::CommandKind::Motion)
+        {
+            self.set_message(EchoLevel::Info, "terminal buffer is read-only".to_string());
+        }
+    }
+
     pub fn run_read_only_motion(&mut self, inv: lattice_grammar::CommandInvocation) {
         let Some(spec) = self.registry.lookup(inv.command) else {
             return;

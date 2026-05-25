@@ -303,8 +303,11 @@ impl App {
             | Action::TerminalInput(_)
             | Action::EnterTerminalInsert
             | Action::ExitTerminalInsert
+            | Action::TerminalScroll(_)
+            | Action::TerminalArmExitChord
             | Action::OnlyTab
             | Action::MoveTab(_)
+            | Action::MovePaneToNewTab
             // Issue #32 (2026-05-22): picker open-target overrides.
             // Host-resident bodies; grouped no-op here.
             | Action::PickerAcceptInSplit
@@ -1414,6 +1417,9 @@ mod tests {
                 insert_completion_open: a.completion_popup_active(),
                 snippet_active: ad.snippet_active,
                 terminal_insert_active: ad.terminal_insert_active,
+                terminal_esc_exits: ad.terminal_esc_exits,
+                terminal_app_cursor_keys: ad.terminal_app_cursor_keys,
+                terminal_insert_exit_pending: ad.terminal_insert_exit_pending,
                 keymap: &translator.keymap,
                 partial_chord: &translator.partial_chord,
             };

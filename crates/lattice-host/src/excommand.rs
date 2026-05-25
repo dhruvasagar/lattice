@@ -381,6 +381,10 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     ("term", "ex:terminal"),
     ("terminal", "ex:terminal"),
     ("tnew", "ex:terminal"),
+    // T4 (2026-05-25): `:tabterminal [cmd]` opens a fresh tab
+    // and lands a terminal in it. Sugar for `:tabnew | :terminal`.
+    ("tabterminal", "ex:tabterminal"),
+    ("tabterm", "ex:tabterminal"),
     ("tabo", "ex:tabonly"),
     ("tabonly", "ex:tabonly"),
     ("tabm", "ex:tabmove"),

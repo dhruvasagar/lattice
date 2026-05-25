@@ -16,7 +16,7 @@ use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use thiserror::Error;
 
 use crate::handle::PtyHandle;
-use crate::reader::spawn_reader;
+use crate::reader::{SharedTerm, spawn_reader};
 use crate::snapshot::TerminalSnapshot;
 
 /// Inputs to [`spawn`].
@@ -32,6 +32,11 @@ pub struct SpawnConfig {
     /// Initial PTY size (rows, cols).
     pub rows: u16,
     pub cols: u16,
+    /// T3 (2026-05-25): scrollback ring capacity in lines. `0`
+    /// disables scrollback. Caller resolves the
+    /// `terminal.scrollback-lines` typed option and passes the
+    /// result here.
+    pub scrollback_lines: u32,
     /// Optional repaint notifier — fired by the reader task
     /// after every published snapshot. Event-driven renderers
     /// (GPUI) need this wake to know terminal output has
@@ -58,6 +63,11 @@ pub enum SpawnError {
 pub struct SpawnHandles {
     pub pty: PtyHandle,
     pub snapshot: Arc<ArcSwap<TerminalSnapshot>>,
+    /// T3 (2026-05-25): shared handle to the alacritty `Term`
+    /// the reader task drives. Dispatch-side actions (scroll,
+    /// resize) lock the inner Mutex; the reader holds an Arc to
+    /// the same `Term`. Cheap to clone.
+    pub term: SharedTerm,
     /// Task handle for the reader; aborted on drop. Hold for
     /// the lifetime of the terminal buffer to keep the reader
     /// running.
@@ -76,6 +86,7 @@ pub fn spawn(config: SpawnConfig) -> Result<SpawnHandles, SpawnError> {
         cwd,
         rows,
         cols,
+        scrollback_lines,
         paint_request,
     } = config;
 
@@ -118,17 +129,19 @@ pub fn spawn(config: SpawnConfig) -> Result<SpawnHandles, SpawnError> {
 
     let handle = PtyHandle::new(pair.master, writer, rows, cols);
     let snapshot = Arc::new(ArcSwap::from_pointee(TerminalSnapshot::empty()));
-    let reader_task = spawn_reader(
+    let (term, reader_task) = spawn_reader(
         reader,
         Arc::clone(&snapshot),
         rows,
         cols,
+        scrollback_lines,
         paint_request,
     );
 
     Ok(SpawnHandles {
         pty: handle,
         snapshot,
+        term,
         reader_task,
     })
 }

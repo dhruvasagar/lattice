@@ -298,6 +298,145 @@ noise floor:
 
 ---
 
+## Post-perf-plan (2026-05-25)
+
+Snapshot after the GPUI perf plan (archived at
+[`../archive/gpui-perf-plan.md`](../archive/gpui-perf-plan.md)) closed.
+Nineteen slices shipped between 2026-05-21 and 2026-05-25, plus E.2
+formally dropped on bench-justified grounds. The plan attacked the
+two dominant UI-thread costs identified in profiling (`ensure_us` and
+`highlights_us`) and ended with `Editor::publish_render_state` itself
+made identity-preserving on the seven highest-allocation sub-states.
+
+**Slice arcs that landed:**
+
+- **A.* / B.1 / D.1 / E.1** — worker pre-paints rows (`VisibleRows`)
+  with inlays woven in (`RowRun` enum); both renderer peers consume
+  the same pre-woven rows wait-free; `Arc<[T]>` publish types collapse
+  HOLD-path clones to a single Arc bump.
+- **A.2b.* / B.2.*** — overlay buckets. Worker pre-buckets the three
+  static overlay layers (doc_highlight / all_matches / substitute)
+  per row in source-byte space; both peers consume the same bucket.
+  Eliminates the per-frame O(N_overlay × V_row) intersection walk
+  that scaled to ~1 ms/frame on a 1000-match `hlsearch` corpus.
+- **B.4.a / B.4.b** — identity-preserving Arc publish. `Versioned<T>`
+  newtype + `PublishCache` on Editor cache seven sub-state Arcs
+  (`panes`, `modes`, `buffer_locals`, `buffers`, `tabs`, inner
+  `syntax.pane_highlights`, inner `lsp.progress`) keyed on per-field
+  version counters. Reuses prior Arc when input version is unchanged.
+- **C** (FoldIndex, O(log N) visual-row math), **A.3** (ensure
+  gating), **A.1** (rope-line window), **F** (release profile
+  tightening), **A.4** (logging demotion behind `profile-frames`)
+  closed earlier in the arc.
+- **E.2** (element-tree reuse) dropped after the E.2.α investigation
+  found no bench-justified work — notify cadence is input-driven,
+  conditional overlay-block construction is already correct, and the
+  four candidate sub-slices each had measurement-backed reasons not
+  to ship.
+
+**The architectural question this run answers:** does the identity-
+preserving publish cache actually pay off in a measurable, no-overhead
+way? Predicted: ~50 % savings on no-op publish (`steady_state` regime
+where all cached inputs are unchanged) with sub-µs net cost on a
+fully-invalidated publish (the cache machinery shouldn't add cost the
+rebuild it's avoiding doesn't already pay).
+
+### Headline deltas — new bench `dispatch_publish`
+
+Reproduce: `cargo bench -q -p lattice-host --bench dispatch_publish`.
+Fixture: editor with a 3-pane tree, 20 LSP-attached buffers
+(`active_modes` + `buffer_locals` + `buffer_uris` populated), 4 tabs,
+3 panes × 60 spans of `pane_highlights`, 6 in-flight `$/progress`
+items.
+
+| Bench                                | Time     | Δ vs `unmemoised` (pre-B.4 equivalent) |
+|--------------------------------------|----------|----------------------------------------|
+| `dispatch_publish/steady_state`      | **3.23 µs** | **−52 %** (cache hits everywhere)   |
+| `dispatch_publish/mutated_modes`     | 3.68 µs  | −45 % (one cache miss, six hits)       |
+| `dispatch_publish/mutated_all`       | 6.44 µs  | −4 % (5 misses + bench-loop mutations) |
+| `dispatch_publish/unmemoised`        | 6.72 µs  | baseline (cache cleared each iter)     |
+
+The `unmemoised` row clears the cache between iterations with no
+per-iter mutation work — the cleanest pre-B.4 stand-in. The `mutated_all`
+row also pays for 5 HashMap insert/remove ops per iteration to bump
+the versions; its small delta over `unmemoised` is that bench-loop
+overhead, not cache overhead. The cache machinery itself
+(`Mutex<PublishCache>::lock` + 7 version reads + 7 slot compares +
+7 Arc clones on hits / closure call + `Arc::new` per miss) is zero
+net cost on a fully-invalidated publish.
+
+### Headline deltas — `highlights_worker` (post-B.2)
+
+| Worker bench                       | Post-A.2b.2b | Post-B.2 | Δ vs post-A.2b.2b |
+|------------------------------------|--------------|----------|-------------------|
+| `worker_cache_hit/{24,60,120}`     | ~49 ns       | ~50 ns   | flat              |
+| `worker_recompute_on_scroll/24`    | 185.4 µs     | 199.9 µs | +7.8 %            |
+| `worker_recompute_on_scroll/60`    | 260.0 µs     | 282.5 µs | +8.7 %            |
+| `worker_recompute_on_scroll/120`   | 374.7 µs     | 415.7 µs | +10.9 %           |
+| `worker_stale_snapshot_hold/{24,60,120}` | ~2.6-2.9 µs | ~2.9 µs | flat-to-+11%   |
+
+The +7–11 % on the recompute path is the new per-recompute static-
+overlay bucket build (`bucket_static_overlays` walk + `snap.source()`
+access + the third `Arc<ArcSwap<...>>` cell store). **Architecturally
+correct** — every µs added on the worker thread is a µs removed from
+the renderer's per-frame body. Worker fires once per text/scroll
+change; renderer fires every paint.
+
+### Headline deltas — `editor_element_frame` (post-B.2)
+
+| GPUI prepaint bench (viewport 120)       | Post-A.2b.2b | Post-B.2 | Δ      |
+|------------------------------------------|--------------|----------|--------|
+| `editor_element_frame_pre_paint`         | 104.3 µs     | 90.1 µs  | −14 %  |
+| `editor_element_frame_with_inlays`       | 130.2 µs     | 118.6 µs | −9 %   |
+| `editor_element_frame_with_overlays`     | 94.0 µs      | 89.9 µs  | −4 %   |
+
+Renderer-side helper-bench numbers improved or held flat. The
+production active-pane path no longer calls these helpers for the
+static overlay layers — it consumes the worker bucket directly — so
+this bench measures the inactive-pane / fallback path. Active-pane
+real-world cost dropped by the worker-bucket lookup amount that the
+bench doesn't capture (no headless `TestAppContext` on gpui 0.2.2).
+
+### Architectural read
+
+- **Editor publish halved on the realistic fixture** (`steady_state`
+  3.23 µs vs `unmemoised` 6.72 µs). Most keystrokes don't touch
+  `panes` / `modes` / `buffer_locals` / `buffers` / `tabs` /
+  `pane_highlights` / `lsp.progress`, so most publishes now reuse
+  every cached Arc instead of rebuilding them.
+- **Renderer side gains the ability to short-circuit per-frame work
+  by `Arc::ptr_eq`** on consecutive frames' sub-state Arcs. No call
+  site does this yet; the seam is in place for future slices.
+- **High-N hlsearch tail-risk eliminated.** Pre-B.2, the active-pane
+  `overlay_quads_for_row` walked every `(hlsearch_match, visible_row)`
+  pair per frame — ~1 ms/frame at viewport 120 with 1000 matches.
+  Post-B.2 the worker emits ≤ a few quads per row in source-byte space;
+  the renderer's walk is O(quads in viewport), not O(N × V).
+- **No CI-gateable measurement of the production active-pane path.**
+  gpui 0.2.2 doesn't expose a headless `TestAppContext`, so the paint
+  phase itself remains `profile-frames`-only. The two bench surfaces
+  that ARE CI-gated (`editor_element_frame` for prepaint,
+  `dispatch_publish` for the publish path, `highlights_worker` for
+  the worker recompute) cover the dominant cost surfaces.
+
+### What this means for the §8.2 commitments
+
+- **Snapshot publish** (`runtime::snapshot_publish_standalone`) stays
+  at 95–101 ns — B.4 operates one layer up (`Editor::publish_render_state`
+  builds the `RenderState` that gets stored into the snapshot cell).
+  The §8.2 row is unchanged.
+- **Frame render TUI 80×24 / 200×60** stays under target. Active-pane
+  paint is faster than the §8.2 commitments table reflects because the
+  worker pre-paints rows + buckets overlays; the bench harness can't
+  exercise that path headlessly so the §8.2 table still reports the
+  pre-A.2 frame numbers as the gating reference.
+- **Editor dispatch publish** is a new measurement surface, not a §8.2
+  row. It sits on the actor tail every time `Editor` mutates and would
+  scale up roughly linearly with publishes-per-frame; B.4 caps that
+  cost on no-op publishes to ~3 µs / publish.
+
+---
+
 ## Environment
 
 - Date: 2026-05-13 (post Phase 4.4 + 4.5 LSP slices — supervisor refactor, file watchers, dynamic capability registration, callHierarchy/typeHierarchy/codeLens/documentLink/documentColor pumps + caches; no perf-targeted commits in the window)

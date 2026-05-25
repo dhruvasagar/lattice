@@ -1,6 +1,30 @@
 # 3c.final.B-extension — perf-driven RS lifts (post-swap)
 
-**Status:** queued — to be sliced after `3c.final.E.swap` (already
+> **Status: ✅ Completed.** All five slices landed:
+> - **B.7** Messages + Modeline — `MessagesRenderState` /
+>   `ModelineRenderState` populated in `Editor::build_render_state`.
+> - **B.8** `pane_highlights` + `lsp_diagnostics` —
+>   `SyntaxRenderState.pane_highlights` + `DiagnosticsRenderState.layer`.
+> - **B.9** `buffer_locals` — `BufferLocalsRenderState` with the typed-
+>   map deep-clone shape.
+> - **B.10** Config — `OptionsRenderState.config` (single Arc bump).
+> - **B.11** Active modes — `ModesRenderState` with per-entry
+>   `Arc<ActiveModes>`.
+>
+> Acceptance criterion satisfied: zero `read_editor` *calls* remain in
+> `render.rs` / `runtime.rs` / `gpui/window.rs` paint paths (the
+> remaining ~10 mentions in those files are comments + assertion error
+> strings enforcing the discipline). The architectural discipline this
+> extension established is captured in
+> [`../architecture/actor-seam-discipline.md`](../architecture/actor-seam-discipline.md).
+>
+> Subsequent perf work moved these sub-states from "rebuilt every
+> publish" to "identity-preserved when their backing data is stable"
+> in `B.4.a` / `B.4.b` (see archived
+> [`gpui-perf-plan.md`](gpui-perf-plan.md) and live
+> [`../operations/benchmarks.md`](../operations/benchmarks.md)).
+
+**Status (original):** queued — to be sliced after `3c.final.E.swap` (already
 landed).
 **Predecessor:** `docs/dev/archive/3c-final-audit.md` §5 (slice
 B field enumeration); `implementation.md` slice ledger up to and

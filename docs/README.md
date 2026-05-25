@@ -62,8 +62,8 @@ right now."**
 | [implementation.md](dev/operations/implementation.md)                     | The shipping ledger. What's done vs. spec'd, per slice.         |
 | [benchmarks.md](dev/operations/benchmarks.md)                             | Latest measured perf numbers + how to reproduce them.           |
 | [verify.md](dev/operations/verify.md)                                     | Manual verification checklist for end-to-end smoke testing.     |
-| [3c-final-b-extension.md](dev/operations/3c-final-b-extension.md)         | Queued perf-driven RS lifts (post-actor-swap follow-up slices). |
 | [embedded-docs-budget.md](dev/operations/embedded-docs-budget.md)         | Size-budget rationale + escape options when embedded user docs grow past the trigger. |
+| [terminal-mode-plan.md](dev/operations/terminal-mode-plan.md)             | Sliced rollout plan for the embedded terminal-mode subsystem.   |
 
 ## dev/notes/
 

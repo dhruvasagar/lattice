@@ -1,5 +1,13 @@
 # GPUI perf plan (A–F)
 
+> **Status: ✅ Completed.** Closed by `B.4.b` (commit `25b2b31`) and `E.2`
+> dropped (commit `8da36c9`). Every slice is either shipped (19 of
+> them) or formally dropped with bench-justified rationale. Future perf
+> work runs through new slices grounded in fresh measurements; the two
+> CI-gated bench surfaces (`editor_element_frame` and
+> `dispatch_publish`) are the regression gates. Headline numbers live
+> in [`../operations/benchmarks.md`](../operations/benchmarks.md).
+
 Targets: keep every feature, hit <3 ms idle frames, <6 ms median keystroke frames, 95p <8 ms, 99p <10 ms.
 
 Dominant costs from traces (pre-plan):

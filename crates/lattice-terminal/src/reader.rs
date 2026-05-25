@@ -34,33 +34,74 @@ pub fn spawn_reader(
     snapshot: Arc<ArcSwap<TerminalSnapshot>>,
     rows: u16,
     cols: u16,
+    paint_request: Option<Arc<tokio::sync::Notify>>,
 ) -> tokio::task::JoinHandle<()> {
+    tracing::info!(
+        target: "lattice_terminal::reader",
+        rows, cols,
+        "spawn_reader: spawning blocking reader task",
+    );
     tokio::task::spawn_blocking(move || {
+        tracing::info!(
+            target: "lattice_terminal::reader",
+            "reader task entered; waiting for first read",
+        );
         let mut grid = TerminalGrid::new(rows, cols);
         let mut buf = [0u8; 32 * 1024];
         let mut last_publish = Instant::now() - REFRESH_WINDOW;
         let mut seq: u64 = 0;
+        let mut total_bytes: u64 = 0;
         loop {
             let n = match reader.read(&mut buf) {
-                Ok(0) => break, // EOF — child exited.
+                Ok(0) => {
+                    tracing::info!(
+                        target: "lattice_terminal::reader",
+                        total_bytes, seq,
+                        "reader: EOF (child exited)",
+                    );
+                    break;
+                }
                 Ok(n) => n,
                 Err(e) => {
-                    tracing::warn!(target: "lattice_terminal::reader", error = %e, "pty read error");
+                    tracing::warn!(
+                        target: "lattice_terminal::reader",
+                        error = %e, total_bytes,
+                        "pty read error",
+                    );
                     break;
                 }
             };
+            total_bytes += n as u64;
+            if total_bytes <= 256 {
+                tracing::info!(
+                    target: "lattice_terminal::reader",
+                    n, total_bytes,
+                    "reader: read bytes",
+                );
+            }
             grid.advance(&buf[..n]);
             let now = Instant::now();
             if now.duration_since(last_publish) >= REFRESH_WINDOW {
                 last_publish = now;
                 seq += 1;
                 snapshot.store(Arc::new(grid.to_snapshot(seq)));
+                if let Some(n) = paint_request.as_ref() {
+                    // Wake event-driven renderers (GPUI) so
+                    // they repaint on new terminal output;
+                    // per-tick renderers (TUI) observe the
+                    // store on their next tick and don't
+                    // depend on this notify.
+                    n.notify_one();
+                }
             }
         }
         // Final publish so the renderer sees the very last
         // bytes even if they arrived mid-throttle-window.
         seq += 1;
         snapshot.store(Arc::new(grid.to_snapshot(seq)));
+        if let Some(n) = paint_request.as_ref() {
+            n.notify_one();
+        }
     })
 }
 

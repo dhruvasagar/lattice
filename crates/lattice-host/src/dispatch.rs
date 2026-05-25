@@ -12330,11 +12330,30 @@ impl Editor {
             cwd: cwd.clone(),
             rows,
             cols,
+            // Wire the editor's shared paint-request notifier so
+            // event-driven renderers (GPUI) repaint when the
+            // reader publishes new terminal output. Same wake
+            // bridge the highlights worker uses.
+            paint_request: Some(self.paint_request.clone()),
         };
 
+        tracing::info!(
+            target: "lattice_host::terminal",
+            program = %program,
+            ?args,
+            cwd = ?cwd,
+            rows,
+            cols,
+            "do_terminal_spawn: invoking lattice_terminal::spawn",
+        );
         let handles = match lattice_terminal::spawn(cfg) {
             Ok(h) => h,
             Err(e) => {
+                tracing::error!(
+                    target: "lattice_host::terminal",
+                    error = %e,
+                    "do_terminal_spawn: spawn failed",
+                );
                 self.set_message(
                     EchoLevel::Error,
                     format!("terminal: spawn failed: {e}"),
@@ -12342,6 +12361,10 @@ impl Editor {
                 return;
             }
         };
+        tracing::info!(
+            target: "lattice_host::terminal",
+            "do_terminal_spawn: spawn succeeded — reader task started",
+        );
 
         // Buffer label = the program name (basename of
         // the first segment), with args appended.

@@ -32,6 +32,14 @@ pub struct SpawnConfig {
     /// Initial PTY size (rows, cols).
     pub rows: u16,
     pub cols: u16,
+    /// Optional repaint notifier — fired by the reader task
+    /// after every published snapshot. Event-driven renderers
+    /// (GPUI) need this wake to know terminal output has
+    /// arrived; per-tick renderers (TUI) observe the publish
+    /// on their next tick and don't strictly need it. Wired by
+    /// the host from `Editor::paint_request` so terminal output
+    /// drives the same bridge the highlights worker uses.
+    pub paint_request: Option<Arc<tokio::sync::Notify>>,
 }
 
 #[derive(Debug, Error)]
@@ -68,6 +76,7 @@ pub fn spawn(config: SpawnConfig) -> Result<SpawnHandles, SpawnError> {
         cwd,
         rows,
         cols,
+        paint_request,
     } = config;
 
     let pty_system = native_pty_system();
@@ -109,7 +118,13 @@ pub fn spawn(config: SpawnConfig) -> Result<SpawnHandles, SpawnError> {
 
     let handle = PtyHandle::new(pair.master, writer, rows, cols);
     let snapshot = Arc::new(ArcSwap::from_pointee(TerminalSnapshot::empty()));
-    let reader_task = spawn_reader(reader, Arc::clone(&snapshot), rows, cols);
+    let reader_task = spawn_reader(
+        reader,
+        Arc::clone(&snapshot),
+        rows,
+        cols,
+        paint_request,
+    );
 
     Ok(SpawnHandles {
         pty: handle,

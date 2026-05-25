@@ -1135,8 +1135,41 @@ impl EditorView {
         let Some(snap) = snap_opt else {
             return div()
                 .p_3()
-                .child(format!("(terminal {:?} unavailable)", pane.buffer_id));
+                .bg(rgb(theme.background))
+                .text_color(rgb(theme.foreground))
+                .child(format!("(terminal #{} unavailable)", pane.buffer_id.0));
         };
+        tracing::trace!(
+            target: "lattice_gpui::terminal",
+            buf_id = pane.buffer_id.0,
+            rows = snap.rows,
+            cols = snap.cols,
+            seq = snap.seq,
+            "paint_terminal_pane: loaded snapshot",
+        );
+        // Diagnostic placeholder while the reader hasn't
+        // published its first frame: a string of spaces renders
+        // as nothing visible, so the user perceives a fully
+        // blank pane and can't tell whether the spawn worked,
+        // the reader's still warming up, or the renderer's
+        // off-path. Show a single status line so the spawn is
+        // visible; the actual cell grid replaces it on the
+        // first non-zero seq.
+        if snap.seq == 0 {
+            return div()
+                .flex()
+                .flex_col()
+                .flex_grow()
+                .overflow_hidden()
+                .bg(rgb(theme.background))
+                .text_color(rgb(theme.foreground))
+                .font_family(theme.font_family.clone())
+                .p_3()
+                .child(format!(
+                    "[terminal #{} — {}×{} — waiting for first output]",
+                    pane.buffer_id.0, snap.rows, snap.cols,
+                ));
+        }
         let mut rows: Vec<gpui::Div> = Vec::with_capacity(snap.rows as usize);
         for r in 0..snap.rows {
             let mut s = String::with_capacity(snap.cols as usize);
@@ -1152,7 +1185,13 @@ impl EditorView {
             .overflow_hidden()
             .bg(rgb(theme.background))
             .text_color(rgb(theme.foreground))
-            .font_family("monospace");
+            // Inherit the GPUI theme's font_family (the root
+            // sets it too). Hardcoding "monospace" here was
+            // wrong: GPUI resolves font_family against the
+            // app's registered font set, and "monospace" is
+            // not a CSS-style generic — it's an exact family
+            // name lookup.
+            .font_family(theme.font_family.clone());
         for row in rows {
             col = col.child(row);
         }

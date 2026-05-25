@@ -64,10 +64,31 @@ pub struct TerminalBuffer {
     /// linked to the buffer's lifetime; on Drop the abort fires
     /// so a removed terminal stops draining its PTY.
     reader_abort: tokio::task::AbortHandle,
+    /// 2026-05-25: killer for the spawned child process. On
+    /// Drop we call `killer.kill()` to force the shell to
+    /// exit; the cloned-reader fd held by the reader task
+    /// keeps the master PTY alive past `PtyHandle::Drop`, so
+    /// closing the master alone is not enough to wake the
+    /// reader's blocking `read()`. Without the kill, the
+    /// reader's tokio `spawn_blocking` task never exits and
+    /// the editor freezes on `:q`. Wrapped in `Option` so Drop
+    /// can `take()` and call the &mut method on the inner
+    /// killer (the trait isn't object-safe with shared refs).
+    child_killer: Option<Box<dyn portable_pty::ChildKiller + Send + Sync>>,
 }
 
 impl Drop for TerminalBuffer {
     fn drop(&mut self) {
+        // Order matters: kill the child FIRST so the cloned
+        // reader fd's blocking `read()` returns 0 (EOF) via
+        // the shell's slave-side close. Only then does the
+        // reader task exit and the spawn_blocking handle
+        // become idle. `reader_abort.abort()` is best-effort
+        // and a no-op for an in-flight blocking syscall, so on
+        // its own it does not unblock the read.
+        if let Some(mut killer) = self.child_killer.take() {
+            let _ = killer.kill();
+        }
         self.reader_abort.abort();
     }
 }
@@ -164,6 +185,7 @@ impl TerminalBuffer {
             snapshot,
             term,
             reader_task,
+            child_killer,
         } = handles;
         Self {
             id,
@@ -179,6 +201,7 @@ impl TerminalBuffer {
             insert_exit_pending: false,
             created_at: std::time::SystemTime::now(),
             reader_abort: reader_task.abort_handle(),
+            child_killer: Some(child_killer),
         }
     }
 

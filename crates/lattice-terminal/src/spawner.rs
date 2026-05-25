@@ -72,6 +72,17 @@ pub struct SpawnHandles {
     /// the lifetime of the terminal buffer to keep the reader
     /// running.
     pub reader_task: tokio::task::JoinHandle<()>,
+    /// 2026-05-25: handle to the spawned child the
+    /// `TerminalBuffer::Drop` uses to force the shell to exit
+    /// on buffer teardown. Without this, the master-side
+    /// reader fd (cloned via `try_clone_reader`) keeps the
+    /// PTY open even after `PtyHandle` drops — the child
+    /// never sees SIGHUP, the reader's blocking `read()`
+    /// never returns, and the editor freezes on `:q`. Calling
+    /// `killer.kill()` sends SIGKILL to the child; once it
+    /// exits, the reader's `read()` returns 0 (EOF), the
+    /// spawn_blocking task exits cleanly.
+    pub child_killer: Box<dyn portable_pty::ChildKiller + Send + Sync>,
 }
 
 /// Spawn a child under a PTY. Returns:
@@ -109,10 +120,20 @@ pub fn spawn(config: SpawnConfig) -> Result<SpawnHandles, SpawnError> {
     }
 
     // Spawn the child on the slave side of the pair.
-    let _child = pair
+    let child = pair
         .slave
         .spawn_command(cmd)
         .map_err(|e| SpawnError::SpawnChild(e.to_string()))?;
+    // 2026-05-25: clone the killer BEFORE dropping the Child
+    // handle so TerminalBuffer::Drop can force the shell to
+    // exit on `:q` / `:bd!`. The reader-side fd (cloned via
+    // `try_clone_reader` below) keeps the master PTY open
+    // even after `PtyHandle` drops, so closing the master is
+    // not enough to wake the reader's blocking `read()` — the
+    // child has to actually exit. Without this kill, the
+    // editor freezes on shutdown.
+    let child_killer = child.clone_killer();
+    drop(child);
     // Drop the slave on the parent side immediately after
     // spawn — the child inherited its own copy via dup2.
     drop(pair.slave);
@@ -143,5 +164,6 @@ pub fn spawn(config: SpawnConfig) -> Result<SpawnHandles, SpawnError> {
         snapshot,
         term,
         reader_task,
+        child_killer,
     })
 }

@@ -113,20 +113,27 @@ impl BufferEntry {
             BufferData::FileTree(_) => BufferKind::FileTree,
             BufferData::Help(_) => BufferKind::Help,
             BufferData::Oil(_) => BufferKind::Oil,
-            BufferData::Terminal(_) => BufferKind::Terminal
+            BufferData::Terminal(_) => BufferKind::Terminal,
+            BufferData::Messages(_) => BufferKind::Messages,
         }
     }
 
+    /// The Document storage for any rope-backed-doc kind.
+    /// Returns `Some` for both [`BufferData::Document`] and
+    /// [`BufferData::Messages`] (their storage is identical;
+    /// only the kind tag differs); `None` for other kinds.
+    /// Code that needs to differentiate Messages from a user
+    /// Document branches on [`Self::kind`].
     pub fn document(&self) -> Option<&DocumentEntry> {
         match &self.data {
-            BufferData::Document(d) => Some(d),
+            BufferData::Document(d) | BufferData::Messages(d) => Some(d),
             _ => None,
         }
     }
 
     pub fn document_mut(&mut self) -> Option<&mut DocumentEntry> {
         match &mut self.data {
-            BufferData::Document(d) => Some(d),
+            BufferData::Document(d) | BufferData::Messages(d) => Some(d),
             _ => None,
         }
     }
@@ -204,6 +211,13 @@ pub enum BufferData {
     /// Flat editable directory listing (oil.nvim-style).
     Oil(OilBuffer),
     Terminal(TerminalBuffer),
+    /// The editor's `*messages*` audit transcript. Storage is
+    /// identical to [`BufferData::Document`] (same
+    /// [`DocumentEntry`]); the discriminator exists so `:ls`,
+    /// modeline, and introspection paths can tell the transcript
+    /// apart from a user-edited file. The subsystem owns content;
+    /// `messages-mode` contributes `ReadOnly` + `NoFile`.
+    Messages(DocumentEntry),
 }
 
 #[derive(Debug, Default)]
@@ -392,7 +406,20 @@ impl BufferRegistry {
         lock_inner(&self.inner)
             .by_id
             .get(&id)
-            .map(|e| matches!(e.data, BufferData::Document(_)))
+            .map(|e| matches!(e.data, BufferData::Document(_) | BufferData::Messages(_)))
+            .unwrap_or(false)
+    }
+
+    /// True iff the entry at `id` is the `*messages*` transcript.
+    /// Symmetric with [`Self::contains_help`] /
+    /// [`Self::contains_oil`] / [`Self::contains_file_tree`] —
+    /// callers that need to differentiate the Messages identity
+    /// from a regular Document branch on this.
+    pub fn contains_messages(&self, id: BufferId) -> bool {
+        lock_inner(&self.inner)
+            .by_id
+            .get(&id)
+            .map(|e| matches!(e.data, BufferData::Messages(_)))
             .unwrap_or(false)
     }
 
@@ -460,13 +487,31 @@ impl BufferRegistry {
         ids
     }
 
-    /// Document buffers only, sorted by id.
+    /// Document buffers only, sorted by id. The `*messages*`
+    /// transcript stores as [`BufferData::Messages`] (see
+    /// [`Self::messages_ids_sorted`]) so it is **excluded** from
+    /// this list even though storage is identical; callers that
+    /// want every rope-backed-doc kind should walk both.
     pub fn document_ids_sorted(&self) -> Vec<BufferId> {
         let inner = lock_inner(&self.inner);
         let mut ids: Vec<BufferId> = inner
             .by_id
             .iter()
             .filter(|(_, e)| matches!(e.data, BufferData::Document(_)))
+            .map(|(id, _)| *id)
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    /// `*messages*` (and any future Messages-kind) buffers,
+    /// sorted by id. Symmetric with [`Self::document_ids_sorted`].
+    pub fn messages_ids_sorted(&self) -> Vec<BufferId> {
+        let inner = lock_inner(&self.inner);
+        let mut ids: Vec<BufferId> = inner
+            .by_id
+            .iter()
+            .filter(|(_, e)| matches!(e.data, BufferData::Messages(_)))
             .map(|(id, _)| *id)
             .collect();
         ids.sort();

@@ -559,7 +559,8 @@ impl App {
                 BufferKind::Oil
                 | BufferKind::FileTree
                 | BufferKind::Document
-                | BufferKind::Terminal => {}
+                | BufferKind::Terminal
+                | BufferKind::Messages => {}
             },
             // Phase 5.8.AF: migrated to host (consumed = true).
             Action::OilNavigateUp => {}

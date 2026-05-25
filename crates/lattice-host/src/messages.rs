@@ -130,10 +130,14 @@ impl Editor {
     pub fn ensure_messages_buffer(&mut self) -> crate::buffers::BufferId {
         let already_present = self.buffers.by_name(MESSAGES_BUFFER_NAME).is_some();
         // msg-mode.1: the buffer's major mode IS `messages-mode`
-        // (symmetric with `lsp-log-mode` for `*lsp*`). The
-        // mode contributes `ReadOnly = true` directly --
-        // no separate `read-only-mode` minor needed.
-        let id = self.ensure_named_synthetic_document(
+        // (symmetric with `lsp-log-mode` for `*lsp*`). The mode
+        // contributes `ReadOnly = true` + `NoFile = true` so the
+        // dispatcher gates writes and `:q` skips the dirty
+        // guard. Stored as `BufferData::Messages` (kind tag
+        // `BufferKind::Messages`) so introspection paths (`:ls`,
+        // modeline) don't conflate the transcript with
+        // user-edited documents.
+        let id = self.ensure_named_messages_document(
             MESSAGES_BUFFER_NAME,
             lattice_mode::MessagesMode::mode_id(),
             SYNTHETIC_BUFFER_FLAGS,

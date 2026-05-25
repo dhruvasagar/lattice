@@ -250,6 +250,11 @@ pub fn major_mode_id_for_buffer_kind(kind: BufferKind) -> Option<ModeId> {
         // no `:w` warn). T2 layers Normal-in-terminal grammar
         // and the Terminal-Insert sub-state on top.
         BufferKind::Terminal => Some(lattice_terminal::TerminalMode::mode_id()),
+        // `messages-mode` is the major for `*messages*`;
+        // contributes `ReadOnly` + `NoFile`. The buffer is
+        // rope-backed so motions / yank / search work like any
+        // Document — the mode just gates writes.
+        BufferKind::Messages => Some(lattice_mode::MessagesMode::mode_id()),
     }
 }
 
@@ -265,7 +270,8 @@ pub fn default_minor_mode_id_for_buffer_kind(kind: BufferKind) -> Option<ModeId>
         BufferKind::Document
         | BufferKind::FileTree
         | BufferKind::Oil
-        | BufferKind::Terminal => None,
+        | BufferKind::Terminal
+        | BufferKind::Messages => None,
     }
 }
 
@@ -303,7 +309,8 @@ pub fn auto_activated_minors_for_buffer_kind(kind: BufferKind) -> Vec<ModeId> {
         BufferKind::Help
         | BufferKind::FileTree
         | BufferKind::Oil
-        | BufferKind::Terminal => Vec::new(),
+        | BufferKind::Terminal
+        | BufferKind::Messages => Vec::new(),
     }
 }
 

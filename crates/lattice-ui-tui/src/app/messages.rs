@@ -142,24 +142,26 @@ mod tests {
 
     #[test]
     fn messages_buffer_appears_in_buffer_registry_with_synthetic_name() {
-        // Slice E: `*messages*` is a Document in the unified
-        // registry; `:b *messages*` reaches it via name lookup.
+        // `*messages*` lives in the unified registry tagged as
+        // `BufferData::Messages` (the storage variant matching
+        // `BufferKind::Messages`); `:b *messages*` reaches it
+        // via name lookup; `:bn`/`:bp` skip it (unlisted).
         use crate::app::test_helpers::app_with;
         let mut app = app_with("hi\n", 5);
         let id = app.ensure_messages_buffer();
         assert_eq!(app.editor.buffers.by_name(MESSAGES_BUFFER_NAME), Some(id));
-        let (is_doc, name, listed) = app
+        let (is_messages, name, listed) = app
             .editor
             .buffers
             .with_entry(id, |entry| {
                 (
-                    matches!(entry.data, crate::buffer_registry::BufferData::Document(_)),
+                    matches!(entry.data, crate::buffer_registry::BufferData::Messages(_)),
                     entry.name.clone(),
                     entry.flags.listed,
                 )
             })
             .expect("*messages* entry");
-        assert!(is_doc);
+        assert!(is_messages, "*messages* must be stored as BufferData::Messages");
         assert_eq!(name.as_deref(), Some(MESSAGES_BUFFER_NAME));
         // Unlisted: `:bn`/`:bp` skip it.
         assert!(!listed);

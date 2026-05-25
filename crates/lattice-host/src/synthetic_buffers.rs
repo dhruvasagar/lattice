@@ -185,16 +185,58 @@ impl Editor {
         major_id: ModeId,
         flags: BufferFlags,
     ) -> BufferId {
+        self.ensure_named_synthetic_doc_with_variant(
+            name,
+            major_id,
+            flags,
+            SyntheticDocVariant::Document,
+        )
+    }
+
+    /// Same as [`Self::ensure_named_synthetic_document`] but
+    /// inserts as [`BufferData::Messages`] so the kind tag is
+    /// `BufferKind::Messages`. Used by `ensure_messages_buffer`
+    /// so `:ls` / modeline / introspection can distinguish the
+    /// transcript from user-edited documents.
+    pub fn ensure_named_messages_document(
+        &mut self,
+        name: &str,
+        major_id: ModeId,
+        flags: BufferFlags,
+    ) -> BufferId {
+        self.ensure_named_synthetic_doc_with_variant(
+            name,
+            major_id,
+            flags,
+            SyntheticDocVariant::Messages,
+        )
+    }
+
+    fn ensure_named_synthetic_doc_with_variant(
+        &mut self,
+        name: &str,
+        major_id: ModeId,
+        flags: BufferFlags,
+        variant: SyntheticDocVariant,
+    ) -> BufferId {
         if let Some(id) = self.buffers.by_name(name) {
             return id;
         }
         let id = BufferId::next();
         let document = Document::empty();
         let handle = spawn_document(document, self.registry.clone());
+        let data = match variant {
+            SyntheticDocVariant::Document => {
+                BufferData::Document(DocumentEntry { id, handle })
+            }
+            SyntheticDocVariant::Messages => {
+                BufferData::Messages(DocumentEntry { id, handle })
+            }
+        };
         self.buffers.insert(BufferEntry {
             id,
             flags,
-            data: BufferData::Document(DocumentEntry { id, handle }),
+            data,
             name: Some(name.to_string()),
         });
         // Seed empty mode-owned document locals so downstream
@@ -209,4 +251,12 @@ impl Editor {
         self.activate_major_by_id(id, major_id);
         id
     }
+}
+
+/// Discriminator for `ensure_named_synthetic_doc_with_variant`:
+/// which `BufferData` variant to use. Storage is identical
+/// (`DocumentEntry`); only the kind tag differs.
+enum SyntheticDocVariant {
+    Document,
+    Messages,
 }

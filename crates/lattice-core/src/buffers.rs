@@ -53,17 +53,33 @@ pub enum BufferKind {
     /// operator path — `is_read_only()` returns true so the
     /// operator dispatcher leaves it alone.
     Terminal,
+    /// `*messages*` audit-log buffer (DESIGN.md §5.10.6 / emacs'
+    /// `*Messages*` analogue). Rope-backed like [`Document`]
+    /// internally — its mode (`messages-mode`) contributes
+    /// `ReadOnly = true` so the dispatcher gates keystrokes, and
+    /// `NoFile = true` so `:q` skips its dirty check. The kind is
+    /// distinct so introspection (`:ls`, modeline) doesn't
+    /// conflate the transcript with user-edited documents.
+    ///
+    /// [`Document`]: crate::Document
+    Messages,
 }
 
 impl BufferKind {
     /// Whether mutating operators (delete, change, paste, insert)
     /// are accepted on this kind. Only [`BufferKind::Document`] and
     /// [`BufferKind::Oil`] are writable; Terminal mutates via its
-    /// own PTY-stdin path, not through rope operators.
+    /// own PTY-stdin path, not through rope operators. `Messages`
+    /// is read-only at the dispatcher level (`messages-mode`
+    /// contributes `ReadOnly`); subsystem appends bypass via the
+    /// edit-batch path.
     pub fn is_read_only(self) -> bool {
         matches!(
             self,
-            BufferKind::Help | BufferKind::FileTree | BufferKind::Terminal
+            BufferKind::Help
+                | BufferKind::FileTree
+                | BufferKind::Terminal
+                | BufferKind::Messages
         )
     }
 
@@ -75,6 +91,7 @@ impl BufferKind {
             BufferKind::FileTree => "file-tree",
             BufferKind::Oil => "oil",
             BufferKind::Terminal => "terminal",
+            BufferKind::Messages => "messages",
         }
     }
 }

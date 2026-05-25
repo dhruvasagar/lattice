@@ -1442,7 +1442,10 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
             BufferKind::FileTree => {
                 _out.renderer_signals.extend(editor.dismiss_file_tree());
             }
-            BufferKind::Document | BufferKind::Oil | BufferKind::Terminal => {}
+            BufferKind::Document
+            | BufferKind::Oil
+            | BufferKind::Terminal
+            | BufferKind::Messages => {}
         },
         // 5.5.G.13: pure-editor command-line arms. `EnterCommandLine`
         // opens the `:` line, clears any in-flight completion popup,
@@ -1638,7 +1641,10 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
                 let signals = editor.do_file_tree_follow();
                 _out.renderer_signals.extend(signals);
             }
-            BufferKind::Help | BufferKind::Document | BufferKind::Terminal => {}
+            BufferKind::Help
+            | BufferKind::Document
+            | BufferKind::Terminal
+            | BufferKind::Messages => {}
         },
     }
     // 5.8.AF.3 closeout: every renderer-neutral `Action` is now
@@ -2131,7 +2137,8 @@ impl Editor {
             BufferKind::Document
             | BufferKind::FileTree
             | BufferKind::Oil
-            | BufferKind::Terminal => self.pane_tree.active().buffer_id,
+            | BufferKind::Terminal
+            | BufferKind::Messages => self.pane_tree.active().buffer_id,
         }
     }
 
@@ -2173,7 +2180,9 @@ impl Editor {
                 .buffers
                 .with_file_tree(self.active_pane_buffer_id(), |t| t.content.clone())
                 .unwrap_or_else(|| self.document.snapshot().buffer.clone()),
-            BufferKind::Document => self.document.snapshot().buffer.clone(),
+            // `*messages*` shares Document storage; `self.document`
+            // points at it when activated through `activate_document`.
+            BufferKind::Document | BufferKind::Messages => self.document.snapshot().buffer.clone(),
             BufferKind::Oil => self
                 .buffers
                 .with_oil(self.active_pane_buffer_id(), |o| o.content.clone())
@@ -2196,7 +2205,7 @@ impl Editor {
     /// file-tree / oil.
     pub fn active_cursor(&self) -> lattice_protocol::position::Position {
         match self.active_buffer {
-            BufferKind::Document => self.cursor,
+            BufferKind::Document | BufferKind::Messages => self.cursor,
             BufferKind::Help => self.popup_help().map(|h| h.cursor).unwrap_or(self.cursor),
             BufferKind::FileTree => self
                 .buffers
@@ -12010,7 +12019,8 @@ impl Editor {
                 BufferKind::Document
                 | BufferKind::FileTree
                 | BufferKind::Oil
-                | BufferKind::Terminal => self.buffers.contains(e.buffer_id),
+                | BufferKind::Terminal
+                | BufferKind::Messages => self.buffers.contains(e.buffer_id),
                 BufferKind::Help => {
                     self.buffers.contains_help(e.buffer_id) || popup_help_id == Some(e.buffer_id)
                 }
@@ -12039,7 +12049,10 @@ impl Editor {
         self.position_history_cursor = idx;
         let entry = self.position_history[idx];
         match entry.buffer {
-            BufferKind::Document => {
+            // Messages buffers share the activate_document path
+            // (rope-backed); the kind tag is preserved via
+            // self.active_buffer set inside activate_buffer.
+            BufferKind::Document | BufferKind::Messages => {
                 if self.buffers.contains_document(entry.buffer_id) {
                     let _ = self.activate_document(entry.buffer_id);
                     self.cursor = entry.position;
@@ -17491,13 +17504,15 @@ impl Editor {
         let doc_count = self.buffers.document_ids_sorted().len();
         let tree_count = self.buffers.file_tree_ids_sorted().len();
         let help_count = self.buffers.help_ids_sorted().len();
+        let msg_count = self.buffers.messages_ids_sorted().len();
         let mut lines: Vec<String> = Vec::new();
         lines.push(format!(
-            "{} open buffer(s) ({} document, {} tree, {} help):",
+            "{} open buffer(s) ({} document, {} tree, {} help, {} message):",
             ids.len(),
             doc_count,
             tree_count,
             help_count,
+            msg_count,
         ));
         lines.push(String::new());
         // Snapshot every entry under one lock acquire. Per-line
@@ -17591,6 +17606,14 @@ impl Editor {
                     let label = row.name.clone().unwrap_or_else(|| "[shell]".to_string());
                     lines.push(format!(
                         "  {active_marker}{listed_marker} #{:<3} term     {label}",
+                        id.0
+                    ));
+                }
+                BufferKind::Messages => {
+                    let label = row.name.clone().unwrap_or_else(|| "*messages*".to_string());
+                    let dirty = if row.doc_dirty { "[+]" } else { "   " };
+                    lines.push(format!(
+                        "  {active_marker}{listed_marker} #{:<3} msg  {dirty} {label}",
                         id.0
                     ));
                 }
@@ -18206,7 +18229,9 @@ impl Editor {
                     o.scroll = scroll as usize;
                 });
             }
-            BufferKind::Document => {}
+            // Document + Messages share the same hot-path stash
+            // (cursor/scroll captured on the active pane below).
+            BufferKind::Document | BufferKind::Messages => {}
             // Terminal: nothing to stash beyond the pane state
             // captured below (cursor/scroll on pane). T3
             // introduces a scrollback-cursor model that may
@@ -18337,7 +18362,11 @@ impl Editor {
             self.push_position_history(cur, PositionSource::AutoJump);
         }
         match kind {
-            BufferKind::Document => self.activate_document(id),
+            // Messages buffers share Document storage and the
+            // same activation pipeline; `activate_document` reads
+            // the kind from the registry and propagates it onto
+            // `self.active_buffer`.
+            BufferKind::Document | BufferKind::Messages => self.activate_document(id),
             BufferKind::FileTree => {
                 self.activate_file_tree(id);
                 false
@@ -18373,7 +18402,12 @@ impl Editor {
     /// document buffer that `self.document` already points at,
     /// e.g. from a help-in-pane overlay or a file-tree pane).
     pub fn activate_document(&mut self, id: BufferId) -> bool {
-        if id == self.document_buffer_id && matches!(self.active_buffer, BufferKind::Document) {
+        // Resolve the destination's kind (Document or Messages)
+        // so `self.active_buffer` reflects the actual identity
+        // after activation. Both kinds share the document
+        // pipeline; the tag is the only divergence.
+        let target_kind = self.buffers.kind_of(id).unwrap_or(BufferKind::Document);
+        if id == self.document_buffer_id && self.active_buffer == target_kind {
             return false;
         }
         if !self.buffers.contains_document(id) {
@@ -18389,9 +18423,9 @@ impl Editor {
         // snapshot_active_document). The "is the entry stashed?"
         // check is `entry.syntax.is_some()`; folds piggyback.
         if id == self.document_buffer_id {
-            self.active_buffer = BufferKind::Document;
+            self.active_buffer = target_kind;
             let pane = self.pane_tree.active_mut();
-            pane.buffer = BufferKind::Document;
+            pane.buffer = target_kind;
             pane.buffer_id = id;
             // Pull stashed mode-state out of buffer_locals when
             // re-activating a buffer the user just left for a pane
@@ -18463,8 +18497,11 @@ impl Editor {
             .map(|f| f.0.clone())
             .unwrap_or_default();
         self.document_buffer_id = id;
+        // Preserve the target's kind tag (Document vs Messages)
+        // so dispatch / introspection sees the right identity.
+        self.active_buffer = target_kind;
         let pane = self.pane_tree.active_mut();
-        pane.buffer = BufferKind::Document;
+        pane.buffer = target_kind;
         pane.buffer_id = id;
         self.current_match = None;
         self.all_matches.clear();
@@ -19396,6 +19433,14 @@ pub fn raw_buffer_candidates(
                 format!("#{:<3} {}", id.0, t.label),
                 format!("term{active_marker}"),
             ),
+            BufferData::Messages(d) => {
+                let label = entry.name.clone().unwrap_or_else(|| "*messages*".to_string());
+                let dirty = if d.handle.dirty() { " [+]" } else { "" };
+                (
+                    format!("#{:<3} {label}{dirty}", id.0),
+                    format!("msg{active_marker}"),
+                )
+            }
         };
         rows.push((id, listed, body, kind_label));
     });
@@ -19515,6 +19560,10 @@ pub fn picker_buffer_entry(
             ("oil".to_string(), dir, title, false)
         }
         BufferData::Terminal(t) => ("term".to_string(), None, t.label.clone(), false),
+        BufferData::Messages(d) => {
+            let title = entry.name.clone().unwrap_or_else(|| "*messages*".to_string());
+            ("msg".to_string(), None, title, d.handle.dirty())
+        }
     };
     lattice_picker::BufferEntry {
         id,

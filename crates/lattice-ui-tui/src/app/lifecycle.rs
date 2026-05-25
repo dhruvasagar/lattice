@@ -910,12 +910,15 @@ mod tests {
         let h = a.popup_help().expect("buffers help");
         let body = h.content.as_string();
         // Four buffers total: the initial document, the file we
-        // opened, and the synthetic `*lsp*` + `*messages*` log
-        // buffers. `:ls` lists every entry regardless of `listed`;
-        // the unlisted marker `u` signals the user-toggleable
-        // cycle filter without suppressing the row.
+        // opened, the synthetic `*lsp*` Document, and the
+        // `*messages*` Messages transcript. `:ls` lists every
+        // entry regardless of `listed`; the unlisted marker `u`
+        // signals the user-toggleable cycle filter without
+        // suppressing the row. The per-kind summary partitions
+        // documents (3) and messages (1).
         assert!(body.contains("4 open buffer"));
-        assert!(body.contains("4 document"));
+        assert!(body.contains("3 document"));
+        assert!(body.contains("1 message"));
         assert!(body.contains("*lsp*"));
         assert!(body.contains("*messages*"));
         let _ = std::fs::remove_file(path);

@@ -23,6 +23,7 @@
 pub mod buffer;
 pub mod cell;
 pub mod handle;
+pub mod modes;
 pub mod reader;
 pub mod snapshot;
 pub mod spawner;
@@ -30,5 +31,6 @@ pub mod spawner;
 pub use buffer::TerminalBuffer;
 pub use cell::{Cell, CellAttrs, CursorShape, NamedColor, TerminalColor};
 pub use handle::{PtyHandle, PtyHandleError};
+pub use modes::{register_terminal_modes, TerminalMode};
 pub use snapshot::TerminalSnapshot;
 pub use spawner::{spawn, SpawnConfig, SpawnError};

@@ -42,9 +42,14 @@ impl Mode for HelpMode {
         // Bug 4: long help bodies (markdown paragraphs, doc
         // comments rendered into popups) should wrap at the
         // pane / popup width rather than overflow horizontally.
+        //
+        // `NoFile = true`: help buffers carry generated content
+        // (apropos lists, describe-* renders), not on-disk
+        // files; `:q` must not warn about unsaved changes.
         lattice_config::overrides! {
             lattice_config::ReadOnly = true,
             lattice_config::Wrap = true,
+            lattice_config::NoFile = true,
         }
     }
     fn required_capabilities(&self) -> CapabilitySet {
@@ -67,13 +72,18 @@ mod tests {
     }
 
     #[test]
-    fn contributes_read_only_and_wrap() {
+    fn contributes_read_only_wrap_and_no_file() {
         // Bug 4: help-mode contributes Wrap = true so long
         // help bodies (markdown paragraphs, doc comments)
         // wrap at the pane / popup width rather than
-        // overflowing horizontally.
+        // overflowing horizontally. NoFile keeps `:q` quiet
+        // when a help pane is the last buffer open.
         let opts = HelpMode.options();
-        assert_eq!(opts.iter().count(), 2, "expected ReadOnly + Wrap");
+        assert_eq!(
+            opts.iter().count(),
+            3,
+            "expected ReadOnly + Wrap + NoFile",
+        );
     }
 
     #[test]

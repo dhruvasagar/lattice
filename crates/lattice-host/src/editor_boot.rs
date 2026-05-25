@@ -261,6 +261,10 @@ impl Editor {
             lattice_oil::register_oil_modes(&mut mr);
             lattice_file_tree::register_file_tree_modes(&mut mr);
             lattice_snippet::register_snippet_modes(&mut mr, snippet_registry_handle.clone());
+            // Issue #40 / Terminal-mode T1: register the
+            // `terminal-mode` major so option contributions
+            // (ReadOnly + NoFile) apply to Terminal buffers.
+            lattice_terminal::register_terminal_modes(&mut mr);
             crate::modes::register_buffer_kind_modes(&mut mr);
             mr
         };

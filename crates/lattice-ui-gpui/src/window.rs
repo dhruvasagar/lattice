@@ -612,6 +612,16 @@ impl EditorView {
             return div().child(format!("(stale pane index {pane_idx})"));
         }
         let pane: &PaneState = &leaves[pane_idx];
+        // Issue #40 / Terminal-mode T1: paint terminal-kind panes
+        // from the PTY-reader's published `TerminalSnapshot`. The
+        // branch lives inline (matching the TUI peer) until
+        // terminal-mode registers itself as a pane-render provider
+        // in T2; the renderer only touches `TerminalSnapshot`
+        // accessors so the `lattice-terminal` substrate stays
+        // decoupled.
+        if matches!(pane.buffer, lattice_core::BufferKind::Terminal) {
+            return self.paint_terminal_pane(pane, &rs_guard, theme, is_active);
+        }
         // Resolve the buffer's document handle. Inactive panes may
         // reference buffers different from `editor.document`; the
         // registry clone on `rs_guard.buffers` shares the editor's
@@ -1100,6 +1110,53 @@ impl EditorView {
                     .flex_row()
                     .child(div().child(status_line)),
             )
+    }
+
+    /// Issue #40 / Terminal-mode T1: paint a terminal-kind pane
+    /// from the `TerminalSnapshot` published by the PTY reader
+    /// task. T1 renders monochrome cell text only; T2 layers SGR
+    /// colors + cursor-shape + alt-screen handling once
+    /// alacritty_terminal is wired into `lattice-terminal::reader`.
+    ///
+    /// The substrate stays decoupled: this helper touches only
+    /// `TerminalSnapshot`'s public accessors (`rows`, `cols`,
+    /// `cell_at`) — no reader / grid internals.
+    fn paint_terminal_pane(
+        &self,
+        pane: &PaneState,
+        rs_guard: &lattice_host::render_state::RenderState,
+        theme: &GpuiTheme,
+        _is_active: bool,
+    ) -> gpui::Div {
+        let snap_opt = rs_guard
+            .buffers
+            .registry
+            .with_terminal(pane.buffer_id, |t| t.snapshot.load_full());
+        let Some(snap) = snap_opt else {
+            return div()
+                .p_3()
+                .child(format!("(terminal {:?} unavailable)", pane.buffer_id));
+        };
+        let mut rows: Vec<gpui::Div> = Vec::with_capacity(snap.rows as usize);
+        for r in 0..snap.rows {
+            let mut s = String::with_capacity(snap.cols as usize);
+            for c in 0..snap.cols {
+                s.push(snap.cell_at(r, c).ch);
+            }
+            rows.push(div().child(SharedString::from(s)));
+        }
+        let mut col = div()
+            .flex()
+            .flex_col()
+            .flex_grow()
+            .overflow_hidden()
+            .bg(rgb(theme.background))
+            .text_color(rgb(theme.foreground))
+            .font_family("monospace");
+        for row in rows {
+            col = col.child(row);
+        }
+        col
     }
 }
 

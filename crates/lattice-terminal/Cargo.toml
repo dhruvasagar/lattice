@@ -23,6 +23,12 @@ thiserror = { workspace = true }
 lattice-core = { path = "../lattice-core" }
 lattice-runtime = { path = "../lattice-runtime" }
 lattice-protocol = { path = "../lattice-protocol" }
+# T1 follow-up: `TerminalMode` contributes typed options
+# (ReadOnly + NoFile via OptionOverrideSet) so the substrate
+# names both `lattice-config` (for the option types) and
+# `lattice-mode` (for the Mode trait + registry).
+lattice-config = { path = "../lattice-config" }
+lattice-mode = { path = "../lattice-mode" }
 
 [lints]
 workspace = true

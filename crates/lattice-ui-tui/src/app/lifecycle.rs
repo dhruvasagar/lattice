@@ -816,6 +816,31 @@ mod tests {
         assert!(a.editor.should_quit);
     }
 
+    /// `:q` must skip the dirty guard for `*messages*` and other
+    /// subsystem-owned synthetic buffers. `messages-mode`
+    /// contributes `NoFile = true` so the resolved-option filter
+    /// in `do_quit` excludes the buffer; without the filter, the
+    /// transcript's append flow leaves it permanently "dirty"
+    /// and `:q` refuses to exit.
+    #[test]
+    fn quit_with_dirty_messages_buffer_still_quits() {
+        let mut a = app_with("xx", 10);
+        let msgs = a.ensure_messages_buffer();
+        // Force a content write so the buffer's clean position
+        // diverges from its current depth (mirrors what the
+        // tracing subscriber's append flow produces).
+        a.append_to_owned_buffer(msgs, "boot record line\n");
+        assert!(
+            a.editor.buffers.document_dirty(msgs),
+            "test pre-condition: *messages* buffer reports dirty after append",
+        );
+        a.do_quit(false);
+        assert!(
+            a.editor.should_quit,
+            ":q must skip the dirty guard for NoFile = true buffers (e.g. *messages*)",
+        );
+    }
+
     #[test]
     fn open_help_popup_preserves_doc_pane_cursor_for_render() {
         // Bug: invoking a popup-mode help command (`:lsp-status`,

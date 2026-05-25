@@ -3601,7 +3601,9 @@ version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
  "arc-swap",
+ "lattice-config",
  "lattice-core",
+ "lattice-mode",
  "lattice-protocol",
  "lattice-runtime",
  "parking_lot",

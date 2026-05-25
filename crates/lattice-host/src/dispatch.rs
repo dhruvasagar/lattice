@@ -12275,14 +12275,26 @@ impl Editor {
             .path()
             .and_then(|p| p.parent().map(|p| p.to_path_buf()));
 
-        // Use the active pane's published viewport_height /
-        // viewport_width when available; fall back to vim's
-        // 24 × 80 default for the very first frame.
+        // Spawn size: prefer per-pane viewport (populated by
+        // renderers that fire `SetPaneViewport` — GPUI does, TUI
+        // doesn't yet) and fall back to the editor-wide
+        // `viewport_height` / `terminal_width` (which BOTH
+        // renderers keep current). Final fallback is vim's 24×80
+        // so a brand-new editor with no measured size yet still
+        // spawns a usable shell.
         let pane = self.pane_tree.active();
-        let rows = pane.viewport_height.max(1).min(u16::MAX as u32) as u16;
-        let cols = pane.viewport_width.max(1).min(u16::MAX as u32) as u16;
-        let rows = if rows == 0 { 24 } else { rows };
-        let cols = if cols == 0 { 80 } else { cols };
+        let rows_u32 = match (pane.viewport_height, self.viewport_height) {
+            (h, _) if h > 0 => h,
+            (_, h) if h > 0 => h,
+            _ => 24,
+        };
+        let cols_u32 = match (pane.viewport_width, self.terminal_width) {
+            (w, _) if w > 0 => w,
+            (_, Some(w)) if w > 0 => w as u32,
+            _ => 80,
+        };
+        let rows = rows_u32.min(u16::MAX as u32) as u16;
+        let cols = cols_u32.min(u16::MAX as u32) as u16;
 
         let cfg = lattice_terminal::SpawnConfig {
             program: program.clone(),
@@ -12317,14 +12329,7 @@ impl Editor {
         };
 
         let id = BufferId::next();
-        let entry = TerminalBuffer {
-            id,
-            pty: Arc::new(handles.pty),
-            label: label.clone(),
-            cwd,
-            snapshot: handles.snapshot,
-            created_at: std::time::SystemTime::now(),
-        };
+        let entry = TerminalBuffer::from_spawn(id, label.clone(), cwd, handles);
         self.buffers.insert(crate::buffer_registry::BufferEntry {
             id,
             flags: lattice_core::BufferFlags {
@@ -12505,10 +12510,16 @@ impl Editor {
             return;
         }
         if !force {
+            // `NoFile = true` is contributed by modes whose
+            // buffers carry generated / transcript content
+            // (`*messages*`, `*lsp*`, help, terminal). The
+            // dirty guard skips them so `:q` quits cleanly
+            // without spurious "unsaved changes" warnings.
             let dirty_id = self
                 .buffers
                 .document_ids_sorted()
                 .into_iter()
+                .filter(|id| !*self.resolved_option::<lattice_config::NoFile>(*id))
                 .find(|id| self.buffers.document_dirty(*id));
             if let Some(id) = dirty_id {
                 self.set_message(

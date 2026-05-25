@@ -51,8 +51,13 @@ impl Mode for MessagesMode {
         // subsystem owns the content. Subsystem writes route
         // through `apply_edit_batch_blocking` which bypasses
         // the dispatcher's read-only gate.
+        //
+        // `NoFile = true`: `*messages*` is a transcript, not an
+        // on-disk file. `:q` must not warn about unsaved
+        // changes; `:w` is a no-op.
         lattice_config::overrides! {
             lattice_config::ReadOnly = true,
+            lattice_config::NoFile = true,
         }
     }
     fn required_capabilities(&self) -> CapabilitySet {
@@ -75,8 +80,12 @@ mod tests {
     }
 
     #[test]
-    fn contributes_read_only() {
+    fn contributes_read_only_and_no_file() {
         let opts = <MessagesMode as Mode>::options(&MessagesMode);
-        assert_eq!(opts.iter().count(), 1, "expected ReadOnly contribution");
+        assert_eq!(
+            opts.iter().count(),
+            2,
+            "expected ReadOnly + NoFile contributions",
+        );
     }
 }

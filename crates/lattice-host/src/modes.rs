@@ -245,10 +245,11 @@ pub fn major_mode_id_for_buffer_kind(kind: BufferKind) -> Option<ModeId> {
         BufferKind::Help => Some(lattice_syntax::MarkdownMode::mode_id()),
         BufferKind::FileTree => Some(FileTreeMode::mode_id()),
         BufferKind::Oil => Some(OilMode::mode_id()),
-        // Terminal: T1 has no major mode. T2 introduces
-        // `terminal-mode` (the major that owns Normal-in-terminal
-        // grammar + the Terminal-Insert sub-state).
-        BufferKind::Terminal => None,
+        // Terminal-mode T1: `terminal-mode` is the major. It
+        // contributes `ReadOnly` + `NoFile` (no dirty tracking,
+        // no `:w` warn). T2 layers Normal-in-terminal grammar
+        // and the Terminal-Insert sub-state on top.
+        BufferKind::Terminal => Some(lattice_terminal::TerminalMode::mode_id()),
     }
 }
 

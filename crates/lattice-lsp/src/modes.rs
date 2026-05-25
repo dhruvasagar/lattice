@@ -84,6 +84,7 @@ impl Mode for LspServerLogMode {
     fn options(&self) -> OptionOverrideSet {
         lattice_config::overrides! {
             lattice_config::ReadOnly = true,
+            lattice_config::NoFile = true,
         }
     }
     fn required_capabilities(&self) -> CapabilitySet {
@@ -222,6 +223,7 @@ impl Mode for LspLogMode {
     fn options(&self) -> OptionOverrideSet {
         lattice_config::overrides! {
             lattice_config::ReadOnly = true,
+            lattice_config::NoFile = true,
         }
     }
     fn required_capabilities(&self) -> CapabilitySet {
@@ -338,6 +340,7 @@ impl Mode for LspTraceLogMode {
     fn options(&self) -> OptionOverrideSet {
         lattice_config::overrides! {
             lattice_config::ReadOnly = true,
+            lattice_config::NoFile = true,
         }
     }
     fn required_capabilities(&self) -> CapabilitySet {

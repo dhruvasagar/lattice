@@ -315,8 +315,18 @@ Integration tests in `lattice-host`:
 Each slice gets its own commit (or small commit chain). Track
 progress here:
 
-- [ ] T1 — Core PTY + buffer kind + render
+- [X] T1 — Core PTY + buffer kind + render (`efb65d8`, 2026-05-25)
 - [ ] T2 — Input + Terminal-Insert mode
+  - [X] T2.a — TerminalInsertMode + minimal ANSI encoder
+    (printable + Enter/Tab/Backspace/Esc + Ctrl-A..Z) +
+    `i` entry, `<C-\>` exit, modeline indicator,
+    `<C-c>` exemption inside Insert (2026-05-25)
+  - [ ] T2.b — Full encoder (arrows, F-keys, Alt-prefix,
+    DECCKM); `a`/`I`/`A` entry; `<Esc>` exit gated by
+    `terminal.esc_exits`
+  - [ ] T2.c — `<C-w>` Window-prefix in Normal-in-terminal,
+    `<C-w>` WERASE inside Insert, `<C-\><C-n>` two-key exit
+    chord (replaces the T2.a single-key approximation)
 - [ ] T3 — Scrollback + nav + copy
 - [ ] T4 — Polish
 - [ ] T5 — Plugin surface (Phase 7+)

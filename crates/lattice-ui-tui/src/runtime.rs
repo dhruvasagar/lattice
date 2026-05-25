@@ -266,6 +266,7 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
                         picker_open: ad.picker_open,
                         insert_completion_open: app.completion_popup_active(),
                         snippet_active: ad.snippet_active,
+                        terminal_insert_active: ad.terminal_insert_active,
                         keymap: &translator.keymap,
                         partial_chord: &translator.partial_chord,
                     };

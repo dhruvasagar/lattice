@@ -705,6 +705,7 @@ impl GpuiApp {
                 picker_open: ad.picker_open,
                 insert_completion_open,
                 snippet_active: ad.snippet_active,
+                terminal_insert_active: ad.terminal_insert_active,
                 keymap: &translator.keymap,
                 partial_chord: &translator.partial_chord,
             };

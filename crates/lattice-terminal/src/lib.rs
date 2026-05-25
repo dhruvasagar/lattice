@@ -31,6 +31,6 @@ pub mod spawner;
 pub use buffer::TerminalBuffer;
 pub use cell::{Cell, CellAttrs, CursorShape, NamedColor, TerminalColor};
 pub use handle::{PtyHandle, PtyHandleError};
-pub use modes::{register_terminal_modes, TerminalMode};
+pub use modes::{register_terminal_modes, TerminalInsertMode, TerminalMode};
 pub use snapshot::TerminalSnapshot;
 pub use spawner::{spawn, SpawnConfig, SpawnError};

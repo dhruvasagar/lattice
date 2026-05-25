@@ -574,6 +574,19 @@ impl Editor {
                 completion_open: self.completion_state.is_some(),
                 picker_open: self.picker.is_some(),
                 snippet_active: self.active_snippet.is_some(),
+                // Terminal-mode T2.a: published so the translate
+                // layer can build TranslateContext from the
+                // snapshot without reaching into active_modes.
+                terminal_insert_active: matches!(
+                    self.active_buffer,
+                    BufferKind::Terminal
+                ) && self
+                    .active_modes
+                    .get(&self.active_pane_buffer_id())
+                    .map(|m| {
+                        m.is_active(lattice_terminal::TerminalInsertMode::mode_id())
+                    })
+                    .unwrap_or(false),
                 // Slice 3c.final.B (group 2): active-document
                 // decoration fields. Renderers read these
                 // through the published snapshot instead of
@@ -1323,6 +1336,9 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         Action::NewTab => editor.do_new_tab(),
         Action::NewTabAt(path) => editor.do_new_tab_at(std::path::PathBuf::from(path)),
         Action::TerminalSpawn(cmd) => editor.do_terminal_spawn(cmd),
+        Action::TerminalInput(bytes) => editor.do_terminal_input(&bytes),
+        Action::EnterTerminalInsert => editor.do_enter_terminal_insert(),
+        Action::ExitTerminalInsert => editor.do_exit_terminal_insert(),
         Action::CloseTab => editor.do_close_tab(),
         Action::OnlyTab => editor.do_only_tab(),
         Action::MoveTab(n) => editor.do_move_tab(n),
@@ -12357,6 +12373,71 @@ impl Editor {
         self.set_message(
             EchoLevel::Info,
             format!("terminal: spawned `{program}` (#{} )", id.0),
+        );
+    }
+
+    /// Terminal-mode T2.a: write encoded bytes to the active
+    /// Terminal buffer's PTY stdin. Handler for
+    /// `Action::TerminalInput`. No-op when the active buffer
+    /// isn't a Terminal (defensive — the translate layer only
+    /// emits TerminalInput while a Terminal is focused, but the
+    /// handler stays safe under cross-pane dispatch races).
+    pub fn do_terminal_input(&mut self, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
+        let buf_id = self.active_pane_buffer_id();
+        let result = self
+            .buffers
+            .with_terminal(buf_id, |t| t.pty.write(bytes));
+        match result {
+            Some(Ok(())) => {}
+            Some(Err(e)) => {
+                self.set_message(
+                    EchoLevel::Error,
+                    format!("terminal: write failed: {e}"),
+                );
+            }
+            None => {
+                // Active buffer is not a Terminal — silent
+                // no-op. Logged at trace for diagnosability.
+                tracing::trace!(
+                    target: "lattice_host::terminal",
+                    buf_id = buf_id.0,
+                    bytes_len = bytes.len(),
+                    "do_terminal_input called on non-Terminal active buffer; dropping",
+                );
+            }
+        }
+    }
+
+    /// Terminal-mode T2.a: activate `terminal-insert-mode` on
+    /// the active Terminal buffer. Handler for
+    /// `Action::EnterTerminalInsert`. No-op if the active
+    /// buffer is not a Terminal.
+    pub fn do_enter_terminal_insert(&mut self) {
+        if !matches!(self.active_buffer, BufferKind::Terminal) {
+            return;
+        }
+        let buf_id = self.active_pane_buffer_id();
+        let _ = self.activate_mode_by_id(
+            buf_id,
+            lattice_terminal::TerminalInsertMode::mode_id(),
+        );
+    }
+
+    /// Terminal-mode T2.a: deactivate `terminal-insert-mode`
+    /// on the active Terminal buffer. Handler for
+    /// `Action::ExitTerminalInsert`. No-op if the active buffer
+    /// is not a Terminal or the mode isn't active.
+    pub fn do_exit_terminal_insert(&mut self) {
+        if !matches!(self.active_buffer, BufferKind::Terminal) {
+            return;
+        }
+        let buf_id = self.active_pane_buffer_id();
+        let _ = self.deactivate_mode_by_id(
+            buf_id,
+            lattice_terminal::TerminalInsertMode::mode_id(),
         );
     }
 

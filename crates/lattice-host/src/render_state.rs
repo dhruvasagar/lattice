@@ -219,6 +219,13 @@ pub struct ActiveDocumentRenderState {
     /// Gates Tab / S-Tab to drive `next_tabstop` / `prev_tabstop`
     /// instead of falling back to insert-completion / outdent.
     pub snippet_active: bool,
+    /// Terminal-mode T2.a (2026-05-25): `true` when
+    /// `terminal-insert-mode` is active on the active Terminal
+    /// buffer. Drives the translate-layer branch that encodes
+    /// keystrokes to ANSI bytes (and emits
+    /// `Action::TerminalInput`) instead of running them through
+    /// the normal-in-terminal vim grammar.
+    pub terminal_insert_active: bool,
     /// Phase 5.8.AF.5 / Slice 3c.final.B (group 2): folds for
     /// the active document. Renderers read
     /// `rs.active_document.folds` instead of `app.editor.folds`.
@@ -277,6 +284,7 @@ impl Default for ActiveDocumentRenderState {
             completion_open: false,
             picker_open: false,
             snippet_active: false,
+            terminal_insert_active: false,
             folds: Arc::from(Vec::<lattice_core::Fold>::new().into_boxed_slice()),
             all_matches: Arc::from(
                 Vec::<lattice_protocol::position::Range>::new().into_boxed_slice(),

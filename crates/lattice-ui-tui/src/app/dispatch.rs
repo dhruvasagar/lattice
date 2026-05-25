@@ -299,6 +299,10 @@ impl App {
             | Action::CloseTab
             // Issue #40 / Terminal-mode T1: host-resident.
             | Action::TerminalSpawn(_)
+            // Terminal-mode T2.a: host-resident encoder + mode-toggle handlers.
+            | Action::TerminalInput(_)
+            | Action::EnterTerminalInsert
+            | Action::ExitTerminalInsert
             | Action::OnlyTab
             | Action::MoveTab(_)
             // Issue #32 (2026-05-22): picker open-target overrides.
@@ -1409,6 +1413,7 @@ mod tests {
                 picker_open: ad.picker_open,
                 insert_completion_open: a.completion_popup_active(),
                 snippet_active: ad.snippet_active,
+                terminal_insert_active: ad.terminal_insert_active,
                 keymap: &translator.keymap,
                 partial_chord: &translator.partial_chord,
             };

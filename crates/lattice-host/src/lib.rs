@@ -56,6 +56,9 @@ pub mod keymap_insert;
 pub mod keymap_normal;
 pub mod keymap_registry;
 pub mod keymap_replace;
+// Terminal-mode T2.a (2026-05-25): keystroke → ANSI byte
+// encoder consumed by the Terminal-Insert translate branch.
+pub mod keymap_terminal;
 pub mod keymap_trie;
 pub mod keymap_visual;
 pub mod lsp_helpers;

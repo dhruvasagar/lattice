@@ -495,6 +495,26 @@ pub enum Action {
     /// buffer. None ⇒ spawn the user's shell from
     /// `terminal.shell` (default `$SHELL` else `/bin/sh`).
     TerminalSpawn(Option<String>),
+    /// Terminal-mode T2.a (2026-05-25): write encoded bytes to
+    /// the active Terminal buffer's PTY stdin. Emitted by the
+    /// translate layer when the user is in Terminal-Insert mode
+    /// on a Terminal buffer and the chord encodes to ANSI via
+    /// `keymap_terminal::key_to_ansi`. The host handler
+    /// (`Editor::do_terminal_input`) looks up the active
+    /// buffer's `PtyHandle` and forwards. No-op on non-Terminal
+    /// active buffers (defensive — translate never emits in
+    /// that state but the handler stays safe).
+    TerminalInput(Vec<u8>),
+    /// Terminal-mode T2.a: activate `terminal-insert-mode` on
+    /// the active Terminal buffer. Emitted by `i` (later `a`/
+    /// `I`/`A`) in Normal-in-terminal. No-op when the active
+    /// buffer is not a Terminal.
+    EnterTerminalInsert,
+    /// Terminal-mode T2.a: deactivate `terminal-insert-mode`
+    /// on the active Terminal buffer. Emitted by `<C-\><C-n>`
+    /// (and, T2.b, optionally `<Esc>` when `terminal.esc_exits`
+    /// is true).
+    ExitTerminalInsert,
     /// `:tabclose` — close active tab (no-op when only one tab).
     CloseTab,
     /// `:tabonly` — close every tab except the active one.

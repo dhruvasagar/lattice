@@ -180,7 +180,19 @@ impl App {
         // 3c.atomic.E: renderer-side modal read through the
         // published `ActiveDocumentRenderState` cell. The modeline
         // and other status renderers call this once per frame.
-        match self.ad().modal {
+        let ad = self.ad();
+        // Terminal-mode T2.a (2026-05-25): when the active buffer
+        // is a Terminal, the label reflects the terminal sub-state
+        // rather than the underlying modal state (which stays
+        // `Normal` while `terminal-insert-mode` is the discriminator).
+        if matches!(ad.buffer_kind, lattice_core::BufferKind::Terminal) {
+            return if ad.terminal_insert_active {
+                "TERMINAL-INSERT"
+            } else {
+                "TERMINAL"
+            };
+        }
+        match ad.modal {
             ModalState::Normal => "NORMAL",
             ModalState::Insert => "INSERT",
             ModalState::Visual(_) => "VISUAL",

@@ -81,6 +81,14 @@ pub struct TranslateContext<'a> {
     /// "insert literal tab" so placeholder navigation is
     /// stable; closing the snippet deactivates the layer.
     pub snippet_active: bool,
+    /// Terminal-mode T2.a (2026-05-25): true when
+    /// `terminal-insert-mode` is active on the active Terminal
+    /// buffer. `translate` short-circuits early in this state:
+    /// keystrokes encode to ANSI bytes (via
+    /// `keymap_terminal::key_to_ansi`) and emit
+    /// `Action::TerminalInput` instead of going through the
+    /// modal-state dispatchers.
+    pub terminal_insert_active: bool,
     /// Layered keymap registry (DESIGN.md §5.2.3, audit
     /// slice 8.c -- 8.d). `translate` consults this instead
     /// of the per-mode hand-rolled `match` tables one slice
@@ -116,6 +124,36 @@ pub fn translate(ctx: TranslateContext<'_>, chord: KeyChord) -> Action {
     // app so an open picker isn't a foot-gun.
     if ctx.picker_open {
         return translate_picker(chord);
+    }
+
+    // Terminal-mode T2.a (2026-05-25): when Terminal-Insert is
+    // active, EVERY keystroke encodes to ANSI and goes to the
+    // PTY — including `<C-c>` (which becomes shell SIGINT, not
+    // "quit the editor"). The one escape is `<C-\><C-n>` which
+    // exits Terminal-Insert and falls back to Normal-in-terminal;
+    // T2.a handles the `<C-\>` half here and lets `<C-n>` arrive
+    // as a separate event with the mode now off. T2.c will add
+    // a stateful two-key chord so the escape sequence doesn't
+    // leak `\x1c` into the PTY between the two keys.
+    if ctx.terminal_insert_active
+        && matches!(ctx.active_buffer, BufferKind::Terminal)
+    {
+        if chord == KeyChord::ctrl('\\') {
+            // The `<C-\>` half of the exit sequence. T2.a
+            // approximation: emit `ExitTerminalInsert` directly.
+            // T2.c upgrades to "two-key armed" so the next
+            // chord (`<C-n>`) confirms the exit and a stray
+            // `<C-n>` after some other key still encodes to
+            // `\x0e` (shell's next-history).
+            return Action::ExitTerminalInsert;
+        }
+        if let Some(bytes) = crate::keymap_terminal::key_to_ansi(&chord) {
+            return Action::TerminalInput(bytes);
+        }
+        // Unmapped special key (e.g. arrow keys in T2.a) —
+        // silent no-op so the user isn't stuck. T2.b removes
+        // this branch by fleshing out the encoder.
+        return Action::None;
     }
 
     // Slice 8.f: the completion-popup and active-snippet minor
@@ -178,6 +216,25 @@ pub fn translate(ctx: TranslateContext<'_>, chord: KeyChord) -> Action {
             KeyKind::Special(SpecialKey::Enter) => return Action::FollowLink,
             KeyKind::Char('-') => return Action::OilNavigateUp,
             _ => {}
+        }
+    }
+
+    // Terminal-mode T2.a (2026-05-25) — Normal-in-terminal
+    // buffer-local bindings. `i` enters `terminal-insert-mode`
+    // (so subsequent keystrokes encode to PTY input via the
+    // earlier short-circuit). T2.b adds `a` / `I` / `A` here;
+    // T2.c adds `<C-w>` window-prefix routing. Other keys fall
+    // through to the standard normal-mode grammar (the
+    // scrollback-motion path lands in T3).
+    if matches!(ctx.active_buffer, BufferKind::Terminal)
+        && !ctx.terminal_insert_active
+        && matches!(ctx.modal, ModalState::Normal)
+        && ctx.partial_chord.is_empty()
+    {
+        if let KeyKind::Char('i') = chord.key {
+            if !chord.mods.ctrl() && !chord.mods.alt() {
+                return Action::EnterTerminalInsert;
+            }
         }
     }
 

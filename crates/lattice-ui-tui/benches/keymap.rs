@@ -482,6 +482,7 @@ fn translate_ctx<'a>(
         picker_open: false,
         insert_completion_open: false,
         snippet_active: false,
+        terminal_insert_active: false,
         keymap,
         partial_chord,
     }

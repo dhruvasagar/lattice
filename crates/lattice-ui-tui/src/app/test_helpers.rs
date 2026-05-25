@@ -50,6 +50,7 @@ pub(super) fn press(app: &mut App, event: crossterm::event::KeyEvent) {
         picker_open: ad.picker_open,
         insert_completion_open: app.completion_popup_active(),
         snippet_active: ad.snippet_active,
+        terminal_insert_active: ad.terminal_insert_active,
         keymap: &app.editor.keymap,
         partial_chord: &app.editor.partial_chord,
     };

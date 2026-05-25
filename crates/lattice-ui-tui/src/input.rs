@@ -182,6 +182,7 @@ mod tests {
             insert_completion_open: false,
             snippet_active: false,
             keymap: test_keymap(),
+            terminal_insert_active: false,
             partial_chord: &[],
         }
     }
@@ -213,6 +214,7 @@ mod tests {
             insert_completion_open: false,
             snippet_active: false,
             keymap: test_keymap(),
+            terminal_insert_active: false,
             partial_chord: partial,
         }
     }
@@ -235,6 +237,7 @@ mod tests {
             insert_completion_open: false,
             snippet_active: false,
             keymap: test_keymap(),
+            terminal_insert_active: false,
             partial_chord: &[],
         }
     }
@@ -264,6 +267,7 @@ mod tests {
             insert_completion_open: false,
             snippet_active: false,
             keymap: test_keymap(),
+            terminal_insert_active: false,
             partial_chord: &[],
         }
     }
@@ -282,6 +286,7 @@ mod tests {
             insert_completion_open: false,
             snippet_active: false,
             keymap: test_keymap(),
+            terminal_insert_active: false,
             partial_chord: &[],
         }
     }
@@ -311,6 +316,7 @@ mod tests {
             insert_completion_open: false,
             snippet_active: false,
             keymap: test_keymap(),
+            terminal_insert_active: false,
             partial_chord: partial,
         }
     }
@@ -329,6 +335,7 @@ mod tests {
             insert_completion_open: false,
             snippet_active: false,
             keymap: test_keymap(),
+            terminal_insert_active: false,
             partial_chord: &[],
         }
     }
@@ -1191,6 +1198,7 @@ mod tests {
             insert_completion_open: false,
             snippet_active: false,
             keymap: test_keymap(),
+            terminal_insert_active: false,
             partial_chord: &[],
         }
     }
@@ -1214,6 +1222,7 @@ mod tests {
             insert_completion_open: false,
             snippet_active: false,
             keymap: test_keymap(),
+            terminal_insert_active: false,
             partial_chord: partial,
         }
     }
@@ -1574,6 +1583,7 @@ mod tests {
                 insert_completion_open,
                 snippet_active,
                 keymap: keymap_for_mode,
+                terminal_insert_active: false,
                 partial_chord: &partial_chord,
             };
             last = translate(ctx, event);
@@ -1770,6 +1780,7 @@ mod tests {
             // `insert_completion_open` flag stays for
             // back-compat but no longer affects dispatch.
             keymap: shared_keymap_with_popup(),
+            terminal_insert_active: false,
             partial_chord: &[],
         }
     }
@@ -2011,6 +2022,7 @@ mod tests {
             // `KeymapLayer::MinorMode` layer pushed on the
             // shared base handle.
             keymap: shared_keymap_with_snippet(),
+            terminal_insert_active: false,
             partial_chord: &[],
         }
     }
@@ -3708,5 +3720,125 @@ mod tests {
             Action::CommandLineAppendChord(s) => assert_eq!(s, "<Up>"),
             other => panic!("expected CommandLineAppendChord, got {other:?}"),
         }
+    }
+
+    /// Terminal-mode T2.a: when active_buffer is Terminal and
+    /// `terminal-insert-mode` is OFF, pressing `i` enters
+    /// Terminal-Insert (analogous to vim's `i` entering Insert).
+    #[test]
+    fn terminal_normal_i_enters_terminal_insert() {
+        let (_, b) = fixture();
+        let ctx = TranslateContext {
+            modal: ModalState::Normal,
+            builtins: &b,
+            pending_count: 0,
+            op_count: 0,
+            recording_macro: false,
+            active_buffer: BufferKind::Terminal,
+            completion_open: false,
+            chord_capture: false,
+            picker_open: false,
+            insert_completion_open: false,
+            snippet_active: false,
+            terminal_insert_active: false,
+            keymap: test_keymap(),
+            partial_chord: &[],
+        };
+        assert!(matches!(
+            translate(ctx, key(KeyCode::Char('i'))),
+            Action::EnterTerminalInsert,
+        ));
+    }
+
+    /// Terminal-mode T2.a: with `terminal-insert-mode` active,
+    /// printable chars + control chars encode to ANSI bytes
+    /// wrapped in `Action::TerminalInput`, bypassing the modal
+    /// dispatchers entirely. This is what makes `ls<CR>` route
+    /// to the shell instead of moving the cursor.
+    #[test]
+    fn terminal_insert_encodes_chars_to_terminal_input() {
+        let (_, b) = fixture();
+        let mk_ctx = || TranslateContext {
+            modal: ModalState::Normal,
+            builtins: &b,
+            pending_count: 0,
+            op_count: 0,
+            recording_macro: false,
+            active_buffer: BufferKind::Terminal,
+            completion_open: false,
+            chord_capture: false,
+            picker_open: false,
+            insert_completion_open: false,
+            snippet_active: false,
+            terminal_insert_active: true,
+            keymap: test_keymap(),
+            partial_chord: &[],
+        };
+        match translate(mk_ctx(), key(KeyCode::Char('l'))) {
+            Action::TerminalInput(bytes) => assert_eq!(bytes, b"l".to_vec()),
+            other => panic!("expected TerminalInput, got {other:?}"),
+        }
+        match translate(mk_ctx(), key(KeyCode::Enter)) {
+            Action::TerminalInput(bytes) => assert_eq!(bytes, vec![b'\r']),
+            other => panic!("expected TerminalInput, got {other:?}"),
+        }
+    }
+
+    /// Terminal-mode T2.a — critical override: `<C-c>` in
+    /// Terminal-Insert sends SIGINT to the child (`\x03`); it
+    /// must NOT trigger the universal `Action::Quit` hatch. A
+    /// vim user reflex of `<C-c>` to interrupt a long shell
+    /// command would otherwise close the editor.
+    #[test]
+    fn terminal_insert_ctrl_c_sends_sigint_byte_not_quit() {
+        let (_, b) = fixture();
+        let ctx = TranslateContext {
+            modal: ModalState::Normal,
+            builtins: &b,
+            pending_count: 0,
+            op_count: 0,
+            recording_macro: false,
+            active_buffer: BufferKind::Terminal,
+            completion_open: false,
+            chord_capture: false,
+            picker_open: false,
+            insert_completion_open: false,
+            snippet_active: false,
+            terminal_insert_active: true,
+            keymap: test_keymap(),
+            partial_chord: &[],
+        };
+        match translate(ctx, ctrl(KeyCode::Char('c'))) {
+            Action::TerminalInput(bytes) => assert_eq!(bytes, vec![0x03]),
+            other => panic!("expected TerminalInput([0x03]), got {other:?}"),
+        }
+    }
+
+    /// Terminal-mode T2.a — `<C-\>` in Terminal-Insert exits
+    /// the mode (T2.a approximation of vim's `<C-\><C-n>` exit;
+    /// T2.c upgrades to the proper two-key chord).
+    #[test]
+    fn terminal_insert_ctrl_backslash_exits_mode() {
+        let (_, b) = fixture();
+        let ctx = TranslateContext {
+            modal: ModalState::Normal,
+            builtins: &b,
+            pending_count: 0,
+            op_count: 0,
+            recording_macro: false,
+            active_buffer: BufferKind::Terminal,
+            completion_open: false,
+            chord_capture: false,
+            picker_open: false,
+            insert_completion_open: false,
+            snippet_active: false,
+            terminal_insert_active: true,
+            keymap: test_keymap(),
+            partial_chord: &[],
+        };
+        assert!(matches!(
+            translate(ctx, ctrl(KeyCode::Char('\\'))),
+            Action::ExitTerminalInsert,
+        ));
     }
 }

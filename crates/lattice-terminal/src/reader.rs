@@ -655,11 +655,24 @@ impl SharedTerm {
     }
 }
 
-/// Spawn the reader task. Returns its `JoinHandle` so the
-/// caller can abort it, plus a `SharedTerm` handle the caller
-/// stores alongside the snapshot so dispatch-time operations
-/// (scroll, resize) can reach into the alacritty `Term` without
-/// going through the reader task.
+/// Spawn the reader task on a detached OS thread. Returns the
+/// `SharedTerm` handle the caller stores alongside the snapshot
+/// so dispatch-time operations (scroll, resize) can reach into
+/// the alacritty `Term`.
+///
+/// 2026-05-25: dropped the `tokio::task::JoinHandle<()>` return
+/// + the abort_handle on TerminalBuffer. Reason: tokio's
+/// `Runtime::Drop` for the editor actor's `current_thread`
+/// runtime waits for in-flight blocking tasks to complete before
+/// finishing — and a PTY reader blocked on `read(&mut buf)`
+/// only returns once the child closes its slave fd. That waiter
+/// was the real cause of the `:q` freeze: even with SIGKILL
+/// firing from `TerminalBuffer::Drop`, the kernel takes some
+/// time to deliver the signal + reap the child, and the runtime
+/// drop wouldn't proceed until then. A plain `std::thread`
+/// detaches the reader from any runtime: the editor can exit
+/// at its own pace; the OS reclaims the thread on process
+/// teardown.
 pub fn spawn_reader(
     mut reader: Box<dyn Read + Send>,
     snapshot: Arc<ArcSwap<TerminalSnapshot>>,
@@ -667,11 +680,11 @@ pub fn spawn_reader(
     cols: u16,
     scrollback_lines: u32,
     paint_request: Option<Arc<tokio::sync::Notify>>,
-) -> (SharedTerm, tokio::task::JoinHandle<()>) {
+) -> SharedTerm {
     tracing::info!(
         target: "lattice_terminal::reader",
         rows, cols, scrollback_lines,
-        "spawn_reader: spawning blocking reader task",
+        "spawn_reader: spawning detached OS thread",
     );
     let term = Arc::new(Mutex::new(build_term(rows, cols, scrollback_lines)));
     let seq = Arc::new(AtomicU64::new(0));
@@ -681,7 +694,7 @@ pub fn spawn_reader(
         seq: Arc::clone(&seq),
         paint_request: paint_request.clone(),
     };
-    let task = tokio::task::spawn_blocking(move || {
+    let _ = std::thread::Builder::new().name("lattice-pty-reader".to_string()).spawn(move || {
         tracing::info!(
             target: "lattice_terminal::reader",
             "reader task entered; waiting for first read",
@@ -751,7 +764,7 @@ pub fn spawn_reader(
             n.notify_one();
         }
     });
-    (shared, task)
+    shared
 }
 
 #[cfg(test)]

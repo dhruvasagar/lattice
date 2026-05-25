@@ -259,6 +259,13 @@ pub struct ActiveDocumentRenderState {
     ///     normal PTY bytes
     /// Cleared by both paths so the next chord starts fresh.
     pub terminal_insert_exit_pending: bool,
+    /// 2026-05-25: program basename ("zsh", "bash", "cargo") of
+    /// the child process driving the active Terminal buffer.
+    /// Published from `TerminalBuffer::program_name` so the
+    /// modeline can surface "what's running here" rather than
+    /// the generic `TERMINAL` label. Empty when the active
+    /// buffer is not a Terminal.
+    pub terminal_program_name: std::sync::Arc<str>,
     /// Phase 5.8.AF.5 / Slice 3c.final.B (group 2): folds for
     /// the active document. Renderers read
     /// `rs.active_document.folds` instead of `app.editor.folds`.
@@ -322,6 +329,7 @@ impl Default for ActiveDocumentRenderState {
             terminal_visual_active: false,
             terminal_app_cursor_keys: false,
             terminal_insert_exit_pending: false,
+            terminal_program_name: Arc::from(""),
             folds: Arc::from(Vec::<lattice_core::Fold>::new().into_boxed_slice()),
             all_matches: Arc::from(
                 Vec::<lattice_protocol::position::Range>::new().into_boxed_slice(),

@@ -68,10 +68,6 @@ pub struct SpawnHandles {
     /// resize) lock the inner Mutex; the reader holds an Arc to
     /// the same `Term`. Cheap to clone.
     pub term: SharedTerm,
-    /// Task handle for the reader; aborted on drop. Hold for
-    /// the lifetime of the terminal buffer to keep the reader
-    /// running.
-    pub reader_task: tokio::task::JoinHandle<()>,
     /// 2026-05-25: handle to the spawned child the
     /// `TerminalBuffer::Drop` uses to force the shell to exit
     /// on buffer teardown. Without this, the master-side
@@ -163,7 +159,7 @@ pub fn spawn(config: SpawnConfig) -> Result<SpawnHandles, SpawnError> {
 
     let handle = PtyHandle::new(pair.master, writer, rows, cols);
     let snapshot = Arc::new(ArcSwap::from_pointee(TerminalSnapshot::empty()));
-    let (term, reader_task) = spawn_reader(
+    let term = spawn_reader(
         reader,
         Arc::clone(&snapshot),
         rows,
@@ -176,7 +172,6 @@ pub fn spawn(config: SpawnConfig) -> Result<SpawnHandles, SpawnError> {
         pty: handle,
         snapshot,
         term,
-        reader_task,
         child_killer,
         child_pid,
     })

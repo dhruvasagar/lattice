@@ -642,6 +642,23 @@ impl Editor {
                     .buffers
                     .with_terminal(self.active_pane_buffer_id(), |t| t.insert_exit_pending)
                     .unwrap_or(false),
+                // 2026-05-25: surface the program basename on the
+                // modeline. Empty string when the active buffer
+                // isn't a terminal — the renderer keys off this
+                // and the `terminal_*_active` flags together so
+                // the per-frame branch stays kind-agnostic.
+                terminal_program_name: if matches!(
+                    self.active_buffer,
+                    BufferKind::Terminal
+                ) {
+                    self.buffers
+                        .with_terminal(self.active_pane_buffer_id(), |t| {
+                            std::sync::Arc::<str>::from(t.program_name.as_str())
+                        })
+                        .unwrap_or_else(|| std::sync::Arc::from(""))
+                } else {
+                    std::sync::Arc::from("")
+                },
                 // Slice 3c.final.B (group 2): active-document
                 // decoration fields. Renderers read these
                 // through the published snapshot instead of
@@ -12578,7 +12595,13 @@ impl Editor {
         };
 
         let id = BufferId::next();
-        let entry = TerminalBuffer::from_spawn(id, label.clone(), cwd, handles);
+        let entry = TerminalBuffer::from_spawn(
+            id,
+            label.clone(),
+            cwd,
+            prog_basename.clone(),
+            handles,
+        );
         self.buffers.insert(crate::buffer_registry::BufferEntry {
             id,
             flags: lattice_core::BufferFlags {

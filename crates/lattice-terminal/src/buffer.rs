@@ -21,6 +21,11 @@ pub struct TerminalBuffer {
     pub pty: Arc<PtyHandle>,
     pub cwd: Option<PathBuf>,
     pub label: String,
+    /// 2026-05-25: short display name for the spawned program
+    /// (e.g. `zsh`, `bash`, `cargo`). Captured at spawn from
+    /// the program path's basename so the modeline can surface
+    /// "what's running here" instead of just "terminal #N".
+    pub program_name: String,
     pub snapshot: Arc<ArcSwap<TerminalSnapshot>>,
     /// T3 (2026-05-25): shared handle to the alacritty `Term`.
     /// Dispatch-side scroll / resize ops lock the inner Mutex
@@ -70,10 +75,6 @@ pub struct TerminalBuffer {
     /// current-hit style.
     pub all_matches: Vec<GridSearchHit>,
     pub created_at: std::time::SystemTime,
-    /// Abort handle for the reader task. Held to keep the task
-    /// linked to the buffer's lifetime; on Drop the abort fires
-    /// so a removed terminal stops draining its PTY.
-    reader_abort: tokio::task::AbortHandle,
     /// 2026-05-25: killer for the spawned child process. On
     /// Drop we call `killer.kill()` to force the shell to
     /// exit; the cloned-reader fd held by the reader task
@@ -95,29 +96,23 @@ pub struct TerminalBuffer {
 
 impl Drop for TerminalBuffer {
     fn drop(&mut self) {
-        // Order matters: kill the child FIRST so the cloned
-        // reader fd's blocking `read()` returns 0 (EOF) via
-        // the shell's slave-side close. Only then does the
-        // reader task exit and the spawn_blocking handle
-        // become idle. `reader_abort.abort()` is best-effort
-        // and a no-op for an in-flight blocking syscall, so on
-        // its own it does not unblock the read.
+        // 2026-05-25: kill the child shell so process tables
+        // don't leak orphan processes. The detached reader
+        // thread (std::thread::spawn, not tokio) will see
+        // read() return 0 (EOF) once the master fd closes,
+        // and then exit on its own; we no longer wait for it
+        // (a previous design used spawn_blocking + JoinHandle
+        // which deadlocked the editor exit because tokio's
+        // Runtime::Drop synchronously waits for in-flight
+        // blocking tasks).
         if let Some(mut killer) = self.child_killer.take() {
             let _ = killer.kill();
         }
-        // 2026-05-25: SIGHUP via portable_pty is not always
-        // sufficient — some shells / environments (WSL2, child
-        // with SIGHUP trap, etc.) ignore it or take too long
-        // to act, and the actor runtime's Drop waits for the
-        // reader's blocking task. SIGKILL is the guaranteed
-        // wake. Unix-only; on Windows the portable_pty
-        // TerminateProcess path above is already authoritative.
         #[cfg(unix)]
         if let Some(pid) = self.child_pid.take() {
             // Workspace lint denies unsafe; the libc FFI call
             // is the only viable way to guarantee SIGKILL
-            // delivery (portable_pty only exposes SIGHUP),
-            // and the call is straightforward: PID + signal.
+            // delivery (portable_pty only exposes SIGHUP).
             // Passing a non-running PID returns ESRCH which we
             // ignore (the child may already have exited).
             #[allow(unsafe_code)]
@@ -125,7 +120,6 @@ impl Drop for TerminalBuffer {
                 libc::kill(pid as libc::pid_t, libc::SIGKILL);
             }
         }
-        self.reader_abort.abort();
     }
 }
 
@@ -214,13 +208,13 @@ impl TerminalBuffer {
         id: BufferId,
         label: String,
         cwd: Option<PathBuf>,
+        program_name: String,
         handles: crate::spawner::SpawnHandles,
     ) -> Self {
         let crate::spawner::SpawnHandles {
             pty,
             snapshot,
             term,
-            reader_task,
             child_killer,
             child_pid,
         } = handles;
@@ -229,6 +223,7 @@ impl TerminalBuffer {
             pty: Arc::new(pty),
             cwd,
             label,
+            program_name,
             snapshot,
             term,
             current_match: None,
@@ -238,7 +233,6 @@ impl TerminalBuffer {
             insert_exit_pending: false,
             nav_cursor: None,
             created_at: std::time::SystemTime::now(),
-            reader_abort: reader_task.abort_handle(),
             child_killer: Some(child_killer),
             child_pid,
         }

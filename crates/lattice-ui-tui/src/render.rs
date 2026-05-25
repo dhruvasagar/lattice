@@ -3093,9 +3093,21 @@ fn draw_mode_line(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnaps
     let pos = format!("{}:{}", app.ad().cursor.line + 1, app.ad().cursor.byte);
     let lang = Lang::detect_from_path(snap.path()).label();
     let mode_label = app.modal_label();
+    // 2026-05-25: when active buffer is a Terminal, append the
+    // running program basename ("zsh", "bash", "cargo") so the
+    // modeline answers "what's running here" without renderers
+    // reaching into the buffer registry.
+    let ad = app.ad();
+    let prog = ad.terminal_program_name.as_ref();
+    let mode_label_owned: String = if !prog.is_empty() {
+        format!("{mode_label} {prog}")
+    } else {
+        mode_label.to_string()
+    };
+    drop(ad);
     let lsp_segment = active_lsp_segment(app);
 
-    let left = format!("[{mode_label}] {dirty} {path}");
+    let left = format!("[{mode_label_owned}] {dirty} {path}");
     let right = if lsp_segment.is_empty() {
         format!("{pos}  {lang}")
     } else {

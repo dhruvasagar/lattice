@@ -1787,17 +1787,45 @@ impl Render for EditorView {
         // 3c.atomic.H: modeline label read through the published
         // render-state. Paint-time read; the apply loop above
         // has already published any modal change.
-        let modal = self.app.ad().modal;
+        let ad = self.app.ad();
+        let modal = ad.modal;
 
-        let modal_label = match modal {
-            ModalState::Normal => "NORMAL",
-            ModalState::Insert => "INSERT",
-            ModalState::Visual(_) => "VISUAL",
-            ModalState::OperatorPending => "PENDING",
-            ModalState::Command => "COMMAND",
-            ModalState::Search(_) => "SEARCH",
-            ModalState::Replace => "REPLACE",
+        // 2026-05-25: terminal buffers override the modal label so
+        // the bottom row reads `TERMINAL-INSERT zsh` rather than
+        // surfacing the (always-`Normal`) underlying modal. The
+        // running program basename is published on the active-doc
+        // render-state at dispatch time — renderers never reach
+        // into the buffer registry from the paint loop.
+        let modal_label: String = if matches!(
+            ad.buffer_kind,
+            lattice_core::BufferKind::Terminal
+        ) {
+            let base = if ad.terminal_insert_active {
+                "TERMINAL-INSERT"
+            } else if ad.terminal_visual_active {
+                "TERMINAL-VISUAL"
+            } else {
+                "TERMINAL"
+            };
+            let prog = ad.terminal_program_name.as_ref();
+            if prog.is_empty() {
+                base.to_string()
+            } else {
+                format!("{base} {prog}")
+            }
+        } else {
+            match modal {
+                ModalState::Normal => "NORMAL",
+                ModalState::Insert => "INSERT",
+                ModalState::Visual(_) => "VISUAL",
+                ModalState::OperatorPending => "PENDING",
+                ModalState::Command => "COMMAND",
+                ModalState::Search(_) => "SEARCH",
+                ModalState::Replace => "REPLACE",
+            }
+            .to_string()
         };
+        drop(ad);
         // 5.8.C / 5.8.H: bottom global row. In Command/Search
         // modes it shows the in-progress `:cmd` / `/pattern`
         // minibuffer; otherwise it shows the global modal label.

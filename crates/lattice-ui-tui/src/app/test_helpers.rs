@@ -124,14 +124,6 @@ pub(super) fn install_help(a: &mut App, h: HelpContent) {
     a.editor.popup_buffer = Some(id);
     a.editor.active_buffer = BufferKind::Help;
     a.seed_help_metadata_locals(id, metadata);
-    // 2026-05-26: mirror production's `open_popup` mode activation.
-    // Without this, `Editor::run_invocation`'s active-mode runner
-    // lookup finds no `help-mode` minor on the popup buffer and
-    // falls through to `run_document_invocation`, which routes
-    // motions to the doc instead of the popup.
-    let _ = a
-        .editor
-        .activate_major_for_buffer_kind(id, BufferKind::Help);
     // 3c.atomic.E: this helper mocks the `:describe-*` path
     // without going through dispatch, so the direct
     // `active_buffer` write isn't reflected in `render_state`

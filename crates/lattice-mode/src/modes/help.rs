@@ -55,14 +55,6 @@ impl Mode for HelpMode {
     fn required_capabilities(&self) -> CapabilitySet {
         CapabilitySet::empty()
     }
-    /// 2026-05-26: claim invocation dispatch for help panes via
-    /// `Editor::run_help_invocation`. Help is a *minor* mode
-    /// (`MarkdownMode` is the major), so the runner lookup walks
-    /// active minors first and finds this id before falling
-    /// through to the major.
-    fn invocation_runner(&self) -> Option<ModeId> {
-        Some(Self::mode_id())
-    }
     fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
         Box::pin(async { Ok(()) })
     }

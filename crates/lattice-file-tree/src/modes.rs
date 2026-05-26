@@ -63,11 +63,6 @@ impl Mode for FileTreeMode {
     fn required_capabilities(&self) -> CapabilitySet {
         CapabilitySet::empty()
     }
-    /// 2026-05-26: claim invocation dispatch for file-tree panes
-    /// via `Editor::run_file_tree_invocation`.
-    fn invocation_runner(&self) -> Option<ModeId> {
-        Some(Self::mode_id())
-    }
     fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
         Box::pin(async { Ok(()) })
     }

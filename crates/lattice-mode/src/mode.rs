@@ -201,28 +201,6 @@ pub trait Mode: Send + Sync + 'static {
         None
     }
 
-    /// 2026-05-26: invocation-runner discovery. Modes that own
-    /// command-invocation dispatch for their buffer kind
-    /// (terminal-mode, oil-mode, file-tree-mode, help-mode, …)
-    /// return their canonical [`ModeId`]; the host registers a
-    /// runner function under that id at boot, and
-    /// `Editor::run_invocation` looks it up by walking the
-    /// active modes on the active pane's buffer (minors first,
-    /// then major) before falling back to the central grammar
-    /// Action gate.
-    ///
-    /// Returning `None` (the default) means the mode doesn't
-    /// claim invocation dispatch — the keymap / decorations /
-    /// completion-source contributions still apply.
-    ///
-    /// Replaces the hardcoded `match BufferKind` block that
-    /// previously lived in `Editor::run_invocation`. Plugin-
-    /// installed modes for plugin-installed buffer kinds now
-    /// extend the dispatcher without touching host code.
-    fn invocation_runner(&self) -> Option<ModeId> {
-        None
-    }
-
     /// Lifecycle. Called once per (buffer, activation) cycle
     /// after the registry has applied the declarative
     /// contributions. Returns an owned [`Guard`](Self::Guard)
@@ -276,7 +254,6 @@ pub trait DynMode: Send + Sync + 'static {
     fn conflicts_with(&self) -> &[ModeId];
     fn implies(&self) -> &[ModeId];
     fn mirrors_option(&self) -> Option<&'static str>;
-    fn invocation_runner(&self) -> Option<ModeId>;
 
     /// Type-erased lifecycle entry. Returns a future whose
     /// output is the typed Guard erased to `Box<dyn Any + Send>`.
@@ -321,9 +298,6 @@ impl<M: Mode> DynMode for M {
     }
     fn mirrors_option(&self) -> Option<&'static str> {
         <M as Mode>::mirrors_option(self)
-    }
-    fn invocation_runner(&self) -> Option<ModeId> {
-        <M as Mode>::invocation_runner(self)
     }
 
     fn on_activate_dyn<'a>(

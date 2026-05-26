@@ -35,14 +35,6 @@ impl Mode for TerminalMode {
     fn required_capabilities(&self) -> CapabilitySet {
         CapabilitySet::empty()
     }
-    /// 2026-05-26: claim invocation dispatch for terminal panes.
-    /// The host's runner registry maps `terminal-mode` to
-    /// `Editor::run_terminal_invocation`; `Editor::run_invocation`
-    /// looks the runner up via this hook instead of branching
-    /// on `BufferKind::Terminal`.
-    fn invocation_runner(&self) -> Option<ModeId> {
-        Some(Self::mode_id())
-    }
     fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
         Box::pin(async { Ok(()) })
     }

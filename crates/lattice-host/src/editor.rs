@@ -229,15 +229,6 @@ use lattice_protocol::position::Position as ProtoPosition;
 #[derive(Clone)]
 pub struct HighlightWake(pub Arc<tokio::sync::Notify>);
 
-/// 2026-05-26: invocation-runner function pointer. The host
-/// registers one per [`lattice_mode::Mode`] whose
-/// [`lattice_mode::Mode::invocation_runner`] returns `Some(id)`.
-/// Returns `true` when the runner claimed the invocation,
-/// `false` when [`Editor::run_invocation`] should fall through
-/// to the grammar Action gate / `run_document_invocation` for
-/// central dispatch.
-pub type InvocationRunnerFn = fn(&mut Editor, lattice_grammar::CommandInvocation) -> bool;
-
 impl Default for HighlightWake {
     fn default() -> Self {
         Self(Arc::new(tokio::sync::Notify::new()))
@@ -606,19 +597,6 @@ pub struct Editor {
     /// Mode registry (M.1). Owns the catalogue of registered
     /// modes; activation / deactivation routes through here.
     pub mode_registry: Arc<ModeRegistry>,
-    /// 2026-05-26: per-mode invocation runner table. Boot
-    /// registers a runner function under each mode-id whose
-    /// [`lattice_mode::Mode::invocation_runner`] returns
-    /// `Some(id)`; [`Editor::run_invocation`] looks the runner
-    /// up by walking the active modes on the active pane's
-    /// buffer (minors first, then major) and calls the first
-    /// match. Empty for modes that don't own dispatch
-    /// (text-mode, completion-mode, semantic-tokens-mode, …).
-    /// Replaces the hardcoded `match BufferKind` block in
-    /// `run_invocation`; plugin-installed modes for plugin-
-    /// installed buffer kinds extend the dispatcher through
-    /// this map without touching host code.
-    pub invocation_runners: HashMap<lattice_mode::ModeId, InvocationRunnerFn>,
     /// Typed service map subsystems hand off to modes so
     /// `Mode::on_activate` can pull subsystem handles via
     /// `ctx.service::<T>()`. Populated at boot; read-only
@@ -1108,51 +1086,4 @@ pub struct Editor {
     pub pending_completion_resolve_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<CompletionResolveOutcome>>,
     pub pending_completion_resolve_token: Option<CancellationToken>,
-}
-
-impl Editor {
-    /// 2026-05-26: register an invocation-runner function under
-    /// the mode-id its owning [`lattice_mode::Mode`] declares via
-    /// [`lattice_mode::Mode::invocation_runner`]. Called from
-    /// `Editor::boot` for each built-in runner
-    /// (`run_help_invocation` / `run_oil_invocation` /
-    /// `run_file_tree_invocation` / `run_terminal_invocation`);
-    /// plugins (post Phase 7) reuse this entry point for the
-    /// modes they install. Overwrites silently on duplicate
-    /// registration — boot order is the single writer.
-    pub fn register_invocation_runner(
-        &mut self,
-        id: lattice_mode::ModeId,
-        runner: InvocationRunnerFn,
-    ) {
-        self.invocation_runners.insert(id, runner);
-    }
-
-    /// 2026-05-26: resolve the invocation runner for `buffer_id`
-    /// by walking the active modes (minors most-recently-
-    /// activated first, then major) and returning the first
-    /// runner whose mode declared
-    /// [`lattice_mode::Mode::invocation_runner`] and has a
-    /// registered function on `self.invocation_runners`.
-    /// Mirrors [`crate::pane_render::resolve_pane_render_mode`]
-    /// — same walk, different table. Returns `None` when no
-    /// active mode owns dispatch (Document panes today).
-    pub fn resolve_invocation_runner(
-        &self,
-        buffer_id: lattice_core::BufferId,
-    ) -> Option<InvocationRunnerFn> {
-        let modes = self.active_modes.get(&buffer_id)?;
-        for &minor_id in modes.minors().iter().rev() {
-            let mode = self.mode_registry.get(minor_id)?;
-            if let Some(runner_id) = mode.invocation_runner()
-                && let Some(runner) = self.invocation_runners.get(&runner_id)
-            {
-                return Some(*runner);
-            }
-        }
-        let major_id = modes.major()?;
-        let mode = self.mode_registry.get(major_id)?;
-        let runner_id = mode.invocation_runner()?;
-        self.invocation_runners.get(&runner_id).copied()
-    }
 }

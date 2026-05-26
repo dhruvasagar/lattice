@@ -45,15 +45,6 @@ impl Mode for HoverMode {
     fn required_capabilities(&self) -> CapabilitySet {
         CapabilitySet::empty()
     }
-    /// 2026-05-26: hover popups want the same read-only motion
-    /// dispatch help buffers use. Point at help-mode's runner id
-    /// so the host's invocation_runners map (where boot registers
-    /// `Editor::run_help_invocation` under `help-mode`) routes
-    /// `j` / `k` / `gg` / `G` through the help runner without
-    /// needing a separate `run_hover_invocation`.
-    fn invocation_runner(&self) -> Option<ModeId> {
-        Some(crate::HelpMode::mode_id())
-    }
     fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
         Box::pin(async { Ok(()) })
     }

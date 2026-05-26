@@ -719,6 +719,225 @@ mod tests {
         assert_eq!(out[0].style.bg, Some(Color::Rgb(0x1e, 0x1e, 0x2e)));
     }
 
+    // ---- S3.c.3 — bg-layer overlays on cell-derived bodies ----
+    //
+    // `apply_match_overlay` is the bg-layer engine for visual,
+    // hlsearch, current_match, substitute, and doc-highlight
+    // overlays. Unlike the semantic-tokens pass, it *replaces*
+    // the entire `Style` for the overlap region (the caller
+    // chooses fg + bg + modifiers as one bundle).
+    //
+    // `apply_underline_overlay` is the diagnostics-underline
+    // engine. It ADDs `Modifier::UNDERLINED` to the overlap
+    // region's existing style; fg / bg from earlier passes stay
+    // intact. The `severity_color` parameter is intentionally
+    // unused at paint time — see the upstream doc comment for
+    // terminal-compatibility reasons.
+
+    use crate::render::{apply_match_overlay, apply_underline_overlay};
+
+    /// Helper: yellow bg + black fg + bold — the canonical hlsearch
+    /// style used in the codebase's `match_style()` helper.
+    fn match_style_yellow_bg() -> TuiStyle {
+        TuiStyle::default()
+            .bg(Color::Yellow)
+            .fg(Color::Black)
+            .add_modifier(Modifier::BOLD)
+    }
+
+    /// Mid-row match overlay on a single-span cell body: splits
+    /// into pre/mid/post with the overlap region carrying the
+    /// overlay style verbatim (fg + bg + modifiers all replaced).
+    #[test]
+    fn s3c3_match_overlay_splits_single_span_body() {
+        let body = flat_body("abcdefgh", 0xcdd6f4);
+        let overlay = match_style_yellow_bg();
+        let out = apply_match_overlay(body, 2, 6, overlay);
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0].content.as_ref(), "ab");
+        assert_eq!(out[1].content.as_ref(), "cdef");
+        assert_eq!(out[2].content.as_ref(), "gh");
+        // Middle span: overlay style exactly.
+        assert_eq!(out[1].style.fg, Some(Color::Black));
+        assert_eq!(out[1].style.bg, Some(Color::Yellow));
+        assert!(out[1].style.add_modifier.contains(Modifier::BOLD));
+        // Outer spans keep the cell-derived fg, bg=None.
+        assert_eq!(out[0].style.fg, Some(Color::Rgb(0xcd, 0xd6, 0xf4)));
+        assert_eq!(out[0].style.bg, None);
+        assert_eq!(out[2].style.fg, Some(Color::Rgb(0xcd, 0xd6, 0xf4)));
+    }
+
+    /// Match overlay covering the entire body: every cell-derived
+    /// span's style becomes the overlay style (no pre / post
+    /// slices needed).
+    #[test]
+    fn s3c3_match_overlay_full_coverage() {
+        let body = flat_body("hi", 0xcdd6f4);
+        let overlay = match_style_yellow_bg();
+        let out = apply_match_overlay(body, 0, 2, overlay);
+        assert_eq!(collect_text(&out), "hi");
+        for s in &out {
+            assert_eq!(s.style.fg, Some(Color::Black));
+            assert_eq!(s.style.bg, Some(Color::Yellow));
+        }
+    }
+
+    /// Match overlay outside the body's byte range: no mutation.
+    /// Captures the no-op contract for ranges past EOL.
+    #[test]
+    fn s3c3_match_overlay_outside_range_noop() {
+        let body = flat_body("abc", 0xcdd6f4);
+        let pre_text = collect_text(&body);
+        let pre_styles: Vec<_> = body.iter().map(|s| s.style).collect();
+        let out = apply_match_overlay(body, 10, 20, match_style_yellow_bg());
+        assert_eq!(collect_text(&out), pre_text);
+        let post_styles: Vec<_> = out.iter().map(|s| s.style).collect();
+        assert_eq!(post_styles, pre_styles);
+    }
+
+    /// Match overlay across a fg boundary in a multi-span body:
+    /// both halves of the overlap region adopt the overlay style.
+    /// Captures the cross-boundary walk semantics for bg-layer
+    /// overlays.
+    #[test]
+    fn s3c3_match_overlay_spans_multi_span_body() {
+        let fg_a = 0xff0000;
+        let fg_b = 0x00ff00;
+        let cells = vec![
+            Cell::new(b'a' as u32, fg_a, 0, 0),
+            Cell::new(b'a' as u32, fg_a, 0, 0),
+            Cell::new(b'a' as u32, fg_a, 0, 0),
+            Cell::new(b'b' as u32, fg_b, 0, 0),
+            Cell::new(b'b' as u32, fg_b, 0, 0),
+            Cell::new(b'b' as u32, fg_b, 0, 0),
+        ];
+        let body = cell_row_to_source_spans(&row(cells));
+        assert_eq!(body.len(), 2);
+        let overlay = match_style_yellow_bg();
+        let out = apply_match_overlay(body, 2, 5, overlay);
+        // Walk the spans and verify the overlap [2, 5) carries
+        // the overlay style on BOTH sides of the fg-boundary
+        // at byte 3.
+        let mut cursor = 0usize;
+        for s in &out {
+            let len = s.content.len();
+            let span_start = cursor;
+            let span_end = cursor + len;
+            if span_start >= 2 && span_end <= 5 {
+                assert_eq!(
+                    s.style.bg,
+                    Some(Color::Yellow),
+                    "overlap span '{}' must carry overlay bg",
+                    s.content.as_ref()
+                );
+            }
+            cursor = span_end;
+        }
+    }
+
+    /// Match overlay's style assignment REPLACES the cell's
+    /// existing modifiers (it does not OR in). A cell carrying
+    /// BOLD from syntax style + an overlay style without BOLD
+    /// results in the overlay's modifier set, not the merged
+    /// one. This is the documented difference vs. the semantic
+    /// tokens overlay's `add_modifier` semantics.
+    #[test]
+    fn s3c3_match_overlay_replaces_modifiers() {
+        // Cell with BOLD syntax modifier.
+        let cells = vec![
+            Cell::new(b'x' as u32, 0xcba6f7, 0, cell_flags::BOLD),
+        ];
+        let body = cell_row_to_source_spans(&row(cells));
+        // Overlay style has ITALIC, NOT BOLD.
+        let overlay = TuiStyle::default()
+            .bg(Color::Yellow)
+            .add_modifier(Modifier::ITALIC);
+        let out = apply_match_overlay(body, 0, 1, overlay);
+        // Replaced: ITALIC present, BOLD absent.
+        assert!(out[0].style.add_modifier.contains(Modifier::ITALIC));
+        assert!(
+            !out[0].style.add_modifier.contains(Modifier::BOLD),
+            "match overlay must REPLACE the style — BOLD from syntax must be dropped"
+        );
+    }
+
+    /// Underline overlay (diagnostics): adds UNDERLINED modifier
+    /// to the overlap region; fg / bg from earlier passes stay
+    /// intact. Captures the additive contract for the diagnostic
+    /// layer.
+    #[test]
+    fn s3c3_underline_overlay_adds_only_underline() {
+        let cells = vec![
+            Cell::new(b'e' as u32, 0xcdd6f4, 0x1e1e2e, cell_flags::BOLD),
+            Cell::new(b'r' as u32, 0xcdd6f4, 0x1e1e2e, cell_flags::BOLD),
+            Cell::new(b'r' as u32, 0xcdd6f4, 0x1e1e2e, cell_flags::BOLD),
+        ];
+        let body = cell_row_to_source_spans(&row(cells));
+        // Sanity: cells share style → one span pre-overlay.
+        assert_eq!(body.len(), 1);
+        let out =
+            apply_underline_overlay(body, 0, 3, Color::Red /* unused */);
+        // UNDERLINED added; fg / bg / BOLD preserved.
+        for s in &out {
+            assert!(s.style.add_modifier.contains(Modifier::UNDERLINED));
+            assert!(s.style.add_modifier.contains(Modifier::BOLD));
+            assert_eq!(s.style.fg, Some(Color::Rgb(0xcd, 0xd6, 0xf4)));
+            assert_eq!(s.style.bg, Some(Color::Rgb(0x1e, 0x1e, 0x2e)));
+        }
+    }
+
+    /// Underline overlay covering only part of the row: pre /
+    /// mid (underlined) / post slices. The mid keeps the cell's
+    /// existing style and only adds UNDERLINED.
+    #[test]
+    fn s3c3_underline_overlay_partial_coverage_keeps_outer_style() {
+        let body = flat_body("abcdef", 0xcdd6f4);
+        let out = apply_underline_overlay(body, 2, 4, Color::Red);
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0].content.as_ref(), "ab");
+        assert!(!out[0].style.add_modifier.contains(Modifier::UNDERLINED));
+        assert_eq!(out[1].content.as_ref(), "cd");
+        assert!(out[1].style.add_modifier.contains(Modifier::UNDERLINED));
+        // Mid keeps the cell's fg too — only the modifier is
+        // additive.
+        assert_eq!(out[1].style.fg, Some(Color::Rgb(0xcd, 0xd6, 0xf4)));
+        assert_eq!(out[2].content.as_ref(), "ef");
+        assert!(!out[2].style.add_modifier.contains(Modifier::UNDERLINED));
+    }
+
+    /// Multiple bg-layer overlays compose by sequential
+    /// application: doc-highlight (yellow bg) followed by visual
+    /// selection (cyan bg) leaves the cyan bg on the overlap —
+    /// the second pass's `apply_match_overlay` REPLACES the
+    /// first's. Captures the documented sequencing.
+    #[test]
+    fn s3c3_match_overlay_composes_by_sequence() {
+        let body = flat_body("abcdef", 0xcdd6f4);
+        let yellow = TuiStyle::default().bg(Color::Yellow).fg(Color::Black);
+        let cyan = TuiStyle::default().bg(Color::Cyan).fg(Color::Black);
+        // Doc-highlight: bytes [1, 5).
+        let after_dh = apply_match_overlay(body, 1, 5, yellow);
+        // Visual selection: bytes [2, 4) — replaces the inner
+        // portion of the doc-highlight bg.
+        let out = apply_match_overlay(after_dh, 2, 4, cyan);
+        // Walk and verify: byte 0 unchanged; byte 1 = yellow;
+        // bytes 2..4 = cyan; byte 4 = yellow; byte 5 = unchanged.
+        let mut cursor = 0usize;
+        for s in &out {
+            let len = s.content.len();
+            let mid = cursor + len / 2;
+            match mid {
+                0 => assert_eq!(s.style.bg, None),
+                1 => assert_eq!(s.style.bg, Some(Color::Yellow)),
+                2 | 3 => assert_eq!(s.style.bg, Some(Color::Cyan)),
+                4 => assert_eq!(s.style.bg, Some(Color::Yellow)),
+                5 => assert_eq!(s.style.bg, None),
+                _ => {}
+            }
+            cursor += len;
+        }
+    }
+
     /// Overlay spanning two different-fg cell-derived spans:
     /// each gets its overlapping portion fg-replaced. Captures
     /// the cross-boundary walk.

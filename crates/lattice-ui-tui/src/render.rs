@@ -3777,7 +3777,11 @@ fn match_overlay_range(
     Some((start, end.min(line_len)))
 }
 
-fn apply_match_overlay(
+/// S3.c.3 (2026-05-26): visibility bumped to `pub(crate)` so
+/// `cells_render::tests` can validate the overlay walks cell-
+/// derived spans correctly. Matches the precedent set by
+/// `apply_whitespace_decoration` / `apply_semantic_token_overlay`.
+pub(crate) fn apply_match_overlay(
     spans: Vec<Span<'static>>,
     overlay_start: usize,
     overlay_end: usize,
@@ -4479,7 +4483,10 @@ fn combine_prefixed(
 /// flagged line scrolled past the viewport. The severity-cell
 /// gutter still carries the per-severity colour, so the user
 /// sees which kind of diagnostic is on the line.
-fn apply_underline_overlay(
+/// S3.c.3 (2026-05-26): visibility bumped to `pub(crate)` so
+/// `cells_render::tests` can validate the overlay walks cell-
+/// derived spans correctly.
+pub(crate) fn apply_underline_overlay(
     spans: Vec<Span<'static>>,
     overlay_start: usize,
     overlay_end: usize,

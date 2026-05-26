@@ -153,13 +153,14 @@ pub fn recompute(
         return WorkerDecision::CacheHit;
     }
 
-    // Cache miss: rebuild. S2.2 was whole-doc mode + raw codepoints;
-    // S2.3.a adds syntax-resolved fg via the host theme. Chunked
-    // mode lands in S2.4.
+    // Cache miss: rebuild. S2.2 was whole-doc + raw codepoints;
+    // S2.3.a adds syntax-resolved fg via the host theme; S2.3.b
+    // splices inlay-hint cells. Chunked mode lands in S2.4.
     let matrix = build_whole_doc_matrix(
         snapshot.as_ref(),
         cells.syntax_handle.as_deref(),
         &cells.theme,
+        &cells.inlay_hints,
         cells.version,
     );
     matrix_cell.store(Arc::new(matrix));
@@ -167,14 +168,18 @@ pub fn recompute(
 }
 
 /// Build a whole-doc [`CellMatrix`] from `snapshot` + optional
-/// syntax handle + theme.
+/// syntax handle + theme + inlay-hint payload.
 ///
 /// One [`CellRow`] per source line. Cell codepoints come from the
 /// document snapshot's rope. `cell.fg` is the theme-resolved RGB
 /// for the syntax span covering each byte; bytes outside any span
 /// (or every byte when no syntax handle is attached) take the
-/// theme's `Style::Default` fg. S2.3.b will fold inlay splicing
-/// into this loop; S2.3.c adds fold elision.
+/// theme's `Style::Default` fg. Inlay hints whose `(line, byte)`
+/// falls inside the visible range splice virtual cells (one per
+/// inlay char) at that position with `flags::INLAY` set, and
+/// record `(orig_byte, char_width)` on `CellRow::inlay_offsets`
+/// so `byte_to_combined_col` returns the right post-inlay column.
+/// S2.3.c will add fold elision.
 ///
 /// Stale-syntax behaviour: if the syntax snapshot's
 /// `text_version` is behind the document's `text_version`, the
@@ -188,6 +193,7 @@ fn build_whole_doc_matrix(
     snapshot: &lattice_runtime::DocumentSnapshot,
     syntax_handle: Option<&lattice_syntax::SyntaxHandle>,
     theme: &crate::ui::theme::Theme,
+    inlay_hints: &[crate::render_state::InlayHintRow],
     version: MatrixVersion,
 ) -> CellMatrix {
     let line_count = snapshot.buffer.line_count();
@@ -196,6 +202,7 @@ fn build_whole_doc_matrix(
     }
 
     let default_fg = resolve_fg(theme, lattice_syntax::Style::Default);
+    let inlay_fg = inlay_hint_fg();
 
     // Resolve per-line styled spans when a current syntax snapshot
     // is available. `highlight_lines` returns one Vec<StyledSpan>
@@ -211,6 +218,11 @@ fn build_whole_doc_matrix(
         snap.highlight_lines(0, line_count).ok()
     });
 
+    // Bucket inlay hints by line so each row's splice walk is
+    // O(inlays_on_line). Pre-sorted ascending by byte within each
+    // bucket — the splice walk assumes that order.
+    let inlays_by_line = bucket_inlays_by_line(inlay_hints, line_count);
+
     let mut rows: Vec<CellRow> = Vec::with_capacity(line_count as usize);
     for line_idx in 0..line_count {
         let text = snapshot.buffer.line(line_idx).unwrap_or_default();
@@ -219,26 +231,136 @@ fn build_whole_doc_matrix(
             .and_then(|v| v.get(line_idx as usize))
             .map(Vec::as_slice)
             .unwrap_or(&[]);
-        let cells: Vec<Cell> = text
-            .char_indices()
-            .map(|(byte, ch)| {
-                let style = style_at_byte(line_spans, byte);
-                let fg = if matches!(style, lattice_syntax::Style::Default) {
-                    default_fg
-                } else {
-                    resolve_fg(theme, style)
-                };
-                Cell::new(ch as u32, fg, 0, 0)
-            })
-            .collect();
-        rows.push(CellRow::new(
-            cells,
-            line_idx,
-            Vec::<lattice_cells::row::InlayOffset>::new(),
-        ));
+        let line_inlays = inlays_by_line
+            .get(line_idx as usize)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        let (cells, inlay_offsets) = build_row_cells(
+            &text,
+            line_spans,
+            line_inlays,
+            theme,
+            default_fg,
+            inlay_fg,
+        );
+        rows.push(CellRow::new(cells, line_idx, inlay_offsets));
     }
     let chunk = Arc::new(CellChunk::new(0, rows, version));
     CellMatrix::whole_doc(chunk, line_count)
+}
+
+/// Per-row build: walks `text` char-by-char, splices inlay text at
+/// each `(orig_byte, text)` position, emits source cells with
+/// theme-resolved fg and inlay cells with `flags::INLAY`. Returns
+/// `(cells, inlay_offsets)` ready for `CellRow::new`.
+///
+/// Splice points are inclusive at byte position (inlays whose
+/// `orig_byte <= char_byte_start` splice in *before* that char).
+/// Trailing inlays at or past EOL splice at end-of-line — matches
+/// the existing `highlights_worker::weave_row` contract so S3
+/// renderers can switch substrates without semantic drift.
+fn build_row_cells(
+    text: &str,
+    line_spans: &[lattice_syntax::StyledSpan],
+    line_inlays: &[(u32, &str)],
+    theme: &crate::ui::theme::Theme,
+    default_fg: u32,
+    inlay_fg: u32,
+) -> (Vec<Cell>, Vec<lattice_cells::row::InlayOffset>) {
+    // Capacity: source chars + sum of inlay char widths. Slight
+    // over-estimate is fine.
+    let inlay_total_chars: usize = line_inlays
+        .iter()
+        .map(|(_, t)| t.chars().count())
+        .sum();
+    let mut cells: Vec<Cell> = Vec::with_capacity(text.len() + inlay_total_chars);
+    let mut inlay_offsets: Vec<lattice_cells::row::InlayOffset> =
+        Vec::with_capacity(line_inlays.len());
+
+    let resolve = |style: lattice_syntax::Style| -> u32 {
+        if matches!(style, lattice_syntax::Style::Default) {
+            default_fg
+        } else {
+            resolve_fg(theme, style)
+        }
+    };
+
+    let mut inlay_idx = 0usize;
+    for (byte, ch) in text.char_indices() {
+        // Splice every inlay whose `orig_byte` is at or before this
+        // char position. Order-of-arrival ties at the same byte
+        // resolve in input order.
+        while inlay_idx < line_inlays.len()
+            && (line_inlays[inlay_idx].0 as usize) <= byte
+        {
+            let (orig_byte, t) = line_inlays[inlay_idx];
+            let char_width = t.chars().count() as u32;
+            inlay_offsets.push((orig_byte, char_width));
+            for ic in t.chars() {
+                cells.push(Cell::new(
+                    ic as u32,
+                    inlay_fg,
+                    0,
+                    lattice_cells::cell_flags::INLAY,
+                ));
+            }
+            inlay_idx += 1;
+        }
+        let style = style_at_byte(line_spans, byte);
+        cells.push(Cell::new(ch as u32, resolve(style), 0, 0));
+    }
+    // Trailing inlays at/past EOL.
+    while inlay_idx < line_inlays.len() {
+        let (orig_byte, t) = line_inlays[inlay_idx];
+        let char_width = t.chars().count() as u32;
+        inlay_offsets.push((orig_byte, char_width));
+        for ic in t.chars() {
+            cells.push(Cell::new(
+                ic as u32,
+                inlay_fg,
+                0,
+                lattice_cells::cell_flags::INLAY,
+            ));
+        }
+        inlay_idx += 1;
+    }
+
+    (cells, inlay_offsets)
+}
+
+/// Bucket a flat inlay-hints list by line into per-line slices of
+/// `(orig_byte, text)`, each bucket sorted ascending by `orig_byte`.
+/// Output length is `line_count` so callers can index by line
+/// without bounds-checking. Hints whose `line` is past `line_count`
+/// are dropped — out-of-range payloads do not feed the build.
+fn bucket_inlays_by_line<'a>(
+    inlay_hints: &'a [crate::render_state::InlayHintRow],
+    line_count: u32,
+) -> Vec<Vec<(u32, &'a str)>> {
+    let mut buckets: Vec<Vec<(u32, &'a str)>> =
+        vec![Vec::new(); line_count as usize];
+    if inlay_hints.is_empty() {
+        return buckets;
+    }
+    for h in inlay_hints {
+        if h.line < line_count {
+            buckets[h.line as usize].push((h.byte, h.text.as_str()));
+        }
+    }
+    for b in &mut buckets {
+        b.sort_by_key(|(off, _)| *off);
+    }
+    buckets
+}
+
+/// Hard-coded `0x7f7f7f` foreground for inlay-hint cells —
+/// mirrors the TUI's existing `DarkGray` inlay style. A dedicated
+/// `inlay_hint_style` theme slot is a follow-up alongside the
+/// match / selection bg slots tracked in the polish backlog
+/// (#19).
+fn inlay_hint_fg() -> u32 {
+    crate::ui::theme::Color::Named(crate::ui::theme::NamedColor::DarkGray)
+        .to_rgb_u32(0)
 }
 
 /// Resolve a syntax style to its `0xRRGGBB` foreground colour via
@@ -301,14 +423,32 @@ mod tests {
         syntax_handle: Option<Arc<lattice_syntax::SyntaxHandle>>,
         theme: crate::ui::theme::Theme,
     ) -> ArcSwap<RenderState> {
+        rs_with_snapshot_full(
+            snapshot,
+            version,
+            matrix_cell,
+            syntax_handle,
+            theme,
+            Vec::<crate::render_state::InlayHintRow>::new(),
+        )
+    }
+
+    /// Full-input variant used by S2.3.b tests that need to drive
+    /// the inlay-hint splice path.
+    fn rs_with_snapshot_full(
+        snapshot: Option<Arc<DocumentSnapshot>>,
+        version: MatrixVersion,
+        matrix_cell: Arc<ArcSwap<CellMatrix>>,
+        syntax_handle: Option<Arc<lattice_syntax::SyntaxHandle>>,
+        theme: crate::ui::theme::Theme,
+        inlay_hints: Vec<crate::render_state::InlayHintRow>,
+    ) -> ArcSwap<RenderState> {
         let cells = CellsRenderState {
             matrix: matrix_cell,
             version,
             snapshot,
             syntax_handle,
-            inlay_hints: Arc::from(
-                Vec::<crate::render_state::InlayHintRow>::new().into_boxed_slice(),
-            ),
+            inlay_hints: Arc::from(inlay_hints.into_boxed_slice()),
             folds: Arc::from(Vec::<lattice_core::Fold>::new().into_boxed_slice()),
             viewport_height: 0,
             theme,
@@ -579,6 +719,185 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ---- S2.3.b — inlay-hint splicing ----
+
+    fn inlay(line: u32, byte: u32, text: &str) -> crate::render_state::InlayHintRow {
+        crate::render_state::InlayHintRow {
+            line,
+            byte,
+            text: text.to_string(),
+        }
+    }
+
+    fn row_text(r: &CellRow) -> String {
+        r.cells
+            .iter()
+            .map(|c| char::from_u32(c.codepoint).unwrap_or('?'))
+            .collect()
+    }
+
+    /// Single inlay spliced mid-line: combined text reflects the
+    /// inlay, the spliced cells carry `flags::INLAY`, and
+    /// `inlay_offsets` records `(orig_byte, char_width)` so
+    /// `byte_to_combined_col` returns the post-inlay column for
+    /// later bytes.
+    #[test]
+    fn single_inlay_splices_into_row_and_sets_flags() {
+        let theme = crate::ui::theme::Theme::default();
+        let snap = snap_of_versioned("hello", 1);
+        let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+        let hints = vec![inlay(0, 2, ": ")];
+        let rs = rs_with_snapshot_full(
+            Some(snap),
+            v(1),
+            matrix_cell.clone(),
+            None,
+            theme,
+            hints,
+        );
+        assert_eq!(recompute(&rs, &matrix_cell), WorkerDecision::Recomputed);
+        let m = matrix_cell.load();
+        let row = m.slice(0, 1).iter().next().cloned().unwrap();
+        // Combined cells: `h e : SPACE l l o`.
+        assert_eq!(row_text(&row), "he: llo");
+        // Inlay-spliced cells at index 2, 3 carry the INLAY flag.
+        assert!(row.cells[2].is_inlay(), "cell 2 (`:`) must be INLAY");
+        assert!(row.cells[3].is_inlay(), "cell 3 (` `) must be INLAY");
+        // Source cells stay clean.
+        assert!(!row.cells[0].is_inlay());
+        assert!(!row.cells[1].is_inlay());
+        assert!(!row.cells[4].is_inlay());
+        // Inlay foreground is the hardcoded DarkGray (0x7f7f7f).
+        assert_eq!(row.cells[2].fg, 0x7f7f7f);
+        // Offsets: one entry, (2, 2) for `(orig_byte, char_width)`.
+        assert_eq!(row.inlay_offsets.as_ref(), &[(2u32, 2u32)] as &[_]);
+        // byte_to_combined_col round-trip: source byte 2 sits at
+        // combined col 4 (after the 2-wide inlay).
+        assert_eq!(row.byte_to_combined_col(0), 0);
+        assert_eq!(row.byte_to_combined_col(2), 4);
+        assert_eq!(row.byte_to_combined_col(3), 5);
+    }
+
+    /// Two inlays on the same line, presented out-of-order in the
+    /// payload, splice in `(byte, sequence-of-arrival)` order after
+    /// the worker's per-line `sort_by_key`.
+    #[test]
+    fn multiple_inlays_splice_in_byte_order() {
+        let theme = crate::ui::theme::Theme::default();
+        let snap = snap_of_versioned("abc", 1);
+        let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+        // Insert out of order on purpose.
+        let hints = vec![inlay(0, 2, "[2]"), inlay(0, 1, "[1]")];
+        let rs = rs_with_snapshot_full(
+            Some(snap),
+            v(1),
+            matrix_cell.clone(),
+            None,
+            theme,
+            hints,
+        );
+        assert_eq!(recompute(&rs, &matrix_cell), WorkerDecision::Recomputed);
+        let row = matrix_cell.load().slice(0, 1).iter().next().cloned().unwrap();
+        assert_eq!(row_text(&row), "a[1]b[2]c");
+        // Offsets ordered by orig_byte.
+        assert_eq!(
+            row.inlay_offsets.as_ref(),
+            &[(1u32, 3u32), (2u32, 3u32)] as &[_]
+        );
+    }
+
+    /// An inlay at byte 0 splices *before* the first char of the
+    /// line — covers the boundary case the byte<=byte splice
+    /// inequality is meant to handle.
+    #[test]
+    fn inlay_at_line_start_splices_before_first_char() {
+        let theme = crate::ui::theme::Theme::default();
+        let snap = snap_of_versioned("xyz", 1);
+        let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+        let hints = vec![inlay(0, 0, "?")];
+        let rs = rs_with_snapshot_full(
+            Some(snap),
+            v(1),
+            matrix_cell.clone(),
+            None,
+            theme,
+            hints,
+        );
+        assert_eq!(recompute(&rs, &matrix_cell), WorkerDecision::Recomputed);
+        let row = matrix_cell.load().slice(0, 1).iter().next().cloned().unwrap();
+        assert_eq!(row_text(&row), "?xyz");
+        assert!(row.cells[0].is_inlay());
+        assert_eq!(row.inlay_offsets.as_ref(), &[(0u32, 1u32)] as &[_]);
+    }
+
+    /// A trailing inlay (orig_byte == line_len) splices at EOL.
+    /// Matches the highlights_worker contract so future renderer
+    /// cutovers don't surprise the user with disappearing
+    /// end-of-line hints.
+    #[test]
+    fn trailing_inlay_splices_at_end_of_line() {
+        let theme = crate::ui::theme::Theme::default();
+        let snap = snap_of_versioned("ab", 1);
+        let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+        let hints = vec![inlay(0, 2, ";")];
+        let rs = rs_with_snapshot_full(
+            Some(snap),
+            v(1),
+            matrix_cell.clone(),
+            None,
+            theme,
+            hints,
+        );
+        assert_eq!(recompute(&rs, &matrix_cell), WorkerDecision::Recomputed);
+        let row = matrix_cell.load().slice(0, 1).iter().next().cloned().unwrap();
+        assert_eq!(row_text(&row), "ab;");
+        assert!(row.cells[2].is_inlay());
+        assert_eq!(row.inlay_offsets.as_ref(), &[(2u32, 1u32)] as &[_]);
+    }
+
+    /// An inlay-version bump (same text + theme, new inlay
+    /// payload) triggers a recompute. Demonstrates the cells.
+    /// inlay_hints field participates in the version axes.
+    #[test]
+    fn inlay_version_bump_triggers_rebuild() {
+        let theme = crate::ui::theme::Theme::default();
+        let snap = snap_of_versioned("a", 1);
+        let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+        let v_a = MatrixVersion {
+            text: 1,
+            syntax: 1,
+            inlay_hints: 0,
+            folds: 0,
+            theme: 0,
+        };
+        let v_b = MatrixVersion { inlay_hints: 1, ..v_a };
+
+        let rs1 = rs_with_snapshot_full(
+            Some(snap.clone()),
+            v_a,
+            matrix_cell.clone(),
+            None,
+            theme,
+            Vec::new(),
+        );
+        assert_eq!(recompute(&rs1, &matrix_cell), WorkerDecision::Recomputed);
+        let first_ptr = Arc::as_ptr(&matrix_cell.load_full());
+
+        // Add an inlay + bump the version.
+        let rs2 = rs_with_snapshot_full(
+            Some(snap),
+            v_b,
+            matrix_cell.clone(),
+            None,
+            theme,
+            vec![inlay(0, 0, "!")],
+        );
+        assert_eq!(recompute(&rs2, &matrix_cell), WorkerDecision::Recomputed);
+        assert_ne!(first_ptr, Arc::as_ptr(&matrix_cell.load_full()));
+        let row = matrix_cell.load().slice(0, 1).iter().next().cloned().unwrap();
+        assert_eq!(row_text(&row), "!a");
     }
 
     /// Theme axis bump rebuilds the matrix even with identical

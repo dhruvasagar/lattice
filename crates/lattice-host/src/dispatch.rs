@@ -871,7 +871,11 @@ impl Editor {
                 // returns both so they are built from one cache scan
                 // — keeps the hash byte-aligned with the published
                 // list by construction.
-                inlay_hints,
+                //
+                // S2.3.b (2026-05-26): the Arc is cloned (one
+                // refcount bump) so the cells substate below reads
+                // the same payload. Single cache scan, two readers.
+                inlay_hints: inlay_hints.clone(),
                 inlay_version: inlay_version_val,
                 // Perf plan B.2 slice B.2.a: clone the worker's
                 // overlay-quads cell into the publish so renderers
@@ -913,9 +917,12 @@ impl Editor {
                 },
                 snapshot: Some(self.document.snapshot()),
                 syntax_handle: self.syntax.clone().map(std::sync::Arc::new),
-                inlay_hints: std::sync::Arc::from(
-                    Vec::<InlayHintRow>::new().into_boxed_slice(),
-                ),
+                // S2.3.b (2026-05-26): cells substate consumes the
+                // same gated inlay payload the syntax substate
+                // does. Empty when `lsp-inlay-hint-mode` is off,
+                // no LSP, or no hints have arrived — the worker's
+                // splice walk short-circuits on the empty bucket.
+                inlay_hints,
                 folds: std::sync::Arc::from(
                     self.folds.clone().into_boxed_slice(),
                 ),

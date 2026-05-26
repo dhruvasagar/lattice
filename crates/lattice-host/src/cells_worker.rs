@@ -154,24 +154,30 @@ pub fn recompute(
     }
 
     // Cache miss: rebuild. S2.2 was whole-doc + raw codepoints;
-    // S2.3.a adds syntax-resolved fg via the host theme; S2.3.b
-    // splices inlay-hint cells; S2.3.c elides closed-fold interior
-    // lines. Chunked mode lands in S2.4.
-    let matrix = build_whole_doc_matrix(
+    // S2.3.a/b/c added syntax fg, inlay splicing, fold elision;
+    // S2.4.a picks whole-doc vs chunked mode based on
+    // `viewport_height` and the snapshot's line count.
+    // S2.4.b (smallest-rebuild-set + downstream chunk shift) needs
+    // edit-range plumbing — every build still touches every chunk
+    // for now.
+    let matrix = build_matrix(
         snapshot.as_ref(),
         cells.syntax_handle.as_deref(),
         &cells.theme,
         &cells.inlay_hints,
         &cells.folds,
         cells.foldenable,
+        cells.viewport_height,
         cells.version,
     );
     matrix_cell.store(Arc::new(matrix));
     WorkerDecision::Recomputed
 }
 
-/// Build a whole-doc [`CellMatrix`] from `snapshot` + optional
-/// syntax handle + theme + inlay-hint payload + folds.
+/// Build a [`CellMatrix`] from `snapshot` + optional syntax
+/// handle + theme + inlay-hint payload + folds. Picks whole-doc
+/// vs chunked mode based on `viewport_height` and the snapshot's
+/// line count.
 ///
 /// One [`CellRow`] per source line that survives fold elision. Cell
 /// codepoints come from the document snapshot's rope. `cell.fg` is
@@ -187,6 +193,15 @@ pub fn recompute(
 /// folded section, matching the existing `line_inside_closed_fold`
 /// semantics.
 ///
+/// **Mode selection (S2.4.a)**: when `viewport_height == 0` or
+/// `line_count <= 4 × viewport_height`, the matrix is a single
+/// whole-doc chunk. Otherwise it splits into
+/// `next_pow2(2 × viewport_height)`-line chunks (clamped to a
+/// 16-line floor). Every chunk carries the same publisher
+/// `MatrixVersion` for now — S2.4.b will reuse unaffected chunks
+/// by per-chunk version comparison once edit-range plumbing
+/// arrives.
+///
 /// Stale-syntax behaviour: if the syntax snapshot's
 /// `text_version` is behind the document's `text_version`, the
 /// snapshot's byte offsets no longer align with the current rope
@@ -195,13 +210,15 @@ pub fn recompute(
 /// case. The matrix rebuilds again when the syntax catches up
 /// (the cascade bumps `MatrixVersion::syntax`, which equals the
 /// document's `text_version` at publish time).
-fn build_whole_doc_matrix(
+#[allow(clippy::too_many_arguments)]
+fn build_matrix(
     snapshot: &lattice_runtime::DocumentSnapshot,
     syntax_handle: Option<&lattice_syntax::SyntaxHandle>,
     theme: &crate::ui::theme::Theme,
     inlay_hints: &[crate::render_state::InlayHintRow],
     folds: &[lattice_core::Fold],
     foldenable: bool,
+    viewport_height: u32,
     version: MatrixVersion,
 ) -> CellMatrix {
     let line_count = snapshot.buffer.line_count();
@@ -226,31 +243,115 @@ fn build_whole_doc_matrix(
         snap.highlight_lines(0, line_count).ok()
     });
 
-    // Bucket inlay hints by line so each row's splice walk is
-    // O(inlays_on_line). Pre-sorted ascending by byte within each
-    // bucket — the splice walk assumes that order.
     let inlays_by_line = bucket_inlays_by_line(inlay_hints, line_count);
-
-    // Fold index — predicates collapse to `false` when foldenable
-    // is off, so the elision branch becomes a no-op for `zi`.
     let fold_index = crate::folds::FoldIndex::from_folds(folds, foldenable);
 
-    let mut rows: Vec<CellRow> = Vec::with_capacity(line_count as usize);
-    for line_idx in 0..line_count {
-        // S2.3.c: skip source lines that fall strictly inside a
-        // closed fold. The fold's start_line stays visible
-        // (renderer paints the fold marker there); only the
-        // interior is elided.
-        if fold_index.line_inside_closed_fold(line_idx) {
+    let inputs = ChunkInputs {
+        snapshot,
+        per_line_spans: per_line_spans.as_ref(),
+        inlays_by_line: &inlays_by_line,
+        fold_index: &fold_index,
+        theme,
+        default_fg,
+        inlay_fg,
+    };
+
+    match pick_chunk_size(viewport_height, line_count) {
+        ChunkMode::WholeDoc => {
+            let rows = build_chunk_rows(&inputs, 0, line_count);
+            let chunk = Arc::new(CellChunk::new(0, rows, version));
+            CellMatrix::whole_doc(chunk, line_count)
+        }
+        ChunkMode::Chunked(chunk_size) => {
+            let mut chunks: Vec<Arc<CellChunk>> = Vec::with_capacity(
+                ((line_count + chunk_size - 1) / chunk_size) as usize,
+            );
+            let mut start = 0u32;
+            while start < line_count {
+                let end = start.saturating_add(chunk_size).min(line_count);
+                let rows = build_chunk_rows(&inputs, start, end);
+                chunks.push(Arc::new(CellChunk::new(start, rows, version)));
+                start = end;
+            }
+            CellMatrix::chunked(chunks, chunk_size, line_count, version)
+        }
+    }
+}
+
+/// Mode selection for [`build_matrix`]. `WholeDoc` collapses to a
+/// single chunk covering the entire document; `Chunked(n)` builds
+/// `n`-line chunks. Switching point and chunk size match the
+/// design doc (`docs/dev/architecture/cell-grid-renderer.md` §
+/// Chunking policy).
+#[derive(Debug, PartialEq, Eq)]
+enum ChunkMode {
+    WholeDoc,
+    Chunked(u32),
+}
+
+/// Pick the chunk mode. Whole-doc when:
+/// - `viewport_height == 0` (boot / no layout yet), or
+/// - `line_count <= 4 × viewport_height` (small-doc threshold).
+///
+/// Chunked otherwise. `chunk_size = next_pow2(2 × viewport_height)`,
+/// clamped to a 16-line floor so tiny viewports don't produce
+/// per-line chunks. The power-of-two snap is intentional — it
+/// keeps the chunk-table cache-friendly and makes the eventual
+/// LRU eviction policy in the design doc trivial to reason about.
+fn pick_chunk_size(viewport_height: u32, line_count: u32) -> ChunkMode {
+    if viewport_height == 0 || line_count <= viewport_height.saturating_mul(4) {
+        return ChunkMode::WholeDoc;
+    }
+    let target = viewport_height.saturating_mul(2).max(16);
+    ChunkMode::Chunked(next_power_of_two(target))
+}
+
+/// Smallest `u32` power of two `≥ n`. `n == 0` returns 1 (the
+/// minimum non-zero power of two); inputs near `u32::MAX` saturate
+/// at `1 << 31` to avoid overflow.
+fn next_power_of_two(n: u32) -> u32 {
+    if n <= 1 {
+        return 1;
+    }
+    let leading = (n - 1).leading_zeros();
+    if leading == 0 {
+        1u32 << 31
+    } else {
+        1u32 << (32 - leading)
+    }
+}
+
+/// Inputs shared across all chunks of a single matrix build. Held
+/// by reference so the orchestrator can call `build_chunk_rows`
+/// repeatedly without cloning.
+struct ChunkInputs<'a> {
+    snapshot: &'a lattice_runtime::DocumentSnapshot,
+    per_line_spans: Option<&'a Vec<Vec<lattice_syntax::StyledSpan>>>,
+    inlays_by_line: &'a [Vec<(u32, &'a str)>],
+    fold_index: &'a crate::folds::FoldIndex,
+    theme: &'a crate::ui::theme::Theme,
+    default_fg: u32,
+    inlay_fg: u32,
+}
+
+/// Build the row vector for one chunk covering source lines
+/// `[start_line, end_line)`. Folded interior lines are skipped
+/// (see `line_inside_closed_fold`); surviving rows keep their
+/// logical `source_line`.
+fn build_chunk_rows(inputs: &ChunkInputs, start_line: u32, end_line: u32) -> Vec<CellRow> {
+    let mut rows: Vec<CellRow> = Vec::with_capacity((end_line - start_line) as usize);
+    for line_idx in start_line..end_line {
+        if inputs.fold_index.line_inside_closed_fold(line_idx) {
             continue;
         }
-        let text = snapshot.buffer.line(line_idx).unwrap_or_default();
-        let line_spans: &[lattice_syntax::StyledSpan] = per_line_spans
-            .as_ref()
+        let text = inputs.snapshot.buffer.line(line_idx).unwrap_or_default();
+        let line_spans: &[lattice_syntax::StyledSpan] = inputs
+            .per_line_spans
             .and_then(|v| v.get(line_idx as usize))
             .map(Vec::as_slice)
             .unwrap_or(&[]);
-        let line_inlays = inlays_by_line
+        let line_inlays = inputs
+            .inlays_by_line
             .get(line_idx as usize)
             .map(Vec::as_slice)
             .unwrap_or(&[]);
@@ -258,14 +359,13 @@ fn build_whole_doc_matrix(
             &text,
             line_spans,
             line_inlays,
-            theme,
-            default_fg,
-            inlay_fg,
+            inputs.theme,
+            inputs.default_fg,
+            inputs.inlay_fg,
         );
         rows.push(CellRow::new(cells, line_idx, inlay_offsets));
     }
-    let chunk = Arc::new(CellChunk::new(0, rows, version));
-    CellMatrix::whole_doc(chunk, line_count)
+    rows
 }
 
 /// Per-row build: walks `text` char-by-char, splices inlay text at
@@ -942,6 +1042,232 @@ mod tests {
         assert_ne!(first_ptr, Arc::as_ptr(&matrix_cell.load_full()));
         let row = matrix_cell.load().slice(0, 1).iter().next().cloned().unwrap();
         assert_eq!(row_text(&row), "!a");
+    }
+
+    // ---- S2.4.a — chunked-mode switch ----
+
+    /// `pick_chunk_size` policy: small docs and zero-viewport
+    /// inputs collapse to whole-doc; everything past the
+    /// `4 × viewport_height` threshold goes chunked.
+    #[test]
+    fn pick_chunk_size_policy() {
+        // viewport == 0 → whole-doc regardless of line count.
+        assert_eq!(pick_chunk_size(0, 0), ChunkMode::WholeDoc);
+        assert_eq!(pick_chunk_size(0, 1_000_000), ChunkMode::WholeDoc);
+
+        // Below threshold (line_count <= 4 × viewport): whole-doc.
+        assert_eq!(pick_chunk_size(50, 200), ChunkMode::WholeDoc);
+        assert_eq!(pick_chunk_size(50, 199), ChunkMode::WholeDoc);
+
+        // Above threshold: chunked with next_pow2(2 × viewport).
+        // viewport=50 → 2×50=100 → next_pow2 = 128.
+        assert_eq!(pick_chunk_size(50, 201), ChunkMode::Chunked(128));
+        // viewport=70 → 2×70=140 → next_pow2 = 256.
+        assert_eq!(pick_chunk_size(70, 281), ChunkMode::Chunked(256));
+
+        // 16-line floor: tiny viewport doesn't produce sub-16
+        // chunks.
+        // viewport=3 → 2×3=6, clamped to 16 → next_pow2 = 16.
+        assert_eq!(pick_chunk_size(3, 13), ChunkMode::Chunked(16));
+    }
+
+    #[test]
+    fn next_power_of_two_table() {
+        assert_eq!(next_power_of_two(0), 1);
+        assert_eq!(next_power_of_two(1), 1);
+        assert_eq!(next_power_of_two(2), 2);
+        assert_eq!(next_power_of_two(3), 4);
+        assert_eq!(next_power_of_two(15), 16);
+        assert_eq!(next_power_of_two(16), 16);
+        assert_eq!(next_power_of_two(17), 32);
+        assert_eq!(next_power_of_two(100), 128);
+        assert_eq!(next_power_of_two(1_000_000), 1_048_576);
+        // u32::MAX-class inputs saturate at 1 << 31 (avoid overflow).
+        assert_eq!(next_power_of_two(u32::MAX), 1u32 << 31);
+    }
+
+    /// Small doc (line_count <= 4 × viewport_height) builds a
+    /// whole-doc matrix — one chunk covering every line.
+    #[test]
+    fn small_doc_stays_whole_doc() {
+        let theme = crate::ui::theme::Theme::default();
+        // 5 lines + viewport 5 → threshold 20; line_count <= 20.
+        let snap = snap_of_versioned("l0\nl1\nl2\nl3\nl4", 1);
+        let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+        let cells = CellsRenderState {
+            matrix: matrix_cell.clone(),
+            version: v(1),
+            snapshot: Some(snap),
+            syntax_handle: None,
+            inlay_hints: Arc::from(
+                Vec::<crate::render_state::InlayHintRow>::new().into_boxed_slice(),
+            ),
+            folds: Arc::from(Vec::<lattice_core::Fold>::new().into_boxed_slice()),
+            viewport_height: 5,
+            foldenable: true,
+            theme,
+        };
+        let rs = ArcSwap::from_pointee(RenderState {
+            cells: Arc::new(cells),
+            ..RenderState::default()
+        });
+        assert_eq!(recompute(&rs, &matrix_cell), WorkerDecision::Recomputed);
+        let m = matrix_cell.load();
+        assert!(m.is_whole_doc(), "small doc must stay whole-doc");
+        assert_eq!(m.chunks.len(), 1);
+        assert_eq!(m.visible_line_count, 5);
+    }
+
+    /// Large doc (line_count > 4 × viewport_height) switches to
+    /// chunked mode. Chunk size = next_pow2(2 × viewport_height),
+    /// chunks cover the full document, and `matrix.slice(0, all)`
+    /// walks them in order with row content matching each line.
+    #[test]
+    fn large_doc_splits_into_chunks() {
+        let theme = crate::ui::theme::Theme::default();
+        // viewport=5, threshold=20. Build 25 lines so we cross it.
+        // chunk_size = next_pow2(10) = 16. Expect ceil(25/16) = 2.
+        let text: String = (0..25)
+            .map(|i| format!("line{}", i))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let snap = snap_of_versioned(&text, 1);
+        let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+        let cells = CellsRenderState {
+            matrix: matrix_cell.clone(),
+            version: v(1),
+            snapshot: Some(snap),
+            syntax_handle: None,
+            inlay_hints: Arc::from(
+                Vec::<crate::render_state::InlayHintRow>::new().into_boxed_slice(),
+            ),
+            folds: Arc::from(Vec::<lattice_core::Fold>::new().into_boxed_slice()),
+            viewport_height: 5,
+            foldenable: true,
+            theme,
+        };
+        let rs = ArcSwap::from_pointee(RenderState {
+            cells: Arc::new(cells),
+            ..RenderState::default()
+        });
+        assert_eq!(recompute(&rs, &matrix_cell), WorkerDecision::Recomputed);
+
+        let m = matrix_cell.load();
+        assert!(!m.is_whole_doc());
+        assert_eq!(m.chunk_size, 16);
+        assert_eq!(m.source_line_count, 25);
+        assert_eq!(m.visible_line_count, 25);
+        // Two chunks: 16 + 9 rows.
+        assert_eq!(m.chunks.len(), 2);
+        assert_eq!(m.chunks[0].start_source_line, 0);
+        assert_eq!(m.chunks[0].rows.len(), 16);
+        assert_eq!(m.chunks[1].start_source_line, 16);
+        assert_eq!(m.chunks[1].rows.len(), 9);
+
+        // Slice iteration walks across chunks transparently and
+        // preserves logical source_line on each row.
+        let source_lines: Vec<u32> =
+            m.slice(0, 100).iter().map(|r| r.source_line).collect();
+        assert_eq!(source_lines, (0u32..25).collect::<Vec<_>>());
+    }
+
+    /// Fold elision works in chunked mode: a closed fold whose
+    /// interior crosses a chunk boundary still elides the right
+    /// source lines. The fold's start_line lands in chunk 0; the
+    /// fold's end_line lands in chunk 1; only the start stays
+    /// visible.
+    #[test]
+    fn chunked_mode_honours_fold_elision_across_chunks() {
+        let theme = crate::ui::theme::Theme::default();
+        let text: String = (0..25)
+            .map(|i| format!("l{}", i))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let snap = snap_of_versioned(&text, 1);
+        let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+        // Close a fold from line 10 through line 20 — interior
+        // lines 11..=20 are elided, 10 stays.
+        let folds = vec![closed_fold(10, 20)];
+        let cells = CellsRenderState {
+            matrix: matrix_cell.clone(),
+            version: v(1),
+            snapshot: Some(snap),
+            syntax_handle: None,
+            inlay_hints: Arc::from(
+                Vec::<crate::render_state::InlayHintRow>::new().into_boxed_slice(),
+            ),
+            folds: Arc::from(folds.into_boxed_slice()),
+            viewport_height: 5,
+            foldenable: true,
+            theme,
+        };
+        let rs = ArcSwap::from_pointee(RenderState {
+            cells: Arc::new(cells),
+            ..RenderState::default()
+        });
+        assert_eq!(recompute(&rs, &matrix_cell), WorkerDecision::Recomputed);
+
+        let m = matrix_cell.load();
+        assert!(!m.is_whole_doc(), "still chunked");
+        assert_eq!(m.source_line_count, 25);
+        // 25 source - 10 elided (11..=20) = 15 visible rows.
+        assert_eq!(m.visible_line_count, 15);
+        let source_lines: Vec<u32> =
+            m.slice(0, 100).iter().map(|r| r.source_line).collect();
+        let expected: Vec<u32> =
+            (0u32..=10).chain(21u32..25).collect();
+        assert_eq!(source_lines, expected);
+    }
+
+    /// Viewport-height change that crosses the threshold flips the
+    /// matrix between whole-doc and chunked shapes — exercised
+    /// because `viewport_height` is not in `MatrixVersion` (it
+    /// only changes via dispatch); the publisher's version axes
+    /// must still drive the rebuild. We bump `text` to simulate
+    /// the version cascade that would accompany a viewport
+    /// resize-induced republish.
+    #[test]
+    fn viewport_shrink_can_promote_to_chunked() {
+        let theme = crate::ui::theme::Theme::default();
+        let text: String = (0..25)
+            .map(|i| format!("l{}", i))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let snap = snap_of_versioned(&text, 1);
+        let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+
+        let mk_rs = |vp: u32, version: MatrixVersion| -> ArcSwap<RenderState> {
+            let cells = CellsRenderState {
+                matrix: matrix_cell.clone(),
+                version,
+                snapshot: Some(snap.clone()),
+                syntax_handle: None,
+                inlay_hints: Arc::from(
+                    Vec::<crate::render_state::InlayHintRow>::new().into_boxed_slice(),
+                ),
+                folds: Arc::from(Vec::<lattice_core::Fold>::new().into_boxed_slice()),
+                viewport_height: vp,
+                foldenable: true,
+                theme,
+            };
+            ArcSwap::from_pointee(RenderState {
+                cells: Arc::new(cells),
+                ..RenderState::default()
+            })
+        };
+
+        // Wide viewport (8) → 4×8=32 ≥ 25 → whole-doc.
+        let rs1 = mk_rs(8, v(1));
+        assert_eq!(recompute(&rs1, &matrix_cell), WorkerDecision::Recomputed);
+        assert!(matrix_cell.load().is_whole_doc());
+
+        // Shrink to 5 → 4×5=20 < 25 → chunked. Bump text version
+        // so the cache key differs and the worker rebuilds.
+        let rs2 = mk_rs(5, v(2));
+        assert_eq!(recompute(&rs2, &matrix_cell), WorkerDecision::Recomputed);
+        let m = matrix_cell.load();
+        assert!(!m.is_whole_doc(), "post-shrink must be chunked");
+        assert_eq!(m.chunk_size, 16);
     }
 
     // ---- S2.3.c — fold elision ----

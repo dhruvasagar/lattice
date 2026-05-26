@@ -115,6 +115,38 @@ impl CellMatrix {
         self.visible_line_count == 0
     }
 
+    /// S3.c.0 (2026-05-26): look up the row whose logical source
+    /// line equals `target`. Returns `None` when the target line
+    /// is folded (no visible row) or past the matrix's coverage.
+    ///
+    /// Walks chunks linearly; chunks are sorted by
+    /// `start_source_line`. Most callers ask for visible lines
+    /// (≤ viewport_height per frame); a typical 100K-line buffer
+    /// at `chunk_size = 128` has ~780 chunks, so the walk is
+    /// sub-µs even without an outer binary search.
+    pub fn row_at_source_line(&self, target: u32) -> Option<&CellRow> {
+        for chunk in self.chunks.iter() {
+            let start = chunk.start_source_line;
+            // Whole-doc mode (`chunk_size == 0`) — the single
+            // chunk covers the entire source. Chunked mode — the
+            // chunk covers `[start, start + chunk_size)`.
+            let end = if self.chunk_size == CHUNK_SIZE_WHOLE_DOC {
+                self.source_line_count
+            } else {
+                start.saturating_add(self.chunk_size)
+            };
+            if target < start {
+                // chunks are ordered; the rest are even further
+                // away.
+                return None;
+            }
+            if target < end {
+                return chunk.row_at_source_line(target);
+            }
+        }
+        None
+    }
+
     /// Borrow the visible rows starting at matrix-row index
     /// `scroll`, up to `height` rows. Returns a [`CellSlice`] that
     /// iterates `&CellRow` references without allocating.
@@ -369,5 +401,56 @@ mod tests {
     #[test]
     fn chunk_size_whole_doc_constant() {
         assert_eq!(CHUNK_SIZE_WHOLE_DOC, 0);
+    }
+
+    // ---- S3.c.0 — row_at_source_line ----
+
+    /// Whole-doc matrix: every source line in `[0, count)` looks
+    /// up to a row. Targets past `count` return `None`. Folded
+    /// lines (absent from the chunk's rows vec) return `None`.
+    #[test]
+    fn row_at_source_line_whole_doc() {
+        // Lines 0, 1, 3 visible; line 2 folded.
+        let c = chunk(0, vec![row(0, b'a'), row(1, b'b'), row(3, b'd')]);
+        let m = CellMatrix::whole_doc(c, 4);
+        assert!(m.is_whole_doc());
+
+        assert_eq!(m.row_at_source_line(0).unwrap().source_line, 0);
+        assert_eq!(m.row_at_source_line(1).unwrap().source_line, 1);
+        // Folded — present in the source range but absent from
+        // the chunk's row vector.
+        assert!(m.row_at_source_line(2).is_none());
+        assert_eq!(m.row_at_source_line(3).unwrap().source_line, 3);
+        // Past EOF.
+        assert!(m.row_at_source_line(4).is_none());
+        assert!(m.row_at_source_line(100).is_none());
+    }
+
+    /// Chunked matrix: lookup walks chunks to the right one and
+    /// then binary-searches inside. Spans across chunk boundaries.
+    #[test]
+    fn row_at_source_line_chunked_walks_chunks() {
+        // Three chunks of width 2 covering lines 0..6.
+        let c1 = chunk(0, vec![row(0, b'a'), row(1, b'b')]);
+        let c2 = chunk(2, vec![row(2, b'c'), row(3, b'd')]);
+        let c3 = chunk(4, vec![row(4, b'e'), row(5, b'f')]);
+        let m = CellMatrix::chunked(vec![c1, c2, c3], 2, 6, MatrixVersion::ZERO);
+
+        for line in 0u32..6 {
+            let r = m
+                .row_at_source_line(line)
+                .unwrap_or_else(|| panic!("expected row for line {line}"));
+            assert_eq!(r.source_line, line);
+        }
+        // Past EOF.
+        assert!(m.row_at_source_line(6).is_none());
+    }
+
+    /// Empty matrix never resolves any target.
+    #[test]
+    fn row_at_source_line_empty_matrix_returns_none() {
+        let m = CellMatrix::empty();
+        assert!(m.row_at_source_line(0).is_none());
+        assert!(m.row_at_source_line(42).is_none());
     }
 }

@@ -3266,30 +3266,46 @@ fn compose_visible_lines_inner(
         let mut body = if is_messages_buffer {
             messages_line_spans(&line_text, &app.theme, buffer_w)
         } else {
-            // Perf plan A.2 slice A.2b.2b: derive per-row source
-            // spans from the worker-published `visible_rows.runs`
-            // (Source variants only). The legacy
-            // `view.visible_highlights[row]` reader is gone; the
-            // worker is now the single source of truth for both
-            // peers' span partitions, and the source spans
-            // partition the LINE TEXT exhaustively (Inlay runs
-            // cover combined-bytes that aren't in line_text).
+            // S3.c.0 (2026-05-26): prefer cell-derived spans when
+            // the cell-builder worker has published a row for
+            // this source line. Cells carry theme-resolved fg +
+            // modifier flags (S3.a) — the
+            // `cell_row_to_source_spans` converter (S3.b) filters
+            // INLAY-flagged cells so the resulting spans cover
+            // source-byte positions one-to-one with `line_text`,
+            // preserving overlay byte-coordinate semantics for
+            // every downstream layer (whitespace, semantic
+            // tokens, hlsearch, visual, diagnostics, …).
             //
-            // Inlay text is still spliced into the body in a
-            // post-overlay pass below (using `rs.syntax.inlay_hints`
-            // — A.2b.2). Migrating that splice path into the
-            // pre-overlay body so we'd source `combined` directly
-            // requires byte-coordinate remap helpers on every
-            // overlay; the cleaner shape is deferred until a
-            // bench shows it's worth the surgery.
-            let scroll = view.app.ad().scroll;
-            let row = (line_idx >= scroll).then(|| (line_idx - scroll) as usize);
-            let row_runs: &[lattice_host::render_state::RowRun] = row
-                .and_then(|idx| view.visible_rows.rows.get(idx))
-                .map(|p| p.runs.as_slice())
-                .unwrap_or(&[]);
-            let derived_spans = source_spans_from_runs(row_runs);
-            render_styled_line(&line_text, &derived_spans, buffer_w)
+            // Falls back to the legacy `RowPrepaint.runs` path
+            // when the matrix has no row for this line — boot
+            // frames before the worker's first build, lines past
+            // the matrix's coverage, or folded lines (the matrix
+            // elides those rows; the legacy path handled
+            // pre-fold rendering before S2.3.c). The fallback is
+            // bit-identical to the pre-S3.c.0 shape, so any
+            // window where the matrix lags doesn't introduce a
+            // visible flicker.
+            //
+            // S3.c.1+ slices validate each overlay against the
+            // cell-derived body in isolation; S3.c.final retires
+            // the RowPrepaint fallback for code-class buffers
+            // once every overlay is covered.
+            let rs_load = view.app.render_state.load();
+            let matrix = rs_load.cells.matrix.load();
+            if let Some(cell_row) = matrix.row_at_source_line(line_idx) {
+                let spans = crate::cells_render::cell_row_to_source_spans(cell_row);
+                truncate_spans_to_width(spans, buffer_w)
+            } else {
+                let scroll = view.app.ad().scroll;
+                let row = (line_idx >= scroll).then(|| (line_idx - scroll) as usize);
+                let row_runs: &[lattice_host::render_state::RowRun] = row
+                    .and_then(|idx| view.visible_rows.rows.get(idx))
+                    .map(|p| p.runs.as_slice())
+                    .unwrap_or(&[]);
+                let derived_spans = source_spans_from_runs(row_runs);
+                render_styled_line(&line_text, &derived_spans, buffer_w)
+            }
         };
         // M.7.3.b: whitespace decoration pre-pass. Cheap when
         // `show_whitespace` is off (single bool check); when

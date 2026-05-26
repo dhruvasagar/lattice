@@ -472,6 +472,11 @@ impl EditorView {
 
     fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
         let ks = &event.keystroke;
+        // 2026-05-26 held-j probe: time each event-handler stage so
+        // the user can grep `[held-j-timing]` from the *messages*
+        // log (or stderr with `-v info`) and report what's slow.
+        // Strip once we identify the bottleneck.
+        let t_start = std::time::Instant::now();
         tracing::debug!(
             key = %ks.key,
             ctrl = ks.modifiers.control,
@@ -493,6 +498,7 @@ impl EditorView {
             cx.notify();
             return;
         }
+        let t_pre_dispatch = std::time::Instant::now();
         let outcome = self.app.dispatch_keystroke(
             &ks.key,
             ks.modifiers.control,
@@ -500,6 +506,7 @@ impl EditorView {
             ks.modifiers.shift,
             ks.modifiers.platform,
         );
+        let t_post_dispatch = std::time::Instant::now();
         // 3c.atomic.H: post-dispatch tracing reads through the
         // published render-state cell. `dispatch_keystroke`'s
         // chain ends with `publish_render_state()` so `ad()` is
@@ -514,6 +521,15 @@ impl EditorView {
         );
         cx.stop_propagation();
         cx.notify();
+        let t_post_notify = std::time::Instant::now();
+        tracing::info!(
+            key = %ks.key,
+            pre_dispatch_us = (t_pre_dispatch - t_start).as_micros() as u64,
+            dispatch_us = (t_post_dispatch - t_pre_dispatch).as_micros() as u64,
+            notify_us = (t_post_notify - t_post_dispatch).as_micros() as u64,
+            total_us = t_post_notify.duration_since(t_start).as_micros() as u64,
+            "[held-j-timing] on_key_down"
+        );
         // Slice 3c.final.B (group 6): lifecycle read via published
         // substate.
         if self.app.render_state.load().lifecycle.should_quit {

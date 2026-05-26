@@ -43,6 +43,11 @@ impl Mode for OilMode {
     fn required_capabilities(&self) -> CapabilitySet {
         CapabilitySet::empty()
     }
+    /// 2026-05-26: claim invocation dispatch for oil panes via
+    /// `Editor::run_oil_invocation`.
+    fn invocation_runner(&self) -> Option<ModeId> {
+        Some(Self::mode_id())
+    }
     fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
         Box::pin(async { Ok(()) })
     }

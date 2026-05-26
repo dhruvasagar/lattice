@@ -21071,24 +21071,31 @@ impl Editor {
                 return;
             }
         }
-        // 2026-05-26: per-kind dispatch runs BEFORE the grammar
-        // Action gate so buffer-kind-specific behaviour stays
-        // inside each runner (`feedback_buffers_no_special_case`
-        // / "modes own their buffers"). Runners return `true`
-        // when they claimed the invocation; `false` falls
-        // through to the Action gate or `run_document_invocation`
-        // below. Without this ordering, Action-kind commands
-        // (`v` enter-visual, `<C-d>` page-down, ...) bypassed
-        // the per-kind runner and forced kind-branching into
-        // `do_*` helpers downstream.
-        let kind_handled = match self.active_buffer {
-            BufferKind::Help => self.run_help_invocation(inv.clone()),
-            BufferKind::Oil => self.run_oil_invocation(inv.clone()),
-            BufferKind::FileTree => self.run_file_tree_invocation(inv.clone()),
-            BufferKind::Terminal => self.run_terminal_invocation(inv.clone()),
-            _ => false,
-        };
-        if kind_handled {
+        // 2026-05-26: active-mode-driven runner dispatch
+        // ("modes own their buffers"). `Editor::resolve_
+        // invocation_runner` walks the active modes on the
+        // active pane (minors first, then major) and returns
+        // the runner registered at boot for the first mode
+        // whose `invocation_runner()` returned `Some`.
+        // Replaces the prior `match BufferKind` block — plugin-
+        // installed modes for plugin-installed buffer kinds now
+        // extend the dispatcher without touching host code.
+        //
+        // Runners return `true` when they claimed the
+        // invocation; `false` falls through to the Action gate
+        // / `run_document_invocation` below. Without this
+        // ordering, Action-kind commands (`v` enter-visual,
+        // `<C-d>` page-down, ...) bypassed the per-kind runner
+        // and forced kind-branching into `do_*` helpers
+        // downstream.
+        // Use `active_buffer_id()` (not `active_pane_buffer_id()`)
+        // so popup overlays (Help) resolve through their own
+        // popup_buffer's mode set, not the pane underneath.
+        let buf_id = self.active_buffer_id();
+        let runner = self.resolve_invocation_runner(buf_id);
+        if let Some(runner) = runner
+            && runner(self, inv.clone())
+        {
             return;
         }
         // Grammar Action gate: `CommandKind::Action` invocations

@@ -36,6 +36,11 @@ lattice-terminal = { path = "../lattice-terminal" }
 # from `lattice_ui_tui::*` while the crate re-exports from
 # lattice-host). See docs/dev/architecture/phase-5-extraction.md.
 lattice-host = { path = "../lattice-host" }
+# S3.b (2026-05-26): cell-grid substrate. The
+# `cells_render` module converts `lattice_cells::Cell` payloads
+# into ratatui spans for the TUI body. See
+# `docs/dev/architecture/cell-grid-renderer.md`.
+lattice-cells = { path = "../lattice-cells" }
 # refactor #70: `lsp_types` is reached through
 # `lattice_lsp::lsp_types::*` (re-exported by lattice-lsp).
 # `lattice-host` re-exports `lattice-lsp` transitively; no direct

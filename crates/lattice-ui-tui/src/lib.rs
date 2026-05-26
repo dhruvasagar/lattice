@@ -29,6 +29,12 @@
 
 pub mod actor_call_counter;
 pub mod app;
+// S3.b (2026-05-26): cell-grid → ratatui span converter. The
+// substrate→TUI translation layer that turns `lattice_cells::Cell`
+// payloads (fg + bg + modifier flags from the cell-builder
+// worker) into ratatui spans. Anchor:
+// `docs/dev/architecture/cell-grid-renderer.md`.
+pub mod cells_render;
 // Phase 5.2: HOST modules migrated to `lattice-host`. The
 // `pub use` here preserves every existing
 // `lattice_ui_tui::<module>::*` import in downstream crates +

@@ -3651,6 +3651,7 @@ dependencies = [
  "criterion",
  "crossterm",
  "fancy-regex",
+ "lattice-cells",
  "lattice-completion",
  "lattice-config",
  "lattice-core",

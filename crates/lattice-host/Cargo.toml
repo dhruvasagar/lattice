@@ -127,6 +127,14 @@ harness = false
 # rebuilds them. See `benches/dispatch_publish.rs`.
 [[bench]]
 name = "dispatch_publish"
+
+# S5 (2026-05-27): cells_worker hot-path bench. Times
+# `recompute` across three workloads — full rebuild (cache miss),
+# incremental single-line edit, cache hit — at varying line
+# counts so the chunked-mode threshold (4 × viewport_height) is
+# exercised on both sides. See `benches/cells_worker.rs`.
+[[bench]]
+name = "cells_worker"
 harness = false
 
 [lints]

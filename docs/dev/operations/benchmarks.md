@@ -1251,6 +1251,52 @@ shape introduces don't measurably hurt the hot path.
 
 ---
 
+## Cell-grid renderer (`crates/lattice-host/benches/cells_worker.rs`)
+
+Anchor: `../architecture/cell-grid-renderer.md` (S5 bench
+harness) + paramount goal #1 (≤8ms keystroke→glyph at 120Hz).
+
+Measures `lattice_host::cells_worker::recompute` — the cells
+worker's entrypoint — across three workloads at three line
+counts. Viewport height fixed at 60 (chunked-mode threshold:
+`4 × 60 = 240` lines).
+
+| Workload                                   | 100 lines     | 1 000 lines   | 5 000 lines   | Floor / Target                            |
+| ------------------------------------------ | ------------- | ------------- | ------------- | ----------------------------------------- |
+| `cells_worker_full_build` (cold start)     | ~41 µs        | ~385 µs       | ~1.9 ms       | ≤2 ms@5k / ≤5 ms@5k                       |
+| `cells_worker_incremental_build` (typing)  | ~39 µs        | ~63 µs        | ~103 µs       | ≤150 µs@5k / ≤500 µs@5k (≪1ms keystroke) |
+| `cells_worker_cache_hit` (no-op publish)   | ~33 ns        | ~33 ns        | ~33 ns        | ≤50 ns / ≤100 ns                          |
+
+**Reading the numbers:**
+
+- `cache_hit` at ~33 ns confirms `recompute`'s version-compare
+  fast path doesn't grow with line count — exactly the
+  expected behaviour from `MatrixVersion::differs_from`.
+- `incremental_build` is what fires on every keystroke. The
+  5000-line cost (~103 µs) is well under any reasonable
+  fraction of the 8 ms keystroke→glyph budget; the chunk
+  rebuild + suffix shift scales sub-linearly because only the
+  edit zone rebuilds, not the whole document.
+- `full_build` is the cold path (boot frame, buffer switch).
+  5000-line cost (~1.9 ms) is comfortably within a single
+  paint budget — even on cold start the user sees content on
+  the very next frame.
+
+**What's NOT measured here:** `paint_cells_row` (needs a live
+GPUI window so it's outside the Criterion-bench surface),
+`GlyphResolver::resolve` miss path (also needs a window),
+end-to-end keystroke→glyph latency (measured by the existing
+held-key probes; S6 strips those once enough confidence in the
+bench numbers accrues). The bench above covers the worker
+side of the pipeline; the paint side is hardware-bound and
+validated by hand-runs against an actual document buffer
+(paint_cells is the default for active panes after S4.final.f
+retired the env-var toggle).
+
+Numbers captured: 2026-05-27, S5 first run.
+
+---
+
 ## "Performance has regressed" warnings
 
 Criterion reports several regressions vs. its stored baseline. The

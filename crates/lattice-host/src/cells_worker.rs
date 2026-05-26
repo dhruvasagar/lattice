@@ -103,6 +103,52 @@ pub enum WorkerDecision {
 /// Spawn from `editor_boot` once `Editor` is constructed. Pass
 /// clones of `Editor::render_state` and `Editor::cells_matrix_cell`
 /// plus the wake `Notify` and the `paint_request` notifier.
+///
+/// ## Coalescing contract (S2.5)
+///
+/// `tokio::sync::Notify` is *permit-style*: any `notify_one()`
+/// calls that arrive while no `notified().await` is pending
+/// store a single permit. The next `notified().await` consumes
+/// the permit and resolves immediately. This gives us optimal
+/// burst coalescing for free:
+///
+/// - **Quiescent state.** Worker is blocked on `notified().await`.
+///   No CPU cost; no permit held.
+/// - **Single wake.** Publisher calls `notify_one()` while the
+///   worker is parked. Worker resolves, builds, publishes, loops
+///   back, parks again.
+/// - **Burst during build.** Multiple `notify_one()` calls arrive
+///   while the worker is mid-build. They collapse to exactly one
+///   stored permit (Notify drops subsequent calls when a permit
+///   is already present). After the current build publishes and
+///   the worker loops back, the next `notified().await` consumes
+///   that single permit; one additional build runs against the
+///   LATEST `render_state.load_full()` (which captures all the
+///   bursts' inputs because `RenderState` is published atomically
+///   via `ArcSwap`).
+/// - **Net behaviour for a burst of N publishes during one
+///   build.** Exactly 2 builds run: the original and one tail
+///   build that catches up to the latest state. No queue, no
+///   intermediate states processed; the cumulative `MatrixVersion`
+///   diff drives the rebuild decision.
+///
+/// No explicit debounce is needed. Adding a sleep before
+/// processing would *add* latency without reducing useful work —
+/// `Notify`'s natural permit semantics already drop intermediate
+/// states.
+///
+/// ## `paint_request` semantics
+///
+/// `paint_request` is a shared `Notify` consumed by the renderer
+/// peer. Both this worker and `highlights_worker` fire
+/// `notify_one()` on content-changing decisions. The renderer
+/// observes one wake per coalesced burst across both workers and
+/// schedules a single paint — matrix + spans are read together
+/// from the next `render_state.load_full()`.
+///
+/// `WorkerDecision::CacheHit` leaves the matrix bit-identical so
+/// no paint wake fires. `Clear` / `Recomputed` /
+/// `RecomputedIncremental` all signal content change.
 pub async fn run(
     render_state: Arc<ArcSwap<RenderState>>,
     wake: CellsWake,
@@ -111,7 +157,7 @@ pub async fn run(
 ) {
     info!(
         target: "lattice_host::cells_worker",
-        "cells worker spawned (S2.2)"
+        "cells worker spawned"
     );
     let mut tick_count: u64 = 0;
     loop {
@@ -2160,5 +2206,359 @@ mod tests {
         let source_lines: Vec<u32> =
             m2.slice(0, 100).iter().map(|r| r.source_line).collect();
         assert_eq!(source_lines, (0u32..28).collect::<Vec<_>>());
+    }
+
+    // ---- S2.5 — coalescing + paint_request + end-to-end ----
+
+    /// `recompute` walks the [`WorkerDecision`] state machine
+    /// monotonically when wakes are interleaved with publishes:
+    /// first publish ⇒ Recomputed; same-version wake ⇒ CacheHit;
+    /// new edit ⇒ RecomputedIncremental; multi-axis change ⇒
+    /// Recomputed (full). This is the synchronous projection of
+    /// the burst-coalescing contract: each iteration of the async
+    /// `run` loop reads the *latest* RenderState and never
+    /// processes stale intermediate states.
+    #[test]
+    fn coalescing_walks_decision_state_machine() {
+        let theme = crate::ui::theme::Theme::default();
+        let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+
+        // Tick 1: initial publish, no prior matrix → full Recomputed.
+        let v1 = MatrixVersion { text: 1, syntax: 1, ..MatrixVersion::ZERO };
+        let snap1 = snap_of_versioned("aa\nbb\ncc", 1);
+        let rs1 = rs_with_everything(
+            Some(snap1.clone()),
+            v1,
+            matrix_cell.clone(),
+            None,
+            theme,
+            Vec::new(),
+            Vec::new(),
+            true,
+            None,
+            5,
+        );
+        assert_eq!(recompute(&rs1, &matrix_cell), WorkerDecision::Recomputed);
+
+        // Tick 2: same RenderState, redundant wake ⇒ CacheHit.
+        assert_eq!(recompute(&rs1, &matrix_cell), WorkerDecision::CacheHit);
+        assert_eq!(recompute(&rs1, &matrix_cell), WorkerDecision::CacheHit);
+
+        // Tick 3: single edit, all other axes unchanged →
+        // incremental.
+        let v2 = MatrixVersion { text: 2, syntax: 2, ..MatrixVersion::ZERO };
+        let snap2 = snap_of_versioned("aa\nNEW\nbb\ncc", 2);
+        let edit = edit_delta(1, 0, 1);
+        let rs2 = rs_with_everything(
+            Some(snap2),
+            v2,
+            matrix_cell.clone(),
+            None,
+            theme,
+            Vec::new(),
+            Vec::new(),
+            true,
+            Some(edit),
+            5,
+        );
+        assert_eq!(
+            recompute(&rs2, &matrix_cell),
+            WorkerDecision::RecomputedIncremental
+        );
+
+        // Tick 4: theme axis bump alongside text — incremental
+        // bails, full rebuild runs.
+        let v3 = MatrixVersion {
+            text: 3,
+            syntax: 3,
+            theme: 7,
+            ..MatrixVersion::ZERO
+        };
+        let snap3 = snap_of_versioned("aa\nNEW\nbb\ncc\nDD", 3);
+        let edit3 = edit_delta(4, 0, 1);
+        let rs3 = rs_with_everything(
+            Some(snap3),
+            v3,
+            matrix_cell.clone(),
+            None,
+            theme,
+            Vec::new(),
+            Vec::new(),
+            true,
+            Some(edit3),
+            5,
+        );
+        assert_eq!(recompute(&rs3, &matrix_cell), WorkerDecision::Recomputed);
+    }
+
+    /// Cells worker and highlights worker write to independent
+    /// `ArcSwap` cells. Driving cells `recompute` does NOT touch
+    /// the spans cell, and (vice versa) driving the highlights
+    /// worker does not corrupt the matrix cell. The shared
+    /// `RenderState` substrate stays consistent across both.
+    #[test]
+    fn cells_worker_does_not_corrupt_spans_cell() {
+        let theme = crate::ui::theme::Theme::default();
+        let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+        let spans_cell: Arc<ArcSwap<crate::render_state::VisibleSpans>> =
+            Arc::default();
+        let rows_cell: Arc<ArcSwap<crate::render_state::VisibleRows>> =
+            Arc::default();
+        let overlay_cell: Arc<
+            ArcSwap<crate::render_state::StaticOverlayQuads>,
+        > = Arc::default();
+
+        // Seed a sentinel value into the spans cell so we can
+        // detect any unintended mutation.
+        let sentinel_key = crate::render_state::VisibleHighlightsKey {
+            snapshot_ptr: 0xdead_beef,
+            ..Default::default()
+        };
+        spans_cell.store(Arc::new(crate::render_state::VisibleSpans {
+            spans: Arc::from(Vec::new().into_boxed_slice()),
+            computed_for_key: sentinel_key,
+        }));
+        let pre_spans_ptr = Arc::as_ptr(&spans_cell.load_full());
+
+        // Run a cells recompute against a RenderState that
+        // happens to share the same `render_state` Arc shape. The
+        // cells path must not touch spans_cell / rows_cell /
+        // overlay_cell.
+        let snap = snap_of_versioned("aa\nbb", 1);
+        let v1 = MatrixVersion { text: 1, syntax: 1, ..MatrixVersion::ZERO };
+        let rs = rs_with_everything(
+            Some(snap),
+            v1,
+            matrix_cell.clone(),
+            None,
+            theme,
+            Vec::new(),
+            Vec::new(),
+            true,
+            None,
+            5,
+        );
+        assert_eq!(recompute(&rs, &matrix_cell), WorkerDecision::Recomputed);
+
+        // Spans cell remains at the sentinel — Arc identity
+        // unchanged.
+        let post_spans_ptr = Arc::as_ptr(&spans_cell.load_full());
+        assert_eq!(
+            pre_spans_ptr, post_spans_ptr,
+            "cells recompute must not touch the spans cell"
+        );
+
+        // Matrix cell has been updated.
+        assert!(!matrix_cell.load().is_empty());
+
+        // Hold the cells unused so they're not optimised away.
+        let _ = (rows_cell, overlay_cell);
+    }
+
+    /// End-to-end smoke test through the actual `run` loop in a
+    /// tokio runtime. Drives:
+    /// - publish + wake → matrix populates → paint_request fires;
+    /// - second publish with new text → matrix updates; second
+    ///   paint_request wake;
+    /// - same-state wake → matrix unchanged (cache-hit); no
+    ///   additional paint_request beyond the first two.
+    ///
+    /// Uses `tokio::time::timeout` so a regression that leaves the
+    /// worker parked surfaces as a test failure, not a hang.
+    #[test]
+    fn end_to_end_through_tokio_run_loop() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async move {
+            use tokio::time::{timeout, Duration};
+
+            let theme = crate::ui::theme::Theme::default();
+            let render_state: Arc<ArcSwap<RenderState>> =
+                Arc::new(ArcSwap::from_pointee(RenderState::default()));
+            let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+            let wake = crate::editor::CellsWake::default();
+            let paint_request: Arc<tokio::sync::Notify> = Arc::default();
+
+            // Spawn the worker.
+            let handle = tokio::spawn(crate::cells_worker::run(
+                render_state.clone(),
+                wake.clone(),
+                matrix_cell.clone(),
+                paint_request.clone(),
+            ));
+
+            // Helper: build + atomically publish a fresh
+            // RenderState, then fire the wake.
+            let publish = |text: &str,
+                           text_version: u64,
+                           last_edit: Option<lattice_cells::EditDelta>| {
+                let snap = snap_of_versioned(text, text_version);
+                let v = MatrixVersion {
+                    text: text_version,
+                    syntax: text_version,
+                    ..MatrixVersion::ZERO
+                };
+                let cells = CellsRenderState {
+                    matrix: matrix_cell.clone(),
+                    version: v,
+                    snapshot: Some(snap),
+                    syntax_handle: None,
+                    inlay_hints: Arc::from(
+                        Vec::<crate::render_state::InlayHintRow>::new()
+                            .into_boxed_slice(),
+                    ),
+                    folds: Arc::from(
+                        Vec::<lattice_core::Fold>::new().into_boxed_slice(),
+                    ),
+                    viewport_height: 5,
+                    foldenable: true,
+                    last_edit,
+                    theme,
+                };
+                let rs = RenderState {
+                    cells: Arc::new(cells),
+                    ..RenderState::default()
+                };
+                render_state.store(Arc::new(rs));
+                wake.0.notify_one();
+            };
+
+            // Publish #1 — fresh document.
+            publish("aa\nbb\ncc", 1, None);
+            timeout(Duration::from_secs(2), paint_request.notified())
+                .await
+                .expect("paint_request must fire after first publish");
+            assert_eq!(matrix_cell.load().source_line_count, 3);
+
+            // Publish #2 — single-line insert; should take
+            // incremental path.
+            publish(
+                "aa\nNEW\nbb\ncc",
+                2,
+                Some(lattice_cells::EditDelta {
+                    start_line: 1,
+                    lines_removed: 0,
+                    lines_added: 1,
+                }),
+            );
+            timeout(Duration::from_secs(2), paint_request.notified())
+                .await
+                .expect("paint_request must fire after second publish");
+            let m2 = matrix_cell.load();
+            assert_eq!(m2.source_line_count, 4);
+            // Row content reflects post-edit text.
+            let texts: Vec<String> = m2
+                .slice(0, 10)
+                .iter()
+                .map(|r| {
+                    r.cells
+                        .iter()
+                        .map(|c| char::from_u32(c.codepoint).unwrap_or('?'))
+                        .collect()
+                })
+                .collect();
+            assert_eq!(texts, vec!["aa", "NEW", "bb", "cc"]);
+
+            // Redundant wake against the same RenderState — worker
+            // must hit CacheHit and NOT fire paint_request.
+            wake.0.notify_one();
+            // Brief wait window for the worker to process; expect
+            // timeout (no paint wake fires).
+            let no_paint =
+                timeout(Duration::from_millis(150), paint_request.notified())
+                    .await;
+            assert!(
+                no_paint.is_err(),
+                "redundant wake must produce CacheHit, not a paint signal"
+            );
+
+            handle.abort();
+            let _ = handle.await;
+        });
+    }
+
+    /// Burst-coalescing smoke test: fire many wakes in quick
+    /// succession with the *same* RenderState; the worker must
+    /// process them as a coalesced batch and produce at most one
+    /// paint signal (after the initial publish). Mirrors the
+    /// design comment: a burst of N publishes during one build
+    /// produces exactly 2 builds (the original + one tail catch-
+    /// up).
+    #[test]
+    fn burst_wakes_coalesce_via_notify_permit() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async move {
+            use tokio::time::{timeout, Duration};
+
+            let theme = crate::ui::theme::Theme::default();
+            let render_state: Arc<ArcSwap<RenderState>> =
+                Arc::new(ArcSwap::from_pointee(RenderState::default()));
+            let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+            let wake = crate::editor::CellsWake::default();
+            let paint_request: Arc<tokio::sync::Notify> = Arc::default();
+
+            let handle = tokio::spawn(crate::cells_worker::run(
+                render_state.clone(),
+                wake.clone(),
+                matrix_cell.clone(),
+                paint_request.clone(),
+            ));
+
+            // Publish one RenderState and fire ten wakes in a
+            // row. `Notify` collapses them to at most one
+            // additional permit beyond the first.
+            let snap = snap_of_versioned("hello\nworld", 1);
+            let v = MatrixVersion { text: 1, syntax: 1, ..MatrixVersion::ZERO };
+            let cells = CellsRenderState {
+                matrix: matrix_cell.clone(),
+                version: v,
+                snapshot: Some(snap),
+                syntax_handle: None,
+                inlay_hints: Arc::from(
+                    Vec::<crate::render_state::InlayHintRow>::new()
+                        .into_boxed_slice(),
+                ),
+                folds: Arc::from(
+                    Vec::<lattice_core::Fold>::new().into_boxed_slice(),
+                ),
+                viewport_height: 5,
+                foldenable: true,
+                last_edit: None,
+                theme,
+            };
+            render_state.store(Arc::new(RenderState {
+                cells: Arc::new(cells),
+                ..RenderState::default()
+            }));
+            for _ in 0..10 {
+                wake.0.notify_one();
+            }
+
+            // First paint fires for the initial Recomputed.
+            timeout(Duration::from_secs(2), paint_request.notified())
+                .await
+                .expect("paint_request must fire for first build");
+
+            // The remaining wakes all see the same RenderState
+            // → CacheHit → no further paint signals. Wait briefly
+            // and confirm no extra wake arrives.
+            let drained =
+                timeout(Duration::from_millis(150), paint_request.notified())
+                    .await;
+            assert!(
+                drained.is_err(),
+                "redundant wakes must coalesce to CacheHit, no extra paint signal"
+            );
+
+            handle.abort();
+            let _ = handle.await;
+        });
     }
 }

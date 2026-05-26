@@ -3892,7 +3892,12 @@ fn inlay_hint_style() -> TuiStyle {
 /// commonly; visual / hlsearch / diagnostics overlays may
 /// have set bg). Same span-splitting machinery as
 /// `apply_match_overlay`.
-fn apply_semantic_token_overlay(
+///
+/// S3.c.2 (2026-05-26): visibility bumped to `pub(crate)` so
+/// `cells_render::tests` can validate the overlay's behaviour
+/// against cell-derived bodies. Matches the existing precedent
+/// set by `apply_whitespace_decoration`.
+pub(crate) fn apply_semantic_token_overlay(
     spans: Vec<Span<'static>>,
     overlay_start: usize,
     overlay_end: usize,

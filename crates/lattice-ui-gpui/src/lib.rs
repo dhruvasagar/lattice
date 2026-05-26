@@ -109,6 +109,15 @@ pub mod editor_element;
 // `docs/dev/architecture/cell-grid-renderer.md`.
 #[cfg(feature = "window")]
 pub mod cells_paint;
+// S4.final.a (2026-05-27): per-codepoint glyph-id cache. The
+// software cache that converts `(FontId, char)` →
+// `Option<ResolvedGlyph>` so the future `paint_cells` loop can
+// hand `(font_id, glyph_id)` to `Window::paint_glyph` without
+// going through `shape_line`. Wired into [`GpuiApp`] in
+// S4.final.b alongside the paint path. Gated behind `window`;
+// mirrors the `cells_paint` gating.
+#[cfg(feature = "window")]
+pub mod glyph_resolver;
 
 #[cfg(feature = "window")]
 pub use window::{document_from_path, run};

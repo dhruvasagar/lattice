@@ -1051,15 +1051,18 @@ impl Element for EditorElement {
             }
         }
 
-        // Text body. S4.final.b: when the `LATTICE_PAINT_CELLS`
-        // toggle is on AND the active pane has a cell matrix
-        // AND the row's source line is covered, paint via
-        // `paint_cells_row` (per-cell `paint_glyph` + bg quads)
-        // and skip `ShapedLine::paint` for that row. Folded
-        // rows / boot frames / inactive panes / toggle-off
-        // continue to use `ShapedLine::paint`.
-        let use_paint_cells = crate::paint_cells::paint_cells_enabled()
-            && self.cell_matrix.is_some();
+        // Text body. S4.final.f: `paint_cells_row` is now the
+        // default for active-pane document bodies — the env-var
+        // toggle retired this slice. When the active pane has a
+        // cell matrix AND the row's source line is covered,
+        // paint via `paint_cells_row` (per-cell `paint_glyph` +
+        // bg quads) and skip `ShapedLine::paint` for that row.
+        // Folded rows / boot frames / buffer-switch gaps /
+        // inactive panes (`cell_matrix == None`) fall through
+        // to `ShapedLine::paint` — the legacy path stays for
+        // those transient and inactive-pane cases until a
+        // future slice migrates inactive panes to cells as well.
+        let use_paint_cells = self.cell_matrix.is_some();
         for (i, shaped_line) in prepaint.shaped_text.iter().enumerate() {
             let line_y = bounds.origin.y + line_height * (i as f32);
             let origin = point(text_origin_x, line_y);

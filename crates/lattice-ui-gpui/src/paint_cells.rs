@@ -1,7 +1,7 @@
 //! S4.final.b (2026-05-27): per-cell `paint_glyph` body path.
+//! S4.final.f (2026-05-27): default-on; env-var toggle retired.
 //!
-//! The active-pane document body, when the runtime toggle
-//! [`paint_cells_enabled`] is on, is drawn by this module
+//! The active-pane document body is drawn by this module
 //! instead of by [`gpui::ShapedLine::paint`]. The cell-grid
 //! substrate (`Arc<CellMatrix>` published by the cells worker)
 //! is walked one row at a time; each cell becomes:
@@ -13,18 +13,30 @@
 //!    baseline `(cell_x, line_y + ascent)` using the resolved
 //!    `(font_id, glyph_id)` pair from [`GlyphResolver`].
 //!
-//! S4.final.b is the wiring + integration point. Modifier
-//! rendering (BOLD weight, ITALIC slant, UNDERLINE geometry,
-//! DIM attenuation, REVERSE swap) lands in S4.final.d. Emoji /
-//! font-fallback handling lands in S4.final.e — until then
-//! cells whose primary-font glyph_id is `.notdef` simply
-//! aren't drawn (the cached `None` resolution stays sticky).
+//! Modifier rendering (BOLD weight / ITALIC slant / UNDERLINE
+//! geometry / DIM attenuation / REVERSE swap) landed in
+//! S4.final.d via [`apply_color_modifiers`] and
+//! [`cell_font_variant`]. Emoji / CJK / non-Latin fallback
+//! flows through GPUI's `layout_line` fallback chain in the
+//! resolver (S4.final.e).
 //!
 //! Cursor + diagnostic + overlay quads continue to flow
 //! through the existing `EditorElement::paint` bookkeeping
 //! (computed against `ShapedLine` metrics in `prepaint`); only
-//! the text-body glyph emission swaps. Hit-testing migrates in
-//! S4.final.c.
+//! the text-body glyph emission swaps. Hit-testing primitives
+//! landed in S4.final.c (`crate::hit_test`), ready for the
+//! eventual mouse-select handler.
+//!
+//! ## Active vs inactive panes
+//!
+//! `EditorElement.cell_matrix` is `Some` only for the active
+//! pane (the cells worker publishes for the active document).
+//! Active-pane rows therefore go through `paint_cells_row`
+//! unconditionally. Inactive panes (`cell_matrix == None`) fall
+//! through to the legacy `ShapedLine::paint` path inside
+//! `EditorElement::paint`. Migrating inactive panes off
+//! `shape_line` is a follow-up that needs the cells worker to
+//! publish for non-active buffers.
 
 #![cfg(feature = "window")]
 
@@ -259,27 +271,11 @@ pub fn paint_cells_row(
     painted
 }
 
-/// Returns `true` when the runtime toggle is on. Reads
-/// `LATTICE_PAINT_CELLS` from the environment once and caches
-/// the result for the process lifetime. Accepts `"1"`, `"true"`,
-/// `"TRUE"` (case-insensitive); any other value (including
-/// unset) returns `false`.
-///
-/// The toggle gates the entire body cutover. When off (the
-/// default), `EditorElement::paint` runs the existing
-/// `ShapedLine::paint` body loop unchanged. When on,
-/// [`paint_cells_row`] runs per visible row and `ShapedLine`'s
-/// body paint is skipped; the prepaint-time ShapedLine
-/// metrics still drive cursor + overlay positioning until
-/// S4.final.c migrates hit-testing.
-pub fn paint_cells_enabled() -> bool {
-    static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *FLAG.get_or_init(|| {
-        std::env::var("LATTICE_PAINT_CELLS")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false)
-    })
-}
+// S4.final.f (2026-05-27): the `paint_cells_enabled` env-var
+// toggle retired here. `paint_cells_row` is now the default
+// for active-pane document bodies in
+// `EditorElement::paint`; the toggle is no longer the entry
+// point. `LATTICE_PAINT_CELLS=1` no longer has any effect.
 
 #[cfg(test)]
 mod tests {

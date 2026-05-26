@@ -1,0 +1,18 @@
+[package]
+name = "lattice-cells"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# S1 — pure substrate types for the cell-grid renderer
+# (`docs/dev/architecture/cell-grid-renderer.md`). Pure data:
+# no rendering, no rope, no I/O. Both renderer crates and the
+# host substrate depend on this. Construction logic and the
+# cell-builder worker land in S2 in `lattice-host`.
+
+[dependencies]
+# `Arc<[T]>` everywhere. No other deps until S2 needs them.
+
+[lints]
+workspace = true

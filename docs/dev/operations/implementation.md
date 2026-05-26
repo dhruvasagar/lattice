@@ -538,6 +538,33 @@ This phase relocates every UI-thread drain onto background tokio tasks via two p
 
 ---
 
+## GPUI cell-grid renderer (2026-05-26)
+
+Anchor: [`../architecture/cell-grid-renderer.md`](../architecture/cell-grid-renderer.md) + design.md §5.6 + paramount goal #1.
+
+The held-j stutter reported on 2026-05-25 (cursor advances a few rows then visibly freezes until key release) traced to `EditorElement::prepaint`'s per-frame `WindowTextSystem::shape_line` calls. The probe (commit `734486d`) confirmed the cost is structural to `shape_line` itself, not call count: a renderer-side content cache (Layer A, retired) reduced calls from 216 to 2 per paint but each remaining call cost the same ~10 ms, conserving total wall time at ~20-30 ms/paint during scroll.
+
+A renderer that ships `shape_line` on the code-buffer hot path cannot hit goal #1's ≤ 8 ms keystroke→glyph budget. The cell-grid + glyph atlas decomposition (alacritty / wezterm / VSCode / browser model) replaces it for code/terminal/file-tree/synthetic buffers; the Shaped path stays for help/markdown/popup surfaces where rich text matters.
+
+| Slice | Status | What lands |
+|---|---|---|
+| S1 cell substrate | 🔄 in progress | New `lattice-cells` crate: `Cell` (16-byte), `CellRow`, `CellChunk`, `CellMatrix`, `MatrixVersion`. Pure data, slicing API, unit tests for whole-doc / multi-chunk / fold-elision / out-of-bounds. |
+| S2 cell-builder worker | ⛔ planned | Tokio worker in `lattice-host`, sibling of `highlights_worker`. Subscribes to (text, syntax, inlay, fold, theme) version cascade; coalesces; rebuilds intersecting chunks; publishes via ArcSwap on `RenderState`. Edits past the change point shift `start_source_line` without rebuilding. |
+| S3 TUI cutover | ⛔ planned | TUI consumes `Arc<CellMatrix>` + `OverlayState` instead of building cells in-renderer. Validates substrate on the surface where cell-grid is already the native model. |
+| S4 GPU glyph atlas | ⛔ planned | Atlas keyed by `(codepoint, font_id, size_px)`. Lazy raster on miss via GPUI's font system. `paint_cells` replaces `EditorElement`'s shape_line path; status line / popup / picker / help stay on the Shaped path. |
+| S5 bench + tuning | ⛔ planned | Criterion harness for held-j scroll + Ctrl-D + paste. Tunes `chunk_size` around the `2 × viewport_height` design anchor, atlas page size/count, atlas eviction. Recorded in `benchmarks.md`. |
+| S6 cleanup | ⛔ planned | Strip the `[held-j-shape]` / `[held-j-render]` / `[held-j-timing]` probes once the bench is the measurement vehicle. Retire any shape_line code on the code path. |
+
+Estimated calendar: 6–9 weeks across all slices.
+
+**Decoration assignment.** Cells carry codepoint + theme-resolved fg + bg + flags. Inlay hints, syntax colours, fold elision are cell-baked. Cursor, selection, hlsearch, current_match, visual_range, doc_highlights, diagnostic underlines, gutter (line_num, fold_marker, severity), substitute-preview are overlays computed at paint time. Any decoration that doesn't change glyph layout is an overlay → appears on the next paint with zero matrix work.
+
+**Trade-off accepted.** One-frame cursor-cell lag after a typed character: cursor renders at new column immediately (overlay); the cell under the cursor reflects pre-edit content for at most one frame. Invisible during typing; observable only in constructed stress tests. This is the price of going fully async on edits, and it aligns with paramount goal #4 (no blocking on edit/UI thread).
+
+**Layer A (retired).** The shaped-line cache (`crates/lattice-ui-gpui/src/shape_cache.rs`) consolidated `shape_line` calls without reducing per-call cost. Validated empirically; reverted in tree as part of the cell-grid plan kickoff. See `cell-grid-renderer.md` § Trade-offs for the audit trail.
+
+---
+
 ## live-picker (debounced re-run on query change)
 
 **`:picker grep` and any future "engine produces the candidate set"

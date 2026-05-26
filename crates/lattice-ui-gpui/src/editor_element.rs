@@ -369,13 +369,13 @@ impl Element for EditorElement {
         window: &mut Window,
         _cx: &mut App,
     ) -> Self::PrepaintState {
-        // 2026-05-26 held-j Layer-A probe: count `shape_line` calls
-        // + sum their wall time per prepaint. The Layer-A
-        // shaped-line-cache hypothesis is "re-shape per paint
-        // dominates"; this probe validates or falsifies that
-        // before we build the cache. Per `feedback_log_levels`,
-        // debug-level — opt in via `--log-level debug`. Strip
-        // once Layer A lands.
+        // 2026-05-26 held-j probe: count `shape_line` calls + sum
+        // their wall time per prepaint. Diagnostic instrumentation
+        // for the cell-grid renderer plan (see
+        // `docs/dev/architecture/cell-grid-renderer.md`). Strip in
+        // S6 once the bench harness lands. Per
+        // `feedback_log_levels`, debug-level — opt in via
+        // `--log-level debug`.
         let prepaint_start = std::time::Instant::now();
         let shape_count = std::cell::Cell::new(0u32);
         let shape_us = std::cell::Cell::new(0u64);
@@ -825,7 +825,8 @@ impl Element for EditorElement {
                 shaped_gutter.push(shaped_g);
             }
         }
-        // Layer-A probe: log the per-prepaint shape totals.
+        // held-j probe: per-prepaint shape totals. Diagnostic for
+        // the cell-grid renderer plan; stripped in S6.
         let prepaint_us = prepaint_start.elapsed().as_micros() as u64;
         tracing::debug!(
             shape_count = shape_count.get(),

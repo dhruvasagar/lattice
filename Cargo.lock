@@ -3332,6 +3332,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "lattice-cells"
+version = "0.1.0"
+
+[[package]]
 name = "lattice-cli"
 version = "0.1.0"
 dependencies = [

@@ -17,6 +17,7 @@ members = [
 	"crates/lattice-oil",
 	"crates/lattice-lsp",
 	"crates/lattice-terminal",
+	"crates/lattice-cells",
 	"crates/lattice-host",
 	"crates/lattice-ui-tui",
 	"crates/lattice-ui-gpui",

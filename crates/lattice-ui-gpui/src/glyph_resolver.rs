@@ -156,7 +156,7 @@ impl GlyphResolver {
 
     /// Resolve `ch` for the given `font` at `font_size`, hitting
     /// the cache when possible and falling back to
-    /// `WindowTextSystem::layout_line` on miss. S4.final.b.
+    /// `WindowTextSystem::layout_line` on miss.
     ///
     /// The miss path lays out a single-char string in a
     /// throwaway [`TextRun`] (colour irrelevant — GPUI's layout
@@ -164,18 +164,36 @@ impl GlyphResolver {
     /// reads the first glyph from the resulting [`LineLayout`]:
     /// - `runs[0].font_id` may differ from
     ///   `text_system.resolve_font(font)` if the system chose a
-    ///   fallback face for the codepoint. We cache that
-    ///   resolved id on [`ResolvedGlyph`] so paint can dispatch
-    ///   to the right font without re-laying-out.
+    ///   fallback face for the codepoint. GPUI does fallback
+    ///   font matching inside `layout_line` (S4.final.e), so
+    ///   emoji / CJK / non-Latin codepoints transparently
+    ///   resolve to whichever font in the platform's fallback
+    ///   chain carries the glyph. We cache that resolved id on
+    ///   [`ResolvedGlyph`] so paint dispatches to the right
+    ///   font without re-laying-out.
     /// - `runs[0].glyphs[0].id` is the per-font glyph index
     ///   `paint_glyph` / `paint_emoji` need.
     /// - `runs[0].glyphs[0].is_emoji` selects between
     ///   `paint_glyph` (monochrome, tinted by fg) and
     ///   `paint_emoji` (colour glyph, fg ignored).
     ///
-    /// Codepoints with no glyph in any fallback font (`layout`'s
-    /// `runs` empty or `glyphs` empty) cache as `None` and
-    /// future lookups stay sticky-`None` — see [`Self::insert`].
+    /// ## Unresolvable codepoints
+    ///
+    /// Three failure modes all collapse to a sticky `None`
+    /// entry (S4.final.e):
+    /// 1. `layout.runs` is empty — the platform shaping
+    ///    pipeline produced no runs at all.
+    /// 2. `runs[0].glyphs` is empty — a run exists but it
+    ///    has no glyphs.
+    /// 3. `runs[0].glyphs[0].id` is `0` (`.notdef` in
+    ///    OpenType — the box / tofu glyph). Storing this
+    ///    glyph would paint a tofu on every frame; we'd
+    ///    rather let the paint loop decide whether to skip
+    ///    the cell or draw a placeholder of its own.
+    ///
+    /// All three log a `tracing::debug` with the codepoint
+    /// so a `RUST_LOG=lattice_gpui::glyph_resolver=debug` run
+    /// shows fallback failures.
     pub fn resolve(
         &mut self,
         ch: char,
@@ -201,16 +219,72 @@ impl GlyphResolver {
         let layout = window
             .text_system()
             .layout_line(s, font_size, &[run], None);
-        let resolved = layout.runs.first().and_then(|r| {
+
+        let raw = layout.runs.first().and_then(|r| {
             r.glyphs.first().map(|g| ResolvedGlyph {
                 font_id: r.font_id,
                 glyph_id: g.id,
                 is_emoji: g.is_emoji,
             })
         });
+
+        let resolved = match raw {
+            None => {
+                tracing::debug!(
+                    target: "lattice_gpui::glyph_resolver",
+                    ch = ?ch,
+                    requested_font = ?font_id,
+                    "layout_line returned no glyphs; caching as sticky-None"
+                );
+                None
+            }
+            Some(rg) if is_notdef(rg.glyph_id) => {
+                tracing::debug!(
+                    target: "lattice_gpui::glyph_resolver",
+                    ch = ?ch,
+                    requested_font = ?font_id,
+                    resolved_font = ?rg.font_id,
+                    "layout_line returned .notdef (glyph 0); caching as sticky-None"
+                );
+                None
+            }
+            Some(rg) => {
+                if rg.font_id != font_id {
+                    tracing::debug!(
+                        target: "lattice_gpui::glyph_resolver",
+                        ch = ?ch,
+                        requested_font = ?font_id,
+                        fallback_font = ?rg.font_id,
+                        is_emoji = rg.is_emoji,
+                        "font fallback selected for codepoint"
+                    );
+                }
+                Some(rg)
+            }
+        };
+
         self.cache.insert(key, resolved);
         resolved
     }
+}
+
+/// True when `glyph_id` is OpenType's `.notdef` (glyph index
+/// 0) — the tofu box used when a font lacks a requested
+/// codepoint. S4.final.e treats `.notdef` as unresolvable so
+/// the cache reflects "no glyph anywhere in the fallback
+/// chain" uniformly with the empty-runs / empty-glyphs cases.
+///
+/// `GlyphId`'s field is `pub(crate)` in gpui 0.2.2 so we
+/// can't read it directly from outside the crate. `GlyphId`
+/// is `#[repr(C)]` with a single `u32` field; transmute is a
+/// no-op reinterpretation of the same bit pattern.
+#[allow(unsafe_code)]
+fn is_notdef(glyph_id: GlyphId) -> bool {
+    // SAFETY: `GlyphId` is `#[repr(C)]` with one `u32` field
+    // and `Copy`. The transmute reads the same 4-byte value
+    // through the `u32` lens; no aliasing, no UB.
+    let raw: u32 = unsafe { std::mem::transmute(glyph_id) };
+    raw == 0
 }
 
 #[cfg(test)]
@@ -362,6 +436,19 @@ mod tests {
         assert_ne!(resolved_glyph.font_id, requested.font_id);
         assert_eq!(resolved_glyph.font_id, font(42));
         assert_eq!(resolved_glyph.glyph_id, glyph_id(7));
+    }
+
+    /// S4.final.e: `is_notdef` detects `GlyphId(0)` and only
+    /// `GlyphId(0)`. Pins the OpenType convention so a
+    /// future refactor (e.g. moving notdef detection into a
+    /// `ResolvedGlyph::is_notdef` method) doesn't drift the
+    /// contract.
+    #[test]
+    fn is_notdef_detects_zero_glyph_id() {
+        assert!(is_notdef(glyph_id(0)));
+        assert!(!is_notdef(glyph_id(1)));
+        assert!(!is_notdef(glyph_id(42)));
+        assert!(!is_notdef(glyph_id(u32::MAX)));
     }
 
     /// `clear` empties the cache without affecting subsequent

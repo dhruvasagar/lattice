@@ -369,7 +369,7 @@ impl Editor {
     /// publication (each background task `store()`s its own
     /// sub-state Arc directly), at which point this whole-world
     /// rebuild method retires.
-    pub fn build_render_state(&self) -> crate::render_state::RenderState {
+    pub fn build_render_state(&mut self) -> crate::render_state::RenderState {
         use crate::render_state::*;
         // Perf plan A.2 slice A.2b.2: build the gated inlay-hint
         // list once and pair it with its content hash. The hash
@@ -939,6 +939,12 @@ impl Editor {
                 ),
                 viewport_height: self.viewport_height,
                 foldenable: self.foldenable(),
+                // S2.4.b (2026-05-26): hand the per-publish-cycle
+                // single-edit delta off to the worker and clear the
+                // slot. Subsequent publishes without further edits
+                // see `None` → worker stays on the cache-hit branch
+                // (or full-rebuild for non-text axis changes).
+                last_edit: self.last_edit_for_cells.take(),
                 theme: self.host_theme,
             }),
             ..RenderState::default()
@@ -1015,7 +1021,7 @@ impl Editor {
     /// `Arc<ArcSwap<RenderState>>`. One atomic release-store on
     /// the hot path; concurrent readers see either the previous
     /// snapshot or the new one with no torn observation.
-    pub fn publish_render_state(&self) {
+    pub fn publish_render_state(&mut self) {
         let next = self.build_render_state();
         self.render_state.store(std::sync::Arc::new(next));
         // Phase 5.8.AF.5 / Slice X2: wake the highlights worker.
@@ -9359,6 +9365,19 @@ impl Editor {
             self.pending_syntax_edits
                 .extend(applied.iter().map(|a| a.delta));
         }
+        // S2.4.b: track the per-publish-cycle single-edit delta.
+        // If exactly one edit lands and the slot is currently None,
+        // store it. Any other shape (batch / second-edit / etc.)
+        // clears the slot so the worker conservatively
+        // full-rebuilds. `build_render_state` `take()`s on publish.
+        match applied {
+            [single] if self.last_edit_for_cells.is_none() => {
+                self.last_edit_for_cells = Some(cells_edit_delta_from_applied(single));
+            }
+            _ => {
+                self.last_edit_for_cells = None;
+            }
+        }
     }
 
     /// Request a reparse if the document's text has changed since
@@ -9501,7 +9520,7 @@ impl Editor {
     /// — Visual-mode extension, the dispatcher's
     /// SelectionChange effect, `gv` reselect, LSP location jumps
     /// — invokes `self.editor.set_selections_blocking(...)`.
-    pub fn set_selections_blocking(&self, selections: SelectionSet) {
+    pub fn set_selections_blocking(&mut self, selections: SelectionSet) {
         // `SetSelections` only fails on actor-gone; ignore the
         // `Result` (post-shutdown nothing meaningful to do).
         let _ = block_on(self.document.set_selections(selections));
@@ -21675,6 +21694,31 @@ impl Editor {
         }
         self.clamp_cursor_to_active_buffer();
         true
+    }
+}
+
+/// S2.4.b: derive the cell-builder's compact line-granular
+/// [`lattice_cells::EditDelta`] from an [`AppliedEdit`].
+///
+/// The original protocol delta carries six fields for tree-sitter
+/// (`start_byte`, `old_end_byte`, ...); for cell-matrix incremental
+/// rebuild the worker only needs the line-shift numbers:
+/// - `start_line` = pre-edit line of the edit start.
+/// - `lines_removed` = number of *full* source lines the edit
+///   deleted (`old_end_position.line - start_position.line`).
+/// - `lines_added` = number of *full* source lines the edit
+///   inserted (`new_end_position.line - start_position.line`).
+fn cells_edit_delta_from_applied(
+    applied: &lattice_core::buffer::AppliedEdit,
+) -> lattice_cells::EditDelta {
+    let d = &applied.delta;
+    let start_line = d.start_position.line;
+    let lines_removed = d.old_end_position.line.saturating_sub(start_line);
+    let lines_added = d.new_end_position.line.saturating_sub(start_line);
+    lattice_cells::EditDelta {
+        start_line,
+        lines_removed,
+        lines_added,
     }
 }
 

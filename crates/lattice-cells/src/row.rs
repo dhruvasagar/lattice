@@ -67,6 +67,24 @@ impl CellRow {
         }
     }
 
+    /// Clone-with-shifted-source-line. The `cells` and
+    /// `inlay_offsets` Arcs are reused (cheap refcount bump — the
+    /// cell payload is shared); only the `source_line` field
+    /// changes.
+    ///
+    /// Used by the cell-builder's incremental rebuild path
+    /// (S2.4.b) to reuse cached row content when an edit shifts
+    /// downstream lines without changing their contents.
+    /// `new_source_line` is the row's logical line in the
+    /// post-edit document.
+    pub fn with_source_line(&self, new_source_line: u32) -> Self {
+        Self {
+            cells: Arc::clone(&self.cells),
+            source_line: new_source_line,
+            inlay_offsets: Arc::clone(&self.inlay_offsets),
+        }
+    }
+
     /// Column count = post-inlay cell count.
     pub fn col_count(&self) -> u32 {
         self.cells.len() as u32
@@ -183,5 +201,22 @@ mod tests {
         assert_eq!(r.byte_to_combined_col(2), 4); // still +2
         assert_eq!(r.byte_to_combined_col(3), 6); // +3 (both)
         assert_eq!(r.byte_to_combined_col(5), 8);
+    }
+
+    /// S2.4.b: `with_source_line` keeps the cell + inlay-offset
+    /// payloads (shared `Arc` identity) and only changes the row's
+    /// logical-line position.
+    #[test]
+    fn with_source_line_shares_cell_arcs() {
+        let cells = vec![ascii(b'a'), ascii(b'b'), ascii(b'c')];
+        let inlays = vec![(2u32, 1u32)];
+        let r = CellRow::new(cells, 5, inlays);
+        let shifted = r.with_source_line(12);
+        assert_eq!(shifted.source_line, 12);
+        // Arc payloads must be shared — cheap refcount-only clone.
+        assert!(Arc::ptr_eq(&r.cells, &shifted.cells));
+        assert!(Arc::ptr_eq(&r.inlay_offsets, &shifted.inlay_offsets));
+        // The original is unchanged.
+        assert_eq!(r.source_line, 5);
     }
 }

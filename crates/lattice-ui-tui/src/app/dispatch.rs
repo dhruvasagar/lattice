@@ -1596,7 +1596,7 @@ mod tests {
 
     #[test]
     fn event_bus_publishes_selections_changed_on_set_selections() {
-        let a = app_with("hello world", 5);
+        let mut a = app_with("hello world", 5);
         let mut rx = subscribe_all_events(&a);
         let sel = Selection::cursor(Position::new(0, 5));
         a.editor.set_selections_blocking(SelectionSet::single(sel));

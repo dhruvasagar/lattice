@@ -1027,6 +1027,18 @@ pub struct Editor {
     /// dispatch tick. The worker `notified().await`s; permit-style
     /// coalescing handles bursts.
     pub cells_wake: CellsWake,
+    /// S2.4.b (2026-05-26): single-edit tracker for the
+    /// cell-builder's incremental rebuild path. `Some(delta)`
+    /// iff exactly one `apply_edit_blocking` (or LSP-applied
+    /// edit) call has happened since the last
+    /// `build_render_state` AND the previous publish cycle had no
+    /// pending delta. Any second edit, batch, undo, redo, or
+    /// other multi-edit path clears it back to `None` —
+    /// conservatively forcing the worker to full-rebuild rather
+    /// than risk applying a stale single-edit shift.
+    /// `build_render_state` `take()`s and hands it to the cells
+    /// substate.
+    pub last_edit_for_cells: Option<lattice_cells::EditDelta>,
     /// Phase 5.8.AF.6 / Slice X1b: paint-request signal. The
     /// highlights worker fires `paint_request.notify_one()` after
     /// every `WorkerDecision::Recomputed` so renderer peers can

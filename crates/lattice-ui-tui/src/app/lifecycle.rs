@@ -93,7 +93,9 @@ impl App {
         // observe the pre-activation buffer until the next
         // dispatch tail. Publish here to keep render-state and
         // editor in sync.
-        self.read_editor(move |e| e.publish_render_state());
+        // S2.4.b (2026-05-26): `publish_render_state` became
+        // `&mut self`. Switch to `mutate_editor`.
+        self.mutate_editor(move |e| e.publish_render_state());
     }
 
     /// 5.5.F.4.2: see [`lattice_host::dispatch::Editor::activate_file_tree`].

@@ -775,6 +775,18 @@ pub struct CellsRenderState {
     /// matrix.
     pub foldenable: bool,
 
+    /// S2.4.b (2026-05-26): single-edit delta covering the bump
+    /// from the previous publish's text_version to this publish's
+    /// text_version. `Some(d)` when exactly one
+    /// `apply_edit_blocking` happened since the last build and the
+    /// worker can take the incremental rebuild path; `None`
+    /// otherwise (no edit, batch, undo / redo, multi-edit
+    /// coalescing) — in which case the worker conservatively
+    /// full-rebuilds. Sourced from `Editor::last_edit_for_cells`
+    /// via `take()` at `build_render_state` time, so subsequent
+    /// publishes without further edits see `None`.
+    pub last_edit: Option<lattice_cells::EditDelta>,
+
     /// Renderer-neutral host theme. The cell-builder resolves each
     /// styled span's `lattice_syntax::Style` to an `0xRRGGBB`
     /// `cell.fg` via [`crate::ui::theme::Theme::syntax_style`]. A
@@ -799,6 +811,7 @@ impl Default for CellsRenderState {
             folds: Arc::from(Vec::<lattice_core::Fold>::new().into_boxed_slice()),
             viewport_height: 0,
             foldenable: true,
+            last_edit: None,
             theme: crate::ui::theme::Theme::default(),
         }
     }
@@ -1576,7 +1589,7 @@ mod tests {
     /// not folded into the `dispatch()` tail by accident.
     #[test]
     fn publish_render_state_replaces_arc() {
-        let editor = Editor::default();
+        let mut editor = Editor::default();
         let before = editor.render_state.load_full();
         editor.publish_render_state();
         let after = editor.render_state.load_full();
@@ -1591,7 +1604,7 @@ mod tests {
     /// the renderer-side read through `render_state` sees it.
     #[test]
     fn diagnostics_substate_reflects_published_layer() {
-        let editor = Editor::default();
+        let mut editor = Editor::default();
         let uri = Uri::from_str("file:///tmp/test.rs").expect("valid uri");
         let diag = Diagnostic {
             range: Range {
@@ -1713,7 +1726,7 @@ mod tests {
         };
         use lattice_protocol::position::Position;
         use std::sync::Arc;
-        let editor = Editor::default();
+        let mut editor = Editor::default();
         // Force a publication so RenderState.lsp carries a clone
         // of the editor's lsp_document_highlights ArcSwap.
         editor.publish_render_state();
@@ -1771,7 +1784,7 @@ mod tests {
     /// `Editor::default()` straight off the constructor.
     #[test]
     fn syntax_inlay_hints_empty_on_default_editor() {
-        let editor = Editor::default();
+        let mut editor = Editor::default();
         editor.publish_render_state();
         let rs = editor.render_state.load();
         assert!(
@@ -1792,7 +1805,7 @@ mod tests {
         use crate::per_buffer_cache::PerBufferCacheExt;
         use lattice_lsp::cache::LspInlayHintCache;
         use lattice_lsp::lsp_types::{InlayHint, InlayHintLabel, Position as LspPosition};
-        let editor = Editor::default();
+        let mut editor = Editor::default();
         editor.lsp_inlay_hints_cache.insert_for(
             editor.document_buffer_id,
             LspInlayHintCache {
@@ -1851,7 +1864,7 @@ mod tests {
     /// [`cached_substates_preserve_arc_identity_on_no_op_publish`].
     #[test]
     fn substate_identity_changes_naively_per_publication() {
-        let editor = Editor::default();
+        let mut editor = Editor::default();
         let a = editor.render_state.load_full();
         editor.publish_render_state();
         let b = editor.render_state.load_full();
@@ -1882,7 +1895,7 @@ mod tests {
     /// - `lsp.progress` (inner progress HashMap Arc)
     #[test]
     fn cached_substates_preserve_arc_identity_on_no_op_publish() {
-        let editor = Editor::default();
+        let mut editor = Editor::default();
         editor.publish_render_state();
         let a = editor.render_state.load_full();
         editor.publish_render_state();
@@ -1931,7 +1944,7 @@ mod tests {
         use crate::buffers::BufferFlags;
         use crate::file_tree::FileTreeBuffer;
         use lattice_core::BufferId;
-        let editor = Editor::default();
+        let mut editor = Editor::default();
         editor.publish_render_state();
         let a = editor.render_state.load_full();
         // Registry mutation only — buffer_uris untouched.
@@ -2041,7 +2054,7 @@ mod tests {
         use crate::buffers::BufferFlags;
         use crate::file_tree::FileTreeBuffer;
         use lattice_core::{BufferId, BufferKind};
-        let editor = Editor::default();
+        let mut editor = Editor::default();
         editor.publish_render_state();
         // Insert via the editor's registry handle, then read
         // through the published render-state's clone. FileTree
@@ -2219,7 +2232,7 @@ mod tests {
     /// Slice 3c.final.B.10: typed-options registry round-trip.
     #[test]
     fn options_registry_reflects_editor_state() {
-        let editor = Editor::default();
+        let mut editor = Editor::default();
         editor.publish_render_state();
         let rs = editor.render_state.load_full();
         // The published `config` Arc shares the registry identity
@@ -2327,7 +2340,7 @@ mod tests {
     /// `help` is `None`.
     #[test]
     fn popup_substate_defaults_closed() {
-        let editor = Editor::default();
+        let mut editor = Editor::default();
         editor.publish_render_state();
         let rs = editor.render_state.load_full();
         assert!(!rs.popup.is_open());
@@ -2339,7 +2352,7 @@ mod tests {
     /// default to None when no overlay is open.
     #[test]
     fn picker_and_completion_substates_default_closed() {
-        let editor = Editor::default();
+        let mut editor = Editor::default();
         editor.publish_render_state();
         let rs = editor.render_state.load_full();
         assert!(rs.picker.state.is_none());
@@ -2410,7 +2423,7 @@ mod tests {
     /// publishes must NOT swap the cell out from under it.
     #[test]
     fn cells_matrix_arc_identity_is_stable_across_publishes() {
-        let editor = Editor::default();
+        let mut editor = Editor::default();
         editor.publish_render_state();
         let rs1 = editor.render_state.load_full();
         let cell1 = rs1.cells.matrix.clone();
@@ -2429,7 +2442,7 @@ mod tests {
     /// future worker will see the wake.
     #[tokio::test]
     async fn publish_render_state_fires_cells_wake() {
-        let editor = Editor::default();
+        let mut editor = Editor::default();
         // Permit set by the publish call; subsequent
         // `notified().await` resolves immediately.
         editor.publish_render_state();

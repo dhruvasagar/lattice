@@ -34,12 +34,16 @@
 
 pub mod cell;
 pub mod chunk;
+// S2.4.b (2026-05-26): substrate-level edit delta consumed by the
+// cell-builder's incremental rebuild path.
+pub mod edit_delta;
 pub mod matrix;
 pub mod row;
 pub mod version;
 
 pub use cell::{flags as cell_flags, Cell};
 pub use chunk::CellChunk;
+pub use edit_delta::EditDelta;
 pub use matrix::{CellMatrix, CellSlice, CellSliceIter, CHUNK_SIZE_WHOLE_DOC};
 pub use row::{CellRow, InlayOffset};
 pub use version::MatrixVersion;

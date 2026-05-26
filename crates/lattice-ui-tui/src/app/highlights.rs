@@ -46,7 +46,11 @@ impl App {
         // `publish_render_state` call still goes through `self.editor`
         // pre-swap; the final E.swap slice routes it through the
         // actor's barrier.
-        self.read_editor(move |e| e.publish_render_state());
+        // S2.4.b (2026-05-26): `publish_render_state` became
+        // `&mut self` (it `take()`s `last_edit_for_cells` for the
+        // cell-builder's incremental path). Switch to
+        // `mutate_editor` accordingly.
+        self.mutate_editor(move |e| e.publish_render_state());
         lattice_host::highlights_worker::recompute(
             &self.render_state,
             &self.syntax_visible_spans_cell,

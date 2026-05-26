@@ -82,6 +82,41 @@ impl CellChunk {
             Err(_) => None,
         }
     }
+
+    /// Clone-with-shifted-line. Produces a new chunk whose
+    /// `start_source_line` and every contained row's `source_line`
+    /// are shifted by `line_delta`. Cell payloads are shared (one
+    /// `Arc` refcount bump per row's `cells` + `inlay_offsets`);
+    /// no rope reads, no theme work, no syntax walk.
+    ///
+    /// Used by the cell-builder's incremental rebuild path
+    /// (S2.4.b) for chunks past a single-line edit's affected
+    /// range — their cell content is unchanged, only their
+    /// logical line position shifts. `new_version` stamps the
+    /// chunk with the publisher's current matrix version so the
+    /// renderer can compare against the new matrix's `version`.
+    ///
+    /// `line_delta` may be negative (deletions shift downstream
+    /// lines down). The shifted `source_line` saturates at 0 if
+    /// the caller passes an unreasonably-negative delta; callers
+    /// in S2.4.b only ever invoke this on chunks past the edit's
+    /// affected range, so the saturating path is defensive only.
+    pub fn shifted_by(&self, line_delta: i32, new_version: MatrixVersion) -> Self {
+        let shifted_rows: Vec<CellRow> = self
+            .rows
+            .iter()
+            .map(|r| {
+                let new_line = (r.source_line as i64 + line_delta as i64).max(0) as u32;
+                r.with_source_line(new_line)
+            })
+            .collect();
+        let new_start = (self.start_source_line as i64 + line_delta as i64).max(0) as u32;
+        Self {
+            start_source_line: new_start,
+            rows: Arc::from(shifted_rows.into_boxed_slice()),
+            version: new_version,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -157,5 +192,48 @@ mod tests {
         };
         let c = CellChunk::empty(0, v);
         assert_eq!(c.version, v);
+    }
+
+    /// S2.4.b: `shifted_by` advances `start_source_line` and every
+    /// row's `source_line` while sharing the inner cell payload
+    /// (Arc identity preserved on each row's `cells`).
+    #[test]
+    fn shifted_by_advances_start_and_rows() {
+        let c = CellChunk::new(
+            10,
+            vec![row(10, b'a'), row(11, b'b'), row(13, b'd')],
+            MatrixVersion::ZERO,
+        );
+        let new_v = MatrixVersion {
+            text: 2,
+            syntax: 2,
+            inlay_hints: 0,
+            folds: 0,
+            theme: 0,
+        };
+        let s = c.shifted_by(3, new_v);
+        assert_eq!(s.start_source_line, 13);
+        assert_eq!(s.version, new_v);
+        let lines: Vec<u32> = s.rows.iter().map(|r| r.source_line).collect();
+        assert_eq!(lines, vec![13, 14, 16]);
+        // Cell payloads remain shared (Arc identity).
+        for (orig, shifted_row) in c.rows.iter().zip(s.rows.iter()) {
+            assert!(Arc::ptr_eq(&orig.cells, &shifted_row.cells));
+        }
+    }
+
+    /// Negative delta shifts upwards; saturates at zero rather
+    /// than wrapping.
+    #[test]
+    fn shifted_by_negative_saturates_at_zero() {
+        let c = CellChunk::new(
+            2,
+            vec![row(2, b'a'), row(3, b'b')],
+            MatrixVersion::ZERO,
+        );
+        let s = c.shifted_by(-5, MatrixVersion::ZERO);
+        assert_eq!(s.start_source_line, 0);
+        let lines: Vec<u32> = s.rows.iter().map(|r| r.source_line).collect();
+        assert_eq!(lines, vec![0, 0]); // both saturated
     }
 }

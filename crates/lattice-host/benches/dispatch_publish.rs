@@ -108,7 +108,7 @@ fn populated_editor() -> Editor {
 
 fn steady_state(c: &mut Criterion) {
     let mut group = c.benchmark_group("dispatch_publish");
-    let editor = populated_editor();
+    let mut editor = populated_editor();
     editor.publish_render_state();
 
     group.bench_function("steady_state", |b| {
@@ -197,7 +197,7 @@ fn mutated_all(c: &mut Criterion) {
 
 fn unmemoised(c: &mut Criterion) {
     let mut group = c.benchmark_group("dispatch_publish");
-    let editor = populated_editor();
+    let mut editor = populated_editor();
     editor.publish_render_state();
 
     group.bench_function("unmemoised", |b| {

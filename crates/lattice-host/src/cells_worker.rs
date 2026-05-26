@@ -66,7 +66,9 @@ use tracing::{debug, info};
 
 use crate::editor::CellsWake;
 use crate::render_state::RenderState;
-use lattice_cells::{Cell, CellChunk, CellMatrix, CellRow, MatrixVersion};
+use lattice_cells::{
+    Cell, CellChunk, CellMatrix, CellRow, MatrixVersion, CHUNK_SIZE_WHOLE_DOC,
+};
 
 /// Recompute decision the worker takes on a wake. Visible for
 /// testing; the production loop calls [`recompute`] directly.
@@ -80,8 +82,18 @@ pub enum WorkerDecision {
     /// matrix's `version`. Worker does nothing.
     CacheHit,
     /// `version` differs from the published matrix; worker built a
-    /// fresh `CellMatrix` from the snapshot and stored it.
+    /// fresh `CellMatrix` from the snapshot and stored it. The
+    /// full-rebuild path — every chunk's rows were materialised
+    /// from rope text + syntax + inlays + theme.
     Recomputed,
+    /// S2.4.b: incremental rebuild — exactly one text edit happened
+    /// since the last publish AND all other version axes are
+    /// unchanged. Chunks before the edit's affected range reuse
+    /// their `Arc<CellChunk>` verbatim; chunks at the affected
+    /// range rebuild from scratch; chunks past the affected range
+    /// shift by `lines_added - lines_removed` (cell payloads
+    /// shared, only `source_line` advances).
+    RecomputedIncremental,
 }
 
 /// Worker entry point spawned at boot. Loops forever, awaiting
@@ -111,7 +123,12 @@ pub async fn run(
         // Wake the renderer on content changes only. CacheHit
         // leaves the matrix bit-identical so waking the peer would
         // be a wasted frame.
-        if matches!(decision, WorkerDecision::Recomputed | WorkerDecision::Clear) {
+        if matches!(
+            decision,
+            WorkerDecision::Recomputed
+                | WorkerDecision::RecomputedIncremental
+                | WorkerDecision::Clear
+        ) {
             paint_request.notify_one();
         }
         debug!(
@@ -153,13 +170,22 @@ pub fn recompute(
         return WorkerDecision::CacheHit;
     }
 
-    // Cache miss: rebuild. S2.2 was whole-doc + raw codepoints;
-    // S2.3.a/b/c added syntax fg, inlay splicing, fold elision;
-    // S2.4.a picks whole-doc vs chunked mode based on
-    // `viewport_height` and the snapshot's line count.
-    // S2.4.b (smallest-rebuild-set + downstream chunk shift) needs
-    // edit-range plumbing — every build still touches every chunk
-    // for now.
+    // S2.4.b: try the incremental rebuild path before falling
+    // back to a full rebuild. Eligibility (single-text-edit step,
+    // other axes unchanged, mode + chunk size compatible, line
+    // count consistent) is checked inside `try_incremental_build`;
+    // if the check fails the function returns `None` and we
+    // proceed to the full rebuild below.
+    if let Some(matrix) = try_incremental_build(&existing, snapshot.as_ref(), cells) {
+        matrix_cell.store(Arc::new(matrix));
+        return WorkerDecision::RecomputedIncremental;
+    }
+
+    // Full rebuild fallback (S2.2 + S2.3.a/b/c + S2.4.a). Touches
+    // every chunk. Triggered on first publish, multi-edit batches,
+    // undo / redo, theme bumps, fold changes, viewport resize that
+    // crosses the chunked-mode threshold, or any other path that
+    // breaks incremental eligibility.
     let matrix = build_matrix(
         snapshot.as_ref(),
         cells.syntax_handle.as_deref(),
@@ -172,6 +198,215 @@ pub fn recompute(
     );
     matrix_cell.store(Arc::new(matrix));
     WorkerDecision::Recomputed
+}
+
+/// S2.4.b: attempt an incremental rebuild from the previously-
+/// published `matrix` and the current `cells` substate. Returns
+/// `Some(new_matrix)` when the fast path is eligible; `None`
+/// otherwise. The caller falls back to a full rebuild on `None`.
+///
+/// Eligibility requires *all* of:
+/// - `cells.last_edit` is `Some(delta)` (single text edit since
+///   the last publish, set by `publish_document_changed` and
+///   `take()`n at `build_render_state` time);
+/// - the published matrix has at least one chunk (no prior
+///   matrix → nothing to reuse);
+/// - exactly the `text` and `syntax` axes of `MatrixVersion`
+///   differ (other axes — `inlay_hints`, `folds`, `theme` —
+///   are unchanged; any other axis would invalidate parts of
+///   the cached cell content);
+/// - the post-edit line count consistency check holds
+///   (`published.source_line_count + (added - removed) ==
+///   snapshot.line_count()`) — guards against silent corruption
+///   when the matrix is for a different document;
+/// - the chunked-mode shape doesn't change between pre and post
+///   edit (same whole-doc vs chunked decision, same `chunk_size`).
+///
+/// On success the new matrix is composed by walking the published
+/// matrix's chunks and:
+/// - **Prefix chunks** (entirely below `edit.start_line`) are
+///   cloned by `Arc` (zero work, refcount bump only).
+/// - **Affected chunks** (those whose covered range intersects
+///   the edit's affected range) rebuild via [`build_chunk_rows`].
+/// - **Suffix chunks** (entirely past `edit.pre_edit_end_line()`)
+///   are shifted via [`CellChunk::shifted_by`] — cell payloads
+///   shared, `source_line` advances by `edit.net_delta()`.
+///
+/// Chunks at the chunked-mode boundary that contain the affected
+/// range may need merging with adjacent rebuilt-zone content;
+/// this implementation rebuilds any chunk whose covered range
+/// touches the affected range to keep the logic simple and
+/// correct.
+fn try_incremental_build(
+    published: &CellMatrix,
+    snapshot: &lattice_runtime::DocumentSnapshot,
+    cells: &crate::render_state::CellsRenderState,
+) -> Option<CellMatrix> {
+    let edit = cells.last_edit?;
+    if published.chunks.is_empty() {
+        return None;
+    }
+
+    let new_version = cells.version;
+    let pub_v = published.version;
+
+    // Only text / syntax axes may differ. text and syntax both
+    // stamp `text_version`, so they should bump together.
+    if new_version.inlay_hints != pub_v.inlay_hints
+        || new_version.folds != pub_v.folds
+        || new_version.theme != pub_v.theme
+    {
+        return None;
+    }
+    if new_version.text == pub_v.text && new_version.syntax == pub_v.syntax {
+        // No actual content delta — would be cache-hit territory.
+        return None;
+    }
+
+    // Line-count consistency check guards against doc switches
+    // where versions coincidentally line up.
+    let new_line_count = snapshot.buffer.line_count();
+    let pre_count = published.source_line_count as i64;
+    let expected_new = pre_count + edit.net_delta() as i64;
+    if expected_new < 0 || expected_new as u32 != new_line_count {
+        return None;
+    }
+
+    // Chunked-mode shape must be unchanged. Whole-doc → whole-doc
+    // and chunked(n) → chunked(n) both qualify; any cross-shape
+    // transition forces a full rebuild.
+    let new_mode = pick_chunk_size(cells.viewport_height, new_line_count);
+    let new_chunk_size = match new_mode {
+        ChunkMode::WholeDoc => CHUNK_SIZE_WHOLE_DOC,
+        ChunkMode::Chunked(n) => n,
+    };
+    if new_chunk_size != published.chunk_size {
+        return None;
+    }
+
+    // Edit-affected ranges in pre- and post-edit line space.
+    // `post_hi = edit.post_edit_end_line()` is unused in the
+    // current partitioning (rebuild_hi is derived from the first
+    // suffix chunk's post-edit start); kept conceptually here for
+    // readers tracing the design doc but not bound.
+    let edit_lo = edit.start_line;
+    let pre_hi = edit.pre_edit_end_line();
+    let net = edit.net_delta();
+
+    // Build inputs once for the affected-zone rebuild path.
+    let default_fg = resolve_fg(&cells.theme, lattice_syntax::Style::Default);
+    let inlay_fg = inlay_hint_fg();
+    let per_line_spans: Option<Vec<Vec<lattice_syntax::StyledSpan>>> =
+        cells.syntax_handle.as_deref().and_then(|h| {
+            let snap = h.snapshot();
+            if snap.text_version() < snapshot.text_version {
+                return None;
+            }
+            snap.highlight_lines(0, new_line_count).ok()
+        });
+    let inlays_by_line = bucket_inlays_by_line(&cells.inlay_hints, new_line_count);
+    let fold_index = crate::folds::FoldIndex::from_folds(&cells.folds, cells.foldenable);
+    let inputs = ChunkInputs {
+        snapshot,
+        per_line_spans: per_line_spans.as_ref(),
+        inlays_by_line: &inlays_by_line,
+        fold_index: &fold_index,
+        theme: &cells.theme,
+        default_fg,
+        inlay_fg,
+    };
+
+    if new_chunk_size == CHUNK_SIZE_WHOLE_DOC {
+        // Whole-doc mode is one chunk — the affected range always
+        // intersects the only chunk we have. Rebuild that chunk
+        // wholesale; this is still cheaper than the full path
+        // because we skip the chunked iteration scaffolding, but
+        // there is no chunk-level reuse to exploit here.
+        let rows = build_chunk_rows(&inputs, 0, new_line_count);
+        let chunk = Arc::new(CellChunk::new(0, rows, new_version));
+        return Some(CellMatrix::whole_doc(chunk, new_line_count));
+    }
+
+    // Chunked-mode incremental rebuild. Partition the published
+    // chunks into three regions whose post-edit projections are
+    // mutually exclusive and contiguous:
+    //
+    // 1. Prefix-reuse: chunks fully before the edit
+    //    (chunk_end <= edit_lo). Their cells *and* logical-line
+    //    positions are unchanged; clone the `Arc<CellChunk>`
+    //    verbatim (one refcount bump).
+    // 2. Rebuild zone: post-edit lines from the prefix's high-
+    //    water-mark up to (but not including) the first suffix
+    //    chunk's post-edit start. Materialised via
+    //    `build_chunk_rows` in `chunk_size`-aligned buckets.
+    // 3. Suffix-shift: chunks fully past the edit
+    //    (chunk_start >= pre_hi). Their `start_source_line` and
+    //    every row's `source_line` shift by `net`; cell payloads
+    //    are shared via row-level `Arc` refcount bumps.
+    //
+    // Chunks straddling the affected range fall into the rebuild
+    // zone implicitly — they are not picked up by either prefix
+    // or suffix and the rebuild loop covers their post-edit
+    // footprint.
+    let chunk_size = new_chunk_size;
+    let mut new_chunks: Vec<Arc<CellChunk>> = Vec::with_capacity(published.chunks.len() + 2);
+
+    // --- Step 1: prefix-reuse ---
+    let mut rebuild_lo: u32 = 0;
+    for chunk in published.chunks.iter() {
+        let chunk_end = chunk
+            .start_source_line
+            .saturating_add(published.chunk_size);
+        if chunk_end <= edit_lo {
+            new_chunks.push(Arc::clone(chunk));
+            rebuild_lo = chunk_end;
+        } else {
+            // chunks are sorted by start_source_line; the rest
+            // overlap or are past the edit.
+            break;
+        }
+    }
+
+    // --- Step 2: suffix-shift ---
+    let mut suffix_chunks: Vec<Arc<CellChunk>> = Vec::new();
+    for chunk in published.chunks.iter() {
+        if chunk.start_source_line >= pre_hi {
+            suffix_chunks.push(Arc::new(chunk.shifted_by(net, new_version)));
+        }
+    }
+    // First suffix chunk's post-edit start anchors the upper bound
+    // of the rebuild zone. If no suffix chunks remain (edit reached
+    // EOF), the rebuild zone extends to `new_line_count`.
+    let rebuild_hi = suffix_chunks
+        .first()
+        .map(|c| c.start_source_line)
+        .unwrap_or(new_line_count);
+
+    // --- Step 3: rebuild zone ---
+    // Carve [rebuild_lo, rebuild_hi) into `chunk_size`-aligned
+    // chunks. The final chunk may be ragged if `rebuild_hi` falls
+    // mid-chunk — that's expected when suffix-shift produces a
+    // chunk at a non-aligned start (e.g. an insert shifts an old
+    // chunk-aligned start by `net != 0`). The matrix invariant is
+    // contiguous ordered chunks, not uniform sizing — the renderer
+    // walks via `chunk.rows.iter()` so any ragged tail is fine.
+    let mut cur = rebuild_lo;
+    while cur < rebuild_hi {
+        let end = cur.saturating_add(chunk_size).min(rebuild_hi);
+        let rows = build_chunk_rows(&inputs, cur, end);
+        new_chunks.push(Arc::new(CellChunk::new(cur, rows, new_version)));
+        cur = end;
+    }
+
+    // --- Append suffix chunks ---
+    new_chunks.extend(suffix_chunks);
+
+    Some(CellMatrix::chunked(
+        new_chunks,
+        chunk_size,
+        new_line_count,
+        new_version,
+    ))
 }
 
 /// Build a [`CellMatrix`] from `snapshot` + optional syntax
@@ -586,6 +821,35 @@ mod tests {
         folds: Vec<lattice_core::Fold>,
         foldenable: bool,
     ) -> ArcSwap<RenderState> {
+        rs_with_everything(
+            snapshot,
+            version,
+            matrix_cell,
+            syntax_handle,
+            theme,
+            inlay_hints,
+            folds,
+            foldenable,
+            None,
+            0,
+        )
+    }
+
+    /// S2.4.b: superset helper exposing `last_edit` and
+    /// `viewport_height` for incremental-rebuild tests.
+    #[allow(clippy::too_many_arguments)]
+    fn rs_with_everything(
+        snapshot: Option<Arc<DocumentSnapshot>>,
+        version: MatrixVersion,
+        matrix_cell: Arc<ArcSwap<CellMatrix>>,
+        syntax_handle: Option<Arc<lattice_syntax::SyntaxHandle>>,
+        theme: crate::ui::theme::Theme,
+        inlay_hints: Vec<crate::render_state::InlayHintRow>,
+        folds: Vec<lattice_core::Fold>,
+        foldenable: bool,
+        last_edit: Option<lattice_cells::EditDelta>,
+        viewport_height: u32,
+    ) -> ArcSwap<RenderState> {
         let cells = CellsRenderState {
             matrix: matrix_cell,
             version,
@@ -593,8 +857,9 @@ mod tests {
             syntax_handle,
             inlay_hints: Arc::from(inlay_hints.into_boxed_slice()),
             folds: Arc::from(folds.into_boxed_slice()),
-            viewport_height: 0,
+            viewport_height,
             foldenable,
+            last_edit,
             theme,
         };
         let rs = RenderState {
@@ -1105,6 +1370,7 @@ mod tests {
             folds: Arc::from(Vec::<lattice_core::Fold>::new().into_boxed_slice()),
             viewport_height: 5,
             foldenable: true,
+            last_edit: None,
             theme,
         };
         let rs = ArcSwap::from_pointee(RenderState {
@@ -1144,6 +1410,7 @@ mod tests {
             folds: Arc::from(Vec::<lattice_core::Fold>::new().into_boxed_slice()),
             viewport_height: 5,
             foldenable: true,
+            last_edit: None,
             theme,
         };
         let rs = ArcSwap::from_pointee(RenderState {
@@ -1199,6 +1466,7 @@ mod tests {
             folds: Arc::from(folds.into_boxed_slice()),
             viewport_height: 5,
             foldenable: true,
+            last_edit: None,
             theme,
         };
         let rs = ArcSwap::from_pointee(RenderState {
@@ -1248,6 +1516,7 @@ mod tests {
                 folds: Arc::from(Vec::<lattice_core::Fold>::new().into_boxed_slice()),
                 viewport_height: vp,
                 foldenable: true,
+                last_edit: None,
                 theme,
             };
             ArcSwap::from_pointee(RenderState {
@@ -1444,5 +1713,452 @@ mod tests {
             rs_with_snapshot_themed(Some(snap), v_b, matrix_cell.clone(), None, theme);
         assert_eq!(recompute(&rs2, &matrix_cell), WorkerDecision::Recomputed);
         assert_ne!(first_ptr, Arc::as_ptr(&matrix_cell.load_full()));
+    }
+
+    // ---- S2.4.b — incremental rebuild ----
+
+    fn edit_delta(start: u32, removed: u32, added: u32) -> lattice_cells::EditDelta {
+        lattice_cells::EditDelta {
+            start_line: start,
+            lines_removed: removed,
+            lines_added: added,
+        }
+    }
+
+    /// Whole-doc mode + single-text-edit takes the incremental
+    /// branch (`RecomputedIncremental`), even though whole-doc has
+    /// nothing to reuse — the eligibility check passes and the
+    /// branch produces a correct matrix.
+    #[test]
+    fn whole_doc_with_edit_takes_incremental_branch() {
+        let theme = crate::ui::theme::Theme::default();
+        let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+
+        // First publish: 3-line doc at text_version 1, no edit.
+        let snap1 = snap_of_versioned("aa\nbb\ncc", 1);
+        let v1 = MatrixVersion { text: 1, syntax: 1, ..MatrixVersion::ZERO };
+        let rs1 = rs_with_everything(
+            Some(snap1),
+            v1,
+            matrix_cell.clone(),
+            None,
+            theme,
+            Vec::new(),
+            Vec::new(),
+            true,
+            None,
+            5, // small viewport ⇒ whole-doc
+        );
+        assert_eq!(recompute(&rs1, &matrix_cell), WorkerDecision::Recomputed);
+        assert!(matrix_cell.load().is_whole_doc());
+
+        // Second publish: insert a line at line 1; text_version → 2.
+        let snap2 = snap_of_versioned("aa\nNEW\nbb\ncc", 2);
+        let v2 = MatrixVersion { text: 2, syntax: 2, ..MatrixVersion::ZERO };
+        let edit = edit_delta(1, 0, 1);
+        let rs2 = rs_with_everything(
+            Some(snap2),
+            v2,
+            matrix_cell.clone(),
+            None,
+            theme,
+            Vec::new(),
+            Vec::new(),
+            true,
+            Some(edit),
+            5,
+        );
+        assert_eq!(
+            recompute(&rs2, &matrix_cell),
+            WorkerDecision::RecomputedIncremental
+        );
+        let m = matrix_cell.load();
+        assert!(m.is_whole_doc());
+        assert_eq!(m.source_line_count, 4);
+        let row_texts: Vec<String> = m
+            .slice(0, 10)
+            .iter()
+            .map(|r| {
+                r.cells
+                    .iter()
+                    .map(|c| char::from_u32(c.codepoint).unwrap_or('?'))
+                    .collect()
+            })
+            .collect();
+        assert_eq!(row_texts, vec!["aa", "NEW", "bb", "cc"]);
+    }
+
+    /// Chunked mode + single-edit reuses prefix chunks (by `Arc`
+    /// identity) and shifts suffix chunks. Concretely: 25-line
+    /// document, viewport 5 → chunk_size 16, an insert at line 2
+    /// rebuilds chunk 0 only; chunk 1 (starts at 16) shifts to
+    /// start at 17.
+    #[test]
+    fn chunked_incremental_reuses_prefix_and_shifts_suffix() {
+        let theme = crate::ui::theme::Theme::default();
+        let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+
+        // 25 lines: "l0\nl1\n...\nl24".
+        let text1: String = (0..25)
+            .map(|i| format!("l{}", i))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let snap1 = snap_of_versioned(&text1, 1);
+        let v1 = MatrixVersion { text: 1, syntax: 1, ..MatrixVersion::ZERO };
+        let rs1 = rs_with_everything(
+            Some(snap1),
+            v1,
+            matrix_cell.clone(),
+            None,
+            theme,
+            Vec::new(),
+            Vec::new(),
+            true,
+            None,
+            5, // 4×5 = 20 < 25 ⇒ chunked, chunk_size = 16
+        );
+        assert_eq!(recompute(&rs1, &matrix_cell), WorkerDecision::Recomputed);
+        let m1 = matrix_cell.load();
+        assert_eq!(m1.chunk_size, 16);
+        assert_eq!(m1.chunks.len(), 2);
+        // Hold an `Arc` clone of chunk 1 so we can compare
+        // identity post-edit. Crate forbids `unsafe`; cloning the
+        // Arc is the clean way to keep the value alive.
+        let chunk1_pre: Arc<CellChunk> = Arc::clone(&m1.chunks[1]);
+
+        // Insert one line at line 2.
+        let text2: String = {
+            let mut lines: Vec<String> = (0..25).map(|i| format!("l{}", i)).collect();
+            lines.insert(2, "INS".to_string());
+            lines.join("\n")
+        };
+        let snap2 = snap_of_versioned(&text2, 2);
+        let v2 = MatrixVersion { text: 2, syntax: 2, ..MatrixVersion::ZERO };
+        let edit = edit_delta(2, 0, 1);
+        let rs2 = rs_with_everything(
+            Some(snap2),
+            v2,
+            matrix_cell.clone(),
+            None,
+            theme,
+            Vec::new(),
+            Vec::new(),
+            true,
+            Some(edit),
+            5,
+        );
+        assert_eq!(
+            recompute(&rs2, &matrix_cell),
+            WorkerDecision::RecomputedIncremental
+        );
+        let m2 = matrix_cell.load();
+        // Post-edit shape: chunked, chunk_size 16, 26 source lines.
+        // Partitioning:
+        // - prefix-reuse: none (old chunk 0 ends at 16 > edit_lo=2)
+        // - rebuild zone: [0, 17) (suffix-shift's first chunk lands
+        //   at start=17). Carved into chunks at start=0 (16 rows)
+        //   and start=16 (1 row).
+        // - suffix-shift: old chunk 1 → start=17 (9 rows).
+        // ⇒ three chunks at starts [0, 16, 17] totalling 26 rows.
+        assert!(!m2.is_whole_doc());
+        assert_eq!(m2.chunk_size, 16);
+        assert_eq!(m2.source_line_count, 26);
+        assert_eq!(m2.visible_line_count, 26);
+        assert_eq!(m2.chunks.len(), 3);
+        assert_eq!(m2.chunks[0].start_source_line, 0);
+        assert_eq!(m2.chunks[1].start_source_line, 16);
+        assert_eq!(m2.chunks[2].start_source_line, 17);
+
+        // m2.chunks[2] is the shifted-from-m1.chunks[1] one.
+        // Rows whose source_line was 16..25 now have source_lines
+        // 17..26.
+        let shifted_lines: Vec<u32> = m2.chunks[2]
+            .rows
+            .iter()
+            .map(|r| r.source_line)
+            .collect();
+        assert_eq!(
+            shifted_lines,
+            (17u32..26).collect::<Vec<_>>(),
+            "suffix chunk rows must be the same as before but shifted by +1"
+        );
+
+        // The shifted chunk is a new Arc<CellChunk> (because we
+        // rebuilt row source_lines) — but the rows' inner cell
+        // arcs are shared.
+        assert!(
+            !Arc::ptr_eq(&chunk1_pre, &m2.chunks[2]),
+            "post-shift chunk must be a new Arc<CellChunk>"
+        );
+
+        // Cell payload sharing across the shift: cells Arcs in
+        // surviving rows MUST be shared by ptr_eq with the
+        // pre-edit equivalents.
+        for (pre_row, post_row) in chunk1_pre.rows.iter().zip(m2.chunks[2].rows.iter()) {
+            assert!(
+                Arc::ptr_eq(&pre_row.cells, &post_row.cells),
+                "row's cell Arc must be shared across shift"
+            );
+        }
+    }
+
+    /// Eligibility falls back to full rebuild when `last_edit` is
+    /// `None` (no single-edit since last publish — e.g.
+    /// undo/redo/multi-edit batch).
+    #[test]
+    fn no_last_edit_falls_back_to_full_rebuild() {
+        let theme = crate::ui::theme::Theme::default();
+        let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+        let snap1 = snap_of_versioned("aa\nbb", 1);
+        let v1 = MatrixVersion { text: 1, syntax: 1, ..MatrixVersion::ZERO };
+        let rs1 = rs_with_everything(
+            Some(snap1),
+            v1,
+            matrix_cell.clone(),
+            None,
+            theme,
+            Vec::new(),
+            Vec::new(),
+            true,
+            None,
+            5,
+        );
+        assert_eq!(recompute(&rs1, &matrix_cell), WorkerDecision::Recomputed);
+
+        // text bumps but last_edit stays None (multi-edit batch
+        // semantics).
+        let snap2 = snap_of_versioned("AA\nBB", 2);
+        let v2 = MatrixVersion { text: 2, syntax: 2, ..MatrixVersion::ZERO };
+        let rs2 = rs_with_everything(
+            Some(snap2),
+            v2,
+            matrix_cell.clone(),
+            None,
+            theme,
+            Vec::new(),
+            Vec::new(),
+            true,
+            None,
+            5,
+        );
+        assert_eq!(recompute(&rs2, &matrix_cell), WorkerDecision::Recomputed);
+    }
+
+    /// Eligibility falls back to full rebuild when a non-text
+    /// axis (e.g. theme) also bumped — incremental can't safely
+    /// reuse cell colours.
+    #[test]
+    fn theme_axis_change_disables_incremental() {
+        let theme = crate::ui::theme::Theme::default();
+        let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+        let snap1 = snap_of_versioned("aa\nbb", 1);
+        let v1 = MatrixVersion {
+            text: 1,
+            syntax: 1,
+            theme: 100,
+            ..MatrixVersion::ZERO
+        };
+        let rs1 = rs_with_everything(
+            Some(snap1),
+            v1,
+            matrix_cell.clone(),
+            None,
+            theme,
+            Vec::new(),
+            Vec::new(),
+            true,
+            None,
+            5,
+        );
+        assert_eq!(recompute(&rs1, &matrix_cell), WorkerDecision::Recomputed);
+
+        // Theme bumps alongside text — incremental must bail.
+        let snap2 = snap_of_versioned("aa\nNEW\nbb", 2);
+        let v2 = MatrixVersion {
+            text: 2,
+            syntax: 2,
+            theme: 200,
+            ..MatrixVersion::ZERO
+        };
+        let edit = edit_delta(1, 0, 1);
+        let rs2 = rs_with_everything(
+            Some(snap2),
+            v2,
+            matrix_cell.clone(),
+            None,
+            theme,
+            Vec::new(),
+            Vec::new(),
+            true,
+            Some(edit),
+            5,
+        );
+        // Full rebuild — incremental rejected because theme axis
+        // differs.
+        assert_eq!(recompute(&rs2, &matrix_cell), WorkerDecision::Recomputed);
+    }
+
+    /// Mismatched line-count guard: even with a single-edit
+    /// delta, if the published matrix's `source_line_count` plus
+    /// `net_delta` doesn't match the new snapshot's line count,
+    /// incremental bails (defensive against doc-switches where
+    /// versions coincidentally line up).
+    #[test]
+    fn line_count_mismatch_disables_incremental() {
+        let theme = crate::ui::theme::Theme::default();
+        let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+        let snap1 = snap_of_versioned("aa\nbb", 1);
+        let v1 = MatrixVersion { text: 1, syntax: 1, ..MatrixVersion::ZERO };
+        let rs1 = rs_with_everything(
+            Some(snap1),
+            v1,
+            matrix_cell.clone(),
+            None,
+            theme,
+            Vec::new(),
+            Vec::new(),
+            true,
+            None,
+            5,
+        );
+        assert_eq!(recompute(&rs1, &matrix_cell), WorkerDecision::Recomputed);
+
+        // New snapshot has 5 lines, but the edit says
+        // lines_added=1 against pre 2 → expects 3, not 5. Bail
+        // to full rebuild.
+        let snap2 = snap_of_versioned("a\nb\nc\nd\ne", 2);
+        let v2 = MatrixVersion { text: 2, syntax: 2, ..MatrixVersion::ZERO };
+        let edit = edit_delta(0, 0, 1);
+        let rs2 = rs_with_everything(
+            Some(snap2),
+            v2,
+            matrix_cell.clone(),
+            None,
+            theme,
+            Vec::new(),
+            Vec::new(),
+            true,
+            Some(edit),
+            5,
+        );
+        assert_eq!(recompute(&rs2, &matrix_cell), WorkerDecision::Recomputed);
+    }
+
+    /// Eligibility falls back when the mode would change between
+    /// pre and post edit (e.g. small-doc whole-doc → chunked
+    /// after adding enough lines).
+    #[test]
+    fn mode_change_disables_incremental() {
+        let theme = crate::ui::theme::Theme::default();
+        let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+        // 5 lines + viewport 5 → whole-doc (5 <= 20).
+        let snap1 = snap_of_versioned("a\nb\nc\nd\ne", 1);
+        let v1 = MatrixVersion { text: 1, syntax: 1, ..MatrixVersion::ZERO };
+        let rs1 = rs_with_everything(
+            Some(snap1),
+            v1,
+            matrix_cell.clone(),
+            None,
+            theme,
+            Vec::new(),
+            Vec::new(),
+            true,
+            None,
+            5,
+        );
+        assert_eq!(recompute(&rs1, &matrix_cell), WorkerDecision::Recomputed);
+        assert!(matrix_cell.load().is_whole_doc());
+
+        // Bump to 30 lines (5 + 25 inserted). Now 30 > 20 → chunked
+        // mode. Single-edit delta says lines_added=25; that crosses
+        // the threshold.
+        let text2: String = (0..30)
+            .map(|i| format!("l{}", i))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let snap2 = snap_of_versioned(&text2, 2);
+        let v2 = MatrixVersion { text: 2, syntax: 2, ..MatrixVersion::ZERO };
+        let edit = edit_delta(5, 0, 25);
+        let rs2 = rs_with_everything(
+            Some(snap2),
+            v2,
+            matrix_cell.clone(),
+            None,
+            theme,
+            Vec::new(),
+            Vec::new(),
+            true,
+            Some(edit),
+            5,
+        );
+        // Mode flipped; incremental must bail.
+        assert_eq!(recompute(&rs2, &matrix_cell), WorkerDecision::Recomputed);
+        assert!(!matrix_cell.load().is_whole_doc());
+    }
+
+    /// Chunked deletion: removing lines also takes the incremental
+    /// branch; downstream chunks shift by the negative delta.
+    #[test]
+    fn chunked_incremental_handles_deletion() {
+        let theme = crate::ui::theme::Theme::default();
+        let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+
+        // 30 lines so we land squarely in chunked mode at viewport
+        // 5 (chunk_size 16, ceil(30/16) = 2 chunks).
+        let text1: String = (0..30)
+            .map(|i| format!("l{}", i))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let snap1 = snap_of_versioned(&text1, 1);
+        let v1 = MatrixVersion { text: 1, syntax: 1, ..MatrixVersion::ZERO };
+        let rs1 = rs_with_everything(
+            Some(snap1),
+            v1,
+            matrix_cell.clone(),
+            None,
+            theme,
+            Vec::new(),
+            Vec::new(),
+            true,
+            None,
+            5,
+        );
+        assert_eq!(recompute(&rs1, &matrix_cell), WorkerDecision::Recomputed);
+        let m1 = matrix_cell.load();
+        assert_eq!(m1.chunk_size, 16);
+        assert_eq!(m1.chunks.len(), 2);
+
+        // Delete two lines at line 3.
+        let text2: String = {
+            let mut lines: Vec<String> = (0..30).map(|i| format!("l{}", i)).collect();
+            lines.drain(3..5);
+            lines.join("\n")
+        };
+        let snap2 = snap_of_versioned(&text2, 2);
+        let v2 = MatrixVersion { text: 2, syntax: 2, ..MatrixVersion::ZERO };
+        let edit = edit_delta(3, 2, 0);
+        let rs2 = rs_with_everything(
+            Some(snap2),
+            v2,
+            matrix_cell.clone(),
+            None,
+            theme,
+            Vec::new(),
+            Vec::new(),
+            true,
+            Some(edit),
+            5,
+        );
+        assert_eq!(
+            recompute(&rs2, &matrix_cell),
+            WorkerDecision::RecomputedIncremental
+        );
+        let m2 = matrix_cell.load();
+        assert_eq!(m2.source_line_count, 28);
+        assert_eq!(m2.visible_line_count, 28);
+        // Walk source_lines via slice — must be 0..28 contiguous.
+        let source_lines: Vec<u32> =
+            m2.slice(0, 100).iter().map(|r| r.source_line).collect();
+        assert_eq!(source_lines, (0u32..28).collect::<Vec<_>>());
     }
 }

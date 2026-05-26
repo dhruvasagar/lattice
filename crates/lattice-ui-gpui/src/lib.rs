@@ -125,6 +125,14 @@ pub mod glyph_resolver;
 // `shape_line` on the document body.
 #[cfg(feature = "window")]
 pub mod paint_cells;
+// S4.final.c (2026-05-27): hit-testing primitives on the cell
+// grid. `x_to_combined_col` / `col_to_x` / `combined_col_to_byte`
+// for mapping mouse positions to buffer coordinates without
+// going through `ShapedLine`. Forward-looking infrastructure
+// for the eventual mouse-select / drag-select handler in
+// `window.rs`.
+#[cfg(feature = "window")]
+pub mod hit_test;
 
 #[cfg(feature = "window")]
 pub use window::{document_from_path, run};

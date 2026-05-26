@@ -19,6 +19,26 @@ pub mod flags {
     /// substituted a marker glyph. Used by `listchars`-style
     /// rendering.
     pub const WS_MARKER: u16 = 1 << 1;
+    /// S3.a (2026-05-26): text-attribute modifier — bold glyph.
+    /// Set by the cell-builder from
+    /// `host::Theme::syntax_style(style).modifiers.bold` so the
+    /// renderer paints the cell with its font's bold weight.
+    pub const BOLD: u16 = 1 << 2;
+    /// Text-attribute modifier — italic glyph. From
+    /// `host::Theme::syntax_style(style).modifiers.italic`.
+    pub const ITALIC: u16 = 1 << 3;
+    /// Text-attribute modifier — underlined glyph. From
+    /// `host::Theme::syntax_style(style).modifiers.underline`.
+    /// The renderer is responsible for the underline geometry
+    /// (font baseline + 1px, etc.).
+    pub const UNDERLINE: u16 = 1 << 4;
+    /// Text-attribute modifier — dimmed cell. From
+    /// `host::Theme::syntax_style(style).modifiers.dim`. The
+    /// renderer typically blends fg toward the pane background.
+    pub const DIM: u16 = 1 << 5;
+    /// Text-attribute modifier — reverse video (swap fg/bg).
+    /// From `host::Theme::syntax_style(style).modifiers.reverse`.
+    pub const REVERSE: u16 = 1 << 6;
 }
 
 /// One renderable cell. Exactly 16 bytes: codepoint (4) + fg (4) +
@@ -98,6 +118,31 @@ impl Cell {
     pub fn is_ws_marker(&self) -> bool {
         self.flags & flags::WS_MARKER != 0
     }
+
+    /// S3.a: `true` iff the bold modifier bit is set.
+    pub fn is_bold(&self) -> bool {
+        self.flags & flags::BOLD != 0
+    }
+
+    /// S3.a: `true` iff the italic modifier bit is set.
+    pub fn is_italic(&self) -> bool {
+        self.flags & flags::ITALIC != 0
+    }
+
+    /// S3.a: `true` iff the underline modifier bit is set.
+    pub fn is_underline(&self) -> bool {
+        self.flags & flags::UNDERLINE != 0
+    }
+
+    /// S3.a: `true` iff the dim modifier bit is set.
+    pub fn is_dim(&self) -> bool {
+        self.flags & flags::DIM != 0
+    }
+
+    /// S3.a: `true` iff the reverse modifier bit is set.
+    pub fn is_reverse(&self) -> bool {
+        self.flags & flags::REVERSE != 0
+    }
 }
 
 impl Default for Cell {
@@ -163,5 +208,70 @@ mod tests {
         let c2 = Cell::new(b':' as u32, 0, 0, flags::INLAY | flags::WS_MARKER);
         assert!(c2.is_ws_marker());
         assert!(c2.is_inlay());
+    }
+
+    /// S3.a: each modifier-flag bit toggles independently and its
+    /// query helper returns the right answer in isolation + when
+    /// combined with other flags.
+    #[test]
+    fn modifier_flag_bits_compose_independently() {
+        // Each modifier alone.
+        let bold = Cell::new(b'a' as u32, 0, 0, flags::BOLD);
+        assert!(bold.is_bold());
+        assert!(!bold.is_italic());
+        assert!(!bold.is_underline());
+        assert!(!bold.is_dim());
+        assert!(!bold.is_reverse());
+
+        let italic = Cell::new(b'a' as u32, 0, 0, flags::ITALIC);
+        assert!(italic.is_italic());
+        assert!(!italic.is_bold());
+
+        let under = Cell::new(b'a' as u32, 0, 0, flags::UNDERLINE);
+        assert!(under.is_underline());
+
+        let dim = Cell::new(b'a' as u32, 0, 0, flags::DIM);
+        assert!(dim.is_dim());
+
+        let rev = Cell::new(b'a' as u32, 0, 0, flags::REVERSE);
+        assert!(rev.is_reverse());
+
+        // Composition: bold + italic + underline + INLAY all set.
+        let all = Cell::new(
+            b'a' as u32,
+            0,
+            0,
+            flags::BOLD | flags::ITALIC | flags::UNDERLINE | flags::INLAY,
+        );
+        assert!(all.is_bold());
+        assert!(all.is_italic());
+        assert!(all.is_underline());
+        assert!(all.is_inlay());
+        assert!(!all.is_dim());
+        assert!(!all.is_reverse());
+        assert!(!all.is_ws_marker());
+    }
+
+    /// Modifier bits don't collide with the INLAY / WS_MARKER bits
+    /// (sanity check for future flag additions).
+    #[test]
+    fn flag_bits_dont_overlap() {
+        let all = [
+            flags::INLAY,
+            flags::WS_MARKER,
+            flags::BOLD,
+            flags::ITALIC,
+            flags::UNDERLINE,
+            flags::DIM,
+            flags::REVERSE,
+        ];
+        let mut seen: u16 = 0;
+        for f in all {
+            assert!(
+                seen & f == 0,
+                "flag {f:#06x} overlaps an earlier flag in {seen:#06x}"
+            );
+            seen |= f;
+        }
     }
 }

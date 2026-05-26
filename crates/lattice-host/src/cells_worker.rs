@@ -340,7 +340,8 @@ fn try_incremental_build(
     let net = edit.net_delta();
 
     // Build inputs once for the affected-zone rebuild path.
-    let default_fg = resolve_fg(&cells.theme, lattice_syntax::Style::Default);
+    let (default_fg, default_flags) =
+        resolve_style(&cells.theme, lattice_syntax::Style::Default);
     let inlay_fg = inlay_hint_fg();
     let per_line_spans: Option<Vec<Vec<lattice_syntax::StyledSpan>>> =
         cells.syntax_handle.as_deref().and_then(|h| {
@@ -359,6 +360,7 @@ fn try_incremental_build(
         fold_index: &fold_index,
         theme: &cells.theme,
         default_fg,
+        default_flags,
         inlay_fg,
     };
 
@@ -507,7 +509,7 @@ fn build_matrix(
         return CellMatrix::empty();
     }
 
-    let default_fg = resolve_fg(theme, lattice_syntax::Style::Default);
+    let (default_fg, default_flags) = resolve_style(theme, lattice_syntax::Style::Default);
     let inlay_fg = inlay_hint_fg();
 
     // Resolve per-line styled spans when a current syntax snapshot
@@ -534,6 +536,7 @@ fn build_matrix(
         fold_index: &fold_index,
         theme,
         default_fg,
+        default_flags,
         inlay_fg,
     };
 
@@ -612,6 +615,10 @@ struct ChunkInputs<'a> {
     fold_index: &'a crate::folds::FoldIndex,
     theme: &'a crate::ui::theme::Theme,
     default_fg: u32,
+    /// S3.a: modifier flags from `theme.syntax_style(Default)` so
+    /// cells outside any styled span pick up the theme's default
+    /// modifiers (typically none, but cheaply propagated).
+    default_flags: u16,
     inlay_fg: u32,
 }
 
@@ -642,6 +649,7 @@ fn build_chunk_rows(inputs: &ChunkInputs, start_line: u32, end_line: u32) -> Vec
             line_inlays,
             inputs.theme,
             inputs.default_fg,
+            inputs.default_flags,
             inputs.inlay_fg,
         );
         rows.push(CellRow::new(cells, line_idx, inlay_offsets));
@@ -665,6 +673,7 @@ fn build_row_cells(
     line_inlays: &[(u32, &str)],
     theme: &crate::ui::theme::Theme,
     default_fg: u32,
+    default_flags: u16,
     inlay_fg: u32,
 ) -> (Vec<Cell>, Vec<lattice_cells::row::InlayOffset>) {
     // Capacity: source chars + sum of inlay char widths. Slight
@@ -677,11 +686,14 @@ fn build_row_cells(
     let mut inlay_offsets: Vec<lattice_cells::row::InlayOffset> =
         Vec::with_capacity(line_inlays.len());
 
-    let resolve = |style: lattice_syntax::Style| -> u32 {
+    // Resolve `Style → (fg, flags)`. `Style::Default` returns the
+    // pre-resolved defaults so callers can avoid the per-cell theme
+    // lookup on the hot path.
+    let resolve = |style: lattice_syntax::Style| -> (u32, u16) {
         if matches!(style, lattice_syntax::Style::Default) {
-            default_fg
+            (default_fg, default_flags)
         } else {
-            resolve_fg(theme, style)
+            resolve_style(theme, style)
         }
     };
 
@@ -707,7 +719,8 @@ fn build_row_cells(
             inlay_idx += 1;
         }
         let style = style_at_byte(line_spans, byte);
-        cells.push(Cell::new(ch as u32, resolve(style), 0, 0));
+        let (fg, mods) = resolve(style);
+        cells.push(Cell::new(ch as u32, fg, 0, mods));
     }
     // Trailing inlays at/past EOL.
     while inlay_idx < line_inlays.len() {
@@ -767,12 +780,57 @@ fn inlay_hint_fg() -> u32 {
 /// the host theme. `Style::Default` and styles whose theme entry
 /// has no explicit fg return `0` — the renderer maps that to "use
 /// the pane's default text colour" at paint time.
+///
+/// S3.a (2026-05-26): kept under `#[cfg(test)]` after the worker
+/// switched to [`resolve_style`] (returns `(fg, flags)` together).
+/// Tests that only assert fg keep the simpler one-value helper.
+#[cfg(test)]
 fn resolve_fg(theme: &crate::ui::theme::Theme, style: lattice_syntax::Style) -> u32 {
-    theme
-        .syntax_style(style)
-        .fg
-        .map(|c| c.to_rgb_u32(0))
-        .unwrap_or(0)
+    resolve_style(theme, style).0
+}
+
+/// S3.a: resolve a syntax style to `(fg, flags)` via the host
+/// theme. The returned `flags` is the OR of `Cell::flags` modifier
+/// bits ([`flags::BOLD`] etc.) matching the host theme's
+/// [`crate::ui::theme::Modifiers`] for this style. Splice-flags
+/// like `INLAY` / `WS_MARKER` are NOT set here — callers OR those
+/// in separately when emitting an inlay or whitespace cell.
+fn resolve_style(
+    theme: &crate::ui::theme::Theme,
+    style: lattice_syntax::Style,
+) -> (u32, u16) {
+    let s = theme.syntax_style(style);
+    let fg = s.fg.map(|c| c.to_rgb_u32(0)).unwrap_or(0);
+    let flags = modifiers_to_flags(&s.modifiers);
+    (fg, flags)
+}
+
+/// S3.a: pack the host theme's [`crate::ui::theme::Modifiers`]
+/// (bold / italic / underline / dim / reverse) into the
+/// `Cell::flags` bit layout declared in
+/// [`lattice_cells::cell_flags`]. Keeps the
+/// `host::Theme → Cell` mapping centralised so adding a new
+/// modifier is a one-line change here + a one-line flag-bit
+/// declaration in `lattice-cells`.
+fn modifiers_to_flags(m: &crate::ui::theme::Modifiers) -> u16 {
+    use lattice_cells::cell_flags;
+    let mut f: u16 = 0;
+    if m.bold {
+        f |= cell_flags::BOLD;
+    }
+    if m.italic {
+        f |= cell_flags::ITALIC;
+    }
+    if m.underline {
+        f |= cell_flags::UNDERLINE;
+    }
+    if m.dim {
+        f |= cell_flags::DIM;
+    }
+    if m.reverse {
+        f |= cell_flags::REVERSE;
+    }
+    f
 }
 
 /// Resolve the highlight style at a given utf-8 byte offset inside
@@ -2560,5 +2618,145 @@ mod tests {
             handle.abort();
             let _ = handle.await;
         });
+    }
+
+    // ---- S3.a — cell modifier flag bits ----
+
+    /// `modifiers_to_flags` packs each host `Modifiers` field into
+    /// the corresponding `cell_flags` bit. Standalone helper test
+    /// — no worker driving needed.
+    #[test]
+    fn modifiers_to_flags_packs_each_bit() {
+        use crate::ui::theme::Modifiers;
+        use lattice_cells::cell_flags;
+
+        let none = Modifiers::default();
+        assert_eq!(modifiers_to_flags(&none), 0);
+
+        let bold = Modifiers { bold: true, ..Modifiers::default() };
+        assert_eq!(modifiers_to_flags(&bold), cell_flags::BOLD);
+
+        let italic = Modifiers { italic: true, ..Modifiers::default() };
+        assert_eq!(modifiers_to_flags(&italic), cell_flags::ITALIC);
+
+        let under = Modifiers { underline: true, ..Modifiers::default() };
+        assert_eq!(modifiers_to_flags(&under), cell_flags::UNDERLINE);
+
+        let dim = Modifiers { dim: true, ..Modifiers::default() };
+        assert_eq!(modifiers_to_flags(&dim), cell_flags::DIM);
+
+        let rev = Modifiers { reverse: true, ..Modifiers::default() };
+        assert_eq!(modifiers_to_flags(&rev), cell_flags::REVERSE);
+
+        let all = Modifiers {
+            bold: true,
+            italic: true,
+            underline: true,
+            dim: true,
+            reverse: true,
+        };
+        let expected = cell_flags::BOLD
+            | cell_flags::ITALIC
+            | cell_flags::UNDERLINE
+            | cell_flags::DIM
+            | cell_flags::REVERSE;
+        assert_eq!(modifiers_to_flags(&all), expected);
+    }
+
+    /// Catppuccin's default theme styles `Keyword` as bold and
+    /// `LineComment` as italic. After running the cell-builder
+    /// with a Rust syntax handle attached, the cells for the `fn`
+    /// keyword carry the BOLD bit and the cells for a `// comment`
+    /// line carry ITALIC. Plain source bytes (the identifier
+    /// `main`, the paren punctuation) do NOT carry either bit.
+    #[test]
+    fn keyword_cells_carry_bold_comment_cells_carry_italic() {
+        let theme = crate::ui::theme::Theme::default();
+        let text = "fn main() {}\n// comment\n";
+        let handle = rust_handle(text, 1);
+        let snap = snap_of_versioned(text, 1);
+        let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+        let rs = rs_with_snapshot_themed(
+            Some(snap),
+            v(1),
+            matrix_cell.clone(),
+            Some(handle),
+            theme,
+        );
+        assert_eq!(recompute(&rs, &matrix_cell), WorkerDecision::Recomputed);
+
+        let m = matrix_cell.load();
+        let rows: Vec<&CellRow> = m.slice(0, 10).iter().collect();
+        assert!(rows.len() >= 2);
+
+        // Line 0: cells 0 and 1 are `f` and `n` (the `fn` keyword).
+        // Catppuccin's keyword style is `.bold()`.
+        let line0 = rows[0];
+        assert_eq!(line0.cells[0].codepoint, b'f' as u32);
+        assert!(
+            line0.cells[0].is_bold(),
+            "`f` of keyword `fn` must carry BOLD flag"
+        );
+        assert!(
+            line0.cells[1].is_bold(),
+            "`n` of keyword `fn` must carry BOLD flag"
+        );
+        // Keyword style has no italic / underline / dim / reverse.
+        assert!(!line0.cells[0].is_italic());
+        assert!(!line0.cells[0].is_underline());
+        assert!(!line0.cells[0].is_dim());
+        assert!(!line0.cells[0].is_reverse());
+
+        // Line 1: `// comment` — comment style is `.italic()`.
+        let line1 = rows[1];
+        assert!(
+            line1.cells.iter().all(|c| c.is_italic()),
+            "every cell on a comment row must carry ITALIC flag"
+        );
+        assert!(
+            line1.cells.iter().all(|c| !c.is_bold()),
+            "comment cells must not carry BOLD (Catppuccin comment is italic-only)"
+        );
+    }
+
+    /// Inlay cells carry only the `INLAY` flag — never any of the
+    /// syntax-style modifier bits. Inlay fg + flags come from the
+    /// dedicated inlay path, not from `theme.syntax_style(...)`.
+    #[test]
+    fn inlay_cells_do_not_inherit_syntax_modifiers() {
+        let theme = crate::ui::theme::Theme::default();
+        let text = "fn x";
+        let handle = rust_handle(text, 1);
+        let snap = snap_of_versioned(text, 1);
+        let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+        // Splice an inlay after `fn` (byte 2) — right in keyword
+        // territory. The cell-builder must NOT pick up BOLD on
+        // the inlay's spliced cells.
+        let hints = vec![inlay(0, 2, ":")];
+        let rs = rs_with_snapshot_full(
+            Some(snap),
+            v(1),
+            matrix_cell.clone(),
+            Some(handle),
+            theme,
+            hints,
+        );
+        assert_eq!(recompute(&rs, &matrix_cell), WorkerDecision::Recomputed);
+
+        let m = matrix_cell.load();
+        let row = m.slice(0, 1).iter().next().cloned().unwrap();
+        // combined row: `f n : space x` (`f`, `n`, inlay `:`, ` `, `x`).
+        // Cell indices: 0=f keyword, 1=n keyword, 2=`:` INLAY,
+        // 3=` ` source, 4=`x` source.
+        assert_eq!(row.cells[0].codepoint, b'f' as u32);
+        assert!(row.cells[0].is_bold(), "keyword `f` should be BOLD");
+        assert_eq!(row.cells[2].codepoint, b':' as u32);
+        assert!(row.cells[2].is_inlay(), "inlay cell must carry INLAY");
+        assert!(
+            !row.cells[2].is_bold(),
+            "inlay cell must NOT inherit BOLD from surrounding keyword style"
+        );
+        assert!(!row.cells[2].is_italic());
+        assert!(!row.cells[2].is_underline());
     }
 }

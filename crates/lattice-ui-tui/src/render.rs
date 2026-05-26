@@ -3831,7 +3831,11 @@ fn match_style() -> TuiStyle {
 /// `byte_offset` past the end of all spans appends -- the
 /// caller's responsibility to convert LSP utf-16 columns to
 /// utf-8 bytes before passing in.
-fn splice_virtual_text_into_spans(
+/// S3.c.4 (2026-05-26): visibility bumped to `pub(crate)` so
+/// `cells_render::tests` can validate the splice walks cell-
+/// derived spans correctly. Matches the precedent set by the
+/// other overlay-engine fns.
+pub(crate) fn splice_virtual_text_into_spans(
     spans: Vec<Span<'static>>,
     byte_offset: usize,
     virtual_text: String,

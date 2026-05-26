@@ -938,6 +938,204 @@ mod tests {
         }
     }
 
+    // ---- S3.c.4 — fold suffix + post-overlay inlay splice ----
+    //
+    // Two tail-of-pipeline passes wrap up the per-line render:
+    //
+    // 1. The post-overlay inlay splice (`splice_virtual_text_into_spans`)
+    //    inserts the LSP `inlayHint` virtual text into the body at
+    //    a source-byte offset. Cell-derived source spans cover
+    //    source bytes 1:1 with `line_text`, exactly matching the
+    //    RowPrepaint shape this splice was designed against.
+    // 2. The closed-fold `' ┄ N lines folded'` suffix is a plain
+    //    `Span::push` after every overlay — no byte-position math.
+    //    It composes trivially with any body shape.
+    //
+    // For cell-derived bodies these two passes are unchanged
+    // contractually; the tests here pin that against regression.
+
+    use crate::render::splice_virtual_text_into_spans;
+
+    fn dim_gray_style() -> TuiStyle {
+        TuiStyle::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::ITALIC)
+    }
+
+    /// Inlay splice at byte 0 prepends the virtual text before
+    /// every cell-derived span. The body's first span stays
+    /// intact; the virtual span emits before it.
+    #[test]
+    fn s3c4_inlay_splice_at_byte_zero_prepends() {
+        let body = flat_body("hi", 0xcdd6f4);
+        let out = splice_virtual_text_into_spans(
+            body,
+            0,
+            ": ".to_string(),
+            dim_gray_style(),
+        );
+        assert_eq!(collect_text(&out), ": hi");
+        // First span is the virtual splice.
+        assert_eq!(out[0].content.as_ref(), ": ");
+        assert_eq!(out[0].style.fg, Some(Color::DarkGray));
+        // Source body follows.
+        assert_eq!(out[1].content.as_ref(), "hi");
+        assert_eq!(out[1].style.fg, Some(Color::Rgb(0xcd, 0xd6, 0xf4)));
+    }
+
+    /// Inlay splice mid-row splits the single cell-derived span
+    /// on the byte boundary. Captures the contract that the
+    /// splice walks cell-derived spans byte-by-byte.
+    #[test]
+    fn s3c4_inlay_splice_mid_span_splits_the_span() {
+        let body = flat_body("abcdef", 0xcdd6f4);
+        // One source span covers bytes [0, 6); splice at byte 3.
+        let out = splice_virtual_text_into_spans(
+            body,
+            3,
+            "[i]".to_string(),
+            dim_gray_style(),
+        );
+        // pre / inlay / post.
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0].content.as_ref(), "abc");
+        assert_eq!(out[1].content.as_ref(), "[i]");
+        assert_eq!(out[1].style.fg, Some(Color::DarkGray));
+        assert!(out[1].style.add_modifier.contains(Modifier::ITALIC));
+        assert_eq!(out[2].content.as_ref(), "def");
+        // Both source halves keep the cell's fg.
+        assert_eq!(out[0].style.fg, Some(Color::Rgb(0xcd, 0xd6, 0xf4)));
+        assert_eq!(out[2].style.fg, Some(Color::Rgb(0xcd, 0xd6, 0xf4)));
+    }
+
+    /// Inlay splice at a span boundary inserts cleanly between
+    /// two cell-derived spans without splitting either. Pin the
+    /// no-split contract — important so byte-position tracking
+    /// stays simple for downstream code that walks display
+    /// columns.
+    #[test]
+    fn s3c4_inlay_splice_at_span_boundary_does_not_split() {
+        let fg_a = 0xff0000;
+        let fg_b = 0x00ff00;
+        let cells = vec![
+            Cell::new(b'a' as u32, fg_a, 0, 0),
+            Cell::new(b'b' as u32, fg_a, 0, 0),
+            Cell::new(b'c' as u32, fg_b, 0, 0),
+            Cell::new(b'd' as u32, fg_b, 0, 0),
+        ];
+        let body = cell_row_to_source_spans(&row(cells));
+        assert_eq!(body.len(), 2);
+        // Splice at byte 2 — exactly the boundary between the
+        // two cell-derived spans.
+        let out = splice_virtual_text_into_spans(
+            body,
+            2,
+            "/*X*/".to_string(),
+            dim_gray_style(),
+        );
+        // Three spans: first body span "ab" / inlay "/*X*/" /
+        // second body span "cd". Neither body span split.
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0].content.as_ref(), "ab");
+        assert_eq!(out[0].style.fg, Some(Color::Rgb(0xff, 0x00, 0x00)));
+        assert_eq!(out[1].content.as_ref(), "/*X*/");
+        assert_eq!(out[2].content.as_ref(), "cd");
+        assert_eq!(out[2].style.fg, Some(Color::Rgb(0x00, 0xff, 0x00)));
+    }
+
+    /// Inlay splice past the end of the body (typical LSP `inlayHint`
+    /// trailing annotation at EOL) appends the virtual text as the
+    /// final span.
+    #[test]
+    fn s3c4_inlay_splice_past_end_appends() {
+        let body = flat_body("hi", 0xcdd6f4);
+        let out = splice_virtual_text_into_spans(
+            body,
+            999,
+            " → unit".to_string(),
+            dim_gray_style(),
+        );
+        // Body spans first, virtual span last.
+        assert_eq!(collect_text(&out), "hi → unit");
+        let last = out.last().unwrap();
+        assert_eq!(last.content.as_ref(), " → unit");
+        assert_eq!(last.style.fg, Some(Color::DarkGray));
+    }
+
+    /// Multiple inlay splices applied in reverse byte order (the
+    /// production loop's pattern — `on_line.sort_by(|a, b|
+    /// b.byte.cmp(&a.byte))` then splice) so earlier splices
+    /// don't shift later ones. Validates the cell-derived body
+    /// composes correctly with the same loop shape.
+    #[test]
+    fn s3c4_multiple_inlays_in_reverse_byte_order() {
+        let body = flat_body("xy", 0xcdd6f4);
+        // Two splices: at byte 1 and at byte 2. Apply in reverse
+        // (byte 2 first, then byte 1) so the byte-1 splice's
+        // offset stays valid.
+        let after_second = splice_virtual_text_into_spans(
+            body,
+            2,
+            "/B/".to_string(),
+            dim_gray_style(),
+        );
+        let after_first = splice_virtual_text_into_spans(
+            after_second,
+            1,
+            "/A/".to_string(),
+            dim_gray_style(),
+        );
+        // Result: `x` `/A/` `y` `/B/` — both inlays at their
+        // intended positions.
+        assert_eq!(collect_text(&after_first), "x/A/y/B/");
+    }
+
+    /// Fold suffix is a plain trailing-span push — composes with
+    /// any body shape. Captures that cell-derived bodies don't
+    /// need special handling.
+    #[test]
+    fn s3c4_fold_suffix_appends_after_cell_body() {
+        let body = flat_body("fn main() {}", 0xcdd6f4);
+        let pre_count = body.len();
+        let mut out = body;
+        // Mirror the closed-fold suffix push from
+        // `compose_visible_lines_inner` line ~3590.
+        out.push(Span::styled(
+            " ┄ 3 lines folded".to_string(),
+            TuiStyle::default().fg(Color::DarkGray),
+        ));
+        // Body untouched; one extra span at the tail.
+        assert_eq!(out.len(), pre_count + 1);
+        let last = out.last().unwrap();
+        assert_eq!(last.content.as_ref(), " ┄ 3 lines folded");
+        assert_eq!(last.style.fg, Some(Color::DarkGray));
+    }
+
+    /// Inlay splice followed by fold suffix: the splice lands at
+    /// its byte offset; the suffix appends at the very end after
+    /// any inlay. Captures the documented ordering — overlays
+    /// run first, then the inlay splice, then the fold suffix.
+    #[test]
+    fn s3c4_inlay_splice_then_fold_suffix_order() {
+        let body = flat_body("ab", 0xcdd6f4);
+        // Inlay at byte 2 (end-of-line).
+        let mut after_inlay = splice_virtual_text_into_spans(
+            body,
+            2,
+            ": T".to_string(),
+            dim_gray_style(),
+        );
+        // Fold suffix.
+        after_inlay.push(Span::styled(
+            " ┄ 5 lines folded".to_string(),
+            TuiStyle::default().fg(Color::DarkGray),
+        ));
+        assert_eq!(collect_text(&after_inlay), "ab: T ┄ 5 lines folded");
+        // Suffix is the LAST span; inlay is before it.
+        let last = after_inlay.last().unwrap();
+        assert!(last.content.as_ref().starts_with(" ┄"));
+    }
+
     /// Overlay spanning two different-fg cell-derived spans:
     /// each gets its overlapping portion fg-replaced. Captures
     /// the cross-boundary walk.

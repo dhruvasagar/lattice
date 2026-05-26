@@ -726,8 +726,12 @@ impl Element for EditorElement {
                 .saturating_add(self.viewport_height.max(1) as usize)
                 .min(raw_lines.len());
             for line_idx in visible_start..visible_end {
-                let line = raw_lines[line_idx];
                 let rel = line_idx.saturating_sub(self.scroll as usize);
+                // 2026-05-26: `self.text` carries the visible-window
+                // text (slice A.4 + cursor-line fix follow-up), so
+                // raw_lines is indexed by visible-row offset, not
+                // by absolute line.
+                let line = raw_lines.get(rel).copied().unwrap_or("");
                 let prepaint_row = self.visible_rows.rows.get(rel);
                 let (shaped, inlay_offsets) = match prepaint_row {
                     Some(row) => {
@@ -762,8 +766,10 @@ impl Element for EditorElement {
             // gutter metadata; the text rows mirror that filter.
             for meta in &self.gutter {
                 let line_idx = meta.line_idx as usize;
-                let line = raw_lines.get(line_idx).copied().unwrap_or("");
                 let rel = line_idx.saturating_sub(self.scroll as usize);
+                // 2026-05-26: raw_lines indexed by visible-row
+                // offset (see fallback branch above).
+                let line = raw_lines.get(rel).copied().unwrap_or("");
                 let prepaint_row = self.visible_rows.rows.get(rel);
                 let (shaped, inlay_offsets) = match prepaint_row {
                     Some(row) => {

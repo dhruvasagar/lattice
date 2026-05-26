@@ -1081,7 +1081,18 @@ impl EditorView {
         let editor_element = crate::editor_element::EditorElement {
             pane_idx,
             theme: theme.clone(),
-            text: std::sync::Arc::new(String::new()),
+            // 2026-05-26: pass the visible-window text joined so
+            // EditorElement's `raw_lines.split('\n')` recovers the
+            // visible lines. Slice A.4 (`1e1da8d`) zeroed this
+            // field to stop materialising the FULL document text
+            // — but the prepaint loop still indexes `raw_lines`
+            // by absolute line_idx for the body+row_meta source,
+            // and for synthetic buffers (*lsp* / *messages*) the
+            // worker prepaint isn't populated so `shape_row`'s
+            // line-text fallback fell to `""` and rendered empty.
+            // The element subtracts `scroll` from line_idx to
+            // index this visible-window subset.
+            text: std::sync::Arc::new(raw_lines.join("\n")),
             // Issue #25 (2026-05-22): per-pane visible_spans for
             // multi-split support. Active pane reads the live
             // visible_spans cell (the highlights worker writes

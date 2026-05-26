@@ -49,6 +49,12 @@ pub mod help;
 pub mod help_topics;
 pub mod highlights;
 pub mod highlights_worker;
+// S2.2 (2026-05-26): cell-grid renderer's cell-builder worker.
+// Sibling of `highlights_worker`; consumes `RenderState.cells`
+// inputs, builds a whole-doc `CellMatrix`, publishes via
+// `Editor::cells_matrix_cell`. See
+// `docs/dev/architecture/cell-grid-renderer.md`.
+pub mod cells_worker;
 pub mod host_generators;
 pub mod input;
 pub mod keymap;

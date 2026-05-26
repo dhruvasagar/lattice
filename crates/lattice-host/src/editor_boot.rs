@@ -650,6 +650,24 @@ impl Editor {
             paint_request.clone(),
         ));
 
+        // S2.2 (2026-05-26): cell-builder worker. Same same-Arc-
+        // identity pattern as the highlights worker — `cells_wake`
+        // and `cells_matrix_cell` are constructed here, cloned into
+        // the worker, then assigned into the Editor literal below
+        // (overriding `..Editor::default()` so all three holders
+        // share the SAME Arc identities). The worker's `.store()`
+        // on `cells_matrix_cell` is therefore observable through
+        // every `render_state.load_full().cells.matrix.load()`.
+        let cells_wake = crate::editor::CellsWake::default();
+        let cells_matrix_cell: std::sync::Arc<arc_swap::ArcSwap<lattice_cells::CellMatrix>> =
+            std::sync::Arc::default();
+        runtime_handle.spawn(crate::cells_worker::run(
+            render_state_arc.clone(),
+            cells_wake.clone(),
+            cells_matrix_cell.clone(),
+            paint_request.clone(),
+        ));
+
         let mut editor = Editor {
             messages: messages_ring.clone(),
             pending_message_event_rx: Some(message_event_rx),
@@ -741,6 +759,12 @@ impl Editor {
             syntax_visible_rows_cell,
             syntax_static_overlay_quads_cell,
             paint_request,
+            // S2.2 (2026-05-26): same-Arc-identity values for the
+            // cell-builder worker. Overrides `..Editor::default()`
+            // so the matrix the worker `.store()`s into is the
+            // same one `render_state.cells.matrix` points at.
+            cells_wake,
+            cells_matrix_cell,
             lsp_log_event_rx: Some(lsp_log_event_rx),
             lsp_progress_event_rx: Some(lsp_progress_event_rx),
             pending_apply_edit_rx: Some(lsp_apply_edit_rx),

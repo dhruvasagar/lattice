@@ -865,16 +865,7 @@ impl GpuiApp {
             }
             _ => {}
         }
-        // 2026-05-26 held-j probe: per-stage timing inside
-        // dispatch_action. The user reports cursor freezes during
-        // held-j and snaps to final on release — classic paint
-        // coalescing. Instrument the four phases (main dispatch,
-        // follow-up cascade, effect drain, run_tick_pending) so
-        // we can see which one eats the time budget. Strip once
-        // we identify the bottleneck.
-        let t_phase = std::time::Instant::now();
         let mut outcome = self.mutate_editor_with(move |e| e.dispatch(action));
-        let t_after_dispatch = std::time::Instant::now();
         let mut pending: std::collections::VecDeque<Action> =
             outcome.next_actions.drain(..).collect();
         while let Some(follow_up) = pending.pop_front() {
@@ -950,20 +941,10 @@ impl GpuiApp {
         // see slice X1b (`docs/dev/operations/render-thread-
         // discipline-remediation.md` §X1b) for the wake-bridge
         // that closes that gap.
-        let t_before_tick = std::time::Instant::now();
         let tick_signals = self.mutate_editor_with(|e| e.run_tick_pending());
         for signal in tick_signals {
             self.handle_renderer_signal(signal);
         }
-        let t_end = std::time::Instant::now();
-        tracing::debug!(
-            dispatch_us = (t_after_dispatch - t_phase).as_micros() as u64,
-            cascade_effects_signals_us =
-                (t_before_tick - t_after_dispatch).as_micros() as u64,
-            run_tick_pending_us = (t_end - t_before_tick).as_micros() as u64,
-            total_us = (t_end - t_phase).as_micros() as u64,
-            "[held-j-timing] dispatch_action"
-        );
         outcome
     }
 

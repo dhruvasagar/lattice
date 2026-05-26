@@ -410,16 +410,6 @@ impl Element for EditorElement {
         window: &mut Window,
         _cx: &mut App,
     ) -> Self::PrepaintState {
-        // 2026-05-26 held-j probe: count `shape_line` calls + sum
-        // their wall time per prepaint. Diagnostic instrumentation
-        // for the cell-grid renderer plan (see
-        // `docs/dev/architecture/cell-grid-renderer.md`). Strip in
-        // S6 once the bench harness lands. Per
-        // `feedback_log_levels`, debug-level — opt in via
-        // `--log-level debug`.
-        let prepaint_start = std::time::Instant::now();
-        let shape_count = std::cell::Cell::new(0u32);
-        let shape_us = std::cell::Cell::new(0u64);
         let raw_lines: Vec<&str> = self.text.split('\n').collect();
 
         let text_style = window.text_style();
@@ -501,15 +491,12 @@ impl Element for EditorElement {
                     &font,
                     self.inlay_color,
                 );
-                let _shape_t = std::time::Instant::now();
                 let shaped = window.text_system().shape_line(
                     SharedString::from(combined),
                     font_size,
                     &runs,
                     None,
                 );
-                shape_us.set(shape_us.get() + _shape_t.elapsed().as_micros() as u64);
-                shape_count.set(shape_count.get() + 1);
                 (shaped, inlay_offsets)
             };
 
@@ -539,15 +526,12 @@ impl Element for EditorElement {
              -> (ShapedLine, Vec<(u32, u32)>) {
                 let (combined, runs, inlay_offsets) =
                     cell_row_to_text_runs(row, &font);
-                let _shape_t = std::time::Instant::now();
                 let shaped = window.text_system().shape_line(
                     SharedString::from(combined),
                     font_size,
                     &runs,
                     None,
                 );
-                shape_us.set(shape_us.get() + _shape_t.elapsed().as_micros() as u64);
-                shape_count.set(shape_count.get() + 1);
                 (shaped, inlay_offsets)
             };
 
@@ -860,32 +844,15 @@ impl Element for EditorElement {
 
                 let gutter_text = format_gutter_text(meta, self.gutter_width);
                 let gutter_runs = build_gutter_runs(&gutter_text, meta, font.clone());
-                let _shape_t = std::time::Instant::now();
                 let shaped_g = window.text_system().shape_line(
                     SharedString::from(gutter_text),
                     font_size,
                     &gutter_runs,
                     None,
                 );
-                shape_us.set(shape_us.get() + _shape_t.elapsed().as_micros() as u64);
-                shape_count.set(shape_count.get() + 1);
                 shaped_gutter.push(shaped_g);
             }
         }
-        // held-j probe: per-prepaint shape totals. Diagnostic for
-        // the cell-grid renderer plan; stripped in S6.
-        let prepaint_us = prepaint_start.elapsed().as_micros() as u64;
-        tracing::debug!(
-            shape_count = shape_count.get(),
-            shape_us = shape_us.get(),
-            prepaint_us = prepaint_us,
-            shape_avg_us = if shape_count.get() > 0 {
-                shape_us.get() / shape_count.get() as u64
-            } else {
-                0
-            },
-            "[held-j-shape] prepaint shape cost"
-        );
 
         // Cursor layout + char pre-shaping.
         let (cursor_layout, shaped_cursor_char) = match &self.cursor {

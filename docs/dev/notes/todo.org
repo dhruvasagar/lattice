@@ -1,5 +1,6 @@
 * Features
-- [ ] Terminal
+- [ ] diagnostics under cursor
+- [X] Terminal
 - [ ] diffing
 - [ ] Theme System (also with a theme picker with preview)
 - [ ] Quickfix / Location lists
@@ -33,8 +34,13 @@
 - [X] `gg`, `zz`, `zt`, `zb` don't work
 - [X] Mouse click on window does not work, no focus, can't maximize
 - [ ] Picker UI improve colors for matching, marginalia
+- [ ] LSP `K` (hover): popup doesn't appear on first press; requires an
+  additional key press, and is not positioned at the cursor location.
+- [ ] Popup buffers don't scroll when the cursor moves past the
+  viewport (cursor leaves the visible area instead of scrolling the
+  popup).
+- [ ] `describe-buffer`'s "Active modes" entries are no longer
+  rendered as links (regression — they were clickable before).
 
 * Documentation
 - [ ] lattice-tutor
-- [ ] Update readme for instructions on how to compile application for
-  gui. Document dependencies. Provide a script to help automate it.

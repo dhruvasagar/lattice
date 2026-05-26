@@ -650,7 +650,7 @@ impl Editor {
             paint_request.clone(),
         ));
 
-        Editor {
+        let mut editor = Editor {
             messages: messages_ring.clone(),
             pending_message_event_rx: Some(message_event_rx),
             option_change_rx: Some(option_change_rx),
@@ -764,6 +764,32 @@ impl Editor {
             active_snippet: None,
             snippet_dirs: Vec::new(),
             ..Editor::default()
-        }
+        };
+        // 2026-05-26: register the built-in invocation runners
+        // under the mode-ids each owning [`lattice_mode::Mode`]
+        // exposes via [`lattice_mode::Mode::invocation_runner`].
+        // `run_invocation` resolves the runner by walking the
+        // active modes on the active pane (minors first, then
+        // major) and looking the first match up here. Plugin-
+        // installed modes (post Phase 7) reuse
+        // [`Editor::register_invocation_runner`] for the same
+        // effect.
+        editor.register_invocation_runner(
+            lattice_mode::HelpMode::mode_id(),
+            Editor::run_help_invocation,
+        );
+        editor.register_invocation_runner(
+            lattice_oil::OilMode::mode_id(),
+            Editor::run_oil_invocation,
+        );
+        editor.register_invocation_runner(
+            lattice_file_tree::FileTreeMode::mode_id(),
+            Editor::run_file_tree_invocation,
+        );
+        editor.register_invocation_runner(
+            lattice_terminal::TerminalMode::mode_id(),
+            Editor::run_terminal_invocation,
+        );
+        editor
     }
 }

@@ -922,7 +922,7 @@ impl GpuiApp {
             self.handle_renderer_signal(signal);
         }
         let t_end = std::time::Instant::now();
-        tracing::info!(
+        tracing::debug!(
             dispatch_us = (t_after_dispatch - t_phase).as_micros() as u64,
             cascade_effects_signals_us =
                 (t_before_tick - t_after_dispatch).as_micros() as u64,

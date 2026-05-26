@@ -522,7 +522,7 @@ impl EditorView {
         cx.stop_propagation();
         cx.notify();
         let t_post_notify = std::time::Instant::now();
-        tracing::info!(
+        tracing::debug!(
             key = %ks.key,
             pre_dispatch_us = (t_pre_dispatch - t_start).as_micros() as u64,
             dispatch_us = (t_post_dispatch - t_pre_dispatch).as_micros() as u64,

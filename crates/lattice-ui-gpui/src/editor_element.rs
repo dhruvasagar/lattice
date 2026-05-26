@@ -70,7 +70,7 @@ use gpui::{
 };
 use lattice_cells::CellMatrix;
 use lattice_host::cursor_shape::CursorShape;
-use lattice_host::render_state::{RowRun, VisibleSpans};
+use lattice_host::render_state::VisibleSpans;
 use lattice_syntax::{Style as SyntaxStyle, StyledSpan};
 
 use crate::GpuiTheme;
@@ -172,19 +172,13 @@ pub(crate) struct EditorElement {
     /// splits on `\n` inside `prepaint`.
     pub(crate) text: Arc<String>,
     /// Worker-published spans. `spans[i]` covers absolute buffer
-    /// line `scroll + i`. Fallback path — used when `visible_rows`
-    /// doesn't carry a prepaint for a line, when a line has inlay
-    /// hints (which aren't woven into rows yet, A.2b), or for the
-    /// inactive-pane render where the worker only publishes for the
-    /// active document.
+    /// line `scroll + i`. Fallback path — used when the cell
+    /// matrix doesn't have a row for the visible line (boot
+    /// frame before the cell-builder's first publish, folded
+    /// lines, or out-of-coverage / buffer-switch gaps) and for
+    /// inactive panes (which carry `cell_matrix == None` because
+    /// the cells worker publishes only for the active document).
     pub(crate) visible_spans: Arc<VisibleSpans>,
-    /// Perf plan A.2 slice A.2a: worker-published pre-paint rows
-    /// for the active pane. When present (and the line has no
-    /// inlays), the prepaint fast path in `prepaint` skips the
-    /// per-line `build_line_with_inlays` walk and shapes directly
-    /// from `row.combined` + `row.runs`. Empty / None ⇒ fallback
-    /// to the `visible_spans` path above.
-    pub(crate) visible_rows: Arc<lattice_host::render_state::VisibleRows>,
     /// Pane scroll (top visible doc line index, 0-based).
     pub(crate) scroll: u32,
     /// Visible viewport height in lines.
@@ -253,18 +247,19 @@ pub(crate) struct EditorElement {
     /// S4.1 (2026-05-27): cell-grid substrate snapshot. Populated
     /// from `render_state.cells.matrix.load_full()` for the active
     /// pane; `None` for inactive panes (mirrors the
-    /// `visible_rows`/`visible_spans` split, since the cells
-    /// worker only publishes for the active document).
+    /// `visible_spans` split, since the cells worker publishes
+    /// only for the active document).
     ///
     /// When `Some` and the row's source line is covered by the
     /// matrix, `prepaint` shapes from cells (S4.0 converter →
-    /// `shape_line`) and skips both the prepaint and legacy
-    /// builds. When `None` or the row is folded / out-of-matrix
-    /// (boot frame, buffer-switch gap), dispatch falls through to
-    /// `shape_row_from_prepaint` and finally `shape_row`. Mirrors
-    /// the TUI's `cell_row_to_source_spans` → `RowPrepaint`
-    /// fallback chain that landed in S3.c.0, retired in
-    /// S3.c.final.
+    /// `shape_line`) and skips the legacy
+    /// `build_line_with_inlays` walk. When `None` or the row is
+    /// folded / out-of-matrix (boot frame, buffer-switch gap),
+    /// dispatch falls through to `shape_row`. The intermediate
+    /// `shape_row_from_prepaint` branch (highlights worker's
+    /// `RowPrepaint`) retired in S4.3 — the worker still
+    /// publishes `visible_rows` for TUI markdown / help /
+    /// messages bodies in other render functions.
     pub(crate) cell_matrix: Option<Arc<CellMatrix>>,
 }
 
@@ -479,55 +474,14 @@ impl Element for EditorElement {
                 (shaped, inlay_offsets)
             };
 
-        // Perf plan A.2 slice A.2a + A.2b.2: prepaint fast path.
-        // When the worker has published a `RowPrepaint` for this
-        // line, skip `build_line_with_inlays` entirely. We build
-        // `TextRun`s by iterating the worker's pre-collapsed runs
-        // once (`O(runs)`) instead of walking `line_len × spans`
-        // characters per row. The shaping call itself stays — it's
-        // hardware-bound on the text system and not the perf-plan
-        // A.2 target.
-        //
-        // Slice A.2b.2 lifted the A.2a `line_has_inlays` gate: the
-        // worker now weaves `syntax.inlay_hints` into `row.combined`
-        // and tags inlay-text bytes with `RowRun::Inlay`. The
-        // active-pane path therefore takes this fast path
-        // unconditionally and returns `row.inlay_offsets` so the
-        // overlay/cursor remap logic stays correct. Inactive panes
-        // still hit the legacy `shape_row` branch because
-        // `visible_rows` is active-pane-only by design.
-        let inlay_color = self.inlay_color;
-        let shape_row_from_prepaint =
-            |row: &lattice_host::render_state::RowPrepaint,
-             window: &mut Window|
-             -> (ShapedLine, Vec<(u32, u32)>) {
-                let mut runs: Vec<TextRun> = Vec::with_capacity(row.runs.len());
-                for r in &row.runs {
-                    let (color, len_bytes) = match r {
-                        RowRun::Source { style, len } => {
-                            (syntax_color(*style), *len as usize)
-                        }
-                        RowRun::Inlay { len } => (inlay_color, *len as usize),
-                    };
-                    runs.push(make_run_with_color(color, len_bytes, &font));
-                }
-                let _shape_t = std::time::Instant::now();
-                let shaped = window.text_system().shape_line(
-                    SharedString::from(row.combined.to_string()),
-                    font_size,
-                    &runs,
-                    None,
-                );
-                shape_us.set(shape_us.get() + _shape_t.elapsed().as_micros() as u64);
-                shape_count.set(shape_count.get() + 1);
-                // `row.inlay_offsets: Arc<[(u32, u32)]>` — copy into
-                // the per-row `Vec<(u32, u32)>` the prepaint state
-                // carries. Typical row has 0–3 entries, so the copy
-                // is negligible; future work could switch the prepaint
-                // state itself to `Arc<[T]>` to share the same Arc.
-                let offsets: Vec<(u32, u32)> = row.inlay_offsets.iter().copied().collect();
-                (shaped, offsets)
-            };
+        // S4.3 (2026-05-27): the legacy prepaint fast path
+        // (`shape_row_from_prepaint`) retired. The cells path
+        // covers the active pane unconditionally and the legacy
+        // `shape_row` is the only remaining fallback for folded
+        // rows / boot frames / out-of-matrix lines / inactive
+        // panes. The highlights worker's `visible_rows`
+        // publishing stays — it still feeds TUI markdown / help
+        // / messages bodies through other render functions.
 
         // S4.1 (2026-05-27): cell-grid fast path. When the cells
         // worker has published a row for `source_line`, the
@@ -795,25 +749,19 @@ impl Element for EditorElement {
                 // raw_lines is indexed by visible-row offset, not
                 // by absolute line.
                 let line = raw_lines.get(rel).copied().unwrap_or("");
-                // S4.1: cells → prepaint → legacy fallback chain.
-                // The cells lookup is by absolute source line
-                // (`row_at_source_line` handles fold elision by
-                // returning `None`); prepaint and legacy then
-                // handle the gap exactly as they did pre-S4.1.
+                // S4.3: cells → legacy fallback. Active pane
+                // gets cells coverage from
+                // `CellMatrix::row_at_source_line`; inactive
+                // panes (cell_matrix == None) and folded rows /
+                // boot frames / out-of-matrix lines fall through
+                // to the legacy `shape_row` walk over
+                // `visible_spans`.
                 let cell_row = self
                     .cell_matrix
                     .as_ref()
                     .and_then(|m| m.row_at_source_line(line_idx as u32));
-                let prepaint_row = self.visible_rows.rows.get(rel);
                 let (shaped, inlay_offsets) = if let Some(row) = cell_row {
                     shape_row_from_cells(row, window)
-                } else if let Some(row) = prepaint_row {
-                    // A.2a / A.2b.2 fast path: worker-prepainted
-                    // row with inlays already woven in. Active
-                    // pane only — inactive panes pass a
-                    // `VisibleRows::default()` so this branch
-                    // falls through for them.
-                    shape_row_from_prepaint(row, window)
                 } else {
                     let line_spans: &[StyledSpan] = self
                         .visible_spans
@@ -841,23 +789,19 @@ impl Element for EditorElement {
                 // 2026-05-26: raw_lines indexed by visible-row
                 // offset (see fallback branch above).
                 let line = raw_lines.get(rel).copied().unwrap_or("");
-                // S4.1: cells → prepaint → legacy fallback chain.
-                // Gutter-driven walk already pre-filters folded
-                // lines, so `row_at_source_line` is asked only
-                // about visible rows; it returns `None` only
-                // during the boot frame before the cell-builder's
-                // first publish or during the buffer-switch gap.
+                // S4.3: cells → legacy fallback. Gutter-driven
+                // walk already pre-filters folded lines, so
+                // `row_at_source_line` is asked only about
+                // visible rows; it returns `None` only during
+                // the boot frame before the cell-builder's first
+                // publish or during the buffer-switch gap, when
+                // the legacy `shape_row` path takes over.
                 let cell_row = self
                     .cell_matrix
                     .as_ref()
                     .and_then(|m| m.row_at_source_line(meta.line_idx));
-                let prepaint_row = self.visible_rows.rows.get(rel);
                 let (shaped, inlay_offsets) = if let Some(row) = cell_row {
                     shape_row_from_cells(row, window)
-                } else if let Some(row) = prepaint_row {
-                    // A.2a / A.2b.2 fast path: worker-prepainted
-                    // row with inlays already woven in.
-                    shape_row_from_prepaint(row, window)
                 } else {
                     let line_spans: &[StyledSpan] = self
                         .visible_spans
@@ -1324,11 +1268,13 @@ impl<'a> LineRunBuilder<'a> {
     }
 }
 
-/// S4.0 (2026-05-26): visibility bumped to `pub(crate)` so
-/// `cells_paint` can reuse this shape when building TextRuns
-/// from cells. The cell-derived path emits one TextRun per
-/// consecutive same-fg cell group — same shape, same field set
-/// as the legacy syntax-span path.
+/// Build a flat fg-only [`TextRun`] for `len` utf-8 bytes —
+/// the shape `build_line_with_inlays`'s [`LineRunBuilder`]
+/// emits. Cell-derived runs go through
+/// [`crate::cells_paint::cell_row_to_text_runs`] instead, which
+/// carries modifier bits (S4.2). Kept `pub(crate)` for symmetry
+/// with the rest of the legacy path; demote to `fn` once the
+/// legacy path retires (S4.final).
 pub(crate) fn make_run_with_color(color: u32, len: usize, font: &gpui::Font) -> TextRun {
     TextRun {
         len,

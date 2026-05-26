@@ -17444,22 +17444,16 @@ impl Editor {
     /// zero-width anchor=head selection so `Range::Selection`
     /// dispatch picks up the cursor immediately.
     ///
-    /// 2026-05-25: Terminal buffers don't carry a document
-    /// selection set — their Visual lives on `TerminalBuffer.visual`
-    /// and is painted by the terminal pane renderer. Without
-    /// this branch, `v` on a Terminal flipped `self.modal` to
-    /// `Visual(_)` (which then routed the next keystroke through
-    /// `dispatch_visual` instead of `run_terminal_invocation`)
-    /// and updated the document's selections — neither of which
-    /// the user could see, since the renderer only reads
-    /// `t.visual` for terminal panes. Delegate to the
-    /// terminal-side helper so modal stays Normal and the
-    /// terminal grammar keeps owning subsequent motion keys.
+    /// 2026-05-26: Terminal buffers don't reach this helper —
+    /// `Editor::run_invocation` routes Terminal-active
+    /// invocations through `run_terminal_invocation` first, and
+    /// that runner calls `do_terminal_enter_visual` directly.
+    /// The earlier `if Terminal { ... }` branch here is gone;
+    /// `do_enter_visual` is now purely the document-side path.
+    /// [[feedback_buffers_no_special_case]] — dispatch-time
+    /// branching lives in the per-kind runner pattern, not in
+    /// generic `do_*` helpers.
     pub fn do_enter_visual(&mut self, kind: lattice_grammar::VisualKind) {
-        if matches!(self.active_buffer, BufferKind::Terminal) {
-            self.do_terminal_enter_visual(kind);
-            return;
-        }
         self.modal = ModalState::Visual(kind);
         self.visual_anchor = Some(self.cursor);
         let sel = lattice_protocol::selection::Selection {
@@ -20936,11 +20930,27 @@ impl Editor {
     /// copy the resulting buffer back. Edits + cursor updates
     /// land on the oil rope without touching the document
     /// actor.
-    pub fn run_oil_invocation(&mut self, inv: lattice_grammar::CommandInvocation) {
+    /// 2026-05-26: returns `true` when the runner claimed the
+    /// invocation, `false` when it should fall through to the
+    /// caller (the grammar Action gate in
+    /// [`Self::run_invocation`]). The per-kind-first dispatch
+    /// reorder uses this signal to keep buffer-kind-specific
+    /// behaviour inside each runner instead of leaking branches
+    /// into `do_*` helpers downstream.
+    pub fn run_oil_invocation(&mut self, inv: lattice_grammar::CommandInvocation) -> bool {
         use lattice_grammar::Effect;
+        // Action-kind commands (`:` enter command line, `/`
+        // enter search, LSP navigation, ...) don't apply to the
+        // oil text buffer; let the grammar Action gate handle
+        // them centrally.
+        if let Some(spec) = self.registry.lookup(inv.command)
+            && matches!(spec.kind, lattice_grammar::CommandKind::Action)
+        {
+            return false;
+        }
         let oil_id = self.active_pane_buffer_id();
         let Some(oil_text) = self.buffers.with_oil(oil_id, |o| o.content.as_string()) else {
-            return;
+            return true;
         };
         let mut inv = inv;
         if let Some(reg) = self.pending_register.take()
@@ -20967,7 +20977,7 @@ impl Editor {
             &lattice_protocol::CancellationToken::never(),
         );
         let Ok(effect) = result else {
-            return;
+            return true;
         };
         self.buffers.with_oil_mut(oil_id, |oil| {
             oil.content = temp_doc.buffer().clone();
@@ -21008,13 +21018,14 @@ impl Editor {
             self.do_exit_visual();
         }
         self.clamp_cursor_to_buffer();
+        true
     }
 
     /// Resolve a motion against the active file tree's content.
     /// Same shape as [`Self::run_help_invocation`] but mutates
     /// the tree's cursor instead of the help buffer's.
-    pub fn run_file_tree_invocation(&mut self, inv: lattice_grammar::CommandInvocation) {
-        self.run_read_only_motion(inv);
+    pub fn run_file_tree_invocation(&mut self, inv: lattice_grammar::CommandInvocation) -> bool {
+        self.run_read_only_motion(inv)
     }
 
     /// Resolve a motion-class invocation against the active help
@@ -21022,8 +21033,13 @@ impl Editor {
     /// "read-only" message; the dispatcher in
     /// [`Self::run_document_invocation`] is the only path that
     /// commits buffer mutations.
-    pub fn run_help_invocation(&mut self, inv: lattice_grammar::CommandInvocation) {
-        self.run_read_only_motion(inv);
+    ///
+    /// 2026-05-26: returns `true` when claimed, `false` for
+    /// Action-kind commands (`:` enter-command, `/` enter-search,
+    /// LSP nav, ...) that should fall through to the grammar
+    /// Action gate.
+    pub fn run_help_invocation(&mut self, inv: lattice_grammar::CommandInvocation) -> bool {
+        self.run_read_only_motion(inv)
     }
 
     /// 5.5.G.23: top-level command-invocation router. Selects the
@@ -21055,6 +21071,31 @@ impl Editor {
                 return;
             }
         }
+        // 2026-05-26: per-kind dispatch runs BEFORE the grammar
+        // Action gate so buffer-kind-specific behaviour stays
+        // inside each runner (`feedback_buffers_no_special_case`
+        // / "modes own their buffers"). Runners return `true`
+        // when they claimed the invocation; `false` falls
+        // through to the Action gate or `run_document_invocation`
+        // below. Without this ordering, Action-kind commands
+        // (`v` enter-visual, `<C-d>` page-down, ...) bypassed
+        // the per-kind runner and forced kind-branching into
+        // `do_*` helpers downstream.
+        let kind_handled = match self.active_buffer {
+            BufferKind::Help => self.run_help_invocation(inv.clone()),
+            BufferKind::Oil => self.run_oil_invocation(inv.clone()),
+            BufferKind::FileTree => self.run_file_tree_invocation(inv.clone()),
+            BufferKind::Terminal => self.run_terminal_invocation(inv.clone()),
+            _ => false,
+        };
+        if kind_handled {
+            return;
+        }
+        // Grammar Action gate: `CommandKind::Action` invocations
+        // bypass the document path and run against a throwaway
+        // scratch `Document`. Reached when the per-kind runner
+        // declined the command (e.g. `:` enter-command-line on a
+        // help / oil / file-tree / terminal pane).
         if let Some(spec) = self.registry.lookup(inv.command)
             && matches!(spec.kind, lattice_grammar::CommandKind::Action)
         {
@@ -21075,25 +21116,8 @@ impl Editor {
             }
             return;
         }
-        // Help / oil / file-tree are read-only or narrow-effect
-        // buffers; route to their dedicated runners. Document is the
-        // mainline path with full effect application.
-        if matches!(self.active_buffer, BufferKind::Help) {
-            self.run_help_invocation(inv);
-            return;
-        }
-        if matches!(self.active_buffer, BufferKind::Oil) {
-            self.run_oil_invocation(inv);
-            return;
-        }
-        if matches!(self.active_buffer, BufferKind::FileTree) {
-            self.run_file_tree_invocation(inv);
-            return;
-        }
-        if matches!(self.active_buffer, BufferKind::Terminal) {
-            self.run_terminal_invocation(inv);
-            return;
-        }
+        // Document path: motions / operators / text-objects on
+        // a Document buffer.
         self.run_document_invocation(inv, out);
     }
 
@@ -21230,11 +21254,17 @@ impl Editor {
     /// `crates/lattice-host/src/input.rs::translate` introduced
     /// by T3.a: the keymap stays kind-agnostic (`j` → `line_down`
     /// motion for every buffer); only the runner differs.
-    pub fn run_terminal_invocation(&mut self, inv: lattice_grammar::CommandInvocation) {
+    /// 2026-05-26: returns `true` when claimed, `false` for
+    /// commands the terminal runner doesn't own (so the caller
+    /// can fall through to the grammar Action gate). Action
+    /// commands the runner intercepts (`v` / `V` / `<C-v>`,
+    /// `y` in Visual, `<C-d>` / `<C-u>` / `<C-f>` / `<C-b>` /
+    /// `<C-e>` / `<C-y>`) return `true`; non-claimed Action
+    /// commands (`:` enter command line, `/` enter search, `K`
+    /// hover, LSP nav, ...) return `false` so the central
+    /// dispatch handles them uniformly.
+    pub fn run_terminal_invocation(&mut self, inv: lattice_grammar::CommandInvocation) -> bool {
         use lattice_terminal::{TerminalScrollKind as Sk, VisualKind as Vk};
-        self.pending_count = 0;
-        self.op_count = 0;
-        let pending_register = self.pending_register.take();
         let buf_id = self.active_pane_buffer_id();
         let count = inv.count.map(|c| c.0).unwrap_or(1).max(1);
         let cmd = inv.command;
@@ -21246,6 +21276,11 @@ impl Editor {
             .with_terminal(buf_id, |t| t.visual)
             .flatten();
         if let Some(visual) = visual {
+            // Visual-active reset: claimed branch, drop pending
+            // count / op count so the next keystroke starts
+            // fresh (mirrors run_document_invocation's reset).
+            self.pending_count = 0;
+            self.op_count = 0;
             // Vertical motion: extend head_line, scroll viewport
             // to keep it visible.
             if cmd == self.builtins.line_down.0 || cmd == self.builtins.line_up.0 {
@@ -21277,7 +21312,7 @@ impl Editor {
                         t.term.scroll(Sk::Delta(0));
                     }
                 });
-                return;
+                return true;
             }
             // T3.b.2.b: horizontal motion in char/block Visual.
             // Linewise Visual ignores col motion (matches vim).
@@ -21304,7 +21339,7 @@ impl Editor {
                 let _ = self.buffers.with_terminal(buf_id, |t| {
                     t.term.scroll(Sk::Delta(0));
                 });
-                return;
+                return true;
             }
             if cmd == self.builtins.goto_last_line.0 {
                 let (_, bot) = self
@@ -21319,7 +21354,7 @@ impl Editor {
                 let _ = self.buffers.with_terminal(buf_id, |t| {
                     t.term.scroll(Sk::Bottom);
                 });
-                return;
+                return true;
             }
             if cmd == self.builtins.goto_first_line.0 {
                 let (top, _) = self
@@ -21334,7 +21369,7 @@ impl Editor {
                 let _ = self.buffers.with_terminal(buf_id, |t| {
                     t.term.scroll(Sk::Top);
                 });
-                return;
+                return true;
             }
             if cmd == self.builtins.yank.0 {
                 // T3.b.2.b: per-kind yank — linewise / charwise
@@ -21385,7 +21420,9 @@ impl Editor {
                         )
                     }
                 };
-                let register = pending_register
+                let register = self
+                    .pending_register
+                    .take()
                     .unwrap_or(lattice_grammar::register::Register::Unnamed);
                 self.store_yank(register, text, kind);
                 let _ = self.buffers.with_terminal_mut(buf_id, |t| {
@@ -21397,9 +21434,9 @@ impl Editor {
                     t.term.scroll(Sk::Delta(0));
                 });
                 self.set_message(EchoLevel::Info, format!("yanked {summary}"));
-                return;
+                return true;
             }
-            return;
+            return true;
         }
         // T3.b.2 / T3.b.2.b: Visual entry — sets the initial
         // anchor + head from either the live cursor (when at
@@ -21429,8 +21466,10 @@ impl Editor {
                 Vk::Line => lattice_grammar::VisualKind::Linewise,
                 Vk::Block => lattice_grammar::VisualKind::Blockwise,
             };
+            self.pending_count = 0;
+            self.op_count = 0;
             self.do_terminal_enter_visual(grammar_kind);
-            return;
+            return true;
         }
         // 2026-05-25: Normal-in-terminal navigation cursor.
         // j / k / gg / G / h / l move the nav_cursor; the
@@ -21457,16 +21496,22 @@ impl Editor {
             None
         };
         if nav_dy.is_some() || nav_dx.is_some() {
+            self.pending_count = 0;
+            self.op_count = 0;
             self.do_terminal_nav_move(buf_id, nav_dy.unwrap_or(0), nav_dx.unwrap_or(0));
-            return;
+            return true;
         }
         if cmd == self.builtins.goto_first_line.0 {
+            self.pending_count = 0;
+            self.op_count = 0;
             self.do_terminal_nav_goto(buf_id, NavTarget::Top);
-            return;
+            return true;
         }
         if cmd == self.builtins.goto_last_line.0 {
+            self.pending_count = 0;
+            self.op_count = 0;
             self.do_terminal_nav_goto(buf_id, NavTarget::Bottom);
-            return;
+            return true;
         }
         // Page motions keep their scroll semantics (no
         // nav_cursor anchoring — vim's `<C-d>` / `<C-u>` are
@@ -21481,29 +21526,58 @@ impl Editor {
             None
         };
         if let Some(kind) = kind {
+            self.pending_count = 0;
+            self.op_count = 0;
             let _ = self.buffers.with_terminal(buf_id, |t| t.term.scroll(kind));
-            return;
+            return true;
         }
-        // Drop into the same read-only echo path Help / FileTree
-        // use so the user gets a consistent message for
-        // edit-class invocations on a terminal buffer.
-        if let Some(spec) = self.registry.lookup(cmd)
-            && !matches!(spec.kind, lattice_grammar::CommandKind::Motion)
-        {
-            self.set_message(EchoLevel::Info, "terminal buffer is read-only".to_string());
+        // 2026-05-26: fall-through dispatch by command kind:
+        // - `Action` commands the runner doesn't intercept
+        //   (`:` enter command, `/` enter search, `K` hover,
+        //   LSP nav, ...) return `false` so the caller's grammar
+        //   Action gate runs them on the central path. Without
+        //   this, those commands either got swallowed silently
+        //   or echoed "read-only" — both wrong.
+        // - `Operator` / `TextObject` commands echo "read-only"
+        //   (terminals don't accept edits at this layer) and
+        //   claim with `true`.
+        // - `Motion` commands the runner didn't already intercept
+        //   are silently swallowed (claim with `true`) to match
+        //   pre-refactor behaviour.
+        match self.registry.lookup(cmd).map(|s| s.kind) {
+            Some(lattice_grammar::CommandKind::Action) => false,
+            Some(lattice_grammar::CommandKind::Motion) | None => true,
+            Some(_) => {
+                self.pending_count = 0;
+                self.op_count = 0;
+                self.set_message(
+                    EchoLevel::Info,
+                    "terminal buffer is read-only".to_string(),
+                );
+                true
+            }
         }
     }
 
-    pub fn run_read_only_motion(&mut self, inv: lattice_grammar::CommandInvocation) {
+    /// 2026-05-26: returns `true` when claimed (Motion handled
+    /// or non-Motion echoed read-only), `false` for Action-kind
+    /// commands so the caller can fall through to the grammar
+    /// Action gate. Action commands (`:`, `/`, `K`, ...) are
+    /// buffer-agnostic and shouldn't echo "read-only" — they
+    /// belong on the central dispatch path.
+    pub fn run_read_only_motion(&mut self, inv: lattice_grammar::CommandInvocation) -> bool {
         let Some(spec) = self.registry.lookup(inv.command) else {
-            return;
+            return true;
         };
+        if matches!(spec.kind, lattice_grammar::CommandKind::Action) {
+            return false;
+        }
         if !matches!(spec.kind, lattice_grammar::CommandKind::Motion) {
             self.pending_count = 0;
             self.op_count = 0;
             self.pending_register = None;
             self.set_message(EchoLevel::Info, "buffer is read-only".to_string());
-            return;
+            return true;
         }
         if inv.command == self.builtins.goto_first_line.0
             || inv.command == self.builtins.goto_last_line.0
@@ -21528,6 +21602,7 @@ impl Editor {
             Err(_) => {}
         }
         self.clamp_cursor_to_active_buffer();
+        true
     }
 }
 

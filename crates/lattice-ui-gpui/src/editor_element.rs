@@ -75,6 +75,7 @@ use lattice_syntax::{Style as SyntaxStyle, StyledSpan};
 
 use crate::GpuiTheme;
 use crate::cells_paint::cell_row_to_text_runs;
+use crate::glyph_resolver::GlyphResolver;
 
 /// Adapter: host-canonical [`Theme::syntax_style`] -> packed 24-bit
 /// `0xRRGGBB`. Phase 5.8.AF.6 / issue-2 hoist: identical body to
@@ -261,6 +262,17 @@ pub(crate) struct EditorElement {
     /// publishes `visible_rows` for TUI markdown / help /
     /// messages bodies in other render functions.
     pub(crate) cell_matrix: Option<Arc<CellMatrix>>,
+    /// S4.final.b (2026-05-27): per-window glyph-id cache. When
+    /// the runtime toggle `LATTICE_PAINT_CELLS=1` is set,
+    /// `EditorElement::paint`'s body loop uses
+    /// `crate::paint_cells::paint_cells_row` (which consumes
+    /// this resolver) to emit per-cell `paint_glyph` calls
+    /// instead of `ShapedLine::paint`. Always populated from
+    /// `EditorView.glyph_resolver` so the cache survives across
+    /// paints + across panes within the same window. Mutex
+    /// because the resolve path mutates the cache on miss and
+    /// `EditorElement::paint` takes `&self`.
+    pub(crate) glyph_resolver: Arc<std::sync::Mutex<GlyphResolver>>,
 }
 
 /// Per-frame layout state. Slice X3.full.2 holds nothing.
@@ -334,6 +346,22 @@ pub(crate) struct EditorElementPrepaintState {
     /// quads (the other layers are active-pane state). Length
     /// matches `shaped_text`.
     overlay_quads_per_row: Vec<Vec<(u32, u32, u32)>>,
+    /// S4.final.b (2026-05-27): the body font as captured in
+    /// `prepaint` (from `window.text_style().font()`). Re-used
+    /// by `paint_cells_row` for the resolve path's `layout_line`
+    /// run; identical to the font `shape_line` was called with
+    /// so cache keys line up across paths.
+    font: gpui::Font,
+    /// S4.final.b (2026-05-27): the body font size (`Pixels`) as
+    /// captured in `prepaint`. Passed straight to
+    /// `Window::paint_glyph` and to the resolver's
+    /// `layout_line` call.
+    font_size: Pixels,
+    /// S4.final.b (2026-05-27): the typographic ascent of the
+    /// body font at `font_size`. `Window::paint_glyph` takes
+    /// its origin as the *baseline*; `paint_cells_row` derives
+    /// the baseline from `line_y + text_ascent`.
+    text_ascent: Pixels,
 }
 
 impl IntoElement for EditorElement {
@@ -398,6 +426,17 @@ impl Element for EditorElement {
         let font = text_style.font();
         let font_size = text_style.font_size.to_pixels(window.rem_size());
         let line_height: Pixels = font_size * 1.3;
+        // S4.final.b (2026-05-27): typographic ascent of the
+        // body font at `font_size`. `Window::paint_glyph`
+        // expects its origin to be the *baseline*; paint_cells
+        // derives the per-row baseline as `line_y + text_ascent`.
+        // Computed once here (LineLayoutCache caches the
+        // FontMetrics lookup behind it) and stashed on the
+        // prepaint state.
+        let text_ascent: Pixels = {
+            let font_id = window.text_system().resolve_font(&font);
+            window.text_system().ascent(font_id, font_size)
+        };
         // Measure the actual advance width of one monospace cell by
         // shaping a reference character. GPUI's LineLayoutCache
         // memoises the result, so this shape call costs one hash
@@ -931,6 +970,9 @@ impl Element for EditorElement {
             inlay_offsets_per_row,
             diagnostic_segments_per_row,
             overlay_quads_per_row,
+            font: font.clone(),
+            font_size,
+            text_ascent,
         }
     }
 
@@ -1009,18 +1051,54 @@ impl Element for EditorElement {
             }
         }
 
-        // Text body.
+        // Text body. S4.final.b: when the `LATTICE_PAINT_CELLS`
+        // toggle is on AND the active pane has a cell matrix
+        // AND the row's source line is covered, paint via
+        // `paint_cells_row` (per-cell `paint_glyph` + bg quads)
+        // and skip `ShapedLine::paint` for that row. Folded
+        // rows / boot frames / inactive panes / toggle-off
+        // continue to use `ShapedLine::paint`.
+        let use_paint_cells = crate::paint_cells::paint_cells_enabled()
+            && self.cell_matrix.is_some();
         for (i, shaped_line) in prepaint.shaped_text.iter().enumerate() {
             let line_y = bounds.origin.y + line_height * (i as f32);
             let origin = point(text_origin_x, line_y);
-            if let Err(err) = shaped_line.paint(origin, line_height, window, cx) {
-                tracing::warn!(
-                    target: "lattice_gpui::editor_element",
-                    line_index = self.scroll as usize + i,
-                    pane = self.pane_idx,
-                    error = ?err,
-                    "text ShapedLine::paint failed"
-                );
+            let painted_via_cells = if use_paint_cells {
+                let line_idx_opt = prepaint.row_meta.get(i).map(|(idx, _)| *idx);
+                match (self.cell_matrix.as_ref(), line_idx_opt) {
+                    (Some(matrix), Some(line_idx)) => match matrix.row_at_source_line(line_idx) {
+                        Some(cell_row) => {
+                            crate::paint_cells::paint_cells_row(
+                                cell_row,
+                                origin,
+                                prepaint.glyph_advance,
+                                line_height,
+                                prepaint.text_ascent,
+                                &prepaint.font,
+                                prepaint.font_size,
+                                self.theme.foreground,
+                                &self.glyph_resolver,
+                                window,
+                            );
+                            true
+                        }
+                        None => false,
+                    },
+                    _ => false,
+                }
+            } else {
+                false
+            };
+            if !painted_via_cells {
+                if let Err(err) = shaped_line.paint(origin, line_height, window, cx) {
+                    tracing::warn!(
+                        target: "lattice_gpui::editor_element",
+                        line_index = self.scroll as usize + i,
+                        pane = self.pane_idx,
+                        error = ?err,
+                        "text ShapedLine::paint failed"
+                    );
+                }
             }
         }
 

@@ -425,6 +425,16 @@ struct EditorView {
     focus_handle: FocusHandle,
     /// Perf plan A.3: per-frame ensure-work delta cache.
     ensure_gate: EnsureGateCache,
+    /// S4.final.b (2026-05-27): per-window glyph-id cache
+    /// (cached `char → ResolvedGlyph` map keyed by FontId).
+    /// Shared across panes within this window — paint_cells
+    /// looks up cells from this resolver instead of going
+    /// through `shape_line`. Wrapped in `Mutex` for
+    /// `&mut self` access during paint without conflicting with
+    /// any other mutable borrows on `EditorView` itself.
+    /// Gated only by the `window` feature (mirrors `app`);
+    /// the resolve path uses `&mut Window` which is paint-only.
+    glyph_resolver: std::sync::Arc<std::sync::Mutex<crate::glyph_resolver::GlyphResolver>>,
 }
 
 impl EditorView {
@@ -467,6 +477,9 @@ impl EditorView {
             app,
             focus_handle: cx.focus_handle(),
             ensure_gate: EnsureGateCache::default(),
+            glyph_resolver: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::glyph_resolver::GlyphResolver::new(),
+            )),
         }
     }
 
@@ -1180,6 +1193,13 @@ impl EditorView {
             } else {
                 None
             },
+            // S4.final.b (2026-05-27): per-window glyph-id
+            // cache. Always carries the shared resolver from
+            // `EditorView`; consumption is gated on
+            // `paint_cells_enabled()` in `EditorElement::paint`.
+            // Sharing across panes means a buffer-switch keeps
+            // the cache warm.
+            glyph_resolver: self.glyph_resolver.clone(),
         };
 
         Self::pane_chrome(

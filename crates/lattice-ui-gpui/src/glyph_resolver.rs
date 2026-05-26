@@ -47,7 +47,7 @@
 
 use std::collections::HashMap;
 
-use gpui::{FontId, GlyphId};
+use gpui::{Font, FontId, GlyphId, Pixels, Rgba, TextRun, Window};
 
 /// Cache key for [`GlyphResolver`]. A resolved [`FontId`]
 /// already encodes font family + weight + style + features +
@@ -152,6 +152,64 @@ impl GlyphResolver {
     /// shifted; not used on the hot path.
     pub fn clear(&mut self) {
         self.cache.clear();
+    }
+
+    /// Resolve `ch` for the given `font` at `font_size`, hitting
+    /// the cache when possible and falling back to
+    /// `WindowTextSystem::layout_line` on miss. S4.final.b.
+    ///
+    /// The miss path lays out a single-char string in a
+    /// throwaway [`TextRun`] (colour irrelevant — GPUI's layout
+    /// cache keys by font + size + text, not run colour), then
+    /// reads the first glyph from the resulting [`LineLayout`]:
+    /// - `runs[0].font_id` may differ from
+    ///   `text_system.resolve_font(font)` if the system chose a
+    ///   fallback face for the codepoint. We cache that
+    ///   resolved id on [`ResolvedGlyph`] so paint can dispatch
+    ///   to the right font without re-laying-out.
+    /// - `runs[0].glyphs[0].id` is the per-font glyph index
+    ///   `paint_glyph` / `paint_emoji` need.
+    /// - `runs[0].glyphs[0].is_emoji` selects between
+    ///   `paint_glyph` (monochrome, tinted by fg) and
+    ///   `paint_emoji` (colour glyph, fg ignored).
+    ///
+    /// Codepoints with no glyph in any fallback font (`layout`'s
+    /// `runs` empty or `glyphs` empty) cache as `None` and
+    /// future lookups stay sticky-`None` — see [`Self::insert`].
+    pub fn resolve(
+        &mut self,
+        ch: char,
+        font: &Font,
+        font_size: Pixels,
+        window: &mut Window,
+    ) -> Option<ResolvedGlyph> {
+        let font_id = window.text_system().resolve_font(font);
+        let key = GlyphKey { font_id, ch };
+        if let Some(cached) = self.cache.get(&key) {
+            return *cached;
+        }
+        let mut buf = [0u8; 4];
+        let s = ch.encode_utf8(&mut buf);
+        let run = TextRun {
+            len: s.len(),
+            font: font.clone(),
+            color: Rgba::default().into(),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let layout = window
+            .text_system()
+            .layout_line(s, font_size, &[run], None);
+        let resolved = layout.runs.first().and_then(|r| {
+            r.glyphs.first().map(|g| ResolvedGlyph {
+                font_id: r.font_id,
+                glyph_id: g.id,
+                is_emoji: g.is_emoji,
+            })
+        });
+        self.cache.insert(key, resolved);
+        resolved
     }
 }
 

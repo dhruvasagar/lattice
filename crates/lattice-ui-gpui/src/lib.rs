@@ -111,13 +111,20 @@ pub mod editor_element;
 pub mod cells_paint;
 // S4.final.a (2026-05-27): per-codepoint glyph-id cache. The
 // software cache that converts `(FontId, char)` →
-// `Option<ResolvedGlyph>` so the future `paint_cells` loop can
-// hand `(font_id, glyph_id)` to `Window::paint_glyph` without
-// going through `shape_line`. Wired into [`GpuiApp`] in
-// S4.final.b alongside the paint path. Gated behind `window`;
-// mirrors the `cells_paint` gating.
+// `Option<ResolvedGlyph>` so the `paint_cells` loop can hand
+// `(font_id, glyph_id)` to `Window::paint_glyph` without going
+// through `shape_line`. Gated behind `window`; mirrors the
+// `cells_paint` gating.
 #[cfg(feature = "window")]
 pub mod glyph_resolver;
+// S4.final.b (2026-05-27): per-cell `paint_glyph` body path.
+// `paint_cells_row` walks one CellRow and emits per-cell bg
+// quads + glyphs. Gated behind a runtime env-var toggle
+// (`LATTICE_PAINT_CELLS=1`) so both `shape_line` and
+// `paint_cells` paths coexist until S4.final.f retires
+// `shape_line` on the document body.
+#[cfg(feature = "window")]
+pub mod paint_cells;
 
 #[cfg(feature = "window")]
 pub use window::{document_from_path, run};

@@ -817,7 +817,21 @@ impl Element for EditorElement {
                 match row_in_viewport {
                     None => (None, None),
                     Some(row) => {
-                        let line = raw_lines.get(c.line as usize).copied().unwrap_or("");
+                        // 2026-05-26: `self.text` was zeroed in slice A.4
+                        // (`1e1da8d`) — `raw_lines.get(c.line)` now
+                        // always returns None for `c.line != 0`, which
+                        // collapsed `char_col` to 0 and pinned the
+                        // horizontal cursor at column 0 (vertical
+                        // motion still moved because the row came
+                        // from the gutter). Read the cursor's line
+                        // text from `row_meta` instead; it's built
+                        // per visible row during the prepaint loop
+                        // above and indexed by the same `row` the
+                        // gutter walk returned.
+                        let line = row_meta
+                            .get(row as usize)
+                            .map(|(_, s)| s.as_str())
+                            .unwrap_or("");
                         let byte = (c.byte as usize).min(line.len());
                         // Slice X3.full.4: remap byte → combined col
                         // via the cursor row's inlay offsets so the

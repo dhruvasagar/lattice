@@ -3,36 +3,52 @@
 //! Each axis tracks one source of cell-content invalidation. The
 //! cell-builder worker (S2, lives in `lattice-host`) compares the
 //! chunk's captured `MatrixVersion` against `RenderState`'s current
-//! version; any field that advanced → that chunk is stale.
+//! version via [`MatrixVersion::differs_from`]; any field that
+//! changed → that chunk is stale and needs rebuild.
+//!
+//! ## Semantics: monotonic + hash-style fields coexist
+//!
+//! Some axes are monotonically-increasing counters (`text` is
+//! `document.text_version()`, bumped on every rope edit). Others
+//! are content hashes (`inlay_hints`, `folds`) — they don't
+//! compare with `<`/`>`, only with `==`/`!=`. The version vector
+//! treats every axis identically: "differs" is the only check
+//! that matters for the rebuild decision, and `differs_from` is
+//! correct for both kinds.
 //!
 //! See `docs/dev/architecture/cell-grid-renderer.md` § Invalidation
 //! for the complete trigger table.
 
-/// Per-source version counters that drive matrix rebuild decisions.
+/// Per-source version stamps that drive matrix rebuild decisions.
 ///
 /// Decoration kinds that *don't* change cell content (cursor,
 /// selection, hlsearch, diagnostics, doc highlights, search matches)
 /// deliberately don't appear here — they live in `OverlayState`
 /// (defined in `lattice-host` in S2) and are read by the paint loop
 /// each frame without triggering matrix work.
+///
+/// Fields are `u64` to match the source counters/hashes in
+/// `lattice-host` (`document.text_version()`,
+/// `compute_fold_hash`, `inlay_hints_version`, etc.) — no lossy
+/// cast at the boundary.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct MatrixVersion {
-    /// Bumped on every rope mutation.
-    pub text: u32,
-    /// Bumped when `lattice-syntax` publishes new spans for the buffer.
-    pub syntax: u32,
-    /// Bumped when LSP inlay hints arrive/change for the buffer.
-    pub inlay_hints: u32,
-    /// Bumped when fold ranges change (collapse, expand, computed).
-    pub folds: u32,
-    /// Bumped when the active theme is replaced or its palette mutates.
-    pub theme: u32,
+    /// Source of truth: `document.text_version()`. Monotonic.
+    pub text: u64,
+    /// Source of truth: content stamp of the syntax span set
+    /// covering the buffer. Hash-style (not monotonic).
+    pub syntax: u64,
+    /// Source of truth: `inlay_hints_version(&inlays)`. Hash-style.
+    pub inlay_hints: u64,
+    /// Source of truth: `compute_fold_hash(&folds)`. Hash-style.
+    pub folds: u64,
+    /// Source of truth: theme palette revision. Monotonic in
+    /// practice (theme replacements are discrete events).
+    pub theme: u64,
 }
 
 impl MatrixVersion {
-    /// Convenience: all-zero version vector. Equivalent to
-    /// `Default::default()`; provided for explicit-init call sites
-    /// where `Default` would be ambiguous.
+    /// All-zero version stamp. Equivalent to `Default::default()`.
     pub const ZERO: Self = Self {
         text: 0,
         syntax: 0,
@@ -41,29 +57,12 @@ impl MatrixVersion {
         theme: 0,
     };
 
-    /// `true` when *any* component of `self` is strictly newer than
-    /// the corresponding component of `other`. Used by the
-    /// cell-builder worker to decide whether a chunk's cached
-    /// version is stale relative to the current RenderState
-    /// version.
-    pub fn any_newer_than(&self, other: &Self) -> bool {
-        self.text > other.text
-            || self.syntax > other.syntax
-            || self.inlay_hints > other.inlay_hints
-            || self.folds > other.folds
-            || self.theme > other.theme
-    }
-
-    /// Component-wise maximum. Used when merging multiple chunks'
-    /// captured versions into a `CellMatrix::version` summary.
-    pub fn max(&self, other: &Self) -> Self {
-        Self {
-            text: self.text.max(other.text),
-            syntax: self.syntax.max(other.syntax),
-            inlay_hints: self.inlay_hints.max(other.inlay_hints),
-            folds: self.folds.max(other.folds),
-            theme: self.theme.max(other.theme),
-        }
+    /// `true` when any component differs from `other`. Used by the
+    /// cell-builder worker to decide if a cached chunk's version
+    /// is stale relative to the current RenderState version. Works
+    /// uniformly across monotonic and hash-style axes.
+    pub fn differs_from(&self, other: &Self) -> bool {
+        self != other
     }
 }
 
@@ -78,7 +77,7 @@ mod tests {
     }
 
     #[test]
-    fn any_newer_detects_each_axis() {
+    fn differs_from_detects_each_axis() {
         let base = MatrixVersion::ZERO;
         let bumps = [
             MatrixVersion { text: 1, ..base },
@@ -88,13 +87,13 @@ mod tests {
             MatrixVersion { theme: 1, ..base },
         ];
         for v in bumps {
-            assert!(v.any_newer_than(&base), "expected newer: {v:?}");
-            assert!(!base.any_newer_than(&v), "expected not-newer: {v:?}");
+            assert!(v.differs_from(&base), "expected differs: {v:?}");
+            assert!(base.differs_from(&v), "differs is symmetric: {v:?}");
         }
     }
 
     #[test]
-    fn any_newer_false_on_equal() {
+    fn differs_false_on_equal() {
         let v = MatrixVersion {
             text: 5,
             syntax: 2,
@@ -102,35 +101,23 @@ mod tests {
             folds: 0,
             theme: 1,
         };
-        assert!(!v.any_newer_than(&v));
+        assert!(!v.differs_from(&v));
     }
 
+    /// Hash-style axes can DECREASE (a hash of fewer inlays might
+    /// be numerically smaller than the previous hash). `differs_from`
+    /// must catch that too, where the old `any_newer_than` did not.
     #[test]
-    fn max_takes_component_wise_max() {
+    fn differs_catches_decreasing_hash_field() {
         let a = MatrixVersion {
-            text: 5,
-            syntax: 2,
-            inlay_hints: 0,
-            folds: 9,
-            theme: 1,
+            inlay_hints: 1_000_000,
+            ..MatrixVersion::ZERO
         };
         let b = MatrixVersion {
-            text: 3,
-            syntax: 7,
-            inlay_hints: 4,
-            folds: 9,
-            theme: 0,
+            inlay_hints: 42,
+            ..MatrixVersion::ZERO
         };
-        let m = a.max(&b);
-        assert_eq!(
-            m,
-            MatrixVersion {
-                text: 5,
-                syntax: 7,
-                inlay_hints: 4,
-                folds: 9,
-                theme: 1,
-            }
-        );
+        assert!(a.differs_from(&b));
+        assert!(b.differs_from(&a));
     }
 }

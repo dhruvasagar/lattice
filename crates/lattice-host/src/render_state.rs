@@ -111,6 +111,12 @@ pub struct RenderState {
     /// so the publish is a plain struct move — no `Arc`
     /// indirection needed.
     pub theme: crate::ui::theme::Theme,
+    /// S2.1 (2026-05-26): cell-grid renderer substrate state.
+    /// Carries the published `CellMatrix` cell + the inputs the
+    /// cell-builder worker (S2.2+) reads to rebuild. See
+    /// [`CellsRenderState`] and
+    /// `docs/dev/architecture/cell-grid-renderer.md`.
+    pub cells: Arc<CellsRenderState>,
 }
 
 impl Default for RenderState {
@@ -134,6 +140,7 @@ impl Default for RenderState {
             translator: Arc::new(TranslatorRenderState::default()),
             lifecycle: Arc::new(LifecycleRenderState::default()),
             theme: crate::ui::theme::Theme::default(),
+            cells: Arc::new(CellsRenderState::default()),
         }
     }
 }
@@ -698,6 +705,80 @@ impl Default for SyntaxRenderState {
             ),
             static_overlay_version: 0,
             pane_highlights: Arc::new(std::collections::HashMap::new()),
+        }
+    }
+}
+
+/// Cell-grid renderer substrate state. Mirror of
+/// [`SyntaxRenderState`] in shape (wait-free output cell + read
+/// inputs); replaces the per-frame `shape_line` path for
+/// code-class buffers.
+///
+/// **S2.1**: only the plumbing is in place — `matrix` is published
+/// but stays empty until S2.2 spawns the cell-builder worker that
+/// will write to it. The other fields are populated from current
+/// `Editor` state by `build_render_state` so the worker has its
+/// full input set the moment it lands.
+///
+/// Anchor: [`docs/dev/architecture/cell-grid-renderer.md`](../../../docs/dev/architecture/cell-grid-renderer.md).
+#[derive(Debug, Clone)]
+pub struct CellsRenderState {
+    /// Worker-published output cell. Inner Arc identity stays
+    /// stable across publishes (cloned from
+    /// `Editor::cells_matrix_cell`) so the worker's writes
+    /// survive subsequent publishes — same stability pattern as
+    /// [`SyntaxRenderState::visible_spans`].
+    pub matrix: Arc<arc_swap::ArcSwap<lattice_cells::CellMatrix>>,
+
+    /// Aggregate version stamp of the inputs below. Worker
+    /// compares against the *published* matrix's
+    /// [`lattice_cells::CellMatrix::version`] to decide rebuild —
+    /// see [`lattice_cells::MatrixVersion::differs_from`]. Folds
+    /// `text_version`, `syntax`-derived stamp, `inlay_hints`
+    /// content hash, `folds` content hash, and `theme` version
+    /// into one comparison value.
+    pub version: lattice_cells::MatrixVersion,
+
+    /// Active document snapshot. The cell-builder walks this
+    /// line-by-line. `None` when no document is active (initial
+    /// boot or between buffer switches). Cloned by reference from
+    /// the active `DocumentHandle.snapshot()` at publish time.
+    pub snapshot: Option<Arc<lattice_runtime::DocumentSnapshot>>,
+
+    /// Active buffer's syntax handle. Consumed by S2.3 cell
+    /// construction to resolve per-cell foreground colour from
+    /// the syntax span set. `None` when no language is attached
+    /// — cells fall back to the theme default fg.
+    pub syntax_handle: Option<Arc<lattice_syntax::SyntaxHandle>>,
+
+    /// Pre-flattened inlay hints for the active buffer. Same
+    /// payload as [`SyntaxRenderState::inlay_hints`]; carried
+    /// here so the cell-builder can splice inlay text into cells
+    /// without re-reading the LSP cache (S2.3).
+    pub inlay_hints: Arc<[InlayHintRow]>,
+
+    /// Active buffer's fold ranges. Consumed by S2.3 for row
+    /// elision (folded source lines do not produce matrix rows).
+    pub folds: Arc<[lattice_core::Fold]>,
+
+    /// Visible pane height in matrix rows. S2.4 reads this to
+    /// pick `chunk_size = 2 × viewport_height` when above the
+    /// whole-doc-mode threshold.
+    pub viewport_height: u32,
+}
+
+impl Default for CellsRenderState {
+    fn default() -> Self {
+        Self {
+            matrix: Arc::new(arc_swap::ArcSwap::from_pointee(
+                lattice_cells::CellMatrix::empty(),
+            )),
+            version: lattice_cells::MatrixVersion::ZERO,
+            snapshot: None,
+            syntax_handle: None,
+            inlay_hints: Arc::from(Vec::<InlayHintRow>::new().into_boxed_slice()),
+            folds: Arc::from(Vec::<lattice_core::Fold>::new().into_boxed_slice()),
+            viewport_height: 0,
         }
     }
 }
@@ -2268,6 +2349,81 @@ mod tests {
         assert!(
             rs.buffers.uris.get(&BufferId(9999)).is_none(),
             "absent ids return None through the published map"
+        );
+    }
+
+    // ---- S2.1 (cell-grid renderer plumbing) ----
+
+    /// `CellsRenderState` is populated by `publish_render_state`.
+    /// The matrix Arc is published as a clone of
+    /// `Editor::cells_matrix_cell` (stable identity); other
+    /// fields aggregate active document + syntax inputs.
+    #[test]
+    fn cells_substate_is_populated_on_publish() {
+        let mut editor = Editor::default();
+        editor.viewport_height = 24;
+        editor.publish_render_state();
+        let rs = editor.render_state.load_full();
+        // Matrix Arc identity matches the editor's cell (so the
+        // worker's writes via that cell are visible through the
+        // published RS without a republish round-trip).
+        assert!(
+            std::sync::Arc::ptr_eq(&rs.cells.matrix, &editor.cells_matrix_cell),
+            "cells.matrix must be a clone of Editor::cells_matrix_cell"
+        );
+        // No worker yet → matrix stays empty.
+        let m = rs.cells.matrix.load();
+        assert!(m.is_empty(), "matrix is empty until S2.2 worker lands");
+        // viewport_height + text version surface through to the
+        // worker via the same RS path.
+        assert_eq!(rs.cells.viewport_height, 24);
+        assert_eq!(rs.cells.version.text, editor.document.text_version());
+        // Snapshot is populated (the cell-builder reads it
+        // line-by-line in S2.2+).
+        assert!(rs.cells.snapshot.is_some());
+    }
+
+    /// The matrix Arc identity persists across publishes. This is
+    /// the load-bearing invariant for S2.2's worker: the worker
+    /// holds its sibling Arc and writes via `store()`; subsequent
+    /// publishes must NOT swap the cell out from under it.
+    #[test]
+    fn cells_matrix_arc_identity_is_stable_across_publishes() {
+        let editor = Editor::default();
+        editor.publish_render_state();
+        let rs1 = editor.render_state.load_full();
+        let cell1 = rs1.cells.matrix.clone();
+        editor.publish_render_state();
+        editor.publish_render_state();
+        let rs2 = editor.render_state.load_full();
+        assert!(
+            std::sync::Arc::ptr_eq(&cell1, &rs2.cells.matrix),
+            "cells.matrix Arc identity must persist across publishes"
+        );
+    }
+
+    /// `publish_render_state` fires `cells_wake.notify_one()` —
+    /// the permit-style coalescing means a single `notified()`
+    /// resolves after one or many publishes. Validates S2.2's
+    /// future worker will see the wake.
+    #[tokio::test]
+    async fn publish_render_state_fires_cells_wake() {
+        let editor = Editor::default();
+        // Permit set by the publish call; subsequent
+        // `notified().await` resolves immediately.
+        editor.publish_render_state();
+        let waker = editor.cells_wake.0.clone();
+        // Borderline impossible to hit the timeout if the permit
+        // is set — `tokio::time::timeout` returns Err only on
+        // genuine miss.
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            async move { waker.notified().await },
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "cells_wake permit must be set by publish_render_state"
         );
     }
 }

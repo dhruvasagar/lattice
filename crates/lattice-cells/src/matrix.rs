@@ -40,6 +40,15 @@ pub struct CellMatrix {
     pub version: MatrixVersion,
 }
 
+impl Default for CellMatrix {
+    /// Equivalent to [`Self::empty`]. Provided so containers like
+    /// `Arc<ArcSwap<CellMatrix>>` derive `Default` without
+    /// explicit-init plumbing at every call site.
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
 impl CellMatrix {
     /// Empty matrix: no chunks, no rows. The initial published
     /// value before the cell-builder finishes its first build.
@@ -56,18 +65,23 @@ impl CellMatrix {
     /// Construct a matrix in chunked mode. S2 is the production
     /// caller; `chunk_size` must be > 0. Use [`Self::whole_doc`]
     /// for the single-chunk mode.
+    ///
+    /// `version` is the aggregate stamp the renderer can inspect
+    /// to detect "is this matrix newer than the one I painted last
+    /// frame?" Comparison is `!=` (see `MatrixVersion::differs_from`)
+    /// because some axes are hash-style and don't admit ordering.
+    /// Production builds pass the publisher's current
+    /// `MatrixVersion` snapshot; defaults to all-zero for empty /
+    /// test cases.
     pub fn chunked(
         chunks: impl Into<Arc<[Arc<CellChunk>]>>,
         chunk_size: u32,
         source_line_count: u32,
+        version: MatrixVersion,
     ) -> Self {
         assert!(chunk_size > 0, "chunked mode requires chunk_size > 0");
         let chunks: Arc<[Arc<CellChunk>]> = chunks.into();
         let visible_line_count = chunks.iter().map(|c| c.row_count()).sum::<u32>();
-        let version = chunks
-            .iter()
-            .map(|c| c.version)
-            .fold(MatrixVersion::ZERO, |acc, v| acc.max(&v));
         Self {
             chunks,
             chunk_size,
@@ -275,22 +289,18 @@ mod tests {
     }
 
     #[test]
-    fn chunked_aggregates_versions() {
-        let v1 = MatrixVersion {
-            text: 1,
-            syntax: 5,
-            ..MatrixVersion::ZERO
-        };
-        let v2 = MatrixVersion {
+    fn chunked_stores_passed_version() {
+        let v = MatrixVersion {
             text: 3,
-            syntax: 2,
-            ..MatrixVersion::ZERO
+            syntax: 7,
+            inlay_hints: 1,
+            folds: 0,
+            theme: 0,
         };
-        let c1 = Arc::new(CellChunk::new(0, vec![row(0, b'a')], v1));
-        let c2 = Arc::new(CellChunk::new(1, vec![row(1, b'b')], v2));
-        let m = CellMatrix::chunked(vec![c1, c2], 1, 2);
-        assert_eq!(m.version.text, 3);
-        assert_eq!(m.version.syntax, 5);
+        let c1 = Arc::new(CellChunk::new(0, vec![row(0, b'a')], v));
+        let c2 = Arc::new(CellChunk::new(1, vec![row(1, b'b')], v));
+        let m = CellMatrix::chunked(vec![c1, c2], 1, 2, v);
+        assert_eq!(m.version, v);
         assert_eq!(m.visible_line_count, 2);
     }
 
@@ -300,7 +310,7 @@ mod tests {
         let c1 = chunk(0, vec![row(0, b'a')]);
         let c2 = chunk(1, vec![row(1, b'b')]);
         let c3 = chunk(2, vec![row(2, b'c')]);
-        let m = CellMatrix::chunked(vec![c1, c2, c3], 1, 3);
+        let m = CellMatrix::chunked(vec![c1, c2, c3], 1, 3, MatrixVersion::ZERO);
         let s = m.slice(0, 3);
         let chars: Vec<u32> = s.iter().map(|r| r.cells[0].codepoint).collect();
         assert_eq!(chars, vec![b'a' as u32, b'b' as u32, b'c' as u32]);
@@ -310,7 +320,7 @@ mod tests {
     fn slice_starting_mid_chunk() {
         let c1 = chunk(0, vec![row(0, b'a'), row(1, b'b'), row(2, b'c')]);
         let c2 = chunk(3, vec![row(3, b'd'), row(4, b'e')]);
-        let m = CellMatrix::chunked(vec![c1, c2], 3, 5);
+        let m = CellMatrix::chunked(vec![c1, c2], 3, 5, MatrixVersion::ZERO);
         // Scroll past first two rows of chunk1; take 3 rows.
         let s = m.slice(2, 3);
         let chars: Vec<u32> = s.iter().map(|r| r.cells[0].codepoint).collect();
@@ -322,7 +332,7 @@ mod tests {
         // Chunk covers source lines 0..3 but only lines 0, 2 are
         // visible (line 1 is folded).
         let c = chunk(0, vec![row(0, b'a'), row(2, b'c')]);
-        let m = CellMatrix::chunked(vec![c], 3, 3);
+        let m = CellMatrix::chunked(vec![c], 3, 3, MatrixVersion::ZERO);
         assert_eq!(m.visible_line_count, 2); // post-fold count
         let s = m.slice(0, 5);
         let source_lines: Vec<u32> = s.iter().map(|r| r.source_line).collect();
@@ -333,7 +343,7 @@ mod tests {
     fn slice_len_matches_iter_count() {
         let c1 = chunk(0, vec![row(0, b'a'), row(1, b'b')]);
         let c2 = chunk(2, vec![row(2, b'c'), row(3, b'd'), row(4, b'e')]);
-        let m = CellMatrix::chunked(vec![c1, c2], 2, 5);
+        let m = CellMatrix::chunked(vec![c1, c2], 2, 5, MatrixVersion::ZERO);
         for (scroll, height) in [(0, 5), (1, 3), (3, 10), (2, 2), (5, 5)] {
             let s = m.slice(scroll, height);
             assert_eq!(
@@ -350,7 +360,7 @@ mod tests {
         let c1 = chunk(0, vec![row(0, b'a')]);
         let c2 = Arc::new(CellChunk::empty(1, MatrixVersion::ZERO));
         let c3 = chunk(2, vec![row(2, b'c')]);
-        let m = CellMatrix::chunked(vec![c1, c2, c3], 1, 3);
+        let m = CellMatrix::chunked(vec![c1, c2, c3], 1, 3, MatrixVersion::ZERO);
         let s = m.slice(0, 5);
         let chars: Vec<u32> = s.iter().map(|r| r.cells[0].codepoint).collect();
         assert_eq!(chars, vec![b'a' as u32, b'c' as u32]);

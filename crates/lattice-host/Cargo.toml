@@ -57,6 +57,12 @@ arc-swap = { workspace = true }
 # Phase 5.2: folds.rs uses `tree_sitter::QueryCursor` for the
 # syntax-fold provider; modes.rs touches `lattice_syntax::Lang`.
 lattice-syntax = { path = "../lattice-syntax" }
+# S2.1 (2026-05-26): cell-grid renderer substrate. `RenderState`
+# carries a `CellsRenderState` whose
+# `matrix: Arc<ArcSwap<CellMatrix>>` is the contract with the
+# renderers (S3 TUI, S4 GPU). See
+# `docs/dev/architecture/cell-grid-renderer.md`.
+lattice-cells = { path = "../lattice-cells" }
 tree-sitter = { workspace = true }
 streaming-iterator = { workspace = true }
 # modes.rs references the snippet major-mode id.

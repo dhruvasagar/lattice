@@ -250,6 +250,28 @@ impl std::fmt::Debug for HighlightWake {
     }
 }
 
+/// S2.1 (2026-05-26): wake signal for the cell-builder worker
+/// (S2.2+). Same shape as [`HighlightWake`]: a `Notify` cloned
+/// into [`Editor::cells_wake`] and a sibling clone held by the
+/// worker task. `publish_render_state` fires `notify_one()`
+/// after every dispatch tick so the worker re-evaluates inputs
+/// from the latest published
+/// [`crate::render_state::CellsRenderState`].
+#[derive(Clone)]
+pub struct CellsWake(pub Arc<tokio::sync::Notify>);
+
+impl Default for CellsWake {
+    fn default() -> Self {
+        Self(Arc::new(tokio::sync::Notify::new()))
+    }
+}
+
+impl std::fmt::Debug for CellsWake {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CellsWake").finish_non_exhaustive()
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct Editor {
     /// Perf plan B.4: identity-preserving sub-state cache for
@@ -991,6 +1013,20 @@ pub struct Editor {
     /// republish round-trip.
     pub syntax_static_overlay_quads_cell:
         std::sync::Arc<arc_swap::ArcSwap<crate::render_state::StaticOverlayQuads>>,
+    /// S2.1 (2026-05-26): cell-grid renderer output cell. Same
+    /// stability pattern as `syntax_visible_spans_cell`: the Arc
+    /// identity lives on `Editor` so `build_render_state` clones
+    /// it into every snapshot; the cell-builder worker (S2.2+)
+    /// holds a sibling clone and writes directly via
+    /// `cell.store(new_matrix)`. Empty `CellMatrix` until the
+    /// worker lands.
+    pub cells_matrix_cell:
+        std::sync::Arc<arc_swap::ArcSwap<lattice_cells::CellMatrix>>,
+    /// S2.1 (2026-05-26): wake signal for the cell-builder worker.
+    /// `publish_render_state` fires `notify_one()` after every
+    /// dispatch tick. The worker `notified().await`s; permit-style
+    /// coalescing handles bursts.
+    pub cells_wake: CellsWake,
     /// Phase 5.8.AF.6 / Slice X1b: paint-request signal. The
     /// highlights worker fires `paint_request.notify_one()` after
     /// every `WorkerDecision::Recomputed` so renderer peers can

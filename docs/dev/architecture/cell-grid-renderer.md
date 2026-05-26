@@ -216,14 +216,21 @@ Sub-millisecond paint, regardless of viewport size or scroll velocity. Held-key 
 
 | Slice | Status | What lands |
 |---|---|---|
-| **S1** | 🔄 in progress | `lattice-cells` crate: `Cell`, `CellRow`, `CellChunk`, `CellMatrix`, `MatrixVersion`. Pure data, slicing API, unit tests on whole-doc / multi-chunk / fold-elision / out-of-bounds. |
-| **S2** | ⛔ planned | Cell-builder worker in `lattice-host`. Subscribes to version cascade, coalesces, rebuilds chunks, publishes via ArcSwap. Integration into `RenderState`. |
-| **S3** | ⛔ planned | TUI cutover. `lattice-ui-tui` consumes `Arc<CellMatrix>` slice + `OverlayState` instead of building cells in-renderer. |
+| **S1** | ✅ landed | `lattice-cells` crate: `Cell`, `CellRow`, `CellChunk`, `CellMatrix`, `MatrixVersion`. Pure data, slicing API, 31 unit tests on whole-doc / multi-chunk / fold-elision / out-of-bounds. |
+| **S2** | 🔄 in progress | Cell-builder worker in `lattice-host`. Subscribes to version cascade, coalesces, rebuilds chunks, publishes via ArcSwap on `RenderState`. Internally sliced (S2.1–S2.5 below). |
+| **S2.1** | 🔄 in progress | Plumbing only. `CellsRenderState` in `render_state.rs` (matrix `Arc<ArcSwap<CellMatrix>>`, wake `Notify`, `MatrixVersion` axes, snapshot/syntax/inlay/folds/theme inputs). `Editor.cells_matrix_cell` + `Editor.cells_wake`. `publish_render_state` populates the cells state. No worker yet — matrix stays empty. Workspace tests green. |
+| **S2.2** | ⛔ planned | Minimal worker. New `cells_worker.rs` sibling of `highlights_worker.rs`. Wake → read RS → build whole-doc `CellMatrix` from rope text alone (ASCII, no syntax fg, no inlays, no folds). Spawned from `editor_boot.rs`. Tests confirm matrix populates and reflects buffer text. |
+| **S2.3** | ⛔ planned | Full cell content. Syntax span → `cell.fg`. Inlay-hint splicing → cells + inlay_offsets. Fold elision. Theme palette wiring. Tests cover all three orthogonally. |
+| **S2.4** | ⛔ planned | Chunked mode. `chunk_size = 2 × viewport_height` switch above threshold. Smallest-rebuild-set computation. Downstream chunk shift (`start_source_line += Δ`, no rebuild). Tests cover small-doc / large-doc / edit-shift paths. |
+| **S2.5** | ⛔ planned | Coalescing + `paint_request` integration. Debounce burst wakes. Verify cell-builder + highlights workers don't fight. End-to-end smoke test. |
+| **S3** | ⛔ planned | TUI cutover. `lattice-ui-tui` consumes `Arc<CellMatrix>` slice + `OverlayState` instead of building cells in-renderer. May start in parallel after S2.3. |
 | **S4** | ⛔ planned | GPU glyph atlas + `paint_cells` in `lattice-ui-gpui`. Replaces `EditorElement`'s `shape_line` path for code-class buffers. Status line / popup / picker / help stay on the Shaped path. |
 | **S5** | ⛔ planned | Criterion bench harness for held-key scroll + Ctrl-D + paste. Tunes `chunk_size`, atlas size/count. Recorded in `benchmarks.md`. Probe stripped. |
 | **S6** | ⛔ planned | Cleanup: strip probes, retire any shape_line code on the code path, audit decoration assignment. |
 
 Estimated calendar: 6–9 weeks across all slices.
+
+**S2.3 is the natural sync point**: after it lands, the matrix is feature-complete content-wise and S3 (TUI cutover) can proceed in parallel with S2.4–S2.5 (perf optimisations).
 
 ---
 

@@ -3444,6 +3444,7 @@ dependencies = [
  "fancy-regex",
  "globset",
  "ignore",
+ "lattice-cells",
  "lattice-completion",
  "lattice-config",
  "lattice-core",

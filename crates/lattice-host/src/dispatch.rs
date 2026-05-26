@@ -882,20 +882,21 @@ impl Editor {
                 doc_highlights: doc_highlights_arc,
                 static_overlay_version: static_overlay_version_val,
             }),
-            // S2.1 (2026-05-26): cell-grid renderer substrate.
-            // Plumbing only — `matrix` is published as a clone of
-            // `self.cells_matrix_cell` (stable Arc identity so
-            // S2.2's worker writes survive subsequent publishes).
-            // The other fields aggregate the inputs the worker
-            // will read. `version` rolls up the same per-axis
-            // stamps the syntax worker uses (text_version,
-            // inlay_version, fold_hash) into one comparison value
-            // (`MatrixVersion::differs_from`). `syntax` version
-            // proxies `text_version` for now — synthetic-syntax
-            // arrivals will get their own counter in S2.3 when
-            // the cell-builder applies fg colours. `theme`
-            // version is a placeholder 0 until S2.3 wires the
-            // palette.
+            // S2.1 / S2.3.a (2026-05-26): cell-grid renderer
+            // substrate. `matrix` is a clone of
+            // `self.cells_matrix_cell` (stable Arc identity so the
+            // cell-builder worker's writes survive subsequent
+            // publishes). The other fields aggregate the inputs the
+            // worker reads. `version` rolls up the per-axis stamps
+            // the worker uses to detect rebuild (text_version,
+            // inlay_version, fold_hash, theme hash) into one
+            // comparison value via `MatrixVersion::differs_from`.
+            // `syntax` version still proxies `text_version` until a
+            // dedicated syntax-snapshot counter lands; the worker
+            // re-resolves syntax fg on any text bump anyway.
+            // `theme` axis is `hash(self.host_theme) as u64` —
+            // theme changes are rare so an aggressive whole-doc
+            // rebuild is acceptable per the design doc.
             cells: std::sync::Arc::new(CellsRenderState {
                 matrix: self.cells_matrix_cell.clone(),
                 version: lattice_cells::MatrixVersion {
@@ -903,7 +904,12 @@ impl Editor {
                     syntax: self.document.text_version(),
                     inlay_hints: inlay_version_val,
                     folds: crate::folds::compute_fold_hash(&self.folds),
-                    theme: 0,
+                    theme: {
+                        use std::hash::{Hash, Hasher};
+                        let mut h = std::collections::hash_map::DefaultHasher::new();
+                        self.host_theme.hash(&mut h);
+                        h.finish()
+                    },
                 },
                 snapshot: Some(self.document.snapshot()),
                 syntax_handle: self.syntax.clone().map(std::sync::Arc::new),
@@ -914,6 +920,7 @@ impl Editor {
                     self.folds.clone().into_boxed_slice(),
                 ),
                 viewport_height: self.viewport_height,
+                theme: self.host_theme,
             }),
             ..RenderState::default()
         }

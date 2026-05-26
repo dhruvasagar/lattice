@@ -31,7 +31,13 @@
 //! so a drift in either default impl fails CI immediately.
 
 /// One full UI theme. Cheap to clone (every field is `Copy`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// S2.3.a (2026-05-26): `Hash` is part of the derive set so the
+/// cell-grid renderer's [`crate::render_state::CellsRenderState`]
+/// can fold the theme into [`lattice_cells::MatrixVersion::theme`]
+/// — any palette change bumps the version and the cell-builder
+/// rebuilds with fresh fg/bg.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Theme {
     // ---- Pane chrome ----
     pub pane_status_active: Style,
@@ -76,7 +82,7 @@ pub struct Theme {
 /// modifiers (bold/italic/etc). `None` for fg/bg means "do not
 /// set this channel" (matches ratatui's empty-style semantics
 /// and GPUI's `Style::transparent_black` background semantics).
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Style {
     pub fg: Option<Color>,
     pub bg: Option<Color>,
@@ -132,7 +138,7 @@ impl Style {
 /// instead of a flag-byte expansion; the renderers' adapter code
 /// pattern-matches against the explicit field set rather than
 /// chasing flag bits.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Modifiers {
     pub bold: bool,
     pub italic: bool,
@@ -152,7 +158,7 @@ pub struct Modifiers {
 /// `Indexed` lookups in palette-aware mode and reads `Rgb`
 /// directly. The host owns the lossless form; each renderer
 /// owns its own lossy-mapping at adapter time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Color {
     /// Terminal / window default for this channel. Maps to
     /// `ratatui::Color::Reset`.
@@ -255,7 +261,7 @@ fn indexed_to_rgb_u32(idx: u8) -> u32 {
 /// The 16 named ANSI colors. Order matches ratatui's
 /// `Color::Black..White` enumeration so the adapter is a
 /// straightforward variant-by-variant match.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NamedColor {
     Black,
     Red,

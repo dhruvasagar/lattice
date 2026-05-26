@@ -765,6 +765,16 @@ pub struct CellsRenderState {
     /// pick `chunk_size = 2 × viewport_height` when above the
     /// whole-doc-mode threshold.
     pub viewport_height: u32,
+
+    /// Renderer-neutral host theme. The cell-builder resolves each
+    /// styled span's `lattice_syntax::Style` to an `0xRRGGBB`
+    /// `cell.fg` via [`crate::ui::theme::Theme::syntax_style`]. A
+    /// content-hash of the theme is folded into
+    /// [`lattice_cells::MatrixVersion::theme`] at publish time so
+    /// any palette change invalidates the matrix and rebuilds with
+    /// the new colours. Per the design doc, theme changes are rare
+    /// — a whole-doc rebuild is an acceptable invalidation cost.
+    pub theme: crate::ui::theme::Theme,
 }
 
 impl Default for CellsRenderState {
@@ -779,6 +789,7 @@ impl Default for CellsRenderState {
             inlay_hints: Arc::from(Vec::<InlayHintRow>::new().into_boxed_slice()),
             folds: Arc::from(Vec::<lattice_core::Fold>::new().into_boxed_slice()),
             viewport_height: 0,
+            theme: crate::ui::theme::Theme::default(),
         }
     }
 }

@@ -99,6 +99,16 @@ pub mod window;
 pub(crate) mod editor_element;
 #[cfg(feature = "bench-internals")]
 pub mod editor_element;
+// S4.0 (2026-05-26): cell-grid → GPUI TextRun converter. The
+// substrate→GPUI translation layer that turns
+// `lattice_cells::Cell` payloads into the
+// `(combined_text, Vec<TextRun>, inlay_offsets)` shape
+// `EditorElement::prepaint` consumes. Gated behind `window`
+// because it depends on `gpui::{Font, TextRun}`; mirrors the
+// `editor_element` gating. Anchor:
+// `docs/dev/architecture/cell-grid-renderer.md`.
+#[cfg(feature = "window")]
+pub mod cells_paint;
 
 #[cfg(feature = "window")]
 pub use window::{document_from_path, run};

@@ -3628,6 +3628,7 @@ dependencies = [
  "arc-swap",
  "criterion",
  "gpui",
+ "lattice-cells",
  "lattice-completion",
  "lattice-config",
  "lattice-core",

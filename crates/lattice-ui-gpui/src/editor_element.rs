@@ -1260,7 +1260,12 @@ impl<'a> LineRunBuilder<'a> {
     }
 }
 
-fn make_run_with_color(color: u32, len: usize, font: &gpui::Font) -> TextRun {
+/// S4.0 (2026-05-26): visibility bumped to `pub(crate)` so
+/// `cells_paint` can reuse this shape when building TextRuns
+/// from cells. The cell-derived path emits one TextRun per
+/// consecutive same-fg cell group — same shape, same field set
+/// as the legacy syntax-span path.
+pub(crate) fn make_run_with_color(color: u32, len: usize, font: &gpui::Font) -> TextRun {
     TextRun {
         len,
         font: font.clone(),

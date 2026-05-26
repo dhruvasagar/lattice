@@ -1177,6 +1177,20 @@ impl EditorView {
             inlay_hints,
             diagnostic_underlines,
             inlay_color,
+            // S4.1 (2026-05-27): active pane consumes the cell
+            // matrix published by the cell-builder worker;
+            // inactive panes pass `None` (mirrors `visible_rows`
+            // — the cells worker only publishes for the active
+            // document). The `prepaint` body branches use this
+            // as the first try in a `cells → prepaint → legacy`
+            // fallback chain; folded rows / boot frames / the
+            // brief buffer-switch gap fall through to the
+            // existing prepaint and legacy paths.
+            cell_matrix: if render_active {
+                Some(rs_guard.cells.matrix.load_full())
+            } else {
+                None
+            },
         };
 
         Self::pane_chrome(

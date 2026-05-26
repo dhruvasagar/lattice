@@ -68,11 +68,13 @@ use gpui::{
     IntoElement, LayoutId, Length, Pixels, SharedString, ShapedLine, Style, TextRun, Window, fill,
     point, px, rgb, size,
 };
+use lattice_cells::CellMatrix;
 use lattice_host::cursor_shape::CursorShape;
 use lattice_host::render_state::{RowRun, VisibleSpans};
 use lattice_syntax::{Style as SyntaxStyle, StyledSpan};
 
 use crate::GpuiTheme;
+use crate::cells_paint::cell_row_to_text_runs;
 
 /// Adapter: host-canonical [`Theme::syntax_style`] -> packed 24-bit
 /// `0xRRGGBB`. Phase 5.8.AF.6 / issue-2 hoist: identical body to
@@ -248,6 +250,22 @@ pub(crate) struct EditorElement {
     /// `0xRRGGBB` for inlay virtual-text. `host_theme` resolved by
     /// the caller, Catppuccin overlay1 (0x7f849c) fallback.
     pub(crate) inlay_color: u32,
+    /// S4.1 (2026-05-27): cell-grid substrate snapshot. Populated
+    /// from `render_state.cells.matrix.load_full()` for the active
+    /// pane; `None` for inactive panes (mirrors the
+    /// `visible_rows`/`visible_spans` split, since the cells
+    /// worker only publishes for the active document).
+    ///
+    /// When `Some` and the row's source line is covered by the
+    /// matrix, `prepaint` shapes from cells (S4.0 converter →
+    /// `shape_line`) and skips both the prepaint and legacy
+    /// builds. When `None` or the row is folded / out-of-matrix
+    /// (boot frame, buffer-switch gap), dispatch falls through to
+    /// `shape_row_from_prepaint` and finally `shape_row`. Mirrors
+    /// the TUI's `cell_row_to_source_spans` → `RowPrepaint`
+    /// fallback chain that landed in S3.c.0, retired in
+    /// S3.c.final.
+    pub(crate) cell_matrix: Option<Arc<CellMatrix>>,
 }
 
 /// Per-frame layout state. Slice X3.full.2 holds nothing.
@@ -511,6 +529,35 @@ impl Element for EditorElement {
                 (shaped, offsets)
             };
 
+        // S4.1 (2026-05-27): cell-grid fast path. When the cells
+        // worker has published a row for `source_line`, the
+        // (combined_text, runs, inlay_offsets) triple comes
+        // straight out of the matrix via `cell_row_to_text_runs`.
+        // Same `shape_line` call shape as the other two paths; the
+        // win is upstream — runs come from the worker's
+        // pre-collapsed cell groups instead of being recomputed
+        // per frame from spans/inlays. Modifier coverage is fg-only
+        // at S4.1 (matches legacy parity); S4.2 propagates BOLD /
+        // ITALIC into the run's font weight/style and adds
+        // UNDERLINE / DIM / REVERSE.
+        let shape_row_from_cells =
+            |row: &lattice_cells::CellRow,
+             window: &mut Window|
+             -> (ShapedLine, Vec<(u32, u32)>) {
+                let (combined, runs, inlay_offsets) =
+                    cell_row_to_text_runs(row, &font);
+                let _shape_t = std::time::Instant::now();
+                let shaped = window.text_system().shape_line(
+                    SharedString::from(combined),
+                    font_size,
+                    &runs,
+                    None,
+                );
+                shape_us.set(shape_us.get() + _shape_t.elapsed().as_micros() as u64);
+                shape_count.set(shape_count.get() + 1);
+                (shaped, inlay_offsets)
+            };
+
         // Per-row diagnostic-segment computation. Walks
         // `self.diagnostic_underlines` against (line_idx, line_text,
         // inlay_offsets); returns (col_start, col_end_excl, color)
@@ -748,25 +795,33 @@ impl Element for EditorElement {
                 // raw_lines is indexed by visible-row offset, not
                 // by absolute line.
                 let line = raw_lines.get(rel).copied().unwrap_or("");
+                // S4.1: cells → prepaint → legacy fallback chain.
+                // The cells lookup is by absolute source line
+                // (`row_at_source_line` handles fold elision by
+                // returning `None`); prepaint and legacy then
+                // handle the gap exactly as they did pre-S4.1.
+                let cell_row = self
+                    .cell_matrix
+                    .as_ref()
+                    .and_then(|m| m.row_at_source_line(line_idx as u32));
                 let prepaint_row = self.visible_rows.rows.get(rel);
-                let (shaped, inlay_offsets) = match prepaint_row {
-                    Some(row) => {
-                        // A.2a / A.2b.2 fast path: worker-prepainted
-                        // row with inlays already woven in. Active
-                        // pane only — inactive panes pass a
-                        // `VisibleRows::default()` so this match
-                        // always falls through for them.
-                        shape_row_from_prepaint(row, window)
-                    }
-                    None => {
-                        let line_spans: &[StyledSpan] = self
-                            .visible_spans
-                            .spans
-                            .get(rel)
-                            .map(Vec::as_slice)
-                            .unwrap_or(&[]);
-                        shape_row(line, line_spans, line_idx as u32, window)
-                    }
+                let (shaped, inlay_offsets) = if let Some(row) = cell_row {
+                    shape_row_from_cells(row, window)
+                } else if let Some(row) = prepaint_row {
+                    // A.2a / A.2b.2 fast path: worker-prepainted
+                    // row with inlays already woven in. Active
+                    // pane only — inactive panes pass a
+                    // `VisibleRows::default()` so this branch
+                    // falls through for them.
+                    shape_row_from_prepaint(row, window)
+                } else {
+                    let line_spans: &[StyledSpan] = self
+                        .visible_spans
+                        .spans
+                        .get(rel)
+                        .map(Vec::as_slice)
+                        .unwrap_or(&[]);
+                    shape_row(line, line_spans, line_idx as u32, window)
                 };
                 let diag_segs = diag_segments_for_row(line_idx as u32, line, &inlay_offsets);
                 let overlay_quads = overlay_quads_for_row(line_idx as u32, rel, line, &inlay_offsets);
@@ -786,22 +841,31 @@ impl Element for EditorElement {
                 // 2026-05-26: raw_lines indexed by visible-row
                 // offset (see fallback branch above).
                 let line = raw_lines.get(rel).copied().unwrap_or("");
+                // S4.1: cells → prepaint → legacy fallback chain.
+                // Gutter-driven walk already pre-filters folded
+                // lines, so `row_at_source_line` is asked only
+                // about visible rows; it returns `None` only
+                // during the boot frame before the cell-builder's
+                // first publish or during the buffer-switch gap.
+                let cell_row = self
+                    .cell_matrix
+                    .as_ref()
+                    .and_then(|m| m.row_at_source_line(meta.line_idx));
                 let prepaint_row = self.visible_rows.rows.get(rel);
-                let (shaped, inlay_offsets) = match prepaint_row {
-                    Some(row) => {
-                        // A.2a / A.2b.2 fast path: worker-prepainted
-                        // row with inlays already woven in.
-                        shape_row_from_prepaint(row, window)
-                    }
-                    None => {
-                        let line_spans: &[StyledSpan] = self
-                            .visible_spans
-                            .spans
-                            .get(rel)
-                            .map(Vec::as_slice)
-                            .unwrap_or(&[]);
-                        shape_row(line, line_spans, meta.line_idx, window)
-                    }
+                let (shaped, inlay_offsets) = if let Some(row) = cell_row {
+                    shape_row_from_cells(row, window)
+                } else if let Some(row) = prepaint_row {
+                    // A.2a / A.2b.2 fast path: worker-prepainted
+                    // row with inlays already woven in.
+                    shape_row_from_prepaint(row, window)
+                } else {
+                    let line_spans: &[StyledSpan] = self
+                        .visible_spans
+                        .spans
+                        .get(rel)
+                        .map(Vec::as_slice)
+                        .unwrap_or(&[]);
+                    shape_row(line, line_spans, meta.line_idx, window)
                 };
                 let diag_segs = diag_segments_for_row(meta.line_idx, line, &inlay_offsets);
                 let overlay_quads = overlay_quads_for_row(meta.line_idx, rel, line, &inlay_offsets);

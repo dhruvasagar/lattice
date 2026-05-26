@@ -155,12 +155,15 @@ pub fn recompute(
 
     // Cache miss: rebuild. S2.2 was whole-doc + raw codepoints;
     // S2.3.a adds syntax-resolved fg via the host theme; S2.3.b
-    // splices inlay-hint cells. Chunked mode lands in S2.4.
+    // splices inlay-hint cells; S2.3.c elides closed-fold interior
+    // lines. Chunked mode lands in S2.4.
     let matrix = build_whole_doc_matrix(
         snapshot.as_ref(),
         cells.syntax_handle.as_deref(),
         &cells.theme,
         &cells.inlay_hints,
+        &cells.folds,
+        cells.foldenable,
         cells.version,
     );
     matrix_cell.store(Arc::new(matrix));
@@ -168,18 +171,21 @@ pub fn recompute(
 }
 
 /// Build a whole-doc [`CellMatrix`] from `snapshot` + optional
-/// syntax handle + theme + inlay-hint payload.
+/// syntax handle + theme + inlay-hint payload + folds.
 ///
-/// One [`CellRow`] per source line. Cell codepoints come from the
-/// document snapshot's rope. `cell.fg` is the theme-resolved RGB
-/// for the syntax span covering each byte; bytes outside any span
-/// (or every byte when no syntax handle is attached) take the
-/// theme's `Style::Default` fg. Inlay hints whose `(line, byte)`
-/// falls inside the visible range splice virtual cells (one per
-/// inlay char) at that position with `flags::INLAY` set, and
-/// record `(orig_byte, char_width)` on `CellRow::inlay_offsets`
-/// so `byte_to_combined_col` returns the right post-inlay column.
-/// S2.3.c will add fold elision.
+/// One [`CellRow`] per source line that survives fold elision. Cell
+/// codepoints come from the document snapshot's rope. `cell.fg` is
+/// the theme-resolved RGB for the syntax span covering each byte;
+/// bytes outside any span (or every byte when no syntax handle is
+/// attached) take the theme's `Style::Default` fg. Inlay hints
+/// whose `(line, byte)` falls inside the visible range splice
+/// virtual cells (one per inlay char) at that position with
+/// `flags::INLAY` set, and record `(orig_byte, char_width)` on
+/// `CellRow::inlay_offsets`. Source lines that fall *strictly
+/// inside* a closed fold (`start_line < line <= end_line`) produce
+/// no row — the fold's `start_line` is the only visible row for the
+/// folded section, matching the existing `line_inside_closed_fold`
+/// semantics.
 ///
 /// Stale-syntax behaviour: if the syntax snapshot's
 /// `text_version` is behind the document's `text_version`, the
@@ -194,6 +200,8 @@ fn build_whole_doc_matrix(
     syntax_handle: Option<&lattice_syntax::SyntaxHandle>,
     theme: &crate::ui::theme::Theme,
     inlay_hints: &[crate::render_state::InlayHintRow],
+    folds: &[lattice_core::Fold],
+    foldenable: bool,
     version: MatrixVersion,
 ) -> CellMatrix {
     let line_count = snapshot.buffer.line_count();
@@ -223,8 +231,19 @@ fn build_whole_doc_matrix(
     // bucket — the splice walk assumes that order.
     let inlays_by_line = bucket_inlays_by_line(inlay_hints, line_count);
 
+    // Fold index — predicates collapse to `false` when foldenable
+    // is off, so the elision branch becomes a no-op for `zi`.
+    let fold_index = crate::folds::FoldIndex::from_folds(folds, foldenable);
+
     let mut rows: Vec<CellRow> = Vec::with_capacity(line_count as usize);
     for line_idx in 0..line_count {
+        // S2.3.c: skip source lines that fall strictly inside a
+        // closed fold. The fold's start_line stays visible
+        // (renderer paints the fold marker there); only the
+        // interior is elided.
+        if fold_index.line_inside_closed_fold(line_idx) {
+            continue;
+        }
         let text = snapshot.buffer.line(line_idx).unwrap_or_default();
         let line_spans: &[lattice_syntax::StyledSpan] = per_line_spans
             .as_ref()
@@ -443,14 +462,39 @@ mod tests {
         theme: crate::ui::theme::Theme,
         inlay_hints: Vec<crate::render_state::InlayHintRow>,
     ) -> ArcSwap<RenderState> {
+        rs_with_snapshot_full_folded(
+            snapshot,
+            version,
+            matrix_cell,
+            syntax_handle,
+            theme,
+            inlay_hints,
+            Vec::new(),
+            true,
+        )
+    }
+
+    /// Folded variant used by S2.3.c tests that need to drive the
+    /// fold-elision path.
+    fn rs_with_snapshot_full_folded(
+        snapshot: Option<Arc<DocumentSnapshot>>,
+        version: MatrixVersion,
+        matrix_cell: Arc<ArcSwap<CellMatrix>>,
+        syntax_handle: Option<Arc<lattice_syntax::SyntaxHandle>>,
+        theme: crate::ui::theme::Theme,
+        inlay_hints: Vec<crate::render_state::InlayHintRow>,
+        folds: Vec<lattice_core::Fold>,
+        foldenable: bool,
+    ) -> ArcSwap<RenderState> {
         let cells = CellsRenderState {
             matrix: matrix_cell,
             version,
             snapshot,
             syntax_handle,
             inlay_hints: Arc::from(inlay_hints.into_boxed_slice()),
-            folds: Arc::from(Vec::<lattice_core::Fold>::new().into_boxed_slice()),
+            folds: Arc::from(folds.into_boxed_slice()),
             viewport_height: 0,
+            foldenable,
             theme,
         };
         let rs = RenderState {
@@ -898,6 +942,144 @@ mod tests {
         assert_ne!(first_ptr, Arc::as_ptr(&matrix_cell.load_full()));
         let row = matrix_cell.load().slice(0, 1).iter().next().cloned().unwrap();
         assert_eq!(row_text(&row), "!a");
+    }
+
+    // ---- S2.3.c — fold elision ----
+
+    fn closed_fold(start: u32, end: u32) -> lattice_core::Fold {
+        lattice_core::Fold {
+            start_line: start,
+            end_line: end,
+            closed: true,
+            identity: None,
+        }
+    }
+
+    fn open_fold(start: u32, end: u32) -> lattice_core::Fold {
+        lattice_core::Fold {
+            start_line: start,
+            end_line: end,
+            closed: false,
+            identity: None,
+        }
+    }
+
+    /// A closed fold drops its interior source lines from the
+    /// matrix. The fold's `start_line` stays visible — vim renders
+    /// the marker there — and `source_line` on the next surviving
+    /// row preserves its logical line index (so the renderer maps
+    /// the click-target back to the source).
+    #[test]
+    fn closed_fold_elides_interior_lines() {
+        let theme = crate::ui::theme::Theme::default();
+        let snap = snap_of_versioned("a\nb\nc\nd\ne", 1);
+        let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+        // Fold lines 1..3 — interior lines 2, 3 are elided; line
+        // 1 (start) stays.
+        let folds = vec![closed_fold(1, 3)];
+        let rs = rs_with_snapshot_full_folded(
+            Some(snap),
+            v(1),
+            matrix_cell.clone(),
+            None,
+            theme,
+            Vec::new(),
+            folds,
+            true,
+        );
+        assert_eq!(recompute(&rs, &matrix_cell), WorkerDecision::Recomputed);
+
+        let m = matrix_cell.load();
+        // source_line_count is preserved (pre-fold logical count).
+        assert_eq!(m.source_line_count, 5);
+        // visible_line_count post-fold: 5 - 2 elided = 3 rows.
+        assert_eq!(m.visible_line_count, 3);
+        let source_lines: Vec<u32> = m
+            .slice(0, 10)
+            .iter()
+            .map(|r| r.source_line)
+            .collect();
+        assert_eq!(source_lines, vec![0, 1, 4]);
+    }
+
+    /// An OPEN fold does not elide its interior. The presence of a
+    /// fold range in the list is not enough — only `closed = true`
+    /// participates.
+    #[test]
+    fn open_fold_does_not_elide() {
+        let theme = crate::ui::theme::Theme::default();
+        let snap = snap_of_versioned("a\nb\nc", 1);
+        let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+        let folds = vec![open_fold(0, 2)];
+        let rs = rs_with_snapshot_full_folded(
+            Some(snap),
+            v(1),
+            matrix_cell.clone(),
+            None,
+            theme,
+            Vec::new(),
+            folds,
+            true,
+        );
+        assert_eq!(recompute(&rs, &matrix_cell), WorkerDecision::Recomputed);
+        let m = matrix_cell.load();
+        assert_eq!(m.visible_line_count, 3);
+        let source_lines: Vec<u32> =
+            m.slice(0, 10).iter().map(|r| r.source_line).collect();
+        assert_eq!(source_lines, vec![0, 1, 2]);
+    }
+
+    /// `foldenable = false` disables elision even with closed folds
+    /// in the list — `zi` (toggle) produces the unfolded matrix
+    /// from the same payload without re-touching the fold list.
+    #[test]
+    fn foldenable_off_disables_elision() {
+        let theme = crate::ui::theme::Theme::default();
+        let snap = snap_of_versioned("a\nb\nc", 1);
+        let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+        let folds = vec![closed_fold(0, 2)];
+        let rs = rs_with_snapshot_full_folded(
+            Some(snap),
+            v(1),
+            matrix_cell.clone(),
+            None,
+            theme,
+            Vec::new(),
+            folds,
+            false,
+        );
+        assert_eq!(recompute(&rs, &matrix_cell), WorkerDecision::Recomputed);
+        let m = matrix_cell.load();
+        assert_eq!(m.visible_line_count, 3, "no elision when foldenable=false");
+    }
+
+    /// Two non-overlapping closed folds both elide their interiors.
+    /// Establishes that the FoldIndex's `partition_point` walk
+    /// handles multiple folds correctly (the worker just calls
+    /// `line_inside_closed_fold` per line).
+    #[test]
+    fn multiple_closed_folds_elide_independently() {
+        let theme = crate::ui::theme::Theme::default();
+        let snap = snap_of_versioned("a\nb\nc\nd\ne\nf\ng", 1);
+        let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+        // Fold lines 0..2 + 4..6. Visible: 0, 3, 4 (start of 2nd
+        // fold).
+        let folds = vec![closed_fold(0, 2), closed_fold(4, 6)];
+        let rs = rs_with_snapshot_full_folded(
+            Some(snap),
+            v(1),
+            matrix_cell.clone(),
+            None,
+            theme,
+            Vec::new(),
+            folds,
+            true,
+        );
+        assert_eq!(recompute(&rs, &matrix_cell), WorkerDecision::Recomputed);
+        let m = matrix_cell.load();
+        let source_lines: Vec<u32> =
+            m.slice(0, 10).iter().map(|r| r.source_line).collect();
+        assert_eq!(source_lines, vec![0, 3, 4]);
     }
 
     /// Theme axis bump rebuilds the matrix even with identical

@@ -907,7 +907,18 @@ impl Editor {
                     text: self.document.text_version(),
                     syntax: self.document.text_version(),
                     inlay_hints: inlay_version_val,
-                    folds: crate::folds::compute_fold_hash(&self.folds),
+                    // S2.3.c (2026-05-26): the cells fold axis also
+                    // captures `foldenable`. `compute_fold_hash`
+                    // hashes the fold list itself; XORing in the
+                    // foldenable bit makes `zi` (toggle) invalidate
+                    // the matrix even when the list is unchanged.
+                    // The syntax substate's `fold_hash` keeps its
+                    // existing list-only shape — it's used for row
+                    // composition, not elision.
+                    folds: {
+                        let h = crate::folds::compute_fold_hash(&self.folds);
+                        if self.foldenable() { h } else { !h }
+                    },
                     theme: {
                         use std::hash::{Hash, Hasher};
                         let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -927,6 +938,7 @@ impl Editor {
                     self.folds.clone().into_boxed_slice(),
                 ),
                 viewport_height: self.viewport_height,
+                foldenable: self.foldenable(),
                 theme: self.host_theme,
             }),
             ..RenderState::default()

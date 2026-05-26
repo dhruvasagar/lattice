@@ -766,6 +766,15 @@ pub struct CellsRenderState {
     /// whole-doc-mode threshold.
     pub viewport_height: u32,
 
+    /// `:set foldenable` for the active buffer. The cell-builder
+    /// feeds this into [`crate::folds::FoldIndex::from_folds`] so
+    /// elision predicates collapse to `false` when folding is off
+    /// — `zi` then yields the unfolded matrix without a separate
+    /// code path. Folded into [`lattice_cells::MatrixVersion::folds`]
+    /// at publish time so toggling foldenable invalidates the
+    /// matrix.
+    pub foldenable: bool,
+
     /// Renderer-neutral host theme. The cell-builder resolves each
     /// styled span's `lattice_syntax::Style` to an `0xRRGGBB`
     /// `cell.fg` via [`crate::ui::theme::Theme::syntax_style`]. A
@@ -789,6 +798,7 @@ impl Default for CellsRenderState {
             inlay_hints: Arc::from(Vec::<InlayHintRow>::new().into_boxed_slice()),
             folds: Arc::from(Vec::<lattice_core::Fold>::new().into_boxed_slice()),
             viewport_height: 0,
+            foldenable: true,
             theme: crate::ui::theme::Theme::default(),
         }
     }

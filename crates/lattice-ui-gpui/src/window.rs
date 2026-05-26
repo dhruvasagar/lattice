@@ -1759,9 +1759,28 @@ impl Render for EditorView {
             pre_ad.viewport_height,
             pre_ad.buffer_kind,
         );
+        // 2026-05-26 held-j probe: log every render() entry +
+        // post-ensure scroll so we can tell if render runs per
+        // keystroke and whether scroll follows cursor.line.
+        // Mismatch (cursor advances but render doesn't, or render
+        // runs but scroll lags) tells us where the visual stall is.
+        tracing::debug!(
+            cursor_line = pre_ad.cursor.line,
+            cursor_byte = pre_ad.cursor.byte,
+            scroll = pre_ad.scroll,
+            viewport = pre_ad.viewport_height,
+            cache_hit = self.ensure_gate.cursor_snap_key == Some(cursor_key),
+            "[held-j-render] render() entry"
+        );
         if self.ensure_gate.cursor_snap_key != Some(cursor_key) {
             self.app.ensure_cursor_in_viewport();
             let post_ad = self.app.render_state.load().active_document.clone();
+            tracing::debug!(
+                cursor_line = post_ad.cursor.line,
+                scroll_before = pre_ad.scroll,
+                scroll_after = post_ad.scroll,
+                "[held-j-render] post ensure_cursor_in_viewport"
+            );
             self.ensure_gate.cursor_snap_key = Some((
                 post_ad.cursor,
                 post_ad.scroll,

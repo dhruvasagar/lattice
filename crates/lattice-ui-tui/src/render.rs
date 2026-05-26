@@ -3266,45 +3266,49 @@ fn compose_visible_lines_inner(
         let mut body = if is_messages_buffer {
             messages_line_spans(&line_text, &app.theme, buffer_w)
         } else {
-            // S3.c.0 (2026-05-26): prefer cell-derived spans when
-            // the cell-builder worker has published a row for
-            // this source line. Cells carry theme-resolved fg +
-            // modifier flags (S3.a) — the
+            // S3.c.final (2026-05-26): cell-derived spans are the
+            // ONLY source for document-buffer bodies. The
             // `cell_row_to_source_spans` converter (S3.b) filters
             // INLAY-flagged cells so the resulting spans cover
             // source-byte positions one-to-one with `line_text`,
             // preserving overlay byte-coordinate semantics for
             // every downstream layer (whitespace, semantic
-            // tokens, hlsearch, visual, diagnostics, …).
+            // tokens, hlsearch, visual, diagnostics, fold suffix,
+            // post-overlay inlay splice — all validated against
+            // cell-derived bodies in S3.c.1–4).
             //
-            // Falls back to the legacy `RowPrepaint.runs` path
-            // when the matrix has no row for this line — boot
-            // frames before the worker's first build, lines past
-            // the matrix's coverage, or folded lines (the matrix
-            // elides those rows; the legacy path handled
-            // pre-fold rendering before S2.3.c). The fallback is
-            // bit-identical to the pre-S3.c.0 shape, so any
-            // window where the matrix lags doesn't introduce a
-            // visible flicker.
+            // The RowPrepaint fallback that lived here through
+            // S3.c.0–4 has been retired. Empty-matrix windows
+            // (boot frames before the first cell-builder publish,
+            // or the brief gap during a buffer switch) emit
+            // plain-text `Span::raw(line_text)` instead — exactly
+            // what the legacy fallback degraded to once
+            // `visible_rows` ran out of rows. Semantically
+            // equivalent for the user; one source-of-truth from
+            // the code's perspective.
             //
-            // S3.c.1+ slices validate each overlay against the
-            // cell-derived body in isolation; S3.c.final retires
-            // the RowPrepaint fallback for code-class buffers
-            // once every overlay is covered.
+            // The highlights worker still runs and populates
+            // `view.visible_rows`; markdown / help / messages
+            // bodies (in other render functions) still read from
+            // it. Only the document-body branch in
+            // `compose_visible_lines_inner` is cut over to the
+            // cell-grid.
             let rs_load = view.app.render_state.load();
             let matrix = rs_load.cells.matrix.load();
             if let Some(cell_row) = matrix.row_at_source_line(line_idx) {
                 let spans = crate::cells_render::cell_row_to_source_spans(cell_row);
                 truncate_spans_to_width(spans, buffer_w)
             } else {
-                let scroll = view.app.ad().scroll;
-                let row = (line_idx >= scroll).then(|| (line_idx - scroll) as usize);
-                let row_runs: &[lattice_host::render_state::RowRun] = row
-                    .and_then(|idx| view.visible_rows.rows.get(idx))
-                    .map(|p| p.runs.as_slice())
-                    .unwrap_or(&[]);
-                let derived_spans = source_spans_from_runs(row_runs);
-                render_styled_line(&line_text, &derived_spans, buffer_w)
+                // Empty-matrix fallback: plain line text, no
+                // styling. Hits only on the first frame at boot
+                // (before the cell-builder's first publish) or
+                // during a buffer switch's brief window. The
+                // overlays below paint correctly against plain
+                // text — the byte-position contract still holds.
+                truncate_spans_to_width(
+                    vec![Span::raw(line_text.clone())],
+                    buffer_w,
+                )
             }
         };
         // M.7.3.b: whitespace decoration pre-pass. Cheap when

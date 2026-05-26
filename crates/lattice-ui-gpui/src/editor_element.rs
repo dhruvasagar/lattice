@@ -120,6 +120,15 @@ pub(crate) struct CursorState {
     /// Modal-shape (Block / Bar / Underline). Resolved by the
     /// caller via `CursorShape::for_mode`.
     pub(crate) shape: CursorShape,
+    /// 2026-05-26: the cursor's source-line text. The caller
+    /// (window.rs `paint_pane`) reads it from the document
+    /// snapshot at the cursor's line. Used by the cursor-layout
+    /// block to compute `char_col` via `byte_to_combined_col` —
+    /// `self.text` was zeroed in slice A.4 so the previous
+    /// `raw_lines.get(c.line)` lookup returned `""` for any
+    /// `c.line != 0` and pinned the horizontal cursor at
+    /// column 0.
+    pub(crate) line_text: String,
 }
 
 /// One inlay-hint row (slice X3.full.4). Caller flattens the LSP
@@ -817,21 +826,15 @@ impl Element for EditorElement {
                 match row_in_viewport {
                     None => (None, None),
                     Some(row) => {
-                        // 2026-05-26: `self.text` was zeroed in slice A.4
-                        // (`1e1da8d`) — `raw_lines.get(c.line)` now
-                        // always returns None for `c.line != 0`, which
-                        // collapsed `char_col` to 0 and pinned the
-                        // horizontal cursor at column 0 (vertical
-                        // motion still moved because the row came
-                        // from the gutter). Read the cursor's line
-                        // text from `row_meta` instead; it's built
-                        // per visible row during the prepaint loop
-                        // above and indexed by the same `row` the
-                        // gutter walk returned.
-                        let line = row_meta
-                            .get(row as usize)
-                            .map(|(_, s)| s.as_str())
-                            .unwrap_or("");
+                        // 2026-05-26 (rev 2): `self.text` was zeroed
+                        // in slice A.4 (`1e1da8d`) and `row_meta`
+                        // is populated from the same empty source,
+                        // so neither carries the cursor's line
+                        // text. The caller (window.rs `paint_pane`)
+                        // reads the cursor's source line from the
+                        // document snapshot and passes it via
+                        // `CursorState.line_text`.
+                        let line: &str = c.line_text.as_str();
                         let byte = (c.byte as usize).min(line.len());
                         // Slice X3.full.4: remap byte → combined col
                         // via the cursor row's inlay offsets so the

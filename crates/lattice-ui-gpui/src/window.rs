@@ -850,11 +850,20 @@ impl EditorView {
         // user that focus has shifted, complementing the popup
         // border-color change above.
         let cursor_state = match (render_active, cursor_shape) {
-            (true, Some(shape)) => Some(crate::editor_element::CursorState {
-                line: cursor.line,
-                byte: cursor.byte,
-                shape,
-            }),
+            (true, Some(shape)) => {
+                // 2026-05-26: read the cursor's source line from
+                // the document snapshot. `EditorElement.text` was
+                // zeroed in slice A.4 (`1e1da8d`) so the element
+                // can't recover the cursor's line text itself —
+                // pass it via `CursorState.line_text` here.
+                let line_text = snapshot.buffer.line(cursor.line).unwrap_or_default();
+                Some(crate::editor_element::CursorState {
+                    line: cursor.line,
+                    byte: cursor.byte,
+                    shape,
+                    line_text,
+                })
+            }
             _ => None,
         };
 

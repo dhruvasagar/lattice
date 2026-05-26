@@ -385,4 +385,204 @@ mod tests {
         assert!(!spans[2].style.add_modifier.contains(Modifier::BOLD));
         assert_eq!(spans[3].content.as_ref(), "(");
     }
+
+    // ---- S3.c.1 — whitespace decoration on cell-derived bodies ----
+    //
+    // Validates that `crate::render::apply_whitespace_decoration`
+    // walks cell-derived spans correctly. The decoration function
+    // consumes spans + line text opaquely and walks each char by
+    // utf-8 byte offset; cell-derived source spans cover the same
+    // source-byte positions one-to-one with `line_text`, so the
+    // classifier should fire at identical positions to the
+    // legacy RowPrepaint path.
+
+    use crate::render::{apply_whitespace_decoration, WhitespaceDecoration};
+    use ratatui::style::Style as TuiStyle;
+
+    fn ws_deco_all_off() -> WhitespaceDecoration {
+        WhitespaceDecoration {
+            tab: None,
+            trailing: None,
+            leading: None,
+            space: None,
+            eol: None,
+            style_normal: TuiStyle::default(),
+            style_trailing: TuiStyle::default(),
+        }
+    }
+
+    fn ws_deco(
+        tab: Option<char>,
+        trailing: Option<char>,
+        leading: Option<char>,
+        space: Option<char>,
+        eol: Option<char>,
+    ) -> WhitespaceDecoration {
+        WhitespaceDecoration {
+            tab,
+            trailing,
+            leading,
+            space,
+            eol,
+            style_normal: TuiStyle::default(),
+            style_trailing: TuiStyle::default(),
+        }
+    }
+
+    /// Helper: concatenate every span's text into one `String` so
+    /// tests can assert on the visible output without caring how
+    /// the spans were split.
+    fn collect_text(spans: &[Span<'static>]) -> String {
+        spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    /// Mid-line space cells get substituted by the `·` space glyph.
+    /// Cell-derived path produces source spans containing the
+    /// literal space; the classifier walks bytes and replaces.
+    #[test]
+    fn s3c1_mid_line_space_substituted() {
+        let fg = 0xcdd6f4;
+        let cells = vec![
+            Cell::new(b'a' as u32, fg, 0, 0),
+            Cell::new(b' ' as u32, fg, 0, 0),
+            Cell::new(b'b' as u32, fg, 0, 0),
+        ];
+        let r = row(cells);
+        let body = cell_row_to_source_spans(&r);
+        let line_text = "a b";
+        let d = ws_deco(None, None, None, Some('·'), None);
+        let out = apply_whitespace_decoration(body, line_text, &d);
+        assert_eq!(collect_text(&out), "a·b");
+    }
+
+    /// Leading-whitespace classification fires for spaces before
+    /// the first non-whitespace byte. Cell-derived spans don't
+    /// confuse the position tracking — `pos` advances by utf-8
+    /// byte length per char regardless of span boundaries.
+    #[test]
+    fn s3c1_leading_whitespace_substituted() {
+        let fg = 0xcdd6f4;
+        // `  hi` — two leading spaces.
+        let cells = vec![
+            Cell::new(b' ' as u32, fg, 0, 0),
+            Cell::new(b' ' as u32, fg, 0, 0),
+            Cell::new(b'h' as u32, fg, 0, 0),
+            Cell::new(b'i' as u32, fg, 0, 0),
+        ];
+        let r = row(cells);
+        let body = cell_row_to_source_spans(&r);
+        let line_text = "  hi";
+        let d = ws_deco(None, None, Some('›'), None, None);
+        let out = apply_whitespace_decoration(body, line_text, &d);
+        assert_eq!(collect_text(&out), "››hi");
+    }
+
+    /// Trailing-whitespace classification fires for spaces after
+    /// the last non-whitespace byte. Cells-derived spans must
+    /// carry those trailing chars so the classifier sees them.
+    #[test]
+    fn s3c1_trailing_whitespace_substituted() {
+        let fg = 0xcdd6f4;
+        // `hi  ` — two trailing spaces.
+        let cells = vec![
+            Cell::new(b'h' as u32, fg, 0, 0),
+            Cell::new(b'i' as u32, fg, 0, 0),
+            Cell::new(b' ' as u32, fg, 0, 0),
+            Cell::new(b' ' as u32, fg, 0, 0),
+        ];
+        let r = row(cells);
+        let body = cell_row_to_source_spans(&r);
+        let line_text = "hi  ";
+        let d = ws_deco(None, Some('▷'), None, None, None);
+        let out = apply_whitespace_decoration(body, line_text, &d);
+        assert_eq!(collect_text(&out), "hi▷▷");
+    }
+
+    /// Tab cell substituted by the tab glyph. Cells carry the
+    /// `\t` codepoint verbatim — the converter preserves it; the
+    /// classifier substitutes.
+    #[test]
+    fn s3c1_tab_cell_substituted() {
+        let fg = 0xcdd6f4;
+        let cells = vec![
+            Cell::new(b'x' as u32, fg, 0, 0),
+            Cell::new(b'\t' as u32, fg, 0, 0),
+            Cell::new(b'y' as u32, fg, 0, 0),
+        ];
+        let r = row(cells);
+        let body = cell_row_to_source_spans(&r);
+        let line_text = "x\ty";
+        let d = ws_deco(Some('→'), None, None, None, None);
+        let out = apply_whitespace_decoration(body, line_text, &d);
+        assert_eq!(collect_text(&out), "x→y");
+    }
+
+    /// EOL marker appends after every cell — including for cells-
+    /// derived bodies. Captures the contract that the EOL glyph
+    /// emit is independent of the input spans' provenance.
+    #[test]
+    fn s3c1_eol_marker_appends_after_cells() {
+        let fg = 0xcdd6f4;
+        let cells = vec![
+            Cell::new(b'h' as u32, fg, 0, 0),
+            Cell::new(b'i' as u32, fg, 0, 0),
+        ];
+        let r = row(cells);
+        let body = cell_row_to_source_spans(&r);
+        let line_text = "hi";
+        let d = ws_deco(None, None, None, None, Some('¶'));
+        let out = apply_whitespace_decoration(body, line_text, &d);
+        assert_eq!(collect_text(&out), "hi¶");
+    }
+
+    /// All-off whitespace decoration is a no-op: the cell-derived
+    /// body passes through unchanged. Defensive against any
+    /// future shortcut that might mutate input when no glyphs are
+    /// configured.
+    #[test]
+    fn s3c1_no_op_decoration_preserves_cell_spans() {
+        let fg = 0xcdd6f4;
+        let cells = vec![
+            Cell::new(b'a' as u32, fg, 0, 0),
+            Cell::new(b' ' as u32, fg, 0, 0),
+            Cell::new(b'b' as u32, fg, 0, 0),
+        ];
+        let r = row(cells);
+        let body_before = cell_row_to_source_spans(&r);
+        let line_text = "a b";
+        let d = ws_deco_all_off();
+        let body_after =
+            apply_whitespace_decoration(body_before.clone(), line_text, &d);
+        // Same text, same span count, same styles.
+        assert_eq!(body_after.len(), body_before.len());
+        for (a, b) in body_after.iter().zip(body_before.iter()) {
+            assert_eq!(a.content.as_ref(), b.content.as_ref());
+            assert_eq!(a.style, b.style);
+        }
+    }
+
+    /// Whitespace decoration walks across span boundaries.
+    /// Construct a cell-derived body where the space sits between
+    /// two different-fg cells so it lands on a span boundary;
+    /// the classifier must still fire at the correct byte
+    /// position.
+    #[test]
+    fn s3c1_substitution_across_span_boundary() {
+        let fg_a = 0xff0000;
+        let fg_b = 0x00ff00;
+        let cells = vec![
+            Cell::new(b'a' as u32, fg_a, 0, 0),
+            Cell::new(b' ' as u32, fg_a, 0, 0),
+            Cell::new(b'b' as u32, fg_b, 0, 0),
+        ];
+        let r = row(cells);
+        // First two cells share fg_a → one span; the third cell
+        // breaks to fg_b → second span. Verify boundary.
+        let body = cell_row_to_source_spans(&r);
+        assert_eq!(body.len(), 2);
+        let line_text = "a b";
+        let d = ws_deco(None, None, None, Some('·'), None);
+        let out = apply_whitespace_decoration(body, line_text, &d);
+        assert_eq!(collect_text(&out), "a·b");
+    }
 }

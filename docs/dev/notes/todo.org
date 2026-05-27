@@ -43,10 +43,10 @@
   rendered as links (regression — visual styling restored via
   ~lattice_help::with_markdown_syntax~ overlay; both peers now
   see Style::Link spans in popup.help_highlights).
-- [ ] Help-link follow (~<CR>~ on a link) works on TUI only.
-  ~do_help_follow_link~ lives in lattice-ui-tui app layer; GPUI
-  has no follow path. Hoist into the host so both peers route
-  through the same dispatcher.
+- [X] Help-link follow (~<CR>~ on a link) works on TUI only.
+  ~do_help_follow_link~ hoisted into ~Editor::do_help_follow_link~
+  (2026-05-27); ~Action::FollowLink => BufferKind::Help~ routes to
+  it. Both peers now dispatch through one host-side handler.
 
 * Documentation
 - [ ] lattice-tutor

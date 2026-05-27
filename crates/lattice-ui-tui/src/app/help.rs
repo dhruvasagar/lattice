@@ -37,9 +37,7 @@
 //! concerns owned by `crate::help`. This module is App's
 //! *workflow* layer above that.
 
-use lattice_protocol::position::Position;
-
-use super::{App, EchoLevel, PositionSource, line_byte_len};
+use super::App;
 // Phase 5.8.AD.5: `HelpContent` no longer used at module
 // scope — every content builder + display path is host-side.
 
@@ -227,42 +225,10 @@ impl App {
     // host-side; App-side `do_customize` wrapper above stays for
     // the `HelpLinkTarget::Customize` follow-handler.
 
-    /// `<CR>` on a customize-edit link (M.9.2). Prefills the
-    /// cmdline with `:set NAME=current_value` and switches to
-    /// Command mode so the user can edit the value and submit.
-    /// The actual write goes through the existing `:set` parser
-    /// (validates, cascades, fires `OptionChanged` on the bus).
-    ///
-    /// `read-only` and other `customizable = false` options are
-    /// rejected -- they're not in the customize listing in the
-    /// first place, but a stale link from a prior render
-    /// shouldn't crash. Echoes an info message.
-    fn do_customize_edit(&mut self, name: &str) {
-        // Slice 3c.final.E.5e: spec is a `&dyn ConfigSpec` trait
-        // object borrowed from `editor.config`; can't escape the
-        // closure. Extract the owned values we need (formatted
-        // string + is_bool flag) inside the read.
-        let name_owned = name.to_string();
-        let Some((current, _is_bool)) = self.read_editor(move |e| {
-            e.config
-                .lookup(&name_owned)
-                .map(|spec| (spec.get_formatted(), spec.is_bool()))
-        }) else {
-            self.set_message(EchoLevel::Error, format!("E518: Unknown option: {name}"));
-            return;
-        };
-        // For booleans, surface the `noNAME` alternative form
-        // by prefilling without `=` -- the user can overwrite
-        // with `noNAME` directly. For non-bool, prefill with
-        // `name=current` so the user sees the value and can
-        // edit it inline.
-        let prefill = format!("set {name}={current}");
-        // Slice 3c.final.E.3: bundle both writes into one closure.
-        self.mutate_editor(move |e| {
-            e.command_line = prefill;
-            e.modal = lattice_grammar::ModalState::Command;
-        });
-    }
+    // 2026-05-27: `do_customize_edit` hoisted into
+    // `Editor::do_customize_edit`. The CustomizeEdit follow-handler
+    // is now reachable from both renderer peers through
+    // `Editor::do_help_follow_link`.
 
     /// `:tutor [N]` -- open the interactive Lattice tutor
     /// lesson `N` (default: 1). Vim-tutor pattern: the lesson
@@ -286,211 +252,19 @@ impl App {
     // Phase 5.8.AD.5: legacy do_tutor body removed.
 
     /// Follow the help link under the cursor (`<CR>` in help mode).
-    /// Looks up the link by cursor position, then dispatches based
-    /// on the link target's variant. Source links echo the
-    /// `path:line` for now -- full file-open lands with multi-buffer.
+    ///
+    /// 2026-05-27: hoisted into `Editor::do_help_follow_link` so both
+    /// renderer peers route through one host-side dispatcher. This
+    /// wrapper is kept so existing tests (and any direct callers)
+    /// reach the same flow without going through `apply(Action::FollowLink)`.
     pub(super) fn do_help_follow_link(&mut self) {
-        // Local helper: same range-containment logic as
-        // `HelpBuffer::link_at` (covers same-line + multi-line
-        // labels). M.3.2.c.5 retires the method on HelpBuffer
-        // and shares this logic via a free function in
-        // `crate::help`; for now the inline shape keeps the
-        // diff narrow.
-        fn range_contains_position(
-            r: &lattice_protocol::position::Range,
-            pos: lattice_protocol::position::Position,
-        ) -> bool {
-            if pos.line == r.start.line && pos.line == r.end.line {
-                return pos.byte >= r.start.byte && pos.byte < r.end.byte;
-            }
-            if pos.line < r.start.line || pos.line > r.end.line {
-                return false;
-            }
-            if pos.line == r.start.line {
-                return pos.byte >= r.start.byte;
-            }
-            if pos.line == r.end.line {
-                return pos.byte < r.end.byte;
-            }
-            true
-        }
-
-        let cursor = self.cursor();
-        if self.popup().buffer_id.is_none() {
-            return;
-        }
-        // M.3.2.c.1: prefer help-mode-owned link data from
-        // `buffer_locals`; fall back to the HelpBuffer's
-        // struct field if the locals don't contain the link.
-        // The fallback handles two cases:
-        // (a) tests that synthesize a `HelpLink` and push it
-        //     directly into `h.links` without going through the
-        //     constructor's parsing path -- the link never
-        //     reaches `seed_help_locals`.
-        // (b) the bootstrap window after construction but
-        //     before `seed_help_locals` runs.
-        // M.3.2.c.5 retires the struct field; tests will
-        // construct a `BufferLocals` directly at that point.
-        //
-        // Note: the popup buffer's own id and the registered id
-        // (= `pane.buffer_id`) are intentionally different (see
-        // comment in `open_help_in_pane`); locals are keyed by
-        // the registered id, so we look up via the active
-        // pane's buffer id, not the popup buffer's id.
-        // M.3.2.c.5: in centred-popup mode `pane.buffer_id` is the
-        // doc behind the popup, not the popup's content. The
-        // popup's construction id (`help.id`) is the locals key
-        // `open_popup` seeded under, so prefer it; fall back to
-        // `pane.buffer_id` for the in-pane case (where the pane
-        // was swapped to the registered help id).
-        // Slice 3c.final.B.9: popup id via `popup()` RS accessor;
-        // buffer_locals via published `buffer_locals()` sub-state.
-        let active_help_id = self
-            .popup()
-            .buffer_id
-            .unwrap_or_else(|| self.panes().tree.active().buffer_id);
-        let pane_id = self.panes().tree.active().buffer_id;
-        let locals_map = self.buffer_locals();
-        let Some(link) = locals_map
-            .map
-            .get(&active_help_id)
-            .and_then(|locals| locals.get::<crate::modes::HelpLinks>())
-            .and_then(|hl| {
-                hl.0.iter()
-                    .find(|link| range_contains_position(&link.range, cursor))
-                    .cloned()
-            })
-            .or_else(|| {
-                if pane_id == active_help_id {
-                    return None;
-                }
-                locals_map
-                    .map
-                    .get(&pane_id)
-                    .and_then(|locals| locals.get::<crate::modes::HelpLinks>())
-                    .and_then(|hl| {
-                        hl.0.iter()
-                            .find(|link| range_contains_position(&link.range, cursor))
-                            .cloned()
-                    })
-            })
-        else {
-            self.set_message(EchoLevel::Info, "no link under cursor".to_string());
-            return;
-        };
-        // Clone the target so we can drop the `&help` borrow
-        // before calling `push_position_history` (`&mut self`).
-        let target = link.target.clone();
-        let prev_help_cursor = cursor;
-        match target {
-            crate::help::HelpLinkTarget::Command(name) => {
-                // Help → help link: `do_describe_command` swaps
-                // the existing popup's content in place (see
-                // `open_popup`'s Help-active branch) and pushes a
-                // frame onto `popup_back_stack`. `<C-o>` walks the
-                // back-stack so we deliberately skip the outer
-                // `push_position_history` -- otherwise the user
-                // gets a wasted `<C-o>` step on a dedup entry
-                // pointing at the link cursor in the new content.
-                self.do_describe_command(&name, None);
-            }
-            crate::help::HelpLinkTarget::Execute(cmdline) => {
-                // `[label](exec:CMDLINE)` -- run `:CMDLINE` as if
-                // the user had typed it. Used by picker-style help
-                // buffers (e.g. `:lsp-server-log`) where each row
-                // dispatches the underlying ex-command on Enter.
-                // The cmdline may navigate outside Help (e.g. open
-                // a file), so push position-history for outer
-                // `<C-o>` continuity.
-                self.push_position_history(prev_help_cursor, PositionSource::AutoJump);
-                self.execute_ex_line(&cmdline);
-            }
-            crate::help::HelpLinkTarget::Chord(chord) => {
-                // Same content-swap path as Command -- skip the
-                // outer push; back-stack handles `<C-o>`.
-                self.do_describe_key(&chord);
-            }
-            crate::help::HelpLinkTarget::Topic(name) => {
-                self.do_open_help_topic(Some(&name));
-            }
-            crate::help::HelpLinkTarget::Customize(name) => {
-                self.do_customize(Some(&name));
-            }
-            crate::help::HelpLinkTarget::CustomizeEdit(name) => {
-                self.do_customize_edit(&name);
-            }
-            crate::help::HelpLinkTarget::Mode(name) => {
-                // `[label](mode:NAME)` -- describe the mode. Same
-                // content-swap path as Command/Topic; the popup
-                // back-stack handles `<C-o>`.
-                self.do_describe_mode(&name);
-            }
-            crate::help::HelpLinkTarget::Anchor(slug) => {
-                // Intra-doc jump: scroll the *current* help buffer to
-                // the anchor line and move the cursor there. Push
-                // history so `<C-o>` returns to the link site.
-                self.push_position_history(prev_help_cursor, PositionSource::AutoJump);
-                // M.3.2.c.5: anchors live in buffer_locals
-                // exclusively. Look up under the popup buffer's
-                // own id first (centred-popup case where
-                // pane.buffer_id is the doc behind the popup),
-                // then fall back to the pane's id (in-pane case).
-                let popup_id = self.popup().buffer_id;
-                let pane_id = self.panes().tree.active().buffer_id;
-                // Slice 3c.final.B.9: anchor lookup via published
-                // `buffer_locals()` sub-state — wait-free Arc bump.
-                let locals_map = self.buffer_locals();
-                let find_in = |id: crate::buffers::BufferId| -> Option<u32> {
-                    locals_map
-                        .map
-                        .get(&id)
-                        .and_then(|l| l.get::<crate::modes::HelpAnchors>())
-                        .and_then(|a| {
-                            a.0.iter().find(|x| x.name == slug).map(|x| x.line)
-                        })
-                };
-                let target_line =
-                    popup_id.and_then(find_in).or_else(|| find_in(pane_id));
-                if let Some(line) = target_line {
-                    let buffer = self.active_text();
-                    let len = line_byte_len(&buffer, line);
-                    let byte = self.cursor().byte;
-                    self.set_cursor(Position::new(line, byte.min(len)));
-                    self.mutate_editor(move |e| e.scroll = line);
-                } else {
-                    self.set_message(EchoLevel::Warn, format!("anchor not found: #{slug}"));
-                }
-            }
-            crate::help::HelpLinkTarget::Source { path, line } => {
-                // `[label](file:PATH:LINE)` -- open the file via
-                // the existing `:e` machinery (multi-buffer
-                // foundation, §5.9), then position the cursor at
-                // the requested line. Push the help-side cursor
-                // onto position history with `PluginPush` so
-                // `<C-o>` walks back into the help view.
-                self.push_position_history(prev_help_cursor, PositionSource::PluginPush);
-                self.do_edit(Some(path.clone()), false);
-                // `do_edit` may have set an error message + bailed
-                // (e.g. permission denied). Don't try to jump in
-                // that case -- the message is already on screen.
-                // Slice 3c.final.X.cleanup: read `last_message.level`
-                // via published `MessagesRenderState.last` (B.7).
-                let last_level = self.messages().last.as_ref().map(|m| m.level);
-                if matches!(last_level, Some(EchoLevel::Error)) {
-                    return;
-                }
-                // Source links carry 1-based line numbers (matching
-                // every editor + every `path:line` convention);
-                // convert to the App's 0-based line index, clamping
-                // to a valid line in the now-loaded buffer.
-                let snap = self.ad().snapshot.clone();
-                let last = snap.buffer.line_count().saturating_sub(1);
-                let target_line = line.saturating_sub(1).min(last);
-                self.set_cursor(Position::new(target_line, 0));
-            }
-            crate::help::HelpLinkTarget::Unresolved(url) => {
-                self.set_message(EchoLevel::Warn, format!("no handler for `{url}`"));
-            }
+        let signals = self.mutate_editor_with(|e| {
+            let mut out = lattice_host::dispatch::DispatchOutcome::default();
+            e.do_help_follow_link(&mut out);
+            out.renderer_signals
+        });
+        for s in signals {
+            self.handle_renderer_signal(s);
         }
     }
 }

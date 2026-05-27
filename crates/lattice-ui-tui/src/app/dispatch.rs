@@ -557,18 +557,13 @@ impl App {
 
             // 5.5.G.12: `HelpDismiss` migrated to `Editor::dispatch`.
             // Phase 5.8.AF: FollowLink Oil/FileTree arms migrated
-            // to host (consumed=true). Help follow-link still
-            // App-side because do_help_follow_link reaches for
-            // App-only link-target handlers (Source variant);
-            // host short-circuits Help to no-op so App handles.
-            Action::FollowLink => match self.ad().buffer_kind {
-                BufferKind::Help => self.do_help_follow_link(),
-                BufferKind::Oil
-                | BufferKind::FileTree
-                | BufferKind::Document
-                | BufferKind::Terminal
-                | BufferKind::Messages => {}
-            },
+            // Phase 5.8.AF: FollowLink fully migrated host-side as
+            // of 2026-05-27. Help-link follow runs through
+            // `Editor::do_help_follow_link`; Oil / FileTree arms
+            // already lived there. This arm is now a host-handled
+            // no-op so the post-dispatch hooks (ensure_cursor_visible,
+            // hover auto-dismiss) still run.
+            Action::FollowLink => {}
             // Phase 5.8.AF: migrated to host (consumed = true).
             Action::OilNavigateUp => {}
 

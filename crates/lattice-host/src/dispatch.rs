@@ -1803,10 +1803,12 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
                 let signals = editor.do_file_tree_follow();
                 _out.renderer_signals.extend(signals);
             }
-            BufferKind::Help
-            | BufferKind::Document
-            | BufferKind::Terminal
-            | BufferKind::Messages => {}
+            BufferKind::Help => {
+                // 2026-05-27: hoisted from lattice-ui-tui app layer
+                // so the GPUI peer reaches the same dispatch.
+                editor.do_help_follow_link(_out);
+            }
+            BufferKind::Document | BufferKind::Terminal | BufferKind::Messages => {}
         },
     }
     // 5.8.AF.3 closeout: every renderer-neutral `Action` is now
@@ -14737,6 +14739,164 @@ impl Editor {
             }))]
         } else {
             Vec::new()
+        }
+    }
+
+    /// `:customize-edit <name>` -- prefill the `:` command line with
+    /// `set NAME=VALUE` and switch to Command modal so the user can
+    /// edit and accept. Used as the follow-handler for help-buffer
+    /// `[label](customize-edit:NAME)` links. Hoisted from the TUI app
+    /// layer in 2026-05-27 so the GPUI peer reaches the same flow.
+    pub fn do_customize_edit(&mut self, name: &str) {
+        let Some(spec) = self.config.lookup(name) else {
+            self.set_message(EchoLevel::Error, format!("E518: Unknown option: {name}"));
+            return;
+        };
+        let current = spec.get_formatted();
+        let prefill = format!("set {name}={current}");
+        self.command_line = prefill;
+        self.modal = lattice_grammar::ModalState::Command;
+    }
+
+    /// `<CR>` on a help-buffer link. Reads the `HelpLinks` table from
+    /// the popup buffer's locals (falling back to the active pane's
+    /// id for in-pane help) and dispatches based on the link's typed
+    /// target. Echoes "no link under cursor" when nothing is hit.
+    ///
+    /// Hoisted from `lattice-ui-tui::app::help::do_help_follow_link`
+    /// in 2026-05-27 so both renderer peers route `<CR>` through one
+    /// host-side dispatcher.
+    pub fn do_help_follow_link(&mut self, out: &mut DispatchOutcome) {
+        use crate::state::PositionSource;
+        use lattice_help::HelpLinkTarget;
+
+        // Range-containment with the same semantics as the help link
+        // table: cursor-on-byte inside `[start, end)`, walking across
+        // multi-line labels.
+        fn range_contains(
+            r: &lattice_protocol::position::Range,
+            pos: lattice_protocol::position::Position,
+        ) -> bool {
+            if pos.line == r.start.line && pos.line == r.end.line {
+                return pos.byte >= r.start.byte && pos.byte < r.end.byte;
+            }
+            if pos.line < r.start.line || pos.line > r.end.line {
+                return false;
+            }
+            if pos.line == r.start.line {
+                return pos.byte >= r.start.byte;
+            }
+            if pos.line == r.end.line {
+                return pos.byte < r.end.byte;
+            }
+            true
+        }
+
+        // Not in a help context: nothing to follow.
+        if self.popup_buffer.is_none() && self.active_buffer != BufferKind::Help {
+            return;
+        }
+        let cursor = self.cursor;
+        let popup_id = self.popup_buffer;
+        let pane_id = self.active_pane_buffer_id();
+
+        // Locals-first lookup: prefer the popup-id's table (centred
+        // popup case), fall back to the pane id (in-pane help case).
+        // Mirrors the TUI's prior ordering verbatim.
+        let find_link = |id: BufferId| -> Option<lattice_help::HelpLink> {
+            self.buffer_locals
+                .get(&id)
+                .and_then(|locals| locals.get::<crate::modes::HelpLinks>())
+                .and_then(|hl| hl.0.iter().find(|l| range_contains(&l.range, cursor)).cloned())
+        };
+        let link = popup_id.and_then(find_link).or_else(|| {
+            if Some(pane_id) == popup_id {
+                None
+            } else {
+                find_link(pane_id)
+            }
+        });
+        let Some(link) = link else {
+            self.set_message(EchoLevel::Info, "no link under cursor".to_string());
+            return;
+        };
+
+        let prev_help_cursor = cursor;
+        match link.target {
+            HelpLinkTarget::Command(name) => {
+                let signals = self.do_describe_command(&name, None);
+                out.renderer_signals.extend(signals);
+            }
+            HelpLinkTarget::Execute(cmdline) => {
+                self.push_position_history(prev_help_cursor, PositionSource::AutoJump);
+                self.execute_ex_line(&cmdline, out);
+            }
+            HelpLinkTarget::Chord(chord) => {
+                let signals = self.do_describe_key(&chord);
+                out.renderer_signals.extend(signals);
+            }
+            HelpLinkTarget::Topic(name) => {
+                let signals = self.do_open_help_topic(Some(&name));
+                out.renderer_signals.extend(signals);
+            }
+            HelpLinkTarget::Customize(name) => {
+                let signals = self.do_customize(Some(&name));
+                out.renderer_signals.extend(signals);
+            }
+            HelpLinkTarget::CustomizeEdit(name) => {
+                self.do_customize_edit(&name);
+            }
+            HelpLinkTarget::Mode(name) => {
+                let signals = self.do_describe_mode(&name);
+                out.renderer_signals.extend(signals);
+            }
+            HelpLinkTarget::Anchor(slug) => {
+                self.push_position_history(prev_help_cursor, PositionSource::AutoJump);
+                let find_anchor = |id: BufferId| -> Option<u32> {
+                    self.buffer_locals
+                        .get(&id)
+                        .and_then(|l| l.get::<crate::modes::HelpAnchors>())
+                        .and_then(|a| a.0.iter().find(|x| x.name == slug).map(|x| x.line))
+                };
+                let target_line = popup_id
+                    .and_then(find_anchor)
+                    .or_else(|| find_anchor(pane_id));
+                if let Some(line) = target_line {
+                    let buffer = self.active_text();
+                    let len = buffer.line_byte_len(line);
+                    let byte = self.cursor.byte;
+                    self.set_cursor(lattice_protocol::position::Position::new(
+                        line,
+                        byte.min(len),
+                    ));
+                    self.scroll = line;
+                } else {
+                    self.set_message(EchoLevel::Warn, format!("anchor not found: #{slug}"));
+                }
+            }
+            HelpLinkTarget::Source { path, line } => {
+                self.push_position_history(prev_help_cursor, PositionSource::PluginPush);
+                let outcome = self.do_edit(Some(path.clone()), false);
+                match outcome {
+                    DoEditOutcome::Opened(s)
+                    | DoEditOutcome::Activated(s)
+                    | DoEditOutcome::Reloaded(s) => {
+                        out.renderer_signals.extend(s);
+                    }
+                    DoEditOutcome::Failed
+                    | DoEditOutcome::Directory(_)
+                    | DoEditOutcome::NoFileName => {
+                        return;
+                    }
+                }
+                let snap = self.document.snapshot();
+                let last = snap.buffer.line_count().saturating_sub(1);
+                let target_line = line.saturating_sub(1).min(last);
+                self.set_cursor(lattice_protocol::position::Position::new(target_line, 0));
+            }
+            HelpLinkTarget::Unresolved(url) => {
+                self.set_message(EchoLevel::Warn, format!("no handler for `{url}`"));
+            }
         }
     }
 

@@ -189,6 +189,7 @@ mod tests {
             inlay_hints: 1,
             folds: 0,
             theme: 0,
+            whitespace: 0,
         };
         let c = CellChunk::empty(0, v);
         assert_eq!(c.version, v);
@@ -210,6 +211,7 @@ mod tests {
             inlay_hints: 0,
             folds: 0,
             theme: 0,
+            whitespace: 0,
         };
         let s = c.shifted_by(3, new_v);
         assert_eq!(s.start_source_line, 13);

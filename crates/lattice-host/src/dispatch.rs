@@ -903,6 +903,21 @@ impl Editor {
             // rebuild is acceptable per the design doc.
             cells: std::sync::Arc::new(CellsRenderState {
                 matrix: self.cells_matrix_cell.clone(),
+                whitespace: {
+                    // 2026-05-27: snapshot the active buffer's
+                    // `display.whitespace.*` state from
+                    // option_cache. Worker consumes this and
+                    // substitutes whitespace bytes at emission.
+                    let oc = &self.option_cache;
+                    crate::cells_worker::WhitespaceConfig {
+                        show: oc.show_whitespace,
+                        tab: oc.whitespace_tab,
+                        trailing: oc.whitespace_trailing,
+                        leading: oc.whitespace_leading,
+                        space: oc.whitespace_space,
+                        eol: oc.whitespace_eol,
+                    }
+                },
                 version: lattice_cells::MatrixVersion {
                     text: self.document.text_version(),
                     syntax: self.document.text_version(),
@@ -923,6 +938,21 @@ impl Editor {
                         use std::hash::{Hash, Hasher};
                         let mut h = std::collections::hash_map::DefaultHasher::new();
                         self.host_theme.hash(&mut h);
+                        h.finish()
+                    },
+                    whitespace: {
+                        // Hash the same whitespace fields so any
+                        // `:set display.whitespace.*` bumps this
+                        // axis and triggers a rebuild.
+                        use std::hash::{Hash, Hasher};
+                        let mut h = std::collections::hash_map::DefaultHasher::new();
+                        let oc = &self.option_cache;
+                        oc.show_whitespace.hash(&mut h);
+                        oc.whitespace_tab.hash(&mut h);
+                        oc.whitespace_trailing.hash(&mut h);
+                        oc.whitespace_leading.hash(&mut h);
+                        oc.whitespace_space.hash(&mut h);
+                        oc.whitespace_eol.hash(&mut h);
                         h.finish()
                     },
                 },

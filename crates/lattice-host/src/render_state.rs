@@ -796,6 +796,15 @@ pub struct CellsRenderState {
     /// the new colours. Per the design doc, theme changes are rare
     /// — a whole-doc rebuild is an acceptable invalidation cost.
     pub theme: crate::ui::theme::Theme,
+
+    /// 2026-05-27: `display.whitespace.*` snapshot. Worker
+    /// substitutes whitespace bytes with marker glyphs +
+    /// `WS_MARKER` flag when `show` is true. A hash of this
+    /// struct is folded into
+    /// [`lattice_cells::MatrixVersion::whitespace`] at publish
+    /// time so any `:set` of a whitespace option invalidates the
+    /// matrix and triggers a rebuild.
+    pub whitespace: crate::cells_worker::WhitespaceConfig,
 }
 
 impl Default for CellsRenderState {
@@ -813,6 +822,7 @@ impl Default for CellsRenderState {
             foldenable: true,
             last_edit: None,
             theme: crate::ui::theme::Theme::default(),
+            whitespace: crate::cells_worker::WhitespaceConfig::default(),
         }
     }
 }

@@ -70,6 +70,33 @@ use lattice_cells::{
     Cell, CellChunk, CellMatrix, CellRow, MatrixVersion, CHUNK_SIZE_WHOLE_DOC,
 };
 
+/// 2026-05-27: `display.whitespace.*` snapshot consumed by the
+/// cell-builder when emitting cells. Mirrors the
+/// `option_cache.whitespace_*` shape but lives here so the worker
+/// can be written without a config-crate import cycle.
+///
+/// `show` is the master gate (`display.show_whitespace`). When
+/// false, the builder emits whitespace bytes verbatim. When true:
+/// - `tab`: glyph substituted for `\t` (None → leave as-is).
+/// - `trailing`: glyph for spaces between the last non-space
+///   byte of a line and EOL.
+/// - `leading`: glyph for spaces between BOL and the first
+///   non-space byte.
+/// - `space`: glyph for middle (non-leading, non-trailing)
+///   spaces. None → keep middle spaces as ' '.
+/// - `eol`: glyph appended at the visual end of each line.
+///   Reserved for a follow-up (extending past the last char
+///   complicates byte↔col remap).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct WhitespaceConfig {
+    pub show: bool,
+    pub tab: Option<char>,
+    pub trailing: Option<char>,
+    pub leading: Option<char>,
+    pub space: Option<char>,
+    pub eol: Option<char>,
+}
+
 /// Recompute decision the worker takes on a wake. Visible for
 /// testing; the production loop calls [`recompute`] directly.
 #[derive(Debug, PartialEq, Eq)]
@@ -241,6 +268,7 @@ pub fn recompute(
         cells.foldenable,
         cells.viewport_height,
         cells.version,
+        &cells.whitespace,
     );
     matrix_cell.store(Arc::new(matrix));
     WorkerDecision::Recomputed
@@ -362,6 +390,7 @@ fn try_incremental_build(
         default_fg,
         default_flags,
         inlay_fg,
+        whitespace: &cells.whitespace,
     };
 
     if new_chunk_size == CHUNK_SIZE_WHOLE_DOC {
@@ -503,6 +532,7 @@ fn build_matrix(
     foldenable: bool,
     viewport_height: u32,
     version: MatrixVersion,
+    whitespace: &WhitespaceConfig,
 ) -> CellMatrix {
     let line_count = snapshot.buffer.line_count();
     if line_count == 0 {
@@ -538,6 +568,7 @@ fn build_matrix(
         default_fg,
         default_flags,
         inlay_fg,
+        whitespace,
     };
 
     match pick_chunk_size(viewport_height, line_count) {
@@ -620,6 +651,10 @@ struct ChunkInputs<'a> {
     /// modifiers (typically none, but cheaply propagated).
     default_flags: u16,
     inlay_fg: u32,
+    /// 2026-05-27: passed through to `build_row_cells` for the
+    /// whitespace-marker substitution. Empty (`show: false`) when
+    /// the user hasn't enabled `display.show_whitespace`.
+    whitespace: &'a WhitespaceConfig,
 }
 
 /// Build the row vector for one chunk covering source lines
@@ -651,6 +686,7 @@ fn build_chunk_rows(inputs: &ChunkInputs, start_line: u32, end_line: u32) -> Vec
             inputs.default_fg,
             inputs.default_flags,
             inputs.inlay_fg,
+            inputs.whitespace,
         );
         rows.push(CellRow::new(cells, line_idx, inlay_offsets));
     }
@@ -675,6 +711,7 @@ fn build_row_cells(
     default_fg: u32,
     default_flags: u16,
     inlay_fg: u32,
+    ws: &WhitespaceConfig,
 ) -> (Vec<Cell>, Vec<lattice_cells::row::InlayOffset>) {
     // Capacity: source chars + sum of inlay char widths. Slight
     // over-estimate is fine.
@@ -696,6 +733,36 @@ fn build_row_cells(
             resolve_style(theme, style)
         }
     };
+
+    // 2026-05-27: pre-scan the line to find leading-end and
+    // trailing-start byte positions. `leading_end_byte` is the
+    // byte of the first NON-space char (== text.len() for blank
+    // lines = all chars trailing). `trailing_start_byte` is the
+    // byte AFTER the last NON-space char.
+    let mut leading_end_byte = text.len();
+    let mut trailing_start_byte = 0;
+    if ws.show {
+        for (b, c) in text.char_indices() {
+            if c != ' ' && c != '\t' {
+                if leading_end_byte == text.len() {
+                    leading_end_byte = b;
+                }
+                trailing_start_byte = b + c.len_utf8();
+            }
+        }
+        if leading_end_byte == text.len() {
+            // No non-space char on the line — treat every cell as
+            // trailing.
+            trailing_start_byte = 0;
+        }
+    }
+    // Trailing-style fg (red) when emitting trailing-space markers.
+    // Matches TUI's theme.whitespace_trailing_style.
+    let trailing_fg = theme
+        .whitespace_trailing_style
+        .fg
+        .map(|c| c.to_rgb_u32(default_fg))
+        .unwrap_or(default_fg);
 
     let mut inlay_idx = 0usize;
     for (byte, ch) in text.char_indices() {
@@ -720,7 +787,53 @@ fn build_row_cells(
         }
         let style = style_at_byte(line_spans, byte);
         let (fg, mods) = resolve(style);
-        cells.push(Cell::new(ch as u32, fg, 0, mods));
+        // 2026-05-27 whitespace decoration. When `ws.show` is true
+        // and the source char is whitespace, substitute the
+        // configured marker glyph and set `WS_MARKER`. Falls
+        // through to the verbatim emit when ws is off or no glyph
+        // is configured for the position.
+        let mut emitted = false;
+        if ws.show {
+            let is_trailing = byte >= trailing_start_byte;
+            let is_leading = byte < leading_end_byte;
+            match ch {
+                '\t' => {
+                    if let Some(g) = ws.tab {
+                        let cell_fg = if is_trailing { trailing_fg } else { fg };
+                        cells.push(Cell::new(
+                            g as u32,
+                            cell_fg,
+                            0,
+                            mods | lattice_cells::cell_flags::WS_MARKER,
+                        ));
+                        emitted = true;
+                    }
+                }
+                ' ' => {
+                    let glyph = if is_trailing {
+                        ws.trailing
+                    } else if is_leading {
+                        ws.leading.or(ws.space)
+                    } else {
+                        ws.space
+                    };
+                    if let Some(g) = glyph {
+                        let cell_fg = if is_trailing { trailing_fg } else { fg };
+                        cells.push(Cell::new(
+                            g as u32,
+                            cell_fg,
+                            0,
+                            mods | lattice_cells::cell_flags::WS_MARKER,
+                        ));
+                        emitted = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if !emitted {
+            cells.push(Cell::new(ch as u32, fg, 0, mods));
+        }
     }
     // Trailing inlays at/past EOL.
     while inlay_idx < line_inlays.len() {
@@ -965,6 +1078,7 @@ mod tests {
             foldenable,
             last_edit,
             theme,
+            whitespace: WhitespaceConfig::default(),
         };
         let rs = RenderState {
             cells: Arc::new(cells),
@@ -985,6 +1099,7 @@ mod tests {
             inlay_hints: 0,
             folds: 0,
             theme: 0,
+            whitespace: 0,
         }
     }
 
@@ -1384,6 +1499,7 @@ mod tests {
             inlay_hints: 0,
             folds: 0,
             theme: 0,
+            whitespace: 0,
         };
         let v_b = MatrixVersion { inlay_hints: 1, ..v_a };
 
@@ -1476,6 +1592,7 @@ mod tests {
             foldenable: true,
             last_edit: None,
             theme,
+            whitespace: WhitespaceConfig::default(),
         };
         let rs = ArcSwap::from_pointee(RenderState {
             cells: Arc::new(cells),
@@ -1516,6 +1633,7 @@ mod tests {
             foldenable: true,
             last_edit: None,
             theme,
+            whitespace: WhitespaceConfig::default(),
         };
         let rs = ArcSwap::from_pointee(RenderState {
             cells: Arc::new(cells),
@@ -1572,6 +1690,7 @@ mod tests {
             foldenable: true,
             last_edit: None,
             theme,
+            whitespace: WhitespaceConfig::default(),
         };
         let rs = ArcSwap::from_pointee(RenderState {
             cells: Arc::new(cells),
@@ -1622,6 +1741,7 @@ mod tests {
                 foldenable: true,
                 last_edit: None,
                 theme,
+                whitespace: WhitespaceConfig::default(),
             };
             ArcSwap::from_pointee(RenderState {
                 cells: Arc::new(cells),
@@ -1795,6 +1915,7 @@ mod tests {
             inlay_hints: 0,
             folds: 0,
             theme: 0xaa,
+            whitespace: 0,
         };
         let v_b = MatrixVersion { theme: 0xbb, ..v_a };
 
@@ -2475,6 +2596,7 @@ mod tests {
                     foldenable: true,
                     last_edit,
                     theme,
+                    whitespace: WhitespaceConfig::default(),
                 };
                 let rs = RenderState {
                     cells: Arc::new(cells),
@@ -2590,6 +2712,7 @@ mod tests {
                 foldenable: true,
                 last_edit: None,
                 theme,
+                whitespace: WhitespaceConfig::default(),
             };
             render_state.store(Arc::new(RenderState {
                 cells: Arc::new(cells),

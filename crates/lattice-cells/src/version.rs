@@ -45,6 +45,14 @@ pub struct MatrixVersion {
     /// Source of truth: theme palette revision. Monotonic in
     /// practice (theme replacements are discrete events).
     pub theme: u64,
+    /// 2026-05-27: `display.whitespace.*` snapshot hash. Bumps
+    /// when `display.show_whitespace` toggles or any of the
+    /// `display.whitespace.*` glyphs change. The cell-builder
+    /// substitutes whitespace bytes with marker glyphs + the
+    /// `WS_MARKER` flag at emission time, so the glyph ends up
+    /// in `Cell.ch` — folding the config into this axis
+    /// invalidates the cached matrix when the user re-configures.
+    pub whitespace: u64,
 }
 
 impl MatrixVersion {
@@ -55,6 +63,7 @@ impl MatrixVersion {
         inlay_hints: 0,
         folds: 0,
         theme: 0,
+        whitespace: 0,
     };
 
     /// `true` when any component differs from `other`. Used by the
@@ -100,8 +109,20 @@ mod tests {
             inlay_hints: 7,
             folds: 0,
             theme: 1,
+            whitespace: 0,
         };
         assert!(!v.differs_from(&v));
+    }
+
+    #[test]
+    fn differs_catches_whitespace_axis() {
+        let base = MatrixVersion::ZERO;
+        let v = MatrixVersion {
+            whitespace: 1,
+            ..base
+        };
+        assert!(v.differs_from(&base));
+        assert!(base.differs_from(&v));
     }
 
     /// Hash-style axes can DECREASE (a hash of fewer inlays might

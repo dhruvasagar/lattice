@@ -27,6 +27,7 @@ pub mod modes;
 pub mod reader;
 pub mod snapshot;
 pub mod spawner;
+pub mod synthetic;
 
 pub use buffer::{TerminalBuffer, TerminalVisualState, VisualKind};
 pub use cell::{Cell, CellAttrs, CursorShape, NamedColor, TerminalColor};
@@ -35,3 +36,4 @@ pub use modes::{register_terminal_modes, TerminalInsertMode, TerminalMode};
 pub use reader::{GridSearchHit, SearchDir, SharedTerm, TerminalScrollKind};
 pub use snapshot::TerminalSnapshot;
 pub use spawner::{spawn, SpawnConfig, SpawnError};
+pub use synthetic::SyntheticDoc;

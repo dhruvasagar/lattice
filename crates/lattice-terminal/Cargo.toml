@@ -44,5 +44,17 @@ lattice-mode = { path = "../lattice-mode" }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+[dev-dependencies]
+# T-snap-1 (2026-05-27): criterion gate for the
+# `term_snapshot_build` bench. CI pin is p99 ≤ 2.0 ms at
+# 10k × 200 (default scrollback × default cols). The bench
+# guards the Insert→Normal mode-transition cost called out in
+# docs/dev/architecture/terminal-as-document.md §6.
+criterion = { workspace = true }
+
+[[bench]]
+name = "term_snapshot"
+harness = false
+
 [lints]
 workspace = true

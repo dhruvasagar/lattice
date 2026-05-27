@@ -3606,6 +3606,7 @@ version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
  "arc-swap",
+ "criterion",
  "fancy-regex",
  "lattice-config",
  "lattice-core",

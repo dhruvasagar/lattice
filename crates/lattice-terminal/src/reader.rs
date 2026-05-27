@@ -279,9 +279,9 @@ fn map_scroll(kind: TerminalScrollKind) -> Scroll {
 /// without waiting for the next PTY byte.
 #[derive(Clone)]
 pub struct SharedTerm {
-    inner: Arc<Mutex<Term<NoopListener>>>,
+    pub(crate) inner: Arc<Mutex<Term<NoopListener>>>,
     snapshot: Arc<ArcSwap<TerminalSnapshot>>,
-    seq: Arc<AtomicU64>,
+    pub(crate) seq: Arc<AtomicU64>,
     paint_request: Option<Arc<tokio::sync::Notify>>,
 }
 
@@ -316,6 +316,50 @@ pub enum SearchDir {
 }
 
 impl SharedTerm {
+    /// T-snap-1 (2026-05-27): in-crate fixture constructor used
+    /// by sibling modules' unit tests. **Not for production code
+    /// paths** — production constructs via `spawn_reader` so the
+    /// OS-thread reader runs. Kept `pub(crate)` because the
+    /// signature references the crate-private `NoopListener`;
+    /// external callers (e.g. the `term_snapshot` bench) use the
+    /// higher-level [`Self::fixture`] helper instead.
+    pub(crate) fn from_state(
+        inner: Arc<Mutex<Term<NoopListener>>>,
+        snapshot: Arc<ArcSwap<TerminalSnapshot>>,
+        seq: Arc<AtomicU64>,
+    ) -> Self {
+        Self {
+            inner,
+            snapshot,
+            seq,
+            paint_request: None,
+        }
+    }
+
+    /// T-snap-1 (2026-05-27): build a fixture `SharedTerm` sized
+    /// to `(rows × cols)` with a `scrollback`-line history ring.
+    /// Empty grid, zero seq, fresh snapshot. Used by tests and
+    /// the `term_snapshot` bench; not for production paths.
+    pub fn fixture(rows: u16, cols: u16, scrollback: u32) -> Self {
+        let term = Arc::new(Mutex::new(build_term(rows, cols, scrollback)));
+        let snapshot = Arc::new(ArcSwap::from_pointee(TerminalSnapshot::empty()));
+        let seq = Arc::new(AtomicU64::new(0));
+        Self::from_state(term, snapshot, seq)
+    }
+
+    /// T-snap-1 (2026-05-27): feed VT bytes into a fixture-built
+    /// `SharedTerm`. Mirrors what the production reader task
+    /// does on each PTY read — runs the alacritty VT processor
+    /// against the byte stream so escape sequences, cursor
+    /// motions, and SGR attributes all land in the grid.
+    /// Test/bench-only.
+    pub fn feed_for_fixture(&self, bytes: &[u8]) {
+        let mut processor: alacritty_terminal::vte::ansi::Processor =
+            alacritty_terminal::vte::ansi::Processor::new();
+        let mut t = self.inner.lock();
+        processor.advance(&mut *t, bytes);
+    }
+
     /// T3: re-position the scrollback viewport and republish a
     /// fresh snapshot so the renderer paints history immediately
     /// (no wait for the next PTY byte to wake the reader).

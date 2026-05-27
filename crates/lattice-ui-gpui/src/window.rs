@@ -343,6 +343,88 @@ fn inactive_pane_opacity(app: &GpuiApp) -> f32 {
     (percent.clamp(0, 100) as f32) / 100.0
 }
 
+/// 2026-05-27: insert-completion filter-chord footer helpers.
+/// Mirror the TUI peer's adaption logic — full form when it fits,
+/// compact `[b]uf │ [o]lsp …` otherwise, prune from the right
+/// when even compact overflows. Order matches the popup keymap
+/// (buffer / lsp / path / tree-sitter / snippet).
+struct GpuiFilterChordEntry {
+    key: &'static str,
+    label: &'static str,
+}
+
+fn gpui_filter_chord_entries(
+    sources_present: &std::collections::BTreeSet<&str>,
+) -> Vec<GpuiFilterChordEntry> {
+    let mut out: Vec<GpuiFilterChordEntry> = Vec::new();
+    if sources_present.contains(lattice_completion::insert::BufferWordsSource::ID) {
+        out.push(GpuiFilterChordEntry { key: "b", label: "buf" });
+    }
+    if sources_present.contains(lattice_completion::insert::LSP_COMPLETION_SOURCE_ID) {
+        out.push(GpuiFilterChordEntry { key: "o", label: "lsp" });
+    }
+    if sources_present.contains(lattice_completion::insert::PATH_SOURCE_ID) {
+        out.push(GpuiFilterChordEntry { key: "f", label: "path" });
+    }
+    if sources_present.contains(lattice_completion::insert::TREE_SITTER_SYMBOL_SOURCE_ID) {
+        out.push(GpuiFilterChordEntry { key: "t", label: "ts" });
+    }
+    if sources_present.contains(lattice_completion::insert::SNIPPET_SOURCE_ID) {
+        out.push(GpuiFilterChordEntry { key: "s", label: "snip" });
+    }
+    out
+}
+
+fn gpui_render_filter_chord_footer(
+    entries: &[GpuiFilterChordEntry],
+    width_cols: u16,
+) -> String {
+    if entries.is_empty() {
+        return String::new();
+    }
+    let w = width_cols as usize;
+    let render = |full: bool, take: usize| -> String {
+        let parts: Vec<String> = entries
+            .iter()
+            .take(take)
+            .map(|e| {
+                if full {
+                    format!("<C-{}> {}", e.key, e.label)
+                } else {
+                    format!("[{}]{}", e.key, e.label)
+                }
+            })
+            .collect();
+        format!(" {} ", parts.join(" │ "))
+    };
+    let full = render(true, entries.len());
+    if full.chars().count() <= w {
+        return full;
+    }
+    let compact = render(false, entries.len());
+    if compact.chars().count() <= w {
+        return compact;
+    }
+    for take in (1..entries.len()).rev() {
+        let pruned = render(false, take);
+        if pruned.chars().count() <= w {
+            return pruned;
+        }
+    }
+    compact.chars().take(w).collect()
+}
+
+fn gpui_source_display_label(id: &str) -> &'static str {
+    match id {
+        "gen:buffer-words" => "buffer-words",
+        "gen:lsp-completion" => "lsp",
+        "gen:path" => "path",
+        "gen:tree-sitter-symbol" => "tree-sitter",
+        "gen:snippet" => "snippet",
+        _ => "source",
+    }
+}
+
 /// Slice `3c.unify.gpui-annotation-render`: shared candidate-row
 /// builder for the picker (minibuffer + overlay) and cmdline-
 /// completion (minibuffer + overlay) surfaces. Replaces four
@@ -2356,6 +2438,34 @@ impl Render for EditorView {
                         )
                     })
                     .collect();
+                // 2026-05-27: filter-chord footer mirrors the
+                // TUI peer. Width budget approximated from the
+                // popup max_w (360px ≈ 45 cells at 8px/char).
+                // Adaption: full form → compact `[b]uf` → prune.
+                // Also surface the active filter when set.
+                let approx_cols: u16 = 45;
+                let footer_text = if let Some(active) = ic.source_filter.as_deref() {
+                    let label = gpui_source_display_label(active);
+                    let raw = format!(" source: {label} │ <C-Space> all ");
+                    if raw.chars().count() > approx_cols as usize {
+                        raw.chars().take(approx_cols as usize).collect::<String>()
+                    } else {
+                        raw
+                    }
+                } else {
+                    let sources_present: std::collections::BTreeSet<&str> = ic
+                        .raw
+                        .iter()
+                        .filter_map(|r| r.source.as_ref().map(|s| s.as_str()))
+                        .collect();
+                    let entries = gpui_filter_chord_entries(&sources_present);
+                    gpui_render_filter_chord_footer(&entries, approx_cols)
+                };
+                let nav_hint = format!(
+                    " {} of {} │ <Tab>/<CR> accept │ <Esc> cancel ",
+                    if total == 0 { 0 } else { ic.selected + 1 },
+                    total,
+                );
                 div()
                     .flex()
                     .flex_col()
@@ -2370,11 +2480,12 @@ impl Render for EditorView {
                         div()
                             .pt_1()
                             .text_color(rgb(theme.popup_border))
-                            .child(format!(
-                                " {} of {}  ·  <C-n>/<C-p> · <Tab>/<CR> accept · <Esc> cancel ",
-                                if total == 0 { 0 } else { ic.selected + 1 },
-                                total,
-                            )),
+                            .child(nav_hint),
+                    )
+                    .child(
+                        div()
+                            .text_color(rgb(theme.popup_border))
+                            .child(footer_text),
                     )
             });
 

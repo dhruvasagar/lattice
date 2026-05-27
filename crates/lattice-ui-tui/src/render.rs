@@ -630,6 +630,15 @@ fn draw_insert_completion_popup(
 /// that actually have candidates in `state.raw`. Filtered:
 /// `source: <id>  [<C-Space> all]` so the user can tell which
 /// source is active and how to clear it.
+///
+/// 2026-05-27: switched from `  ` separator to `│` and added
+/// a compact fallback. Width adaption order:
+///   1. Full form: `<C-b> buf │ <C-o> lsp │ ...`
+///   2. Compact: `[b]uf │ [o]lsp │ ...` (drops the `<C-` chord
+///      prefix since users know the convention from the popup-
+///      layer keymap docs).
+///   3. Prune chords from the right (least common source last)
+///      until what's left fits.
 fn insert_completion_footer_line(
     state: &lattice_completion::InsertCompletionState,
     width: u16,
@@ -638,7 +647,7 @@ fn insert_completion_footer_line(
     use ratatui::text::Span;
     if let Some(active) = state.source_filter.as_ref() {
         let label = source_display_label(active.as_str());
-        let text = format!(" source: {label}  <C-Space> all ");
+        let text = format!(" source: {label} │ <C-Space> all ");
         let text = clip_to_width(&text, width);
         return Line::from(Span::styled(
             text,
@@ -650,34 +659,95 @@ fn insert_completion_footer_line(
         .iter()
         .filter_map(|r| r.source.as_ref().map(|s| s.as_str()))
         .collect();
-    let mut parts: Vec<&str> = Vec::new();
-    // Chord order matches the popup-layer keymap (CSM.K2):
-    // <C-b> buffer, <C-o> lsp, <C-f> path, <C-t> ts, <C-s> snippet.
-    if sources_present.contains(lattice_completion::insert::BufferWordsSource::ID) {
-        parts.push("<C-b> buf");
+    let entries = filter_chord_entries(&sources_present);
+    if entries.is_empty() {
+        return Line::from(Span::raw(""));
     }
-    if sources_present.contains(lattice_completion::insert::LSP_COMPLETION_SOURCE_ID) {
-        parts.push("<C-o> lsp");
-    }
-    if sources_present.contains(lattice_completion::insert::PATH_SOURCE_ID) {
-        parts.push("<C-f> path");
-    }
-    if sources_present.contains(lattice_completion::insert::TREE_SITTER_SYMBOL_SOURCE_ID) {
-        parts.push("<C-t> ts");
-    }
-    if sources_present.contains(lattice_completion::insert::SNIPPET_SOURCE_ID) {
-        parts.push("<C-s> snip");
-    }
-    let text = if parts.is_empty() {
-        String::new()
-    } else {
-        format!(" {} ", parts.join("  "))
-    };
-    let text = clip_to_width(&text, width);
+    let text = render_filter_chord_footer(&entries, width);
     Line::from(Span::styled(
         text,
         Style::default().add_modifier(Modifier::DIM),
     ))
+}
+
+/// One filter chord entry. `key` is the bare letter (e.g.
+/// `"b"`); `label` is the source's short name. Shared between
+/// the full and compact renderers.
+pub(crate) struct FilterChordEntry {
+    pub key: &'static str,
+    pub label: &'static str,
+}
+
+/// 2026-05-27: build the ordered chord list from the sources
+/// actually present in this batch. Pruning order matches the
+/// popup keymap (CSM.K2): buffer → lsp → path → tree-sitter →
+/// snippet (most-common to least-common in normal coding use).
+pub(crate) fn filter_chord_entries(
+    sources_present: &std::collections::BTreeSet<&str>,
+) -> Vec<FilterChordEntry> {
+    let mut out: Vec<FilterChordEntry> = Vec::new();
+    if sources_present.contains(lattice_completion::insert::BufferWordsSource::ID) {
+        out.push(FilterChordEntry { key: "b", label: "buf" });
+    }
+    if sources_present.contains(lattice_completion::insert::LSP_COMPLETION_SOURCE_ID) {
+        out.push(FilterChordEntry { key: "o", label: "lsp" });
+    }
+    if sources_present.contains(lattice_completion::insert::PATH_SOURCE_ID) {
+        out.push(FilterChordEntry { key: "f", label: "path" });
+    }
+    if sources_present.contains(lattice_completion::insert::TREE_SITTER_SYMBOL_SOURCE_ID) {
+        out.push(FilterChordEntry { key: "t", label: "ts" });
+    }
+    if sources_present.contains(lattice_completion::insert::SNIPPET_SOURCE_ID) {
+        out.push(FilterChordEntry { key: "s", label: "snip" });
+    }
+    out
+}
+
+/// 2026-05-27: render the filter-chord footer string with
+/// width adaption — full form if it fits, compact otherwise,
+/// then prune from the right.
+pub(crate) fn render_filter_chord_footer(
+    entries: &[FilterChordEntry],
+    width: u16,
+) -> String {
+    if entries.is_empty() {
+        return String::new();
+    }
+    let w = width as usize;
+    let render = |form_full: bool, take: usize| -> String {
+        let parts: Vec<String> = entries
+            .iter()
+            .take(take)
+            .map(|e| {
+                if form_full {
+                    format!("<C-{}> {}", e.key, e.label)
+                } else {
+                    format!("[{}]{}", e.key, e.label)
+                }
+            })
+            .collect();
+        format!(" {} ", parts.join(" │ "))
+    };
+    // Try full form, all entries.
+    let full = render(true, entries.len());
+    if full.chars().count() <= w {
+        return full;
+    }
+    // Try compact form, all entries.
+    let compact = render(false, entries.len());
+    if compact.chars().count() <= w {
+        return compact;
+    }
+    // Prune from the right in compact form.
+    for take in (1..entries.len()).rev() {
+        let pruned = render(false, take);
+        if pruned.chars().count() <= w {
+            return pruned;
+        }
+    }
+    // Single chord still doesn't fit — hard truncate.
+    clip_to_width(&compact, width)
 }
 
 fn source_display_label(id: &str) -> &'static str {

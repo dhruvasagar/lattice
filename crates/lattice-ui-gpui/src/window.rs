@@ -627,13 +627,23 @@ impl EditorView {
     /// already populates for the TUI peer via
     /// `refresh_pane_highlights`, queued for a future slice.
     fn paint_pane_tree(&self, node: &PaneNode, theme: &GpuiTheme, active_idx: usize) -> gpui::Div {
+        // 2026-05-27: split branches drop `.size_full()`. With both
+        // `.flex_grow()` and `.size_full()`, the split's hypothetical
+        // main size resolved to `height: 100%` of the parent (which
+        // is the document area, but for the second split level the
+        // parent is the WINDOW root because flex children's percentage
+        // resolves up the tree). With three+ panes the cumulative
+        // hypothetical sum exceeded the window height; the cmdline
+        // row at the bottom got pushed off-screen — `:q<CR>` worked
+        // but no minibuffer was visible. `.flex_grow()` alone gives
+        // the split a `basis: auto` so it consumes only free space,
+        // never claiming an explicit 100% that displaces siblings.
         match node {
             PaneNode::Leaf(idx) => self.paint_pane(*idx, theme, *idx == active_idx),
             PaneNode::HorizontalSplit { top, bottom, .. } => div()
                 .flex()
                 .flex_col()
                 .flex_grow()
-                .size_full()
                 .child(
                     self.paint_pane_tree(top, theme, active_idx)
                         .flex_grow()
@@ -645,7 +655,6 @@ impl EditorView {
                 .flex()
                 .flex_row()
                 .flex_grow()
-                .size_full()
                 .child(
                     self.paint_pane_tree(left, theme, active_idx)
                         .flex_grow()

@@ -36,9 +36,12 @@
 - [ ] Picker UI improve colors for matching, marginalia
 - [ ] LSP `K` (hover): popup doesn't appear on first press; requires an
   additional key press, and is not positioned at the cursor location.
-- [ ] Popup buffers don't scroll when the cursor moves past the
-  viewport (cursor leaves the visible area instead of scrolling the
-  popup).
+- [X] Popup buffers don't scroll when the cursor moves past the
+  viewport (GPUI only — TUI was fine). Per-frame override on the
+  GPUI render pass sets ~Editor::viewport_height~ to the popup's
+  inner row count (~POPUP_INNER_HEIGHT_ROWS = 30~) while focused
+  so ~ensure_cursor_in_viewport~ scrolls correctly; restores from
+  the active leaf when the popup is dismissed.
 - [X] `describe-buffer`'s "Active modes" entries are no longer
   rendered as links (regression — visual styling restored via
   ~lattice_help::with_markdown_syntax~ overlay; both peers now

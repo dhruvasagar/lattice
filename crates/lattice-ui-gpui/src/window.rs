@@ -103,6 +103,13 @@ fn syntax_color(style: SyntaxStyle) -> u32 {
         .unwrap_or(0xcdd6f4)
 }
 
+/// Maximum body rows the GPUI popup overlay paints. Doubles as the
+/// popup's effective scroll viewport: when the popup is focused we
+/// override `Editor::viewport_height` to this value so motion +
+/// `ensure_cursor_visible` clamp scroll against what's actually
+/// drawn (TUI achieves the same via `help_popup_inner_height`).
+pub(crate) const POPUP_INNER_HEIGHT_ROWS: u32 = 30;
+
 /// Walk `spans` (one entry per line) and find the `Style` that
 /// covers `byte`.
 fn style_at(spans: &[lattice_syntax::StyledSpan], byte: usize) -> SyntaxStyle {
@@ -1744,6 +1751,40 @@ impl Render for EditorView {
         let _ = total_rows;
         #[cfg(feature = "profile-frames")]
         let after_viewport = std::time::Instant::now();
+        // 2026-05-27: per-frame viewport override matching what the
+        // motion engine should clamp against.
+        //
+        // When a help/hover popup is focused (State B), motion writes
+        // against `Editor::cursor` and scroll clamp reads
+        // `Editor::viewport_height`. The pane-viewport loop above
+        // sets that height to the active pane's row count, but the
+        // popup overlay only paints `POPUP_INNER_HEIGHT_ROWS` body
+        // rows — anything past that is invisible, so `j` would walk
+        // the cursor off the popup without bumping scroll. Override
+        // to the popup's inner height while focused so
+        // `ensure_cursor_in_viewport` (next call) scrolls correctly.
+        //
+        // On the way back (popup dismissed): the diff-then-send loop
+        // skips `set_pane_viewport` when the pane's leaf rows are
+        // unchanged, so `editor.viewport_height` would stay stuck at
+        // the popup's inner height. Restore from the active leaf's
+        // published row count here too. Mirrors TUI's
+        // `App::active_pane_content_height` -> `set_viewport_height`
+        // per-frame update; diff-then-send keeps churn down.
+        let rs_for_popup = self.app.render_state.load();
+        let popup_focused = matches!(
+            rs_for_popup.active_document.buffer_kind,
+            lattice_core::BufferKind::Help
+        );
+        let target_height = if popup_focused {
+            POPUP_INNER_HEIGHT_ROWS
+        } else {
+            rs_for_popup.panes.tree.active().viewport_height.max(1)
+        };
+        if rs_for_popup.active_document.viewport_height != target_height {
+            drop(rs_for_popup);
+            self.app.set_viewport_height(target_height);
+        }
         // 5.8.O: keep the cursor inside the viewport before any
         // paint reads `editor.scroll`. Auto-scrolls if the cursor
         // moved past the visible window since the last frame.
@@ -2294,7 +2335,11 @@ impl Render for EditorView {
             let ad = self.app.ad();
             let popup_focused = ad.buffer_kind == lattice_core::BufferKind::Help;
             // Max visible lines sized for the expanded 600px body.
-            const MAX_POPUP_LINES: usize = 30;
+            // Matches `POPUP_INNER_HEIGHT_ROWS` — the per-frame
+            // viewport override the render loop applies so motion +
+            // `ensure_cursor_visible` track the popup's actual
+            // scroll surface.
+            const MAX_POPUP_LINES: usize = POPUP_INNER_HEIGHT_ROWS as usize;
             let popup_scroll = if popup_focused { ad.scroll as usize } else { 0 };
             let cursor_doc_line = if popup_focused {
                 Some(ad.cursor.line as usize)

@@ -362,6 +362,7 @@ fn paint_candidate_row(
     selected: bool,
     theme: &GpuiTheme,
     padded: bool,
+    display_col_chars: usize,
 ) -> gpui::Div {
     // Issue #35 (2026-05-22): match highlight now uses
     // `picker_match_highlight` (Catppuccin peach by default,
@@ -416,19 +417,16 @@ fn paint_candidate_row(
         div().flex().flex_row().children(cells)
     };
 
-    // 2026-05-27: annotation column-alignment. User reported
-    // completion marginalia (rightmost annotation) drifted
-    // per-row because the previous layout placed it
-    // immediately after the display with a 2-space gap, so
-    // longer display texts pushed the annotation to a later
-    // column. Fix: a `flex_grow` spacer between display and
-    // annotation pushes the annotation to the right edge of
-    // the row's allocated width. Every row terminates the
-    // annotation at the same x → aligned column. The picker /
-    // completion container's `max_w` caps the row's width so
-    // the annotation lands at the picker's right edge, not
-    // the screen edge (the earlier `justify_between` issue
-    // that motivated the immediately-after layout).
+    // 2026-05-27 column-aligned annotations. Caller computes
+    // `display_col_chars` as the widest display in the visible
+    // set; we pad this row's display with trailing spaces to
+    // that column count so all rows' annotations start at the
+    // same x. Bounded by candidate width, not container width
+    // (an earlier `flex_grow` approach right-justified to the
+    // container edge — fine for narrow popups but pushed the
+    // annotation absurdly far in maximized windows). `+ 2`
+    // leaves a small gap between the longest display and the
+    // annotation column.
     let annotation_text = cand.annotations.join("  ");
     let mut row = div().flex().flex_row().w_full();
     if padded {
@@ -443,18 +441,26 @@ fn paint_candidate_row(
         .child(div().text_color(marginalia_fg).flex_shrink_0().child(kind_glyph))
         .child(display_div.flex_shrink_0());
     if !annotation_text.is_empty() {
-        // Spacer between display and annotation expands to
-        // fill leftover horizontal space; annotation right-
-        // aligns at the row's right edge.
-        row = row
-            .child(div().flex_grow())
-            .child(
+        // Pad spaces so this row's annotation lands at the same
+        // column as every other row. `+ 2` leaves a small gap.
+        let display_chars = display.chars().count();
+        let pad_chars = display_col_chars
+            .saturating_sub(display_chars)
+            .saturating_add(2);
+        if pad_chars > 0 {
+            row = row.child(
                 div()
                     .text_color(marginalia_fg)
                     .flex_shrink_0()
-                    .ml_2()
-                    .child(annotation_text),
+                    .child(" ".repeat(pad_chars)),
             );
+        }
+        row = row.child(
+            div()
+                .text_color(marginalia_fg)
+                .flex_shrink_0()
+                .child(annotation_text),
+        );
     }
     if let Some(bg) = row_bg { row.bg(bg) } else { row }
 }
@@ -2321,49 +2327,33 @@ impl Render for EditorView {
                     .saturating_sub(max_visible / 2)
                     .min(total.saturating_sub(max_visible.min(total)));
                 let window_end = (window_start + max_visible).min(total);
-                // 5.8.AB.1: match-range highlighting in the
-                // insert-completion popup, same rules as the
-                // picker overlay.
-                let match_hl_fg = rgb(theme.cursor_background);
+                // 2026-05-27: insert-completion now routes through
+                // the shared `paint_candidate_row` so the kind
+                // glyph + right-aligned annotation column behaviour
+                // matches the picker and cmdline-completion paths.
+                // Previously had its own inline row builder that
+                // ignored `cand.annotations` entirely — column data
+                // (LSP detail, doc snippet, etc.) wasn't shown.
+                // 2026-05-27: column-align annotations. Compute
+                // widest display across the visible candidates so
+                // every row's annotation lands at the same x.
+                let display_col_chars = ic.rendered[window_start..window_end]
+                    .iter()
+                    .map(|c| c.raw.display.chars().count())
+                    .max()
+                    .unwrap_or(0);
                 let visible: Vec<gpui::Div> = ic.rendered[window_start..window_end]
                     .iter()
                     .enumerate()
                     .map(|(i, cand)| {
                         let abs_idx = window_start + i;
-                        let selected = abs_idx == ic.selected;
-                        let row_bg = if selected {
-                            Some(rgb(theme.status_background))
-                        } else {
-                            None
-                        };
-                        let row_fg = if selected {
-                            rgb(theme.status_foreground)
-                        } else {
-                            rgb(theme.foreground)
-                        };
-                        let display = &cand.raw.display;
-                        if cand.match_ranges.is_empty() {
-                            let row = div().child(display.clone()).text_color(row_fg);
-                            return if let Some(bg) = row_bg { row.bg(bg) } else { row };
-                        }
-                        let in_match = |byte_idx: usize| -> bool {
-                            cand.match_ranges
-                                .iter()
-                                .any(|r| byte_idx >= r.start && byte_idx < r.end)
-                        };
-                        let cells: Vec<gpui::Div> = display
-                            .char_indices()
-                            .map(|(byte_idx, c)| {
-                                let cell = div().child(c.to_string());
-                                if in_match(byte_idx) {
-                                    cell.text_color(match_hl_fg)
-                                } else {
-                                    cell.text_color(row_fg)
-                                }
-                            })
-                            .collect();
-                        let row = div().flex().flex_row().children(cells);
-                        if let Some(bg) = row_bg { row.bg(bg) } else { row }
+                        paint_candidate_row(
+                            cand,
+                            abs_idx == ic.selected,
+                            &theme,
+                            false,
+                            display_col_chars,
+                        )
                     })
                     .collect();
                 div()
@@ -2423,12 +2413,23 @@ impl Render for EditorView {
             // also paints the right-aligned annotations column.
             // `padded: false` — the overlay container below
             // applies its own `.p_2()`.
+            let display_col_chars = picker.candidates[window_start..window_end]
+                .iter()
+                .map(|c| c.raw.display.chars().count())
+                .max()
+                .unwrap_or(0);
             let visible_candidates: Vec<gpui::Div> = picker.candidates[window_start..window_end]
                 .iter()
                 .enumerate()
                 .map(|(i, cand)| {
                     let abs_idx = window_start + i;
-                    paint_candidate_row(cand, abs_idx == picker.selected, &theme, false)
+                    paint_candidate_row(
+                        cand,
+                        abs_idx == picker.selected,
+                        &theme,
+                        false,
+                        display_col_chars,
+                    )
                 })
                 .collect();
             // Width sizing: file pickers carry long paths (often
@@ -2524,6 +2525,11 @@ impl Render for EditorView {
                         .text_color(rgb(theme.popup_border))
                         .child("  (no matches)".to_string())]
                 } else {
+                    let display_col_chars = picker.candidates[scroll..window_end]
+                        .iter()
+                        .map(|c| c.raw.display.chars().count())
+                        .max()
+                        .unwrap_or(0);
                     picker.candidates[scroll..window_end]
                         .iter()
                         .enumerate()
@@ -2534,6 +2540,7 @@ impl Render for EditorView {
                                 abs_idx == picker.selected,
                                 &theme,
                                 true,
+                                display_col_chars,
                             )
                         })
                         .collect()
@@ -2608,12 +2615,23 @@ impl Render for EditorView {
                 // Slice 3c.unify.gpui-annotation-render: shared row
                 // builder. `padded: true` for the minibuffer
                 // strip variant.
+                let display_col_chars = state.candidates[scroll..window_end]
+                    .iter()
+                    .map(|c| c.raw.display.chars().count())
+                    .max()
+                    .unwrap_or(0);
                 let cand_rows: Vec<gpui::Div> = state.candidates[scroll..window_end]
                     .iter()
                     .enumerate()
                     .map(|(i, cand)| {
                         let abs_idx = scroll + i;
-                        paint_candidate_row(cand, abs_idx == state.selected, &theme, true)
+                        paint_candidate_row(
+                            cand,
+                            abs_idx == state.selected,
+                            &theme,
+                            true,
+                            display_col_chars,
+                        )
                     })
                     .collect();
                 div()
@@ -2642,12 +2660,23 @@ impl Render for EditorView {
                 // Slice 3c.unify.gpui-annotation-render: shared row
                 // builder. `padded: false` — overlay container
                 // applies its own `.p_2()`.
+                let display_col_chars = state.candidates[window_start..window_end]
+                    .iter()
+                    .map(|c| c.raw.display.chars().count())
+                    .max()
+                    .unwrap_or(0);
                 let visible_candidates: Vec<gpui::Div> = state.candidates[window_start..window_end]
                     .iter()
                     .enumerate()
                     .map(|(i, cand)| {
                         let abs_idx = window_start + i;
-                        paint_candidate_row(cand, abs_idx == state.selected, &theme, false)
+                        paint_candidate_row(
+                            cand,
+                            abs_idx == state.selected,
+                            &theme,
+                            false,
+                            display_col_chars,
+                        )
                     })
                     .collect();
                 div()

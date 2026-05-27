@@ -589,13 +589,21 @@ fn draw_insert_completion_popup(
     } else {
         state.selected + 1 - candidate_rows
     };
+    let display_col_chars = state
+        .rendered
+        .iter()
+        .skip(scroll)
+        .take(candidate_rows)
+        .map(|c| c.raw.display.chars().count())
+        .max()
+        .unwrap_or(0);
     let lines: Vec<Line> = state
         .rendered
         .iter()
         .enumerate()
         .skip(scroll)
         .take(candidate_rows)
-        .map(|(i, c)| insert_candidate_line(c, i == state.selected, popup.width))
+        .map(|(i, c)| insert_candidate_line(c, i == state.selected, display_col_chars))
         .collect();
     let candidate_area = Rect {
         x: popup.x,
@@ -799,10 +807,16 @@ fn draw_insert_completion_docs_popup(
 /// (3-4 cells). Detail column lands in 4.2.g.3 once LSP
 /// items carry signatures; for buffer-words there's no
 /// detail to show.
+/// 2026-05-27: `display_col_chars` is the widest visible
+/// candidate's display width in chars. Caller computes once
+/// per render so every row's annotation column starts at the
+/// same x. Replaces the previous `width: u16` (popup width)
+/// padding that made the annotation drift to the right edge
+/// of wide popups — bounded by content, not container.
 fn insert_candidate_line<'a>(
     c: &'a lattice_completion::RenderedCandidate,
     selected: bool,
-    width: u16,
+    display_col_chars: usize,
 ) -> Line<'a> {
     let row_style = if selected {
         TuiStyle::default()
@@ -845,16 +859,19 @@ fn insert_candidate_line<'a>(
     if cursor < label.len() {
         spans.push(Span::styled(label[cursor..].to_string(), row_style));
     }
-    // Source tag, right-aligned. Inferred from kind for v1 --
+    // Source tag, column-aligned. Inferred from kind for v1 --
     // CandidateData::Plain doesn't carry a source id today.
     // 4.2.g.5 will plumb the SourceId into RenderedCandidate
     // (typed routing payload work) and this falls out.
     let source_tag = source_tag_for_kind(c.raw.kind);
-    // Pad to push the tag right-aligned. Computing the
-    // visible width of the spans we just emitted is cheap
-    // for v1 (labels are short).
+    // Pad so the tag column starts `display_col_chars + 2`
+    // chars into the row — same x as every other row in the
+    // visible window.
     let label_len: usize = spans.iter().map(|s| s.content.chars().count()).sum();
-    let target_pad = (width as usize).saturating_sub(label_len + source_tag.len() + 1);
+    let target_col = display_col_chars
+        .saturating_add(spans[0].content.chars().count()) // kind prefix width
+        .saturating_add(2);
+    let target_pad = target_col.saturating_sub(label_len);
     if target_pad > 0 {
         spans.push(Span::styled(" ".repeat(target_pad), row_style));
     }
@@ -935,13 +952,21 @@ fn draw_completion_popup(frame: &mut Frame, popup_area: Rect, app: &App) {
     } else {
         state.selected + 1 - visible_count
     };
+    let display_col_chars = state
+        .candidates
+        .iter()
+        .skip(scroll)
+        .take(visible_count)
+        .map(|c| c.raw.display.chars().count())
+        .max()
+        .unwrap_or(0);
     let visible: Vec<Line> = state
         .candidates
         .iter()
         .enumerate()
         .skip(scroll)
         .take(visible_count)
-        .map(|(i, c)| candidate_to_line(c, i == state.selected, inner.width))
+        .map(|(i, c)| candidate_to_line(c, i == state.selected, display_col_chars))
         .collect();
     let para = Paragraph::new(visible);
     frame.render_widget(para, inner);
@@ -949,11 +974,16 @@ fn draw_completion_popup(frame: &mut Frame, popup_area: Rect, app: &App) {
 
 /// Render one candidate as a single styled line. Matched byte
 /// ranges are painted with a distinct style; annotations
-/// right-aligned in the row's remaining width.
+/// column-aligned at `display_col_chars + 2` characters in
+/// (caller passes the widest visible display so every row's
+/// annotation starts at the same x). 2026-05-27: previously
+/// took `width: u16` and right-justified to it; replaced for
+/// content-bound annotation column so wide popups don't push
+/// the marginalia to the far-right edge.
 fn candidate_to_line<'a>(
     c: &'a lattice_completion::RenderedCandidate,
     selected: bool,
-    width: u16,
+    display_col_chars: usize,
 ) -> Line<'a> {
     let prefix = if selected { "▶ " } else { "  " };
     let row_style = if selected {
@@ -1015,15 +1045,22 @@ fn candidate_to_line<'a>(
         spans.push(Span::styled(text[cursor..].to_string(), row_style));
     }
 
-    // Annotations right-aligned. Use a foreground that contrasts
-    // with the row background -- on a selected row, `DarkGray` fg
-    // would vanish into the `DarkGray` bg, hiding the marginalia.
+    // Annotations column-aligned. Pad so this row's annotation
+    // starts at `prefix + kind_glyph + display_col_chars + 2`
+    // chars in — same x across the visible batch. Use a fg
+    // that contrasts with the row bg (`DarkGray` fg would
+    // vanish into the selected-row `DarkGray` bg).
     let annotations = c.annotations.join("  ");
     if !annotations.is_empty() {
-        let used: usize = prefix.len() + text.len();
-        let want = annotations.len() + 2;
-        let pad = (width as usize).saturating_sub(used + want);
-        spans.push(Span::styled(" ".repeat(pad + 2), row_style));
+        let kind_prefix_len = prefix.len() + 2; // glyph + " "
+        let target_col = display_col_chars
+            .saturating_add(kind_prefix_len)
+            .saturating_add(2);
+        let used = prefix.len() + 2 + text.len(); // kind prefix + display
+        let pad = target_col.saturating_sub(used);
+        if pad > 0 {
+            spans.push(Span::styled(" ".repeat(pad), row_style));
+        }
         let annotation_fg = if selected {
             Color::Gray
         } else {
@@ -1105,13 +1142,21 @@ fn draw_picker_candidates(frame: &mut Frame, area: Rect, app: &App) {
     } else {
         p.selected + 1 - visible_count
     };
+    let display_col_chars = p
+        .candidates
+        .iter()
+        .skip(scroll)
+        .take(visible_count)
+        .map(|c| c.raw.display.chars().count())
+        .max()
+        .unwrap_or(0);
     let visible: Vec<Line> = p
         .candidates
         .iter()
         .enumerate()
         .skip(scroll)
         .take(visible_count)
-        .map(|(i, c)| candidate_to_line(c, i == p.selected, area.width))
+        .map(|(i, c)| candidate_to_line(c, i == p.selected, display_col_chars))
         .collect();
     let para = Paragraph::new(visible);
     frame.render_widget(para, area);
@@ -1234,13 +1279,21 @@ fn draw_picker_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
     } else {
         p.selected + 1 - visible_count
     };
+    let display_col_chars = p
+        .candidates
+        .iter()
+        .skip(scroll)
+        .take(visible_count)
+        .map(|c| c.raw.display.chars().count())
+        .max()
+        .unwrap_or(0);
     let visible: Vec<Line> = p
         .candidates
         .iter()
         .enumerate()
         .skip(scroll)
         .take(visible_count)
-        .map(|(i, c)| candidate_to_line(c, i == p.selected, cand_area.width))
+        .map(|(i, c)| candidate_to_line(c, i == p.selected, display_col_chars))
         .collect();
     let para = Paragraph::new(visible);
     frame.render_widget(para, cand_area);
@@ -1290,13 +1343,21 @@ fn draw_completion_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
     } else {
         state.selected + 1 - visible_count
     };
+    let display_col_chars = state
+        .candidates
+        .iter()
+        .skip(scroll)
+        .take(visible_count)
+        .map(|c| c.raw.display.chars().count())
+        .max()
+        .unwrap_or(0);
     let visible: Vec<Line> = state
         .candidates
         .iter()
         .enumerate()
         .skip(scroll)
         .take(visible_count)
-        .map(|(i, c)| candidate_to_line(c, i == state.selected, inner.width))
+        .map(|(i, c)| candidate_to_line(c, i == state.selected, display_col_chars))
         .collect();
     let para = Paragraph::new(visible);
     frame.render_widget(para, inner);

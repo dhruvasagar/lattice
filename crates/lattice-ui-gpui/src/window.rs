@@ -136,29 +136,24 @@ pub(crate) fn popup_outer_dims_px(viewport_w_px: f32, viewport_h_px: f32) -> (f3
 }
 
 /// Pixel cost of the popup's vertical chrome (border + .p_4 padding
-/// top+bottom + header text row + separator row + .pb_2 header
-/// gap + safety margin). Subtract from the popup's outer height
-/// to get the inner body area. `row_px` is the editor row height
-/// (font_size × 1.3), passed in because the header rows use the
-/// same metric.
+/// top+bottom + header title row + separator row + .pb_2 header
+/// gap). Subtract from the popup's outer height to get the inner
+/// body area.
 ///
-/// 2026-05-27: the header text + separator are estimated at
-/// `row_px` each, but GPUI may render them at a slightly larger
-/// line-height (default text vs editor text); the popup body is
-/// also stacked under the header in a flex column whose layout
-/// can add small gaps. To guarantee that the cursor's last
-/// visible row really fits inside the popup's painted area, a
-/// 2-row safety margin is added. Empirically the symptom of an
-/// under-counted chrome is "last few lines off the popup", so
-/// the margin biases toward fewer-painted-rows-than-possible.
+/// 2026-05-27: chrome is now exact (no safety margin) because the
+/// popup paint locks each header row AND each body row to exactly
+/// `row_px`. Previously the safety margin compensated for GPUI's
+/// default `text-sm` line-height (~20px) being larger than the
+/// editor row_px (~18.2px); with explicit `.h(px(row_px))` on
+/// every header / body div the row metric is the single source
+/// of truth.
 pub(crate) fn popup_chrome_v_px(rem: f32, row_px: f32) -> f32 {
     let border_v = 2.0 * 2.0; // .border_2() top + bottom
     let p4_v = rem * 1.0 * 2.0; // .p_4() top + bottom = 2rem
     let header_text = row_px; // " title (hint) " row
     let separator_row = row_px; // "───" row
     let pb_2_v = rem * 0.5; // header .pb_2() = 0.5rem
-    let safety_rows_px = 2.0 * row_px; // see fn doc above
-    border_v + p4_v + header_text + separator_row + pb_2_v + safety_rows_px
+    border_v + p4_v + header_text + separator_row + pb_2_v
 }
 
 /// Derive integer body-row count from popup outer height + chrome.
@@ -2581,7 +2576,23 @@ impl Render for EditorView {
                         // flex containers collapse).
                         cells.push(div().child(" ".to_string()));
                     }
-                    div().flex().flex_row().children(cells)
+                    // 2026-05-27: lock each popup-body row to the
+                    // editor's `estimated_row_px`. Without this, GPUI's
+                    // default `text-sm` line-height (~1.25rem = 20px)
+                    // dominated, making each row taller than the
+                    // editor's `row_px = font_size × 1.3 ≈ 18.2px`.
+                    // The body's locked `popup_body_h_px` then fit
+                    // fewer rows than `popup_inner_rows` claimed,
+                    // overflow-clipping the last few rows and letting
+                    // the cursor scroll into them invisibly. Forcing
+                    // each row to `estimated_row_px` makes the body
+                    // metric the single source of truth.
+                    div()
+                        .flex()
+                        .flex_row()
+                        .h(px(estimated_row_px))
+                        .flex_shrink_0()
+                        .children(cells)
                 })
                 .collect();
 
@@ -2615,11 +2626,30 @@ impl Render for EditorView {
                 .border_2()
                 .border_color(border_color)
                 .child(
+                    // 2026-05-27: lock title + separator rows to
+                    // exactly `estimated_row_px` so the chrome math
+                    // is precise. Default text rendering uses
+                    // `text-sm` line-height (~20px @ 16px rem); the
+                    // editor row_px is ~18.2px. Without the lock,
+                    // header height drifted, eating space the body
+                    // needed.
                     div()
+                        .flex()
+                        .flex_col()
                         .text_color(rgb(theme.popup_border))
                         .pb_2()
-                        .child(format!(" {title}{header_hint} "))
-                        .child(div().child("───────────────".to_string())),
+                        .child(
+                            div()
+                                .h(px(estimated_row_px))
+                                .flex_shrink_0()
+                                .child(format!(" {title}{header_hint} ")),
+                        )
+                        .child(
+                            div()
+                                .h(px(estimated_row_px))
+                                .flex_shrink_0()
+                                .child("───────────────".to_string()),
+                        ),
                 )
                 .child(
                     // 2026-05-27: body height locked to

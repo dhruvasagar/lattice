@@ -62,6 +62,22 @@
   ~do_help_follow_link~ hoisted into ~Editor::do_help_follow_link~
   (2026-05-27); ~Action::FollowLink => BufferKind::Help~ routes to
   it. Both peers now dispatch through one host-side handler.
+- [ ] :terminal: in Normal mode, ~k~ doesn't move up. Needs
+  interactive repro to isolate (state-of-scrollback matters).
+  Code review of ~do_terminal_nav_move~ + ~run_terminal_invocation~
+  (dispatch.rs:12846, 21540) finds the j/k paths symmetric. Likely
+  cause: fresh-shell scenario where ~cursor_line()~ returns 0 with
+  no scrollback → ~k~ clamps to top and looks like a no-op. Confirm
+  with the user's exact scenario; may also need a more discoverable
+  cursor (the nav cursor lands at column 0 of the row above, easy
+  to miss visually).
+- [ ] Universal: cursor must never paint past the last visible
+  buffer row. User reports lines hidden behind modeline/cmdline.
+  ~per_leaf_v_chrome_px~ (window.rs:1644) subtracts ~.p_3()~
+  padding + per-pane status row + ~.py_1()~ — math looks correct;
+  may be a pixel-rounding/floor() mismatch with the actual flex
+  layout. Needs interactive repro with window dimensions to
+  triangulate the 1-row drift.
 
 * Documentation
 - [ ] lattice-tutor

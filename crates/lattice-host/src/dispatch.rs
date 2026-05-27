@@ -169,6 +169,222 @@ pub enum NavTarget {
     Bottom,
 }
 
+/// 2026-05-27: direction for the Normal-in-terminal word-class
+/// motions. `Forward` = `w`/`W` (next word start), `Backward` =
+/// `b`/`B` (prev word start), `End` = `e`/`E` (end of current
+/// or next word).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalWordDir {
+    Forward,
+    Backward,
+    End,
+}
+
+/// 2026-05-27: classification of a single grid cell for the
+/// terminal word-class motions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TermCharClass {
+    /// Word char (vim's "word" or "WORD" class — see
+    /// `terminal_char_class`).
+    Word,
+    /// Punctuation. Only used by the small-word class; the
+    /// `WORD` class folds Punct into Word.
+    Punct,
+    /// Whitespace (space, tab, padding).
+    Space,
+}
+
+/// Classify one grid char. `big = true` switches to the `WORD`
+/// class (any non-whitespace is `Word`). `big = false` is the
+/// small-word class: alnum + `_` → Word; other non-whitespace →
+/// Punct; whitespace → Space.
+fn terminal_char_class(c: char, big: bool) -> TermCharClass {
+    if c.is_whitespace() {
+        TermCharClass::Space
+    } else if big {
+        TermCharClass::Word
+    } else if c.is_alphanumeric() || c == '_' {
+        TermCharClass::Word
+    } else {
+        TermCharClass::Punct
+    }
+}
+
+/// Step one "word boundary" from `(cur_l, cur_c)` in the given
+/// direction. Walks the grid char-by-char across line
+/// boundaries; the alacritty grid is row-major with `cols`
+/// columns per row.
+fn terminal_word_step(
+    term: &lattice_terminal::SharedTerm,
+    cur_l: i32,
+    cur_c: u16,
+    cols: u16,
+    top: i32,
+    bot: i32,
+    dir: TerminalWordDir,
+    big: bool,
+) -> (i32, u16) {
+    use TerminalWordDir as D;
+    if cols == 0 {
+        return (cur_l, cur_c);
+    }
+    // Read each grid line on demand. Cells past EOL on a row
+    // are treated as Space.
+    let line_text = |line: i32| -> Vec<char> {
+        let s = term.line_range_text(line, line);
+        // Strip the trailing `\n` line_range_text appends.
+        let s = s.trim_end_matches('\n');
+        s.chars().collect()
+    };
+    let char_at = |_line: i32, col: u16, chars: &[char]| -> char {
+        chars.get(col as usize).copied().unwrap_or(' ')
+    };
+    // Encode (line, col) as a monotonic stream position so we
+    // can walk one step at a time without tracking col-wrap.
+    let advance = |line: i32, col: u16| -> Option<(i32, u16)> {
+        if col + 1 < cols {
+            Some((line, col + 1))
+        } else if line + 1 <= bot {
+            Some((line + 1, 0))
+        } else {
+            None
+        }
+    };
+    let retreat = |line: i32, col: u16| -> Option<(i32, u16)> {
+        if col > 0 {
+            Some((line, col - 1))
+        } else if line - 1 >= top {
+            Some((line - 1, cols - 1))
+        } else {
+            None
+        }
+    };
+    match dir {
+        D::Forward => {
+            // `w`/`W`: skip the current class (if Word/Punct), then
+            // skip any Space, land on the first non-Space.
+            let mut chars = line_text(cur_l);
+            let start_cls = terminal_char_class(char_at(cur_l, cur_c, &chars), big);
+            let mut l = cur_l;
+            let mut c = cur_c;
+            // 1. Skip while class matches start (only if start is
+            //    non-Space — if we're on Space, just skip Space).
+            if start_cls != TermCharClass::Space {
+                while terminal_char_class(char_at(l, c, &chars), big) == start_cls {
+                    let Some((nl, nc)) = advance(l, c) else {
+                        return (l, c);
+                    };
+                    if nl != l {
+                        chars = line_text(nl);
+                    }
+                    l = nl;
+                    c = nc;
+                }
+            }
+            // 2. Skip Space to land on next word/punct start.
+            while terminal_char_class(char_at(l, c, &chars), big) == TermCharClass::Space {
+                let Some((nl, nc)) = advance(l, c) else {
+                    return (l, c);
+                };
+                if nl != l {
+                    chars = line_text(nl);
+                }
+                l = nl;
+                c = nc;
+            }
+            (l, c)
+        }
+        D::Backward => {
+            // `b`/`B`: step back; skip Space; then back to the
+            // START of the word/punct we're inside.
+            let mut chars = line_text(cur_l);
+            let mut l = cur_l;
+            let mut c = cur_c;
+            // 1. Step back once unconditionally.
+            let Some((nl, nc)) = retreat(l, c) else {
+                return (l, c);
+            };
+            if nl != l {
+                chars = line_text(nl);
+            }
+            l = nl;
+            c = nc;
+            // 2. Skip Space.
+            while terminal_char_class(char_at(l, c, &chars), big) == TermCharClass::Space {
+                let Some((nl, nc)) = retreat(l, c) else {
+                    return (l, c);
+                };
+                if nl != l {
+                    chars = line_text(nl);
+                }
+                l = nl;
+                c = nc;
+            }
+            // 3. Walk back to the START of the current class
+            //    run.
+            let cls = terminal_char_class(char_at(l, c, &chars), big);
+            loop {
+                let Some((pl, pc)) = retreat(l, c) else {
+                    return (l, c);
+                };
+                let prev_chars = if pl != l { line_text(pl) } else { chars.clone() };
+                if terminal_char_class(char_at(pl, pc, &prev_chars), big) != cls {
+                    return (l, c);
+                }
+                l = pl;
+                c = pc;
+                if pl != cur_l {
+                    chars = prev_chars;
+                }
+            }
+        }
+        D::End => {
+            // `e`/`E`: step forward; skip Space; then forward to
+            // the END of the word/punct we're inside.
+            let mut chars = line_text(cur_l);
+            let mut l = cur_l;
+            let mut c = cur_c;
+            // 1. Step forward once.
+            let Some((nl, nc)) = advance(l, c) else {
+                return (l, c);
+            };
+            if nl != l {
+                chars = line_text(nl);
+            }
+            l = nl;
+            c = nc;
+            // 2. Skip Space.
+            while terminal_char_class(char_at(l, c, &chars), big) == TermCharClass::Space {
+                let Some((nl, nc)) = advance(l, c) else {
+                    return (l, c);
+                };
+                if nl != l {
+                    chars = line_text(nl);
+                }
+                l = nl;
+                c = nc;
+            }
+            // 3. Walk forward to the END of the current class
+            //    run.
+            let cls = terminal_char_class(char_at(l, c, &chars), big);
+            loop {
+                let Some((nl, nc)) = advance(l, c) else {
+                    return (l, c);
+                };
+                let next_chars = if nl != l { line_text(nl) } else { chars.clone() };
+                if terminal_char_class(char_at(nl, nc, &next_chars), big) != cls {
+                    return (l, c);
+                }
+                l = nl;
+                c = nc;
+                if nl != cur_l {
+                    chars = next_chars;
+                }
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum RendererSignal {
     /// The host's neutral [`crate::ui::theme::Theme`] changed
@@ -12952,6 +13168,64 @@ impl Editor {
         });
     }
 
+    /// 2026-05-27: word-class motion for the Normal-in-terminal
+    /// navigation cursor. Implements `w` / `b` / `e` and the
+    /// `WORD` variants `W` / `B` / `E` over the alacritty grid.
+    ///
+    /// `big = false` uses the vim "word" class (alphanumerics +
+    /// underscore are word chars; everything else is a
+    /// separator); `big = true` uses the "WORD" class (any
+    /// non-whitespace is a WORD char).
+    ///
+    /// Walks one char at a time across line boundaries.
+    /// Forward motions stop at the start of the next word /
+    /// end of the current/next word; backward stops at the
+    /// start of the previous word. Count multiplier applies.
+    pub fn do_terminal_nav_word(
+        &mut self,
+        buf_id: BufferId,
+        dir: TerminalWordDir,
+        big: bool,
+        count: u32,
+    ) {
+        let _ = self.buffers.with_terminal_mut(buf_id, |t| {
+            let (top, bot) = t.term.line_bounds();
+            let cols = t.snapshot.load().cols;
+            let (mut cur_l, mut cur_c) = t.nav_cursor.unwrap_or_else(|| {
+                let snap = t.snapshot.load();
+                if snap.scroll_offset == 0 {
+                    (t.term.cursor_line(), 0)
+                } else {
+                    (-(snap.scroll_offset as i32), 0)
+                }
+            });
+            for _ in 0..count.max(1) {
+                let (next_l, next_c) =
+                    terminal_word_step(&t.term, cur_l, cur_c, cols, top, bot, dir, big);
+                cur_l = next_l;
+                cur_c = next_c;
+            }
+            t.nav_cursor = Some((cur_l, cur_c));
+            if let Some(v) = t.visual.as_mut() {
+                v.head_line = cur_l;
+                v.head_col = cur_c;
+            }
+            // Bring cursor into view if needed (same logic as
+            // do_terminal_nav_move).
+            let snap = t.snapshot.load();
+            let top_visible = -(snap.scroll_offset as i32);
+            let bot_visible = top_visible + snap.rows as i32 - 1;
+            if cur_l < top_visible {
+                t.term.scroll_to_line(cur_l);
+            } else if cur_l > bot_visible {
+                let target = cur_l - (snap.rows as i32 - 1);
+                t.term.scroll_to_line(target.max(top));
+            } else {
+                t.term.scroll(lattice_terminal::TerminalScrollKind::Delta(0));
+            }
+        });
+    }
+
     /// 2026-05-25: jump the Normal-in-terminal navigation
     /// cursor to top / bottom of scrollback. Pairs with
     /// `do_terminal_nav_move` for the gg / G chords.
@@ -21865,6 +22139,30 @@ impl Editor {
             self.pending_count = 0;
             self.op_count = 0;
             self.do_terminal_nav_goto(buf_id, NavTarget::Bottom);
+            return true;
+        }
+        // 2026-05-27: word-class motions for Normal-in-terminal.
+        // w / W / b / B / e / E walk the alacritty grid and
+        // advance `nav_cursor` so Visual head follows.
+        let (word_dir, word_big) = if cmd == self.builtins.word_forward.0 {
+            (Some(TerminalWordDir::Forward), false)
+        } else if cmd == self.builtins.big_word_forward.0 {
+            (Some(TerminalWordDir::Forward), true)
+        } else if cmd == self.builtins.word_backward.0 {
+            (Some(TerminalWordDir::Backward), false)
+        } else if cmd == self.builtins.big_word_backward.0 {
+            (Some(TerminalWordDir::Backward), true)
+        } else if cmd == self.builtins.word_end.0 {
+            (Some(TerminalWordDir::End), false)
+        } else if cmd == self.builtins.big_word_end.0 {
+            (Some(TerminalWordDir::End), true)
+        } else {
+            (None, false)
+        };
+        if let Some(dir) = word_dir {
+            self.pending_count = 0;
+            self.op_count = 0;
+            self.do_terminal_nav_word(buf_id, dir, word_big, count);
             return true;
         }
         // Page motions keep their scroll semantics (no

@@ -2614,14 +2614,24 @@ impl Editor {
                 .buffers
                 .with_oil(self.active_pane_buffer_id(), |o| o.content.clone())
                 .unwrap_or_else(|| self.document.snapshot().buffer.clone()),
-            // Terminal content lives in cell-grid form, not in a
-            // rope. Operator / motion paths that hit
-            // `active_text` are read-only on Terminal kind anyway;
-            // returning an empty buffer is a safe no-op for the
-            // text consumers (count-by-line, search, etc.) and
-            // T3's scrollback navigation will dispatch off the
-            // TerminalSnapshot directly.
-            BufferKind::Terminal => lattice_core::Buffer::default(),
+            // T-grammar-1 (2026-05-28): Terminal-in-Normal mode
+            // operates on the SyntheticDoc rope built by
+            // `TerminalNormalMode::on_activate`. When the buffer
+            // has a synthetic doc (i.e. we're in Normal/Visual,
+            // not Insert), expose its rope so motions / text
+            // objects / search read uniformly without
+            // kind-branching. Insert mode (no doc) falls back
+            // to an empty buffer — no document-grammar should
+            // be running on a PTY-bound terminal anyway.
+            // See `docs/dev/architecture/terminal-as-document.md`
+            // §3.6.
+            BufferKind::Terminal => self
+                .buffers
+                .with_terminal(self.active_pane_buffer_id(), |t| {
+                    t.synthetic.as_ref().map(|d| d.buffer.clone())
+                })
+                .flatten()
+                .unwrap_or_default(),
         }
     }
 

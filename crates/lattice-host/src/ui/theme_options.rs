@@ -53,6 +53,16 @@ fn validate_font_size(n: &i64) -> Result<(), String> {
     }
 }
 
+fn validate_inactive_pane_opacity(n: &i64) -> Result<(), String> {
+    if *n >= 0 && *n <= 100 {
+        Ok(())
+    } else {
+        Err(format!(
+            "ui.inactive_pane_opacity must be in range [0, 100], got {n}"
+        ))
+    }
+}
+
 // Group binding: TUI-specific UI options under the `appearance`
 // group (theme / colors / sprite icons). User customizes via
 // `:customize appearance`.
@@ -63,6 +73,21 @@ lattice_config::options! {
     /// text so the active pane stands out without losing color.
     #[name("ui.dim_inactive")]
     pub UiDimInactive: bool = true;
+
+    /// Opacity of the buffer content in inactive panes, as a
+    /// percentage in `[0, 100]`. Renderers that support alpha
+    /// blending (GPUI) apply this when [`UiDimInactive`] is true;
+    /// the TUI peer ignores it (terminal cells don't have a true
+    /// alpha channel — TUI uses its `Modifier::DIM` instead).
+    ///
+    /// Default `50` (0.5 alpha) matches the contrast users see
+    /// from terminal `DIM` mode in mainstream fonts. `100` disables
+    /// the dim (same as `:set ui.dim_inactive=false`); `0` would
+    /// hide inactive panes entirely so the validator clamps the
+    /// lower bound at the option layer, not the renderer.
+    #[name("ui.inactive_pane_opacity")]
+    #[validate(validate_inactive_pane_opacity)]
+    pub UiInactivePaneOpacity: i64 = 50;
 
     /// Character drawn in the column separating side-by-side
     /// panes (default `│`).

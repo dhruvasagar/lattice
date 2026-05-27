@@ -289,6 +289,33 @@ fn picker_display_is_minibuffer(app: &GpuiApp) -> bool {
         .unwrap_or(true)
 }
 
+/// 2026-05-27: read `ui.inactive_pane_opacity` (percent 0-100) and
+/// convert to a 0.0..=1.0 alpha. `ui.dim_inactive=false` short-
+/// circuits to 1.0 so the inactive pane paints at full opacity (the
+/// user has opted out of the dim entirely).
+///
+/// Used by `pane_chrome` for every pane kind via a single threaded
+/// parameter; renderers without alpha support (TUI) ignore the
+/// number and use their own dim modifier instead.
+fn inactive_pane_opacity(app: &GpuiApp) -> f32 {
+    let dim_on = app
+        .options()
+        .config
+        .get_typed::<lattice_host::ui::theme_options::UiDimInactive>()
+        .map(|v| *v)
+        .unwrap_or(true);
+    if !dim_on {
+        return 1.0;
+    }
+    let percent = app
+        .options()
+        .config
+        .get_typed::<lattice_host::ui::theme_options::UiInactivePaneOpacity>()
+        .map(|v| *v)
+        .unwrap_or(50);
+    (percent.clamp(0, 100) as f32) / 100.0
+}
+
 /// Slice `3c.unify.gpui-annotation-render`: shared candidate-row
 /// builder for the picker (minibuffer + overlay) and cmdline-
 /// completion (minibuffer + overlay) surfaces. Replaces four
@@ -754,6 +781,7 @@ impl EditorView {
         status_text: String,
         render_active: bool,
         theme: &GpuiTheme,
+        inactive_opacity: f32,
     ) -> gpui::Div {
         let (status_bg, status_fg) = if render_active {
             (rgb(theme.cursor_background), rgb(theme.cursor_foreground))
@@ -771,7 +799,11 @@ impl EditorView {
         // Applied as `.opacity()` on the content wrapper. Status row
         // stays at full opacity so the pane identity / cursor coords
         // are still legible on inactive panes.
-        let content_opacity: f32 = if render_active { 1.0 } else { 0.5 };
+        //
+        // `inactive_opacity` is user-configurable via
+        // `:set ui.inactive_pane_opacity=N` (percent 0-100). Default
+        // 50 (= 0.5 alpha).
+        let content_opacity: f32 = if render_active { 1.0 } else { inactive_opacity };
         div()
             .flex()
             .flex_col()
@@ -866,7 +898,13 @@ impl EditorView {
                 is_active,
                 row_px,
             );
-            return Self::pane_chrome(inner, status_text, is_active, theme);
+            return Self::pane_chrome(
+                inner,
+                status_text,
+                is_active,
+                theme,
+                inactive_pane_opacity(&self.app),
+            );
         }
         // Resolve the buffer's document handle. Inactive panes may
         // reference buffers different from `editor.document`; the
@@ -1379,6 +1417,7 @@ impl EditorView {
             status_line,
             render_active,
             theme,
+            inactive_pane_opacity(&self.app),
         )
     }
 

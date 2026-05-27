@@ -162,6 +162,22 @@ pub(crate) fn popup_inner_height_rows(popup_h_px: f32, rem: f32, row_px: f32) ->
     ((popup_h_px - chrome) / row_px).floor().max(1.0) as u32
 }
 
+/// Horizontal chrome: border (left + right) + .p_4 padding (left +
+/// right). Drives `popup_inner_cols` for wrap-at-width.
+pub(crate) fn popup_chrome_h_px(rem: f32) -> f32 {
+    let border_h = 2.0 * 2.0; // .border_2() left + right
+    let p4_h = rem * 1.0 * 2.0; // .p_4() left + right = 2rem
+    border_h + p4_h
+}
+
+/// Derive integer body-col count from popup outer width + chrome.
+/// `glyph_advance_px` is the monospace cell width (measured by
+/// shaping a reference char on the popup's font).
+pub(crate) fn popup_inner_cols(popup_w_px: f32, rem: f32, glyph_advance_px: f32) -> u32 {
+    let chrome = popup_chrome_h_px(rem);
+    ((popup_w_px - chrome) / glyph_advance_px).floor().max(1.0) as u32
+}
+
 /// Pixel height the popup body is locked to (so its rendered
 /// content cannot exceed `popup_inner_height_rows` × `row_px`).
 /// Passed to the body div's `min_h == max_h` so flex layout
@@ -286,6 +302,17 @@ fn picker_display_is_minibuffer(app: &GpuiApp) -> bool {
         .config
         .get_typed::<lattice_config::core_options::PickerDisplay>()
         .map(|s| s.as_str() != "popup")
+        .unwrap_or(true)
+}
+
+/// 2026-05-27: read `popup.wrap` (bool) — controls whether the
+/// help / hover popup wraps long lines at the popup's inner cols
+/// or clips at the right edge.
+fn popup_wrap_enabled(app: &GpuiApp) -> bool {
+    app.options()
+        .config
+        .get_typed::<lattice_host::ui::theme_options::PopupWrap>()
+        .map(|v| *v)
         .unwrap_or(true)
 }
 
@@ -2670,30 +2697,91 @@ impl Render for EditorView {
                 None
             };
 
-            let popup_lines: Vec<gpui::Div> = body_lines
-                .iter()
-                .enumerate()
-                .skip(popup_scroll)
-                .take(max_popup_lines)
-                .map(|(idx, line)| {
-                    let is_cursor_line = cursor_doc_line == Some(idx);
-                    let spans: &[lattice_syntax::StyledSpan] =
-                        line_highlights.get(idx).map(Vec::as_slice).unwrap_or(&[]);
-                    let cursor_byte_on_line = if is_cursor_line { cursor_byte } else { None };
-                    // 2026-05-27 cursor-shift fix: render every popup
-                    // body row through a uniform `flex_row` of per-char
-                    // divs. Previously non-cursor lines used a single
-                    // naked `div().child(line.to_string())` while the
-                    // cursor line used per-char flex; the two layouts
-                    // applied subtly different glyph spacing, so the
-                    // current line visibly jumped a character right
-                    // every time the cursor moved. Uniform layout
-                    // means uniform metrics — no jump.
-                    let mut cells: Vec<gpui::Div> = line
-                        .char_indices()
+            // 2026-05-27 popup wrap. Each source line emits ONE OR
+            // MORE visible rows: when `popup.wrap` is true and the
+            // source line is wider than `inner_cols` chars, split
+            // it into char-count chunks. The cursor block appears
+            // on the wrap segment whose char-range contains
+            // `cursor_byte`; other segments of the same source
+            // line render without the cursor highlight.
+            let inner_cols = popup_inner_cols(popup_w_px, rem, glyph_advance_px) as usize;
+            let wrap_on = popup_wrap_enabled(&self.app);
+            let mut popup_lines: Vec<gpui::Div> = Vec::new();
+            'outer: for (idx, line) in body_lines.iter().enumerate().skip(popup_scroll) {
+                if popup_lines.len() >= max_popup_lines {
+                    break;
+                }
+                let is_cursor_line = cursor_doc_line == Some(idx);
+                let spans: &[lattice_syntax::StyledSpan] =
+                    line_highlights.get(idx).map(Vec::as_slice).unwrap_or(&[]);
+                let cb_line = if is_cursor_line {
+                    cursor_byte.unwrap_or(0)
+                } else {
+                    usize::MAX
+                };
+                // Char-index list lets us slice the line at char
+                // boundaries (the grapheme question is deferred —
+                // help / hover text is overwhelmingly ASCII).
+                let char_indices: Vec<(usize, char)> = line.char_indices().collect();
+                let total_chars = char_indices.len();
+                // Empty line: one blank visible row to preserve row
+                // height (flex_row collapses if no children).
+                if total_chars == 0 {
+                    let mut cells: Vec<gpui::Div> = Vec::new();
+                    if is_cursor_line && cb_line == 0 {
+                        cells.push(
+                            div()
+                                .bg(rgb(theme.cursor_background))
+                                .text_color(rgb(theme.cursor_foreground))
+                                .child(" ".to_string()),
+                        );
+                    } else {
+                        cells.push(div().child(" ".to_string()));
+                    }
+                    popup_lines.push(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .h(px(estimated_row_px))
+                            .flex_shrink_0()
+                            .children(cells),
+                    );
+                    continue;
+                }
+                // Determine chunk size. Without wrap, one chunk
+                // spanning the whole line (cells overflow the
+                // popup's `overflow_hidden` and clip at the right
+                // edge — pre-wrap behaviour).
+                let chunk_chars = if wrap_on && total_chars > inner_cols {
+                    inner_cols.max(1)
+                } else {
+                    total_chars.max(1)
+                };
+                let mut chunk_start_char = 0;
+                while chunk_start_char < total_chars {
+                    if popup_lines.len() >= max_popup_lines {
+                        break 'outer;
+                    }
+                    let chunk_end_char = (chunk_start_char + chunk_chars).min(total_chars);
+                    // Byte range for this chunk's text.
+                    let byte_start = char_indices[chunk_start_char].0;
+                    let byte_end = if chunk_end_char < total_chars {
+                        char_indices[chunk_end_char].0
+                    } else {
+                        line.len()
+                    };
+                    let cursor_in_chunk = is_cursor_line
+                        && cb_line >= byte_start
+                        && cb_line < byte_end;
+                    let cursor_past_end = is_cursor_line
+                        && chunk_end_char == total_chars
+                        && cb_line >= line.len();
+                    let mut cells: Vec<gpui::Div> = char_indices
+                        [chunk_start_char..chunk_end_char]
+                        .iter()
                         .map(|(byte_idx, c)| {
-                            let style = style_at(spans, byte_idx);
-                            if cursor_byte_on_line == Some(byte_idx) {
+                            let style = style_at(spans, *byte_idx);
+                            if cursor_in_chunk && *byte_idx == cb_line {
                                 div()
                                     .bg(rgb(theme.cursor_background))
                                     .text_color(rgb(theme.cursor_foreground))
@@ -2705,43 +2793,25 @@ impl Render for EditorView {
                             }
                         })
                         .collect();
-                    if is_cursor_line {
-                        let cb = cursor_byte.unwrap_or(0);
-                        // Cursor past end-of-line: append a space
-                        // block so the cursor has a glyph cell.
-                        if cb >= line.len() {
-                            cells.push(
-                                div()
-                                    .bg(rgb(theme.cursor_background))
-                                    .text_color(rgb(theme.cursor_foreground))
-                                    .child(" ".to_string()),
-                            );
-                        }
-                    } else if line.is_empty() {
-                        // Blank non-cursor lines still need a cell so
-                        // the flex_row preserves row height (empty
-                        // flex containers collapse).
-                        cells.push(div().child(" ".to_string()));
+                    if cursor_past_end {
+                        cells.push(
+                            div()
+                                .bg(rgb(theme.cursor_background))
+                                .text_color(rgb(theme.cursor_foreground))
+                                .child(" ".to_string()),
+                        );
                     }
-                    // 2026-05-27: lock each popup-body row to the
-                    // editor's `estimated_row_px`. Without this, GPUI's
-                    // default `text-sm` line-height (~1.25rem = 20px)
-                    // dominated, making each row taller than the
-                    // editor's `row_px = font_size × 1.3 ≈ 18.2px`.
-                    // The body's locked `popup_body_h_px` then fit
-                    // fewer rows than `popup_inner_rows` claimed,
-                    // overflow-clipping the last few rows and letting
-                    // the cursor scroll into them invisibly. Forcing
-                    // each row to `estimated_row_px` makes the body
-                    // metric the single source of truth.
-                    div()
-                        .flex()
-                        .flex_row()
-                        .h(px(estimated_row_px))
-                        .flex_shrink_0()
-                        .children(cells)
-                })
-                .collect();
+                    popup_lines.push(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .h(px(estimated_row_px))
+                            .flex_shrink_0()
+                            .children(cells),
+                    );
+                    chunk_start_char = chunk_end_char;
+                }
+            }
 
             let border_color = if popup_focused {
                 rgb(theme.cursor_background)

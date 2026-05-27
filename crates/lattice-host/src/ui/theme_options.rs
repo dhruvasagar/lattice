@@ -89,6 +89,14 @@ lattice_config::options! {
     #[validate(validate_inactive_pane_opacity)]
     pub UiInactivePaneOpacity: i64 = 50;
 
+    /// Wrap long lines in floating help / hover popups (`K`,
+    /// `:describe-*`, `:help`) at the popup's locked width instead
+    /// of clipping at the right edge. When disabled, lines longer
+    /// than the popup width are truncated visually (the underlying
+    /// help-buffer content is unchanged).
+    #[name("popup.wrap")]
+    pub PopupWrap: bool = true;
+
     /// Character drawn in the column separating side-by-side
     /// panes (default `│`).
     #[name("ui.separator")]

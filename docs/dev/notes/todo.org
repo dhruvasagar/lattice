@@ -74,7 +74,7 @@
   (~popup_inner_height_rows~ derives from explicit chrome math,
   ~build_terminal_inner~ locks each row to ~estimated_row_px~,
   ~paint_pane~ uses ~pane.viewport_height~ for inactive paints).
-- [ ] :terminal: only half the vertical space appears used to
+- [X] :terminal: only half the vertical space appears used to
   render content (reported 2026-05-27 after row-lock fix). Needs
   interactive repro with ~RUST_LOG=lattice_gpui::viewport=debug~
   to confirm whether ~snap.rows~ vs ~leaf.viewport_height~ vs
@@ -86,10 +86,11 @@
   buffer fell through to the document path and looked inactive.
   Resolved by the ~activate_major_for_buffer_kind~ call landed
   for terminal-mode (2026-05-27).
-- [ ] Popup body wrap: long lines should wrap at the locked popup
-  width instead of clipping at the right edge. Needs a
-  ~popup.wrap~ option + line-break algorithm.
-- [ ] Terminal inactive panes should also DIM the content (not
+- [X] Popup body wrap: long lines wrap at the locked popup width
+  (~popup.wrap~ option, default true). One source line emits one
+  or more visible rows; cursor block follows the wrap segment
+  whose char-range contains ~cursor_byte~.
+- [X] Terminal inactive panes should also DIM the content (not
   just hide the cursor). Document panes today don't dim either —
   may need a peer-level opacity / palette-darken pass.
 

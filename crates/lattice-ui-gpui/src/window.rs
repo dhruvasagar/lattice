@@ -801,8 +801,14 @@ impl EditorView {
             // always paint the block so the user can still see
             // where each shell's cursor sits.
             let insert_active = is_active && ad.terminal_insert_active;
-            let (inner, status_text) =
-                self.build_terminal_inner(pane, &rs_guard, theme, insert_active, row_px);
+            let (inner, status_text) = self.build_terminal_inner(
+                pane,
+                &rs_guard,
+                theme,
+                insert_active,
+                is_active,
+                row_px,
+            );
             return Self::pane_chrome(inner, status_text, is_active, theme);
         }
         // Resolve the buffer's document handle. Inactive panes may
@@ -1341,6 +1347,7 @@ impl EditorView {
         rs_guard: &lattice_host::render_state::RenderState,
         theme: &GpuiTheme,
         insert_active: bool,
+        is_active: bool,
         row_px: f32,
     ) -> (AnyElement, String) {
         let snap_opt = rs_guard.buffers.registry.with_terminal(pane.buffer_id, |t| {
@@ -1479,7 +1486,14 @@ impl EditorView {
         // 2026-05-25: nav_cursor overrides the PTY cursor in
         // Normal-in-terminal so the user sees where j / k / etc.
         // is moving. Matches the TUI peer's logic.
-        let (cursor_row, cursor_col, cursor_visible) = if let Some((nav_l, nav_c)) = nav_cursor {
+        // 2026-05-27: only paint the terminal cursor when the pane
+        // is active. Document panes already do this (cursor is
+        // active-only); the terminal kept its PTY cursor visible on
+        // every inactive split, breaking the "inactive panes don't
+        // own input" visual cue.
+        let (cursor_row, cursor_col, cursor_visible) = if !is_active {
+            (0, 0, false)
+        } else if let Some((nav_l, nav_c)) = nav_cursor {
             let off = snap.scroll_offset as i32;
             let row = nav_l + off;
             if (0..snap.rows as i32).contains(&row) && nav_c < snap.cols {

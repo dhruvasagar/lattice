@@ -19301,14 +19301,22 @@ impl Editor {
                 false
             }
             BufferKind::Terminal => {
-                // T1: minimal activation — flip active_buffer
-                // + update the active pane's buffer_id. No
-                // mode-state plumbing yet; T2/T3 layer
-                // sub-mode + scrollback.
+                // T1: flip active_buffer + update the active pane's
+                // buffer_id. 2026-05-27: also activate `terminal-mode`
+                // as the major mode for this buffer. Without it,
+                // `resolve_invocation_runner` returned None and the
+                // `j` / `k` / `gg` / `G` invocations from the normal
+                // keymap fell through to `run_document_invocation`,
+                // which operates on `self.document` (the unrelated
+                // last-active doc) instead of the terminal's
+                // scrollback. The user's symptom was "k doesn't move
+                // the cursor in Terminal Normal mode"; the dispatch
+                // ran against the wrong buffer entirely.
                 self.active_buffer = BufferKind::Terminal;
                 let pane = self.pane_tree.active_mut();
                 pane.buffer = BufferKind::Terminal;
                 pane.buffer_id = id;
+                let _ = self.activate_major_for_buffer_kind(id, BufferKind::Terminal);
                 false
             }
         }

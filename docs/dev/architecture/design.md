@@ -285,6 +285,8 @@ struct Document {
 - Major mode determines parser, LSP server, keymaps, style mappings, rendering profile.
 - Modal state (Normal / Insert / Visual / Op-pending / Command / Search) lives on the Document as a separate field; see §5.2. Major mode and modal mode are orthogonal axes.
 
+**Synthetic Documents.** Help / log / scratch / messages / terminal-scrollback views are all `Document` instances on the same rope-backed abstraction. They differ from on-disk Documents along two orthogonal axes: `BufferMutability` (`ReadOnly` / `Interactive` / `Editable`, §5.9.8) and the absence of a file path. The grammar and rendering layers do not branch on "synthetic vs. file-backed"; mutability gates only operator-level edits via the read-only echo path. Terminal scrollback is the most recent addition — see [`terminal-as-document.md`](terminal-as-document.md) — but the model also covers help (§5.11), `*messages*`, LSP logs, and `:scratch`.
+
 #### 5.1.1 Position history (jump list + mark ring unified)
 
 Both vim's jump list and emacs's mark ring track "where the cursor was" -- the same underlying data, with different push policies. We unify them into one **position history** per buffer plus one global history, with each entry tagged by the source that pushed it:
@@ -1705,6 +1707,8 @@ The user opens any of these like opening a file: a command (`:open file-tree`, k
 **Implementation seed: help / log buffers in the registry.** The unified `BufferRegistry` carries the same `BufferData::Help(HelpBuffer)` variant the introspection layer (§5.11) uses for `:describe-*`, `:apropos`, `:diagnostics`, and the LSP log views. `App::open_help_in_pane(buffer)` is the in-pane entry point (durable record + active hot-path mirror); `App::open_help` is the popup overlay path (transient surfaces: hover, doc lookups, error toasts). De-dup by title means re-running `:lsp-log rust` surfaces the existing buffer rather than spawning a duplicate. The picker (§5.9.7) and the LSP command refactor (`:lsp-log` / `:lsp-server-log` / `:lsp-trace-log`) consume this primitive: candidate generation walks `BufferRegistry::help_ids_sorted()`, on-accept activates the chosen `BufferId` in the current pane.
 
 **Performance:** content providers are lazy. They populate on first display; they refresh on declared triggers (event, periodic, manual), all off the UI thread on the rayon pool. A buffer that is open but whose pane is not visible can be configured to suspend updates entirely.
+
+**Terminal buffers — Document-on-Normal.** The `terminal` buffer has two sub-states (`TerminalInsertMode` PTY-bound, `TerminalNormalMode` Document-bound). Insert mode encodes keystrokes to ANSI and the renderer paints the alacritty cell grid directly. Normal / Visual operates on a **synthetic, read-only Document** built from the scrollback at Insert→Normal transition; the central vim grammar (motions, text objects, marks, search, registers, visual modes) runs against that Document with no kind-specific branching. The renderer still paints the cell grid; a coord adapter remaps document-space selection ranges to cell coordinates at publish time. See [`terminal-as-document.md`](terminal-as-document.md) for the lifecycle, coord adapter, and slice plan.
 
 #### 5.9.9 Notifications
 

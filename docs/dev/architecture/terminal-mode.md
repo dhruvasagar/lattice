@@ -130,20 +130,38 @@ Terminal buffers do NOT participate in:
 ## 5. Modal sub-states
 
 A pane whose active buffer is `BufferKind::Terminal` has two
-sub-states. Mode-line shows the current one explicitly.
+sub-states. Mode-line shows the current one explicitly. As of
+2026-05-27 the mechanics of the Normal sub-state are specified
+in [`terminal-as-document.md`](terminal-as-document.md) — the
+scrollback view is a synthetic, read-only Document owned by a
+`TerminalNormalMode` minor mode; the central vim grammar
+operates on it. The summary below is the user-visible behaviour;
+see the companion doc for the lifecycle, coord adapter, and
+slice plan.
 
 ### 5.1 Normal-in-terminal (default on entry)
 
 - Mode-line: `-- TERMINAL --`
-- Vim grammar applies to the **scrollback view** (NOT the PTY).
-- Keystrokes operate on the cell grid as if it were a read-only
-  buffer:
-  - Motions (`j` / `k` / `gg` / `G` / `0` / `$` / `/`)
-  - Operators (yank only — `y` copies cells as text)
-  - Visual mode (charwise / linewise / blockwise — select cells)
+- Vim grammar applies to a **synthetic Document built from the
+  scrollback view** (NOT the PTY). See
+  [`terminal-as-document.md`](terminal-as-document.md) §3 for
+  the build-on-entry / drop-on-exit mechanism.
+- Keystrokes flow through the standard Normal-mode keymap; the
+  full grammar applies because the active text *is* a
+  rope-backed Document:
+  - Motions (any — `h`/`j`/`k`/`l`/`w`/`W`/`b`/`B`/`e`/`E`/
+    `0`/`^`/`$`/`gg`/`G`/`f`/`F`/`t`/`T`/`%`/`gj`/`gk`/...)
+  - Operators (yank only — `y`/`Y`. Read-only buffer rejects
+    `d`/`c`/`>`/`<` with the standard echo.)
+  - Visual mode (charwise / linewise / blockwise — selection
+    set on the synthetic doc; renderer paints on the cell grid.)
+  - Text objects (`iw`/`aw`/`i"`/`a"`/...)
+  - Search (`/`/`?`/`n`/`N`/`*`/`#` + `hlsearch`)
+  - Marks (`m{a-z}` / `'{a-z}` / `` `{a-z} ``)
   - `<C-o>` / `<C-i>` jump list integration
 - Window motions work (`<C-w>` is the prefix).
-- `i` / `a` / `I` / `A` enter Terminal-Insert.
+- `i` / `a` / `I` / `A` deactivate `TerminalNormalMode` +
+  activate `TerminalInsertMode` (snap-to-live-edge included).
 
 ### 5.2 Terminal-Insert
 

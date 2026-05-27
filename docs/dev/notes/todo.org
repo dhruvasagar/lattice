@@ -94,8 +94,8 @@
 - [X] Terminal inactive panes should also DIM the content (not
   just hide the cursor). Document panes today don't dim either —
   may need a peer-level opacity / palette-darken pass.
-- [ ] visual block mode does not work
-- [ ] marginalia columns alignment
+- [X] visual block mode does not work
+- [X] marginalia columns alignment
 
 * Documentation
 - [ ] lattice-tutor

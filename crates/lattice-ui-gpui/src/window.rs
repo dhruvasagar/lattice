@@ -760,6 +760,18 @@ impl EditorView {
         } else {
             (rgb(theme.status_background), rgb(theme.status_foreground))
         };
+        // 2026-05-27: dim the buffer content (NOT the status row)
+        // when this pane is inactive. The TUI peer composes
+        // `inactive_pane_overlay = Style::empty().dim()` over every
+        // inactive pane's painted text — visible separation between
+        // "where input goes" and "everywhere else". The GPUI peer
+        // had no equivalent; only the status row colour changed,
+        // which the user reported as "too subtle".
+        //
+        // Applied as `.opacity()` on the content wrapper. Status row
+        // stays at full opacity so the pane identity / cursor coords
+        // are still legible on inactive panes.
+        let content_opacity: f32 = if render_active { 1.0 } else { 0.5 };
         div()
             .flex()
             .flex_col()
@@ -772,6 +784,7 @@ impl EditorView {
                     .flex()
                     .flex_col()
                     .overflow_hidden()
+                    .opacity(content_opacity)
                     .child(inner),
             )
             .child(

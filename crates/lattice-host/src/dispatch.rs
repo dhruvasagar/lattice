@@ -12847,6 +12847,9 @@ impl Editor {
         let _ = self.buffers.with_terminal_mut(buf_id, |t| {
             let cols = t.snapshot.load().cols;
             let (top, bot) = t.term.line_bounds();
+            let nav_was_none = t.nav_cursor.is_none();
+            let live_cursor_line = t.term.cursor_line();
+            let snap_scroll_offset = t.snapshot.load().scroll_offset;
             let (cur_l, cur_c) = t.nav_cursor.unwrap_or_else(|| {
                 let snap = t.snapshot.load();
                 if snap.scroll_offset == 0 {
@@ -12859,6 +12862,28 @@ impl Editor {
             let new_c = (cur_c as i32 + dx)
                 .max(0)
                 .min(cols.saturating_sub(1) as i32) as u16;
+            // 2026-05-27 terminal-nav probe. Opt-in via
+            //   RUST_LOG=lattice_host::terminal_nav=debug
+            // Logs the alacritty grid bounds, the chosen anchor
+            // (live cursor vs scroll-offset fallback), and the
+            // clamp result so reports of "k doesn't move up" can
+            // be triangulated against the actual grid state.
+            tracing::debug!(
+                target: "lattice_host::terminal_nav",
+                dy,
+                dx,
+                top,
+                bot,
+                live_cursor_line,
+                snap_scroll_offset,
+                nav_was_none,
+                cur_l,
+                cur_c,
+                new_l,
+                new_c,
+                clamp_no_move = new_l == cur_l && dy != 0,
+                "terminal-nav probe"
+            );
             t.nav_cursor = Some((new_l, new_c));
             if let Some(v) = t.visual.as_mut() {
                 v.head_line = new_l;

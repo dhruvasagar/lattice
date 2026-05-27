@@ -1833,6 +1833,48 @@ impl Render for EditorView {
                 post_ad.buffer_kind,
             ));
         }
+        // 2026-05-27 viewport-invariant probe. Opt-in via
+        //   RUST_LOG=lattice_gpui::viewport=debug
+        // Fires every frame, logging the chrome math + the
+        // viewport_height vs. cursor-state values needed to
+        // triangulate "cursor goes past last visible row" reports.
+        // Compares the row count motion clamps against
+        // (`viewport_height`) with the painted pixel area
+        // (`leaf_h_px = leaf rows * estimated_row_px`) and the
+        // global geometry that fed `collect_pane_geometries`.
+        if tracing::enabled!(target: "lattice_gpui::viewport", tracing::Level::DEBUG) {
+            let rs_probe = self.app.render_state.load();
+            let active_leaf = rs_probe.panes.tree.active();
+            let cursor = rs_probe.active_document.cursor;
+            let scroll = rs_probe.active_document.scroll;
+            let vh = rs_probe.active_document.viewport_height;
+            let bot_visible = scroll.saturating_add(vh.saturating_sub(1));
+            let cursor_past_bot = cursor.line > bot_visible;
+            let leaf_h_px = active_leaf.viewport_height as f32 * estimated_row_px;
+            tracing::debug!(
+                target: "lattice_gpui::viewport",
+                viewport_h_px = f32::from(viewport_px.height),
+                avail_h_px,
+                global_chrome_v_px,
+                tabline_h_px,
+                strip_rows_px,
+                per_leaf_v_chrome_px,
+                pane_padding_v_px,
+                pane_status_row_px,
+                pane_status_padding_px,
+                estimated_row_px,
+                rem,
+                leaf_rows = active_leaf.viewport_height,
+                leaf_h_px,
+                ad_viewport_height = vh,
+                cursor_line = cursor.line,
+                scroll,
+                bot_visible,
+                cursor_past_bot,
+                active_buffer_kind = ?rs_probe.active_document.buffer_kind,
+                "viewport-invariant probe"
+            );
+        }
         #[cfg(feature = "profile-frames")]
         let after_ensure = std::time::Instant::now();
         // Phase 5.8.AF.5 / Slice X2.5: the per-frame

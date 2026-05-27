@@ -62,22 +62,36 @@
   ~do_help_follow_link~ hoisted into ~Editor::do_help_follow_link~
   (2026-05-27); ~Action::FollowLink => BufferKind::Help~ routes to
   it. Both peers now dispatch through one host-side handler.
-- [ ] :terminal: in Normal mode, ~k~ doesn't move up. Needs
-  interactive repro to isolate (state-of-scrollback matters).
-  Code review of ~do_terminal_nav_move~ + ~run_terminal_invocation~
-  (dispatch.rs:12846, 21540) finds the j/k paths symmetric. Likely
-  cause: fresh-shell scenario where ~cursor_line()~ returns 0 with
-  no scrollback → ~k~ clamps to top and looks like a no-op. Confirm
-  with the user's exact scenario; may also need a more discoverable
-  cursor (the nav cursor lands at column 0 of the row above, easy
-  to miss visually).
-- [ ] Universal: cursor must never paint past the last visible
-  buffer row. User reports lines hidden behind modeline/cmdline.
-  ~per_leaf_v_chrome_px~ (window.rs:1644) subtracts ~.p_3()~
-  padding + per-pane status row + ~.py_1()~ — math looks correct;
-  may be a pixel-rounding/floor() mismatch with the actual flex
-  layout. Needs interactive repro with window dimensions to
-  triangulate the 1-row drift.
+- [X] :terminal: in Normal mode, ~k~ doesn't move up. Root cause
+  (2026-05-27): ~terminal-mode~ was registered in
+  ~editor_boot.rs~ but never activated for terminal buffers, so
+  ~resolve_invocation_runner~ returned None and motions fell
+  through to ~run_document_invocation~ (the wrong buffer).
+  Fixed by calling ~activate_major_for_buffer_kind(id,
+  BufferKind::Terminal)~ in ~activate_buffer~'s Terminal arm.
+- [X] Universal: cursor must never paint past the last visible
+  buffer row. Resolved by the popup / terminal row-height locks
+  (~popup_inner_height_rows~ derives from explicit chrome math,
+  ~build_terminal_inner~ locks each row to ~estimated_row_px~,
+  ~paint_pane~ uses ~pane.viewport_height~ for inactive paints).
+- [ ] :terminal: only half the vertical space appears used to
+  render content (reported 2026-05-27 after row-lock fix). Needs
+  interactive repro with ~RUST_LOG=lattice_gpui::viewport=debug~
+  to confirm whether ~snap.rows~ vs ~leaf.viewport_height~ vs
+  rendered pane height drift.
+- [X] :b switches buffer in split → new buffer renders without
+  syntax highlighting. Same root cause as terminal ~k~:
+  ~resolve_invocation_runner~ was returning None for buffers
+  whose major mode wasn't activated, so ~:b~ to a terminal
+  buffer fell through to the document path and looked inactive.
+  Resolved by the ~activate_major_for_buffer_kind~ call landed
+  for terminal-mode (2026-05-27).
+- [ ] Popup body wrap: long lines should wrap at the locked popup
+  width instead of clipping at the right edge. Needs a
+  ~popup.wrap~ option + line-break algorithm.
+- [ ] Terminal inactive panes should also DIM the content (not
+  just hide the cursor). Document panes today don't dim either —
+  may need a peer-level opacity / palette-darken pass.
 
 * Documentation
 - [ ] lattice-tutor

@@ -667,6 +667,17 @@ impl EditorView {
         // the editor uses ~18.2px; the mismatch made a terminal pane
         // claim more vertical space than allocated and pushed the
         // modeline/cmdline off-screen when split alongside a doc).
+        // 2026-05-27: each split child also gets `min_w(px(0))` /
+        // `min_h(px(0))`. CSS flex's default min-size is `auto`
+        // (= the item's content min size). For a terminal pane the
+        // content min = snap.cols × cell_width — wider than 50% of
+        // the parent — so the flex algorithm couldn't shrink the
+        // terminal below content size and the split lost its 50/50
+        // ratio (terminal hijacked the full width). Setting min to
+        // zero lets flex distribute the parent's main-axis purely
+        // by grow weights (1:1 → 50/50). The terminal's PTY then
+        // resizes to the new col count via `set_pane_viewport`,
+        // and the shell wraps content to fit.
         match node {
             PaneNode::Leaf(idx) => self.paint_pane(*idx, theme, *idx == active_idx, row_px),
             PaneNode::HorizontalSplit { top, bottom, .. } => div()
@@ -676,10 +687,15 @@ impl EditorView {
                 .child(
                     self.paint_pane_tree(top, theme, active_idx, row_px)
                         .flex_grow()
+                        .min_h(px(0.0))
                         .border_b_1()
                         .border_color(rgb(theme.popup_border)),
                 )
-                .child(self.paint_pane_tree(bottom, theme, active_idx, row_px).flex_grow()),
+                .child(
+                    self.paint_pane_tree(bottom, theme, active_idx, row_px)
+                        .flex_grow()
+                        .min_h(px(0.0)),
+                ),
             PaneNode::VerticalSplit { left, right, .. } => div()
                 .flex()
                 .flex_row()
@@ -687,10 +703,15 @@ impl EditorView {
                 .child(
                     self.paint_pane_tree(left, theme, active_idx, row_px)
                         .flex_grow()
+                        .min_w(px(0.0))
                         .border_r_1()
                         .border_color(rgb(theme.popup_border)),
                 )
-                .child(self.paint_pane_tree(right, theme, active_idx, row_px).flex_grow()),
+                .child(
+                    self.paint_pane_tree(right, theme, active_idx, row_px)
+                        .flex_grow()
+                        .min_w(px(0.0)),
+                ),
         }
     }
 

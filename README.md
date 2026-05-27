@@ -1,4 +1,4 @@
-# Lattice
+![Lattice](./assetsd/readme-banner.svg)
 
 A modal, GPU-accelerated, plugin-first text editor written in Rust. Combines
 **vim's modal editing power** with **emacs's extensibility model** on a
@@ -98,19 +98,19 @@ loads:
 
 ```mermaid
 flowchart TD
-    UI["<b>UI Layer</b><br/><code>lattice-ui-tui</code> &nbsp;(future GPU renderer)<br/>• Renders snapshots; never blocks; never holds locks<br/>• Translates input → CommandInvocation"]
+	UI["<b>UI Layer</b><br/><code>lattice-ui-tui</code> &nbsp;(future GPU renderer)<br/>• Renders snapshots; never blocks; never holds locks<br/>• Translates input → CommandInvocation"]
 
-    Core["<b>Core Layer</b><br/><code>lattice-runtime</code> + <code>lattice-core</code> + <code>lattice-grammar</code><br/>• One DocumentActor per open document (tokio task)<br/>• Owns the writable Document; bounded mpsc mailbox<br/>• Publishes immutable snapshots via arc-swap<br/>• Grammar dispatcher: motions, operators, text objects,<br/>&nbsp;&nbsp;ex-commands, plugin contributions — peers, not<br/>&nbsp;&nbsp;separated worlds"]
+	Core["<b>Core Layer</b><br/><code>lattice-runtime</code> + <code>lattice-core</code> + <code>lattice-grammar</code><br/>• One DocumentActor per open document (tokio task)<br/>• Owns the writable Document; bounded mpsc mailbox<br/>• Publishes immutable snapshots via arc-swap<br/>• Grammar dispatcher: motions, operators, text objects,<br/>&nbsp;&nbsp;ex-commands, plugin contributions — peers, not<br/>&nbsp;&nbsp;separated worlds"]
 
-    Plugin["<b>Plugin Layer</b> &nbsp;<i>(planned)</i><br/><code>lattice-plugin-host</code><br/>• wasmtime + Component Model + WASI<br/>• One Store per plugin instance, runs as a tokio task<br/>• Capability-gated, fuel-limited, crash-isolated"]
+	Plugin["<b>Plugin Layer</b> &nbsp;<i>(planned)</i><br/><code>lattice-plugin-host</code><br/>• wasmtime + Component Model + WASI<br/>• One Store per plugin instance, runs as a tokio task<br/>• Capability-gated, fuel-limited, crash-isolated"]
 
-    UI -->|"<b>DocumentHandle</b> (cheap clone)<br/>• snapshot() — wait-free Arc load<br/>• dispatch_with_cancel() — Pending&lt;Effect&gt;<br/>• apply_edit() — Pending&lt;AppliedEdit&gt;"| Core
-    Core -.->|"WIT-defined ABI<br/><i>(planned)</i>"| Plugin
+	UI -->|"<b>DocumentHandle</b> (cheap clone)<br/>• snapshot() — wait-free Arc load<br/>• dispatch_with_cancel() — Pending&lt;Effect&gt;<br/>• apply_edit() — Pending&lt;AppliedEdit&gt;"| Core
+	Core -.->|"WIT-defined ABI<br/><i>(planned)</i>"| Plugin
 
-    classDef done fill:#1f4d2c,stroke:#2ea043,color:#e6edf3
-    classDef planned fill:#3d2a1a,stroke:#bf8700,color:#e6edf3,stroke-dasharray:5 5
-    class UI,Core done
-    class Plugin planned
+	classDef done fill:#1f4d2c,stroke:#2ea043,color:#e6edf3
+	classDef planned fill:#3d2a1a,stroke:#bf8700,color:#e6edf3,stroke-dasharray:5 5
+	class UI,Core done
+	class Plugin planned
 ```
 
 ### Crate map

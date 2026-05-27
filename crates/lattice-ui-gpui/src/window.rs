@@ -642,7 +642,13 @@ impl EditorView {
     /// cursor markers — those need per-pane caches the host
     /// already populates for the TUI peer via
     /// `refresh_pane_highlights`, queued for a future slice.
-    fn paint_pane_tree(&self, node: &PaneNode, theme: &GpuiTheme, active_idx: usize) -> gpui::Div {
+    fn paint_pane_tree(
+        &self,
+        node: &PaneNode,
+        theme: &GpuiTheme,
+        active_idx: usize,
+        row_px: f32,
+    ) -> gpui::Div {
         // 2026-05-27: split branches drop `.size_full()`. With both
         // `.flex_grow()` and `.size_full()`, the split's hypothetical
         // main size resolved to `height: 100%` of the parent (which
@@ -654,30 +660,37 @@ impl EditorView {
         // but no minibuffer was visible. `.flex_grow()` alone gives
         // the split a `basis: auto` so it consumes only free space,
         // never claiming an explicit 100% that displaces siblings.
+        //
+        // `row_px` is the editor row height threaded through so
+        // terminal panes can lock each painted row to exactly that
+        // metric (default GPUI `text-sm` line-height is ~20px while
+        // the editor uses ~18.2px; the mismatch made a terminal pane
+        // claim more vertical space than allocated and pushed the
+        // modeline/cmdline off-screen when split alongside a doc).
         match node {
-            PaneNode::Leaf(idx) => self.paint_pane(*idx, theme, *idx == active_idx),
+            PaneNode::Leaf(idx) => self.paint_pane(*idx, theme, *idx == active_idx, row_px),
             PaneNode::HorizontalSplit { top, bottom, .. } => div()
                 .flex()
                 .flex_col()
                 .flex_grow()
                 .child(
-                    self.paint_pane_tree(top, theme, active_idx)
+                    self.paint_pane_tree(top, theme, active_idx, row_px)
                         .flex_grow()
                         .border_b_1()
                         .border_color(rgb(theme.popup_border)),
                 )
-                .child(self.paint_pane_tree(bottom, theme, active_idx).flex_grow()),
+                .child(self.paint_pane_tree(bottom, theme, active_idx, row_px).flex_grow()),
             PaneNode::VerticalSplit { left, right, .. } => div()
                 .flex()
                 .flex_row()
                 .flex_grow()
                 .child(
-                    self.paint_pane_tree(left, theme, active_idx)
+                    self.paint_pane_tree(left, theme, active_idx, row_px)
                         .flex_grow()
                         .border_r_1()
                         .border_color(rgb(theme.popup_border)),
                 )
-                .child(self.paint_pane_tree(right, theme, active_idx).flex_grow()),
+                .child(self.paint_pane_tree(right, theme, active_idx, row_px).flex_grow()),
         }
     }
 
@@ -733,7 +746,13 @@ impl EditorView {
     /// and no highlights. Each pane gets its own status line at
     /// its bottom (path + cursor coords), which keeps the visible
     /// boundary between panes legible without a hard chrome border.
-    fn paint_pane(&self, pane_idx: usize, theme: &GpuiTheme, is_active: bool) -> gpui::Div {
+    fn paint_pane(
+        &self,
+        pane_idx: usize,
+        theme: &GpuiTheme,
+        is_active: bool,
+        row_px: f32,
+    ) -> gpui::Div {
         // Slice 3c.final.E.swap: paint reads route through the
         // App's own `render_state` Arc (cloned from
         // `editor.render_state` at construction). No `&Editor`
@@ -783,7 +802,7 @@ impl EditorView {
             // where each shell's cursor sits.
             let insert_active = is_active && ad.terminal_insert_active;
             let (inner, status_text) =
-                self.build_terminal_inner(pane, &rs_guard, theme, insert_active);
+                self.build_terminal_inner(pane, &rs_guard, theme, insert_active, row_px);
             return Self::pane_chrome(inner, status_text, is_active, theme);
         }
         // Resolve the buffer's document handle. Inactive panes may
@@ -1322,6 +1341,7 @@ impl EditorView {
         rs_guard: &lattice_host::render_state::RenderState,
         theme: &GpuiTheme,
         insert_active: bool,
+        row_px: f32,
     ) -> (AnyElement, String) {
         let snap_opt = rs_guard.buffers.registry.with_terminal(pane.buffer_id, |t| {
             (
@@ -1502,7 +1522,19 @@ impl EditorView {
         let visual_state = visual;
         let mut rows: Vec<gpui::Div> = Vec::with_capacity(snap.rows as usize);
         for r in 0..snap.rows {
-            let mut row_div = div().flex().flex_row();
+            // 2026-05-27: lock each terminal row to the editor's
+            // row_px metric (font_size × 1.3). Without this, default
+            // GPUI text rendering used a larger line-height (~20px
+            // for text-sm) per row; `snap.rows × 20px` exceeded the
+            // pane's allocated height and pushed the modeline /
+            // cmdline siblings off-screen when terminal was one of
+            // a vsplit pair. `.flex_shrink_0()` prevents flex from
+            // squishing the row below `row_px`.
+            let mut row_div = div()
+                .flex()
+                .flex_row()
+                .h(px(row_px))
+                .flex_shrink_0();
             let mut run_text = String::with_capacity(snap.cols as usize);
             let mut run_style: Option<CellStyle> = None;
             let flush =
@@ -2121,7 +2153,12 @@ impl Render for EditorView {
         let render_state = self.app.render_state.load_full();
         let active_idx = render_state.panes.tree.active_index();
         let document_area = self
-            .paint_pane_tree(render_state.panes.tree.root(), &theme, active_idx)
+            .paint_pane_tree(
+                render_state.panes.tree.root(),
+                &theme,
+                active_idx,
+                estimated_row_px,
+            )
             .flex_grow();
         #[cfg(feature = "profile-frames")]
         let after_paint = std::time::Instant::now();

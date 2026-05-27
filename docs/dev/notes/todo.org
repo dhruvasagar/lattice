@@ -30,10 +30,10 @@
   - [X] file completion for `:e` is broken
 - [ ] `describe-*` functions open a popup, but the focus is not within them
 - [X] <C-n>, <C-p> for completions
-- [ ] popup focus
+- [X] popup focus
 - [X] `gg`, `zz`, `zt`, `zb` don't work
 - [X] Mouse click on window does not work, no focus, can't maximize
-- [ ] Picker UI improve colors for matching, marginalia
+- [X] Picker UI improve colors for matching, marginalia
 - [X] LSP `K` (hover): popup doesn't appear on first press; requires
   an additional key press, and is not positioned at the cursor
   location. Two GPUI fixes (2026-05-27):

@@ -190,6 +190,47 @@ fn main_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) ->
             .saturating_sub(2)
             .saturating_sub(extra_rows as u16) as u32;
         app.set_viewport_height(app.active_pane_content_height(buffer_height));
+        // 2026-05-27: fire `set_pane_viewport(idx, rows, cols)` per
+        // leaf so the host writes the per-pane geometry onto
+        // `PaneState` AND, for terminal panes, resizes alacritty +
+        // PTY to match the allocated area. Without this, terminal
+        // grids stayed at their spawn-time 80×24 default and never
+        // wrapped to the actual TUI pane width — the GPUI peer
+        // had this loop in its render path but the TUI never did.
+        //
+        // Diff-then-send: only send when the leaf's published
+        // viewport differs from what compute_rects computed this
+        // frame. Steady-state (no resize) fires zero commands.
+        let panes_arc = app.panes();
+        let area_for_panes = crate::pane::PaneRect {
+            x: 0,
+            y: 0,
+            width: size.width,
+            height: buffer_height as u16,
+        };
+        let rects = panes_arc.tree.compute_rects(area_for_panes);
+        let multi = rects.len() > 1;
+        let current_leaves: Vec<_> = panes_arc.tree.leaves().to_vec();
+        for (idx, prect) in &rects {
+            // Reserve a bottom row for the per-pane status line in
+            // multi-pane setups so the host's viewport matches
+            // what's actually drawn (the renderer carves the same
+            // row off in `draw_panes`).
+            let content_h = if multi && prect.height >= 2 {
+                prect.height - 1
+            } else {
+                prect.height
+            };
+            let rows = u32::from(content_h).max(1);
+            let cols = u32::from(prect.width).max(1);
+            let needs = current_leaves
+                .get(*idx)
+                .map(|l| l.viewport_height != rows || l.viewport_width != cols)
+                .unwrap_or(true);
+            if needs {
+                app.set_pane_viewport(*idx, rows, cols);
+            }
+        }
         // Slice 3c.final.C: terminal_width via Action.
         app.apply(lattice_host::action::Action::SetTerminalWidth(size.width));
         // `<C-l>` (RedrawScreen) sets `pending_redraw`; honour it

@@ -1158,6 +1158,34 @@ impl App {
         }
     }
 
+    /// 2026-05-27: per-pane geometry hand-off. Mirrors the GPUI
+    /// peer's `set_pane_viewport`. The host writes onto
+    /// `PaneState[idx]`; for terminal-kind panes the
+    /// `SetPaneViewport` handler also resizes alacritty + PTY so
+    /// the shell wraps its output to the new column count.
+    /// Without this, TUI terminal panes never reflowed on split /
+    /// resize and content overflowed past the visible area.
+    pub fn set_pane_viewport(&mut self, idx: usize, rows: u32, cols: u32) {
+        #[cfg(not(test))]
+        {
+            let _ = self.editor_actor.set_pane_viewport(idx, rows, cols);
+        }
+        #[cfg(test)]
+        {
+            let active_idx = self.editor.pane_tree.active_index();
+            let leaves = self.editor.pane_tree.leaves_mut();
+            if idx < leaves.len() {
+                leaves[idx].viewport_height = rows.max(1);
+                leaves[idx].viewport_width = cols.max(1);
+            }
+            if idx == active_idx {
+                self.editor.viewport_height = rows.max(1);
+                self.editor.ensure_cursor_visible();
+            }
+            self.editor.publish_render_state();
+        }
+    }
+
     /// Variant of [`Self::mutate_editor`] for closures that
     /// return a value (typically `Vec<RendererSignal>` from
     /// host helpers). Same routing contract.

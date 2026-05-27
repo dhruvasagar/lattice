@@ -416,38 +416,45 @@ fn paint_candidate_row(
         div().flex().flex_row().children(cells)
     };
 
-    // Issue #35-followup (2026-05-22): user reported the
-    // marginalia floated to the far-right edge in maximized
-    // windows. Previously `justify_between().w_full()` pushed
-    // annotations across the whole screen; now annotations
-    // sit right after the display text with a small gap.
-    // The row's `w_full` is kept ONLY so the selected-row bg
-    // fills the strip; child layout is natural (no
-    // justify_between).
+    // 2026-05-27: annotation column-alignment. User reported
+    // completion marginalia (rightmost annotation) drifted
+    // per-row because the previous layout placed it
+    // immediately after the display with a 2-space gap, so
+    // longer display texts pushed the annotation to a later
+    // column. Fix: a `flex_grow` spacer between display and
+    // annotation pushes the annotation to the right edge of
+    // the row's allocated width. Every row terminates the
+    // annotation at the same x → aligned column. The picker /
+    // completion container's `max_w` caps the row's width so
+    // the annotation lands at the picker's right edge, not
+    // the screen edge (the earlier `justify_between` issue
+    // that motivated the immediately-after layout).
     let annotation_text = cand.annotations.join("  ");
     let mut row = div().flex().flex_row().w_full();
     if padded {
         row = row.px_2();
     }
-    // Issue #35 (2026-05-22): left-margin kind glyph (one
-    // ASCII char) so the user can scan candidates by kind
-    // (`f` = file, `b` = buffer, `:` = command, etc.). Sits
-    // in `marginalia_fg` so it doesn't compete with the
-    // display text.
+    // Left-margin kind glyph (one ASCII char) so the user can
+    // scan candidates by kind (`f` = file, `b` = buffer,
+    // `:` = command, etc.). Marginalia color so it doesn't
+    // compete with the display text.
     let kind_glyph = format!("{} ", cand.raw.kind.glyph());
     row = row
-        .child(div().text_color(marginalia_fg).child(kind_glyph))
-        .child(display_div);
+        .child(div().text_color(marginalia_fg).flex_shrink_0().child(kind_glyph))
+        .child(display_div.flex_shrink_0());
     if !annotation_text.is_empty() {
-        // 2-space gap after the display text, then the
-        // annotation. Sits close to the candidate rather
-        // than at the screen edge.
-        row = row.child(
-            div()
-                .text_color(marginalia_fg)
-                .ml_2()
-                .child(annotation_text),
-        );
+        // Spacer between display and annotation expands to
+        // fill leftover horizontal space; annotation right-
+        // aligns at the row's right edge.
+        row = row
+            .child(div().flex_grow())
+            .child(
+                div()
+                    .text_color(marginalia_fg)
+                    .flex_shrink_0()
+                    .ml_2()
+                    .child(annotation_text),
+            );
     }
     if let Some(bg) = row_bg { row.bg(bg) } else { row }
 }

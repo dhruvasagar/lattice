@@ -1,6 +1,7 @@
 * Features
 - [ ] diagnostics under cursor
 - [X] Terminal
+- [ ] ligatures
 - [ ] diffing
 - [ ] Theme System (also with a theme picker with preview)
 - [ ] Quickfix / Location lists
@@ -93,6 +94,7 @@
 - [X] Terminal inactive panes should also DIM the content (not
   just hide the cursor). Document panes today don't dim either —
   may need a peer-level opacity / palette-darken pass.
+- visual block mode does not work
 
 * Documentation
 - [ ] lattice-tutor

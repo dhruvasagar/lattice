@@ -2750,12 +2750,19 @@ impl Render for EditorView {
                     if is_cursor_line && cb_line == 0 {
                         cells.push(
                             div()
+                                .w(px(glyph_advance_px))
+                                .flex_shrink_0()
                                 .bg(rgb(theme.cursor_background))
                                 .text_color(rgb(theme.cursor_foreground))
                                 .child(" ".to_string()),
                         );
                     } else {
-                        cells.push(div().child(" ".to_string()));
+                        cells.push(
+                            div()
+                                .w(px(glyph_advance_px))
+                                .flex_shrink_0()
+                                .child(" ".to_string()),
+                        );
                     }
                     popup_lines.push(
                         div()
@@ -2795,19 +2802,35 @@ impl Render for EditorView {
                     let cursor_past_end = is_cursor_line
                         && chunk_end_char == total_chars
                         && cb_line >= line.len();
+                    // 2026-05-27 cell-width lock. Without an
+                    // explicit width per cell, the row's actual
+                    // pixel width was `sum(cell content widths)`
+                    // which diverged from `N × glyph_advance_px`
+                    // (sub-pixel kerning, font metrics for non-"M"
+                    // glyphs). For wrap the break point was
+                    // `inner_cols = (popup_w - chrome) / adv`, so
+                    // the sum could exceed the popup edge and the
+                    // tail of each wrap row clipped past the right
+                    // border. Locking `.w(px(adv)) +
+                    // .flex_shrink_0()` per cell makes a row of
+                    // N cells exactly N × adv wide — the same
+                    // budget the wrap math uses.
+                    let cell_w_px = glyph_advance_px;
                     let mut cells: Vec<gpui::Div> = char_indices
                         [chunk_start_char..chunk_end_char]
                         .iter()
                         .map(|(byte_idx, c)| {
                             let style = style_at(spans, *byte_idx);
+                            let base = div()
+                                .w(px(cell_w_px))
+                                .flex_shrink_0()
+                                .overflow_hidden();
                             if cursor_in_chunk && *byte_idx == cb_line {
-                                div()
-                                    .bg(rgb(theme.cursor_background))
+                                base.bg(rgb(theme.cursor_background))
                                     .text_color(rgb(theme.cursor_foreground))
                                     .child(c.to_string())
                             } else {
-                                div()
-                                    .text_color(rgb(syntax_color(style)))
+                                base.text_color(rgb(syntax_color(style)))
                                     .child(c.to_string())
                             }
                         })
@@ -2815,6 +2838,8 @@ impl Render for EditorView {
                     if cursor_past_end {
                         cells.push(
                             div()
+                                .w(px(cell_w_px))
+                                .flex_shrink_0()
                                 .bg(rgb(theme.cursor_background))
                                 .text_color(rgb(theme.cursor_foreground))
                                 .child(" ".to_string()),

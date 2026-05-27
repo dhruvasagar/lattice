@@ -137,22 +137,43 @@ pub(crate) fn popup_outer_dims_px(viewport_w_px: f32, viewport_h_px: f32) -> (f3
 
 /// Pixel cost of the popup's vertical chrome (border + .p_4 padding
 /// top+bottom + header text row + separator row + .pb_2 header
-/// gap). Subtract from the popup's outer height to get the inner
-/// body area. `row_px` is the editor row height (font_size × 1.3),
-/// passed in because the header rows use the same metric.
+/// gap + safety margin). Subtract from the popup's outer height
+/// to get the inner body area. `row_px` is the editor row height
+/// (font_size × 1.3), passed in because the header rows use the
+/// same metric.
+///
+/// 2026-05-27: the header text + separator are estimated at
+/// `row_px` each, but GPUI may render them at a slightly larger
+/// line-height (default text vs editor text); the popup body is
+/// also stacked under the header in a flex column whose layout
+/// can add small gaps. To guarantee that the cursor's last
+/// visible row really fits inside the popup's painted area, a
+/// 2-row safety margin is added. Empirically the symptom of an
+/// under-counted chrome is "last few lines off the popup", so
+/// the margin biases toward fewer-painted-rows-than-possible.
 pub(crate) fn popup_chrome_v_px(rem: f32, row_px: f32) -> f32 {
     let border_v = 2.0 * 2.0; // .border_2() top + bottom
     let p4_v = rem * 1.0 * 2.0; // .p_4() top + bottom = 2rem
     let header_text = row_px; // " title (hint) " row
     let separator_row = row_px; // "───" row
     let pb_2_v = rem * 0.5; // header .pb_2() = 0.5rem
-    border_v + p4_v + header_text + separator_row + pb_2_v
+    let safety_rows_px = 2.0 * row_px; // see fn doc above
+    border_v + p4_v + header_text + separator_row + pb_2_v + safety_rows_px
 }
 
 /// Derive integer body-row count from popup outer height + chrome.
 pub(crate) fn popup_inner_height_rows(popup_h_px: f32, rem: f32, row_px: f32) -> u32 {
     let chrome = popup_chrome_v_px(rem, row_px);
     ((popup_h_px - chrome) / row_px).floor().max(1.0) as u32
+}
+
+/// Pixel height the popup body is locked to (so its rendered
+/// content cannot exceed `popup_inner_height_rows` × `row_px`).
+/// Passed to the body div's `min_h == max_h` so flex layout
+/// can't oversize the body and push rows past the popup's
+/// bottom edge.
+pub(crate) fn popup_body_h_px(popup_h_px: f32, rem: f32, row_px: f32) -> f32 {
+    popup_inner_height_rows(popup_h_px, rem, row_px) as f32 * row_px
 }
 
 /// Walk `spans` (one entry per line) and find the `Style` that
@@ -1700,6 +1721,18 @@ impl Render for EditorView {
         );
         let popup_inner_rows =
             popup_inner_height_rows(popup_h_px, rem, estimated_row_px);
+        // 2026-05-27: lock the body div's height too. With only the
+        // outer popup container size locked, the body's flex-grown
+        // content could (under-estimated chrome) render more rows
+        // than visually fit, and the popup's overflow_hidden would
+        // clip the bottom — the cursor's last visible row would be
+        // physically painted but invisible. Setting min_h == max_h
+        // on the body forces flex to size it exactly to
+        // `popup_inner_rows × row_px` so the row count is the
+        // single source of truth for both painting and cursor
+        // clamping.
+        let popup_body_h_px =
+            popup_body_h_px(popup_h_px, rem, estimated_row_px);
         // Issue #17 (2026-05-22): the previous calc subtracted
         // exactly 1 row for the modeline/cmdline bottom strip and
         // ignored every other piece of non-buffer chrome — `.p_3()`
@@ -2589,9 +2622,17 @@ impl Render for EditorView {
                         .child(div().child("───────────────".to_string())),
                 )
                 .child(
+                    // 2026-05-27: body height locked to
+                    // `popup_inner_rows × row_px` so flex can't
+                    // oversize the body. Combined with
+                    // `.take(max_popup_lines)` this guarantees the
+                    // cursor's last reachable row is always painted
+                    // inside the popup's visible bottom edge.
                     div()
                         .flex()
                         .flex_col()
+                        .min_h(px(popup_body_h_px))
+                        .max_h(px(popup_body_h_px))
                         .overflow_hidden()
                         .children(popup_lines),
                 )

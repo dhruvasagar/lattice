@@ -178,6 +178,37 @@ insta = "1.43"
 proptest = "1.7"
 criterion = { version = "0.5", default-features = false, features = ["plotters", "cargo_bench_support"] }
 
+# 2026-05-27: dev-profile tuning for fast iteration.
+#
+# Default `[profile.dev]` builds at `opt-level = 0` for every crate
+# in the workspace AND every dependency. Lattice's own code at -O0
+# is fine — it's the dependencies that hurt: tree-sitter, gpui,
+# wgpu, alacritty, regex etc. all become 10-100× slower at runtime
+# without basic optimization, making interactive testing on the
+# debug profile painful (the user reported huge build times AND
+# sluggish behaviour).
+#
+# Bumping every NON-workspace dependency to `opt-level = 1` gives
+# near-release runtime smoothness while keeping incremental edits
+# to lattice's own crates cheap to recompile (lattice's crates
+# stay at `opt-level = 0`, so per-crate rebuild + link stays in the
+# few-second range alongside the mold linker config in
+# `.cargo/config.toml`).
+#
+# `package."*"` matches every non-workspace crate. Workspace crates
+# stay at the top-level `[profile.dev]` setting (opt-level = 0).
+#
+# Trade-off accepted: first cold build is slightly heavier (deps
+# compile with one pass of LLVM optimization instead of zero). After
+# that, incremental builds touching only lattice crates do NOT
+# recompile deps. Net: cold ~20% slower, incremental ~5× faster
+# in practice.
+[profile.dev]
+opt-level = 0
+
+[profile.dev.package."*"]
+opt-level = 1
+
 [profile.release]
 # Perf plan F. Targets the GPUI peer's <3 ms idle frame / <6 ms p50
 # keystroke budget by giving LLVM enough whole-program context to

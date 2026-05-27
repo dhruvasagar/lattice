@@ -1,0 +1,26 @@
+# Workspace cargo config. 2026-05-27.
+#
+# Build-speed defaults for local iteration. The release profile in
+# Cargo.toml stays optimized for ship-perf (lto = "thin",
+# codegen-units = 1, panic = abort); this file accelerates LINK time
+# without touching codegen quality.
+#
+# - `linker = "clang"` + `link-arg=-fuse-ld=mold` routes the final
+#   link step through mold instead of the default ld/gold/lld. Mold
+#   is roughly an order of magnitude faster than lld on Linux for a
+#   crate-rich workspace like lattice (gpui + tree-sitter + tokio
+#   alone produce hundreds of object files); a clean
+#   `cargo build -p lattice-ui-gpui` link drops from ~60 s to ~3-5 s.
+# - The `[target.x86_64-unknown-linux-gnu]` scope keeps the override
+#   Linux-only so contributors on macOS / Windows pick up their
+#   platform's default linker without surprises.
+#
+# Workflow change to pair with this config: iterate with
+# `cargo run` (debug profile — fast incremental builds, runs at
+# acceptable speed once `[profile.dev]` in Cargo.toml lifts deps to
+# `opt-level = 1`). Reserve `cargo run --release` for latency
+# measurement only.
+
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]

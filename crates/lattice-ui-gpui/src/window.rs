@@ -2457,8 +2457,8 @@ impl Render for EditorView {
                 // Adaption: full form → compact `[b]uf` → prune.
                 // Also surface the active filter when set.
                 let approx_cols: u16 = 45;
-                let footer_text = if let Some(active) = ic.source_filter.as_deref() {
-                    let label = gpui_source_display_label(active);
+                let footer_text = if let Some(active) = ic.source_filter.as_ref() {
+                    let label = gpui_source_display_label(active.as_str());
                     let raw = format!(" source: {label} │ <C-Space> all ");
                     if raw.chars().count() > approx_cols as usize {
                         raw.chars().take(approx_cols as usize).collect::<String>()

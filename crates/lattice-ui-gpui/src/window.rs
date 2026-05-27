@@ -103,12 +103,57 @@ fn syntax_color(style: SyntaxStyle) -> u32 {
         .unwrap_or(0xcdd6f4)
 }
 
-/// Maximum body rows the GPUI popup overlay paints. Doubles as the
-/// popup's effective scroll viewport: when the popup is focused we
-/// override `Editor::viewport_height` to this value so motion +
-/// `ensure_cursor_visible` clamp scroll against what's actually
-/// drawn (TUI achieves the same via `help_popup_inner_height`).
-pub(crate) const POPUP_INNER_HEIGHT_ROWS: u32 = 30;
+/// Popup sizing constants. 2026-05-27: popup geometry is locked to
+/// a window-relative size so the box does not grow with content
+/// (which previously caused width-jump on long-line scroll). Both
+/// `:describe-*` (Centered) and `K` hover (CursorAnchored) use the
+/// same fixed dimensions for visual consistency.
+///
+/// Width / height are computed each frame as
+///   `clamp(MIN, RATIO × viewport_dim, MAX)`
+/// so small windows shrink the popup, normal windows hit MAX, and
+/// the body never expands to fit text. The inner content area
+/// (where the popup body paints) is the outer size minus chrome
+/// (border + `.p_4()` padding + header row + separator row +
+/// `.pb_2()` header gap); see `popup_chrome_v_px` for the
+/// breakdown. The integer row count derived from inner pixels
+/// doubles as the cursor-clamp viewport when the popup is focused
+/// (mirrors TUI's `help_popup_inner_height`).
+pub(crate) const POPUP_MAX_W_PX: f32 = 900.0;
+pub(crate) const POPUP_MAX_H_PX: f32 = 600.0;
+pub(crate) const POPUP_MIN_W_PX: f32 = 480.0;
+pub(crate) const POPUP_MIN_H_PX: f32 = 240.0;
+pub(crate) const POPUP_W_RATIO: f32 = 0.70;
+pub(crate) const POPUP_H_RATIO: f32 = 0.60;
+
+/// Compute the popup's outer pixel dimensions from the window's
+/// viewport pixels. Window-relative with hard min/max caps so the
+/// popup is readable on small windows and not absurd on large ones.
+pub(crate) fn popup_outer_dims_px(viewport_w_px: f32, viewport_h_px: f32) -> (f32, f32) {
+    let w = (viewport_w_px * POPUP_W_RATIO).clamp(POPUP_MIN_W_PX, POPUP_MAX_W_PX);
+    let h = (viewport_h_px * POPUP_H_RATIO).clamp(POPUP_MIN_H_PX, POPUP_MAX_H_PX);
+    (w, h)
+}
+
+/// Pixel cost of the popup's vertical chrome (border + .p_4 padding
+/// top+bottom + header text row + separator row + .pb_2 header
+/// gap). Subtract from the popup's outer height to get the inner
+/// body area. `row_px` is the editor row height (font_size × 1.3),
+/// passed in because the header rows use the same metric.
+pub(crate) fn popup_chrome_v_px(rem: f32, row_px: f32) -> f32 {
+    let border_v = 2.0 * 2.0; // .border_2() top + bottom
+    let p4_v = rem * 1.0 * 2.0; // .p_4() top + bottom = 2rem
+    let header_text = row_px; // " title (hint) " row
+    let separator_row = row_px; // "───" row
+    let pb_2_v = rem * 0.5; // header .pb_2() = 0.5rem
+    border_v + p4_v + header_text + separator_row + pb_2_v
+}
+
+/// Derive integer body-row count from popup outer height + chrome.
+pub(crate) fn popup_inner_height_rows(popup_h_px: f32, rem: f32, row_px: f32) -> u32 {
+    let chrome = popup_chrome_v_px(rem, row_px);
+    ((popup_h_px - chrome) / row_px).floor().max(1.0) as u32
+}
 
 /// Walk `spans` (one entry per line) and find the `Style` that
 /// covers `byte`.
@@ -787,7 +832,20 @@ impl EditorView {
         } else {
             pane.scroll
         };
-        let viewport_height = ad.viewport_height.max(1);
+        // 2026-05-27: when the popup is focused (State B), `ad`
+        // describes the POPUP's viewport_height (the
+        // `popup_inner_rows` override the render loop applies up
+        // top), not the document pane's. The doc pane sits behind
+        // the popup, dimmed but fully painted — read its OWN
+        // leaf viewport so `visible_end` paints the full pane area,
+        // not the popup-sized subset. Same fallback applies to
+        // inactive split panes (their `pane.viewport_height` is
+        // their leaf row count).
+        let viewport_height = if render_active {
+            ad.viewport_height.max(1)
+        } else {
+            pane.viewport_height.max(1)
+        };
         let visible_start = (pane_scroll as usize).min(total_lines);
         let visible_end = (pane_scroll as usize)
             .saturating_add(viewport_height as usize)
@@ -1616,6 +1674,23 @@ impl Render for EditorView {
         let font_size_px = rem * 0.875; // text_sm()
         let estimated_row_px = font_size_px * 1.3; // matches EditorElement::line_height
         let total_rows = (f32::from(viewport_px.height) / estimated_row_px).floor() as i32;
+        // 2026-05-27 popup geometry. Locked to a window-relative
+        // size so the popup container never grows with content. Both
+        // dimensions and the integer row count derived from the
+        // inner body area are used in three places this frame:
+        //   1. The viewport-height override below (popup-focused
+        //      motion clamps against `popup_inner_rows`).
+        //   2. `.take(MAX_POPUP_LINES)` in the popup overlay paint
+        //      (caps how many body rows the flex_col emits).
+        //   3. The popup container's `.min_w()/.max_w()` +
+        //      `.min_h()/.max_h()` lock so width never jumps when
+        //      a long line scrolls into view.
+        let (popup_w_px, popup_h_px) = popup_outer_dims_px(
+            f32::from(viewport_px.width),
+            f32::from(viewport_px.height),
+        );
+        let popup_inner_rows =
+            popup_inner_height_rows(popup_h_px, rem, estimated_row_px);
         // Issue #17 (2026-05-22): the previous calc subtracted
         // exactly 1 row for the modeline/cmdline bottom strip and
         // ignored every other piece of non-buffer chrome — `.p_3()`
@@ -1793,7 +1868,7 @@ impl Render for EditorView {
             lattice_core::BufferKind::Help
         );
         let target_height = if popup_focused {
-            POPUP_INNER_HEIGHT_ROWS
+            popup_inner_rows
         } else {
             rs_for_popup.panes.tree.active().viewport_height.max(1)
         };
@@ -2392,12 +2467,12 @@ impl Render for EditorView {
             // we can show the right content window and a cursor indicator.
             let ad = self.app.ad();
             let popup_focused = ad.buffer_kind == lattice_core::BufferKind::Help;
-            // Max visible lines sized for the expanded 600px body.
-            // Matches `POPUP_INNER_HEIGHT_ROWS` — the per-frame
-            // viewport override the render loop applies so motion +
-            // `ensure_cursor_visible` track the popup's actual
-            // scroll surface.
-            const MAX_POPUP_LINES: usize = POPUP_INNER_HEIGHT_ROWS as usize;
+            // 2026-05-27: max visible body rows derived from the
+            // per-frame popup geometry (`popup_inner_rows` computed
+            // up top from window dimensions minus popup chrome). The
+            // viewport-height override above uses the same value so
+            // motion clamps and the painted body stay in lockstep.
+            let max_popup_lines: usize = popup_inner_rows as usize;
             let popup_scroll = if popup_focused { ad.scroll as usize } else { 0 };
             let cursor_doc_line = if popup_focused {
                 Some(ad.cursor.line as usize)
@@ -2415,7 +2490,7 @@ impl Render for EditorView {
                 .iter()
                 .enumerate()
                 .skip(popup_scroll)
-                .take(MAX_POPUP_LINES)
+                .take(max_popup_lines)
                 .map(|(idx, line)| {
                     let is_cursor_line = cursor_doc_line == Some(idx);
                     let spans: &[lattice_syntax::StyledSpan] =
@@ -2478,11 +2553,20 @@ impl Render for EditorView {
             } else {
                 " (K to focus · Esc dismiss)"
             };
+            // 2026-05-27: lock the popup to the per-frame computed
+            // outer dimensions. min == max prevents the flex layout
+            // from shrinking on short content or growing on long
+            // lines (the prior `max_w(px(900))` with no `min_w`
+            // caused the popup width to visibly jump when a long
+            // line scrolled into view).
             div()
                 .flex()
                 .flex_col()
-                .max_w(px(900.0))
-                .max_h(px(600.0))
+                .min_w(px(popup_w_px))
+                .max_w(px(popup_w_px))
+                .min_h(px(popup_h_px))
+                .max_h(px(popup_h_px))
+                .overflow_hidden()
                 .p_4()
                 .bg(rgb(theme.popup_background))
                 .text_color(rgb(theme.foreground))
@@ -2666,24 +2750,49 @@ impl Render for EditorView {
                     let cursor_screen_row =
                         anchor.line.saturating_sub(popup_substate.doc_scroll_at_anchor) as f32;
                     let cursor_byte_col = anchor.byte as f32;
-                    // Pane's `.p_3()` adds 0.75rem padding before
-                    // the editor element starts; account for it
-                    // so popup x/y align with painted glyphs.
-                    let pane_pad_px = rem * 0.75;
-                    // Prefer placing below the cursor row; flip above
-                    // when the popup would extend beyond the viewport.
-                    const POPUP_MAX_H: f32 = 600.0;
-                    let below_top = pane_pad_px + (cursor_screen_row + 1.0) * estimated_row_px;
+                    // 2026-05-27: the popup is positioned relative
+                    // to the WINDOW (root container's top-left),
+                    // not relative to the document area. Account
+                    // for everything between the window top and
+                    // the first painted document row: the tabline
+                    // (when visible) and the pane's `.p_3()` top
+                    // padding. The horizontal anchor uses the
+                    // pane's left padding only.
+                    let pane_pad_v = rem * 0.75;
+                    let pane_pad_h = rem * 0.75;
+                    let top_origin_px = tabline_h_px + pane_pad_v;
+                    let cursor_row_top =
+                        top_origin_px + cursor_screen_row * estimated_row_px;
+                    // Prefer placing the popup right below the
+                    // cursor row; flip above when the locked popup
+                    // height wouldn't fit below; if neither side
+                    // fits cleanly, pin to whichever has more room
+                    // and let the popup clip against the window
+                    // (the lock means we can't shrink).
                     let viewport_h = f32::from(viewport_px.height);
-                    let top_px = if below_top + POPUP_MAX_H > viewport_h {
-                        // Not enough room below — anchor above the cursor row.
-                        let above_top =
-                            pane_pad_px + cursor_screen_row * estimated_row_px - POPUP_MAX_H;
-                        above_top.max(0.0)
-                    } else {
+                    let below_top = cursor_row_top + estimated_row_px;
+                    let above_top = cursor_row_top - popup_h_px;
+                    let fits_below = below_top + popup_h_px <= viewport_h;
+                    let fits_above = above_top >= 0.0;
+                    let top_px = if fits_below {
                         below_top
+                    } else if fits_above {
+                        above_top
+                    } else {
+                        // Neither side fits — pin to the side with
+                        // more room, clamped to the viewport.
+                        let room_below = viewport_h - below_top;
+                        let room_above = cursor_row_top;
+                        if room_below >= room_above {
+                            (viewport_h - popup_h_px).max(0.0)
+                        } else {
+                            0.0
+                        }
                     };
-                    let left_px = pane_pad_px + cursor_byte_col * glyph_advance_px;
+                    let left_px = pane_pad_h + cursor_byte_col * glyph_advance_px;
+                    // Keep the popup within the window's right edge.
+                    let viewport_w = f32::from(viewport_px.width);
+                    let left_px = left_px.min((viewport_w - popup_w_px).max(0.0));
                     root.child(
                         div()
                             .absolute()

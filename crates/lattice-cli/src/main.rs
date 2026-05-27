@@ -146,12 +146,34 @@ async fn main() -> Result<()> {
     let level = compute_log_level(&cli);
     lattice_runtime::set_boot_log_level(level);
 
+    // Bundle-context detection: when the binary lives inside a macOS
+    // `.app` bundle (`…/Contents/MacOS/lattice`), `open Lattice.app`
+    // provides no CLI flags. Defaulting to TUI in that context renders
+    // nothing — there is no controlling terminal. Auto-select GUI
+    // whenever we detect a bundle, unless `--tui` was given explicitly.
+    //
+    // The check is macOS-only and feature-gated on `gui` so the TUI-
+    // only build path is unaffected. `current_exe` can fail in rare
+    // sandboxed environments; the `unwrap_or(false)` falls back to the
+    // normal TUI default in that case.
+    #[cfg(all(target_os = "macos", feature = "gui"))]
+    let running_in_bundle = std::env::current_exe()
+        .ok()
+        .map(|p| {
+            p.components()
+                .any(|c| c.as_os_str() == "Contents")
+        })
+        .unwrap_or(false);
+    #[cfg(not(all(target_os = "macos", feature = "gui")))]
+    let running_in_bundle = false;
+
     // Issue #36 (2026-05-22): gate the fmt-to-stderr layer.
     // TUI's stderr is the editor terminal — every event
     // would blit a stray line over ratatui's paint. Defaults
     // OFF for TUI, ON for GPUI. `--stderr-logs` forces ON
     // (e.g. `lattice --tui --stderr-logs 2>tracing.log`).
-    let stderr_enabled = cli.stderr_logs || cli.gui;
+    let use_gui = cli.gui || (running_in_bundle && !cli.tui);
+    let stderr_enabled = cli.stderr_logs || use_gui;
     lattice_runtime::set_boot_stderr_enabled(stderr_enabled);
 
     let document = match cli.file {
@@ -164,10 +186,11 @@ async fn main() -> Result<()> {
     // Phase 5.9 / 5.8.M: single-binary entry. `--gui` routes to the
     // GPUI peer (feature-gated by `gui`). `--tui` (or no flag) routes
     // to the TUI peer. After phase 5.last achieves full feature parity
-    // the default flips to GUI; until then TUI stays the default.
-    // `clap`'s `conflicts_with` enforces mutual exclusivity at parse
-    // time.
-    if cli.gui {
+    // the default flips to GUI; until then TUI stays the default for
+    // direct invocations; `open Lattice.app` auto-selects GUI via the
+    // bundle-context guard above. `clap`'s `conflicts_with` enforces
+    // mutual exclusivity at parse time.
+    if use_gui {
         run_gui(document)
     } else {
         lattice_ui_tui::run(document)

@@ -667,17 +667,23 @@ impl EditorView {
         // the editor uses ~18.2px; the mismatch made a terminal pane
         // claim more vertical space than allocated and pushed the
         // modeline/cmdline off-screen when split alongside a doc).
-        // 2026-05-27: each split child also gets `min_w(px(0))` /
-        // `min_h(px(0))`. CSS flex's default min-size is `auto`
-        // (= the item's content min size). For a terminal pane the
-        // content min = snap.cols × cell_width — wider than 50% of
-        // the parent — so the flex algorithm couldn't shrink the
-        // terminal below content size and the split lost its 50/50
-        // ratio (terminal hijacked the full width). Setting min to
-        // zero lets flex distribute the parent's main-axis purely
-        // by grow weights (1:1 → 50/50). The terminal's PTY then
-        // resizes to the new col count via `set_pane_viewport`,
-        // and the shell wraps content to fit.
+        // 2026-05-27: each split child gets `flex_basis(px(0))` +
+        // `min_w(px(0))` / `min_h(px(0))`. The `min_*` line lets
+        // the item shrink below its content's intrinsic min-size
+        // (default `min: auto`). The `flex_basis(0)` line is the
+        // critical one: with `basis = auto`, the flex algorithm
+        // computes hypothetical sizes from each item's CONTENT
+        // and shares free / shrink space WEIGHTED BY THAT BASIS
+        // — so a terminal pane that prints wide content makes its
+        // basis grow and steals space from the doc pane next to
+        // it (the "terminal hijacks the split when content
+        // arrives" report). `basis(0)` takes content out of the
+        // size equation entirely; with both children at grow=1
+        // basis=0 the parent's main axis splits exactly 50/50
+        // regardless of what either pane is painting.
+        //
+        // Doubled on both axes so a horizontal split (`<C-w>s`)
+        // doesn't get squeezed by a tall terminal either.
         match node {
             PaneNode::Leaf(idx) => self.paint_pane(*idx, theme, *idx == active_idx, row_px),
             PaneNode::HorizontalSplit { top, bottom, .. } => div()
@@ -687,6 +693,7 @@ impl EditorView {
                 .child(
                     self.paint_pane_tree(top, theme, active_idx, row_px)
                         .flex_grow()
+                        .flex_basis(px(0.0))
                         .min_h(px(0.0))
                         .border_b_1()
                         .border_color(rgb(theme.popup_border)),
@@ -694,6 +701,7 @@ impl EditorView {
                 .child(
                     self.paint_pane_tree(bottom, theme, active_idx, row_px)
                         .flex_grow()
+                        .flex_basis(px(0.0))
                         .min_h(px(0.0)),
                 ),
             PaneNode::VerticalSplit { left, right, .. } => div()
@@ -703,6 +711,7 @@ impl EditorView {
                 .child(
                     self.paint_pane_tree(left, theme, active_idx, row_px)
                         .flex_grow()
+                        .flex_basis(px(0.0))
                         .min_w(px(0.0))
                         .border_r_1()
                         .border_color(rgb(theme.popup_border)),
@@ -710,6 +719,7 @@ impl EditorView {
                 .child(
                     self.paint_pane_tree(right, theme, active_idx, row_px)
                         .flex_grow()
+                        .flex_basis(px(0.0))
                         .min_w(px(0.0)),
                 ),
         }

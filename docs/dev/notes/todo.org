@@ -28,7 +28,7 @@
 - [X] GUI: cursor scrolls past viewport
 - [X] command line completion
   - [X] file completion for `:e` is broken
-- [ ] `describe-*` functions open a popup, but the focus is not within them
+- [X] `describe-*` functions open a popup, but the focus is not within them
 - [X] <C-n>, <C-p> for completions
 - [X] popup focus
 - [X] `gg`, `zz`, `zt`, `zb` don't work

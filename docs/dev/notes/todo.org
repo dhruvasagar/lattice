@@ -34,8 +34,20 @@
 - [X] `gg`, `zz`, `zt`, `zb` don't work
 - [X] Mouse click on window does not work, no focus, can't maximize
 - [ ] Picker UI improve colors for matching, marginalia
-- [ ] LSP `K` (hover): popup doesn't appear on first press; requires an
-  additional key press, and is not positioned at the cursor location.
+- [X] LSP `K` (hover): popup doesn't appear on first press; requires
+  an additional key press, and is not positioned at the cursor
+  location. Two GPUI fixes (2026-05-27):
+  - Wake-bridge in ~EditorView::new~ now drains ~run_tick_pending~
+    before ~cx.notify()~ so idle LSP arrivals (hover, signature
+    help, …) materialize without the next keystroke.
+  - ~Editor::pending_hover_anchor~ stashes ~(cursor, scroll)~ at
+    K-press; ~open_floating_popup~ consumes it one-shot so the
+    popup pins to the invocation site rather than wherever the
+    cursor drifted to between K and the LSP response.
+  - Popup body now renders every row through a uniform
+    ~flex_row~ of per-char divs (previously non-cursor lines
+    used naked text, cursor line used per-char flex — metrics
+    diverged, current line jumped a char right on every motion).
 - [X] Popup buffers don't scroll when the cursor moves past the
   viewport (GPUI only — TUI was fine). Per-frame override on the
   GPUI render pass sets ~Editor::viewport_height~ to the popup's

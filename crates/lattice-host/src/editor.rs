@@ -1074,6 +1074,12 @@ pub struct Editor {
     // ---- LSP per-feature request channels (rx + token pairs) ----
     pub pending_hover_rx: Option<tokio::sync::mpsc::UnboundedReceiver<HoverOutcome>>,
     pub pending_hover_token: Option<CancellationToken>,
+    /// 2026-05-27: cursor + scroll captured at K-press time, consumed
+    /// by `open_floating_popup` when the LSP response arrives so the
+    /// hover popup anchors to the invocation site rather than wherever
+    /// the cursor has drifted to. One-shot — cleared after the popup
+    /// opens (or when the request is cancelled).
+    pub pending_hover_anchor: Option<(lattice_protocol::position::Position, u32)>,
     pub pending_definition_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<Vec<lattice_lsp::lsp_types::Location>>>,
     pub pending_definition_token: Option<CancellationToken>,

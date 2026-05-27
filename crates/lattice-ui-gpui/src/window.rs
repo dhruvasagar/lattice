@@ -467,12 +467,28 @@ impl EditorView {
         // upgrade (window closed).
         // Slice 3c.final.B-extension: paint_request cached on GpuiApp
         // at boot (no read_editor round-trip — wait-free Arc clone).
+        //
+        // 2026-05-27 X1b extension: also drain pending LSP / event /
+        // mode-lifecycle results inside the bridge. Without this,
+        // an idle LSP response (e.g. the first `K` hover) fires
+        // paint_request.notify_one() but the resulting paint runs
+        // a render that never calls `run_tick_pending` (X1 moved
+        // it to the keystroke dispatch tail for perf), so the
+        // response sits in `pending_hover_rx` until the user
+        // presses another key. Draining here closes that gap
+        // while keeping the keystroke fast path's amortization.
         let paint_request = app.paint_request.clone();
         cx.spawn(async move |this, cx| {
             loop {
                 paint_request.notified().await;
                 if this
-                    .update(cx, |_view, cx| cx.notify())
+                    .update(cx, |view, cx| {
+                        let signals = view.app.mutate_editor_with(|e| e.run_tick_pending());
+                        for signal in signals {
+                            view.app.handle_renderer_signal(signal);
+                        }
+                        cx.notify();
+                    })
                     .is_err()
                 {
                     break;
@@ -2362,27 +2378,36 @@ impl Render for EditorView {
                     let is_cursor_line = cursor_doc_line == Some(idx);
                     let spans: &[lattice_syntax::StyledSpan] =
                         line_highlights.get(idx).map(Vec::as_slice).unwrap_or(&[]);
-
+                    let cursor_byte_on_line = if is_cursor_line { cursor_byte } else { None };
+                    // 2026-05-27 cursor-shift fix: render every popup
+                    // body row through a uniform `flex_row` of per-char
+                    // divs. Previously non-cursor lines used a single
+                    // naked `div().child(line.to_string())` while the
+                    // cursor line used per-char flex; the two layouts
+                    // applied subtly different glyph spacing, so the
+                    // current line visibly jumped a character right
+                    // every time the cursor moved. Uniform layout
+                    // means uniform metrics — no jump.
+                    let mut cells: Vec<gpui::Div> = line
+                        .char_indices()
+                        .map(|(byte_idx, c)| {
+                            let style = style_at(spans, byte_idx);
+                            if cursor_byte_on_line == Some(byte_idx) {
+                                div()
+                                    .bg(rgb(theme.cursor_background))
+                                    .text_color(rgb(theme.cursor_foreground))
+                                    .child(c.to_string())
+                            } else {
+                                div()
+                                    .text_color(rgb(syntax_color(style)))
+                                    .child(c.to_string())
+                            }
+                        })
+                        .collect();
                     if is_cursor_line {
-                        // Render a character-wide block cursor at cursor_byte.
                         let cb = cursor_byte.unwrap_or(0);
-                        let mut cells: Vec<gpui::Div> = line
-                            .char_indices()
-                            .map(|(byte_idx, c)| {
-                                let syntax_style = style_at(spans, byte_idx);
-                                if byte_idx == cb {
-                                    div()
-                                        .bg(rgb(theme.cursor_background))
-                                        .text_color(rgb(theme.cursor_foreground))
-                                        .child(c.to_string())
-                                } else {
-                                    div()
-                                        .text_color(rgb(syntax_color(syntax_style)))
-                                        .child(c.to_string())
-                                }
-                            })
-                            .collect();
-                        // Cursor past end-of-line: append a space block.
+                        // Cursor past end-of-line: append a space
+                        // block so the cursor has a glyph cell.
                         if cb >= line.len() {
                             cells.push(
                                 div()
@@ -2391,21 +2416,13 @@ impl Render for EditorView {
                                     .child(" ".to_string()),
                             );
                         }
-                        div().flex().flex_row().children(cells)
-                    } else if spans.is_empty() {
-                        div().child(line.to_string())
-                    } else {
-                        let cells: Vec<gpui::Div> = line
-                            .char_indices()
-                            .map(|(byte_idx, c)| {
-                                let style = style_at(spans, byte_idx);
-                                div()
-                                    .text_color(rgb(syntax_color(style)))
-                                    .child(c.to_string())
-                            })
-                            .collect();
-                        div().flex().flex_row().children(cells)
+                    } else if line.is_empty() {
+                        // Blank non-cursor lines still need a cell so
+                        // the flex_row preserves row height (empty
+                        // flex containers collapse).
+                        cells.push(div().child(" ".to_string()));
                     }
+                    div().flex().flex_row().children(cells)
                 })
                 .collect();
 

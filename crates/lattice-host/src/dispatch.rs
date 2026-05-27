@@ -7753,6 +7753,12 @@ impl Editor {
             // Outcome delivered: clear the in-flight token so a
             // subsequent motion doesn't try to flip a stale token.
             self.pending_hover_token = None;
+            // 2026-05-27: clear the K-press anchor stash. The Body
+            // arm's popup open already `take()`d it via
+            // `open_floating_popup`; this also clears NoBody /
+            // NoServers so the stash doesn't leak into a later
+            // unrelated floating popup (signature help, etc.).
+            self.pending_hover_anchor = None;
         }
         signals
     }
@@ -8031,6 +8037,13 @@ impl Editor {
         let token = lattice_protocol::CancellationToken::new();
         self.pending_hover_rx = Some(rx);
         self.pending_hover_token = Some(token.clone());
+        // 2026-05-27 popup-anchor fix: stash the cursor + scroll *as
+        // of K-press*. `open_floating_popup` consumes this one-shot
+        // override so the popup pins to the symbol the user invoked
+        // hover on, not wherever the cursor drifts to between the
+        // K-press and the LSP response (which arrives asynchronously
+        // and may take dozens of ms).
+        self.pending_hover_anchor = Some((self.cursor, self.scroll));
 
         let lsp = self.lsp.clone();
         let logger = self.lsp_logger.clone();
@@ -14242,8 +14255,18 @@ impl Editor {
         // any focus shuffle. Floating popups (State A) don't touch
         // the cursor, but capturing here keeps the renderer's read
         // path uniform between floating and focused popups.
-        self.popup_anchor = Some(self.cursor);
-        self.popup_doc_scroll_at_anchor = self.scroll;
+        //
+        // 2026-05-27: for async openers (LSP hover, signature help)
+        // the cursor may have drifted between request and response.
+        // `pending_hover_anchor` carries the K-press cursor through
+        // — consume it (one-shot) when set so the popup pins to the
+        // invocation site.
+        let (anchor_cursor, anchor_scroll) = self
+            .pending_hover_anchor
+            .take()
+            .unwrap_or((self.cursor, self.scroll));
+        self.popup_anchor = Some(anchor_cursor);
+        self.popup_doc_scroll_at_anchor = anchor_scroll;
         self.popup_buffer = Some(buffer_id);
         self.popup_placement = placement;
         self.seed_help_metadata_locals(buffer_id, metadata);

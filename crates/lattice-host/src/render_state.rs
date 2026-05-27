@@ -293,6 +293,12 @@ pub struct ActiveDocumentRenderState {
     /// `Editor::visual_selection_range()` helper so renderers don't
     /// need to reach for that method through `&Editor`.
     pub visual_range: Option<lattice_protocol::position::Range>,
+    /// Rectangular block extents when `modal == Visual(Blockwise)`,
+    /// `None` otherwise. Renderers prefer this over `visual_range`
+    /// in Blockwise — `visual_range` only expresses a linear span
+    /// and can't represent the per-line column band a block needs.
+    /// Mirrors [`crate::visual::Editor::visual_block_extents`].
+    pub visual_block_extents: Option<crate::visual::BlockExtents>,
     /// `:s/pat/repl/...` preview overlay. `None` while no
     /// substitute is being typed. The renderer paints the
     /// match ranges (and replacement text, if any) with the
@@ -343,6 +349,7 @@ impl Default for ActiveDocumentRenderState {
             ),
             current_match: None,
             visual_range: None,
+            visual_block_extents: None,
             substitute_preview: None,
             selections: Arc::new(lattice_protocol::SelectionSet::default()),
             option_cache: crate::state::OptionCache::default(),

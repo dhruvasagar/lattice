@@ -885,6 +885,7 @@ impl Editor {
                 ),
                 current_match: self.current_match,
                 visual_range: self.visual_selection_range(),
+                visual_block_extents: self.visual_block_extents(),
                 substitute_preview: self
                     .substitute_preview
                     .clone()

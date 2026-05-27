@@ -1245,6 +1245,14 @@ impl EditorView {
         } else {
             None
         };
+        // 2026-05-27: Visual(Blockwise) rectangle published by the
+        // host. Element-side paints a per-line column band instead
+        // of the linear visual_range.
+        let visual_block_extents = if render_active {
+            rs_guard.active_document.visual_block_extents
+        } else {
+            None
+        };
         let current_match = if render_active {
             rs_guard.active_document.current_match
         } else {
@@ -1507,6 +1515,7 @@ impl EditorView {
             cursor: cursor_state,
             is_active: render_active,
             visual_range,
+            visual_block_extents,
             current_match,
             all_matches,
             substitute_matches,

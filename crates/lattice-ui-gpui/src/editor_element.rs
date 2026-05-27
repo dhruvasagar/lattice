@@ -204,7 +204,18 @@ pub(crate) struct EditorElement {
     /// Visual-mode selection range in utf-8 byte coordinates.
     /// `None` outside Visual mode. Caller-resolved; element paints
     /// the layered background. (Slice X3.full.3.)
+    ///
+    /// Used for Charwise / Linewise visual. Blockwise mode
+    /// publishes `visual_block_extents` instead — a linear `Range`
+    /// can't express the per-line column band a block needs.
     pub(crate) visual_range: Option<lattice_core::protocol::position::Range>,
+    /// Visual(Blockwise) rectangle in utf-8 byte coordinates;
+    /// `None` outside Visual(Blockwise). When `Some`, the element
+    /// paints a per-line column band on each line in
+    /// `[start_line, end_line]` and ignores `visual_range`.
+    /// Mirrors
+    /// [`lattice_host::render_state::ActiveDocumentRenderState::visual_block_extents`].
+    pub(crate) visual_block_extents: Option<lattice_host::visual::BlockExtents>,
     /// `current_match`: the primary search hit the cursor sits on.
     /// Painted with the strongest match colour (yellow bg).
     pub(crate) current_match: Option<lattice_core::protocol::position::Range>,
@@ -589,6 +600,7 @@ impl Element for EditorElement {
         let all_matches = &self.all_matches;
         let current_match = &self.current_match;
         let visual_range = &self.visual_range;
+        let visual_block_extents = self.visual_block_extents;
         let substitute_matches = &self.substitute_matches;
         // Perf plan B.2 slice B.2.a: active pane consumes the
         // worker's pre-bucketed static quads as the base of
@@ -684,7 +696,38 @@ impl Element for EditorElement {
                             0xf9e2af,
                         );
                     }
-                    if let Some(r) = visual_range {
+                    // Blockwise visual: per-line column band
+                    // [start_col, end_col]. Both ends are inclusive
+                    // byte columns — match TUI's
+                    // `apply_match_overlay` semantics (`end + 1`
+                    // exclusive). The band paints on every line in
+                    // [start_line, end_line]; lines short of
+                    // `start_col` paint nothing. Blockwise
+                    // suppresses the linear `visual_range` overlay
+                    // since the host still publishes a charwise-
+                    // shaped fallback for it.
+                    if let Some(b) = visual_block_extents {
+                        if line_idx >= b.start_line && line_idx <= b.end_line {
+                            let line_len = line_text.len();
+                            let start = (b.start_col as usize).min(line_len);
+                            let end = ((b.end_col as usize) + 1).min(line_len);
+                            if start < end {
+                                let cs = byte_to_combined_col(
+                                    line_text,
+                                    start,
+                                    inlay_offsets,
+                                ) as u32;
+                                let ce = byte_to_combined_col(
+                                    line_text,
+                                    end,
+                                    inlay_offsets,
+                                ) as u32;
+                                if ce > cs {
+                                    quads.push((cs, ce, 0x45475a));
+                                }
+                            }
+                        }
+                    } else if let Some(r) = visual_range {
                         push_range_quads(
                             &mut quads,
                             std::slice::from_ref(r),

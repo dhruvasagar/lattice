@@ -3804,35 +3804,19 @@ fn substitute_preview_style() -> TuiStyle {
 }
 
 /// For blockwise Visual: the rectangle defined by the selection's
-/// `(anchor, head)` positions. Returns `None` if not in blockwise mode.
+/// `(anchor, head)` positions. Returns `None` if not in blockwise
+/// mode.
+///
+/// 2026-05-27: migrated to
+/// [`lattice_host::visual::BlockExtents`] / `Editor::
+/// visual_block_extents` — renderer-neutral so the GPUI peer can
+/// consume the same data. Thin wrapper kept so this peer's call
+/// sites resolve unchanged.
 fn visual_block_extents(app: &App) -> Option<BlockExtents> {
-    if !matches!(
-        app.ad().modal,
-        ModalState::Visual(lattice_grammar::VisualKind::Blockwise)
-    ) {
-        return None;
-    }
-    let sels = app.ad().selections.clone();
-    let sel = sels.primary();
-    let start_line = sel.anchor.line.min(sel.head.line);
-    let end_line = sel.anchor.line.max(sel.head.line);
-    let start_col = sel.anchor.byte.min(sel.head.byte);
-    let end_col = sel.anchor.byte.max(sel.head.byte);
-    Some(BlockExtents {
-        start_line,
-        end_line,
-        start_col,
-        end_col,
-    })
+    app.ad().visual_block_extents
 }
 
-#[derive(Debug, Clone, Copy)]
-struct BlockExtents {
-    start_line: u32,
-    end_line: u32,
-    start_col: u32,
-    end_col: u32,
-}
+type BlockExtents = lattice_host::visual::BlockExtents;
 
 /// Compute the rendered range of the visual selection. Returns `None` if
 /// not in Visual mode. For Linewise visual the byte extents on the first

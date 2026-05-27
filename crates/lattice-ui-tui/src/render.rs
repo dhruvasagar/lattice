@@ -723,7 +723,10 @@ pub(crate) fn render_filter_chord_footer(
                 if form_full {
                     format!("<C-{}> {}", e.key, e.label)
                 } else {
-                    format!("[{}]{}", e.key, e.label)
+                    // `^` is the standard Ctrl indicator (e.g. `^C` =
+                    // Ctrl-C). `[^b]uf` reads as "Ctrl-b → buf" in
+                    // half the chars of the full form.
+                    format!("[^{}]{}", e.key, e.label)
                 }
             })
             .collect();

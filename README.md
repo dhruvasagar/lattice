@@ -1,4 +1,4 @@
-![Lattice](./assetsd/readme-banner.svg)
+![Lattice](./assets/readme-banner.svg)
 
 A modal, GPU-accelerated, plugin-first text editor written in Rust. Combines
 **vim's modal editing power** with **emacs's extensibility model** on a

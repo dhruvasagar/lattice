@@ -1,4 +1,8 @@
-![Lattice](./assets/readme-banner.svg)
+<p align="center">
+	<img src="./assets/readme-banner.svg" alt="Lattice - a modal, GPU-accelerated, plugin-first text editor in Rust" width="720" />
+</p>
+
+<h3 align="center">A modal, GPU-accelerated, plugin-first text editor in Rust<h3>
 
 A modal, GPU-accelerated, plugin-first text editor written in Rust. Combines
 **vim's modal editing power** with **emacs's extensibility model** on a

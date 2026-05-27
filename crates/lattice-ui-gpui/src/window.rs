@@ -2706,6 +2706,25 @@ impl Render for EditorView {
             // line render without the cursor highlight.
             let inner_cols = popup_inner_cols(popup_w_px, rem, glyph_advance_px) as usize;
             let wrap_on = popup_wrap_enabled(&self.app);
+            // 2026-05-27 popup-wrap probe. One log per frame the
+            // popup is open. Enable with:
+            //   RUST_LOG=lattice_gpui::popup_wrap=debug
+            // Helpful when "wrap doesn't fire" — compare inner_cols
+            // against the longest body line. If `wrap_on=false`,
+            // the user has `popup.wrap=false` or the option didn't
+            // register. If `inner_cols` is larger than the longest
+            // line, wrap doesn't activate (everything fits).
+            let longest_line_chars = body_lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+            tracing::debug!(
+                target: "lattice_gpui::popup_wrap",
+                wrap_on,
+                inner_cols,
+                popup_w_px,
+                glyph_advance_px,
+                longest_line_chars,
+                line_count = body_lines.len(),
+                "popup-wrap probe"
+            );
             let mut popup_lines: Vec<gpui::Div> = Vec::new();
             'outer: for (idx, line) in body_lines.iter().enumerate().skip(popup_scroll) {
                 if popup_lines.len() >= max_popup_lines {

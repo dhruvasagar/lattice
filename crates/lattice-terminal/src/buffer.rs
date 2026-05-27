@@ -74,6 +74,16 @@ pub struct TerminalBuffer {
     /// distinguished `current_match` keeps the stronger
     /// current-hit style.
     pub all_matches: Vec<GridSearchHit>,
+    /// T-mode-1 (2026-05-27): frozen scrollback snapshot when
+    /// `TerminalNormalMode` is active on this buffer; `None`
+    /// otherwise. Populated by the mode's `on_activate` hook
+    /// (rope build from `term.build_normal_snapshot()`) and
+    /// dropped by the mode's Guard. The central vim grammar
+    /// operates on this rope during Normal / Visual sub-states;
+    /// see `docs/dev/architecture/terminal-as-document.md`.
+    /// `Arc` so the host's render-state publish path can clone
+    /// out a cheap reference without holding the buffer lock.
+    pub synthetic: Option<Arc<crate::synthetic::SyntheticDoc>>,
     pub created_at: std::time::SystemTime,
     /// 2026-05-25: killer for the spawned child process. On
     /// Drop we call `killer.kill()` to force the shell to
@@ -230,6 +240,7 @@ impl TerminalBuffer {
             visual: None,
             last_visual: None,
             all_matches: Vec::new(),
+            synthetic: None,
             insert_exit_pending: false,
             nav_cursor: None,
             created_at: std::time::SystemTime::now(),

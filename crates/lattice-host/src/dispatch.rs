@@ -12977,6 +12977,16 @@ impl Editor {
 
         // Activate in the active pane.
         let _ = self.activate_buffer(id);
+        // T-mode-1 (2026-05-27): freshly-spawned terminals land
+        // in Normal-in-terminal by default (per `terminal-mode.md`
+        // §5.1). Activate `TerminalNormalMode` so the central vim
+        // grammar has its SyntheticDoc to operate on; otherwise
+        // the first `i` / `a` exits an empty Normal state with
+        // no rope behind it.
+        let _ = self.activate_mode_by_id(
+            id,
+            lattice_terminal::TerminalNormalMode::mode_id(),
+        );
         self.set_message(
             EchoLevel::Info,
             format!("terminal: spawned `{program}` (#{} )", id.0),
@@ -13058,6 +13068,16 @@ impl Editor {
             t.all_matches.clear();
             t.nav_cursor = None;
         });
+        // T-mode-1 (2026-05-27): deactivate TerminalNormalMode
+        // BEFORE activating TerminalInsertMode so the Guard's
+        // Drop runs first — the SyntheticDoc gets cleared before
+        // the buffer becomes PTY-live again. The two minors are
+        // mutually exclusive; the host's transition path is
+        // the seam that enforces it.
+        let _ = self.deactivate_mode_by_id(
+            buf_id,
+            lattice_terminal::TerminalNormalMode::mode_id(),
+        );
         let _ = self.activate_mode_by_id(
             buf_id,
             lattice_terminal::TerminalInsertMode::mode_id(),
@@ -13082,6 +13102,15 @@ impl Editor {
         let _ = self.deactivate_mode_by_id(
             buf_id,
             lattice_terminal::TerminalInsertMode::mode_id(),
+        );
+        // T-mode-1 (2026-05-27): activate TerminalNormalMode AFTER
+        // TerminalInsertMode deactivates. on_activate runs the
+        // rope build (`install_synthetic`) so the central vim
+        // grammar has a Document to operate on for the duration
+        // of Normal / Visual.
+        let _ = self.activate_mode_by_id(
+            buf_id,
+            lattice_terminal::TerminalNormalMode::mode_id(),
         );
     }
 

@@ -20,12 +20,14 @@
 //! semantics and gives the user a stable target for motions /
 //! marks / search.
 
+use std::sync::Arc;
+
 use alacritty_terminal::{
     grid::Dimensions,
     index::{Column, Line, Point},
     term::TermMode,
 };
-use lattice_core::Buffer;
+use lattice_core::{Buffer, BufferId};
 use lattice_protocol::position::Position;
 
 use crate::reader::SharedTerm;
@@ -146,6 +148,59 @@ impl SharedTerm {
             frozen_at,
             alt_screen,
         }
+    }
+}
+
+/// T-mode-1 (2026-05-27): service trait that `TerminalNormalMode`
+/// uses to build / drop the SyntheticDoc on a `TerminalBuffer`
+/// from its lifecycle hooks. The implementation lives on the
+/// host's `BufferRegistry`; the mode pulls a handle to it via
+/// `ModeContext::service::<TerminalStoreHandle>()`.
+///
+/// Two methods only: install (build + stash) and clear (drop).
+/// Keeping it minimal avoids leaking the `with_terminal_mut`
+/// closure surface across the crate boundary; the host wraps
+/// `with_terminal_mut` internally to satisfy these calls.
+pub trait TerminalStore: Send + Sync {
+    /// Build a SyntheticDoc from the terminal buffer's current
+    /// grid state and stash it on the buffer. Returns `true` if
+    /// a terminal buffer existed for `id` (and the doc was
+    /// installed); `false` otherwise. Idempotent — re-calling
+    /// rebuilds the doc.
+    fn install_synthetic(&self, id: BufferId) -> bool;
+
+    /// Drop any existing SyntheticDoc on the buffer. Idempotent.
+    /// Returns `true` if a terminal buffer existed for `id`;
+    /// `false` otherwise.
+    fn clear_synthetic(&self, id: BufferId) -> bool;
+}
+
+/// Cheap-clone handle to a [`TerminalStore`]. Mirrors the
+/// `BufferStoreHandle` pattern — the host registers a wrapping
+/// handle in the `ServiceRegistry` at boot; modes pull it via
+/// `ModeContext::service::<TerminalStoreHandle>()`.
+#[derive(Clone)]
+pub struct TerminalStoreHandle {
+    inner: Arc<dyn TerminalStore>,
+}
+
+impl TerminalStoreHandle {
+    pub fn new(store: Arc<dyn TerminalStore>) -> Self {
+        Self { inner: store }
+    }
+
+    pub fn install_synthetic(&self, id: BufferId) -> bool {
+        self.inner.install_synthetic(id)
+    }
+
+    pub fn clear_synthetic(&self, id: BufferId) -> bool {
+        self.inner.clear_synthetic(id)
+    }
+}
+
+impl std::fmt::Debug for TerminalStoreHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TerminalStoreHandle").finish_non_exhaustive()
     }
 }
 

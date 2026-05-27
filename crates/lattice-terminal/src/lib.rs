@@ -32,8 +32,11 @@ pub mod synthetic;
 pub use buffer::{TerminalBuffer, TerminalVisualState, VisualKind};
 pub use cell::{Cell, CellAttrs, CursorShape, NamedColor, TerminalColor};
 pub use handle::{PtyHandle, PtyHandleError};
-pub use modes::{register_terminal_modes, TerminalInsertMode, TerminalMode};
+pub use modes::{
+    register_terminal_modes, TerminalInsertMode, TerminalMode, TerminalNormalMode,
+    TerminalNormalModeGuard,
+};
 pub use reader::{GridSearchHit, SearchDir, SharedTerm, TerminalScrollKind};
 pub use snapshot::TerminalSnapshot;
 pub use spawner::{spawn, SpawnConfig, SpawnError};
-pub use synthetic::SyntheticDoc;
+pub use synthetic::{SyntheticDoc, TerminalStore, TerminalStoreHandle};

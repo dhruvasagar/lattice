@@ -841,6 +841,33 @@ impl lattice_mode::BufferStore for BufferRegistry {
     }
 }
 
+// ---------------------------------------------------------------
+// TerminalStore impl (T-mode-1)
+// ---------------------------------------------------------------
+//
+// Wraps `BufferRegistry` so `TerminalNormalMode`'s on-activate /
+// Guard-Drop can install / clear the SyntheticDoc on a
+// `TerminalBuffer` from inside the mode lifecycle. Registered at
+// boot via `editor_boot.rs` and pulled by the mode via
+// `ctx.service::<lattice_terminal::TerminalStoreHandle>()`.
+
+impl lattice_terminal::TerminalStore for BufferRegistry {
+    fn install_synthetic(&self, id: BufferId) -> bool {
+        self.with_terminal_mut(id, |t| {
+            let doc = t.term.build_normal_snapshot();
+            t.synthetic = Some(std::sync::Arc::new(doc));
+        })
+        .is_some()
+    }
+
+    fn clear_synthetic(&self, id: BufferId) -> bool {
+        self.with_terminal_mut(id, |t| {
+            t.synthetic = None;
+        })
+        .is_some()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

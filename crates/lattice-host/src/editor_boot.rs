@@ -683,6 +683,14 @@ impl Editor {
             services: {
                 let mut s = ServiceRegistry::new();
                 s.register(lsp.clone());
+                // T-mode-1 (2026-05-27): TerminalStoreHandle so
+                // `TerminalNormalMode` can install / clear the
+                // SyntheticDoc on a TerminalBuffer from its
+                // lifecycle hooks. Same `BufferRegistry` backs
+                // both stores — cheap clone (Arc inside).
+                let term_store: Arc<dyn lattice_terminal::TerminalStore> =
+                    Arc::new(buffers_for_services.clone());
+                s.register(lattice_terminal::TerminalStoreHandle::new(term_store));
                 let store: Arc<dyn lattice_mode::BufferStore> = Arc::new(buffers_for_services);
                 s.register(lattice_mode::BufferStoreHandle::new(store));
                 s.register(lsp_logger.clone());

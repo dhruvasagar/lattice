@@ -1406,7 +1406,7 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App, snap: &Doc
     // (Contrast `draw_help_in_pane` below: in-pane mode swaps the
     // pane to the registered help buffer, where pane.buffer_id is
     // the right key.)
-    let (highlights, links) = help_render_data(app, popup_id, &help);
+    let (highlights, _links) = help_render_data(app, popup_id, &help);
     let visible: Vec<Line> = lines
         .iter()
         .skip(scroll)
@@ -1414,27 +1414,8 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App, snap: &Doc
         .enumerate()
         .map(|(i, l)| {
             let line_idx = scroll + i;
-            let mut spans: Vec<lattice_syntax::StyledSpan> =
+            let spans: Vec<lattice_syntax::StyledSpan> =
                 highlights.get(line_idx).cloned().unwrap_or_default();
-            // Layer Style::Link decoration on every link's label
-            // range that touches this line. tree-sitter-md 0.3.x's
-            // inline injection is unreliable so we paint link
-            // styling from the parsed HelpLinks (same hlsearch-
-            // style overlay model the buffer renderer uses).
-            for link in links.iter() {
-                if let Some((s, e)) = link_label_range_on_line(link, line_idx as u32) {
-                    let line_len = l.len();
-                    let s = s.min(line_len);
-                    let e = e.min(line_len);
-                    if s < e {
-                        spans.push(lattice_syntax::StyledSpan {
-                            start: s,
-                            end: e,
-                            style: lattice_syntax::Style::Link,
-                        });
-                    }
-                }
-            }
             let mut body = render_help_line(l, &spans);
             // Hlsearch / current_match overlays -- same painter
             // the document path and the in-pane help variant use,
@@ -1851,7 +1832,7 @@ fn draw_help_in_pane(frame: &mut Frame, area: Rect, app: &App) {
     // `App::open_help_in_pane`.
     // Slice 3c.final.B (group 1): pane via `app.panes()`.
     let render_id = app.panes().tree.active().buffer_id;
-    let (highlights, links) = help_render_data(app, render_id, &help);
+    let (highlights, _links) = help_render_data(app, render_id, &help);
     let visible: Vec<Line> = lines
         .iter()
         .skip(scroll)
@@ -1859,22 +1840,8 @@ fn draw_help_in_pane(frame: &mut Frame, area: Rect, app: &App) {
         .enumerate()
         .map(|(i, l)| {
             let line_idx = scroll + i;
-            let mut spans: Vec<lattice_syntax::StyledSpan> =
+            let spans: Vec<lattice_syntax::StyledSpan> =
                 highlights.get(line_idx).cloned().unwrap_or_default();
-            for link in links.iter() {
-                if let Some((s, e)) = link_label_range_on_line(link, line_idx as u32) {
-                    let line_len = l.len();
-                    let s = s.min(line_len);
-                    let e = e.min(line_len);
-                    if s < e {
-                        spans.push(lattice_syntax::StyledSpan {
-                            start: s,
-                            end: e,
-                            style: lattice_syntax::Style::Link,
-                        });
-                    }
-                }
-            }
             let mut body = render_help_line(l, &spans);
             let line_len = l.len();
             // Hlsearch overlay: every `app.editor.all_matches` range that
@@ -4749,32 +4716,6 @@ fn display_col_for_byte(
         .map(|h| UnicodeWidthStr::width(h.text.as_str()) as u32)
         .sum();
     base + inlay_shift
-}
-
-/// Project a link's label range onto a single rendered line.
-/// Returns `Some((start_byte, end_byte))` (line-relative) when the
-/// link covers any portion of the given line, `None` otherwise.
-/// Used by the help-overlay renderer to paint Style::Link on each
-/// link's label region.
-fn link_label_range_on_line(link: &crate::help::HelpLink, line_idx: u32) -> Option<(usize, usize)> {
-    let r = &link.range;
-    if line_idx < r.start.line || line_idx > r.end.line {
-        return None;
-    }
-    let start = if line_idx == r.start.line {
-        r.start.byte as usize
-    } else {
-        0
-    };
-    let end = if line_idx == r.end.line {
-        r.end.byte as usize
-    } else {
-        usize::MAX
-    };
-    if end <= start {
-        return None;
-    }
-    Some((start, end))
 }
 
 /// Compose one help-buffer row into ratatui spans by:

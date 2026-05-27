@@ -144,10 +144,15 @@ pub struct HelpContent {
 
 impl HelpContent {
     /// Builder-style override: enrich the metadata's `highlights`
-    /// via the markdown grammar. Cheap when the registry doesn't
-    /// have markdown registered (silent no-op).
+    /// via the markdown grammar, then overlay `Style::Link` spans on
+    /// each link's label range so renderers paint clickable tokens
+    /// without re-discovering the link table at frame time. Cheap
+    /// when the registry doesn't have markdown registered (the
+    /// grammar pass is a silent no-op; the link overlay still runs).
     pub fn with_markdown_syntax(mut self, registry: Arc<LangRegistry>) -> Self {
-        self.metadata.highlights = compute_markdown_highlights(&self.buffer, registry);
+        let mut highlights = compute_markdown_highlights(&self.buffer, registry);
+        overlay_link_styles(&mut highlights, &self.metadata.links);
+        self.metadata.highlights = highlights;
         self
     }
 
@@ -245,6 +250,56 @@ pub fn compute_markdown_highlights(
         }
     }
     Vec::new()
+}
+
+/// Overlay `Style::Link` spans on each link's label range. The
+/// markdown grammar runs against the link-stripped buffer text
+/// (see [`extract_links_and_clean`]) so it never sees `[label](url)`
+/// markup and never emits a Link capture itself. Renderers therefore
+/// can't tell a link label from prose. Walking `links` here and
+/// pushing one Link span per `range` onto the line's highlight
+/// vector restores that signal so the published `metadata.highlights`
+/// is self-contained.
+///
+/// Multi-line links (a label that wraps across a row break) push one
+/// span per affected line, each clipped to that line's byte width.
+fn overlay_link_styles(
+    highlights: &mut Vec<Vec<lattice_syntax::StyledSpan>>,
+    links: &[HelpLink],
+) {
+    for link in links {
+        let r = &link.range;
+        let start_line = r.start.line as usize;
+        let end_line = r.end.line as usize;
+        for line_idx in start_line..=end_line {
+            // Skip lines outside the highlighted range; grow the
+            // vector when a link sits past the last grammar-touched
+            // line (uncommon but possible for trailing links).
+            if line_idx >= highlights.len() {
+                highlights.resize(line_idx + 1, Vec::new());
+            }
+            let start = if line_idx == start_line {
+                r.start.byte as usize
+            } else {
+                0
+            };
+            // Use `usize::MAX` on intermediate lines and clip downstream
+            // in renderers; for `end_line` use the recorded byte.
+            let end = if line_idx == end_line {
+                r.end.byte as usize
+            } else {
+                usize::MAX
+            };
+            if end <= start {
+                continue;
+            }
+            highlights[line_idx].push(lattice_syntax::StyledSpan {
+                start,
+                end,
+                style: lattice_syntax::Style::Link,
+            });
+        }
+    }
 }
 
 /// Find the metadata link whose label range contains `pos`.
@@ -1154,6 +1209,49 @@ mod tests {
         let h = HelpContent::from_lines("t", vec!["# title".into()]);
         assert!(h.metadata.highlights.is_empty());
         assert_eq!(h.content.line_count(), 1);
+    }
+
+    #[test]
+    fn with_markdown_syntax_overlays_style_link_on_help_links() {
+        // Regression (2026-05-27): describe-buffer's "Active modes"
+        // section renders each mode name as `[name](mode:name)`. The
+        // cleaner strips the markup before the grammar runs so the
+        // markdown highlighter never sees the link; `with_markdown_syntax`
+        // now overlays `Style::Link` spans from `metadata.links` so
+        // both renderer peers paint the label as a clickable token
+        // without re-discovering links at frame time.
+        let registry = LangRegistry::standard().expect("registry");
+        let lines = vec![
+            "## Active modes".to_string(),
+            "- major: [rust](mode:rust)".to_string(),
+            "- minors: [lsp](mode:lsp), [autoindent](mode:autoindent)".to_string(),
+        ];
+        let h = HelpContent::from_lines("describe-buffer", lines).with_markdown_syntax(registry);
+        // Line 1 (`- major: rust`): the cleaned label `rust` sits at
+        // bytes 9..13. One Link span should cover exactly that.
+        let line1_links: Vec<_> = h.metadata.highlights[1]
+            .iter()
+            .filter(|sp| sp.style == lattice_syntax::Style::Link)
+            .collect();
+        assert_eq!(
+            line1_links.len(),
+            1,
+            "expected one Link span on `- major: rust`, got {:?}",
+            h.metadata.highlights[1]
+        );
+        assert_eq!((line1_links[0].start, line1_links[0].end), (9, 13));
+        // Line 2 (`- minors: lsp, autoindent`): two Link spans, one
+        // per inline link, each over the cleaned label range.
+        let line2_links: Vec<_> = h.metadata.highlights[2]
+            .iter()
+            .filter(|sp| sp.style == lattice_syntax::Style::Link)
+            .collect();
+        assert_eq!(
+            line2_links.len(),
+            2,
+            "expected two Link spans on `- minors: lsp, autoindent`, got {:?}",
+            h.metadata.highlights[2]
+        );
     }
 
     // --- Anchor links + heading slugs ---------------------------

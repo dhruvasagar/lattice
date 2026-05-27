@@ -39,8 +39,14 @@
 - [ ] Popup buffers don't scroll when the cursor moves past the
   viewport (cursor leaves the visible area instead of scrolling the
   popup).
-- [ ] `describe-buffer`'s "Active modes" entries are no longer
-  rendered as links (regression — they were clickable before).
+- [X] `describe-buffer`'s "Active modes" entries are no longer
+  rendered as links (regression — visual styling restored via
+  ~lattice_help::with_markdown_syntax~ overlay; both peers now
+  see Style::Link spans in popup.help_highlights).
+- [ ] Help-link follow (~<CR>~ on a link) works on TUI only.
+  ~do_help_follow_link~ lives in lattice-ui-tui app layer; GPUI
+  has no follow path. Hoist into the host so both peers route
+  through the same dispatcher.
 
 * Documentation
 - [ ] lattice-tutor

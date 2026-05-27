@@ -1488,25 +1488,42 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         Action::CloseTab => editor.do_close_tab(),
         Action::OnlyTab => editor.do_only_tab(),
         Action::MoveTab(n) => editor.do_move_tab(n),
+        // 2026-05-27: window-resize actions respect the count
+        // prefix. `5<C-w>>` resizes by `5 × 0.05 = 0.25`. Same as
+        // vim. Count defaults to 1 when no prefix is typed; the
+        // `pending_count` slot is cleared after consumption so the
+        // next chord starts fresh.
         Action::GrowPaneHeight => {
-            editor
-                .pane_tree
-                .resize_active_split(lattice_core::ui::pane::SplitOrientation::Horizontal, 0.05);
+            let count = editor.pending_count.max(1) as f32;
+            editor.pending_count = 0;
+            editor.pane_tree.resize_active_split(
+                lattice_core::ui::pane::SplitOrientation::Horizontal,
+                0.05 * count,
+            );
         }
         Action::ShrinkPaneHeight => {
-            editor
-                .pane_tree
-                .resize_active_split(lattice_core::ui::pane::SplitOrientation::Horizontal, -0.05);
+            let count = editor.pending_count.max(1) as f32;
+            editor.pending_count = 0;
+            editor.pane_tree.resize_active_split(
+                lattice_core::ui::pane::SplitOrientation::Horizontal,
+                -0.05 * count,
+            );
         }
         Action::GrowPaneWidth => {
-            editor
-                .pane_tree
-                .resize_active_split(lattice_core::ui::pane::SplitOrientation::Vertical, 0.05);
+            let count = editor.pending_count.max(1) as f32;
+            editor.pending_count = 0;
+            editor.pane_tree.resize_active_split(
+                lattice_core::ui::pane::SplitOrientation::Vertical,
+                0.05 * count,
+            );
         }
         Action::ShrinkPaneWidth => {
-            editor
-                .pane_tree
-                .resize_active_split(lattice_core::ui::pane::SplitOrientation::Vertical, -0.05);
+            let count = editor.pending_count.max(1) as f32;
+            editor.pending_count = 0;
+            editor.pane_tree.resize_active_split(
+                lattice_core::ui::pane::SplitOrientation::Vertical,
+                -0.05 * count,
+            );
         }
         Action::NextPane => {
             let target = editor.pane_tree.next_pane();

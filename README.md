@@ -149,7 +149,7 @@ flowchart TD
 - Rust 1.94+ (edition 2024)
 - A POSIX terminal that handles 256 colors and bracketed paste
 
-**Build & run**
+**Build & run (TUI — default)**
 
 ```sh
 cargo build --release
@@ -158,10 +158,51 @@ cargo run --release -- README.md
 
 The CLI opens the file in the TUI. Editing is full vim modal.
 
+**Build & run (GPUI — GPU renderer)**
+
+```sh
+cargo run --release --features gui -- --gui README.md
+```
+
+Pass `--gui` to route to the GPUI peer. `--tui` explicitly forces the terminal
+renderer. The two flags are mutually exclusive; the default stays TUI for direct
+invocations.
+
+**macOS app bundle**
+
+```sh
+# Install once:
+cargo install cargo-bundle
+
+# Build the .app (must cd into the binary crate — cargo-bundle has no -p flag):
+cd crates/lattice-cli
+cargo bundle --release --features gui
+
+# Open:
+open ../../target/release/bundle/osx/Lattice.app
+```
+
+The bundle auto-routes to the GPUI renderer (no `--gui` flag needed) via
+bundle-context detection: when the binary runs inside `…/Contents/MacOS/`, it
+detects the `Contents` path component and selects GUI automatically. Pass
+`--tui` to override. The icon comes from `assets/lattice.icns` (10 sizes,
+16–512 px + @2x), configured in `[package.metadata.bundle]` in
+`crates/lattice-cli/Cargo.toml`.
+
+**Linux desktop entry**
+
+```sh
+sudo cp assets/linux/com.lattice-editor.lattice.desktop \
+         /usr/share/applications/
+sudo cp assets/favicon-64.png \
+         /usr/share/icons/hicolor/64x64/apps/com.lattice-editor.lattice.png
+gtk-update-icon-cache -f /usr/share/icons/hicolor/
+```
+
 **Run tests**
 
 ```sh
-cargo test --workspace        # ~1115 tests, sub-second
+cargo test --workspace        # ~1784 tests, sub-second
 cargo clippy --workspace      # workspace lints (deny unsafe outside opt-in)
 ```
 

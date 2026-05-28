@@ -39,3 +39,23 @@ gui = ["dep:lattice-ui-gpui", "lattice-ui-gpui/window"]
 
 [lints]
 workspace = true
+
+# cargo-bundle metadata — used by `cargo bundle --features gui` to
+# produce a native .app (macOS) / .deb / .rpm / AppImage (Linux).
+# Install cargo-bundle once: `cargo install cargo-bundle`
+# Then build: `cargo bundle --release --features gui`
+[package.metadata.bundle]
+name            = "Lattice"
+identifier      = "com.lattice-editor.lattice"
+# Path is relative to this Cargo.toml.  icns for macOS; cargo-bundle
+# falls back to the PNG list on Linux (uses the largest square PNG).
+icon            = [
+    "../../assets/lattice.icns",
+    "../../assets/favicon-16.png",
+    "../../assets/favicon-32.png",
+    "../../assets/favicon-64.png",
+]
+short_description = "A modal, GPU-accelerated, plugin-first text editor"
+long_description  = "Combines vim's modal editing power with emacs's extensibility model on a non-blocking, multi-threaded core."
+copyright       = "Copyright © 2024 Dhruva Sagar"
+category        = "developer-tools"

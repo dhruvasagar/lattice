@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Lattice
+Comment=A modal, GPU-accelerated, plugin-first text editor
+Exec=lattice %F
+Icon=com.lattice-editor.lattice
+Terminal=false
+Categories=Development;TextEditor;
+MimeType=text/plain;
+Keywords=text;editor;vim;modal;gpu;
+StartupWMClass=lattice

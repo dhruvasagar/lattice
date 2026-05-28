@@ -63,7 +63,7 @@ use anyhow::{Context as _, Result};
 use gpui::{
     AnyElement, App, AppContext, Application, Bounds, Context, FocusHandle, Focusable,
     InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render, SharedString, Styled,
-    TextRun, Window, WindowBounds, WindowOptions, div, font, px, rgb, size,
+    TextRun, TitlebarOptions, Window, WindowBounds, WindowOptions, div, font, px, rgb, size,
 };
 use lattice_core::Document;
 use lattice_core::ui::pane::{PaneNode, PaneState};
@@ -3365,6 +3365,14 @@ pub fn run(document: Document) -> Result<()> {
         let window = cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
+                titlebar: Some(TitlebarOptions {
+                    title: Some(SharedString::from("Lattice")),
+                    ..Default::default()
+                }),
+                // XDG app-id for Linux desktop environments (Wayland /
+                // X11) so the window groups correctly with any .desktop
+                // launcher that references "com.lattice-editor.lattice".
+                app_id: Some("com.lattice-editor.lattice".to_string()),
                 ..Default::default()
             },
             move |_window, cx| cx.new(|cx| EditorView::new(document, cx)),

@@ -83,6 +83,29 @@ inside this zone.
 - `favicon-16.png`, `favicon-32.png`, `favicon-64.png` — PNG counterparts
 - `apple-touch-icon.png` — 180×180, for iOS home screen
 
+### App bundle (desktop)
+
+- `lattice.icns` — macOS `.icns` file (10 sizes from 16 to 1024px@2x) for
+  the macOS `.app` bundle. Generated via `iconutil` from `lattice.iconset/`.
+  Used by `cargo bundle --features gui` automatically.
+- `lattice.iconset/` — iconset directory used as the source for `lattice.icns`.
+  Regenerate with:
+  ```sh
+  sips -Z 512 assets/lattice-mark-512.png --out /tmp/lattice-scaled.png
+  sips -p 512 512 /tmp/lattice-scaled.png --out /tmp/lattice-512sq.png
+  # … populate lattice.iconset/ at all standard sizes …
+  iconutil -c icns assets/lattice.iconset --output assets/lattice.icns
+  ```
+- `linux/com.lattice-editor.lattice.desktop` — XDG `.desktop` entry for Linux
+  desktop environments. Install system-wide with:
+  ```sh
+  sudo cp assets/linux/com.lattice-editor.lattice.desktop \
+           /usr/share/applications/
+  sudo cp assets/favicon-64.png \
+           /usr/share/icons/hicolor/64x64/apps/com.lattice-editor.lattice.png
+  gtk-update-icon-cache -f /usr/share/icons/hicolor/
+  ```
+
 ## Web integration
 
 Drop into a project's `<head>`:

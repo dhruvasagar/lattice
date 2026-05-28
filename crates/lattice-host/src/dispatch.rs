@@ -10317,6 +10317,15 @@ impl Editor {
         let len = buffer.line_byte_len(new_line);
         let byte = self.cursor.byte.min(len);
         self.cursor = lattice_protocol::position::Position::new(new_line, byte);
+        // 2026-05-28: terminal pane needs an explicit alacritty
+        // viewport scroll for the new cursor row to be visible
+        // (the publisher only syncs `t.nav_cursor`; the
+        // `scroll_to_line` is gated on `sync_terminal_nav_cursor
+        // _from_doc`).
+        if matches!(self.active_buffer, BufferKind::Terminal) {
+            let buf_id = self.active_pane_buffer_id();
+            self.sync_terminal_nav_cursor_from_doc(buf_id);
+        }
     }
 
     /// Vim's `<C-e>` (down) / `<C-y>` (up) -- scroll one line.
@@ -21995,24 +22004,14 @@ impl Editor {
             }
             return true;
         }
-        // Page motions keep their scroll semantics (no
-        // nav_cursor anchoring — vim's `<C-d>` / `<C-u>` are
-        // half-page jumps that re-anchor the cursor too;
-        // implementing that fully needs viewport height. For now
-        // keep them as pure viewport scrolls.)
-        let kind = if cmd == self.action_ids.page_down {
-            Some(Sk::PageDown)
-        } else if cmd == self.action_ids.page_up {
-            Some(Sk::PageUp)
-        } else {
-            None
-        };
-        if let Some(kind) = kind {
-            self.pending_count = 0;
-            self.op_count = 0;
-            let _ = self.buffers.with_terminal(buf_id, |t| t.term.scroll(kind));
-            return true;
-        }
+        // 2026-05-28: page-scroll Actions (`<C-d>` / `<C-u>`)
+        // retired from the runner. Returning `false` for them
+        // lets `run_invocation` dispatch through the central
+        // `Action::PageDown` / `PageUp` handler → `do_page`,
+        // which now writes `self.cursor` against `active_text()`
+        // (the SyntheticDoc) and syncs the alacritty viewport
+        // via `sync_terminal_nav_cursor_from_doc` for terminal
+        // panes. Single dispatch path for both buffer kinds.
         // 2026-05-26: fall-through dispatch by command kind:
         // - `Action` commands the runner doesn't intercept
         //   (`:` enter command, `/` enter search, `K` hover,

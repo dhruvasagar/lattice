@@ -127,6 +127,11 @@ memchr = { workspace = true }
 # (`benches/highlights_worker.rs`) needs criterion + a real
 # `Syntax` instance to feed the worker recompute path.
 criterion = { workspace = true }
+# D.2.c (2026-05-29): diff-subsystem debouncer tests use
+# `#[tokio::test(start_paused = true)]` + `tokio::time::advance`
+# to drive the lazy debounce task deterministically without
+# wall-clock waits. The `test-util` feature is dev-only.
+tokio = { workspace = true, features = ["test-util", "macros", "rt"] }
 
 [[bench]]
 name = "highlights_worker"

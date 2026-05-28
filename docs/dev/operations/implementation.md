@@ -1332,10 +1332,75 @@ shared with multibuffer-views and post-v1 inlay hints.
   3-recompute revision sequence, stale-publish drop, equal-rev
   drop, unregistered-buffer None handle, tokio happy-path
   publish, tokio serial-pair monotonicity).
-- 🗒 **D.2.c** — Edit-event subscription + debounce: hook
-  `DiffSubsystem` into the buffer edit-event stream; debounce
-  recomputes per the standard host cadence; buffer-close fires
-  `drop_session`.
+- ✅ **D.2.c** (2026-05-29) — Routing + debounce + bus
+  subscription landed in `lattice-host::diff_subsystem`. Final
+  shape per the
+  [`docs/dev/architecture/diff-system.md`](../architecture/diff-system.md)
+  §3.4 redesign:
+  - **`BufferTextProvider`** — single host seam over buffer
+    storage. The subsystem touches no buffer registry directly;
+    everything that needs a live rope reads through this
+    trait. Future ephemeral / plugin-owned buffers plug in via
+    the same interface.
+  - **`CurrentSource`** trait mirroring `BaselineSource`;
+    **`BufferBaseline`** + **`BufferCurrentSource`** concrete
+    live-rope impls. Unsaved-buffer-vs-unsaved-buffer diff is
+    first-class — both sides resolve through the provider at
+    snapshot time, neither needs a filesystem path.
+  - **`DiffDescriptor { baseline, current, watch: Vec<BufferId> }`** —
+    explicit dependency declaration. Descriptor author knows
+    which sources are buffer-backed; the subsystem treats
+    `watch` as the routing key.
+  - **Centralized inverse `watchers` index**: edits to buffer
+    X fan out via one `HashMap<BufferId, Vec<SessionKey>>`
+    lookup. Cost per edit is O(1 + dependents), independent of
+    total session count — scales to project-wide diff /
+    AI multi-file `openDiff` (N=100..1000 sessions) where the
+    per-session-actor alternative would clone events N× per
+    keystroke through the global event bus. See §3.4.4 for
+    the scaling discussion and rejected alternatives (Helix
+    direct-call, Zed per-entity-actor).
+  - **Per-session lazy `Debouncer`**: zero tasks at rest. On
+    first `poke()` after idle, spawns a tokio task that
+    sleeps the debounce window, re-reads its epoch counter,
+    and either reschedules or fires the runner and
+    self-terminates. Default window: 50ms (`DEFAULT_DEBOUNCE_WINDOW`,
+    matches Helix's diff debounce). Overridable via
+    `with_debounce_window`.
+  - **`DocumentBufferResolver`** trait for the protocol-layer
+    `DocumentId` → host-layer `BufferId` translation that the
+    bus events require. Host supplies the impl over
+    `BufferRegistry`; tests inject mocks.
+  - **`bind(bus, resolver) -> DiffSubscriptionGuard`**:
+    subscribes once to `DocumentChanged` + `DocumentClosed`,
+    spawns one drainer task that fans events through the
+    routing path. The returned guard's `Drop` unsubscribes the
+    bus subscription and aborts the drainer task — RAII
+    lifecycle.
+  - **`drop_session(buffer_id)`** now scrubs descriptor +
+    every `watchers` bucket entry + the debouncer in addition
+    to the session. Re-register with a smaller watch list
+    scrubs stale entries before installing new ones.
+  - **`note_buffer_edited` / `note_buffer_closed`** public
+    routing entry points (tests + future non-bus drivers).
+  **39 tests green** (18 new D.2.c): buffer-source snapshot
+  through provider (incl. empty-rope on missing buffer),
+  descriptor + debouncer wiring on `register_with_sources`,
+  multi-session shared-buffer fan-out, drop scrubs only the
+  dropped session's entries, re-register with shrunken watch
+  scrubs stale, debouncer single-poke fires after window,
+  rapid-pokes coalesce to one runner, post-idle pokes fire
+  twice (all three using `#[tokio::test(start_paused = true)]`
+  + `sleep`-based auto-advance), `note_buffer_edited` triggers
+  debounced recompute, no-op on unregistered, watched-baseline
+  edit wakes session, `note_buffer_closed` drops, bus
+  `DocumentChanged` routes through drainer → debouncer →
+  recompute, bus `DocumentClosed` routes through drainer →
+  `drop_session`, guard `Drop` unsubscribes + aborts drainer
+  (post-drop bus event does not act on subsystem). Routing /
+  bus tests use real tokio time because `schedule_recompute`
+  goes through `spawn_blocking` which runs on the (real-time)
+  blocking pool.
 - 🗒 **D.2.d** — `:describe-diff` introspection ex-command:
   enumerates `iter_sessions`, opens a synthetic Document buffer
   listing per-session algorithm, hunk count, revision, last

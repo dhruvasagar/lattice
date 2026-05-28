@@ -1,62 +1,81 @@
-//! D.2.a (2026-05-28) — `DiffSubsystem` skeleton.
+//! D.2.a / D.2.b / D.2.c — `DiffSubsystem`.
 //!
-//! Registry of [`DiffSession`] entries keyed by
-//! [`BufferId`]. One session per diffed document. Sessions are
-//! `Arc`-shared so consumers (the future inline overlay D.3,
-//! side-by-side D.4, hunk-transfer ops D.5, `:describe-diff`
-//! D.2.d) can hold a stable handle while the registry continues
-//! to mutate around them.
+//! Registry + compute + routing layer for the diff subsystem.
+//! Sessions are `Arc`-shared so consumers (the future inline
+//! overlay D.3, side-by-side D.4, hunk-transfer ops D.5,
+//! `:describe-diff` D.2.d) can hold a stable handle while the
+//! registry continues to mutate around them.
 //!
-//! ## What this slice lands (D.2.a)
+//! ## Slice landing order
 //!
-//! - [`DiffSubsystem`] — `Mutex<HashMap<BufferId, Arc<DiffSession>>>`
-//!   with `register` / `lookup` / `drop_session` / `iter_sessions`.
-//! - [`DiffSession`] — published `ArcSwap<HunkIndex>` per buffer,
-//!   algorithm tag, monotonic `revision` counter.
-//! - No compute, no baseline, no edit-event subscription. Those
-//!   land in D.2.b (compute + RCU publish on `spawn_blocking`) and
-//!   D.2.c (edit-event subscription + debounce).
-//!
-//! ## Why a skeleton slice
-//!
-//! Per CLAUDE.md heuristic #1 ("best long-term fit beats easy
-//! implementation"), the lifecycle surface is the load-bearing
-//! contract — every later consumer reads through `lookup` and
-//! enumerates through `iter_sessions`. Landing it first as a
-//! standalone unit means D.2.b can drop in pure compute behind
-//! the existing API without churning call sites.
+//! - **D.2.a (2026-05-28)** — registry skeleton. [`DiffSubsystem`]
+//!   keying [`Arc<DiffSession>`] by [`BufferId`] behind a
+//!   `std::sync::Mutex`. `register` / `lookup` / `drop_session` /
+//!   `iter_sessions`. Per-session `ArcSwap<HunkIndex>` for
+//!   RCU-published reads.
+//! - **D.2.b (2026-05-28)** — compute path. [`BaselineSource`]
+//!   trait (initial impl [`StaticBaseline`]). Monotonic revision
+//!   allocator on the session; gated publish via
+//!   [`DiffSession::try_publish_if_newer`]. Sync recompute body
+//!   [`DiffSession::recompute_blocking`]; tokio orchestration
+//!   [`DiffSubsystem::schedule_recompute`] spawns it on
+//!   `spawn_blocking` and returns a join handle.
+//! - **D.2.c (2026-05-29)** — routing + debounce + bus
+//!   subscription. [`BufferTextProvider`] (one host seam),
+//!   [`CurrentSource`] (mirror of `BaselineSource`),
+//!   [`BufferBaseline`] / [`BufferCurrentSource`] live-rope impls,
+//!   [`DiffDescriptor`] (sources + explicit `watch: Vec<BufferId>`).
+//!   Centralized inverse `watchers` index + per-session lazy
+//!   [`Debouncer`]. [`DiffSubsystem::bind`] takes a [`DocumentBufferResolver`]
+//!   and an `Arc<EventBus>` and returns a [`DiffSubscriptionGuard`]
+//!   that aborts the drainer task and unsubscribes the bus on
+//!   `Drop`. See
+//!   [`../../../docs/dev/architecture/diff-system.md`](../../../docs/dev/architecture/diff-system.md)
+//!   §3.4 for the full data + routing model and the
+//!   per-session-actor / direct-call alternatives that were
+//!   considered and rejected.
 //!
 //! ## Concurrency model
 //!
-//! - Registry mutation (`register` / `drop_session`) goes through
-//!   a `std::sync::Mutex`. Mutation is buffer-open / buffer-close
-//!   frequency — never per-frame.
+//! - Registry / descriptor / watchers / debouncer mutation goes
+//!   through `std::sync::Mutex`. Mutation is buffer-open /
+//!   buffer-close / lazy-debouncer-spawn frequency — never
+//!   per-frame.
 //! - Per-session published `hunks: ArcSwap<HunkIndex>` is read
-//!   lock-free from any thread (the renderer, the upcoming
-//!   `:describe-diff` query, etc.).
+//!   lock-free from any thread (the renderer, `:describe-diff`,
+//!   etc.).
 //! - The session's `Arc` itself is cloned out of the registry
-//!   under the registry lock, then released. Holders may keep the
-//!   `Arc` past a `drop_session` call — the registry forgets the
-//!   entry, but in-flight readers see a coherent snapshot until
-//!   they release their clone. This matches the standard
-//!   `BufferRegistry` / `cells_matrix_cell` pattern in this crate.
-//!
-//! ## Design fragment
-//!
-//! [`../../../docs/dev/architecture/diff-system.md`](../../../docs/dev/architecture/diff-system.md)
-//! §6 (subsystem) and §3.1 (data model). Synopsis in
-//! `design.md` §5.13.
+//!   under the registry lock, then released. Holders may keep
+//!   the `Arc` past a `drop_session` call — the registry forgets
+//!   the entry, but in-flight readers see a coherent snapshot
+//!   until they release their clone (RCU). Matches the standard
+//!   `BufferRegistry` / `cells_matrix_cell` pattern in this
+//!   crate.
+//! - Bus subscription is **centralized** (one subscription on
+//!   the subsystem; one drainer task). On each `DocumentChanged`
+//!   the drainer resolves DocumentId → BufferId, looks up
+//!   dependents in the `watchers` inverse index, and pokes each
+//!   session's `Debouncer`. The per-session debouncer is
+//!   **lazy** — no task at rest; a tokio task spawns on first
+//!   poke, sleeps the debounce window, and self-terminates after
+//!   the burst quiesces. Rationale + scaling discussion in §3.4.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use arc_swap::ArcSwap;
 use ropey::Rope;
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use tracing::debug;
 
 use lattice_core::BufferId;
 use lattice_diff::{compute_two_way, DiffAlgorithm, HunkIndex};
+use lattice_protocol::event::{Event, EventKind};
+use lattice_protocol::ids::DocumentId;
+use lattice_runtime::{EventBus, EventFilter, SubscriptionId, SubscriptionTarget};
 
 /// Source of the baseline a [`DiffSession`] diffs against.
 ///
@@ -106,6 +125,265 @@ impl StaticBaseline {
 impl BaselineSource for StaticBaseline {
 	fn snapshot(&self) -> Rope {
 		self.rope.clone()
+	}
+}
+
+// ──────────────────────────────────────────────────────────────
+// D.2.c: CurrentSource trait + concrete sources
+// ──────────────────────────────────────────────────────────────
+
+/// Source of the "current" side of a diff session — the rope a
+/// session is comparing against its baseline.
+///
+/// Mirror of [`BaselineSource`]. The split is semantic, not
+/// structural: both traits expose the same shape, but the
+/// asymmetry makes the descriptor's intent explicit at the call
+/// site (`descriptor.baseline.snapshot()` vs.
+/// `descriptor.current.snapshot()`). Saves a comment per
+/// recompute closure.
+pub trait CurrentSource: Send + Sync + 'static + std::fmt::Debug {
+	/// Produce the current rope. Called once per recompute from
+	/// inside the `spawn_blocking` body — must not hold the UI
+	/// thread.
+	fn snapshot(&self) -> Rope;
+}
+
+/// One-trait seam between the diff subsystem and the host's
+/// buffer storage. Required for [`BufferBaseline`] /
+/// [`BufferCurrentSource`] to resolve a [`BufferId`] to its live
+/// rope at snapshot time.
+///
+/// The host supplies a single impl backed by `BufferRegistry`.
+/// Future ephemeral-buffer providers (e.g. plugin-owned virtual
+/// buffers, AI-proposed-edits views) plug into the same trait.
+///
+/// `buffer_rope(id)` returns `None` when the buffer has been
+/// dropped. Concrete buffer-backed sources treat `None` as an
+/// empty rope so a recompute against a closed buffer still
+/// produces a well-defined `HunkIndex` (all-Add or all-Remove
+/// depending on which side was the dropped buffer) rather than
+/// panicking. The session's `drop_session` lifecycle will
+/// remove the entry shortly after.
+pub trait BufferTextProvider: Send + Sync + 'static + std::fmt::Debug {
+	fn buffer_rope(&self, id: BufferId) -> Option<Rope>;
+}
+
+/// Live-rope baseline backed by a sibling buffer. The
+/// unsaved-buffer case: when neither side of a diff has a
+/// filesystem path, both sides resolve through
+/// [`BufferTextProvider`] at snapshot time. The session's
+/// descriptor must include this buffer in its `watch` list so
+/// edits to it wake the session.
+#[derive(Clone, Debug)]
+pub struct BufferBaseline {
+	provider: Arc<dyn BufferTextProvider>,
+	buffer_id: BufferId,
+}
+
+impl BufferBaseline {
+	pub fn new(provider: Arc<dyn BufferTextProvider>, buffer_id: BufferId) -> Self {
+		Self { provider, buffer_id }
+	}
+
+	pub fn buffer_id(&self) -> BufferId {
+		self.buffer_id
+	}
+}
+
+impl BaselineSource for BufferBaseline {
+	fn snapshot(&self) -> Rope {
+		self.provider.buffer_rope(self.buffer_id).unwrap_or_default()
+	}
+}
+
+/// Live-rope current source backed by a buffer. Sibling of
+/// [`BufferBaseline`]. The session's descriptor must include
+/// this buffer in its `watch` list (which it almost always
+/// already does — the session is registered under
+/// `current.buffer_id`).
+#[derive(Clone, Debug)]
+pub struct BufferCurrentSource {
+	provider: Arc<dyn BufferTextProvider>,
+	buffer_id: BufferId,
+}
+
+impl BufferCurrentSource {
+	pub fn new(provider: Arc<dyn BufferTextProvider>, buffer_id: BufferId) -> Self {
+		Self { provider, buffer_id }
+	}
+
+	pub fn buffer_id(&self) -> BufferId {
+		self.buffer_id
+	}
+}
+
+impl CurrentSource for BufferCurrentSource {
+	fn snapshot(&self) -> Rope {
+		self.provider.buffer_rope(self.buffer_id).unwrap_or_default()
+	}
+}
+
+/// The "what to diff against what" pair for a session.
+///
+/// `baseline` + `current` are the source sides; `watch` is the
+/// **explicit dependency declaration**: every [`BufferId`] whose
+/// edits should wake this session. The descriptor's author
+/// (a future `:diffsplit` / `:Gdiff` / AI-host call site) knows
+/// which sources are buffer-backed and contributes those
+/// `BufferId`s into `watch`. Static or git-blob sources
+/// contribute nothing.
+///
+/// `Clone` because the runtime sometimes wants a stable
+/// snapshot of the descriptor to feed a debounced recompute —
+/// the inner `Arc<dyn ...>` and `Vec<BufferId>` clones are
+/// cheap (one Arc bump per source + a small heap allocation).
+#[derive(Clone, Debug)]
+pub struct DiffDescriptor {
+	pub baseline: Arc<dyn BaselineSource>,
+	pub current: Arc<dyn CurrentSource>,
+	pub watch: Vec<BufferId>,
+}
+
+// ──────────────────────────────────────────────────────────────
+// D.2.c: DocumentBufferResolver
+// ──────────────────────────────────────────────────────────────
+
+/// Translates the protocol-layer [`DocumentId`] carried in
+/// `Event::DocumentChanged` / `Event::DocumentClosed` back to a
+/// host-layer [`BufferId`]. The host supplies an impl backed by
+/// `BufferRegistry`. Kept as a trait so the subsystem stays
+/// independent of buffer-registry layout (and so tests can
+/// inject a stub mapping).
+pub trait DocumentBufferResolver: Send + Sync + 'static + std::fmt::Debug {
+	fn buffer_id_for(&self, document_id: DocumentId) -> Option<BufferId>;
+}
+
+// ──────────────────────────────────────────────────────────────
+// D.2.c: Lazy per-session Debouncer
+// ──────────────────────────────────────────────────────────────
+
+/// Default debounce window. Matches Helix's diff debounce
+/// (50ms); short enough that the visual lag is imperceptible
+/// during sustained typing, long enough that a burst of 5–10
+/// keystrokes collapses to a single recompute. Overridable via
+/// [`DiffSubsystem::with_debounce_window`] for tests and host
+/// configuration.
+pub const DEFAULT_DEBOUNCE_WINDOW: Duration = Duration::from_millis(50);
+
+/// Per-session debounce controller.
+///
+/// State is two atomics — an epoch counter bumped on every
+/// [`Self::poke`], and a `pending` flag that gates spawning the
+/// debounce task. The task itself is **lazy**: it spawns on the
+/// first `poke` after an idle period, sleeps the debounce
+/// window, re-reads the epoch, and either re-sleeps (more pokes
+/// arrived during the window) or invokes the supplied
+/// `runner` and exits. No task runs while the session is
+/// quiescent.
+///
+/// `runner` is `Arc<dyn Fn>` — shareable across the loop. The
+/// caller (`DiffSubsystem::poke_session`) captures the
+/// subsystem `Arc` + session key into the closure.
+#[derive(Debug)]
+pub struct Debouncer {
+	inner: Arc<DebouncerInner>,
+}
+
+#[derive(Debug)]
+struct DebouncerInner {
+	epoch: AtomicU64,
+	pending: AtomicBool,
+	window: Duration,
+}
+
+impl Debouncer {
+	pub fn new(window: Duration) -> Self {
+		Self {
+			inner: Arc::new(DebouncerInner {
+				epoch: AtomicU64::new(0),
+				pending: AtomicBool::new(false),
+				window,
+			}),
+		}
+	}
+
+	pub fn window(&self) -> Duration {
+		self.inner.window
+	}
+
+	/// Bump the epoch. If no debounce task is in flight, spawn
+	/// one that sleeps the window, re-reads the epoch, and
+	/// either re-sleeps (more pokes) or invokes `runner` and
+	/// exits.
+	///
+	/// `runner` runs on the tokio runtime (the debounce task is
+	/// itself a tokio task). Inside the runner, the production
+	/// call site schedules the actual recompute on
+	/// `spawn_blocking`; the runner closure stays light.
+	pub fn poke<F>(&self, runner: F)
+	where
+		F: Fn() + Send + Sync + 'static,
+	{
+		let inner = Arc::clone(&self.inner);
+		// Bump the epoch first so a concurrent task observes the
+		// new value even if we don't end up spawning.
+		inner.epoch.fetch_add(1, Ordering::Relaxed);
+		// Try to claim the spawn slot. If we lose, another
+		// debounce task is already in flight and our epoch bump
+		// will be observed when it re-reads.
+		if inner
+			.pending
+			.compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+			.is_ok()
+		{
+			let runner = Arc::new(runner);
+			let inner_task = Arc::clone(&inner);
+			tokio::spawn(async move {
+				loop {
+					let observed = inner_task.epoch.load(Ordering::Acquire);
+					tokio::time::sleep(inner_task.window).await;
+					let after = inner_task.epoch.load(Ordering::Acquire);
+					if after == observed {
+						// Quiet. Clear pending, fire, exit.
+						// Race: a poke that lands between this
+						// store and the next read of `pending`
+						// will spawn a new task — at worst one
+						// extra recompute, dropped by the
+						// revision gate (see D.2.b).
+						inner_task.pending.store(false, Ordering::Release);
+						runner();
+						return;
+					}
+					// More pokes arrived during sleep — loop and
+					// sleep again.
+				}
+			});
+		}
+	}
+}
+
+// ──────────────────────────────────────────────────────────────
+// D.2.c: Bus-subscription guard
+// ──────────────────────────────────────────────────────────────
+
+/// RAII guard returned by [`DiffSubsystem::bind`]. Holds the
+/// bus `SubscriptionId` + the drainer task `JoinHandle`. On
+/// `Drop`, unsubscribes the bus subscription and aborts the
+/// drainer task.
+///
+/// Hosts hold one of these for the editor's lifetime. Tests
+/// drop it to verify cleanup.
+#[derive(Debug)]
+pub struct DiffSubscriptionGuard {
+	bus: Arc<EventBus>,
+	subscription: SubscriptionId,
+	drainer: JoinHandle<()>,
+}
+
+impl Drop for DiffSubscriptionGuard {
+	fn drop(&mut self) {
+		self.bus.unsubscribe(self.subscription);
+		self.drainer.abort();
 	}
 }
 
@@ -238,29 +516,62 @@ impl DiffSession {
 	}
 }
 
-/// Process-wide registry of [`DiffSession`] entries.
+/// Process-wide registry + routing layer for diff sessions.
 ///
-/// Lifecycle:
-/// - `register(buffer_id, algorithm)` — idempotent. Returns the
-///   existing session if one is already registered for the id;
-///   the requested `algorithm` is ignored in that case (changing
-///   algorithm is a drop + re-register). Otherwise inserts a fresh
-///   session and returns its handle.
-/// - `lookup(buffer_id)` — returns `Some(Arc<DiffSession>)` if a
-///   session is registered, else `None`.
-/// - `drop_session(buffer_id)` — removes the registry entry.
-///   Returns `true` if an entry was removed. In-flight `Arc`
-///   holders are unaffected.
+/// Lifecycle (D.2.a):
+/// - `register(buffer_id, algorithm)` — idempotent; pure-compute
+///   path with no sources, no debouncer, no routing entries.
+///   For tests and the future `:describe-diff` standalone path.
+/// - `register_with_sources(buffer_id, algorithm, descriptor)`
+///   (D.2.c) — production registration. Installs the
+///   descriptor + watch entries + a per-session [`Debouncer`].
+///   Edits to any buffer in `descriptor.watch` will route to
+///   this session.
+/// - `lookup(buffer_id)` — returns `Some(Arc<DiffSession>)` if
+///   registered.
+/// - `lookup_descriptor(buffer_id)` (D.2.c) — returns
+///   `Some(DiffDescriptor)` if registered with sources.
+/// - `drop_session(buffer_id)` — removes session, descriptor,
+///   debouncer, and the session's entries from every
+///   `watchers` bucket. In-flight `Arc` holders are unaffected.
 /// - `iter_sessions()` — snapshot of all currently-registered
-///   sessions. Powers `:describe-diff` (D.2.d) and is the
-///   enumeration surface for D.6 `:diffput <bufnr>` /
-///   `:diffget <bufnr>`.
+///   sessions. Powers `:describe-diff` (D.2.d).
+///
+/// Routing (D.2.c):
+/// - `bind(bus, resolver)` — installs the bus subscription +
+///   drainer task. Returns a [`DiffSubscriptionGuard`] whose
+///   `Drop` unsubscribes and aborts.
+/// - `note_buffer_edited(buffer_id)` — pokes the debouncer for
+///   every session in `watchers[buffer_id]`. Public so tests
+///   and (future) non-bus drivers can fire it directly.
+/// - `note_buffer_closed(buffer_id)` — calls `drop_session`.
 ///
 /// The registry is `Default`-able and zero-cost to construct; the
-/// host owns one instance, threaded through `Editor`.
-#[derive(Debug, Default)]
+/// host owns one instance, threaded through `Editor`. Debounce
+/// window defaults to [`DEFAULT_DEBOUNCE_WINDOW`] and can be
+/// overridden via [`Self::with_debounce_window`].
+#[derive(Debug)]
 pub struct DiffSubsystem {
 	sessions: Mutex<HashMap<BufferId, Arc<DiffSession>>>,
+	descriptors: Mutex<HashMap<BufferId, DiffDescriptor>>,
+	/// Inverse index: edits to `watched_buffer` should wake the
+	/// listed session keys. Rebuilt from descriptors on every
+	/// register / drop.
+	watchers: Mutex<HashMap<BufferId, Vec<BufferId>>>,
+	debouncers: Mutex<HashMap<BufferId, Arc<Debouncer>>>,
+	debounce_window: Duration,
+}
+
+impl Default for DiffSubsystem {
+	fn default() -> Self {
+		Self {
+			sessions: Mutex::new(HashMap::new()),
+			descriptors: Mutex::new(HashMap::new()),
+			watchers: Mutex::new(HashMap::new()),
+			debouncers: Mutex::new(HashMap::new()),
+			debounce_window: DEFAULT_DEBOUNCE_WINDOW,
+		}
+	}
 }
 
 impl DiffSubsystem {
@@ -268,9 +579,30 @@ impl DiffSubsystem {
 		Self::default()
 	}
 
-	/// Register a session for `buffer_id`. Idempotent: returns the
-	/// existing `Arc<DiffSession>` if one is already registered
-	/// (the `algorithm` argument is ignored in that case).
+	/// Construct a subsystem with a non-default debounce window.
+	/// Primarily a test hook (so unit tests can run with
+	/// `Duration::from_millis(1)` and avoid wall-clock waits) but
+	/// hosts can also tune the window via the typed options
+	/// registry once that wiring lands (D.2.e).
+	pub fn with_debounce_window(window: Duration) -> Self {
+		Self {
+			debounce_window: window,
+			..Self::default()
+		}
+	}
+
+	pub fn debounce_window(&self) -> Duration {
+		self.debounce_window
+	}
+
+	/// Register a session for `buffer_id` with no sources. The
+	/// session has no debouncer, no descriptor, no watchers
+	/// entries — used by tests and by the pure-compute API path.
+	/// Production callers want [`Self::register_with_sources`].
+	///
+	/// Idempotent: returns the existing `Arc<DiffSession>` if
+	/// one is already registered (the `algorithm` argument is
+	/// ignored in that case).
 	pub fn register(
 		&self,
 		buffer_id: BufferId,
@@ -283,6 +615,58 @@ impl DiffSubsystem {
 			.clone()
 	}
 
+	/// D.2.c: register a session with a full [`DiffDescriptor`].
+	/// Inserts (or reuses) the session, stores the descriptor,
+	/// rebuilds the inverse `watchers` entries to include this
+	/// session for every buffer in `descriptor.watch`, and
+	/// installs a per-session [`Debouncer`].
+	///
+	/// Idempotent on session identity (same `Arc<DiffSession>`
+	/// returned on re-registration) but **descriptor is
+	/// replaced** on re-registration — the caller may be
+	/// updating sources (e.g. switching baseline from
+	/// `StaticBaseline` to `GitBaseline`). The old watch
+	/// entries are scrubbed before the new ones are installed
+	/// so a re-register with a shrunken watch list doesn't
+	/// leave stale routes.
+	pub fn register_with_sources(
+		&self,
+		buffer_id: BufferId,
+		algorithm: DiffAlgorithm,
+		descriptor: DiffDescriptor,
+	) -> Arc<DiffSession> {
+		let session = {
+			let mut sessions = self.sessions.lock().expect("DiffSubsystem mutex poisoned");
+			sessions
+				.entry(buffer_id)
+				.or_insert_with(|| Arc::new(DiffSession::new(buffer_id, algorithm)))
+				.clone()
+		};
+		// Replace descriptor; capture old to scrub stale
+		// watcher entries.
+		let old_descriptor = {
+			let mut descriptors = self
+				.descriptors
+				.lock()
+				.expect("DiffSubsystem mutex poisoned");
+			descriptors.insert(buffer_id, descriptor.clone())
+		};
+		if let Some(old) = old_descriptor {
+			self.scrub_watcher_entries(buffer_id, &old.watch);
+		}
+		self.install_watcher_entries(buffer_id, &descriptor.watch);
+		// Install or replace the debouncer (idempotent — a
+		// re-register on an already-debouncing session keeps
+		// the existing controller).
+		{
+			let mut debouncers = self.debouncers.lock().expect("DiffSubsystem mutex poisoned");
+			debouncers
+				.entry(buffer_id)
+				.or_insert_with(|| Arc::new(Debouncer::new(self.debounce_window)));
+		}
+		session
+	}
+
 	/// Look up the session for `buffer_id`. Returns `None` if no
 	/// session is registered.
 	pub fn lookup(&self, buffer_id: BufferId) -> Option<Arc<DiffSession>> {
@@ -293,15 +677,91 @@ impl DiffSubsystem {
 			.cloned()
 	}
 
-	/// Drop the registry entry for `buffer_id`. Returns `true` if
-	/// an entry was removed. Called from buffer-close lifecycle
-	/// in D.2.c; safe to call on a non-registered id.
+	/// D.2.c: look up the descriptor for `buffer_id`. Returns
+	/// `None` if the session was registered via [`Self::register`]
+	/// (sources-less) or not registered at all.
+	pub fn lookup_descriptor(&self, buffer_id: BufferId) -> Option<DiffDescriptor> {
+		self.descriptors
+			.lock()
+			.expect("DiffSubsystem mutex poisoned")
+			.get(&buffer_id)
+			.cloned()
+	}
+
+	/// D.2.c: snapshot of the inverse routing index for
+	/// `watched_buffer`. Returns the session keys whose
+	/// descriptors include `watched_buffer` in their `watch`
+	/// list. Empty if no sessions watch it.
+	///
+	/// Test-friendly; production code uses
+	/// [`Self::note_buffer_edited`].
+	pub fn watchers_of(&self, watched_buffer: BufferId) -> Vec<BufferId> {
+		self.watchers
+			.lock()
+			.expect("DiffSubsystem mutex poisoned")
+			.get(&watched_buffer)
+			.cloned()
+			.unwrap_or_default()
+	}
+
+	/// Drop the registry entry for `buffer_id`. Removes the
+	/// session, descriptor, every watchers-bucket entry, and
+	/// the debouncer. Returns `true` if a session entry was
+	/// removed. Safe to call on a non-registered id.
+	///
+	/// In-flight `Arc<DiffSession>` holders stay coherent; the
+	/// registry's job is naming, not lifetime enforcement.
 	pub fn drop_session(&self, buffer_id: BufferId) -> bool {
-		self.sessions
+		let removed = self
+			.sessions
 			.lock()
 			.expect("DiffSubsystem mutex poisoned")
 			.remove(&buffer_id)
-			.is_some()
+			.is_some();
+		let descriptor = self
+			.descriptors
+			.lock()
+			.expect("DiffSubsystem mutex poisoned")
+			.remove(&buffer_id);
+		if let Some(d) = descriptor {
+			self.scrub_watcher_entries(buffer_id, &d.watch);
+		}
+		// Drop the debouncer Arc — any in-flight task holds its
+		// own Arc clone and will run to completion (it'll call
+		// runner() then exit), but no further pokes can arrive
+		// for this session.
+		self.debouncers
+			.lock()
+			.expect("DiffSubsystem mutex poisoned")
+			.remove(&buffer_id);
+		removed
+	}
+
+	// Internal helper: add this session_key to each watched
+	// buffer's bucket. Called from register_with_sources.
+	fn install_watcher_entries(&self, session_key: BufferId, watch: &[BufferId]) {
+		let mut watchers = self.watchers.lock().expect("DiffSubsystem mutex poisoned");
+		for &watched in watch {
+			let bucket = watchers.entry(watched).or_default();
+			if !bucket.contains(&session_key) {
+				bucket.push(session_key);
+			}
+		}
+	}
+
+	// Internal helper: remove this session_key from each watched
+	// buffer's bucket. Called from drop_session + register
+	// (when replacing a descriptor).
+	fn scrub_watcher_entries(&self, session_key: BufferId, watch: &[BufferId]) {
+		let mut watchers = self.watchers.lock().expect("DiffSubsystem mutex poisoned");
+		for watched in watch {
+			if let Some(bucket) = watchers.get_mut(watched) {
+				bucket.retain(|s| *s != session_key);
+				if bucket.is_empty() {
+					watchers.remove(watched);
+				}
+			}
+		}
 	}
 
 	/// `true` if no sessions are registered. Test-friendly.
@@ -367,6 +827,139 @@ impl DiffSubsystem {
 			let base = baseline.snapshot();
 			session.recompute_blocking(&base, &current)
 		}))
+	}
+
+	// ──────────────────────────────────────────────────────
+	// D.2.c: routing entry points
+	// ──────────────────────────────────────────────────────
+
+	/// Notify the subsystem that `buffer_id` was edited. Walks
+	/// the inverse `watchers` index and pokes the debouncer for
+	/// every session whose descriptor's `watch` list includes
+	/// `buffer_id`. Each poke schedules a recompute after the
+	/// debounce window; multiple pokes during the window
+	/// collapse to one recompute (see [`Debouncer`]).
+	///
+	/// Production driver is [`Self::bind`]'s drainer task; tests
+	/// (and future non-bus drivers) can call this directly.
+	pub fn note_buffer_edited(self: &Arc<Self>, buffer_id: BufferId) {
+		let dependents = self.watchers_of(buffer_id);
+		if dependents.is_empty() {
+			return;
+		}
+		debug!(
+			target: "lattice_host::diff_subsystem",
+			?buffer_id,
+			n_dependents = dependents.len(),
+			"diff: buffer edited, poking debouncers"
+		);
+		for session_key in dependents {
+			self.poke_session(session_key);
+		}
+	}
+
+	/// Notify the subsystem that `buffer_id` was closed. Drops
+	/// the session for that buffer. If the closed buffer was a
+	/// watched-only dependency of some other session (e.g.
+	/// `BufferBaseline(closed_id)` for session X), session X's
+	/// watcher entry for `closed_id` is left in place — the
+	/// next snapshot returns an empty rope per the
+	/// [`BufferTextProvider`] contract, and the session will
+	/// recompute the all-Add diff. The session itself is not
+	/// dropped on a watched-side close; only on a current-side
+	/// close.
+	pub fn note_buffer_closed(&self, buffer_id: BufferId) {
+		debug!(
+			target: "lattice_host::diff_subsystem",
+			?buffer_id,
+			"diff: buffer closed, dropping session if registered"
+		);
+		self.drop_session(buffer_id);
+	}
+
+	// Internal: look up the descriptor + debouncer for
+	// `session_key` and fire a debounced recompute via
+	// `schedule_recompute`. The closure captured by the
+	// debouncer holds an `Arc<Self>` so the subsystem stays
+	// alive for the duration of the deferred work.
+	fn poke_session(self: &Arc<Self>, session_key: BufferId) {
+		let debouncer = match self
+			.debouncers
+			.lock()
+			.expect("DiffSubsystem mutex poisoned")
+			.get(&session_key)
+			.cloned()
+		{
+			Some(d) => d,
+			None => return,
+		};
+		let sub = Arc::clone(self);
+		debouncer.poke(move || {
+			sub.recompute_from_descriptor(session_key);
+		});
+	}
+
+	// Internal: read the session's descriptor, snapshot the
+	// current source, and fire `schedule_recompute`. The
+	// schedule_recompute call spawns the diff on the blocking
+	// pool; we return immediately. Stale or torn-down sessions
+	// return early — the gated publish in D.2.b drops anything
+	// stale that does land.
+	fn recompute_from_descriptor(&self, session_key: BufferId) {
+		let descriptor = match self.lookup_descriptor(session_key) {
+			Some(d) => d,
+			None => return,
+		};
+		let current = descriptor.current.snapshot();
+		let _ = self.schedule_recompute(session_key, descriptor.baseline, current);
+	}
+
+	/// D.2.c: bind the subsystem to an event bus. Subscribes to
+	/// `EventKind::DocumentChanged` + `EventKind::DocumentClosed`,
+	/// spawns one drainer task that translates each event's
+	/// `DocumentId` to `BufferId` via `resolver` and fans the
+	/// signal into the routing path.
+	///
+	/// Returns a [`DiffSubscriptionGuard`] whose `Drop`
+	/// unsubscribes the bus subscription and aborts the
+	/// drainer task. Hosts hold the guard for the editor's
+	/// lifetime; tests drop it to verify cleanup.
+	pub fn bind(
+		self: &Arc<Self>,
+		bus: Arc<EventBus>,
+		resolver: Arc<dyn DocumentBufferResolver>,
+	) -> DiffSubscriptionGuard {
+		let (tx, mut rx) = mpsc::unbounded_channel::<Event>();
+		let subscription = bus.subscribe(
+			EventFilter::kinds(vec![
+				EventKind::DocumentChanged,
+				EventKind::DocumentClosed,
+			]),
+			SubscriptionTarget::Channel(tx),
+		);
+		let sub_self = Arc::clone(self);
+		let drainer = tokio::spawn(async move {
+			while let Some(event) = rx.recv().await {
+				match event {
+					Event::DocumentChanged { id, .. } => {
+						if let Some(buffer_id) = resolver.buffer_id_for(id) {
+							sub_self.note_buffer_edited(buffer_id);
+						}
+					}
+					Event::DocumentClosed { id } => {
+						if let Some(buffer_id) = resolver.buffer_id_for(id) {
+							sub_self.note_buffer_closed(buffer_id);
+						}
+					}
+					_ => {}
+				}
+			}
+		});
+		DiffSubscriptionGuard {
+			bus,
+			subscription,
+			drainer,
+		}
 	}
 }
 
@@ -668,5 +1261,469 @@ mod tests {
 
 		assert_eq!(idx2.revision, 2);
 		assert_eq!(session.current_hunks().revision, 2);
+	}
+
+	// ──────────────────────────────────────────────────────────
+	// D.2.c: routing + debounce + bus subscription
+	// ──────────────────────────────────────────────────────────
+
+	use std::sync::atomic::AtomicU64;
+
+	// Mock impl of BufferTextProvider — stores ropes keyed by
+	// BufferId. The test sets ropes; `BufferBaseline` /
+	// `BufferCurrentSource` read them on snapshot.
+	#[derive(Debug, Default)]
+	struct MockProvider {
+		ropes: Mutex<HashMap<BufferId, Rope>>,
+	}
+
+	impl MockProvider {
+		fn set(&self, id: BufferId, rope: Rope) {
+			self.ropes.lock().unwrap().insert(id, rope);
+		}
+	}
+
+	impl BufferTextProvider for MockProvider {
+		fn buffer_rope(&self, id: BufferId) -> Option<Rope> {
+			self.ropes.lock().unwrap().get(&id).cloned()
+		}
+	}
+
+	// Mock impl of DocumentBufferResolver — stores DocumentId →
+	// BufferId pairs the test sets up before publishing events.
+	#[derive(Debug, Default)]
+	struct MockResolver {
+		map: Mutex<HashMap<DocumentId, BufferId>>,
+	}
+
+	impl MockResolver {
+		fn bind(&self, doc_id: DocumentId, buf_id: BufferId) {
+			self.map.lock().unwrap().insert(doc_id, buf_id);
+		}
+	}
+
+	impl DocumentBufferResolver for MockResolver {
+		fn buffer_id_for(&self, document_id: DocumentId) -> Option<BufferId> {
+			self.map.lock().unwrap().get(&document_id).copied()
+		}
+	}
+
+	fn descriptor(
+		provider: &Arc<dyn BufferTextProvider>,
+		baseline_buf: BufferId,
+		current_buf: BufferId,
+	) -> DiffDescriptor {
+		DiffDescriptor {
+			baseline: Arc::new(BufferBaseline::new(
+				Arc::clone(provider),
+				baseline_buf,
+			)),
+			current: Arc::new(BufferCurrentSource::new(
+				Arc::clone(provider),
+				current_buf,
+			)),
+			watch: vec![baseline_buf, current_buf],
+		}
+	}
+
+	// ── Concrete sources ──────────────────────────────────────
+
+	#[test]
+	fn buffer_baseline_snapshots_through_provider() {
+		let provider = Arc::new(MockProvider::default());
+		provider.set(bid(1), Rope::from("hello\n"));
+		let dyn_provider: Arc<dyn BufferTextProvider> = provider.clone();
+		let base = BufferBaseline::new(dyn_provider, bid(1));
+		assert_eq!(base.snapshot().to_string(), "hello\n");
+	}
+
+	#[test]
+	fn buffer_baseline_returns_empty_rope_when_provider_lacks_buffer() {
+		let provider: Arc<dyn BufferTextProvider> = Arc::new(MockProvider::default());
+		let base = BufferBaseline::new(provider, bid(999));
+		assert_eq!(base.snapshot().len_chars(), 0);
+	}
+
+	#[test]
+	fn buffer_current_source_snapshots_through_provider() {
+		let provider = Arc::new(MockProvider::default());
+		provider.set(bid(1), Rope::from("world\n"));
+		let dyn_provider: Arc<dyn BufferTextProvider> = provider.clone();
+		let cur = BufferCurrentSource::new(dyn_provider, bid(1));
+		assert_eq!(cur.snapshot().to_string(), "world\n");
+	}
+
+	// ── Descriptor + watchers ─────────────────────────────────
+
+	#[test]
+	fn register_with_sources_stores_descriptor_and_debouncer() {
+		let provider: Arc<dyn BufferTextProvider> = Arc::new(MockProvider::default());
+		let sub = DiffSubsystem::new();
+		let desc = descriptor(&provider, bid(2), bid(1));
+		let session = sub.register_with_sources(bid(1), DiffAlgorithm::Histogram, desc);
+		assert_eq!(session.buffer_id(), bid(1));
+		assert!(sub.lookup_descriptor(bid(1)).is_some());
+		// Debouncer present (looked up via watchers_of → poke
+		// path; here we just check the routing table directly).
+		assert_eq!(sub.watchers_of(bid(1)), vec![bid(1)]);
+		assert_eq!(sub.watchers_of(bid(2)), vec![bid(1)]);
+	}
+
+	#[test]
+	fn multiple_sessions_share_a_watched_buffer_bucket() {
+		// Sessions A and B both watch buffer X — `watchers_of(X)`
+		// returns both.
+		let provider: Arc<dyn BufferTextProvider> = Arc::new(MockProvider::default());
+		let sub = DiffSubsystem::new();
+		let desc_a = DiffDescriptor {
+			baseline: Arc::new(BufferBaseline::new(Arc::clone(&provider), bid(10))),
+			current: Arc::new(BufferCurrentSource::new(Arc::clone(&provider), bid(1))),
+			watch: vec![bid(10), bid(1)],
+		};
+		let desc_b = DiffDescriptor {
+			baseline: Arc::new(BufferBaseline::new(Arc::clone(&provider), bid(10))),
+			current: Arc::new(BufferCurrentSource::new(Arc::clone(&provider), bid(2))),
+			watch: vec![bid(10), bid(2)],
+		};
+		sub.register_with_sources(bid(1), DiffAlgorithm::Histogram, desc_a);
+		sub.register_with_sources(bid(2), DiffAlgorithm::Histogram, desc_b);
+		let mut watchers = sub.watchers_of(bid(10));
+		watchers.sort();
+		assert_eq!(watchers, vec![bid(1), bid(2)]);
+	}
+
+	#[test]
+	fn drop_session_clears_descriptor_and_watcher_buckets() {
+		let provider: Arc<dyn BufferTextProvider> = Arc::new(MockProvider::default());
+		let sub = DiffSubsystem::new();
+		let desc = descriptor(&provider, bid(2), bid(1));
+		sub.register_with_sources(bid(1), DiffAlgorithm::Histogram, desc);
+		assert!(sub.lookup_descriptor(bid(1)).is_some());
+		assert_eq!(sub.watchers_of(bid(2)), vec![bid(1)]);
+
+		assert!(sub.drop_session(bid(1)));
+		assert!(sub.lookup_descriptor(bid(1)).is_none());
+		assert!(sub.watchers_of(bid(2)).is_empty());
+		assert!(sub.watchers_of(bid(1)).is_empty());
+	}
+
+	#[test]
+	fn drop_session_only_scrubs_dropped_sessions_watchers() {
+		// Session A watches X; session B also watches X. Drop A
+		// → bucket only loses A, B remains.
+		let provider: Arc<dyn BufferTextProvider> = Arc::new(MockProvider::default());
+		let sub = DiffSubsystem::new();
+		let desc_a = DiffDescriptor {
+			baseline: Arc::new(BufferBaseline::new(Arc::clone(&provider), bid(10))),
+			current: Arc::new(BufferCurrentSource::new(Arc::clone(&provider), bid(1))),
+			watch: vec![bid(10), bid(1)],
+		};
+		let desc_b = DiffDescriptor {
+			baseline: Arc::new(BufferBaseline::new(Arc::clone(&provider), bid(10))),
+			current: Arc::new(BufferCurrentSource::new(Arc::clone(&provider), bid(2))),
+			watch: vec![bid(10), bid(2)],
+		};
+		sub.register_with_sources(bid(1), DiffAlgorithm::Histogram, desc_a);
+		sub.register_with_sources(bid(2), DiffAlgorithm::Histogram, desc_b);
+
+		sub.drop_session(bid(1));
+		assert_eq!(sub.watchers_of(bid(10)), vec![bid(2)]);
+	}
+
+	#[test]
+	fn reregister_with_smaller_watch_scrubs_stale_entries() {
+		// Initial watch [10, 1]; re-register with [1] only → 10
+		// loses its entry for this session.
+		let provider: Arc<dyn BufferTextProvider> = Arc::new(MockProvider::default());
+		let sub = DiffSubsystem::new();
+		let desc_a = DiffDescriptor {
+			baseline: Arc::new(StaticBaseline::new(Rope::from(""))),
+			current: Arc::new(BufferCurrentSource::new(Arc::clone(&provider), bid(1))),
+			watch: vec![bid(10), bid(1)],
+		};
+		sub.register_with_sources(bid(1), DiffAlgorithm::Histogram, desc_a);
+		assert_eq!(sub.watchers_of(bid(10)), vec![bid(1)]);
+
+		let desc_b = DiffDescriptor {
+			baseline: Arc::new(StaticBaseline::new(Rope::from(""))),
+			current: Arc::new(BufferCurrentSource::new(Arc::clone(&provider), bid(1))),
+			watch: vec![bid(1)],
+		};
+		sub.register_with_sources(bid(1), DiffAlgorithm::Histogram, desc_b);
+		assert!(sub.watchers_of(bid(10)).is_empty());
+		assert_eq!(sub.watchers_of(bid(1)), vec![bid(1)]);
+	}
+
+	// ── Debouncer ─────────────────────────────────────────────
+
+	// Helper: under paused time, sleeping in the main task lets
+	// the runtime auto-advance — when all tasks are idle, time
+	// jumps to the next earliest deadline. So `sleep(60ms)`
+	// here drives the debouncer's `sleep(50ms)` to completion
+	// without wall-clock waits. The yield_now+advance pattern
+	// used elsewhere is unreliable because a yield-spinning main
+	// task isn't "idle" for auto-advance purposes.
+
+	#[tokio::test(start_paused = true)]
+	async fn debouncer_single_poke_fires_runner_after_window() {
+		let counter = Arc::new(AtomicU64::new(0));
+		let window = Duration::from_millis(50);
+		let deb = Debouncer::new(window);
+		let c = Arc::clone(&counter);
+		deb.poke(move || {
+			c.fetch_add(1, Ordering::Relaxed);
+		});
+
+		// Sleep just shy of the window: debouncer task is
+		// still mid-sleep, not yet fired.
+		tokio::time::sleep(Duration::from_millis(40)).await;
+		assert_eq!(counter.load(Ordering::Relaxed), 0);
+
+		// Sleep past the window: debouncer's sleep completes,
+		// runner fires once.
+		tokio::time::sleep(Duration::from_millis(20)).await;
+		assert_eq!(counter.load(Ordering::Relaxed), 1);
+	}
+
+	#[tokio::test(start_paused = true)]
+	async fn debouncer_rapid_pokes_coalesce_to_one_runner_invocation() {
+		let counter = Arc::new(AtomicU64::new(0));
+		let window = Duration::from_millis(50);
+		let deb = Debouncer::new(window);
+		let c = Arc::clone(&counter);
+		let runner = move || {
+			c.fetch_add(1, Ordering::Relaxed);
+		};
+
+		// Five pokes spaced 10ms apart — each one within the
+		// debounce window of the previous. Total elapsed = 50ms.
+		for _ in 0..5 {
+			let r = runner.clone();
+			deb.poke(r);
+			tokio::time::sleep(Duration::from_millis(10)).await;
+		}
+		// Sleep past the window from the last poke (elapsed
+		// ~50ms when last poke fired; debouncer task started a
+		// new 50ms sleep at t=50 → wakes at t=100). Sleep 80ms
+		// to land safely past it.
+		tokio::time::sleep(Duration::from_millis(80)).await;
+		assert_eq!(counter.load(Ordering::Relaxed), 1);
+	}
+
+	#[tokio::test(start_paused = true)]
+	async fn debouncer_pokes_after_idle_fire_runner_twice() {
+		let counter = Arc::new(AtomicU64::new(0));
+		let window = Duration::from_millis(50);
+		let deb = Debouncer::new(window);
+		let c = Arc::clone(&counter);
+		let runner = move || {
+			c.fetch_add(1, Ordering::Relaxed);
+		};
+
+		// First poke → fires after window.
+		deb.poke(runner.clone());
+		tokio::time::sleep(Duration::from_millis(80)).await;
+		assert_eq!(counter.load(Ordering::Relaxed), 1);
+
+		// Idle gap, then second poke → fires again.
+		tokio::time::sleep(Duration::from_millis(500)).await;
+		deb.poke(runner);
+		tokio::time::sleep(Duration::from_millis(80)).await;
+		assert_eq!(counter.load(Ordering::Relaxed), 2);
+	}
+
+	// ── Routing integration ───────────────────────────────────
+
+	// Routing / bus tests run with REAL tokio time: the
+	// debounce → schedule_recompute path eventually calls
+	// `tokio::task::spawn_blocking`, which runs on the blocking
+	// thread pool (separate OS threads). The blocking pool
+	// doesn't observe paused time, so wall-clock progress is
+	// required to see published results. Debounce windows kept
+	// to ~10ms so tests stay fast.
+
+	async fn wait_for_revision_above(
+		session: &Arc<DiffSession>,
+		threshold: u64,
+		deadline: Duration,
+	) -> u64 {
+		let start = std::time::Instant::now();
+		loop {
+			let rev = session.current_hunks().revision;
+			if rev > threshold {
+				return rev;
+			}
+			if start.elapsed() >= deadline {
+				return rev;
+			}
+			tokio::time::sleep(Duration::from_millis(5)).await;
+		}
+	}
+
+	#[tokio::test]
+	async fn note_buffer_edited_triggers_debounced_recompute() {
+		let provider = Arc::new(MockProvider::default());
+		provider.set(bid(2), Rope::from("alpha\n"));
+		provider.set(bid(1), Rope::from("alpha\nbeta\n"));
+		let dyn_provider: Arc<dyn BufferTextProvider> = provider.clone();
+
+		let sub = Arc::new(DiffSubsystem::with_debounce_window(Duration::from_millis(10)));
+		let desc = descriptor(&dyn_provider, bid(2), bid(1));
+		let session =
+			sub.register_with_sources(bid(1), DiffAlgorithm::Histogram, desc);
+
+		// Edit the buffer (simulated by changing the provider's
+		// rope) then fire the routing entry point.
+		provider.set(bid(1), Rope::from("alpha\nBETA\n"));
+		Arc::clone(&sub).note_buffer_edited(bid(1));
+
+		let rev = wait_for_revision_above(&session, 0, Duration::from_secs(2)).await;
+		assert!(rev > 0, "session should have recomputed");
+		let idx = session.current_hunks();
+		assert_eq!(idx.len(), 1, "one hunk for the Change");
+	}
+
+	#[tokio::test]
+	async fn note_buffer_edited_with_no_session_is_noop() {
+		// No session registered for bid(99); call must not
+		// panic, must not spawn anything.
+		let sub = Arc::new(DiffSubsystem::new());
+		Arc::clone(&sub).note_buffer_edited(bid(99));
+		tokio::time::sleep(Duration::from_millis(20)).await;
+	}
+
+	#[tokio::test]
+	async fn editing_watched_baseline_wakes_session() {
+		// Session X watches its own buffer (bid 1) AND a
+		// sibling buffer (bid 2 — the baseline). Editing the
+		// baseline must wake X.
+		let provider = Arc::new(MockProvider::default());
+		provider.set(bid(2), Rope::from("alpha\n"));
+		provider.set(bid(1), Rope::from("alpha\n"));
+		let dyn_provider: Arc<dyn BufferTextProvider> = provider.clone();
+
+		let sub = Arc::new(DiffSubsystem::with_debounce_window(Duration::from_millis(10)));
+		let desc = descriptor(&dyn_provider, bid(2), bid(1));
+		let session = sub.register_with_sources(bid(1), DiffAlgorithm::Histogram, desc);
+
+		// Initially identical — recompute produces empty hunks.
+		Arc::clone(&sub).note_buffer_edited(bid(1));
+		let rev1 = wait_for_revision_above(&session, 0, Duration::from_secs(2)).await;
+		assert!(rev1 > 0);
+		assert!(session.current_hunks().is_empty());
+
+		// Now edit the *baseline* buffer (bid 2). Session should
+		// recompute and see hunks.
+		provider.set(bid(2), Rope::from("alpha\nBETA\n"));
+		Arc::clone(&sub).note_buffer_edited(bid(2));
+		let rev2 = wait_for_revision_above(&session, rev1, Duration::from_secs(2)).await;
+		assert!(rev2 > rev1);
+		assert_eq!(session.current_hunks().len(), 1);
+	}
+
+	#[tokio::test]
+	async fn note_buffer_closed_drops_session() {
+		let provider: Arc<dyn BufferTextProvider> = Arc::new(MockProvider::default());
+		let sub = Arc::new(DiffSubsystem::with_debounce_window(Duration::from_millis(10)));
+		let desc = descriptor(&provider, bid(2), bid(1));
+		sub.register_with_sources(bid(1), DiffAlgorithm::Histogram, desc);
+		assert!(sub.lookup(bid(1)).is_some());
+
+		sub.note_buffer_closed(bid(1));
+		assert!(sub.lookup(bid(1)).is_none());
+		assert!(sub.lookup_descriptor(bid(1)).is_none());
+	}
+
+	// ── Bus binding ───────────────────────────────────────────
+
+	fn doc_id(n: u64) -> DocumentId {
+		DocumentId::new(n)
+	}
+
+	#[tokio::test]
+	async fn bind_routes_document_changed_to_debounced_recompute() {
+		let provider = Arc::new(MockProvider::default());
+		provider.set(bid(2), Rope::from("alpha\n"));
+		provider.set(bid(1), Rope::from("alpha\nbeta\n"));
+		let dyn_provider: Arc<dyn BufferTextProvider> = provider.clone();
+
+		let sub = Arc::new(DiffSubsystem::with_debounce_window(Duration::from_millis(10)));
+		let desc = descriptor(&dyn_provider, bid(2), bid(1));
+		let session = sub.register_with_sources(bid(1), DiffAlgorithm::Histogram, desc);
+
+		let bus = Arc::new(EventBus::new());
+		let resolver = Arc::new(MockResolver::default());
+		resolver.bind(doc_id(1001), bid(1));
+		let resolver_dyn: Arc<dyn DocumentBufferResolver> = resolver;
+
+		let _guard = sub.bind(Arc::clone(&bus), resolver_dyn);
+
+		// Yield once to let the drainer task park on rx.recv().
+		tokio::task::yield_now().await;
+
+		// Publish a DocumentChanged for the bound DocumentId.
+		bus.publish(Event::DocumentChanged {
+			id: doc_id(1001),
+			path: None,
+			version: 2,
+			edits: Vec::new(),
+		});
+
+		let rev = wait_for_revision_above(&session, 0, Duration::from_secs(2)).await;
+		assert!(rev > 0, "session should have recomputed after bus event");
+	}
+
+	#[tokio::test]
+	async fn bind_routes_document_closed_to_drop_session() {
+		let provider: Arc<dyn BufferTextProvider> = Arc::new(MockProvider::default());
+		let sub = Arc::new(DiffSubsystem::with_debounce_window(Duration::from_millis(10)));
+		let desc = descriptor(&provider, bid(2), bid(1));
+		sub.register_with_sources(bid(1), DiffAlgorithm::Histogram, desc);
+		assert!(sub.lookup(bid(1)).is_some());
+
+		let bus = Arc::new(EventBus::new());
+		let resolver = Arc::new(MockResolver::default());
+		resolver.bind(doc_id(1001), bid(1));
+		let resolver_dyn: Arc<dyn DocumentBufferResolver> = resolver;
+		let _guard = sub.bind(Arc::clone(&bus), resolver_dyn);
+
+		tokio::task::yield_now().await;
+
+		bus.publish(Event::DocumentClosed { id: doc_id(1001) });
+
+		// Wait for drainer to process the event.
+		let deadline = std::time::Instant::now() + Duration::from_secs(2);
+		while sub.lookup(bid(1)).is_some() && std::time::Instant::now() < deadline {
+			tokio::time::sleep(Duration::from_millis(5)).await;
+		}
+		assert!(sub.lookup(bid(1)).is_none());
+	}
+
+	#[tokio::test]
+	async fn dropping_guard_unsubscribes_bus_and_aborts_drainer() {
+		let provider: Arc<dyn BufferTextProvider> = Arc::new(MockProvider::default());
+		let sub = Arc::new(DiffSubsystem::with_debounce_window(Duration::from_millis(10)));
+		let desc = descriptor(&provider, bid(2), bid(1));
+		sub.register_with_sources(bid(1), DiffAlgorithm::Histogram, desc);
+
+		let bus = Arc::new(EventBus::new());
+		let resolver = Arc::new(MockResolver::default());
+		resolver.bind(doc_id(1001), bid(1));
+		let resolver_dyn: Arc<dyn DocumentBufferResolver> = resolver;
+		let guard = sub.bind(Arc::clone(&bus), resolver_dyn);
+
+		tokio::task::yield_now().await;
+
+		// Drop the guard — bus subscription should be cleaned.
+		drop(guard);
+		tokio::task::yield_now().await;
+
+		// Publish — the drainer is gone, so the session does
+		// NOT receive the event.
+		bus.publish(Event::DocumentClosed { id: doc_id(1001) });
+		tokio::time::sleep(Duration::from_millis(100)).await;
+		// Session should still be present — the guard's drop
+		// prevented the drainer from acting on the event.
+		assert!(sub.lookup(bid(1)).is_some());
 	}
 }

@@ -209,47 +209,217 @@ came from a `DiffMap` or directly from the document.
 
 A `DiffSubsystem` lives next to `LspSupervisor` and the
 existing terminal supervisor on `lattice-host`
-(`lattice-host::diff_subsystem`, landed D.2.a 2026-05-28). It
-owns:
+(`lattice-host::diff_subsystem`, landed D.2.a 2026-05-28).
+What follows is the model the subsystem implements end-to-end
+across D.2.a (registry) → D.2.b (compute) → D.2.c (routing +
+debounce). Each piece names the slice that landed it so the
+prose stays load-bearing without going stale.
 
-- The `HashMap<BufferId, Arc<DiffSession>>`. (Drafts of this
-  fragment called for an opaque `DiffSessionId`; D.2.a
-  collapsed to `BufferId` keying once the consumer surface was
-  clear — one session per diffed buffer holds for inline
-  overlay, side-by-side (each pane = own buffer), and three-way
-  (three buffers, three sessions). An opaque id was speculative
-  pre-implementation. If a later slice — e.g. ephemeral diff
-  previews unattached to any registered buffer — needs
-  buffer-detached lifetimes, we re-introduce the opaque id then.)
-- Subscriptions to document edit events for every
-  participating buffer (one mpsc receiver per session, fed by
-  the existing event bus §5.10). Lands D.2.c.
-- A tokio task pool for recomputation. Each session's
-  recompute is one `spawn_blocking` (diff is CPU-bound) —
-  landed D.2.b via `DiffSubsystem::schedule_recompute(buffer_id,
-  Arc<dyn BaselineSource>, Rope)` returning a
-  `JoinHandle<Option<Arc<HunkIndex>>>`. Supersede policy: no
-  abort — overlapping recomputes both run, and the gated publish
-  (`try_publish_if_newer` — strict greater-than on revision)
-  drops the stale result. Debouncing lands D.2.c.
-- Drop-cleanup: `drop_session(buffer_id)` removes the registry
-  entry but in-flight `Arc<DiffSession>` holders stay coherent
-  (RCU semantics). This satisfies the Claude `openDiff` flow:
-  the diff outlives any one view because consumers hold their
-  own `Arc` — the registry's job is naming, not lifetime
-  enforcement.
+#### 3.4.1 Data model — sessions, descriptors, watchers
 
-The subsystem exposes a small synchronous API to the host: open
-a session, query hunks, request recompute, apply a hunk
-(`do` / `dp`), close. Ex-commands (`:diff`, `:diffthis`,
-`:diff-accept`, `:diff-reject`, `:Gdiff`) and the future WIT
-plugin surface for Claude Code IDE integration are all
-consumers of this API.
+A diff session is a derivation: published `HunkIndex` =
+`compute_two_way(baseline_rope, current_rope)`. The session
+itself is the publish channel (D.2.a / D.2.b — `Arc<DiffSession>`
+in a `BufferId`-keyed registry, `ArcSwap<HunkIndex>` for RCU
+reads, monotonic revision counter, gated publish). The
+**sources** that feed the derivation are decoupled from the
+session and stored alongside it in a **descriptor** (D.2.c):
+
+```rust
+pub trait BaselineSource:    Send + Sync + 'static + Debug { fn snapshot(&self) -> Rope; }
+pub trait CurrentSource:     Send + Sync + 'static + Debug { fn snapshot(&self) -> Rope; }
+pub trait BufferTextProvider: Send + Sync + 'static + Debug {
+    fn buffer_rope(&self, id: BufferId) -> Option<Rope>;
+}
+
+pub struct DiffDescriptor {
+    pub baseline: Arc<dyn BaselineSource>,
+    pub current:  Arc<dyn CurrentSource>,
+    /// Buffers whose edits should trigger a recompute of this
+    /// session. The descriptor's author declares this
+    /// explicitly because only the author knows which sources
+    /// read from live buffers (StaticBaseline contributes no
+    /// watch entry; BufferBaseline contributes its `buffer_id`).
+    pub watch: Vec<BufferId>,
+}
+```
+
+The author of the descriptor knows what they wrote — sources
+are *not* expected to self-introspect their dependencies.
+Static, file-on-disk, and git-blob sources have empty watch
+contributions; buffer-backed sources contribute their
+`BufferId`. The watch list is the **explicit dependency
+declaration**.
+
+Concrete sources land progressively:
+- `StaticBaseline { rope }` — D.2.b. AI proposed-edits, static
+  comparisons, tests.
+- `BufferBaseline { provider, buffer_id }` — D.2.c. Live rope
+  read from a sibling buffer. Handles the unsaved-buffer-vs-
+  unsaved-buffer case directly: both sides resolve through
+  `BufferTextProvider` at snapshot time; neither needs a
+  filesystem path.
+- `BufferCurrentSource { provider, buffer_id }` — D.2.c. The
+  live-rope side for any session backed by a real buffer.
+- `GitBaseline { path, repo }` — D.7. Reads `HEAD:path` via
+  `gix`. Contributes no watch entry (HEAD doesn't change mid-
+  session unless we add a refs watcher, which we don't in v1).
+- `OnDiskBaseline { path }` — re-reads file at snapshot. Rare
+  (for explicit `:diff` against current on-disk state).
+
+**`BufferTextProvider` is the single host seam** the subsystem
+needs into buffer storage. The host supplies one impl over
+`BufferRegistry`; future ephemeral-buffer providers (e.g.,
+plugin-owned virtual buffers) plug into the same trait.
+
+#### 3.4.2 Dependency graph — a buffer can wake many sessions
+
+A buffer can be `current` for one session and `baseline` for
+another *at the same time*. Concrete example: two scratch
+buffers X and Y opened with `:diffsplit`, neither on disk.
+
+- **Session(X)**: current = live X, baseline = live Y, watch = [X, Y]
+- **Session(Y)**: current = live Y, baseline = live X, watch = [Y, X]
+
+When the user types in X, both sessions must recompute (X's
+current changed for Session(X); X's baseline changed for
+Session(Y)). The subsystem fans the edit-event on X out to
+both. Project-wide diff and AI multi-file `openDiff`
+generalise this: one multibuffer session whose watch list is
+the N source buffers (M.2 + D.3 compose); an edit to any one
+of them wakes only that one session and recomputes only the
+affected excerpt.
+
+#### 3.4.3 Routing — centralized inverse index, lazy debouncers
+
+The subsystem keeps three maps:
+
+```rust
+sessions:    Mutex<HashMap<BufferId, Arc<DiffSession>>>,        // identity + publish
+descriptors: Mutex<HashMap<BufferId, DiffDescriptor>>,          // what to diff against what
+watchers:    Mutex<HashMap<BufferId, Vec<BufferId>>>,           // INVERSE: watched buffer → sessions
+debouncers:  Mutex<HashMap<BufferId, Arc<Debouncer>>>,          // per-session debounce state
+```
+
+The `watchers` map is the inverse index over descriptors —
+"which session keys depend on edits to buffer X?" Rebuilt on
+register / drop. This is the routing structure: when a
+`DocumentChanged` event lands for buffer X, one `HashMap`
+lookup returns the (small) set of sessions to wake.
+
+**Bus subscription is centralized**: one `EventBus` subscription
+on the subsystem, one drainer task. The drainer translates
+`DocumentId` → `BufferId` via a `DocumentBufferResolver` trait
+(host supplies the impl over `BufferRegistry`), looks up
+dependents in `watchers`, and pokes each session's
+`Debouncer`. `DocumentClosed` similarly drives `drop_session`.
+
+**`Debouncer` is lazy** — no task at rest. On first `poke()`,
+it bumps an epoch counter and spawns a tokio task that sleeps
+the debounce window, re-reads the epoch, and either
+reschedules (if more pokes arrived) or fires the recompute
+callback and self-terminates. A dormant session costs three
+HashMap entries; an actively-edited session costs one tokio
+task that lives only as long as the edit burst.
+
+#### 3.4.4 Why centralized routing — scaling discussion
+
+The first instinct (recorded here so future-us doesn't try it
+again) was a **per-session actor** — each session spawns a
+tokio task that subscribes directly to its watched buffers'
+edit events, debounces locally, computes. This is what Zed
+does for `BufferDiff`, and it composes beautifully when N is
+small or when each "actor" has independent state worth
+running. For diff sessions, two things break that down:
+
+| Sessions (N) | Per-session-actor cost / edit  | Centralized-routing cost / edit |
+|--------------|--------------------------------|---------------------------------|
+| **10**       | 10 receivers cloned + woken    | 1 lookup, fan to dependents     |
+| **100**      | 100× clone, 99 discard         | 1 lookup, fan to dependents     |
+| **1000**     | 1000× clone per keystroke      | 1 lookup, fan to dependents     |
+
+Per-session-actor cost grows with **total session count**,
+not actual dependents — because the global event bus delivers
+to every subscriber and the subscriber decides whether to
+care. At N=1000 (a large multi-file `openDiff`) the
+per-keystroke clone-and-fan-out becomes a real cost.
+Centralized routing scales with **actual dependents**, which
+is typically 1–2 even at high N because edits are sparse over
+the watched set.
+
+Zed avoids this by making each `Buffer` its own publisher
+(per-entity subscription, not a global bus). Lattice's bus is
+global per-kind, so the equivalent structural decision is to
+**centralize the routing inside the subsystem that owns the
+sessions**. The cleanliness Zed gets from per-entity
+subscription Lattice gets from a single subscription + a
+typed inverse index inside the subsystem.
+
+Helix takes the third path — `Document::apply_changes` calls
+directly into `DiffHandle`. Tight coupling, but Helix doesn't
+have project-wide or multi-file diff at the substrate level,
+and its diff has only one consumer of edit events. We
+considered it (D.2.c would have been a `note_buffer_edited`
+call from `dispatch.rs::publish_document_changed`) and
+rejected it because the bus subscription preserves
+decoupling without the per-session-actor scaling penalty.
+
+The choice tracks paramount goals: **#1 performance**
+(O(1+dependents) per edit), **#4 asynchronicity** (one
+drainer task + lazy debouncer tasks; no App orchestration),
+**#2 extensibility** (new source types / consumer types
+compose without touching routing).
+
+#### 3.4.5 `SessionKey` — `BufferId` for v1, extension path noted
+
+D.2.a's drafts called for an opaque `DiffSessionId`; D.2.a
+collapsed to `BufferId` once the consumer surface was clear —
+one session per diffed buffer holds for inline overlay,
+side-by-side (each pane = own buffer), three-way (three
+buffers, three sessions), and multibuffer (one session keyed
+by the multibuffer document's own buffer id). If a later
+slice needs ephemeral diff previews unattached to any
+registered buffer — or multiple sessions per buffer — we
+re-introduce the opaque id then; the routing structures all
+key on a `SessionKey` type alias that's currently `= BufferId`
+and would swap to an opaque newtype without touching the
+inverse index.
+
+#### 3.4.6 Drop, supersede, RCU semantics
+
+- `drop_session(buffer_id)` clears the entry from all four
+  maps and aborts the in-flight debouncer task if any.
+  Removes the session's watcher entries from each watched
+  buffer's bucket. In-flight `Arc<DiffSession>` holders stay
+  coherent (RCU); the registry's job is naming, not lifetime
+  enforcement. This satisfies the Claude `openDiff` flow: the
+  diff outlives any one view because consumers hold their own
+  `Arc` clone.
+- Supersede policy on overlapping recomputes (D.2.b): no
+  abort — both runs complete; the gated publish
+  (`try_publish_if_newer`, strict greater-than on revision)
+  drops the stale result. The debouncer eliminates most
+  redundant spawns *before* the blocking pool sees them.
+- Bus subscription lifecycle (D.2.c): `bind(bus, resolver)`
+  returns a `DiffSubscriptionGuard`. The guard's `Drop`
+  unsubscribes the bus subscription and aborts the drainer
+  task. Hosts hold the guard for the editor's lifetime;
+  tests drop it to verify cleanup.
+
+The subsystem exposes a small synchronous API to the host:
+register a session with sources, query hunks, request
+recompute, apply a hunk (`do` / `dp`), close. Ex-commands
+(`:diff`, `:diffthis`, `:diff-accept`, `:diff-reject`,
+`:Gdiff`) and the future WIT plugin surface for Claude Code
+IDE integration are all consumers of this API.
 
 Per saved feedback *"Modes own their buffers, App is a host"*
 the subsystem follows the same pattern: storage on the
 subsystem, behavior on the subsystem's API. App does not gain
-`ensure_diff_session_for` or `drain_diff_events` shims.
+`ensure_diff_session_for` or `drain_diff_events` shims. The
+inverse index lives on the subsystem, not on App; the bus
+subscription is owned by the subsystem; nothing about the
+routing leaks into dispatch.
 
 ## 4. The engine
 
@@ -503,7 +673,7 @@ panic on the hot path, never swallow silently).
 |---------|-------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | **D.0** | Foundational primitives                   | (a) Displacing virtual-row primitive on the cell-grid renderer: `VirtualRow` type, row-translation cache, renderer iteration interleaving virtual + document rows, motion / scroll / cursor honour the interleaving. (b) Scroll-binding pane-group primitive: `PaneGroup` with pluggable row-mapping function; default mapping = identity. Tests: virtual-row insert / remove / re-anchor on document edit; cursor lands correctly when typing past a virtual row; scroll-bind round-trip with identity mapping preserves cursor position. Benches: `virtual_row_layout_p99_us` at 1k virtual rows; `scroll_bind_dispatch_p99_us` at 100 paired panes. No diff-specific consumer yet — the primitives stand alone. |
 | **D.1** | `lattice-diff` crate                      | Pure crate. `Hunk` / `HunkIndex` types; `compute_two_way(a, b)` / `compute_three_way(base, a, b) -> HunkIndex` via `imara-diff`. Algorithm enum + per-call selector. Property tests: round-trip via patch apply for randomly-generated rope pairs; conflict detection on three-way matches git's behaviour on a set of known cases. Bench: `diff_recompute_p99_us` at v1 P95 file (5k × 80 cols); stress at 50k × 200. No host integration yet.                                                                                                                                                                                                                                                                    |
-| **D.2** | `DiffSubsystem` + `DiffSession` lifecycle | New subsystem on `lattice-host`. `DiffSession` open / close / debounced recompute / RCU publish via `ArcSwap`. Subscriptions to document edit events through the existing event bus (§5.10). `:describe-diff` ex-command lists active sessions. No rendering yet — assert observable behaviour by reading `HunkIndex` after mutations. Tests: open session, edit doc, observe new revision; close session releases subscriptions; document-close auto-closes session per §8 decision; subsystem survives a panicking recompute task (one session degraded, others unaffected).                                                                                                                                     |
+| **D.2** | `DiffSubsystem` + `DiffSession` lifecycle | New subsystem on `lattice-host`. `DiffSession` open / close / debounced recompute / RCU publish via `ArcSwap`. Subscriptions to document edit events through the existing event bus (§5.10). `:describe-diff` ex-command lists active sessions. No rendering yet — assert observable behaviour by reading `HunkIndex` after mutations. Tests: open session, edit doc, observe new revision; close session releases subscriptions; document-close auto-closes session per §8 decision; subsystem survives a panicking recompute task (one session degraded, others unaffected). **Carved during build:** D.2.a (registry skeleton, ✅), D.2.b (`spawn_blocking` compute + revision-gated publish, ✅), D.2.c (routing + lazy debouncer + bus subscription per §3.4, in progress), D.2.d (`:describe-diff`), D.2.e (bench wiring). See `docs/dev/operations/implementation.md` for slice-by-slice status. |
 | **D.3** | Inline overlay presentation               | First consumer of D.0's virtual-row primitive. `DiffMap` in `PresentationMode::Inline` for the single-doc-vs-baseline case (file vs. disk content as baseline — easiest baseline to source). Hunk decorations: gutter signs (sprite, reuses §5.6.7 atlas), line-background tints (`DiffAdd` / `DiffChange` / `DiffRemove` theme entries), virtual-row deletion blocks. `]c` / `[c` motions registered. End-to-end test: open a file, edit it, observe gutter signs and inline deletion blocks; `]c` jumps between hunks. Bench: `diff_render_p99_us` at 100 visible hunks.                                                                                                                                         |
 | **D.4** | Side-by-side two-way presentation         | Second consumer of D.0 (scroll-bind primitive). `:diff <buf>`, `:diffthis`, `:diffsplit <file>`, `:diffoff` ex-commands. `PresentationMode::SideBySide` for two panes; pane-group scroll-binding consults `HunkIndex` for hunk-correspondent row mapping. Filler virtual rows on both sides to align parallel hunks. `[c` / `]c` motions work uniformly. Tests: two files diffed render correctly; scroll one pane, other follows; filler rows align hunks; `:diffoff` cleanly drops state on both panes.                                                                                                                                                                                                          |
 | **D.5** | Hunk transfer operators (`do` / `dp`)     | Operators registered through `CommandRegistry`. Translate to `ApplyEdit` against the receiving document; edit fires recompute through the standard pipeline. Tests: `dp` on a Change hunk replaces the other document's range; undo composes correctly; macros record and replay correctly; recompute fires once after the edit settles.                                                                                                                                                                                                                                                                                                                                                                           |

@@ -21854,6 +21854,25 @@ impl Editor {
                 return true;
             }
             let _ = visual; // borrow released; yank arm re-reads
+            // 2026-05-28: any other operator / text-object in
+            // Visual on a terminal pane routes through
+            // `dispatch_synthetic_operator`, which runs the
+            // central grammar against the SyntheticDoc rope and
+            // applies non-mutating effects (Yank → register) or
+            // rejects mutating effects with "buffer is read-
+            // only". This is the seam that lets newly-registered
+            // operators (e.g. surround) work on terminal-Visual
+            // with zero per-buffer-kind changes.
+            let op_kind = self.registry.lookup(cmd).map(|s| s.kind);
+            if matches!(
+                op_kind,
+                Some(lattice_grammar::CommandKind::Operator)
+                    | Some(lattice_grammar::CommandKind::TextObject),
+            ) && cmd != self.builtins.yank.0
+            {
+                self.dispatch_synthetic_operator(inv);
+                return true;
+            }
             if cmd == self.builtins.yank.0 {
                 // 2026-05-28: Visual yank now extracts from the
                 // SyntheticDoc rope via the doc-space

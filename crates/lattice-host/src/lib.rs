@@ -61,6 +61,12 @@ pub mod cells_worker;
 // recompute scheduling land D.2.b. See
 // `docs/dev/architecture/diff-system.md` §6.
 pub mod diff_subsystem;
+// D.0a.1 (2026-05-29): virtual-rows worker. Sibling of
+// `cells_worker`; owns the `VirtualRowMatrix` rebuild path,
+// polls registered `VirtualRowProvider`s on wake, publishes
+// via `Editor::virtual_rows_matrix_cell`. See
+// `docs/dev/architecture/virtual-rows.md`.
+pub mod virtual_rows_worker;
 pub mod host_generators;
 pub mod input;
 pub mod keymap;

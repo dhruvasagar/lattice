@@ -260,6 +260,27 @@ impl std::fmt::Debug for HighlightWake {
 #[derive(Clone)]
 pub struct CellsWake(pub Arc<tokio::sync::Notify>);
 
+/// D.0a.1 (2026-05-29): wake signal for the
+/// `virtual_rows_worker`. Sibling of `CellsWake`. Fired by
+/// `publish_render_state` and by provider-state changes (e.g.,
+/// `DiffSubsystem` after publishing new hunks). The worker
+/// awaits via `notified()` and rebuilds the `VirtualRowMatrix`
+/// off the UI thread.
+#[derive(Clone)]
+pub struct VirtualRowsWake(pub Arc<tokio::sync::Notify>);
+
+impl Default for VirtualRowsWake {
+    fn default() -> Self {
+        Self(Arc::new(tokio::sync::Notify::new()))
+    }
+}
+
+impl std::fmt::Debug for VirtualRowsWake {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VirtualRowsWake").finish_non_exhaustive()
+    }
+}
+
 impl Default for CellsWake {
     fn default() -> Self {
         Self(Arc::new(tokio::sync::Notify::new()))
@@ -1031,6 +1052,31 @@ pub struct Editor {
     /// `diff_subsystem.build_describe_diff_content()` directly.
     /// See `docs/dev/architecture/diff-system.md` §3.4.
     pub diff_subsystem: std::sync::Arc<crate::diff_subsystem::DiffSubsystem>,
+    /// D.0a.1 (2026-05-29): virtual-rows worker output cell.
+    /// Same stability pattern as `cells_matrix_cell`: the Arc
+    /// identity lives on `Editor` so `build_render_state`
+    /// clones it into every snapshot; the
+    /// `virtual_rows_worker` holds a sibling clone and writes
+    /// directly via `cell.store(new_matrix)`. Empty
+    /// `VirtualRowMatrix` until the first provider registers
+    /// and the worker rebuilds.
+    pub virtual_rows_matrix_cell:
+        std::sync::Arc<arc_swap::ArcSwap<lattice_cells::VirtualRowMatrix>>,
+    /// D.0a.1 (2026-05-29): wake signal for the virtual-rows
+    /// worker. `publish_render_state` fires `notify_one()`
+    /// after every dispatch tick (permit-style coalescing
+    /// mirrors `cells_wake`). Provider state changes fire the
+    /// same signal directly to wake the worker between
+    /// dispatch ticks.
+    pub virtual_rows_wake: VirtualRowsWake,
+    /// D.0a.1 (2026-05-29): the provider registry the
+    /// virtual-rows worker iterates on every wake. Consumers
+    /// (D.3 inline diff deletion-block provider, M.2
+    /// multibuffer excerpt-header provider) register their
+    /// providers here at slice-mount time and unregister at
+    /// teardown.
+    pub virtual_row_providers:
+        std::sync::Arc<crate::virtual_rows_worker::VirtualRowProviderRegistry>,
     /// S2.1 (2026-05-26): wake signal for the cell-builder worker.
     /// `publish_render_state` fires `notify_one()` after every
     /// dispatch tick. The worker `notified().await`s; permit-style

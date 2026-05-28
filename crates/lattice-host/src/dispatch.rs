@@ -1112,6 +1112,13 @@ impl Editor {
         // effectively a permit that the first spawned worker
         // consumes immediately on startup.
         self.cells_wake.0.notify_one();
+        // D.0a.1 (2026-05-29): wake the virtual-rows worker.
+        // Same permit-style coalescing as the cells wake. The
+        // worker re-evaluates its providers on each wake; when
+        // no providers are registered the recompute resolves
+        // to `Recomputed` once then `CacheHit` thereafter, so
+        // dispatch-tick wakes are cheap.
+        self.virtual_rows_wake.0.notify_one();
     }
 
     // ----------------------------------------------------------------

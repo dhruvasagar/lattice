@@ -1270,11 +1270,47 @@ shared with multibuffer-views and post-v1 inlay hints.
   consumer. Design fragment landed:
   [`../architecture/virtual-rows.md`](../architecture/virtual-rows.md);
   synopsis at design.md §5.15.
-- 🗒 **D.0a.1** — `virtual_rows_worker` on `lattice-host`.
-  Sibling tokio task to `cells_worker`; reads registered
-  providers, builds `VirtualRowMatrix`, publishes via
-  `ArcSwap`. Lands before D.3 (first production consumer) or
-  M.2 (multibuffer rendering), whichever ships first.
+- ✅ **D.0a.1** (2026-05-29) — `virtual_rows_worker` landed on
+  `lattice-host`. Sibling of `cells_worker`. New
+  `VirtualRowProviderRegistry` (`Mutex<HashMap<ProviderId,
+  Arc<dyn VirtualRowProvider>>>`) for consumer registration;
+  `register` / `unregister` / `snapshot` / `len`. Worker holds
+  `VirtualRowsWorkerState { last_fingerprint:
+  Option<u64>, next_publish_version: u64 }` across recompute
+  calls. Cache-hit short-circuits on the **stable hash of
+  `[(provider_id, provider_version)]` + `source_line_count`**
+  — so rebuilds happen only when something actually changed,
+  even when `publish_render_state` wakes on every dispatch
+  tick. Published matrix's `version` bumps monotonically only
+  on actual content change; downstream consumers compare
+  versions to invalidate caches. `recompute(state, render_state,
+  providers, matrix_cell)` decision function (sync; tests call
+  directly) returns `Clear` / `CacheHit` / `Recomputed`.
+  Production `run(...)` async loop awaits `VirtualRowsWake`'s
+  Notify; fires `paint_request.notify_one()` on `Clear` or
+  `Recomputed` (cache hits skip the paint wake). New
+  `pub virtual_rows_matrix_cell: Arc<ArcSwap<VirtualRowMatrix>>`,
+  `pub virtual_rows_wake: VirtualRowsWake`, and
+  `pub virtual_row_providers: Arc<VirtualRowProviderRegistry>`
+  fields on `Editor` (same Arc-sharing discipline as
+  `cells_matrix_cell` so worker writes land in
+  `RenderState`-visible cells). `editor_boot` spawns the
+  worker alongside `cells_worker`. `publish_render_state`
+  fires `virtual_rows_wake.notify_one()` after the cells wake
+  — same permit-style coalescing. Extended
+  `VirtualRowProvider` trait with `fn version(&self) -> u64`
+  (cheap, monotonic; signals "data changed since last poll"
+  so the worker can short-circuit without paying for
+  expensive `collect()` calls). 12 tests green: registry
+  register/unregister/duplicates, fingerprint
+  order-independence + source-line-count sensitivity +
+  provider-version sensitivity, recompute no-document Clear,
+  cache-hit after no-providers initial Recomputed,
+  publishes rows from provider, cache-hit when static,
+  re-publishes when provider version bumps, re-publishes when
+  document line count changes, merges rows from multiple
+  providers. **419 unit tests green** in `lattice-host`
+  overall after the slice landed (no regressions).
 - 🗒 **D.0b** — Scroll-binding pane-group primitive. Reusable
   by side-by-side diff (D.4), vim `:set scrollbind`, future
   `:windo`.

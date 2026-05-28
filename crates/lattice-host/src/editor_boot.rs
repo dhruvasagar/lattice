@@ -668,6 +668,25 @@ impl Editor {
             paint_request.clone(),
         ));
 
+        // D.0a.1 (2026-05-29): virtual-rows worker. Sibling of
+        // the cells worker — same Arc-sharing discipline so
+        // `Editor::virtual_rows_matrix_cell` and the worker's
+        // sibling clone resolve to the same publish target.
+        let virtual_rows_wake = crate::editor::VirtualRowsWake::default();
+        let virtual_rows_matrix_cell: std::sync::Arc<
+            arc_swap::ArcSwap<lattice_cells::VirtualRowMatrix>,
+        > = std::sync::Arc::default();
+        let virtual_row_providers: std::sync::Arc<
+            crate::virtual_rows_worker::VirtualRowProviderRegistry,
+        > = std::sync::Arc::default();
+        runtime_handle.spawn(crate::virtual_rows_worker::run(
+            render_state_arc.clone(),
+            virtual_rows_wake.clone(),
+            virtual_row_providers.clone(),
+            virtual_rows_matrix_cell.clone(),
+            paint_request.clone(),
+        ));
+
         let mut editor = Editor {
             messages: messages_ring.clone(),
             pending_message_event_rx: Some(message_event_rx),
@@ -773,6 +792,12 @@ impl Editor {
             // same one `render_state.cells.matrix` points at.
             cells_wake,
             cells_matrix_cell,
+            // D.0a.1 (2026-05-29): the worker's three Arcs +
+            // wake match the cells pattern — same identities
+            // here as the `runtime_handle.spawn(...)` above.
+            virtual_rows_wake,
+            virtual_rows_matrix_cell,
+            virtual_row_providers,
             lsp_log_event_rx: Some(lsp_log_event_rx),
             lsp_progress_event_rx: Some(lsp_progress_event_rx),
             pending_apply_edit_rx: Some(lsp_apply_edit_rx),

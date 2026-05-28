@@ -218,11 +218,24 @@ pub type ProviderId = u64;
 /// appears, whichever ships first). Tests build
 /// `VirtualRowMatrix` directly via [`VirtualRowMatrix::build`]
 /// rather than through a provider registry.
-pub trait VirtualRowProvider: Send + Sync {
+pub trait VirtualRowProvider: Send + Sync + std::fmt::Debug {
 	/// A stable id for this provider. Used by the worker to
 	/// deduplicate registration + route mutation
 	/// notifications.
 	fn id(&self) -> ProviderId;
+
+	/// Monotonic version counter — the provider bumps it
+	/// whenever the rows [`Self::collect`] would emit have
+	/// changed. The worker uses the combined fingerprint of all
+	/// providers' versions to short-circuit on the cache-hit
+	/// path without paying for the (potentially expensive)
+	/// `collect` calls.
+	///
+	/// D.0a.1 introduces this. Implementations whose row set is
+	/// truly static may return `0` forever — the worker will
+	/// then cache-hit unless some other provider's version
+	/// changes or the document's line count changes.
+	fn version(&self) -> u64;
 
 	/// Emit the current set of virtual rows for the
 	/// associated document.

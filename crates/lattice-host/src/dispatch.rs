@@ -17903,6 +17903,30 @@ impl Editor {
     /// branching lives in the per-kind runner pattern, not in
     /// generic `do_*` helpers.
     pub fn do_enter_visual(&mut self, kind: lattice_grammar::VisualKind) {
+        // 2026-05-28: vim-style toggle / switch semantics.
+        // Pressing the same kind key while already in that
+        // Visual kind exits Visual; pressing a different kind
+        // switches the in-flight selection's kind without
+        // resetting anchor / head.
+        if let ModalState::Visual(current) = self.modal {
+            if current == kind {
+                self.do_exit_visual();
+                return;
+            }
+            // Different kind → switch in place, keep anchor + head.
+            self.modal = ModalState::Visual(kind);
+            let sels = self.document.selections();
+            let sel = sels.primary();
+            let switched = lattice_protocol::selection::Selection {
+                anchor: sel.anchor,
+                head: sel.head,
+                visual: Some(visual_kind_to_mode(kind)),
+            };
+            self.set_selections_blocking(
+                lattice_protocol::selection::SelectionSet::single(switched),
+            );
+            return;
+        }
         self.modal = ModalState::Visual(kind);
         self.visual_anchor = Some(self.cursor);
         let sel = lattice_protocol::selection::Selection {
@@ -17931,6 +17955,37 @@ impl Editor {
             lattice_grammar::VisualKind::Linewise => Vk::Line,
             lattice_grammar::VisualKind::Blockwise => Vk::Block,
         };
+        // 2026-05-28: vim-style toggle / switch. Pressing the
+        // same visual-kind key while terminal-Visual is active
+        // exits; pressing a different kind switches in place.
+        let existing = self.buffers.with_terminal(buf_id, |t| t.visual).flatten();
+        if let Some(visual) = existing {
+            if visual.kind == kind {
+                // Same kind → exit Visual (mirrors do_exit_visual
+                // for the document path).
+                let _ = self.buffers.with_terminal_mut(buf_id, |t| {
+                    if let Some(prev) = t.visual.take() {
+                        t.last_visual = Some(prev);
+                    }
+                });
+                let _ = self.buffers.with_terminal(buf_id, |t| {
+                    t.term.scroll(Sk::Delta(0));
+                });
+                self.publish_render_state();
+                return;
+            }
+            // Different kind → switch in place; keep anchor + head.
+            let _ = self.buffers.with_terminal_mut(buf_id, |t| {
+                if let Some(v) = t.visual.as_mut() {
+                    v.kind = kind;
+                }
+            });
+            let _ = self.buffers.with_terminal(buf_id, |t| {
+                t.term.scroll(Sk::Delta(0));
+            });
+            self.publish_render_state();
+            return;
+        }
         let (anchor_line, anchor_col) = self
             .buffers
             .with_terminal(buf_id, |t| {

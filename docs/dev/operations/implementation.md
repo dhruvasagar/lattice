@@ -1253,8 +1253,25 @@ shared with multibuffer-views and post-v1 inlay hints.
   primitive + scroll-binding pane-group primitive. Reusable
   by multibuffer M.2, post-v1 inlay hints, vim
   `:set scrollbind`, future `:windo`.
-- 🗒 **D.1** — `lattice-diff` crate: `Hunk` / `HunkIndex` +
-  two/three-way compute via `imara-diff`. Pure crate.
+- ✅ **D.1** (2026-05-28) — `lattice-diff` crate landed.
+  Public surface: `Hunk` / `HunkKind` / `LineRange` /
+  `HunkIndex` / `DiffAlgorithm` (Histogram / Myers /
+  MyersMinimal — Patience dropped, not in `imara-diff`'s
+  surface); `compute_two_way(a, b, alg)` and
+  `compute_three_way(base, local, remote, alg)` returning
+  `HunkIndex`; `patch::apply_two_way(a, b, hunks)` round-trip
+  primitive for tests. Three-way merge does **content-equality
+  detection** — when both sides touch the same base region,
+  the merger compares the resulting `local` and `remote`
+  slices and downgrades to a non-conflict if they match
+  (caught by a property test: identical local==remote should
+  never conflict). Tokenisation uses
+  `imara_diff::sources::lines_with_terminator` so trailing-
+  newline differences are preserved. **29 tests green**:
+  23 unit + 5 proptest (256 cases each across all three
+  algorithms + three-way invariants) + 1 doctest. Bench
+  recorded (`benches/recompute.rs`); CI gate enforcement
+  deferred to D.2 per design plan.
 - 🗒 **D.2** — `DiffSubsystem` + `DiffSession` lifecycle:
   RCU publish, debounced recompute, edit-event subscriptions,
   `:describe-diff`.

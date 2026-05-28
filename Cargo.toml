@@ -22,6 +22,7 @@ members = [
 	"crates/lattice-ui-tui",
 	"crates/lattice-ui-gpui",
 	"crates/lattice-cli",
+	"crates/lattice-diff",
 ]
 
 [workspace.package]
@@ -172,6 +173,14 @@ tree-sitter-javascript = "0.23"
 # crate; we register them as separate `HighlightConfiguration`s and the
 # block grammar's injections.scm wires them together.
 tree-sitter-md = "0.3"
+
+# Diff engine (lattice-diff -- D.1). `imara-diff` is the
+# pure-Rust diff library shipped by gitoxide: Histogram by
+# default (matches git 2.7+ output), Myers and Patience also
+# supported. Pure compute, no I/O, no async. The Sink trait
+# emits before/after line ranges; we collect them into typed
+# `Hunk`s. See `docs/dev/architecture/diff-system.md` §4.
+imara-diff = "0.1"
 
 # Testing
 insta = "1.43"

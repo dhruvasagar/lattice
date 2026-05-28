@@ -239,14 +239,17 @@ subsystem, behavior on the subsystem's API. App does not gain
 ## 4. The engine
 
 `imara-diff` is the Rust diff library used by `gitoxide`.
-Histogram (git's default since 2.7), Myers, and Patience are
-all supported; we default to Histogram and expose
-`diff.algorithm` as a typed option (§5.12).
+Histogram (git's default since 2.7), Myers, and Myers-Minimal
+are all supported; we default to Histogram and expose
+`diff.algorithm` as a typed option (§5.12). (Patience is
+*not* in `imara-diff`'s surface — listed in early drafts of
+this design as a vim-`diffopt` parity choice, dropped from D.1
+in favour of the engine's actual surface.)
 
 ```toml
 # options.toml
 [diff]
-algorithm = "histogram"  # histogram | myers | patience
+algorithm = "histogram"  # histogram | myers | myers-minimal
 debounce-ms = 40         # debounce per session's edit stream
 context-lines = 3        # cosmetic context for unified output
 ```
@@ -375,7 +378,7 @@ code path — the edit invalidates and recomputes uniformly.
 | `:diff-mode <inline\|split\|three-way>` | Switch presentation mode on the active diff session |
 | `:diff-accept` | Apply remaining hunks and close session (used by `openDiff` flow) |
 | `:diff-reject` | Discard session without applying (used by `openDiff` flow) |
-| `:diff-algorithm <histogram\|myers\|patience>` | Set engine for this session |
+| `:diff-algorithm <histogram\|myers\|myers-minimal>` | Set engine for this session |
 | `:Gdiff [<ref>]` | (post-D.7) diff current buffer vs git ref (default `HEAD`) |
 | `:describe-diff` | Open help buffer showing active sessions, algorithms, hunk counts |
 
@@ -390,8 +393,10 @@ type.
 
 Registered against the typed-options system (§5.12):
 
-- `diff.algorithm` — `histogram | myers | patience`, default
-  `histogram`.
+- `diff.algorithm` — `histogram | myers | myers-minimal`,
+  default `histogram`. (`imara-diff` exposes these three;
+  Patience is not in the engine's surface so it's not
+  available — landed D.1 2026-05-28.)
 - `diff.debounce-ms` — `u32`, default 40.
 - `diff.context-lines` — `u32`, default 3.
 - `diff.presentation` — `inline | split | three-way`, default

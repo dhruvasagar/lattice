@@ -22372,15 +22372,24 @@ impl Editor {
         //   Action gate runs them on the central path. Without
         //   this, those commands either got swallowed silently
         //   or echoed "read-only" — both wrong.
-        // - `Operator` / `TextObject` commands echo "read-only"
-        //   (terminals don't accept edits at this layer) and
-        //   claim with `true`.
+        // - `Operator` / `TextObject`: T-rich-1 (2026-05-28)
+        //   routes these through `dispatch_synthetic_operator`
+        //   against the SyntheticDoc rope, so `yiw` / `yi"` / etc.
+        //   yank from scrollback. Mutating effects (`Edits`)
+        //   echo "read-only" and are dropped.
         // - `Motion` commands the runner didn't already intercept
         //   are silently swallowed (claim with `true`) to match
         //   pre-refactor behaviour.
         match self.registry.lookup(cmd).map(|s| s.kind) {
             Some(lattice_grammar::CommandKind::Action) => false,
             Some(lattice_grammar::CommandKind::Motion) | None => true,
+            Some(lattice_grammar::CommandKind::Operator)
+            | Some(lattice_grammar::CommandKind::TextObject) => {
+                self.pending_count = 0;
+                self.op_count = 0;
+                self.dispatch_synthetic_operator(inv);
+                true
+            }
             Some(_) => {
                 self.pending_count = 0;
                 self.op_count = 0;
@@ -22389,6 +22398,69 @@ impl Editor {
                     "terminal buffer is read-only".to_string(),
                 );
                 true
+            }
+        }
+    }
+
+    /// T-rich-1 (2026-05-28): dispatch an Operator / TextObject
+    /// invocation against a transient `Document` wrapping the
+    /// SyntheticDoc rope (`active_text()`). Read-only effects
+    /// (`Yank`, `SelectionChange`, `None`, `EchoRegisters`) apply
+    /// normally; mutation effects (`Edits`, `EnterMode(Insert)`,
+    /// etc.) echo "read-only" and are dropped.
+    ///
+    /// Unlocks vim's text-object grammar on terminal scrollback:
+    /// `yiw`, `yi"`, `yiB`, `y%`, etc. now produce a yank from
+    /// the SyntheticDoc into the register. Visual + operator
+    /// is also routed here when an operator is paired with a
+    /// motion / text object outside Visual mode.
+    fn dispatch_synthetic_operator(&mut self, inv: lattice_grammar::CommandInvocation) {
+        let buffer = self.active_text();
+        let mut doc = lattice_core::Document::from_text(buffer.as_string());
+        let cursor = self.cursor;
+        let cancel = lattice_protocol::CancellationToken::never();
+        let effect = match lattice_grammar::execute(
+            &self.registry,
+            &mut doc,
+            cursor,
+            inv,
+            &cancel,
+        ) {
+            Ok(eff) => eff,
+            Err(_) => return,
+        };
+        match effect {
+            lattice_grammar::Effect::Yank {
+                register,
+                content,
+                kind,
+            } => {
+                let len = content.chars().count();
+                let summary = match kind {
+                    lattice_grammar::YankKind::Linewise => {
+                        let lines = content.lines().count().max(1);
+                        format!("{lines} line(s)")
+                    }
+                    lattice_grammar::YankKind::Blockwise => {
+                        format!("{len} char(s)")
+                    }
+                    lattice_grammar::YankKind::Charwise => {
+                        format!("{len} char(s)")
+                    }
+                };
+                self.store_yank(register, content, kind);
+                self.set_message(EchoLevel::Info, format!("yanked {summary}"));
+            }
+            lattice_grammar::Effect::None
+            | lattice_grammar::Effect::SelectionChange(_)
+            | lattice_grammar::Effect::EchoRegisters => {
+                // Non-mutating; nothing to apply on the buffer.
+            }
+            _ => {
+                self.set_message(
+                    EchoLevel::Info,
+                    "terminal buffer is read-only".to_string(),
+                );
             }
         }
     }

@@ -14,5 +14,15 @@ license.workspace = true
 [dependencies]
 # `Arc<[T]>` everywhere. No other deps until S2 needs them.
 
+[dev-dependencies]
+# D.0a (2026-05-28): bench virtual_row_layout + display_slice
+# interleaver against realistic 1k-virtual-row inputs. CI gate
+# enforcement deferred to a downstream consumer slice.
+criterion = { workspace = true }
+
+[[bench]]
+name = "virtual_rows"
+harness = false
+
 [lints]
 workspace = true

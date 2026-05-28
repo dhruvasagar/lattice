@@ -1249,10 +1249,35 @@ a `DiffMap` transform per pane. Two foundational primitives
 (displacing virtual rows, scroll-binding pane groups) are
 shared with multibuffer-views and post-v1 inlay hints.
 
-- 🗒 **D.0** — Foundational primitives: displacing virtual-row
-  primitive + scroll-binding pane-group primitive. Reusable
-  by multibuffer M.2, post-v1 inlay hints, vim
-  `:set scrollbind`, future `:windo`.
+- ✅ **D.0a** (2026-05-28) — Displacing virtual-row primitive
+  landed in `lattice-cells`. New `virtual_rows` module exports
+  `VirtualRow` / `AnchorPosition` / `VirtualRowMatrix` /
+  `VirtualRowVersion` / `VirtualRowProvider` / `ProviderId`.
+  New `DisplayRowEntry` / `DisplaySlice` / `DisplaySliceIter`
+  in `matrix` module + `CellMatrix::display_slice(scroll,
+  height, &VirtualRowMatrix) -> DisplaySlice<'_>` method
+  layered additively over the existing `slice()` — zero
+  renderer-call-site change. Ordering contract:
+  Above-at-line < Cell-at-line < Below-at-line; folded-line
+  anchors emit at the next visible row; past-EOF anchors
+  clamped + emitted at end. Vim motion semantics preserved
+  by construction (`motion_line_down` /
+  `motion_line_up` operate in source-line space; virtual
+  rows are visual chrome, not navigation targets). **57
+  tests green** (15 new D.0a + 42 pre-existing). Criterion
+  bench `virtual_row_layout` + `display_slice_iter`
+  recorded; CI gate enforcement deferred to first production
+  consumer. Design fragment landed:
+  [`../architecture/virtual-rows.md`](../architecture/virtual-rows.md);
+  synopsis at design.md §5.15.
+- 🗒 **D.0a.1** — `virtual_rows_worker` on `lattice-host`.
+  Sibling tokio task to `cells_worker`; reads registered
+  providers, builds `VirtualRowMatrix`, publishes via
+  `ArcSwap`. Lands before D.3 (first production consumer) or
+  M.2 (multibuffer rendering), whichever ships first.
+- 🗒 **D.0b** — Scroll-binding pane-group primitive. Reusable
+  by side-by-side diff (D.4), vim `:set scrollbind`, future
+  `:windo`.
 - ✅ **D.1** (2026-05-28) — `lattice-diff` crate landed.
   Public surface: `Hunk` / `HunkKind` / `LineRange` /
   `HunkIndex` / `DiffAlgorithm` (Histogram / Myers /

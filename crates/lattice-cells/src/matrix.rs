@@ -13,6 +13,7 @@ use std::sync::Arc;
 use crate::chunk::CellChunk;
 use crate::row::CellRow;
 use crate::version::MatrixVersion;
+use crate::virtual_rows::{AnchorPosition, VirtualRow, VirtualRowMatrix};
 
 /// Sentinel value of [`CellMatrix::chunk_size`] meaning whole-doc
 /// mode: the matrix has at most one chunk covering the entire
@@ -164,6 +165,42 @@ impl CellMatrix {
             end,
         }
     }
+
+    /// D.0a: borrow `height` display rows starting at display
+    /// row `scroll`, **interleaving** virtual rows from
+    /// `virtual_rows` with the document rows in this matrix.
+    ///
+    /// `scroll` and `height` are in *display-row* space —
+    /// they count both document rows and virtual rows.
+    /// Returns a [`DisplaySlice`] that iterates
+    /// [`DisplayRowEntry::Document`] for document rows and
+    /// [`DisplayRowEntry::Virtual`] for virtual rows in
+    /// natural top-to-bottom order.
+    ///
+    /// When `virtual_rows.is_empty()` the iterator degenerates
+    /// to the same yield order as [`Self::slice`]; renderers
+    /// can call `display_slice` unconditionally without
+    /// paying for the interleaver when no provider has
+    /// registered virtual rows.
+    ///
+    /// See `docs/dev/architecture/virtual-rows.md` for the
+    /// full ordering contract (Above-before-Cell-before-Below
+    /// at each anchor line, folded-line anchors emit at the
+    /// next visible line, past-EOF anchors emit at the end).
+    pub fn display_slice<'a>(
+        &'a self,
+        scroll: u32,
+        height: u32,
+        virtual_rows: &'a VirtualRowMatrix,
+    ) -> DisplaySlice<'a> {
+        DisplaySlice {
+            chunks: &self.chunks,
+            cell_total: self.visible_line_count,
+            virtual_rows,
+            scroll,
+            height,
+        }
+    }
 }
 
 /// Borrowed iterator over a slice of matrix rows. Created via
@@ -256,6 +293,185 @@ impl<'a> Iterator for CellSliceIter<'a> {
             self.row_idx_in_chunk = 0;
         }
         None
+    }
+}
+
+// ============================================================
+// D.0a: display rows — interleaver over (CellMatrix,
+// VirtualRowMatrix). See
+// `docs/dev/architecture/virtual-rows.md`.
+// ============================================================
+
+/// One row yielded by [`DisplaySliceIter`].
+///
+/// `Document` rows reference a [`CellRow`] from the underlying
+/// [`CellMatrix`]; `Virtual` rows reference a [`VirtualRow`]
+/// from the sibling [`VirtualRowMatrix`]. Renderers paint both
+/// the same way (both carry `Arc<[Cell]>`), differing only in
+/// the cursor / motion treatment (vim's `j` / `k` step
+/// document rows only — virtual rows are visual-only).
+#[derive(Debug, Clone, Copy)]
+pub enum DisplayRowEntry<'a> {
+    Document(&'a CellRow),
+    Virtual(&'a VirtualRow),
+}
+
+/// Borrowed slice over the interleaved (document, virtual)
+/// display rows. Created via [`CellMatrix::display_slice`].
+///
+/// Holds the parameters; the actual interleaving work happens
+/// in [`Self::iter`] / [`DisplaySliceIter`]. Cheap to
+/// construct.
+#[derive(Debug)]
+pub struct DisplaySlice<'a> {
+    chunks: &'a [Arc<CellChunk>],
+    cell_total: u32,
+    virtual_rows: &'a VirtualRowMatrix,
+    scroll: u32,
+    height: u32,
+}
+
+impl<'a> DisplaySlice<'a> {
+    /// Iterate `height` display rows starting at `scroll`.
+    ///
+    /// When `virtual_rows.is_empty()` the iterator walks the
+    /// underlying `CellSliceIter` directly without
+    /// interleaver overhead.
+    pub fn iter(&self) -> DisplaySliceIter<'a> {
+        let cells = if self.virtual_rows.is_empty() {
+            // Fast path: no virtual rows, scroll counts cell
+            // rows 1:1. Reuse CellSliceIter's chunk-walk
+            // logic for the start position.
+            let start = self.scroll.min(self.cell_total);
+            CellSliceIter::new(self.chunks, start, self.cell_total)
+        } else {
+            CellSliceIter::new(self.chunks, 0, self.cell_total)
+        };
+
+        let mut it = DisplaySliceIter {
+            cells,
+            cell_peek: None,
+            virtual_rows: &self.virtual_rows.rows,
+            v_idx: 0,
+            after_cell_below_for: None,
+            remaining: u32::MAX,
+        };
+
+        // Skip `scroll` display rows when virtual rows are
+        // present. Naive O(scroll); for v1 viewport sizes
+        // (sub-frame budget at scroll < ~10k display rows)
+        // this is well inside the per-frame budget. Optimised
+        // skip via line_index lookup can replace this if a
+        // bench surfaces it.
+        if !self.virtual_rows.is_empty() {
+            for _ in 0..self.scroll {
+                if it.next().is_none() {
+                    break;
+                }
+            }
+        }
+        it.remaining = self.height;
+        it
+    }
+}
+
+/// Iterator yielded by [`DisplaySlice::iter`]. Walks the
+/// underlying [`CellSliceIter`] in tandem with the virtual
+/// rows in `virtual_rows`, emitting them in the order:
+///
+/// 1. Virtual rows whose anchor is strictly less than the
+///    next document row's source line.
+/// 2. Virtual rows whose anchor equals the next document
+///    row's source line and `position == Above`.
+/// 3. The document row.
+/// 4. Virtual rows whose anchor equals that document row's
+///    source line and `position == Below`.
+/// 5. Repeat from (1) with the next document row.
+/// 6. After the last document row, any remaining virtual
+///    rows are emitted in their sorted order (covers both
+///    past-EOF anchors and anchors on folded-out trailing
+///    lines).
+pub struct DisplaySliceIter<'a> {
+    cells: CellSliceIter<'a>,
+    cell_peek: Option<&'a CellRow>,
+    virtual_rows: &'a [VirtualRow],
+    v_idx: usize,
+    /// When `Some(line)`, the iterator just emitted the
+    /// document row for `line` and is now draining its
+    /// `Below(line)` virtual rows before peeking the next
+    /// document row.
+    after_cell_below_for: Option<u32>,
+    remaining: u32,
+}
+
+impl<'a> Iterator for DisplaySliceIter<'a> {
+    type Item = DisplayRowEntry<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 {
+            return None;
+        }
+
+        loop {
+            // Phase A: drain `Below(line)` virtual rows for
+            // the most-recently emitted document row.
+            if let Some(line) = self.after_cell_below_for {
+                if let Some(vrow) = self.virtual_rows.get(self.v_idx) {
+                    if vrow.anchor_line == line
+                        && vrow.position == AnchorPosition::Below
+                    {
+                        self.v_idx += 1;
+                        self.remaining -= 1;
+                        return Some(DisplayRowEntry::Virtual(vrow));
+                    }
+                }
+                // No more Below(line) entries — exit phase A.
+                self.after_cell_below_for = None;
+            }
+
+            // Phase B: peek next document row if we haven't.
+            if self.cell_peek.is_none() {
+                self.cell_peek = self.cells.next();
+            }
+
+            match self.cell_peek {
+                Some(crow) => {
+                    let line = crow.source_line;
+                    // Phase C: emit any virtual row whose
+                    // anchor sits at or before `line` with
+                    // `Above`-or-earlier semantics.
+                    if let Some(vrow) = self.virtual_rows.get(self.v_idx) {
+                        let v_anchor = vrow.anchor_line;
+                        let emits_before_cell = v_anchor < line
+                            || (v_anchor == line
+                                && vrow.position == AnchorPosition::Above);
+                        if emits_before_cell {
+                            self.v_idx += 1;
+                            self.remaining -= 1;
+                            return Some(DisplayRowEntry::Virtual(vrow));
+                        }
+                    }
+                    // Phase D: emit the document row; queue
+                    // `Below(line)` for phase A on the next
+                    // call.
+                    self.cell_peek = None;
+                    self.after_cell_below_for = Some(line);
+                    self.remaining -= 1;
+                    return Some(DisplayRowEntry::Document(crow));
+                }
+                None => {
+                    // No more document rows; emit any
+                    // remaining virtual rows in sorted
+                    // order.
+                    if let Some(vrow) = self.virtual_rows.get(self.v_idx) {
+                        self.v_idx += 1;
+                        self.remaining -= 1;
+                        return Some(DisplayRowEntry::Virtual(vrow));
+                    }
+                    return None;
+                }
+            }
+        }
     }
 }
 
@@ -453,5 +669,225 @@ mod tests {
         let m = CellMatrix::empty();
         assert!(m.row_at_source_line(0).is_none());
         assert!(m.row_at_source_line(42).is_none());
+    }
+
+    // ============================================================
+    // D.0a: display_slice / interleaver tests
+    // ============================================================
+
+    use crate::virtual_rows::{
+        AnchorPosition, VirtualRow, VirtualRowMatrix, VirtualRowVersion,
+    };
+
+    fn vrow(anchor: u32, position: AnchorPosition) -> VirtualRow {
+        VirtualRow {
+            anchor_line: anchor,
+            position,
+            cells: Arc::from([] as [Cell; 0]),
+            height: 1,
+        }
+    }
+
+    /// Collect a DisplaySlice as a Vec<(kind, anchor_or_line)>
+    /// for ergonomic test assertions. `kind` is 'D' for
+    /// Document or 'V' for Virtual.
+    fn collect(slice: &DisplaySlice<'_>) -> Vec<(char, u32)> {
+        slice
+            .iter()
+            .map(|e| match e {
+                DisplayRowEntry::Document(r) => ('D', r.source_line),
+                DisplayRowEntry::Virtual(r) => ('V', r.anchor_line),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn display_slice_empty_virtual_matches_slice() {
+        let c = chunk(0, vec![row(0, b'a'), row(1, b'b'), row(2, b'c')]);
+        let m = CellMatrix::whole_doc(c, 3);
+        let v = VirtualRowMatrix::empty();
+        let ds = m.display_slice(0, 10, &v);
+        assert_eq!(collect(&ds), vec![('D', 0), ('D', 1), ('D', 2)]);
+    }
+
+    #[test]
+    fn display_slice_above_emits_before_document_row() {
+        let c = chunk(0, vec![row(0, b'a'), row(1, b'b')]);
+        let m = CellMatrix::whole_doc(c, 2);
+        let v = VirtualRowMatrix::build(
+            vec![vrow(1, AnchorPosition::Above)],
+            2,
+            VirtualRowVersion(1),
+        );
+        let ds = m.display_slice(0, 10, &v);
+        assert_eq!(collect(&ds), vec![('D', 0), ('V', 1), ('D', 1)]);
+    }
+
+    #[test]
+    fn display_slice_below_emits_after_document_row() {
+        let c = chunk(0, vec![row(0, b'a'), row(1, b'b')]);
+        let m = CellMatrix::whole_doc(c, 2);
+        let v = VirtualRowMatrix::build(
+            vec![vrow(0, AnchorPosition::Below)],
+            2,
+            VirtualRowVersion(1),
+        );
+        let ds = m.display_slice(0, 10, &v);
+        assert_eq!(collect(&ds), vec![('D', 0), ('V', 0), ('D', 1)]);
+    }
+
+    #[test]
+    fn display_slice_multiple_at_same_anchor_sorted_above_then_below() {
+        let c = chunk(0, vec![row(0, b'a'), row(1, b'b')]);
+        let m = CellMatrix::whole_doc(c, 2);
+        let v = VirtualRowMatrix::build(
+            vec![
+                vrow(1, AnchorPosition::Below),
+                vrow(1, AnchorPosition::Above),
+                vrow(1, AnchorPosition::Above),
+                vrow(1, AnchorPosition::Below),
+            ],
+            2,
+            VirtualRowVersion(1),
+        );
+        let ds = m.display_slice(0, 20, &v);
+        // Expected ordering at anchor=1: two Above, then doc
+        // row 1, then two Below.
+        assert_eq!(
+            collect(&ds),
+            vec![
+                ('D', 0),
+                ('V', 1), // Above
+                ('V', 1), // Above
+                ('D', 1),
+                ('V', 1), // Below
+                ('V', 1), // Below
+            ]
+        );
+    }
+
+    #[test]
+    fn display_slice_anchor_past_eof_emits_at_end() {
+        let c = chunk(0, vec![row(0, b'a'), row(1, b'b')]);
+        let m = CellMatrix::whole_doc(c, 2);
+        // VirtualRowMatrix::build clamps past-EOF anchors to
+        // source_line_count, which sorts after the last
+        // document row.
+        let v = VirtualRowMatrix::build(
+            vec![vrow(99, AnchorPosition::Above)],
+            2,
+            VirtualRowVersion(1),
+        );
+        let ds = m.display_slice(0, 20, &v);
+        assert_eq!(collect(&ds), vec![('D', 0), ('D', 1), ('V', 2)]);
+    }
+
+    #[test]
+    fn display_slice_folded_line_emits_at_next_visible_row() {
+        // Matrix has source lines [0, 2, 4] (lines 1 and 3
+        // folded). Virtual rows anchored at 1 (Above) and 3
+        // (Below) must emit at the next visible row -- they
+        // can't sit at their original folded source line.
+        let c = chunk(0, vec![row(0, b'a'), row(2, b'b'), row(4, b'c')]);
+        let m = CellMatrix::whole_doc(c, 5);
+        let v = VirtualRowMatrix::build(
+            vec![
+                vrow(1, AnchorPosition::Above),
+                vrow(3, AnchorPosition::Below),
+            ],
+            5,
+            VirtualRowVersion(1),
+        );
+        let ds = m.display_slice(0, 20, &v);
+        // (1, Above) emits before the next visible doc row
+        // (source 2). (3, Below) emits before the next visible
+        // doc row (source 4) because the would-be anchor line
+        // 3 is folded out.
+        assert_eq!(
+            collect(&ds),
+            vec![
+                ('D', 0),
+                ('V', 1),
+                ('D', 2),
+                ('V', 3),
+                ('D', 4),
+            ]
+        );
+    }
+
+    #[test]
+    fn display_slice_scroll_skips_display_rows() {
+        let c = chunk(0, vec![row(0, b'a'), row(1, b'b'), row(2, b'c')]);
+        let m = CellMatrix::whole_doc(c, 3);
+        let v = VirtualRowMatrix::build(
+            vec![vrow(0, AnchorPosition::Below)],
+            3,
+            VirtualRowVersion(1),
+        );
+        // Unsliced order: D0, V0, D1, D2.
+        let ds_0 = m.display_slice(0, 10, &v);
+        assert_eq!(collect(&ds_0), vec![('D', 0), ('V', 0), ('D', 1), ('D', 2)]);
+
+        // Scroll past D0 and V0: 2-row skip starts at D1.
+        let ds_2 = m.display_slice(2, 10, &v);
+        assert_eq!(collect(&ds_2), vec![('D', 1), ('D', 2)]);
+    }
+
+    #[test]
+    fn display_slice_height_bounds_yielded_rows() {
+        let c = chunk(0, vec![row(0, b'a'), row(1, b'b'), row(2, b'c')]);
+        let m = CellMatrix::whole_doc(c, 3);
+        let v = VirtualRowMatrix::build(
+            vec![vrow(0, AnchorPosition::Below)],
+            3,
+            VirtualRowVersion(1),
+        );
+        // Unsliced order: D0, V0, D1, D2. height=2 yields the
+        // first two.
+        let ds = m.display_slice(0, 2, &v);
+        assert_eq!(collect(&ds), vec![('D', 0), ('V', 0)]);
+    }
+
+    #[test]
+    fn display_slice_empty_matrix_with_virtual_rows_emits_only_virtual() {
+        let m = CellMatrix::empty();
+        let v = VirtualRowMatrix::build(
+            vec![
+                vrow(0, AnchorPosition::Above),
+                vrow(0, AnchorPosition::Below),
+            ],
+            0,
+            VirtualRowVersion(1),
+        );
+        let ds = m.display_slice(0, 10, &v);
+        assert_eq!(collect(&ds), vec![('V', 0), ('V', 0)]);
+    }
+
+    #[test]
+    fn display_slice_chunked_matrix_interleaves_correctly() {
+        // Two chunks of size 2: rows [0, 1] and [2, 3].
+        let c1 = chunk(0, vec![row(0, b'a'), row(1, b'b')]);
+        let c2 = chunk(2, vec![row(2, b'c'), row(3, b'd')]);
+        let m = CellMatrix::chunked(vec![c1, c2], 2, 4, MatrixVersion::ZERO);
+        let v = VirtualRowMatrix::build(
+            vec![
+                vrow(1, AnchorPosition::Below),
+                vrow(2, AnchorPosition::Above),
+            ],
+            4,
+            VirtualRowVersion(1),
+        );
+        let ds = m.display_slice(0, 20, &v);
+        assert_eq!(
+            collect(&ds),
+            vec![
+                ('D', 0),
+                ('D', 1),
+                ('V', 1), // Below(1)
+                ('V', 2), // Above(2)
+                ('D', 2),
+                ('D', 3),
+            ]
+        );
     }
 }

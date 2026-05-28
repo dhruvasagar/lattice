@@ -3343,6 +3343,9 @@ dependencies = [
 [[package]]
 name = "lattice-cells"
 version = "0.1.0"
+dependencies = [
+ "criterion",
+]
 
 [[package]]
 name = "lattice-cli"

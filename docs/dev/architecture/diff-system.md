@@ -282,6 +282,12 @@ renderer's row vector becomes "document rows interleaved with
 virtual rows," and motions / scroll / cursor positioning all
 have to honour the interleaving.
 
+**Full design in [`virtual-rows.md`](virtual-rows.md).** The
+pure data + interleaver layer (`VirtualRow`,
+`VirtualRowMatrix`, `VirtualRowProvider`, `DisplayRowEntry`,
+`CellMatrix::display_slice`) shipped in D.0a (2026-05-28).
+D.3 below is the first production consumer.
+
 This primitive is shared with:
 
 - Inline diff deletion blocks (this design).

@@ -40,10 +40,21 @@ pub mod edit_delta;
 pub mod matrix;
 pub mod row;
 pub mod version;
+// D.0a (2026-05-28): virtual-row primitive for inline diff
+// deletion blocks, multibuffer excerpt headers, and future
+// inlay / code-lens consumers. See
+// `docs/dev/architecture/virtual-rows.md`.
+pub mod virtual_rows;
 
 pub use cell::{flags as cell_flags, Cell};
 pub use chunk::CellChunk;
 pub use edit_delta::EditDelta;
-pub use matrix::{CellMatrix, CellSlice, CellSliceIter, CHUNK_SIZE_WHOLE_DOC};
+pub use matrix::{
+	CellMatrix, CellSlice, CellSliceIter, DisplayRowEntry, DisplaySlice, DisplaySliceIter,
+	CHUNK_SIZE_WHOLE_DOC,
+};
 pub use row::{CellRow, InlayOffset};
 pub use version::MatrixVersion;
+pub use virtual_rows::{
+	AnchorPosition, ProviderId, VirtualRow, VirtualRowMatrix, VirtualRowProvider, VirtualRowVersion,
+};

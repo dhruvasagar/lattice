@@ -17903,6 +17903,16 @@ impl Editor {
     /// branching lives in the per-kind runner pattern, not in
     /// generic `do_*` helpers.
     pub fn do_enter_visual(&mut self, kind: lattice_grammar::VisualKind) {
+        // 2026-05-28: terminal-Visual uses its own substrate
+        // (`t.visual` grid coords + `modal` stays Normal per
+        // `terminal-mode.md` §5.1). Branch here so the
+        // `Action::EnterVisual` central path can dispatch
+        // uniformly without callers (or the terminal runner)
+        // needing to intercept first.
+        if matches!(self.active_buffer, BufferKind::Terminal) {
+            self.do_terminal_enter_visual(kind);
+            return;
+        }
         // 2026-05-28: vim-style toggle / switch semantics.
         // Pressing the same kind key while already in that
         // Visual kind exits Visual; pressing a different kind
@@ -21936,39 +21946,12 @@ impl Editor {
             }
             return true;
         }
-        // T3.b.2 / T3.b.2.b: Visual entry — sets the initial
-        // anchor + head from either the live cursor (when at
-        // live edge) or the topmost visible row (when scrolled
-        // into history). Charwise / blockwise pin the col to 0
-        // for now; user moves head with `h` / `l` after entry.
-        let enter_visual_kind = if cmd == self.action_ids.enter_visual_linewise {
-            Some(Vk::Line)
-        } else if cmd == self.action_ids.enter_visual_charwise {
-            Some(Vk::Char)
-        } else if cmd == self.action_ids.enter_visual_blockwise {
-            Some(Vk::Block)
-        } else {
-            None
-        };
-        if let Some(kind) = enter_visual_kind {
-            // 2026-05-25: Visual entry delegates to the
-            // host-side `do_terminal_enter_visual` helper so the
-            // Action-path entry (`v` → `Action::Invoke(...)` →
-            // grammar → `AppEffect::EnterVisual` →
-            // `Action::EnterVisual` → `do_enter_visual` →
-            // here) and any future direct call site share one
-            // initialiser. Map the grammar's `VisualKind` to
-            // the terminal-side enum before dispatch.
-            let grammar_kind = match kind {
-                Vk::Char => lattice_grammar::VisualKind::Charwise,
-                Vk::Line => lattice_grammar::VisualKind::Linewise,
-                Vk::Block => lattice_grammar::VisualKind::Blockwise,
-            };
-            self.pending_count = 0;
-            self.op_count = 0;
-            self.do_terminal_enter_visual(grammar_kind);
-            return true;
-        }
+        // 2026-05-28: Visual entry (`v` / `V` / `<C-v>`) is now
+        // a pure Action — the central `Action::EnterVisual`
+        // handler dispatches `do_enter_visual` which branches
+        // internally on `BufferKind::Terminal`. The bespoke
+        // intercept that used to live here retired with that
+        // branch.
         // T-clean-1 Phase B.2 (2026-05-28): scroll-line actions
         // (`<C-e>` / `<C-y>` analogues mapped to scroll_line_*)
         // are Actions, not Motions, so they don't reach the

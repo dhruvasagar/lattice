@@ -21730,7 +21730,7 @@ impl Editor {
     pub fn run_terminal_invocation(&mut self, inv: lattice_grammar::CommandInvocation) -> bool {
         use lattice_terminal::{TerminalScrollKind as Sk, VisualKind as Vk};
         let buf_id = self.active_pane_buffer_id();
-        let count = inv.count.map(|c| c.0).unwrap_or(1).max(1);
+        let _count = inv.count.map(|c| c.0).unwrap_or(1).max(1);
         let cmd = inv.command;
         // T3.b.2 / T3.b.2.b: handle Visual-active state first.
         // Visual entry / no-Visual scrollback nav fall through
@@ -21745,97 +21745,54 @@ impl Editor {
             // fresh (mirrors run_document_invocation's reset).
             self.pending_count = 0;
             self.op_count = 0;
-            // Vertical motion: extend head_line, scroll viewport
-            // to keep it visible.
-            if cmd == self.builtins.line_down.0 || cmd == self.builtins.line_up.0 {
-                let delta = if cmd == self.builtins.line_down.0 {
-                    count as i32
-                } else {
-                    -(count as i32)
-                };
-                let (top, bot) = self
-                    .buffers
-                    .with_terminal(buf_id, |t| t.term.line_bounds())
-                    .unwrap_or((0, 0));
-                let new_head = (visual.head_line + delta).clamp(top, bot);
-                let _ = self.buffers.with_terminal_mut(buf_id, |t| {
-                    if let Some(v) = t.visual.as_mut() {
-                        v.head_line = new_head;
-                    }
-                });
-                let _ = self.buffers.with_terminal(buf_id, |t| {
-                    let snap = t.snapshot.load();
-                    let top_visible = -(snap.scroll_offset as i32);
-                    let bot_visible = top_visible + snap.rows as i32 - 1;
-                    if new_head < top_visible {
-                        t.term.scroll_to_line(new_head);
-                    } else if new_head > bot_visible {
-                        let target = new_head - (snap.rows as i32 - 1);
-                        t.term.scroll_to_line(target.max(top));
-                    } else {
-                        t.term.scroll(Sk::Delta(0));
-                    }
-                });
+            // T-clean-1 hotfix (2026-05-28): every Motion-kind
+            // command extends the Visual head via the central
+            // grammar. `execute_motion_only` against the
+            // SyntheticDoc rope produces the new doc-space
+            // cursor; `sync_terminal_nav_cursor_from_doc` then
+            // translates to grid + updates `t.visual.head_*` +
+            // brings the row into view. Same dispatch path the
+            // non-Visual branch uses below.
+            //
+            // The bespoke j/k/h/l/gg/G arms inside Visual are
+            // retired by this slice — they had stopped at the
+            // first hard-coded `cmd ==` check and never handed
+            // motions like w/b/e/$/^/0/f/F/% through to the
+            // grammar.
+            let coerced = if cmd == self.action_ids.scroll_line_down {
+                Some(self.builtins.line_down.0)
+            } else if cmd == self.action_ids.scroll_line_up {
+                Some(self.builtins.line_up.0)
+            } else {
+                None
+            };
+            let dispatch_cmd = coerced.unwrap_or(cmd);
+            let kind = self.registry.lookup(dispatch_cmd).map(|s| s.kind);
+            if matches!(kind, Some(lattice_grammar::CommandKind::Motion)) {
+                let mut motion_inv = inv.clone();
+                motion_inv.command = dispatch_cmd;
+                let buffer = self.active_text();
+                let cancel = lattice_protocol::CancellationToken::never();
+                if let Ok(new_pos) = lattice_grammar::execute_motion_only(
+                    &self.registry,
+                    &buffer,
+                    self.cursor,
+                    motion_inv,
+                    &cancel,
+                ) {
+                    self.cursor = new_pos;
+                    self.pane_tree.active_mut().cursor = new_pos;
+                    self.sync_terminal_nav_cursor_from_doc(buf_id);
+                }
                 return true;
             }
-            // T3.b.2.b: horizontal motion in char/block Visual.
-            // Linewise Visual ignores col motion (matches vim).
-            if (cmd == self.builtins.char_left.0 || cmd == self.builtins.char_right.0)
-                && !matches!(visual.kind, Vk::Line)
-            {
-                let delta = if cmd == self.builtins.char_right.0 {
-                    count as i32
-                } else {
-                    -(count as i32)
-                };
-                let cols = self
-                    .buffers
-                    .with_terminal(buf_id, |t| t.snapshot.load().cols)
-                    .unwrap_or(0);
-                let new_col = (visual.head_col as i32 + delta)
-                    .max(0)
-                    .min(cols.saturating_sub(1) as i32) as u16;
-                let _ = self.buffers.with_terminal_mut(buf_id, |t| {
-                    if let Some(v) = t.visual.as_mut() {
-                        v.head_col = new_col;
-                    }
-                });
-                let _ = self.buffers.with_terminal(buf_id, |t| {
-                    t.term.scroll(Sk::Delta(0));
-                });
-                return true;
-            }
-            if cmd == self.builtins.goto_last_line.0 {
-                let (_, bot) = self
-                    .buffers
-                    .with_terminal(buf_id, |t| t.term.line_bounds())
-                    .unwrap_or((0, 0));
-                let _ = self.buffers.with_terminal_mut(buf_id, |t| {
-                    if let Some(v) = t.visual.as_mut() {
-                        v.head_line = bot;
-                    }
-                });
-                let _ = self.buffers.with_terminal(buf_id, |t| {
-                    t.term.scroll(Sk::Bottom);
-                });
-                return true;
-            }
-            if cmd == self.builtins.goto_first_line.0 {
-                let (top, _) = self
-                    .buffers
-                    .with_terminal(buf_id, |t| t.term.line_bounds())
-                    .unwrap_or((0, 0));
-                let _ = self.buffers.with_terminal_mut(buf_id, |t| {
-                    if let Some(v) = t.visual.as_mut() {
-                        v.head_line = top;
-                    }
-                });
-                let _ = self.buffers.with_terminal(buf_id, |t| {
-                    t.term.scroll(Sk::Top);
-                });
-                return true;
-            }
+            let _ = visual; // borrow released; yank arm re-reads
             if cmd == self.builtins.yank.0 {
+                let visual = self
+                    .buffers
+                    .with_terminal(buf_id, |t| t.visual)
+                    .flatten()
+                    .unwrap_or(visual);
                 // T3.b.2.b: per-kind yank — linewise / charwise
                 // / blockwise route to distinct substrate
                 // helpers so the register entry shape matches

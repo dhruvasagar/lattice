@@ -11675,6 +11675,68 @@ impl Editor {
         .unwrap_or_default();
     }
 
+    /// T-search-1 (2026-05-28): for a Terminal buffer, mirror the
+    /// doc-space search results (`self.current_match` +
+    /// `self.all_matches`) into the grid-space `t.current_match`
+    /// / `t.all_matches` fields the renderer reads, and also
+    /// update `nav_cursor` from `self.cursor`. Also scrolls the
+    /// alacritty viewport so the matched row is visible.
+    ///
+    /// No-op when the buffer has no SyntheticDoc (Insert mode —
+    /// search shouldn't fire in Insert anyway).
+    fn terminal_mirror_search_hits(&mut self, buf_id: BufferId) {
+        let current = self.current_match;
+        let all: Vec<_> = self.all_matches.iter().copied().collect();
+        let cursor = self.cursor;
+        let _ = self.buffers.with_terminal_mut(buf_id, |t| {
+            let Some(synthetic) = t.synthetic.as_ref() else {
+                return;
+            };
+            let origin = synthetic.origin_top_line;
+            let translate = |r: &lattice_protocol::position::Range|
+                -> lattice_terminal::GridSearchHit {
+                lattice_terminal::GridSearchHit {
+                    line: origin + r.start.line as i32,
+                    column: r.start.byte as u16,
+                    // `Range` is half-open in bytes; len is the
+                    // byte distance when the match is single-
+                    // line (the common case for vim search).
+                    len: r.end.byte.saturating_sub(r.start.byte),
+                }
+            };
+            t.current_match = current.as_ref().map(translate);
+            t.all_matches = all.iter().map(translate).collect();
+            // Mirror cursor → grid `nav_cursor` so the renderer
+            // paints the cursor at the hit. Use the same
+            // translation as the motion paths.
+            t.nav_cursor = Some((
+                origin + cursor.line as i32,
+                cursor.byte as u16,
+            ));
+            if let Some(v) = t.visual.as_mut() {
+                v.head_line = origin + cursor.line as i32;
+                v.head_col = cursor.byte as u16;
+            }
+            // Scroll the alacritty viewport so the hit row is
+            // visible. `scroll_to_line` is bounded — out-of-grid
+            // coords clamp to the live edge.
+            if let Some(h) = t.current_match {
+                t.term.scroll_to_line(h.line);
+            }
+        });
+    }
+
+    /// T-search-1 (2026-05-28): clear the grid-mirror search
+    /// fields on a Terminal buffer. Symmetric to
+    /// [`Self::terminal_mirror_search_hits`]; called from
+    /// `cancel_search` and `submit_search` not-found paths.
+    fn terminal_clear_search_mirror(&mut self, buf_id: BufferId) {
+        let _ = self.buffers.with_terminal_mut(buf_id, |t| {
+            t.current_match = None;
+            t.all_matches.clear();
+        });
+    }
+
     /// Commit the search pattern -- jump the cursor to the first
     /// match, record `last_search`, populate `all_matches` for
     /// hlsearch. On empty submit, replay `last_search` (vim `<CR>`
@@ -11701,65 +11763,12 @@ impl Editor {
                 return;
             }
         };
-        // T3.b (2026-05-25): terminal buffers run search across
-        // the alacritty grid (live screen + scrollback) rather
-        // than against `active_text` (which is empty for
-        // terminals — kind-specific text would leak the grid
-        // into the document subsystem). Route via SharedTerm's
-        // grid walker; on hit, scroll the viewport to the
-        // matching row + remember the pattern for `n` / `N`.
-        if matches!(self.active_buffer, BufferKind::Terminal) {
-            let buf_id = self.active_pane_buffer_id();
-            let dir = match line.direction {
-                lattice_grammar::SearchDirection::Forward => {
-                    lattice_terminal::SearchDir::Forward
-                }
-                lattice_grammar::SearchDirection::Backward => {
-                    lattice_terminal::SearchDir::Backward
-                }
-            };
-            let hit = self
-                .buffers
-                .with_terminal(buf_id, |t| t.term.find_match(&regex, dir))
-                .flatten();
-            // T3.b.3: collect every match so renderers can paint
-            // the hlsearch-style softer overlay over all
-            // occurrences in the visible window.
-            let all = self
-                .buffers
-                .with_terminal(buf_id, |t| t.term.find_all_matches(&regex))
-                .unwrap_or_default();
-            match hit {
-                Some(h) => {
-                    let _ = self.buffers.with_terminal(buf_id, |t| {
-                        t.term.scroll_to_line(h.line);
-                    });
-                    let _ = self.buffers.with_terminal_mut(buf_id, |t| {
-                        t.current_match = Some(h);
-                        t.all_matches = all;
-                    });
-                    self.last_search = Some(crate::state::LastSearch {
-                        pattern: line.pattern,
-                        direction: line.direction,
-                    });
-                }
-                None => {
-                    let _ = self.buffers.with_terminal_mut(buf_id, |t| {
-                        t.current_match = None;
-                        t.all_matches.clear();
-                    });
-                    self.set_message(
-                        EchoLevel::Error,
-                        format!("E486: Pattern not found: {}", line.pattern),
-                    );
-                    self.last_search = Some(crate::state::LastSearch {
-                        pattern: line.pattern,
-                        direction: line.direction,
-                    });
-                }
-            }
-            return;
-        }
+        // T-search-1 (2026-05-28): terminal buffers run search
+        // against `active_text()` — the SyntheticDoc rope built
+        // by `TerminalNormalMode`. Same `lattice_core::search`
+        // machinery as document buffers; grid mirror happens
+        // post-hit via `terminal_mirror_search_hits` so the
+        // renderer's cell-grid paint stays unchanged.
         let dir = match line.direction {
             lattice_grammar::SearchDirection::Forward => lattice_core::search::Direction::Forward,
             lattice_grammar::SearchDirection::Backward => lattice_core::search::Direction::Backward,
@@ -11799,11 +11808,20 @@ impl Editor {
                 });
                 if matches!(self.active_buffer, BufferKind::Document) {
                     self.auto_open_folds_at_cursor();
+                } else if matches!(self.active_buffer, BufferKind::Terminal) {
+                    // T-search-1: translate doc-space results to
+                    // grid for the renderer's cell-grid paint.
+                    let buf_id = self.active_pane_buffer_id();
+                    self.terminal_mirror_search_hits(buf_id);
                 }
             }
             Ok(None) => {
                 self.current_match = None;
                 self.all_matches.clear();
+                if matches!(self.active_buffer, BufferKind::Terminal) {
+                    let buf_id = self.active_pane_buffer_id();
+                    self.terminal_clear_search_mirror(buf_id);
+                }
                 self.set_message(
                     EchoLevel::Error,
                     format!("E486: Pattern not found: {}", line.pattern),
@@ -11816,6 +11834,10 @@ impl Editor {
             Err(_) => {
                 self.current_match = None;
                 self.all_matches.clear();
+                if matches!(self.active_buffer, BufferKind::Terminal) {
+                    let buf_id = self.active_pane_buffer_id();
+                    self.terminal_clear_search_mirror(buf_id);
+                }
             }
         }
     }
@@ -11828,15 +11850,12 @@ impl Editor {
         }
         self.current_match = None;
         self.all_matches.clear();
-        // T3.b.3: also clear the terminal-buffer match overlay
-        // when the user aborts the search line. Vim's `<Esc>`
-        // out of `/` leaves no decoration; match this.
+        // T-search-1 (2026-05-28): the terminal grid mirror lives
+        // on the buffer; clear it too. (Vim's `<Esc>` out of `/`
+        // leaves no decoration.)
         if matches!(self.active_buffer, BufferKind::Terminal) {
             let buf_id = self.active_pane_buffer_id();
-            let _ = self.buffers.with_terminal_mut(buf_id, |t| {
-                t.current_match = None;
-                t.all_matches.clear();
-            });
+            self.terminal_clear_search_mirror(buf_id);
         }
         self.modal = ModalState::Normal;
     }
@@ -11871,49 +11890,10 @@ impl Editor {
                 return;
             }
         };
-        // T3.b: terminal `n` / `N` walks the grid via SharedTerm
-        // rather than the empty `active_text` rope. Re-uses the
-        // same regex object and just flips direction. Wraps
-        // implicitly — `find_match` always scans the full grid,
-        // so the next match in `direction` order is found
-        // regardless of current viewport.
-        if matches!(self.active_buffer, BufferKind::Terminal) {
-            let buf_id = self.active_pane_buffer_id();
-            let term_dir = match direction {
-                lattice_grammar::SearchDirection::Forward => {
-                    lattice_terminal::SearchDir::Forward
-                }
-                lattice_grammar::SearchDirection::Backward => {
-                    lattice_terminal::SearchDir::Backward
-                }
-            };
-            let hit = self
-                .buffers
-                .with_terminal(buf_id, |t| t.term.find_match(&regex, term_dir))
-                .flatten();
-            let all = self
-                .buffers
-                .with_terminal(buf_id, |t| t.term.find_all_matches(&regex))
-                .unwrap_or_default();
-            match hit {
-                Some(h) => {
-                    let _ = self.buffers.with_terminal(buf_id, |t| {
-                        t.term.scroll_to_line(h.line);
-                    });
-                    let _ = self.buffers.with_terminal_mut(buf_id, |t| {
-                        t.current_match = Some(h);
-                        t.all_matches = all;
-                    });
-                }
-                None => {
-                    self.set_message(
-                        EchoLevel::Error,
-                        format!("E486: Pattern not found: {}", last.pattern),
-                    );
-                }
-            }
-            return;
-        }
+        // T-search-1 (2026-05-28): terminal `n` / `N` searches
+        // the SyntheticDoc rope via `active_text()`. Falls
+        // through to the unified document path below; the post-
+        // hit mirror writes grid coords for the renderer.
         let dir = match direction {
             lattice_grammar::SearchDirection::Forward => lattice_core::search::Direction::Forward,
             lattice_grammar::SearchDirection::Backward => lattice_core::search::Direction::Backward,
@@ -11943,10 +11923,27 @@ impl Editor {
                 }
                 if matches!(self.active_buffer, BufferKind::Document) {
                     self.auto_open_folds_at_cursor();
+                } else if matches!(self.active_buffer, BufferKind::Terminal) {
+                    // T-search-1: refresh `all_matches` against
+                    // the frozen rope + mirror to grid so the
+                    // renderer paints `n` / `N` hits and the
+                    // hlsearch overlay correctly.
+                    self.all_matches = lattice_core::search::find_all(
+                        &buffer,
+                        &regex,
+                        &lattice_runtime::CancellationToken::never(),
+                    )
+                    .unwrap_or_default();
+                    let buf_id = self.active_pane_buffer_id();
+                    self.terminal_mirror_search_hits(buf_id);
                 }
             }
             Ok(None) => {
                 self.current_match = None;
+                if matches!(self.active_buffer, BufferKind::Terminal) {
+                    let buf_id = self.active_pane_buffer_id();
+                    self.terminal_clear_search_mirror(buf_id);
+                }
                 self.set_message(
                     EchoLevel::Error,
                     format!("E486: Pattern not found: {}", last.pattern),
@@ -11954,22 +11951,29 @@ impl Editor {
             }
             Err(_) => {
                 self.current_match = None;
+                if matches!(self.active_buffer, BufferKind::Terminal) {
+                    let buf_id = self.active_pane_buffer_id();
+                    self.terminal_clear_search_mirror(buf_id);
+                }
             }
         }
     }
 
     /// `*` / `#` -- extract the word at the cursor, store as
     /// `last_search`, jump to the next (or previous) occurrence.
+    ///
+    /// T-search-1 (2026-05-28): reads from `active_text()` (the
+    /// SyntheticDoc rope when terminal-Normal, document rope
+    /// otherwise) so the word extraction + search both run
+    /// against the cursor's actual buffer. Before T-search-1
+    /// the call always read `self.document.*` which gave nonsense
+    /// (or empty) results on terminal panes.
     pub fn do_search_word_under_cursor(&mut self, direction: lattice_grammar::SearchDirection) {
         let pre_jump = self.cursor;
-        let text = self.document.text();
+        let buffer = self.active_text();
+        let text = buffer.as_string();
         let bytes = text.as_bytes();
-        let cursor_byte = match self
-            .document
-            .snapshot()
-            .buffer
-            .position_to_byte(self.cursor)
-        {
+        let cursor_byte = match buffer.position_to_byte(self.cursor) {
             Ok(b) => b,
             Err(_) => return,
         };
@@ -11999,7 +12003,7 @@ impl Editor {
             lattice_grammar::SearchDirection::Forward => lattice_core::search::Direction::Forward,
             lattice_grammar::SearchDirection::Backward => lattice_core::search::Direction::Backward,
         };
-        let from = step_byte(&self.document.snapshot().buffer, self.cursor, direction);
+        let from = step_byte(&buffer, self.cursor, direction);
         let escaped = fancy_regex::escape(&word).into_owned();
         let regex = match compile_search_pattern(&escaped) {
             Ok(r) => r,
@@ -12009,7 +12013,7 @@ impl Editor {
             }
         };
         match lattice_core::search::find(
-            &self.document.snapshot().buffer,
+            &buffer,
             &regex,
             from,
             dir,
@@ -12020,7 +12024,7 @@ impl Editor {
                 self.cursor = hit.range.start;
                 self.current_match = Some(hit.range);
                 self.all_matches = lattice_core::search::find_all(
-                    &self.document.snapshot().buffer,
+                    &buffer,
                     &regex,
                     &lattice_runtime::CancellationToken::never(),
                 )
@@ -12031,6 +12035,9 @@ impl Editor {
                 });
                 if matches!(self.active_buffer, BufferKind::Document) {
                     self.auto_open_folds_at_cursor();
+                } else if matches!(self.active_buffer, BufferKind::Terminal) {
+                    let buf_id = self.active_pane_buffer_id();
+                    self.terminal_mirror_search_hits(buf_id);
                 }
             }
             Ok(None) => {

@@ -1235,6 +1235,95 @@ Capsule summary so this ledger stands alone:
   `ui.visual-background`) so renderers can distinguish
   match / selection backgrounds.
 
+## diff-system (in design, 2026-05-28)
+
+Design fragment:
+[`../architecture/diff-system.md`](../architecture/diff-system.md).
+Synopsis in
+[`../architecture/design.md`](../architecture/design.md) §5.13.
+Covers inline overlay against a baseline, side-by-side two-way
+diff, three-pane three-way merge, hunk motions / transfer
+operators. Data layer is `imara-diff` Histogram on
+`spawn_blocking`, RCU-published via arc-swap; presentation is
+a `DiffMap` transform per pane. Two foundational primitives
+(displacing virtual rows, scroll-binding pane groups) are
+shared with multibuffer-views and post-v1 inlay hints.
+
+- 🗒 **D.0** — Foundational primitives: displacing virtual-row
+  primitive + scroll-binding pane-group primitive. Reusable
+  by multibuffer M.2, post-v1 inlay hints, vim
+  `:set scrollbind`, future `:windo`.
+- 🗒 **D.1** — `lattice-diff` crate: `Hunk` / `HunkIndex` +
+  two/three-way compute via `imara-diff`. Pure crate.
+- 🗒 **D.2** — `DiffSubsystem` + `DiffSession` lifecycle:
+  RCU publish, debounced recompute, edit-event subscriptions,
+  `:describe-diff`.
+- 🗒 **D.3** — Inline overlay presentation: single-doc vs.
+  baseline; gutter signs, line tints, deletion blocks; `]c`
+  / `[c` motions.
+- 🗒 **D.4** — Side-by-side two-way: `:diff`, `:diffthis`,
+  `:diffsplit`, `:diffoff`; pane-group scroll-binding with
+  hunk-correspondent row mapping.
+- 🗒 **D.5** — Hunk transfer operators `do` / `dp` via
+  `CommandRegistry`.
+- 🗒 **D.6** — Three-way merge: conflict regions, `:diffput
+  <bufnr>` / `:diffget <bufnr>`, `:diff-accept` /
+  `:diff-reject`.
+- 🗒 **D.7** — Git baseline integration (`:Gdiff`) via a
+  small `lattice-vcs` crate over `gix`.
+
+Slice sequencing: D.0 / D.1 in parallel; D.2 after D.1; D.3
+after D.0 (a) + D.2; D.4 after D.0 (b) + D.3; D.5 after D.2;
+D.6 after D.4; D.7 after D.3. Open questions §8 (engine
+algorithm, conflict semantics, fold-of-equal, doc-close
+behaviour) resolved per slice.
+
+## multibuffer-views (in design, 2026-05-28)
+
+Design fragment:
+[`../architecture/multibuffer-views.md`](../architecture/multibuffer-views.md).
+Synopsis in
+[`../architecture/design.md`](../architecture/design.md) §5.14.
+A `MultibufferDocument` is a `Document` (trait) whose content
+is composed of N anchored excerpts; edits propagate through
+the standard pipeline to source buffers. Lights up
+project-wide diff, AI multi-file `openDiff`,
+search-as-buffer, LSP references-as-buffer, and
+diagnostics-as-buffer with one implementation.
+
+- 🗒 **M.0** — Document-as-trait refactor: hoist `Document` to
+  trait; port today's struct to `RopeDocument`; no behavioural
+  change. **Load-bearing slice** — every Document call site
+  touched.
+- 🗒 **M.1** — `MultibufferDocument` read-only: excerpts,
+  composed `rope()` view, row-translation cache, registered
+  in `BufferRegistry`, edits rejected.
+- 🗒 **M.2** — Excerpt rendering: consumes D.0 virtual-row
+  primitive (lands D.0 if not yet shipped); headers +
+  separators; `]e` / `[e` / `]E` / `[E` motions.
+- 🗒 **M.3** — Edit propagation: translation-table lookup →
+  source dispatch; boundary clipping; multi-excerpt selection
+  split; undo grouping across source buffers.
+- 🗒 **M.4** — Live updates from source buffers: anchor-driven
+  excerpt tracking, debounced translation rebuild,
+  cross-pane consistency.
+- 🗒 **M.5** — Expand-context affordance:
+  `:multibuffer-expand` / `:multibuffer-contract`.
+- 🗒 **M.6** — `MultibufferProvider` trait + first consumer
+  (`SearchProvider` / `:search-buffer`).
+
+Follow-on consumers (post-M.6, each its own slice sequence,
+not yet committed): `ProjectDiffProvider` (composes with
+diff-system D.7), `AIProposedEditsProvider` (composes with
+diff-system D.3 — the AI multi-file `openDiff` flow),
+`LspReferencesProvider` (replaces `gr` picker with editable
+multibuffer), `DiagnosticsProvider` (replaces `:diagnostics`
+list with editable multibuffer).
+
+Open questions §8 (excerpt-boundary clip vs extend,
+source-buffer close behaviour, fold-as-unit, diff over
+multibuffer, tree-sitter per-excerpt) resolved per slice.
+
 ## In-progress
 
 **Phase 4.2 navigation -- 9/12 shipped + 1 partial.**

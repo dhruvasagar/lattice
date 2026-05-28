@@ -21758,49 +21758,42 @@ impl Editor {
         self.clamp_cursor_to_buffer();
     }
 
-    /// Unified motion dispatch for read-only buffer kinds (help /
-    /// file-tree). Reads buffer text via [`Self::active_text`] and
-    /// the live cursor / scroll from `self.cursor` / `self.scroll`
-    /// — same hot-path the document dispatcher uses, so motion
-    /// semantics (counts, jump-history pushes for `gg` / `G`,
-    /// scroll-aware visibility) are identical. Non-motion command
-    /// classes (operators, text-objects, ex bodies that reach
-    /// here) echo "buffer is read-only" and bail.
-    /// Terminal-mode T3 (2026-05-25): motion / action dispatcher
-    /// for Terminal-active buffers. Plays the same architectural
-    /// role as [`Self::run_help_invocation`] /
-    /// [`Self::run_oil_invocation`] /
-    /// [`Self::run_file_tree_invocation`]: the substrate-specific
-    /// runner that translates the kind-agnostic grammar invocation
-    /// into the operations the substrate actually supports.
+    /// Thin dispatcher for Terminal-active panes.
     ///
-    /// For terminals, "the substrate" is the alacritty grid:
-    /// - Vertical motions (`line_down` / `line_up`) and the
-    ///   ctrl-d / ctrl-u / ctrl-e / ctrl-y / ctrl-f / ctrl-b
-    ///   family translate to scrollback movement
-    ///   (`SharedTerm::scroll`).
-    /// - `gg` / `G` (`goto_first_line` / `goto_last_line`) jump
-    ///   to top / bottom of the scrollback ring.
-    /// - Insert-entry motions (i / a / I / A) emit
-    ///   `EnterTerminalInsert` via the translate layer; they
-    ///   never reach this runner.
-    /// - Anything else (horizontal motions, operators,
-    ///   text-objects, edits) is a no-op with a read-only echo,
-    ///   matching what vim's `:terminal` does.
+    /// As of 2026-05-28 (T-clean-1 + Slices 1–5 follow-up) this
+    /// runner no longer carries vim-grammar knowledge. It is a
+    /// pure dispatcher that hands grammar invocations off to
+    /// central handlers operating on `active_text()` (the
+    /// SyntheticDoc rope):
     ///
-    /// This replaces the special-case interception in
-    /// `crates/lattice-host/src/input.rs::translate` introduced
-    /// by T3.a: the keymap stays kind-agnostic (`j` → `line_down`
-    /// motion for every buffer); only the runner differs.
-    /// 2026-05-26: returns `true` when claimed, `false` for
-    /// commands the terminal runner doesn't own (so the caller
-    /// can fall through to the grammar Action gate). Action
-    /// commands the runner intercepts (`v` / `V` / `<C-v>`,
-    /// `y` in Visual, `<C-d>` / `<C-u>` / `<C-f>` / `<C-b>` /
-    /// `<C-e>` / `<C-y>`) return `true`; non-claimed Action
-    /// commands (`:` enter command line, `/` enter search, `K`
-    /// hover, LSP nav, ...) return `false` so the central
-    /// dispatch handles them uniformly.
+    /// - **Motion-kind**: `execute_motion_only` against the
+    ///   rope; cursor + visual head sync via
+    ///   `sync_terminal_nav_cursor_from_doc`.
+    /// - **Operator + TextObject**: `dispatch_synthetic_operator`
+    ///   runs the grammar's full operator path against a
+    ///   transient `Document` wrapping the rope; non-mutating
+    ///   effects apply (Yank → register), mutating effects echo
+    ///   "read-only".
+    /// - **Visual yank**: extracts text from the rope via the
+    ///   doc-space `visual_selection_range` /
+    ///   `visual_block_extents` helpers.
+    /// - **Visual entry** (`v`/`V`/`<C-v>`), **page scroll**
+    ///   (`<C-d>`/`<C-u>`), **Insert entry** (`i`/`a`/`I`/`A`):
+    ///   not handled here at all — returned as `false` so
+    ///   `run_invocation`'s central Action gate dispatches them
+    ///   uniformly. (Slices 3 + 4.)
+    ///
+    /// Going forward, vim-grammar fixes go in `lattice-grammar`,
+    /// not in this runner. The remaining bespoke pieces here are
+    /// the dispatch wiring + the terminal-specific viewport sync
+    /// (`sync_terminal_nav_cursor_from_doc`) which has no
+    /// document analogue. File-level retirement of this runner
+    /// requires the dispatch-engine refactor that lets
+    /// `run_document_invocation` accept an active-text override
+    /// (deferred).
+    ///
+    /// Return contract: `true` claims the invocation; `false`
+    /// falls through to the Action gate in `run_invocation`.
     pub fn run_terminal_invocation(&mut self, inv: lattice_grammar::CommandInvocation) -> bool {
         use lattice_terminal::{TerminalScrollKind as Sk, VisualKind as Vk};
         let buf_id = self.active_pane_buffer_id();

@@ -63,13 +63,13 @@ Properties that fall out:
 The UX patterns this primitive enables (each a separate slice
 post-M.6):
 
-| Consumer | UX it lights up |
-|---|---|
-| `SearchProvider` (lands with M.6) | Project-wide search/replace as an editable buffer (`wgrep`-style). Edit a result line → file is edited. |
-| `ProjectDiffProvider` | "Show all changed files in the repo as one scrollable diff." Per-excerpt diff state via `diff-system.md`. |
-| `AIProposedEditsProvider` | Claude / agent proposes edits to N files; all hunks shown in one multibuffer with per-hunk accept/reject. |
-| `LspReferencesProvider` | `gr` opens a multibuffer of every call site as editable excerpts, not a read-only picker. |
-| `DiagnosticsProvider` | `:diagnostics` opens a multibuffer of every diagnostic site as editable excerpts. |
+| Consumer                          | UX it lights up                                                                                           |
+|-----------------------------------|-----------------------------------------------------------------------------------------------------------|
+| `SearchProvider` (lands with M.6) | Project-wide search/replace as an editable buffer (`wgrep`-style). Edit a result line → file is edited.   |
+| `ProjectDiffProvider`             | "Show all changed files in the repo as one scrollable diff." Per-excerpt diff state via `diff-system.md`. |
+| `AIProposedEditsProvider`         | Claude / agent proposes edits to N files; all hunks shown in one multibuffer with per-hunk accept/reject. |
+| `LspReferencesProvider`           | `gr` opens a multibuffer of every call site as editable excerpts, not a read-only picker.                 |
+| `DiagnosticsProvider`             | `:diagnostics` opens a multibuffer of every diagnostic site as editable excerpts.                         |
 
 Without multibuffer these flows degrade to picker → jump →
 back-to-picker iteration; the modern multi-file editing
@@ -151,9 +151,26 @@ range changes.
 pub struct Excerpt {
 	pub id: ExcerptId,
 	pub source: BufferId,
-	pub start: Anchor,    // tracks source-buffer edits
+	pub start: Anchor,        // character-precise (line + col)
 	pub end: Anchor,
 	pub header: ExcerptHeader,
+	/// Rendering mode at partial-line edges (where the excerpt
+	/// starts/ends mid-line):
+	/// - `LineSnapped`: render the full source row at the edge;
+	///   reject edits outside `[start.col, end.col]` on the
+	///   first/last row. M.1 default. Good for diff / search /
+	///   diagnostics consumers where surrounding-row context is
+	///   useful and the col range is fuzzy.
+	/// - `Strict`: render only `[start.col, end.col]` on the
+	///   first/last row — the partial line becomes its own
+	///   display row of width `end.col - start.col`. Used by
+	///   N.1 narrow-to-region for Emacs-style narrow semantics.
+	pub edges: ExcerptEdgeMode,
+}
+
+pub enum ExcerptEdgeMode {
+	LineSnapped,
+	Strict,
 }
 
 pub struct ExcerptHeader {
@@ -163,10 +180,23 @@ pub struct ExcerptHeader {
 ```
 
 `Anchor` is the existing position-history primitive
-(§5.1.1) — it already tracks source-buffer edits without the
+(§5.1.1) — `(line: u32, col: u32)` plus generation tracking.
+It already moves with source-buffer edits without the
 multibuffer doing any work. When the user inserts a line at
-source row 50 and the excerpt covers source rows 102–118,
-the anchors slide to 103–119 automatically.
+source row 50 and the excerpt covers source rows 102–118, the
+anchors slide to 103–119 automatically. When the user inserts
+3 chars at column 5 of the excerpt's start row, `start.col`
+slides from `c` to `c + 3`.
+
+**Character-precise from M.1.** The data model is anchor-based
+end-to-end so narrow-to-region (N.1) drops in without
+revisiting the excerpt structure. The `edges: ExcerptEdgeMode`
+field is the only narrow-vs-non-narrow rendering difference —
+M.1 ships both modes (default `LineSnapped`); N.1 just sets
+`Strict` on the excerpts it creates. The row-translation cache
+(§3.3) handles partial-line rows by emitting a `RowEntry`
+variant that carries the col range; the renderer slices the
+source row to that range when materialising the display cells.
 
 When the user edits *inside* an excerpt's range, the anchors
 again slide automatically — no excerpt mutation needed. The
@@ -193,9 +223,18 @@ pub struct RowTranslation {
 }
 
 pub enum RowEntry {
+	/// Full source row (the common case).
 	Excerpt {
 		excerpt_id: ExcerptId,
 		source_row: u32,
+	},
+	/// Partial source row — only `col_range` is visible /
+	/// editable. Emitted by `ExcerptEdgeMode::Strict` for
+	/// narrow-to-region's first / last rows.
+	PartialExcerpt {
+		excerpt_id: ExcerptId,
+		source_row: u32,
+		col_range: std::ops::Range<u32>,
 	},
 	Header(ExcerptId),
 	Separator,
@@ -207,7 +246,9 @@ The translation table is the bridge between the renderer
 (holding the actual content). Lookup is O(log n) over
 `entries`; rebuild is O(N) where N is the total source row
 count across all excerpts — done off-thread and published via
-arc-swap.
+arc-swap. The renderer treats `PartialExcerpt` identically to
+`Excerpt` for highlighting + decoration; it just slices the
+source row's cells to `col_range` before emitting glyphs.
 
 ### 3.4 `MultibufferProvider`
 
@@ -348,6 +389,10 @@ the standard edit pipeline handles the per-excerpt split.
 | `:multibuffer-jump-to-source` | Open the excerpt's source buffer in a new pane at the cursor's source position |
 | `:multibuffer-close` | Close the multibuffer (does not affect source buffers) |
 | `:describe-multibuffer` | Open help buffer showing active multibuffers, providers, excerpt counts |
+| `:narrow` | (N.1, A.5) Open a single-excerpt multibuffer over the active visual region, `edges: Strict`. Source buffer unchanged until edits propagate via M.3. |
+| `:narrow-to-defun` | (N.1) Same as `:narrow` with the range computed from the tree-sitter scope at point. |
+| `:narrow-to-paragraph` | (N.1) Same with the prose paragraph at point. |
+| `:widen` | (N.1) Close the active narrow multibuffer, returning to the source. Equivalent to `:bd` on a NarrowProvider-backed buffer; named for Emacs muscle memory. |
 
 Per saved feedback on dashed naming, these are all
 dashed multi-word commands.
@@ -471,6 +516,21 @@ Slice sequencing:
 - **M.6** depends on M.4 (provider needs editable +
   live-updating multibuffer).
 
+### N.1 — Narrow mode (follow-on, depends on M.3)
+
+| Slice | Title | What lands |
+|---|---|---|
+| **N.1** | Narrow mode | `NarrowProvider` (one excerpt with `ExcerptEdgeMode::Strict`); `:narrow` over the active visual region; `:narrow-to-defun` (tree-sitter scope at point); `:narrow-to-paragraph`; `:widen` sugar over `:bd`. Tests: narrow over a line range renders only that range; edits propagate to the source; widen restores; partial-line edges render exactly `[start.col, end.col]`; stacked narrow (narrow within a narrow's output buffer) edits propagate two hops to the real source; two panes narrowed to different ranges of the same source stay live-synced through M.4. No bench gate (composed primitive — perf is covered by M.3 / M.4 gates). |
+
+`N.1` depends on **M.3** (editable multibuffer + edit
+propagation) — that's the load-bearing prerequisite for
+"edits in the narrowed view save to the original buffer."
+Multiple parallel narrows and stacked narrow additionally
+rely on **M.4** (live source-edit propagation) for cross-pane
+consistency; lands once M.4 is green.
+
+Full design notes in §A.5.
+
 ## 10. Follow-on consumers (appendix)
 
 After M.6, four further providers compose on top without
@@ -529,6 +589,47 @@ than "list them and jump per site."
 
 Slice cost: one provider.
 
+### A.5. `NarrowProvider` — Emacs-style narrow mode
+
+Composes purely with M.1 (excerpt structure) + M.3 (edit
+propagation). The provider holds **one excerpt** over a single
+source buffer's character-precise range with
+`edges: ExcerptEdgeMode::Strict` so partial-line edges render
+exactly the narrowed text.
+
+UX: `:narrow` over the active visual region creates a
+single-excerpt multibuffer pinned to the source's selection
+range; the user sees only that range, edits propagate
+upstream through M.3's standard pipeline, and `:widen` (or
+`:bd` on the multibuffer) returns to viewing the source.
+`:narrow-to-defun` is the same primitive with the range
+computed from the tree-sitter scope at point;
+`:narrow-to-paragraph` from the prose paragraph at point.
+
+Why it's not in-place (vs. Emacs):
+
+- Emacs `narrow-to-region` stashes restriction bounds on the
+  buffer itself, so a buffer can be narrowed in at most one
+  way at a time.
+- The multibuffer approach makes the narrow its own buffer.
+  Costs: a new BufferId, a registry entry. Pays: **multiple
+  parallel narrows on the same source** (one per pane,
+  showing different ranges, all live-synced); **narrow within
+  narrow** (a NarrowProvider over a NarrowProvider's output
+  buffer chains through M.3's edit propagation transparently);
+  **narrow over multibuffer** (narrow inside a search-results
+  view, an AI proposed-edits view, a project-diff view —
+  same machinery).
+
+The compositional gain is the architectural reason to do this
+through multibuffer rather than as a sibling restriction-bounds
+field on Document. Saved memory check: aligns with
+*"Buffers must not have kind-specific logic"* — a narrowed
+view is just a Document, not a special buffer kind.
+
+Slice cost: one provider + the `:narrow` / `:narrow-to-defun` /
+`:narrow-to-paragraph` / `:widen` ex-commands.
+
 ## 11. Testing strategy
 
 - **Unit tests** in a new `lattice-multibuffer` crate (or
@@ -556,15 +657,15 @@ Slice cost: one provider.
   snapshot. And the reverse.
 - **Bench:**
   - `multibuffer_edit_dispatch_p99_us` (M.3) — CI gate ≤
-    100µs at 1k excerpts.
+	100µs at 1k excerpts.
   - `multibuffer_source_edit_p99_us` (M.4) — CI gate ≤ 200µs
-    at 1k excerpts × 10 source buffers.
+	at 1k excerpts × 10 source buffers.
   - `multibuffer_render_p99_us` (M.2) — CI gate ≤ 200µs at
-    50 visible excerpts.
+	50 visible excerpts.
   - `multibuffer_translation_rebuild_p99_us` (M.1) — CI gate
-    ≤ 2000µs at 20k rows.
+	≤ 2000µs at 20k rows.
   - `multibuffer_bulk_replace_p99_us` (M.6) — CI gate ≤ 5000µs
-    at 1k excerpt replacement.
+	at 1k excerpt replacement.
 - **Stress observations** (not gated): 10k excerpts across
   100 source buffers; one source buffer with 5k excerpts
   under continuous edit.

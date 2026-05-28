@@ -21843,64 +21843,86 @@ impl Editor {
             }
             let _ = visual; // borrow released; yank arm re-reads
             if cmd == self.builtins.yank.0 {
-                let visual = self
+                // 2026-05-28: Visual yank now extracts from the
+                // SyntheticDoc rope via the doc-space
+                // `visual_selection_range` / `visual_block_extents`
+                // (T-paint-1). Retires the grid-cell extraction
+                // path (`t.term.{line,char,block}_range_text`)
+                // for the in-buffer yank — the rope and the grid
+                // carry the same content, the rope just speaks
+                // doc-space coords.
+                let buffer = self.active_text();
+                let visual_kind = self
                     .buffers
-                    .with_terminal(buf_id, |t| t.visual)
-                    .flatten()
-                    .unwrap_or(visual);
-                // T3.b.2.b: per-kind yank — linewise / charwise
-                // / blockwise route to distinct substrate
-                // helpers so the register entry shape matches
-                // what `p` will paste later.
-                let (text, kind, summary) = match visual.kind {
-                    Vk::Line => {
-                        let (lo, hi) = visual.line_range();
-                        let t = self
-                            .buffers
-                            .with_terminal(buf_id, |t| t.term.line_range_text(lo, hi))
-                            .unwrap_or_default();
+                    .with_terminal(buf_id, |t| t.visual.map(|v| v.kind))
+                    .flatten();
+                let (text, yank_kind, summary) = match visual_kind {
+                    Some(Vk::Block) => {
+                        let extents = self
+                            .visual_block_extents()
+                            .unwrap_or(crate::visual::BlockExtents {
+                                start_line: 0,
+                                end_line: 0,
+                                start_col: 0,
+                                end_col: 0,
+                            });
+                        let mut out = String::new();
+                        let line_count = buffer.line_count();
+                        for line in extents.start_line..=extents.end_line {
+                            if line >= line_count {
+                                break;
+                            }
+                            let line_text = buffer.line(line).unwrap_or_default();
+                            let line_text = line_text.trim_end_matches('\n');
+                            let bytes = line_text.as_bytes();
+                            let lo = (extents.start_col as usize).min(bytes.len());
+                            let hi = ((extents.end_col as usize) + 1).min(bytes.len());
+                            if lo < hi {
+                                out.push_str(&line_text[lo..hi]);
+                            }
+                            out.push('\n');
+                        }
+                        let rows = extents.end_line - extents.start_line + 1;
+                        let cols = extents.end_col - extents.start_col + 1;
                         (
-                            t,
-                            lattice_grammar::YankKind::Linewise,
-                            format!("{} line(s)", (hi - lo + 1).max(1)),
-                        )
-                    }
-                    Vk::Char => {
-                        let ((s_line, s_col), (e_line, e_col)) = visual.char_endpoints();
-                        let t = self
-                            .buffers
-                            .with_terminal(buf_id, |t| {
-                                t.term.char_range_text(s_line, s_col, e_line, e_col)
-                            })
-                            .unwrap_or_default();
-                        let len = t.chars().count();
-                        (t, lattice_grammar::YankKind::Charwise, format!("{} char(s)", len))
-                    }
-                    Vk::Block => {
-                        let (lo, hi) = visual.line_range();
-                        let (lo_c, hi_c) = visual.block_col_range();
-                        let t = self
-                            .buffers
-                            .with_terminal(buf_id, |t| {
-                                t.term.block_range_text(lo, hi, lo_c, hi_c)
-                            })
-                            .unwrap_or_default();
-                        (
-                            t,
+                            out,
                             lattice_grammar::YankKind::Blockwise,
-                            format!(
-                                "{} rows × {} cols",
-                                (hi - lo + 1).max(1),
-                                (hi_c - lo_c + 1) as u32,
-                            ),
+                            format!("{rows} rows × {cols} cols"),
                         )
+                    }
+                    Some(Vk::Line) => {
+                        let range = self.visual_selection_range();
+                        let (start_line, end_line) = match range {
+                            Some(r) => (r.start.line, r.end.line.min(buffer.line_count().saturating_sub(1))),
+                            None => (0, 0),
+                        };
+                        let mut out = String::new();
+                        for line in start_line..=end_line {
+                            let line_text = buffer.line(line).unwrap_or_default();
+                            out.push_str(line_text.trim_end_matches('\n'));
+                            out.push('\n');
+                        }
+                        (
+                            out,
+                            lattice_grammar::YankKind::Linewise,
+                            format!("{} line(s)", (end_line - start_line + 1).max(1)),
+                        )
+                    }
+                    Some(Vk::Char) | None => {
+                        let range = self.visual_selection_range();
+                        let text = match range {
+                            Some(r) => buffer.slice(r).unwrap_or_default(),
+                            None => String::new(),
+                        };
+                        let len = text.chars().count();
+                        (text, lattice_grammar::YankKind::Charwise, format!("{len} char(s)"))
                     }
                 };
                 let register = self
                     .pending_register
                     .take()
                     .unwrap_or(lattice_grammar::register::Register::Unnamed);
-                self.store_yank(register, text, kind);
+                self.store_yank(register, text, yank_kind);
                 let _ = self.buffers.with_terminal_mut(buf_id, |t| {
                     if let Some(prev) = t.visual.take() {
                         t.last_visual = Some(prev);

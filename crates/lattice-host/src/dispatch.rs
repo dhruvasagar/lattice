@@ -878,22 +878,27 @@ impl Editor {
                 // T-clean-1 Phase A.1 (2026-05-28): publisher
                 // derives the renderer-consumed cursor + visual
                 // from `self.cursor` (doc-space) + the buffer's
-                // `synthetic.origin_top_line`, replacing the
-                // direct `with_terminal(...|t| t.nav_cursor)`
-                // reach the renderers had.
+                // `synthetic.origin_top_line`. Phase A.3
+                // (2026-05-28): publisher ALSO writes back to
+                // `t.nav_cursor` so the bespoke buffer field
+                // stays in sync as a renderer-convenience cache
+                // — motion paths stop writing it explicitly
+                // (single writer = publisher).
                 terminal_nav_cursor: if matches!(
                     self.active_buffer,
                     BufferKind::Terminal
                 ) {
                     let cur = self.cursor;
                     self.buffers
-                        .with_terminal(self.active_pane_buffer_id(), |t| {
-                            t.synthetic.as_ref().map(|s| {
+                        .with_terminal_mut(self.active_pane_buffer_id(), |t| {
+                            let nav = t.synthetic.as_ref().map(|s| {
                                 let grid_line =
                                     s.origin_top_line + cur.line as i32;
                                 let grid_col = cur.byte as u16;
                                 (grid_line, grid_col)
-                            })
+                            });
+                            t.nav_cursor = nav;
+                            nav
                         })
                         .flatten()
                 } else {
@@ -11740,13 +11745,11 @@ impl Editor {
             };
             t.current_match = current.as_ref().map(translate);
             t.all_matches = all.iter().map(translate).collect();
-            // Mirror cursor → grid `nav_cursor` so the renderer
-            // paints the cursor at the hit. Use the same
-            // translation as the motion paths.
-            t.nav_cursor = Some((
-                origin + cursor.line as i32,
-                cursor.byte as u16,
-            ));
+            // T-clean-1 Phase A.3 (2026-05-28): nav_cursor write
+            // removed — publisher syncs from `self.cursor`
+            // (already updated to hit.range.start by the caller)
+            // at end-of-dispatch. Visual head still needs the
+            // grid coords for the bespoke Visual paint path.
             if let Some(v) = t.visual.as_mut() {
                 v.head_line = origin + cursor.line as i32;
                 v.head_col = cursor.byte as u16;
@@ -12611,7 +12614,10 @@ impl Editor {
             };
             let grid_line = s.origin_top_line + cur.line as i32;
             let grid_col = cur.byte as u16;
-            t.nav_cursor = Some((grid_line, grid_col));
+            // T-clean-1 Phase A.3 (2026-05-28): nav_cursor write
+            // removed — publisher syncs from `self.cursor` at
+            // end-of-dispatch. Visual head update stays for the
+            // bespoke Visual paint path.
             if let Some(v) = t.visual.as_mut() {
                 v.head_line = grid_line;
                 v.head_col = grid_col;
@@ -13332,7 +13338,13 @@ impl Editor {
                 clamp_no_move = new_l == cur_l && dy != 0,
                 "terminal-nav probe"
             );
-            t.nav_cursor = Some((new_l, new_c));
+            // T-clean-1 Phase A.3 (2026-05-28): nav_cursor write
+            // removed — publisher syncs from `self.cursor` (set
+            // below by the caller) at end-of-dispatch. The
+            // `cur_l` / `cur_c` used as the fallback anchor a
+            // few lines above still reads `t.nav_cursor`, which
+            // remains valid because the publisher wrote it on
+            // the previous dispatch's tail.
             if let Some(v) = t.visual.as_mut() {
                 v.head_line = new_l;
                 v.head_col = new_c;
@@ -13402,7 +13414,8 @@ impl Editor {
                 cur_l = next_l;
                 cur_c = next_c;
             }
-            t.nav_cursor = Some((cur_l, cur_c));
+            // T-clean-1 Phase A.3 (2026-05-28): nav_cursor write
+            // removed — publisher syncs from `self.cursor`.
             if let Some(v) = t.visual.as_mut() {
                 v.head_line = cur_l;
                 v.head_col = cur_c;
@@ -13444,7 +13457,8 @@ impl Editor {
                 NavTarget::Bottom => bot,
             };
             let new_c = t.nav_cursor.map(|(_, c)| c).unwrap_or(0);
-            t.nav_cursor = Some((new_l, new_c));
+            // T-clean-1 Phase A.3 (2026-05-28): nav_cursor write
+            // removed — publisher syncs from `self.cursor`.
             if let Some(v) = t.visual.as_mut() {
                 v.head_line = new_l;
                 v.head_col = new_c;

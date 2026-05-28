@@ -12997,10 +12997,38 @@ impl Editor {
             id,
             lattice_terminal::TerminalNormalMode::mode_id(),
         );
+        // T-cursor-1 (2026-05-28): seed `self.cursor` from the
+        // freshly-built SyntheticDoc so the doc-space cursor is
+        // valid the moment the pane becomes active. Search /
+        // marks / text objects read through `self.cursor`.
+        self.seed_terminal_doc_cursor(id);
         self.set_message(
             EchoLevel::Info,
             format!("terminal: spawned `{program}` (#{} )", id.0),
         );
+    }
+
+    /// T-cursor-1 (2026-05-28): copy the SyntheticDoc's cursor
+    /// into `self.cursor` (and the active pane's stash) so the
+    /// doc-space cursor is valid immediately after a
+    /// `TerminalNormalMode` activation. Called after every
+    /// activation site (`do_terminal_spawn` + `do_exit_terminal_
+    /// insert`). No-op when the buffer is not a terminal, the
+    /// synthetic doc is missing, or the buffer isn't currently
+    /// focused (the cursor write only applies to the focused
+    /// pane — non-active panes carry their own pane.cursor).
+    fn seed_terminal_doc_cursor(&mut self, buf_id: BufferId) {
+        let doc_cursor = self
+            .buffers
+            .with_terminal(buf_id, |t| t.synthetic.as_ref().map(|s| s.cursor))
+            .flatten();
+        let Some(c) = doc_cursor else {
+            return;
+        };
+        if self.active_pane_buffer_id() == buf_id {
+            self.cursor = c;
+            self.pane_tree.active_mut().cursor = c;
+        }
     }
 
     /// Terminal-mode T2.a: write encoded bytes to the active
@@ -13122,6 +13150,10 @@ impl Editor {
             buf_id,
             lattice_terminal::TerminalNormalMode::mode_id(),
         );
+        // T-cursor-1 (2026-05-28): seed `self.cursor` from the
+        // freshly-built SyntheticDoc (the live PTY cursor
+        // translated to doc-space at build time).
+        self.seed_terminal_doc_cursor(buf_id);
     }
 
     /// T2.c (2026-05-25): handler for `Action::TerminalArmExitChord`.
@@ -13146,8 +13178,15 @@ impl Editor {
     /// visible window. Also syncs the Visual head when a
     /// Visual session is in flight, so j/k inside Visual
     /// extends the selection via the cursor naturally.
+    ///
+    /// T-cursor-1 (2026-05-28): also writes `self.cursor` in
+    /// doc-space (translated via `synthetic.origin_top_line`) so
+    /// downstream consumers — search, marks, text objects, the
+    /// future central-dispatch flip — can read uniformly. `nav_
+    /// cursor` stays the grid-space mirror the renderers paint
+    /// from until T-paint-1 retires it.
     pub fn do_terminal_nav_move(&mut self, buf_id: BufferId, dy: i32, dx: i32) {
-        let _ = self.buffers.with_terminal_mut(buf_id, |t| {
+        let new_doc_cursor = self.buffers.with_terminal_mut(buf_id, |t| {
             let cols = t.snapshot.load().cols;
             let (top, bot) = t.term.line_bounds();
             let nav_was_none = t.nav_cursor.is_none();
@@ -13205,7 +13244,19 @@ impl Editor {
                 // Republish so the cursor overlay repaints.
                 t.term.scroll(lattice_terminal::TerminalScrollKind::Delta(0));
             }
+            // T-cursor-1: compute the doc-space cursor for the
+            // caller to install on `self.cursor`. Only available
+            // when the synthetic doc exists (i.e. mode is
+            // TerminalNormalMode, not Insert).
+            t.synthetic.as_ref().map(|s| {
+                let doc_line = (new_l - s.origin_top_line).max(0) as u32;
+                let doc_byte = new_c as u32;
+                lattice_protocol::position::Position::new(doc_line, doc_byte)
+            })
         });
+        if let Some(Some(c)) = new_doc_cursor {
+            self.cursor = c;
+        }
     }
 
     /// 2026-05-27: word-class motion for the Normal-in-terminal
@@ -13228,7 +13279,7 @@ impl Editor {
         big: bool,
         count: u32,
     ) {
-        let _ = self.buffers.with_terminal_mut(buf_id, |t| {
+        let new_doc_cursor = self.buffers.with_terminal_mut(buf_id, |t| {
             let (top, bot) = t.term.line_bounds();
             let cols = t.snapshot.load().cols;
             let (mut cur_l, mut cur_c) = t.nav_cursor.unwrap_or_else(|| {
@@ -13263,14 +13314,24 @@ impl Editor {
             } else {
                 t.term.scroll(lattice_terminal::TerminalScrollKind::Delta(0));
             }
+            // T-cursor-1: doc-space mirror for downstream
+            // consumers. See `do_terminal_nav_move` for context.
+            t.synthetic.as_ref().map(|s| {
+                let doc_line = (cur_l - s.origin_top_line).max(0) as u32;
+                let doc_byte = cur_c as u32;
+                lattice_protocol::position::Position::new(doc_line, doc_byte)
+            })
         });
+        if let Some(Some(c)) = new_doc_cursor {
+            self.cursor = c;
+        }
     }
 
     /// 2026-05-25: jump the Normal-in-terminal navigation
     /// cursor to top / bottom of scrollback. Pairs with
     /// `do_terminal_nav_move` for the gg / G chords.
     pub fn do_terminal_nav_goto(&mut self, buf_id: BufferId, target: NavTarget) {
-        let _ = self.buffers.with_terminal_mut(buf_id, |t| {
+        let new_doc_cursor = self.buffers.with_terminal_mut(buf_id, |t| {
             let (top, bot) = t.term.line_bounds();
             let new_l = match target {
                 NavTarget::Top => top,
@@ -13284,7 +13345,16 @@ impl Editor {
             }
             // Snap viewport so the cursor row is visible.
             t.term.scroll_to_line(new_l);
+            // T-cursor-1: doc-space mirror.
+            t.synthetic.as_ref().map(|s| {
+                let doc_line = (new_l - s.origin_top_line).max(0) as u32;
+                let doc_byte = new_c as u32;
+                lattice_protocol::position::Position::new(doc_line, doc_byte)
+            })
         });
+        if let Some(Some(c)) = new_doc_cursor {
+            self.cursor = c;
+        }
     }
 
     /// Terminal-mode T3 (2026-05-25): re-position the

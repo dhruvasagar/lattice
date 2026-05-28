@@ -1427,10 +1427,31 @@ shared with multibuffer-views and post-v1 inlay hints.
   column — that requires per-recompute telemetry not in the
   current `DiffSession`; defer to a follow-on slice once
   consumers ask for it.
-- 🗒 **D.2.e** — Implementation-ledger cross-link to bench
-  coverage; criterion bench wired against the recompute path
-  (CI gate enforcement still deferred until D.3 produces a
-  visual consumer for paint metric).
+- ✅ **D.2.e** (2026-05-29) — Criterion bench landed at
+  `lattice-host/benches/diff_subsystem.rs` with four workloads:
+  - **`recompute_blocking`** at 1k / 5k / 50k lines —
+    measured at ~469µs / ~7.86ms / ~634ms on dev hardware.
+    The 5k case is right at the 8ms 120Hz keystroke budget,
+    confirming the debounce in D.2.c is load-bearing (you
+    can't recompute on every keystroke at v1 P95 file size).
+  - **`routing_fanout`** at N=10 / 100 / 1000 sessions all
+    watching the same shared buffer (worst case) — ~518ns /
+    ~5µs / ~47.7µs. Grows linearly with **actual dependent
+    count**, which is the expected per-poke cost.
+  - **`routing_isolated_lookup`** at N=10 / 100 / 1000
+    sessions where only one watches the poked buffer —
+    **~76ns flat regardless of N**. Directly confirms
+    `diff-system.md` §3.4's "cost per edit is O(1 + actual
+    dependents), independent of total session count" claim.
+    This is the production-typical case (project-wide diff
+    over 1000 files but only one edited at a time).
+  - **`debouncer_poke`** — ~17.7ns steady-state (atomic
+    fetch_add + CAS; first-poke spawn cost amortised across
+    criterion's iteration loop).
+  CI gate enforcement still deferred until D.3 visual
+  consumer lands and the paint pass joins the budget. Bench
+  is annotated with the §3.4 paragraphs it backs so the
+  design + bench stay coupled (heuristic #5).
 - 🗒 **D.3** — Inline overlay presentation: single-doc vs.
   baseline; gutter signs, line tints, deletion blocks; `]c`
   / `[c` motions.

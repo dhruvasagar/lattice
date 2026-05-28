@@ -1,0 +1,231 @@
+//! D.2.e (2026-05-29): diff-subsystem hot-path bench.
+//!
+//! Three workloads back the §3.4 scaling claims:
+//!
+//! - **`recompute_blocking`** — synchronous compute body the
+//!   `spawn_blocking` task executes. Walks the same path as a
+//!   production recompute: allocate revision, call
+//!   `lattice_diff::compute_two_way`, build `HunkIndex`, gated
+//!   publish. Measured at 1k / 5k / 50k line ropes — the v1
+//!   P95 file size band and the stress band per
+//!   `diff-system.md` §7. No tokio runtime needed (pure sync).
+//!
+//! - **`routing_fanout`** — `DiffSubsystem::note_buffer_edited`
+//!   with N sessions **all watching the same shared buffer**.
+//!   Worst-case fan-out — every poke walks all N dependents.
+//!   Measures the inverse-index lookup + N × per-session
+//!   `Debouncer::poke` cost. Crucially, the debounce window
+//!   is set to 60s so the spawned tokio tasks **do not fire**
+//!   during the bench — what we're measuring is the routing
+//!   entry path, not the deferred compute. Grows ~linearly
+//!   with N (each dependent is one cheap poke), which is the
+//!   actual cost when many sessions share a baseline (e.g.,
+//!   AI multi-file diff with all sessions watching one
+//!   shared base buffer).
+//!
+//! - **`routing_isolated_lookup`** — N sessions registered, but
+//!   only **one** of them watches the buffer that gets poked.
+//!   Backs the §3.4 "cost per edit O(1 + actual dependents),
+//!   independent of total registered session count" claim
+//!   directly. The cost should stay flat (one HashMap lookup
+//!   + one poke) regardless of N. This is the production case
+//!   when project-wide diff opens 1000 sessions over 1000
+//!   different files but only one is being edited.
+//!
+//! - **`debouncer_poke`** — raw `Debouncer::poke` cost.
+//!   First-poke after idle pays the tokio spawn; subsequent
+//!   pokes are a `fetch_add` + a CAS. Criterion's
+//!   measurement averages over many iterations so the spawn
+//!   amortises; isolated first-poke cost would need a fresh
+//!   `Debouncer` per sample which criterion's
+//!   `bench_function` doesn't easily express. Steady-state
+//!   fetch_add is what we care about for the per-keystroke
+//!   path anyway.
+//!
+//! Run:
+//!
+//!   cargo bench -p lattice-host --bench diff_subsystem
+//!
+//! Backs paramount goal #1 (sub-frame keystroke→glyph) by
+//! showing the routing cost is independent of N (heuristic
+//! #5 — design + bench ship together). CI gate enforcement
+//! deferred until the first visual consumer (D.3 inline
+//! overlay).
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use ropey::Rope;
+
+use lattice_core::BufferId;
+use lattice_diff::DiffAlgorithm;
+use lattice_host::diff_subsystem::{
+	BufferCurrentSource, BufferTextProvider, Debouncer, DiffDescriptor, DiffSession,
+	DiffSubsystem, StaticBaseline,
+};
+
+#[derive(Debug)]
+struct EmptyProvider;
+
+impl BufferTextProvider for EmptyProvider {
+	fn buffer_rope(&self, _: BufferId) -> Option<Rope> {
+		Some(Rope::new())
+	}
+}
+
+fn make_rope(lines: u32) -> Rope {
+	let mut s = String::with_capacity((lines as usize) * 80);
+	for i in 0..lines {
+		for c in 0..80u32 {
+			let b = b'a' + (((i * 80) + c) % 26) as u8;
+			s.push(b as char);
+		}
+		s.push('\n');
+	}
+	Rope::from(s)
+}
+
+fn mutate_a_few_lines(rope: &Rope, n: u32) -> Rope {
+	let owned = rope.to_string();
+	let lines: Vec<String> = owned.lines().map(|l| l.to_string()).collect();
+	let stride = ((lines.len() as u32) / n).max(1);
+	let mutated: Vec<String> = lines
+		.into_iter()
+		.enumerate()
+		.map(|(i, l)| {
+			if (i as u32) % stride == 0 {
+				let mut m = l;
+				if !m.is_empty() {
+					m.replace_range(0..1, "X");
+				}
+				m
+			} else {
+				l
+			}
+		})
+		.collect();
+	let mut out = mutated.join("\n");
+	if !out.ends_with('\n') {
+		out.push('\n');
+	}
+	Rope::from(out)
+}
+
+fn bench_recompute_blocking(c: &mut Criterion) {
+	let mut group = c.benchmark_group("recompute_blocking");
+	for &lines in &[1_000u32, 5_000, 50_000] {
+		let baseline = make_rope(lines);
+		let current = mutate_a_few_lines(&baseline, 20);
+		group.bench_with_input(BenchmarkId::new("lines", lines), &(), |b, _| {
+			b.iter(|| {
+				let session = DiffSession::new(BufferId(1), DiffAlgorithm::Histogram);
+				session.recompute_blocking(black_box(&baseline), black_box(&current));
+			});
+		});
+	}
+	group.finish();
+}
+
+fn bench_routing_fanout(c: &mut Criterion) {
+	// Routing fan-out needs a tokio runtime because `Debouncer::poke`
+	// spawns a tokio task on first poke. The 60s debounce window
+	// guarantees the task never fires during the bench — we measure
+	// the entry path, not the deferred compute.
+	let rt = tokio::runtime::Builder::new_multi_thread()
+		.enable_all()
+		.build()
+		.expect("tokio runtime");
+	let _enter = rt.enter();
+
+	let mut group = c.benchmark_group("routing_fanout");
+	let provider: Arc<dyn BufferTextProvider> = Arc::new(EmptyProvider);
+	let shared = BufferId(u32::MAX);
+	for &n in &[10u32, 100, 1_000] {
+		let sub = Arc::new(DiffSubsystem::with_debounce_window(Duration::from_secs(60)));
+		for i in 0..n {
+			let id = BufferId(i + 1);
+			let desc = DiffDescriptor {
+				baseline: Arc::new(StaticBaseline::new(Rope::new())),
+				current: Arc::new(BufferCurrentSource::new(Arc::clone(&provider), id)),
+				watch: vec![shared],
+			};
+			sub.register_with_sources(id, DiffAlgorithm::Histogram, desc);
+		}
+		group.bench_with_input(BenchmarkId::new("sessions", n), &sub, |b, sub| {
+			b.iter(|| {
+				Arc::clone(sub).note_buffer_edited(black_box(shared));
+			});
+		});
+	}
+	group.finish();
+}
+
+fn bench_routing_isolated_lookup(c: &mut Criterion) {
+	// N sessions registered, only ONE watches the buffer that
+	// gets poked. Tests that routing cost is independent of
+	// total session count — the inverse index returns a
+	// 1-element list regardless of N. Confirms §3.4's
+	// "O(1 + dependents)" claim where dependents == 1.
+	let rt = tokio::runtime::Builder::new_multi_thread()
+		.enable_all()
+		.build()
+		.expect("tokio runtime");
+	let _enter = rt.enter();
+
+	let mut group = c.benchmark_group("routing_isolated_lookup");
+	let provider: Arc<dyn BufferTextProvider> = Arc::new(EmptyProvider);
+	let poked = BufferId(u32::MAX);
+	for &n in &[10u32, 100, 1_000] {
+		let sub = Arc::new(DiffSubsystem::with_debounce_window(Duration::from_secs(60)));
+		// Session 1 is the only one watching `poked`. Sessions
+		// 2..N watch their own private siblings — they're
+		// registered noise, not dependents.
+		let session_one = BufferId(1);
+		let desc_one = DiffDescriptor {
+			baseline: Arc::new(StaticBaseline::new(Rope::new())),
+			current: Arc::new(BufferCurrentSource::new(Arc::clone(&provider), session_one)),
+			watch: vec![poked],
+		};
+		sub.register_with_sources(session_one, DiffAlgorithm::Histogram, desc_one);
+		for i in 2..=n {
+			let id = BufferId(i);
+			let sibling = BufferId(i + 100_000);
+			let desc = DiffDescriptor {
+				baseline: Arc::new(StaticBaseline::new(Rope::new())),
+				current: Arc::new(BufferCurrentSource::new(Arc::clone(&provider), id)),
+				watch: vec![sibling],
+			};
+			sub.register_with_sources(id, DiffAlgorithm::Histogram, desc);
+		}
+		group.bench_with_input(BenchmarkId::new("sessions", n), &sub, |b, sub| {
+			b.iter(|| {
+				Arc::clone(sub).note_buffer_edited(black_box(poked));
+			});
+		});
+	}
+	group.finish();
+}
+
+fn bench_debouncer_poke(c: &mut Criterion) {
+	let rt = tokio::runtime::Builder::new_multi_thread()
+		.enable_all()
+		.build()
+		.expect("tokio runtime");
+	let _enter = rt.enter();
+	let deb = Debouncer::new(Duration::from_secs(60));
+	c.bench_function("debouncer_poke", |b| {
+		b.iter(|| {
+			deb.poke(|| {});
+		});
+	});
+}
+
+criterion_group!(
+	benches,
+	bench_recompute_blocking,
+	bench_routing_fanout,
+	bench_routing_isolated_lookup,
+	bench_debouncer_poke
+);
+criterion_main!(benches);

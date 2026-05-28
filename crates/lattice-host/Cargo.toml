@@ -153,5 +153,15 @@ name = "dispatch_publish"
 name = "cells_worker"
 harness = false
 
+# D.2.e (2026-05-29): diff-subsystem hot-path bench. Three
+# workloads — `recompute_blocking` at 1k/5k/50k lines,
+# `routing_fanout` with N=10/100/1000 watching sessions, raw
+# `Debouncer::poke` cost. Backs the §3.4 "routing cost
+# independent of session count" claim. See
+# `benches/diff_subsystem.rs`.
+[[bench]]
+name = "diff_subsystem"
+harness = false
+
 [lints]
 workspace = true

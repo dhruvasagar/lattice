@@ -63,6 +63,12 @@ lattice-syntax = { path = "../lattice-syntax" }
 # renderers (S3 TUI, S4 GPU). See
 # `docs/dev/architecture/cell-grid-renderer.md`.
 lattice-cells = { path = "../lattice-cells" }
+# D.2.a (2026-05-28): diff-subsystem skeleton. `DiffSubsystem`
+# holds per-buffer `DiffSession` registry; sessions wrap
+# `lattice-diff`'s `HunkIndex` in `ArcSwap` for RCU-published
+# reads. Compute lands D.2.b. See
+# `docs/dev/architecture/diff-system.md`.
+lattice-diff = { path = "../lattice-diff" }
 tree-sitter = { workspace = true }
 streaming-iterator = { workspace = true }
 # modes.rs references the snippet major-mode id.

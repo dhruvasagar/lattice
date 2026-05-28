@@ -55,6 +55,12 @@ pub mod highlights_worker;
 // `Editor::cells_matrix_cell`. See
 // `docs/dev/architecture/cell-grid-renderer.md`.
 pub mod cells_worker;
+// D.2.a (2026-05-28): diff-subsystem registry skeleton.
+// `DiffSubsystem` keys `DiffSession` entries by `BufferId`;
+// sessions publish `Arc<HunkIndex>` via `ArcSwap`. Compute +
+// recompute scheduling land D.2.b. See
+// `docs/dev/architecture/diff-system.md` §6.
+pub mod diff_subsystem;
 pub mod host_generators;
 pub mod input;
 pub mod keymap;

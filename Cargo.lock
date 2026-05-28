@@ -3471,6 +3471,7 @@ dependencies = [
  "lattice-completion",
  "lattice-config",
  "lattice-core",
+ "lattice-diff",
  "lattice-file-tree",
  "lattice-grammar",
  "lattice-help",

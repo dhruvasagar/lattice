@@ -208,21 +208,31 @@ came from a `DiffMap` or directly from the document.
 ### 3.4 `DiffSubsystem` — the owner
 
 A `DiffSubsystem` lives next to `LspSupervisor` and the
-existing terminal supervisor on `lattice-host`. It owns:
+existing terminal supervisor on `lattice-host`
+(`lattice-host::diff_subsystem`, landed D.2.a 2026-05-28). It
+owns:
 
-- The `HashMap<DiffSessionId, DiffSession>` keyed by an opaque
-  id.
+- The `HashMap<BufferId, Arc<DiffSession>>`. (Drafts of this
+  fragment called for an opaque `DiffSessionId`; D.2.a
+  collapsed to `BufferId` keying once the consumer surface was
+  clear — one session per diffed buffer holds for inline
+  overlay, side-by-side (each pane = own buffer), and three-way
+  (three buffers, three sessions). An opaque id was speculative
+  pre-implementation. If a later slice — e.g. ephemeral diff
+  previews unattached to any registered buffer — needs
+  buffer-detached lifetimes, we re-introduce the opaque id then.)
 - Subscriptions to document edit events for every
   participating buffer (one mpsc receiver per session, fed by
-  the existing event bus §5.10).
+  the existing event bus §5.10). Lands D.2.c.
 - A tokio task pool for recomputation. Each session's
   recompute is one `spawn_blocking` (diff is CPU-bound) with
-  a debounce.
-- Drop-cleanup: closing the last pane / decoration that
-  references a session does not destroy it; explicit
-  `DiffSubsystem::close(id)` does. (This matters for the
-  Claude `openDiff` flow, where the diff outlives any one
-  view.)
+  a debounce. Lands D.2.b.
+- Drop-cleanup: `drop_session(buffer_id)` removes the registry
+  entry but in-flight `Arc<DiffSession>` holders stay coherent
+  (RCU semantics). This satisfies the Claude `openDiff` flow:
+  the diff outlives any one view because consumers hold their
+  own `Arc` — the registry's job is naming, not lifetime
+  enforcement.
 
 The subsystem exposes a small synchronous API to the host: open
 a session, query hunks, request recompute, apply a hunk
@@ -484,16 +494,16 @@ test coverage of the new scenarios + failure modes, graceful
 error handling (log + skip on recoverable failures, never
 panic on the hot path, never swallow silently).
 
-| Slice | Title | What lands |
-|---|---|---|
-| **D.0** | Foundational primitives | (a) Displacing virtual-row primitive on the cell-grid renderer: `VirtualRow` type, row-translation cache, renderer iteration interleaving virtual + document rows, motion / scroll / cursor honour the interleaving. (b) Scroll-binding pane-group primitive: `PaneGroup` with pluggable row-mapping function; default mapping = identity. Tests: virtual-row insert / remove / re-anchor on document edit; cursor lands correctly when typing past a virtual row; scroll-bind round-trip with identity mapping preserves cursor position. Benches: `virtual_row_layout_p99_us` at 1k virtual rows; `scroll_bind_dispatch_p99_us` at 100 paired panes. No diff-specific consumer yet — the primitives stand alone. |
-| **D.1** | `lattice-diff` crate | Pure crate. `Hunk` / `HunkIndex` types; `compute_two_way(a, b)` / `compute_three_way(base, a, b) -> HunkIndex` via `imara-diff`. Algorithm enum + per-call selector. Property tests: round-trip via patch apply for randomly-generated rope pairs; conflict detection on three-way matches git's behaviour on a set of known cases. Bench: `diff_recompute_p99_us` at v1 P95 file (5k × 80 cols); stress at 50k × 200. No host integration yet. |
-| **D.2** | `DiffSubsystem` + `DiffSession` lifecycle | New subsystem on `lattice-host`. `DiffSession` open / close / debounced recompute / RCU publish via `ArcSwap`. Subscriptions to document edit events through the existing event bus (§5.10). `:describe-diff` ex-command lists active sessions. No rendering yet — assert observable behaviour by reading `HunkIndex` after mutations. Tests: open session, edit doc, observe new revision; close session releases subscriptions; document-close auto-closes session per §8 decision; subsystem survives a panicking recompute task (one session degraded, others unaffected). |
-| **D.3** | Inline overlay presentation | First consumer of D.0's virtual-row primitive. `DiffMap` in `PresentationMode::Inline` for the single-doc-vs-baseline case (file vs. disk content as baseline — easiest baseline to source). Hunk decorations: gutter signs (sprite, reuses §5.6.7 atlas), line-background tints (`DiffAdd` / `DiffChange` / `DiffRemove` theme entries), virtual-row deletion blocks. `]c` / `[c` motions registered. End-to-end test: open a file, edit it, observe gutter signs and inline deletion blocks; `]c` jumps between hunks. Bench: `diff_render_p99_us` at 100 visible hunks. |
-| **D.4** | Side-by-side two-way presentation | Second consumer of D.0 (scroll-bind primitive). `:diff <buf>`, `:diffthis`, `:diffsplit <file>`, `:diffoff` ex-commands. `PresentationMode::SideBySide` for two panes; pane-group scroll-binding consults `HunkIndex` for hunk-correspondent row mapping. Filler virtual rows on both sides to align parallel hunks. `[c` / `]c` motions work uniformly. Tests: two files diffed render correctly; scroll one pane, other follows; filler rows align hunks; `:diffoff` cleanly drops state on both panes. |
-| **D.5** | Hunk transfer operators (`do` / `dp`) | Operators registered through `CommandRegistry`. Translate to `ApplyEdit` against the receiving document; edit fires recompute through the standard pipeline. Tests: `dp` on a Change hunk replaces the other document's range; undo composes correctly; macros record and replay correctly; recompute fires once after the edit settles. |
-| **D.6** | Three-way merge presentation | `PresentationMode::SideBySide { pane_index: 0/1/2 }` for three panes. `HunkKind::Conflict` populated by `compute_three_way`. Conflict-region rendering uses a distinct theme entry (`DiffConflict`). `:diffput <bufnr>` / `:diffget <bufnr>` honour the disambiguating argument. `:diff-accept` / `:diff-reject` ex-commands for resolving the session. Tests: three documents with non-overlapping changes show two non-conflict hunks; three documents with overlapping changes show one conflict hunk; `:diffput 2` resolves a conflict by pushing pane 1's version. |
-| **D.7** | Git baseline integration (`:Gdiff`) | New small `lattice-vcs` crate (or extension of an existing one) providing `git_baseline(path, ref) -> Rope`. `:Gdiff [<ref>]` opens a single-doc inline session against the git baseline. Uses `gix` (gitoxide) for read-only access; no working-copy mutation. Tests: dirty file shows hunks vs HEAD; clean file shows no hunks; non-git paths return a clear error via the existing diagnostic banner. |
+| Slice   | Title                                     | What lands                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+|---------|-------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **D.0** | Foundational primitives                   | (a) Displacing virtual-row primitive on the cell-grid renderer: `VirtualRow` type, row-translation cache, renderer iteration interleaving virtual + document rows, motion / scroll / cursor honour the interleaving. (b) Scroll-binding pane-group primitive: `PaneGroup` with pluggable row-mapping function; default mapping = identity. Tests: virtual-row insert / remove / re-anchor on document edit; cursor lands correctly when typing past a virtual row; scroll-bind round-trip with identity mapping preserves cursor position. Benches: `virtual_row_layout_p99_us` at 1k virtual rows; `scroll_bind_dispatch_p99_us` at 100 paired panes. No diff-specific consumer yet — the primitives stand alone. |
+| **D.1** | `lattice-diff` crate                      | Pure crate. `Hunk` / `HunkIndex` types; `compute_two_way(a, b)` / `compute_three_way(base, a, b) -> HunkIndex` via `imara-diff`. Algorithm enum + per-call selector. Property tests: round-trip via patch apply for randomly-generated rope pairs; conflict detection on three-way matches git's behaviour on a set of known cases. Bench: `diff_recompute_p99_us` at v1 P95 file (5k × 80 cols); stress at 50k × 200. No host integration yet.                                                                                                                                                                                                                                                                    |
+| **D.2** | `DiffSubsystem` + `DiffSession` lifecycle | New subsystem on `lattice-host`. `DiffSession` open / close / debounced recompute / RCU publish via `ArcSwap`. Subscriptions to document edit events through the existing event bus (§5.10). `:describe-diff` ex-command lists active sessions. No rendering yet — assert observable behaviour by reading `HunkIndex` after mutations. Tests: open session, edit doc, observe new revision; close session releases subscriptions; document-close auto-closes session per §8 decision; subsystem survives a panicking recompute task (one session degraded, others unaffected).                                                                                                                                     |
+| **D.3** | Inline overlay presentation               | First consumer of D.0's virtual-row primitive. `DiffMap` in `PresentationMode::Inline` for the single-doc-vs-baseline case (file vs. disk content as baseline — easiest baseline to source). Hunk decorations: gutter signs (sprite, reuses §5.6.7 atlas), line-background tints (`DiffAdd` / `DiffChange` / `DiffRemove` theme entries), virtual-row deletion blocks. `]c` / `[c` motions registered. End-to-end test: open a file, edit it, observe gutter signs and inline deletion blocks; `]c` jumps between hunks. Bench: `diff_render_p99_us` at 100 visible hunks.                                                                                                                                         |
+| **D.4** | Side-by-side two-way presentation         | Second consumer of D.0 (scroll-bind primitive). `:diff <buf>`, `:diffthis`, `:diffsplit <file>`, `:diffoff` ex-commands. `PresentationMode::SideBySide` for two panes; pane-group scroll-binding consults `HunkIndex` for hunk-correspondent row mapping. Filler virtual rows on both sides to align parallel hunks. `[c` / `]c` motions work uniformly. Tests: two files diffed render correctly; scroll one pane, other follows; filler rows align hunks; `:diffoff` cleanly drops state on both panes.                                                                                                                                                                                                          |
+| **D.5** | Hunk transfer operators (`do` / `dp`)     | Operators registered through `CommandRegistry`. Translate to `ApplyEdit` against the receiving document; edit fires recompute through the standard pipeline. Tests: `dp` on a Change hunk replaces the other document's range; undo composes correctly; macros record and replay correctly; recompute fires once after the edit settles.                                                                                                                                                                                                                                                                                                                                                                           |
+| **D.6** | Three-way merge presentation              | `PresentationMode::SideBySide { pane_index: 0/1/2 }` for three panes. `HunkKind::Conflict` populated by `compute_three_way`. Conflict-region rendering uses a distinct theme entry (`DiffConflict`). `:diffput <bufnr>` / `:diffget <bufnr>` honour the disambiguating argument. `:diff-accept` / `:diff-reject` ex-commands for resolving the session. Tests: three documents with non-overlapping changes show two non-conflict hunks; three documents with overlapping changes show one conflict hunk; `:diffput 2` resolves a conflict by pushing pane 1's version.                                                                                                                                            |
+| **D.7** | Git baseline integration (`:Gdiff`)       | New small `lattice-vcs` crate (or extension of an existing one) providing `git_baseline(path, ref) -> Rope`. `:Gdiff [<ref>]` opens a single-doc inline session against the git baseline. Uses `gix` (gitoxide) for read-only access; no working-copy mutation. Tests: dirty file shows hunks vs HEAD; clean file shows no hunks; non-git paths return a clear error via the existing diagnostic banner.                                                                                                                                                                                                                                                                                                           |
 
 After D.7, two consumer flows compose on top of this subsystem
 without further changes to the diff layer:
@@ -549,15 +559,15 @@ Slice sequencing:
   Change hunks.
 - **Bench:**
   - `diff_recompute_p99_us` (D.1) — CI gate ≤ 1000µs at v1
-    P95 file size.
+	P95 file size.
   - `diff_row_lookup_p99_ns` (D.0/D.3) — CI gate ≤ 500ns at
-    1k hunks.
+	1k hunks.
   - `diff_render_p99_us` (D.3) — CI gate ≤ 200µs at 100
-    visible hunks (sub-frame at 60Hz).
+	visible hunks (sub-frame at 60Hz).
   - `diff_scroll_bind_p99_us` (D.4) — CI gate ≤ 50µs at 1k
-    hunks.
+	hunks.
   - `virtual_row_layout_p99_us` (D.0) — CI gate ≤ 100µs at
-    1k virtual rows.
+	1k virtual rows.
 - **Stress observations** (not gated, recorded in
   `benchmarks.md`): 50k × 200 file pair (~10MB each);
   large-conflict three-way merge with 100 conflict regions.

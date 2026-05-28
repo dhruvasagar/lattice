@@ -1297,9 +1297,37 @@ shared with multibuffer-views and post-v1 inlay hints.
   algorithms + three-way invariants) + 1 doctest. Bench
   recorded (`benches/recompute.rs`); CI gate enforcement
   deferred to D.2 per design plan.
-- 🗒 **D.2** — `DiffSubsystem` + `DiffSession` lifecycle:
-  RCU publish, debounced recompute, edit-event subscriptions,
-  `:describe-diff`.
+- ✅ **D.2.a** (2026-05-28) — `DiffSubsystem` skeleton landed
+  in `lattice-host::diff_subsystem`. Process-wide registry of
+  `Arc<DiffSession>` keyed by `BufferId`, behind a
+  `std::sync::Mutex` (mutation is buffer-open / buffer-close
+  frequency, never per-frame). Each `DiffSession` carries
+  `algorithm: DiffAlgorithm` + `hunks: ArcSwap<HunkIndex>` so
+  consumers read lock-free. Public surface: `register` (idempotent
+  on `buffer_id`), `lookup`, `drop_session`, `iter_sessions`,
+  `is_empty`, `len`. `DiffSession::current_hunks` /
+  `publish(Arc<HunkIndex>)` give the RCU read/write pair.
+  Lifecycle decoupled from `Arc` holders — `drop_session` removes
+  the entry but in-flight clones stay coherent. **11 tests
+  green** (registry + session). No compute yet — that lands D.2.b.
+- 🗒 **D.2.b** — Compute path on `spawn_blocking`: per-session
+  `BaselineSource` trait (initial impl: in-memory `Rope`),
+  `DiffSession::recompute(baseline, current, alg)` returns an
+  `Arc<HunkIndex>` via `lattice-diff::compute_two_way`, published
+  through `DiffSession::publish`. `Cancellation` token on
+  supersede (same pattern as `cells_worker`).
+- 🗒 **D.2.c** — Edit-event subscription + debounce: hook
+  `DiffSubsystem` into the buffer edit-event stream; debounce
+  recomputes per the standard host cadence; buffer-close fires
+  `drop_session`.
+- 🗒 **D.2.d** — `:describe-diff` introspection ex-command:
+  enumerates `iter_sessions`, opens a synthetic Document buffer
+  listing per-session algorithm, hunk count, revision, last
+  recompute duration.
+- 🗒 **D.2.e** — Implementation-ledger cross-link to bench
+  coverage; criterion bench wired against the recompute path
+  (CI gate enforcement still deferred until D.3 produces a
+  visual consumer for paint metric).
 - 🗒 **D.3** — Inline overlay presentation: single-doc vs.
   baseline; gutter signs, line tints, deletion blocks; `]c`
   / `[c` motions.

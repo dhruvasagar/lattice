@@ -12527,7 +12527,15 @@ impl Editor {
         if exact {
             self.cursor = pos;
         } else {
-            let text = self.document.text();
+            // T-marks-1 (2026-05-28): read from `active_text()`
+            // (rope-aware) so the first-non-blank line dance
+            // works for any buffer kind — including
+            // Terminal-Normal where the rope is the
+            // SyntheticDoc. Before T-marks-1 this always read
+            // `self.document.text()` which gave nonsense on
+            // terminal panes.
+            let buffer = self.active_text();
+            let text = buffer.as_string();
             let line_text = text
                 .split_inclusive('\n')
                 .nth(pos.line as usize)
@@ -12541,7 +12549,55 @@ impl Editor {
             self.cursor = lattice_protocol::position::Position::new(pos.line, col as u32);
         }
         self.clamp_cursor_to_active_buffer();
-        self.auto_open_folds_at_cursor();
+        // T-marks-1: for terminal panes, mirror the new doc-space
+        // cursor back to grid so the renderer paints the cursor
+        // at the jumped position. No-op for other buffer kinds.
+        if matches!(self.active_buffer, BufferKind::Terminal) {
+            let buf_id = self.active_pane_buffer_id();
+            self.sync_terminal_nav_cursor_from_doc(buf_id);
+        } else {
+            self.auto_open_folds_at_cursor();
+        }
+    }
+
+    /// T-marks-1 (2026-05-28): mirror `self.cursor` (doc-space)
+    /// to `t.nav_cursor` (grid-space) on a Terminal-Normal
+    /// buffer, then bring the cursor row into view by scrolling
+    /// the alacritty grid. Called after any code path writes
+    /// `self.cursor` for a terminal pane outside the regular
+    /// motion runners (mark jumps, jumplist navigation, etc.).
+    ///
+    /// No-op when the buffer has no SyntheticDoc (Insert mode
+    /// — these paths shouldn't fire in Insert anyway).
+    fn sync_terminal_nav_cursor_from_doc(&mut self, buf_id: BufferId) {
+        let cur = self.cursor;
+        let _ = self.buffers.with_terminal_mut(buf_id, |t| {
+            let Some(s) = t.synthetic.as_ref() else {
+                return;
+            };
+            let grid_line = s.origin_top_line + cur.line as i32;
+            let grid_col = cur.byte as u16;
+            t.nav_cursor = Some((grid_line, grid_col));
+            if let Some(v) = t.visual.as_mut() {
+                v.head_line = grid_line;
+                v.head_col = grid_col;
+            }
+            // Bring the cursor row into view (same shape as
+            // `do_terminal_nav_move`).
+            let snap = t.snapshot.load();
+            let top_visible = -(snap.scroll_offset as i32);
+            let bot_visible = top_visible + snap.rows as i32 - 1;
+            let (top_bound, _bot_bound) = t.term.line_bounds();
+            if grid_line < top_visible {
+                t.term.scroll_to_line(grid_line);
+            } else if grid_line > bot_visible {
+                let target = grid_line - (snap.rows as i32 - 1);
+                t.term.scroll_to_line(target.max(top_bound));
+            } else {
+                // Republish so the cursor overlay repaints.
+                t.term.scroll(lattice_terminal::TerminalScrollKind::Delta(0));
+            }
+        });
     }
 
     /// `<C-o>` / `<C-i>` -- walk the jump-history ring filtered
@@ -12682,12 +12738,12 @@ impl Editor {
                 }
             }
             BufferKind::Terminal => {
-                // T3.b.3: restore the scrollback row the user
-                // was viewing when this entry was pushed. Re-
-                // activates the buffer + scrolls the alacritty
-                // grid to the recorded display_offset. Falls
-                // back to the live edge for entries pushed
-                // before the field existed (offset = 0).
+                // T3.b.3 + T-marks-1: restore the scrollback row
+                // the user was viewing when this entry was pushed
+                // AND restore the doc-space cursor + grid mirror
+                // so the cursor lands where it was. Falls back to
+                // the live edge for entries pushed before the
+                // `terminal_scroll_offset` field existed.
                 if self.buffers.contains(entry.buffer_id) {
                     self.active_buffer = BufferKind::Terminal;
                     self.pane_tree.active_mut().buffer = BufferKind::Terminal;
@@ -12696,6 +12752,15 @@ impl Editor {
                     let _ = self.buffers.with_terminal(entry.buffer_id, |t| {
                         t.term.scroll_to_line(target_line);
                     });
+                    // T-marks-1 (2026-05-28): pre-T-cursor-1 this
+                    // branch left the cursor untouched (the
+                    // bespoke `nav_cursor` was source of truth).
+                    // Now self.cursor is the doc-space cursor for
+                    // terminal-Normal — restore it from the
+                    // entry, then mirror to `nav_cursor`.
+                    self.cursor = entry.position;
+                    self.clamp_cursor_to_active_buffer();
+                    self.sync_terminal_nav_cursor_from_doc(entry.buffer_id);
                 }
             }
         }

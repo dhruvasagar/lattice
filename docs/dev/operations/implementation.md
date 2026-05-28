@@ -1310,12 +1310,28 @@ shared with multibuffer-views and post-v1 inlay hints.
   Lifecycle decoupled from `Arc` holders — `drop_session` removes
   the entry but in-flight clones stay coherent. **11 tests
   green** (registry + session). No compute yet — that lands D.2.b.
-- 🗒 **D.2.b** — Compute path on `spawn_blocking`: per-session
-  `BaselineSource` trait (initial impl: in-memory `Rope`),
-  `DiffSession::recompute(baseline, current, alg)` returns an
-  `Arc<HunkIndex>` via `lattice-diff::compute_two_way`, published
-  through `DiffSession::publish`. `Cancellation` token on
-  supersede (same pattern as `cells_worker`).
+- ✅ **D.2.b** (2026-05-28) — Compute path on `spawn_blocking`
+  landed in `lattice-host::diff_subsystem`. New
+  `BaselineSource: Send + Sync + 'static` trait with one impl
+  (`StaticBaseline` wrapping an owned `Rope` — clones are cheap,
+  it's `Arc`-shared chunks). Future `GitBaseline` (D.7),
+  `BufferBaseline` (D.4), `MergeBaseSource` (D.6) plug into the
+  same trait. `DiffSession` gains a monotonic
+  `next_revision: AtomicU64` allocator, gated publish via
+  `try_publish_if_newer` (drops stale revisions on strict
+  greater-than), and `recompute_blocking(baseline, current)` —
+  the synchronous body called from the `spawn_blocking` closure.
+  `DiffSubsystem::schedule_recompute(buffer_id, Arc<dyn BaselineSource>, current)`
+  spawns the recompute on tokio's blocking pool and returns a
+  `JoinHandle<Option<Arc<HunkIndex>>>`. Supersede policy: no
+  abort — overlapping computes both run, the gate picks the
+  highest revision. D.2.c's debounce will eliminate most
+  redundant spawns before they hit the pool. **21 tests green**
+  (10 new D.2.b: baseline snapshot, revision monotonicity,
+  identical-rope empty hunks, changed-rope hunk classification,
+  3-recompute revision sequence, stale-publish drop, equal-rev
+  drop, unregistered-buffer None handle, tokio happy-path
+  publish, tokio serial-pair monotonicity).
 - 🗒 **D.2.c** — Edit-event subscription + debounce: hook
   `DiffSubsystem` into the buffer edit-event stream; debounce
   recomputes per the standard host cadence; buffer-close fires

@@ -225,8 +225,13 @@ owns:
   participating buffer (one mpsc receiver per session, fed by
   the existing event bus §5.10). Lands D.2.c.
 - A tokio task pool for recomputation. Each session's
-  recompute is one `spawn_blocking` (diff is CPU-bound) with
-  a debounce. Lands D.2.b.
+  recompute is one `spawn_blocking` (diff is CPU-bound) —
+  landed D.2.b via `DiffSubsystem::schedule_recompute(buffer_id,
+  Arc<dyn BaselineSource>, Rope)` returning a
+  `JoinHandle<Option<Arc<HunkIndex>>>`. Supersede policy: no
+  abort — overlapping recomputes both run, and the gated publish
+  (`try_publish_if_newer` — strict greater-than on revision)
+  drops the stale result. Debouncing lands D.2.c.
 - Drop-cleanup: `drop_session(buffer_id)` removes the registry
   entry but in-flight `Arc<DiffSession>` holders stay coherent
   (RCU semantics). This satisfies the Claude `openDiff` flow:

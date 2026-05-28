@@ -1590,7 +1590,7 @@ impl EditorView {
                 t.nav_cursor,
             )
         });
-        let Some((snap, current_match, visual, all_matches, nav_cursor)) = snap_opt else {
+        let Some((snap, current_match, mut visual, all_matches, mut nav_cursor)) = snap_opt else {
             let placeholder = div()
                 .bg(rgb(theme.background))
                 .text_color(rgb(theme.foreground))
@@ -1601,6 +1601,22 @@ impl EditorView {
                 format!("  [terminal #{} unavailable]", pane.buffer_id.0),
             );
         };
+        // T-clean-1 Phase A.2 (2026-05-28): active pane reads
+        // cursor + visual from the publisher's derived render-
+        // state fields (computed from doc-space `self.cursor`
+        // + `synthetic.origin_top_line`). Inactive panes keep
+        // their `with_terminal` reads — those carry the
+        // last-known cell coords from when the pane was last
+        // active, which is the intentional cross-pane
+        // preservation behaviour.
+        if is_active {
+            if rs_guard.active_document.terminal_nav_cursor.is_some() {
+                nav_cursor = rs_guard.active_document.terminal_nav_cursor;
+            }
+            if rs_guard.active_document.terminal_visual.is_some() {
+                visual = rs_guard.active_document.terminal_visual;
+            }
+        }
         tracing::trace!(
             target: "lattice_gpui::terminal",
             buf_id = pane.buffer_id.0,

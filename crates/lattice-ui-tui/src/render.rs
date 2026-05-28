@@ -2192,7 +2192,7 @@ fn draw_terminal_pane(
     use ratatui::widgets::Paragraph;
     use lattice_terminal::{CellAttrs, NamedColor as TermNamed, TerminalColor};
     let rs = app.render_state.load();
-    let (snap_arc, current_match, visual, all_matches, nav_cursor) = match rs
+    let (snap_arc, current_match, mut visual, all_matches, mut nav_cursor) = match rs
         .buffers
         .registry
         .with_terminal(pane.buffer_id, |t| {
@@ -2211,6 +2211,23 @@ fn draw_terminal_pane(
             return;
         }
     };
+    // T-clean-1 Phase A.2 (2026-05-28): for the active pane,
+    // prefer the publisher's derived values from
+    // `rs.active_document.terminal_nav_cursor` /
+    // `terminal_visual` (computed from `self.cursor` (doc-space)
+    // + `synthetic.origin_top_line`). This is the path that
+    // will retire `t.nav_cursor` / `t.visual` direct reads
+    // entirely once per-pane publishing lands. Inactive panes
+    // keep using `with_terminal` (their stashed values are
+    // intentionally last-known-good across pane switches).
+    if is_active {
+        if rs.active_document.terminal_nav_cursor.is_some() {
+            nav_cursor = rs.active_document.terminal_nav_cursor;
+        }
+        if rs.active_document.terminal_visual.is_some() {
+            visual = rs.active_document.terminal_visual;
+        }
+    }
     let rows_to_paint = area.height.min(snap_arc.rows);
     let cols_to_paint = area.width.min(snap_arc.cols);
     // 2026-05-25: nav_cursor overrides the PTY cursor in

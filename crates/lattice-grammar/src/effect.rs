@@ -444,6 +444,11 @@ pub enum Effect {
     /// `lattice_protocol::event_registry::EVENT_DESCRIPTORS` and
     /// formats each as `name :: source-crate :: doc`.
     DescribeEvents,
+    /// `:describe-diff` -- render a help buffer listing every
+    /// active diff session (D.2.d). Walks the host's
+    /// `DiffSubsystem::describe_sessions` and formats each row
+    /// as `BufferId | Algorithm | Rev | Hunks | Watches`.
+    DescribeDiff,
     /// `:describe-event <name>` -- render the descriptor for a
     /// single registered event (M.5.3.c). The introspection
     /// counterpart of `:describe-command` for events.

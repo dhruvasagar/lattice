@@ -387,6 +387,35 @@ impl Drop for DiffSubscriptionGuard {
 	}
 }
 
+// ──────────────────────────────────────────────────────────────
+// D.2.d: introspection types
+// ──────────────────────────────────────────────────────────────
+
+/// One row of `:describe-diff` output. Produced by
+/// [`DiffSubsystem::describe_sessions`] and rendered into the
+/// help-buffer body by
+/// [`DiffSubsystem::build_describe_diff_content`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiffSessionDescription {
+	pub buffer_id: BufferId,
+	pub algorithm: DiffAlgorithm,
+	pub revision: u64,
+	pub hunk_count: usize,
+	/// Buffers this session watches for edit-triggered
+	/// recomputes (from `descriptor.watch`). Empty if the
+	/// session was registered without sources via
+	/// [`DiffSubsystem::register`] (the test path).
+	pub watch: Vec<BufferId>,
+}
+
+fn format_algorithm(alg: DiffAlgorithm) -> &'static str {
+	match alg {
+		DiffAlgorithm::Histogram => "Histogram",
+		DiffAlgorithm::Myers => "Myers",
+		DiffAlgorithm::MyersMinimal => "MyersMinimal",
+	}
+}
+
 /// Per-document diff state. Wraps an `ArcSwap<HunkIndex>` so
 /// consumers read the latest published hunks without holding the
 /// registry lock.
@@ -792,6 +821,96 @@ impl DiffSubsystem {
 			.values()
 			.cloned()
 			.collect()
+	}
+
+	// ──────────────────────────────────────────────────────
+	// D.2.d: introspection
+	// ──────────────────────────────────────────────────────
+
+	/// Snapshot of all currently-registered sessions for
+	/// `:describe-diff` introspection. Sorted by `BufferId` so
+	/// the rendered output is stable across calls.
+	///
+	/// Each row carries everything the renderer needs to format
+	/// one line of the help buffer: the session key, the
+	/// algorithm, the currently-published revision + hunk
+	/// count, and (when a descriptor is registered) the
+	/// declared `watch` list.
+	pub fn describe_sessions(&self) -> Vec<DiffSessionDescription> {
+		let sessions = self
+			.sessions
+			.lock()
+			.expect("DiffSubsystem mutex poisoned");
+		let descriptors = self
+			.descriptors
+			.lock()
+			.expect("DiffSubsystem mutex poisoned");
+		let mut rows: Vec<DiffSessionDescription> = sessions
+			.values()
+			.map(|session| {
+				let hunks = session.current_hunks();
+				let watch = descriptors
+					.get(&session.buffer_id())
+					.map(|d| d.watch.clone())
+					.unwrap_or_default();
+				DiffSessionDescription {
+					buffer_id: session.buffer_id(),
+					algorithm: session.algorithm(),
+					revision: hunks.revision,
+					hunk_count: hunks.len(),
+					watch,
+				}
+			})
+			.collect();
+		rows.sort_by_key(|row| row.buffer_id);
+		rows
+	}
+
+	/// Build the `:describe-diff` help-buffer body — the
+	/// human-readable text rendered into the synthetic
+	/// Document buffer that `do_describe_diff` opens.
+	///
+	/// Output shape:
+	/// ```text
+	/// Active diff sessions: 2
+	///
+	/// BufferId  Algorithm     Rev  Hunks  Watches
+	/// --------  ------------  ---  -----  -------
+	/// 1         Histogram     5    3      [1, 2]
+	/// 7         MyersMinimal  0    0      [7]
+	/// ```
+	pub fn build_describe_diff_content(&self) -> String {
+		let rows = self.describe_sessions();
+		if rows.is_empty() {
+			return "No active diff sessions.\n".to_string();
+		}
+		let mut out = String::new();
+		out.push_str(&format!("Active diff sessions: {}\n\n", rows.len()));
+		out.push_str("BufferId  Algorithm     Rev  Hunks  Watches\n");
+		out.push_str("--------  ------------  ---  -----  -------\n");
+		for row in rows {
+			let watches = if row.watch.is_empty() {
+				"[]".to_string()
+			} else {
+				format!(
+					"[{}]",
+					row.watch
+						.iter()
+						.map(|b| b.0.to_string())
+						.collect::<Vec<_>>()
+						.join(", ")
+				)
+			};
+			out.push_str(&format!(
+				"{:<8}  {:<12}  {:<3}  {:<5}  {}\n",
+				row.buffer_id.0,
+				format_algorithm(row.algorithm),
+				row.revision,
+				row.hunk_count,
+				watches
+			));
+		}
+		out
 	}
 
 	/// D.2.b: schedule a recompute of `buffer_id`'s session on
@@ -1697,6 +1816,87 @@ mod tests {
 			tokio::time::sleep(Duration::from_millis(5)).await;
 		}
 		assert!(sub.lookup(bid(1)).is_none());
+	}
+
+	// ── D.2.d introspection ───────────────────────────────────
+
+	#[test]
+	fn describe_sessions_empty_when_no_sessions() {
+		let sub = DiffSubsystem::new();
+		assert!(sub.describe_sessions().is_empty());
+		assert_eq!(sub.build_describe_diff_content(), "No active diff sessions.\n");
+	}
+
+	#[test]
+	fn describe_sessions_lists_sessions_sorted_by_buffer_id() {
+		// Register out-of-order to verify the sort.
+		let provider: Arc<dyn BufferTextProvider> = Arc::new(MockProvider::default());
+		let sub = DiffSubsystem::new();
+		sub.register_with_sources(
+			bid(7),
+			DiffAlgorithm::MyersMinimal,
+			descriptor(&provider, bid(99), bid(7)),
+		);
+		sub.register_with_sources(
+			bid(1),
+			DiffAlgorithm::Histogram,
+			descriptor(&provider, bid(2), bid(1)),
+		);
+		let rows = sub.describe_sessions();
+		assert_eq!(rows.len(), 2);
+		assert_eq!(rows[0].buffer_id, bid(1));
+		assert_eq!(rows[0].algorithm, DiffAlgorithm::Histogram);
+		assert_eq!(rows[0].watch, vec![bid(2), bid(1)]);
+		assert_eq!(rows[1].buffer_id, bid(7));
+		assert_eq!(rows[1].algorithm, DiffAlgorithm::MyersMinimal);
+		assert_eq!(rows[1].watch, vec![bid(99), bid(7)]);
+	}
+
+	#[test]
+	fn describe_sessions_reflects_current_published_hunks() {
+		let s = DiffSubsystem::new();
+		let session = s.register(bid(1), DiffAlgorithm::Histogram);
+		session.publish(Arc::new(HunkIndex {
+			hunks: vec![],
+			algorithm: DiffAlgorithm::Histogram,
+			revision: 12,
+		}));
+		let rows = s.describe_sessions();
+		assert_eq!(rows.len(), 1);
+		assert_eq!(rows[0].revision, 12);
+		assert_eq!(rows[0].hunk_count, 0);
+	}
+
+	#[test]
+	fn build_describe_diff_content_formats_columns() {
+		let provider: Arc<dyn BufferTextProvider> = Arc::new(MockProvider::default());
+		let sub = DiffSubsystem::new();
+		sub.register_with_sources(
+			bid(1),
+			DiffAlgorithm::Histogram,
+			descriptor(&provider, bid(2), bid(1)),
+		);
+		let body = sub.build_describe_diff_content();
+		assert!(body.starts_with("Active diff sessions: 1\n"));
+		assert!(body.contains("BufferId  Algorithm     Rev  Hunks  Watches"));
+		assert!(body.contains("--------  ------------  ---  -----  -------"));
+		assert!(
+			body.contains("Histogram"),
+			"algorithm column missing: {body}"
+		);
+		assert!(body.contains("[2, 1]"), "watch column missing: {body}");
+	}
+
+	#[test]
+	fn describe_sessions_omits_watch_for_sources_less_register() {
+		let s = DiffSubsystem::new();
+		s.register(bid(1), DiffAlgorithm::Histogram);
+		let rows = s.describe_sessions();
+		assert_eq!(rows.len(), 1);
+		assert!(
+			rows[0].watch.is_empty(),
+			"register() path has no descriptor → empty watch"
+		);
 	}
 
 	#[tokio::test]

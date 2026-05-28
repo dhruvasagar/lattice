@@ -2145,6 +2145,26 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
                     },
                 )));
         }
+        Effect::DescribeDiff => {
+            // D.2.d (2026-05-29): `:describe-diff` -- walks
+            // `editor.diff_subsystem.describe_sessions` and
+            // renders the introspection help body. Infallible.
+            let body = editor.diff_subsystem.build_describe_diff_content();
+            let lines: Vec<String> =
+                body.lines().map(|s| s.to_string()).collect();
+            let content = lattice_help::HelpContent::from_lines(
+                "describe-diff",
+                lines,
+            )
+            .with_markdown_syntax(editor.lang_registry.clone());
+            out.renderer_signals
+                .push(RendererSignal::DisplayBuffer(Box::new(
+                    DisplayBufferRequest {
+                        content,
+                        category: lattice_core::ui::display::BufferDisplayCategory::HelpList,
+                    },
+                )));
+        }
         Effect::DescribeEvent { name } => {
             // 5.5.F.3: `:describe-event <name>` -- descriptor
             // lookup. Unknown name routes error; dispatcher
@@ -20828,6 +20848,7 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::ToggleMode { .. }
         | Effect::DescribeEvents
         | Effect::DescribeEvent { .. }
+        | Effect::DescribeDiff
         | Effect::ListModes
         | Effect::DescribeMode { .. }
         | Effect::DescribeOptionResolution { .. }
@@ -20912,6 +20933,7 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::ToggleMode { .. }
         | Effect::DescribeEvents
         | Effect::DescribeEvent { .. }
+        | Effect::DescribeDiff
         | Effect::ListModes
         | Effect::DescribeMode { .. }
         | Effect::DescribeOptionResolution { .. }

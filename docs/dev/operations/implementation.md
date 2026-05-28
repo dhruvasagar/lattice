@@ -1401,10 +1401,32 @@ shared with multibuffer-views and post-v1 inlay hints.
   bus tests use real tokio time because `schedule_recompute`
   goes through `spawn_blocking` which runs on the (real-time)
   blocking pool.
-- 🗒 **D.2.d** — `:describe-diff` introspection ex-command:
-  enumerates `iter_sessions`, opens a synthetic Document buffer
-  listing per-session algorithm, hunk count, revision, last
-  recompute duration.
+- ✅ **D.2.d** (2026-05-29) — `:describe-diff` introspection.
+  New `DiffSessionDescription` row type + `DiffSubsystem::describe_sessions`
+  snapshot + `build_describe_diff_content` formatter on the
+  subsystem (pure / synchronous; columns: BufferId, Algorithm,
+  Rev, Hunks, Watches; sorted by BufferId for stable output;
+  `"No active diff sessions."` when empty). `Effect::DescribeDiff`
+  variant + `ex:describe-diff` ex-command registered in
+  `lattice-grammar` (parse_no_args, Keyword surface,
+  Display latency). `"describe-diff"` alias in
+  `lattice-host::excommand`. Effect handler in
+  `dispatch.rs::handle_effect` reads
+  `editor.diff_subsystem.build_describe_diff_content()`, wraps
+  in `lattice_help::HelpContent::from_lines("describe-diff",
+  lines).with_markdown_syntax(...)`, emits
+  `RendererSignal::DisplayBuffer(HelpList)`. New
+  `pub diff_subsystem: Arc<DiffSubsystem>` field on `Editor`
+  (initialised via `Arc::<DiffSubsystem>::default()` — the
+  subsystem is `Default` and zero-cost to construct; live
+  bus binding is wired by the first production consumer
+  slice). 49 tests green (5 new D.2.d: empty-sessions
+  output, sorted-listing across two sessions,
+  reflects-published-hunks, column formatter, sources-less
+  register omits watch). No "last recompute duration"
+  column — that requires per-recompute telemetry not in the
+  current `DiffSession`; defer to a follow-on slice once
+  consumers ask for it.
 - 🗒 **D.2.e** — Implementation-ledger cross-link to bench
   coverage; criterion bench wired against the recompute path
   (CI gate enforcement still deferred until D.3 produces a

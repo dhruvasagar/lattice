@@ -983,6 +983,7 @@ impl GpuiApp {
             | Effect::DescribeOptionResolution { .. }
             | Effect::DescribeEvents
             | Effect::DescribeEvent { .. }
+            | Effect::DescribeDiff
             | Effect::BufferNext
             | Effect::BufferPrev
             | Effect::BufferDelete { .. }

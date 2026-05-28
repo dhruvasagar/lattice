@@ -62,6 +62,9 @@ pub struct ExBuiltins {
     pub list_options: ExCommandId,
     pub describe_events: ExCommandId,
     pub describe_event: ExCommandId,
+    /// D.2.d (2026-05-29): `:describe-diff` introspection
+    /// (`lattice-host` `do_describe_diff`).
+    pub describe_diff: ExCommandId,
     pub list_modes: ExCommandId,
     pub describe_mode: ExCommandId,
     pub describe_option_resolution: ExCommandId,
@@ -842,6 +845,22 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             accepts_range: false,
             parse_args: Box::new(parse_no_args),
             apply: Box::new(|_| Ok(Effect::DescribeEvents)),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let describe_diff = registry.register_ex_command(
+        "ex:describe-diff",
+        "List every active diff session (`:describe-diff`). D.2.d. \
+         Walks `DiffSubsystem::describe_sessions` and renders one row \
+         per session with BufferId, algorithm, current revision, hunk \
+         count, and watched buffers.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::DescribeDiff)),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -1660,6 +1679,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         list_options,
         describe_events,
         describe_event,
+        describe_diff,
         list_modes,
         describe_mode,
         describe_option_resolution,

@@ -1022,6 +1022,15 @@ pub struct Editor {
     /// worker lands.
     pub cells_matrix_cell:
         std::sync::Arc<arc_swap::ArcSwap<lattice_cells::CellMatrix>>,
+    /// D.2.d (2026-05-29): diff subsystem instance. Holds the
+    /// per-buffer `DiffSession` registry, the routing inverse
+    /// index, and the per-session lazy debouncer. Reads through
+    /// the host's `BufferTextProvider` impl (wired post-D.2.c
+    /// when the first consumer slice lands) for live-rope
+    /// baselines / current sources. `:describe-diff` reads
+    /// `diff_subsystem.build_describe_diff_content()` directly.
+    /// See `docs/dev/architecture/diff-system.md` §3.4.
+    pub diff_subsystem: std::sync::Arc<crate::diff_subsystem::DiffSubsystem>,
     /// S2.1 (2026-05-26): wake signal for the cell-builder worker.
     /// `publish_render_state` fires `notify_one()` after every
     /// dispatch tick. The worker `notified().await`s; permit-style

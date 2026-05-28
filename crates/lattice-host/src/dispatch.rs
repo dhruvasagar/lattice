@@ -159,231 +159,17 @@ pub struct DispatchOutcome {
 /// and 5.5.E ([`Self::ThemeChanged`]); the variants exist from
 /// 5.5.A so the type surface is fixed before any consumer composes
 /// against it.
-/// 2026-05-25: target for [`Editor::do_terminal_nav_goto`].
-/// Pulled out into a public enum so the gg / G chord paths
-/// have a self-documenting argument rather than a bool /
-/// magic-number.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NavTarget {
-    Top,
-    Bottom,
-}
+// T-clean-1 Phase B.2 (2026-05-28): `NavTarget` retired —
+// `do_terminal_nav_goto` collapsed into the central
+// `execute_motion_only` dispatch.
 
-/// 2026-05-27: direction for the Normal-in-terminal word-class
-/// motions. `Forward` = `w`/`W` (next word start), `Backward` =
-/// `b`/`B` (prev word start), `End` = `e`/`E` (end of current
-/// or next word).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TerminalWordDir {
-    Forward,
-    Backward,
-    End,
-}
-
-/// 2026-05-27: classification of a single grid cell for the
-/// terminal word-class motions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TermCharClass {
-    /// Word char (vim's "word" or "WORD" class — see
-    /// `terminal_char_class`).
-    Word,
-    /// Punctuation. Only used by the small-word class; the
-    /// `WORD` class folds Punct into Word.
-    Punct,
-    /// Whitespace (space, tab, padding).
-    Space,
-}
-
-/// Classify one grid char. `big = true` switches to the `WORD`
-/// class (any non-whitespace is `Word`). `big = false` is the
-/// small-word class: alnum + `_` → Word; other non-whitespace →
-/// Punct; whitespace → Space.
-fn terminal_char_class(c: char, big: bool) -> TermCharClass {
-    if c.is_whitespace() {
-        TermCharClass::Space
-    } else if big {
-        TermCharClass::Word
-    } else if c.is_alphanumeric() || c == '_' {
-        TermCharClass::Word
-    } else {
-        TermCharClass::Punct
-    }
-}
-
-/// Step one "word boundary" from `(cur_l, cur_c)` in the given
-/// direction. Walks the grid char-by-char across line
-/// boundaries; the alacritty grid is row-major with `cols`
-/// columns per row.
-fn terminal_word_step(
-    term: &lattice_terminal::SharedTerm,
-    cur_l: i32,
-    cur_c: u16,
-    cols: u16,
-    top: i32,
-    bot: i32,
-    dir: TerminalWordDir,
-    big: bool,
-) -> (i32, u16) {
-    use TerminalWordDir as D;
-    if cols == 0 {
-        return (cur_l, cur_c);
-    }
-    // Read each grid line on demand. Cells past EOL on a row
-    // are treated as Space.
-    let line_text = |line: i32| -> Vec<char> {
-        let s = term.line_range_text(line, line);
-        // Strip the trailing `\n` line_range_text appends.
-        let s = s.trim_end_matches('\n');
-        s.chars().collect()
-    };
-    let char_at = |_line: i32, col: u16, chars: &[char]| -> char {
-        chars.get(col as usize).copied().unwrap_or(' ')
-    };
-    // Encode (line, col) as a monotonic stream position so we
-    // can walk one step at a time without tracking col-wrap.
-    let advance = |line: i32, col: u16| -> Option<(i32, u16)> {
-        if col + 1 < cols {
-            Some((line, col + 1))
-        } else if line + 1 <= bot {
-            Some((line + 1, 0))
-        } else {
-            None
-        }
-    };
-    let retreat = |line: i32, col: u16| -> Option<(i32, u16)> {
-        if col > 0 {
-            Some((line, col - 1))
-        } else if line - 1 >= top {
-            Some((line - 1, cols - 1))
-        } else {
-            None
-        }
-    };
-    match dir {
-        D::Forward => {
-            // `w`/`W`: skip the current class (if Word/Punct), then
-            // skip any Space, land on the first non-Space.
-            let mut chars = line_text(cur_l);
-            let start_cls = terminal_char_class(char_at(cur_l, cur_c, &chars), big);
-            let mut l = cur_l;
-            let mut c = cur_c;
-            // 1. Skip while class matches start (only if start is
-            //    non-Space — if we're on Space, just skip Space).
-            if start_cls != TermCharClass::Space {
-                while terminal_char_class(char_at(l, c, &chars), big) == start_cls {
-                    let Some((nl, nc)) = advance(l, c) else {
-                        return (l, c);
-                    };
-                    if nl != l {
-                        chars = line_text(nl);
-                    }
-                    l = nl;
-                    c = nc;
-                }
-            }
-            // 2. Skip Space to land on next word/punct start.
-            while terminal_char_class(char_at(l, c, &chars), big) == TermCharClass::Space {
-                let Some((nl, nc)) = advance(l, c) else {
-                    return (l, c);
-                };
-                if nl != l {
-                    chars = line_text(nl);
-                }
-                l = nl;
-                c = nc;
-            }
-            (l, c)
-        }
-        D::Backward => {
-            // `b`/`B`: step back; skip Space; then back to the
-            // START of the word/punct we're inside.
-            let mut chars = line_text(cur_l);
-            let mut l = cur_l;
-            let mut c = cur_c;
-            // 1. Step back once unconditionally.
-            let Some((nl, nc)) = retreat(l, c) else {
-                return (l, c);
-            };
-            if nl != l {
-                chars = line_text(nl);
-            }
-            l = nl;
-            c = nc;
-            // 2. Skip Space.
-            while terminal_char_class(char_at(l, c, &chars), big) == TermCharClass::Space {
-                let Some((nl, nc)) = retreat(l, c) else {
-                    return (l, c);
-                };
-                if nl != l {
-                    chars = line_text(nl);
-                }
-                l = nl;
-                c = nc;
-            }
-            // 3. Walk back to the START of the current class
-            //    run.
-            let cls = terminal_char_class(char_at(l, c, &chars), big);
-            loop {
-                let Some((pl, pc)) = retreat(l, c) else {
-                    return (l, c);
-                };
-                let prev_chars = if pl != l { line_text(pl) } else { chars.clone() };
-                if terminal_char_class(char_at(pl, pc, &prev_chars), big) != cls {
-                    return (l, c);
-                }
-                l = pl;
-                c = pc;
-                if pl != cur_l {
-                    chars = prev_chars;
-                }
-            }
-        }
-        D::End => {
-            // `e`/`E`: step forward; skip Space; then forward to
-            // the END of the word/punct we're inside.
-            let mut chars = line_text(cur_l);
-            let mut l = cur_l;
-            let mut c = cur_c;
-            // 1. Step forward once.
-            let Some((nl, nc)) = advance(l, c) else {
-                return (l, c);
-            };
-            if nl != l {
-                chars = line_text(nl);
-            }
-            l = nl;
-            c = nc;
-            // 2. Skip Space.
-            while terminal_char_class(char_at(l, c, &chars), big) == TermCharClass::Space {
-                let Some((nl, nc)) = advance(l, c) else {
-                    return (l, c);
-                };
-                if nl != l {
-                    chars = line_text(nl);
-                }
-                l = nl;
-                c = nc;
-            }
-            // 3. Walk forward to the END of the current class
-            //    run.
-            let cls = terminal_char_class(char_at(l, c, &chars), big);
-            loop {
-                let Some((nl, nc)) = advance(l, c) else {
-                    return (l, c);
-                };
-                let next_chars = if nl != l { line_text(nl) } else { chars.clone() };
-                if terminal_char_class(char_at(nl, nc, &next_chars), big) != cls {
-                    return (l, c);
-                }
-                l = nl;
-                c = nc;
-                if nl != cur_l {
-                    chars = next_chars;
-                }
-            }
-        }
-    }
-}
+// T-clean-1 Phase B.2 (2026-05-28): `TerminalWordDir`,
+// `TermCharClass`, `terminal_char_class`, `terminal_word_step`
+// all retired — terminal word-class motions (`w` / `W` / `b` /
+// `B` / `e` / `E`) flow through the central grammar's
+// word-motion implementations against the SyntheticDoc rope.
+// Same byte-rope walker the document path uses, single source
+// of correctness, free word-class semantics improvements.
 
 #[derive(Debug, Clone)]
 pub enum RendererSignal {
@@ -13283,199 +13069,19 @@ impl Editor {
         });
     }
 
-    /// 2026-05-25: move the Normal-in-terminal navigation
-    /// cursor by `(dy, dx)`. Initializes nav_cursor to the live
-    /// PTY cursor on first move; clamps to grid bounds;
-    /// auto-scrolls the viewport when the cursor leaves the
-    /// visible window. Also syncs the Visual head when a
-    /// Visual session is in flight, so j/k inside Visual
-    /// extends the selection via the cursor naturally.
-    ///
-    /// T-cursor-1 (2026-05-28): also writes `self.cursor` in
-    /// doc-space (translated via `synthetic.origin_top_line`) so
-    /// downstream consumers — search, marks, text objects, the
-    /// future central-dispatch flip — can read uniformly. `nav_
-    /// cursor` stays the grid-space mirror the renderers paint
-    /// from until T-paint-1 retires it.
-    pub fn do_terminal_nav_move(&mut self, buf_id: BufferId, dy: i32, dx: i32) {
-        let new_doc_cursor = self.buffers.with_terminal_mut(buf_id, |t| {
-            let cols = t.snapshot.load().cols;
-            let (top, bot) = t.term.line_bounds();
-            let nav_was_none = t.nav_cursor.is_none();
-            let live_cursor_line = t.term.cursor_line();
-            let snap_scroll_offset = t.snapshot.load().scroll_offset;
-            let (cur_l, cur_c) = t.nav_cursor.unwrap_or_else(|| {
-                let snap = t.snapshot.load();
-                if snap.scroll_offset == 0 {
-                    (t.term.cursor_line(), 0)
-                } else {
-                    (-(snap.scroll_offset as i32), 0)
-                }
-            });
-            let new_l = (cur_l + dy).clamp(top, bot);
-            let new_c = (cur_c as i32 + dx)
-                .max(0)
-                .min(cols.saturating_sub(1) as i32) as u16;
-            // 2026-05-27 terminal-nav probe. Opt-in via
-            //   RUST_LOG=lattice_host::terminal_nav=debug
-            // Logs the alacritty grid bounds, the chosen anchor
-            // (live cursor vs scroll-offset fallback), and the
-            // clamp result so reports of "k doesn't move up" can
-            // be triangulated against the actual grid state.
-            tracing::debug!(
-                target: "lattice_host::terminal_nav",
-                dy,
-                dx,
-                top,
-                bot,
-                live_cursor_line,
-                snap_scroll_offset,
-                nav_was_none,
-                cur_l,
-                cur_c,
-                new_l,
-                new_c,
-                clamp_no_move = new_l == cur_l && dy != 0,
-                "terminal-nav probe"
-            );
-            // T-clean-1 Phase A.3 (2026-05-28): nav_cursor write
-            // removed — publisher syncs from `self.cursor` (set
-            // below by the caller) at end-of-dispatch. The
-            // `cur_l` / `cur_c` used as the fallback anchor a
-            // few lines above still reads `t.nav_cursor`, which
-            // remains valid because the publisher wrote it on
-            // the previous dispatch's tail.
-            if let Some(v) = t.visual.as_mut() {
-                v.head_line = new_l;
-                v.head_col = new_c;
-            }
-            // Bring cursor into view if needed.
-            let snap = t.snapshot.load();
-            let top_visible = -(snap.scroll_offset as i32);
-            let bot_visible = top_visible + snap.rows as i32 - 1;
-            if new_l < top_visible {
-                t.term.scroll_to_line(new_l);
-            } else if new_l > bot_visible {
-                let target = new_l - (snap.rows as i32 - 1);
-                t.term.scroll_to_line(target.max(top));
-            } else {
-                // Republish so the cursor overlay repaints.
-                t.term.scroll(lattice_terminal::TerminalScrollKind::Delta(0));
-            }
-            // T-cursor-1: compute the doc-space cursor for the
-            // caller to install on `self.cursor`. Only available
-            // when the synthetic doc exists (i.e. mode is
-            // TerminalNormalMode, not Insert).
-            t.synthetic.as_ref().map(|s| {
-                let doc_line = (new_l - s.origin_top_line).max(0) as u32;
-                let doc_byte = new_c as u32;
-                lattice_protocol::position::Position::new(doc_line, doc_byte)
-            })
-        });
-        if let Some(Some(c)) = new_doc_cursor {
-            self.cursor = c;
-        }
-    }
+    // T-clean-1 Phase B.2 (2026-05-28): `do_terminal_nav_move`
+    // retired — `h` / `j` / `k` / `l` (and the `<C-e>` / `<C-y>`
+    // single-line scrolls coerced to `line_down` / `line_up`)
+    // flow through `execute_motion_only` against the
+    // SyntheticDoc rope. The viewport-into-view logic moves to
+    // `sync_terminal_nav_cursor_from_doc`, which the runner
+    // calls after each motion.
 
-    /// 2026-05-27: word-class motion for the Normal-in-terminal
-    /// navigation cursor. Implements `w` / `b` / `e` and the
-    /// `WORD` variants `W` / `B` / `E` over the alacritty grid.
-    ///
-    /// `big = false` uses the vim "word" class (alphanumerics +
-    /// underscore are word chars; everything else is a
-    /// separator); `big = true` uses the "WORD" class (any
-    /// non-whitespace is a WORD char).
-    ///
-    /// Walks one char at a time across line boundaries.
-    /// Forward motions stop at the start of the next word /
-    /// end of the current/next word; backward stops at the
-    /// start of the previous word. Count multiplier applies.
-    pub fn do_terminal_nav_word(
-        &mut self,
-        buf_id: BufferId,
-        dir: TerminalWordDir,
-        big: bool,
-        count: u32,
-    ) {
-        let new_doc_cursor = self.buffers.with_terminal_mut(buf_id, |t| {
-            let (top, bot) = t.term.line_bounds();
-            let cols = t.snapshot.load().cols;
-            let (mut cur_l, mut cur_c) = t.nav_cursor.unwrap_or_else(|| {
-                let snap = t.snapshot.load();
-                if snap.scroll_offset == 0 {
-                    (t.term.cursor_line(), 0)
-                } else {
-                    (-(snap.scroll_offset as i32), 0)
-                }
-            });
-            for _ in 0..count.max(1) {
-                let (next_l, next_c) =
-                    terminal_word_step(&t.term, cur_l, cur_c, cols, top, bot, dir, big);
-                cur_l = next_l;
-                cur_c = next_c;
-            }
-            // T-clean-1 Phase A.3 (2026-05-28): nav_cursor write
-            // removed — publisher syncs from `self.cursor`.
-            if let Some(v) = t.visual.as_mut() {
-                v.head_line = cur_l;
-                v.head_col = cur_c;
-            }
-            // Bring cursor into view if needed (same logic as
-            // do_terminal_nav_move).
-            let snap = t.snapshot.load();
-            let top_visible = -(snap.scroll_offset as i32);
-            let bot_visible = top_visible + snap.rows as i32 - 1;
-            if cur_l < top_visible {
-                t.term.scroll_to_line(cur_l);
-            } else if cur_l > bot_visible {
-                let target = cur_l - (snap.rows as i32 - 1);
-                t.term.scroll_to_line(target.max(top));
-            } else {
-                t.term.scroll(lattice_terminal::TerminalScrollKind::Delta(0));
-            }
-            // T-cursor-1: doc-space mirror for downstream
-            // consumers. See `do_terminal_nav_move` for context.
-            t.synthetic.as_ref().map(|s| {
-                let doc_line = (cur_l - s.origin_top_line).max(0) as u32;
-                let doc_byte = cur_c as u32;
-                lattice_protocol::position::Position::new(doc_line, doc_byte)
-            })
-        });
-        if let Some(Some(c)) = new_doc_cursor {
-            self.cursor = c;
-        }
-    }
-
-    /// 2026-05-25: jump the Normal-in-terminal navigation
-    /// cursor to top / bottom of scrollback. Pairs with
-    /// `do_terminal_nav_move` for the gg / G chords.
-    pub fn do_terminal_nav_goto(&mut self, buf_id: BufferId, target: NavTarget) {
-        let new_doc_cursor = self.buffers.with_terminal_mut(buf_id, |t| {
-            let (top, bot) = t.term.line_bounds();
-            let new_l = match target {
-                NavTarget::Top => top,
-                NavTarget::Bottom => bot,
-            };
-            let new_c = t.nav_cursor.map(|(_, c)| c).unwrap_or(0);
-            // T-clean-1 Phase A.3 (2026-05-28): nav_cursor write
-            // removed — publisher syncs from `self.cursor`.
-            if let Some(v) = t.visual.as_mut() {
-                v.head_line = new_l;
-                v.head_col = new_c;
-            }
-            // Snap viewport so the cursor row is visible.
-            t.term.scroll_to_line(new_l);
-            // T-cursor-1: doc-space mirror.
-            t.synthetic.as_ref().map(|s| {
-                let doc_line = (new_l - s.origin_top_line).max(0) as u32;
-                let doc_byte = new_c as u32;
-                lattice_protocol::position::Position::new(doc_line, doc_byte)
-            })
-        });
-        if let Some(Some(c)) = new_doc_cursor {
-            self.cursor = c;
-        }
-    }
+    // T-clean-1 Phase B.2 (2026-05-28): `do_terminal_nav_word` +
+    // `do_terminal_nav_goto` retired — `w` / `W` / `b` / `B` /
+    // `e` / `E` / `gg` / `G` flow through `execute_motion_only`
+    // against the SyntheticDoc rope, sharing the central
+    // grammar's word-class semantics with document buffers.
 
     /// Terminal-mode T3 (2026-05-25): re-position the
     /// scrollback viewport on the active Terminal buffer.
@@ -22329,70 +21935,47 @@ impl Editor {
             self.do_terminal_enter_visual(grammar_kind);
             return true;
         }
-        // 2026-05-25: Normal-in-terminal navigation cursor.
-        // j / k / gg / G / h / l move the nav_cursor; the
-        // viewport auto-scrolls when the cursor leaves the
-        // visible window. This makes Visual entry land on the
-        // user's actual reading position and gives them a
-        // visible "you are here" marker.
-        let nav_dy = if cmd == self.builtins.line_down.0 {
-            Some(count as i32)
-        } else if cmd == self.builtins.line_up.0 {
-            Some(-(count as i32))
-        } else if cmd == self.action_ids.scroll_line_down {
-            Some(1)
+        // T-clean-1 Phase B.2 (2026-05-28): scroll-line actions
+        // (`<C-e>` / `<C-y>` analogues mapped to scroll_line_*)
+        // are Actions, not Motions, so they don't reach the
+        // Motion dispatcher below. Map them to single-step
+        // line_down/up so the central motion path handles
+        // viewport + cursor uniformly.
+        let coerced = if cmd == self.action_ids.scroll_line_down {
+            Some(self.builtins.line_down.0)
         } else if cmd == self.action_ids.scroll_line_up {
-            Some(-1)
+            Some(self.builtins.line_up.0)
         } else {
             None
         };
-        let nav_dx = if cmd == self.builtins.char_right.0 {
-            Some(count as i32)
-        } else if cmd == self.builtins.char_left.0 {
-            Some(-(count as i32))
-        } else {
-            None
-        };
-        if nav_dy.is_some() || nav_dx.is_some() {
+        let dispatch_cmd = coerced.unwrap_or(cmd);
+        let kind = self.registry.lookup(dispatch_cmd).map(|s| s.kind);
+        if matches!(kind, Some(lattice_grammar::CommandKind::Motion)) {
             self.pending_count = 0;
             self.op_count = 0;
-            self.do_terminal_nav_move(buf_id, nav_dy.unwrap_or(0), nav_dx.unwrap_or(0));
-            return true;
-        }
-        if cmd == self.builtins.goto_first_line.0 {
-            self.pending_count = 0;
-            self.op_count = 0;
-            self.do_terminal_nav_goto(buf_id, NavTarget::Top);
-            return true;
-        }
-        if cmd == self.builtins.goto_last_line.0 {
-            self.pending_count = 0;
-            self.op_count = 0;
-            self.do_terminal_nav_goto(buf_id, NavTarget::Bottom);
-            return true;
-        }
-        // 2026-05-27: word-class motions for Normal-in-terminal.
-        // w / W / b / B / e / E walk the alacritty grid and
-        // advance `nav_cursor` so Visual head follows.
-        let (word_dir, word_big) = if cmd == self.builtins.word_forward.0 {
-            (Some(TerminalWordDir::Forward), false)
-        } else if cmd == self.builtins.big_word_forward.0 {
-            (Some(TerminalWordDir::Forward), true)
-        } else if cmd == self.builtins.word_backward.0 {
-            (Some(TerminalWordDir::Backward), false)
-        } else if cmd == self.builtins.big_word_backward.0 {
-            (Some(TerminalWordDir::Backward), true)
-        } else if cmd == self.builtins.word_end.0 {
-            (Some(TerminalWordDir::End), false)
-        } else if cmd == self.builtins.big_word_end.0 {
-            (Some(TerminalWordDir::End), true)
-        } else {
-            (None, false)
-        };
-        if let Some(dir) = word_dir {
-            self.pending_count = 0;
-            self.op_count = 0;
-            self.do_terminal_nav_word(buf_id, dir, word_big, count);
+            let mut motion_inv = inv.clone();
+            motion_inv.command = dispatch_cmd;
+            let buffer = self.active_text();
+            let cancel = lattice_protocol::CancellationToken::never();
+            match lattice_grammar::execute_motion_only(
+                &self.registry,
+                &buffer,
+                self.cursor,
+                motion_inv,
+                &cancel,
+            ) {
+                Ok(new_pos) => {
+                    self.cursor = new_pos;
+                    self.pane_tree.active_mut().cursor = new_pos;
+                    self.sync_terminal_nav_cursor_from_doc(buf_id);
+                }
+                Err(_) => {
+                    // Motion failed (e.g. count overflow, or
+                    // the doc is empty so `j` has nowhere to
+                    // go). Silently swallow to match the prior
+                    // bespoke behaviour.
+                }
+            }
             return true;
         }
         // Page motions keep their scroll semantics (no

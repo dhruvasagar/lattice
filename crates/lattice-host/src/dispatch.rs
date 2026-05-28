@@ -875,6 +875,40 @@ impl Editor {
                 } else {
                     std::sync::Arc::from("")
                 },
+                // T-clean-1 Phase A.1 (2026-05-28): publisher
+                // derives the renderer-consumed cursor + visual
+                // from `self.cursor` (doc-space) + the buffer's
+                // `synthetic.origin_top_line`, replacing the
+                // direct `with_terminal(...|t| t.nav_cursor)`
+                // reach the renderers had.
+                terminal_nav_cursor: if matches!(
+                    self.active_buffer,
+                    BufferKind::Terminal
+                ) {
+                    let cur = self.cursor;
+                    self.buffers
+                        .with_terminal(self.active_pane_buffer_id(), |t| {
+                            t.synthetic.as_ref().map(|s| {
+                                let grid_line =
+                                    s.origin_top_line + cur.line as i32;
+                                let grid_col = cur.byte as u16;
+                                (grid_line, grid_col)
+                            })
+                        })
+                        .flatten()
+                } else {
+                    None
+                },
+                terminal_visual: if matches!(
+                    self.active_buffer,
+                    BufferKind::Terminal
+                ) {
+                    self.buffers
+                        .with_terminal(self.active_pane_buffer_id(), |t| t.visual)
+                        .flatten()
+                } else {
+                    None
+                },
                 // Slice 3c.final.B (group 2): active-document
                 // decoration fields. Renderers read these
                 // through the published snapshot instead of

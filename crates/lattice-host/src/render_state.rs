@@ -273,6 +273,21 @@ pub struct ActiveDocumentRenderState {
     /// the generic `TERMINAL` label. Empty when the active
     /// buffer is not a Terminal.
     pub terminal_program_name: std::sync::Arc<str>,
+    /// T-clean-1 Phase A.1 (2026-05-28): the active Terminal
+    /// pane's cursor in alacritty grid coordinates
+    /// `(absolute_line, col)`. Derived by the publisher from
+    /// `self.cursor` (doc-space) + `synthetic.origin_top_line`.
+    /// Renderers read this instead of reaching into
+    /// `TerminalBuffer::nav_cursor` so the bespoke mirror can
+    /// retire (Phase A.3). `None` when the active buffer is
+    /// not a Terminal or has no SyntheticDoc (Insert mode).
+    pub terminal_nav_cursor: Option<(i32, u16)>,
+    /// T-clean-1 Phase A.1 (2026-05-28): published copy of
+    /// `TerminalBuffer::visual` for renderer consumption. Same
+    /// shape as on the buffer (grid coords). Renderers read
+    /// this so the buffer-side field can later move to a
+    /// doc-space source. `None` when not in terminal-Visual.
+    pub terminal_visual: Option<lattice_terminal::TerminalVisualState>,
     /// Phase 5.8.AF.5 / Slice 3c.final.B (group 2): folds for
     /// the active document. Renderers read
     /// `rs.active_document.folds` instead of `app.editor.folds`.
@@ -343,6 +358,8 @@ impl Default for ActiveDocumentRenderState {
             terminal_app_cursor_keys: false,
             terminal_insert_exit_pending: false,
             terminal_program_name: Arc::from(""),
+            terminal_nav_cursor: None,
+            terminal_visual: None,
             folds: Arc::from(Vec::<lattice_core::Fold>::new().into_boxed_slice()),
             all_matches: Arc::from(
                 Vec::<lattice_protocol::position::Range>::new().into_boxed_slice(),

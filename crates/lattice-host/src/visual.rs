@@ -7,11 +7,13 @@
 //! splice; the GPUI peer paints a flex_row cell with an inverted
 //! background. Both consume [`Editor::visual_selection_range`].
 
+use lattice_core::BufferKind;
 use lattice_protocol::position::{Position, Range};
 use lattice_protocol::selection::VisualMode;
 
 use crate::editor::Editor;
 use lattice_grammar::{ModalState, VisualKind};
+use lattice_terminal::VisualKind as TermVisualKind;
 
 /// Rectangle defined by a Blockwise Visual selection's
 /// `(anchor, head)` positions, normalised so that
@@ -54,6 +56,17 @@ impl Editor {
     /// Renderer-neutral; the returned `Range` is the renderer-
     /// agnostic [`lattice_protocol::position::Range`].
     pub fn visual_selection_range(&self) -> Option<Range> {
+        // T-paint-1 (2026-05-28): terminal Visual lives on
+        // `t.visual` (grid-space) and its own modal flag stays
+        // `Normal`. Derive a doc-space `Range` from it via the
+        // SyntheticDoc's `origin_top_line`, so downstream
+        // document-grammar consumers (operator range resolution,
+        // future copy-to-register paths, etc.) see terminal
+        // Visual through the same publish surface as document
+        // Visual.
+        if matches!(self.active_buffer, BufferKind::Terminal) {
+            return self.terminal_visual_selection_range();
+        }
         if !matches!(self.modal, ModalState::Visual(_)) {
             return None;
         }
@@ -89,7 +102,14 @@ impl Editor {
     /// renderer peers paint the same block. Charwise / Linewise
     /// stay on [`visual_selection_range`] — Blockwise needs a
     /// per-line column band that a linear `Range` can't express.
+    /// T-paint-1 (2026-05-28): also returns the block when the
+    /// active buffer is a Terminal with `t.visual.kind == Block`,
+    /// translating from grid-space to doc-space via
+    /// `synthetic.origin_top_line`.
     pub fn visual_block_extents(&self) -> Option<BlockExtents> {
+        if matches!(self.active_buffer, BufferKind::Terminal) {
+            return self.terminal_visual_block_extents();
+        }
         if !matches!(self.modal, ModalState::Visual(VisualKind::Blockwise)) {
             return None;
         }
@@ -101,5 +121,70 @@ impl Editor {
             start_col: sel.anchor.byte.min(sel.head.byte),
             end_col: sel.anchor.byte.max(sel.head.byte),
         })
+    }
+
+    /// T-paint-1 (2026-05-28): doc-space derivation of the
+    /// terminal-Visual selection. Reads grid-space `(anchor, head)`
+    /// from `t.visual`, subtracts `origin_top_line` to get doc
+    /// lines, treats the grid column as a byte column (ASCII
+    /// assumption — wide-char handling is the §7 open question),
+    /// then folds Charwise / Linewise / Blockwise the same way as
+    /// the document path.
+    fn terminal_visual_selection_range(&self) -> Option<Range> {
+        let buf_id = self.active_pane_buffer_id();
+        self.buffers
+            .with_terminal(buf_id, |t| {
+                let visual = t.visual?;
+                let synthetic = t.synthetic.as_ref()?;
+                let origin = synthetic.origin_top_line;
+                let anchor_line = (visual.anchor_line - origin).max(0) as u32;
+                let head_line = (visual.head_line - origin).max(0) as u32;
+                let anchor = Position::new(anchor_line, visual.anchor_col as u32);
+                let head = Position::new(head_line, visual.head_col as u32);
+                let (a, b) = if anchor <= head { (anchor, head) } else { (head, anchor) };
+                Some(match visual.kind {
+                    TermVisualKind::Line => Range::new(
+                        Position::new(a.line, 0),
+                        Position::new(b.line, u32::MAX),
+                    ),
+                    TermVisualKind::Char => Range::new(
+                        a,
+                        Position::new(b.line, b.byte.saturating_add(1)),
+                    ),
+                    TermVisualKind::Block => Range::new(
+                        a,
+                        Position::new(b.line, b.byte.saturating_add(1)),
+                    ),
+                })
+            })
+            .flatten()
+    }
+
+    /// T-paint-1 (2026-05-28): doc-space derivation of the
+    /// terminal-Visual block extents. Mirrors
+    /// [`Self::terminal_visual_selection_range`]; only fires for
+    /// `TermVisualKind::Block`.
+    fn terminal_visual_block_extents(&self) -> Option<BlockExtents> {
+        let buf_id = self.active_pane_buffer_id();
+        self.buffers
+            .with_terminal(buf_id, |t| {
+                let visual = t.visual?;
+                if !matches!(visual.kind, TermVisualKind::Block) {
+                    return None;
+                }
+                let synthetic = t.synthetic.as_ref()?;
+                let origin = synthetic.origin_top_line;
+                let anchor_line = (visual.anchor_line - origin).max(0) as u32;
+                let head_line = (visual.head_line - origin).max(0) as u32;
+                let anchor_col = visual.anchor_col as u32;
+                let head_col = visual.head_col as u32;
+                Some(BlockExtents {
+                    start_line: anchor_line.min(head_line),
+                    end_line: anchor_line.max(head_line),
+                    start_col: anchor_col.min(head_col),
+                    end_col: anchor_col.max(head_col),
+                })
+            })
+            .flatten()
     }
 }

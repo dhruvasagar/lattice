@@ -81,6 +81,19 @@ impl Buffer {
         &self.rope
     }
 
+    /// D.3.a (2026-05-29): clone the underlying rope. `Rope::clone`
+    /// is `Arc`-share of the underlying chunks (no deep copy), so
+    /// the cost is one refcount bump per chunk. Used by the
+    /// diff subsystem's `BufferTextProvider` impl to hand a
+    /// snapshot rope to `BufferBaseline` / `BufferCurrentSource`
+    /// from inside the worker's `spawn_blocking` body. Exposes
+    /// only `Rope` (not the internal `Rope` field), so the
+    /// abstraction barrier the `pub(crate) rope()` method
+    /// protects stays in place.
+    pub fn to_rope(&self) -> Rope {
+        self.rope.clone()
+    }
+
     /// Materialise one logical line (without its trailing `\n`).
     /// Returns `None` if `line` is past the end. Locating the line
     /// is `O(log n)`; copying its bytes is `O(line_len)`.

@@ -1488,9 +1488,60 @@ shared with multibuffer-views and post-v1 inlay hints.
   consumer lands and the paint pass joins the budget. Bench
   is annotated with the §3.4 paragraphs it backs so the
   design + bench stay coupled (heuristic #5).
-- 🗒 **D.3** — Inline overlay presentation: single-doc vs.
-  baseline; gutter signs, line tints, deletion blocks; `]c`
-  / `[c` motions.
+- 🚧 **D.3** — Inline overlay presentation. Carved during build
+  into a series of sub-slices; D.3.a landed 2026-05-29 as the
+  foundational wiring, follow-ons (D.3.a.1 / D.3.b / D.3.c /
+  D.3.d / D.3.e) track the ex-command + content + motions +
+  visual polish.
+  - ✅ **D.3.a** (2026-05-29) — Foundational wiring landed in
+    `lattice-host`. New `Buffer::to_rope() -> Rope` (lattice-core;
+    `Arc`-share clone of the chunked rope, no deep copy);
+    `BufferRegistryTextProvider` impl of `BufferTextProvider`
+    over `BufferRegistry::document_handle ->
+    DocumentHandle::snapshot -> snapshot.buffer.to_rope`;
+    `OnDiskBaseline { path }` impl of `BaselineSource` that
+    re-reads the file on every `snapshot` (with
+    `tracing::debug` degradation to empty rope on I/O error
+    — defensible all-Add presentation when the baseline
+    file vanishes mid-session); `DiffOverlayVirtualRowProvider`
+    impl of `VirtualRowProvider` in a new `diff_overlay`
+    module. The provider walks the session's published
+    `HunkIndex`, emits one `Above`-anchored empty `VirtualRow`
+    per baseline line for each Remove / Change / Conflict
+    hunk (Add hunks emit nothing — those lines are visible
+    on the current side, future D.3.d / D.3.e renders the
+    sign + tint). `version()` returns
+    `session.current_hunks().revision`, so the
+    `virtual_rows_worker`'s fingerprint pass picks up hunk
+    changes on the next wake. `id()` is
+    `0xD1FF_0000_0000_0000 | buffer_id` so the namespace is
+    audit-visible. 10 new tests (8 provider + 2
+    `OnDiskBaseline` — file read + missing-file degradation).
+    **429 `lattice-host` unit tests green** overall.
+  - 🗒 **D.3.a.1** — `:diff` (no args) / `:diffoff` ex-commands.
+    Wires `DiffSubsystem::bind` at editor boot; registers
+    `BufferRegistryTextProvider` as the host's
+    `BufferTextProvider`; opens a `DiffSession` with
+    `OnDiskBaseline` + `BufferCurrentSource` for the active
+    document; registers the `DiffOverlayVirtualRowProvider`
+    with `Editor::virtual_row_providers`; spawns a publish-
+    notify → `VirtualRowsWake` forwarder so hunk-republishes
+    reach the worker without waiting for the next
+    `publish_render_state` tick.
+  - 🗒 **D.3.b** — Deletion-block content. Provider snapshots
+    the descriptor's baseline rope on each revision bump,
+    renders the baseline lines into cell sequences, caches
+    them, and serves them from `collect()` instead of empty
+    `Arc<[Cell]>`.
+  - 🗒 **D.3.c** — `]c` / `[c` motions. Register hunk-jump
+    motions in the keymap + grammar; jump source = the
+    session's published `HunkIndex` ranges[1] (current side).
+  - 🗒 **D.3.d** — Gutter sign rendering. `+` / `-` / `~`
+    sprites in the gutter column for Add / Remove / Change
+    hunks; reuses §5.6.7 icon atlas.
+  - 🗒 **D.3.e** — Line background tints. `DiffAdd`,
+    `DiffChange`, `DiffRemove` theme entries applied to cell
+    backgrounds on the current side.
 - 🗒 **D.4** — Side-by-side two-way: `:diff`, `:diffthis`,
   `:diffsplit`, `:diffoff`; pane-group scroll-binding with
   hunk-correspondent row mapping.

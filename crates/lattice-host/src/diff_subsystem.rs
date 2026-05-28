@@ -128,6 +128,58 @@ impl BaselineSource for StaticBaseline {
 	}
 }
 
+/// D.3.a (2026-05-29): on-disk file baseline.
+///
+/// `snapshot` re-reads the file at `path` and parses it into a
+/// fresh `Rope`. Used by `:diff` (no args) — "diff against
+/// the on-disk version of this file." Cheap enough to do
+/// inside `spawn_blocking` per the [`BaselineSource`]
+/// contract; D.3's first consumer is single-file inline
+/// overlay so per-recompute file re-reads are acceptable.
+/// Future D.7 (`:Gdiff`) introduces a separate `GitBaseline`
+/// that reads through `gix` against a fixed ref.
+///
+/// On I/O error (missing path, permissions, mid-read crash)
+/// snapshot returns an empty rope. The session then recomputes
+/// the diff against empty baseline (all-Add hunks), which is
+/// the "everything is new" presentation — a noisy but
+/// defensible degradation that the user can resolve via
+/// `:diffoff` and a corrected path. We log the error at
+/// `tracing::debug` so the failure surfaces under
+/// `RUST_LOG=lattice_host::diff_subsystem=debug` without
+/// blocking the recompute path.
+#[derive(Clone, Debug)]
+pub struct OnDiskBaseline {
+	path: std::path::PathBuf,
+}
+
+impl OnDiskBaseline {
+	pub fn new(path: std::path::PathBuf) -> Self {
+		Self { path }
+	}
+
+	pub fn path(&self) -> &std::path::Path {
+		&self.path
+	}
+}
+
+impl BaselineSource for OnDiskBaseline {
+	fn snapshot(&self) -> Rope {
+		match std::fs::read_to_string(&self.path) {
+			Ok(s) => Rope::from(s),
+			Err(err) => {
+				debug!(
+					target: "lattice_host::diff_subsystem",
+					path = ?self.path,
+					?err,
+					"OnDiskBaseline::snapshot failed; returning empty rope"
+				);
+				Rope::new()
+			}
+		}
+	}
+}
+
 // ──────────────────────────────────────────────────────────────
 // D.2.c: CurrentSource trait + concrete sources
 // ──────────────────────────────────────────────────────────────
@@ -166,6 +218,36 @@ pub trait CurrentSource: Send + Sync + 'static + std::fmt::Debug {
 /// remove the entry shortly after.
 pub trait BufferTextProvider: Send + Sync + 'static + std::fmt::Debug {
 	fn buffer_rope(&self, id: BufferId) -> Option<Rope>;
+}
+
+/// D.3.a (2026-05-29): the production [`BufferTextProvider`]
+/// impl. Bridges the trait to the host's [`crate::buffer_registry::BufferRegistry`]:
+/// `buffer_rope(id)` walks `BufferRegistry::document_handle(id)
+/// -> DocumentHandle::snapshot() -> snapshot.buffer.to_rope()`.
+///
+/// All operations are RCU-style reads (registry mutex held only
+/// long enough to clone an `Arc<DocumentSnapshot>`; rope clone
+/// is `Arc`-share of chunks). Safe to call from
+/// `spawn_blocking`. Returns `None` for non-document buffers
+/// or for ids the registry has dropped — the diff subsystem's
+/// `BufferBaseline` / `BufferCurrentSource` impls map `None`
+/// to an empty rope per their documented contract.
+#[derive(Clone, Debug)]
+pub struct BufferRegistryTextProvider {
+	registry: Arc<crate::buffer_registry::BufferRegistry>,
+}
+
+impl BufferRegistryTextProvider {
+	pub fn new(registry: Arc<crate::buffer_registry::BufferRegistry>) -> Self {
+		Self { registry }
+	}
+}
+
+impl BufferTextProvider for BufferRegistryTextProvider {
+	fn buffer_rope(&self, id: BufferId) -> Option<Rope> {
+		let handle = self.registry.document_handle(id)?;
+		Some(handle.snapshot().buffer.to_rope())
+	}
 }
 
 /// Live-rope baseline backed by a sibling buffer. The
@@ -1220,6 +1302,34 @@ mod tests {
 		// Second snapshot is independent.
 		let snap2 = base.snapshot();
 		assert_eq!(snap2.to_string(), "alpha\nbeta\n");
+	}
+
+	#[test]
+	fn on_disk_baseline_reads_file() {
+		// Write a tempfile, snapshot the baseline against it,
+		// verify content.
+		let dir = std::env::temp_dir();
+		let path = dir.join(format!(
+			"lattice-on-disk-baseline-test-{}.txt",
+			std::process::id()
+		));
+		std::fs::write(&path, "hello\nworld\n").expect("write tempfile");
+		let base = OnDiskBaseline::new(path.clone());
+		let snap = base.snapshot();
+		assert_eq!(snap.to_string(), "hello\nworld\n");
+		let _ = std::fs::remove_file(&path);
+	}
+
+	#[test]
+	fn on_disk_baseline_missing_file_returns_empty_rope() {
+		// Per docs: missing path / I/O error degrades to
+		// empty rope (all-Add presentation) rather than
+		// panicking.
+		let base = OnDiskBaseline::new(std::path::PathBuf::from(
+			"/nonexistent/path/lattice-diff-test-does-not-exist",
+		));
+		let snap = base.snapshot();
+		assert_eq!(snap.len_chars(), 0);
 	}
 
 	#[test]

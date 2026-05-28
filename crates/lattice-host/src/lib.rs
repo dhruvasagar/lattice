@@ -67,6 +67,12 @@ pub mod diff_subsystem;
 // via `Editor::virtual_rows_matrix_cell`. See
 // `docs/dev/architecture/virtual-rows.md`.
 pub mod virtual_rows_worker;
+// D.3.a (2026-05-29): inline diff overlay's
+// `VirtualRowProvider` impl. Converts the active
+// `DiffSession`'s published `HunkIndex` to deletion-block
+// `VirtualRow`s anchored above the current-side hunk start.
+// See `docs/dev/architecture/diff-system.md` §3.3.
+pub mod diff_overlay;
 pub mod host_generators;
 pub mod input;
 pub mod keymap;

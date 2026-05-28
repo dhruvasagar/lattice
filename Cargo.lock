@@ -3488,6 +3488,7 @@ dependencies = [
  "notify",
  "ropey",
  "serde_json",
+ "smallvec",
  "streaming-iterator",
  "thiserror 2.0.18",
  "tokio",

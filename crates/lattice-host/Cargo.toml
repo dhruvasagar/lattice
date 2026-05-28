@@ -132,6 +132,12 @@ criterion = { workspace = true }
 # to drive the lazy debounce task deterministically without
 # wall-clock waits. The `test-util` feature is dev-only.
 tokio = { workspace = true, features = ["test-util", "macros", "rt"] }
+# D.3.a (2026-05-29): diff-overlay provider tests construct
+# `Hunk { ranges: SmallVec<[LineRange; 3]> }` directly via the
+# `smallvec!` macro. Production code uses `Hunk` values
+# emitted by `lattice-diff`'s `compute_two_way` — no host-side
+# allocation; the dev-dep is purely for inline test fixtures.
+smallvec = { workspace = true }
 
 [[bench]]
 name = "highlights_worker"

@@ -1156,7 +1156,7 @@ snapshot_post_publish_read at 10/1k/50k lines).
 ## Terminal-mode (issue #40, 2026-05-22 → 2026-05-25)
 
 Plan + tracker live in
-[`terminal-mode-plan.md`](terminal-mode-plan.md); design in
+[`slice-plans/terminal-mode.md`](slice-plans/terminal-mode.md); design in
 [`../architecture/terminal-mode.md`](../architecture/terminal-mode.md).
 Capsule summary so this ledger stands alone:
 

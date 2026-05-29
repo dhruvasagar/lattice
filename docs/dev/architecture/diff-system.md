@@ -805,53 +805,12 @@ exposes per-buffer language overrides.
 
 ## 9. Slice plan
 
-Each slice ships green-on-merge with the four artefacts
-CLAUDE.md mandates: architecture documentation (this doc,
-updated as needed), benchmark coverage where load-bearing,
-test coverage of the new scenarios + failure modes, graceful
-error handling (log + skip on recoverable failures, never
-panic on the hot path, never swallow silently).
-
-| Slice   | Title                                     | What lands                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-|---------|-------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| **D.0** | Foundational primitives                   | (a) Displacing virtual-row primitive on the cell-grid renderer: `VirtualRow` type, row-translation cache, renderer iteration interleaving virtual + document rows, motion / scroll / cursor honour the interleaving. (b) Scroll-binding pane-group primitive: `PaneGroup` with pluggable row-mapping function; default mapping = identity. Tests: virtual-row insert / remove / re-anchor on document edit; cursor lands correctly when typing past a virtual row; scroll-bind round-trip with identity mapping preserves cursor position. Benches: `virtual_row_layout_p99_us` at 1k virtual rows; `scroll_bind_dispatch_p99_us` at 100 paired panes. No diff-specific consumer yet — the primitives stand alone. |
-| **D.1** | `lattice-diff` crate                      | Pure crate. `Hunk` / `HunkIndex` types; `compute_two_way(a, b)` / `compute_three_way(base, a, b) -> HunkIndex` via `imara-diff`. Algorithm enum + per-call selector. Property tests: round-trip via patch apply for randomly-generated rope pairs; conflict detection on three-way matches git's behaviour on a set of known cases. Bench: `diff_recompute_p99_us` at v1 P95 file (5k × 80 cols); stress at 50k × 200. No host integration yet.                                                                                                                                                                                                                                                                    |
-| **D.2** | `DiffSubsystem` + `DiffSession` lifecycle | New subsystem on `lattice-host`. `DiffSession` open / close / debounced recompute / RCU publish via `ArcSwap`. Subscriptions to document edit events through the existing event bus (§5.10). `:describe-diff` ex-command lists active sessions. No rendering yet — assert observable behaviour by reading `HunkIndex` after mutations. Tests: open session, edit doc, observe new revision; close session releases subscriptions; document-close auto-closes session per §8 decision; subsystem survives a panicking recompute task (one session degraded, others unaffected). **Carved during build:** D.2.a (registry skeleton, ✅), D.2.b (`spawn_blocking` compute + revision-gated publish, ✅), D.2.c (routing + lazy debouncer + bus subscription per §3.4, in progress), D.2.d (`:describe-diff`), D.2.e (bench wiring). See `docs/dev/operations/implementation.md` for slice-by-slice status. |
-| **D.3** | Inline overlay presentation               | First consumer of D.0's virtual-row primitive. `DiffMap` in `PresentationMode::Inline` for the single-doc-vs-baseline case (file vs. disk content as baseline — easiest baseline to source). Hunk decorations: gutter signs (sprite, reuses §5.6.7 atlas), line-background tints (`DiffAdd` / `DiffChange` / `DiffRemove` theme entries), virtual-row deletion blocks. `]c` / `[c` motions registered. End-to-end test: open a file, edit it, observe gutter signs and inline deletion blocks; `]c` jumps between hunks. Bench: `diff_render_p99_us` at 100 visible hunks.                                                                                                                                         |
-| **D.4** | Side-by-side two-way presentation         | Second consumer of D.0 (scroll-bind primitive). `:diff <buf>`, `:diffthis`, `:diffsplit <file>`, `:diffoff` ex-commands. `PresentationMode::SideBySide` for two panes; pane-group scroll-binding consults `HunkIndex` for hunk-correspondent row mapping. Filler virtual rows on both sides to align parallel hunks. `[c` / `]c` motions work uniformly. Tests: two files diffed render correctly; scroll one pane, other follows; filler rows align hunks; `:diffoff` cleanly drops state on both panes.                                                                                                                                                                                                          |
-| **D.5** | Hunk transfer operators (`do` / `dp`)     | Operators registered through `CommandRegistry`. Translate to `ApplyEdit` against the receiving document; edit fires recompute through the standard pipeline. Tests: `dp` on a Change hunk replaces the other document's range; undo composes correctly; macros record and replay correctly; recompute fires once after the edit settles.                                                                                                                                                                                                                                                                                                                                                                           |
-| **D.6** | Three-way merge presentation              | `PresentationMode::SideBySide { pane_index: 0/1/2 }` for three panes. `HunkKind::Conflict` populated by `compute_three_way`. Conflict-region rendering uses a distinct theme entry (`DiffConflict`). `:diffput <bufnr>` / `:diffget <bufnr>` honour the disambiguating argument. `:diff-accept` / `:diff-reject` ex-commands for resolving the session. Tests: three documents with non-overlapping changes show two non-conflict hunks; three documents with overlapping changes show one conflict hunk; `:diffput 2` resolves a conflict by pushing pane 1's version.                                                                                                                                            |
-| **D.7** | Git baseline integration (`:Gdiff`)       | New small `lattice-vcs` crate (or extension of an existing one) providing `git_baseline(path, ref) -> Rope`. `:Gdiff [<ref>]` opens a single-doc inline session against the git baseline. Uses `gix` (gitoxide) for read-only access; no working-copy mutation. Tests: dirty file shows hunks vs HEAD; clean file shows no hunks; non-git paths return a clear error via the existing diagnostic banner.                                                                                                                                                                                                                                                                                                           |
-| **D.3.f** | Hunk fold provider                      | `HunkFoldProvider` registers one fold range per hunk's current-side range (`ranges[1]`) into the existing fold registry. **No new keymaps** — the standard fold vocabulary (`za` / `zo` / `zc` / `zR` / `zM`, `foldlevel=N`, `:foldopen` / `:foldclose`) covers hunks identically to syntactic / marker folds (§6.5). Composition: `za` on a row inside both a hunk and an excerpt fold (multibuffer M.7) toggles the innermost first; repeated presses walk outwards. Lands after D.3.e since fold-state interaction with deletion-block virtual rows + tint backgrounds wants those visuals settled first. Tests: hunk fold range is registered with the right span; `za` toggles a hunk fold without affecting other folds; nested hunk-inside-excerpt prefers innermost on `za`. |
-
-After D.7, two consumer flows compose on top of this subsystem
-without further changes to the diff layer:
-
-- **Claude Code `openDiff` (single-file)** — synthesises a
-  baseline Document from the proposed text and opens an
-  inline D.3-style session; waits on the
-  `DiffSession::completion` oneshot for `Accept` / `Reject`.
-  Lands as part of the Claude Code IDE plugin work,
-  independent of the diff slices.
-- **Project-wide diff** and **AI multi-file `openDiff`** —
-  compose with `multibuffer-views.md`'s `MultibufferDocument`
-  and an `AIProposedEditsProvider` / `ProjectDiffProvider`.
-  Each excerpt's diff state is one `DiffSession` and one
-  inline `DiffMap`; the multibuffer composes them. Lands as
-  part of those provider slices.
-
-Slice sequencing:
-
-- **D.0** is foundational and reusable beyond diff. Land
-  green standalone before D.3.
-- **D.1** has no dependency on D.0 — it's a pure crate. Can
-  land in parallel with D.0.
-- **D.2** depends on D.1 only.
-- **D.3** depends on D.0 (a) + D.2.
-- **D.4** depends on D.0 (b) + D.3.
-- **D.5** depends on D.2 only (no presentation dependency).
-- **D.6** depends on D.4.
-- **D.7** depends on D.3.
+Sequencing lives in
+[`docs/dev/operations/slice-plans/diff-system.md`](../operations/slice-plans/diff-system.md);
+authoritative status per slice lives in
+[`docs/dev/operations/implementation.md`](../operations/implementation.md).
+This fragment owns *what* and *why*; the slice plan owns
+*when* and *in what order*.
 
 ## 10. Testing strategy
 

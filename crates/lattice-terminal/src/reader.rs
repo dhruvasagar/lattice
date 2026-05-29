@@ -62,7 +62,7 @@ impl EventListener for NoopListener {
 /// placeholder didn't track scrollback; T2 leaves the
 /// scrollback ring at zero so the grid behaves identically
 /// for the screen-only case. Scrollback exposure lands with
-/// T3 (`docs/dev/operations/terminal-mode-plan.md`).
+/// T3 (`docs/dev/operations/slice-plans/terminal-mode.md`).
 struct PtyDimensions {
     rows: u16,
     cols: u16,

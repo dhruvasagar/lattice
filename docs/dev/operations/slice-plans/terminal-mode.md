@@ -289,7 +289,7 @@ Integration tests in `lattice-host`:
 
 - `docs/dev/architecture/terminal-mode.md` — ✅ (this slice
   preparation work).
-- `docs/dev/operations/terminal-mode-plan.md` — ✅ (this doc).
+- `docs/dev/operations/slice-plans/terminal-mode.md` — ✅ (this doc).
 - `docs/user/terminal.md` — ✅ (companion).
 - `docs/dev/architecture/design.md` §5.B — added once T1 ships
   (terse canonical text mirroring the architecture doc).

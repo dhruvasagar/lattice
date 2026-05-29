@@ -9,7 +9,7 @@ leaving Lattice.
 > the developer-facing
 > [`docs/dev/architecture/terminal-mode.md`](../dev/architecture/terminal-mode.md)
 > and
-> [`docs/dev/operations/terminal-mode-plan.md`](../dev/operations/terminal-mode-plan.md).
+> [`docs/dev/operations/slice-plans/terminal-mode.md`](../dev/operations/slice-plans/terminal-mode.md).
 > This user-facing doc describes the intended user experience
 > once T1–T4 ship.
 

@@ -5,7 +5,7 @@ forthcoming `design.md` §5.B (canonical text lands once T1
 ships). User-facing help lives in
 [`../../user/terminal.md`](../../user/terminal.md). The
 planning document with slice-level breakdown lives in
-[`../operations/terminal-mode-plan.md`](../operations/terminal-mode-plan.md).
+[`../operations/slice-plans/terminal-mode.md`](../operations/slice-plans/terminal-mode.md).
 
 ---
 
@@ -509,7 +509,7 @@ moving to new tab.
 
 ## 17. Slice plan summary
 
-See [`../operations/terminal-mode-plan.md`](../operations/terminal-mode-plan.md)
+See [`../operations/slice-plans/terminal-mode.md`](../operations/slice-plans/terminal-mode.md)
 for the full slice-by-slice breakdown.
 
 - **T1** — Core PTY + buffer kind + render (no input yet)

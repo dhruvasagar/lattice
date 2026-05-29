@@ -2,7 +2,7 @@
 //!
 //! Issue #40 / Terminal-mode T1 (2026-05-22). See
 //! `docs/dev/architecture/terminal-mode.md` for the design
-//! and `docs/dev/operations/terminal-mode-plan.md` for the
+//! and `docs/dev/operations/slice-plans/terminal-mode.md` for the
 //! slice breakdown.
 //!
 //! # Surface (T1)

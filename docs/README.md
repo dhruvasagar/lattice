@@ -63,7 +63,7 @@ right now."**
 | [benchmarks.md](dev/operations/benchmarks.md)                             | Latest measured perf numbers + how to reproduce them.           |
 | [verify.md](dev/operations/verify.md)                                     | Manual verification checklist for end-to-end smoke testing.     |
 | [embedded-docs-budget.md](dev/operations/embedded-docs-budget.md)         | Size-budget rationale + escape options when embedded user docs grow past the trigger. |
-| [terminal-mode-plan.md](dev/operations/terminal-mode-plan.md)             | Sliced rollout plan for the embedded terminal-mode subsystem.   |
+| [slice-plans/](dev/operations/slice-plans/)                               | Sliced rollout plans, one file per subsystem (diff, multibuffer, virtual rows, terminal, completion-pipeline). Sequencing-only; design lives in `dev/architecture/`. |
 
 ## dev/notes/
 

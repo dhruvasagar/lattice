@@ -340,6 +340,50 @@ lifecycle events the same way diff sessions do today.
 - **One global mapper switched by mode.** Tempting for
   diff-only use but blocks composition. Multiple
   concurrent groups need independent mappers.
+- **Diff subsystem owns its secondary cell / virtual-row
+  / highlights pipeline (call this *D1*; rejected
+  2026-05-29).** Considered when carving D.4.d. Idea:
+  `DiffSession` holds per-side `Arc<ArcSwap<CellMatrix>>`
+  cells, spawns its own builder task, exposes matrices
+  through the existing diff-subsystem snapshot in
+  `RenderState`. Pro: bounds the side-by-side pipeline
+  to diff crates; `CellsRenderState` keeps its single-
+  document shape. Con: forces the cell builder to be
+  callable from two places (`cells_worker` + diff
+  subsystem builder), duplicating the wake / cache-hit
+  / chunking discipline that already lives inside
+  `cells_worker`. Three-pane merge (D.6) would
+  re-duplicate the same plumbing again. Future
+  consumers (LSP preview pane, picker live-preview)
+  would each grow their own builder, fragmenting the
+  matrix-build path.
+
+  **Chosen: D2 — workers iterate the per-document
+  registry.** `Editor::cells_matrices` (and the parallel
+  registry for virtual rows / highlights, landing later)
+  is the storage primitive. The existing workers iterate
+  over visible buffers and rebuild per buffer.
+  `RenderState` grows a per-pane matrix-snapshot lookup
+  so the renderer paints each pane against the matrix
+  matching its buffer. Cost: `CellsRenderState` shape
+  changes from single-snapshot to per-pane inputs;
+  dispatch's `publish_render_state` populates one entry
+  per visible pane. Trade accepted: paramount goal #1
+  (performance) is protected because the worker keeps
+  its single wake / single cache-hit discipline — the
+  iteration is over typically 1–2 visible buffers, and
+  the per-buffer cache-hit shortcut means scrolling one
+  pane only rebuilds that pane's matrix. The registry
+  also generalises cleanly to D.6 (three panes), `:windo`
+  if it ever needs per-pane rich rendering, and future
+  preview panes — none of those have to grow their own
+  builder. Heuristic #2 reading: while diff is the only
+  *near-term* consumer that needs more than one
+  document's matrix simultaneously, the design choice
+  is between "diff grows a parallel pipeline" (D1) and
+  "the existing pipeline learns to handle multiple
+  documents" (D2). D2 is the lower long-term entropy
+  even though both shapes work for diff alone.
 
 ## 9. Slice plan
 

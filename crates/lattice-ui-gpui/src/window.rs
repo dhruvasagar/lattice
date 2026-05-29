@@ -1200,7 +1200,7 @@ impl EditorView {
                 // D.3.d.2 (2026-05-29): diff sign lookup —
                 // read through the same `RenderState::diff`
                 // substate the TUI uses. Lock-free Arc load.
-                let diff_sign = rs
+                let diff_sign = rs_guard
                     .diff
                     .sign_map
                     .sign_at(line_idx as u32)
@@ -1230,7 +1230,7 @@ impl EditorView {
         let diff_tint_per_row: Vec<Option<u32>> = (visible_start..visible_end)
             .filter(|line_idx| !fold_index.line_inside_closed_fold(*line_idx as u32))
             .map(|line_idx| {
-                rs.diff.sign_map.sign_at(line_idx as u32).and_then(|kind| {
+                rs_guard.diff.sign_map.sign_at(line_idx as u32).and_then(|kind| {
                     use lattice_host::diff_overlay::DiffSignKind;
                     match kind {
                         DiffSignKind::Add => Some(0x00_32_00),

@@ -1518,16 +1518,59 @@ shared with multibuffer-views and post-v1 inlay hints.
     audit-visible. 10 new tests (8 provider + 2
     `OnDiskBaseline` — file read + missing-file degradation).
     **429 `lattice-host` unit tests green** overall.
-  - 🗒 **D.3.a.1** — `:diff` (no args) / `:diffoff` ex-commands.
-    Wires `DiffSubsystem::bind` at editor boot; registers
-    `BufferRegistryTextProvider` as the host's
-    `BufferTextProvider`; opens a `DiffSession` with
-    `OnDiskBaseline` + `BufferCurrentSource` for the active
-    document; registers the `DiffOverlayVirtualRowProvider`
-    with `Editor::virtual_row_providers`; spawns a publish-
-    notify → `VirtualRowsWake` forwarder so hunk-republishes
-    reach the worker without waiting for the next
-    `publish_render_state` tick.
+  - ✅ **D.3.a.1** (2026-05-29) — `:diff` / `:diffoff`
+    ex-commands + end-to-end mounting. New
+    `DiffSession::publish_notify()` returns a shared
+    `Arc<tokio::sync::Notify>` fired on every successful
+    publish (gated on `try_publish_if_newer` taking, or
+    unconditional `publish`); the forwarder task spawned by
+    `:diff` awaits it and pokes `VirtualRowsWake` so hunk
+    republishes reach the worker without waiting for the
+    next `publish_render_state` tick.
+    `BufferRegistry::buffer_id_for_document(doc_id)` reverse
+    lookup (O(N_documents); acceptable at v1 buffer counts).
+    `BufferRegistryDocumentResolver` impl of
+    `DocumentBufferResolver` bridges bus events.
+    `BufferRegistryTextProvider` simplified to take
+    `BufferRegistry` directly (it's already `Clone +
+    Arc<Mutex<...>>` internally — no extra Arc wrapper).
+    `Editor` gains
+    `diff_subscription_guard: Option<DiffSubscriptionGuard>` +
+    `diff_forwarders: Arc<Mutex<HashMap<BufferId, JoinHandle<()>>>>`.
+    `editor_boot` constructs the `DiffSubsystem`, builds the
+    resolver, calls `bind(event_bus, resolver)` under
+    `runtime_handle.enter()`, and stows the guard on
+    `Editor`. New `Effect::DiffOpen` + `Effect::DiffOff`
+    variants in `lattice-grammar`; ex-command registrations
+    `ex:diff` / `ex:diffoff` (parse_no_args, Keyword
+    surface, Display latency); aliases `diff` /
+    `diffoff` in `lattice-host::excommand`. Match arms
+    updated in lattice-host effect_mutates +
+    effect_mutates_or_yanks, plus lattice-ui-tui and
+    lattice-ui-gpui dispatch no-op groupings. New
+    `Editor::do_diff_open` reads the active document's path,
+    builds a `DiffDescriptor` (`OnDiskBaseline(path)` +
+    `BufferCurrentSource(provider, buffer_id)` + watch =
+    [buffer_id]), calls
+    `register_with_sources`, builds a
+    `DiffOverlayVirtualRowProvider`, registers it with
+    `Editor::virtual_row_providers` (clears any stale prior
+    registration), spawns the publish-notify → wake
+    forwarder, stores its `JoinHandle` in `diff_forwarders`
+    keyed by buffer_id, and triggers an initial
+    `note_buffer_edited` so the first recompute fires without
+    waiting for the user's next edit. `Editor::do_diff_off`
+    drops the session, unregisters the provider (looked up
+    via the new free fn
+    `diff_overlay_provider_id(buffer_id)`), aborts the
+    forwarder, and pokes the virtual-rows wake so the worker
+    immediately republishes a matrix without the dropped
+    rows. Preconditions: `:diff` errors with `E32: No file
+    name` for scratch buffers; reports "Diff session already
+    open" if a session exists; `:diffoff` reports "No active
+    diff session" when there isn't one. **431 tests green**
+    (2 new D.3.a.1: scratch-buffer error path,
+    no-session-noop path).
   - 🗒 **D.3.b** — Deletion-block content. Provider snapshots
     the descriptor's baseline rope on each revision bump,
     renders the baseline lines into cell sequences, caches

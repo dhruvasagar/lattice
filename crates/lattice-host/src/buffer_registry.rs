@@ -384,6 +384,30 @@ impl BufferRegistry {
             .and_then(|e| e.document().map(|d| d.handle.clone()))
     }
 
+    /// D.3.a.1 (2026-05-29): reverse lookup —
+    /// `DocumentId` → `BufferId`. Used by the
+    /// diff subsystem's `DocumentBufferResolver` impl: bus
+    /// events carry `DocumentId`, host-side state is keyed by
+    /// `BufferId`. Scans the registry's document entries —
+    /// O(N_documents) per call, acceptable at v1 buffer counts
+    /// (~tens; the LSP fan-in and the keymap registry do
+    /// similar walks). Future inverse index lives behind the
+    /// same method signature.
+    pub fn buffer_id_for_document(
+        &self,
+        document_id: lattice_protocol::ids::DocumentId,
+    ) -> Option<BufferId> {
+        let inner = lock_inner(&self.inner);
+        for (buffer_id, entry) in inner.by_id.iter() {
+            if let Some(d) = entry.document() {
+                if d.handle.id() == document_id {
+                    return Some(*buffer_id);
+                }
+            }
+        }
+        None
+    }
+
     /// Kind-specific convenience: path of the document at `id`.
     pub fn document_path(&self, id: BufferId) -> Option<std::path::PathBuf> {
         lock_inner(&self.inner)

@@ -449,6 +449,13 @@ pub enum Effect {
     /// `DiffSubsystem::describe_sessions` and formats each row
     /// as `BufferId | Algorithm | Rev | Hunks | Watches`.
     DescribeDiff,
+    /// `:diff` (no args) -- open an inline diff session for
+    /// the active document against its on-disk content.
+    /// D.3.a.1.
+    DiffOpen,
+    /// `:diffoff` -- close the active document's diff session
+    /// (if any). D.3.a.1.
+    DiffOff,
     /// `:describe-event <name>` -- render the descriptor for a
     /// single registered event (M.5.3.c). The introspection
     /// counterpart of `:describe-command` for events.

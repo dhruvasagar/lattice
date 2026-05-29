@@ -414,6 +414,8 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     ("describe-events", "ex:describe-events"),
     ("describe-event", "ex:describe-event"),
     ("describe-diff", "ex:describe-diff"),
+    ("diff", "ex:diff"),
+    ("diffoff", "ex:diffoff"),
     ("list-modes", "ex:list-modes"),
     ("describe-mode", "ex:describe-mode"),
     (

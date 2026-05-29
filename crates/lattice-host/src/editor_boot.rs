@@ -687,6 +687,36 @@ impl Editor {
             paint_request.clone(),
         ));
 
+        // D.3.a.1 (2026-05-29): bind the diff subsystem to the
+        // event bus. The drainer task subscribes to
+        // DocumentChanged + DocumentClosed and routes through
+        // the per-session debouncer. The guard's `Drop`
+        // unsubscribes + aborts the drainer when the editor
+        // tears down. `_enter` lets us spawn the drainer task
+        // onto `runtime_handle` even though `bind` uses
+        // `tokio::spawn`.
+        let diff_subsystem: std::sync::Arc<crate::diff_subsystem::DiffSubsystem> =
+            std::sync::Arc::default();
+        let diff_subscription_guard = {
+            let _enter = runtime_handle.enter();
+            let resolver: std::sync::Arc<
+                dyn crate::diff_subsystem::DocumentBufferResolver,
+            > = std::sync::Arc::new(
+                crate::diff_subsystem::BufferRegistryDocumentResolver::new(
+                    buffers.clone(),
+                ),
+            );
+            diff_subsystem.bind(event_bus.clone(), resolver)
+        };
+        let diff_forwarders: std::sync::Arc<
+            std::sync::Mutex<
+                std::collections::HashMap<
+                    lattice_core::BufferId,
+                    tokio::task::JoinHandle<()>,
+                >,
+            >,
+        > = std::sync::Arc::default();
+
         let mut editor = Editor {
             messages: messages_ring.clone(),
             pending_message_event_rx: Some(message_event_rx),
@@ -798,6 +828,14 @@ impl Editor {
             virtual_rows_wake,
             virtual_rows_matrix_cell,
             virtual_row_providers,
+            // D.3.a.1 (2026-05-29): diff subsystem + its bus
+            // subscription guard + the per-session wake
+            // forwarder map. `:diff` mutates the map at slice
+            // mount; `:diffoff` aborts a forwarder and clears
+            // its entry.
+            diff_subsystem,
+            diff_subscription_guard: Some(diff_subscription_guard),
+            diff_forwarders,
             lsp_log_event_rx: Some(lsp_log_event_rx),
             lsp_progress_event_rx: Some(lsp_progress_event_rx),
             pending_apply_edit_rx: Some(lsp_apply_edit_rx),

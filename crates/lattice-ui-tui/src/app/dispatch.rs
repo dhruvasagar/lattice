@@ -807,6 +807,8 @@ impl App {
             | Effect::DescribeEvents
             | Effect::DescribeEvent { .. }
             | Effect::DescribeDiff
+            | Effect::DiffOpen
+            | Effect::DiffOff
             | Effect::BufferNext
             | Effect::BufferPrev
             | Effect::BufferDelete { .. }
@@ -1097,6 +1099,8 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::DescribeEvents
         | Effect::DescribeEvent { .. }
         | Effect::DescribeDiff
+        | Effect::DiffOpen
+        | Effect::DiffOff
         | Effect::ListModes
         | Effect::DescribeMode { .. }
         | Effect::DescribeOptionResolution { .. }
@@ -1181,6 +1185,8 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::DescribeEvents
         | Effect::DescribeEvent { .. }
         | Effect::DescribeDiff
+        | Effect::DiffOpen
+        | Effect::DiffOff
         | Effect::ListModes
         | Effect::DescribeMode { .. }
         | Effect::DescribeOptionResolution { .. }

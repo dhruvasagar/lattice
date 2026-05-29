@@ -61,7 +61,18 @@ use std::sync::Arc;
 use lattice_cells::{AnchorPosition, Cell, ProviderId, VirtualRow, VirtualRowProvider};
 use lattice_diff::HunkKind;
 
+use lattice_core::BufferId;
+
 use crate::diff_subsystem::DiffSession;
+
+/// D.3.a.1 (2026-05-29): the [`ProviderId`] this slice uses
+/// for a given session's overlay provider. Exposed as a free
+/// function so `:diffoff` can unregister without holding the
+/// session — the namespace prefix + buffer-id encoding makes
+/// the id deterministic.
+pub fn diff_overlay_provider_id(buffer_id: BufferId) -> ProviderId {
+	DIFF_OVERLAY_PROVIDER_NAMESPACE | u64::from(buffer_id.0)
+}
 
 /// Namespace prefix for diff-overlay [`ProviderId`]s. We
 /// OR-mix the session's `BufferId` into the low 32 bits;

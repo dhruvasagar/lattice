@@ -2172,6 +2172,23 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
                     },
                 )));
         }
+        Effect::DiffOpen => {
+            // D.3.a.1 (2026-05-29): open an inline diff session
+            // for the active document against its on-disk
+            // content. Registers a DiffSession on the
+            // subsystem, mounts a DiffOverlayVirtualRowProvider
+            // on the virtual-rows worker, and spawns a
+            // publish-notify → VirtualRowsWake forwarder so
+            // hunk republishes wake the worker immediately.
+            editor.do_diff_open();
+        }
+        Effect::DiffOff => {
+            // D.3.a.1: close the active document's diff session
+            // (no-op if none registered). Drops the session,
+            // unregisters the overlay provider, and aborts the
+            // wake forwarder.
+            editor.do_diff_off();
+        }
         Effect::DescribeEvent { name } => {
             // 5.5.F.3: `:describe-event <name>` -- descriptor
             // lookup. Unknown name routes error; dispatcher
@@ -2330,6 +2347,138 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
 // with their callers; subsequent slices (5.5.E+) split them into
 // per-domain modules if the file outgrows comfortable navigation.
 impl Editor {
+    /// D.3.a.1 (2026-05-29): open an inline diff session for
+    /// the active document against its on-disk content.
+    ///
+    /// Surfaces an echo-area error and returns early if any
+    /// precondition fails: no active document, no path on
+    /// disk (scratch buffer), a session is already open for
+    /// this buffer. On success, registers the
+    /// `DiffSession`, mounts a
+    /// `DiffOverlayVirtualRowProvider` on the virtual-rows
+    /// worker, spawns a publish-notify → `VirtualRowsWake`
+    /// forwarder task, and triggers an initial
+    /// `note_buffer_edited` so the first recompute fires
+    /// without waiting for the next user edit.
+    pub fn do_diff_open(&mut self) {
+        let buffer_id = self.document_buffer_id;
+        let snap = self.document.snapshot();
+        let Some(path) = snap.path() else {
+            self.set_message(
+                EchoLevel::Error,
+                "E32: No file name (`:diff` needs a saved buffer)",
+            );
+            return;
+        };
+        let path = path.to_path_buf();
+        if self.diff_subsystem.lookup(buffer_id).is_some() {
+            self.set_message(
+                EchoLevel::Info,
+                format!("Diff session already open for buffer {}", buffer_id.0),
+            );
+            return;
+        }
+        let provider_text: std::sync::Arc<
+            dyn crate::diff_subsystem::BufferTextProvider,
+        > = std::sync::Arc::new(
+            crate::diff_subsystem::BufferRegistryTextProvider::new(self.buffers.clone()),
+        );
+        let descriptor = crate::diff_subsystem::DiffDescriptor {
+            baseline: std::sync::Arc::new(
+                crate::diff_subsystem::OnDiskBaseline::new(path.clone()),
+            ),
+            current: std::sync::Arc::new(
+                crate::diff_subsystem::BufferCurrentSource::new(
+                    std::sync::Arc::clone(&provider_text),
+                    buffer_id,
+                ),
+            ),
+            watch: vec![buffer_id],
+        };
+        let session = self.diff_subsystem.register_with_sources(
+            buffer_id,
+            lattice_diff::DiffAlgorithm::Histogram,
+            descriptor,
+        );
+        let overlay_provider: std::sync::Arc<
+            dyn lattice_cells::VirtualRowProvider,
+        > = std::sync::Arc::new(
+            crate::diff_overlay::DiffOverlayVirtualRowProvider::new(
+                std::sync::Arc::clone(&session),
+            ),
+        );
+        if !self.virtual_row_providers.register(overlay_provider) {
+            // Already registered — the previous lookup told us
+            // no session existed for this buffer, but a stale
+            // provider from a previous registration cycle is
+            // still in place. Clear it and try again.
+            self.virtual_row_providers.unregister(
+                crate::diff_overlay::diff_overlay_provider_id(buffer_id),
+            );
+            let overlay_provider: std::sync::Arc<
+                dyn lattice_cells::VirtualRowProvider,
+            > = std::sync::Arc::new(
+                crate::diff_overlay::DiffOverlayVirtualRowProvider::new(
+                    std::sync::Arc::clone(&session),
+                ),
+            );
+            self.virtual_row_providers.register(overlay_provider);
+        }
+
+        // Spawn the publish-notify → VirtualRowsWake forwarder.
+        // Awaits the session's publish_notify and fires the
+        // worker's wake on every publish. JoinHandle is stored
+        // so :diffoff can abort it.
+        let publish_notify = session.publish_notify();
+        let virtual_rows_wake = self.virtual_rows_wake.0.clone();
+        let forwarder = tokio::spawn(async move {
+            loop {
+                publish_notify.notified().await;
+                virtual_rows_wake.notify_one();
+            }
+        });
+        if let Ok(mut map) = self.diff_forwarders.lock() {
+            if let Some(prev) = map.insert(buffer_id, forwarder) {
+                prev.abort();
+            }
+        }
+
+        // Kick off the first recompute. The bus subscription
+        // would catch the next DocumentChanged anyway, but a
+        // proactive poke ensures the user sees hunks
+        // immediately on `:diff` without typing first.
+        std::sync::Arc::clone(&self.diff_subsystem).note_buffer_edited(buffer_id);
+        self.set_message(
+            EchoLevel::Info,
+            format!("Diff opened: buffer {} vs {}", buffer_id.0, path.display()),
+        );
+    }
+
+    /// D.3.a.1 (2026-05-29): close the active document's diff
+    /// session if one is registered. Drops the session,
+    /// unregisters the overlay provider from the virtual-rows
+    /// worker, and aborts the wake forwarder. No-op if no
+    /// session is open for this buffer.
+    pub fn do_diff_off(&mut self) {
+        let buffer_id = self.document_buffer_id;
+        if !self.diff_subsystem.drop_session(buffer_id) {
+            self.set_message(EchoLevel::Info, "No active diff session");
+            return;
+        }
+        self.virtual_row_providers
+            .unregister(crate::diff_overlay::diff_overlay_provider_id(buffer_id));
+        if let Ok(mut map) = self.diff_forwarders.lock() {
+            if let Some(handle) = map.remove(&buffer_id) {
+                handle.abort();
+            }
+        }
+        // Wake the virtual-rows worker so it observes the
+        // provider removal and republishes an updated matrix
+        // (otherwise stale rows linger until the next edit).
+        self.virtual_rows_wake.0.notify_one();
+        self.set_message(EchoLevel::Info, "Diff closed");
+    }
+
     /// Surface a one-line message in the echo area. Replaces the
     /// previous message; also appends a [`lattice_runtime::MessageRecord`]
     /// to the bounded `*messages*` ring and publishes a typed
@@ -20856,6 +21005,8 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::DescribeEvents
         | Effect::DescribeEvent { .. }
         | Effect::DescribeDiff
+        | Effect::DiffOpen
+        | Effect::DiffOff
         | Effect::ListModes
         | Effect::DescribeMode { .. }
         | Effect::DescribeOptionResolution { .. }
@@ -20941,6 +21092,8 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::DescribeEvents
         | Effect::DescribeEvent { .. }
         | Effect::DescribeDiff
+        | Effect::DiffOpen
+        | Effect::DiffOff
         | Effect::ListModes
         | Effect::DescribeMode { .. }
         | Effect::DescribeOptionResolution { .. }
@@ -22396,6 +22549,43 @@ mod tests {
             lattice_picker::OpenTarget::Default,
             "picker_open_target must reset after every do_picker_accept call \
              (slice 32 one-shot guarantee)"
+        );
+    }
+
+    // ── D.3.a.1: :diff / :diffoff smoke tests ───────────────
+
+    #[test]
+    fn do_diff_open_without_path_errors() {
+        // Default Editor has a scratch document with no path.
+        // :diff must surface E32 and leave the subsystem
+        // untouched.
+        let mut editor = Editor::default();
+        editor.do_diff_open();
+        let msg = editor.last_message.as_ref().expect("message set");
+        assert!(
+            msg.text.contains("No file name"),
+            "unexpected message: {}",
+            msg.text
+        );
+        assert_eq!(msg.level, EchoLevel::Error);
+        assert!(
+            editor
+                .diff_subsystem
+                .lookup(editor.document_buffer_id)
+                .is_none(),
+            "no session should have been registered"
+        );
+    }
+
+    #[test]
+    fn do_diff_off_with_no_session_is_a_noop_message() {
+        let mut editor = Editor::default();
+        editor.do_diff_off();
+        let msg = editor.last_message.as_ref().expect("message set");
+        assert!(
+            msg.text.contains("No active diff session"),
+            "unexpected message: {}",
+            msg.text
         );
     }
 }

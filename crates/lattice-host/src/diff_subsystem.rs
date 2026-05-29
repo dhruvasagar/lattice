@@ -234,11 +234,11 @@ pub trait BufferTextProvider: Send + Sync + 'static + std::fmt::Debug {
 /// to an empty rope per their documented contract.
 #[derive(Clone, Debug)]
 pub struct BufferRegistryTextProvider {
-	registry: Arc<crate::buffer_registry::BufferRegistry>,
+	registry: crate::buffer_registry::BufferRegistry,
 }
 
 impl BufferRegistryTextProvider {
-	pub fn new(registry: Arc<crate::buffer_registry::BufferRegistry>) -> Self {
+	pub fn new(registry: crate::buffer_registry::BufferRegistry) -> Self {
 		Self { registry }
 	}
 }
@@ -247,6 +247,29 @@ impl BufferTextProvider for BufferRegistryTextProvider {
 	fn buffer_rope(&self, id: BufferId) -> Option<Rope> {
 		let handle = self.registry.document_handle(id)?;
 		Some(handle.snapshot().buffer.to_rope())
+	}
+}
+
+/// D.3.a.1 (2026-05-29): production [`DocumentBufferResolver`]
+/// impl. Bridges `DocumentId` → `BufferId` via
+/// `BufferRegistry::buffer_id_for_document`. Stored on `Editor`
+/// for the editor's lifetime and handed to
+/// `DiffSubsystem::bind` so the drainer task can translate
+/// bus events.
+#[derive(Clone, Debug)]
+pub struct BufferRegistryDocumentResolver {
+	registry: crate::buffer_registry::BufferRegistry,
+}
+
+impl BufferRegistryDocumentResolver {
+	pub fn new(registry: crate::buffer_registry::BufferRegistry) -> Self {
+		Self { registry }
+	}
+}
+
+impl DocumentBufferResolver for BufferRegistryDocumentResolver {
+	fn buffer_id_for(&self, document_id: DocumentId) -> Option<BufferId> {
+		self.registry.buffer_id_for_document(document_id)
 	}
 }
 
@@ -522,6 +545,16 @@ pub struct DiffSession {
 	/// what [`Self::try_publish_if_newer`] gates against. Starts
 	/// at 1 (the initial empty index uses revision 0).
 	next_revision: AtomicU64,
+	/// D.3.a.1 (2026-05-29): wake signal fired on every
+	/// successful publish (gated by `try_publish_if_newer` or
+	/// the unconditional `publish`). Consumers — notably the
+	/// virtual-rows-wake forwarder set up by `:diff` — await
+	/// `notified()` to react immediately to hunk republishes
+	/// without waiting for the next `publish_render_state`
+	/// tick. Permit-style coalescing: a burst of publishes
+	/// collapses to one consumer wake, which matches the
+	/// expected debounce behavior on the worker side.
+	publish_notify: Arc<tokio::sync::Notify>,
 }
 
 impl DiffSession {
@@ -534,7 +567,16 @@ impl DiffSession {
 			algorithm,
 			hunks: ArcSwap::from_pointee(HunkIndex::empty(algorithm)),
 			next_revision: AtomicU64::new(1),
+			publish_notify: Arc::new(tokio::sync::Notify::new()),
 		}
+	}
+
+	/// D.3.a.1: shared `Notify` fired on every successful
+	/// publish. The `:diff` handler clones this and awaits
+	/// `notified()` in a forwarder task to wake the
+	/// `virtual_rows_worker` immediately on hunk republish.
+	pub fn publish_notify(&self) -> Arc<tokio::sync::Notify> {
+		self.publish_notify.clone()
 	}
 
 	pub fn buffer_id(&self) -> BufferId {
@@ -557,8 +599,12 @@ impl DiffSession {
 	/// for tests; D.2.b's recompute path prefers
 	/// [`Self::try_publish_if_newer`] for monotonic ordering
 	/// under concurrent `spawn_blocking` completion.
+	///
+	/// D.3.a.1: fires `publish_notify` so the diff-overlay
+	/// wake forwarder observes the publish.
 	pub fn publish(&self, hunks: Arc<HunkIndex>) {
 		self.hunks.store(hunks);
+		self.publish_notify.notify_one();
 	}
 
 	/// D.2.b: allocate a fresh revision tag. Monotonically
@@ -594,6 +640,12 @@ impl DiffSession {
 				Arc::clone(current)
 			}
 		});
+		// D.3.a.1: fire publish_notify on a successful take so
+		// the diff-overlay wake forwarder reacts immediately
+		// to the hunk republish.
+		if took {
+			self.publish_notify.notify_one();
+		}
 		took
 	}
 

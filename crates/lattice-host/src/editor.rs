@@ -1077,6 +1077,24 @@ pub struct Editor {
     /// teardown.
     pub virtual_row_providers:
         std::sync::Arc<crate::virtual_rows_worker::VirtualRowProviderRegistry>,
+    /// D.3.a.1 (2026-05-29): the bus-subscription guard from
+    /// `DiffSubsystem::bind`. Held for the editor's lifetime;
+    /// its `Drop` unsubscribes the bus + aborts the drainer
+    /// task on editor teardown. Stored behind `Option` so the
+    /// `Editor::default()` path (used by tests that don't
+    /// boot through `editor_boot`) can leave it unset without
+    /// the bind machinery firing.
+    pub diff_subscription_guard:
+        Option<crate::diff_subsystem::DiffSubscriptionGuard>,
+    /// D.3.a.1 (2026-05-29): per-session wake-forwarder
+    /// `JoinHandle`s. `:diff` spawns a tokio task that awaits
+    /// `DiffSession::publish_notify().notified()` and fires
+    /// `VirtualRowsWake` on each publish; `:diffoff` aborts
+    /// the task by `BufferId` and unregisters the provider.
+    /// `tokio::sync::Mutex` is overkill here — mutation is
+    /// `:diff`/`:diffoff` frequency, never per-frame.
+    pub diff_forwarders:
+        std::sync::Arc<std::sync::Mutex<std::collections::HashMap<lattice_core::BufferId, tokio::task::JoinHandle<()>>>>,
     /// S2.1 (2026-05-26): wake signal for the cell-builder worker.
     /// `publish_render_state` fires `notify_one()` after every
     /// dispatch tick. The worker `notified().await`s; permit-style

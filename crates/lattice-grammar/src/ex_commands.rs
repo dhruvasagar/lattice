@@ -65,6 +65,12 @@ pub struct ExBuiltins {
     /// D.2.d (2026-05-29): `:describe-diff` introspection
     /// (`lattice-host` `do_describe_diff`).
     pub describe_diff: ExCommandId,
+    /// D.3.a.1 (2026-05-29): `:diff` (no args) — open an
+    /// inline diff session against on-disk baseline.
+    pub diff_open: ExCommandId,
+    /// D.3.a.1 (2026-05-29): `:diffoff` — close the active
+    /// document's diff session.
+    pub diff_off: ExCommandId,
     pub list_modes: ExCommandId,
     pub describe_mode: ExCommandId,
     pub describe_option_resolution: ExCommandId,
@@ -845,6 +851,34 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             accepts_range: false,
             parse_args: Box::new(parse_no_args),
             apply: Box::new(|_| Ok(Effect::DescribeEvents)),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let diff_open = registry.register_ex_command(
+        "ex:diff",
+        "Open an inline diff session for the active document \
+         against its on-disk content (`:diff`). D.3.a.1.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::DiffOpen)),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let diff_off = registry.register_ex_command(
+        "ex:diffoff",
+        "Close the active document's diff session, if any \
+         (`:diffoff`). D.3.a.1.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::DiffOff)),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -1680,6 +1714,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         describe_events,
         describe_event,
         describe_diff,
+        diff_open,
+        diff_off,
         list_modes,
         describe_mode,
         describe_option_resolution,

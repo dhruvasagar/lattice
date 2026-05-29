@@ -984,6 +984,8 @@ impl GpuiApp {
             | Effect::DescribeEvents
             | Effect::DescribeEvent { .. }
             | Effect::DescribeDiff
+            | Effect::DiffOpen
+            | Effect::DiffOff
             | Effect::BufferNext
             | Effect::BufferPrev
             | Effect::BufferDelete { .. }

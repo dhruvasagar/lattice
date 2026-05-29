@@ -1620,8 +1620,8 @@ shared with multibuffer-views and post-v1 inlay hints.
     when viewport height is reached. Mirror refactor in the
     inactive-pane loop so cross-pane displays of the same
     document stay consistent. **1461 workspace tests green.**
-  - 🚧 **D.3.b.2** — Syntax highlighting inside deletion
-    blocks. Provider runs a one-shot tree-sitter parse of the
+  - ✅ **D.3.b.2** (2026-05-29) — Syntax highlighting inside
+    deletion blocks. Provider runs a one-shot tree-sitter parse of the
     baseline rope via a new
     `lattice_syntax::oneshot_highlight_lines(lang, registry,
     source, start_line, end_line)` helper (wraps the existing

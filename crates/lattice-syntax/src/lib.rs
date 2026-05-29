@@ -53,6 +53,7 @@
 pub mod handle;
 pub mod lang;
 pub mod modes;
+pub mod oneshot;
 pub mod registry;
 pub mod style;
 pub mod syntax;
@@ -64,6 +65,7 @@ pub use crate::modes::{
     TreeSitterCompletionMode, TreeSitterSymbolSource, major_mode_id_for_lang,
     register_language_modes,
 };
+pub use crate::oneshot::oneshot_highlight_lines;
 pub use crate::registry::LangRegistry;
 pub use crate::style::{Style, StyledSpan};
 pub use crate::syntax::{Syntax, SyntaxError, SyntaxSnapshot};

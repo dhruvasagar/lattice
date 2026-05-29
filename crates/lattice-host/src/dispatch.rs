@@ -2472,11 +2472,29 @@ impl Editor {
         // the same, and the post-render `notify_one` is what
         // the standalone forwarder used to do.
         let virtual_rows_wake = self.virtual_rows_wake.0.clone();
+        // D.3.b.2 (2026-05-29): supply a SyntaxContext when
+        // the active document's path lets us detect a
+        // language. None means the refresh task renders
+        // deletion blocks monochrome (pre-D.3.b.2 behaviour),
+        // which is what tests + Lang::Plain paths get.
+        let syntax_ctx = {
+            let lang = lattice_syntax::Lang::detect_from_path(Some(&path));
+            if matches!(lang, lattice_syntax::Lang::Plain) {
+                None
+            } else {
+                Some(crate::diff_overlay::SyntaxContext {
+                    lang,
+                    registry: self.lang_registry.clone(),
+                    theme: self.host_theme,
+                })
+            }
+        };
         let forwarder = crate::diff_overlay::DiffOverlayRefreshTask::spawn(
             std::sync::Arc::clone(&session),
             baseline,
             overlay_cache_handle,
             virtual_rows_wake,
+            syntax_ctx,
         );
         if let Ok(mut map) = self.diff_forwarders.lock() {
             if let Some(prev) = map.insert(buffer_id, forwarder) {

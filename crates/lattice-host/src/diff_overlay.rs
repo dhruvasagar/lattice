@@ -265,9 +265,16 @@ impl DiffOverlayVirtualRowProvider {
 	/// the resulting `Vec<VirtualRow>` plus the revision they
 	/// were rendered against. Public so tests can exercise the
 	/// render path without spinning up the async refresh task.
+	///
+	/// D.3.b.2 (2026-05-29): `syntax` provides a `Lang`,
+	/// `LangRegistry`, and `Theme` for one-shot tree-sitter
+	/// highlighting of the baseline rope. When `None`, cells
+	/// emit with `fg = 0` and the renderer falls back to
+	/// monochrome — backward-compatible with D.3.b's behavior.
 	pub fn render_rows(
 		session: &DiffSession,
 		baseline: &dyn BaselineSource,
+		syntax: Option<&SyntaxContext>,
 	) -> (u64, Vec<VirtualRow>) {
 		let hunks = session.current_hunks();
 		let revision = hunks.revision;
@@ -275,6 +282,27 @@ impl DiffOverlayVirtualRowProvider {
 			return (revision, Vec::new());
 		}
 		let baseline_rope = baseline.snapshot();
+		// D.3.b.2: run one-shot tree-sitter parse once for
+		// the whole baseline, then look up spans per
+		// deletion-block line during the hunk walk below.
+		let per_line_spans: Option<Vec<Vec<lattice_syntax::StyledSpan>>> =
+			syntax.and_then(|ctx| {
+				let source = baseline_rope.to_string();
+				let line_count = baseline_rope.len_lines() as u32;
+				lattice_syntax::oneshot_highlight_lines(
+					ctx.lang,
+					ctx.registry.clone(),
+					&source,
+					0,
+					line_count,
+				)
+			});
+		let default_fg: u32 = syntax
+			.map(|ctx| {
+				let s = ctx.theme.syntax_style(lattice_syntax::Style::Default);
+				s.fg.map(|c| c.to_rgb_u32(0)).unwrap_or(0)
+			})
+			.unwrap_or(0);
 		let mut rows: Vec<VirtualRow> = Vec::new();
 		for hunk in &hunks.hunks {
 			let (baseline_range, current_anchor) = match hunk.kind {
@@ -293,7 +321,13 @@ impl DiffOverlayVirtualRowProvider {
 				HunkKind::Add => continue,
 			};
 			for line_idx in baseline_range.start..baseline_range.end {
-				let cells = render_baseline_line(&baseline_rope, line_idx);
+				let cells = render_baseline_line(
+					&baseline_rope,
+					line_idx,
+					syntax,
+					per_line_spans.as_ref(),
+					default_fg,
+				);
 				rows.push(VirtualRow {
 					anchor_line: current_anchor,
 					position: AnchorPosition::Above,
@@ -307,24 +341,81 @@ impl DiffOverlayVirtualRowProvider {
 
 }
 
+/// D.3.b.2 (2026-05-29): the per-session syntax context the
+/// provider needs to populate `Cell.fg` with theme-resolved
+/// token colours.
+///
+/// The refresh task threads this through from
+/// `DiffOverlayRefreshTask::spawn` so the provider doesn't
+/// have to plumb the host's syntax / theme types into its
+/// public surface. `None` (passed as `syntax: Option<&...>`
+/// in [`DiffOverlayVirtualRowProvider::render_rows`]) means
+/// "don't syntax-highlight" — useful for tests and for
+/// languages with no registered grammar.
+#[derive(Clone, Debug)]
+pub struct SyntaxContext {
+	pub lang: lattice_syntax::Lang,
+	pub registry: Arc<lattice_syntax::LangRegistry>,
+	pub theme: crate::ui::theme::Theme,
+}
+
 /// D.3.b: render one source line of `rope` as a sequence of
 /// `Cell`s. `line_idx` is bounds-checked; out-of-range lines
 /// produce an empty cell list (defensive against revisions
 /// where the baseline rope has fewer lines than the hunk
 /// expects — e.g., a session whose baseline file was
 /// truncated mid-edit).
-fn render_baseline_line(rope: &ropey::Rope, line_idx: u32) -> Vec<Cell> {
+///
+/// D.3.b.2 (2026-05-29): when `syntax` + `per_line_spans` are
+/// supplied, each cell's `fg` is set from the styled span
+/// covering its byte offset (theme-resolved RGB); bytes not
+/// inside any span get `default_fg`. When `syntax` is `None`,
+/// cells emit with `fg = 0` so renderers fall back to the
+/// terminal / pane default foreground — the pre-D.3.b.2
+/// monochrome behaviour.
+fn render_baseline_line(
+	rope: &ropey::Rope,
+	line_idx: u32,
+	syntax: Option<&SyntaxContext>,
+	per_line_spans: Option<&Vec<Vec<lattice_syntax::StyledSpan>>>,
+	default_fg: u32,
+) -> Vec<Cell> {
 	let idx = line_idx as usize;
 	if idx >= rope.len_lines() {
 		return Vec::new();
 	}
 	let line = rope.line(idx);
+	let spans: &[lattice_syntax::StyledSpan] = per_line_spans
+		.and_then(|p| p.get(idx))
+		.map(Vec::as_slice)
+		.unwrap_or(&[]);
+	let theme = syntax.map(|s| &s.theme);
 	let mut out: Vec<Cell> = Vec::with_capacity(line.len_chars());
+	let mut byte_idx: usize = 0;
 	for ch in line.chars() {
 		if ch == '\n' || ch == '\r' {
 			break;
 		}
-		out.push(Cell::with_codepoint(ch as u32));
+		// Resolve fg from the styled span covering byte_idx,
+		// or fall back to default_fg / 0 per the contract
+		// above.
+		let fg: u32 = if let Some(theme) = theme {
+			let style = spans
+				.iter()
+				.find(|s| {
+					let start = s.start as usize;
+					let end = s.end as usize;
+					start <= byte_idx && byte_idx < end
+				})
+				.map(|s| s.style)
+				.unwrap_or(lattice_syntax::Style::Default);
+			let s = theme.syntax_style(style);
+			s.fg.map(|c| c.to_rgb_u32(0)).unwrap_or(default_fg)
+		} else {
+			0
+		};
+		out.push(Cell::new(ch as u32, fg, 0, 0));
+		byte_idx += ch.len_utf8();
 	}
 	out
 }
@@ -380,15 +471,16 @@ impl DiffOverlayRefreshTask {
 		baseline: Arc<dyn BaselineSource>,
 		cache: Arc<Mutex<DiffOverlayCache>>,
 		virtual_rows_wake: Arc<tokio::sync::Notify>,
+		syntax: Option<SyntaxContext>,
 	) -> JoinHandle<()> {
 		tokio::spawn(async move {
 			// Initial render so the first `collect()` from the
 			// worker returns the populated cache.
-			Self::run_once(&session, &*baseline, &cache, &virtual_rows_wake);
+			Self::run_once(&session, &*baseline, &cache, &virtual_rows_wake, syntax.as_ref());
 			let publish_notify = session.publish_notify();
 			loop {
 				publish_notify.notified().await;
-				Self::run_once(&session, &*baseline, &cache, &virtual_rows_wake);
+				Self::run_once(&session, &*baseline, &cache, &virtual_rows_wake, syntax.as_ref());
 			}
 		})
 	}
@@ -398,6 +490,7 @@ impl DiffOverlayRefreshTask {
 		baseline: &dyn BaselineSource,
 		cache: &Mutex<DiffOverlayCache>,
 		virtual_rows_wake: &Arc<tokio::sync::Notify>,
+		syntax: Option<&SyntaxContext>,
 	) {
 		let hunks = session.current_hunks();
 		// D.3.d.0: derive the per-line sign classification
@@ -409,7 +502,7 @@ impl DiffOverlayRefreshTask {
 		let sign_map = compute_diff_sign_map(&hunks);
 		session.publish_sign_map(Arc::new(sign_map));
 		let (rendered_revision, rows) =
-			DiffOverlayVirtualRowProvider::render_rows(session, baseline);
+			DiffOverlayVirtualRowProvider::render_rows(session, baseline, syntax);
 		debug!(
 			target: "lattice_host::diff_overlay",
 			buffer_id = ?session.buffer_id(),
@@ -493,7 +586,68 @@ mod tests {
 
 	fn render(session: &DiffSession, baseline_text: &str) -> Vec<VirtualRow> {
 		let base = StaticBaseline::new(Rope::from(baseline_text));
-		DiffOverlayVirtualRowProvider::render_rows(session, &base).1
+		DiffOverlayVirtualRowProvider::render_rows(session, &base, None).1
+	}
+
+	// D.3.b.2 (2026-05-29): variant that runs the render
+	// pipeline WITH a real `SyntaxContext` so tests can
+	// assert per-cell fg is populated from the one-shot
+	// tree-sitter parse.
+	fn render_with_syntax(session: &DiffSession, baseline_text: &str) -> Vec<VirtualRow> {
+		let base = StaticBaseline::new(Rope::from(baseline_text));
+		let registry = lattice_syntax::LangRegistry::standard().expect("standard registry");
+		let ctx = SyntaxContext {
+			lang: lattice_syntax::Lang::Rust,
+			registry,
+			theme: crate::ui::theme::Theme::default(),
+		};
+		DiffOverlayVirtualRowProvider::render_rows(session, &base, Some(&ctx)).1
+	}
+
+	#[test]
+	fn cells_emit_fg_zero_without_syntax_context() {
+		// D.3.b.2 backward-compat: when syntax = None, cells
+		// keep fg = 0 (pre-D.3.b.2 behaviour). Renderer falls
+		// back to terminal / pane default foreground.
+		let hunk = Hunk {
+			kind: HunkKind::Remove,
+			ranges: smallvec![LineRange::new(0, 1), LineRange::new(10, 10)],
+		};
+		let s = session_with_hunks(bid(1), vec![hunk]);
+		let rows = render(&s, "fn main() {}\n");
+		assert_eq!(rows.len(), 1);
+		// Every cell's fg should be 0 (unstyled).
+		for cell in rows[0].cells.iter() {
+			assert_eq!(cell.fg, 0, "syntax=None must leave cells unstyled");
+		}
+	}
+
+	#[test]
+	fn cells_emit_per_token_fg_with_syntax_context() {
+		// D.3.b.2: the rust grammar should colour the `fn`
+		// keyword distinct from the `main` identifier. The
+		// exact RGB values depend on the theme, but they
+		// must differ between the keyword and identifier
+		// cells.
+		let hunk = Hunk {
+			kind: HunkKind::Remove,
+			ranges: smallvec![LineRange::new(0, 1), LineRange::new(10, 10)],
+		};
+		let s = session_with_hunks(bid(1), vec![hunk]);
+		let rows = render_with_syntax(&s, "fn main() {}\n");
+		assert_eq!(rows.len(), 1);
+		let cells = &rows[0].cells;
+		assert!(cells.len() >= 4, "expected at least 'fn m...' cells");
+		// `f` (idx 0) and `m` (idx 3) sit in different token
+		// kinds; their `fg` must differ from each other unless
+		// the theme has collapsed them to the same colour
+		// (which it shouldn't for a default theme).
+		let fn_fg = cells[0].fg;
+		let main_fg = cells[3].fg;
+		assert_ne!(
+			fn_fg, main_fg,
+			"keyword 'fn' and identifier 'main' should have different fg colours"
+		);
 	}
 
 	#[test]

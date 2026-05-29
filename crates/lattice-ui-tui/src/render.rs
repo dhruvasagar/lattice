@@ -4378,22 +4378,60 @@ fn render_virtual_row(
         " ".repeat(gutter_w as usize),
         TuiStyle::default().fg(Color::DarkGray),
     );
-    // Render cells as a single owned string, then style with
-    // the deletion-block backdrop.
-    let mut content = String::with_capacity(vrow.cells.len());
+    // D.3.b.2 (2026-05-29): emit per-cell spans with run
+    // coalescing — adjacent cells sharing the same `fg` (and
+    // both ASCII / both non-control) merge into a single
+    // styled Span so an 80-char baseline line produces ~5
+    // spans, not 80. Each cell carries the deletion-block
+    // backdrop (`Color::Rgb(60,0,0)`); `fg = 0` means
+    // "use terminal default" (the renderer leaves fg unset).
+    let bg = Color::Rgb(60, 0, 0);
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut run_text = String::new();
+    let mut run_fg: Option<u32> = None;
+    let flush = |text: &mut String, fg: Option<u32>, spans: &mut Vec<Span<'static>>| {
+        if text.is_empty() {
+            return;
+        }
+        let mut style = TuiStyle::default().bg(bg);
+        if let Some(rgb) = fg {
+            if rgb != 0 {
+                let r = ((rgb >> 16) & 0xff) as u8;
+                let g = ((rgb >> 8) & 0xff) as u8;
+                let b = (rgb & 0xff) as u8;
+                style = style.fg(Color::Rgb(r, g, b));
+            }
+        }
+        spans.push(Span::styled(std::mem::take(text), style));
+    };
     for cell in vrow.cells.iter() {
-        if let Some(ch) = char::from_u32(cell.codepoint) {
-            content.push(ch);
+        let Some(ch) = char::from_u32(cell.codepoint) else {
+            continue;
+        };
+        let cell_fg = Some(cell.fg);
+        if run_fg.is_none() {
+            run_fg = cell_fg;
         }
+        if run_fg != cell_fg {
+            flush(&mut run_text, run_fg, &mut spans);
+            run_fg = cell_fg;
+        }
+        run_text.push(ch);
     }
-    let used = content.chars().count() as u32;
+    flush(&mut run_text, run_fg, &mut spans);
+    // Pad the row out to body_width so the backdrop covers
+    // the full body column even for short baseline lines.
+    let used: u32 = spans.iter().map(|s| s.content.chars().count() as u32).sum();
     if used < body_width {
-        for _ in 0..(body_width - used) {
-            content.push(' ');
-        }
+        let pad: String = " ".repeat((body_width - used) as usize);
+        spans.push(Span::styled(pad, TuiStyle::default().bg(bg)));
     }
-    let body = Span::styled(content, TuiStyle::default().bg(Color::Rgb(60, 0, 0)));
-    Line::from(vec![severity_blank, diff_sign_blank, gutter_blank, body])
+    let mut out: Vec<Span<'static>> = Vec::with_capacity(3 + spans.len());
+    out.push(severity_blank);
+    out.push(diff_sign_blank);
+    out.push(gutter_blank);
+    out.extend(spans);
+    Line::from(out)
 }
 
 /// D.3.e (2026-05-29): line background tint colour for

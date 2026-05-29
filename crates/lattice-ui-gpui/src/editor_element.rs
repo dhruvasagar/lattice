@@ -1545,30 +1545,69 @@ fn push_virtual_row(
     diagnostic_segments_per_row: &mut Vec<Vec<(u32, u32, u32)>>,
     overlay_quads_per_row: &mut Vec<Vec<(u32, u32, u32)>>,
 ) {
-    // Body text: convert cells → string; ShapedLine needs at
-    // least one char so empty cells get a single space.
+    // D.3.b.2 (2026-05-29): build the body text + a parallel
+    // `Vec<TextRun>` keyed by per-cell `fg`. Adjacent cells
+    // sharing the same fg coalesce into a single TextRun so
+    // an 80-char line produces ~5 runs, not 80. `cell.fg = 0`
+    // is the "use default" sentinel; fall back to
+    // `body_color` (the theme foreground passed by the
+    // caller). For empty rows we still emit one space so
+    // `shape_line` doesn't fail on a zero-length input.
     let mut content = String::with_capacity(vrow.cells.len());
+    let mut runs: Vec<TextRun> = Vec::new();
+    let mut current_color: Option<u32> = None;
+    let mut current_len: usize = 0;
+    let flush =
+        |color: Option<u32>, len: usize, runs: &mut Vec<TextRun>, font: &gpui::Font| {
+            if len == 0 {
+                return;
+            }
+            let resolved = color
+                .filter(|c| *c != 0)
+                .unwrap_or(body_color);
+            runs.push(TextRun {
+                len,
+                font: font.clone(),
+                color: rgb(resolved).into(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            });
+        };
     for cell in vrow.cells.iter() {
-        if let Some(ch) = char::from_u32(cell.codepoint) {
-            content.push(ch);
+        let Some(ch) = char::from_u32(cell.codepoint) else {
+            continue;
+        };
+        let cell_color = Some(cell.fg);
+        if current_color.is_none() {
+            current_color = cell_color;
         }
+        if current_color != cell_color {
+            flush(current_color, current_len, &mut runs, font);
+            current_color = cell_color;
+            current_len = 0;
+        }
+        let ch_bytes = ch.len_utf8();
+        content.push(ch);
+        current_len += ch_bytes;
     }
+    flush(current_color, current_len, &mut runs, font);
     if content.is_empty() {
         content.push(' ');
+        runs.push(TextRun {
+            len: 1,
+            font: font.clone(),
+            color: rgb(body_color).into(),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        });
     }
-    let body_run = TextRun {
-        len: content.len(),
-        font: font.clone(),
-        color: rgb(body_color).into(),
-        background_color: None,
-        underline: None,
-        strikethrough: None,
-    };
     let content_cols = content.chars().count() as u32;
     let shaped_body = window.text_system().shape_line(
         SharedString::from(content),
         font_size,
-        &[body_run],
+        &runs,
         None,
     );
     // Gutter: fully blank-padded to match

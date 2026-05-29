@@ -4944,10 +4944,33 @@ fn buffer_line_to_visible_row_with(
     if target < scroll {
         return None;
     }
+    // D.3.b.1.cursor-fix (2026-05-29): account for virtual
+    // rows the renderer interleaves between document rows.
+    // Without this, the cursor was painted at the doc-row
+    // count past scroll — which is the position the line
+    // WOULD occupy if there were no virtual rows in between.
+    // After D.3.b.1's interleaver added Above- and Below-
+    // anchored virtual rows around each doc row, the cursor
+    // visually landed on the wrong row whenever a deletion
+    // block sat between the scroll and the cursor.
+    let virtual_rows_matrix = view.app.render_state.load().virtual_rows.matrix.clone();
     let total_lines = snap.buffer.line_count();
     let mut buf_line = scroll;
     let mut row: u32 = 0;
     while row < viewport_height && buf_line < total_lines {
+        // Above-anchored virtual rows at buf_line render
+        // BEFORE the doc row, so they shift `row` by their
+        // count when walking past this position.
+        let above_count = virtual_rows_at(
+            &virtual_rows_matrix,
+            buf_line,
+            lattice_cells::AnchorPosition::Above,
+        )
+        .count() as u32;
+        row += above_count;
+        if row >= viewport_height {
+            return None;
+        }
         // If a closed fold starts at buf_line, the fold's whole
         // range collapses onto this single visible row. The cursor
         // resolves to this row whether it's at the fold heading or
@@ -4978,6 +5001,15 @@ fn buffer_line_to_visible_row_with(
             buf_line += 1;
             continue;
         }
+        // Below-anchored virtual rows of buf_line render
+        // AFTER the doc row, before the next doc row.
+        let below_count = virtual_rows_at(
+            &virtual_rows_matrix,
+            buf_line,
+            lattice_cells::AnchorPosition::Below,
+        )
+        .count() as u32;
+        row += below_count;
         buf_line = next_buf_line;
         row += 1;
     }

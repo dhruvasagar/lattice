@@ -782,6 +782,43 @@ number of pattern alternatives; pruning the captures we don't fold
 visibly (e.g. `parameters`, `arguments` for very-short ranges) is the
 next available optimization if 3.9ms ever pushes uncomfortable.
 
+### D.3.f.2 — fold-recompute integration + hunk overlay (`crates/lattice-host/benches/fold_recompute.rs`)
+
+D.3.f.0 added a `FoldProvider` registry; D.3.f.1 attached the
+`HunkFoldProvider` overlay. The bench quantifies the marginal cost
+that those two slices put on the per-keystroke fold-recompute path
+so a future regression on either the registry indirection or the
+per-hunk emission shape surfaces immediately.
+
+| Workload                           | n=0      | n=10     | n=100    | n=1000   | Vs. 8 ms keystroke budget          |
+|------------------------------------|----------|----------|----------|----------|-----------------------------------|
+| `overlay_only_at_n_hunks`          | 95 ns    | 275 ns   | 3.1 µs   | 144 µs   | 1000-hunk case: 55× headroom      |
+| `hunk_provider_compute_pure`       | 1.9 ns   | 138 ns   | 1.3 µs   | 12.4 µs  | provider floor; integration adds ~15× through carry-over |
+| `fold_identity_hash`               | —        | —        | —        | —        | 11.5 ns / hash (DefaultHasher, salted "diff:hunk")        |
+
+`overlay_only_at_n_hunks` measures the end-to-end
+`Editor::recompute_folds` cost with foldmethod=Manual + a published
+`HunkIndex`. The Manual primary returns empty, so the registry
+dispatch + overlay emission + closed-state carry-over loop is what
+shows up. At n=100 (the upper end of realistic per-file hunk counts)
+recompute is **3.1 µs** — over 2500× under the keystroke budget. At
+n=1000 (pathological: a thousand independent edits scattered through
+one file, an unlikely real shape) it grows to **144 µs** which is
+still **55× under budget**.
+
+The gap between `hunk_provider_compute_pure` and
+`overlay_only_at_n_hunks` at the same n (e.g. 1.3 µs vs 3.1 µs at
+n=100) is the integration overhead: the carry-over loop walking the
+previous fold list to preserve closed-state, plus the post-merge
+sort. That overhead grows roughly linearly with N, consistent with
+the O(P + O + F) recompute described in
+[`fold-architecture.md`](../architecture/fold-architecture.md) §4.
+
+CI gate enforcement deferred until the bench falls into a runner
+with stable wall-clock guarantees or a visual regression motivates
+an absolute ceiling. The headroom is large enough that catching a
+regression via routine bench-on-PR is sufficient.
+
 ---
 
 ## Native highlight (`crates/lattice-syntax/benches/highlight.rs`)

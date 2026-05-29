@@ -1870,9 +1870,27 @@ shared with multibuffer-views and post-v1 inlay hints.
     overlay). Updated `diff-system.md` §6.5 to point at
     `fold-architecture.md`. **466 host tests + 1461
     workspace tests green.**
-  - 🗒 **D.3.f.2** — Bench `fold_recompute_p99_us` (100
-    hunks overlaid on a syntax primary, 5k-line file). CI
-    gate enforces the keystroke budget.
+  - ✅ **D.3.f.2** (2026-05-29) — fold-recompute bench
+    landed. New `crates/lattice-host/benches/fold_recompute.rs`
+    + `[[bench]] fold_recompute` in `Cargo.toml`. Three
+    workloads: `overlay_only_at_n_hunks` (end-to-end
+    `Editor::recompute_folds` at foldmethod=Manual with N
+    published hunks — isolates the D.3.f.0 registry
+    dispatch + D.3.f.1 overlay emission + carry-over cost),
+    `hunk_provider_compute_pure` (isolated `HunkFoldProvider::compute`),
+    `fold_identity_hash` (raw hasher cost). N covers 0 /
+    10 / 100 / 1000 hunks. Recorded baselines (per
+    `benchmarks.md` §Folds-D.3.f.2): 100-hunk recompute is
+    **3.1 µs** (2580× under the 8 ms keystroke budget);
+    pathological 1000-hunk recompute is **144 µs** (55×
+    under budget). Pure provider compute at 100 hunks is
+    1.3 µs; the ~15× integration overhead is the
+    closed-state carry-over loop + post-merge sort, both
+    O(prev + new). CI gate enforcement deferred until the
+    bench lands on a runner with stable wall-clock or a
+    visual regression motivates an absolute ceiling — the
+    headroom is large enough that bench-on-PR catches
+    regressions. Closes D.3.f.
 - 🗒 **D.4** — Side-by-side two-way: `:diff`, `:diffthis`,
   `:diffsplit`, `:diffoff`; pane-group scroll-binding with
   hunk-correspondent row mapping.

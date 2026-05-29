@@ -169,5 +169,16 @@ harness = false
 name = "diff_subsystem"
 harness = false
 
+# D.3.f.2 (2026-05-29): fold-recompute hot-path bench. Three
+# workloads — `overlay_only_at_n_hunks` (Editor::recompute_folds
+# with N hunks at foldmethod=Manual),
+# `hunk_provider_compute_pure` (isolated provider compute),
+# `fold_identity_hash` (raw identity-hash cost). Backs the
+# `fold-architecture.md` §4 keystroke-budget claim. See
+# `benches/fold_recompute.rs`.
+[[bench]]
+name = "fold_recompute"
+harness = false
+
 [lints]
 workspace = true

@@ -565,6 +565,21 @@ impl Editor {
         // leaf. Drives D.4.d.1.b's worker iteration. Empty when
         // no Document pane is visible.
         let cells_panes = self.build_cells_panes(last_edit_active);
+        // D.4.d.1.c: PaneId → matrix lookup derived from
+        // `cells_panes`. Renderers use this through
+        // `CellsRenderState::matrix_for_pane(pane_id)` instead
+        // of always reading the top-level (active-pane) cell.
+        let cells_pane_matrices: std::sync::Arc<
+            std::collections::HashMap<
+                lattice_core::ui::pane::PaneId,
+                std::sync::Arc<arc_swap::ArcSwap<lattice_cells::CellMatrix>>,
+            >,
+        > = std::sync::Arc::new(
+            cells_panes
+                .iter()
+                .map(|p| (p.pane_id, p.matrix.clone()))
+                .collect(),
+        );
         // Start from the empty `Default` snapshot, then override
         // each sub-state whose backing source has been wired up.
         // Slice 3a wires only `diagnostics`; Slice 3b/3c add
@@ -1048,11 +1063,14 @@ impl Editor {
                 last_edit: last_edit_active,
                 theme: self.host_theme,
                 // D.4.d.1.a (2026-05-29): per-visible-Document-pane
-                // build inputs. Worker iteration over this slice
-                // lands in D.4.d.1.b; until then the top-level
-                // fields above remain the worker's single input
-                // source and this slice is informational.
+                // build inputs. Worker iteration consumes this in
+                // D.4.d.1.b. Renderers wanting per-pane reads use
+                // [`pane_matrices`] (derived below) instead of
+                // scanning this slice.
                 panes: cells_panes,
+                // D.4.d.1.c (2026-05-29): PaneId → matrix lookup,
+                // derived once at publish time from `panes`.
+                pane_matrices: cells_pane_matrices,
             }),
             // D.3.d.1 (2026-05-29): snapshot the active
             // document's diff sign map (empty if no session

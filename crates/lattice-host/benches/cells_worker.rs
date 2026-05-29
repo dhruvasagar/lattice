@@ -107,6 +107,11 @@ fn rs_for(
         foldenable: false,
         last_edit,
     };
+    let pane_matrices = {
+        let mut m = std::collections::HashMap::new();
+        m.insert(pane_entry.pane_id, pane_entry.matrix.clone());
+        Arc::new(m)
+    };
     let cells = CellsRenderState {
         matrix: matrix_cell,
         version,
@@ -120,6 +125,7 @@ fn rs_for(
         theme: Theme::default(),
         whitespace: WhitespaceConfig::default(),
         panes: Arc::from(vec![pane_entry].into_boxed_slice()),
+        pane_matrices,
     };
     let rs = RenderState {
         cells: Arc::new(cells),

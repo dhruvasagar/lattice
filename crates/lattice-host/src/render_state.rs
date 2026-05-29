@@ -885,20 +885,49 @@ pub struct CellsRenderState {
     /// pane. Populated by `publish_render_state` from
     /// `pane_tree.leaves()`; non-Document leaves are skipped.
     ///
-    /// The cells worker iterates this slice in D.4.d.1.b to
-    /// build per-buffer matrices. Until then the slice is
-    /// purely informational — the worker still reads the
-    /// top-level (active-doc) inputs above.
-    ///
-    /// Each entry's `matrix` cell is sourced from
-    /// [`crate::editor::Editor::cells_matrix_for`]; the
-    /// **active pane's entry shares Arc identity with the
-    /// top-level [`Self::matrix`]** (and therefore with
-    /// `Editor::cells_matrix_cell`) so the existing
-    /// single-doc renderer read path keeps landing on the
-    /// same cell. D.4.d.1.c adds a renderer per-pane lookup
-    /// for the non-active panes.
+    /// D.4.d.1.b consumes this slice in
+    /// [`crate::cells_worker::recompute`] — each entry's
+    /// `matrix` is the per-buffer registry cell the worker
+    /// writes through. The active pane's entry shares Arc
+    /// identity with [`Self::matrix`] so today's renderer
+    /// read path keeps landing on the worker's writes for
+    /// the active pane; [`Self::pane_matrices`] +
+    /// [`Self::matrix_for_pane`] are the per-pane read
+    /// surface renderers can use to find a non-active pane's
+    /// matrix without iterating `panes`.
     pub panes: Arc<[PaneCellsInputs]>,
+
+    /// D.4.d.1.c (2026-05-29): `PaneId → matrix` lookup
+    /// derived from [`Self::panes`] at publish time so
+    /// renderers can find a pane's matrix by id without
+    /// scanning the panes slice. One entry per visible
+    /// Document leaf; non-Document panes are absent (the
+    /// renderer's per-kind dispatch already knows not to
+    /// consult cells for those).
+    ///
+    /// Use [`Self::matrix_for_pane`] for the read; direct
+    /// access to the map is fine when batching multiple
+    /// lookups.
+    pub pane_matrices: Arc<
+        std::collections::HashMap<
+            lattice_core::ui::pane::PaneId,
+            Arc<arc_swap::ArcSwap<lattice_cells::CellMatrix>>,
+        >,
+    >,
+}
+
+impl CellsRenderState {
+    /// D.4.d.1.c: look up the cell matrix for `pane_id`.
+    /// Returns `None` when the pane is not a Document leaf
+    /// (file tree / help / messages / oil / terminal panes
+    /// skip the cells path entirely — see
+    /// `crate::dispatch::Editor::build_cells_panes`).
+    pub fn matrix_for_pane(
+        &self,
+        pane_id: lattice_core::ui::pane::PaneId,
+    ) -> Option<&Arc<arc_swap::ArcSwap<lattice_cells::CellMatrix>>> {
+        self.pane_matrices.get(&pane_id)
+    }
 }
 
 /// D.4.d.1.a (2026-05-29): per-visible-Document-pane build
@@ -985,6 +1014,7 @@ impl Default for CellsRenderState {
             theme: crate::ui::theme::Theme::default(),
             whitespace: crate::cells_worker::WhitespaceConfig::default(),
             panes: Arc::from(Vec::<PaneCellsInputs>::new().into_boxed_slice()),
+            pane_matrices: Arc::new(std::collections::HashMap::new()),
         }
     }
 }
@@ -2765,6 +2795,78 @@ mod tests {
         editor.publish_render_state();
         let rs2 = editor.render_state.load_full();
         assert!(rs2.cells.panes.iter().all(|p| p.last_edit.is_none()));
+    }
+
+    // ---- D.4.d.1.c (per-pane matrix lookup) ----
+
+    /// D.4.d.1.c: `cells.pane_matrices` carries one entry per
+    /// visible Document leaf; each entry's matrix Arc identity
+    /// matches the corresponding `panes[i].matrix` (the
+    /// registry cell the worker writes through).
+    #[test]
+    fn cells_pane_matrices_mirror_panes_entries() {
+        use lattice_core::ui::pane::SplitOrientation;
+        let mut editor = Editor::default();
+        editor.pane_tree.split_active(SplitOrientation::Vertical);
+        editor.publish_render_state();
+        let rs = editor.render_state.load_full();
+        assert_eq!(rs.cells.panes.len(), 2);
+        assert_eq!(rs.cells.pane_matrices.len(), 2);
+        for entry in rs.cells.panes.iter() {
+            let lookup = rs
+                .cells
+                .pane_matrices
+                .get(&entry.pane_id)
+                .expect("every pane must appear in pane_matrices");
+            assert!(
+                std::sync::Arc::ptr_eq(lookup, &entry.matrix),
+                "pane_matrices lookup must return the same Arc as panes[i].matrix"
+            );
+        }
+    }
+
+    /// D.4.d.1.c: `matrix_for_pane` is the typed read on top of
+    /// `pane_matrices`. Returns the matching cell for visible
+    /// Document panes and `None` for any other id (closed pane,
+    /// non-Document leaf, unknown id).
+    #[test]
+    fn cells_matrix_for_pane_returns_matching_cell_or_none() {
+        let mut editor = Editor::default();
+        editor.publish_render_state();
+        let rs = editor.render_state.load_full();
+        let active_pane_id = editor.pane_tree.active().id;
+        let cell = rs
+            .cells
+            .matrix_for_pane(active_pane_id)
+            .expect("active Document pane must resolve through matrix_for_pane");
+        assert!(
+            std::sync::Arc::ptr_eq(cell, &rs.cells.matrix),
+            "active pane's matrix_for_pane lookup must match top-level cells.matrix"
+        );
+        // Unknown id returns None.
+        let unknown = lattice_core::ui::pane::PaneId(u32::MAX);
+        assert!(rs.cells.matrix_for_pane(unknown).is_none());
+    }
+
+    /// D.4.d.1.c: non-Document leaves are absent from
+    /// `pane_matrices` (the worker filters them out of `panes`).
+    /// Renderers' per-kind dispatch already knows not to consult
+    /// cells for those kinds.
+    #[test]
+    fn cells_pane_matrices_skip_non_document_leaves() {
+        use lattice_core::ui::pane::SplitOrientation;
+        use lattice_core::BufferKind;
+        let mut editor = Editor::default();
+        editor.pane_tree.split_active(SplitOrientation::Vertical);
+        let non_doc_pane_id = {
+            let leaves = editor.pane_tree.leaves_mut();
+            leaves[1].buffer = BufferKind::FileTree;
+            leaves[1].id
+        };
+        editor.publish_render_state();
+        let rs = editor.render_state.load_full();
+        assert_eq!(rs.cells.pane_matrices.len(), 1);
+        assert!(rs.cells.matrix_for_pane(non_doc_pane_id).is_none());
     }
 
     /// `publish_render_state` fires `cells_wake.notify_one()` —

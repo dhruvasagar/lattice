@@ -1148,6 +1148,11 @@ mod tests {
             foldenable,
             last_edit,
         };
+        let pane_matrices = {
+            let mut m = std::collections::HashMap::new();
+            m.insert(pane_entry.pane_id, pane_entry.matrix.clone());
+            Arc::new(m)
+        };
         let cells = CellsRenderState {
             matrix: matrix_cell,
             version,
@@ -1161,6 +1166,7 @@ mod tests {
             theme,
             whitespace: WhitespaceConfig::default(),
             panes: Arc::from(vec![pane_entry].into_boxed_slice()),
+            pane_matrices,
         };
         let rs = RenderState {
             cells: Arc::new(cells),
@@ -2665,7 +2671,12 @@ mod tests {
                     last_edit,
                     theme,
                     whitespace: WhitespaceConfig::default(),
-                    panes: Arc::from(vec![inputs].into_boxed_slice()),
+                    panes: Arc::from(vec![inputs.clone()].into_boxed_slice()),
+                    pane_matrices: {
+                        let mut m = std::collections::HashMap::new();
+                        m.insert(inputs.pane_id, inputs.matrix);
+                        Arc::new(m)
+                    },
                 };
                 let rs = RenderState {
                     cells: Arc::new(cells),
@@ -2799,7 +2810,12 @@ mod tests {
                 last_edit: None,
                 theme,
                 whitespace: WhitespaceConfig::default(),
-                panes: Arc::from(vec![inputs].into_boxed_slice()),
+                panes: Arc::from(vec![inputs.clone()].into_boxed_slice()),
+                pane_matrices: {
+                    let mut m = std::collections::HashMap::new();
+                    m.insert(inputs.pane_id, inputs.matrix);
+                    Arc::new(m)
+                },
             };
             render_state.store(Arc::new(RenderState {
                 cells: Arc::new(cells),

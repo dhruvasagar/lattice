@@ -2011,14 +2011,14 @@ shared with multibuffer-views and post-v1 inlay hints.
       **2 tests** in `dispatch::tests` (active-doc Arc-
       identity invariant; lazy-insert + idempotent +
       distinct-per-buffer). 503 host tests green.
-    - 🚧 **D.4.d.1** — Cells worker iterates registry.
-      Carved into three sub-slices during execution so the
-      RenderState shape change, worker iteration, and
-      renderer per-pane cutover each land green
-      independently. d.0's Arc-identity invariant means the
-      active pane's matrix cell stays the seeded registry
-      entry throughout, so no user-visible regression at any
-      boundary.
+    - ✅ **D.4.d.1** (2026-05-29) — Cells worker iterates
+      registry. Carved into three sub-slices during
+      execution so the RenderState shape change, worker
+      iteration, and renderer per-pane lookup each land
+      green independently. d.0's Arc-identity invariant
+      means the active pane's matrix cell stays the seeded
+      registry entry throughout, so no user-visible
+      regression at any boundary.
       - ✅ **D.4.d.1.a** (2026-05-29) — `CellsRenderState`
         carries per-pane build inputs. New
         `PaneCellsInputs { pane_id, buffer_id, matrix,
@@ -2087,9 +2087,27 @@ shared with multibuffer-views and post-v1 inlay hints.
         empty-panes-is-cache-hit,
         pane-without-snapshot-clears-its-matrix). 512 host
         tests green; bench compiles.
-      - 🗒 **D.4.d.1.c** — `RenderState.cells` exposes a
-        per-`PaneId` matrix map; TUI + GPUI look up matrix
-        by pane being painted, not always the active one.
+      - ✅ **D.4.d.1.c** (2026-05-29) — Per-pane matrix
+        lookup on `CellsRenderState`. New
+        `pane_matrices: Arc<HashMap<PaneId,
+        Arc<ArcSwap<CellMatrix>>>>` field built once at
+        publish from `cells_panes`. New
+        `CellsRenderState::matrix_for_pane(pane_id)` typed
+        helper. Non-Document leaves are absent (publisher
+        already filters them out of `panes`). The active
+        pane's lookup returns the same Arc as
+        `cells.matrix` so the existing renderer top-level
+        read path is identity-equivalent for single-pane
+        flows. Renderer call-site cutover to consult
+        `matrix_for_pane(pane_id)` lands with D.4.d.3 when
+        `:diffsplit` + the inactive-Document render path
+        actually need to draw two distinct buffers' matrices
+        side-by-side; d.1.c ships the scaffolding so that
+        cutover doesn't have to also reshape the substate.
+        **3 new tests** (`pane_matrices` mirrors `panes`;
+        `matrix_for_pane` returns the matching cell + None
+        for unknown ids; non-Document leaves skipped).
+        515 host tests green.
     - 🗒 **D.4.d.2** — Same surface for virtual rows.
     - 🗒 **D.4.d.3** — `:diffsplit` / `:diffthis` + vim-
       parity `:diffoff`.

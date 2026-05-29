@@ -2108,7 +2108,43 @@ shared with multibuffer-views and post-v1 inlay hints.
         `matrix_for_pane` returns the matching cell + None
         for unknown ids; non-Document leaves skipped).
         515 host tests green.
-    - 🗒 **D.4.d.2** — Same surface for virtual rows.
+    - 🚧 **D.4.d.2** — Same surface for virtual rows.
+      Mirror of D.4.d.0 + D.4.d.1 on
+      `virtual_rows_matrix_cell`. Carved into four sub-
+      slices for the same blast-radius bounding as
+      D.4.d.1.
+      - ✅ **D.4.d.2.0** (2026-05-29) — Per-document
+        virtual-rows-matrix registry surface. New
+        `Editor::virtual_rows_matrices:
+        Arc<Mutex<HashMap<BufferId,
+        Arc<ArcSwap<VirtualRowMatrix>>>>>` field; boot
+        seeds the active document's entry **sharing Arc
+        identity** with `Editor::virtual_rows_matrix_cell`
+        so the existing single-writer hot path
+        (virtual_rows_worker →
+        `virtual_rows_matrix_cell` →
+        `RenderState.virtual_rows.matrix`) stays
+        bit-identical. New
+        `Editor::virtual_rows_matrix_for(buffer_id)` is
+        the single port into the registry: lazy-inserts
+        an empty cell on first ask, idempotent on repeat
+        asks, distinct buffers get distinct cells. No
+        worker iteration yet — D.4.d.2.1.b makes the
+        worker rebuild per visible buffer. **2 tests**
+        in `dispatch::tests` (active-doc Arc-identity
+        invariant; lazy-insert + idempotent +
+        distinct-per-buffer). 517 host tests green.
+      - 🗒 **D.4.d.2.1.a** —
+        `VirtualRowProviderRegistry` keyed per
+        `BufferId` so baseline + current panes' filler
+        providers don't collide.
+      - 🗒 **D.4.d.2.1.b** —
+        `virtual_rows_worker::recompute` iterates
+        `rs.cells.panes`, writes per-buffer matrices via
+        the registry. Per-buffer fingerprint cache.
+      - 🗒 **D.4.d.2.1.c** —
+        `VirtualRowsRenderState::pane_matrices` +
+        `matrix_for_pane(pane_id)` lookup.
     - 🗒 **D.4.d.3** — `:diffsplit` / `:diffthis` + vim-
       parity `:diffoff`.
   - 🗒 **D.4.e** — Bench `pane_group_scroll_p99_us`.

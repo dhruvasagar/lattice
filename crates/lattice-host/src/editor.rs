@@ -1111,6 +1111,39 @@ pub struct Editor {
     /// and the worker rebuilds.
     pub virtual_rows_matrix_cell:
         std::sync::Arc<arc_swap::ArcSwap<lattice_cells::VirtualRowMatrix>>,
+    /// D.4.d.2.0 (2026-05-29): per-document virtual-rows
+    /// matrix registry. Mirror of [`Self::cells_matrices`]
+    /// for the displacing-virtual-row primitive. Each
+    /// visible buffer that takes the virtual-rows path gets
+    /// its own `Arc<ArcSwap<VirtualRowMatrix>>` so the
+    /// worker (after D.4.d.2.1.b) can rebuild per buffer,
+    /// and the renderer can pull the right matrix per pane
+    /// at paint time (load-bearing for side-by-side diff
+    /// fillers — D.4 — where two panes show different
+    /// hunks' filler rows simultaneously).
+    ///
+    /// The active-document entry is stored under
+    /// `document_buffer_id` and **shares its Arc identity
+    /// with [`Self::virtual_rows_matrix_cell`]** so the
+    /// existing hot path (virtual_rows_worker writing
+    /// through the field, renderer reading through
+    /// `RenderState.virtual_rows.matrix`) stays bit-identical
+    /// until the worker iteration upgrade lands in
+    /// D.4.d.2.1.b.
+    ///
+    /// Inserts are lazy via
+    /// [`Self::virtual_rows_matrix_for`] — a buffer's entry
+    /// shows up the first time anything asks for its matrix.
+    /// Pruning of stale entries is deferred until the worker
+    /// actually consumes the registry.
+    pub virtual_rows_matrices: std::sync::Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<
+                lattice_core::BufferId,
+                std::sync::Arc<arc_swap::ArcSwap<lattice_cells::VirtualRowMatrix>>,
+            >,
+        >,
+    >,
     /// D.0a.1 (2026-05-29): wake signal for the virtual-rows
     /// worker. `publish_render_state` fires `notify_one()`
     /// after every dispatch tick (permit-style coalescing
@@ -1353,6 +1386,34 @@ impl Editor {
             .cells_matrices
             .lock()
             .expect("cells_matrices mutex poisoned");
+        map.entry(buffer_id)
+            .or_insert_with(std::sync::Arc::default)
+            .clone()
+    }
+
+    /// D.4.d.2.0 (2026-05-29): lazy port into the per-document
+    /// [`Self::virtual_rows_matrices`] registry. Mirror of
+    /// [`Self::cells_matrix_for`] for the virtual-row pipeline.
+    /// Returns the matrix cell for `buffer_id`, inserting an
+    /// empty `Arc<ArcSwap<VirtualRowMatrix>>` on first ask.
+    ///
+    /// Idempotent: every call for the same `buffer_id`
+    /// returns the same `Arc` identity so renderer reads and
+    /// worker writes stay coherent.
+    ///
+    /// The active document's entry is seeded at boot to
+    /// share its `Arc` with
+    /// [`Self::virtual_rows_matrix_cell`], so callers that
+    /// resolve the active doc through either surface land
+    /// on the same cell.
+    pub fn virtual_rows_matrix_for(
+        &self,
+        buffer_id: lattice_core::BufferId,
+    ) -> std::sync::Arc<arc_swap::ArcSwap<lattice_cells::VirtualRowMatrix>> {
+        let mut map = self
+            .virtual_rows_matrices
+            .lock()
+            .expect("virtual_rows_matrices mutex poisoned");
         map.entry(buffer_id)
             .or_insert_with(std::sync::Arc::default)
             .clone()

@@ -704,6 +704,28 @@ impl Editor {
         let virtual_rows_matrix_cell: std::sync::Arc<
             arc_swap::ArcSwap<lattice_cells::VirtualRowMatrix>,
         > = std::sync::Arc::default();
+        // D.4.d.2.0 (2026-05-29): per-document virtual-rows
+        // matrix registry. Seed with the initial document's
+        // matrix sharing the same Arc identity as
+        // `virtual_rows_matrix_cell` so the existing single-
+        // writer hot path (virtual_rows_worker →
+        // virtual_rows_matrix_cell → RenderState.virtual_rows.matrix)
+        // stays bit-identical. Subsequent buffer switches insert
+        // their own entries lazily via
+        // `Editor::virtual_rows_matrix_for`. Mirror of the
+        // `cells_matrices` seeding above.
+        let virtual_rows_matrices: std::sync::Arc<
+            std::sync::Mutex<
+                std::collections::HashMap<
+                    lattice_core::BufferId,
+                    std::sync::Arc<arc_swap::ArcSwap<lattice_cells::VirtualRowMatrix>>,
+                >,
+            >,
+        > = {
+            let mut map = std::collections::HashMap::new();
+            map.insert(document_buffer_id, virtual_rows_matrix_cell.clone());
+            std::sync::Arc::new(std::sync::Mutex::new(map))
+        };
         let virtual_row_providers: std::sync::Arc<
             crate::virtual_rows_worker::VirtualRowProviderRegistry,
         > = std::sync::Arc::default();
@@ -856,6 +878,11 @@ impl Editor {
             // here as the `runtime_handle.spawn(...)` above.
             virtual_rows_wake,
             virtual_rows_matrix_cell,
+            // D.4.d.2.0 (2026-05-29): same-Arc-identity
+            // seeding for the active doc's virtual-rows
+            // matrix; subsequent buffers lazy-insert via
+            // `Editor::virtual_rows_matrix_for`.
+            virtual_rows_matrices,
             virtual_row_providers,
             // D.3.a.1 (2026-05-29): diff subsystem + its bus
             // subscription guard + the per-session wake

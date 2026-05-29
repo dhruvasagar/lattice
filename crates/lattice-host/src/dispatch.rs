@@ -23605,4 +23605,61 @@ mod tests {
             "different buffers must get distinct cells"
         );
     }
+
+    // ── D.4.d.2.0: virtual_rows_matrices registry ───────────
+
+    /// Mirror of [`cells_matrix_for_active_doc_shares_field_arc`]
+    /// for the virtual-rows pipeline. The active-document
+    /// entry in `virtual_rows_matrices` shares Arc identity
+    /// with `Editor::virtual_rows_matrix_cell` (boot-seeded
+    /// invariant); D.4.d.2.1.b will rely on this so the
+    /// existing renderer read path through
+    /// `RenderState.virtual_rows.matrix` keeps landing on the
+    /// worker's writes for the active pane.
+    #[test]
+    fn virtual_rows_matrix_for_active_doc_shares_field_arc() {
+        let document = lattice_core::Document::empty();
+        let editor = crate::editor::Editor::boot(document);
+        let bid = editor.document_buffer_id;
+        let registry_cell = editor.virtual_rows_matrix_for(bid);
+        assert!(
+            std::sync::Arc::ptr_eq(
+                &registry_cell,
+                &editor.virtual_rows_matrix_cell,
+            ),
+            "active-doc virtual-rows registry entry must share \
+             Arc identity with `virtual_rows_matrix_cell` \
+             (boot-seeded invariant)"
+        );
+    }
+
+    /// Mirror of [`cells_matrix_for_new_buffer_inserts_then_reuses`]
+    /// for the virtual-rows pipeline. Idempotent lazy-insert
+    /// + distinct cells per buffer.
+    #[test]
+    fn virtual_rows_matrix_for_new_buffer_inserts_then_reuses() {
+        let document = lattice_core::Document::empty();
+        let editor = crate::editor::Editor::boot(document);
+        let foreign = lattice_core::BufferId::next();
+        assert_ne!(foreign, editor.document_buffer_id);
+
+        let first = editor.virtual_rows_matrix_for(foreign);
+        let second = editor.virtual_rows_matrix_for(foreign);
+        assert!(
+            std::sync::Arc::ptr_eq(&first, &second),
+            "repeat asks for the same buffer must return the same Arc"
+        );
+        assert!(
+            !std::sync::Arc::ptr_eq(&first, &editor.virtual_rows_matrix_cell),
+            "foreign-buffer virtual-rows cell must be distinct \
+             from the active-doc cell"
+        );
+
+        let other = lattice_core::BufferId::next();
+        let other_cell = editor.virtual_rows_matrix_for(other);
+        assert!(
+            !std::sync::Arc::ptr_eq(&first, &other_cell),
+            "different buffers must get distinct virtual-rows cells"
+        );
+    }
 }

@@ -2237,10 +2237,39 @@ shared with multibuffer-views and post-v1 inlay hints.
         `two_panes_sharing_buffer_share_one_matrix_write`).
         527 host tests green; workspace build green.
         Mirror of D.4.d.1.b.
-      - 🗒 **D.4.d.2.1.d** —
-        `VirtualRowsRenderState::pane_matrices` +
-        `matrix_for_pane(pane_id)` lookup. Mirror of
-        D.4.d.1.c.
+      - ✅ **D.4.d.2.1.d** (2026-05-30) — Per-pane
+        virtual-rows matrix lookup on
+        `VirtualRowsRenderState`. New field
+        `pane_matrices: Arc<HashMap<PaneId,
+        Arc<ArcSwap<VirtualRowMatrix>>>>` built once
+        at publish from `cells_panes` (derived from
+        `(pane_id, virtual_rows_matrix)` pairs — the
+        same shape `cells_pane_matrices` uses). New
+        `VirtualRowsRenderState::matrix_for_pane(pane_id)`
+        typed helper returns `Option<&Arc<ArcSwap<...>>>`.
+        Non-Document leaves are absent (publisher
+        already filters them out of `cells.panes`,
+        and the lookup map is derived from there). The
+        active pane's lookup returns the same Arc as
+        `virtual_rows_matrix_for(active_buffer_id)` —
+        which is the worker's write target — so any
+        renderer that switches from
+        `rs.virtual_rows.matrix` to
+        `rs.virtual_rows.matrix_for_pane(pane_id)` for
+        the active pane reads identical content. The
+        existing top-level `matrix` field stays on
+        `VirtualRowsRenderState` (active pane only) so
+        renderers can migrate to the per-pane lookup
+        incrementally. Closes the symmetric D.4.d.2
+        carve; D.4.d.3 (`:diffsplit` / `:diffthis` /
+        `:diffoff` ex-commands) is the first user-
+        visible slice. **3 new tests** in
+        `render_state::tests` mirroring D.4.d.1.c
+        (`virtual_rows_pane_matrices_mirror_panes_entries`,
+        `virtual_rows_matrix_for_pane_returns_matching_cell_or_none`,
+        `virtual_rows_pane_matrices_skip_non_document_leaves`).
+        530 host tests green; workspace build green.
+        Mirror of D.4.d.1.c.
     - 🗒 **D.4.d.3** — `:diffsplit` / `:diffthis` + vim-
       parity `:diffoff`.
   - 🗒 **D.4.e** — Bench `pane_group_scroll_p99_us`.

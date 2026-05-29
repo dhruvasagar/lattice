@@ -170,9 +170,52 @@ impl Default for RenderState {
 /// `matrix` defaults to an empty `VirtualRowMatrix` so the
 /// renderer never has to handle an `Option`; an empty matrix
 /// reports no rows for any line.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct VirtualRowsRenderState {
     pub matrix: Arc<lattice_cells::VirtualRowMatrix>,
+    /// D.4.d.2.1.d (2026-05-30): `PaneId → virtual-rows matrix`
+    /// lookup derived from `CellsRenderState::panes` at publish
+    /// time so renderers can find a pane's virtual-rows matrix
+    /// by id without scanning the panes slice. One entry per
+    /// visible Document leaf; non-Document panes are absent
+    /// (the publisher filters them out of
+    /// `CellsRenderState::panes`). Mirror of
+    /// [`CellsRenderState::pane_matrices`].
+    ///
+    /// Use [`Self::matrix_for_pane`] for the read; direct
+    /// access to the map is fine when batching multiple
+    /// lookups.
+    pub pane_matrices: Arc<
+        std::collections::HashMap<
+            lattice_core::ui::pane::PaneId,
+            Arc<arc_swap::ArcSwap<lattice_cells::VirtualRowMatrix>>,
+        >,
+    >,
+}
+
+impl Default for VirtualRowsRenderState {
+    fn default() -> Self {
+        Self {
+            matrix: Arc::new(lattice_cells::VirtualRowMatrix::empty()),
+            pane_matrices: Arc::new(std::collections::HashMap::new()),
+        }
+    }
+}
+
+impl VirtualRowsRenderState {
+    /// D.4.d.2.1.d: look up the virtual-rows matrix cell for
+    /// `pane_id`. Returns `None` when the pane is not a Document
+    /// leaf (file tree / help / messages / oil / terminal panes
+    /// skip the cells path entirely, so they're absent from
+    /// `pane_matrices` — see
+    /// `crate::dispatch::Editor::build_cells_panes`). Mirror of
+    /// [`CellsRenderState::matrix_for_pane`].
+    pub fn matrix_for_pane(
+        &self,
+        pane_id: lattice_core::ui::pane::PaneId,
+    ) -> Option<&Arc<arc_swap::ArcSwap<lattice_cells::VirtualRowMatrix>>> {
+        self.pane_matrices.get(&pane_id)
+    }
 }
 
 /// D.3.d.1 (2026-05-29): renderer-side projection of the
@@ -2943,6 +2986,92 @@ mod tests {
         let rs = editor.render_state.load_full();
         assert_eq!(rs.cells.pane_matrices.len(), 1);
         assert!(rs.cells.matrix_for_pane(non_doc_pane_id).is_none());
+    }
+
+    // ---- D.4.d.2.1.d (per-pane virtual-rows matrix lookup) ----
+
+    /// D.4.d.2.1.d: `virtual_rows.pane_matrices` carries one
+    /// entry per visible Document leaf; each entry's matrix Arc
+    /// identity matches the corresponding
+    /// `cells.panes[i].virtual_rows_matrix` (the registry cell
+    /// the worker writes through). Mirror of the cells
+    /// `cells_pane_matrices_mirror_panes_entries` test for the
+    /// virtual-rows pipeline.
+    #[test]
+    fn virtual_rows_pane_matrices_mirror_panes_entries() {
+        use lattice_core::ui::pane::SplitOrientation;
+        let mut editor = Editor::default();
+        editor.pane_tree.split_active(SplitOrientation::Vertical);
+        editor.publish_render_state();
+        let rs = editor.render_state.load_full();
+        assert_eq!(rs.cells.panes.len(), 2);
+        assert_eq!(rs.virtual_rows.pane_matrices.len(), 2);
+        for entry in rs.cells.panes.iter() {
+            let lookup = rs
+                .virtual_rows
+                .pane_matrices
+                .get(&entry.pane_id)
+                .expect("every pane must appear in virtual_rows.pane_matrices");
+            assert!(
+                std::sync::Arc::ptr_eq(lookup, &entry.virtual_rows_matrix),
+                "pane_matrices lookup must return the same Arc as panes[i].virtual_rows_matrix"
+            );
+        }
+    }
+
+    /// D.4.d.2.1.d: `matrix_for_pane` is the typed read on top
+    /// of `pane_matrices`. Returns the matching cell for visible
+    /// Document panes and `None` for any other id (closed pane,
+    /// non-Document leaf, unknown id).
+    ///
+    /// `Editor::default()` doesn't run the boot seed (which is
+    /// what shares Arc identity with `virtual_rows_matrix_cell`),
+    /// so we assert the registry-port equality here — the
+    /// matrix the renderer would read through this lookup is
+    /// the same one `virtual_rows_matrix_for(buffer_id)` returns.
+    /// The D.4.d.2.0 boot Arc-identity invariant is covered in
+    /// `dispatch::tests::virtual_rows_matrix_for_active_doc_shares_field_arc`.
+    #[test]
+    fn virtual_rows_matrix_for_pane_returns_matching_cell_or_none() {
+        let mut editor = Editor::default();
+        editor.publish_render_state();
+        let rs = editor.render_state.load_full();
+        let active_pane_id = editor.pane_tree.active().id;
+        let cell = rs
+            .virtual_rows
+            .matrix_for_pane(active_pane_id)
+            .expect("active Document pane must resolve through matrix_for_pane");
+        let registry_cell = editor.virtual_rows_matrix_for(editor.document_buffer_id);
+        assert!(
+            std::sync::Arc::ptr_eq(cell, &registry_cell),
+            "active pane's matrix_for_pane lookup must return the same Arc as the registry"
+        );
+        // Unknown id returns None.
+        let unknown = lattice_core::ui::pane::PaneId(u32::MAX);
+        assert!(rs.virtual_rows.matrix_for_pane(unknown).is_none());
+    }
+
+    /// D.4.d.2.1.d: non-Document leaves are absent from
+    /// `virtual_rows.pane_matrices` (the publisher filters
+    /// them out of `cells.panes` upstream, so the lookup
+    /// derived from `panes` is automatically scoped to
+    /// Document panes only). Mirror of
+    /// `cells_pane_matrices_skip_non_document_leaves`.
+    #[test]
+    fn virtual_rows_pane_matrices_skip_non_document_leaves() {
+        use lattice_core::ui::pane::SplitOrientation;
+        use lattice_core::BufferKind;
+        let mut editor = Editor::default();
+        editor.pane_tree.split_active(SplitOrientation::Vertical);
+        let non_doc_pane_id = {
+            let leaves = editor.pane_tree.leaves_mut();
+            leaves[1].buffer = BufferKind::FileTree;
+            leaves[1].id
+        };
+        editor.publish_render_state();
+        let rs = editor.render_state.load_full();
+        assert_eq!(rs.virtual_rows.pane_matrices.len(), 1);
+        assert!(rs.virtual_rows.matrix_for_pane(non_doc_pane_id).is_none());
     }
 
     /// `publish_render_state` fires `cells_wake.notify_one()` —

@@ -580,6 +580,23 @@ impl Editor {
                 .map(|p| (p.pane_id, p.matrix.clone()))
                 .collect(),
         );
+        // D.4.d.2.1.d (2026-05-30): PaneId → virtual-rows
+        // matrix lookup, derived from the same `cells_panes`
+        // slice. Renderers will use
+        // `VirtualRowsRenderState::matrix_for_pane(pane_id)`
+        // to find a non-active pane's virtual-rows matrix
+        // without scanning. Mirror of `cells_pane_matrices`.
+        let virtual_rows_pane_matrices: std::sync::Arc<
+            std::collections::HashMap<
+                lattice_core::ui::pane::PaneId,
+                std::sync::Arc<arc_swap::ArcSwap<lattice_cells::VirtualRowMatrix>>,
+            >,
+        > = std::sync::Arc::new(
+            cells_panes
+                .iter()
+                .map(|p| (p.pane_id, p.virtual_rows_matrix.clone()))
+                .collect(),
+        );
         // Start from the empty `Default` snapshot, then override
         // each sub-state whose backing source has been wired up.
         // Slice 3a wires only `diagnostics`; Slice 3b/3c add
@@ -1094,10 +1111,13 @@ impl Editor {
             // emitted rows (no active diff overlay, no
             // multibuffer view, etc.). Renderer interleaves
             // virtual rows with document rows via
-            // `rs.virtual_rows.matrix`.
+            // `rs.virtual_rows.matrix` for the active pane;
+            // D.4.d.2.1.d adds `pane_matrices` so renderers
+            // can resolve a non-active pane's matrix by id.
             virtual_rows: std::sync::Arc::new(
                 crate::render_state::VirtualRowsRenderState {
                     matrix: self.virtual_rows_matrix_cell.load_full(),
+                    pane_matrices: virtual_rows_pane_matrices,
                 },
             ),
             ..RenderState::default()

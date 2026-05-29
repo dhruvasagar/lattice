@@ -1122,6 +1122,13 @@ impl Editor {
     /// the hot path; concurrent readers see either the previous
     /// snapshot or the new one with no torn observation.
     pub fn publish_render_state(&mut self) {
+        // D.4.a (2026-05-29): propagate scroll bindings before
+        // the render state snapshot so the snapshot reflects the
+        // bound panes' updated stashed scrolls. Idempotent —
+        // running every tick is cheap (typical N=0 groups; even
+        // an active 2-pane diff group is two indexed lookups
+        // plus one mapper call).
+        self.propagate_pane_group_scroll();
         let next = self.build_render_state();
         self.render_state.store(std::sync::Arc::new(next));
         // Phase 5.8.AF.5 / Slice X2: wake the highlights worker.
@@ -2588,6 +2595,172 @@ impl Editor {
             return;
         };
         self.cursor = lattice_protocol::position::Position::new(line, 0);
+    }
+
+    // =====================================================
+    // D.4.a (2026-05-29): pane-group substrate. See
+    // `docs/dev/architecture/pane-groups.md`. Membership is
+    // keyed on `(pane, buffer)` pairs; propagation reads
+    // each pane's *currently-displayed* buffer at dispatch
+    // tail and skips members whose buffer no longer matches
+    // their registration (suspended members resume when
+    // the user switches back).
+    // =====================================================
+
+    /// Register a new pane group. Returns `Err` with a brief
+    /// description if any new member's `(pane, buffer)` pair
+    /// already participates in an existing group's
+    /// currently-active member. Suspended memberships
+    /// (registered pairs where the pane has since switched
+    /// to a different buffer) are ignored by the conflict
+    /// check — they're inert until/unless the buffer returns.
+    pub fn add_pane_group(
+        &mut self,
+        members: Vec<crate::pane_group::PaneGroupMember>,
+        mapper: std::sync::Arc<dyn crate::pane_group::RowMapper>,
+    ) -> Result<lattice_core::ui::pane::PaneGroupId, String> {
+        // Reject duplicates inside the new group itself.
+        for (i, m) in members.iter().enumerate() {
+            if members[..i].contains(m) {
+                return Err(format!(
+                    "duplicate (pane={:?}, buffer={:?}) within group",
+                    m.pane, m.buffer
+                ));
+            }
+        }
+        // Reject conflict with an existing *active* member in
+        // another group. "Active" = the pane's current buffer
+        // equals the registered buffer.
+        for new_m in &members {
+            let current_buffer_for_pane = self
+                .pane_tree
+                .leaves()
+                .iter()
+                .find(|p| p.id == new_m.pane)
+                .map(|p| p.buffer_id);
+            if current_buffer_for_pane != Some(new_m.buffer) {
+                // Suspended-on-arrival membership: not in
+                // conflict with anyone (it's inert until the
+                // buffer matches). Skip the conflict check
+                // for this entry.
+                continue;
+            }
+            for g in &self.pane_groups {
+                if g.members.iter().any(|existing| existing == new_m) {
+                    return Err(format!(
+                        "(pane={:?}, buffer={:?}) already in group {:?}",
+                        new_m.pane, new_m.buffer, g.id
+                    ));
+                }
+            }
+        }
+        let group = crate::pane_group::PaneGroup::new(members, mapper);
+        let id = group.id;
+        self.pane_groups.push(group);
+        Ok(id)
+    }
+
+    /// Drop the group with the given id. No-op if not
+    /// registered. Subsystems call this on session teardown
+    /// (`:diffoff`, zen-mode exit, etc.).
+    pub fn drop_pane_group(&mut self, id: lattice_core::ui::pane::PaneGroupId) -> bool {
+        let before = self.pane_groups.len();
+        self.pane_groups.retain(|g| g.id != id);
+        self.pane_groups.len() != before
+    }
+
+    /// Remove a single `(pane, buffer)` member from a group.
+    /// If the group is left empty, the group itself is
+    /// dropped. Returns `true` if the member was removed.
+    pub fn remove_pane_group_member(
+        &mut self,
+        id: lattice_core::ui::pane::PaneGroupId,
+        member: crate::pane_group::PaneGroupMember,
+    ) -> bool {
+        let Some(group) = self.pane_groups.iter_mut().find(|g| g.id == id) else {
+            return false;
+        };
+        let before = group.members.len();
+        group.members.retain(|m| *m != member);
+        let removed = group.members.len() != before;
+        // Prune empty groups so propagation doesn't walk
+        // useless entries forever.
+        if group.members.is_empty() {
+            self.pane_groups.retain(|g| g.id != id);
+        }
+        removed
+    }
+
+    /// Propagate the active pane's scroll to every other
+    /// member of its group whose registered buffer still
+    /// matches its pane's current buffer. Called from
+    /// `publish_render_state` at the dispatch tail.
+    /// Idempotent — running every tick is safe and cheap.
+    pub fn propagate_pane_group_scroll(&mut self) {
+        if self.pane_groups.is_empty() {
+            return;
+        }
+        // Identify the active pane and its current buffer.
+        let active_idx = self.pane_tree.active_index();
+        let Some(active_leaf) = self.pane_tree.leaves().get(active_idx) else {
+            return;
+        };
+        let active_member = crate::pane_group::PaneGroupMember {
+            pane: active_leaf.id,
+            buffer: active_leaf.buffer_id,
+        };
+        let active_scroll = self.scroll;
+        // Walk groups looking for the one whose active
+        // member is the active pane+buffer pair.
+        // Collect propagation updates first, then apply —
+        // borrowing both `pane_groups` (immutable for the
+        // mapper) and `pane_tree.leaves_mut` (mutable for
+        // the write) simultaneously would not compile.
+        let mut updates: Vec<(lattice_core::ui::pane::PaneId, u32)> = Vec::new();
+        for group in &self.pane_groups {
+            let Some(from_idx) = group.index_of(active_member) else {
+                continue;
+            };
+            for (to_idx, member) in group.members.iter().enumerate() {
+                if to_idx == from_idx {
+                    continue;
+                }
+                // Buffer check: is the target pane still
+                // showing the buffer it was registered with?
+                let target_leaf = self
+                    .pane_tree
+                    .leaves()
+                    .iter()
+                    .find(|p| p.id == member.pane);
+                let Some(target_leaf) = target_leaf else {
+                    // Target pane no longer exists (closed).
+                    // The next tick's group-prune will clean
+                    // up; skip silently.
+                    continue;
+                };
+                if target_leaf.buffer_id != member.buffer {
+                    // Suspended — user has switched buffers
+                    // in this pane. Skip propagation; the
+                    // binding resumes on the tick where the
+                    // buffer is back.
+                    continue;
+                }
+                let mapped = group.mapper.map_row(from_idx, to_idx, active_scroll);
+                updates.push((member.pane, mapped));
+            }
+            // A pane belongs to at most one *active* group;
+            // once we propagate, no other group will match
+            // this active pair.
+            break;
+        }
+        if updates.is_empty() {
+            return;
+        }
+        for leaf in self.pane_tree.leaves_mut() {
+            if let Some((_, scroll)) = updates.iter().find(|(p, _)| *p == leaf.id) {
+                leaf.scroll = *scroll;
+            }
+        }
     }
 
     /// D.3.d.0 (2026-05-29): snapshot the active document's
@@ -22937,6 +23110,185 @@ mod tests {
                 .iter()
                 .all(|f| f.identity != Some(crate::diff_fold::hunk_fold_identity(0, 3))),
             "after drop_session, the hunk fold must be gone"
+        );
+    }
+
+    // ── D.4.a: PaneGroup registry + propagation ────────────
+
+    /// Add → drop round-trip. The id returned by
+    /// `add_pane_group` is the same one `drop_pane_group`
+    /// accepts; the second drop is a no-op.
+    #[test]
+    fn pane_group_add_and_drop_round_trip() {
+        use crate::pane_group::{IdentityRowMapper, PaneGroupMember};
+        let mut editor = Editor::default();
+        let active = editor
+            .pane_tree
+            .leaves()
+            .first()
+            .copied()
+            .expect("at least one pane");
+        let id = editor
+            .add_pane_group(
+                vec![PaneGroupMember {
+                    pane: active.id,
+                    buffer: active.buffer_id,
+                }],
+                std::sync::Arc::new(IdentityRowMapper),
+            )
+            .expect("registration ok");
+        assert_eq!(editor.pane_groups.len(), 1);
+        assert!(editor.drop_pane_group(id));
+        assert_eq!(editor.pane_groups.len(), 0);
+        assert!(
+            !editor.drop_pane_group(id),
+            "second drop is a no-op (returns false)"
+        );
+    }
+
+    /// Two groups can't both claim the same active
+    /// `(pane, buffer)` pair. The second registration errs.
+    #[test]
+    fn pane_group_rejects_duplicate_active_member() {
+        use crate::pane_group::{IdentityRowMapper, PaneGroupMember};
+        let mut editor = Editor::default();
+        let active = editor.pane_tree.leaves()[0];
+        let member = PaneGroupMember {
+            pane: active.id,
+            buffer: active.buffer_id,
+        };
+        editor
+            .add_pane_group(vec![member], std::sync::Arc::new(IdentityRowMapper))
+            .expect("first registration");
+        let err = editor
+            .add_pane_group(vec![member], std::sync::Arc::new(IdentityRowMapper))
+            .expect_err("second registration with same pair must fail");
+        assert!(err.contains("already in group"), "{err}");
+    }
+
+    /// Propagation: a 2-pane identity-mapper group, scroll
+    /// on the active pane writes the *same* scroll into the
+    /// other pane's stashed `PaneState.scroll`.
+    #[test]
+    fn pane_group_identity_propagation_2_pane() {
+        use crate::pane_group::{IdentityRowMapper, PaneGroupMember};
+        let mut editor = Editor::default();
+        // Split to get a second pane.
+        editor
+            .pane_tree
+            .split_active(lattice_core::ui::pane::SplitOrientation::Horizontal);
+        // After split, leaves()[0] is the original (still
+        // active by convention); leaves()[1] is the new one.
+        let active = editor.pane_tree.leaves()[0];
+        let other = editor.pane_tree.leaves()[1];
+        editor
+            .add_pane_group(
+                vec![
+                    PaneGroupMember {
+                        pane: active.id,
+                        buffer: active.buffer_id,
+                    },
+                    PaneGroupMember {
+                        pane: other.id,
+                        buffer: other.buffer_id,
+                    },
+                ],
+                std::sync::Arc::new(IdentityRowMapper),
+            )
+            .expect("registration");
+        // Set active pane's scroll and propagate.
+        editor.scroll = 42;
+        editor.propagate_pane_group_scroll();
+        let other_after = editor
+            .pane_tree
+            .leaves()
+            .iter()
+            .find(|p| p.id == other.id)
+            .expect("other pane present");
+        assert_eq!(other_after.scroll, 42, "identity mapper copies row");
+    }
+
+    /// Buffer-mismatch suspends propagation: register a
+    /// member, then switch the target pane's buffer to a
+    /// different one; propagation must skip that pane.
+    #[test]
+    fn pane_group_propagation_suspended_on_buffer_mismatch() {
+        use crate::pane_group::{IdentityRowMapper, PaneGroupMember};
+        let mut editor = Editor::default();
+        editor
+            .pane_tree
+            .split_active(lattice_core::ui::pane::SplitOrientation::Horizontal);
+        let active = editor.pane_tree.leaves()[0];
+        let other = editor.pane_tree.leaves()[1];
+        editor
+            .add_pane_group(
+                vec![
+                    PaneGroupMember {
+                        pane: active.id,
+                        buffer: active.buffer_id,
+                    },
+                    PaneGroupMember {
+                        pane: other.id,
+                        buffer: other.buffer_id,
+                    },
+                ],
+                std::sync::Arc::new(IdentityRowMapper),
+            )
+            .expect("registration");
+        // Mutate the other pane's buffer to a different one,
+        // mimicking `:bn`. Stash a known scroll first so we
+        // can prove it didn't change.
+        let stash_marker = 1_234u32;
+        editor
+            .pane_tree
+            .leaves_mut()
+            .iter_mut()
+            .find(|p| p.id == other.id)
+            .expect("other pane")
+            .scroll = stash_marker;
+        editor
+            .pane_tree
+            .leaves_mut()
+            .iter_mut()
+            .find(|p| p.id == other.id)
+            .expect("other pane")
+            .buffer_id = lattice_core::BufferId(99_999);
+
+        editor.scroll = 77;
+        editor.propagate_pane_group_scroll();
+
+        let other_after = editor
+            .pane_tree
+            .leaves()
+            .iter()
+            .find(|p| p.id == other.id)
+            .expect("other pane present");
+        assert_eq!(
+            other_after.scroll, stash_marker,
+            "buffer mismatch must suspend propagation — stashed scroll untouched"
+        );
+    }
+
+    /// `remove_pane_group_member` drops the empty group
+    /// once the last member is gone, so propagation isn't
+    /// walking a zombie entry forever.
+    #[test]
+    fn remove_pane_group_member_prunes_empty_group() {
+        use crate::pane_group::{IdentityRowMapper, PaneGroupMember};
+        let mut editor = Editor::default();
+        let active = editor.pane_tree.leaves()[0];
+        let m = PaneGroupMember {
+            pane: active.id,
+            buffer: active.buffer_id,
+        };
+        let id = editor
+            .add_pane_group(vec![m], std::sync::Arc::new(IdentityRowMapper))
+            .expect("registration");
+        assert!(editor.remove_pane_group_member(id, m));
+        assert_eq!(
+            editor.pane_groups.len(),
+            0,
+            "empty group must be pruned automatically"
         );
     }
 

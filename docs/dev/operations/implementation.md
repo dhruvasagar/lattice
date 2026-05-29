@@ -1891,9 +1891,45 @@ shared with multibuffer-views and post-v1 inlay hints.
     visual regression motivates an absolute ceiling — the
     headroom is large enough that bench-on-PR catches
     regressions. Closes D.3.f.
-- 🗒 **D.4** — Side-by-side two-way: `:diff`, `:diffthis`,
-  `:diffsplit`, `:diffoff`; pane-group scroll-binding with
-  hunk-correspondent row mapping.
+- 🚧 **D.4** — Side-by-side two-way: `:diffsplit`,
+  `:diffthis`, `:diffoff` extension; pane-group
+  scroll-binding with hunk-correspondent row mapping +
+  filler rows. Per-pane buffer mutability addressed by
+  buffer-pair keyed membership (see
+  [`pane-groups.md`](../architecture/pane-groups.md)).
+  Carve in [`slice-plans/pane-groups.md`](slice-plans/pane-groups.md).
+  - ✅ **D.4.a** (2026-05-29) — `PaneGroup` substrate
+    landed. New `PaneGroupId` in
+    `lattice-core::ui::pane`. New `lattice-host/src/pane_group.rs`
+    holds `PaneGroupMember { pane, buffer }`, the
+    `RowMapper` trait, `IdentityRowMapper`,
+    `OffsetRowMapper` (test stub kept in production code
+    for downstream-slice smoke tests), and `PaneGroup { id,
+    members, mapper }`. New `Editor::pane_groups: Vec<PaneGroup>`
+    field + `add_pane_group` / `drop_pane_group` /
+    `remove_pane_group_member` methods. Conflict check at
+    registration honours the buffer pair — duplicate active
+    members are rejected, suspended memberships (pane
+    showing a different buffer than registered) coexist
+    freely. `propagate_pane_group_scroll` invoked at the
+    `publish_render_state` tail: finds the group matching
+    `(active_pane.id, active_pane.buffer_id)`, walks other
+    members, writes `mapper.map_row(...)` into their
+    stashed `PaneState.scroll` *only when* the target
+    pane's current buffer still matches the registered
+    one (mismatch ⇒ skip; closed pane ⇒ skip). Empty
+    groups auto-prune on `remove_pane_group_member`. **9
+    tests** (4 in `pane_group`: identity mapper, offset
+    mapper saturation, unique ids, index_of by pair; 5
+    dispatch integration: add/drop round-trip, duplicate
+    rejection, 2-pane identity propagation, buffer-mismatch
+    suspension, prune-on-empty). 475 host + 1461 workspace
+    tests green.
+  - 🗒 **D.4.b** — `HunkRowMapper` (pure function of
+    `HunkIndex`).
+  - 🗒 **D.4.c** — Filler-row provider for hunk alignment.
+  - 🗒 **D.4.d** — `:diffsplit` / `:diffthis` ex-commands.
+  - 🗒 **D.4.e** — Bench `pane_group_scroll_p99_us`.
 - 🗒 **D.5** — Hunk transfer operators `do` / `dp` via
   `CommandRegistry`.
 - 🗒 **D.6** — Three-way merge: conflict regions, `:diffput

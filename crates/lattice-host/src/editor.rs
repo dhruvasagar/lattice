@@ -623,6 +623,16 @@ pub struct Editor {
     /// excerpt + file-boundary providers land in M.7 / M.8).
     /// See `docs/dev/architecture/fold-architecture.md`.
     pub fold_registry: crate::fold_provider::FoldRegistry,
+    /// D.4.a (2026-05-29): scroll-binding pane groups. Each
+    /// entry binds a set of `(pane, buffer)` pairs through a
+    /// pluggable `RowMapper`; propagation runs at
+    /// `publish_render_state` tail. Membership keyed on the
+    /// pair so buffer changes within a pane suspend the
+    /// binding automatically. Subsystems (diff D.4.d, future
+    /// `:set scrollbind`, zen mode, `:windo`) add/drop their
+    /// groups around lifecycle. See
+    /// `docs/dev/architecture/pane-groups.md`.
+    pub pane_groups: Vec<crate::pane_group::PaneGroup>,
     /// Picker source registry -- `:picker` source kinds.
     pub picker_registry: Arc<PickerRegistry>,
     /// Per-source MRU index that biases the picker's initial

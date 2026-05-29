@@ -42,6 +42,25 @@ impl PaneId {
     }
 }
 
+/// D.4.a (2026-05-29): process-monotonic id for a scroll-binding
+/// [`crate::ui::pane::PaneGroup`]-equivalent registry entry. The
+/// `PaneGroup` struct itself lives in `lattice-host` (the trait
+/// underneath it needs host-side state); the id is hoisted into
+/// `lattice-core` so `lattice-core`-level code can hold and pass
+/// the handle without depending on the host crate.
+///
+/// See `docs/dev/architecture/pane-groups.md`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct PaneGroupId(pub u32);
+
+impl PaneGroupId {
+    pub fn next() -> Self {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static NEXT: AtomicU32 = AtomicU32::new(1);
+        Self(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
 /// One leaf in the pane tree. Carries the per-pane viewport state
 /// for its content buffer; switching the active pane swaps these
 /// fields with `App::cursor` / `App::scroll` so motion code

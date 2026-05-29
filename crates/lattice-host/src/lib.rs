@@ -58,6 +58,12 @@ pub mod fold_provider;
 // See `docs/dev/architecture/fold-architecture.md` and
 // `docs/dev/architecture/diff-system.md` §6.5.
 pub mod diff_fold;
+// D.4.a (2026-05-29): pane-group substrate. `PaneGroup` is
+// a set of `(pane, buffer)` pairs that scroll together
+// under a pluggable `RowMapper`. The trait + registry
+// land in this slice; the `HunkRowMapper` consumer is
+// D.4.b. See `docs/dev/architecture/pane-groups.md`.
+pub mod pane_group;
 pub mod help;
 pub mod help_topics;
 pub mod highlights;

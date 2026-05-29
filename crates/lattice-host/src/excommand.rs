@@ -417,6 +417,7 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     ("diff", "ex:diff"),
     ("diffoff", "ex:diffoff"),
     ("diffthis", "ex:diffthis"),
+    ("diffsplit", "ex:diffsplit"),
     ("hunk-next", "ex:hunk-next"),
     ("hunk-prev", "ex:hunk-prev"),
     ("list-modes", "ex:list-modes"),

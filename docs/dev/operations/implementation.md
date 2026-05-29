@@ -2270,8 +2270,9 @@ shared with multibuffer-views and post-v1 inlay hints.
         `virtual_rows_pane_matrices_skip_non_document_leaves`).
         530 host tests green; workspace build green.
         Mirror of D.4.d.1.c.
-    - 🚧 **D.4.d.3** — `:diffthis` / `:diffsplit` /
-      `:diffoff[!]`. Carved into two sub-slices.
+    - ✅ **D.4.d.3** (2026-05-30) — `:diffthis` /
+      `:diffsplit` / `:diffoff[!]`. Carved into two
+      sub-slices (both ✅).
       - ✅ **D.4.d.3.a** (2026-05-30) —
         `:diffthis` state machine + two-pane session-
         open + session-as-source-of-truth `:diffoff`.
@@ -2339,9 +2340,39 @@ shared with multibuffer-views and post-v1 inlay hints.
         `diff_off_with_force_bang_is_v1_identical_to_no_bang`,
         `subsystem_lookup_session_for_resolves_secondary_to_primary`).
         538 host tests green; workspace build green.
-      - 🗒 **D.4.d.3.b** — `:diffsplit <file>`.
-        Composes vsplit + open-in-new-pane + the
-        `register_two_pane_diff` helper.
+      - ✅ **D.4.d.3.b** (2026-05-30) — `:diffsplit <file>`.
+        Composes vsplit + `:edit <path>` in the new
+        pane + the `register_two_pane_diff` helper that
+        backs `:diffthis` (D.4.d.3.a). New
+        `Effect::Diffsplit { path: PathBuf }`,
+        `:ex:diffsplit` spec with the new
+        `parse_required_path` parser (empty arg errors
+        at parse time), `apply_diffsplit` callback,
+        `("diffsplit", "ex:diffsplit")` alias, and the
+        `Effect::Diffsplit { .. }` arm threaded through
+        the effect-classifier match arms in
+        `lattice-host` / `lattice-ui-tui` /
+        `lattice-ui-gpui`.
+        New `Editor::do_diffsplit(path)`: gates the
+        active pane on Document kind + the active
+        buffer on "no existing diff session"; vsplits;
+        `set_active(new_idx)`; calls `do_edit(Some(path),
+        false)`; on success reads the now-active pane's
+        `(pane_id, buffer_id)` as `current` and calls
+        `register_two_pane_diff(baseline, current)`;
+        on open failure (`Failed` /
+        `Directory(_)` / `NoFileName`) closes the new
+        pane so the user isn't stranded in an empty
+        vsplit. Cursor lands in the new pane (vim
+        parity). **4 new tests** in `dispatch::tests`
+        (`diffsplit_rejects_non_document_active_pane`,
+        `diffsplit_rejects_when_active_buffer_has_session`,
+        `diffsplit_opens_and_registers_two_pane_session`
+        — happy path via `Editor::boot` + a temp file,
+        `diffsplit_rolls_back_split_on_open_failure`).
+        Closes D.4.d.3; D.4.e (bench) is the only
+        remaining D.4 slice. 542 host tests green;
+        workspace build green.
   - 🗒 **D.4.e** — Bench `pane_group_scroll_p99_us`.
 - 🗒 **D.5** — Hunk transfer operators `do` / `dp` via
   `CommandRegistry`.

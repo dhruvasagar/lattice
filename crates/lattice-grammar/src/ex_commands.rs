@@ -77,6 +77,10 @@ pub struct ExBuiltins {
     /// pane for a two-pane diff; the second invocation in a
     /// different pane completes the session.
     pub diff_this: ExCommandId,
+    /// D.4.d.3.b (2026-05-30): `:diffsplit <file>` — open
+    /// `<file>` in a new vsplit and register a two-pane diff
+    /// between the current pane and the new pane.
+    pub diff_split: ExCommandId,
     /// D.3.c (2026-05-29): `:hunk-next` / `]c` — jump to next
     /// diff hunk on the current side.
     pub hunk_next: ExCommandId,
@@ -918,6 +922,30 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             parse_args: Box::new(parse_no_args),
             apply: Box::new(|_| Ok(Effect::Diffthis)),
             args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let diff_split = registry.register_ex_command(
+        "ex:diffsplit",
+        "Open `<file>` in a new vertical split and register a \
+         two-pane diff between the current pane and the new \
+         pane (`:diffsplit <file>`). Composes a vsplit with \
+         `:edit <file>` in the new pane plus the same two-pane \
+         setup `:diffthis` performs. Path is required. D.4.d.3.b.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_required_path),
+            apply: Box::new(apply_diffsplit),
+            args_schema: vec![ArgSpec {
+                name: "path",
+                kind: ArgKind::String,
+                doc: "File path to load into the new split pane.",
+                prompt: "path:",
+                default: ArgDefault::Required,
+                completion: Some("gen:files"),
+            }],
             surface_form: SurfaceForm::Keyword,
         },
     );
@@ -1785,6 +1813,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         diff_open,
         diff_off,
         diff_this,
+        diff_split,
         hunk_next,
         hunk_prev,
         list_modes,
@@ -1848,6 +1877,35 @@ fn parse_optional_path(rest: &str, _bang: bool) -> GrammarResult<Args> {
     } else {
         Ok(Args::String(trimmed.to_string()))
     }
+}
+
+/// D.4.d.3.b: required-path parser for `:diffsplit <file>`.
+/// Empty argument errors at parse time so the user gets a
+/// clear `expected path` message instead of falling into
+/// the apply path with a confusing `Args::None`.
+fn parse_required_path(rest: &str, _bang: bool) -> GrammarResult<Args> {
+    let trimmed = rest.trim();
+    if trimmed.is_empty() {
+        Err(CommandError::BadArgs(
+            "expected file path (`:diffsplit <file>`)".into(),
+        ))
+    } else {
+        Ok(Args::String(trimmed.to_string()))
+    }
+}
+
+/// D.4.d.3.b: apply callback for `:diffsplit <file>` —
+/// pulls the path out of the parser's `Args::String`.
+fn apply_diffsplit(ctx: &ExCommandContext) -> GrammarResult<Effect> {
+    let path = match &ctx.args {
+        Args::String(s) => std::path::PathBuf::from(s),
+        _ => {
+            return Err(CommandError::BadArgs(
+                "expected file path (`:diffsplit <file>`)".into(),
+            ));
+        }
+    };
+    Ok(Effect::Diffsplit { path })
 }
 
 /// `:tabmove [N]` parser (issue #29 slice 3). Optional

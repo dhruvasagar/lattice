@@ -2318,6 +2318,17 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             // pane errors out — v1 is two-way only.
             editor.do_diffthis();
         }
+        Effect::Diffsplit { path } => {
+            // D.4.d.3.b: `:diffsplit <file>` — open `<file>`
+            // in a new vertical split and immediately
+            // register a two-pane diff between the current
+            // pane (baseline) and the new pane (current).
+            // Composes vsplit + `:edit <path>` in the new
+            // pane + the `register_two_pane_diff` helper
+            // that backs `:diffthis`. Cursor lands in the
+            // new pane (vim parity).
+            editor.do_diffsplit(path);
+        }
         Effect::NextHunk => {
             // D.3.c: `]c` — jump cursor to next hunk start
             // on the current side. Wraps to top.
@@ -3186,6 +3197,128 @@ impl Editor {
         std::sync::Arc::clone(&self.diff_subsystem).note_buffer_edited(primary);
 
         Ok(())
+    }
+
+    /// D.4.d.3.b (2026-05-30): `:diffsplit <file>` — open
+    /// `<file>` in a new vertical split and immediately
+    /// register a two-pane diff between the current pane
+    /// (baseline) and the new pane (current). Composes the
+    /// existing `do_split_pane` / `set_active` / `do_edit`
+    /// primitives with `register_two_pane_diff` from
+    /// D.4.d.3.a.
+    ///
+    /// Cursor lands in the new pane (vim parity). On
+    /// failure to open `<file>`, the new pane is closed
+    /// and the user is returned to the original pane —
+    /// otherwise the user would be stranded in an empty
+    /// vsplit holding the active doc.
+    ///
+    /// Errors:
+    /// - Active pane is not a Document leaf →
+    ///   "diffsplit: active pane is not a document".
+    /// - Active buffer already has a diff session →
+    ///   "diffsplit: buffer N already has an active diff
+    ///   session; use :diffoff first".
+    /// - `do_edit` returns `Failed` / `Directory(_)` /
+    ///   `NoFileName` → the new pane is closed; the
+    ///   user keeps the existing error message
+    ///   surfaced by `do_edit`.
+    /// - `register_two_pane_diff` returns Err (e.g. pane
+    ///   already in another active group) → reported via
+    ///   `set_message`; the new pane stays open with
+    ///   `<file>` loaded (the user can `:diffoff` or
+    ///   `<C-w>q` from there).
+    pub fn do_diffsplit(&mut self, path: std::path::PathBuf) {
+        use lattice_core::ui::pane::SplitOrientation;
+
+        // Gate 1: active pane must be a Document leaf.
+        let active_leaf = self.pane_tree.active();
+        if !matches!(active_leaf.buffer, lattice_core::BufferKind::Document) {
+            self.set_message(
+                EchoLevel::Error,
+                "diffsplit: active pane is not a document",
+            );
+            return;
+        }
+        let baseline = crate::pane_group::PaneGroupMember {
+            pane: active_leaf.id,
+            buffer: active_leaf.buffer_id,
+        };
+
+        // Gate 2: active buffer must not already have a diff
+        // session — defence-in-depth so the user gets a clear
+        // error before any split / open work happens.
+        if self
+            .diff_subsystem
+            .lookup_session_for(baseline.buffer)
+            .is_some()
+        {
+            self.set_message(
+                EchoLevel::Error,
+                format!(
+                    "diffsplit: buffer {} already has an active diff session; \
+                     use :diffoff first",
+                    baseline.buffer.0
+                ),
+            );
+            return;
+        }
+
+        // Open the vertical split. `split_active` keeps the
+        // original pane active and returns the new leaf's
+        // index. We then switch active to the new leaf so
+        // `do_edit` (which operates on the active pane)
+        // loads `<file>` there.
+        let new_idx = self.pane_tree.split_active(SplitOrientation::Vertical);
+        self.pane_tree.set_active(new_idx);
+
+        // Load `<file>` into the new (now active) pane.
+        let outcome = self.do_edit(Some(path), false);
+        match outcome {
+            DoEditOutcome::Opened(_)
+            | DoEditOutcome::Activated(_)
+            | DoEditOutcome::Reloaded(_) => {
+                // Fall through to session setup.
+            }
+            DoEditOutcome::Failed
+            | DoEditOutcome::Directory(_)
+            | DoEditOutcome::NoFileName => {
+                // `do_edit` already surfaced an error; close
+                // the new pane so we don't leave the user
+                // stranded in an empty vsplit. `close_active`
+                // restores active to the sibling (= original
+                // pane).
+                self.pane_tree.close_active();
+                return;
+            }
+        }
+
+        // Read the new pane's id + the just-loaded buffer's
+        // id from the live tree. `do_edit` may have reused
+        // an existing buffer (`Activated`) or opened a fresh
+        // one (`Opened`); either way the active leaf now
+        // reflects the right pair.
+        let new_leaf = self.pane_tree.active();
+        let current = crate::pane_group::PaneGroupMember {
+            pane: new_leaf.id,
+            buffer: new_leaf.buffer_id,
+        };
+
+        // Register the two-pane diff. Baseline = the
+        // original pane; current = the newly-split pane
+        // (which holds the just-loaded file). Mirror of
+        // the `:diffthis` completion path.
+        if let Err(msg) = self.register_two_pane_diff(baseline, current) {
+            self.set_message(EchoLevel::Error, format!("diffsplit: {msg}"));
+            return;
+        }
+        self.set_message(
+            EchoLevel::Info,
+            format!(
+                "diffsplit: opened (baseline buffer {} ↔ current buffer {})",
+                baseline.buffer.0, current.buffer.0
+            ),
+        );
     }
 
     /// Surface a one-line message in the echo area. Replaces the
@@ -21892,6 +22025,7 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::DiffOpen
         | Effect::DiffOff { .. }
         | Effect::Diffthis
+        | Effect::Diffsplit { .. }
         | Effect::NextHunk
         | Effect::PrevHunk
         | Effect::ListModes
@@ -21982,6 +22116,7 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::DiffOpen
         | Effect::DiffOff { .. }
         | Effect::Diffthis
+        | Effect::Diffsplit { .. }
         | Effect::NextHunk
         | Effect::PrevHunk
         | Effect::ListModes
@@ -24295,5 +24430,176 @@ mod tests {
         sub.drop_session(primary);
         assert!(sub.lookup_session_for(primary).is_none());
         assert!(sub.lookup_session_for(secondary).is_none());
+    }
+
+    // ── D.4.d.3.b: :diffsplit <file> ──────────────────────────
+
+    /// Write `contents` to a uniquely-named temp file and
+    /// return the path. Caller is responsible for deletion
+    /// (drop the returned `TempFilePath` to remove it).
+    struct TempFilePath(std::path::PathBuf);
+    impl Drop for TempFilePath {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    fn write_temp(contents: &str, tag: &str) -> TempFilePath {
+        let mut path = std::env::temp_dir();
+        // Cargo test nameserver: pid + tag keeps tests
+        // running in parallel from colliding.
+        path.push(format!(
+            "lattice-diffsplit-{}-{}-{}.tmp",
+            std::process::id(),
+            tag,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0),
+        ));
+        std::fs::write(&path, contents).expect("write temp file");
+        TempFilePath(path)
+    }
+
+    /// `:diffsplit` rejects a non-Document active pane up-
+    /// front — no split happens. Mirrors `diffthis_rejects_*`.
+    #[test]
+    fn diffsplit_rejects_non_document_active_pane() {
+        let mut editor = crate::editor::Editor::default();
+        editor.pane_tree.leaves_mut()[0].buffer =
+            lattice_core::BufferKind::FileTree;
+        let pane_count_before = editor.pane_tree.leaves().len();
+
+        editor.do_diffsplit(std::path::PathBuf::from("/dev/null"));
+
+        let msg = editor.last_message.as_ref().expect("error msg");
+        assert!(
+            msg.text.contains("not a document"),
+            "expected reject message, got: {}",
+            msg.text
+        );
+        assert_eq!(
+            editor.pane_tree.leaves().len(),
+            pane_count_before,
+            "no split should happen on the reject path"
+        );
+    }
+
+    /// `:diffsplit` rejects when the active buffer already
+    /// participates in a session. Mirrors
+    /// `diffthis_rejects_when_active_buffer_has_session`.
+    #[test]
+    fn diffsplit_rejects_when_active_buffer_has_session() {
+        let mut editor = crate::editor::Editor::default();
+        let active_buffer = editor.pane_tree.active().buffer_id;
+        editor
+            .diff_subsystem
+            .register(active_buffer, lattice_diff::DiffAlgorithm::Histogram);
+        let pane_count_before = editor.pane_tree.leaves().len();
+
+        editor.do_diffsplit(std::path::PathBuf::from("/dev/null"));
+
+        let msg = editor.last_message.as_ref().expect("error msg");
+        assert!(
+            msg.text.contains("already has an active diff session"),
+            "expected reject message, got: {}",
+            msg.text
+        );
+        assert_eq!(
+            editor.pane_tree.leaves().len(),
+            pane_count_before,
+            "no split should happen on the reject path"
+        );
+    }
+
+    /// Happy path: `:diffsplit <existing-file>` vsplits the
+    /// pane, loads the file in the new pane, and registers a
+    /// two-pane diff between the two leaves. Session, pane
+    /// group, and both filler providers are in place at the
+    /// end.
+    ///
+    /// Uses `Editor::boot` (not `Editor::default()`) because
+    /// `do_edit`'s happy path consults the options cascade
+    /// (`expandtab`, `tabstop`, …) which `default()` doesn't
+    /// register. `#[tokio::test]` because boot + the
+    /// completion path (`register_two_pane_diff` →
+    /// `note_buffer_edited`) both arm tokio tasks.
+    #[tokio::test]
+    async fn diffsplit_opens_and_registers_two_pane_session() {
+        let file = write_temp("baseline\ncontent\n", "happy");
+        let document = lattice_core::Document::empty();
+        let mut editor = crate::editor::Editor::boot(document);
+        let baseline_buffer = editor.document_buffer_id;
+
+        editor.do_diffsplit(file.0.clone());
+
+        // Two panes now: baseline + the newly-loaded file.
+        assert_eq!(
+            editor.pane_tree.leaves().len(),
+            2,
+            "vsplit must produce two panes on the happy path"
+        );
+        // The new pane (active after diffsplit per vim
+        // parity) carries the loaded buffer.
+        let current_buffer = editor.pane_tree.active().buffer_id;
+        assert_ne!(
+            current_buffer, baseline_buffer,
+            "the new pane must show a different buffer"
+        );
+        // Session is registered keyed on the current side's
+        // buffer, with the pane group bound.
+        let session = editor
+            .diff_subsystem
+            .lookup(current_buffer)
+            .expect("session registered under the new buffer");
+        assert!(session.pane_group_id().is_some());
+        // Either side resolves through the indirection map.
+        assert!(editor
+            .diff_subsystem
+            .lookup_session_for(baseline_buffer)
+            .is_some());
+        // Per-side filler providers registered scoped per
+        // buffer (D.4.d.2.1.a).
+        assert_eq!(
+            editor
+                .virtual_row_providers
+                .snapshot(baseline_buffer)
+                .len(),
+            1
+        );
+        assert_eq!(
+            editor.virtual_row_providers.snapshot(current_buffer).len(),
+            1
+        );
+    }
+
+    /// `:diffsplit <nonexistent-file>` fails inside `do_edit`
+    /// and rolls the vsplit back, so the user isn't stranded
+    /// in an empty pane. No session, no pane group.
+    #[tokio::test]
+    async fn diffsplit_rolls_back_split_on_open_failure() {
+        let mut editor = crate::editor::Editor::default();
+        let pane_count_before = editor.pane_tree.leaves().len();
+
+        // Path that points at a directory — `do_edit` returns
+        // `Directory(_)` which our handler routes to the
+        // rollback branch. Cheaper than synthesising a path
+        // guaranteed not to exist (which is racy across CI
+        // environments).
+        let bogus = std::env::temp_dir();
+        editor.do_diffsplit(bogus);
+
+        assert_eq!(
+            editor.pane_tree.leaves().len(),
+            pane_count_before,
+            "failed open must collapse the new vsplit"
+        );
+        assert!(
+            editor.diff_subsystem.is_empty(),
+            "no session should be registered on the failure path"
+        );
+        assert!(
+            editor.pane_groups.is_empty(),
+            "no pane group should be registered on the failure path"
+        );
     }
 }

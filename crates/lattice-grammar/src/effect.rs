@@ -473,6 +473,17 @@ pub enum Effect {
     /// errors out — v1 is two-way only; multi-way arrives
     /// with D.6 three-way merge. D.4.d.3.a.
     Diffthis,
+    /// `:diffsplit <file>` -- open `<file>` in a new vertical
+    /// split and immediately register a two-pane diff between
+    /// the current pane (baseline) and the new pane (current).
+    /// Composes vsplit + `:edit <file>` in the new pane +
+    /// the `register_two_pane_diff` helper that backs
+    /// `:diffthis`. Path is required; empty arg errors at
+    /// parse time. The cursor lands in the new pane (vim
+    /// parity). D.4.d.3.b.
+    Diffsplit {
+        path: std::path::PathBuf,
+    },
     /// `]c` / `:hunk-next` -- jump cursor to the start of the
     /// next diff hunk on the current side (`ranges[1]`).
     /// Wraps to top. D.3.c.

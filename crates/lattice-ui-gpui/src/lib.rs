@@ -987,6 +987,7 @@ impl GpuiApp {
             | Effect::DiffOpen
             | Effect::DiffOff { .. }
             | Effect::Diffthis
+            | Effect::Diffsplit { .. }
             | Effect::NextHunk
             | Effect::PrevHunk
             | Effect::BufferNext

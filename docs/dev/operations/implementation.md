@@ -1571,6 +1571,33 @@ shared with multibuffer-views and post-v1 inlay hints.
     diff session" when there isn't one. **431 tests green**
     (2 new D.3.a.1: scratch-buffer error path,
     no-session-noop path).
+  - ✅ **D.3.b.1.gpui** (2026-05-29) — GPUI mirror of the TUI
+    interleaver. New `EditorElement::virtual_rows: Arc<VirtualRowMatrix>`
+    field; `window.rs paint_pane` snapshots
+    `rs_guard.virtual_rows.matrix`. `GutterLineMeta` gains
+    `is_virtual: bool`; `format_gutter_text` returns a fully
+    blank-padded string for virtual rows so column alignment
+    stays the same. `virtual_rows_at_gpui` helper mirrors
+    TUI's; `push_virtual_row` shapes the cells via
+    `text_system().shape_line` and pushes placeholder entries
+    into every parallel per-row array (`shaped_text`,
+    `shaped_gutter`, `row_meta` with sentinel
+    `line_idx = u32::MAX`, empty `inlay_offsets`, empty
+    `diag_segs`, single `(0, content_width, 0x3c_00_00)`
+    backdrop in `overlay_quads_per_row`). The prepaint
+    gutter-driven walk interleaves Above-anchored rows →
+    doc row → Below-anchored rows for each visible doc
+    line. New `doc_to_shaped_row_local: Vec<u32>` tracks
+    the shaped-text row index of each gutter entry; the
+    cursor-row computation remaps through it so cursor
+    positioning stays correct when virtual rows shift
+    doc-row positions in shaped-text space. Sentinel
+    `line_idx = u32::MAX` makes the cells-fast-path lookup
+    in `paint` return `None`, falling through to
+    `ShapedLine::paint` which renders the virtual row's
+    shaped content over the backdrop quad. Existing GPUI
+    test fixtures updated to populate `is_virtual: false`.
+    25 lattice-ui-gpui tests + 1461 workspace tests green.
   - ✅ **D.3.b.1** (2026-05-29) — Virtual-row interleaver
     wired to TUI renderer. Closes the rendering gap Dhruva
     flagged during visual testing: `DiffOverlayRefreshTask`

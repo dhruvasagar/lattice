@@ -119,6 +119,14 @@ pub(crate) struct GutterLineMeta {
     /// caller (`window.rs paint_pane`) from
     /// `rs.diff.sign_map.sign_at(line_idx)`.
     pub(crate) diff_sign: Option<(char, u32)>,
+    /// D.3.b.1.gpui (2026-05-29): marks this row as a virtual
+    /// row (deletion block from `DiffOverlayVirtualRowProvider`,
+    /// or future multibuffer excerpt header). `format_gutter_text`
+    /// returns a blank-padded string for virtual rows so the
+    /// gutter column stays aligned but shows nothing — the
+    /// row's red backdrop quad + content text are the visible
+    /// surface.
+    pub(crate) is_virtual: bool,
 }
 
 /// Active-pane cursor state. `None` on inactive panes.
@@ -246,6 +254,13 @@ pub(crate) struct EditorElement {
     /// paint — doc_highlight).
     pub(crate) worker_static_overlay_quads:
         Option<std::sync::Arc<lattice_host::render_state::StaticOverlayQuads>>,
+    /// D.3.b.1.gpui (2026-05-29): published `VirtualRowMatrix`
+    /// snapshot. Cloned at construction time from
+    /// `rs.virtual_rows.matrix`. The prepaint walk consults
+    /// the matrix per visible doc line to interleave Above-
+    /// and Below-anchored virtual rows (deletion blocks today,
+    /// multibuffer headers in future) into the row stream.
+    pub(crate) virtual_rows: std::sync::Arc<lattice_cells::VirtualRowMatrix>,
     /// D.3.e (2026-05-29): per-visible-row diff line-tint
     /// colour. `Some(rgb)` when a hunk's current side touches
     /// this row (Add → faint green, Change → faint yellow);
@@ -494,6 +509,12 @@ impl Element for EditorElement {
             Vec::with_capacity(row_capacity);
         let mut overlay_quads_per_row: Vec<Vec<(u32, u32, u32)>> =
             Vec::with_capacity(row_capacity);
+        // D.3.b.1.gpui (2026-05-29): for each entry in
+        // `self.gutter`, the shaped_text row index of the
+        // corresponding doc row after virtual-row interleaving.
+        // Cursor lookup remaps through this Vec.
+        let mut doc_to_shaped_row_local: Vec<u32> =
+            Vec::with_capacity(self.gutter.len());
 
         // Slice X3.full.4: precompute per-line inlay-hint lists,
         // sorted by byte offset, so the per-row shaping loop just
@@ -886,12 +907,45 @@ impl Element for EditorElement {
             // Gutter-driven walk: caller already pre-filtered the
             // visible rows (skipping folded lines) and built the
             // gutter metadata; the text rows mirror that filter.
+            //
+            // D.3.b.1.gpui (2026-05-29): around each visible doc
+            // row, interleave Above- and Below-anchored virtual
+            // rows from `self.virtual_rows`. The interleaver
+            // tracks the shaped_text row index for each gutter
+            // entry via `doc_to_shaped_row_local` so the cursor
+            // lookup below remaps from doc-row index (position
+            // in self.gutter) to shaped_text row.
             for meta in &self.gutter {
                 let line_idx = meta.line_idx as usize;
                 let rel = line_idx.saturating_sub(self.scroll as usize);
                 // 2026-05-26: raw_lines indexed by visible-row
                 // offset (see fallback branch above).
                 let line = raw_lines.get(rel).copied().unwrap_or("");
+                // D.3.b.1.gpui: emit Above-anchored virtual rows
+                // for this doc line first.
+                for vrow in virtual_rows_at_gpui(
+                    &self.virtual_rows,
+                    meta.line_idx,
+                    lattice_cells::AnchorPosition::Above,
+                ) {
+                    push_virtual_row(
+                        vrow,
+                        self.gutter_width,
+                        &font,
+                        font_size,
+                        self.theme.foreground,
+                        window,
+                        &mut shaped_text,
+                        &mut shaped_gutter,
+                        &mut row_meta,
+                        &mut inlay_offsets_per_row,
+                        &mut diagnostic_segments_per_row,
+                        &mut overlay_quads_per_row,
+                    );
+                }
+                // Record the shaped_text row index of this
+                // doc row for the cursor remap below.
+                doc_to_shaped_row_local.push(shaped_text.len() as u32);
                 // S4.3: cells → legacy fallback. Gutter-driven
                 // walk already pre-filters folded lines, so
                 // `row_at_source_line` is asked only about
@@ -931,6 +985,29 @@ impl Element for EditorElement {
                     None,
                 );
                 shaped_gutter.push(shaped_g);
+
+                // D.3.b.1.gpui: emit Below-anchored virtual
+                // rows after the doc row.
+                for vrow in virtual_rows_at_gpui(
+                    &self.virtual_rows,
+                    meta.line_idx,
+                    lattice_cells::AnchorPosition::Below,
+                ) {
+                    push_virtual_row(
+                        vrow,
+                        self.gutter_width,
+                        &font,
+                        font_size,
+                        self.theme.foreground,
+                        window,
+                        &mut shaped_text,
+                        &mut shaped_gutter,
+                        &mut row_meta,
+                        &mut inlay_offsets_per_row,
+                        &mut diagnostic_segments_per_row,
+                        &mut overlay_quads_per_row,
+                    );
+                }
             }
         }
 
@@ -951,10 +1028,15 @@ impl Element for EditorElement {
                         None
                     }
                 } else {
+                    // D.3.b.1.gpui: position in self.gutter
+                    // gives the doc-row index; remap through
+                    // doc_to_shaped_row_local to the shaped_text
+                    // row index (which includes interleaved
+                    // virtual rows).
                     self.gutter
                         .iter()
                         .position(|m| m.line_idx == c.line)
-                        .map(|r| r as u32)
+                        .and_then(|p| doc_to_shaped_row_local.get(p).copied())
                 };
                 match row_in_viewport {
                     None => (None, None),
@@ -1425,7 +1507,108 @@ const FOLD_MARKER_GLYPH: char = '►';
 /// Format a gutter row's text content: 1 char fold marker + 1
 /// char severity sign + N-char right-aligned line number + 1
 /// space. Total width = `2 + gutter_width + 1`.
+/// D.3.b.1.gpui (2026-05-29): iterate `VirtualRowMatrix` rows
+/// anchored at `line` with the given `position`. Mirrors the
+/// TUI helper of the same name.
+fn virtual_rows_at_gpui<'a>(
+    matrix: &'a lattice_cells::VirtualRowMatrix,
+    line: u32,
+    position: lattice_cells::AnchorPosition,
+) -> impl Iterator<Item = &'a lattice_cells::VirtualRow> + 'a {
+    let start = matrix.first_row_at_or_after(line) as usize;
+    matrix.rows[start..]
+        .iter()
+        .take_while(move |r| r.anchor_line == line)
+        .filter(move |r| r.position == position)
+}
+
+/// D.3.b.1.gpui (2026-05-29): shape a virtual row's content
+/// and push it + placeholder entries into every parallel
+/// per-row array so the row participates in the paint pass.
+/// The gutter renders as fully blank (alignment placeholder);
+/// the body's deletion-block backdrop is added as a
+/// full-row overlay quad. Uses sentinel `line_idx = u32::MAX`
+/// in `row_meta` so the cells-fast-path lookup in `paint`
+/// returns `None` and falls back to `ShapedLine::paint`.
+#[allow(clippy::too_many_arguments)]
+fn push_virtual_row(
+    vrow: &lattice_cells::VirtualRow,
+    gutter_width: usize,
+    font: &gpui::Font,
+    font_size: Pixels,
+    body_color: u32,
+    window: &mut Window,
+    shaped_text: &mut Vec<ShapedLine>,
+    shaped_gutter: &mut Vec<ShapedLine>,
+    row_meta: &mut Vec<(u32, String)>,
+    inlay_offsets_per_row: &mut Vec<Vec<(u32, u32)>>,
+    diagnostic_segments_per_row: &mut Vec<Vec<(u32, u32, u32)>>,
+    overlay_quads_per_row: &mut Vec<Vec<(u32, u32, u32)>>,
+) {
+    // Body text: convert cells → string; ShapedLine needs at
+    // least one char so empty cells get a single space.
+    let mut content = String::with_capacity(vrow.cells.len());
+    for cell in vrow.cells.iter() {
+        if let Some(ch) = char::from_u32(cell.codepoint) {
+            content.push(ch);
+        }
+    }
+    if content.is_empty() {
+        content.push(' ');
+    }
+    let body_run = TextRun {
+        len: content.len(),
+        font: font.clone(),
+        color: rgb(body_color).into(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let content_cols = content.chars().count() as u32;
+    let shaped_body = window.text_system().shape_line(
+        SharedString::from(content),
+        font_size,
+        &[body_run],
+        None,
+    );
+    // Gutter: fully blank-padded to match
+    // `format_gutter_text`'s virtual-row width.
+    let blank_gutter: String = " ".repeat(gutter_width + 4);
+    let gutter_run = TextRun {
+        len: blank_gutter.len(),
+        font: font.clone(),
+        color: rgb(GUTTER_NORMAL_COLOR).into(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let shaped_g = window.text_system().shape_line(
+        SharedString::from(blank_gutter),
+        font_size,
+        &[gutter_run],
+        None,
+    );
+    // Deletion-block backdrop: full-row quad in the body
+    // column. Painted first in `overlay_quads_per_row` so
+    // subsequent paints (none, for virtual rows) layer over.
+    let backdrop_width = content_cols.max(1);
+    let backdrop = (0u32, backdrop_width, 0x3c_00_00u32);
+    shaped_text.push(shaped_body);
+    shaped_gutter.push(shaped_g);
+    row_meta.push((u32::MAX, String::new()));
+    inlay_offsets_per_row.push(Vec::new());
+    diagnostic_segments_per_row.push(Vec::new());
+    overlay_quads_per_row.push(vec![backdrop]);
+}
+
 fn format_gutter_text(meta: &GutterLineMeta, gutter_width: usize) -> String {
+    if meta.is_virtual {
+        // D.3.b.1.gpui: virtual rows render a fully-blank
+        // gutter so the column stays the same width as
+        // document rows. Total width = 1 (fold) + 1 (sev) +
+        // 1 (diff) + gutter_width + 1 (trail) = gutter_width + 4.
+        return " ".repeat(gutter_width + 4);
+    }
     let fold = if meta.fold_start {
         FOLD_MARKER_GLYPH
     } else {
@@ -1582,6 +1765,7 @@ mod tests {
             fold_start: false,
             severity: None,
             diff_sign: None,
+            is_virtual: false,
         };
         // fold + sev + diff + "  1" + trail = "     1 " (7 chars).
         assert_eq!(format_gutter_text(&meta, 3), "     1 ");
@@ -1594,6 +1778,7 @@ mod tests {
             fold_start: true,
             severity: None,
             diff_sign: None,
+            is_virtual: false,
         };
         // ► + ' ' + ' ' + " 42" + ' ' = "►   42 " (7 chars).
         assert_eq!(format_gutter_text(&meta, 3), "►   42 ");
@@ -1618,6 +1803,7 @@ mod tests {
             fold_start: false,
             severity: None,
             diff_sign: Some(('+', 0x33aa33)),
+            is_virtual: false,
         };
         // D.3.d.2: ' ' (fold) + ' ' (sev) + '+' (diff) + "10" + ' ' (trail) = "  +10 ".
         assert_eq!(format_gutter_text(&meta, 2), "  +10 ");

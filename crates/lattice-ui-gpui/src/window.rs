@@ -1217,6 +1217,7 @@ impl EditorView {
                     fold_start,
                     severity,
                     diff_sign,
+                    is_virtual: false,
                 }
             })
             .collect();
@@ -1545,6 +1546,11 @@ impl EditorView {
                 None
             },
             diff_tint_per_row,
+            // D.3.b.1.gpui (2026-05-29): snapshot the virtual-
+            // row matrix from RenderState — the prepaint walk
+            // interleaves Above- and Below-anchored virtual
+            // rows around each visible doc line.
+            virtual_rows: rs_guard.virtual_rows.matrix.clone(),
             scroll: pane_scroll,
             viewport_height,
             gutter: gutter_meta,

@@ -2774,6 +2774,13 @@ fn draw_inactive_document(
         // matches editor convention (Helix-style adjacent
         // columns alongside severity).
         let diff_sign_cell = render_diff_sign_cell(&view, buf_line);
+        // D.3.e: line tint on inactive panes too — keeps
+        // cross-pane reads consistent when both panes show
+        // the active document.
+        let body = match diff_tint_bg(&view, buf_line) {
+            Some(bg) => apply_diff_tint(body, bg),
+            None => body,
+        };
         lines.push(combine_prefixed(
             vec![
                 Span::styled(" ".to_string(), TuiStyle::default()),
@@ -3792,6 +3799,17 @@ fn compose_visible_lines_inner(
         // occupy adjacent dedicated columns so the two
         // decoration types don't compete (Helix-style).
         let diff_sign_cell = render_diff_sign_cell(view, line_idx);
+        // D.3.e: line-background tint. Applied AFTER all other
+        // body overlays (whitespace decoration, hlsearch,
+        // visual selection, etc.) — the tint sits BEHIND the
+        // already-styled content, so we layer bg last and
+        // preserve every fg / modifier the upstream overlays
+        // set. Conditional on the active-document sign map;
+        // no-session / no-hunk-on-line → no allocation.
+        let body = match diff_tint_bg(view, line_idx) {
+            Some(bg) => apply_diff_tint(body, bg),
+            None => body,
+        };
         out.push(combine_prefixed(
             vec![severity_cell, diff_sign_cell],
             gutter,
@@ -4217,6 +4235,49 @@ const DIAG_GUTTER_WIDTH: u32 = 1;
 /// D.3.e will route them through the theme's `DiffAdd` /
 /// `DiffChange` / `DiffRemove` entries.
 const DIFF_SIGN_GUTTER_WIDTH: u32 = 1;
+
+/// D.3.e (2026-05-29): line background tint colour for
+/// `line_idx`, if any. Reuses the same `DiffSignMap` data
+/// path as `render_diff_sign_cell` — one classification
+/// source for both decorations. Returns `None` when no
+/// session, no hunk on this row, or the hunk is `Remove`
+/// (which has no current-side row to tint; the deletion
+/// block from D.3.b is the visible surface for removes).
+///
+/// Tint colours are intentionally dim — the tint sits BEHIND
+/// source text, and a saturated background would crush
+/// foreground colours. Hardcoded for v1; future theme
+/// integration routes through `DiffAdd` / `DiffChange` /
+/// `DiffRemove` theme entries (deferred to the theme
+/// expansion slice).
+fn diff_tint_bg(view: &FrameView<'_>, line_idx: u32) -> Option<Color> {
+    use lattice_host::diff_overlay::DiffSignKind;
+    let rs = view.app.render_state.load();
+    match rs.diff.sign_map.sign_at(line_idx)? {
+        DiffSignKind::Add => Some(Color::Rgb(0, 50, 0)),
+        DiffSignKind::Change => Some(Color::Rgb(50, 50, 0)),
+        // Remove hunks have no current-side row to tint;
+        // D.3.b's deletion block is the visible surface.
+        DiffSignKind::Remove => None,
+    }
+}
+
+/// D.3.e: layer a background tint over every span in
+/// `spans`, preserving each span's foreground colour and
+/// modifiers. Used to apply diff-line backgrounds on top of
+/// syntax-highlighted source content.
+fn apply_diff_tint(
+    spans: Vec<Span<'static>>,
+    bg: Color,
+) -> Vec<Span<'static>> {
+    spans
+        .into_iter()
+        .map(|s| {
+            let new_style = s.style.bg(bg);
+            Span::styled(s.content.into_owned(), new_style)
+        })
+        .collect()
+}
 
 /// D.3.d.1: render the diff-sign cell for `line_idx`.
 /// Returns one `Span` — the sign character + colour when a

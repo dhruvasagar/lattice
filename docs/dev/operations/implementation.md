@@ -1696,9 +1696,33 @@ shared with multibuffer-views and post-v1 inlay hints.
       verifies placement. Text-based glyphs (`+` / `~` /
       `-`) for parity with TUI; sprite atlas (§5.6.7)
       variant is a follow-on if/when GPUI demands it.
-  - 🗒 **D.3.e** — Line background tints. `DiffAdd`,
-    `DiffChange`, `DiffRemove` theme entries applied to cell
-    backgrounds on the current side.
+  - ✅ **D.3.e** (2026-05-29) — Line background tints. Reuses
+    the `DiffSignMap` data layer from D.3.d.0 — same per-line
+    classification source for signs and tints. **TUI**: new
+    `diff_tint_bg(view, line_idx)` returns `Color::Rgb(0,50,0)`
+    for Add lines, `Color::Rgb(50,50,0)` for Change lines,
+    `None` for Remove (no current-side row to tint — the
+    D.3.b deletion block is the visible surface). New
+    `apply_diff_tint(spans, bg)` layers the bg over every
+    body span, preserving each span's fg + modifiers so
+    syntax highlighting still reads. Applied AFTER all other
+    body overlays (whitespace, hlsearch, visual selection,
+    diagnostics underline) so the tint sits BEHIND
+    everything. Both active and inactive panes tint
+    consistently. **GPUI**: new
+    `EditorElement::diff_tint_per_row: Vec<Option<u32>>`
+    field; pre-resolved in `window.rs paint_pane` parallel to
+    `gutter_meta` so `rel_row` indexes both arrays. Tints
+    paint as full-row quads pushed FIRST into
+    `overlay_quads_per_row` — every cursor / search /
+    selection overlay paints over them. Width = source-char
+    count + inlay-virtual-text width; zero-width rows get a
+    1-column tint so the backdrop stays visible on empty
+    lines. Hardcoded colours (`0x00_32_00` Add,
+    `0x32_32_00` Change) for v1; theme routing via `DiffAdd`
+    / `DiffChange` / `DiffRemove` entries is a follow-on
+    once the theme expansion slice lands. **1461 workspace
+    tests green.**
   - 🗒 **D.3.f** — Hunk fold provider. `HunkFoldProvider`
     registers one fold range per hunk's current-side range
     (`ranges[1]`) into the existing fold registry. **No new

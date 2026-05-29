@@ -246,6 +246,18 @@ pub(crate) struct EditorElement {
     /// paint — doc_highlight).
     pub(crate) worker_static_overlay_quads:
         Option<std::sync::Arc<lattice_host::render_state::StaticOverlayQuads>>,
+    /// D.3.e (2026-05-29): per-visible-row diff line-tint
+    /// colour. `Some(rgb)` when a hunk's current side touches
+    /// this row (Add → faint green, Change → faint yellow);
+    /// `None` otherwise. Pre-resolved by the caller
+    /// (`window.rs paint_pane`) from `rs.diff.sign_map.sign_at`
+    /// for each visible buffer line, in the same order as
+    /// `gutter` so `rel_row` indexes both arrays. Tints paint
+    /// as full-row quads at the BOTTOM of `overlay_quads_per_row`
+    /// — every cursor / search / selection overlay paints
+    /// over them, so they read as a backdrop rather than
+    /// competing with foreground emphasis.
+    pub(crate) diff_tint_per_row: Vec<Option<u32>>,
     /// Background colour for the cursor line
     /// (`host_theme.cursor_line_bg` resolved by the caller, fallback
     /// Catppuccin surface0).
@@ -626,6 +638,7 @@ impl Element for EditorElement {
                 lattice_host::render_state::OverlayLayer::Substitute => 0xf38ba8,
             }
         };
+        let diff_tint_per_row = &self.diff_tint_per_row;
         let overlay_quads_for_row =
             |line_idx: u32,
              rel_row: usize,
@@ -633,6 +646,23 @@ impl Element for EditorElement {
              inlay_offsets: &[(u32, u32)]|
              -> Vec<(u32, u32, u32)> {
                 let mut quads: Vec<(u32, u32, u32)> = Vec::new();
+                // D.3.e: full-row diff tint, painted FIRST so
+                // every cursor / selection / search overlay
+                // composites OVER it. Width is the line's
+                // total combined columns (source chars +
+                // inlay-virtual-text chars). Zero-width rows
+                // (empty lines) get a 1-column tint so the
+                // backdrop is still visible.
+                if let Some(&Some(tint_color)) =
+                    diff_tint_per_row.get(rel_row)
+                {
+                    let source_cols = line_text.chars().count() as u32;
+                    let inlay_cols: u32 =
+                        inlay_offsets.iter().map(|(_, w)| *w).sum();
+                    let total_cols = source_cols + inlay_cols;
+                    let width = total_cols.max(1);
+                    quads.push((0, width, tint_color));
+                }
                 if is_active {
                     // Worker bucket carries doc_highlight + all_matches +
                     // substitute already in combined-column space.

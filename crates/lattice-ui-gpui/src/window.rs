@@ -1221,6 +1221,26 @@ impl EditorView {
             })
             .collect();
 
+        // D.3.e (2026-05-29): per-visible-row diff tint. Same
+        // sign-map source as `diff_sign` above — Add → faint
+        // dark green, Change → faint dark yellow, Remove → no
+        // current-side row to tint (deletion block is the
+        // visual surface). Order parallels `gutter_meta` so
+        // `rel_row` indexes both arrays.
+        let diff_tint_per_row: Vec<Option<u32>> = (visible_start..visible_end)
+            .filter(|line_idx| !fold_index.line_inside_closed_fold(*line_idx as u32))
+            .map(|line_idx| {
+                rs.diff.sign_map.sign_at(line_idx as u32).and_then(|kind| {
+                    use lattice_host::diff_overlay::DiffSignKind;
+                    match kind {
+                        DiffSignKind::Add => Some(0x00_32_00),
+                        DiffSignKind::Change => Some(0x32_32_00),
+                        DiffSignKind::Remove => None,
+                    }
+                })
+            })
+            .collect();
+
         // Active-pane cursor state. `None` on inactive panes so the
         // element doesn't paint a cursor marker there.
         //
@@ -1524,6 +1544,7 @@ impl EditorView {
             } else {
                 None
             },
+            diff_tint_per_row,
             scroll: pane_scroll,
             viewport_height,
             gutter: gutter_meta,

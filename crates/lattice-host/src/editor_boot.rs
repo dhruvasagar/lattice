@@ -661,6 +661,25 @@ impl Editor {
         let cells_wake = crate::editor::CellsWake::default();
         let cells_matrix_cell: std::sync::Arc<arc_swap::ArcSwap<lattice_cells::CellMatrix>> =
             std::sync::Arc::default();
+        // D.4.d.0 (2026-05-29): per-document cells-matrix
+        // registry. Seed with the initial document's matrix
+        // sharing the same Arc identity as
+        // `cells_matrix_cell` so the existing worker write
+        // path and renderer read path stay coherent.
+        // Subsequent buffer switches insert their own
+        // entries lazily via `Editor::cells_matrix_for`.
+        let cells_matrices: std::sync::Arc<
+            std::sync::Mutex<
+                std::collections::HashMap<
+                    lattice_core::BufferId,
+                    std::sync::Arc<arc_swap::ArcSwap<lattice_cells::CellMatrix>>,
+                >,
+            >,
+        > = {
+            let mut map = std::collections::HashMap::new();
+            map.insert(document_buffer_id, cells_matrix_cell.clone());
+            std::sync::Arc::new(std::sync::Mutex::new(map))
+        };
         runtime_handle.spawn(crate::cells_worker::run(
             render_state_arc.clone(),
             cells_wake.clone(),
@@ -822,6 +841,7 @@ impl Editor {
             // same one `render_state.cells.matrix` points at.
             cells_wake,
             cells_matrix_cell,
+            cells_matrices,
             // D.0a.1 (2026-05-29): the worker's three Arcs +
             // wake match the cells pattern — same identities
             // here as the `runtime_handle.spawn(...)` above.

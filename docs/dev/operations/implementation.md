@@ -1991,7 +1991,30 @@ shared with multibuffer-views and post-v1 inlay hints.
     simultaneously, the worker needs per-document
     matrices. That upgrade lands in D.4.d alongside the
     `:diffsplit` wiring.
-  - 🗒 **D.4.d** — `:diffsplit` / `:diffthis` ex-commands.
+  - 🚧 **D.4.d** — `:diffsplit` / `:diffthis` ex-commands.
+    Carved into four sub-slices to keep blast radius
+    bounded:
+    - ✅ **D.4.d.0** (2026-05-29) — Per-document cells-
+      matrix registry surface. New
+      `Editor::cells_matrices:
+      Arc<Mutex<HashMap<BufferId,
+      Arc<ArcSwap<CellMatrix>>>>>` field; boot seeds the
+      active document's entry **sharing its Arc identity**
+      with `Editor::cells_matrix_cell` so the existing
+      single-writer hot path (cells_worker → field →
+      `RenderState.cells.matrix`) stays bit-identical. New
+      `Editor::cells_matrix_for(buffer_id)` is the single
+      port into the registry: lazy-inserts an empty cell
+      on first ask, idempotent on repeat asks, distinct
+      buffers get distinct cells. No worker iteration yet;
+      D.4.d.1 makes the worker rebuild per visible buffer.
+      **2 tests** in `dispatch::tests` (active-doc Arc-
+      identity invariant; lazy-insert + idempotent +
+      distinct-per-buffer). 503 host tests green.
+    - 🗒 **D.4.d.1** — Cells worker iterates registry.
+    - 🗒 **D.4.d.2** — Same surface for virtual rows.
+    - 🗒 **D.4.d.3** — `:diffsplit` / `:diffthis` + vim-
+      parity `:diffoff`.
   - 🗒 **D.4.e** — Bench `pane_group_scroll_p99_us`.
 - 🗒 **D.5** — Hunk transfer operators `do` / `dp` via
   `CommandRegistry`.

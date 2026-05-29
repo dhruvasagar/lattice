@@ -23337,4 +23337,57 @@ mod tests {
             "closed-state must survive the republish (identity match → carry-over)"
         );
     }
+
+    // ── D.4.d.0: cells_matrices registry ────────────────────
+
+    /// The active-document entry in the registry shares its
+    /// `Arc` identity with `Editor::cells_matrix_cell`. The
+    /// boot path seeds it; `cells_matrix_for` reads it back.
+    /// Failing this means the worker / renderer Arc-identity
+    /// invariant has been broken and the existing single-
+    /// document write path stops landing on the field.
+    #[test]
+    fn cells_matrix_for_active_doc_shares_field_arc() {
+        let document = lattice_core::Document::empty();
+        let editor = crate::editor::Editor::boot(document);
+        let bid = editor.document_buffer_id;
+        let registry_cell = editor.cells_matrix_for(bid);
+        assert!(
+            std::sync::Arc::ptr_eq(&registry_cell, &editor.cells_matrix_cell),
+            "active-doc registry entry must share Arc identity \
+             with `cells_matrix_cell` (boot-seeded invariant)"
+        );
+    }
+
+    /// First ask for a fresh buffer mints a new
+    /// `Arc<ArcSwap<CellMatrix>>`; second ask returns the
+    /// same `Arc` identity. Distinct buffers get distinct
+    /// cells. Idempotency is the contract callers rely on:
+    /// renderer + worker both reach the same cell for the
+    /// same buffer regardless of who asked first.
+    #[test]
+    fn cells_matrix_for_new_buffer_inserts_then_reuses() {
+        let document = lattice_core::Document::empty();
+        let editor = crate::editor::Editor::boot(document);
+        let foreign = lattice_core::BufferId::next();
+        assert_ne!(foreign, editor.document_buffer_id);
+
+        let first = editor.cells_matrix_for(foreign);
+        let second = editor.cells_matrix_for(foreign);
+        assert!(
+            std::sync::Arc::ptr_eq(&first, &second),
+            "repeat asks for the same buffer must return the same Arc"
+        );
+        assert!(
+            !std::sync::Arc::ptr_eq(&first, &editor.cells_matrix_cell),
+            "foreign-buffer cell must be distinct from the active-doc cell"
+        );
+
+        let other = lattice_core::BufferId::next();
+        let other_cell = editor.cells_matrix_for(other);
+        assert!(
+            !std::sync::Arc::ptr_eq(&first, &other_cell),
+            "different buffers must get distinct cells"
+        );
+    }
 }

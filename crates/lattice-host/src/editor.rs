@@ -1060,6 +1060,38 @@ pub struct Editor {
     /// worker lands.
     pub cells_matrix_cell:
         std::sync::Arc<arc_swap::ArcSwap<lattice_cells::CellMatrix>>,
+    /// D.4.d.0 (2026-05-29): per-document cells-matrix
+    /// registry. Each visible buffer gets its own
+    /// `Arc<ArcSwap<CellMatrix>>` so the cells worker can
+    /// rebuild per buffer, and the renderer can pull the
+    /// matrix matching each pane's buffer at paint time
+    /// (load-bearing for side-by-side diff — D.4 — where
+    /// two panes show different buffers simultaneously).
+    ///
+    /// The active-document entry is stored under
+    /// `document_buffer_id` and **shares its Arc identity
+    /// with [`Self::cells_matrix_cell`]** so the existing
+    /// hot path (cells_worker writing through the field,
+    /// renderer reading through `RenderState.cells.matrix`)
+    /// stays bit-identical until the worker iteration
+    /// upgrade lands in D.4.d.1.
+    ///
+    /// Inserts are lazy via
+    /// [`Self::cells_matrix_for`] — a buffer's entry shows
+    /// up the first time anything asks for its matrix.
+    /// Pruning of stale entries is deferred until the
+    /// worker actually consumes the registry; for now,
+    /// entries accumulate without harm because
+    /// [`arc_swap::ArcSwap`] over an empty `CellMatrix` is
+    /// a cheap idle resource.
+    pub cells_matrices: std::sync::Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<
+                lattice_core::BufferId,
+                std::sync::Arc<arc_swap::ArcSwap<lattice_cells::CellMatrix>>,
+            >,
+        >,
+    >,
     /// D.2.d (2026-05-29): diff subsystem instance. Holds the
     /// per-buffer `DiffSession` registry, the routing inverse
     /// index, and the per-session lazy debouncer. Reads through
@@ -1298,5 +1330,31 @@ impl Editor {
         let mode = self.mode_registry.get(major_id)?;
         let runner_id = mode.invocation_runner()?;
         self.invocation_runners.get(&runner_id).copied()
+    }
+
+    /// D.4.d.0 (2026-05-29): lazy port into the per-document
+    /// [`Self::cells_matrices`] registry. Returns the matrix
+    /// cell for `buffer_id`, inserting an empty
+    /// `Arc<ArcSwap<CellMatrix>>` on first ask.
+    ///
+    /// Idempotent: every call for the same `buffer_id`
+    /// returns the same `Arc` identity so renderer reads and
+    /// worker writes stay coherent.
+    ///
+    /// The active document's entry is seeded at boot to
+    /// share its `Arc` with [`Self::cells_matrix_cell`], so
+    /// callers that resolve the active doc through either
+    /// surface land on the same cell.
+    pub fn cells_matrix_for(
+        &self,
+        buffer_id: lattice_core::BufferId,
+    ) -> std::sync::Arc<arc_swap::ArcSwap<lattice_cells::CellMatrix>> {
+        let mut map = self
+            .cells_matrices
+            .lock()
+            .expect("cells_matrices mutex poisoned");
+        map.entry(buffer_id)
+            .or_insert_with(std::sync::Arc::default)
+            .clone()
     }
 }

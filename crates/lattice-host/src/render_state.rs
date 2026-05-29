@@ -962,6 +962,21 @@ pub struct PaneCellsInputs {
     /// entries share Arc identity with
     /// [`CellsRenderState::matrix`].
     pub matrix: Arc<arc_swap::ArcSwap<lattice_cells::CellMatrix>>,
+    /// D.4.d.2.1.b (2026-05-29): per-pane virtual-rows matrix
+    /// output cell. Cloned from
+    /// `Editor::virtual_rows_matrix_for(buffer_id)` so the
+    /// virtual-rows worker (D.4.d.2.1.c) can write via
+    /// `cell.store(...)` and have the writes visible
+    /// through every later `render_state.load_full()`.
+    /// Active-pane entries share Arc identity with
+    /// [`crate::editor::Editor::virtual_rows_matrix_cell`]
+    /// (boot-seeded invariant from D.4.d.2.0) so the
+    /// existing single-document read path through
+    /// [`VirtualRowsRenderState::matrix`] keeps landing on
+    /// the worker's writes for the active pane until
+    /// D.4.d.2.1.d switches the renderer to a per-pane
+    /// lookup.
+    pub virtual_rows_matrix: Arc<arc_swap::ArcSwap<lattice_cells::VirtualRowMatrix>>,
     /// Aggregate version for this pane's inputs. Worker
     /// compares against `matrix.load().version` to
     /// short-circuit cache hits per pane.
@@ -2718,6 +2733,67 @@ mod tests {
             assert!(
                 std::sync::Arc::ptr_eq(&entry.matrix, &shared_cell),
                 "panes showing the same buffer must share the registry's matrix Arc"
+            );
+        }
+    }
+
+    // ---- D.4.d.2.1.b (virtual_rows_matrix on PaneCellsInputs) ----
+
+    /// D.4.d.2.1.b: the publish path attaches a per-buffer
+    /// `virtual_rows_matrix` cell to each `PaneCellsInputs` so
+    /// D.4.d.2.1.c's worker iteration can write through
+    /// `pane.virtual_rows_matrix.store(...)`. Single-pane
+    /// invariant: the entry's cell resolves through the same
+    /// registry port (`virtual_rows_matrix_for`) the
+    /// renderer-side lookup (D.4.d.2.1.d) will read.
+    ///
+    /// `Editor::default()` doesn't seed the registry (boot
+    /// does), so we assert the registry-port equality here —
+    /// not the boot-seeded Arc-identity against
+    /// `virtual_rows_matrix_cell`, which the D.4.d.2.0
+    /// `virtual_rows_matrix_for_active_doc_shares_field_arc`
+    /// test in `dispatch::tests` already covers via
+    /// `Editor::boot`.
+    #[test]
+    fn cells_panes_carry_virtual_rows_matrix_for_single_document_pane() {
+        let mut editor = Editor::default();
+        editor.publish_render_state();
+        let rs = editor.render_state.load_full();
+        assert_eq!(rs.cells.panes.len(), 1);
+        let entry = &rs.cells.panes[0];
+        let registry_cell = editor.virtual_rows_matrix_for(entry.buffer_id);
+        assert!(
+            std::sync::Arc::ptr_eq(&entry.virtual_rows_matrix, &registry_cell),
+            "panes entry virtual_rows_matrix must come from the \
+             registry's `virtual_rows_matrix_for` port"
+        );
+    }
+
+    /// D.4.d.2.1.b: a vsplit produces two Document leaves; both
+    /// surface with the same `virtual_rows_matrix` Arc because
+    /// they share `buffer_id` (the registry hands out one cell
+    /// per buffer, not per pane — same contract as the cells
+    /// side). When `:diffsplit` lands (D.4.d.3), the second
+    /// leaf will point at a different buffer and the two
+    /// `virtual_rows_matrix` Arcs will diverge — that case is
+    /// already covered by the D.4.d.2.0 distinct-buffers test;
+    /// here we lock the same-buffer-shares-cell invariant the
+    /// worker iteration in D.4.d.2.1.c will rely on.
+    #[test]
+    fn cells_panes_share_virtual_rows_matrix_when_buffers_match() {
+        use lattice_core::ui::pane::SplitOrientation;
+        let mut editor = Editor::default();
+        editor.pane_tree.split_active(SplitOrientation::Vertical);
+        editor.publish_render_state();
+        let rs = editor.render_state.load_full();
+        assert_eq!(rs.cells.panes.len(), 2, "two Document leaves expected");
+        let shared_cell = editor.virtual_rows_matrix_for(editor.document_buffer_id);
+        for entry in rs.cells.panes.iter() {
+            assert_eq!(entry.buffer_id, editor.document_buffer_id);
+            assert!(
+                std::sync::Arc::ptr_eq(&entry.virtual_rows_matrix, &shared_cell),
+                "panes showing the same buffer must share the \
+                 registry's virtual_rows_matrix Arc"
             );
         }
     }

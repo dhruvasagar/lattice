@@ -2167,13 +2167,44 @@ shared with multibuffer-views and post-v1 inlay hints.
         `registry_unregister_only_affects_its_buffer`,
         `recompute_only_polls_active_doc_providers`).
         521 host tests green; workspace build green.
-      - 🗒 **D.4.d.2.1.b** —
-        `virtual_rows_worker::recompute` iterates
-        `rs.cells.panes`, writes per-buffer matrices via
-        the registry. Per-buffer fingerprint cache.
+      - ✅ **D.4.d.2.1.b** (2026-05-29) — Per-pane
+        virtual-rows matrix on `PaneCellsInputs`. New
+        field `virtual_rows_matrix:
+        Arc<ArcSwap<VirtualRowMatrix>>` populated at
+        publish in `build_cells_panes` (dispatch.rs)
+        from `self.virtual_rows_matrix_for(buffer_id)`.
+        Active-pane entry shares Arc identity with
+        `Editor::virtual_rows_matrix_cell` (D.4.d.2.0
+        boot seed), preserving the existing renderer
+        read path through `RenderState.virtual_rows.matrix`
+        until D.4.d.2.1.d swaps in a per-pane lookup.
+        Two panes of the same buffer share the same
+        `virtual_rows_matrix` Arc — the registry hands
+        out one cell per buffer, not per pane, mirroring
+        the cells side. No worker change yet:
+        D.4.d.2.1.c switches `virtual_rows_worker` to
+        iterate `rs.cells.panes` and write via
+        `pane.virtual_rows_matrix.store(...)`. Five
+        non-test PaneCellsInputs construction sites
+        updated (production publish + 4 test/bench
+        constructors); they slot in
+        `ArcSwap::from_pointee(VirtualRowMatrix::empty())`
+        defaults. **2 new tests** in `render_state::tests`
+        mirroring the D.4.d.1.a pattern
+        (`cells_panes_carry_virtual_rows_matrix_for_single_document_pane`,
+        `cells_panes_share_virtual_rows_matrix_when_buffers_match`).
+        523 host tests green; workspace build green.
+        Mirror of D.4.d.1.a.
       - 🗒 **D.4.d.2.1.c** —
+        `virtual_rows_worker::recompute` iterates
+        `rs.cells.panes`, writes via
+        `pane.virtual_rows_matrix.store(...)`. Per-
+        buffer fingerprint cache. Drops `matrix_cell`
+        parameter from `run`. Mirror of D.4.d.1.b.
+      - 🗒 **D.4.d.2.1.d** —
         `VirtualRowsRenderState::pane_matrices` +
-        `matrix_for_pane(pane_id)` lookup.
+        `matrix_for_pane(pane_id)` lookup. Mirror of
+        D.4.d.1.c.
     - 🗒 **D.4.d.3** — `:diffsplit` / `:diffthis` + vim-
       parity `:diffoff`.
   - 🗒 **D.4.e** — Bench `pane_group_scroll_p99_us`.

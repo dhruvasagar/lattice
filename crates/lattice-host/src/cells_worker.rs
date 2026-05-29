@@ -1139,6 +1139,9 @@ mod tests {
             pane_id: lattice_core::ui::pane::PaneId::default(),
             buffer_id: lattice_core::BufferId::default(),
             matrix: matrix_cell.clone(),
+            virtual_rows_matrix: Arc::new(ArcSwap::from_pointee(
+                lattice_cells::VirtualRowMatrix::empty(),
+            )),
             version,
             snapshot: snapshot.clone(),
             syntax_handle: syntax_handle.clone(),
@@ -2640,6 +2643,9 @@ mod tests {
                     pane_id: lattice_core::ui::pane::PaneId::default(),
                     buffer_id: lattice_core::BufferId::default(),
                     matrix: matrix_cell.clone(),
+                    virtual_rows_matrix: Arc::new(ArcSwap::from_pointee(
+                        lattice_cells::VirtualRowMatrix::empty(),
+                    )),
                     version: v,
                     snapshot: Some(snap.clone()),
                     syntax_handle: None,
@@ -2779,6 +2785,9 @@ mod tests {
                 pane_id: lattice_core::ui::pane::PaneId::default(),
                 buffer_id: lattice_core::BufferId::default(),
                 matrix: matrix_cell.clone(),
+                virtual_rows_matrix: Arc::new(ArcSwap::from_pointee(
+                    lattice_cells::VirtualRowMatrix::empty(),
+                )),
                 version: v,
                 snapshot: Some(snap.clone()),
                 syntax_handle: None,
@@ -2861,6 +2870,9 @@ mod tests {
             pane_id: lattice_core::ui::pane::PaneId::default(),
             buffer_id: lattice_core::BufferId::default(),
             matrix,
+            virtual_rows_matrix: Arc::new(ArcSwap::from_pointee(
+                lattice_cells::VirtualRowMatrix::empty(),
+            )),
             version,
             snapshot,
             syntax_handle: None,

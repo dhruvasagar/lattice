@@ -44,7 +44,7 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 
-use lattice_cells::{CellMatrix, EditDelta, MatrixVersion};
+use lattice_cells::{CellMatrix, EditDelta, MatrixVersion, VirtualRowMatrix};
 use lattice_host::cells_worker::recompute;
 use lattice_host::cells_worker::WhitespaceConfig;
 use lattice_host::render_state::{
@@ -98,6 +98,7 @@ fn rs_for(
         pane_id: PaneId::default(),
         buffer_id: BufferId::default(),
         matrix: matrix_cell.clone(),
+        virtual_rows_matrix: Arc::new(ArcSwap::from_pointee(VirtualRowMatrix::empty())),
         version,
         snapshot: Some(snapshot.clone()),
         syntax_handle: None,

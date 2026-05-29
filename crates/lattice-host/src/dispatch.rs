@@ -7491,6 +7491,13 @@ impl Editor {
                 pane_id: leaf.id,
                 buffer_id,
                 matrix: self.cells_matrix_for(buffer_id),
+                // D.4.d.2.1.b (2026-05-29): pre-attach the
+                // per-buffer virtual-rows cell at publish time.
+                // Active-pane entry shares Arc identity with
+                // `Editor::virtual_rows_matrix_cell` (D.4.d.2.0
+                // boot seed). D.4.d.2.1.c switches the virtual-
+                // rows worker to write via `pane.virtual_rows_matrix`.
+                virtual_rows_matrix: self.virtual_rows_matrix_for(buffer_id),
                 version,
                 snapshot,
                 syntax_handle,

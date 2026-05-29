@@ -3129,6 +3129,28 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
 /// async path held the supervisor mutex) is gone. Multiple
 /// servers are joined with `+` (`[lsp:rust+typos]`); the §5.4
 /// multi-server merge model means more than one is legitimate.
+/// D.3.g (2026-05-29): modeline diff-mode indicator. Returns
+/// `[diff: N hunks]` when the active document has an open
+/// `DiffSession`, empty string otherwise. The baseline
+/// descriptor (on-disk path / git ref / sibling buffer) isn't
+/// surfaced here in v1 — the hunk count is the load-bearing
+/// signal that diff mode is active; a future D.3.h headerline
+/// carries the verbose baseline label. `0 hunks` still shows
+/// (the session is open but the buffer happens to match
+/// baseline) so the user has a clear "diff is on" signal even
+/// when no changes are visible yet.
+fn active_diff_segment(app: &App) -> String {
+    let rs = app.render_state.load();
+    let Some(n) = rs.diff.active_session_hunk_count else {
+        return String::new();
+    };
+    match n {
+        0 => "[diff: 0 hunks]".to_string(),
+        1 => "[diff: 1 hunk]".to_string(),
+        n => format!("[diff: {n} hunks]"),
+    }
+}
+
 fn active_lsp_segment(app: &App) -> String {
     // M.5.6: hide the modeline LSP segment when `lsp-mode` is
     // off. The supervisor may still hold attachments (other
@@ -3273,8 +3295,17 @@ fn draw_mode_line(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnaps
     let lang = Lang::detect_from_path(snap.path()).label();
     let mode_label = app.modal_label();
     let lsp_segment = active_lsp_segment(app);
+    let diff_segment = active_diff_segment(app);
 
-    let left = format!("[{mode_label}] {dirty} {path}");
+    let left = if diff_segment.is_empty() {
+        format!("[{mode_label}] {dirty} {path}")
+    } else {
+        // D.3.g (2026-05-29): diff-mode indicator sits between
+        // the mode label and the path so it's adjacent to the
+        // modal-state badge — Vim's `:set statusline` puts
+        // `[diff]` similarly close to the mode flag.
+        format!("[{mode_label}] {diff_segment} {dirty} {path}")
+    };
     let right = if lsp_segment.is_empty() {
         format!("{pos}  {lang}")
     } else {

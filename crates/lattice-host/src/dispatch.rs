@@ -1027,6 +1027,14 @@ impl Editor {
                 sign_map: self
                     .diff_signs_for_active()
                     .unwrap_or_default(),
+                // D.3.g (2026-05-29): expose hunk count so the
+                // modeline diff segment can render
+                // `[diff: N hunks]` without holding an Editor
+                // reference.
+                active_session_hunk_count: self
+                    .diff_subsystem
+                    .lookup(self.document_buffer_id)
+                    .map(|s| s.current_hunks().len()),
             }),
             // D.3.b.1 (2026-05-29): snapshot the published
             // virtual-row matrix. Empty when no provider has

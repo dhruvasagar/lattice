@@ -186,6 +186,14 @@ pub struct VirtualRowsRenderState {
 #[derive(Clone, Debug, Default)]
 pub struct DiffRenderState {
     pub sign_map: Arc<crate::diff_overlay::DiffSignMap>,
+    /// D.3.g (2026-05-29): hunk count for the active
+    /// document's `DiffSession`, if any. `None` means no
+    /// session is open for the active buffer. `Some(0)` means
+    /// a session is open but the buffer currently matches
+    /// baseline (no hunks). The modeline diff-mode indicator
+    /// reads this to render `[diff: N hunks]` only when a
+    /// session is active.
+    pub active_session_hunk_count: Option<usize>,
 }
 
 /// Active buffer's hot-path render-side projection.

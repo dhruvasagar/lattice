@@ -68,9 +68,15 @@ pub struct ExBuiltins {
     /// D.3.a.1 (2026-05-29): `:diff` (no args) — open an
     /// inline diff session against on-disk baseline.
     pub diff_open: ExCommandId,
-    /// D.3.a.1 (2026-05-29): `:diffoff` — close the active
-    /// document's diff session.
+    /// D.3.a.1 (2026-05-29): `:diffoff[!]` — close the active
+    /// pane's diff session. D.4.d.3.a (2026-05-30) added the
+    /// bang form (forward-compat for D.6 three-way merge; v1
+    /// behaviour is identical to the no-bang form).
     pub diff_off: ExCommandId,
+    /// D.4.d.3.a (2026-05-30): `:diffthis` — stage the active
+    /// pane for a two-pane diff; the second invocation in a
+    /// different pane completes the session.
+    pub diff_this: ExCommandId,
     /// D.3.c (2026-05-29): `:hunk-next` / `]c` — jump to next
     /// diff hunk on the current side.
     pub hunk_next: ExCommandId,
@@ -877,14 +883,40 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
     );
     let diff_off = registry.register_ex_command(
         "ex:diffoff",
-        "Close the active document's diff session, if any \
-         (`:diffoff`). D.3.a.1.",
+        "Close the active pane's diff session, if any \
+         (`:diffoff[!]`). D.4.d.3.a extends the v1 inline \
+         `:diffoff` (D.3.a.1) to also handle two-pane \
+         `:diffthis` / `:diffsplit` sessions; the session's \
+         watch list is the source of truth for participants \
+         (the tab is not a grouping unit). `:diffoff!` is \
+         forward-compat for D.6 three-way merge — in v1 both \
+         forms behave identically because removing one side \
+         of a two-way diff collapses the whole session.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: true,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|ctx| Ok(Effect::DiffOff { force: ctx.bang })),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let diff_this = registry.register_ex_command(
+        "ex:diffthis",
+        "Stage the active pane for a two-pane diff; the second \
+         `:diffthis` invocation in a different pane completes \
+         the session (`DiffSession` + `PaneGroup` with \
+         `HunkRowMapper` + filler providers on each side). \
+         Same pane twice unstages. Third pane errors out — v1 \
+         is two-way only; multi-way arrives with D.6 three-way \
+         merge. D.4.d.3.a.",
         ExCommandSpec {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
             parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::DiffOff)),
+            apply: Box::new(|_| Ok(Effect::Diffthis)),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -1752,6 +1784,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         describe_diff,
         diff_open,
         diff_off,
+        diff_this,
         hunk_next,
         hunk_prev,
         list_modes,

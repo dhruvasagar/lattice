@@ -565,6 +565,15 @@ pub struct DiffSession {
 	/// construction; first refresh populates it once the
 	/// initial recompute completes.
 	sign_map: ArcSwap<crate::diff_overlay::DiffSignMap>,
+	/// D.4.d.3.a (2026-05-30): linkage from a two-pane diff
+	/// session to its `PaneGroup` (the scroll-binding
+	/// mechanism with `HunkRowMapper`). `None` for inline
+	/// `:diff` sessions, which have no pane-group scroll
+	/// binding; `Some(id)` for `:diffthis` / `:diffsplit`
+	/// sessions, set by `bind_pane_group` at registration
+	/// and read by `do_diff_off` at teardown to drop the
+	/// group cleanly.
+	pane_group_id: Mutex<Option<lattice_core::ui::pane::PaneGroupId>>,
 }
 
 impl DiffSession {
@@ -581,7 +590,33 @@ impl DiffSession {
 			sign_map: ArcSwap::from_pointee(
 				crate::diff_overlay::DiffSignMap::default(),
 			),
+			pane_group_id: Mutex::new(None),
 		}
+	}
+
+	/// D.4.d.3.a (2026-05-30): bind a `PaneGroup` to this
+	/// session — call once at two-pane session creation,
+	/// before any wake or read. Subsequent calls overwrite
+	/// (a re-binding scenario isn't expected in v1 but is
+	/// safe).
+	pub fn bind_pane_group(&self, id: lattice_core::ui::pane::PaneGroupId) {
+		*self
+			.pane_group_id
+			.lock()
+			.expect("DiffSession pane_group_id mutex poisoned") = Some(id);
+	}
+
+	/// D.4.d.3.a: read the linked `PaneGroupId`, if any.
+	/// `None` for inline `:diff` sessions; `Some(id)` for
+	/// two-pane sessions registered via `:diffthis` /
+	/// `:diffsplit`. The teardown path (`do_diff_off`)
+	/// reads this to drop the linked group atomically with
+	/// the session.
+	pub fn pane_group_id(&self) -> Option<lattice_core::ui::pane::PaneGroupId> {
+		*self
+			.pane_group_id
+			.lock()
+			.expect("DiffSession pane_group_id mutex poisoned")
 	}
 
 	/// D.3.d.0 (2026-05-29): snapshot the latest published
@@ -753,6 +788,15 @@ pub struct DiffSubsystem {
 	/// listed session keys. Rebuilt from descriptors on every
 	/// register / drop.
 	watchers: Mutex<HashMap<BufferId, Vec<BufferId>>>,
+	/// D.4.d.3.a (2026-05-30): secondary-buffer → primary-buffer
+	/// indirection. Populated from `descriptor.watch` minus the
+	/// primary key at registration time; consulted by
+	/// [`Self::lookup_session_for`] so a buffer participating
+	/// in a two-pane diff (but not the session's primary key)
+	/// still resolves to its session. Inline `:diff` sessions
+	/// have a single-entry `watch` list that equals the primary,
+	/// so they contribute no entries here.
+	secondary_index: Mutex<HashMap<BufferId, BufferId>>,
 	debouncers: Mutex<HashMap<BufferId, Arc<Debouncer>>>,
 	debounce_window: Duration,
 }
@@ -763,6 +807,7 @@ impl Default for DiffSubsystem {
 			sessions: Mutex::new(HashMap::new()),
 			descriptors: Mutex::new(HashMap::new()),
 			watchers: Mutex::new(HashMap::new()),
+			secondary_index: Mutex::new(HashMap::new()),
 			debouncers: Mutex::new(HashMap::new()),
 			debounce_window: DEFAULT_DEBOUNCE_WINDOW,
 		}
@@ -848,8 +893,15 @@ impl DiffSubsystem {
 		};
 		if let Some(old) = old_descriptor {
 			self.scrub_watcher_entries(buffer_id, &old.watch);
+			self.scrub_secondary_entries(buffer_id, &old.watch);
 		}
 		self.install_watcher_entries(buffer_id, &descriptor.watch);
+		// D.4.d.3.a: maintain the BufferId → primary
+		// indirection so two-pane sessions can be looked up
+		// from *either* side. Inline sessions (`watch =
+		// [primary]`) contribute no entries because
+		// `scrub_secondary_entries` skips the primary.
+		self.install_secondary_entries(buffer_id, &descriptor.watch);
 		// Install or replace the debouncer (idempotent — a
 		// re-register on an already-debouncing session keeps
 		// the existing controller).
@@ -860,6 +912,26 @@ impl DiffSubsystem {
 				.or_insert_with(|| Arc::new(Debouncer::new(self.debounce_window)));
 		}
 		session
+	}
+
+	/// D.4.d.3.a (2026-05-30): resolve a session from *any*
+	/// buffer that participates in it (primary or secondary).
+	/// Returns the same `Arc<DiffSession>` whether the caller
+	/// passes the session's primary key or one of its
+	/// descriptor's watched buffers. The teardown path
+	/// (`do_diff_off`) uses this so `:diffoff` from either
+	/// pane of a two-way diff finds the same session.
+	pub fn lookup_session_for(&self, buffer_id: BufferId) -> Option<Arc<DiffSession>> {
+		if let Some(session) = self.lookup(buffer_id) {
+			return Some(session);
+		}
+		let primary = self
+			.secondary_index
+			.lock()
+			.expect("DiffSubsystem mutex poisoned")
+			.get(&buffer_id)
+			.copied()?;
+		self.lookup(primary)
 	}
 
 	/// Look up the session for `buffer_id`. Returns `None` if no
@@ -920,6 +992,7 @@ impl DiffSubsystem {
 			.remove(&buffer_id);
 		if let Some(d) = descriptor {
 			self.scrub_watcher_entries(buffer_id, &d.watch);
+			self.scrub_secondary_entries(buffer_id, &d.watch);
 		}
 		// Drop the debouncer Arc — any in-flight task holds its
 		// own Arc clone and will run to completion (it'll call
@@ -955,6 +1028,49 @@ impl DiffSubsystem {
 				if bucket.is_empty() {
 					watchers.remove(watched);
 				}
+			}
+		}
+	}
+
+	// D.4.d.3.a internal helper: for each watched buffer that
+	// isn't the session's primary key, record the secondary
+	// → primary mapping so `lookup_session_for` can resolve a
+	// session from either side of a two-pane diff. Skips
+	// entries that equal `session_key` (inline `:diff`
+	// `watch = [primary]` contributes nothing). Idempotent on
+	// repeat installs.
+	fn install_secondary_entries(&self, session_key: BufferId, watch: &[BufferId]) {
+		let mut secondary = self
+			.secondary_index
+			.lock()
+			.expect("DiffSubsystem mutex poisoned");
+		for &watched in watch {
+			if watched == session_key {
+				continue;
+			}
+			secondary.insert(watched, session_key);
+		}
+	}
+
+	// D.4.d.3.a internal helper: remove any secondary entries
+	// pointing at this `session_key`. Called from drop_session
+	// and from register (when replacing a descriptor whose
+	// watch list shrunk). Skips the primary entry like the
+	// install path.
+	fn scrub_secondary_entries(&self, session_key: BufferId, watch: &[BufferId]) {
+		let mut secondary = self
+			.secondary_index
+			.lock()
+			.expect("DiffSubsystem mutex poisoned");
+		for watched in watch {
+			if *watched == session_key {
+				continue;
+			}
+			// Only remove if the entry still points at this
+			// session — a re-register could have rerouted the
+			// secondary to a different primary in between.
+			if secondary.get(watched) == Some(&session_key) {
+				secondary.remove(watched);
 			}
 		}
 	}

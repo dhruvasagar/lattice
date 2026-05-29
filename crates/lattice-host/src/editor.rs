@@ -633,6 +633,18 @@ pub struct Editor {
     /// groups around lifecycle. See
     /// `docs/dev/architecture/pane-groups.md`.
     pub pane_groups: Vec<crate::pane_group::PaneGroup>,
+    /// D.4.d.3.a (2026-05-30): pending `:diffthis` staging.
+    /// `None` until the user runs `:diffthis` in the first
+    /// pane; `Some(member)` after that until either the same
+    /// pane runs `:diffthis` again (which unstages, clearing
+    /// back to `None`) or a *different* pane runs `:diffthis`
+    /// (which completes the two-pane setup via
+    /// `register_two_pane_diff` and clears back to `None`).
+    /// Reuses `PaneGroupMember` because the staged pair
+    /// becomes the first member of the new pane group at
+    /// completion time. v1 supports two-way diffs only; D.6
+    /// (three-way merge) will widen this to `Vec<PaneGroupMember>`.
+    pub pending_diffthis: Option<crate::pane_group::PaneGroupMember>,
     /// Picker source registry -- `:picker` source kinds.
     pub picker_registry: Arc<PickerRegistry>,
     /// Per-source MRU index that biases the picker's initial

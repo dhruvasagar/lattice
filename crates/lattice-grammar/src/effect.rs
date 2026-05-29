@@ -453,9 +453,26 @@ pub enum Effect {
     /// the active document against its on-disk content.
     /// D.3.a.1.
     DiffOpen,
-    /// `:diffoff` -- close the active document's diff session
-    /// (if any). D.3.a.1.
-    DiffOff,
+    /// `:diffoff[!]` -- close the active pane's diff session
+    /// (if any). v1 two-way semantics collapse `:diffoff` and
+    /// `:diffoff!` to the same teardown (removing one side of
+    /// a two-way diff leaves the other degenerate, so both
+    /// drop the whole session). The bang is a forward-compat
+    /// surface: D.6 (three-way merge) will distinguish per-
+    /// participant removal (`:diffoff`) from full-session
+    /// teardown (`:diffoff!`). The handler reads the session's
+    /// watch list as the source of truth for participants —
+    /// the tab is not a grouping unit. D.3.a.1 / D.4.d.3.a.
+    DiffOff { force: bool },
+    /// `:diffthis` -- stage the active pane for a two-pane
+    /// diff; the second `:diffthis` invocation in a different
+    /// pane completes the session (creates a `DiffSession`
+    /// against the two live buffers, a `PaneGroup` with
+    /// `HunkRowMapper`, and `FillerRowProvider`s on each
+    /// side). Same pane twice unstages. Third-pane staging
+    /// errors out — v1 is two-way only; multi-way arrives
+    /// with D.6 three-way merge. D.4.d.3.a.
+    Diffthis,
     /// `]c` / `:hunk-next` -- jump cursor to the start of the
     /// next diff hunk on the current side (`ranges[1]`).
     /// Wraps to top. D.3.c.

@@ -808,7 +808,8 @@ impl App {
             | Effect::DescribeEvent { .. }
             | Effect::DescribeDiff
             | Effect::DiffOpen
-            | Effect::DiffOff
+            | Effect::DiffOff { .. }
+            | Effect::Diffthis
             | Effect::NextHunk
             | Effect::PrevHunk
             | Effect::BufferNext
@@ -1102,7 +1103,8 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::DescribeEvent { .. }
         | Effect::DescribeDiff
         | Effect::DiffOpen
-        | Effect::DiffOff
+        | Effect::DiffOff { .. }
+        | Effect::Diffthis
         | Effect::NextHunk
         | Effect::PrevHunk
         | Effect::ListModes
@@ -1190,7 +1192,8 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::DescribeEvent { .. }
         | Effect::DescribeDiff
         | Effect::DiffOpen
-        | Effect::DiffOff
+        | Effect::DiffOff { .. }
+        | Effect::Diffthis
         | Effect::NextHunk
         | Effect::PrevHunk
         | Effect::ListModes

@@ -2290,12 +2290,33 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             // hunk republishes wake the worker immediately.
             editor.do_diff_open();
         }
-        Effect::DiffOff => {
-            // D.3.a.1: close the active document's diff session
-            // (no-op if none registered). Drops the session,
-            // unregisters the overlay provider, and aborts the
-            // wake forwarder.
-            editor.do_diff_off();
+        Effect::DiffOff { force } => {
+            // D.3.a.1 / D.4.d.3.a: close the active pane's diff
+            // session (no-op if none registered). Handles both
+            // the inline single-buffer session (D.3.a.1) and
+            // the two-pane two-way session (D.4.d.3.a) via
+            // `DiffSubsystem::lookup_session_for(buffer_id)` —
+            // either side of a two-pane diff resolves to the
+            // same session. Walks `descriptor.watch` for
+            // participants; drops the linked pane group;
+            // unregisters every side's filler / overlay
+            // provider; drops the session; aborts the refresh
+            // task. v1 semantics: `force` (the `:diffoff!`
+            // bang) is accepted at the parser level for
+            // forward-compat with D.6 three-way merge, but
+            // behaves identically to `:diffoff` in v1 — a
+            // two-way session collapses on single-side
+            // removal regardless.
+            editor.do_diff_off(force);
+        }
+        Effect::Diffthis => {
+            // D.4.d.3.a: `:diffthis` — stage the active pane
+            // for a two-pane diff. First call stages; second
+            // call in a different pane completes (registers
+            // the session, pane group, filler providers);
+            // second call in the same pane unstages. Third
+            // pane errors out — v1 is two-way only.
+            editor.do_diffthis();
         }
         Effect::NextHunk => {
             // D.3.c: `]c` — jump cursor to next hunk start
@@ -2851,31 +2872,320 @@ impl Editor {
         Some(session.sign_map())
     }
 
-    /// D.3.a.1 (2026-05-29): close the active document's diff
-    /// session if one is registered. Drops the session,
-    /// unregisters the overlay provider from the virtual-rows
-    /// worker, and aborts the wake forwarder. No-op if no
-    /// session is open for this buffer.
-    pub fn do_diff_off(&mut self) {
-        let buffer_id = self.document_buffer_id;
-        if !self.diff_subsystem.drop_session(buffer_id) {
+    /// D.3.a.1 (2026-05-29) / D.4.d.3.a (2026-05-30): close
+    /// the active pane's diff session if one is registered.
+    /// Unified handler for both the inline single-buffer
+    /// session (D.3.a.1) and the two-pane two-way session
+    /// (D.4.d.3.a). Looks up the session via
+    /// `lookup_session_for(active_buffer_id)` so either side
+    /// of a two-pane diff finds the same session. Walks
+    /// `descriptor.watch` (the source of truth for
+    /// participants) to unregister every side's filler /
+    /// overlay provider; drops the linked `PaneGroup` if any;
+    /// drops the session. The tab is **not** a grouping unit
+    /// — only the session's own watch list drives teardown.
+    ///
+    /// `force` (the `:diffoff!` bang) is accepted at the
+    /// parser level for forward-compat with D.6 three-way
+    /// merge but is a no-op in v1: removing one side of a
+    /// two-way diff already collapses the whole session, so
+    /// `:diffoff` and `:diffoff!` are operationally identical.
+    pub fn do_diff_off(&mut self, _force: bool) {
+        let active_buffer_id = self.document_buffer_id;
+        let Some(session) = self.diff_subsystem.lookup_session_for(active_buffer_id) else {
             self.set_message(EchoLevel::Info, "No active diff session");
             return;
+        };
+        let primary = session.buffer_id();
+        let pane_group_id = session.pane_group_id();
+        let descriptor = self.diff_subsystem.lookup_descriptor(primary);
+        let watch: Vec<lattice_core::BufferId> = descriptor
+            .as_ref()
+            .map(|d| d.watch.clone())
+            .unwrap_or_else(|| vec![primary]);
+
+        // Walk every participant. Each unregister call is
+        // safe-idempotent (returns false if absent), so we
+        // can blindly try inline-overlay + both filler-side
+        // ids on every watched buffer without first
+        // distinguishing inline-vs-two-pane sessions.
+        for buf in &watch {
+            self.virtual_row_providers.unregister(
+                *buf,
+                crate::diff_overlay::diff_overlay_provider_id(*buf),
+            );
+            self.virtual_row_providers.unregister(
+                *buf,
+                crate::diff_filler::diff_filler_provider_id(
+                    primary,
+                    crate::diff_filler::Side::Baseline,
+                ),
+            );
+            self.virtual_row_providers.unregister(
+                *buf,
+                crate::diff_filler::diff_filler_provider_id(
+                    primary,
+                    crate::diff_filler::Side::Current,
+                ),
+            );
         }
-        self.virtual_row_providers.unregister(
-            buffer_id,
-            crate::diff_overlay::diff_overlay_provider_id(buffer_id),
-        );
+
+        // Drop the linked pane group (two-pane sessions
+        // only; `None` for inline `:diff`). Idempotent.
+        if let Some(id) = pane_group_id {
+            self.drop_pane_group(id);
+        }
+
+        // Abort any refresh task. The forwarders map is
+        // keyed by the inline session's buffer_id (D.3.a.1);
+        // two-pane sessions don't currently spawn one (filler
+        // providers are pure-sync per D.4.c). Walk every
+        // watched buffer to be defensive against a future
+        // refresh task added on either side.
         if let Ok(mut map) = self.diff_forwarders.lock() {
-            if let Some(handle) = map.remove(&buffer_id) {
-                handle.abort();
+            for buf in &watch {
+                if let Some(handle) = map.remove(buf) {
+                    handle.abort();
+                }
             }
         }
+
+        // Drop the session itself. `drop_session` scrubs the
+        // watcher buckets, descriptor, secondary index, and
+        // debouncer in one shot.
+        self.diff_subsystem.drop_session(primary);
+
         // Wake the virtual-rows worker so it observes the
-        // provider removal and republishes an updated matrix
+        // provider removals and republishes empty matrices
         // (otherwise stale rows linger until the next edit).
         self.virtual_rows_wake.0.notify_one();
         self.set_message(EchoLevel::Info, "Diff closed");
+    }
+
+    /// D.4.d.3.a (2026-05-30): `:diffthis` — stage the active
+    /// pane for a two-pane diff. First call sets
+    /// [`Editor::pending_diffthis`]; second call in a
+    /// *different* pane completes the session via
+    /// [`Self::register_two_pane_diff`]; second call in the
+    /// *same* pane unstages. Errors:
+    /// - Active pane is not a Document leaf (file tree, help,
+    ///   etc.): "diffthis: active pane is not a document".
+    /// - Active buffer already has an active diff session:
+    ///   "diffthis: buffer N already has an active diff
+    ///   session; use :diffoff first".
+    /// - Pending stage references a pane/buffer that no
+    ///   longer matches the tree (pane closed or buffer
+    ///   swapped): silently clear the stale stage and treat
+    ///   this invocation as the first.
+    /// - v1 explicitly two-way: a future third-pane invocation
+    ///   would land here once `pending_diffthis` widens to
+    ///   `Vec`; not exercised in v1.
+    pub fn do_diffthis(&mut self) {
+        // Gate on Document kind — `:diffthis` over a file
+        // tree or help leaf is meaningless.
+        let active_leaf = self.pane_tree.active();
+        if !matches!(active_leaf.buffer, lattice_core::BufferKind::Document) {
+            self.set_message(
+                EchoLevel::Error,
+                "diffthis: active pane is not a document",
+            );
+            return;
+        }
+        let active_pane = active_leaf.id;
+        let active_buffer = active_leaf.buffer_id;
+        let active_member = crate::pane_group::PaneGroupMember {
+            pane: active_pane,
+            buffer: active_buffer,
+        };
+
+        // Reject if the active buffer already participates in
+        // some other diff session — both an inline session
+        // here and an existing two-pane session block. Vim
+        // would silently re-stage; we'd rather surface a
+        // clear error in v1 so the user disambiguates with
+        // an explicit `:diffoff` first.
+        if self
+            .diff_subsystem
+            .lookup_session_for(active_buffer)
+            .is_some()
+        {
+            self.set_message(
+                EchoLevel::Error,
+                format!(
+                    "diffthis: buffer {} already has an active diff session; \
+                     use :diffoff first",
+                    active_buffer.0
+                ),
+            );
+            return;
+        }
+
+        // Stale-stage cleanup: if the previously-staged
+        // (pane, buffer) no longer matches the live tree
+        // (pane closed, buffer swapped), drop the stage and
+        // treat this call as a fresh stage. Avoids surprising
+        // the user with completion against an unrelated pane.
+        if let Some(staged) = self.pending_diffthis {
+            let stage_valid = self
+                .pane_tree
+                .leaves()
+                .iter()
+                .any(|l| l.id == staged.pane && l.buffer_id == staged.buffer);
+            if !stage_valid {
+                self.pending_diffthis = None;
+            }
+        }
+
+        match self.pending_diffthis {
+            None => {
+                // First call: stage the active pane.
+                self.pending_diffthis = Some(active_member);
+                self.set_message(
+                    EchoLevel::Info,
+                    format!(
+                        "diffthis: staged pane (buffer {}); run :diffthis in \
+                         another pane to complete",
+                        active_buffer.0
+                    ),
+                );
+            }
+            Some(staged) if staged == active_member => {
+                // Same pane twice: unstage.
+                self.pending_diffthis = None;
+                self.set_message(EchoLevel::Info, "diffthis: unstaged");
+            }
+            Some(staged) => {
+                // Different pane: complete the two-pane
+                // setup. Staged side is the "baseline"
+                // (first to stage); active side is the
+                // "current" (second to stage). Arbitrary but
+                // stable — the mapper is symmetric in the
+                // sense that both directions are wired
+                // through `HunkRowMapper`.
+                self.pending_diffthis = None;
+                match self.register_two_pane_diff(staged, active_member) {
+                    Ok(()) => {
+                        self.set_message(
+                            EchoLevel::Info,
+                            format!(
+                                "diffthis: opened (baseline buffer {} ↔ current buffer {})",
+                                staged.buffer.0, active_buffer.0
+                            ),
+                        );
+                    }
+                    Err(msg) => {
+                        self.set_message(
+                            EchoLevel::Error,
+                            format!("diffthis: {msg}"),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// D.4.d.3.a (2026-05-30): set up a two-pane two-way diff
+    /// between `(baseline_pane, baseline_buffer)` and
+    /// `(current_pane, current_buffer)`. Builds the
+    /// `DiffSession` against the two live buffers' ropes,
+    /// registers a `PaneGroup` with `HunkRowMapper`, binds
+    /// the group id back onto the session, registers a
+    /// `FillerRowProvider` per side scoped to that side's
+    /// buffer (per the D.4.d.2.1.a per-`BufferId` provider
+    /// registry), and pokes the session's debouncer for an
+    /// initial hunk compute.
+    ///
+    /// The session's primary key is the *current* side's
+    /// `BufferId`. Either side's buffer resolves to the same
+    /// session via [`crate::diff_subsystem::DiffSubsystem::lookup_session_for`]
+    /// (the secondary index points baseline → current).
+    fn register_two_pane_diff(
+        &mut self,
+        baseline: crate::pane_group::PaneGroupMember,
+        current: crate::pane_group::PaneGroupMember,
+    ) -> Result<(), String> {
+        if baseline == current {
+            return Err("baseline and current members must differ".to_string());
+        }
+        let primary = current.buffer;
+        // Reject if the current side's buffer already has a
+        // session (defence-in-depth — `do_diffthis` checks
+        // before us, but tests may call this helper
+        // directly).
+        if self.diff_subsystem.lookup_session_for(primary).is_some() {
+            return Err(format!(
+                "buffer {} already has an active diff session",
+                primary.0
+            ));
+        }
+
+        let provider_text: std::sync::Arc<
+            dyn crate::diff_subsystem::BufferTextProvider,
+        > = std::sync::Arc::new(
+            crate::diff_subsystem::BufferRegistryTextProvider::new(self.buffers.clone()),
+        );
+        let descriptor = crate::diff_subsystem::DiffDescriptor {
+            baseline: std::sync::Arc::new(crate::diff_subsystem::BufferBaseline::new(
+                std::sync::Arc::clone(&provider_text),
+                baseline.buffer,
+            )),
+            current: std::sync::Arc::new(crate::diff_subsystem::BufferCurrentSource::new(
+                std::sync::Arc::clone(&provider_text),
+                primary,
+            )),
+            watch: vec![baseline.buffer, primary],
+        };
+        let session = self.diff_subsystem.register_with_sources(
+            primary,
+            lattice_diff::DiffAlgorithm::Histogram,
+            descriptor,
+        );
+
+        // Pane group + HunkRowMapper. Member layout: 0 =
+        // baseline, 1 = current. `HunkRowMapper::new` accepts
+        // (session, baseline_idx, current_idx).
+        let members = vec![baseline, current];
+        let mapper: std::sync::Arc<dyn crate::pane_group::RowMapper> =
+            std::sync::Arc::new(crate::diff_pane_group::HunkRowMapper::new(
+                std::sync::Arc::clone(&session),
+                0,
+                1,
+            ));
+        let pane_group_id = self.add_pane_group(members, mapper).map_err(|e| {
+            // Roll back the session if pane-group registration
+            // fails (e.g. one of the panes is already in
+            // another active group). Otherwise we'd leave a
+            // session with no UI binding.
+            self.diff_subsystem.drop_session(primary);
+            e
+        })?;
+        session.bind_pane_group(pane_group_id);
+
+        // Filler providers on each side. Side ids encode
+        // (primary, Side) so baseline + current ids don't
+        // collide; per-BufferId scoping (D.4.d.2.1.a) routes
+        // the registration to the right side's buffer.
+        let baseline_filler: std::sync::Arc<dyn lattice_cells::VirtualRowProvider> =
+            std::sync::Arc::new(crate::diff_filler::FillerRowProvider::new(
+                std::sync::Arc::clone(&session),
+                crate::diff_filler::Side::Baseline,
+            ));
+        let current_filler: std::sync::Arc<dyn lattice_cells::VirtualRowProvider> =
+            std::sync::Arc::new(crate::diff_filler::FillerRowProvider::new(
+                std::sync::Arc::clone(&session),
+                crate::diff_filler::Side::Current,
+            ));
+        self.virtual_row_providers
+            .register(baseline.buffer, baseline_filler);
+        self.virtual_row_providers
+            .register(primary, current_filler);
+
+        // Poke the session so the initial hunk compute fires
+        // without waiting for the user's next edit. Mirror of
+        // the kick at the end of `do_diff_open`.
+        std::sync::Arc::clone(&self.diff_subsystem).note_buffer_edited(primary);
+
+        Ok(())
     }
 
     /// Surface a one-line message in the echo area. Replaces the
@@ -21580,7 +21890,8 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::DescribeEvent { .. }
         | Effect::DescribeDiff
         | Effect::DiffOpen
-        | Effect::DiffOff
+        | Effect::DiffOff { .. }
+        | Effect::Diffthis
         | Effect::NextHunk
         | Effect::PrevHunk
         | Effect::ListModes
@@ -21669,7 +21980,8 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::DescribeEvent { .. }
         | Effect::DescribeDiff
         | Effect::DiffOpen
-        | Effect::DiffOff
+        | Effect::DiffOff { .. }
+        | Effect::Diffthis
         | Effect::NextHunk
         | Effect::PrevHunk
         | Effect::ListModes
@@ -23158,7 +23470,7 @@ mod tests {
     #[test]
     fn do_diff_off_with_no_session_is_a_noop_message() {
         let mut editor = Editor::default();
-        editor.do_diff_off();
+        editor.do_diff_off(false);
         let msg = editor.last_message.as_ref().expect("message set");
         assert!(
             msg.text.contains("No active diff session"),
@@ -23695,5 +24007,293 @@ mod tests {
             !std::sync::Arc::ptr_eq(&first, &other_cell),
             "different buffers must get distinct virtual-rows cells"
         );
+    }
+
+    // ── D.4.d.3.a: :diffthis + two-pane :diffoff ──────────────
+
+    /// Build a two-pane fixture: vsplit, then assign a
+    /// distinct `buffer_id` to the second leaf so the two
+    /// panes show different buffers. Returns
+    /// `(active_pane, active_buffer, other_pane, other_buffer)`.
+    /// Both leaves stay `BufferKind::Document` — the test
+    /// pane tree's content doesn't need to be backed by
+    /// real entries in the buffer registry for the
+    /// `:diffthis` state machine tests (the helper
+    /// `register_two_pane_diff` resolves ropes through
+    /// `BufferRegistryTextProvider`, which returns empty on
+    /// missing buffers — fine for the test surface, the
+    /// session still registers).
+    fn vsplit_two_buffers(
+        editor: &mut crate::editor::Editor,
+    ) -> (
+        lattice_core::ui::pane::PaneId,
+        lattice_core::BufferId,
+        lattice_core::ui::pane::PaneId,
+        lattice_core::BufferId,
+    ) {
+        use lattice_core::ui::pane::SplitOrientation;
+        editor.pane_tree.split_active(SplitOrientation::Vertical);
+        let other_buffer = lattice_core::BufferId(99);
+        editor.pane_tree.leaves_mut()[1].buffer_id = other_buffer;
+        let active_pane = editor.pane_tree.leaves()[0].id;
+        let active_buffer = editor.pane_tree.leaves()[0].buffer_id;
+        let other_pane = editor.pane_tree.leaves()[1].id;
+        (active_pane, active_buffer, other_pane, other_buffer)
+    }
+
+    /// First `:diffthis` stages the active pane: sets
+    /// `pending_diffthis` and surfaces a staging message.
+    #[test]
+    fn diffthis_stages_first_pane() {
+        let mut editor = crate::editor::Editor::default();
+        let (active_pane, active_buffer, _, _) = vsplit_two_buffers(&mut editor);
+        editor.pane_tree.set_active(0);
+
+        editor.do_diffthis();
+
+        let staged = editor.pending_diffthis.expect("staged");
+        assert_eq!(staged.pane, active_pane);
+        assert_eq!(staged.buffer, active_buffer);
+        // Nothing registered yet — completion happens on the
+        // second invocation in a different pane.
+        assert!(editor.diff_subsystem.is_empty());
+        assert!(editor.pane_groups.is_empty());
+    }
+
+    /// Running `:diffthis` twice in the same pane clears the
+    /// pending stage — gives the user a quick way to cancel
+    /// before completing.
+    #[test]
+    fn diffthis_same_pane_twice_unstages() {
+        let mut editor = crate::editor::Editor::default();
+        let (_active_pane, _, _, _) = vsplit_two_buffers(&mut editor);
+        editor.pane_tree.set_active(0);
+
+        editor.do_diffthis();
+        assert!(editor.pending_diffthis.is_some());
+        editor.do_diffthis();
+        assert!(editor.pending_diffthis.is_none());
+    }
+
+    /// First `:diffthis` in pane A then second in pane B
+    /// completes: registers the session under pane B's buffer,
+    /// creates a pane group with two members, binds the group
+    /// id back onto the session, and registers a filler
+    /// provider on each side via the per-`BufferId` registry.
+    ///
+    /// `#[tokio::test]` because completion calls
+    /// `note_buffer_edited` which arms the per-session
+    /// debouncer (a tokio `sleep_until` task).
+    #[tokio::test]
+    async fn diffthis_second_pane_completes() {
+        let mut editor = crate::editor::Editor::default();
+        let (_, active_buffer, _, other_buffer) = vsplit_two_buffers(&mut editor);
+
+        // First diffthis in pane 0 (baseline side).
+        editor.pane_tree.set_active(0);
+        editor.do_diffthis();
+        assert!(editor.pending_diffthis.is_some());
+
+        // Second diffthis in pane 1 (current side).
+        editor.pane_tree.set_active(1);
+        editor.do_diffthis();
+
+        // Stage cleared, session registered, pane group exists.
+        assert!(editor.pending_diffthis.is_none());
+        let primary = other_buffer; // current side becomes the primary key.
+        let session = editor
+            .diff_subsystem
+            .lookup(primary)
+            .expect("session registered under current side");
+        assert!(
+            session.pane_group_id().is_some(),
+            "session should be bound to its pane group"
+        );
+        let pg_id = session.pane_group_id().unwrap();
+        let pg = editor
+            .pane_groups
+            .iter()
+            .find(|g| g.id == pg_id)
+            .expect("pane group present");
+        assert_eq!(pg.members.len(), 2);
+
+        // Filler providers registered scoped per-buffer
+        // (D.4.d.2.1.a): baseline side under `active_buffer`,
+        // current side under `other_buffer` (= primary).
+        assert_eq!(
+            editor.virtual_row_providers.snapshot(active_buffer).len(),
+            1,
+            "baseline-side filler registered under baseline buffer"
+        );
+        assert_eq!(
+            editor.virtual_row_providers.snapshot(other_buffer).len(),
+            1,
+            "current-side filler registered under current buffer"
+        );
+    }
+
+    /// The active buffer already has a session (inline `:diff`
+    /// or another two-pane diff) → `:diffthis` errors.
+    /// Defends users from accidentally double-binding a buffer.
+    #[test]
+    fn diffthis_rejects_when_active_buffer_has_session() {
+        let mut editor = crate::editor::Editor::default();
+        let (_, active_buffer, _, _) = vsplit_two_buffers(&mut editor);
+        editor.pane_tree.set_active(0);
+
+        // Pre-register a stub session against the active
+        // buffer. `register` (the sources-less path) is fine
+        // for this lifecycle check.
+        editor
+            .diff_subsystem
+            .register(active_buffer, lattice_diff::DiffAlgorithm::Histogram);
+
+        editor.do_diffthis();
+        let msg = editor.last_message.as_ref().expect("error msg");
+        assert!(
+            msg.text.contains("already has an active diff session"),
+            "expected reject message, got: {}",
+            msg.text
+        );
+        assert!(editor.pending_diffthis.is_none());
+    }
+
+    /// `:diffthis` on a non-Document active pane (file tree /
+    /// help / etc.) errors without staging.
+    #[test]
+    fn diffthis_rejects_non_document_active_pane() {
+        let mut editor = crate::editor::Editor::default();
+        // Flip the active leaf's kind. Buffer-kind dispatch
+        // happens before the staging logic.
+        editor.pane_tree.leaves_mut()[0].buffer = lattice_core::BufferKind::FileTree;
+
+        editor.do_diffthis();
+        let msg = editor.last_message.as_ref().expect("error msg");
+        assert!(
+            msg.text.contains("not a document"),
+            "expected reject message, got: {}",
+            msg.text
+        );
+        assert!(editor.pending_diffthis.is_none());
+    }
+
+    /// `:diffoff` from *either* pane of a two-way diff finds
+    /// the session via the subsystem's secondary→primary
+    /// indirection. After teardown: session gone, pane group
+    /// gone, filler providers gone on both sides.
+    #[tokio::test]
+    async fn diff_off_from_baseline_pane_tears_down_two_pane_session() {
+        let mut editor = crate::editor::Editor::default();
+        let (_, baseline_buffer, _, current_buffer) = vsplit_two_buffers(&mut editor);
+        editor.pane_tree.set_active(0);
+        editor.do_diffthis();
+        editor.pane_tree.set_active(1);
+        editor.do_diffthis();
+        assert!(editor.diff_subsystem.lookup(current_buffer).is_some());
+
+        // Tear down from the baseline pane — the active
+        // buffer is `baseline_buffer`, which is NOT the
+        // session's primary key. `lookup_session_for` must
+        // still resolve via the secondary index.
+        editor.pane_tree.set_active(0);
+        editor.document_buffer_id = baseline_buffer;
+        editor.do_diff_off(false);
+
+        assert!(editor.diff_subsystem.is_empty(), "session dropped");
+        assert!(editor.pane_groups.is_empty(), "pane group dropped");
+        assert!(
+            editor.virtual_row_providers.snapshot(baseline_buffer).is_empty(),
+            "baseline filler unregistered"
+        );
+        assert!(
+            editor.virtual_row_providers.snapshot(current_buffer).is_empty(),
+            "current filler unregistered"
+        );
+    }
+
+    /// `:diffoff!` (force) in v1 behaves identically to
+    /// `:diffoff` — the bang is forward-compat for D.6
+    /// three-way merge. Asserted by running both forms over
+    /// the same fixture and checking the same end state.
+    #[tokio::test]
+    async fn diff_off_with_force_bang_is_v1_identical_to_no_bang() {
+        // No-bang baseline.
+        let mut editor_a = crate::editor::Editor::default();
+        let (_, _, _, current_a) = vsplit_two_buffers(&mut editor_a);
+        editor_a.pane_tree.set_active(0);
+        editor_a.do_diffthis();
+        editor_a.pane_tree.set_active(1);
+        editor_a.do_diffthis();
+        editor_a.document_buffer_id = current_a;
+        editor_a.do_diff_off(false);
+
+        // Bang form.
+        let mut editor_b = crate::editor::Editor::default();
+        let (_, _, _, current_b) = vsplit_two_buffers(&mut editor_b);
+        editor_b.pane_tree.set_active(0);
+        editor_b.do_diffthis();
+        editor_b.pane_tree.set_active(1);
+        editor_b.do_diffthis();
+        editor_b.document_buffer_id = current_b;
+        editor_b.do_diff_off(true);
+
+        // Both: session gone, pane group gone.
+        assert!(editor_a.diff_subsystem.is_empty());
+        assert!(editor_a.pane_groups.is_empty());
+        assert!(editor_b.diff_subsystem.is_empty());
+        assert!(editor_b.pane_groups.is_empty());
+    }
+
+    /// `DiffSubsystem::lookup_session_for` resolves a
+    /// secondary buffer back to the session whose primary key
+    /// differs. Direct unit test on the subsystem so the
+    /// indirection contract is asserted independently of the
+    /// `:diffthis` completion path.
+    #[test]
+    fn subsystem_lookup_session_for_resolves_secondary_to_primary() {
+        let sub = crate::diff_subsystem::DiffSubsystem::new();
+        let primary = lattice_core::BufferId(7);
+        let secondary = lattice_core::BufferId(8);
+
+        // Stand-in descriptor — sources empty (their snapshots
+        // return empty ropes); what matters is the `watch`
+        // list shape: `[primary, secondary]`.
+        let provider_text: std::sync::Arc<
+            dyn crate::diff_subsystem::BufferTextProvider,
+        > = std::sync::Arc::new(
+            crate::diff_subsystem::BufferRegistryTextProvider::new(
+                crate::buffer_registry::BufferRegistry::new().into(),
+            ),
+        );
+        let descriptor = crate::diff_subsystem::DiffDescriptor {
+            baseline: std::sync::Arc::new(crate::diff_subsystem::BufferBaseline::new(
+                std::sync::Arc::clone(&provider_text),
+                secondary,
+            )),
+            current: std::sync::Arc::new(crate::diff_subsystem::BufferCurrentSource::new(
+                std::sync::Arc::clone(&provider_text),
+                primary,
+            )),
+            watch: vec![primary, secondary],
+        };
+        sub.register_with_sources(primary, lattice_diff::DiffAlgorithm::Histogram, descriptor);
+
+        // Primary lookup works.
+        let from_primary = sub
+            .lookup_session_for(primary)
+            .expect("primary resolves to its session");
+        assert_eq!(from_primary.buffer_id(), primary);
+        // Secondary lookup resolves through the index.
+        let from_secondary = sub
+            .lookup_session_for(secondary)
+            .expect("secondary resolves to the same session");
+        assert_eq!(from_secondary.buffer_id(), primary);
+        assert!(std::sync::Arc::ptr_eq(&from_primary, &from_secondary));
+
+        // After `drop_session(primary)`, the secondary entry
+        // is scrubbed too — no zombie indirection.
+        sub.drop_session(primary);
+        assert!(sub.lookup_session_for(primary).is_none());
+        assert!(sub.lookup_session_for(secondary).is_none());
     }
 }

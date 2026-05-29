@@ -2270,8 +2270,78 @@ shared with multibuffer-views and post-v1 inlay hints.
         `virtual_rows_pane_matrices_skip_non_document_leaves`).
         530 host tests green; workspace build green.
         Mirror of D.4.d.1.c.
-    - 🗒 **D.4.d.3** — `:diffsplit` / `:diffthis` + vim-
-      parity `:diffoff`.
+    - 🚧 **D.4.d.3** — `:diffthis` / `:diffsplit` /
+      `:diffoff[!]`. Carved into two sub-slices.
+      - ✅ **D.4.d.3.a** (2026-05-30) —
+        `:diffthis` state machine + two-pane session-
+        open + session-as-source-of-truth `:diffoff`.
+        New `Effect::Diffthis` and reshape
+        `Effect::DiffOff` → `Effect::DiffOff { force:
+        bool }` (forward-compat for D.6 three-way
+        merge; v1 bang is operationally identical).
+        New `:ex:diffthis` spec + alias; `:ex:diffoff`
+        now `accepts_bang: true`.
+        New `Editor::pending_diffthis:
+        Option<PaneGroupMember>` (reuses
+        `PaneGroupMember` because the staged pair
+        becomes the first member of the new
+        `PaneGroup`). New `do_diffthis`: stage on
+        first call, complete-via-`register_two_pane_diff`
+        on second call in a different pane, unstage on
+        second call in the same pane. Rejects:
+        non-Document active pane; active buffer
+        already participates in a session; stale stages
+        (pane closed / buffer swapped) silently
+        re-stage.
+        New `register_two_pane_diff(baseline,
+        current)`: builds `DiffSession` via
+        `register_with_sources` with `BufferBaseline` +
+        `BufferCurrentSource` (`watch = [baseline,
+        current]`), constructs a `PaneGroup` with
+        `HunkRowMapper(session, 0, 1)`, binds the
+        group id back onto the session via the new
+        `DiffSession::bind_pane_group`, registers a
+        `FillerRowProvider` per side scoped to that
+        side's `BufferId` via the per-`BufferId`
+        provider registry (D.4.d.2.1.a). Current side
+        is the session's primary key.
+        New `DiffSubsystem::secondary_index:
+        Mutex<HashMap<BufferId, BufferId>>` +
+        `lookup_session_for(buffer_id)` so either side
+        of a two-pane diff resolves to the same
+        session. `register_with_sources` /
+        `drop_session` maintain the index via the new
+        `install_secondary_entries` /
+        `scrub_secondary_entries` helpers.
+        New `DiffSession::pane_group_id:
+        Mutex<Option<PaneGroupId>>` + `bind_pane_group` /
+        `pane_group_id()` — `None` for inline `:diff`
+        sessions, `Some(id)` for two-pane sessions.
+        Unified `do_diff_off(force: bool)`: looks up
+        the session via `lookup_session_for`, walks
+        `descriptor.watch` as the source of truth for
+        participants (the tab is **not** a grouping
+        unit), unregisters every side's filler /
+        overlay provider, drops the linked
+        `PaneGroup` if any, drops the session,
+        aborts any refresh task. v1 makes `force` a
+        no-op; the bang lights up in D.6.
+        Effect plumbing updated in `lattice-host`
+        dispatch + `lattice-ui-tui` / `lattice-ui-gpui`
+        effect-classifier match arms.
+        **8 new tests** in `dispatch::tests`
+        (`diffthis_stages_first_pane`,
+        `diffthis_same_pane_twice_unstages`,
+        `diffthis_second_pane_completes`,
+        `diffthis_rejects_when_active_buffer_has_session`,
+        `diffthis_rejects_non_document_active_pane`,
+        `diff_off_from_baseline_pane_tears_down_two_pane_session`,
+        `diff_off_with_force_bang_is_v1_identical_to_no_bang`,
+        `subsystem_lookup_session_for_resolves_secondary_to_primary`).
+        538 host tests green; workspace build green.
+      - 🗒 **D.4.d.3.b** — `:diffsplit <file>`.
+        Composes vsplit + open-in-new-pane + the
+        `register_two_pane_diff` helper.
   - 🗒 **D.4.e** — Bench `pane_group_scroll_p99_us`.
 - 🗒 **D.5** — Hunk transfer operators `do` / `dp` via
   `CommandRegistry`.

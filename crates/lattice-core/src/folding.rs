@@ -18,6 +18,10 @@ crate::labeled_enum! {
     /// `labeled_enum!` — adding a new fold method is now one
     /// line; the `label` / `parse_label` / `doc` / `all`
     /// accessors are derived automatically.
+    ///
+    /// D.3.f.0 added `#[derive(Hash)]` so the `FoldRegistry`
+    /// can key its primary-provider map on `FoldMethod`.
+    #[derive(Hash)]
     pub enum FoldMethod {
         /// Only user `zf` ranges, no auto-recompute.
         #[default]
@@ -65,6 +69,24 @@ pub struct Fold {
     pub closed: bool,
     pub identity: Option<u64>,
 }
+
+/// D.3.f.0: distinguishes mutually-exclusive primary fold sources
+/// (one runs at a time, picked by `:set foldmethod=`) from
+/// additive overlay sources (always compose). See
+/// `docs/dev/architecture/fold-architecture.md` §2.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ProviderKind {
+    Primary,
+    Overlay,
+}
+
+/// D.3.f.0: stable identifier for a registered fold provider.
+/// Two distinct providers must produce distinct ids; a single
+/// provider produces the same id across recomputes. Used by the
+/// registry for lookup and by diagnostics that need to attribute
+/// a fold back to its source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ProviderId(pub u64);
 
 #[cfg(test)]
 mod tests {

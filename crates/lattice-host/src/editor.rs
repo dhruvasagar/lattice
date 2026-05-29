@@ -616,6 +616,13 @@ pub struct Editor {
     pub picker: Option<Picker>,
     /// Manual folds. v1 supports non-nested folds defined by line range.
     pub folds: Vec<lattice_core::Fold>,
+    /// D.3.f.0 (2026-05-29): fold-provider registry. Holds the
+    /// five built-in `Primary` providers (Manual / Indent /
+    /// Markdown / Syntax / Lsp) and the list of registered
+    /// `Overlay` providers (HunkFoldProvider lands in D.3.f.1;
+    /// excerpt + file-boundary providers land in M.7 / M.8).
+    /// See `docs/dev/architecture/fold-architecture.md`.
+    pub fold_registry: crate::fold_provider::FoldRegistry,
     /// Picker source registry -- `:picker` source kinds.
     pub picker_registry: Arc<PickerRegistry>,
     /// Per-source MRU index that biases the picker's initial

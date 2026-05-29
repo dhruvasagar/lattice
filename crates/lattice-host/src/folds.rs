@@ -549,6 +549,122 @@ impl FoldIndex {
     }
 }
 
+// =========================================================
+// D.3.f.0 (2026-05-29): primary-provider impls wrapping the
+// existing `compute_*_folds` helpers. See
+// `docs/dev/architecture/fold-architecture.md`. These wire
+// into the `FoldRegistry` constructed by `Editor::boot`.
+// Behaviour is unchanged from the pre-refactor
+// `Editor::recompute_folds` match arms — the registry
+// dispatch produces the same fold sets for the same inputs.
+// =========================================================
+
+use crate::fold_provider::{FoldContext, FoldProvider};
+use lattice_core::{ProviderId, ProviderKind};
+
+const PROVIDER_ID_MANUAL: ProviderId = ProviderId(0);
+const PROVIDER_ID_INDENT: ProviderId = ProviderId(1);
+const PROVIDER_ID_MARKDOWN: ProviderId = ProviderId(2);
+const PROVIDER_ID_SYNTAX: ProviderId = ProviderId(3);
+const PROVIDER_ID_LSP: ProviderId = ProviderId(4);
+
+pub struct ManualPrimary;
+
+impl FoldProvider for ManualPrimary {
+    fn id(&self) -> ProviderId {
+        PROVIDER_ID_MANUAL
+    }
+    fn kind(&self) -> ProviderKind {
+        ProviderKind::Primary
+    }
+    fn compute(&self, _ctx: &FoldContext<'_>) -> Vec<Fold> {
+        // Manual folds (zf) are carried over by
+        // `Editor::recompute_folds` from the previous fold
+        // list; the Primary provider produces nothing.
+        Vec::new()
+    }
+}
+
+pub struct IndentPrimary;
+
+impl FoldProvider for IndentPrimary {
+    fn id(&self) -> ProviderId {
+        PROVIDER_ID_INDENT
+    }
+    fn kind(&self) -> ProviderKind {
+        ProviderKind::Primary
+    }
+    fn compute(&self, ctx: &FoldContext<'_>) -> Vec<Fold> {
+        compute_indent_folds(ctx.buffer)
+    }
+}
+
+pub struct MarkdownPrimary;
+
+impl FoldProvider for MarkdownPrimary {
+    fn id(&self) -> ProviderId {
+        PROVIDER_ID_MARKDOWN
+    }
+    fn kind(&self) -> ProviderKind {
+        ProviderKind::Primary
+    }
+    fn compute(&self, ctx: &FoldContext<'_>) -> Vec<Fold> {
+        compute_markdown_folds(ctx.buffer)
+    }
+}
+
+pub struct SyntaxPrimary;
+
+impl FoldProvider for SyntaxPrimary {
+    fn id(&self) -> ProviderId {
+        PROVIDER_ID_SYNTAX
+    }
+    fn kind(&self) -> ProviderKind {
+        ProviderKind::Primary
+    }
+    fn compute(&self, ctx: &FoldContext<'_>) -> Vec<Fold> {
+        if let Some(syntax) = ctx.syntax {
+            if let Some(folds) = compute_syntax_folds(syntax) {
+                return folds;
+            }
+        }
+        // Cascade: markdown for `.md`, else indent — matches
+        // pre-refactor `Editor::recompute_syntax_folds`.
+        let is_md = ctx
+            .path
+            .and_then(|p| p.extension())
+            .and_then(|e| e.to_str())
+            .map(|ext| ext.eq_ignore_ascii_case("md"))
+            .unwrap_or(false);
+        if is_md {
+            compute_markdown_folds(ctx.buffer)
+        } else {
+            compute_indent_folds(ctx.buffer)
+        }
+    }
+}
+
+pub struct LspPrimary;
+
+impl FoldProvider for LspPrimary {
+    fn id(&self) -> ProviderId {
+        PROVIDER_ID_LSP
+    }
+    fn kind(&self) -> ProviderKind {
+        ProviderKind::Primary
+    }
+    fn compute(&self, ctx: &FoldContext<'_>) -> Vec<Fold> {
+        if let Some(folds) = ctx.lsp_folds {
+            if !folds.is_empty() {
+                return folds.to_vec();
+            }
+        }
+        // Cascade to syntax provider's behaviour — matches
+        // pre-refactor `Editor::recompute_lsp_folds`.
+        SyntaxPrimary.compute(ctx)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]

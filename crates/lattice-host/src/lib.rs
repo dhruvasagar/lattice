@@ -45,6 +45,12 @@ mod editor_boot;
 pub mod excommand;
 pub mod file_tree;
 pub mod folds;
+// D.3.f.0 (2026-05-29): FoldProvider trait + registry. See
+// `docs/dev/architecture/fold-architecture.md`. Substrate-only
+// slice; the five existing fold methods become Primary
+// providers wrapping today's `compute_*_folds` helpers. The
+// first overlay consumer (`HunkFoldProvider`) lands in D.3.f.1.
+pub mod fold_provider;
 pub mod help;
 pub mod help_topics;
 pub mod highlights;

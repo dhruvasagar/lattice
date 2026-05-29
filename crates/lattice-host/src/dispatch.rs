@@ -9283,21 +9283,65 @@ impl Editor {
     /// sub-mode disabled).
     pub fn recompute_folds(&mut self) {
         let fm = self.foldmethod();
-        if matches!(fm, FoldMethod::Manual) {
+        // Pre-refactor parity: `foldmethod=manual` preserves the
+        // existing fold list verbatim (vim behaviour — the user has
+        // hand-curated `zf` folds and any leftover computed folds
+        // from a previous method swap). The registry path skips
+        // entirely until overlays land (D.3.f.1 reintroduces the
+        // path for the hunk-overlay-on-manual case via its own
+        // wake-driven `recompute_folds()` invocations).
+        if matches!(fm, FoldMethod::Manual) && self.fold_registry.overlays().count() == 0 {
             return;
         }
+        // D.3.f.0 (2026-05-29): registry dispatch. The primary
+        // provider keyed on `fm` runs first; then every registered
+        // overlay provider runs. Closed-state and `zf`-manual fold
+        // carry-over preserved verbatim from the pre-refactor path.
+        // Behaviour for the five built-in methods is unchanged.
+
+        // Build `FoldContext` once. Pre-resolve every input any
+        // registered provider might read so `compute()` stays pure.
         let snapshot = self.document.snapshot();
-        let mut next = match fm {
-            FoldMethod::Manual => return,
-            FoldMethod::Indent => crate::folds::compute_indent_folds(&snapshot.buffer),
-            FoldMethod::Markdown => crate::folds::compute_markdown_folds(&snapshot.buffer),
-            FoldMethod::Syntax => self.recompute_syntax_folds(&snapshot.buffer),
-            FoldMethod::Lsp => self.recompute_lsp_folds(&snapshot.buffer),
+        let path_buf = self.document.path().map(|p| p.to_path_buf());
+        let syntax_snapshot = self
+            .document_syntax_for(self.document_buffer_id)
+            .map(|h| h.snapshot());
+        let lsp_folds_vec: Option<Vec<Fold>> = {
+            use crate::per_buffer_cache::PerBufferCacheExt;
+            if self.lsp_folding_mode_enabled_for(self.document_buffer_id) {
+                self.lsp_folds_cache
+                    .get_for(self.document_buffer_id)
+                    .map(|c| c.folds.clone())
+            } else {
+                None
+            }
         };
+        // D.3.f.1 wires hunk inputs here once `HunkFoldProvider`
+        // lands; the field stays `None` in this slice.
+        let diff_hunks: Option<std::sync::Arc<lattice_diff::HunkIndex>> = None;
+
+        let ctx = crate::fold_provider::FoldContext {
+            buffer: &snapshot.buffer,
+            buffer_id: self.document_buffer_id,
+            path: path_buf.as_deref(),
+            syntax: syntax_snapshot.as_deref(),
+            lsp_folds: lsp_folds_vec.as_deref(),
+            diff_hunks: diff_hunks.as_deref(),
+        };
+
+        let mut next: Vec<Fold> = Vec::new();
+        if let Some(primary) = self.fold_registry.primary(fm) {
+            next.extend(primary.compute(&ctx));
+        }
+        for overlay in self.fold_registry.overlays() {
+            next.extend(overlay.compute(&ctx));
+        }
+
         // Carry over closed-state. Identity hash (heading text +
-        // depth) is the primary key so that adding a line to one
-        // section doesn't reopen the closed section above. Falls
-        // back to (start_line, end_line) when identity is missing.
+        // depth, node-kind for syntax, etc.) is the primary key so
+        // adding a line to one section doesn't reopen the closed
+        // section above. Falls back to (start_line, end_line) when
+        // identity is missing.
         for nf in next.iter_mut() {
             let prev = nf
                 .identity
@@ -9325,50 +9369,6 @@ impl Editor {
                 .then_with(|| b.end_line.cmp(&a.end_line))
         });
         self.folds = next;
-    }
-
-    /// Run the tree-sitter folds.scm provider against the live
-    /// `Syntax`, falling back to markdown / indent when the syntax
-    /// provider returns `None` (no `folds.scm` for this language, or
-    /// no parse tree yet).
-    fn recompute_syntax_folds(&self, buffer: &lattice_core::Buffer) -> Vec<Fold> {
-        if let Some(syntax) = self.document_syntax_for(self.document_buffer_id) {
-            let snap = syntax.snapshot();
-            if let Some(folds) = crate::folds::compute_syntax_folds(&snap) {
-                return folds;
-            }
-        }
-        let is_md = self
-            .document
-            .path()
-            .map(|p| {
-                p.extension()
-                    .and_then(|e| e.to_str())
-                    .map(|ext| ext.eq_ignore_ascii_case("md"))
-                    .unwrap_or(false)
-            })
-            .unwrap_or(false);
-        if is_md {
-            crate::folds::compute_markdown_folds(buffer)
-        } else {
-            crate::folds::compute_indent_folds(buffer)
-        }
-    }
-
-    /// 4.4.f: read the LSP fold cache for the active buffer. When
-    /// the cache is empty (request still in-flight, no server
-    /// attached, or sub-mode disabled), cascade to the syntax
-    /// provider so the user sees *some* folds rather than an empty
-    /// list.
-    fn recompute_lsp_folds(&self, buffer: &lattice_core::Buffer) -> Vec<Fold> {
-        use crate::per_buffer_cache::PerBufferCacheExt;
-        if self.lsp_folding_mode_enabled_for(self.document_buffer_id)
-            && let Some(cache) = self.lsp_folds_cache.get_for(self.document_buffer_id)
-            && !cache.folds.is_empty()
-        {
-            return cache.folds.clone();
-        }
-        self.recompute_syntax_folds(buffer)
     }
 
     /// 5.5.G.23: blocking grammar-dispatch entry. Drives every

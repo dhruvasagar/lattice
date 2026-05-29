@@ -1800,18 +1800,53 @@ shared with multibuffer-views and post-v1 inlay hints.
     / `DiffChange` / `DiffRemove` entries is a follow-on
     once the theme expansion slice lands. **1461 workspace
     tests green.**
-  - 🗒 **D.3.f** — Hunk fold provider. `HunkFoldProvider`
-    registers one fold range per hunk's current-side range
-    (`ranges[1]`) into the existing fold registry. **No new
-    keymaps** — the standard fold vocabulary (`za` / `zo` /
-    `zc` / `zR` / `zM`, `foldlevel=N`, `:foldopen` /
-    `:foldclose`) covers hunks identically to syntactic /
-    marker folds. Lands after D.3.e so fold-state interaction
-    with deletion-block virtual rows + tint backgrounds is
-    settled first. Composes with multibuffer M.7 / M.8 fold
-    providers via vim's "smallest enclosing fold wins" on
-    `za`. See `diff-system.md` §6.5 for the design
-    requirement.
+  - ✅ **D.3.f.0** (2026-05-29) — `FoldProvider` trait +
+    registry refactor. Substrate-only slice: `ProviderKind`
+    and `ProviderId` join `Fold` / `FoldMethod` in
+    `lattice-core::folding`; `FoldMethod` gains `#[derive(Hash)]`
+    so it can key the registry's primary map. New
+    `lattice-host/src/fold_provider.rs` ships
+    `FoldContext<'a>` (buffer + path + syntax + lsp_folds +
+    diff_hunks pre-loaded), the `FoldProvider` trait
+    (`id` + `kind` + `compute(&FoldContext)`), and
+    `FoldRegistry` with built-in `Manual` / `Indent` /
+    `Markdown` / `Syntax` / `Lsp` primary providers wrapping
+    today's `compute_*_folds` helpers (Syntax + Lsp keep
+    their cascades — markdown/indent fallback, syntax
+    cascade — inside the provider impls). New `Editor`
+    field `fold_registry: FoldRegistry` (built-ins seeded
+    via `Default`). `Editor::recompute_folds` reshaped to
+    pre-resolve the context once, dispatch the primary by
+    `FoldMethod`, iterate registered overlays, then run
+    today's closed-state and `zf`-manual carry-over
+    unchanged. Pre-refactor `recompute_syntax_folds` /
+    `recompute_lsp_folds` Editor methods retired (their
+    cascade logic moved into `SyntaxPrimary` / `LspPrimary`).
+    `Manual` foldmethod still early-returns when no
+    overlays are registered (preserves pre-refactor parity
+    for `:set foldmethod=syntax` → `:set foldmethod=manual`
+    transitions). No behaviour change for the five built-in
+    methods; 53 existing fold tests + 452 host tests green;
+    3 new registry tests (primary lookup, overlay
+    add/remove round-trip, same-id replace). Design lands
+    in [`fold-architecture.md`](../architecture/fold-architecture.md)
+    with the slice plan at
+    [`slice-plans/fold-architecture.md`](slice-plans/fold-architecture.md);
+    diff-system.md §6.5 still describes the consumer.
+    **1461 workspace tests green** (regression sweep
+    end-to-end).
+  - 🗒 **D.3.f.1** — `HunkFoldProvider` overlay (next).
+    Registers when `DiffSubsystem::open_session` runs;
+    deregisters in `drop_session`. Reads `FoldContext::diff_hunks`;
+    emits one `Fold` per non-empty current-side hunk;
+    identity = `hash(("diff:hunk", start_line, end_line))`.
+    `recompute_folds()` fires on each `DiffSession::publish_notify`
+    via a forwarder task. See `diff-system.md` §6.5 for the
+    design requirement; per-slice contract in
+    [`slice-plans/fold-architecture.md`](slice-plans/fold-architecture.md).
+  - 🗒 **D.3.f.2** — Bench `fold_recompute_p99_us` (100
+    hunks overlaid on a syntax primary, 5k-line file). CI
+    gate enforces the keystroke budget.
 - 🗒 **D.4** — Side-by-side two-way: `:diff`, `:diffthis`,
   `:diffsplit`, `:diffoff`; pane-group scroll-binding with
   hunk-correspondent row mapping.

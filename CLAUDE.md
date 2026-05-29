@@ -95,4 +95,4 @@ Keep **design fragments** and **slice plans** in separate files. Don't co-locate
 - **Cross-reference** — design doc links to the slice plan ("see slice plan for sequencing"), slice plan links to the design sections it implements.
 - When carving a slice mid-build, update the slice plan, not the design fragment, unless the design itself changed (e.g., a rejected alternative became the chosen path).
 
-Existing design fragments that grew a §9 Slice plan table (`diff-system.md`, `multibuffer-views.md`) violate this convention — they should migrate to `docs/dev/operations/slice-plans/` on the next opportunity.
+2026-05-29 cleanup migrated all existing per-subsystem slice plans into `docs/dev/operations/slice-plans/` — design fragments now own *what* and *why*, slice plans own *when* and *in what order*. New design fragments must follow the same pattern from day one.

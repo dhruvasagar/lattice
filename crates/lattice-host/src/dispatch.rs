@@ -1028,6 +1028,17 @@ impl Editor {
                     .diff_signs_for_active()
                     .unwrap_or_default(),
             }),
+            // D.3.b.1 (2026-05-29): snapshot the published
+            // virtual-row matrix. Empty when no provider has
+            // emitted rows (no active diff overlay, no
+            // multibuffer view, etc.). Renderer interleaves
+            // virtual rows with document rows via
+            // `rs.virtual_rows.matrix`.
+            virtual_rows: std::sync::Arc::new(
+                crate::render_state::VirtualRowsRenderState {
+                    matrix: self.virtual_rows_matrix_cell.load_full(),
+                },
+            ),
             ..RenderState::default()
         }
     }

@@ -2741,16 +2741,39 @@ fn draw_inactive_document(
         None
     };
 
+    // D.3.b.1 (2026-05-29): inactive-pane virtual-row
+    // interleaver. Mirrors the active-pane logic so a pane
+    // showing the same document as the active pane reads
+    // identically (deletion blocks land at the same anchor
+    // positions).
+    let virtual_rows_matrix = app.render_state.load().virtual_rows.matrix.clone();
+    let inactive_body_col_width = buffer_w;
     let mut lines: Vec<Line> = Vec::with_capacity(area.height as usize);
-    for i in 0..area.height as u32 {
+    let mut i: u32 = 0;
+    while (lines.len() as u32) < area.height as u32 {
         let buf_line = pane.scroll + i;
+        i += 1;
         if buf_line >= total_lines {
             lines.push(empty_marker_line(gutter_w));
             continue;
         }
+        // Emit Above-anchored virtual rows for this doc line.
+        for vrow in virtual_rows_at(
+            &virtual_rows_matrix,
+            buf_line,
+            lattice_cells::AnchorPosition::Above,
+        ) {
+            if (lines.len() as u32) >= area.height as u32 {
+                break;
+            }
+            lines.push(render_virtual_row(vrow, gutter_w, inactive_body_col_width));
+        }
+        if (lines.len() as u32) >= area.height as u32 {
+            break;
+        }
         let line_text = snap.buffer.line(buf_line).unwrap_or_default();
         let gutter = render_gutter_for_inactive(&view, pane.cursor.line, buf_line, gutter_w);
-        let spans = highlights.get(i as usize).map(Vec::as_slice).unwrap_or(&[]);
+        let spans = highlights.get((i - 1) as usize).map(Vec::as_slice).unwrap_or(&[]);
         let mut body = render_styled_line(&line_text, spans, buffer_w);
         // M.7.3.b: whitespace decoration pre-pass for inactive
         // panes too -- consistency with the active pane.
@@ -2789,6 +2812,18 @@ fn draw_inactive_document(
             gutter,
             body,
         ));
+        // D.3.b.1: emit Below-anchored virtual rows after the
+        // document row.
+        for vrow in virtual_rows_at(
+            &virtual_rows_matrix,
+            buf_line,
+            lattice_cells::AnchorPosition::Below,
+        ) {
+            if (lines.len() as u32) >= area.height as u32 {
+                break;
+            }
+            lines.push(render_virtual_row(vrow, gutter_w, inactive_body_col_width));
+        }
     }
     frame.render_widget(Paragraph::new(lines), area);
 }
@@ -3374,15 +3409,40 @@ fn compose_visible_lines_inner(
         }
     }
 
-    let mut out = Vec::with_capacity(height as usize);
-    for i in 0..height {
-        let line_idx = match visible.get(i as usize) {
-            Some(&l) => l,
+    // D.3.b.1 (2026-05-29): snapshot the virtual-row matrix
+    // so we can interleave Above / Below rows around document
+    // lines. Lock-free `Arc` clone; the matrix lives on the
+    // RenderState snapshot already loaded by callers.
+    let virtual_rows_matrix = view.app.render_state.load().virtual_rows.matrix.clone();
+    let body_col_width = buffer_w;
+    let mut out: Vec<Line<'static>> = Vec::with_capacity(height as usize);
+    let mut visible_idx: usize = 0;
+    while (out.len() as u32) < height {
+        let line_idx = match visible.get(visible_idx) {
+            Some(&l) => {
+                visible_idx += 1;
+                l
+            }
             None => {
                 out.push(empty_marker_line(gutter_w));
                 continue;
             }
         };
+        // D.3.b.1: emit Above-anchored virtual rows for this
+        // document line first.
+        for vrow in virtual_rows_at(
+            &virtual_rows_matrix,
+            line_idx,
+            lattice_cells::AnchorPosition::Above,
+        ) {
+            if (out.len() as u32) >= height {
+                break;
+            }
+            out.push(render_virtual_row(vrow, gutter_w, body_col_width));
+        }
+        if (out.len() as u32) >= height {
+            break;
+        }
         // Pull just this line's text (O(log n) lookup +
         // O(line_len) materialisation).
         let line_text = snap.buffer.line(line_idx).unwrap_or_default();
@@ -3815,6 +3875,19 @@ fn compose_visible_lines_inner(
             gutter,
             body,
         ));
+        // D.3.b.1: emit Below-anchored virtual rows for this
+        // document line, then continue to the next visible
+        // document line.
+        for vrow in virtual_rows_at(
+            &virtual_rows_matrix,
+            line_idx,
+            lattice_cells::AnchorPosition::Below,
+        ) {
+            if (out.len() as u32) >= height {
+                break;
+            }
+            out.push(render_virtual_row(vrow, gutter_w, body_col_width));
+        }
     }
     out
 }
@@ -4235,6 +4308,62 @@ const DIAG_GUTTER_WIDTH: u32 = 1;
 /// D.3.e will route them through the theme's `DiffAdd` /
 /// `DiffChange` / `DiffRemove` entries.
 const DIFF_SIGN_GUTTER_WIDTH: u32 = 1;
+
+/// D.3.b.1 (2026-05-29): iterate `VirtualRowMatrix` rows
+/// anchored at `line` with the given `position`. The matrix
+/// keeps rows sorted by `(anchor_line, position)` with
+/// `Above < Below`, so this is a single contiguous slice we
+/// just `take_while` over.
+fn virtual_rows_at<'a>(
+    matrix: &'a lattice_cells::VirtualRowMatrix,
+    line: u32,
+    position: lattice_cells::AnchorPosition,
+) -> impl Iterator<Item = &'a lattice_cells::VirtualRow> + 'a {
+    let start = matrix.first_row_at_or_after(line) as usize;
+    matrix.rows[start..]
+        .iter()
+        .take_while(move |r| r.anchor_line == line)
+        .filter(move |r| r.position == position)
+}
+
+/// D.3.b.1: render a virtual row as a ratatui `Line`.
+/// Emits the same blank severity + diff-sign + gutter prefix
+/// as a document row so the body column lines up exactly,
+/// then renders the row's cells as a single styled span with
+/// a dim-red background (the "this content existed in
+/// baseline but is gone / replaced in current" convention
+/// borrowed from Vim's `:diff` and GitHub-style diffs).
+/// Empty `cells` (D.3.a's empty placeholder) still emit a
+/// row of the correct width so the deletion appears as a
+/// visible gap.
+fn render_virtual_row(
+    vrow: &lattice_cells::VirtualRow,
+    gutter_w: u32,
+    body_width: u32,
+) -> Line<'static> {
+    let severity_blank = Span::styled(" ".to_string(), TuiStyle::default());
+    let diff_sign_blank = Span::styled(" ".to_string(), TuiStyle::default());
+    let gutter_blank = Span::styled(
+        " ".repeat(gutter_w as usize),
+        TuiStyle::default().fg(Color::DarkGray),
+    );
+    // Render cells as a single owned string, then style with
+    // the deletion-block backdrop.
+    let mut content = String::with_capacity(vrow.cells.len());
+    for cell in vrow.cells.iter() {
+        if let Some(ch) = char::from_u32(cell.codepoint) {
+            content.push(ch);
+        }
+    }
+    let used = content.chars().count() as u32;
+    if used < body_width {
+        for _ in 0..(body_width - used) {
+            content.push(' ');
+        }
+    }
+    let body = Span::styled(content, TuiStyle::default().bg(Color::Rgb(60, 0, 0)));
+    Line::from(vec![severity_blank, diff_sign_blank, gutter_blank, body])
+}
 
 /// D.3.e (2026-05-29): line background tint colour for
 /// `line_idx`, if any. Reuses the same `DiffSignMap` data

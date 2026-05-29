@@ -1571,6 +1571,28 @@ shared with multibuffer-views and post-v1 inlay hints.
     diff session" when there isn't one. **431 tests green**
     (2 new D.3.a.1: scratch-buffer error path,
     no-session-noop path).
+  - ✅ **D.3.b.1** (2026-05-29) — Virtual-row interleaver
+    wired to TUI renderer. Closes the rendering gap Dhruva
+    flagged during visual testing: `DiffOverlayRefreshTask`
+    was populating the `VirtualRowMatrix` correctly, but the
+    matrix had no path to the TUI renderer, so deletion blocks
+    never appeared on screen. New `RenderState::virtual_rows:
+    Arc<VirtualRowsRenderState>` substate exposes the
+    matrix; `build_render_state` snapshots from
+    `editor.virtual_rows_matrix_cell.load_full()` per publish.
+    New `virtual_rows_at(matrix, line, position)` helper
+    iterates anchored rows at a given line; new
+    `render_virtual_row(vrow, gutter_w, body_width)` emits a
+    ratatui `Line` with blank severity / diff-sign / gutter
+    columns matching the document-row layout + a dim-red bg
+    on the body (deletion-block convention from Vim's `:diff`
+    + GitHub-style diffs). Active-pane `for i in 0..height`
+    loop converted to `while (out.len() as u32) < height`
+    that emits Above-anchored virtual rows → document row →
+    Below-anchored virtual rows per visible doc line, stopping
+    when viewport height is reached. Mirror refactor in the
+    inactive-pane loop so cross-pane displays of the same
+    document stay consistent. **1461 workspace tests green.**
   - ✅ **D.3.b** (2026-05-29) — Deletion-block content from
     baseline snapshot. `DiffOverlayVirtualRowProvider`
     reshaped to hold a shared `Arc<Mutex<DiffOverlayCache>>`

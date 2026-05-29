@@ -124,6 +124,13 @@ pub struct RenderState {
     /// in `build_render_state` from
     /// `editor.diff_signs_for_active()`; absent ⇒ empty map.
     pub diff: Arc<DiffRenderState>,
+    /// D.3.b.1 (2026-05-29): virtual-rows render state.
+    /// Carries the published `VirtualRowMatrix` so the
+    /// renderer can interleave deletion-block + multibuffer-
+    /// header rows between document rows. Snapshot is taken
+    /// in `build_render_state` from
+    /// `editor.virtual_rows_matrix_cell.load_full()`.
+    pub virtual_rows: Arc<VirtualRowsRenderState>,
 }
 
 impl Default for RenderState {
@@ -149,8 +156,23 @@ impl Default for RenderState {
             theme: crate::ui::theme::Theme::default(),
             cells: Arc::new(CellsRenderState::default()),
             diff: Arc::new(DiffRenderState::default()),
+            virtual_rows: Arc::new(VirtualRowsRenderState::default()),
         }
     }
+}
+
+/// D.3.b.1 (2026-05-29): renderer-side projection of the
+/// virtual-rows worker's published `VirtualRowMatrix`.
+/// Carries the matrix so the TUI / GPUI renderer can
+/// interleave virtual rows between document rows when
+/// painting visible content.
+///
+/// `matrix` defaults to an empty `VirtualRowMatrix` so the
+/// renderer never has to handle an `Option`; an empty matrix
+/// reports no rows for any line.
+#[derive(Clone, Debug, Default)]
+pub struct VirtualRowsRenderState {
+    pub matrix: Arc<lattice_cells::VirtualRowMatrix>,
 }
 
 /// D.3.d.1 (2026-05-29): renderer-side projection of the

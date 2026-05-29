@@ -1620,6 +1620,35 @@ shared with multibuffer-views and post-v1 inlay hints.
     when viewport height is reached. Mirror refactor in the
     inactive-pane loop so cross-pane displays of the same
     document stay consistent. **1461 workspace tests green.**
+  - 🚧 **D.3.b.2** — Syntax highlighting inside deletion
+    blocks. Provider runs a one-shot tree-sitter parse of the
+    baseline rope via a new
+    `lattice_syntax::oneshot_highlight_lines(lang, registry,
+    source, start_line, end_line)` helper (wraps the existing
+    `Syntax::for_language_with_registry` + `parse` +
+    `snapshot().highlight_lines` chain without caching or
+    actor plumbing). Populates `Cell.fg` per char in the
+    rendered virtual rows. Renderers (TUI `render_virtual_row`,
+    GPUI `push_virtual_row`) walk cells and coalesce
+    adjacent same-fg runs into single
+    `Span`s / `TextRun`s — typical baseline line goes from
+    80 spans to ~5. Backdrop colour stays hardcoded red from
+    D.3.b.1; theme routing is D.3.b.3. Reason this needs its
+    own slice rather than reusing the document's
+    `SyntaxHandle`: baseline byte offsets diverge from
+    current's under hunks, so the actor-published spans
+    don't apply. Phantom-Document approach (Option C in
+    §6.6.1) was rejected as too heavy for v1. Language
+    detection uses the current document's `Lang` for the
+    baseline parse — same file, same lang.
+  - 🗒 **D.3.b.3** — Theme-routed deletion-block backdrop +
+    syntax style routing. Adds `DiffAdd`, `DiffChange`,
+    `DiffRemove`, `DiffConflict` entries to the theme.
+    Replaces D.3.b.1's hardcoded `Color::Rgb(60, 0, 0)` and
+    D.3.b.2's per-cell fg lookups with theme-resolved values.
+    Blocked on theme expansion to add the four entries; the
+    schema change probably wants its own slice in the theme
+    series.
   - ✅ **D.3.b** (2026-05-29) — Deletion-block content from
     baseline snapshot. `DiffOverlayVirtualRowProvider`
     reshaped to hold a shared `Arc<Mutex<DiffOverlayCache>>`

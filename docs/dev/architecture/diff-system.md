@@ -654,6 +654,94 @@ applies to keymap surface too.
 
 The slice plan (§9) lists D.3.f as the gate for this.
 
+### 6.6 Deletion-block content — syntax highlighting
+
+D.3.b lands raw baseline-text cells in deletion blocks with
+no per-cell styling (`Cell::with_codepoint` only — fg = 0,
+bg = 0). Renderers paint them as monochrome text on a dim
+red backdrop. D.3.b.2 extends the provider to populate
+`Cell.fg` from a tree-sitter parse of the baseline rope so
+deletion content reads like the rest of the editor:
+keywords, identifiers, strings, numbers all in their
+theme colours.
+
+#### 6.6.1 Why the baseline can't reuse the current
+#### document's syntax handle
+
+The current side's syntax pipeline runs through
+`SyntaxHandle`, which holds an actor-driven incremental
+parser tied to a `Document`. The baseline has no
+`Document` — it's an ephemeral `Rope` snapshot from
+`BaselineSource::snapshot()`. Reusing the current
+document's spans against the baseline rope is incorrect
+because byte offsets don't align across hunks (line 42 on
+baseline isn't line 42 on current).
+
+Three options considered (full discussion in
+[`docs/dev/operations/implementation.md`](../operations/implementation.md)
+D.3.b.2 entry):
+
+- **A — One-shot synchronous parse** of the baseline rope
+  through `lattice-syntax`. Returns spans in the same shape
+  the actor-based path returns. **Chosen.**
+- **B — Reuse the current document's spans.** Rejected:
+  byte offsets diverge under hunks.
+- **C — Synthesise a phantom `Document` for the baseline.**
+  Rejected for v1: heavy. Lifecycle complexity (open/close
+  alongside session, parse-error recovery, surface in
+  `:ls`), and incremental parsing doesn't help because the
+  baseline only changes when the session reopens against a
+  different file — every refresh is essentially a fresh
+  parse anyway.
+
+#### 6.6.2 The one-shot parse helper
+
+`lattice_syntax::oneshot_highlight_lines(lang, registry,
+source, start_line, end_line)` wraps:
+
+```rust
+let mut syntax = Syntax::for_language_with_registry(lang, registry)?;
+syntax.parse(source);
+syntax.snapshot().highlight_lines(start_line, end_line)
+```
+
+No caching, no actor, no incremental state. Returns
+`Option<Vec<Vec<StyledSpan>>>` — `None` when the language
+has no registered grammar (falls back to monochrome). The
+provider's refresh task calls this once per
+publish-notify wake and caches the result alongside the
+rendered virtual rows.
+
+#### 6.6.3 Backdrop colour stays hardcoded in v1
+
+D.3.b.2 only adds per-cell `fg`. The dim red backdrop
+(`Color::Rgb(60, 0, 0)` in TUI, `0x3c_00_00` in GPUI)
+stays hardcoded from D.3.b.1. Theme routing through
+`DiffAdd` / `DiffChange` / `DiffRemove` entries is a
+follow-on (D.3.b.3) blocked on theme expansion to add
+those entries.
+
+#### 6.6.4 Renderer-side span coalescing
+
+Naive per-cell emission produces one `Span` (TUI) or
+`TextRun` (GPUI) per character — a 80-char deletion line
+becomes 80 spans. Both renderers walk adjacent cells and
+coalesce runs with the same `(fg, flags)` into single
+spans. Typical baseline lines have 3-8 distinct token
+colours; coalescing collapses the per-cell explosion to
+the natural span count per line.
+
+#### 6.6.5 Language detection
+
+The provider stores the **current document's** `Lang` at
+construction time (looked up from the buffer's
+`Lang::detect_from_path` result) and reuses it for the
+baseline parse. Same file, same language — almost always
+true. The edge case where a user has set a different
+filetype on the current buffer than its path implies is
+ignored for v1; fix lands when the typed-options system
+exposes per-buffer language overrides.
+
 ## 7. Performance posture
 
 - **Hot path (per-keystroke):** Unchanged for buffers not

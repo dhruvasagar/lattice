@@ -18,11 +18,18 @@
 //!
 //! ## D.0a.1 scope — minimal
 //!
-//! - [`VirtualRowProviderRegistry`] — `BufferId`-agnostic for
-//!   v1 (single global matrix tied to the active document,
-//!   matching the `cells_matrix_cell` shape). Future
-//!   per-document matrices land alongside the multi-pane
-//!   diff slices.
+//! - [`VirtualRowProviderRegistry`] — `BufferId`-keyed (as of
+//!   D.4.d.2.1.a). Each visible buffer owns its own
+//!   `ProviderId → provider` map so baseline + current panes'
+//!   filler providers (D.4.c) coexist without colliding on
+//!   `ProviderId`, and the worker (post-D.4.d.2.1.b) can
+//!   iterate panes and poll each one's scope independently.
+//!   This slice keeps the worker single-pane: `recompute`
+//!   reads `active_document.document_buffer_id` and snapshots
+//!   only that buffer's providers. Today's sole producer (the
+//!   D.3.a inline diff overlay) registers against the same
+//!   buffer the worker reads, so behaviour is identical for
+//!   single-pane flows.
 //! - [`recompute`] — sync decision function. Tests call this
 //!   directly to assert each branch.
 //! - [`run`] — async loop. `wake.notified().await`s the
@@ -58,11 +65,23 @@ use arc_swap::ArcSwap;
 use tracing::{debug, info};
 
 use lattice_cells::{ProviderId, VirtualRow, VirtualRowMatrix, VirtualRowProvider, VirtualRowVersion};
+use lattice_core::BufferId;
 
 use crate::editor::VirtualRowsWake;
 use crate::render_state::RenderState;
 
-/// Process-wide registry of [`VirtualRowProvider`] instances.
+/// Process-wide registry of [`VirtualRowProvider`] instances,
+/// scoped per [`BufferId`] (D.4.d.2.1.a).
+///
+/// Each visible buffer that participates in the virtual-rows
+/// pipeline owns its own `ProviderId → provider` sub-map.
+/// Scoping by `BufferId` is what lets baseline + current
+/// panes of a side-by-side diff (D.4.d.3) both register
+/// filler providers (D.4.c) without colliding on
+/// `ProviderId`, even though the filler ids use side-
+/// distinct prefixes — registering against the wrong
+/// scope would still mis-route the rows when the worker
+/// (post-D.4.d.2.1.b) iterates per-pane.
 ///
 /// Mutation (`register` / `unregister`) is consumer-creation
 /// frequency — never per-frame. Read (`snapshot`) is per
@@ -71,7 +90,7 @@ use crate::render_state::RenderState;
 /// references.
 #[derive(Debug, Default)]
 pub struct VirtualRowProviderRegistry {
-	providers: Mutex<HashMap<ProviderId, Arc<dyn VirtualRowProvider>>>,
+	by_buffer: Mutex<HashMap<BufferId, HashMap<ProviderId, Arc<dyn VirtualRowProvider>>>>,
 }
 
 impl VirtualRowProviderRegistry {
@@ -79,55 +98,76 @@ impl VirtualRowProviderRegistry {
 		Self::default()
 	}
 
-	/// Register a provider. Returns `false` if a provider with
-	/// the same id was already registered (no replacement —
-	/// the caller is expected to `unregister` first).
-	pub fn register(&self, provider: Arc<dyn VirtualRowProvider>) -> bool {
+	/// Register a provider against `buffer_id`. Returns `false`
+	/// if a provider with the same id was already registered in
+	/// the same buffer scope (no replacement — the caller is
+	/// expected to `unregister` first). Providers with the same
+	/// id in *different* buffer scopes do not collide.
+	pub fn register(
+		&self,
+		buffer_id: BufferId,
+		provider: Arc<dyn VirtualRowProvider>,
+	) -> bool {
 		let id = provider.id();
-		let mut providers = self
-			.providers
+		let mut by_buffer = self
+			.by_buffer
 			.lock()
 			.expect("VirtualRowProviderRegistry mutex poisoned");
-		if providers.contains_key(&id) {
+		let scope = by_buffer.entry(buffer_id).or_default();
+		if scope.contains_key(&id) {
 			return false;
 		}
-		providers.insert(id, provider);
+		scope.insert(id, provider);
 		true
 	}
 
-	/// Remove a provider. Returns `true` if one was removed.
-	pub fn unregister(&self, id: ProviderId) -> bool {
-		self.providers
+	/// Remove a provider from `buffer_id`'s scope. Returns
+	/// `true` if one was removed. Empty scopes are pruned so
+	/// `is_empty()` reflects "no providers anywhere".
+	pub fn unregister(&self, buffer_id: BufferId, id: ProviderId) -> bool {
+		let mut by_buffer = self
+			.by_buffer
 			.lock()
-			.expect("VirtualRowProviderRegistry mutex poisoned")
-			.remove(&id)
-			.is_some()
+			.expect("VirtualRowProviderRegistry mutex poisoned");
+		let Some(scope) = by_buffer.get_mut(&buffer_id) else {
+			return false;
+		};
+		let removed = scope.remove(&id).is_some();
+		if scope.is_empty() {
+			by_buffer.remove(&buffer_id);
+		}
+		removed
 	}
 
-	/// Snapshot all registered providers. Returns fresh `Arc`
-	/// clones — callers can hold them past a concurrent
-	/// `unregister` (RCU). Order is unspecified.
-	pub fn snapshot(&self) -> Vec<Arc<dyn VirtualRowProvider>> {
-		self.providers
+	/// Snapshot providers registered against `buffer_id`. Returns
+	/// fresh `Arc` clones — callers can hold them past a
+	/// concurrent `unregister` (RCU). Order is unspecified.
+	/// Returns an empty `Vec` if the buffer has no scope.
+	pub fn snapshot(&self, buffer_id: BufferId) -> Vec<Arc<dyn VirtualRowProvider>> {
+		self.by_buffer
 			.lock()
 			.expect("VirtualRowProviderRegistry mutex poisoned")
-			.values()
-			.cloned()
-			.collect()
+			.get(&buffer_id)
+			.map(|scope| scope.values().cloned().collect())
+			.unwrap_or_default()
 	}
 
+	/// True iff no buffer scope holds any provider.
 	pub fn is_empty(&self) -> bool {
-		self.providers
+		self.by_buffer
 			.lock()
 			.expect("VirtualRowProviderRegistry mutex poisoned")
 			.is_empty()
 	}
 
+	/// Total provider count across all buffer scopes.
 	pub fn len(&self) -> usize {
-		self.providers
+		self.by_buffer
 			.lock()
 			.expect("VirtualRowProviderRegistry mutex poisoned")
-			.len()
+			.values()
+			.map(|scope| scope.len())
+			.sum()
 	}
 }
 
@@ -231,7 +271,14 @@ pub fn recompute(
 		return WorkerDecision::Clear;
 	}
 
-	let provider_snap = providers.snapshot();
+	// D.4.d.2.1.a: scope provider snapshot to the active
+	// document's buffer. Today's sole producer (D.3.a inline
+	// diff overlay) registers against the same buffer the
+	// worker reads, so single-pane behaviour is identical.
+	// D.4.d.2.1.b will iterate `rs.cells.panes` and snapshot
+	// each visible buffer's scope independently.
+	let active_buffer_id = rs.active_document.document_buffer_id;
+	let provider_snap = providers.snapshot(active_buffer_id);
 	let fingerprint = compute_fingerprint(&provider_snap, source_line_count);
 
 	if state.last_fingerprint == Some(fingerprint) {
@@ -305,9 +352,16 @@ mod tests {
 	use super::*;
 
 	use lattice_cells::AnchorPosition;
-	use lattice_core::Buffer;
+	use lattice_core::{Buffer, BufferId};
 	use lattice_runtime::DocumentSnapshot;
 	use std::sync::atomic::{AtomicU64, Ordering};
+
+	/// The active-document buffer id used across recompute
+	/// tests. Mirrors `RenderState::default()`'s
+	/// `active_document.document_buffer_id` (also
+	/// `BufferId(0)`) so providers registered against this
+	/// scope match what `recompute` snapshots.
+	const ACTIVE: BufferId = BufferId(0);
 
 	/// Test-only provider that returns a fixed set of rows and
 	/// reports a version bumped by tests via `set_version`.
@@ -382,21 +436,90 @@ mod tests {
 		let reg = VirtualRowProviderRegistry::new();
 		assert!(reg.is_empty());
 		let p = Arc::new(MockProvider::new(1, vec![]));
-		assert!(reg.register(p as Arc<dyn VirtualRowProvider>));
+		assert!(reg.register(ACTIVE, p as Arc<dyn VirtualRowProvider>));
 		assert_eq!(reg.len(), 1);
-		assert_eq!(reg.snapshot().len(), 1);
-		assert!(reg.unregister(1));
+		assert_eq!(reg.snapshot(ACTIVE).len(), 1);
+		assert!(reg.unregister(ACTIVE, 1));
 		assert!(reg.is_empty());
 	}
 
 	#[test]
-	fn registry_duplicate_register_returns_false() {
+	fn registry_duplicate_register_in_same_scope_returns_false() {
 		let reg = VirtualRowProviderRegistry::new();
 		let p1 = Arc::new(MockProvider::new(1, vec![]));
 		let p2 = Arc::new(MockProvider::new(1, vec![row(0, AnchorPosition::Above)]));
-		assert!(reg.register(p1 as Arc<dyn VirtualRowProvider>));
-		assert!(!reg.register(p2 as Arc<dyn VirtualRowProvider>));
+		assert!(reg.register(ACTIVE, p1 as Arc<dyn VirtualRowProvider>));
+		assert!(!reg.register(ACTIVE, p2 as Arc<dyn VirtualRowProvider>));
 		assert_eq!(reg.len(), 1);
+	}
+
+	/// D.4.d.2.1.a: same `ProviderId` in two distinct buffer
+	/// scopes coexist — this is what lets baseline + current
+	/// panes both run their filler providers without one
+	/// rejecting the other. Even though today's filler ids
+	/// (`0xD1FF_0001_*` vs `0xD1FF_0002_*`) are side-distinct,
+	/// the registry scoping is what makes the per-pane worker
+	/// iteration (D.4.d.2.1.b) sound when two providers
+	/// happen to share an id.
+	#[test]
+	fn registry_isolates_providers_by_buffer() {
+		let reg = VirtualRowProviderRegistry::new();
+		let baseline = BufferId(7);
+		let current = BufferId(8);
+		let p1 = Arc::new(MockProvider::new(42, vec![]));
+		let p2 = Arc::new(MockProvider::new(42, vec![row(0, AnchorPosition::Above)]));
+		assert!(reg.register(baseline, p1 as Arc<dyn VirtualRowProvider>));
+		assert!(reg.register(current, p2 as Arc<dyn VirtualRowProvider>));
+		assert_eq!(reg.len(), 2);
+		assert_eq!(reg.snapshot(baseline).len(), 1);
+		assert_eq!(reg.snapshot(current).len(), 1);
+	}
+
+	#[test]
+	fn registry_snapshot_scoped_to_buffer() {
+		let reg = VirtualRowProviderRegistry::new();
+		let bid_a = BufferId(1);
+		let bid_b = BufferId(2);
+		reg.register(
+			bid_a,
+			Arc::new(MockProvider::new(10, vec![])) as Arc<dyn VirtualRowProvider>,
+		);
+		reg.register(
+			bid_b,
+			Arc::new(MockProvider::new(20, vec![])) as Arc<dyn VirtualRowProvider>,
+		);
+		let snap_a = reg.snapshot(bid_a);
+		let snap_b = reg.snapshot(bid_b);
+		assert_eq!(snap_a.len(), 1);
+		assert_eq!(snap_a[0].id(), 10);
+		assert_eq!(snap_b.len(), 1);
+		assert_eq!(snap_b[0].id(), 20);
+		// Unknown buffer → empty snapshot, never a panic.
+		assert!(reg.snapshot(BufferId(99)).is_empty());
+	}
+
+	#[test]
+	fn registry_unregister_only_affects_its_buffer() {
+		let reg = VirtualRowProviderRegistry::new();
+		let bid_a = BufferId(1);
+		let bid_b = BufferId(2);
+		reg.register(
+			bid_a,
+			Arc::new(MockProvider::new(5, vec![])) as Arc<dyn VirtualRowProvider>,
+		);
+		reg.register(
+			bid_b,
+			Arc::new(MockProvider::new(5, vec![])) as Arc<dyn VirtualRowProvider>,
+		);
+		assert!(reg.unregister(bid_a, 5));
+		assert!(reg.snapshot(bid_a).is_empty());
+		assert_eq!(reg.snapshot(bid_b).len(), 1);
+		// Pruning: bid_a scope removed entirely → len drops to 1.
+		assert_eq!(reg.len(), 1);
+		// Idempotent: removing again is a no-op `false`, not a panic.
+		assert!(!reg.unregister(bid_a, 5));
+		// Unknown buffer unregister → false, no panic.
+		assert!(!reg.unregister(BufferId(99), 5));
 	}
 
 	// ── Fingerprint ───────────────────────────────────────────
@@ -464,7 +587,7 @@ mod tests {
 			1,
 			vec![row(1, AnchorPosition::Above), row(2, AnchorPosition::Below)],
 		));
-		reg.register(provider.clone() as Arc<dyn VirtualRowProvider>);
+		reg.register(ACTIVE, provider.clone() as Arc<dyn VirtualRowProvider>);
 		let cell = Arc::new(ArcSwap::from_pointee(VirtualRowMatrix::empty()));
 
 		let d = recompute(&mut state, &rs, &reg, &cell);
@@ -480,7 +603,7 @@ mod tests {
 		let rs = make_render_state_with_doc("a\nb\n");
 		let reg = VirtualRowProviderRegistry::new();
 		let provider = Arc::new(MockProvider::new(1, vec![row(0, AnchorPosition::Above)]));
-		reg.register(provider as Arc<dyn VirtualRowProvider>);
+		reg.register(ACTIVE, provider as Arc<dyn VirtualRowProvider>);
 		let cell = Arc::new(ArcSwap::from_pointee(VirtualRowMatrix::empty()));
 
 		let d1 = recompute(&mut state, &rs, &reg, &cell);
@@ -495,7 +618,7 @@ mod tests {
 		let rs = make_render_state_with_doc("a\nb\n");
 		let reg = VirtualRowProviderRegistry::new();
 		let provider = Arc::new(MockProvider::new(1, vec![row(0, AnchorPosition::Above)]));
-		reg.register(provider.clone() as Arc<dyn VirtualRowProvider>);
+		reg.register(ACTIVE, provider.clone() as Arc<dyn VirtualRowProvider>);
 		let cell = Arc::new(ArcSwap::from_pointee(VirtualRowMatrix::empty()));
 
 		recompute(&mut state, &rs, &reg, &cell);
@@ -537,12 +660,40 @@ mod tests {
 		let reg = VirtualRowProviderRegistry::new();
 		let p1 = Arc::new(MockProvider::new(1, vec![row(0, AnchorPosition::Above)]));
 		let p2 = Arc::new(MockProvider::new(2, vec![row(2, AnchorPosition::Below)]));
-		reg.register(p1 as Arc<dyn VirtualRowProvider>);
-		reg.register(p2 as Arc<dyn VirtualRowProvider>);
+		reg.register(ACTIVE, p1 as Arc<dyn VirtualRowProvider>);
+		reg.register(ACTIVE, p2 as Arc<dyn VirtualRowProvider>);
 		let cell = Arc::new(ArcSwap::from_pointee(VirtualRowMatrix::empty()));
 
 		recompute(&mut state, &rs, &reg, &cell);
 		let published = cell.load_full();
 		assert_eq!(published.len(), 2);
+	}
+
+	/// D.4.d.2.1.a: the worker scopes its provider snapshot
+	/// to the active document's buffer. A provider registered
+	/// against a *different* buffer must not contribute rows
+	/// to the active doc's matrix — load-bearing for
+	/// D.4.d.2.1.b's per-pane iteration, where each pane's
+	/// matrix only sees its own buffer's providers.
+	#[test]
+	fn recompute_only_polls_active_doc_providers() {
+		let mut state = VirtualRowsWorkerState::new();
+		let rs = make_render_state_with_doc("a\nb\nc\n");
+		let reg = VirtualRowProviderRegistry::new();
+		// Register against a buffer that is NOT the active one.
+		let foreign = BufferId(42);
+		assert_ne!(foreign, ACTIVE);
+		let provider = Arc::new(MockProvider::new(
+			1,
+			vec![row(0, AnchorPosition::Above), row(1, AnchorPosition::Below)],
+		));
+		reg.register(foreign, provider as Arc<dyn VirtualRowProvider>);
+		let cell = Arc::new(ArcSwap::from_pointee(VirtualRowMatrix::empty()));
+
+		let d = recompute(&mut state, &rs, &reg, &cell);
+		// Recomputed because the fingerprint of (no active-doc
+		// providers, line_count=4) is unseen; matrix is empty.
+		assert_eq!(d, WorkerDecision::Recomputed);
+		assert_eq!(cell.load_full().len(), 0);
 	}
 }

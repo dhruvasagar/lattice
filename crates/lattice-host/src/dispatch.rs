@@ -2512,15 +2512,20 @@ impl Editor {
         let overlay_cache_handle = overlay.cache_handle();
         let overlay_provider: std::sync::Arc<dyn lattice_cells::VirtualRowProvider> =
             overlay;
-        if !self.virtual_row_providers.register(overlay_provider.clone()) {
+        if !self
+            .virtual_row_providers
+            .register(buffer_id, overlay_provider.clone())
+        {
             // Already registered — the previous lookup told us
             // no session existed for this buffer, but a stale
             // provider from a previous registration cycle is
             // still in place. Clear it and try again.
             self.virtual_row_providers.unregister(
+                buffer_id,
                 crate::diff_overlay::diff_overlay_provider_id(buffer_id),
             );
-            self.virtual_row_providers.register(overlay_provider);
+            self.virtual_row_providers
+                .register(buffer_id, overlay_provider);
         }
 
         // D.3.b: spawn the off-worker refresh task. Does an
@@ -2837,8 +2842,10 @@ impl Editor {
             self.set_message(EchoLevel::Info, "No active diff session");
             return;
         }
-        self.virtual_row_providers
-            .unregister(crate::diff_overlay::diff_overlay_provider_id(buffer_id));
+        self.virtual_row_providers.unregister(
+            buffer_id,
+            crate::diff_overlay::diff_overlay_provider_id(buffer_id),
+        );
         if let Ok(mut map) = self.diff_forwarders.lock() {
             if let Some(handle) = map.remove(&buffer_id) {
                 handle.abort();

@@ -2134,10 +2134,39 @@ shared with multibuffer-views and post-v1 inlay hints.
         in `dispatch::tests` (active-doc Arc-identity
         invariant; lazy-insert + idempotent +
         distinct-per-buffer). 517 host tests green.
-      - 🗒 **D.4.d.2.1.a** —
-        `VirtualRowProviderRegistry` keyed per
-        `BufferId` so baseline + current panes' filler
-        providers don't collide.
+      - ✅ **D.4.d.2.1.a** (2026-05-29) —
+        `VirtualRowProviderRegistry` keyed per `BufferId`.
+        Internal storage flipped from
+        `HashMap<ProviderId, Arc<dyn VirtualRowProvider>>`
+        to `HashMap<BufferId, HashMap<ProviderId, Arc<dyn
+        VirtualRowProvider>>>`. `register` /
+        `unregister` / `snapshot` each take a `BufferId`
+        scope arg; `is_empty` / `len` reflect totals
+        across buffers. Empty inner scopes auto-prune on
+        `unregister` so `is_empty()` keeps meaning "no
+        providers anywhere." Worker's `recompute` now
+        snapshots only the active document's buffer
+        (`rs.active_document.document_buffer_id`),
+        mirroring the per-pane iteration D.4.d.2.1.b will
+        layer on. Today's sole producer — the D.3.a inline
+        diff overlay registered in `do_diff_open` —
+        registers against `buffer_id`, the same id the
+        worker reads in single-pane flows, so behaviour
+        is bit-identical for single-pane diff. Load-
+        bearing for D.4.d.2.1.b: with the registry scoped
+        per buffer, the worker can iterate visible panes
+        and snapshot each pane's buffer independently;
+        and baseline + current panes of a `:diffsplit`
+        can each register their filler providers
+        (D.4.c) without collisions even when ids
+        happen to overlap. Diff-off (`do_diff_off`)
+        likewise updates to pass `buffer_id`. **4 new
+        tests** in `virtual_rows_worker::tests`
+        (`registry_isolates_providers_by_buffer`,
+        `registry_snapshot_scoped_to_buffer`,
+        `registry_unregister_only_affects_its_buffer`,
+        `recompute_only_polls_active_doc_providers`).
+        521 host tests green; workspace build green.
       - 🗒 **D.4.d.2.1.b** —
         `virtual_rows_worker::recompute` iterates
         `rs.cells.panes`, writes per-buffer matrices via

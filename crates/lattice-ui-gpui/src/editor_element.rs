@@ -277,6 +277,11 @@ pub(crate) struct EditorElement {
     /// (`host_theme.cursor_line_bg` resolved by the caller, fallback
     /// Catppuccin surface0).
     pub(crate) cursorline_bg: u32,
+    /// D.3.b.3 (2026-05-29): backdrop colour for deletion-
+    /// block virtual rows. Resolved at construction time
+    /// from `host_theme.diff_deletion_block_bg.to_rgb_u32(0)`
+    /// so the paint pass doesn't need to hold a Theme.
+    pub(crate) diff_deletion_block_bg: u32,
     /// LSP inlay hints for the buffer (slice X3.full.4). Caller
     /// flattens labels and pre-applies padding; the element
     /// splices `text` at `byte` into each affected visible row's
@@ -934,6 +939,7 @@ impl Element for EditorElement {
                         &font,
                         font_size,
                         self.theme.foreground,
+                        self.diff_deletion_block_bg,
                         window,
                         &mut shaped_text,
                         &mut shaped_gutter,
@@ -999,6 +1005,7 @@ impl Element for EditorElement {
                         &font,
                         font_size,
                         self.theme.foreground,
+                        self.diff_deletion_block_bg,
                         window,
                         &mut shaped_text,
                         &mut shaped_gutter,
@@ -1537,6 +1544,7 @@ fn push_virtual_row(
     font: &gpui::Font,
     font_size: Pixels,
     body_color: u32,
+    backdrop_color: u32,
     window: &mut Window,
     shaped_text: &mut Vec<ShapedLine>,
     shaped_gutter: &mut Vec<ShapedLine>,
@@ -1631,7 +1639,7 @@ fn push_virtual_row(
     // column. Painted first in `overlay_quads_per_row` so
     // subsequent paints (none, for virtual rows) layer over.
     let backdrop_width = content_cols.max(1);
-    let backdrop = (0u32, backdrop_width, 0x3c_00_00u32);
+    let backdrop = (0u32, backdrop_width, backdrop_color);
     shaped_text.push(shaped_body);
     shaped_gutter.push(shaped_g);
     row_meta.push((u32::MAX, String::new()));

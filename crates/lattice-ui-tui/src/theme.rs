@@ -121,6 +121,32 @@ pub struct Theme {
     pub messages_warn_style: Style,
     /// Style for the `ERROR` level token. Red + bold.
     pub messages_error_style: Style,
+
+    // ---- Diff (D.3.b.3 2026-05-29) ---------------------------
+    /// Glyph color for the `+` sign in the diff gutter column
+    /// (D.3.d.1). The glyph itself is hardcoded `+`; this style
+    /// supplies its colour.
+    pub diff_add_sign_style: Style,
+    /// Glyph color for the `~` sign in the diff gutter column.
+    pub diff_change_sign_style: Style,
+    /// Glyph color for the `-` sign in the diff gutter column.
+    /// D.3.d.0 doesn't currently emit Remove on the current
+    /// side (deletion blocks surface removes), but the entry
+    /// is reserved for future renderers.
+    pub diff_remove_sign_style: Style,
+    /// Background tint applied to lines added in the current
+    /// side (D.3.e).
+    pub diff_add_line_bg: Color,
+    /// Background tint applied to lines changed in the current
+    /// side (D.3.e).
+    pub diff_change_line_bg: Color,
+    /// Background tint applied to deletion-block virtual rows
+    /// (D.3.b.1 / D.3.b.2). Sits behind the baseline-text cells
+    /// in the deletion block.
+    pub diff_deletion_block_bg: Color,
+    /// Background tint reserved for three-way conflict regions
+    /// (D.6). Unused in v1.
+    pub diff_conflict_line_bg: Color,
 }
 
 impl Default for Theme {
@@ -165,6 +191,16 @@ impl Default for Theme {
             messages_info_style: Style::new(),
             messages_warn_style: Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
             messages_error_style: Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
+
+            // D.3.b.3 (2026-05-29): defaults mirror
+            // `host_theme::Theme::default()` Diff section.
+            diff_add_sign_style: Style::new().fg(Color::Green).add_modifier(Modifier::BOLD),
+            diff_change_sign_style: Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            diff_remove_sign_style: Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
+            diff_add_line_bg: Color::Rgb(0, 50, 0),
+            diff_change_line_bg: Color::Rgb(50, 50, 0),
+            diff_deletion_block_bg: Color::Rgb(60, 0, 0),
+            diff_conflict_line_bg: Color::Rgb(60, 0, 60),
         }
     }
 }
@@ -302,6 +338,15 @@ impl From<&host_theme::Theme> for Theme {
             messages_info_style: host_style_to_ratatui(h.messages_info_style),
             messages_warn_style: host_style_to_ratatui(h.messages_warn_style),
             messages_error_style: host_style_to_ratatui(h.messages_error_style),
+            // D.3.b.3 (2026-05-29): diff entries adapt through
+            // the standard host→tui converters.
+            diff_add_sign_style: host_style_to_ratatui(h.diff_add_sign_style),
+            diff_change_sign_style: host_style_to_ratatui(h.diff_change_sign_style),
+            diff_remove_sign_style: host_style_to_ratatui(h.diff_remove_sign_style),
+            diff_add_line_bg: host_color_to_ratatui(h.diff_add_line_bg),
+            diff_change_line_bg: host_color_to_ratatui(h.diff_change_line_bg),
+            diff_deletion_block_bg: host_color_to_ratatui(h.diff_deletion_block_bg),
+            diff_conflict_line_bg: host_color_to_ratatui(h.diff_conflict_line_bg),
         }
     }
 }

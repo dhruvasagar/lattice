@@ -1641,8 +1641,7 @@ shared with multibuffer-views and post-v1 inlay hints.
     §6.6.1) was rejected as too heavy for v1. Language
     detection uses the current document's `Lang` for the
     baseline parse — same file, same lang.
-  - 🗒 **D.3.b.3** — Theme-routed deletion-block backdrop +
-    syntax style routing. Adds `DiffAdd`, `DiffChange`,
+  - ✅ **D.3.b.3** (2026-05-29) — Theme-routed diff colours. Adds `DiffAdd`, `DiffChange`,
     `DiffRemove`, `DiffConflict` entries to the theme.
     Replaces D.3.b.1's hardcoded `Color::Rgb(60, 0, 0)` and
     D.3.b.2's per-cell fg lookups with theme-resolved values.

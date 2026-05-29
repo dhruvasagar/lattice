@@ -2766,7 +2766,7 @@ fn draw_inactive_document(
             if (lines.len() as u32) >= area.height as u32 {
                 break;
             }
-            lines.push(render_virtual_row(vrow, gutter_w, inactive_body_col_width));
+            lines.push(render_virtual_row(&view, vrow, gutter_w, inactive_body_col_width));
         }
         if (lines.len() as u32) >= area.height as u32 {
             break;
@@ -2822,7 +2822,7 @@ fn draw_inactive_document(
             if (lines.len() as u32) >= area.height as u32 {
                 break;
             }
-            lines.push(render_virtual_row(vrow, gutter_w, inactive_body_col_width));
+            lines.push(render_virtual_row(&view, vrow, gutter_w, inactive_body_col_width));
         }
     }
     frame.render_widget(Paragraph::new(lines), area);
@@ -3469,7 +3469,7 @@ fn compose_visible_lines_inner(
             if (out.len() as u32) >= height {
                 break;
             }
-            out.push(render_virtual_row(vrow, gutter_w, body_col_width));
+            out.push(render_virtual_row(view, vrow, gutter_w, body_col_width));
         }
         if (out.len() as u32) >= height {
             break;
@@ -3917,7 +3917,7 @@ fn compose_visible_lines_inner(
             if (out.len() as u32) >= height {
                 break;
             }
-            out.push(render_virtual_row(vrow, gutter_w, body_col_width));
+            out.push(render_virtual_row(view, vrow, gutter_w, body_col_width));
         }
     }
     out
@@ -4368,6 +4368,7 @@ fn virtual_rows_at<'a>(
 /// row of the correct width so the deletion appears as a
 /// visible gap.
 fn render_virtual_row(
+    view: &FrameView<'_>,
     vrow: &lattice_cells::VirtualRow,
     gutter_w: u32,
     body_width: u32,
@@ -4379,13 +4380,14 @@ fn render_virtual_row(
         TuiStyle::default().fg(Color::DarkGray),
     );
     // D.3.b.2 (2026-05-29): emit per-cell spans with run
-    // coalescing — adjacent cells sharing the same `fg` (and
-    // both ASCII / both non-control) merge into a single
-    // styled Span so an 80-char baseline line produces ~5
-    // spans, not 80. Each cell carries the deletion-block
-    // backdrop (`Color::Rgb(60,0,0)`); `fg = 0` means
-    // "use terminal default" (the renderer leaves fg unset).
-    let bg = Color::Rgb(60, 0, 0);
+    // coalescing — adjacent cells sharing the same `fg`
+    // merge into a single styled Span so an 80-char
+    // baseline line produces ~5 spans, not 80. Each cell
+    // carries the deletion-block backdrop from the theme
+    // (D.3.b.3 — `theme.diff_deletion_block_bg`).
+    // `cell.fg = 0` means "use terminal default" (the
+    // renderer leaves fg unset).
+    let bg = view.app.theme.diff_deletion_block_bg;
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut run_text = String::new();
     let mut run_fg: Option<u32> = None;
@@ -4452,8 +4454,9 @@ fn diff_tint_bg(view: &FrameView<'_>, line_idx: u32) -> Option<Color> {
     use lattice_host::diff_overlay::DiffSignKind;
     let rs = view.app.render_state.load();
     match rs.diff.sign_map.sign_at(line_idx)? {
-        DiffSignKind::Add => Some(Color::Rgb(0, 50, 0)),
-        DiffSignKind::Change => Some(Color::Rgb(50, 50, 0)),
+        // D.3.b.3: read tint colours from the theme.
+        DiffSignKind::Add => Some(view.app.theme.diff_add_line_bg),
+        DiffSignKind::Change => Some(view.app.theme.diff_change_line_bg),
         // Remove hunks have no current-side row to tint;
         // D.3.b's deletion block is the visible surface.
         DiffSignKind::Remove => None,
@@ -4493,17 +4496,20 @@ fn render_diff_sign_cell(
     let Some(kind) = rs.diff.sign_map.sign_at(line_idx) else {
         return blank;
     };
-    let (glyph, fg) = match kind {
-        DiffSignKind::Add => ('+', Color::Green),
-        DiffSignKind::Change => ('~', Color::Yellow),
+    // D.3.b.3: glyph stays hardcoded (convention), style
+    // reads from theme so the bold + colour follow the user's
+    // diagnostic-style preferences too.
+    let (glyph, style) = match kind {
+        DiffSignKind::Add => ('+', view.app.theme.diff_add_sign_style),
+        DiffSignKind::Change => ('~', view.app.theme.diff_change_sign_style),
         // D.3.d.0 deliberately doesn't classify any
         // current-side line as Remove — Remove hunks have an
         // empty current range. The arm is kept exhaustive
         // anyway in case a future refactor (e.g., classifying
         // deletion-block anchors) starts emitting it.
-        DiffSignKind::Remove => ('-', Color::Red),
+        DiffSignKind::Remove => ('-', view.app.theme.diff_remove_sign_style),
     };
-    Span::styled(glyph.to_string(), TuiStyle::default().fg(fg))
+    Span::styled(glyph.to_string(), style)
 }
 
 /// Build the severity-column cell for `line_idx`. Returns one

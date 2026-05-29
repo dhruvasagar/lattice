@@ -1206,11 +1206,24 @@ impl EditorView {
                     .sign_at(line_idx as u32)
                     .map(|kind| {
                         use lattice_host::diff_overlay::DiffSignKind;
-                        match kind {
-                            DiffSignKind::Add => ('+', 0x33_AA_33),
-                            DiffSignKind::Change => ('~', 0xCC_AA_22),
-                            DiffSignKind::Remove => ('-', 0xCC_33_33),
-                        }
+                        // D.3.b.3 (2026-05-29): read sign
+                        // colours from the host theme. Glyphs
+                        // stay hardcoded (convention).
+                        let style = match kind {
+                            DiffSignKind::Add => host_theme.diff_add_sign_style,
+                            DiffSignKind::Change => host_theme.diff_change_sign_style,
+                            DiffSignKind::Remove => host_theme.diff_remove_sign_style,
+                        };
+                        let fg = style
+                            .fg
+                            .map(|c| c.to_rgb_u32(0))
+                            .unwrap_or(host_theme.foreground.to_rgb_u32(0));
+                        let glyph = match kind {
+                            DiffSignKind::Add => '+',
+                            DiffSignKind::Change => '~',
+                            DiffSignKind::Remove => '-',
+                        };
+                        (glyph, fg)
                     });
                 crate::editor_element::GutterLineMeta {
                     line_idx: line_idx as u32,
@@ -1233,9 +1246,13 @@ impl EditorView {
             .map(|line_idx| {
                 rs_guard.diff.sign_map.sign_at(line_idx as u32).and_then(|kind| {
                     use lattice_host::diff_overlay::DiffSignKind;
+                    // D.3.b.3 (2026-05-29): read line tint
+                    // colours from the host theme.
                     match kind {
-                        DiffSignKind::Add => Some(0x00_32_00),
-                        DiffSignKind::Change => Some(0x32_32_00),
+                        DiffSignKind::Add => Some(host_theme.diff_add_line_bg.to_rgb_u32(0)),
+                        DiffSignKind::Change => {
+                            Some(host_theme.diff_change_line_bg.to_rgb_u32(0))
+                        }
                         DiffSignKind::Remove => None,
                     }
                 })
@@ -1564,6 +1581,10 @@ impl EditorView {
             substitute_matches,
             doc_highlights,
             cursorline_bg,
+            // D.3.b.3 (2026-05-29): resolve deletion-block
+            // backdrop colour from the host theme so the paint
+            // pass doesn't need to hold a Theme reference.
+            diff_deletion_block_bg: host_theme.diff_deletion_block_bg.to_rgb_u32(0),
             inlay_hints,
             diagnostic_underlines,
             inlay_color,

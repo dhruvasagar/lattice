@@ -71,6 +71,13 @@ pub mod pane_group;
 // + row + member-index pair. Composed with D.4.a, consumed
 // by D.4.d (`:diffsplit` / `:diffthis`).
 pub mod diff_pane_group;
+// D.4.c (2026-05-29): `FillerRowProvider` — emits blank
+// virtual rows on whichever side of a side-by-side diff is
+// shorter for each hunk, so hunks align visually between
+// the two panes. One provider per side. Pure-sync collect
+// (no off-thread render needed — work is O(hunks)).
+// Consumed by D.4.d (`:diffsplit` / `:diffthis`).
+pub mod diff_filler;
 pub mod help;
 pub mod help_topics;
 pub mod highlights;

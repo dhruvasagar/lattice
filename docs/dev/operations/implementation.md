@@ -1954,7 +1954,43 @@ shared with multibuffer-views and post-v1 inlay hints.
     unfamiliar member pair = identity, round-trip through
     published session. 487 host + 1461 workspace tests
     green.
-  - 🗒 **D.4.c** — Filler-row provider for hunk alignment.
+  - ✅ **D.4.c** (2026-05-29) — `FillerRowProvider` landed.
+    New `lattice-host/src/diff_filler.rs`. `Side` enum
+    distinguishes the two providers a side-by-side session
+    needs (one per pane). Pure-sync `collect()` walks the
+    session's published `HunkIndex` and translates each
+    hunk into zero or more blank `VirtualRow`s on the
+    shorter side via `compute_filler_rows`. Algorithm:
+    `|baseline_len - current_len|` filler rows on the
+    shorter side; anchor at `range.start` with `Above` when
+    the shorter range is empty (Add ⇒ baseline, Remove ⇒
+    current), or `range.end - 1` with `Below` when both
+    sides have lines (Change with one shorter). No
+    off-thread refresh task — the work is O(hunks) and
+    trivial; pure `current_hunks()` read inside `collect()`.
+    Provider id namespaced with side-distinct bits
+    (`0xD1FF_0001_*` baseline, `0xD1FF_0002_*` current) so
+    both sides coexist with the inline overlay provider
+    (`0xD1FF_0000_*`) in the global virtual-rows registry.
+    Conflict hunks skipped (three-way axis — D.6 territory);
+    malformed hunks (< 2 ranges) skipped defensively.
+    **14 tests**: empty index = no fillers, Add = baseline
+    only, Remove = current only, Change baseline-longer =
+    current fillers Below, Change current-longer = baseline
+    fillers Below, Change equal = no fillers, multiple
+    hunks accumulate independently per side, Conflict
+    skipped, malformed skipped, provider ids distinct per
+    side, no overlay-namespace collision, collect reads
+    published hunks, version changes with session revision,
+    version differs across sides at rev 0. 501 host + 1461
+    workspace tests green. **Wiring caveat:** the virtual-
+    rows worker is currently single-document
+    (`Editor::virtual_rows_matrix_cell` is one global
+    matrix tied to the active document). For side-by-side
+    rendering to show fillers on *both* panes
+    simultaneously, the worker needs per-document
+    matrices. That upgrade lands in D.4.d alongside the
+    `:diffsplit` wiring.
   - 🗒 **D.4.d** — `:diffsplit` / `:diffthis` ex-commands.
   - 🗒 **D.4.e** — Bench `pane_group_scroll_p99_us`.
 - 🗒 **D.5** — Hunk transfer operators `do` / `dp` via

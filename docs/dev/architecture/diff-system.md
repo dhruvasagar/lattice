@@ -543,6 +543,21 @@ Both are **motions**, not commands — `d]c` (delete through next
 hunk), `c]c` (change through next hunk), `v]c` (visual-select
 through next hunk) all compose for free.
 
+**Hunk navigation vs. file navigation in multi-file diff
+views.** When a diff view is mounted on top of a multibuffer
+(project-wide diff per `multibuffer-views.md` A.1, AI
+multi-file diff per A.2), `]c` / `[c` walk hunks within the
+current excerpt's row range, and `multibuffer-views.md` §6.1's
+`]E` / `[E` walk between files (= excerpt-source boundaries).
+The two-axis split is by design: a user reviewing 50 files'
+worth of proposed edits wants `]E` to jump file-to-file
+without scrolling every hunk; `]c` then refines within a
+file. `]e` / `[e` walk individual excerpts within a file
+(useful when one file has multiple non-contiguous hunks
+rendered as separate excerpts). No diff-system-specific
+file-navigation keybindings — multibuffer-views' excerpt
+motions cover the case.
+
 ### 6.2 Operators
 
 | Surface | Registered as | Vim equivalent | Behaviour |

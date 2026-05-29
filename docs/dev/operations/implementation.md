@@ -1596,9 +1596,42 @@ shared with multibuffer-views and post-v1 inlay hints.
     out-of-range baseline → empty cells, collect returns
     cached rows, version folds session revision + cache
     version).
-  - 🗒 **D.3.c** — `]c` / `[c` motions. Register hunk-jump
-    motions in the keymap + grammar; jump source = the
-    session's published `HunkIndex` ranges[1] (current side).
+  - ✅ **D.3.c** (2026-05-29) — Hunk navigation. New
+    `Effect::NextHunk` + `Effect::PrevHunk` in `lattice-grammar`;
+    `ex:hunk-next` / `ex:hunk-prev` ex-commands registered
+    (Keyword surface, Display latency); aliases `hunk-next` /
+    `hunk-prev` in `lattice-host::excommand`. New
+    `Editor::do_next_hunk` / `do_prev_hunk` methods look up
+    the active diff session, walk `HunkIndex` sorted by
+    `ranges[1].start` (current side), find next / prev hunk
+    strictly past / before the cursor's line, wrap on
+    no-match. Surfaces info messages on no-session
+    ("no diff session") or empty-hunks ("no hunks"). Match
+    arms updated in lattice-host effect_mutates +
+    effect_mutates_or_yanks, lattice-ui-tui dispatch
+    (Effect → method dispatch + no-op groupings), and
+    lattice-ui-gpui no-op grouping. **Direct `]c` / `[c`
+    chord binding deferred** — matches the precedent
+    established by `]d` (diagnostic jump) which is currently
+    accessible via `:diag-next` but not yet bound to the `]d`
+    chord pending the 8.g normal-mode keymap audit slices.
+    Both `:hunk-next` / `:hunk-prev` work today. Design
+    fragment §6.1 expanded with the hunk-vs-file two-axis
+    composition note: when a diff view is mounted on top of a
+    multibuffer (project-wide A.1, AI multi-file A.2),
+    `]c` / `[c` walk hunks within the current excerpt while
+    `multibuffer-views.md` §6.1's `]E` / `[E` walk between
+    files (= excerpt-source boundaries). No diff-system-
+    specific file-navigation keybindings — the multibuffer
+    "different-source" excerpt motions ARE the file-nav
+    primitive in those contexts. Mirror notes added to
+    multibuffer-views.md §A.1 (`ProjectDiffProvider`) + §A.2
+    (`AIProposedEditsProvider`) so future provider
+    implementers don't re-litigate the composition. **5 new
+    D.3.c tests** (no-session messages on both motions,
+    next walks forward + wraps to first, prev walks
+    backward + wraps to last, empty-HunkIndex info message);
+    **439 lattice-host unit tests green**.
   - 🗒 **D.3.d** — Gutter sign rendering. `+` / `-` / `~`
     sprites in the gutter column for Add / Remove / Change
     hunks; reuses §5.6.7 icon atlas.

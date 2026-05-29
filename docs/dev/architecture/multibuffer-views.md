@@ -374,6 +374,20 @@ The "different-source" variants matter for project-wide
 flows: in a multibuffer with 47 excerpts across 12 files,
 `]E` walks files, `]e` walks excerpts.
 
+**Hunk navigation vs. file navigation in multi-file diff
+views.** In a project-wide diff (`A.1` `ProjectDiffProvider`)
+or AI multi-file diff (`A.2` `AIProposedEditsProvider`), the
+two navigation axes compose cleanly: `]c` / `[c` (from
+diff-system.md §6.1 / D.3.c) walk hunks within the current
+excerpt; `]E` / `[E` walk file boundaries (= excerpt-source
+boundaries). The user gets both axes for free, with no new
+diff-specific keybindings, because the multibuffer's
+"different-source" excerpt navigation is exactly what
+"navigate between files" means in these contexts.
+`]e` / `[e` walk individual excerpts within a file — useful
+when one file has multiple non-contiguous hunks rendered as
+separate excerpts.
+
 ### 6.2 Operators
 
 No new operators. Existing operators (`d`, `c`, `y`, `>`,
@@ -550,6 +564,14 @@ gutter signs nest inside each excerpt's row range. UX: "show
 me everything that changed in the repo as one scrollable,
 editable diff."
 
+**Navigation surface**: `]c` / `[c` walk hunks within the
+current file's excerpt (the diff-system motion). `]E` / `[E`
+walk between files (the multibuffer "different-source"
+motion — §6.1). `]e` / `[e` walk individual excerpts within
+a file when one file has multiple non-contiguous hunks. No
+new keybindings needed; the two-axis nav falls out of the
+composition.
+
 Slice cost: one provider + the inline-DiffMap-inside-excerpt
 composition path.
 
@@ -564,6 +586,13 @@ Code `openDiff`"), emits one excerpt per changed file
 covering the dirty hunks. The multibuffer renders inline
 diff per-excerpt. UX: "Claude wants to change 8 files —
 review them all in one view, accept or reject per-hunk."
+
+**Navigation surface**: same two-axis composition as A.1.
+`]c` / `[c` walk hunks within the current proposed-file
+excerpt; `]E` / `[E` walk between files (each file is its
+own excerpt source). For an 8-file proposal, `]E` is "next
+file" without scrolling through every hunk in the current
+one.
 
 Slice cost: one provider + the per-excerpt acceptance plumbing
 (routes to the underlying `DiffSession::completion` oneshot

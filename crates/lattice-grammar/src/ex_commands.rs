@@ -71,6 +71,12 @@ pub struct ExBuiltins {
     /// D.3.a.1 (2026-05-29): `:diffoff` — close the active
     /// document's diff session.
     pub diff_off: ExCommandId,
+    /// D.3.c (2026-05-29): `:hunk-next` / `]c` — jump to next
+    /// diff hunk on the current side.
+    pub hunk_next: ExCommandId,
+    /// D.3.c (2026-05-29): `:hunk-prev` / `[c` — jump to
+    /// previous diff hunk on the current side.
+    pub hunk_prev: ExCommandId,
     pub list_modes: ExCommandId,
     pub describe_mode: ExCommandId,
     pub describe_option_resolution: ExCommandId,
@@ -879,6 +885,36 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             accepts_range: false,
             parse_args: Box::new(parse_no_args),
             apply: Box::new(|_| Ok(Effect::DiffOff)),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let hunk_next = registry.register_ex_command(
+        "ex:hunk-next",
+        "Jump cursor to the start of the next diff hunk on \
+         the current side. Wraps to top. `]c` / `:hunk-next`. \
+         D.3.c.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::NextHunk)),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let hunk_prev = registry.register_ex_command(
+        "ex:hunk-prev",
+        "Jump cursor to the start of the previous diff hunk \
+         on the current side. Wraps to bottom. `[c` / \
+         `:hunk-prev`. D.3.c.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::PrevHunk)),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -1716,6 +1752,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         describe_diff,
         diff_open,
         diff_off,
+        hunk_next,
+        hunk_prev,
         list_modes,
         describe_mode,
         describe_option_resolution,

@@ -456,6 +456,14 @@ pub enum Effect {
     /// `:diffoff` -- close the active document's diff session
     /// (if any). D.3.a.1.
     DiffOff,
+    /// `]c` / `:hunk-next` -- jump cursor to the start of the
+    /// next diff hunk on the current side (`ranges[1]`).
+    /// Wraps to top. D.3.c.
+    NextHunk,
+    /// `[c` / `:hunk-prev` -- jump cursor to the start of the
+    /// previous diff hunk on the current side. Wraps to
+    /// bottom. D.3.c.
+    PrevHunk,
     /// `:describe-event <name>` -- render the descriptor for a
     /// single registered event (M.5.3.c). The introspection
     /// counterpart of `:describe-command` for events.

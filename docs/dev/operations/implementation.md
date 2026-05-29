@@ -2195,12 +2195,48 @@ shared with multibuffer-views and post-v1 inlay hints.
         `cells_panes_share_virtual_rows_matrix_when_buffers_match`).
         523 host tests green; workspace build green.
         Mirror of D.4.d.1.a.
-      - 🗒 **D.4.d.2.1.c** —
-        `virtual_rows_worker::recompute` iterates
-        `rs.cells.panes`, writes via
-        `pane.virtual_rows_matrix.store(...)`. Per-
-        buffer fingerprint cache. Drops `matrix_cell`
-        parameter from `run`. Mirror of D.4.d.1.b.
+      - ✅ **D.4.d.2.1.c** (2026-05-30) —
+        `virtual_rows_worker` iterates `rs.cells.panes`.
+        `recompute` reshape: from a single global
+        `matrix_cell` write into an iteration over
+        every visible pane (`rs.cells.panes`),
+        dispatching to a new `recompute_pane` helper
+        that writes via `pane.virtual_rows_matrix`
+        (D.4.d.2.1.b publish-time scaffold). Aggregate
+        decision precedence is `Recomputed > Clear >
+        CacheHit` (mirror of cells, minus the
+        incremental path virtual rows don't have).
+        Empty `rs.cells.panes` ⇒ `CacheHit` (was
+        `Clear` pre-cutover); pane with `snapshot:
+        None` ⇒ that pane's matrix cleared, aggregate
+        `Clear`. `VirtualRowsWorkerState::last_fingerprint:
+        Option<u64>` becomes `last_fingerprints:
+        HashMap<BufferId, u64>` so two visible buffers
+        cache-hit independently; `next_publish_version`
+        stays a single monotonic counter (per-matrix
+        strictly-monotonic is what downstream consumers
+        actually need). Worker `run` drops the
+        `matrix_cell` parameter; `editor_boot` passes
+        only `(render_state, wake, providers,
+        paint_request)`. The active-pane Arc-identity
+        invariant (D.4.d.2.0 boot seed) means worker
+        writes for the active pane still land on
+        `virtual_rows_matrix_cell`, preserving the
+        existing renderer read path through
+        `RenderState.virtual_rows.matrix` until
+        D.4.d.2.1.d swaps in a per-pane lookup.
+        Existing 8 recompute tests adapted to the
+        pane-driven shape via three new helpers
+        (`pane_inputs`, `rs_with_panes`,
+        `snapshot_with_text` + `rs_with_single_pane`).
+        **4 new tests** mirror cells D.4.d.1.b
+        (`recompute_empty_panes_is_cache_hit`,
+        `recompute_pane_without_snapshot_clears_its_matrix`,
+        `two_panes_distinct_buffers_both_rebuild`,
+        `per_pane_cache_hit_skips_unchanged_pane`,
+        `two_panes_sharing_buffer_share_one_matrix_write`).
+        527 host tests green; workspace build green.
+        Mirror of D.4.d.1.b.
       - 🗒 **D.4.d.2.1.d** —
         `VirtualRowsRenderState::pane_matrices` +
         `matrix_for_pane(pane_id)` lookup. Mirror of

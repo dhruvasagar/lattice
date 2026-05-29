@@ -729,11 +729,21 @@ impl Editor {
         let virtual_row_providers: std::sync::Arc<
             crate::virtual_rows_worker::VirtualRowProviderRegistry,
         > = std::sync::Arc::default();
+        // D.4.d.2.1.c (2026-05-30): `run` no longer takes the
+        // `virtual_rows_matrix_cell` directly — the worker
+        // writes per-pane via `pane.virtual_rows_matrix`
+        // sourced from `Editor::virtual_rows_matrices` at
+        // publish (D.4.d.2.1.b). The active-pane Arc-identity
+        // invariant (D.4.d.2.0 boot seed) means worker writes
+        // for the active pane still land on
+        // `virtual_rows_matrix_cell`, preserving the existing
+        // renderer read path through
+        // `RenderState.virtual_rows.matrix` until D.4.d.2.1.d
+        // swaps in a per-pane lookup.
         runtime_handle.spawn(crate::virtual_rows_worker::run(
             render_state_arc.clone(),
             virtual_rows_wake.clone(),
             virtual_row_providers.clone(),
-            virtual_rows_matrix_cell.clone(),
             paint_request.clone(),
         ));
 

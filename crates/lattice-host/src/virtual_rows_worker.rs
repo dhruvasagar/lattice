@@ -173,38 +173,50 @@ impl VirtualRowProviderRegistry {
 
 /// Recompute decision the worker takes on a wake. Visible for
 /// testing; the production loop calls [`recompute`] directly.
+///
+/// As of D.4.d.2.1.c the worker iterates `rs.cells.panes` and
+/// produces one decision per pane; the aggregate decision
+/// returned to `run` is the highest-precedence one across
+/// panes (`Recomputed > Clear > CacheHit`).
 #[derive(Debug, PartialEq, Eq)]
 pub enum WorkerDecision {
-	/// No active document. Worker cleared the matrix (or
-	/// noted it was already empty). Renderer should treat
-	/// the matrix as having no virtual rows.
+	/// Pane had no document snapshot (transient race during
+	/// buffer close, or non-Document leaf — though the
+	/// publisher already filters those out). Worker cleared
+	/// that pane's matrix (or noted it was already empty).
 	Clear,
 	/// Fingerprint of `(providers × versions, source_line_count)`
-	/// matches the previously observed fingerprint. No new
-	/// matrix published; renderer reads the existing one.
+	/// matches the previously observed fingerprint for this
+	/// pane's buffer. No new matrix published; renderer reads
+	/// the existing one.
 	CacheHit,
 	/// Fingerprint changed. Worker polled `collect()` on every
-	/// registered provider, built a fresh `VirtualRowMatrix`,
-	/// and stored it via the shared `matrix_cell`.
+	/// registered provider for the pane's buffer, built a
+	/// fresh `VirtualRowMatrix`, and stored it via
+	/// `pane.virtual_rows_matrix`.
 	Recomputed,
 }
 
 /// Worker-local state held across recompute calls.
 ///
-/// `last_fingerprint` lets us short-circuit when neither the
-/// providers nor the document have changed; `next_publish_version`
-/// is the monotonic counter that stamps published matrices so
-/// downstream consumers can compare versions cheaply.
+/// `last_fingerprints` lets us short-circuit per buffer when
+/// neither the providers nor that buffer's document have
+/// changed (D.4.d.2.1.c switched this from a single
+/// `Option<u64>` to a `HashMap<BufferId, u64>` so two visible
+/// buffers cache-hit independently). `next_publish_version`
+/// is a single monotonic counter that stamps every published
+/// matrix — across buffers — so downstream consumers compare
+/// versions cheaply per matrix.
 #[derive(Debug)]
 pub struct VirtualRowsWorkerState {
-	last_fingerprint: Option<u64>,
+	last_fingerprints: HashMap<BufferId, u64>,
 	next_publish_version: u64,
 }
 
 impl Default for VirtualRowsWorkerState {
 	fn default() -> Self {
 		Self {
-			last_fingerprint: None,
+			last_fingerprints: HashMap::new(),
 			// Start at 1; the empty matrix at construction is
 			// `VirtualRowVersion::ZERO`, so the first
 			// successful publish always carries a strictly
@@ -238,53 +250,99 @@ fn compute_fingerprint(
 	hasher.finish()
 }
 
-/// Pure sync recompute. Reads the current `RenderState` for
-/// the active document's line count, snapshots the provider
-/// registry, fingerprints the inputs, and either publishes a
-/// fresh matrix or returns a cache hit. Returns the decision
-/// taken so tests can assert each branch without driving the
-/// async loop.
+/// Pure sync recompute. Iterates `rs.cells.panes`, dispatches
+/// each to [`recompute_pane`], and aggregates the per-pane
+/// decisions into a single one for the async loop. Returns the
+/// aggregate so tests can assert behaviour without driving
+/// `run`.
+///
+/// D.4.d.2.1.c (2026-05-30): switched from a single global
+/// `matrix_cell` write target to per-pane iteration over
+/// `rs.cells.panes`. Each pane carries its own
+/// `pane.virtual_rows_matrix` registry cell (D.4.d.2.1.b
+/// publish-time scaffold), which the worker writes via
+/// `pane.virtual_rows_matrix.store(...)`. Active-pane entries
+/// share Arc identity with `Editor::virtual_rows_matrix_cell`
+/// (D.4.d.2.0 boot seed) so the existing renderer read path
+/// through `RenderState.virtual_rows.matrix` is bit-identical
+/// for single-pane flows until D.4.d.2.1.d swaps the renderer
+/// to per-pane lookup.
+///
+/// Aggregate decision precedence: `Recomputed > Clear >
+/// CacheHit`. Mirrors the cells worker's precedence (minus
+/// the incremental path virtual rows don't have). `Recomputed`
+/// or `Clear` content changes; the async loop fires
+/// `paint_request` on either.
 pub fn recompute(
 	state: &mut VirtualRowsWorkerState,
 	render_state: &ArcSwap<RenderState>,
 	providers: &VirtualRowProviderRegistry,
-	matrix_cell: &ArcSwap<VirtualRowMatrix>,
 ) -> WorkerDecision {
 	let rs = render_state.load_full();
-	let snapshot = rs.cells.snapshot.as_ref();
-	let source_line_count = snapshot
-		.map(|s| s.buffer.line_count())
-		.unwrap_or(0);
-
-	// Clear branch: no active document.
-	if snapshot.is_none() {
-		let existing = matrix_cell.load();
-		if existing.is_empty() && existing.source_line_count == 0 {
-			// Already at the initial empty state; no publish
-			// needed. Reset our fingerprint so a future
-			// rebind doesn't false-positive cache-hit.
-			state.last_fingerprint = None;
-			return WorkerDecision::Clear;
-		}
-		matrix_cell.store(Arc::new(VirtualRowMatrix::empty()));
-		state.last_fingerprint = None;
-		return WorkerDecision::Clear;
-	}
-
-	// D.4.d.2.1.a: scope provider snapshot to the active
-	// document's buffer. Today's sole producer (D.3.a inline
-	// diff overlay) registers against the same buffer the
-	// worker reads, so single-pane behaviour is identical.
-	// D.4.d.2.1.b will iterate `rs.cells.panes` and snapshot
-	// each visible buffer's scope independently.
-	let active_buffer_id = rs.active_document.document_buffer_id;
-	let provider_snap = providers.snapshot(active_buffer_id);
-	let fingerprint = compute_fingerprint(&provider_snap, source_line_count);
-
-	if state.last_fingerprint == Some(fingerprint) {
+	if rs.cells.panes.is_empty() {
 		return WorkerDecision::CacheHit;
 	}
-	state.last_fingerprint = Some(fingerprint);
+	let mut any_recomputed = false;
+	let mut any_cleared = false;
+	for pane in rs.cells.panes.iter() {
+		match recompute_pane(pane, state, providers) {
+			WorkerDecision::CacheHit => {}
+			WorkerDecision::Clear => any_cleared = true,
+			WorkerDecision::Recomputed => any_recomputed = true,
+		}
+	}
+	if any_recomputed {
+		WorkerDecision::Recomputed
+	} else if any_cleared {
+		WorkerDecision::Clear
+	} else {
+		WorkerDecision::CacheHit
+	}
+}
+
+/// D.4.d.2.1.c (2026-05-30): per-pane recompute. Same shape
+/// as `cells_worker::recompute_pane`. Visible for tests that
+/// want to assert per-pane decisions without driving the
+/// aggregate.
+///
+/// Writes via `pane.virtual_rows_matrix` (the per-buffer
+/// registry cell), so two panes showing the same buffer
+/// share a single output cell — the second pane sees a
+/// `CacheHit` against the rebuild the first one already
+/// published (same `(buffer_id, providers, source_line_count)`
+/// fingerprint).
+pub fn recompute_pane(
+	pane: &crate::render_state::PaneCellsInputs,
+	state: &mut VirtualRowsWorkerState,
+	providers: &VirtualRowProviderRegistry,
+) -> WorkerDecision {
+	let Some(snapshot) = pane.snapshot.as_ref() else {
+		// No snapshot — buffer closed mid-publish, or no
+		// active document for this pane. Clear this pane's
+		// matrix if it isn't already empty; idempotent on
+		// repeat clears so the second call doesn't churn the
+		// Arc. Drop the cached fingerprint so a later
+		// re-bind doesn't false-positive cache-hit.
+		state.last_fingerprints.remove(&pane.buffer_id);
+		let existing = pane.virtual_rows_matrix.load();
+		if existing.is_empty() && existing.source_line_count == 0 {
+			return WorkerDecision::Clear;
+		}
+		pane.virtual_rows_matrix
+			.store(Arc::new(VirtualRowMatrix::empty()));
+		return WorkerDecision::Clear;
+	};
+
+	let source_line_count = snapshot.buffer.line_count();
+	let provider_snap = providers.snapshot(pane.buffer_id);
+	let fingerprint = compute_fingerprint(&provider_snap, source_line_count);
+
+	if state.last_fingerprints.get(&pane.buffer_id) == Some(&fingerprint) {
+		return WorkerDecision::CacheHit;
+	}
+	state
+		.last_fingerprints
+		.insert(pane.buffer_id, fingerprint);
 
 	let mut rows: Vec<VirtualRow> = Vec::new();
 	for p in &provider_snap {
@@ -298,7 +356,7 @@ pub fn recompute(
 		source_line_count,
 		VirtualRowVersion(publish_version),
 	);
-	matrix_cell.store(Arc::new(new_matrix));
+	pane.virtual_rows_matrix.store(Arc::new(new_matrix));
 	WorkerDecision::Recomputed
 }
 
@@ -319,7 +377,6 @@ pub async fn run(
 	render_state: Arc<ArcSwap<RenderState>>,
 	wake: VirtualRowsWake,
 	providers: Arc<VirtualRowProviderRegistry>,
-	matrix_cell: Arc<ArcSwap<VirtualRowMatrix>>,
 	paint_request: Arc<tokio::sync::Notify>,
 ) {
 	info!(
@@ -331,7 +388,7 @@ pub async fn run(
 	loop {
 		wake.0.notified().await;
 		let t0 = std::time::Instant::now();
-		let decision = recompute(&mut state, &render_state, &providers, &matrix_cell);
+		let decision = recompute(&mut state, &render_state, &providers);
 		let elapsed_us = t0.elapsed().as_micros();
 		tick += 1;
 		if matches!(decision, WorkerDecision::Recomputed | WorkerDecision::Clear) {
@@ -414,19 +471,73 @@ mod tests {
 		}
 	}
 
-	fn make_render_state_with_doc(text: &str) -> Arc<ArcSwap<RenderState>> {
-		let mut snap = DocumentSnapshot::default();
-		snap.buffer = Buffer::from_text(text);
-		let mut rs = RenderState::default();
-		rs.cells = Arc::new(crate::render_state::CellsRenderState {
-			snapshot: Some(Arc::new(snap)),
+	/// Build a `PaneCellsInputs` carrying the fields the
+	/// virtual-rows worker reads (`buffer_id`, `snapshot`,
+	/// `virtual_rows_matrix`) — every other field stays at a
+	/// cheap default. Each call mints a fresh `PaneId`.
+	fn pane_inputs(
+		buffer_id: BufferId,
+		snapshot: Option<Arc<DocumentSnapshot>>,
+		vr_matrix: Arc<ArcSwap<VirtualRowMatrix>>,
+	) -> crate::render_state::PaneCellsInputs {
+		use lattice_core::ui::pane::PaneId;
+		crate::render_state::PaneCellsInputs {
+			pane_id: PaneId::next(),
+			buffer_id,
+			matrix: Arc::new(ArcSwap::from_pointee(lattice_cells::CellMatrix::empty())),
+			virtual_rows_matrix: vr_matrix,
+			version: lattice_cells::MatrixVersion::ZERO,
+			snapshot,
+			syntax_handle: None,
+			inlay_hints: Arc::from(
+				Vec::<crate::render_state::InlayHintRow>::new().into_boxed_slice(),
+			),
+			folds: Arc::from(Vec::<lattice_core::Fold>::new().into_boxed_slice()),
+			viewport_height: 10,
+			foldenable: false,
+			last_edit: None,
+		}
+	}
+
+	/// Build an `ArcSwap<RenderState>` whose `cells.panes`
+	/// carries the supplied entries verbatim. The
+	/// virtual-rows worker now reads `rs.cells.panes` (per
+	/// D.4.d.2.1.c) so this is the canonical recompute
+	/// fixture.
+	fn rs_with_panes(
+		panes: Vec<crate::render_state::PaneCellsInputs>,
+	) -> Arc<ArcSwap<RenderState>> {
+		let cells = crate::render_state::CellsRenderState {
+			panes: Arc::from(panes.into_boxed_slice()),
 			..crate::render_state::CellsRenderState::default()
-		});
+		};
+		let rs = RenderState {
+			cells: Arc::new(cells),
+			..RenderState::default()
+		};
 		Arc::new(ArcSwap::from_pointee(rs))
 	}
 
-	fn make_render_state_no_doc() -> Arc<ArcSwap<RenderState>> {
-		Arc::new(ArcSwap::from_pointee(RenderState::default()))
+	/// Shorthand: build a fresh `DocumentSnapshot` carrying
+	/// the supplied text. Used by the line-count-driven tests.
+	fn snapshot_with_text(text: &str) -> Arc<DocumentSnapshot> {
+		let mut snap = DocumentSnapshot::default();
+		snap.buffer = Buffer::from_text(text);
+		Arc::new(snap)
+	}
+
+	/// Build the canonical single-pane fixture: one pane
+	/// scoped to `ACTIVE` carrying a snapshot of `text` and
+	/// writing into `cell`.
+	fn rs_with_single_pane(
+		text: &str,
+		cell: Arc<ArcSwap<VirtualRowMatrix>>,
+	) -> Arc<ArcSwap<RenderState>> {
+		rs_with_panes(vec![pane_inputs(
+			ACTIVE,
+			Some(snapshot_with_text(text)),
+			cell,
+		)])
 	}
 
 	// ── Registry ──────────────────────────────────────────────
@@ -553,44 +664,73 @@ mod tests {
 
 	// ── Recompute ─────────────────────────────────────────────
 
+	/// D.4.d.2.1.c: empty `rs.cells.panes` ⇒ `CacheHit`. The
+	/// pre-D.4.d.2.1.c semantics emitted `Clear` here (off
+	/// the global `matrix_cell`); after the pane-driven cutover
+	/// there's no top-level cell to write through, and "no
+	/// panes" is observationally indistinguishable from a
+	/// quiet tick — matching the cells worker's precedent.
 	#[test]
-	fn recompute_no_document_emits_clear() {
+	fn recompute_empty_panes_is_cache_hit() {
 		let mut state = VirtualRowsWorkerState::new();
-		let rs = make_render_state_no_doc();
+		let rs = rs_with_panes(vec![]);
 		let reg = VirtualRowProviderRegistry::new();
+		let decision = recompute(&mut state, &rs, &reg);
+		assert_eq!(decision, WorkerDecision::CacheHit);
+	}
+
+	/// D.4.d.2.1.c: a pane whose `snapshot` is `None` clears
+	/// that pane's matrix (transient buffer-close race
+	/// behaviour). Aggregate decision is `Clear` since no
+	/// pane recomputed.
+	#[test]
+	fn recompute_pane_without_snapshot_clears_its_matrix() {
+		let mut state = VirtualRowsWorkerState::new();
 		let cell = Arc::new(ArcSwap::from_pointee(VirtualRowMatrix::empty()));
-		let decision = recompute(&mut state, &rs, &reg, &cell);
-		assert_eq!(decision, WorkerDecision::Clear);
+		// Seed the cell with non-empty content so the clear
+		// branch is observable (the no-op clear path returns
+		// `Clear` too, but doesn't churn the Arc).
+		cell.store(Arc::new(VirtualRowMatrix::build(
+			vec![row(0, AnchorPosition::Above)],
+			3,
+			VirtualRowVersion(7),
+		)));
+		assert_eq!(cell.load_full().len(), 1);
+		let rs = rs_with_panes(vec![pane_inputs(ACTIVE, None, cell.clone())]);
+		let reg = VirtualRowProviderRegistry::new();
+		let d = recompute(&mut state, &rs, &reg);
+		assert_eq!(d, WorkerDecision::Clear);
+		assert_eq!(cell.load_full().len(), 0, "matrix cleared");
 	}
 
 	#[test]
 	fn recompute_with_no_providers_is_cache_hit_after_first() {
 		let mut state = VirtualRowsWorkerState::new();
-		let rs = make_render_state_with_doc("a\nb\nc\n");
-		let reg = VirtualRowProviderRegistry::new();
 		let cell = Arc::new(ArcSwap::from_pointee(VirtualRowMatrix::empty()));
+		let rs = rs_with_single_pane("a\nb\nc\n", cell.clone());
+		let reg = VirtualRowProviderRegistry::new();
 		// First wake: fingerprint not yet seen → Recomputed
 		// (publishes an empty matrix tagged with the line count).
-		let d1 = recompute(&mut state, &rs, &reg, &cell);
+		let d1 = recompute(&mut state, &rs, &reg);
 		assert_eq!(d1, WorkerDecision::Recomputed);
 		// Second wake: identical fingerprint → CacheHit.
-		let d2 = recompute(&mut state, &rs, &reg, &cell);
+		let d2 = recompute(&mut state, &rs, &reg);
 		assert_eq!(d2, WorkerDecision::CacheHit);
 	}
 
 	#[test]
 	fn recompute_publishes_rows_from_provider() {
 		let mut state = VirtualRowsWorkerState::new();
-		let rs = make_render_state_with_doc("a\nb\nc\nd\n");
+		let cell = Arc::new(ArcSwap::from_pointee(VirtualRowMatrix::empty()));
+		let rs = rs_with_single_pane("a\nb\nc\nd\n", cell.clone());
 		let reg = VirtualRowProviderRegistry::new();
 		let provider = Arc::new(MockProvider::new(
 			1,
 			vec![row(1, AnchorPosition::Above), row(2, AnchorPosition::Below)],
 		));
 		reg.register(ACTIVE, provider.clone() as Arc<dyn VirtualRowProvider>);
-		let cell = Arc::new(ArcSwap::from_pointee(VirtualRowMatrix::empty()));
 
-		let d = recompute(&mut state, &rs, &reg, &cell);
+		let d = recompute(&mut state, &rs, &reg);
 		assert_eq!(d, WorkerDecision::Recomputed);
 		let published = cell.load_full();
 		assert_eq!(published.len(), 2);
@@ -600,32 +740,32 @@ mod tests {
 	#[test]
 	fn recompute_cache_hit_after_provider_static() {
 		let mut state = VirtualRowsWorkerState::new();
-		let rs = make_render_state_with_doc("a\nb\n");
+		let cell = Arc::new(ArcSwap::from_pointee(VirtualRowMatrix::empty()));
+		let rs = rs_with_single_pane("a\nb\n", cell.clone());
 		let reg = VirtualRowProviderRegistry::new();
 		let provider = Arc::new(MockProvider::new(1, vec![row(0, AnchorPosition::Above)]));
 		reg.register(ACTIVE, provider as Arc<dyn VirtualRowProvider>);
-		let cell = Arc::new(ArcSwap::from_pointee(VirtualRowMatrix::empty()));
 
-		let d1 = recompute(&mut state, &rs, &reg, &cell);
+		let d1 = recompute(&mut state, &rs, &reg);
 		assert_eq!(d1, WorkerDecision::Recomputed);
-		let d2 = recompute(&mut state, &rs, &reg, &cell);
+		let d2 = recompute(&mut state, &rs, &reg);
 		assert_eq!(d2, WorkerDecision::CacheHit);
 	}
 
 	#[test]
 	fn recompute_re_publishes_when_provider_version_bumps() {
 		let mut state = VirtualRowsWorkerState::new();
-		let rs = make_render_state_with_doc("a\nb\n");
+		let cell = Arc::new(ArcSwap::from_pointee(VirtualRowMatrix::empty()));
+		let rs = rs_with_single_pane("a\nb\n", cell.clone());
 		let reg = VirtualRowProviderRegistry::new();
 		let provider = Arc::new(MockProvider::new(1, vec![row(0, AnchorPosition::Above)]));
 		reg.register(ACTIVE, provider.clone() as Arc<dyn VirtualRowProvider>);
-		let cell = Arc::new(ArcSwap::from_pointee(VirtualRowMatrix::empty()));
 
-		recompute(&mut state, &rs, &reg, &cell);
+		recompute(&mut state, &rs, &reg);
 		let v1 = cell.load_full().version;
 
 		provider.replace_rows(vec![row(0, AnchorPosition::Above), row(1, AnchorPosition::Below)]);
-		let d = recompute(&mut state, &rs, &reg, &cell);
+		let d = recompute(&mut state, &rs, &reg);
 		assert_eq!(d, WorkerDecision::Recomputed);
 		let v2 = cell.load_full().version;
 		assert!(v2.0 > v1.0, "publish version monotonically bumps");
@@ -635,17 +775,17 @@ mod tests {
 	#[test]
 	fn recompute_re_publishes_when_document_line_count_changes() {
 		let mut state = VirtualRowsWorkerState::new();
-		let rs1 = make_render_state_with_doc("a\nb\n");
-		let reg = VirtualRowProviderRegistry::new();
 		let cell = Arc::new(ArcSwap::from_pointee(VirtualRowMatrix::empty()));
+		let rs1 = rs_with_single_pane("a\nb\n", cell.clone());
+		let reg = VirtualRowProviderRegistry::new();
 
-		let d1 = recompute(&mut state, &rs1, &reg, &cell);
+		let d1 = recompute(&mut state, &rs1, &reg);
 		assert_eq!(d1, WorkerDecision::Recomputed);
 		let v1 = cell.load_full().version;
 
-		// Replace render_state with one whose document has more lines.
-		let rs2 = make_render_state_with_doc("a\nb\nc\nd\n");
-		let d2 = recompute(&mut state, &rs2, &reg, &cell);
+		// Re-publish the same cell against a longer document.
+		let rs2 = rs_with_single_pane("a\nb\nc\nd\n", cell.clone());
+		let d2 = recompute(&mut state, &rs2, &reg);
 		assert_eq!(d2, WorkerDecision::Recomputed);
 		let v2 = cell.load_full().version;
 		assert!(v2.0 > v1.0);
@@ -656,31 +796,32 @@ mod tests {
 	#[test]
 	fn recompute_merges_rows_from_multiple_providers() {
 		let mut state = VirtualRowsWorkerState::new();
-		let rs = make_render_state_with_doc("a\nb\nc\nd\n");
+		let cell = Arc::new(ArcSwap::from_pointee(VirtualRowMatrix::empty()));
+		let rs = rs_with_single_pane("a\nb\nc\nd\n", cell.clone());
 		let reg = VirtualRowProviderRegistry::new();
 		let p1 = Arc::new(MockProvider::new(1, vec![row(0, AnchorPosition::Above)]));
 		let p2 = Arc::new(MockProvider::new(2, vec![row(2, AnchorPosition::Below)]));
 		reg.register(ACTIVE, p1 as Arc<dyn VirtualRowProvider>);
 		reg.register(ACTIVE, p2 as Arc<dyn VirtualRowProvider>);
-		let cell = Arc::new(ArcSwap::from_pointee(VirtualRowMatrix::empty()));
 
-		recompute(&mut state, &rs, &reg, &cell);
+		recompute(&mut state, &rs, &reg);
 		let published = cell.load_full();
 		assert_eq!(published.len(), 2);
 	}
 
 	/// D.4.d.2.1.a: the worker scopes its provider snapshot
-	/// to the active document's buffer. A provider registered
-	/// against a *different* buffer must not contribute rows
-	/// to the active doc's matrix — load-bearing for
-	/// D.4.d.2.1.b's per-pane iteration, where each pane's
+	/// to each pane's buffer. A provider registered against a
+	/// *different* buffer must not contribute rows to a pane
+	/// showing a different buffer — load-bearing for
+	/// D.4.d.2.1.c's per-pane iteration, where each pane's
 	/// matrix only sees its own buffer's providers.
 	#[test]
 	fn recompute_only_polls_active_doc_providers() {
 		let mut state = VirtualRowsWorkerState::new();
-		let rs = make_render_state_with_doc("a\nb\nc\n");
+		let cell = Arc::new(ArcSwap::from_pointee(VirtualRowMatrix::empty()));
+		let rs = rs_with_single_pane("a\nb\nc\n", cell.clone());
 		let reg = VirtualRowProviderRegistry::new();
-		// Register against a buffer that is NOT the active one.
+		// Register against a buffer that is NOT the pane's.
 		let foreign = BufferId(42);
 		assert_ne!(foreign, ACTIVE);
 		let provider = Arc::new(MockProvider::new(
@@ -688,12 +829,125 @@ mod tests {
 			vec![row(0, AnchorPosition::Above), row(1, AnchorPosition::Below)],
 		));
 		reg.register(foreign, provider as Arc<dyn VirtualRowProvider>);
-		let cell = Arc::new(ArcSwap::from_pointee(VirtualRowMatrix::empty()));
 
-		let d = recompute(&mut state, &rs, &reg, &cell);
-		// Recomputed because the fingerprint of (no active-doc
-		// providers, line_count=4) is unseen; matrix is empty.
+		let d = recompute(&mut state, &rs, &reg);
+		// Recomputed because the fingerprint of (no providers,
+		// line_count=4) is unseen for this buffer; matrix stays empty.
 		assert_eq!(d, WorkerDecision::Recomputed);
 		assert_eq!(cell.load_full().len(), 0);
+	}
+
+	// ── D.4.d.2.1.c: per-pane iteration ───────────────────────
+
+	/// Two panes for distinct buffers, each with its own
+	/// provider scoped to its buffer. Both panes recompute on
+	/// the same tick; each pane's matrix carries that pane's
+	/// provider's rows. Mirror of
+	/// `cells_worker::two_panes_distinct_buffers_both_rebuild`.
+	#[test]
+	fn two_panes_distinct_buffers_both_rebuild() {
+		let mut state = VirtualRowsWorkerState::new();
+		let bid_a = BufferId(11);
+		let bid_b = BufferId(22);
+		let cell_a = Arc::new(ArcSwap::from_pointee(VirtualRowMatrix::empty()));
+		let cell_b = Arc::new(ArcSwap::from_pointee(VirtualRowMatrix::empty()));
+		let rs = rs_with_panes(vec![
+			pane_inputs(bid_a, Some(snapshot_with_text("a\n")), cell_a.clone()),
+			pane_inputs(bid_b, Some(snapshot_with_text("b\nb\n")), cell_b.clone()),
+		]);
+		let reg = VirtualRowProviderRegistry::new();
+		let pa = Arc::new(MockProvider::new(1, vec![row(0, AnchorPosition::Above)]));
+		let pb = Arc::new(MockProvider::new(
+			2,
+			vec![row(0, AnchorPosition::Above), row(1, AnchorPosition::Below)],
+		));
+		reg.register(bid_a, pa as Arc<dyn VirtualRowProvider>);
+		reg.register(bid_b, pb as Arc<dyn VirtualRowProvider>);
+
+		let d = recompute(&mut state, &rs, &reg);
+		assert_eq!(d, WorkerDecision::Recomputed);
+		assert_eq!(cell_a.load_full().len(), 1, "buffer A: one row from its provider");
+		assert_eq!(cell_b.load_full().len(), 2, "buffer B: two rows from its provider");
+	}
+
+	/// Two panes for distinct buffers. After the initial
+	/// publish, bump only buffer A's provider. Only pane A
+	/// should rebuild; pane B's matrix Arc must be the
+	/// identical `Arc<VirtualRowMatrix>` it carried before
+	/// (no `store` call on a cache-hit pane). Mirror of
+	/// `cells_worker::per_pane_cache_hit_skips_unchanged_pane`.
+	#[test]
+	fn per_pane_cache_hit_skips_unchanged_pane() {
+		let mut state = VirtualRowsWorkerState::new();
+		let bid_a = BufferId(11);
+		let bid_b = BufferId(22);
+		let cell_a = Arc::new(ArcSwap::from_pointee(VirtualRowMatrix::empty()));
+		let cell_b = Arc::new(ArcSwap::from_pointee(VirtualRowMatrix::empty()));
+		let rs = rs_with_panes(vec![
+			pane_inputs(bid_a, Some(snapshot_with_text("a\n")), cell_a.clone()),
+			pane_inputs(bid_b, Some(snapshot_with_text("b\n")), cell_b.clone()),
+		]);
+		let reg = VirtualRowProviderRegistry::new();
+		let pa = Arc::new(MockProvider::new(1, vec![row(0, AnchorPosition::Above)]));
+		let pb = Arc::new(MockProvider::new(2, vec![row(0, AnchorPosition::Above)]));
+		reg.register(bid_a, pa.clone() as Arc<dyn VirtualRowProvider>);
+		reg.register(bid_b, pb as Arc<dyn VirtualRowProvider>);
+
+		// First tick: both panes publish.
+		assert_eq!(recompute(&mut state, &rs, &reg), WorkerDecision::Recomputed);
+		let matrix_b_v1 = cell_b.load_full();
+
+		// Bump buffer A's provider only.
+		pa.replace_rows(vec![
+			row(0, AnchorPosition::Above),
+			row(0, AnchorPosition::Below),
+		]);
+		assert_eq!(recompute(&mut state, &rs, &reg), WorkerDecision::Recomputed);
+
+		// Pane A rebuilt (now 2 rows); pane B's Arc identity
+		// must be unchanged (no `store` on cache-hit).
+		assert_eq!(cell_a.load_full().len(), 2);
+		let matrix_b_v2 = cell_b.load_full();
+		assert!(
+			Arc::ptr_eq(&matrix_b_v1, &matrix_b_v2),
+			"unchanged pane's matrix Arc must survive untouched"
+		);
+	}
+
+	/// Two panes showing the *same* buffer share the same
+	/// registry cell. The first pane processed recomputes and
+	/// writes; the second pane's iteration sees the cached
+	/// fingerprint and short-circuits — exactly one write
+	/// against the shared cell per tick, no thrash. Mirror of
+	/// `cells_worker::two_panes_sharing_buffer_share_one_matrix_write`.
+	#[test]
+	fn two_panes_sharing_buffer_share_one_matrix_write() {
+		let mut state = VirtualRowsWorkerState::new();
+		let bid = BufferId(33);
+		let shared_cell = Arc::new(ArcSwap::from_pointee(VirtualRowMatrix::empty()));
+		let snap = snapshot_with_text("x\ny\n");
+		let rs = rs_with_panes(vec![
+			pane_inputs(bid, Some(snap.clone()), shared_cell.clone()),
+			pane_inputs(bid, Some(snap.clone()), shared_cell.clone()),
+		]);
+		let reg = VirtualRowProviderRegistry::new();
+		let provider = Arc::new(MockProvider::new(
+			7,
+			vec![row(0, AnchorPosition::Above), row(1, AnchorPosition::Below)],
+		));
+		reg.register(bid, provider as Arc<dyn VirtualRowProvider>);
+
+		let d = recompute(&mut state, &rs, &reg);
+		// Aggregate is `Recomputed` because the first pane
+		// rebuilt; the second is a `CacheHit` against the
+		// fingerprint already cached for `bid` and writes
+		// nothing.
+		assert_eq!(d, WorkerDecision::Recomputed);
+		assert_eq!(shared_cell.load_full().len(), 2);
+
+		// A second tick over the same `rs` is now a full
+		// aggregate `CacheHit` — neither pane writes.
+		let d2 = recompute(&mut state, &rs, &reg);
+		assert_eq!(d2, WorkerDecision::CacheHit);
 	}
 }

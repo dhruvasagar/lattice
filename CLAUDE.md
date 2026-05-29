@@ -85,3 +85,14 @@ Rust + tokio (multi-thread) + ropey + tree-sitter + GPUI (preferred) or wgpu fal
 - Don't introduce backwards-compat hacks for vim or emacs configs -- explicit non-goal.
 - Do not add features, refactors, or abstractions beyond what a task requires; design discipline matters here because the doc is being lived-in, not legacy.
 - Verify before recommending: a memory or doc reference to a file / type / symbol is *not* evidence it exists. Only `docs/dev/architecture/design.md` and `docs/dev/operations/implementation.md` are authoritative; verify against the source.
+
+## Doc organisation: design vs. slice plan
+
+Keep **design fragments** and **slice plans** in separate files. Don't co-locate.
+
+- **Design** (`docs/dev/architecture/<feature>.md`) — contracts, data model, rationale, paramount-goal alignment, rejected alternatives, foldability + grammar surface, the "what" and "why". Stable across implementation iterations.
+- **Slice plan** — concrete sequencing, slice IDs, dependencies between slices, status icons (✅ / 🚧 / 🗒), test/commit counts. Churns frequently as work lands. Lives in `docs/dev/operations/implementation.md` (the global ledger) or in a per-feature file under `docs/dev/operations/slice-plans/<feature>.md` once the global ledger gets too dense.
+- **Cross-reference** — design doc links to the slice plan ("see slice plan for sequencing"), slice plan links to the design sections it implements.
+- When carving a slice mid-build, update the slice plan, not the design fragment, unless the design itself changed (e.g., a rejected alternative became the chosen path).
+
+Existing design fragments that grew a §9 Slice plan table (`diff-system.md`, `multibuffer-views.md`) violate this convention — they should migrate to `docs/dev/operations/slice-plans/` on the next opportunity.

@@ -554,6 +554,17 @@ impl Editor {
                 tabs_arc,
             )
         };
+        // D.4.d.1.a (2026-05-29): take the single-edit slot once
+        // here so both the top-level `cells.last_edit` (active-doc
+        // back-compat path the worker reads today) and the per-pane
+        // builder's active entry see the same Option. The builder
+        // attaches it only to the active pane's entry — non-active
+        // panes always carry `None`.
+        let last_edit_active = self.last_edit_for_cells.take();
+        // Per-pane build inputs, one entry per visible Document
+        // leaf. Drives D.4.d.1.b's worker iteration. Empty when
+        // no Document pane is visible.
+        let cells_panes = self.build_cells_panes(last_edit_active);
         // Start from the empty `Default` snapshot, then override
         // each sub-state whose backing source has been wired up.
         // Slice 3a wires only `diagnostics`; Slice 3b/3c add
@@ -1016,8 +1027,19 @@ impl Editor {
                 // slot. Subsequent publishes without further edits
                 // see `None` → worker stays on the cache-hit branch
                 // (or full-rebuild for non-text axis changes).
-                last_edit: self.last_edit_for_cells.take(),
+                //
+                // D.4.d.1.a (2026-05-29): consumed once into
+                // `last_edit_active` above so the per-pane builder
+                // can attach the same delta to the active pane's
+                // entry without a second `take()`.
+                last_edit: last_edit_active,
                 theme: self.host_theme,
+                // D.4.d.1.a (2026-05-29): per-visible-Document-pane
+                // build inputs. Worker iteration over this slice
+                // lands in D.4.d.1.b; until then the top-level
+                // fields above remain the worker's single input
+                // source and this slice is informational.
+                panes: cells_panes,
             }),
             // D.3.d.1 (2026-05-29): snapshot the active
             // document's diff sign map (empty if no session
@@ -7292,19 +7314,181 @@ impl Editor {
     fn build_active_inlay_hints(
         &self,
     ) -> (Arc<[crate::render_state::InlayHintRow]>, u64) {
+        let snapshot = self.document.snapshot();
+        self.build_inlay_hints_for_buffer(self.document_buffer_id, &snapshot)
+    }
+
+    /// D.4.d.1.a (2026-05-29): build per-pane cell-builder
+    /// inputs from `pane_tree.leaves()`. One
+    /// [`crate::render_state::PaneCellsInputs`] entry per
+    /// visible Document leaf; non-Document leaves
+    /// (file tree / help / messages / etc.) skip the cells
+    /// path and are filtered out.
+    ///
+    /// `last_edit_active` is the single-edit delta the
+    /// publisher just `take()`d off `Editor::last_edit_for_cells`;
+    /// it is attached to the active pane's entry only (edits
+    /// land on the active document, so non-active panes always
+    /// see `None` and full-rebuild on text-version bumps —
+    /// which is the conservative correct behaviour).
+    ///
+    /// Each entry's `matrix` is sourced from
+    /// [`Self::cells_matrix_for`]. The active pane's entry
+    /// therefore shares Arc identity with
+    /// [`Self::cells_matrix_cell`] (and with the top-level
+    /// [`crate::render_state::CellsRenderState::matrix`] the
+    /// renderer reads today). D.4.d.1.b will switch the
+    /// cells worker to iterate this slice; D.4.d.1.c will
+    /// expose the per-pane matrices to renderers.
+    fn build_cells_panes(
+        &self,
+        last_edit_active: Option<lattice_cells::EditDelta>,
+    ) -> Arc<[crate::render_state::PaneCellsInputs]> {
+        use crate::render_state::PaneCellsInputs;
+        let foldenable = self.foldenable();
+        let active_doc_active =
+            matches!(self.active_buffer, lattice_core::BufferKind::Document);
+        let active_buffer_id = self.document_buffer_id;
+        let active_pane_id = self.pane_tree.active().id;
+        let theme_hash: u64 = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            self.host_theme.hash(&mut h);
+            h.finish()
+        };
+        let whitespace_hash: u64 = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            let oc = &self.option_cache;
+            oc.show_whitespace.hash(&mut h);
+            oc.whitespace_tab.hash(&mut h);
+            oc.whitespace_trailing.hash(&mut h);
+            oc.whitespace_leading.hash(&mut h);
+            oc.whitespace_space.hash(&mut h);
+            oc.whitespace_eol.hash(&mut h);
+            h.finish()
+        };
+
+        let mut entries: Vec<PaneCellsInputs> =
+            Vec::with_capacity(self.pane_tree.leaves().len());
+        for leaf in self.pane_tree.leaves() {
+            if !matches!(leaf.buffer, lattice_core::BufferKind::Document) {
+                continue;
+            }
+            let buffer_id = leaf.buffer_id;
+            // `is_active` selects the leaf that is currently the
+            // user's focus. This is distinct from "shows the active
+            // buffer" — two panes can render the same Document
+            // simultaneously; only the focused pane should consume
+            // the single-edit slot to avoid double-applying the
+            // delta when the worker iterates.
+            let is_active_pane = leaf.id == active_pane_id && active_doc_active;
+            // Live `Editor` slots (`self.document`, `self.folds`)
+            // are still the source of truth for the active buffer
+            // regardless of which pane it's painted in.
+            let is_active_buffer = buffer_id == active_buffer_id && active_doc_active;
+
+            // Snapshot. Active buffer: live document handle.
+            // Non-active: look up through the buffer registry
+            // (returns None if the buffer is mid-close — worker
+            // treats None as skip).
+            let snapshot: Option<Arc<lattice_runtime::DocumentSnapshot>> = if is_active_buffer {
+                Some(self.document.snapshot())
+            } else {
+                self.buffers
+                    .document_handle(buffer_id)
+                    .map(|h| h.snapshot())
+            };
+
+            // Syntax handle. `document_syntax_for` resolves
+            // active vs non-active uniformly; wrap in Arc per
+            // publish — mirrors the existing active-doc path
+            // (`self.syntax.clone().map(Arc::new)`).
+            let syntax_handle: Option<Arc<lattice_syntax::SyntaxHandle>> = self
+                .document_syntax_for(buffer_id)
+                .cloned()
+                .map(Arc::new);
+
+            // Folds. Active buffer: live mutable slot
+            // (`Editor::folds`). Non-active: per-buffer entry on
+            // `buffer_locals`.
+            let folds_vec: Vec<lattice_core::Fold> = if is_active_buffer {
+                self.folds.clone()
+            } else {
+                self.buffer_locals
+                    .get(&buffer_id)
+                    .and_then(|l| l.get::<crate::modes::DocumentFolds>())
+                    .map(|f| f.0.clone())
+                    .unwrap_or_default()
+            };
+            let folds_hash = crate::folds::compute_fold_hash(&folds_vec);
+            let folds_arc: Arc<[lattice_core::Fold]> =
+                Arc::from(folds_vec.into_boxed_slice());
+
+            // Inlay hints — keyed by `buffer_id`; gate checked
+            // inside the helper.
+            let (inlay_hints, inlay_version) = if let Some(snap) = snapshot.as_ref() {
+                self.build_inlay_hints_for_buffer(buffer_id, snap)
+            } else {
+                (
+                    Arc::from(
+                        Vec::<crate::render_state::InlayHintRow>::new().into_boxed_slice(),
+                    ),
+                    0u64,
+                )
+            };
+
+            let text_version = snapshot.as_ref().map(|s| s.text_version).unwrap_or(0);
+
+            let version = lattice_cells::MatrixVersion {
+                text: text_version,
+                syntax: text_version,
+                inlay_hints: inlay_version,
+                folds: if foldenable { folds_hash } else { !folds_hash },
+                theme: theme_hash,
+                whitespace: whitespace_hash,
+            };
+
+            entries.push(PaneCellsInputs {
+                pane_id: leaf.id,
+                buffer_id,
+                matrix: self.cells_matrix_for(buffer_id),
+                version,
+                snapshot,
+                syntax_handle,
+                inlay_hints,
+                folds: folds_arc,
+                viewport_height: leaf.viewport_height,
+                foldenable,
+                last_edit: if is_active_pane { last_edit_active } else { None },
+            });
+        }
+        Arc::from(entries.into_boxed_slice())
+    }
+
+    /// D.4.d.1.a (2026-05-29): per-buffer variant of
+    /// [`Self::build_active_inlay_hints`]. Same gating + cache
+    /// read + utf16→utf8 mapping; takes `buffer_id` and a
+    /// reference to the buffer's snapshot so the per-pane build
+    /// path can call it for non-active panes without re-locking
+    /// the document handle for each one.
+    fn build_inlay_hints_for_buffer(
+        &self,
+        buffer_id: lattice_core::BufferId,
+        snapshot: &lattice_runtime::DocumentSnapshot,
+    ) -> (Arc<[crate::render_state::InlayHintRow]>, u64) {
         use crate::per_buffer_cache::PerBufferCacheExt;
         let empty: Arc<[crate::render_state::InlayHintRow]> =
             Arc::from(Vec::<crate::render_state::InlayHintRow>::new().into_boxed_slice());
-        if !self.lsp_inlay_hint_mode_enabled_for(self.document_buffer_id) {
+        if !self.lsp_inlay_hint_mode_enabled_for(buffer_id) {
             return (empty, 0);
         }
-        let Some(cache) = self.lsp_inlay_hints_cache.get_for(self.document_buffer_id) else {
+        let Some(cache) = self.lsp_inlay_hints_cache.get_for(buffer_id) else {
             return (empty, 0);
         };
         if cache.hints.is_empty() {
             return (empty, 0);
         }
-        let snapshot = self.document.snapshot();
         let total_lines: u32 = snapshot.buffer.line_count();
         let rows: Vec<crate::render_state::InlayHintRow> = cache
             .hints

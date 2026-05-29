@@ -880,6 +880,92 @@ pub struct CellsRenderState {
     /// time so any `:set` of a whitespace option invalidates the
     /// matrix and triggers a rebuild.
     pub whitespace: crate::cells_worker::WhitespaceConfig,
+
+    /// D.4.d.1.a (2026-05-29): one entry per visible Document
+    /// pane. Populated by `publish_render_state` from
+    /// `pane_tree.leaves()`; non-Document leaves are skipped.
+    ///
+    /// The cells worker iterates this slice in D.4.d.1.b to
+    /// build per-buffer matrices. Until then the slice is
+    /// purely informational — the worker still reads the
+    /// top-level (active-doc) inputs above.
+    ///
+    /// Each entry's `matrix` cell is sourced from
+    /// [`crate::editor::Editor::cells_matrix_for`]; the
+    /// **active pane's entry shares Arc identity with the
+    /// top-level [`Self::matrix`]** (and therefore with
+    /// `Editor::cells_matrix_cell`) so the existing
+    /// single-doc renderer read path keeps landing on the
+    /// same cell. D.4.d.1.c adds a renderer per-pane lookup
+    /// for the non-active panes.
+    pub panes: Arc<[PaneCellsInputs]>,
+}
+
+/// D.4.d.1.a (2026-05-29): per-visible-Document-pane build
+/// inputs for the cell-builder worker. Mirrors the shape of
+/// the top-level [`CellsRenderState`] active-doc fields but
+/// keyed by `(pane_id, buffer_id)` so the worker can resolve
+/// each entry's matrix Arc via
+/// [`crate::editor::Editor::cells_matrix_for`] at publish
+/// time and rebuild per visible buffer.
+///
+/// `last_edit` is `Some(delta)` only for the active pane
+/// (edits land on the active document; the publish path
+/// `take()`s `Editor::last_edit_for_cells` exactly once);
+/// non-active panes always carry `None` so the worker
+/// conservatively full-rebuilds on text-version bumps for
+/// those buffers. That is correct today because non-active
+/// buffers don't take edits in normal use; LSP-driven edits
+/// to non-active buffers also flush through `apply_edit`
+/// which clears the slot.
+#[derive(Debug, Clone)]
+pub struct PaneCellsInputs {
+    /// `PaneTree` leaf id. Stable across publishes until the
+    /// pane is closed or reorganised.
+    pub pane_id: lattice_core::ui::pane::PaneId,
+    /// Document buffer this pane is showing. Worker uses
+    /// this as the registry key.
+    pub buffer_id: lattice_core::BufferId,
+    /// Per-pane matrix output cell. Cloned from
+    /// `Editor::cells_matrix_for(buffer_id)` so worker
+    /// writes via `cell.store(...)` are visible through
+    /// every later `render_state.load_full()`. Active-pane
+    /// entries share Arc identity with
+    /// [`CellsRenderState::matrix`].
+    pub matrix: Arc<arc_swap::ArcSwap<lattice_cells::CellMatrix>>,
+    /// Aggregate version for this pane's inputs. Worker
+    /// compares against `matrix.load().version` to
+    /// short-circuit cache hits per pane.
+    pub version: lattice_cells::MatrixVersion,
+    /// Document snapshot for `buffer_id`. `None` when the
+    /// buffer is missing from the registry (transient race
+    /// during close); the worker treats `None` as "skip,
+    /// matrix unchanged."
+    pub snapshot: Option<Arc<lattice_runtime::DocumentSnapshot>>,
+    /// Syntax handle for `buffer_id`, if any. Resolves
+    /// through `Editor::document_syntax_for` so non-active
+    /// buffers carrying a parsed `Syntax` are still themed.
+    pub syntax_handle: Option<Arc<lattice_syntax::SyntaxHandle>>,
+    /// Flattened inlay hints for `buffer_id`. Empty when
+    /// `lsp-inlay-hint-mode` is off for this buffer or no
+    /// hints have arrived.
+    pub inlay_hints: Arc<[InlayHintRow]>,
+    /// Fold ranges for `buffer_id`. Sourced from
+    /// `buffer_locals[buffer_id].DocumentFolds`.
+    pub folds: Arc<[lattice_core::Fold]>,
+    /// Pane-local visible-buffer height. Sourced from
+    /// `PaneState.viewport_height` (Issue #25). Drives the
+    /// worker's chunked-mode threshold.
+    pub viewport_height: u32,
+    /// Per-pane foldenable. Global today (no per-buffer
+    /// setting); kept here so a future per-buffer
+    /// `foldenable` doesn't require a substate reshape.
+    pub foldenable: bool,
+    /// Single-edit delta for the incremental rebuild path.
+    /// `Some(delta)` only for the active pane on the publish
+    /// cycle when exactly one edit was applied; `None`
+    /// otherwise. See struct-level docstring.
+    pub last_edit: Option<lattice_cells::EditDelta>,
 }
 
 impl Default for CellsRenderState {
@@ -898,6 +984,7 @@ impl Default for CellsRenderState {
             last_edit: None,
             theme: crate::ui::theme::Theme::default(),
             whitespace: crate::cells_worker::WhitespaceConfig::default(),
+            panes: Arc::from(Vec::<PaneCellsInputs>::new().into_boxed_slice()),
         }
     }
 }
@@ -2519,6 +2606,151 @@ mod tests {
             std::sync::Arc::ptr_eq(&cell1, &rs2.cells.matrix),
             "cells.matrix Arc identity must persist across publishes"
         );
+    }
+
+    // ---- D.4.d.1.a (per-pane cells inputs) ----
+
+    /// D.4.d.1.a: the default editor's single Document leaf
+    /// surfaces through `cells.panes` as exactly one entry whose
+    /// `pane_id` matches the active leaf, `buffer_id` matches
+    /// the active document, and `matrix` resolves through the
+    /// registry's idempotent `cells_matrix_for` port (the worker
+    /// will write through the same Arc in D.4.d.1.b).
+    ///
+    /// The d.0 boot invariant — active-doc registry entry
+    /// shares Arc identity with `cells_matrix_cell` — is set up
+    /// by `Editor::boot`. `Editor::default()` (used here)
+    /// doesn't seed the registry, so we assert the weaker
+    /// registry-port contract instead: every panes entry's
+    /// `matrix` is the same Arc the registry returns for that
+    /// `buffer_id`.
+    #[test]
+    fn cells_panes_populated_for_single_document_pane() {
+        let mut editor = Editor::default();
+        editor.publish_render_state();
+        let rs = editor.render_state.load_full();
+        assert_eq!(
+            rs.cells.panes.len(),
+            1,
+            "default single Document leaf produces one panes entry"
+        );
+        let entry = &rs.cells.panes[0];
+        assert_eq!(entry.buffer_id, editor.document_buffer_id);
+        assert_eq!(entry.pane_id, editor.pane_tree.active().id);
+        assert!(
+            entry.snapshot.is_some(),
+            "active pane entry must carry the document snapshot"
+        );
+        let registry_cell = editor.cells_matrix_for(entry.buffer_id);
+        assert!(
+            std::sync::Arc::ptr_eq(&entry.matrix, &registry_cell),
+            "panes entry matrix must come from the registry's cells_matrix_for port"
+        );
+        // Active pane's version must match the top-level cells
+        // version — same hashes, same inputs.
+        assert_eq!(entry.version, rs.cells.version);
+    }
+
+    /// D.4.d.1.a: a vsplit produces two Document leaves; each
+    /// surfaces with a distinct `pane_id`. With both leaves
+    /// still pointing at the active buffer, both entries share
+    /// `buffer_id` and the same registry matrix Arc — the
+    /// registry hands out one cell per buffer, not per pane.
+    #[test]
+    fn cells_panes_populated_per_visible_document_leaf() {
+        use lattice_core::ui::pane::SplitOrientation;
+        let mut editor = Editor::default();
+        editor.pane_tree.split_active(SplitOrientation::Vertical);
+        editor.publish_render_state();
+        let rs = editor.render_state.load_full();
+        assert_eq!(rs.cells.panes.len(), 2, "two Document leaves expected");
+        assert_ne!(
+            rs.cells.panes[0].pane_id, rs.cells.panes[1].pane_id,
+            "leaves must surface with distinct pane ids"
+        );
+        let shared_cell = editor.cells_matrix_for(editor.document_buffer_id);
+        for entry in rs.cells.panes.iter() {
+            assert_eq!(entry.buffer_id, editor.document_buffer_id);
+            assert!(
+                std::sync::Arc::ptr_eq(&entry.matrix, &shared_cell),
+                "panes showing the same buffer must share the registry's matrix Arc"
+            );
+        }
+    }
+
+    /// D.4.d.1.a: non-Document leaves (file tree / help /
+    /// messages / oil / terminal) don't take the cells path —
+    /// they're filtered out of `cells.panes` so the worker can
+    /// iterate without a kind check per entry.
+    #[test]
+    fn cells_panes_skip_non_document_leaves() {
+        use lattice_core::ui::pane::SplitOrientation;
+        use lattice_core::BufferKind;
+        let mut editor = Editor::default();
+        editor.pane_tree.split_active(SplitOrientation::Vertical);
+        // Flip pane index 1 to a non-Document kind. The filter
+        // keys on `leaf.buffer` directly, so the buffer_id
+        // doesn't need to point at a real FileTreeBuffer for
+        // this assertion.
+        editor.pane_tree.leaves_mut()[1].buffer = BufferKind::FileTree;
+        editor.publish_render_state();
+        let rs = editor.render_state.load_full();
+        assert_eq!(
+            rs.cells.panes.len(),
+            1,
+            "non-Document leaves must be filtered out of panes"
+        );
+        assert_eq!(rs.cells.panes[0].buffer_id, editor.document_buffer_id);
+    }
+
+    /// D.4.d.1.a: the active pane's entry carries the
+    /// single-edit delta the publisher just `take()`d off
+    /// `Editor::last_edit_for_cells`; other panes (even ones
+    /// showing the same buffer) carry `None`. Prevents the
+    /// worker from double-applying the same delta when
+    /// iterating per pane.
+    #[test]
+    fn cells_panes_last_edit_routes_only_to_active_pane() {
+        use lattice_core::ui::pane::SplitOrientation;
+        let mut editor = Editor::default();
+        editor.pane_tree.split_active(SplitOrientation::Vertical);
+        // Make pane 0 the active one; both leaves share the
+        // active document so without the pane filter both would
+        // get the delta.
+        editor.pane_tree.set_active(0);
+        let active_pane_id = editor.pane_tree.active().id;
+        editor.last_edit_for_cells = Some(lattice_cells::EditDelta {
+            start_line: 0,
+            lines_removed: 0,
+            lines_added: 1,
+        });
+        editor.publish_render_state();
+        let rs = editor.render_state.load_full();
+        assert_eq!(rs.cells.panes.len(), 2);
+        let active_entry = rs
+            .cells
+            .panes
+            .iter()
+            .find(|p| p.pane_id == active_pane_id)
+            .expect("active pane must be present in panes");
+        assert!(
+            active_entry.last_edit.is_some(),
+            "active pane entry must carry the consumed delta"
+        );
+        let other_entry = rs
+            .cells
+            .panes
+            .iter()
+            .find(|p| p.pane_id != active_pane_id)
+            .expect("non-active pane must be present in panes");
+        assert!(
+            other_entry.last_edit.is_none(),
+            "non-active pane entries must never carry the active delta"
+        );
+        // Slot drained — next publish sees None on every entry.
+        editor.publish_render_state();
+        let rs2 = editor.render_state.load_full();
+        assert!(rs2.cells.panes.iter().all(|p| p.last_edit.is_none()));
     }
 
     /// `publish_render_state` fires `cells_wake.notify_one()` —

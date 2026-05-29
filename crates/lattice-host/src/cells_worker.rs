@@ -1079,6 +1079,9 @@ mod tests {
             last_edit,
             theme,
             whitespace: WhitespaceConfig::default(),
+            panes: std::sync::Arc::from(
+                Vec::<crate::render_state::PaneCellsInputs>::new().into_boxed_slice(),
+            ),
         };
         let rs = RenderState {
             cells: Arc::new(cells),
@@ -1593,6 +1596,9 @@ mod tests {
             last_edit: None,
             theme,
             whitespace: WhitespaceConfig::default(),
+            panes: std::sync::Arc::from(
+                Vec::<crate::render_state::PaneCellsInputs>::new().into_boxed_slice(),
+            ),
         };
         let rs = ArcSwap::from_pointee(RenderState {
             cells: Arc::new(cells),
@@ -1634,6 +1640,9 @@ mod tests {
             last_edit: None,
             theme,
             whitespace: WhitespaceConfig::default(),
+            panes: std::sync::Arc::from(
+                Vec::<crate::render_state::PaneCellsInputs>::new().into_boxed_slice(),
+            ),
         };
         let rs = ArcSwap::from_pointee(RenderState {
             cells: Arc::new(cells),
@@ -1691,6 +1700,9 @@ mod tests {
             last_edit: None,
             theme,
             whitespace: WhitespaceConfig::default(),
+            panes: std::sync::Arc::from(
+                Vec::<crate::render_state::PaneCellsInputs>::new().into_boxed_slice(),
+            ),
         };
         let rs = ArcSwap::from_pointee(RenderState {
             cells: Arc::new(cells),
@@ -1742,6 +1754,9 @@ mod tests {
                 last_edit: None,
                 theme,
                 whitespace: WhitespaceConfig::default(),
+                panes: std::sync::Arc::from(
+                    Vec::<crate::render_state::PaneCellsInputs>::new().into_boxed_slice(),
+                ),
             };
             ArcSwap::from_pointee(RenderState {
                 cells: Arc::new(cells),
@@ -2597,6 +2612,10 @@ mod tests {
                     last_edit,
                     theme,
                     whitespace: WhitespaceConfig::default(),
+                    panes: std::sync::Arc::from(
+                        Vec::<crate::render_state::PaneCellsInputs>::new()
+                            .into_boxed_slice(),
+                    ),
                 };
                 let rs = RenderState {
                     cells: Arc::new(cells),
@@ -2713,6 +2732,10 @@ mod tests {
                 last_edit: None,
                 theme,
                 whitespace: WhitespaceConfig::default(),
+                panes: std::sync::Arc::from(
+                    Vec::<crate::render_state::PaneCellsInputs>::new()
+                        .into_boxed_slice(),
+                ),
             };
             render_state.store(Arc::new(RenderState {
                 cells: Arc::new(cells),

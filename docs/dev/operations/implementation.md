@@ -2011,7 +2011,51 @@ shared with multibuffer-views and post-v1 inlay hints.
       **2 tests** in `dispatch::tests` (active-doc Arc-
       identity invariant; lazy-insert + idempotent +
       distinct-per-buffer). 503 host tests green.
-    - 🗒 **D.4.d.1** — Cells worker iterates registry.
+    - 🚧 **D.4.d.1** — Cells worker iterates registry.
+      Carved into three sub-slices during execution so the
+      RenderState shape change, worker iteration, and
+      renderer per-pane cutover each land green
+      independently. d.0's Arc-identity invariant means the
+      active pane's matrix cell stays the seeded registry
+      entry throughout, so no user-visible regression at any
+      boundary.
+      - ✅ **D.4.d.1.a** (2026-05-29) — `CellsRenderState`
+        carries per-pane build inputs. New
+        `PaneCellsInputs { pane_id, buffer_id, matrix,
+        version, snapshot, syntax_handle, inlay_hints,
+        folds, viewport_height, foldenable, last_edit }`;
+        new `CellsRenderState::panes:
+        Arc<[PaneCellsInputs]>` populated by
+        `publish_render_state` from `pane_tree.leaves()`
+        (Document leaves only). Active vs non-active inputs
+        sourced via two distinct flags: `is_active_pane`
+        (leaf.id == active) routes the consumed
+        `last_edit_for_cells` slot; `is_active_buffer`
+        (buffer_id == active) routes live `Editor::folds`
+        + `self.document.snapshot()` vs the `buffer_locals`
+        / `BufferRegistry::document_handle` lookups. Each
+        entry's `matrix` Arc comes from
+        `cells_matrix_for(buffer_id)` (idempotent so two
+        panes on the same buffer share the cell).
+        `build_active_inlay_hints` refactored into
+        `build_inlay_hints_for_buffer(buffer_id, &snapshot)`
+        so non-active panes reuse the same gating + utf16
+        conversion. Worker still consumes the top-level
+        active-doc inputs — no behavioural change yet;
+        D.4.d.1.b makes the worker iterate `panes`.
+        **4 tests** in `render_state::tests` (single
+        Document leaf → 1 entry; vsplit → 2 distinct
+        pane_ids sharing buffer + registry Arc; non-Document
+        leaves filtered; `last_edit_for_cells` routes only
+        to the active pane and drains on next publish).
+        507 host tests green.
+      - 🗒 **D.4.d.1.b** — `cells_worker::recompute`
+        iterates `cells.panes`, writes per-buffer matrices
+        via the entry's `matrix` cell. Cache-hit / clear /
+        full-rebuild / incremental decisions are per-pane.
+      - 🗒 **D.4.d.1.c** — `RenderState.cells` exposes a
+        per-`PaneId` matrix map; TUI + GPUI look up matrix
+        by pane being painted, not always the active one.
     - 🗒 **D.4.d.2** — Same surface for virtual rows.
     - 🗒 **D.4.d.3** — `:diffsplit` / `:diffthis` + vim-
       parity `:diffoff`.

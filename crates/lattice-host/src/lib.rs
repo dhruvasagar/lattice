@@ -64,6 +64,13 @@ pub mod diff_fold;
 // land in this slice; the `HunkRowMapper` consumer is
 // D.4.b. See `docs/dev/architecture/pane-groups.md`.
 pub mod pane_group;
+// D.4.b (2026-05-29): `HunkRowMapper` — `RowMapper` impl
+// that translates rows between the baseline and current
+// sides of a two-way diff via cumulative-shift walks over
+// the published `HunkIndex`. Pure function of the session
+// + row + member-index pair. Composed with D.4.a, consumed
+// by D.4.d (`:diffsplit` / `:diffthis`).
+pub mod diff_pane_group;
 pub mod help;
 pub mod help_topics;
 pub mod highlights;

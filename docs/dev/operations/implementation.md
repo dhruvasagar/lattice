@@ -1925,8 +1925,35 @@ shared with multibuffer-views and post-v1 inlay hints.
     rejection, 2-pane identity propagation, buffer-mismatch
     suspension, prune-on-empty). 475 host + 1461 workspace
     tests green.
-  - 🗒 **D.4.b** — `HunkRowMapper` (pure function of
-    `HunkIndex`).
+  - ✅ **D.4.b** (2026-05-29) — `HunkRowMapper` landed.
+    New `lattice-host/src/diff_pane_group.rs`. Constructed
+    with `Arc<DiffSession>` + the baseline / current member
+    indices into `PaneGroup::members`. `RowMapper::map_row`
+    dispatches on the (from, to) pair: matches the baseline
+    → current direction, the current → baseline direction,
+    or falls back to identity for unfamiliar pairs (e.g.
+    future three-pane compositions). Per-direction logic
+    is a single cumulative-shift walk over the published
+    `HunkIndex`: row before this hunk ⇒ apply accumulated
+    shift; row inside this hunk ⇒ proportional mapping
+    (`offset * to_len / from_len`, capped at `to_len - 1`)
+    *or* collapse to `to.start` when either side is empty
+    (Add / Remove); row past this hunk ⇒ accumulate
+    `current_len - baseline_len` and continue. Past all
+    hunks ⇒ apply final shift. Pure functions
+    `map_baseline_to_current` / `map_current_to_baseline`
+    exposed for direct unit testing without round-tripping
+    through the trait. Defensive: malformed hunks
+    (`ranges.len() < 2`) are skipped (no panic); unfamiliar
+    member pairs return identity. **12 tests**: empty
+    index = identity both directions, single Add (baseline
+    rows past shift, current rows inside collapse), single
+    Remove symmetric, Change with proportional inside (both
+    expand and compress), cumulative shift across multiple
+    Adds, mixed Add/Remove cancels, malformed hunk skipped,
+    unfamiliar member pair = identity, round-trip through
+    published session. 487 host + 1461 workspace tests
+    green.
   - 🗒 **D.4.c** — Filler-row provider for hunk alignment.
   - 🗒 **D.4.d** — `:diffsplit` / `:diffthis` ex-commands.
   - 🗒 **D.4.e** — Bench `pane_group_scroll_p99_us`.

@@ -1662,18 +1662,21 @@ shared with multibuffer-views and post-v1 inlay hints.
       unconditionally so the layout stays stable on `:diff` /
       `:diffoff`. New `render_diff_sign_cell(view, line_idx)`
       reads through `RenderState::diff.sign_map` —
-      lock-free `ArcSwap` load; renderer hot path. Per user
-      direction the sign sits **right of the line number**
-      (GitHub PR convention) — composed into the body's
-      prepend rather than the prefix. Hardcoded colours
-      (Add → green, Change → yellow, Remove → red); D.3.e
-      will route through theme entries. Layout becomes
-      `[severity] [fold + line_num] [diff_sign] [body...]`.
-      Cursor-position arithmetic updated to account for the
-      new column (cells past gutter +1). Three cursor-
-      position tests updated to assert the new col +1.
-      New `RenderState::diff: Arc<DiffRenderState>` substate
-      so the renderer never holds an `Editor` reference;
+      lock-free `ArcSwap` load; renderer hot path. Sign sits
+      **left of line numbers**, between the LSP severity
+      column and the gutter — matches editor convention
+      across Vim signcolumn / Helix / Zed / VSCode /
+      JetBrains. (Initial RIGHT-of-numbers / GitHub-PR
+      placement was reverted in `72954f9` after Dhruva
+      flagged convention priority for diff features — see
+      saved memory `feedback_convention_first`.) Hardcoded
+      colours (Add → green, Change → yellow, Remove → red);
+      D.3.e will route through theme entries. Layout:
+      `[severity] [diff_sign] [fold + line_num] [body...]`.
+      Cursor-position arithmetic accounts for the new
+      column. Three cursor-position tests updated. New
+      `RenderState::diff: Arc<DiffRenderState>` substate so
+      the renderer never holds an `Editor` reference;
       `build_render_state` snapshots
       `editor.diff_signs_for_active()` per publish. **163
       lattice-ui-tui render tests + 447 lattice-host unit
@@ -1683,19 +1686,31 @@ shared with multibuffer-views and post-v1 inlay hints.
       `GutterLineMeta::diff_sign: Option<(char, u32)>` field
       pre-resolved at `window.rs paint_pane` time from
       `rs.diff.sign_map.sign_at(line_idx)`. `format_gutter_text`
-      layout becomes `{fold}{sev}{num:>width$}{diff} ` —
-      diff sign right of line number, matching TUI. New run
-      inside `build_gutter_runs` splits the trailing portion
-      into digits + diff-sign + trailing-space (3 runs
-      instead of 1) so the diff sign gets its own colour.
-      Three existing format tests updated for the new
-      width; one new test verifies diff sign placement
-      right of line number. Text-based glyphs (`+` / `~` /
+      layout: `{fold}{sev}{diff}{num:>width$} ` — diff sign
+      LEFT of line number, matching TUI placement and the
+      Vim/Helix/Zed/VSCode convention. `build_gutter_runs`
+      emits 4 runs (fold, severity, diff, line-number +
+      trail) so the diff sign gets its own colour. Three
+      existing format tests updated for the new width; one
+      new test (`gutter_text_format_diff_sign_left_of_line_number`)
+      verifies placement. Text-based glyphs (`+` / `~` /
       `-`) for parity with TUI; sprite atlas (§5.6.7)
       variant is a follow-on if/when GPUI demands it.
   - 🗒 **D.3.e** — Line background tints. `DiffAdd`,
     `DiffChange`, `DiffRemove` theme entries applied to cell
     backgrounds on the current side.
+  - 🗒 **D.3.f** — Hunk fold provider. `HunkFoldProvider`
+    registers one fold range per hunk's current-side range
+    (`ranges[1]`) into the existing fold registry. **No new
+    keymaps** — the standard fold vocabulary (`za` / `zo` /
+    `zc` / `zR` / `zM`, `foldlevel=N`, `:foldopen` /
+    `:foldclose`) covers hunks identically to syntactic /
+    marker folds. Lands after D.3.e so fold-state interaction
+    with deletion-block virtual rows + tint backgrounds is
+    settled first. Composes with multibuffer M.7 / M.8 fold
+    providers via vim's "smallest enclosing fold wins" on
+    `za`. See `diff-system.md` §6.5 for the design
+    requirement.
 - 🗒 **D.4** — Side-by-side two-way: `:diff`, `:diffthis`,
   `:diffsplit`, `:diffoff`; pane-group scroll-binding with
   hunk-correspondent row mapping.
@@ -1746,6 +1761,27 @@ diagnostics-as-buffer with one implementation.
   `:multibuffer-expand` / `:multibuffer-contract`.
 - 🗒 **M.6** — `MultibufferProvider` trait + first consumer
   (`SearchProvider` / `:search-buffer`).
+- 🗒 **M.7** — Excerpt fold provider. `ExcerptFoldProvider`
+  registers one fold range per excerpt's composed-row range
+  into the existing fold registry. **No new keymaps** — the
+  standard `z*` vocabulary (`za` / `zo` / `zc` / `zR` /
+  `zM`, `foldlevel=N`) covers excerpts identically to
+  syntactic / marker folds. `za` on a row inside an excerpt
+  collapses to the excerpt's M.2 header virtual row. Composes
+  with diff-system D.3.f hunk folds via vim's "smallest
+  enclosing fold wins" on `za`. Depends on M.4 so fold ranges
+  stay current as source edits shift anchors. See
+  `multibuffer-views.md` §6.5.
+- 🗒 **M.8** — File-boundary fold provider. `FileBoundaryFoldProvider`
+  registers one fold range per distinct `source: BufferId`
+  covering the union of that file's excerpts. **No new
+  keymaps** — same vocabulary as M.7. Essential for project-
+  wide diff (A.1) + AI multi-file diff (A.2) where a user
+  reviewing 50 files wants `za` on a file-header row to
+  collapse the whole file into one summary. Nesting: file
+  > excerpt > hunk on `za`. Depends on M.6 so provider-
+  driven excerpt sets are stable before fold ranges union
+  across them. See `multibuffer-views.md` §6.5.
 
 Follow-on consumers (post-M.6, each its own slice sequence,
 not yet committed): `ProjectDiffProvider` (composes with

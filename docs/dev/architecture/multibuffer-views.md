@@ -418,6 +418,54 @@ dashed multi-word commands.
   separator-only`, default `inline`.
 - `multibuffer.show-separators` — `bool`, default `true`.
 
+### 6.5 Foldability — composes with the existing fold engine
+
+Excerpts and file boundaries must be foldable so the user can
+collapse a multi-excerpt view to a navigation outline.
+Critically, **this needs zero new keymap surface** — the
+existing fold vocabulary (`za` / `zo` / `zc` / `zR` / `zM`,
+`foldlevel=N`, `:foldopen` / `:foldclose`) is fold-source-
+agnostic. The fold engine accepts a range from any provider
+and treats it identically.
+
+Two providers cover the two natural fold scopes:
+
+- **M.7** lands `ExcerptFoldProvider` — one fold range per
+  excerpt's composed-row range. `za` on a row inside an
+  excerpt collapses to the excerpt's header (M.2 virtual
+  row); `zR` opens every excerpt alongside every other
+  fold source.
+- **M.8** lands `FileBoundaryFoldProvider` — one fold range
+  per distinct `source: BufferId` covering the union of
+  that file's excerpts. `za` on a file-header row collapses
+  the whole file's excerpts to a single one-line file
+  summary. Useful in project-wide diff (A.1) and AI multi-
+  file diff (A.2) for "review files top-down" workflows.
+
+Composition with diff-system foldability
+(`diff-system.md` §6.5):
+
+- Hunk fold ranges (D.3.f) live in each source document's
+  local coordinates.
+- Excerpt and file-boundary fold ranges (M.7 / M.8) live in
+  the multibuffer's composed coordinates.
+- When a hunk sits inside an excerpt sits inside a file
+  boundary and the user presses `za` on a row inside all
+  three, the **smallest enclosing fold wins** — vim's
+  convention. Repeated `za` presses walk outward through
+  the nesting: hunk → excerpt → file.
+
+The composition runs through the standard fold registry, not
+a multibuffer-specific abstraction, so `:foldopen` /
+`:foldclose` ex-commands and the entire `z*` family continue
+to work without any multibuffer-aware special-casing. No
+`:multibuffer-fold-excerpt`, `:multibuffer-fold-file` etc.
+ex-commands are added — heuristic #4 (*"Don't add features
+beyond what the task requires"*) applies to keymap surface
+too.
+
+The slice plan (§9) lists M.7 + M.8 as the gates for this.
+
 ## 7. Performance posture
 
 - **Hot path (per-keystroke in multibuffer):** Edit dispatch
@@ -479,9 +527,13 @@ adequate.
   Lean (a) — explicit, no surprise state; the provider can
   re-emit the excerpt if it knows how to recover the source.
   Decide before M.4.
-- **Folding inside excerpts** — should excerpts be foldable
-  as units? Useful for navigation in large multibuffers.
-  Lean yes, but defer to a polish slice after M.6.
+- ~~**Folding inside excerpts** — should excerpts be
+  foldable as units? Useful for navigation in large
+  multibuffers. Lean yes, but defer to a polish slice
+  after M.6.~~ **Resolved 2026-05-29.** Yes — landed as
+  M.7 (`ExcerptFoldProvider`) + M.8 (`FileBoundaryFoldProvider`)
+  in the slice plan §9. Composes with the existing fold
+  engine; no new keymap surface. See §6.5.
 - **Multibuffers participating in diff sessions** — when a
   multibuffer is the active buffer and the user invokes
   `:diff <buf>`, what does that mean? Lean: disallow at the
@@ -514,6 +566,8 @@ error handling.
 | **M.4** | Live updates from source buffers | Source-buffer edits propagate to the multibuffer view. Anchor-driven excerpt range tracking (existing anchor type handles this). Translation rebuild debounced and run off-thread. Cross-pane consistency: edit in source pane reflects in multibuffer pane on next snapshot. Tests: edit source buffer outside any excerpt — multibuffer unchanged; edit source buffer inside an excerpt — multibuffer's composed view reflects; rapid edits coalesce into one rebuild. Bench: `multibuffer_source_edit_p99_us` ≤ 200µs at 1k excerpts. |
 | **M.5** | Expand-context affordance | `:multibuffer-expand [n]` / `:multibuffer-contract [n]` ex-commands and the bound keys (`+` / `-` on excerpt header). Translates to anchor-range mutation on the relevant excerpt; translation rebuild fires through the standard path. Tests: expand grows the excerpt; contract shrinks; expand below 1 row is a no-op; expand past the source buffer's end clips. |
 | **M.6** | `MultibufferProvider` trait + first consumer | The provider trait + the `MultibufferSubsystem` that owns provider tasks. **First consumer lands in the same slice**: `SearchProvider` — wraps ripgrep, emits initial excerpts from match locations, observes search-query changes and re-emits excerpts. `:search-buffer <pattern>` ex-command opens the result in a multibuffer. Tests: provider lifecycle (create, mutate, close); ripgrep-driven excerpts populate correctly; query change replaces excerpts; search-buffer responds to subscribed event mutations. Bench: `multibuffer_bulk_replace_p99_us` ≤ 5000µs at 1k excerpt replacement. |
+| **M.7** | Excerpt fold provider              | `ExcerptFoldProvider` registers one fold range per excerpt's composed-row range into the existing fold registry. **No new keymaps** — the standard `z*` vocabulary (`za` / `zo` / `zc` / `zR` / `zM`, `foldlevel=N`, `:foldopen` / `:foldclose`) covers excerpts identically to syntactic / marker folds (§6.5). `za` on a row inside an excerpt collapses to the excerpt's M.2 header virtual row. Composition: when a hunk (D.3.f) sits inside an excerpt, the smallest enclosing fold wins on `za`; repeated presses walk outwards. Lands after M.4 (live-updates) so fold ranges stay current as source edits shift anchors. Tests: excerpt fold range matches the composed-row span; `za` toggles without affecting other folds; nested hunk-inside-excerpt prefers innermost on `za`; expand-context (M.5) widens the fold range. |
+| **M.8** | File-boundary fold provider        | `FileBoundaryFoldProvider` registers one fold range per distinct `source: BufferId` covering the union of that file's excerpts. **No new keymaps** — same vocabulary as M.7. Surfaces "collapse all hunks/excerpts in this file to one summary row" as a natural `za` action on the file-header row. Essential for project-wide diff (A.1) + AI multi-file diff (A.2) where a user reviewing 50 files wants a top-down outline. Composition: file > excerpt > hunk nesting on `za`. Lands after M.6 so provider-driven excerpt sets are stable before fold ranges union across them. Tests: file fold range covers excerpts contiguously; `za` toggle collapses all excerpts of one file; multi-file multibuffer with 100 files × 5 excerpts collapses into a 100-row outline at `:set foldlevel=0`. |
 
 Slice sequencing:
 
@@ -529,6 +583,10 @@ Slice sequencing:
 - **M.5** depends on M.4.
 - **M.6** depends on M.4 (provider needs editable +
   live-updating multibuffer).
+- **M.7** depends on M.4 (fold ranges shift with anchor
+  updates; live-update must be stable first).
+- **M.8** depends on M.6 (provider-driven excerpt sets must
+  be stable before fold ranges union across them).
 
 ### N.1 — Narrow mode (follow-on, depends on M.3)
 

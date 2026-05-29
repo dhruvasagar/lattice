@@ -614,6 +614,46 @@ Registered against the typed-options system (§5.12):
 - `diff.fill-char` — `string` (one char), default `"-"`. The
   visual fill in filler rows.
 
+### 6.5 Foldability — composes with the existing fold engine
+
+Hunks must be foldable so the user can collapse a noisy
+region to a one-line summary and walk the remaining changes
+without scrolling through every modified line. Critically,
+**this needs zero new keymap surface** — the existing fold
+vocabulary (`za` / `zo` / `zc` / `zR` / `zM`, plus
+`foldmethod=` / `foldlevel=` options) is intentionally fold-
+source-agnostic. The fold engine accepts a range from any
+provider and treats it identically.
+
+D.3.f lands a `HunkFoldProvider` that registers one fold
+range per hunk's current-side range (`ranges[1]`). The fold
+engine then takes over: `za` on a row inside a hunk toggles
+the hunk's fold; `zR` opens every hunk along with every
+other fold source; `:set foldlevel=0` collapses all hunks to
+their summary row alongside any syntactic / marker folds.
+
+Composition with multibuffer foldability
+(`multibuffer-views.md` §6.5):
+
+- Hunk fold ranges live in the current document's local
+  coordinate space.
+- Excerpt + file-boundary folds live in the multibuffer's
+  composed coordinate space (M.7 / M.8).
+- When a hunk is inside an excerpt and the user presses `za`
+  on a row inside both, the **smallest enclosing fold
+  wins** — vim's convention. Repeated `za` presses walk
+  innermost-to-outermost (hunk → excerpt → file boundary).
+
+The composition runs through the standard fold registry, not
+a diff-specific abstraction, so `:foldopen` / `:foldclose`
+ex-commands and the entire `z*` family continue to work
+without any diff-aware special-casing. No `:hunk-fold`,
+`:hunk-unfold`, etc. ex-commands are added — heuristic #4
+(*"Don't add features beyond what the task requires"*)
+applies to keymap surface too.
+
+The slice plan (§9) lists D.3.f as the gate for this.
+
 ## 7. Performance posture
 
 - **Hot path (per-keystroke):** Unchanged for buffers not
@@ -694,6 +734,7 @@ panic on the hot path, never swallow silently).
 | **D.5** | Hunk transfer operators (`do` / `dp`)     | Operators registered through `CommandRegistry`. Translate to `ApplyEdit` against the receiving document; edit fires recompute through the standard pipeline. Tests: `dp` on a Change hunk replaces the other document's range; undo composes correctly; macros record and replay correctly; recompute fires once after the edit settles.                                                                                                                                                                                                                                                                                                                                                                           |
 | **D.6** | Three-way merge presentation              | `PresentationMode::SideBySide { pane_index: 0/1/2 }` for three panes. `HunkKind::Conflict` populated by `compute_three_way`. Conflict-region rendering uses a distinct theme entry (`DiffConflict`). `:diffput <bufnr>` / `:diffget <bufnr>` honour the disambiguating argument. `:diff-accept` / `:diff-reject` ex-commands for resolving the session. Tests: three documents with non-overlapping changes show two non-conflict hunks; three documents with overlapping changes show one conflict hunk; `:diffput 2` resolves a conflict by pushing pane 1's version.                                                                                                                                            |
 | **D.7** | Git baseline integration (`:Gdiff`)       | New small `lattice-vcs` crate (or extension of an existing one) providing `git_baseline(path, ref) -> Rope`. `:Gdiff [<ref>]` opens a single-doc inline session against the git baseline. Uses `gix` (gitoxide) for read-only access; no working-copy mutation. Tests: dirty file shows hunks vs HEAD; clean file shows no hunks; non-git paths return a clear error via the existing diagnostic banner.                                                                                                                                                                                                                                                                                                           |
+| **D.3.f** | Hunk fold provider                      | `HunkFoldProvider` registers one fold range per hunk's current-side range (`ranges[1]`) into the existing fold registry. **No new keymaps** — the standard fold vocabulary (`za` / `zo` / `zc` / `zR` / `zM`, `foldlevel=N`, `:foldopen` / `:foldclose`) covers hunks identically to syntactic / marker folds (§6.5). Composition: `za` on a row inside both a hunk and an excerpt fold (multibuffer M.7) toggles the innermost first; repeated presses walk outwards. Lands after D.3.e since fold-state interaction with deletion-block virtual rows + tint backgrounds wants those visuals settled first. Tests: hunk fold range is registered with the right span; `za` toggles a hunk fold without affecting other folds; nested hunk-inside-excerpt prefers innermost on `za`. |
 
 After D.7, two consumer flows compose on top of this subsystem
 without further changes to the diff layer:

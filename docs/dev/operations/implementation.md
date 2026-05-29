@@ -2373,7 +2373,27 @@ shared with multibuffer-views and post-v1 inlay hints.
         Closes D.4.d.3; D.4.e (bench) is the only
         remaining D.4 slice. 542 host tests green;
         workspace build green.
-  - 🗒 **D.4.e** — Bench `pane_group_scroll_p99_us`.
+  - ✅ **D.4.e** (2026-05-30) — Pane-group benches. New
+    `crates/lattice-host/benches/pane_group.rs` + `[[bench]]
+    pane_group` in `Cargo.toml`. Three workloads:
+    `pane_group_no_group` (early-return floor cost paid by
+    every publish when no group is registered),
+    `pane_group_identity_propagation` (2-pane identity-mapper
+    propagation per tick — exercises group walk + buffer-
+    mismatch check + mapper call + stashed-scroll write),
+    `hunk_row_map_p99_us` (`HunkRowMapper::map_row` against a
+    `DiffSession` carrying 100 hunks distributed Add /
+    Remove / Change to exercise the three per-hunk branches
+    in the cumulative-shift walk). Each bench iter samples
+    8 representative rows so the call cost is amortised
+    realistically. Smoke-verified via
+    `cargo bench --bench pane_group -- --test`. Backs
+    `diff-system.md` §7 `diff_scroll_bind_p99_us`
+    keystroke-budget claim + paramount goal #1 (the
+    propagation tail runs on every publish, so its no-
+    group floor + identity-bound cost both must fit
+    inside the budget). Closes D.4 (side-by-side two-way
+    diff fully wired end-to-end).
 - 🗒 **D.5** — Hunk transfer operators `do` / `dp` via
   `CommandRegistry`.
 - 🗒 **D.6** — Three-way merge: conflict regions, `:diffput

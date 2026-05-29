@@ -180,5 +180,17 @@ harness = false
 name = "fold_recompute"
 harness = false
 
+# D.4.e (2026-05-30): pane-group scroll-binding hot-path bench.
+# Three workloads — `pane_group_no_group` (early-return cost
+# paid by every publish when no group is registered),
+# `pane_group_identity_propagation` (2-pane identity-mapper
+# propagation per tick), `hunk_row_map_p99_us`
+# (`HunkRowMapper::map_row` at 100 hunks). Backs the
+# `diff-system.md` §7 `diff_scroll_bind_p99_us` keystroke-
+# budget claim. See `benches/pane_group.rs`.
+[[bench]]
+name = "pane_group"
+harness = false
+
 [lints]
 workspace = true

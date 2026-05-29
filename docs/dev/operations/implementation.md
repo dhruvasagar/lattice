@@ -1835,15 +1835,41 @@ shared with multibuffer-views and post-v1 inlay hints.
     diff-system.md §6.5 still describes the consumer.
     **1461 workspace tests green** (regression sweep
     end-to-end).
-  - 🗒 **D.3.f.1** — `HunkFoldProvider` overlay (next).
-    Registers when `DiffSubsystem::open_session` runs;
-    deregisters in `drop_session`. Reads `FoldContext::diff_hunks`;
-    emits one `Fold` per non-empty current-side hunk;
-    identity = `hash(("diff:hunk", start_line, end_line))`.
-    `recompute_folds()` fires on each `DiffSession::publish_notify`
-    via a forwarder task. See `diff-system.md` §6.5 for the
-    design requirement; per-slice contract in
-    [`slice-plans/fold-architecture.md`](slice-plans/fold-architecture.md).
+  - ✅ **D.3.f.1** (2026-05-29) — `HunkFoldProvider` overlay
+    landed. New `lattice-host/src/diff_fold.rs` houses the
+    provider (`ProviderId(100)`, `ProviderKind::Overlay`) +
+    the `hunk_fold_identity` helper that namespaces hashes
+    with the literal `"diff:hunk"` so closed-state survives
+    publishes when the span is unchanged. `compute()` reads
+    the active session's `HunkIndex` via
+    `FoldContext::diff_hunks` (loaded by
+    `Editor::recompute_folds` from
+    `DiffSubsystem::lookup(buffer_id).map(|s| s.current_hunks())`);
+    emits one `Fold` per non-empty current-side hunk range
+    of length >= 2, skipping pure-`Remove` hunks (zero
+    current side — the deletion surfaces as a virtual row)
+    and single-line hunks (z* no-op). `LineRange::end` is
+    exclusive in `lattice-diff`; `Fold::end_line` is
+    inclusive in `lattice-core`; provider subtracts one.
+    Always-on registration: `FoldRegistry::with_builtins()`
+    pre-seeds the overlay so `Editor::default()` and the
+    editor-boot path get identical composition. Eventual-
+    consistency model for publish→fold freshness: hunks
+    appear on the next `recompute_folds()` trigger (edit /
+    mode change / buffer switch / foldmethod change); no
+    new wake mechanism — matches how virtual rows compose
+    today. Tests: 10 unit tests in `diff_fold` (no session
+    empty, empty index empty, Add hunk → fold with
+    inclusive end, Remove skipped, single-line skipped,
+    Change + Conflict both foldable, identity stable across
+    revs, identity distinguishes spans, provider id, malformed
+    hunk → no panic); 3 dispatch integration tests
+    (`recompute_folds` adds hunk fold after publish, drops it
+    after `drop_session`, closed-state survives republish);
+    1 fold_provider test (with_builtins pre-seeds the
+    overlay). Updated `diff-system.md` §6.5 to point at
+    `fold-architecture.md`. **466 host tests + 1461
+    workspace tests green.**
   - 🗒 **D.3.f.2** — Bench `fold_recompute_p99_us` (100
     hunks overlaid on a syntax primary, 5k-line file). CI
     gate enforces the keystroke budget.

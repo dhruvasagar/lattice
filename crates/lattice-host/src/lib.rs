@@ -51,6 +51,13 @@ pub mod folds;
 // providers wrapping today's `compute_*_folds` helpers. The
 // first overlay consumer (`HunkFoldProvider`) lands in D.3.f.1.
 pub mod fold_provider;
+// D.3.f.1 (2026-05-29): HunkFoldProvider — overlay that
+// emits one Fold per non-empty current-side hunk range in
+// the active diff session. Registered as an overlay at
+// editor boot; emits empty when no diff session is active.
+// See `docs/dev/architecture/fold-architecture.md` and
+// `docs/dev/architecture/diff-system.md` §6.5.
+pub mod diff_fold;
 pub mod help;
 pub mod help_topics;
 pub mod highlights;

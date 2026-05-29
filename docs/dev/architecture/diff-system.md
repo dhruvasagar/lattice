@@ -626,11 +626,21 @@ source-agnostic. The fold engine accepts a range from any
 provider and treats it identically.
 
 D.3.f lands a `HunkFoldProvider` that registers one fold
-range per hunk's current-side range (`ranges[1]`). The fold
+range per hunk's current-side range (`ranges[1]`) as an
+**overlay** in the fold-engine substrate
+([`fold-architecture.md`](fold-architecture.md)). The fold
 engine then takes over: `za` on a row inside a hunk toggles
 the hunk's fold; `zR` opens every hunk along with every
 other fold source; `:set foldlevel=0` collapses all hunks to
 their summary row alongside any syntactic / marker folds.
+
+Hunk folds skip pure-`Remove` hunks (empty current-side
+range — the deletion surfaces as a virtual row, not a fold)
+and single-line hunks (collapsing one line to itself is a
+no-op the `z*` family wouldn't surface). Identity is
+`hash(("diff:hunk", start_line, end_line))` so closed-state
+survives across diff publishes when a hunk's span is
+unchanged.
 
 Composition with multibuffer foldability
 (`multibuffer-views.md` §6.5):

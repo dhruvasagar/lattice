@@ -88,9 +88,18 @@ impl FoldRegistry {
         primaries.insert(FoldMethod::Markdown, Arc::new(MarkdownPrimary));
         primaries.insert(FoldMethod::Syntax, Arc::new(SyntaxPrimary));
         primaries.insert(FoldMethod::Lsp, Arc::new(LspPrimary));
+        // D.3.f.1 (2026-05-29): the hunk fold overlay is
+        // always-on — `compute()` is gated by `ctx.diff_hunks`
+        // being `Some`, so it's inert when no diff session
+        // backs the active buffer. Pre-seeding here means
+        // `Editor::default()` (used by tests) gets the same
+        // composition as the editor-boot path without a
+        // manual `add_overlay` call.
+        let overlays: Vec<Arc<dyn FoldProvider>> =
+            vec![Arc::new(crate::diff_fold::HunkFoldProvider)];
         Self {
             primaries,
-            overlays: Vec::new(),
+            overlays,
         }
     }
 
@@ -177,20 +186,23 @@ mod tests {
     #[test]
     fn overlay_add_and_remove_round_trip() {
         let mut r = FoldRegistry::with_builtins();
-        assert_eq!(r.overlays().count(), 0);
+        // `with_builtins` pre-seeds the always-on
+        // HunkFoldProvider (D.3.f.1) — baseline is 1, not 0.
+        let baseline = r.overlays().count();
         let id = r.add_overlay(Arc::new(StaticOverlay {
             id: ProviderId(42),
             folds: vec![],
         }));
         assert_eq!(id, ProviderId(42));
-        assert_eq!(r.overlays().count(), 1);
+        assert_eq!(r.overlays().count(), baseline + 1);
         r.remove_overlay(ProviderId(42));
-        assert_eq!(r.overlays().count(), 0);
+        assert_eq!(r.overlays().count(), baseline);
     }
 
     #[test]
     fn add_overlay_with_existing_id_replaces() {
         let mut r = FoldRegistry::with_builtins();
+        let baseline = r.overlays().count();
         r.add_overlay(Arc::new(StaticOverlay {
             id: ProviderId(7),
             folds: vec![Fold {
@@ -206,8 +218,19 @@ mod tests {
         }));
         assert_eq!(
             r.overlays().count(),
-            1,
+            baseline + 1,
             "same-id overlay must replace, not duplicate"
+        );
+    }
+
+    #[test]
+    fn with_builtins_pre_seeds_hunk_overlay() {
+        // D.3.f.1: HunkFoldProvider lives at id 100.
+        let r = FoldRegistry::with_builtins();
+        assert!(
+            r.overlays()
+                .any(|p| p.id() == crate::diff_fold::HUNK_FOLD_PROVIDER_ID),
+            "HunkFoldProvider must be pre-seeded so `Editor::default()` matches editor-boot composition"
         );
     }
 }

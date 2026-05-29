@@ -9316,9 +9316,15 @@ impl Editor {
                 None
             }
         };
-        // D.3.f.1 wires hunk inputs here once `HunkFoldProvider`
-        // lands; the field stays `None` in this slice.
-        let diff_hunks: Option<std::sync::Arc<lattice_diff::HunkIndex>> = None;
+        // D.3.f.1 (2026-05-29): load the active diff session's
+        // currently-published `HunkIndex` for the buffer (lock-
+        // free `ArcSwap::load_full`). When no session is
+        // registered, `lookup` returns `None` and the
+        // HunkFoldProvider falls through to emitting nothing.
+        let diff_hunks: Option<std::sync::Arc<lattice_diff::HunkIndex>> = self
+            .diff_subsystem
+            .lookup(self.document_buffer_id)
+            .map(|s| s.current_hunks());
 
         let ctx = crate::fold_provider::FoldContext {
             buffer: &snapshot.buffer,
@@ -22847,5 +22853,136 @@ mod tests {
         let msg = editor.last_message.as_ref().expect("message set");
         assert!(msg.text.contains("no hunks"), "{}", msg.text);
         assert_eq!(editor.cursor, before);
+    }
+
+    // ── D.3.f.1: hunk folds overlay through recompute_folds ─
+
+    /// End-to-end: a registered diff session with a multi-line
+    /// Add hunk produces a hunk fold in `editor.folds` after
+    /// `recompute_folds()`. Verifies the registry overlay
+    /// path: HunkFoldProvider seeded by `with_builtins`,
+    /// `FoldContext::diff_hunks` populated from the session,
+    /// fold appended alongside whatever the primary produces.
+    #[test]
+    fn recompute_folds_adds_hunk_fold_when_session_publishes() {
+        use lattice_diff::{DiffAlgorithm, Hunk, HunkIndex, HunkKind, LineRange};
+        use smallvec::smallvec;
+
+        let mut editor = Editor::default();
+        let bid = editor.document_buffer_id;
+        let session = editor
+            .diff_subsystem
+            .register(bid, DiffAlgorithm::Histogram);
+        session.publish(std::sync::Arc::new(HunkIndex {
+            hunks: vec![Hunk {
+                kind: HunkKind::Add,
+                ranges: smallvec![LineRange::new(3, 3), LineRange::new(3, 7)],
+            }],
+            algorithm: DiffAlgorithm::Histogram,
+            revision: 1,
+        }));
+
+        editor.recompute_folds();
+
+        let hunk_fold = editor
+            .folds
+            .iter()
+            .find(|f| f.start_line == 3 && f.end_line == 6);
+        assert!(
+            hunk_fold.is_some(),
+            "expected one hunk fold at lines 3..=6 after recompute_folds, got {:?}",
+            editor.folds
+        );
+        assert_eq!(
+            hunk_fold.unwrap().identity,
+            Some(crate::diff_fold::hunk_fold_identity(3, 6)),
+            "hunk fold identity must namespace via diff:hunk hash"
+        );
+    }
+
+    /// Closing the diff session drops the hunk fold on the
+    /// next `recompute_folds()`. Verifies that the overlay
+    /// gating on `ctx.diff_hunks` (Some vs None) flips
+    /// correctly when the session goes away.
+    #[test]
+    fn recompute_folds_drops_hunk_fold_when_session_closes() {
+        use lattice_diff::{DiffAlgorithm, Hunk, HunkIndex, HunkKind, LineRange};
+        use smallvec::smallvec;
+
+        let mut editor = Editor::default();
+        let bid = editor.document_buffer_id;
+        let session = editor
+            .diff_subsystem
+            .register(bid, DiffAlgorithm::Histogram);
+        session.publish(std::sync::Arc::new(HunkIndex {
+            hunks: vec![Hunk {
+                kind: HunkKind::Add,
+                ranges: smallvec![LineRange::new(0, 0), LineRange::new(0, 4)],
+            }],
+            algorithm: DiffAlgorithm::Histogram,
+            revision: 1,
+        }));
+        editor.recompute_folds();
+        assert!(
+            editor.folds.iter().any(|f| f.identity.is_some()),
+            "sanity: session active → hunk fold present"
+        );
+
+        editor.diff_subsystem.drop_session(bid);
+        editor.recompute_folds();
+
+        assert!(
+            editor
+                .folds
+                .iter()
+                .all(|f| f.identity != Some(crate::diff_fold::hunk_fold_identity(0, 3))),
+            "after drop_session, the hunk fold must be gone"
+        );
+    }
+
+    /// Closed-state survives a republish that produces the
+    /// same hunk span. The identity hash namespaces by span;
+    /// the carry-over loop in `recompute_folds` matches old
+    /// → new by identity and preserves `closed`.
+    #[test]
+    fn hunk_fold_closed_state_survives_republish() {
+        use lattice_diff::{DiffAlgorithm, Hunk, HunkIndex, HunkKind, LineRange};
+        use smallvec::smallvec;
+
+        let mut editor = Editor::default();
+        let bid = editor.document_buffer_id;
+        let session = editor
+            .diff_subsystem
+            .register(bid, DiffAlgorithm::Histogram);
+        let mk = |rev| {
+            std::sync::Arc::new(HunkIndex {
+                hunks: vec![Hunk {
+                    kind: HunkKind::Add,
+                    ranges: smallvec![LineRange::new(1, 1), LineRange::new(1, 4)],
+                }],
+                algorithm: DiffAlgorithm::Histogram,
+                revision: rev,
+            })
+        };
+        session.publish(mk(1));
+        editor.recompute_folds();
+        let pos = editor
+            .folds
+            .iter()
+            .position(|f| f.identity == Some(crate::diff_fold::hunk_fold_identity(1, 3)))
+            .expect("hunk fold present after first publish");
+        editor.folds[pos].closed = true;
+
+        session.publish(mk(2));
+        editor.recompute_folds();
+        let f = editor
+            .folds
+            .iter()
+            .find(|f| f.identity == Some(crate::diff_fold::hunk_fold_identity(1, 3)))
+            .expect("hunk fold still present after republish");
+        assert!(
+            f.closed,
+            "closed-state must survive the republish (identity match → carry-over)"
+        );
     }
 }

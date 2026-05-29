@@ -2561,21 +2561,32 @@ mod tests {
     // ---- S2.1 (cell-grid renderer plumbing) ----
 
     /// `CellsRenderState` is populated by `publish_render_state`.
-    /// The matrix Arc is published as a clone of
-    /// `Editor::cells_matrix_cell` (stable identity); other
+    /// The matrix Arc is published as the active pane's
+    /// per-buffer matrix cell (via
+    /// `Editor::cells_matrix_for(document_buffer_id)`); other
     /// fields aggregate active document + syntax inputs.
+    ///
+    /// D.4.d.1.b (2026-05-29): pre-d.1.b the assertion was
+    /// `Arc::ptr_eq(&rs.cells.matrix, &editor.cells_matrix_cell)`.
+    /// The worker now writes through `cells.panes[i].matrix`
+    /// (each entry's cell comes from the registry), so the
+    /// renderer's top-level read target switched to the
+    /// registry's active-buffer cell to keep the renderer
+    /// back-compat path landing on the worker's writes.
     #[test]
     fn cells_substate_is_populated_on_publish() {
         let mut editor = Editor::default();
         editor.viewport_height = 24;
         editor.publish_render_state();
         let rs = editor.render_state.load_full();
-        // Matrix Arc identity matches the editor's cell (so the
-        // worker's writes via that cell are visible through the
-        // published RS without a republish round-trip).
+        // Matrix Arc identity matches the registry's active
+        // cell (so the worker's writes via that cell are
+        // visible through the published RS without a republish
+        // round-trip).
+        let registry_cell = editor.cells_matrix_for(editor.document_buffer_id);
         assert!(
-            std::sync::Arc::ptr_eq(&rs.cells.matrix, &editor.cells_matrix_cell),
-            "cells.matrix must be a clone of Editor::cells_matrix_cell"
+            std::sync::Arc::ptr_eq(&rs.cells.matrix, &registry_cell),
+            "cells.matrix must come from cells_matrix_for(active_buffer)"
         );
         // No worker yet → matrix stays empty.
         let m = rs.cells.matrix.load();
@@ -2592,7 +2603,10 @@ mod tests {
     /// The matrix Arc identity persists across publishes. This is
     /// the load-bearing invariant for S2.2's worker: the worker
     /// holds its sibling Arc and writes via `store()`; subsequent
-    /// publishes must NOT swap the cell out from under it.
+    /// publishes must NOT swap the cell out from under it. The
+    /// registry's lazy-insert is idempotent so repeat lookups for
+    /// the same buffer return the same Arc — d.1.b preserves the
+    /// invariant by sourcing `cells.matrix` from the registry.
     #[test]
     fn cells_matrix_arc_identity_is_stable_across_publishes() {
         let mut editor = Editor::default();

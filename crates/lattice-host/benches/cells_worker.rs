@@ -46,7 +46,10 @@ use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_ma
 
 use lattice_cells::{CellMatrix, EditDelta, MatrixVersion};
 use lattice_host::cells_worker::recompute;
-use lattice_host::render_state::{CellsRenderState, InlayHintRow, RenderState};
+use lattice_host::cells_worker::WhitespaceConfig;
+use lattice_host::render_state::{
+    CellsRenderState, InlayHintRow, PaneCellsInputs, RenderState,
+};
 use lattice_host::ui::theme::Theme;
 use lattice_core::Document;
 use lattice_runtime::DocumentSnapshot;
@@ -69,26 +72,54 @@ fn synthetic_rust_doc(line_count: usize) -> Document {
     Document::from_text(&body)
 }
 
-/// Build a [`RenderState`] whose `cells` substate points at
-/// `snapshot` with the requested `version`, plus an optional
-/// `last_edit` for the incremental path. The returned
-/// `ArcSwap` is what `recompute` reads from.
+/// Build a [`RenderState`] whose `cells` substate carries a
+/// single-Document-pane entry pointing at `snapshot` with the
+/// requested `version` and `last_edit`. The pane's matrix cell
+/// is `matrix_cell` so the bench can observe / pre-populate the
+/// worker's write target.
+///
+/// D.4.d.1.b (2026-05-29): pre-d.1.b this helper populated only
+/// the top-level `cells.snapshot` / `cells.matrix`; the worker
+/// now reads each pane's inputs, so the bench publishes through
+/// `cells.panes`.
 fn rs_for(
     snapshot: Arc<DocumentSnapshot>,
     version: MatrixVersion,
     last_edit: Option<EditDelta>,
+    matrix_cell: Arc<ArcSwap<CellMatrix>>,
 ) -> ArcSwap<RenderState> {
+    use lattice_core::ui::pane::PaneId;
+    use lattice_core::BufferId;
+    let inlay_hints: Arc<[InlayHintRow]> =
+        Arc::from(Vec::<InlayHintRow>::new().into_boxed_slice());
+    let folds: Arc<[lattice_core::Fold]> =
+        Arc::from(Vec::<lattice_core::Fold>::new().into_boxed_slice());
+    let pane_entry = PaneCellsInputs {
+        pane_id: PaneId::default(),
+        buffer_id: BufferId::default(),
+        matrix: matrix_cell.clone(),
+        version,
+        snapshot: Some(snapshot.clone()),
+        syntax_handle: None,
+        inlay_hints: inlay_hints.clone(),
+        folds: folds.clone(),
+        viewport_height: VIEWPORT_HEIGHT,
+        foldenable: false,
+        last_edit,
+    };
     let cells = CellsRenderState {
-        matrix: Arc::default(),
+        matrix: matrix_cell,
         version,
         snapshot: Some(snapshot),
         syntax_handle: None,
-        inlay_hints: Arc::from(Vec::<InlayHintRow>::new().into_boxed_slice()),
-        folds: Arc::from(Vec::<lattice_core::Fold>::new().into_boxed_slice()),
+        inlay_hints,
+        folds,
         viewport_height: VIEWPORT_HEIGHT,
         foldenable: false,
         last_edit,
         theme: Theme::default(),
+        whitespace: WhitespaceConfig::default(),
+        panes: Arc::from(vec![pane_entry].into_boxed_slice()),
     };
     let rs = RenderState {
         cells: Arc::new(cells),
@@ -106,10 +137,7 @@ fn bench_full_build(c: &mut Criterion) {
         // is stale → forces a full rebuild.
         let version = MatrixVersion {
             text: 1,
-            syntax: 0,
-            inlay_hints: 0,
-            folds: 0,
-            theme: 0,
+            ..MatrixVersion::ZERO
         };
         group.bench_with_input(
             BenchmarkId::from_parameter(format!("{line_count}_lines")),
@@ -120,8 +148,8 @@ fn bench_full_build(c: &mut Criterion) {
                     // check always fails the cache and forces
                     // build_matrix.
                     let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
-                    let rs = rs_for(snap.clone(), *ver, None);
-                    let decision = recompute(&rs, &matrix_cell);
+                    let rs = rs_for(snap.clone(), *ver, None, matrix_cell);
+                    let decision = recompute(&rs);
                     black_box(decision);
                 });
             },
@@ -148,8 +176,8 @@ fn bench_incremental_build(c: &mut Criterion) {
         // clone its Arc as the starting point for each iter so
         // the prefix-reuse path is exercised.
         let initial_matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
-        let rs0 = rs_for(snapshot.clone(), v1, None);
-        recompute(&rs0, &initial_matrix_cell);
+        let rs0 = rs_for(snapshot.clone(), v1, None, initial_matrix_cell.clone());
+        recompute(&rs0);
         let baseline_matrix = initial_matrix_cell.load_full();
 
         // Single-line edit on line line_count/2 — touches the
@@ -170,8 +198,8 @@ fn bench_incremental_build(c: &mut Criterion) {
                     // matrix and the same edit delta.
                     let matrix_cell: Arc<ArcSwap<CellMatrix>> =
                         Arc::new(ArcSwap::from_pointee((**baseline).clone()));
-                    let rs = rs_for(snap.clone(), *ver, Some(*ed));
-                    let decision = recompute(&rs, &matrix_cell);
+                    let rs = rs_for(snap.clone(), *ver, Some(*ed), matrix_cell);
+                    let decision = recompute(&rs);
                     black_box(decision);
                 });
             },
@@ -195,17 +223,17 @@ fn bench_cache_hit(c: &mut Criterion) {
         // version match and return CacheHit without touching
         // build_matrix or try_incremental_build.
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
-        let rs_full = rs_for(snapshot.clone(), version, None);
-        recompute(&rs_full, &matrix_cell);
+        let rs_full = rs_for(snapshot.clone(), version, None, matrix_cell.clone());
+        recompute(&rs_full);
 
-        let rs = rs_for(snapshot, version, None);
+        let rs = rs_for(snapshot, version, None, matrix_cell.clone());
 
         group.bench_with_input(
             BenchmarkId::from_parameter(format!("{line_count}_lines")),
-            &(rs, matrix_cell),
-            |b, (rs, cell)| {
+            &rs,
+            |b, rs| {
                 b.iter(|| {
-                    let decision = recompute(rs, cell);
+                    let decision = recompute(rs);
                     black_box(decision);
                 });
             },

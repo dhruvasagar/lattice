@@ -2049,10 +2049,44 @@ shared with multibuffer-views and post-v1 inlay hints.
         leaves filtered; `last_edit_for_cells` routes only
         to the active pane and drains on next publish).
         507 host tests green.
-      - 🗒 **D.4.d.1.b** — `cells_worker::recompute`
-        iterates `cells.panes`, writes per-buffer matrices
-        via the entry's `matrix` cell. Cache-hit / clear /
-        full-rebuild / incremental decisions are per-pane.
+      - ✅ **D.4.d.1.b** (2026-05-29) — Cells worker
+        iterates `cells.panes`. `cells_worker::recompute`
+        no longer takes a top-level `matrix_cell`; it loops
+        over the per-pane inputs, dispatches to the new
+        `recompute_pane(pane, theme, whitespace) ->
+        WorkerDecision` helper, and writes each pane's
+        matrix into `pane.matrix` (the registry cell).
+        Aggregate decision precedence is
+        `Recomputed > Incremental > Clear > CacheHit` so
+        the renderer's `paint_request` notify fires iff at
+        least one pane produced content.
+        `try_incremental_build` signature switched from
+        `(published, snapshot, &CellsRenderState)` to
+        `(published, snapshot, &PaneCellsInputs, &Theme,
+        &WhitespaceConfig)` — same algorithm, fields
+        sourced per pane. `publish_render_state` now
+        sets `cells.matrix = cells_matrix_for(active)`
+        instead of cloning `cells_matrix_cell`, so the
+        renderer's existing top-level read lands on the
+        registry's active-buffer cell (= the worker's
+        write target) on both the boot path *and* the
+        `Editor::default()` path. The
+        `cells_substate_is_populated_on_publish` +
+        `cells_matrix_arc_identity_is_stable_across_publishes`
+        tests updated to assert via the registry.
+        Worker `run` and the editor_boot spawn call drop
+        the `cells_matrix_cell` parameter; the field
+        stays on `Editor` as the boot-time seed but is no
+        longer a worker write target. Bench (`benches/cells_worker.rs`)
+        updated: `rs_for` takes a `matrix_cell` parameter
+        and publishes through `cells.panes[0]`. **5 new
+        tests** in `cells_worker::tests`
+        (two-panes-distinct-buffers-both-rebuild,
+        per-pane-cache-hit-skips-unchanged-pane,
+        two-panes-sharing-buffer-share-one-matrix-write,
+        empty-panes-is-cache-hit,
+        pane-without-snapshot-clears-its-matrix). 512 host
+        tests green; bench compiles.
       - 🗒 **D.4.d.1.c** — `RenderState.cells` exposes a
         per-`PaneId` matrix map; TUI + GPUI look up matrix
         by pane being painted, not always the active one.

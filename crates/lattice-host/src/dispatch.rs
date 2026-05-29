@@ -955,7 +955,20 @@ impl Editor {
             // theme changes are rare so an aggressive whole-doc
             // rebuild is acceptable per the design doc.
             cells: std::sync::Arc::new(CellsRenderState {
-                matrix: self.cells_matrix_cell.clone(),
+                // D.4.d.1.b (2026-05-29): top-level `matrix`
+                // now resolves through the per-document
+                // registry so the active pane's cell IS the
+                // renderer's read target regardless of how the
+                // editor was constructed. On the boot path this
+                // is the same `Arc` as `cells_matrix_cell`
+                // (registry seeded that entry); on
+                // `Editor::default()` it's the lazy-inserted
+                // registry cell, which is the cell the worker
+                // also writes through via `cells.panes[i]`.
+                // D.4.d.1.c lets renderers look up per pane;
+                // this field stays as the active pane's view
+                // until then.
+                matrix: self.cells_matrix_for(self.document_buffer_id),
                 whitespace: {
                     // 2026-05-27: snapshot the active buffer's
                     // `display.whitespace.*` state from

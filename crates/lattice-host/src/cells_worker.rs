@@ -179,7 +179,6 @@ pub enum WorkerDecision {
 pub async fn run(
     render_state: Arc<ArcSwap<RenderState>>,
     wake: CellsWake,
-    matrix_cell: Arc<ArcSwap<CellMatrix>>,
     paint_request: Arc<tokio::sync::Notify>,
 ) {
     info!(
@@ -190,7 +189,7 @@ pub async fn run(
     loop {
         wake.0.notified().await;
         let t0 = std::time::Instant::now();
-        let decision = recompute(&render_state, &matrix_cell);
+        let decision = recompute(&render_state);
         let elapsed_us = t0.elapsed().as_micros();
         tick_count += 1;
         // Wake the renderer on content changes only. CacheHit
@@ -215,62 +214,117 @@ pub async fn run(
 }
 
 /// Pure synchronous recompute. Reads the current published
-/// `CellsRenderState`, decides whether to recompute, and updates
-/// `matrix_cell` accordingly. Returns the decision taken so tests
-/// can assert each branch without driving the async loop.
-pub fn recompute(
-    render_state: &ArcSwap<RenderState>,
-    matrix_cell: &ArcSwap<CellMatrix>,
-) -> WorkerDecision {
+/// `CellsRenderState`, iterates over every visible Document
+/// pane (`cells.panes`), and updates each pane's `matrix`
+/// independently. Returns the aggregate decision used to
+/// gate the renderer `paint_request` wake:
+///
+/// - `Clear`: at least one pane saw a `Clear` (and no pane
+///   saw a content-producing rebuild).
+/// - `Recomputed` / `RecomputedIncremental`: at least one
+///   pane rebuilt content. `Recomputed` wins when both kinds
+///   of rebuild fire in one tick, since the renderer just
+///   needs to know "something changed" — the exact mix
+///   matters per-pane only.
+/// - `CacheHit`: every pane was idle (or `panes` was empty).
+///   No paint wake.
+///
+/// D.4.d.1.b (2026-05-29): pre-d.1.b, the worker wrote into
+/// a single top-level `matrix_cell` corresponding to the
+/// active document. Now each pane's own
+/// `Arc<ArcSwap<CellMatrix>>` is the write target — the
+/// renderer reads them per pane in D.4.d.1.c.
+pub fn recompute(render_state: &ArcSwap<RenderState>) -> WorkerDecision {
     let rs = render_state.load_full();
     let cells = &rs.cells;
+    if cells.panes.is_empty() {
+        return WorkerDecision::CacheHit;
+    }
+    let mut any_recomputed = false;
+    let mut any_incremental = false;
+    let mut any_cleared = false;
+    for pane in cells.panes.iter() {
+        match recompute_pane(pane, &cells.theme, &cells.whitespace) {
+            WorkerDecision::CacheHit => {}
+            WorkerDecision::Clear => any_cleared = true,
+            WorkerDecision::Recomputed => any_recomputed = true,
+            WorkerDecision::RecomputedIncremental => any_incremental = true,
+        }
+    }
+    if any_recomputed {
+        WorkerDecision::Recomputed
+    } else if any_incremental {
+        WorkerDecision::RecomputedIncremental
+    } else if any_cleared {
+        WorkerDecision::Clear
+    } else {
+        WorkerDecision::CacheHit
+    }
+}
 
-    let Some(snapshot) = cells.snapshot.as_ref() else {
-        // No active document. Clear the published matrix if it
-        // isn't already empty.
-        let existing = matrix_cell.load();
+/// D.4.d.1.b (2026-05-29): per-pane recompute. Same algorithm
+/// the pre-d.1.b `recompute` ran against the top-level
+/// active-doc fields, now keyed off a single
+/// [`crate::render_state::PaneCellsInputs`]. Visible for tests
+/// that want to assert per-pane decisions without driving the
+/// aggregate.
+///
+/// Writes via `pane.matrix` (the per-buffer registry cell), so
+/// two panes showing the same buffer share a single output cell
+/// and the second pane sees a `CacheHit` against the rebuild
+/// the first one already published.
+pub fn recompute_pane(
+    pane: &crate::render_state::PaneCellsInputs,
+    theme: &crate::ui::theme::Theme,
+    whitespace: &WhitespaceConfig,
+) -> WorkerDecision {
+    let Some(snapshot) = pane.snapshot.as_ref() else {
+        // No snapshot — buffer closed mid-publish, or no
+        // active document for this pane. Clear this pane's
+        // matrix if it isn't already empty; idempotent on
+        // repeat clears so the second call doesn't churn the
+        // Arc.
+        let existing = pane.matrix.load();
         if existing.is_empty() && existing.version == MatrixVersion::ZERO {
             return WorkerDecision::Clear;
         }
-        matrix_cell.store(Arc::new(CellMatrix::empty()));
+        pane.matrix.store(Arc::new(CellMatrix::empty()));
         return WorkerDecision::Clear;
     };
 
-    // Cache hit: published matrix's version matches the publisher's
-    // inputs.
-    let existing = matrix_cell.load_full();
-    if !cells.version.differs_from(&existing.version) {
+    // Cache hit: this pane's published matrix already
+    // reflects the inputs (and the registry cell was just
+    // written by an earlier pane in this same tick sharing
+    // the same buffer, or by an earlier tick whose inputs
+    // didn't drift).
+    let existing = pane.matrix.load_full();
+    if !pane.version.differs_from(&existing.version) {
         return WorkerDecision::CacheHit;
     }
 
-    // S2.4.b: try the incremental rebuild path before falling
-    // back to a full rebuild. Eligibility (single-text-edit step,
-    // other axes unchanged, mode + chunk size compatible, line
-    // count consistent) is checked inside `try_incremental_build`;
-    // if the check fails the function returns `None` and we
-    // proceed to the full rebuild below.
-    if let Some(matrix) = try_incremental_build(&existing, snapshot.as_ref(), cells) {
-        matrix_cell.store(Arc::new(matrix));
+    // S2.4.b: try the incremental rebuild path. Eligibility
+    // is checked inside `try_incremental_build`; on `None` we
+    // fall through to the full rebuild.
+    if let Some(matrix) =
+        try_incremental_build(&existing, snapshot.as_ref(), pane, theme, whitespace)
+    {
+        pane.matrix.store(Arc::new(matrix));
         return WorkerDecision::RecomputedIncremental;
     }
 
-    // Full rebuild fallback (S2.2 + S2.3.a/b/c + S2.4.a). Touches
-    // every chunk. Triggered on first publish, multi-edit batches,
-    // undo / redo, theme bumps, fold changes, viewport resize that
-    // crosses the chunked-mode threshold, or any other path that
-    // breaks incremental eligibility.
+    // Full rebuild fallback.
     let matrix = build_matrix(
         snapshot.as_ref(),
-        cells.syntax_handle.as_deref(),
-        &cells.theme,
-        &cells.inlay_hints,
-        &cells.folds,
-        cells.foldenable,
-        cells.viewport_height,
-        cells.version,
-        &cells.whitespace,
+        pane.syntax_handle.as_deref(),
+        theme,
+        &pane.inlay_hints,
+        &pane.folds,
+        pane.foldenable,
+        pane.viewport_height,
+        pane.version,
+        whitespace,
     );
-    matrix_cell.store(Arc::new(matrix));
+    pane.matrix.store(Arc::new(matrix));
     WorkerDecision::Recomputed
 }
 
@@ -314,14 +368,16 @@ pub fn recompute(
 fn try_incremental_build(
     published: &CellMatrix,
     snapshot: &lattice_runtime::DocumentSnapshot,
-    cells: &crate::render_state::CellsRenderState,
+    pane: &crate::render_state::PaneCellsInputs,
+    theme: &crate::ui::theme::Theme,
+    whitespace: &WhitespaceConfig,
 ) -> Option<CellMatrix> {
-    let edit = cells.last_edit?;
+    let edit = pane.last_edit?;
     if published.chunks.is_empty() {
         return None;
     }
 
-    let new_version = cells.version;
+    let new_version = pane.version;
     let pub_v = published.version;
 
     // Only text / syntax axes may differ. text and syntax both
@@ -349,7 +405,7 @@ fn try_incremental_build(
     // Chunked-mode shape must be unchanged. Whole-doc → whole-doc
     // and chunked(n) → chunked(n) both qualify; any cross-shape
     // transition forces a full rebuild.
-    let new_mode = pick_chunk_size(cells.viewport_height, new_line_count);
+    let new_mode = pick_chunk_size(pane.viewport_height, new_line_count);
     let new_chunk_size = match new_mode {
         ChunkMode::WholeDoc => CHUNK_SIZE_WHOLE_DOC,
         ChunkMode::Chunked(n) => n,
@@ -369,28 +425,28 @@ fn try_incremental_build(
 
     // Build inputs once for the affected-zone rebuild path.
     let (default_fg, default_flags) =
-        resolve_style(&cells.theme, lattice_syntax::Style::Default);
+        resolve_style(theme, lattice_syntax::Style::Default);
     let inlay_fg = inlay_hint_fg();
     let per_line_spans: Option<Vec<Vec<lattice_syntax::StyledSpan>>> =
-        cells.syntax_handle.as_deref().and_then(|h| {
+        pane.syntax_handle.as_deref().and_then(|h| {
             let snap = h.snapshot();
             if snap.text_version() < snapshot.text_version {
                 return None;
             }
             snap.highlight_lines(0, new_line_count).ok()
         });
-    let inlays_by_line = bucket_inlays_by_line(&cells.inlay_hints, new_line_count);
-    let fold_index = crate::folds::FoldIndex::from_folds(&cells.folds, cells.foldenable);
+    let inlays_by_line = bucket_inlays_by_line(&pane.inlay_hints, new_line_count);
+    let fold_index = crate::folds::FoldIndex::from_folds(&pane.folds, pane.foldenable);
     let inputs = ChunkInputs {
         snapshot,
         per_line_spans: per_line_spans.as_ref(),
         inlays_by_line: &inlays_by_line,
         fold_index: &fold_index,
-        theme: &cells.theme,
+        theme,
         default_fg,
         default_flags,
         inlay_fg,
-        whitespace: &cells.whitespace,
+        whitespace,
     };
 
     if new_chunk_size == CHUNK_SIZE_WHOLE_DOC {
@@ -1054,6 +1110,15 @@ mod tests {
 
     /// S2.4.b: superset helper exposing `last_edit` and
     /// `viewport_height` for incremental-rebuild tests.
+    ///
+    /// D.4.d.1.b (2026-05-29): also publishes a single-pane
+    /// `cells.panes[0]` entry mirroring the top-level inputs
+    /// and using the same `matrix_cell`, so the worker (which
+    /// now iterates `cells.panes`) writes into the caller's
+    /// `matrix_cell`. Without this entry the worker would see
+    /// an empty `panes` slice and return `CacheHit` without
+    /// touching the matrix — every pre-d.1.b test expects the
+    /// matrix to receive a fresh build.
     #[allow(clippy::too_many_arguments)]
     fn rs_with_everything(
         snapshot: Option<Arc<DocumentSnapshot>>,
@@ -1067,21 +1132,35 @@ mod tests {
         last_edit: Option<lattice_cells::EditDelta>,
         viewport_height: u32,
     ) -> ArcSwap<RenderState> {
+        let inlay_hints_arc: Arc<[crate::render_state::InlayHintRow]> =
+            Arc::from(inlay_hints.into_boxed_slice());
+        let folds_arc: Arc<[lattice_core::Fold]> = Arc::from(folds.into_boxed_slice());
+        let pane_entry = crate::render_state::PaneCellsInputs {
+            pane_id: lattice_core::ui::pane::PaneId::default(),
+            buffer_id: lattice_core::BufferId::default(),
+            matrix: matrix_cell.clone(),
+            version,
+            snapshot: snapshot.clone(),
+            syntax_handle: syntax_handle.clone(),
+            inlay_hints: inlay_hints_arc.clone(),
+            folds: folds_arc.clone(),
+            viewport_height,
+            foldenable,
+            last_edit,
+        };
         let cells = CellsRenderState {
             matrix: matrix_cell,
             version,
             snapshot,
             syntax_handle,
-            inlay_hints: Arc::from(inlay_hints.into_boxed_slice()),
-            folds: Arc::from(folds.into_boxed_slice()),
+            inlay_hints: inlay_hints_arc,
+            folds: folds_arc,
             viewport_height,
             foldenable,
             last_edit,
             theme,
             whitespace: WhitespaceConfig::default(),
-            panes: std::sync::Arc::from(
-                Vec::<crate::render_state::PaneCellsInputs>::new().into_boxed_slice(),
-            ),
+            panes: Arc::from(vec![pane_entry].into_boxed_slice()),
         };
         let rs = RenderState {
             cells: Arc::new(cells),
@@ -1125,14 +1204,14 @@ mod tests {
         matrix_cell.store(Arc::new(CellMatrix::whole_doc(pre_chunk, 1)));
         let rs = rs_with_snapshot(None, v(7), matrix_cell.clone());
 
-        let decision = recompute(&rs, &matrix_cell);
+        let decision = recompute(&rs);
         assert_eq!(decision, WorkerDecision::Clear);
         assert!(matrix_cell.load().is_empty());
 
         // Second call sees an already-empty matrix at version ZERO;
         // the idempotent Clear branch short-circuits without a store.
         let before = Arc::as_ptr(&matrix_cell.load_full());
-        assert_eq!(recompute(&rs, &matrix_cell), WorkerDecision::Clear);
+        assert_eq!(recompute(&rs), WorkerDecision::Clear);
         let after = Arc::as_ptr(&matrix_cell.load_full());
         assert_eq!(before, after, "idempotent Clear must not churn the Arc");
     }
@@ -1145,7 +1224,7 @@ mod tests {
         let snap = snap_of("ab\ncd\nef");
         let rs = rs_with_snapshot(Some(snap), v(1), matrix_cell.clone());
 
-        let decision = recompute(&rs, &matrix_cell);
+        let decision = recompute(&rs);
         assert_eq!(decision, WorkerDecision::Recomputed);
 
         let matrix = matrix_cell.load();
@@ -1178,9 +1257,9 @@ mod tests {
         let snap = snap_of("hello");
         let rs = rs_with_snapshot(Some(snap), v(4), matrix_cell.clone());
 
-        assert_eq!(recompute(&rs, &matrix_cell), WorkerDecision::Recomputed);
+        assert_eq!(recompute(&rs), WorkerDecision::Recomputed);
         let first_ptr = Arc::as_ptr(&matrix_cell.load_full());
-        assert_eq!(recompute(&rs, &matrix_cell), WorkerDecision::CacheHit);
+        assert_eq!(recompute(&rs), WorkerDecision::CacheHit);
         let second_ptr = Arc::as_ptr(&matrix_cell.load_full());
         assert_eq!(
             first_ptr, second_ptr,
@@ -1195,13 +1274,13 @@ mod tests {
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
         let snap1 = snap_of("aaa");
         let rs1 = rs_with_snapshot(Some(snap1), v(1), matrix_cell.clone());
-        assert_eq!(recompute(&rs1, &matrix_cell), WorkerDecision::Recomputed);
+        assert_eq!(recompute(&rs1), WorkerDecision::Recomputed);
         assert_eq!(matrix_cell.load().version, v(1));
 
         // New snapshot + bumped text version.
         let snap2 = snap_of("bbbb");
         let rs2 = rs_with_snapshot(Some(snap2), v(2), matrix_cell.clone());
-        assert_eq!(recompute(&rs2, &matrix_cell), WorkerDecision::Recomputed);
+        assert_eq!(recompute(&rs2), WorkerDecision::Recomputed);
         let m = matrix_cell.load();
         assert_eq!(m.version, v(2));
         assert_eq!(m.visible_line_count, 1);
@@ -1217,7 +1296,7 @@ mod tests {
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
         let snap = snap_of("");
         let rs = rs_with_snapshot(Some(snap), v(1), matrix_cell.clone());
-        assert_eq!(recompute(&rs, &matrix_cell), WorkerDecision::Recomputed);
+        assert_eq!(recompute(&rs), WorkerDecision::Recomputed);
         let m = matrix_cell.load();
         assert_eq!(m.visible_line_count, 1);
         let row = m.slice(0, 1).iter().next().cloned().unwrap();
@@ -1268,7 +1347,7 @@ mod tests {
             Some(handle),
             theme,
         );
-        assert_eq!(recompute(&rs, &matrix_cell), WorkerDecision::Recomputed);
+        assert_eq!(recompute(&rs), WorkerDecision::Recomputed);
 
         let m = matrix_cell.load();
         let rows: Vec<&CellRow> = m.slice(0, 10).iter().collect();
@@ -1307,7 +1386,7 @@ mod tests {
         let snap = snap_of("ab\ncd");
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
         let rs = rs_with_snapshot_themed(Some(snap), v(1), matrix_cell.clone(), None, theme);
-        assert_eq!(recompute(&rs, &matrix_cell), WorkerDecision::Recomputed);
+        assert_eq!(recompute(&rs), WorkerDecision::Recomputed);
         let default_fg = resolve_fg(&theme, lattice_syntax::Style::Default);
         let m = matrix_cell.load();
         for row in m.slice(0, 10).iter() {
@@ -1337,7 +1416,7 @@ mod tests {
             Some(handle),
             theme,
         );
-        assert_eq!(recompute(&rs, &matrix_cell), WorkerDecision::Recomputed);
+        assert_eq!(recompute(&rs), WorkerDecision::Recomputed);
 
         let default_fg = resolve_fg(&theme, lattice_syntax::Style::Default);
         let m = matrix_cell.load();
@@ -1388,7 +1467,7 @@ mod tests {
             theme,
             hints,
         );
-        assert_eq!(recompute(&rs, &matrix_cell), WorkerDecision::Recomputed);
+        assert_eq!(recompute(&rs), WorkerDecision::Recomputed);
         let m = matrix_cell.load();
         let row = m.slice(0, 1).iter().next().cloned().unwrap();
         // Combined cells: `h e : SPACE l l o`.
@@ -1429,7 +1508,7 @@ mod tests {
             theme,
             hints,
         );
-        assert_eq!(recompute(&rs, &matrix_cell), WorkerDecision::Recomputed);
+        assert_eq!(recompute(&rs), WorkerDecision::Recomputed);
         let row = matrix_cell.load().slice(0, 1).iter().next().cloned().unwrap();
         assert_eq!(row_text(&row), "a[1]b[2]c");
         // Offsets ordered by orig_byte.
@@ -1456,7 +1535,7 @@ mod tests {
             theme,
             hints,
         );
-        assert_eq!(recompute(&rs, &matrix_cell), WorkerDecision::Recomputed);
+        assert_eq!(recompute(&rs), WorkerDecision::Recomputed);
         let row = matrix_cell.load().slice(0, 1).iter().next().cloned().unwrap();
         assert_eq!(row_text(&row), "?xyz");
         assert!(row.cells[0].is_inlay());
@@ -1481,7 +1560,7 @@ mod tests {
             theme,
             hints,
         );
-        assert_eq!(recompute(&rs, &matrix_cell), WorkerDecision::Recomputed);
+        assert_eq!(recompute(&rs), WorkerDecision::Recomputed);
         let row = matrix_cell.load().slice(0, 1).iter().next().cloned().unwrap();
         assert_eq!(row_text(&row), "ab;");
         assert!(row.cells[2].is_inlay());
@@ -1514,7 +1593,7 @@ mod tests {
             theme,
             Vec::new(),
         );
-        assert_eq!(recompute(&rs1, &matrix_cell), WorkerDecision::Recomputed);
+        assert_eq!(recompute(&rs1), WorkerDecision::Recomputed);
         let first_ptr = Arc::as_ptr(&matrix_cell.load_full());
 
         // Add an inlay + bump the version.
@@ -1526,7 +1605,7 @@ mod tests {
             theme,
             vec![inlay(0, 0, "!")],
         );
-        assert_eq!(recompute(&rs2, &matrix_cell), WorkerDecision::Recomputed);
+        assert_eq!(recompute(&rs2), WorkerDecision::Recomputed);
         assert_ne!(first_ptr, Arc::as_ptr(&matrix_cell.load_full()));
         let row = matrix_cell.load().slice(0, 1).iter().next().cloned().unwrap();
         assert_eq!(row_text(&row), "!a");
@@ -1578,33 +1657,22 @@ mod tests {
     /// whole-doc matrix — one chunk covering every line.
     #[test]
     fn small_doc_stays_whole_doc() {
-        let theme = crate::ui::theme::Theme::default();
         // 5 lines + viewport 5 → threshold 20; line_count <= 20.
         let snap = snap_of_versioned("l0\nl1\nl2\nl3\nl4", 1);
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
-        let cells = CellsRenderState {
-            matrix: matrix_cell.clone(),
-            version: v(1),
-            snapshot: Some(snap),
-            syntax_handle: None,
-            inlay_hints: Arc::from(
-                Vec::<crate::render_state::InlayHintRow>::new().into_boxed_slice(),
-            ),
-            folds: Arc::from(Vec::<lattice_core::Fold>::new().into_boxed_slice()),
-            viewport_height: 5,
-            foldenable: true,
-            last_edit: None,
-            theme,
-            whitespace: WhitespaceConfig::default(),
-            panes: std::sync::Arc::from(
-                Vec::<crate::render_state::PaneCellsInputs>::new().into_boxed_slice(),
-            ),
-        };
-        let rs = ArcSwap::from_pointee(RenderState {
-            cells: Arc::new(cells),
-            ..RenderState::default()
-        });
-        assert_eq!(recompute(&rs, &matrix_cell), WorkerDecision::Recomputed);
+        let rs = rs_with_everything(
+            Some(snap),
+            v(1),
+            matrix_cell.clone(),
+            None,
+            crate::ui::theme::Theme::default(),
+            Vec::new(),
+            Vec::new(),
+            true,
+            None,
+            5,
+        );
+        assert_eq!(recompute(&rs), WorkerDecision::Recomputed);
         let m = matrix_cell.load();
         assert!(m.is_whole_doc(), "small doc must stay whole-doc");
         assert_eq!(m.chunks.len(), 1);
@@ -1617,7 +1685,6 @@ mod tests {
     /// walks them in order with row content matching each line.
     #[test]
     fn large_doc_splits_into_chunks() {
-        let theme = crate::ui::theme::Theme::default();
         // viewport=5, threshold=20. Build 25 lines so we cross it.
         // chunk_size = next_pow2(10) = 16. Expect ceil(25/16) = 2.
         let text: String = (0..25)
@@ -1626,29 +1693,19 @@ mod tests {
             .join("\n");
         let snap = snap_of_versioned(&text, 1);
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
-        let cells = CellsRenderState {
-            matrix: matrix_cell.clone(),
-            version: v(1),
-            snapshot: Some(snap),
-            syntax_handle: None,
-            inlay_hints: Arc::from(
-                Vec::<crate::render_state::InlayHintRow>::new().into_boxed_slice(),
-            ),
-            folds: Arc::from(Vec::<lattice_core::Fold>::new().into_boxed_slice()),
-            viewport_height: 5,
-            foldenable: true,
-            last_edit: None,
-            theme,
-            whitespace: WhitespaceConfig::default(),
-            panes: std::sync::Arc::from(
-                Vec::<crate::render_state::PaneCellsInputs>::new().into_boxed_slice(),
-            ),
-        };
-        let rs = ArcSwap::from_pointee(RenderState {
-            cells: Arc::new(cells),
-            ..RenderState::default()
-        });
-        assert_eq!(recompute(&rs, &matrix_cell), WorkerDecision::Recomputed);
+        let rs = rs_with_everything(
+            Some(snap),
+            v(1),
+            matrix_cell.clone(),
+            None,
+            crate::ui::theme::Theme::default(),
+            Vec::new(),
+            Vec::new(),
+            true,
+            None,
+            5,
+        );
+        assert_eq!(recompute(&rs), WorkerDecision::Recomputed);
 
         let m = matrix_cell.load();
         assert!(!m.is_whole_doc());
@@ -1676,7 +1733,6 @@ mod tests {
     /// visible.
     #[test]
     fn chunked_mode_honours_fold_elision_across_chunks() {
-        let theme = crate::ui::theme::Theme::default();
         let text: String = (0..25)
             .map(|i| format!("l{}", i))
             .collect::<Vec<_>>()
@@ -1686,29 +1742,19 @@ mod tests {
         // Close a fold from line 10 through line 20 — interior
         // lines 11..=20 are elided, 10 stays.
         let folds = vec![closed_fold(10, 20)];
-        let cells = CellsRenderState {
-            matrix: matrix_cell.clone(),
-            version: v(1),
-            snapshot: Some(snap),
-            syntax_handle: None,
-            inlay_hints: Arc::from(
-                Vec::<crate::render_state::InlayHintRow>::new().into_boxed_slice(),
-            ),
-            folds: Arc::from(folds.into_boxed_slice()),
-            viewport_height: 5,
-            foldenable: true,
-            last_edit: None,
-            theme,
-            whitespace: WhitespaceConfig::default(),
-            panes: std::sync::Arc::from(
-                Vec::<crate::render_state::PaneCellsInputs>::new().into_boxed_slice(),
-            ),
-        };
-        let rs = ArcSwap::from_pointee(RenderState {
-            cells: Arc::new(cells),
-            ..RenderState::default()
-        });
-        assert_eq!(recompute(&rs, &matrix_cell), WorkerDecision::Recomputed);
+        let rs = rs_with_everything(
+            Some(snap),
+            v(1),
+            matrix_cell.clone(),
+            None,
+            crate::ui::theme::Theme::default(),
+            Vec::new(),
+            folds,
+            true,
+            None,
+            5,
+        );
+        assert_eq!(recompute(&rs), WorkerDecision::Recomputed);
 
         let m = matrix_cell.load();
         assert!(!m.is_whole_doc(), "still chunked");
@@ -1740,39 +1786,29 @@ mod tests {
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
 
         let mk_rs = |vp: u32, version: MatrixVersion| -> ArcSwap<RenderState> {
-            let cells = CellsRenderState {
-                matrix: matrix_cell.clone(),
+            rs_with_everything(
+                Some(snap.clone()),
                 version,
-                snapshot: Some(snap.clone()),
-                syntax_handle: None,
-                inlay_hints: Arc::from(
-                    Vec::<crate::render_state::InlayHintRow>::new().into_boxed_slice(),
-                ),
-                folds: Arc::from(Vec::<lattice_core::Fold>::new().into_boxed_slice()),
-                viewport_height: vp,
-                foldenable: true,
-                last_edit: None,
+                matrix_cell.clone(),
+                None,
                 theme,
-                whitespace: WhitespaceConfig::default(),
-                panes: std::sync::Arc::from(
-                    Vec::<crate::render_state::PaneCellsInputs>::new().into_boxed_slice(),
-                ),
-            };
-            ArcSwap::from_pointee(RenderState {
-                cells: Arc::new(cells),
-                ..RenderState::default()
-            })
+                Vec::new(),
+                Vec::new(),
+                true,
+                None,
+                vp,
+            )
         };
 
         // Wide viewport (8) → 4×8=32 ≥ 25 → whole-doc.
         let rs1 = mk_rs(8, v(1));
-        assert_eq!(recompute(&rs1, &matrix_cell), WorkerDecision::Recomputed);
+        assert_eq!(recompute(&rs1), WorkerDecision::Recomputed);
         assert!(matrix_cell.load().is_whole_doc());
 
         // Shrink to 5 → 4×5=20 < 25 → chunked. Bump text version
         // so the cache key differs and the worker rebuilds.
         let rs2 = mk_rs(5, v(2));
-        assert_eq!(recompute(&rs2, &matrix_cell), WorkerDecision::Recomputed);
+        assert_eq!(recompute(&rs2), WorkerDecision::Recomputed);
         let m = matrix_cell.load();
         assert!(!m.is_whole_doc(), "post-shrink must be chunked");
         assert_eq!(m.chunk_size, 16);
@@ -1821,7 +1857,7 @@ mod tests {
             folds,
             true,
         );
-        assert_eq!(recompute(&rs, &matrix_cell), WorkerDecision::Recomputed);
+        assert_eq!(recompute(&rs), WorkerDecision::Recomputed);
 
         let m = matrix_cell.load();
         // source_line_count is preserved (pre-fold logical count).
@@ -1855,7 +1891,7 @@ mod tests {
             folds,
             true,
         );
-        assert_eq!(recompute(&rs, &matrix_cell), WorkerDecision::Recomputed);
+        assert_eq!(recompute(&rs), WorkerDecision::Recomputed);
         let m = matrix_cell.load();
         assert_eq!(m.visible_line_count, 3);
         let source_lines: Vec<u32> =
@@ -1882,7 +1918,7 @@ mod tests {
             folds,
             false,
         );
-        assert_eq!(recompute(&rs, &matrix_cell), WorkerDecision::Recomputed);
+        assert_eq!(recompute(&rs), WorkerDecision::Recomputed);
         let m = matrix_cell.load();
         assert_eq!(m.visible_line_count, 3, "no elision when foldenable=false");
     }
@@ -1909,7 +1945,7 @@ mod tests {
             folds,
             true,
         );
-        assert_eq!(recompute(&rs, &matrix_cell), WorkerDecision::Recomputed);
+        assert_eq!(recompute(&rs), WorkerDecision::Recomputed);
         let m = matrix_cell.load();
         let source_lines: Vec<u32> =
             m.slice(0, 10).iter().map(|r| r.source_line).collect();
@@ -1941,17 +1977,17 @@ mod tests {
             None,
             theme,
         );
-        assert_eq!(recompute(&rs1, &matrix_cell), WorkerDecision::Recomputed);
+        assert_eq!(recompute(&rs1), WorkerDecision::Recomputed);
         let first_ptr = Arc::as_ptr(&matrix_cell.load_full());
 
         // Repeat with the same version: cache-hit, no store.
-        assert_eq!(recompute(&rs1, &matrix_cell), WorkerDecision::CacheHit);
+        assert_eq!(recompute(&rs1), WorkerDecision::CacheHit);
         assert_eq!(first_ptr, Arc::as_ptr(&matrix_cell.load_full()));
 
         // Bump only the theme axis: must rebuild.
         let rs2 =
             rs_with_snapshot_themed(Some(snap), v_b, matrix_cell.clone(), None, theme);
-        assert_eq!(recompute(&rs2, &matrix_cell), WorkerDecision::Recomputed);
+        assert_eq!(recompute(&rs2), WorkerDecision::Recomputed);
         assert_ne!(first_ptr, Arc::as_ptr(&matrix_cell.load_full()));
     }
 
@@ -1989,7 +2025,7 @@ mod tests {
             None,
             5, // small viewport ⇒ whole-doc
         );
-        assert_eq!(recompute(&rs1, &matrix_cell), WorkerDecision::Recomputed);
+        assert_eq!(recompute(&rs1), WorkerDecision::Recomputed);
         assert!(matrix_cell.load().is_whole_doc());
 
         // Second publish: insert a line at line 1; text_version → 2.
@@ -2009,7 +2045,7 @@ mod tests {
             5,
         );
         assert_eq!(
-            recompute(&rs2, &matrix_cell),
+            recompute(&rs2),
             WorkerDecision::RecomputedIncremental
         );
         let m = matrix_cell.load();
@@ -2057,7 +2093,7 @@ mod tests {
             None,
             5, // 4×5 = 20 < 25 ⇒ chunked, chunk_size = 16
         );
-        assert_eq!(recompute(&rs1, &matrix_cell), WorkerDecision::Recomputed);
+        assert_eq!(recompute(&rs1), WorkerDecision::Recomputed);
         let m1 = matrix_cell.load();
         assert_eq!(m1.chunk_size, 16);
         assert_eq!(m1.chunks.len(), 2);
@@ -2088,7 +2124,7 @@ mod tests {
             5,
         );
         assert_eq!(
-            recompute(&rs2, &matrix_cell),
+            recompute(&rs2),
             WorkerDecision::RecomputedIncremental
         );
         let m2 = matrix_cell.load();
@@ -2163,7 +2199,7 @@ mod tests {
             None,
             5,
         );
-        assert_eq!(recompute(&rs1, &matrix_cell), WorkerDecision::Recomputed);
+        assert_eq!(recompute(&rs1), WorkerDecision::Recomputed);
 
         // text bumps but last_edit stays None (multi-edit batch
         // semantics).
@@ -2181,7 +2217,7 @@ mod tests {
             None,
             5,
         );
-        assert_eq!(recompute(&rs2, &matrix_cell), WorkerDecision::Recomputed);
+        assert_eq!(recompute(&rs2), WorkerDecision::Recomputed);
     }
 
     /// Eligibility falls back to full rebuild when a non-text
@@ -2210,7 +2246,7 @@ mod tests {
             None,
             5,
         );
-        assert_eq!(recompute(&rs1, &matrix_cell), WorkerDecision::Recomputed);
+        assert_eq!(recompute(&rs1), WorkerDecision::Recomputed);
 
         // Theme bumps alongside text — incremental must bail.
         let snap2 = snap_of_versioned("aa\nNEW\nbb", 2);
@@ -2235,7 +2271,7 @@ mod tests {
         );
         // Full rebuild — incremental rejected because theme axis
         // differs.
-        assert_eq!(recompute(&rs2, &matrix_cell), WorkerDecision::Recomputed);
+        assert_eq!(recompute(&rs2), WorkerDecision::Recomputed);
     }
 
     /// Mismatched line-count guard: even with a single-edit
@@ -2261,7 +2297,7 @@ mod tests {
             None,
             5,
         );
-        assert_eq!(recompute(&rs1, &matrix_cell), WorkerDecision::Recomputed);
+        assert_eq!(recompute(&rs1), WorkerDecision::Recomputed);
 
         // New snapshot has 5 lines, but the edit says
         // lines_added=1 against pre 2 → expects 3, not 5. Bail
@@ -2281,7 +2317,7 @@ mod tests {
             Some(edit),
             5,
         );
-        assert_eq!(recompute(&rs2, &matrix_cell), WorkerDecision::Recomputed);
+        assert_eq!(recompute(&rs2), WorkerDecision::Recomputed);
     }
 
     /// Eligibility falls back when the mode would change between
@@ -2306,7 +2342,7 @@ mod tests {
             None,
             5,
         );
-        assert_eq!(recompute(&rs1, &matrix_cell), WorkerDecision::Recomputed);
+        assert_eq!(recompute(&rs1), WorkerDecision::Recomputed);
         assert!(matrix_cell.load().is_whole_doc());
 
         // Bump to 30 lines (5 + 25 inserted). Now 30 > 20 → chunked
@@ -2332,7 +2368,7 @@ mod tests {
             5,
         );
         // Mode flipped; incremental must bail.
-        assert_eq!(recompute(&rs2, &matrix_cell), WorkerDecision::Recomputed);
+        assert_eq!(recompute(&rs2), WorkerDecision::Recomputed);
         assert!(!matrix_cell.load().is_whole_doc());
     }
 
@@ -2363,7 +2399,7 @@ mod tests {
             None,
             5,
         );
-        assert_eq!(recompute(&rs1, &matrix_cell), WorkerDecision::Recomputed);
+        assert_eq!(recompute(&rs1), WorkerDecision::Recomputed);
         let m1 = matrix_cell.load();
         assert_eq!(m1.chunk_size, 16);
         assert_eq!(m1.chunks.len(), 2);
@@ -2390,7 +2426,7 @@ mod tests {
             5,
         );
         assert_eq!(
-            recompute(&rs2, &matrix_cell),
+            recompute(&rs2),
             WorkerDecision::RecomputedIncremental
         );
         let m2 = matrix_cell.load();
@@ -2432,11 +2468,11 @@ mod tests {
             None,
             5,
         );
-        assert_eq!(recompute(&rs1, &matrix_cell), WorkerDecision::Recomputed);
+        assert_eq!(recompute(&rs1), WorkerDecision::Recomputed);
 
         // Tick 2: same RenderState, redundant wake ⇒ CacheHit.
-        assert_eq!(recompute(&rs1, &matrix_cell), WorkerDecision::CacheHit);
-        assert_eq!(recompute(&rs1, &matrix_cell), WorkerDecision::CacheHit);
+        assert_eq!(recompute(&rs1), WorkerDecision::CacheHit);
+        assert_eq!(recompute(&rs1), WorkerDecision::CacheHit);
 
         // Tick 3: single edit, all other axes unchanged →
         // incremental.
@@ -2456,7 +2492,7 @@ mod tests {
             5,
         );
         assert_eq!(
-            recompute(&rs2, &matrix_cell),
+            recompute(&rs2),
             WorkerDecision::RecomputedIncremental
         );
 
@@ -2482,7 +2518,7 @@ mod tests {
             Some(edit3),
             5,
         );
-        assert_eq!(recompute(&rs3, &matrix_cell), WorkerDecision::Recomputed);
+        assert_eq!(recompute(&rs3), WorkerDecision::Recomputed);
     }
 
     /// Cells worker and highlights worker write to independent
@@ -2532,7 +2568,7 @@ mod tests {
             None,
             5,
         );
-        assert_eq!(recompute(&rs, &matrix_cell), WorkerDecision::Recomputed);
+        assert_eq!(recompute(&rs), WorkerDecision::Recomputed);
 
         // Spans cell remains at the sentinel — Arc identity
         // unchanged.
@@ -2580,12 +2616,11 @@ mod tests {
             let handle = tokio::spawn(crate::cells_worker::run(
                 render_state.clone(),
                 wake.clone(),
-                matrix_cell.clone(),
                 paint_request.clone(),
             ));
 
             // Helper: build + atomically publish a fresh
-            // RenderState, then fire the wake.
+            // RenderState (single-pane), then fire the wake.
             let publish = |text: &str,
                            text_version: u64,
                            last_edit: Option<lattice_cells::EditDelta>| {
@@ -2594,6 +2629,24 @@ mod tests {
                     text: text_version,
                     syntax: text_version,
                     ..MatrixVersion::ZERO
+                };
+                let inputs = crate::render_state::PaneCellsInputs {
+                    pane_id: lattice_core::ui::pane::PaneId::default(),
+                    buffer_id: lattice_core::BufferId::default(),
+                    matrix: matrix_cell.clone(),
+                    version: v,
+                    snapshot: Some(snap.clone()),
+                    syntax_handle: None,
+                    inlay_hints: Arc::from(
+                        Vec::<crate::render_state::InlayHintRow>::new()
+                            .into_boxed_slice(),
+                    ),
+                    folds: Arc::from(
+                        Vec::<lattice_core::Fold>::new().into_boxed_slice(),
+                    ),
+                    viewport_height: 5,
+                    foldenable: true,
+                    last_edit,
                 };
                 let cells = CellsRenderState {
                     matrix: matrix_cell.clone(),
@@ -2612,10 +2665,7 @@ mod tests {
                     last_edit,
                     theme,
                     whitespace: WhitespaceConfig::default(),
-                    panes: std::sync::Arc::from(
-                        Vec::<crate::render_state::PaneCellsInputs>::new()
-                            .into_boxed_slice(),
-                    ),
+                    panes: Arc::from(vec![inputs].into_boxed_slice()),
                 };
                 let rs = RenderState {
                     cells: Arc::new(cells),
@@ -2706,7 +2756,6 @@ mod tests {
             let handle = tokio::spawn(crate::cells_worker::run(
                 render_state.clone(),
                 wake.clone(),
-                matrix_cell.clone(),
                 paint_request.clone(),
             ));
 
@@ -2715,6 +2764,24 @@ mod tests {
             // additional permit beyond the first.
             let snap = snap_of_versioned("hello\nworld", 1);
             let v = MatrixVersion { text: 1, syntax: 1, ..MatrixVersion::ZERO };
+            let inputs = crate::render_state::PaneCellsInputs {
+                pane_id: lattice_core::ui::pane::PaneId::default(),
+                buffer_id: lattice_core::BufferId::default(),
+                matrix: matrix_cell.clone(),
+                version: v,
+                snapshot: Some(snap.clone()),
+                syntax_handle: None,
+                inlay_hints: Arc::from(
+                    Vec::<crate::render_state::InlayHintRow>::new()
+                        .into_boxed_slice(),
+                ),
+                folds: Arc::from(
+                    Vec::<lattice_core::Fold>::new().into_boxed_slice(),
+                ),
+                viewport_height: 5,
+                foldenable: true,
+                last_edit: None,
+            };
             let cells = CellsRenderState {
                 matrix: matrix_cell.clone(),
                 version: v,
@@ -2732,10 +2799,7 @@ mod tests {
                 last_edit: None,
                 theme,
                 whitespace: WhitespaceConfig::default(),
-                panes: std::sync::Arc::from(
-                    Vec::<crate::render_state::PaneCellsInputs>::new()
-                        .into_boxed_slice(),
-                ),
+                panes: Arc::from(vec![inputs].into_boxed_slice()),
             };
             render_state.store(Arc::new(RenderState {
                 cells: Arc::new(cells),
@@ -2764,6 +2828,167 @@ mod tests {
             handle.abort();
             let _ = handle.await;
         });
+    }
+
+    // ---- D.4.d.1.b (per-pane iteration) ----
+
+    /// Build a single `PaneCellsInputs` with sensible defaults for
+    /// the multi-pane tests below. Each test bumps the bits it
+    /// cares about; everything else stays at the default.
+    fn pane_inputs(
+        matrix: Arc<ArcSwap<CellMatrix>>,
+        snapshot: Option<Arc<DocumentSnapshot>>,
+        version: MatrixVersion,
+        viewport_height: u32,
+    ) -> crate::render_state::PaneCellsInputs {
+        crate::render_state::PaneCellsInputs {
+            pane_id: lattice_core::ui::pane::PaneId::default(),
+            buffer_id: lattice_core::BufferId::default(),
+            matrix,
+            version,
+            snapshot,
+            syntax_handle: None,
+            inlay_hints: Arc::from(
+                Vec::<crate::render_state::InlayHintRow>::new().into_boxed_slice(),
+            ),
+            folds: Arc::from(Vec::<lattice_core::Fold>::new().into_boxed_slice()),
+            viewport_height,
+            foldenable: true,
+            last_edit: None,
+        }
+    }
+
+    /// Build an `ArcSwap<RenderState>` whose `cells.panes` carries
+    /// the caller-supplied entries verbatim. Top-level inputs stay
+    /// at default — the worker now reads from `panes`.
+    fn rs_with_panes(
+        entries: Vec<crate::render_state::PaneCellsInputs>,
+    ) -> ArcSwap<RenderState> {
+        let cells = CellsRenderState {
+            panes: Arc::from(entries.into_boxed_slice()),
+            ..CellsRenderState::default()
+        };
+        ArcSwap::from_pointee(RenderState {
+            cells: Arc::new(cells),
+            ..RenderState::default()
+        })
+    }
+
+    /// Two visible Document panes with distinct buffers (distinct
+    /// matrix cells) both rebuild on a single tick. Each pane's
+    /// own cell receives a fresh `CellMatrix`; cross-pane writes
+    /// don't bleed.
+    #[test]
+    fn two_panes_with_distinct_buffers_both_rebuild() {
+        let snap_a = snap_of_versioned("aa\nbb", 1);
+        let snap_b = snap_of_versioned("xx\nyy\nzz", 1);
+        let cell_a: Arc<ArcSwap<CellMatrix>> = Arc::default();
+        let cell_b: Arc<ArcSwap<CellMatrix>> = Arc::default();
+        let mut a = pane_inputs(cell_a.clone(), Some(snap_a), v(1), 5);
+        let mut b = pane_inputs(cell_b.clone(), Some(snap_b), v(1), 5);
+        a.buffer_id = lattice_core::BufferId(1);
+        b.buffer_id = lattice_core::BufferId(2);
+        let rs = rs_with_panes(vec![a, b]);
+        assert_eq!(recompute(&rs), WorkerDecision::Recomputed);
+        // Pane A: 2 source lines from "aa\nbb".
+        assert_eq!(cell_a.load().source_line_count, 2);
+        // Pane B: 3 source lines from "xx\nyy\nzz".
+        assert_eq!(cell_b.load().source_line_count, 3);
+    }
+
+    /// Cache-hit per pane: one pane sees a version bump and
+    /// rebuilds; the other pane's inputs match its published
+    /// matrix and skip work. The aggregate decision is
+    /// `Recomputed` because at least one pane changed.
+    #[test]
+    fn per_pane_cache_hit_skips_unchanged_pane() {
+        let snap_a = snap_of_versioned("aa\nbb", 1);
+        let snap_b = snap_of_versioned("xx\nyy", 1);
+        let cell_a: Arc<ArcSwap<CellMatrix>> = Arc::default();
+        let cell_b: Arc<ArcSwap<CellMatrix>> = Arc::default();
+        let mut a = pane_inputs(cell_a.clone(), Some(snap_a.clone()), v(1), 5);
+        let mut b = pane_inputs(cell_b.clone(), Some(snap_b.clone()), v(1), 5);
+        a.buffer_id = lattice_core::BufferId(1);
+        b.buffer_id = lattice_core::BufferId(2);
+        // First tick: both build.
+        let rs1 = rs_with_panes(vec![a.clone(), b.clone()]);
+        assert_eq!(recompute(&rs1), WorkerDecision::Recomputed);
+        let a_arc_after_tick1 = cell_a.load_full();
+        let b_arc_after_tick1 = cell_b.load_full();
+        // Second tick: bump pane A's text version; pane B unchanged.
+        let snap_a2 = snap_of_versioned("aa\nbb\ncc", 2);
+        a.version = v(2);
+        a.snapshot = Some(snap_a2);
+        let rs2 = rs_with_panes(vec![a, b]);
+        assert_eq!(recompute(&rs2), WorkerDecision::Recomputed);
+        // Pane A rebuilt — Arc identity changed.
+        assert!(
+            !Arc::ptr_eq(&a_arc_after_tick1, &cell_a.load_full()),
+            "pane A must rebuild on version bump"
+        );
+        assert_eq!(cell_a.load().source_line_count, 3);
+        // Pane B was a cache hit — Arc identity preserved.
+        assert!(
+            Arc::ptr_eq(&b_arc_after_tick1, &cell_b.load_full()),
+            "pane B was a cache hit; Arc identity must survive"
+        );
+        assert_eq!(cell_b.load().source_line_count, 2);
+    }
+
+    /// Two panes showing the same buffer share one matrix cell.
+    /// The first pane rebuilds; the second pane sees a CacheHit
+    /// against the freshly-published matrix. Aggregate is
+    /// `Recomputed` (one entry produced content).
+    #[test]
+    fn two_panes_sharing_buffer_share_one_matrix_write() {
+        let snap = snap_of_versioned("aa\nbb", 1);
+        let shared_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+        let mut a = pane_inputs(shared_cell.clone(), Some(snap.clone()), v(1), 5);
+        let mut b = pane_inputs(shared_cell.clone(), Some(snap), v(1), 5);
+        // Same buffer, distinct pane ids — matches what
+        // `Editor::cells_matrix_for` returns when two panes show
+        // the same buffer.
+        let pid = lattice_core::ui::pane::PaneId::default();
+        a.pane_id = pid;
+        b.pane_id = pid; // ids match because PaneId::default() is the same; the test
+        a.buffer_id = lattice_core::BufferId(42);
+        b.buffer_id = lattice_core::BufferId(42);
+        let rs = rs_with_panes(vec![a, b]);
+        assert_eq!(recompute(&rs), WorkerDecision::Recomputed);
+        assert_eq!(shared_cell.load().source_line_count, 2);
+    }
+
+    /// Empty `panes` → no work; aggregate is `CacheHit`. Used by
+    /// editors with no Document leaves visible (eg every pane
+    /// showing a synthetic buffer).
+    #[test]
+    fn empty_panes_is_cache_hit() {
+        let rs = rs_with_panes(Vec::new());
+        assert_eq!(recompute(&rs), WorkerDecision::CacheHit);
+    }
+
+    /// A pane with `snapshot: None` clears its matrix. The
+    /// aggregate decision is `Clear` when no other pane saw a
+    /// content-producing rebuild.
+    #[test]
+    fn pane_without_snapshot_clears_its_matrix() {
+        let cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+        // Seed a non-empty matrix so the Clear branch exercises
+        // the store path (not the idempotent fast path).
+        let pre_chunk = Arc::new(CellChunk::new(
+            0,
+            vec![CellRow::new(
+                vec![Cell::with_codepoint(b'x' as u32)],
+                0,
+                Vec::<lattice_cells::row::InlayOffset>::new(),
+            )],
+            v(7),
+        ));
+        cell.store(Arc::new(CellMatrix::whole_doc(pre_chunk, 1)));
+        let pane = pane_inputs(cell.clone(), None, v(7), 5);
+        let rs = rs_with_panes(vec![pane]);
+        assert_eq!(recompute(&rs), WorkerDecision::Clear);
+        assert!(cell.load().is_empty());
     }
 
     // ---- S3.a — cell modifier flag bits ----
@@ -2829,7 +3054,7 @@ mod tests {
             Some(handle),
             theme,
         );
-        assert_eq!(recompute(&rs, &matrix_cell), WorkerDecision::Recomputed);
+        assert_eq!(recompute(&rs), WorkerDecision::Recomputed);
 
         let m = matrix_cell.load();
         let rows: Vec<&CellRow> = m.slice(0, 10).iter().collect();
@@ -2887,7 +3112,7 @@ mod tests {
             theme,
             hints,
         );
-        assert_eq!(recompute(&rs, &matrix_cell), WorkerDecision::Recomputed);
+        assert_eq!(recompute(&rs), WorkerDecision::Recomputed);
 
         let m = matrix_cell.load();
         let row = m.slice(0, 1).iter().next().cloned().unwrap();

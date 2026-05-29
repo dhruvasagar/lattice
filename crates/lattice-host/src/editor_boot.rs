@@ -680,10 +680,19 @@ impl Editor {
             map.insert(document_buffer_id, cells_matrix_cell.clone());
             std::sync::Arc::new(std::sync::Mutex::new(map))
         };
+        // D.4.d.1.b (2026-05-29): the worker now writes per
+        // pane via `cells.panes[i].matrix` (each entry's cell
+        // comes from `Editor::cells_matrix_for`), so the
+        // single top-level `cells_matrix_cell.clone()` arg the
+        // pre-d.1.b worker took is gone. The active pane's
+        // entry shares Arc identity with `cells_matrix_cell`
+        // via the seeded `cells_matrices` registry above, so
+        // the existing renderer read path keeps landing on
+        // the worker's writes until D.4.d.1.c teaches the
+        // renderer about the per-pane map.
         runtime_handle.spawn(crate::cells_worker::run(
             render_state_arc.clone(),
             cells_wake.clone(),
-            cells_matrix_cell.clone(),
             paint_request.clone(),
         ));
 

@@ -1571,11 +1571,31 @@ shared with multibuffer-views and post-v1 inlay hints.
     diff session" when there isn't one. **431 tests green**
     (2 new D.3.a.1: scratch-buffer error path,
     no-session-noop path).
-  - 🗒 **D.3.b** — Deletion-block content. Provider snapshots
-    the descriptor's baseline rope on each revision bump,
-    renders the baseline lines into cell sequences, caches
-    them, and serves them from `collect()` instead of empty
-    `Arc<[Cell]>`.
+  - ✅ **D.3.b** (2026-05-29) — Deletion-block content from
+    baseline snapshot. `DiffOverlayVirtualRowProvider`
+    reshaped to hold a shared `Arc<Mutex<DiffOverlayCache>>`
+    populated by the new `DiffOverlayRefreshTask` off the
+    worker thread. The provider's `collect()` returns
+    `cache.rows.clone()` (non-blocking — never reads baseline
+    inside the worker's recompute path); `version()` folds
+    `session.current_hunks().revision ^ cache.cache_version`
+    so a cache install shows up in the worker's fingerprint
+    pass even when the session revision is unchanged. New
+    pure-sync `render_rows(session, baseline)` walks the
+    session's `HunkIndex`, snapshots the baseline rope,
+    materialises one `VirtualRow` per baseline-deleted line
+    for Remove / Change / Conflict hunks, and encodes the
+    line text into cells via `Cell::with_codepoint` per char
+    (newlines / CRs stripped). Defensive: out-of-range
+    baseline lines (truncation race) yield empty cells, not
+    panics. `:diff` now spawns `DiffOverlayRefreshTask` (which
+    subsumes D.3.a.1's standalone publish-notify forwarder —
+    the task already awaits `publish_notify` between renders
+    and fires `virtual_rows_wake` after each, so the wiring
+    folds together). 434 tests green (3 new D.3.b:
+    out-of-range baseline → empty cells, collect returns
+    cached rows, version folds session revision + cache
+    version).
   - 🗒 **D.3.c** — `]c` / `[c` motions. Register hunk-jump
     motions in the keymap + grammar; jump source = the
     session's published `HunkIndex` ranges[1] (current side).

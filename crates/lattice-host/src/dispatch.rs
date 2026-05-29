@@ -2383,10 +2383,12 @@ impl Editor {
         > = std::sync::Arc::new(
             crate::diff_subsystem::BufferRegistryTextProvider::new(self.buffers.clone()),
         );
-        let descriptor = crate::diff_subsystem::DiffDescriptor {
-            baseline: std::sync::Arc::new(
+        let baseline: std::sync::Arc<dyn crate::diff_subsystem::BaselineSource> =
+            std::sync::Arc::new(
                 crate::diff_subsystem::OnDiskBaseline::new(path.clone()),
-            ),
+            );
+        let descriptor = crate::diff_subsystem::DiffDescriptor {
+            baseline: std::sync::Arc::clone(&baseline),
             current: std::sync::Arc::new(
                 crate::diff_subsystem::BufferCurrentSource::new(
                     std::sync::Arc::clone(&provider_text),
@@ -2400,14 +2402,19 @@ impl Editor {
             lattice_diff::DiffAlgorithm::Histogram,
             descriptor,
         );
-        let overlay_provider: std::sync::Arc<
-            dyn lattice_cells::VirtualRowProvider,
-        > = std::sync::Arc::new(
+        // Build the overlay provider and capture the cache
+        // handle so the D.3.b refresh task can write to the
+        // same `Mutex<DiffOverlayCache>` the provider reads
+        // from in `collect()` / `version()`.
+        let overlay = std::sync::Arc::new(
             crate::diff_overlay::DiffOverlayVirtualRowProvider::new(
                 std::sync::Arc::clone(&session),
             ),
         );
-        if !self.virtual_row_providers.register(overlay_provider) {
+        let overlay_cache_handle = overlay.cache_handle();
+        let overlay_provider: std::sync::Arc<dyn lattice_cells::VirtualRowProvider> =
+            overlay;
+        if !self.virtual_row_providers.register(overlay_provider.clone()) {
             // Already registered — the previous lookup told us
             // no session existed for this buffer, but a stale
             // provider from a previous registration cycle is
@@ -2415,28 +2422,24 @@ impl Editor {
             self.virtual_row_providers.unregister(
                 crate::diff_overlay::diff_overlay_provider_id(buffer_id),
             );
-            let overlay_provider: std::sync::Arc<
-                dyn lattice_cells::VirtualRowProvider,
-            > = std::sync::Arc::new(
-                crate::diff_overlay::DiffOverlayVirtualRowProvider::new(
-                    std::sync::Arc::clone(&session),
-                ),
-            );
             self.virtual_row_providers.register(overlay_provider);
         }
 
-        // Spawn the publish-notify → VirtualRowsWake forwarder.
-        // Awaits the session's publish_notify and fires the
-        // worker's wake on every publish. JoinHandle is stored
-        // so :diffoff can abort it.
-        let publish_notify = session.publish_notify();
+        // D.3.b: spawn the off-worker refresh task. Does an
+        // initial render before parking on `publish_notify`,
+        // then re-renders on every subsequent publish. Each
+        // render fires `virtual_rows_wake` so the worker
+        // picks up the cache change. This task subsumes the
+        // D.3.a.1 wake forwarder: the publish-notify await is
+        // the same, and the post-render `notify_one` is what
+        // the standalone forwarder used to do.
         let virtual_rows_wake = self.virtual_rows_wake.0.clone();
-        let forwarder = tokio::spawn(async move {
-            loop {
-                publish_notify.notified().await;
-                virtual_rows_wake.notify_one();
-            }
-        });
+        let forwarder = crate::diff_overlay::DiffOverlayRefreshTask::spawn(
+            std::sync::Arc::clone(&session),
+            baseline,
+            overlay_cache_handle,
+            virtual_rows_wake,
+        );
         if let Ok(mut map) = self.diff_forwarders.lock() {
             if let Some(prev) = map.insert(buffer_id, forwarder) {
                 prev.abort();

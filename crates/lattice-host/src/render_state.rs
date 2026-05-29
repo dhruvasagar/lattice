@@ -117,6 +117,13 @@ pub struct RenderState {
     /// [`CellsRenderState`] and
     /// `docs/dev/architecture/cell-grid-renderer.md`.
     pub cells: Arc<CellsRenderState>,
+    /// D.3.d.1 (2026-05-29): inline-diff overlay render state.
+    /// Carries the active document's `DiffSignMap` for the
+    /// gutter-sign column. Renderers read via
+    /// `rs.diff.sign_map.sign_at(line_idx)`. Snapshot is taken
+    /// in `build_render_state` from
+    /// `editor.diff_signs_for_active()`; absent ⇒ empty map.
+    pub diff: Arc<DiffRenderState>,
 }
 
 impl Default for RenderState {
@@ -141,8 +148,22 @@ impl Default for RenderState {
             lifecycle: Arc::new(LifecycleRenderState::default()),
             theme: crate::ui::theme::Theme::default(),
             cells: Arc::new(CellsRenderState::default()),
+            diff: Arc::new(DiffRenderState::default()),
         }
     }
+}
+
+/// D.3.d.1 (2026-05-29): renderer-side projection of the
+/// active document's diff overlay state. Carries the
+/// `DiffSignMap` for the gutter-sign column; future D.3.e
+/// (line tints) reads through the same map.
+///
+/// `sign_map` defaults to an empty `Arc<DiffSignMap>` so
+/// renderers never have to handle the `Option` path; an
+/// empty map's `sign_at` is `None` for every line.
+#[derive(Clone, Debug, Default)]
+pub struct DiffRenderState {
+    pub sign_map: Arc<crate::diff_overlay::DiffSignMap>,
 }
 
 /// Active buffer's hot-path render-side projection.

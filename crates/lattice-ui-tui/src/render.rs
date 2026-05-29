@@ -2685,10 +2685,12 @@ fn draw_inactive_document(
     };
     // Reserve the diagnostic-severity column on inactive panes
     // too so the gutter alignment matches the active pane when
-    // they share a document.
+    // they share a document. D.3.d.1: same for the diff-sign
+    // column.
     let buffer_w = (area.width as u32)
         .saturating_sub(gutter_w)
-        .saturating_sub(DIAG_GUTTER_WIDTH);
+        .saturating_sub(DIAG_GUTTER_WIDTH)
+        .saturating_sub(DIFF_SIGN_GUTTER_WIDTH);
 
     // Source for inactive-pane highlights:
     //  1. `pane_highlights[idx]` when the pane has a different
@@ -2768,10 +2770,17 @@ fn draw_inactive_document(
         // document. Diagnostics on inactive panes are
         // intentionally minimal -- the active pane is the
         // canonical surface; inactive ones avoid visual noise.
+        // D.3.d.1: diff sign cell sits between gutter and body
+        // (right of line numbers).
+        let diff_sign_cell = render_diff_sign_cell(&view, buf_line);
+        let mut body_with_sign: Vec<Span<'static>> =
+            Vec::with_capacity(body.len() + 1);
+        body_with_sign.push(diff_sign_cell);
+        body_with_sign.extend(body);
         lines.push(combine_prefixed(
             vec![Span::styled(" ".to_string(), TuiStyle::default())],
             gutter,
-            body,
+            body_with_sign,
         ));
     }
     frame.render_widget(Paragraph::new(lines), area);
@@ -3310,10 +3319,14 @@ fn compose_visible_lines_inner(
         2
     };
     // Severity column is prepended (Phase 4.1.d.iii); reserve
-    // one cell so buffer width stays correct.
+    // one cell so buffer width stays correct. D.3.d.1: diff
+    // sign column sits between severity and gutter, costs one
+    // more cell — reserved unconditionally so the layout
+    // doesn't shift on `:diff` / `:diffoff`.
     let buffer_w = width
         .saturating_sub(gutter_w)
-        .saturating_sub(DIAG_GUTTER_WIDTH);
+        .saturating_sub(DIAG_GUTTER_WIDTH)
+        .saturating_sub(DIFF_SIGN_GUTTER_WIDTH);
 
     // Compute visual selection range once (instead of per line).
     let visual_range = visual_selection_range(app);
@@ -3772,7 +3785,20 @@ fn compose_visible_lines_inner(
         // even when no diagnostics exist so the layout doesn't
         // shift when one arrives.
         let severity_cell = render_diagnostic_severity_cell(view, snap, line_idx);
-        out.push(combine_prefixed(vec![severity_cell], gutter, body));
+        // D.3.d.1: diff sign cell sits between the gutter
+        // (line numbers + fold marker) and the source body.
+        // Reads from the active session's sign map; blank when
+        // no session or no hunk touches the line.
+        let diff_sign_cell = render_diff_sign_cell(view, line_idx);
+        let mut body_with_sign: Vec<Span<'static>> =
+            Vec::with_capacity(body.len() + 1);
+        body_with_sign.push(diff_sign_cell);
+        body_with_sign.extend(body);
+        out.push(combine_prefixed(
+            vec![severity_cell],
+            gutter,
+            body_with_sign,
+        ));
     }
     out
 }
@@ -4182,6 +4208,46 @@ fn render_gutter_for(view: &FrameView<'_>, line_idx: u32, width: u32) -> Span<'s
 /// width but keeps the layout stable when diagnostics
 /// arrive / clear.
 const DIAG_GUTTER_WIDTH: u32 = 1;
+
+/// D.3.d.1 (2026-05-29): width of the diff-sign column,
+/// prepended between the diagnostic-severity column and the
+/// gutter. Always 1 cell — the column stays reserved even
+/// when no diff session is active so the layout doesn't shift
+/// on `:diff` / `:diffoff`. Sign characters: `+` (Add), `~`
+/// (Change), `-` (Remove anchor); blank when no hunk touches
+/// the row. Colours hardcoded for v1 (green / yellow / red);
+/// D.3.e will route them through the theme's `DiffAdd` /
+/// `DiffChange` / `DiffRemove` entries.
+const DIFF_SIGN_GUTTER_WIDTH: u32 = 1;
+
+/// D.3.d.1: render the diff-sign cell for `line_idx`.
+/// Returns one `Span` — the sign character + colour when a
+/// hunk's current side touches the line, blank otherwise.
+/// Reads through `RenderState::diff.sign_map` — the renderer
+/// side of the diff overlay seam. Lock-free per frame; the
+/// renderer never holds an Editor reference.
+fn render_diff_sign_cell(
+    view: &FrameView<'_>,
+    line_idx: u32,
+) -> Span<'static> {
+    use lattice_host::diff_overlay::DiffSignKind;
+    let blank = Span::styled(" ".to_string(), TuiStyle::default());
+    let rs = view.app.render_state.load();
+    let Some(kind) = rs.diff.sign_map.sign_at(line_idx) else {
+        return blank;
+    };
+    let (glyph, fg) = match kind {
+        DiffSignKind::Add => ('+', Color::Green),
+        DiffSignKind::Change => ('~', Color::Yellow),
+        // D.3.d.0 deliberately doesn't classify any
+        // current-side line as Remove — Remove hunks have an
+        // empty current range. The arm is kept exhaustive
+        // anyway in case a future refactor (e.g., classifying
+        // deletion-block anchors) starts emitting it.
+        DiffSignKind::Remove => ('-', Color::Red),
+    };
+    Span::styled(glyph.to_string(), TuiStyle::default().fg(fg))
+}
 
 /// Build the severity-column cell for `line_idx`. Returns one
 /// `Span` -- the severity glyph + the per-severity style when a
@@ -4796,6 +4862,7 @@ fn cursor_screen_position_at(
     let rs_st = view.app.render_state.load();
     let inlay_hints = &rs_st.syntax.inlay_hints;
     let col = DIAG_GUTTER_WIDTH
+        + DIFF_SIGN_GUTTER_WIDTH
         + gutter_w
         + display_col_for_byte(&snap.buffer, cursor, inlay_hints);
     Some((
@@ -5251,8 +5318,8 @@ mod tests {
             area,
         )
         .unwrap();
-        // severity_cell (1) + gutter_width(1)=4 + 3 = 8.
-        assert_eq!(pos.0, 8);
+        // severity_cell (1) + diff_sign_cell (1) + gutter_width(1)=4 + 3 = 9.
+        assert_eq!(pos.0, 9);
         assert_eq!(pos.1, 0);
     }
 
@@ -5321,8 +5388,8 @@ mod tests {
             area,
         )
         .unwrap();
-        // severity_cell (1) + gutter_w (4) + 5 display cells = 10.
-        assert_eq!(pos.0, 10);
+        // severity_cell (1) + diff_sign_cell (1) + gutter_w (4) + 5 = 11.
+        assert_eq!(pos.0, 11);
     }
 
     #[test]
@@ -5339,8 +5406,8 @@ mod tests {
             area,
         )
         .unwrap();
-        // severity_cell (1) + gutter_w (4) + 5 display cells = 10.
-        assert_eq!(pos.0, 10);
+        // severity_cell (1) + diff_sign_cell (1) + gutter_w (4) + 5 = 11.
+        assert_eq!(pos.0, 11);
     }
 
     #[test]

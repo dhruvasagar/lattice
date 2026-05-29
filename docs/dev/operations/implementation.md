@@ -1657,13 +1657,42 @@ shared with multibuffer-views and post-v1 inlay hints.
       = change, sorted entries; session round-trip:
       starts-empty, publish round-trips). **447
       lattice-host unit tests green.**
-    - 🗒 **D.3.d.1** — TUI renderer integration. Reserve a
-      gutter column, paint `+` / `-` / `~` characters per
-      `sign_at(row)` lookup. Composes with line-number
-      column.
-    - 🗒 **D.3.d.2** — GPUI renderer integration. Sprite-based
-      variant via §5.6.7 atlas if/when GPUI is primary
-      surface.
+    - ✅ **D.3.d.1** (2026-05-29) — TUI renderer integration.
+      New `DIFF_SIGN_GUTTER_WIDTH: u32 = 1` reserved
+      unconditionally so the layout stays stable on `:diff` /
+      `:diffoff`. New `render_diff_sign_cell(view, line_idx)`
+      reads through `RenderState::diff.sign_map` —
+      lock-free `ArcSwap` load; renderer hot path. Per user
+      direction the sign sits **right of the line number**
+      (GitHub PR convention) — composed into the body's
+      prepend rather than the prefix. Hardcoded colours
+      (Add → green, Change → yellow, Remove → red); D.3.e
+      will route through theme entries. Layout becomes
+      `[severity] [fold + line_num] [diff_sign] [body...]`.
+      Cursor-position arithmetic updated to account for the
+      new column (cells past gutter +1). Three cursor-
+      position tests updated to assert the new col +1.
+      New `RenderState::diff: Arc<DiffRenderState>` substate
+      so the renderer never holds an `Editor` reference;
+      `build_render_state` snapshots
+      `editor.diff_signs_for_active()` per publish. **163
+      lattice-ui-tui render tests + 447 lattice-host unit
+      tests green.**
+    - ✅ **D.3.d.2** (2026-05-29) — GPUI renderer integration.
+      Same `RenderState::diff.sign_map` read path. New
+      `GutterLineMeta::diff_sign: Option<(char, u32)>` field
+      pre-resolved at `window.rs paint_pane` time from
+      `rs.diff.sign_map.sign_at(line_idx)`. `format_gutter_text`
+      layout becomes `{fold}{sev}{num:>width$}{diff} ` —
+      diff sign right of line number, matching TUI. New run
+      inside `build_gutter_runs` splits the trailing portion
+      into digits + diff-sign + trailing-space (3 runs
+      instead of 1) so the diff sign gets its own colour.
+      Three existing format tests updated for the new
+      width; one new test verifies diff sign placement
+      right of line number. Text-based glyphs (`+` / `~` /
+      `-`) for parity with TUI; sprite atlas (§5.6.7)
+      variant is a follow-on if/when GPUI demands it.
   - 🗒 **D.3.e** — Line background tints. `DiffAdd`,
     `DiffChange`, `DiffRemove` theme entries applied to cell
     backgrounds on the current side.

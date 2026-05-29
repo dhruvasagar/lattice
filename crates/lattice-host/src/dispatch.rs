@@ -1019,6 +1019,15 @@ impl Editor {
                 last_edit: self.last_edit_for_cells.take(),
                 theme: self.host_theme,
             }),
+            // D.3.d.1 (2026-05-29): snapshot the active
+            // document's diff sign map (empty if no session
+            // is open). Renderer-side reads go through
+            // `rs.diff.sign_map.sign_at(line)`.
+            diff: std::sync::Arc::new(crate::render_state::DiffRenderState {
+                sign_map: self
+                    .diff_signs_for_active()
+                    .unwrap_or_default(),
+            }),
             ..RenderState::default()
         }
     }

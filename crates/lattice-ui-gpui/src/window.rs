@@ -1197,10 +1197,26 @@ impl EditorView {
                 let fold_start = fold_index.closed_fold_start_at(line_idx as u32);
                 let severity =
                     line_severity(line_idx as u32).map(|s| diagnostic_glyph_and_color(&host_theme, s));
+                // D.3.d.2 (2026-05-29): diff sign lookup —
+                // read through the same `RenderState::diff`
+                // substate the TUI uses. Lock-free Arc load.
+                let diff_sign = rs
+                    .diff
+                    .sign_map
+                    .sign_at(line_idx as u32)
+                    .map(|kind| {
+                        use lattice_host::diff_overlay::DiffSignKind;
+                        match kind {
+                            DiffSignKind::Add => ('+', 0x33_AA_33),
+                            DiffSignKind::Change => ('~', 0xCC_AA_22),
+                            DiffSignKind::Remove => ('-', 0xCC_33_33),
+                        }
+                    });
                 crate::editor_element::GutterLineMeta {
                     line_idx: line_idx as u32,
                     fold_start,
                     severity,
+                    diff_sign,
                 }
             })
             .collect();

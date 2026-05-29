@@ -555,6 +555,16 @@ pub struct DiffSession {
 	/// collapses to one consumer wake, which matches the
 	/// expected debounce behavior on the worker side.
 	publish_notify: Arc<tokio::sync::Notify>,
+	/// D.3.d.0 (2026-05-29): published per-line sign
+	/// classification derived from the current `HunkIndex`.
+	/// Renderers read via `sign_map()` (lock-free `ArcSwap`
+	/// load) per-frame; the
+	/// [`crate::diff_overlay::DiffOverlayRefreshTask`] writes
+	/// this cell on every hunk publish, keeping it in lockstep
+	/// with `hunks`. Initialised to an empty map at session
+	/// construction; first refresh populates it once the
+	/// initial recompute completes.
+	sign_map: ArcSwap<crate::diff_overlay::DiffSignMap>,
 }
 
 impl DiffSession {
@@ -568,7 +578,29 @@ impl DiffSession {
 			hunks: ArcSwap::from_pointee(HunkIndex::empty(algorithm)),
 			next_revision: AtomicU64::new(1),
 			publish_notify: Arc::new(tokio::sync::Notify::new()),
+			sign_map: ArcSwap::from_pointee(
+				crate::diff_overlay::DiffSignMap::default(),
+			),
 		}
+	}
+
+	/// D.3.d.0 (2026-05-29): snapshot the latest published
+	/// `DiffSignMap`. Lock-free `ArcSwap::load_full`; renderer
+	/// hot path. The map is refreshed in lockstep with
+	/// `hunks` by [`crate::diff_overlay::DiffOverlayRefreshTask`].
+	pub fn sign_map(&self) -> Arc<crate::diff_overlay::DiffSignMap> {
+		self.sign_map.load_full()
+	}
+
+	/// D.3.d.0: publish a freshly-computed sign map.
+	/// Unconditional store (no revision gate) — the
+	/// `DiffOverlayRefreshTask` already serialises map
+	/// updates with `hunks` publishes, so out-of-order
+	/// landing isn't possible from the refresh-task side.
+	/// Direct callers (tests, future consumers) bear the
+	/// ordering responsibility.
+	pub fn publish_sign_map(&self, map: Arc<crate::diff_overlay::DiffSignMap>) {
+		self.sign_map.store(map);
 	}
 
 	/// D.3.a.1: shared `Notify` fired on every successful

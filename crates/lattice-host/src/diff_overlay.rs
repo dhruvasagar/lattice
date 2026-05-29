@@ -59,13 +59,127 @@
 use std::sync::{Arc, Mutex};
 
 use lattice_cells::{AnchorPosition, Cell, ProviderId, VirtualRow, VirtualRowProvider};
-use lattice_diff::HunkKind;
+use lattice_diff::{HunkIndex, HunkKind};
 
 use lattice_core::BufferId;
 use tokio::task::JoinHandle;
 use tracing::debug;
 
 use crate::diff_subsystem::{BaselineSource, DiffSession};
+
+// ──────────────────────────────────────────────────────────────
+// D.3.d.0 (2026-05-29): per-line sign classification.
+// ──────────────────────────────────────────────────────────────
+
+/// Per-line gutter sign kind. Renderer-facing surface for
+/// D.3.d.1 (TUI) and D.3.d.2 (GPUI sprite atlas) integrations
+/// — D.3.d.0 lands the data layer only. D.3.e (line tints)
+/// composes on top of the same classification.
+///
+/// `Add` and `Remove` are emitted for the obvious cases.
+/// `Change` is emitted on **both** the baseline-deleted lines
+/// (covered by the deletion-block virtual rows) and the
+/// current-side replaced lines (which sit in the actual
+/// document rows). A row carrying a `Change` sign tells the
+/// renderer "this line replaces baseline content" — useful
+/// for the tint pass.
+///
+/// `Conflict` is collapsed into `Change` for D.3.d.0 —
+/// three-way merge (D.6) will refine.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum DiffSignKind {
+	Add,
+	Remove,
+	Change,
+}
+
+/// Sparse per-line classification of the current-side rope.
+///
+/// Keyed by source line index (0-based, into the current
+/// rope — i.e., the line the user is looking at). Sparse
+/// because most lines have no sign. `entries` is sorted by
+/// line so renderer-side lookup (per-row) is `O(log n)` via
+/// binary search.
+///
+/// Build via [`compute_diff_sign_map`] — pure function of an
+/// `Arc<HunkIndex>`. Published per-session via
+/// `DiffSession::sign_map_cell` (D.3.d.0); the
+/// [`DiffOverlayRefreshTask`] refreshes it on every hunk
+/// publish so renderers see consistent decorations.
+#[derive(Clone, Debug, Default)]
+pub struct DiffSignMap {
+	entries: Vec<(u32, DiffSignKind)>,
+	/// The session revision the map was computed against.
+	/// Renderers can compare against the session's
+	/// `current_hunks().revision` to detect staleness.
+	revision: u64,
+}
+
+impl DiffSignMap {
+	pub fn entries(&self) -> &[(u32, DiffSignKind)] {
+		&self.entries
+	}
+
+	pub fn revision(&self) -> u64 {
+		self.revision
+	}
+
+	pub fn is_empty(&self) -> bool {
+		self.entries.is_empty()
+	}
+
+	pub fn len(&self) -> usize {
+		self.entries.len()
+	}
+
+	/// Lookup the sign for `line`, if any. `O(log n)` binary
+	/// search over `entries`. Renderer hot path.
+	pub fn sign_at(&self, line: u32) -> Option<DiffSignKind> {
+		match self.entries.binary_search_by_key(&line, |(l, _)| *l) {
+			Ok(idx) => Some(self.entries[idx].1),
+			Err(_) => None,
+		}
+	}
+}
+
+/// D.3.d.0: derive a `DiffSignMap` from a `HunkIndex`.
+///
+/// Walks each hunk's current-side range (`ranges[1]`):
+/// - `Add` → every line in the range gets `Add`.
+/// - `Change` / `Conflict` → every line in the range gets
+///   `Change` (the current-side rows are the replacements).
+/// - `Remove` → no current-side lines exist; the deletion is
+///   surfaced through the virtual-row deletion block (D.3.b)
+///   and gets no sign in the sign map. Renderers wanting to
+///   sign the *insertion point* of a removed hunk should
+///   render based on the deletion block's anchor line (a
+///   future D.3.d.1 detail) — keeping the sign map a
+///   strictly-current-rope decoration here avoids
+///   double-counting at the deletion anchor.
+///
+/// Entries are sorted by line before return so
+/// `DiffSignMap::sign_at` binary-searches cheaply.
+pub fn compute_diff_sign_map(hunks: &HunkIndex) -> DiffSignMap {
+	let mut entries: Vec<(u32, DiffSignKind)> = Vec::new();
+	for hunk in &hunks.hunks {
+		let Some(current_range) = hunk.ranges.get(1) else {
+			continue;
+		};
+		let kind = match hunk.kind {
+			HunkKind::Add => DiffSignKind::Add,
+			HunkKind::Change | HunkKind::Conflict => DiffSignKind::Change,
+			HunkKind::Remove => continue,
+		};
+		for line in current_range.start..current_range.end {
+			entries.push((line, kind));
+		}
+	}
+	entries.sort_by_key(|(l, _)| *l);
+	DiffSignMap {
+		entries,
+		revision: hunks.revision,
+	}
+}
 
 /// D.3.a.1 (2026-05-29): the [`ProviderId`] this slice uses
 /// for a given session's overlay provider. Exposed as a free
@@ -285,6 +399,15 @@ impl DiffOverlayRefreshTask {
 		cache: &Mutex<DiffOverlayCache>,
 		virtual_rows_wake: &Arc<tokio::sync::Notify>,
 	) {
+		let hunks = session.current_hunks();
+		// D.3.d.0: derive the per-line sign classification
+		// from the same `HunkIndex` revision the deletion
+		// blocks are rendered against. Publishing the sign
+		// map FIRST (before deletion-block rows) means a
+		// renderer reading both in the same paint pass
+		// sees consistent state — same revision on both.
+		let sign_map = compute_diff_sign_map(&hunks);
+		session.publish_sign_map(Arc::new(sign_map));
 		let (rendered_revision, rows) =
 			DiffOverlayVirtualRowProvider::render_rows(session, baseline);
 		debug!(
@@ -492,6 +615,146 @@ mod tests {
 			revision: 9,
 		}));
 		assert_eq!(p.version(), 9);
+	}
+
+	// ── D.3.d.0: DiffSignMap derivation ─────────────────────
+
+	#[test]
+	fn sign_map_empty_for_no_hunks() {
+		let idx = HunkIndex {
+			hunks: vec![],
+			algorithm: DiffAlgorithm::Histogram,
+			revision: 7,
+		};
+		let map = compute_diff_sign_map(&idx);
+		assert!(map.is_empty());
+		assert_eq!(map.revision(), 7);
+		assert_eq!(map.sign_at(0), None);
+	}
+
+	#[test]
+	fn add_hunk_emits_add_signs_for_each_current_line() {
+		let idx = HunkIndex {
+			hunks: vec![Hunk {
+				kind: HunkKind::Add,
+				ranges: smallvec![LineRange::new(5, 5), LineRange::new(10, 13)],
+			}],
+			algorithm: DiffAlgorithm::Histogram,
+			revision: 1,
+		};
+		let map = compute_diff_sign_map(&idx);
+		assert_eq!(map.len(), 3);
+		assert_eq!(map.sign_at(10), Some(DiffSignKind::Add));
+		assert_eq!(map.sign_at(11), Some(DiffSignKind::Add));
+		assert_eq!(map.sign_at(12), Some(DiffSignKind::Add));
+		assert_eq!(map.sign_at(13), None);
+	}
+
+	#[test]
+	fn change_hunk_emits_change_signs_on_current_side() {
+		let idx = HunkIndex {
+			hunks: vec![Hunk {
+				kind: HunkKind::Change,
+				ranges: smallvec![LineRange::new(0, 2), LineRange::new(20, 22)],
+			}],
+			algorithm: DiffAlgorithm::Histogram,
+			revision: 1,
+		};
+		let map = compute_diff_sign_map(&idx);
+		assert_eq!(map.len(), 2);
+		assert_eq!(map.sign_at(20), Some(DiffSignKind::Change));
+		assert_eq!(map.sign_at(21), Some(DiffSignKind::Change));
+		assert_eq!(map.sign_at(19), None);
+	}
+
+	#[test]
+	fn remove_hunk_emits_no_current_side_signs() {
+		// Remove: baseline lines disappear. The current-side
+		// range is empty (start == end at the deletion
+		// anchor); there are no current-side lines to sign.
+		// The deletion is surfaced through the virtual-row
+		// deletion block (D.3.b).
+		let idx = HunkIndex {
+			hunks: vec![Hunk {
+				kind: HunkKind::Remove,
+				ranges: smallvec![LineRange::new(5, 8), LineRange::new(10, 10)],
+			}],
+			algorithm: DiffAlgorithm::Histogram,
+			revision: 1,
+		};
+		let map = compute_diff_sign_map(&idx);
+		assert!(map.is_empty());
+	}
+
+	#[test]
+	fn conflict_hunk_emits_change_signs() {
+		let idx = HunkIndex {
+			hunks: vec![Hunk {
+				kind: HunkKind::Conflict,
+				ranges: smallvec![
+					LineRange::new(0, 2),
+					LineRange::new(0, 2),
+					LineRange::new(0, 2)
+				],
+			}],
+			algorithm: DiffAlgorithm::Histogram,
+			revision: 1,
+		};
+		let map = compute_diff_sign_map(&idx);
+		assert_eq!(map.len(), 2);
+		assert_eq!(map.sign_at(0), Some(DiffSignKind::Change));
+		assert_eq!(map.sign_at(1), Some(DiffSignKind::Change));
+	}
+
+	#[test]
+	fn sign_map_entries_sorted_by_line() {
+		// Out-of-order hunks (a Change at high lines + an Add
+		// at low) should still produce a sorted entry list so
+		// binary search works.
+		let idx = HunkIndex {
+			hunks: vec![
+				Hunk {
+					kind: HunkKind::Change,
+					ranges: smallvec![LineRange::new(0, 1), LineRange::new(100, 102)],
+				},
+				Hunk {
+					kind: HunkKind::Add,
+					ranges: smallvec![LineRange::new(5, 5), LineRange::new(10, 12)],
+				},
+			],
+			algorithm: DiffAlgorithm::Histogram,
+			revision: 1,
+		};
+		let map = compute_diff_sign_map(&idx);
+		let lines: Vec<u32> = map.entries().iter().map(|(l, _)| *l).collect();
+		assert_eq!(lines, vec![10, 11, 100, 101]);
+		assert_eq!(map.sign_at(10), Some(DiffSignKind::Add));
+		assert_eq!(map.sign_at(100), Some(DiffSignKind::Change));
+	}
+
+	#[test]
+	fn session_sign_map_starts_empty() {
+		let s = DiffSession::new(bid(1), DiffAlgorithm::Histogram);
+		let map = s.sign_map();
+		assert!(map.is_empty());
+	}
+
+	#[test]
+	fn session_publish_sign_map_round_trips() {
+		let s = DiffSession::new(bid(1), DiffAlgorithm::Histogram);
+		let new = compute_diff_sign_map(&HunkIndex {
+			hunks: vec![Hunk {
+				kind: HunkKind::Add,
+				ranges: smallvec![LineRange::new(0, 0), LineRange::new(5, 7)],
+			}],
+			algorithm: DiffAlgorithm::Histogram,
+			revision: 4,
+		});
+		s.publish_sign_map(Arc::new(new));
+		let snap = s.sign_map();
+		assert_eq!(snap.len(), 2);
+		assert_eq!(snap.revision(), 4);
+		assert_eq!(snap.sign_at(5), Some(DiffSignKind::Add));
 	}
 
 	#[test]

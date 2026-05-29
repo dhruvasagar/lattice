@@ -1632,9 +1632,38 @@ shared with multibuffer-views and post-v1 inlay hints.
     next walks forward + wraps to first, prev walks
     backward + wraps to last, empty-HunkIndex info message);
     **439 lattice-host unit tests green**.
-  - 🗒 **D.3.d** — Gutter sign rendering. `+` / `-` / `~`
-    sprites in the gutter column for Add / Remove / Change
-    hunks; reuses §5.6.7 icon atlas.
+  - 🚧 **D.3.d** — Gutter sign rendering. Carved during build
+    into a data layer + per-renderer integration sub-slices.
+    - ✅ **D.3.d.0** (2026-05-29) — Data layer. New
+      `DiffSignKind { Add, Remove, Change }` enum (Conflict
+      collapsed into Change for v1; D.6 three-way merge
+      refines). New `DiffSignMap` — sparse sorted
+      `Vec<(u32 line, DiffSignKind)>` + `revision` tag.
+      `DiffSignMap::sign_at(line)` is `O(log n)` binary
+      search; renderer hot path. Pure `compute_diff_sign_map(&HunkIndex)`
+      derives the map: Add → every current-side line gets
+      `Add`; Change / Conflict → every current-side line gets
+      `Change`; Remove → no sign (deletion already surfaced
+      via D.3.b deletion blocks). New `DiffSession::sign_map`
+      `ArcSwap<DiffSignMap>` field + `sign_map()` / `publish_sign_map`
+      accessors. `DiffOverlayRefreshTask` now refreshes the
+      sign map at the top of every `run_once` — published
+      strictly before the deletion-block cache so a renderer
+      reading both in the same paint pass sees consistent
+      state (same revision on both). New
+      `Editor::diff_signs_for_active() -> Option<Arc<DiffSignMap>>`
+      helper for renderer integration. 8 new tests (sign-map
+      derivation: empty, add, change, remove no-op, conflict
+      = change, sorted entries; session round-trip:
+      starts-empty, publish round-trips). **447
+      lattice-host unit tests green.**
+    - 🗒 **D.3.d.1** — TUI renderer integration. Reserve a
+      gutter column, paint `+` / `-` / `~` characters per
+      `sign_at(row)` lookup. Composes with line-number
+      column.
+    - 🗒 **D.3.d.2** — GPUI renderer integration. Sprite-based
+      variant via §5.6.7 atlas if/when GPUI is primary
+      surface.
   - 🗒 **D.3.e** — Line background tints. `DiffAdd`,
     `DiffChange`, `DiffRemove` theme entries applied to cell
     backgrounds on the current side.

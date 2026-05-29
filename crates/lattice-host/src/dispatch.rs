@@ -2544,6 +2544,16 @@ impl Editor {
         self.cursor = lattice_protocol::position::Position::new(line, 0);
     }
 
+    /// D.3.d.0 (2026-05-29): snapshot the active document's
+    /// diff sign map, if any. Returns `None` when no session
+    /// is open for the active buffer; renderers fall back to
+    /// the no-gutter path. Lock-free `ArcSwap::load_full`;
+    /// renderer hot path.
+    pub fn diff_signs_for_active(&self) -> Option<std::sync::Arc<crate::diff_overlay::DiffSignMap>> {
+        let session = self.diff_subsystem.lookup(self.document_buffer_id)?;
+        Some(session.sign_map())
+    }
+
     /// D.3.a.1 (2026-05-29): close the active document's diff
     /// session if one is registered. Drops the session,
     /// unregisters the overlay provider from the virtual-rows

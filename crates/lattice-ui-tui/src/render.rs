@@ -2770,17 +2770,17 @@ fn draw_inactive_document(
         // document. Diagnostics on inactive panes are
         // intentionally minimal -- the active pane is the
         // canonical surface; inactive ones avoid visual noise.
-        // D.3.d.1: diff sign cell sits between gutter and body
-        // (right of line numbers).
+        // D.3.d.1: diff sign cell sits LEFT of line numbers —
+        // matches editor convention (Helix-style adjacent
+        // columns alongside severity).
         let diff_sign_cell = render_diff_sign_cell(&view, buf_line);
-        let mut body_with_sign: Vec<Span<'static>> =
-            Vec::with_capacity(body.len() + 1);
-        body_with_sign.push(diff_sign_cell);
-        body_with_sign.extend(body);
         lines.push(combine_prefixed(
-            vec![Span::styled(" ".to_string(), TuiStyle::default())],
+            vec![
+                Span::styled(" ".to_string(), TuiStyle::default()),
+                diff_sign_cell,
+            ],
             gutter,
-            body_with_sign,
+            body,
         ));
     }
     frame.render_widget(Paragraph::new(lines), area);
@@ -3785,19 +3785,17 @@ fn compose_visible_lines_inner(
         // even when no diagnostics exist so the layout doesn't
         // shift when one arrives.
         let severity_cell = render_diagnostic_severity_cell(view, snap, line_idx);
-        // D.3.d.1: diff sign cell sits between the gutter
-        // (line numbers + fold marker) and the source body.
-        // Reads from the active session's sign map; blank when
-        // no session or no hunk touches the line.
+        // D.3.d.1: diff sign cell sits LEFT of line numbers
+        // (between severity and gutter) — matches the editor
+        // convention used by Vim signcolumn, Helix, Zed,
+        // VSCode, JetBrains. LSP severity and diff signs
+        // occupy adjacent dedicated columns so the two
+        // decoration types don't compete (Helix-style).
         let diff_sign_cell = render_diff_sign_cell(view, line_idx);
-        let mut body_with_sign: Vec<Span<'static>> =
-            Vec::with_capacity(body.len() + 1);
-        body_with_sign.push(diff_sign_cell);
-        body_with_sign.extend(body);
         out.push(combine_prefixed(
-            vec![severity_cell],
+            vec![severity_cell, diff_sign_cell],
             gutter,
-            body_with_sign,
+            body,
         ));
     }
     out

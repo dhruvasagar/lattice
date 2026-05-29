@@ -1402,17 +1402,21 @@ fn format_gutter_text(meta: &GutterLineMeta, gutter_width: usize) -> String {
         ' '
     };
     let sev = meta.severity.map(|(g, _)| g).unwrap_or(' ');
-    // D.3.d.2: diff-sign column sits AFTER the line number —
-    // immediately to the right of the digits, before the
-    // trailing space. Same blank-space-when-absent discipline
-    // so the layout never shifts on :diff / :diffoff.
+    // D.3.d.2: diff-sign column sits LEFT of the line number
+    // (between severity and the digits) — matches editor
+    // convention (Vim signcolumn, Helix, Zed, VSCode,
+    // JetBrains). LSP severity and diff occupy adjacent
+    // dedicated columns so the two decoration types don't
+    // compete (Helix-style). Same blank-space-when-absent
+    // discipline so the layout never shifts on :diff /
+    // :diffoff.
     let diff = meta.diff_sign.map(|(g, _)| g).unwrap_or(' ');
     format!(
-        "{fold}{sev}{num:>width$}{diff} ",
+        "{fold}{sev}{diff}{num:>width$} ",
         fold = fold,
         sev = sev,
-        num = meta.line_idx as usize + 1,
         diff = diff,
+        num = meta.line_idx as usize + 1,
         width = gutter_width,
     )
 }
@@ -1455,60 +1459,26 @@ fn build_gutter_runs(text: &str, meta: &GutterLineMeta, font: gpui::Font) -> Vec
     });
     bytes_consumed += sev_len;
 
-    // Format is `{fold}{sev}{num:>width$}{diff} ` — split the
-    // remaining `text[bytes_consumed..]` into:
-    //   - line-number digits (everything before the last 2
-    //     chars: diff sign + trailing space),
-    //   - diff sign (1 char),
-    //   - trailing space (1 char).
-    // The diff sign + trailing space together are always
-    // exactly 2 bytes (both ASCII for D.3.d.2 — '+', '~', '-'
-    // or ' '; sprite-based variants land in a follow-on).
-    let tail = &text[bytes_consumed..];
-    let diff_byte_start = tail
-        .char_indices()
-        .nth_back(1)
-        .map(|(i, _)| i)
-        .unwrap_or(0);
-    let space_byte_start = tail
-        .char_indices()
-        .next_back()
-        .map(|(i, _)| i)
-        .unwrap_or(0);
-
-    // Run 3: line-number digits.
-    if diff_byte_start > 0 {
-        runs.push(TextRun {
-            len: diff_byte_start,
-            font: font.clone(),
-            color: rgb(GUTTER_NORMAL_COLOR).into(),
-            background_color: None,
-            underline: None,
-            strikethrough: None,
-        });
-    }
-    bytes_consumed += diff_byte_start;
-
-    // Run 4: D.3.d.2 diff sign (right of line number).
+    // Run 3: D.3.d.2 diff sign (left of line number, between
+    // severity and digits — Vim/Helix/Zed/VSCode convention).
     let diff_color = meta.diff_sign.map(|(_, c)| c).unwrap_or(GUTTER_NORMAL_COLOR);
-    let diff_byte_len = space_byte_start - diff_byte_start;
-    if diff_byte_len > 0 {
-        runs.push(TextRun {
-            len: diff_byte_len,
-            font: font.clone(),
-            color: rgb(diff_color).into(),
-            background_color: None,
-            underline: None,
-            strikethrough: None,
-        });
-        bytes_consumed += diff_byte_len;
-    }
+    let diff_char = text[bytes_consumed..].chars().next().unwrap_or(' ');
+    let diff_len = diff_char.len_utf8();
+    runs.push(TextRun {
+        len: diff_len,
+        font: font.clone(),
+        color: rgb(diff_color).into(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    });
+    bytes_consumed += diff_len;
 
-    // Run 5: trailing space.
-    let trailing_len = text.len() - bytes_consumed;
-    if trailing_len > 0 {
+    // Run 4: line number + trailing space.
+    let tail_len = text.len() - bytes_consumed;
+    if tail_len > 0 {
         runs.push(TextRun {
-            len: trailing_len,
+            len: tail_len,
             font,
             color: rgb(GUTTER_NORMAL_COLOR).into(),
             background_color: None,
@@ -1583,8 +1553,8 @@ mod tests {
             severity: None,
             diff_sign: None,
         };
-        // fold + sev + "  1" + diff + trail = "    1  " (7 chars).
-        assert_eq!(format_gutter_text(&meta, 3), "    1  ");
+        // fold + sev + diff + "  1" + trail = "     1 " (7 chars).
+        assert_eq!(format_gutter_text(&meta, 3), "     1 ");
     }
 
     #[test]
@@ -1595,8 +1565,8 @@ mod tests {
             severity: None,
             diff_sign: None,
         };
-        // ► + ' ' + " 42" + ' ' + ' ' = "►  42  " (7 chars).
-        assert_eq!(format_gutter_text(&meta, 3), "►  42  ");
+        // ► + ' ' + ' ' + " 42" + ' ' = "►   42 " (7 chars).
+        assert_eq!(format_gutter_text(&meta, 3), "►   42 ");
     }
 
     #[test]
@@ -1607,19 +1577,20 @@ mod tests {
             severity: Some(('E', 0xff0000)),
             diff_sign: None,
         };
-        assert_eq!(format_gutter_text(&meta, 2), " E10  ");
+        // ' ' + 'E' + ' ' + "10" + ' ' = " E 10 ".
+        assert_eq!(format_gutter_text(&meta, 2), " E 10 ");
     }
 
     #[test]
-    fn gutter_text_format_diff_sign_right_of_line_number() {
+    fn gutter_text_format_diff_sign_left_of_line_number() {
         let meta = GutterLineMeta {
             line_idx: 9,
             fold_start: false,
             severity: None,
             diff_sign: Some(('+', 0x33aa33)),
         };
-        // D.3.d.2: ' ' (fold) + ' ' (sev) + "10" + '+' (diff) + ' ' = "  10+ ".
-        assert_eq!(format_gutter_text(&meta, 2), "  10+ ");
+        // D.3.d.2: ' ' (fold) + ' ' (sev) + '+' (diff) + "10" + ' ' (trail) = "  +10 ".
+        assert_eq!(format_gutter_text(&meta, 2), "  +10 ");
     }
 
     #[test]

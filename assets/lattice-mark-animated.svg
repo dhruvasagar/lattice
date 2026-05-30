@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 120" role="img" aria-label="Lattice">
+  <title>Lattice</title>
+  <path d="M 0 20 L 20 20 L 20 100 L 80 100 L 80 120 L 0 120 Z" fill="#1f6feb"/>
+  <path d="M 20 0 L 100 0 L 100 100 L 80 100 L 80 20 L 20 20 Z" fill="#1f6feb"/>
+  <rect x="40" y="36" width="20" height="48" fill="#f59e0b">
+    <!-- Terminal-cursor blink: visible 60% of cycle, hidden 40%, snap transitions.
+         1s cycle matches xterm/iTerm default cursor blink rate. -->
+    <animate attributeName="opacity"
+             values="1;1;0;0"
+             keyTimes="0;0.6;0.6;1"
+             dur="1s"
+             repeatCount="indefinite"/>
+  </rect>
+</svg>

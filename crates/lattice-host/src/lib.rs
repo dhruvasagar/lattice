@@ -58,6 +58,11 @@ pub mod fold_provider;
 // See `docs/dev/architecture/fold-architecture.md` and
 // `docs/dev/architecture/diff-system.md` §6.5.
 pub mod diff_fold;
+// D.5.a (2026-05-30): `diff-mode` minor mode + the host-side
+// bridge that toggles it on participating buffers as
+// `DiffSession`s open and close. See
+// `docs/dev/architecture/diff-system.md` §3.4.7.
+pub mod diff_mode;
 // D.4.a (2026-05-29): pane-group substrate. `PaneGroup` is
 // a set of `(pane, buffer)` pairs that scroll together
 // under a pluggable `RowMapper`. The trait + registry

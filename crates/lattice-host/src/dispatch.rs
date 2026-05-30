@@ -1195,6 +1195,14 @@ impl Editor {
     /// the hot path; concurrent readers see either the previous
     /// snapshot or the new one with no torn observation.
     pub fn publish_render_state(&mut self) {
+        // D.5.a (2026-05-30): apply any diff-mode toggles
+        // queued by the `DiffSubsystem` since the previous
+        // tick. Must run before `build_render_state` reads
+        // `active_modes` so the snapshot reflects the current
+        // mode set (modeline, keymap overlays, K.1.c per-
+        // keystroke filter all consume the same state).
+        // Idempotent and cheap when the queue is empty.
+        self.apply_pending_diff_mode_changes();
         // D.4.a (2026-05-29): propagate scroll bindings before
         // the render state snapshot so the snapshot reflects the
         // bound panes' updated stashed scrolls. Idempotent —
@@ -2546,6 +2554,10 @@ impl Editor {
                 ),
             ),
             watch: vec![buffer_id],
+            // D.5.a (2026-05-30): file-on-disk baseline has
+            // no live buffer, so only the current side
+            // receives `diff-mode`.
+            participants: vec![buffer_id],
         };
         let session = self.diff_subsystem.register_with_sources(
             buffer_id,
@@ -2799,6 +2811,68 @@ impl Editor {
             self.pane_groups.retain(|g| g.id != id);
         }
         removed
+    }
+
+    /// D.5.a (2026-05-30): drain the `DiffModeBridge`'s pending
+    /// queue and apply each toggle via the existing
+    /// `mode_registry` pattern. Called from
+    /// `publish_render_state` at the dispatch tail so any
+    /// session register/drop that happened during this tick
+    /// (either dispatcher-initiated or via the doc-close
+    /// auto-drop on a tokio worker) reflects in `ActiveModes`
+    /// before the next render snapshot.
+    ///
+    /// Errors on individual buffers (mode not registered,
+    /// capability mismatch) log + skip rather than panic —
+    /// downstream `do`/`dp` dispatch (D.5.b/c) gracefully
+    /// no-ops when the bit isn't set.
+    pub fn apply_pending_diff_mode_changes(&mut self) {
+        let changes = self.diff_subsystem.mode_bridge().drain_pending();
+        if changes.is_empty() {
+            return;
+        }
+        let diff_mode_id = crate::diff_mode::DiffMode::mode_id();
+        for change in changes {
+            let buffer_id = change.buffer;
+            let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
+            let mut active = self
+                .active_modes
+                .remove(&buffer_id)
+                .unwrap_or_default();
+            let res = match change.action {
+                crate::diff_mode::DiffModeAction::Activate => self
+                    .mode_registry
+                    .activate_minor(
+                        &mut active,
+                        &self.mode_guards,
+                        &self.config,
+                        &self.event_bus,
+                        &self.services,
+                        proto_id,
+                        diff_mode_id,
+                        lattice_mode::CapabilitySet::empty(),
+                    ),
+                crate::diff_mode::DiffModeAction::Deactivate => self
+                    .mode_registry
+                    .deactivate_minor(
+                        &mut active,
+                        &self.mode_guards,
+                        &self.event_bus,
+                        proto_id,
+                        diff_mode_id,
+                    ),
+            };
+            if let Err(e) = res {
+                tracing::debug!(
+                    target: "lattice_host::diff_mode",
+                    ?buffer_id,
+                    ?change,
+                    error = ?e,
+                    "diff-mode toggle failed; leaving buffer state untouched"
+                );
+            }
+            self.active_modes.insert(buffer_id, active);
+        }
     }
 
     /// Propagate the active pane's scroll to every other
@@ -3145,6 +3219,11 @@ impl Editor {
                 primary,
             )),
             watch: vec![baseline.buffer, primary],
+            // D.5.a (2026-05-30): both sides are live buffers
+            // backing the two-pane diff; both receive
+            // `diff-mode` so `do`/`dp` (D.5.b/c) dispatch from
+            // either pane.
+            participants: vec![baseline.buffer, primary],
         };
         let session = self.diff_subsystem.register_with_sources(
             primary,
@@ -24466,6 +24545,311 @@ mod tests {
         assert!(editor_b.pane_groups.is_empty());
     }
 
+    // ─────────────────────────────────────────────────────────
+    // D.5.a: diff-mode lifecycle end-to-end. Verifies the full
+    // path:
+    //   `:diffthis` / `:diff` → `register_with_sources` → bridge
+    //     queue → `apply_pending_diff_mode_changes` → `ActiveModes`.
+    // Plus the symmetric teardown path. The pure-bridge tests
+    // live in `crate::diff_mode::tests`; these tests assert the
+    // integration is wired correctly.
+    // ─────────────────────────────────────────────────────────
+
+    fn diff_mode_active_on(editor: &crate::editor::Editor, buffer: lattice_core::BufferId) -> bool {
+        editor
+            .active_modes
+            .get(&buffer)
+            .map(|am| am.has_minor(crate::diff_mode::DiffMode::mode_id()))
+            .unwrap_or(false)
+    }
+
+    /// `Editor::default()` constructs an empty `ModeRegistry`;
+    /// the tests below need `diff-mode` registered against it
+    /// so the dispatch tail's
+    /// [`Editor::apply_pending_diff_mode_changes`] toggles
+    /// land in `ActiveModes`. Boot wires this via
+    /// `register_diff_modes` — in tests we replace the
+    /// default-empty `Arc<ModeRegistry>` before any session
+    /// opens.
+    fn editor_with_diff_mode_registered() -> crate::editor::Editor {
+        let mut editor = crate::editor::Editor::default();
+        let mut registry = lattice_mode::ModeRegistry::new();
+        crate::diff_mode::register_diff_modes(&mut registry);
+        editor.mode_registry = std::sync::Arc::new(registry);
+        editor
+    }
+
+    /// Inline session activates diff-mode on the *current*
+    /// buffer only — the file-on-disk baseline has no live
+    /// buffer to mark.
+    #[tokio::test]
+    async fn inline_session_activates_diff_mode_on_current_only() {
+        let mut editor = editor_with_diff_mode_registered();
+        let primary = editor.document_buffer_id;
+        // Inline session via the no-pane-group construction so
+        // we exercise the same `register_with_sources` path
+        // `do_diff_open` uses, without depending on a real
+        // file. participants = [primary].
+        let provider_text: std::sync::Arc<dyn crate::diff_subsystem::BufferTextProvider> =
+            std::sync::Arc::new(crate::diff_subsystem::BufferRegistryTextProvider::new(
+                editor.buffers.clone(),
+            ));
+        let descriptor = crate::diff_subsystem::DiffDescriptor {
+            baseline: std::sync::Arc::new(crate::diff_subsystem::StaticBaseline::new(
+                ropey::Rope::new(),
+            )),
+            current: std::sync::Arc::new(crate::diff_subsystem::BufferCurrentSource::new(
+                provider_text,
+                primary,
+            )),
+            watch: vec![primary],
+            participants: vec![primary],
+        };
+        editor.diff_subsystem.register_with_sources(
+            primary,
+            lattice_diff::DiffAlgorithm::Histogram,
+            descriptor,
+        );
+
+        editor.apply_pending_diff_mode_changes();
+        assert!(diff_mode_active_on(&editor, primary));
+    }
+
+    /// Two-pane `:diffthis` activates diff-mode on **both**
+    /// participants so `do`/`dp` chord dispatch (D.5.b/c) works
+    /// from either pane.
+    #[tokio::test]
+    async fn diffthis_activates_diff_mode_on_both_panes() {
+        let mut editor = editor_with_diff_mode_registered();
+        let (_, baseline_buffer, _, current_buffer) = vsplit_two_buffers(&mut editor);
+        editor.pane_tree.set_active(0);
+        editor.do_diffthis();
+        editor.pane_tree.set_active(1);
+        editor.do_diffthis();
+
+        editor.apply_pending_diff_mode_changes();
+        assert!(
+            diff_mode_active_on(&editor, baseline_buffer),
+            "baseline pane should have diff-mode active"
+        );
+        assert!(
+            diff_mode_active_on(&editor, current_buffer),
+            "current pane should have diff-mode active"
+        );
+    }
+
+    /// `:diffoff` deactivates diff-mode on both participants.
+    /// Closes the lifecycle invariant.
+    #[tokio::test]
+    async fn diff_off_clears_diff_mode_on_both_panes() {
+        let mut editor = editor_with_diff_mode_registered();
+        let (_, baseline_buffer, _, current_buffer) = vsplit_two_buffers(&mut editor);
+        editor.pane_tree.set_active(0);
+        editor.do_diffthis();
+        editor.pane_tree.set_active(1);
+        editor.do_diffthis();
+        editor.apply_pending_diff_mode_changes();
+        assert!(diff_mode_active_on(&editor, baseline_buffer));
+        assert!(diff_mode_active_on(&editor, current_buffer));
+
+        // Teardown from either pane — choose the current side
+        // (primary key path).
+        editor.document_buffer_id = current_buffer;
+        editor.do_diff_off(false);
+        editor.apply_pending_diff_mode_changes();
+
+        assert!(
+            !diff_mode_active_on(&editor, baseline_buffer),
+            "baseline diff-mode cleared by :diffoff"
+        );
+        assert!(
+            !diff_mode_active_on(&editor, current_buffer),
+            "current diff-mode cleared by :diffoff"
+        );
+    }
+
+    /// Doc-close auto-drop (`note_buffer_closed` →
+    /// `drop_session`) deactivates diff-mode on the surviving
+    /// peer. The bridge queue must drain at the next dispatch
+    /// tick — simulated by calling
+    /// `apply_pending_diff_mode_changes` directly.
+    #[tokio::test]
+    async fn doc_close_auto_drop_clears_diff_mode_on_peer() {
+        let mut editor = editor_with_diff_mode_registered();
+        let (_, baseline_buffer, _, current_buffer) = vsplit_two_buffers(&mut editor);
+        editor.pane_tree.set_active(0);
+        editor.do_diffthis();
+        editor.pane_tree.set_active(1);
+        editor.do_diffthis();
+        editor.apply_pending_diff_mode_changes();
+        assert!(diff_mode_active_on(&editor, current_buffer));
+
+        // Simulate the bus-driven auto-drop the
+        // `DocumentClosed` event would fire.
+        editor.diff_subsystem.note_buffer_closed(current_buffer);
+        editor.apply_pending_diff_mode_changes();
+
+        assert!(
+            !diff_mode_active_on(&editor, baseline_buffer),
+            "baseline diff-mode cleared by auto-drop"
+        );
+        assert!(
+            !diff_mode_active_on(&editor, current_buffer),
+            "current diff-mode cleared by auto-drop"
+        );
+    }
+
+    /// Two simultaneous independent sessions
+    /// (file1↔file2, file3↔file4) — diff-mode lights up on each
+    /// pair independently; closing one leaves the other
+    /// untouched.
+    #[tokio::test]
+    async fn two_independent_sessions_have_independent_diff_mode_state() {
+        let mut editor = editor_with_diff_mode_registered();
+        let provider_text: std::sync::Arc<dyn crate::diff_subsystem::BufferTextProvider> =
+            std::sync::Arc::new(crate::diff_subsystem::BufferRegistryTextProvider::new(
+                editor.buffers.clone(),
+            ));
+        let mk = |baseline: lattice_core::BufferId, current: lattice_core::BufferId| {
+            crate::diff_subsystem::DiffDescriptor {
+                baseline: std::sync::Arc::new(
+                    crate::diff_subsystem::BufferBaseline::new(
+                        std::sync::Arc::clone(&provider_text),
+                        baseline,
+                    ),
+                ),
+                current: std::sync::Arc::new(
+                    crate::diff_subsystem::BufferCurrentSource::new(
+                        std::sync::Arc::clone(&provider_text),
+                        current,
+                    ),
+                ),
+                watch: vec![baseline, current],
+                participants: vec![baseline, current],
+            }
+        };
+        let f1 = lattice_core::BufferId(101);
+        let f2 = lattice_core::BufferId(102);
+        let f3 = lattice_core::BufferId(103);
+        let f4 = lattice_core::BufferId(104);
+        editor.diff_subsystem.register_with_sources(
+            f2,
+            lattice_diff::DiffAlgorithm::Histogram,
+            mk(f1, f2),
+        );
+        editor.diff_subsystem.register_with_sources(
+            f4,
+            lattice_diff::DiffAlgorithm::Histogram,
+            mk(f3, f4),
+        );
+        editor.apply_pending_diff_mode_changes();
+        for b in [f1, f2, f3, f4] {
+            assert!(
+                diff_mode_active_on(&editor, b),
+                "buffer {b:?} should have diff-mode active"
+            );
+        }
+
+        // Close session A (f2). Session B (f3↔f4) untouched.
+        editor.diff_subsystem.drop_session(f2);
+        editor.apply_pending_diff_mode_changes();
+        assert!(!diff_mode_active_on(&editor, f1), "f1 cleared with A");
+        assert!(!diff_mode_active_on(&editor, f2), "f2 cleared with A");
+        assert!(diff_mode_active_on(&editor, f3), "f3 still in B");
+        assert!(diff_mode_active_on(&editor, f4), "f4 still in B");
+    }
+
+    /// Refcount correctness: the same buffer participating in
+    /// two simultaneous sessions stays diff-mode-active until
+    /// the *last* session closes. Regression guard against the
+    /// naive "session opens → on / session closes → off" shape.
+    #[tokio::test]
+    async fn shared_buffer_in_two_sessions_keeps_diff_mode_until_last_close() {
+        let mut editor = editor_with_diff_mode_registered();
+        let provider_text: std::sync::Arc<dyn crate::diff_subsystem::BufferTextProvider> =
+            std::sync::Arc::new(crate::diff_subsystem::BufferRegistryTextProvider::new(
+                editor.buffers.clone(),
+            ));
+        let shared = lattice_core::BufferId(201);
+        let peer_a = lattice_core::BufferId(202);
+        let peer_b = lattice_core::BufferId(203);
+        let mk = |baseline: lattice_core::BufferId, current: lattice_core::BufferId| {
+            crate::diff_subsystem::DiffDescriptor {
+                baseline: std::sync::Arc::new(
+                    crate::diff_subsystem::BufferBaseline::new(
+                        std::sync::Arc::clone(&provider_text),
+                        baseline,
+                    ),
+                ),
+                current: std::sync::Arc::new(
+                    crate::diff_subsystem::BufferCurrentSource::new(
+                        std::sync::Arc::clone(&provider_text),
+                        current,
+                    ),
+                ),
+                watch: vec![baseline, current],
+                participants: vec![baseline, current],
+            }
+        };
+        // Session A: shared ↔ peer_a (primary = peer_a).
+        editor.diff_subsystem.register_with_sources(
+            peer_a,
+            lattice_diff::DiffAlgorithm::Histogram,
+            mk(shared, peer_a),
+        );
+        // Session B: shared ↔ peer_b (primary = peer_b).
+        editor.diff_subsystem.register_with_sources(
+            peer_b,
+            lattice_diff::DiffAlgorithm::Histogram,
+            mk(shared, peer_b),
+        );
+        editor.apply_pending_diff_mode_changes();
+        assert!(diff_mode_active_on(&editor, shared));
+        assert!(diff_mode_active_on(&editor, peer_a));
+        assert!(diff_mode_active_on(&editor, peer_b));
+        assert_eq!(editor.diff_subsystem.mode_bridge().refcount(shared), 2);
+
+        // Close A. shared must stay active (B still needs it).
+        editor.diff_subsystem.drop_session(peer_a);
+        editor.apply_pending_diff_mode_changes();
+        assert!(
+            diff_mode_active_on(&editor, shared),
+            "shared must stay active while B holds it"
+        );
+        assert!(!diff_mode_active_on(&editor, peer_a));
+        assert!(diff_mode_active_on(&editor, peer_b));
+        assert_eq!(editor.diff_subsystem.mode_bridge().refcount(shared), 1);
+
+        // Close B. shared now drops.
+        editor.diff_subsystem.drop_session(peer_b);
+        editor.apply_pending_diff_mode_changes();
+        assert!(!diff_mode_active_on(&editor, shared));
+        assert!(!diff_mode_active_on(&editor, peer_b));
+        assert_eq!(editor.diff_subsystem.mode_bridge().refcount(shared), 0);
+    }
+
+    /// Scratch / unsaved buffers (no `Path`) work end-to-end —
+    /// the diff layer takes no path dependency, so a two-pane
+    /// diff between two scratch buffers activates diff-mode on
+    /// both. Verifies the design's path-free commitment
+    /// (architecture doc §3.4.1) survives the D.5.a wiring.
+    #[tokio::test]
+    async fn scratch_to_scratch_diff_activates_diff_mode_on_both() {
+        let mut editor = editor_with_diff_mode_registered();
+        let (_, baseline_buffer, _, current_buffer) = vsplit_two_buffers(&mut editor);
+        // Neither buffer has a file path — the BufferRegistry
+        // entries are absent; `BufferRegistryTextProvider`
+        // returns empty ropes for missing buffers, which the
+        // diff layer handles uniformly (all-Add baseline).
+        editor.pane_tree.set_active(0);
+        editor.do_diffthis();
+        editor.pane_tree.set_active(1);
+        editor.do_diffthis();
+        editor.apply_pending_diff_mode_changes();
+        assert!(diff_mode_active_on(&editor, baseline_buffer));
+        assert!(diff_mode_active_on(&editor, current_buffer));
+    }
+
     /// `DiffSubsystem::lookup_session_for` resolves a
     /// secondary buffer back to the session whose primary key
     /// differs. Direct unit test on the subsystem so the
@@ -24497,6 +24881,7 @@ mod tests {
                 primary,
             )),
             watch: vec![primary, secondary],
+            participants: vec![primary, secondary],
         };
         sub.register_with_sources(primary, lattice_diff::DiffAlgorithm::Histogram, descriptor);
 

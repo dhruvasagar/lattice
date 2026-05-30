@@ -2533,11 +2533,118 @@ shared with multibuffer-views and post-v1 inlay hints.
     Closes K.1; D.5's diff-mode dispatch wires into the
     new substrate without further keymap-architecture
     work.
-- 🗒 **D.5** — Hunk transfer operators `do` / `dp` via
+- 🚧 **D.5** — Hunk transfer operators `do` / `dp` via
   `CommandRegistry`. After K.1: `do`/`dp` register in the
   diff-mode `MinorMode(ModeId)` layer, not globally.
   Carved into D.5.a (mode lifecycle), D.5.b (`do`),
   D.5.c (`dp`).
+  - ✅ **D.5.a** (2026-05-30) — `diff-mode` lifecycle. The
+    architectural contract: a buffer participates in any
+    `DiffSession` ⟺ `diff-mode` is active on that buffer.
+    Single chokepoint inside the subsystem so every present
+    and future `:diff*` ex-command (`:diff <buf>`,
+    `:diffthis`, `:diffsplit`, future `:Gdiff` D.7) and the
+    doc-close auto-drop (`note_buffer_closed →
+    drop_session`) inherit the toggle without each call
+    site repeating the activation logic. Wiring:
+    1. Register the `diff-mode` minor mode in
+       `lattice-mode`. Empty in v1 — the bit is what other
+       layers consult; `do`/`dp` bindings land in D.5.b/c
+       under the `MinorMode(ModeId::new("diff-mode"))`
+       layer (K.1.b shape).
+    2. Add `participants: SmallVec<[BufferId; 3]>` to
+       `DiffDescriptor`. Conceptually distinct from `watch`:
+       `watch` = "subscribe to edits on these ids",
+       `participants` = "these ids are user-visible diff
+       sides that should get the mode". In v1 they happen
+       to coincide for buffer-backed sources and diverge
+       only when a baseline source contributes no live
+       buffer (file-on-disk inline) — so the inline path
+       passes `[primary]`, the two-pane path passes
+       `[baseline, primary]`, and D.7's `:Gdiff` will pass
+       `[primary]` against a `GitBaseline`. D.6 three-way
+       lands as `[doc_a, doc_b, doc_c]`.
+    3. New `DiffModeBridge` host service. Per-buffer
+       refcount (`HashMap<BufferId, SmallVec<session_keys>>`):
+       activation appends a session key to the buffer's
+       bucket; deactivation removes it; bridge flips the
+       `ActiveModes.diff-mode` bit off only when the bucket
+       empties. The refcount handles the corner case where
+       the same buffer participates in two sessions
+       simultaneously (today: baseline-side buffer staged
+       into a second session; D.6 future: `MergeBase` also
+       diffed against working tree). Cheaper than tightening
+       the rejection check in three different ex-commands.
+    4. `DiffSubsystem` holds `Option<Arc<DiffModeBridge>>`
+       injected at editor boot; `register_with_sources`
+       activates each participant after the session lands
+       in the registry; `drop_session` deactivates them
+       before clearing the entry. Subsystem doesn't import
+       `lattice-mode` — it sees the bridge as a trait, so
+       the existing layering holds.
+    5. Two simultaneous independent sessions (file1↔file2,
+       file3↔file4) stay fully decoupled at every shared-
+       state layer — subsystem registry keyed by primary
+       BufferId, watch list bucketed per BufferId,
+       pane-group `(pane, buffer)` conflict check (D.4.a),
+       per-`BufferId` virtual-row provider registry
+       (D.4.d.2.1.a), per-buffer `ActiveModes`. The
+       `MinorMode(ModeId)` keymap layer itself is a single
+       global table (K.1.b shape) — that's correct because
+       the operator's *implementation* is shared while the
+       operator's *target session + peer buffer* are
+       resolved at execution time from
+       `lookup_session_for(active_buffer)`. Verified by a
+       two-session independence test landing here.
+    6. Scratch / unsaved buffers are full citizens: the
+       diff layer takes no `Path` dependency
+       (`BaselineSource::snapshot → Rope` and
+       `BufferTextProvider::buffer_rope(BufferId) → Rope`
+       are both path-free). `:diff scratchA scratchB`
+       routes through `register_two_pane_diff` unchanged
+       and gets diff-mode activated on both via the bridge.
+       Test covers it here so the architectural commitment
+       in §3.4.1 (already explicit about
+       unsaved-vs-unsaved) is exercised end-to-end.
+    7. Narrow-region diffs (multibuffer-views A.5,
+       deferred): each `:narrow` mints a synthetic
+       `BufferId` over a character-precise range; diffing
+       two narrows is a two-pane diff with no diff-layer
+       changes required. No test here (narrow not landed
+       yet), but the lifecycle invariant in this slice is
+       what makes the future composition free.
+
+    **Landed shape:** the bridge lives *on* `DiffSubsystem`
+    (not on `Editor` with a separate wiring step) because
+    `DiffSubsystem::default()` is the only spot that can
+    keep "subsystem owns a bridge" invariant correct under
+    `Editor::default()`-style construction. The earlier
+    draft used a `DiffModeBridgeHook` trait + `Option` slot
+    + `set_mode_bridge` boot wiring — dropped during
+    integration when tests showed `Editor::default()` would
+    silently bypass the wire-up and leave the subsystem
+    bridgeless. Subsystem-as-owner removes the failure
+    mode entirely.
+
+    562 host tests green (+16 new D.5.a tests: 9 bridge
+    refcount + 7 dispatch integration covering inline,
+    two-pane, `:diffoff`, doc-close auto-drop, two
+    independent sessions, refcount-correct shared buffer,
+    scratch-to-scratch). Workspace green. New files:
+    `crates/lattice-host/src/diff_mode.rs`. Touched:
+    `crates/lattice-host/src/{diff_subsystem.rs,
+    editor_boot.rs, dispatch.rs, lib.rs}` +
+    `crates/lattice-host/benches/diff_subsystem.rs`. Arch
+    doc: `docs/dev/architecture/diff-system.md` §3.4.7
+    spells out the invariant.
+- 🗒 **D.5.b** — `do` (diff-get). Register `do` in the
+    diff-mode keymap layer; resolve hunk-under-cursor on
+    current side; replace `ranges[1]` with the peer's text
+    for `ranges[other]` via `apply_edit_blocking`. Edit
+    cascades through the standard pipeline → debounce →
+    recompute.
+- 🗒 **D.5.c** — `dp` (diff-put). Mirror of `do`. File-on-disk
+    inline baseline → clear error, no silent failure.
 - 🗒 **D.6** — Three-way merge: conflict regions, `:diffput
   <bufnr>` / `:diffget <bufnr>`, `:diff-accept` /
   `:diff-reject`.

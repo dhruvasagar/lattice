@@ -149,6 +149,7 @@ fn bench_routing_fanout(c: &mut Criterion) {
 				baseline: Arc::new(StaticBaseline::new(Rope::new())),
 				current: Arc::new(BufferCurrentSource::new(Arc::clone(&provider), id)),
 				watch: vec![shared],
+				participants: vec![],
 			};
 			sub.register_with_sources(id, DiffAlgorithm::Histogram, desc);
 		}
@@ -186,6 +187,7 @@ fn bench_routing_isolated_lookup(c: &mut Criterion) {
 			baseline: Arc::new(StaticBaseline::new(Rope::new())),
 			current: Arc::new(BufferCurrentSource::new(Arc::clone(&provider), session_one)),
 			watch: vec![poked],
+			participants: vec![],
 		};
 		sub.register_with_sources(session_one, DiffAlgorithm::Histogram, desc_one);
 		for i in 2..=n {
@@ -195,6 +197,7 @@ fn bench_routing_isolated_lookup(c: &mut Criterion) {
 				baseline: Arc::new(StaticBaseline::new(Rope::new())),
 				current: Arc::new(BufferCurrentSource::new(Arc::clone(&provider), id)),
 				watch: vec![sibling],
+				participants: vec![],
 			};
 			sub.register_with_sources(id, DiffAlgorithm::Histogram, desc);
 		}

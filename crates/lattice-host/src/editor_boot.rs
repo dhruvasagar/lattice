@@ -266,6 +266,11 @@ impl Editor {
             // (ReadOnly + NoFile) apply to Terminal buffers.
             lattice_terminal::register_terminal_modes(&mut mr);
             crate::modes::register_buffer_kind_modes(&mut mr);
+            // D.5.a (2026-05-30): `diff-mode` minor — marker bit
+            // consulted by K.1.c per-keystroke lookup so D.5.b/c
+            // `do`/`dp` chords gate on per-buffer diff
+            // participation.
+            crate::diff_mode::register_diff_modes(&mut mr);
             mr
         };
         register_mode_toggle_commands(&mut registry, &mode_registry);
@@ -757,6 +762,11 @@ impl Editor {
         // `tokio::spawn`.
         let diff_subsystem: std::sync::Arc<crate::diff_subsystem::DiffSubsystem> =
             std::sync::Arc::default();
+        // D.5.a (2026-05-30): the subsystem owns its diff-mode
+        // bridge via `Default`. Editor accesses it through
+        // `diff_subsystem.mode_bridge()` during the dispatch
+        // tail (`apply_pending_diff_mode_changes`); no separate
+        // wiring step required.
         let diff_subscription_guard = {
             let _enter = runtime_handle.enter();
             let resolver: std::sync::Arc<

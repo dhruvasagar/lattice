@@ -347,7 +347,21 @@ pub struct DiffDescriptor {
 	pub baseline: Arc<dyn BaselineSource>,
 	pub current: Arc<dyn CurrentSource>,
 	pub watch: Vec<BufferId>,
+	/// D.5.a (2026-05-30): user-visible diff sides that should
+	/// receive `diff-mode` activation while this session is
+	/// registered. Distinct from [`Self::watch`]:
+	/// - `watch` declares edit-event subscriptions.
+	/// - `participants` declares which buffers are user-visible
+	///   diff sides that should get the mode toggle.
+	///
+	/// For buffer-backed sources they coincide; they diverge
+	/// when a baseline source contributes no live buffer
+	/// (file-on-disk inline → `[primary]`; D.7 git baseline
+	/// → `[primary]`). Two-pane is `[baseline, primary]`; D.6
+	/// three-way will be `[doc_a, doc_b, doc_c]`.
+	pub participants: Vec<BufferId>,
 }
+
 
 // ──────────────────────────────────────────────────────────────
 // D.2.c: DocumentBufferResolver
@@ -799,6 +813,11 @@ pub struct DiffSubsystem {
 	secondary_index: Mutex<HashMap<BufferId, BufferId>>,
 	debouncers: Mutex<HashMap<BufferId, Arc<Debouncer>>>,
 	debounce_window: Duration,
+	/// D.5.a (2026-05-30): host-side `diff-mode` lifecycle
+	/// bridge. Created on `Default` so the subsystem is the
+	/// single owner of the bridge identity; the editor accesses
+	/// it via [`Self::mode_bridge`] for the dispatch-tail drain.
+	mode_bridge: Arc<crate::diff_mode::DiffModeBridge>,
 }
 
 impl Default for DiffSubsystem {
@@ -810,6 +829,7 @@ impl Default for DiffSubsystem {
 			secondary_index: Mutex::new(HashMap::new()),
 			debouncers: Mutex::new(HashMap::new()),
 			debounce_window: DEFAULT_DEBOUNCE_WINDOW,
+			mode_bridge: Arc::new(crate::diff_mode::DiffModeBridge::new()),
 		}
 	}
 }
@@ -833,6 +853,14 @@ impl DiffSubsystem {
 
 	pub fn debounce_window(&self) -> Duration {
 		self.debounce_window
+	}
+
+	/// D.5.a (2026-05-30): access the diff-mode lifecycle
+	/// bridge so the editor's dispatch tail can drain queued
+	/// activations. The subsystem owns the bridge identity; the
+	/// returned `Arc` is a cheap reference clone, not a take.
+	pub fn mode_bridge(&self) -> Arc<crate::diff_mode::DiffModeBridge> {
+		Arc::clone(&self.mode_bridge)
 	}
 
 	/// Register a session for `buffer_id` with no sources. The
@@ -911,6 +939,16 @@ impl DiffSubsystem {
 				.entry(buffer_id)
 				.or_insert_with(|| Arc::new(Debouncer::new(self.debounce_window)));
 		}
+		// D.5.a (2026-05-30): notify the diff-mode bridge after
+		// the session is durable in the registry. The bridge
+		// queues activation changes; the dispatch tail drains
+		// and applies them via `mode_registry.activate_minor`.
+		// Re-register paths (e.g. switching baseline source)
+		// flow through here too — the bridge's idempotent
+		// scrub-then-re-add on the same `session_key` keeps
+		// refcounts correct.
+		self.mode_bridge
+			.note_session_opened(buffer_id, &descriptor.participants);
 		session
 	}
 
@@ -1002,6 +1040,14 @@ impl DiffSubsystem {
 			.lock()
 			.expect("DiffSubsystem mutex poisoned")
 			.remove(&buffer_id);
+		// D.5.a (2026-05-30): notify the bridge AFTER all
+		// registry state for this session has been torn down.
+		// Bridge consults its own per-session record (set at
+		// open) so it doesn't depend on the descriptor.
+		// `note_session_closed` on an unknown key is a no-op,
+		// so calling unconditionally is safe even when
+		// `removed` is false (double-drop / drop-before-open).
+		self.mode_bridge.note_session_closed(buffer_id);
 		removed
 	}
 
@@ -1752,6 +1798,9 @@ mod tests {
 				current_buf,
 			)),
 			watch: vec![baseline_buf, current_buf],
+			// D.5.a: tests don't exercise the mode bridge,
+			// so participants stays empty by default.
+			participants: vec![],
 		}
 	}
 
@@ -1808,11 +1857,13 @@ mod tests {
 			baseline: Arc::new(BufferBaseline::new(Arc::clone(&provider), bid(10))),
 			current: Arc::new(BufferCurrentSource::new(Arc::clone(&provider), bid(1))),
 			watch: vec![bid(10), bid(1)],
+			participants: vec![],
 		};
 		let desc_b = DiffDescriptor {
 			baseline: Arc::new(BufferBaseline::new(Arc::clone(&provider), bid(10))),
 			current: Arc::new(BufferCurrentSource::new(Arc::clone(&provider), bid(2))),
 			watch: vec![bid(10), bid(2)],
+			participants: vec![],
 		};
 		sub.register_with_sources(bid(1), DiffAlgorithm::Histogram, desc_a);
 		sub.register_with_sources(bid(2), DiffAlgorithm::Histogram, desc_b);
@@ -1846,11 +1897,13 @@ mod tests {
 			baseline: Arc::new(BufferBaseline::new(Arc::clone(&provider), bid(10))),
 			current: Arc::new(BufferCurrentSource::new(Arc::clone(&provider), bid(1))),
 			watch: vec![bid(10), bid(1)],
+			participants: vec![],
 		};
 		let desc_b = DiffDescriptor {
 			baseline: Arc::new(BufferBaseline::new(Arc::clone(&provider), bid(10))),
 			current: Arc::new(BufferCurrentSource::new(Arc::clone(&provider), bid(2))),
 			watch: vec![bid(10), bid(2)],
+			participants: vec![],
 		};
 		sub.register_with_sources(bid(1), DiffAlgorithm::Histogram, desc_a);
 		sub.register_with_sources(bid(2), DiffAlgorithm::Histogram, desc_b);
@@ -1869,6 +1922,7 @@ mod tests {
 			baseline: Arc::new(StaticBaseline::new(Rope::from(""))),
 			current: Arc::new(BufferCurrentSource::new(Arc::clone(&provider), bid(1))),
 			watch: vec![bid(10), bid(1)],
+			participants: vec![],
 		};
 		sub.register_with_sources(bid(1), DiffAlgorithm::Histogram, desc_a);
 		assert_eq!(sub.watchers_of(bid(10)), vec![bid(1)]);
@@ -1877,6 +1931,7 @@ mod tests {
 			baseline: Arc::new(StaticBaseline::new(Rope::from(""))),
 			current: Arc::new(BufferCurrentSource::new(Arc::clone(&provider), bid(1))),
 			watch: vec![bid(1)],
+			participants: vec![],
 		};
 		sub.register_with_sources(bid(1), DiffAlgorithm::Histogram, desc_b);
 		assert!(sub.watchers_of(bid(10)).is_empty());

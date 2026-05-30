@@ -421,6 +421,64 @@ inverse index lives on the subsystem, not on App; the bus
 subscription is owned by the subsystem; nothing about the
 routing leaks into dispatch.
 
+#### 3.4.7 `diff-mode` lifecycle invariant — D.5.a
+
+A buffer participates in any `DiffSession` ⟺ `diff-mode` is
+active on that buffer. The toggle lives inside the subsystem
+(`register_with_sources` / `drop_session`) so every present
+and future `:diff*` ex-command (`:diff <buf>`, `:diffthis`,
+`:diffsplit`, future `:Gdiff` D.7, future `:diff-accept` /
+`:diff-reject` D.6) and the doc-close auto-drop inherit the
+mode toggle without each call site repeating it.
+
+`DiffDescriptor` carries `participants: SmallVec<[BufferId; 3]>`
+distinct from `watch`. `watch` declares edit-event
+subscriptions; `participants` declares user-visible diff
+sides that should get the mode. For buffer-backed sources
+they coincide; they diverge when a baseline source contributes
+no live buffer (file-on-disk inline → `participants =
+[primary]`, two-pane → `[baseline, primary]`, D.6 three-way
+→ `[doc_a, doc_b, doc_c]`).
+
+The subsystem calls into a `DiffModeBridge` host service
+which **ref-counts diff-mode per buffer**
+(`HashMap<BufferId, SmallVec<session_keys>>`): activation
+appends a session key to the buffer's bucket; deactivation
+removes it; the bridge flips `ActiveModes.diff-mode` off only
+when the bucket empties. Refcounting guards against the case
+where the same buffer participates in two sessions
+simultaneously (today: a baseline-side buffer staged into a
+second session; D.6: a `MergeBase` participant also diffed
+against working tree). Cheaper than tightening rejection
+checks across multiple ex-commands.
+
+Two simultaneous independent sessions (file1↔file2,
+file3↔file4) stay fully decoupled at every shared-state
+layer: subsystem registry keyed by primary `BufferId`, watch
+list bucketed per `BufferId`, pane-group `(pane, buffer)`
+collision check (D.4.a), per-`BufferId` virtual-row provider
+registry (D.4.d.2.1.a), per-buffer `ActiveModes`. The
+`MinorMode(ModeId::new("diff-mode"))` keymap layer is a
+single global table (K.1.b) — that's correct because the
+operator implementation is shared while the operator's
+target session and peer buffer are resolved at execution
+time from `lookup_session_for(active_buffer)`.
+
+Scratch / unsaved buffers are full citizens by construction:
+the diff layer takes no `Path` dependency (`§3.4.1`'s
+`BaselineSource::snapshot → Rope` and
+`BufferTextProvider::buffer_rope(BufferId) → Rope` are both
+path-free), so `:diff scratchA scratchB` routes through the
+same two-pane path and gets diff-mode activated on both via
+the bridge.
+
+Narrow-region diffs (multibuffer-views A.5, deferred):
+`:narrow` mints a synthetic `BufferId` over a character-
+precise range, so diffing two narrows (over different files
+or different ranges of the same file) is a two-pane diff
+with no diff-layer changes required — the lifecycle
+invariant above is what makes that composition free.
+
 ## 4. The engine
 
 `imara-diff` is the Rust diff library used by `gitoxide`.

@@ -2394,14 +2394,19 @@ shared with multibuffer-views and post-v1 inlay hints.
     group floor + identity-bound cost both must fit
     inside the budget). Closes D.4 (side-by-side two-way
     diff fully wired end-to-end).
-- 🚧 **K** — Keymap architecture refresh (in service of D.5,
-  surfaced 2026-05-30). Establishes mode-scoped keymap
-  layers as the architectural substrate for D.5's
-  `diff-mode` chords and the broader emacs-style
-  composability story (user-config bindings can target a
-  specific mode; chords are scoped to that mode's
-  lifecycle so the same chord can mean different things
-  in different modes without collision).
+- ✅ **K** (2026-05-30) — Keymap architecture refresh
+  closed. Established mode-scoped keymap layers as the
+  architectural substrate for D.5's `diff-mode` chords
+  and the broader emacs-style composability story (user-
+  config bindings can target a specific mode; chords are
+  scoped to that mode's lifecycle so the same chord can
+  mean different things in different modes without
+  collision). All four sub-slices landed: K.1.a (ActiveModes
+  re-promotion semantics), K.1.b (`MinorMode(ModeId)`
+  type rename), K.1.c (per-keystroke active-buffer mode
+  filter via `lookup_with_context`), K.1.d (`:describe-key`
+  runtime registry section with active/inactive
+  annotation).
   - ✅ **K.1.a** (2026-05-30) — `ActiveModes::push_minor`
     moves-to-end on re-activation. Pre-K.1.a: `push_minor`
     was a no-op when the minor was already present, so the
@@ -2499,12 +2504,35 @@ shared with multibuffer-views and post-v1 inlay hints.
     matching emacs's `(define-key foo-mode-map …)`
     semantics. The pre-K.1.c order survives for legacy
     `lookup` callers.
-  - 🗒 **K.1.d** — `:describe-key` revisions: layer label
-    from ModeId, "Active" line based on active buffer's
-    mode set, "Inactive-but-registered" listing for
-    chords with no active binding, "Shadows" line for
-    active bindings with lower-priority registered
-    bindings.
+  - ✅ **K.1.d** (2026-05-30) — `:describe-key` runtime
+    registry section. `KeymapHandle::enumerate_chord_bindings(
+    mode, chords)` walks every layer under the registry
+    mutex (telemetry path, not hot) and returns every
+    `(layer, BoundCommand)` pair where the chord
+    terminates as Bound. `build_describe_key_content`
+    appends a new "Runtime registry:" section grouping
+    hits per `BindingMode` (`normal` / `insert` / `visual`
+    / `replace`), with each MinorMode entry marked
+    `[active]` or `[inactive — mode not active on this
+    buffer]` based on `active_modes[document_buffer_id]`.
+    Surfaces the visibility story the user demanded: ask
+    `:describe-key do`, get an immediate answer to "why
+    doesn't this fire here? oh, diff-mode isn't active
+    on this buffer." Static catalog output (from
+    `crate::keymap::lookup`) stays unchanged at the top
+    of the response; the runtime section is appended
+    below.
+    Minimum scope for K.1.d v1: layer label + active
+    annotation per binding, source. Richer formatting
+    (full Active / Shadows section diagrams, per-mode
+    headers like "Bound to: …") is deferred — the
+    information is there, the prose layout can iterate.
+    **1 new test** in `dispatch::tests`
+    (`describe_key_runtime_registry_marks_inactive_minor_mode_bindings`).
+    546 host tests green (+1); workspace build green.
+    Closes K.1; D.5's diff-mode dispatch wires into the
+    new substrate without further keymap-architecture
+    work.
 - 🗒 **D.5** — Hunk transfer operators `do` / `dp` via
   `CommandRegistry`. After K.1: `do`/`dp` register in the
   diff-mode `MinorMode(ModeId)` layer, not globally.

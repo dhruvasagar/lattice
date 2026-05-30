@@ -20170,8 +20170,87 @@ impl Editor {
                 }
             }
         }
+
+        // K.1.d (2026-05-30): runtime-registry section.
+        // Surfaces minor-mode and runtime-installed bindings
+        // that the static catalog above doesn't know about,
+        // annotated with whether each MinorMode binding is
+        // currently active given the active buffer's mode
+        // set. Lets the user answer "why doesn't `do` work
+        // here? oh, diff-mode isn't active on this buffer."
+        self.append_runtime_chord_bindings_section(chord, &mut lines);
+
         lattice_help::HelpContent::from_lines(format!("describe-key {chord}"), lines)
             .with_markdown_syntax(self.lang_registry.clone())
+    }
+
+    /// K.1.d (2026-05-30): append the runtime-registry
+    /// section to `:describe-key`'s output. Walks every
+    /// runtime-installed binding for `chord` across all
+    /// `BindingMode`s, marking each MinorMode binding as
+    /// `[active]` or `[inactive]` based on the active
+    /// buffer's `active_modes`. Other layer kinds (Builtin
+    /// catalog, User, Buffer) print without the active
+    /// annotation (they're always-on).
+    ///
+    /// Best-effort parse: a chord string that doesn't
+    /// parse via `chord::parse_chord_sequence` skips the
+    /// section silently (the user already got the static-
+    /// catalog hits above).
+    fn append_runtime_chord_bindings_section(
+        &self,
+        chord: &str,
+        lines: &mut Vec<String>,
+    ) {
+        let Ok(parsed) = crate::chord::parse_chord_sequence(chord) else {
+            return;
+        };
+        // Collect per-mode hits across the four common
+        // dispatch modes. Could enumerate all BindingMode
+        // variants but four is what describe-key shows in
+        // practice.
+        let modes = [
+            ("normal", crate::keymap::BindingMode::Normal),
+            ("insert", crate::keymap::BindingMode::Insert),
+            ("visual", crate::keymap::BindingMode::Visual),
+            ("replace", crate::keymap::BindingMode::Replace),
+        ];
+        let active_minors: Vec<lattice_mode::mode::ModeId> = self
+            .active_modes
+            .get(&self.document_buffer_id)
+            .map(|m| m.minors().to_vec())
+            .unwrap_or_default();
+        let mut any_runtime_hit = false;
+        for (mode_label, mode) in modes {
+            let hits = self.keymap.enumerate_chord_bindings(mode, &parsed);
+            if hits.is_empty() {
+                continue;
+            }
+            if !any_runtime_hit {
+                lines.push(String::new());
+                lines.push("Runtime registry:".to_string());
+                any_runtime_hit = true;
+            }
+            lines.push(String::new());
+            lines.push(format!("  [{mode_label} mode]"));
+            for (layer, bound) in hits {
+                let active_marker = match layer {
+                    crate::keymap_trie::KeymapLayer::MinorMode(mode_id) => {
+                        if active_minors.contains(&mode_id) {
+                            " [active]"
+                        } else {
+                            " [inactive — mode not active on this buffer]"
+                        }
+                    }
+                    _ => "",
+                };
+                lines.push(format!(
+                    "    {layer:?} → {:?}{active_marker}",
+                    bound.command.command,
+                ));
+                lines.push(format!("      source: {:?}", bound.source));
+            }
+        }
     }
 
     /// 5.5.F.2: build the `:list-keymap` content. Groups every
@@ -24438,6 +24517,62 @@ mod tests {
         sub.drop_session(primary);
         assert!(sub.lookup_session_for(primary).is_none());
         assert!(sub.lookup_session_for(secondary).is_none());
+    }
+
+    // ── K.1.d: describe-key runtime registry section ──────────
+
+    /// K.1.d: `:describe-key` includes a "Runtime registry"
+    /// section listing minor-mode bindings with their active
+    /// status. When the relevant mode is active on the active
+    /// buffer, the binding shows `[active]`; otherwise
+    /// `[inactive — mode not active on this buffer]`.
+    /// Validates the visibility story the user cares about:
+    /// `describe-key` answers "why doesn't `do` work here?"
+    /// by surfacing the inactive mode.
+    #[test]
+    fn describe_key_runtime_registry_marks_inactive_minor_mode_bindings() {
+        use crate::keymap_registry::PushLayerKind;
+        use crate::keymap_trie::{BoundCommand, ChordPattern, KeymapLayer, KeymapTrie};
+        use lattice_grammar::CommandInvocation;
+        use lattice_grammar::SourceLocation;
+        use lattice_mode::mode::ModeId;
+        use lattice_protocol::ids::CommandId;
+        use std::collections::HashMap;
+        use std::sync::Arc;
+
+        let editor = crate::editor::Editor::default();
+        let diff_mode = ModeId::new("diff-mode");
+
+        // Push diff-mode with `do` → CommandId(0xD1FF).
+        let mut bindings = HashMap::new();
+        let mut trie = KeymapTrie::new();
+        trie.insert(
+            &[ChordPattern::Literal(crate::chord::KeyChord::char('d')),
+              ChordPattern::Literal(crate::chord::KeyChord::char('o'))],
+            Arc::new(BoundCommand::from_invocation(
+                CommandInvocation::of(CommandId::new(0xD1FF)),
+                SourceLocation::synthetic("test:diff-mode.do"),
+                KeymapLayer::MinorMode(diff_mode),
+            )),
+        );
+        bindings.insert(crate::keymap::BindingMode::Normal, trie);
+        editor.keymap.push_layer(
+            PushLayerKind::MinorMode(diff_mode),
+            "diff-mode",
+            bindings,
+        );
+
+        // Active buffer does NOT have diff-mode active.
+        let content = editor.build_describe_key_content("do");
+        let body = content.lines().join("\n");
+        assert!(
+            body.contains("Runtime registry:"),
+            "describe-key must include the runtime registry section, got:\n{body}"
+        );
+        assert!(
+            body.contains("[inactive"),
+            "minor-mode binding must be marked [inactive] when the mode isn't active, got:\n{body}"
+        );
     }
 
     // ── D.4.d.3.b: :diffsplit <file> ──────────────────────────

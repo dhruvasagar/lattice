@@ -604,6 +604,33 @@ impl KeymapHandle {
             .sum()
     }
 
+    /// K.1.d (2026-05-30): enumerate every binding registered
+    /// for `chords` in `mode` across all layers, returning the
+    /// layer + binding pair for each. Telemetry path (drives
+    /// `:describe-key`'s mode-aware section); not on the
+    /// keystroke hot path. Order: layer-priority ascending
+    /// (Builtin first, then MajorMode, then MinorMode layers
+    /// in ModeId-alphabetical order, then User, then Buffer).
+    /// Callers cross-reference the layers' MinorMode entries
+    /// against the active buffer's `ActiveModes` to mark
+    /// which would actually fire right now.
+    pub fn enumerate_chord_bindings(
+        &self,
+        mode: BindingMode,
+        chords: &[KeyChord],
+    ) -> Vec<(KeymapLayer, Arc<BoundCommand>)> {
+        let inner = self.registry.inner.lock().expect("registry mutex");
+        let mut hits = Vec::new();
+        for layer in &inner.layers {
+            if let Some(trie) = layer.modes.get(&mode) {
+                if let LookupResult::Bound { command, .. } = trie.lookup(chords) {
+                    hits.push((layer.layer, command));
+                }
+            }
+        }
+        hits
+    }
+
     /// Human-readable label for the layer carrying `id`, if any.
     /// Drives `:describe-key`'s provenance row ("user, init.rs:42";
     /// "minor-mode:completion-popup"). Telemetry path; not on the

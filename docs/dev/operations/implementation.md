@@ -2394,8 +2394,56 @@ shared with multibuffer-views and post-v1 inlay hints.
     group floor + identity-bound cost both must fit
     inside the budget). Closes D.4 (side-by-side two-way
     diff fully wired end-to-end).
+- 🚧 **K** — Keymap architecture refresh (in service of D.5,
+  surfaced 2026-05-30). Establishes mode-scoped keymap
+  layers as the architectural substrate for D.5's
+  `diff-mode` chords and the broader emacs-style
+  composability story (user-config bindings can target a
+  specific mode; chords are scoped to that mode's
+  lifecycle so the same chord can mean different things
+  in different modes without collision).
+  - ✅ **K.1.a** (2026-05-30) — `ActiveModes::push_minor`
+    moves-to-end on re-activation. Pre-K.1.a: `push_minor`
+    was a no-op when the minor was already present, so the
+    "later activation wins" claim in the active.rs
+    doc-comment (and `mode-architecture.md` §6.2) didn't
+    hold under re-activation — a mode re-activated after
+    siblings stayed at its original position. Post-K.1.a:
+    re-activation removes the prior entry and pushes to
+    the end, re-asserting the mode as most-recent.
+    Matches emacs's `minor-mode-map-alist` re-promotion
+    semantics. Load-bearing for K.1.c (per-keystroke
+    minor-mode merge in active-buffer reverse activation
+    order). **1 new test** in `active::tests`
+    (`push_minor_moves_to_end_on_reactivation`); 79
+    lattice-mode lib tests green. Also fixed pre-existing
+    test-build gap: `lattice-mode`'s dev-dep `tokio`
+    needed the `time` feature for the cascade-rollback
+    tests at `registry.rs:1436` to compile.
+  - 🗒 **K.1.b** — `KeymapLayer::MinorMode(u32)` →
+    `KeymapLayer::MinorMode(ModeId)`. Rename
+    `push_layer`/`pop_layer`/`OwnedLayer` capability to
+    key off `ModeId` directly; per-layer label derives
+    from the mode id. Updates all minor-mode call sites
+    (`completion`, `help`, `hover`, `terminal_insert_mode`,
+    snippet test layers, plugin tests).
+  - 🗒 **K.1.c** — Per-keystroke merge filters minor-mode
+    layers by `active_modes[active_buffer].iter().rev()`.
+    Last-activated-wins. Drops the global pre-merge for
+    minor-mode layers; keeps it for `Builtin` /
+    `MajorMode` / `User` / `Buffer`. Per-tick fold path
+    (α from the design discussion).
+  - 🗒 **K.1.d** — `:describe-key` revisions: layer label
+    from ModeId, "Active" line based on active buffer's
+    mode set, "Inactive-but-registered" listing for
+    chords with no active binding, "Shadows" line for
+    active bindings with lower-priority registered
+    bindings.
 - 🗒 **D.5** — Hunk transfer operators `do` / `dp` via
-  `CommandRegistry`.
+  `CommandRegistry`. After K.1: `do`/`dp` register in the
+  diff-mode `MinorMode(ModeId)` layer, not globally.
+  Carved into D.5.a (mode lifecycle), D.5.b (`do`),
+  D.5.c (`dp`).
 - 🗒 **D.6** — Three-way merge: conflict regions, `:diffput
   <bufnr>` / `:diffget <bufnr>`, `:diff-accept` /
   `:diff-reject`.

@@ -47,8 +47,10 @@ linkme = { workspace = true }
 # M-async.2: registry tests are `#[tokio::test]` so they can
 # `.await` on the bus channel that the spawned lifecycle task
 # publishes to. `tokio::sync::mpsc` for the channel; the
-# `macros` feature for `#[tokio::test]`.
-tokio = { workspace = true }
+# `macros` feature for `#[tokio::test]`; `rt` for the test
+# runtime; `time` for `tokio::time::sleep` used by the cascade
+# rollback tests (registry.rs:1436).
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 
 [lints]
 workspace = true

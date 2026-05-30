@@ -87,11 +87,20 @@ impl ActiveModes {
 
     /// Append a minor in activation order. Registry calls this
     /// AFTER the minor's `on_activate` ran successfully.
-    /// No-op if the minor is already active (idempotent).
+    ///
+    /// **Move-to-end on re-activation** (K.1.a, 2026-05-30):
+    /// if the minor was already active, it's moved to the end
+    /// of the list rather than left in place. This makes
+    /// re-activation re-assert the mode as most-recent, which
+    /// is the source of truth for both option-resolution
+    /// tie-breaking (per `mode-architecture.md` §6.2) and the
+    /// per-buffer keymap layer ordering (K.1.c). Matches
+    /// emacs's `minor-mode-map-alist` re-promotion semantics.
     pub(crate) fn push_minor(&mut self, mode: ModeId) {
-        if !self.has_minor(mode) {
-            self.minors.push(mode);
+        if let Some(idx) = self.minors.iter().position(|&m| m == mode) {
+            self.minors.remove(idx);
         }
+        self.minors.push(mode);
     }
 
     /// Remove a minor by id. Registry calls this AFTER the
@@ -148,6 +157,26 @@ mod tests {
         a.push_minor(m);
         a.push_minor(m);
         assert_eq!(a.minors(), &[m]);
+    }
+
+    /// K.1.a (2026-05-30): re-activating a minor that's
+    /// already active moves it to the end (most-recent),
+    /// matching emacs's `minor-mode-map-alist` re-promotion.
+    /// This is what makes "later activation wins" semantics
+    /// hold under re-activation, not just first-activation.
+    #[test]
+    fn push_minor_moves_to_end_on_reactivation() {
+        let mut a = ActiveModes::new();
+        let one = ModeId::new("a-mode");
+        let two = ModeId::new("b-mode");
+        let three = ModeId::new("c-mode");
+        a.push_minor(one);
+        a.push_minor(two);
+        a.push_minor(three);
+        // Re-activate `one` — should move from index 0 to
+        // the end without otherwise disturbing the order.
+        a.push_minor(one);
+        assert_eq!(a.minors(), &[two, three, one]);
     }
 
     #[test]

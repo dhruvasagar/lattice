@@ -1799,6 +1799,16 @@ pub struct TranslatorRenderState {
     pub builtins: lattice_grammar::builtins::Builtins,
     pub keymap: crate::keymap_registry::KeymapHandle,
     pub partial_chord: std::sync::Arc<[crate::chord::KeyChord]>,
+    /// D.5.b (2026-05-30): active buffer's minor modes,
+    /// snapshotted at publish time and threaded into
+    /// `TranslateContext` so chord bindings registered against
+    /// `MinorMode(ModeId)` layers gate on per-buffer
+    /// activation (K.1.c). Empty in headless / mid-boot when
+    /// no buffer has been activated yet. One Arc bump per
+    /// publish; the slice is typically 0–3 entries
+    /// (diff-mode, completion-popup-mode,
+    /// active-snippet-mode in the busiest realistic case).
+    pub active_minor_modes: std::sync::Arc<[lattice_mode::ModeId]>,
 }
 
 /// Diagnostics — the proof-of-life sub-state for Slice 3a.

@@ -194,6 +194,12 @@ pub struct ActionIds {
     /// Slice 8.i.4.e: active-snippet overlay actions
     /// (registered into a minor-mode layer pushed when a
     /// snippet activates; popped on exit).
+    /// D.5.b (2026-05-30): `do` chord under
+    /// `MinorMode(diff-mode)`. Resolves the hunk under cursor
+    /// on the current side and rewrites it to match the
+    /// baseline. Per K.1.c the binding only fires on buffers
+    /// where diff-mode is in `ActiveModes.minors()`.
+    pub diff_get: CommandId,
     pub snippet_next_placeholder: CommandId,
     pub snippet_prev_placeholder: CommandId,
     pub snippet_leave: CommandId,
@@ -974,6 +980,12 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "Completion-popup `<C-Space>`: clear the active source filter.",
             AppEffect::CompletionFilterClear,
         ),
+        diff_get: register_simple(
+            registry,
+            "action:diff-get",
+            "diff-mode `do`: rewrite the current side's hunk to match the baseline.",
+            AppEffect::DiffGet,
+        ),
         snippet_next_placeholder: register_simple(
             registry,
             "action:snippet-next-placeholder",
@@ -1298,6 +1310,7 @@ mod tests {
                 "action:snippet-prev-placeholder",
             ),
             (ids.snippet_leave, "action:snippet-leave"),
+            (ids.diff_get, "action:diff-get"),
         ] {
             let spec = registry
                 .lookup(id)

@@ -3,6 +3,7 @@
 - [X] Terminal
 - [ ] ligatures
 - [ ] diffing
+- [ ] Narrow mode
 - [ ] Theme System (also with a theme picker with preview)
 - [ ] Quickfix / Location lists
 - [ ] :! shell execution
@@ -15,12 +16,14 @@
 - [ ] compilation-mode
 - [ ] surround operator
 - [ ] argument operator
+- [ ] Search operators
 - [ ] borderless gui windows
 - [ ] DAP
 - [X] Picker to add <C-s>, <C-v>, <C-t> to open file under cursor in a
   split, vertical split or tab. This will override
 
 * Plugins
+- [ ] plugin manager
 - [ ] project.el
 - [ ] Claude Code IDE
 - [ ] Org Mode

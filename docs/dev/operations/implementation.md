@@ -2637,12 +2637,93 @@ shared with multibuffer-views and post-v1 inlay hints.
     `crates/lattice-host/benches/diff_subsystem.rs`. Arch
     doc: `docs/dev/architecture/diff-system.md` §3.4.7
     spells out the invariant.
-- 🗒 **D.5.b** — `do` (diff-get). Register `do` in the
-    diff-mode keymap layer; resolve hunk-under-cursor on
-    current side; replace `ranges[1]` with the peer's text
-    for `ranges[other]` via `apply_edit_blocking`. Edit
-    cascades through the standard pipeline → debounce →
-    recompute.
+- ✅ **D.5.b** (2026-05-30) — `do` (diff-get) operator.
+    The diff-mode `do` chord rewrites the current side's
+    hunk to match the baseline; the edit cascades through
+    the standard `apply_edit_blocking` → debounce →
+    recompute pipeline so the hunk vanishes on the next
+    publish. Wiring shape:
+
+    1. `AppEffect::DiffGet` (lattice-grammar) + `Action::DiffGet`
+       (lattice-host) join the unified command surface.
+       `ActionIds::diff_get` is registered as
+       `action:diff-get` via `register_simple` and listed in
+       the verification table. Translation
+       (`AppEffect::DiffGet → Action::DiffGet`) and dispatch
+       (`Action::DiffGet → editor.do_diff_get()`) match the
+       SnippetNext / OpenFoldAtCursor pattern exactly — no
+       new dispatch machinery.
+    2. `crate::diff::mode::diff_mode_layer_bindings(actions)`
+       builds the `{ Normal: trie{ "do" → diff_get } }` map.
+       `editor_boot` pushes this once under
+       `PushLayerKind::MinorMode(diff-mode)`; K.1.c's
+       per-keystroke `active_minor_modes` filter (already
+       plumbed through `RenderState → TranslateContext` for
+       this slice) handles the per-buffer gating so the
+       chord is invisible on buffers without `diff-mode`
+       active. Push-once-at-boot, not push/pop on
+       activation — K.1.c is the per-buffer responsibility.
+    3. `DiffSubsystem::compute_get_edit(buffer_id,
+       cursor_row) → Option<DiffGetPlan>` is pure: look up
+       the session and descriptor, search the published
+       `HunkIndex` for the hunk whose current-side
+       (`ranges[1]`) covers `cursor_row` (Add hunks: range
+       non-empty, half-open coverage; Remove hunks: range
+       empty, exact-anchor match — vim parity), read the
+       baseline rope via `descriptor.baseline.snapshot()`,
+       slice the baseline at `ranges[0]`, return the
+       `(Edit, post_cursor_row)` plan. Three-way `Conflict`
+       hunks are skipped (D.6 lands those). Returns `None`
+       cleanly when no session, no descriptor, no hunk, or
+       cursor outside every hunk.
+    4. `Editor::do_diff_get()` reads `self.cursor.line` for
+       the active buffer, asks the subsystem for a plan,
+       applies the edit via `apply_edit_blocking`, parks the
+       cursor at `plan.post_cursor_row`. On `apply_edit`
+       failure (e.g., undo-stack saturation): debug-log and
+       skip the cursor reposition — never panic on the hot
+       path.
+
+    **Active-minor-modes plumbing (precondition):** the
+    snapshot of the active buffer's `ActiveModes.minors()`
+    is now threaded through `RenderState.translator
+    .active_minor_modes` into `TranslateContext` and into
+    `lookup_normal{,_with_prefix}`. This is what makes the
+    K.1.c per-buffer chord gating real for Normal-mode
+    bindings registered under `MinorMode(_)` layers.
+    Touched: `render_state.rs`, `input.rs`,
+    `keymap_normal.rs`, `dispatch.rs`, plus the UI mirror
+    files (`lattice-ui-tui::{app/dispatch,
+    app/test_helpers, input, keymap_normal, runtime}` and
+    `lattice-ui-gpui::lib`).
+
+    **Tests (12 new):** 9 pure `compute_get_edit` (Change,
+    Add, Remove with anchor match + off-anchor miss, cursor
+    outside hunks, three-way Conflict ignored, no session,
+    no descriptor, first-match among many) + 3 dispatch
+    integration (`do_diff_get` Change end-to-end through
+    `apply_edit_blocking` with cursor reposition, no-session
+    silent no-op, cursor-outside-hunks silent no-op).
+    Per-buffer chord gating is already covered by the
+    K.1.c `lookup_with_context_*` tests in
+    `keymap_registry.rs` which use the `diff-mode` example
+    directly. 574 host + workspace tests green (+12 new).
+
+    Touched: `crates/lattice-grammar/src/app_effect.rs`,
+    `crates/lattice-host/src/{action.rs, actions.rs,
+    diff/mode.rs, diff/subsystem.rs, dispatch.rs,
+    editor_boot.rs}`, `crates/lattice-ui-tui/src/app/
+    dispatch.rs`. Arch doc: design fragment §6.2 already
+    describes `do`/`dp` semantics; no doc edit needed.
+
+    **Spec items deferred to D.5.c or later:** undo
+    composes correctly + macro replay produces identical
+    edit are generic `apply_edit_blocking` properties
+    already exercised by the existing edit-cluster test
+    suite; recompute fires exactly once after the edit
+    settles is verified at the subsystem level by D.2.b/c
+    tests. No new integration test added here to avoid
+    duplicating their coverage.
 - 🗒 **D.5.c** — `dp` (diff-put). Mirror of `do`. File-on-disk
     inline baseline → clear error, no silent failure.
 - 🗒 **D.6** — Three-way merge: conflict regions, `:diffput

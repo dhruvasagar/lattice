@@ -771,6 +771,24 @@ impl Editor {
                 partial_chord: std::sync::Arc::from(
                     self.partial_chord.clone().into_boxed_slice(),
                 ),
+                // D.5.b: per-publish snapshot of the active
+                // buffer's minor-mode set. K.1.c's
+                // `lookup_with_context` reads this so chord
+                // bindings registered against
+                // `MinorMode(ModeId)` layers (D.5.b's
+                // `diff-mode`, future per-mode bindings) only
+                // fire on buffers where the mode is in
+                // `ActiveModes.minors()`. Empty when no
+                // ActiveModes entry exists for the active
+                // buffer (mid-boot / read-only synthetic
+                // buffers without minors).
+                active_minor_modes: self
+                    .active_modes
+                    .get(&self.document_buffer_id)
+                    .map(|am| {
+                        std::sync::Arc::from(am.minors().to_vec().into_boxed_slice())
+                    })
+                    .unwrap_or_else(|| std::sync::Arc::from(Vec::new().into_boxed_slice())),
             }),
             // Slice 3c.final.B (group 6): lifecycle flags + theme.
             // `LifecycleRenderState` is three small Copy fields;
@@ -1742,6 +1760,10 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         // 5.5.G.8: snippet placeholder navigation.
         Action::SnippetNextPlaceholder => editor.do_snippet_next_placeholder(),
         Action::SnippetPrevPlaceholder => editor.do_snippet_prev_placeholder(),
+        // D.5.b: diff-mode `do` — resolve the hunk under
+        // the cursor and rewrite the current side to match
+        // the baseline.
+        Action::DiffGet => editor.do_diff_get(),
         // 5.5.G.9: paste cluster (`p` / `P` / bracketed-paste).
         Action::PasteAfter => editor.do_paste(false),
         Action::PasteBefore => editor.do_paste(true),
@@ -4203,6 +4225,7 @@ impl Editor {
                 out.next_actions.push(Action::SnippetPrevPlaceholder)
             }
             AppEffect::SnippetLeave => out.next_actions.push(Action::SnippetLeave),
+            AppEffect::DiffGet => out.next_actions.push(Action::DiffGet),
         }
     }
 
@@ -13373,6 +13396,56 @@ impl Editor {
         match next {
             Some(group) => self.move_cursor_to_snippet_group(&group),
             None => self.active_snippet = None,
+        }
+    }
+
+    /// D.5.b (2026-05-30): handler for the diff-mode `do`
+    /// (diff-get) chord. Reads the active document's cursor
+    /// row, asks the diff subsystem to compute the get-edit
+    /// for the hunk under the cursor, applies it via the
+    /// standard `apply_edit_blocking` pipeline, and parks the
+    /// cursor at the hunk's start line.
+    ///
+    /// Silent no-op when there's no session, no descriptor,
+    /// no hunk under the cursor, or the matched hunk is a
+    /// three-way `Conflict` — the binding is invisible in
+    /// those states. K.1.c per-buffer gating already ensures
+    /// the chord doesn't fire on buffers without `diff-mode`
+    /// active, so a `compute_get_edit` returning `None` here
+    /// means the buffer *had* diff-mode active but the
+    /// session's hunks haven't published yet (mid-recompute)
+    /// or the cursor sits outside every hunk.
+    pub fn do_diff_get(&mut self) {
+        let buffer_id = self.document_buffer_id;
+        let cursor_row = self.cursor.line;
+        let Some(plan) = self
+            .diff_subsystem
+            .compute_get_edit(buffer_id, cursor_row)
+        else {
+            return;
+        };
+        // The edit cascades through `apply_edit_blocking`
+        // which fires `DocumentChanged` on the bus; the diff
+        // subsystem's debouncer collapses the burst into one
+        // recompute and republishes a fresh `HunkIndex`
+        // (the hunk we just resolved vanishes). On failure
+        // (e.g., undo stack saturation) we log at debug and
+        // skip the cursor reposition.
+        match self.apply_edit_blocking(plan.edit) {
+            Ok(_) => {
+                self.cursor = lattice_protocol::position::Position::new(
+                    plan.post_cursor_row,
+                    0,
+                );
+            }
+            Err(err) => {
+                tracing::debug!(
+                    target: "lattice_host::diff::mode",
+                    ?buffer_id,
+                    ?err,
+                    "diff-mode `do` apply_edit_blocking failed; cursor unchanged"
+                );
+            }
         }
     }
 
@@ -23874,6 +23947,147 @@ mod tests {
             editor.cursor.line, 10,
             "third [c wraps to last hunk (cursor at 3 → prev is hunk 2)"
         );
+    }
+
+    // ── D.5.b: do_diff_get end-to-end ──────────────────────
+
+    /// Boot an editor (with a running document actor) over
+    /// `current_text` and register a `StaticBaseline`-backed
+    /// session over `baseline_text`. Cursor starts at (0, 0).
+    fn boot_editor_with_diff_session(
+        current_text: &str,
+        baseline_text: &str,
+    ) -> Editor {
+        use crate::diff::subsystem::{
+            BufferCurrentSource, BufferTextProvider, DiffDescriptor,
+            StaticBaseline,
+        };
+        use lattice_diff::DiffAlgorithm;
+        use ropey::Rope;
+        use std::sync::Arc;
+
+        // Sources-less BufferTextProvider stub for the
+        // current side — compute_get_edit reads only the
+        // baseline, so a None-returning provider suffices.
+        #[derive(Debug)]
+        struct NoneProvider;
+        impl BufferTextProvider for NoneProvider {
+            fn buffer_rope(&self, _: lattice_core::BufferId) -> Option<Rope> {
+                None
+            }
+        }
+
+        let document = lattice_core::Document::from_text(current_text);
+        let editor = crate::editor::Editor::boot(document);
+        let bid = editor.document_buffer_id;
+        let provider: Arc<dyn BufferTextProvider> = Arc::new(NoneProvider);
+        let desc = DiffDescriptor {
+            baseline: Arc::new(StaticBaseline::new(Rope::from(baseline_text))),
+            current: Arc::new(BufferCurrentSource::new(provider, bid)),
+            watch: vec![bid],
+            participants: vec![bid],
+        };
+        editor.diff_subsystem.register_with_sources(
+            bid,
+            DiffAlgorithm::Histogram,
+            desc,
+        );
+        editor
+    }
+
+    /// `do` on a Change hunk rewrites the current side's
+    /// lines to match the baseline and parks the cursor at
+    /// the hunk start. Verifies the full
+    /// chord → Action → handler → apply_edit_blocking path.
+    #[tokio::test]
+    async fn do_diff_get_change_replaces_current_lines_with_baseline() {
+        use lattice_diff::{Hunk, HunkIndex, HunkKind, LineRange};
+        use smallvec::smallvec;
+
+        // Current: 3 lines; baseline: 3 lines; hunk
+        // replaces current rows 0..3 with baseline rows 0..3.
+        let mut editor = boot_editor_with_diff_session(
+            "current-a\ncurrent-b\ncurrent-c\n",
+            "baseline-a\nbaseline-b\nbaseline-c\n",
+        );
+        let bid = editor.document_buffer_id;
+        let session = editor.diff_subsystem.lookup(bid).unwrap();
+        let rev = session.allocate_revision();
+        session.publish(std::sync::Arc::new(HunkIndex {
+            hunks: vec![Hunk {
+                kind: HunkKind::Change,
+                ranges: smallvec![LineRange::new(0, 3), LineRange::new(0, 3)],
+            }],
+            algorithm: lattice_diff::DiffAlgorithm::Histogram,
+            revision: rev,
+        }));
+
+        // Park cursor in the middle of the hunk.
+        editor.cursor = lattice_protocol::position::Position::new(1, 0);
+        editor.do_diff_get();
+
+        // Buffer now matches the baseline.
+        let snapshot = editor.document.snapshot();
+        let text = snapshot.buffer.to_rope().to_string();
+        assert_eq!(text, "baseline-a\nbaseline-b\nbaseline-c\n");
+        // Cursor parks at the hunk start.
+        assert_eq!(editor.cursor.line, 0);
+        assert_eq!(editor.cursor.byte, 0);
+    }
+
+    /// No session → silent no-op; buffer + cursor unchanged.
+    /// Per-buffer K.1.c filtering would normally suppress
+    /// the chord, but the handler's own no-session guard
+    /// keeps the action a no-op if anything ever invokes it
+    /// directly.
+    #[tokio::test]
+    async fn do_diff_get_no_session_is_silent_noop() {
+        let document = lattice_core::Document::from_text("unchanged\n");
+        let mut editor = crate::editor::Editor::boot(document);
+        let cursor_before = editor.cursor;
+        let snapshot_before =
+            editor.document.snapshot().buffer.to_rope().to_string();
+
+        editor.do_diff_get();
+
+        let snapshot_after =
+            editor.document.snapshot().buffer.to_rope().to_string();
+        assert_eq!(snapshot_before, snapshot_after);
+        assert_eq!(editor.cursor, cursor_before);
+    }
+
+    /// Cursor sitting outside every hunk → silent no-op.
+    /// Matches the pure `compute_get_edit_cursor_outside_hunks`
+    /// test but exercises the handler.
+    #[tokio::test]
+    async fn do_diff_get_cursor_outside_hunks_is_silent_noop() {
+        use lattice_diff::{Hunk, HunkIndex, HunkKind, LineRange};
+        use smallvec::smallvec;
+
+        let mut editor = boot_editor_with_diff_session(
+            "line-0\nline-1\nline-2\n",
+            "alt\n",
+        );
+        let bid = editor.document_buffer_id;
+        let session = editor.diff_subsystem.lookup(bid).unwrap();
+        let rev = session.allocate_revision();
+        session.publish(std::sync::Arc::new(HunkIndex {
+            hunks: vec![Hunk {
+                kind: HunkKind::Change,
+                ranges: smallvec![LineRange::new(0, 1), LineRange::new(10, 11)],
+            }],
+            algorithm: lattice_diff::DiffAlgorithm::Histogram,
+            revision: rev,
+        }));
+
+        editor.cursor = lattice_protocol::position::Position::new(2, 0);
+        let snapshot_before =
+            editor.document.snapshot().buffer.to_rope().to_string();
+        editor.do_diff_get();
+        let snapshot_after =
+            editor.document.snapshot().buffer.to_rope().to_string();
+        assert_eq!(snapshot_before, snapshot_after);
+        assert_eq!(editor.cursor.line, 2);
     }
 
     #[test]

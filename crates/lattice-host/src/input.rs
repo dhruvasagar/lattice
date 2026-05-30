@@ -132,6 +132,19 @@ pub struct TranslateContext<'a> {
     /// AfterJumpMarkExact / AfterRegister / AfterMacroStart /
     /// AfterMacroPlay) all funnel through here now.
     pub partial_chord: &'a [crate::chord::KeyChord],
+    /// D.5.b (2026-05-30): active buffer's minor modes, in
+    /// activation order. Threaded into `lookup_with_context` so
+    /// chord bindings registered under `MinorMode(ModeId)`
+    /// layers only fire on buffers where the corresponding
+    /// mode is in `ActiveModes.minors()`. Empty slice means
+    /// "no minor modes active" — minor-mode bindings are
+    /// invisible to dispatch under that constraint
+    /// (K.1.c fast path). Normal-mode dispatch uses this
+    /// today (`lookup_normal` / `lookup_normal_with_prefix`);
+    /// Visual / Insert / Replace stay on the legacy
+    /// all-registered-modes-active `lookup` until D.5
+    /// extends their grammar.
+    pub active_minor_modes: &'a [lattice_mode::ModeId],
 }
 
 pub fn translate(ctx: TranslateContext<'_>, chord: KeyChord) -> Action {
@@ -368,6 +381,7 @@ pub fn translate(ctx: TranslateContext<'_>, chord: KeyChord) -> Action {
             ctx.recording_macro,
             ctx.keymap,
             ctx.partial_chord,
+            ctx.active_minor_modes,
         ),
         ModalState::Command => translate_command(chord, ctx.completion_open, ctx.chord_capture),
         ModalState::Search(_) => translate_search(chord),
@@ -529,6 +543,7 @@ fn translate_normal(
     recording_macro: bool,
     keymap: &KeymapHandle,
     partial_chord: &[KeyChord],
+    active_minor_modes: &[lattice_mode::ModeId],
 ) -> Action {
     // Slice 8.g.iv: every Normal-mode action flows through
     // `attach_count` so motion / operator counts are baked into
@@ -545,6 +560,7 @@ fn translate_normal(
         recording_macro,
         keymap,
         partial_chord,
+        active_minor_modes,
     );
     crate::keymap_normal::attach_count(action, pending_count, op_count)
 }
@@ -556,6 +572,7 @@ fn compute_normal_action(
     recording_macro: bool,
     keymap: &KeymapHandle,
     partial_chord: &[KeyChord],
+    active_minor_modes: &[lattice_mode::ModeId],
 ) -> Action {
     let _ = builtins;
     // Numeric prefix: `1`-`9` always start (or extend) a count;
@@ -590,7 +607,12 @@ fn compute_normal_action(
     // `Action::None` (which `App::apply` turns into a
     // partial_chord clear).
     if !partial_chord.is_empty() {
-        return crate::keymap_normal::lookup_normal_with_prefix(keymap, partial_chord, &chord);
+        return crate::keymap_normal::lookup_normal_with_prefix(
+            keymap,
+            partial_chord,
+            &chord,
+            active_minor_modes,
+        );
     }
 
     // `q` while a macro is recording stops the recording. The
@@ -611,5 +633,6 @@ fn compute_normal_action(
     // -> trie lookup. `lookup_normal` returns `Some(action)` for
     // any matched chord; on `None` we fall through to
     // `Action::None`.
-    crate::keymap_normal::lookup_normal(keymap, &chord).unwrap_or(Action::None)
+    crate::keymap_normal::lookup_normal(keymap, &chord, active_minor_modes)
+        .unwrap_or(Action::None)
 }

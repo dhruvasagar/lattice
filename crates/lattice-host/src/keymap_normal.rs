@@ -1395,9 +1395,13 @@ fn register_text_object_resolutions(
 /// AfterZ))` so the dispatcher arms the second-key resolver.
 /// Other partial paths still return `None` (no caller produces
 /// them today; future sub-slices can extend this match arm).
-pub fn lookup_normal(handle: &KeymapHandle, chord: &KeyChord) -> Option<Action> {
+pub fn lookup_normal(
+    handle: &KeymapHandle,
+    chord: &KeyChord,
+    active_minor_modes: &[lattice_mode::ModeId],
+) -> Option<Action> {
     let chord = normalize_for_normal_lookup(*chord);
-    match handle.lookup(BindingMode::Normal, &[chord]) {
+    match handle.lookup_with_context(BindingMode::Normal, &[chord], active_minor_modes) {
         LookupResult::Bound { command, captured } => {
             Some(action_from_bound_with_capture(&command, &captured))
         }
@@ -1444,11 +1448,12 @@ pub fn lookup_normal_with_prefix(
     handle: &KeymapHandle,
     prefix: &[KeyChord],
     chord: &KeyChord,
+    active_minor_modes: &[lattice_mode::ModeId],
 ) -> Action {
     let chord = normalize_for_normal_lookup(*chord);
     let mut path: Vec<KeyChord> = prefix.to_vec();
     path.push(chord);
-    match handle.lookup(BindingMode::Normal, &path) {
+    match handle.lookup_with_context(BindingMode::Normal, &path, active_minor_modes) {
         LookupResult::Bound { command, captured } => {
             action_from_bound_with_capture(&command, &captured)
         }

@@ -516,6 +516,15 @@ pub enum AppEffect {
     /// Completion-popup overlay: clear the active source filter
     /// (`<C-Space>`). Restores the mixed merged candidate list.
     CompletionFilterClear,
+    /// D.5.b (2026-05-30): diff-mode `do` (diff-get) operator.
+    /// Resolves the hunk under the cursor on the current side
+    /// of the active `DiffSession` and replaces / inserts /
+    /// deletes the current side to match the baseline for that
+    /// hunk. No-ops when no session, no hunk, or the hunk is a
+    /// three-way `Conflict` (D.6 handles those). Translated to
+    /// `Action::DiffGet` by the translate path; routed to
+    /// `editor.do_diff_get()` from the dispatch path.
+    DiffGet,
 }
 
 #[cfg(test)]

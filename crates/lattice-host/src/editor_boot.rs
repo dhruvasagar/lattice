@@ -830,6 +830,20 @@ impl Editor {
                 crate::keymap_visual::register_visual_bindings(&h, &builtins, &action_ids);
                 crate::keymap_insert::register_insert_bindings(&h, &action_ids);
                 crate::keymap_normal::register_normal_bindings(&h, &builtins, &action_ids);
+                // D.5.b (2026-05-30): push the diff-mode minor
+                // keymap layer once. K.1.c per-keystroke filter
+                // gates the chord so it only fires on buffers
+                // where `diff-mode` is in `ActiveModes.minors()`.
+                // No matching push/pop on activation needed —
+                // the layer stays for the editor's lifetime and
+                // the filter takes the per-buffer responsibility.
+                h.push_layer(
+                    crate::keymap_registry::PushLayerKind::MinorMode(
+                        crate::diff::mode::DiffMode::mode_id(),
+                    ),
+                    "diff-mode",
+                    crate::diff::mode::diff_mode_layer_bindings(&action_ids),
+                );
                 h
             },
             completion_registry,

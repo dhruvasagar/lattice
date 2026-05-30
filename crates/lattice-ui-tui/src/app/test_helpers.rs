@@ -57,6 +57,15 @@ pub(super) fn press(app: &mut App, event: crossterm::event::KeyEvent) {
         terminal_visual_active: ad.terminal_visual_active,
         keymap: &app.editor.keymap,
         partial_chord: &app.editor.partial_chord,
+        // D.5.b: in test, drive from the editor's snapshot —
+        // mirrors the runtime/gpui path so tests cover the
+        // per-buffer chord gating.
+        active_minor_modes: &app
+            .editor
+            .active_modes
+            .get(&app.editor.document_buffer_id)
+            .map(|am| am.minors().to_vec())
+            .unwrap_or_default(),
     };
     let action = crate::input::translate(ctx, event);
     app.apply(action);

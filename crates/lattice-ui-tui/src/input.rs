@@ -196,6 +196,7 @@ mod tests {
             terminal_insert_exit_pending: false,
             terminal_visual_active: false,
             partial_chord: &[],
+            active_minor_modes: &[],
         }
     }
 
@@ -232,6 +233,7 @@ mod tests {
             terminal_insert_exit_pending: false,
             terminal_visual_active: false,
             partial_chord: partial,
+            active_minor_modes: &[],
         }
     }
 
@@ -259,6 +261,7 @@ mod tests {
             terminal_insert_exit_pending: false,
             terminal_visual_active: false,
             partial_chord: &[],
+            active_minor_modes: &[],
         }
     }
 
@@ -293,6 +296,7 @@ mod tests {
             terminal_insert_exit_pending: false,
             terminal_visual_active: false,
             partial_chord: &[],
+            active_minor_modes: &[],
         }
     }
 
@@ -316,6 +320,7 @@ mod tests {
             terminal_insert_exit_pending: false,
             terminal_visual_active: false,
             partial_chord: &[],
+            active_minor_modes: &[],
         }
     }
 
@@ -350,6 +355,7 @@ mod tests {
             terminal_insert_exit_pending: false,
             terminal_visual_active: false,
             partial_chord: partial,
+            active_minor_modes: &[],
         }
     }
 
@@ -373,6 +379,7 @@ mod tests {
             terminal_insert_exit_pending: false,
             terminal_visual_active: false,
             partial_chord: &[],
+            active_minor_modes: &[],
         }
     }
 
@@ -1240,6 +1247,7 @@ mod tests {
             terminal_insert_exit_pending: false,
             terminal_visual_active: false,
             partial_chord: &[],
+            active_minor_modes: &[],
         }
     }
 
@@ -1268,6 +1276,7 @@ mod tests {
             terminal_insert_exit_pending: false,
             terminal_visual_active: false,
             partial_chord: partial,
+            active_minor_modes: &[],
         }
     }
 
@@ -1633,6 +1642,7 @@ mod tests {
                 terminal_insert_exit_pending: false,
             terminal_visual_active: false,
                 partial_chord: &partial_chord,
+                active_minor_modes: &[],
             };
             last = translate(ctx, event);
             // Mirror `App::apply`'s partial_chord lifecycle
@@ -1834,6 +1844,7 @@ mod tests {
             terminal_insert_exit_pending: false,
             terminal_visual_active: false,
             partial_chord: &[],
+            active_minor_modes: &[],
         }
     }
 
@@ -2080,6 +2091,7 @@ mod tests {
             terminal_insert_exit_pending: false,
             terminal_visual_active: false,
             partial_chord: &[],
+            active_minor_modes: &[],
         }
     }
 
@@ -3806,6 +3818,7 @@ mod tests {
             terminal_visual_active: false,
                 keymap: test_keymap(),
                 partial_chord: &[],
+                active_minor_modes: &[],
             };
             let action = translate(ctx, key(KeyCode::Char(c)));
             assert!(
@@ -3840,6 +3853,7 @@ mod tests {
             terminal_visual_active: false,
             keymap: test_keymap(),
             partial_chord: &[],
+            active_minor_modes: &[],
         };
         assert!(matches!(
             translate(ctx, key(KeyCode::Char('i'))),
@@ -3874,6 +3888,7 @@ mod tests {
             terminal_visual_active: false,
             keymap: test_keymap(),
             partial_chord: &[],
+            active_minor_modes: &[],
         };
         match translate(mk_ctx(), key(KeyCode::Char('l'))) {
             Action::TerminalInput(bytes) => assert_eq!(bytes, b"l".to_vec()),
@@ -3912,6 +3927,7 @@ mod tests {
             terminal_visual_active: false,
             keymap: test_keymap(),
             partial_chord: &[],
+            active_minor_modes: &[],
         };
         match translate(ctx, ctrl(KeyCode::Char('c'))) {
             Action::TerminalInput(bytes) => assert_eq!(bytes, vec![0x03]),
@@ -3944,6 +3960,7 @@ mod tests {
             terminal_visual_active: false,
             keymap: test_keymap(),
             partial_chord: &[],
+            active_minor_modes: &[],
         };
         assert!(matches!(
             translate(ctx, ctrl(KeyCode::Char('\\'))),
@@ -3975,6 +3992,7 @@ mod tests {
             terminal_visual_active: false,
             keymap: test_keymap(),
             partial_chord: &[],
+            active_minor_modes: &[],
         };
         assert!(matches!(
             translate(ctx, ctrl(KeyCode::Char('n'))),
@@ -4006,6 +4024,7 @@ mod tests {
             terminal_visual_active: false,
             keymap: test_keymap(),
             partial_chord: &[],
+            active_minor_modes: &[],
         };
         match translate(ctx, key(KeyCode::Char('a'))) {
             Action::TerminalInput(bytes) => assert_eq!(bytes, vec![0x1c, b'a']),
@@ -4036,6 +4055,7 @@ mod tests {
             terminal_visual_active: false,
             keymap: test_keymap(),
             partial_chord: &[],
+            active_minor_modes: &[],
         };
         match translate(ctx, key(KeyCode::Up)) {
             Action::TerminalInput(bytes) => assert_eq!(bytes, b"\x1bOA".to_vec()),
@@ -4069,6 +4089,7 @@ mod tests {
             terminal_visual_active: false,
             keymap: test_keymap(),
             partial_chord: &[],
+            active_minor_modes: &[],
         };
         assert!(matches!(
             translate(ctx, key(KeyCode::Esc)),
@@ -4103,6 +4124,7 @@ mod tests {
             terminal_visual_active: false,
             keymap: test_keymap(),
             partial_chord: &[],
+            active_minor_modes: &[],
         };
         match translate(ctx, key(KeyCode::Esc)) {
             Action::TerminalInput(bytes) => assert_eq!(bytes, vec![0x1b]),

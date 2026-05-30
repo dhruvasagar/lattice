@@ -43,6 +43,26 @@ mod tests {
         crate::chord::from_event(&raw).expect("test event converts to a chord")
     }
 
+    /// D.5.b (2026-05-30): shadow the host-crate `lookup_normal`
+    /// signature change. Production gained
+    /// `active_minor_modes: &[ModeId]` so chord bindings
+    /// registered against `MinorMode(ModeId)` layers gate on
+    /// per-buffer activation (K.1.c). These tests exercise the
+    /// always-on `Builtin`-layer catalog; they pass `&[]`
+    /// (no minor modes active) to keep behaviour identical to
+    /// the pre-D.5.b legacy `lookup` path.
+    fn lookup_normal(handle: &KeymapHandle, chord: &KeyChord) -> Option<Action> {
+        lattice_host::keymap_normal::lookup_normal(handle, chord, &[])
+    }
+
+    fn lookup_normal_with_prefix(
+        handle: &KeymapHandle,
+        prefix: &[KeyChord],
+        chord: &KeyChord,
+    ) -> Action {
+        lattice_host::keymap_normal::lookup_normal_with_prefix(handle, prefix, chord, &[])
+    }
+
     fn fixture() -> (CommandRegistry, Builtins, ActionIds) {
         let mut r = CommandRegistry::new();
         let b = lattice_grammar::builtins::populate(&mut r);

@@ -325,6 +325,11 @@ impl App {
             // 5.5.G.8: snippet placeholder navigation arms.
             | Action::SnippetNextPlaceholder
             | Action::SnippetPrevPlaceholder
+            // D.5.b (2026-05-30): diff-mode `do` is
+            // host-resident — `Editor::do_diff_get` resolves
+            // the hunk under cursor and replaces the
+            // current side via `apply_edit_blocking`.
+            | Action::DiffGet
             // 5.5.G.9: paste cluster arms.
             | Action::PasteAfter
             | Action::PasteBefore
@@ -1449,6 +1454,7 @@ mod tests {
                 terminal_visual_active: ad.terminal_visual_active,
                 keymap: &translator.keymap,
                 partial_chord: &translator.partial_chord,
+                active_minor_modes: &translator.active_minor_modes,
             };
             let action = crate::input::translate(
                 ctx,

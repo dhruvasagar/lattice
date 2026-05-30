@@ -72,7 +72,7 @@ use tokio::task::JoinHandle;
 use tracing::debug;
 
 use lattice_core::BufferId;
-use lattice_diff::{compute_two_way, DiffAlgorithm, HunkIndex};
+use lattice_diff::{compute_two_way, DiffAlgorithm, HunkIndex, HunkKind, LineRange};
 use lattice_protocol::event::{Event, EventKind};
 use lattice_protocol::ids::DocumentId;
 use lattice_runtime::{EventBus, EventFilter, SubscriptionId, SubscriptionTarget};
@@ -525,6 +525,42 @@ pub struct DiffSessionDescription {
 	/// session was registered without sources via
 	/// [`DiffSubsystem::register`] (the test path).
 	pub watch: Vec<BufferId>,
+}
+
+/// D.5.b (2026-05-30): describes the edit the diff-mode `do`
+/// (diff-get) operator would apply when invoked at a given
+/// cursor row on the current side of a session. Produced by
+/// [`DiffSubsystem::compute_get_edit`]; consumed by dispatch
+/// which translates it into an `apply_edit_blocking` call
+/// and re-positions the cursor.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiffGetPlan {
+	/// The mutation to apply to the current side's buffer.
+	pub edit: lattice_protocol::edit::Edit,
+	/// Post-edit cursor line — the start of the resolved
+	/// hunk on the current side. Cursor stays "on the hunk"
+	/// so successive `]c` / `[c` jumps walk through
+	/// neighbouring hunks naturally.
+	pub post_cursor_row: u32,
+}
+
+/// D.5.b helper: slice the rope at the given line range and
+/// return the contents as a `String`. Half-open `[start, end)`.
+/// Empty range returns the empty string. Tolerant of an
+/// `end` that exceeds the rope's line count (clamped) and a
+/// `start` past EOF (returns empty).
+fn slice_line_range(rope: &Rope, range: LineRange) -> String {
+	if range.is_empty() {
+		return String::new();
+	}
+	let total_lines = rope.len_lines() as u32;
+	if range.start >= total_lines {
+		return String::new();
+	}
+	let end = range.end.min(total_lines);
+	let start_char = rope.line_to_char(range.start as usize);
+	let end_char = rope.line_to_char(end as usize);
+	rope.slice(start_char..end_char).to_string()
 }
 
 fn format_algorithm(alg: DiffAlgorithm) -> &'static str {
@@ -991,6 +1027,77 @@ impl DiffSubsystem {
 			.expect("DiffSubsystem mutex poisoned")
 			.get(&buffer_id)
 			.cloned()
+	}
+
+	/// D.5.b (2026-05-30): compute the edit the diff-mode `do`
+	/// chord would apply for `buffer_id` at `cursor_row`.
+	///
+	/// Returns `None` (silent no-op) when:
+	/// - no session is registered for `buffer_id`,
+	/// - no descriptor is registered (sources-less test
+	///   registration — there's no baseline to read from),
+	/// - no hunk covers `cursor_row` on the current side,
+	/// - the matched hunk is a three-way [`HunkKind::Conflict`]
+	///   (D.6 lands the conflict-resolution path).
+	///
+	/// Behaviour by hunk kind on the two-way current side
+	/// (`ranges[1]`):
+	/// - **Change**: replace `ranges[1]` with the baseline
+	///   slice for `ranges[0]`.
+	/// - **Add**: current side has the extra lines; baseline
+	///   range is empty → delete `ranges[1]` (revert the add).
+	/// - **Remove**: current side is empty at the deletion
+	///   point; baseline has the removed lines → insert the
+	///   baseline text at `ranges[1].start` (revert the
+	///   remove). For a `Remove` hunk the current range is
+	///   empty; `cursor_row` must equal `ranges[1].start`
+	///   exactly for the lookup to match (vim parity — `do`
+	///   only fires while the cursor sits on the deletion-
+	///   marker row).
+	///
+	/// Reads the baseline through
+	/// [`DiffDescriptor::baseline`]`.snapshot()`. The
+	/// snapshot is potentially expensive (file re-read for
+	/// [`OnDiskBaseline`]); callers invoke once per `do`
+	/// keystroke, never inside a tight loop.
+	pub fn compute_get_edit(
+		&self,
+		buffer_id: BufferId,
+		cursor_row: u32,
+	) -> Option<DiffGetPlan> {
+		let session = self.lookup(buffer_id)?;
+		let descriptor = self.lookup_descriptor(buffer_id)?;
+		let hunks = session.current_hunks();
+		let hunk = hunks.hunks.iter().find(|h| {
+			if matches!(h.kind, HunkKind::Conflict) {
+				return false;
+			}
+			let Some(current) = h.ranges.get(1).copied() else {
+				return false;
+			};
+			if current.is_empty() {
+				// Remove hunk on the current side — cursor
+				// must sit exactly at the deletion-point row.
+				current.start == cursor_row
+			} else {
+				cursor_row >= current.start && cursor_row < current.end
+			}
+		})?;
+		let baseline_range = hunk.ranges.first().copied()?;
+		let current_range = hunk.ranges.get(1).copied()?;
+		let baseline_rope = descriptor.baseline.snapshot();
+		let baseline_text = slice_line_range(&baseline_rope, baseline_range);
+		let edit = lattice_protocol::edit::Edit::replace(
+			lattice_protocol::position::Range::new(
+				lattice_protocol::position::Position::new(current_range.start, 0),
+				lattice_protocol::position::Position::new(current_range.end, 0),
+			),
+			baseline_text,
+		);
+		Some(DiffGetPlan {
+			edit,
+			post_cursor_row: current_range.start,
+		})
 	}
 
 	/// D.2.c: snapshot of the inverse routing index for
@@ -2290,5 +2397,255 @@ mod tests {
 		// Session should still be present — the guard's drop
 		// prevented the drainer from acting on the event.
 		assert!(sub.lookup(bid(1)).is_some());
+	}
+
+	// ── D.5.b: compute_get_edit ────────────────────────────────
+
+	use lattice_diff::Hunk;
+	use smallvec::smallvec;
+
+	/// Build a session with a [`StaticBaseline`] for testing
+	/// `compute_get_edit` without exercising the buffer-backed
+	/// machinery. Returns the subsystem so the caller can
+	/// publish hunks and query.
+	fn fixture_with_baseline(baseline: &str) -> (DiffSubsystem, BufferId) {
+		let sub = DiffSubsystem::new();
+		let provider: Arc<dyn BufferTextProvider> = Arc::new(MockProvider::default());
+		// Current side is buffer-backed but never read by
+		// compute_get_edit — the function reads the baseline
+		// only. The current source is required for descriptor
+		// construction.
+		let desc = DiffDescriptor {
+			baseline: Arc::new(StaticBaseline::new(Rope::from(baseline))),
+			current: Arc::new(BufferCurrentSource::new(Arc::clone(&provider), bid(1))),
+			watch: vec![bid(1)],
+			participants: vec![bid(1)],
+		};
+		sub.register_with_sources(bid(1), DiffAlgorithm::Histogram, desc);
+		(sub, bid(1))
+	}
+
+	fn publish_hunks(sub: &DiffSubsystem, key: BufferId, hunks: Vec<Hunk>) {
+		let session = sub.lookup(key).unwrap();
+		let rev = session.allocate_revision();
+		session.publish(Arc::new(HunkIndex {
+			hunks,
+			algorithm: DiffAlgorithm::Histogram,
+			revision: rev,
+		}));
+	}
+
+	fn lr(start: u32, end: u32) -> LineRange {
+		LineRange::new(start, end)
+	}
+
+	/// `Change` on the current side: `do` replaces the
+	/// current lines with the baseline slice for the
+	/// corresponding baseline range.
+	#[test]
+	fn compute_get_edit_change_replaces_current_range_with_baseline() {
+		let (sub, key) = fixture_with_baseline("base-a\nbase-b\n");
+		publish_hunks(
+			&sub,
+			key,
+			vec![Hunk {
+				kind: HunkKind::Change,
+				ranges: smallvec![lr(0, 2), lr(3, 5)],
+			}],
+		);
+		let plan = sub.compute_get_edit(key, 3).expect("hunk covers row 3");
+		assert_eq!(plan.post_cursor_row, 3);
+		// Edit: replace current range (lines 3..5) with the
+		// baseline lines 0..2 → "base-a\nbase-b\n".
+		assert_eq!(plan.edit.range.start.line, 3);
+		assert_eq!(plan.edit.range.end.line, 5);
+		match plan.edit.kind {
+			lattice_protocol::edit::EditKind::Replace { ref text } => {
+				assert_eq!(text, "base-a\nbase-b\n");
+			}
+		}
+	}
+
+	/// `Add` hunk: lines appear in current side only;
+	/// baseline range is empty. `do` deletes the current
+	/// lines (revert the addition; baseline says no content
+	/// here).
+	#[test]
+	fn compute_get_edit_add_deletes_current_range() {
+		let (sub, key) = fixture_with_baseline("");
+		publish_hunks(
+			&sub,
+			key,
+			vec![Hunk {
+				kind: HunkKind::Add,
+				ranges: smallvec![lr(0, 0), lr(2, 4)],
+			}],
+		);
+		let plan = sub.compute_get_edit(key, 3).expect("hunk covers row 3");
+		// Cursor parks at the hunk start (row 2).
+		assert_eq!(plan.post_cursor_row, 2);
+		assert_eq!(plan.edit.range.start.line, 2);
+		assert_eq!(plan.edit.range.end.line, 4);
+		match plan.edit.kind {
+			lattice_protocol::edit::EditKind::Replace { ref text } => {
+				assert!(text.is_empty(), "Add → delete: text must be empty, was {text:?}");
+			}
+		}
+	}
+
+	/// `Remove` hunk: lines appear in baseline only;
+	/// current range is empty. `do` inserts the baseline
+	/// lines at the deletion anchor (revert the removal).
+	#[test]
+	fn compute_get_edit_remove_inserts_baseline_text_at_gap() {
+		let (sub, key) = fixture_with_baseline("removed-1\nremoved-2\n");
+		publish_hunks(
+			&sub,
+			key,
+			vec![Hunk {
+				kind: HunkKind::Remove,
+				ranges: smallvec![lr(0, 2), lr(5, 5)],
+			}],
+		);
+		// Cursor must sit exactly at the empty-current anchor
+		// (row 5) for the Remove lookup to match — vim parity.
+		let plan = sub
+			.compute_get_edit(key, 5)
+			.expect("Remove hunk anchored at row 5 must match");
+		assert_eq!(plan.post_cursor_row, 5);
+		// Edit: insert at line 5 (empty range), text is
+		// the baseline's "removed-1\nremoved-2\n".
+		assert_eq!(plan.edit.range.start.line, 5);
+		assert_eq!(plan.edit.range.end.line, 5);
+		match plan.edit.kind {
+			lattice_protocol::edit::EditKind::Replace { ref text } => {
+				assert_eq!(text, "removed-1\nremoved-2\n");
+			}
+		}
+	}
+
+	/// `Remove` hunks anchor at exactly `current.start`; a
+	/// cursor one row off is a miss. (No "near enough"
+	/// matching — vim's `do` only fires when the cursor
+	/// sits on the deletion-marker row.)
+	#[test]
+	fn compute_get_edit_remove_misses_when_cursor_off_anchor() {
+		let (sub, key) = fixture_with_baseline("x\n");
+		publish_hunks(
+			&sub,
+			key,
+			vec![Hunk {
+				kind: HunkKind::Remove,
+				ranges: smallvec![lr(0, 1), lr(5, 5)],
+			}],
+		);
+		assert!(sub.compute_get_edit(key, 4).is_none());
+		assert!(sub.compute_get_edit(key, 6).is_none());
+	}
+
+	/// Cursor outside every hunk returns `None`.
+	#[test]
+	fn compute_get_edit_cursor_outside_hunks_returns_none() {
+		let (sub, key) = fixture_with_baseline("a\nb\n");
+		publish_hunks(
+			&sub,
+			key,
+			vec![Hunk {
+				kind: HunkKind::Change,
+				ranges: smallvec![lr(0, 2), lr(10, 12)],
+			}],
+		);
+		assert!(sub.compute_get_edit(key, 0).is_none());
+		assert!(sub.compute_get_edit(key, 9).is_none());
+		// End is exclusive — row 12 is past the hunk.
+		assert!(sub.compute_get_edit(key, 12).is_none());
+	}
+
+	/// Three-way `Conflict` hunks are skipped — D.6 owns the
+	/// conflict-resolution path; `do` is two-way only.
+	#[test]
+	fn compute_get_edit_conflict_hunk_is_ignored() {
+		let (sub, key) = fixture_with_baseline("base\n");
+		publish_hunks(
+			&sub,
+			key,
+			vec![Hunk {
+				kind: HunkKind::Conflict,
+				ranges: smallvec![lr(0, 1), lr(0, 1)],
+			}],
+		);
+		assert!(sub.compute_get_edit(key, 0).is_none());
+	}
+
+	/// No session registered → no-op `None`. The keymap
+	/// layer is global so the chord can fire on any buffer,
+	/// but per-buffer K.1.c gating prevents that — if a test
+	/// bypasses K.1.c and the action runs, it must still
+	/// degrade cleanly.
+	#[test]
+	fn compute_get_edit_no_session_returns_none() {
+		let sub = DiffSubsystem::new();
+		assert!(sub.compute_get_edit(bid(42), 0).is_none());
+	}
+
+	/// Session registered without a descriptor (the
+	/// sources-less `register` path used in some tests) →
+	/// no baseline to read from, returns `None` gracefully.
+	#[test]
+	fn compute_get_edit_no_descriptor_returns_none() {
+		let sub = DiffSubsystem::new();
+		// `register` is the sources-less path used by some
+		// test fixtures; it stores no descriptor.
+		sub.register(bid(1), DiffAlgorithm::Histogram);
+		// Publish a Change hunk; cursor on it would normally
+		// match — but the missing descriptor causes the
+		// lookup to short-circuit to `None`.
+		publish_hunks(
+			&sub,
+			bid(1),
+			vec![Hunk {
+				kind: HunkKind::Change,
+				ranges: smallvec![lr(0, 1), lr(0, 1)],
+			}],
+		);
+		assert!(sub.compute_get_edit(bid(1), 0).is_none());
+	}
+
+	/// First hunk wins when several hunks coexist — the
+	/// search is linear over the published list. The
+	/// algorithm doesn't sort, but published HunkIndex
+	/// preserves the diff order which is non-overlapping +
+	/// monotonic per `imara-diff`, so the first match is
+	/// also the only match.
+	#[test]
+	fn compute_get_edit_finds_hunk_among_many() {
+		let (sub, key) = fixture_with_baseline(
+			"first-hunk\nsecond-hunk\nthird-hunk\n",
+		);
+		publish_hunks(
+			&sub,
+			key,
+			vec![
+				Hunk {
+					kind: HunkKind::Change,
+					ranges: smallvec![lr(0, 1), lr(0, 1)],
+				},
+				Hunk {
+					kind: HunkKind::Change,
+					ranges: smallvec![lr(1, 2), lr(5, 6)],
+				},
+				Hunk {
+					kind: HunkKind::Change,
+					ranges: smallvec![lr(2, 3), lr(10, 11)],
+				},
+			],
+		);
+		let plan = sub.compute_get_edit(key, 5).expect("second hunk covers 5");
+		match plan.edit.kind {
+			lattice_protocol::edit::EditKind::Replace { ref text } => {
+				assert_eq!(text, "second-hunk\n");
+			}
+		}
+		assert_eq!(plan.post_cursor_row, 5);
 	}
 }

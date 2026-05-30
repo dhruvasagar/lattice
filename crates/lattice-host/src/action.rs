@@ -299,6 +299,19 @@ pub enum Action {
     /// (placeholders become plain text); also exits Insert
     /// per vim convention.
     SnippetLeave,
+    /// D.5.b (2026-05-30): diff-mode `do` operator. Resolves
+    /// the hunk under the cursor on the current side of the
+    /// active `DiffSession` for the current buffer and
+    /// rewrites the current side to match the baseline (cf.
+    /// `crate::diff::subsystem::DiffSubsystem::compute_get_edit`).
+    /// Gated by K.1.c: the binding only fires when `diff-mode`
+    /// is in the active buffer's `ActiveModes.minors()`, so a
+    /// non-diff buffer receiving the chord falls through to
+    /// the normal `do` resolution (operator `d` + `o`, which
+    /// the trie rejects), not this variant. No-ops silently
+    /// if there's no hunk under the cursor or a recompute
+    /// hasn't published one yet.
+    DiffGet,
     /// `:lsp-symbols` (Phase 4.2.e). Send
     /// `textDocument/documentSymbol` to every attached server;
     /// render the merged outline as a vertico picker. Selecting

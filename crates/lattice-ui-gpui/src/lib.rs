@@ -746,6 +746,7 @@ impl GpuiApp {
                 terminal_visual_active: ad.terminal_visual_active,
                 keymap: &translator.keymap,
                 partial_chord: &translator.partial_chord,
+                active_minor_modes: &translator.active_minor_modes,
             };
             lattice_host::input::translate(ctx, chord)
         };

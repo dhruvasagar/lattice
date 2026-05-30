@@ -93,6 +93,58 @@ pub fn register_diff_modes(registry: &mut ModeRegistry) {
         .expect("diff-mode must register without conflict");
 }
 
+/// D.5.b (2026-05-30): chord bindings for the `diff-mode`
+/// keymap layer.
+///
+/// `do` → `action:diff-get`. The layer is pushed once at
+/// editor boot under `PushLayerKind::MinorMode(diff-mode)`;
+/// K.1.c's per-keystroke filter gates the binding so it only
+/// fires on buffers where `diff-mode` is in
+/// `ActiveModes.minors()`. Buffers without diff-mode active
+/// fall through to the normal `do` resolution (operator `d`
+/// followed by `o`) — the diff-mode binding is invisible to
+/// them.
+///
+/// D.5.c will add `dp` (diff-put) to the same trie.
+pub fn diff_mode_layer_bindings(
+    actions: &crate::actions::ActionIds,
+) -> std::collections::HashMap<
+    crate::keymap::BindingMode,
+    crate::keymap_trie::KeymapTrie,
+> {
+    use crate::chord::{KeyChord, KeyKind, KeyMods};
+    use crate::keymap::BindingMode;
+    use crate::keymap_trie::{
+        BoundCommand, ChordPattern, KeymapLayer, KeymapTrie,
+    };
+    use lattice_grammar::CommandInvocation;
+    use lattice_grammar::source::SourceLocation;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    fn lit_char(c: char) -> ChordPattern {
+        ChordPattern::Literal(KeyChord {
+            key: KeyKind::Char(c),
+            mods: KeyMods::NONE,
+        })
+    }
+
+    let layer = KeymapLayer::MinorMode(DiffMode::mode_id());
+    let mut trie = KeymapTrie::new();
+    trie.insert(
+        &[lit_char('d'), lit_char('o')],
+        Arc::new(BoundCommand::from_invocation(
+            CommandInvocation::of(actions.diff_get),
+            SourceLocation::builtin_file(file!(), line!()),
+            layer,
+        )),
+    );
+
+    let mut modes = HashMap::new();
+    modes.insert(BindingMode::Normal, trie);
+    modes
+}
+
 // ──────────────────────────────────────────────────────────────
 // DiffModeBridge — refcount + cross-thread queue
 // ──────────────────────────────────────────────────────────────

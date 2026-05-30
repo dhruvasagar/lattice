@@ -2458,12 +2458,47 @@ shared with multibuffer-views and post-v1 inlay hints.
     K.1.c will replace this with per-buffer active-mode
     reverse-activation order. 542 host tests green; 79
     lattice-mode tests green; workspace build green.
-  - 🗒 **K.1.c** — Per-keystroke merge filters minor-mode
-    layers by `active_modes[active_buffer].iter().rev()`.
-    Last-activated-wins. Drops the global pre-merge for
-    minor-mode layers; keeps it for `Builtin` /
-    `MajorMode` / `User` / `Buffer`. Per-tick fold path
-    (α from the design discussion).
+  - ✅ **K.1.c** (2026-05-30) — Per-keystroke minor-mode
+    filter. Registry now keeps **two** wait-free caches:
+    `merged` (always-on: Builtin + MajorMode + User +
+    Buffer) and `minor_mode_tries` (per-`ModeId` minor-
+    mode tries, indexed for per-tick lookup). All writes
+    rebuild both. New `KeymapHandle::lookup_with_context(
+    mode, chords, active_modes)` composes a per-tick
+    trie: starts from always-on, overlays each `ModeId`
+    in `active_modes` in the listed order so
+    last-activated overlays last and **wins**. Empty
+    `active_modes` is the fast path (uses the always-on
+    cache directly, no allocation). Legacy
+    `lookup(mode, chords)` is preserved as
+    "all-registered-minor-modes-active, alphabetical
+    order" to keep existing dispatch callers
+    (completion-popup, active-snippet, all the tests)
+    working unchanged — their mode lifecycle already
+    gates at push/pop. D.5's `do`/`dp` chord dispatch
+    will opt into `lookup_with_context` with the active
+    buffer's `active_modes[document_buffer_id].minors()`
+    so per-buffer gating kicks in for diff-mode without
+    forcing a complete refactor of the dispatcher entry
+    point. **3 new tests** in `keymap_registry::tests`
+    (`lookup_with_context_empty_active_modes_skips_minor_modes`,
+    `lookup_with_context_chord_reuse_across_modes`,
+    `lookup_with_context_last_activated_wins`). 545 host
+    tests green (+3); workspace build green. **Note on
+    layer-priority shift**: pre-K.1.c the priority order
+    was `Builtin < MajorMode < MinorMode(_) < User <
+    Buffer`. K.1.c's per-tick fold applies minor-mode
+    layers on top of the always-on merge, which puts
+    them *above* User and Buffer at lookup time. This is
+    deliberate — mode-scoped chords (`do` in `diff-mode`,
+    `M-d` in `corfu-popupinfo-map`) intentionally claim
+    their chord while the mode is active. Users wanting
+    to override a specific mode's binding use
+    `OwnedLayer { mode_id }` to bind inside that mode's
+    layer (where same-layer last-write-wins applies),
+    matching emacs's `(define-key foo-mode-map …)`
+    semantics. The pre-K.1.c order survives for legacy
+    `lookup` callers.
   - 🗒 **K.1.d** — `:describe-key` revisions: layer label
     from ModeId, "Active" line based on active buffer's
     mode set, "Inactive-but-registered" listing for

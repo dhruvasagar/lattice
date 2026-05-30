@@ -218,18 +218,47 @@ impl RegistryInner {
         &mut self.layers[pos]
     }
 
-    fn build_merged(&self) -> MergedKeymap {
+    /// K.1.c (2026-05-30): merge **only** the always-on
+    /// layers (Builtin + MajorMode + User + Buffer). MinorMode
+    /// layers are excluded — they're folded in per-keystroke
+    /// based on the active buffer's mode set (see
+    /// [`KeymapHandle::lookup_with_context`]).
+    ///
+    /// Pre-K.1.c the merge included every layer regardless of
+    /// activation, which made the lookup path miss the
+    /// "minor-mode bindings only fire when the mode is
+    /// active on the active buffer" semantics emacs-style
+    /// composability demands.
+    fn build_always_on_merged(&self) -> MergedKeymap {
         let mut merged = MergedKeymap::default();
-        // Walk layers ascending; merge_over overlays each on
-        // top, so the highest-priority layer's bindings end
-        // up authoritative (architecture doc §2 + §4).
         for layer in &self.layers {
+            if matches!(layer.layer, KeymapLayer::MinorMode(_)) {
+                continue;
+            }
             for (mode, trie) in &layer.modes {
                 let target = merged.by_mode.entry(*mode).or_default();
                 target.merge_over(trie);
             }
         }
         merged
+    }
+
+    /// K.1.c (2026-05-30): snapshot the per-`ModeId` minor-mode
+    /// tries for the read-side cache. Each value is the full
+    /// per-`BindingMode` trie set for that mode's keymap layer.
+    /// The keystroke path consults this map for each active
+    /// `ModeId` (in reverse activation order, last-wins) when
+    /// composing the merged trie.
+    fn build_minor_mode_tries(
+        &self,
+    ) -> HashMap<ModeId, Arc<HashMap<BindingMode, KeymapTrie>>> {
+        let mut out = HashMap::new();
+        for layer in &self.layers {
+            if let KeymapLayer::MinorMode(mode_id) = layer.layer {
+                out.insert(mode_id, Arc::new(layer.modes.clone()));
+            }
+        }
+        out
     }
 }
 
@@ -243,7 +272,19 @@ impl RegistryInner {
 /// `KeymapLayer::Builtin`.
 pub struct KeymapRegistry {
     inner: Mutex<RegistryInner>,
+    /// K.1.c (2026-05-30): cached merge of the **always-on**
+    /// layers only (`Builtin + MajorMode + User + Buffer`).
+    /// Wait-free read; rebuilt by writers. Pre-K.1.c this
+    /// cached every layer; minor-mode layers are now folded in
+    /// per-keystroke (see [`merged_minor_modes`](Self::merged_minor_modes)).
     merged: Arc<ArcSwap<MergedKeymap>>,
+    /// K.1.c (2026-05-30): per-`ModeId` minor-mode trie cache.
+    /// Wait-free read; consulted per-keystroke for each mode
+    /// in `active_modes[active_buffer]` (reverse activation
+    /// order, last-wins) by
+    /// [`KeymapHandle::lookup_with_context`]. Rebuilt by
+    /// writers alongside `merged`.
+    minor_mode_tries: Arc<ArcSwap<HashMap<ModeId, Arc<HashMap<BindingMode, KeymapTrie>>>>>,
 }
 
 impl KeymapRegistry {
@@ -251,6 +292,7 @@ impl KeymapRegistry {
         Arc::new(Self {
             inner: Mutex::new(RegistryInner::new()),
             merged: Arc::new(ArcSwap::from_pointee(MergedKeymap::default())),
+            minor_mode_tries: Arc::new(ArcSwap::from_pointee(HashMap::new())),
         })
     }
 }
@@ -263,6 +305,7 @@ impl Default for KeymapRegistry {
         Self {
             inner: Mutex::new(RegistryInner::new()),
             merged: Arc::new(ArcSwap::from_pointee(MergedKeymap::default())),
+            minor_mode_tries: Arc::new(ArcSwap::from_pointee(HashMap::new())),
         }
     }
 }
@@ -301,12 +344,89 @@ impl KeymapHandle {
 
     /// Look up the typed binding for `chords` in `mode`.
     /// Wait-free.
+    ///
+    /// K.1.c (2026-05-30): preserves pre-K.1.c semantics by
+    /// treating **all registered minor modes as active** (in
+    /// `ModeId`-alphabetical order, matching K.1.b's sorted-
+    /// layers-vec merge order). Legacy callers (the
+    /// translate dispatcher's completion-popup / snippet
+    /// keystroke path) continue to work unchanged — their
+    /// mode lifecycle already gates at push/pop, so
+    /// "everything always active" matches the push/pop
+    /// surface.
+    ///
+    /// For per-buffer-gated lookup (the emacs-style
+    /// composability story — `do` in diff-mode only fires
+    /// when the active buffer has diff-mode active) use
+    /// [`Self::lookup_with_context`] with the buffer's
+    /// `active_modes`. D.5 wires diff-mode through that
+    /// path; other modes migrate as their consumers care.
     pub fn lookup(&self, mode: BindingMode, chords: &[KeyChord]) -> LookupResult {
-        let merged = self.registry.merged.load();
-        match merged.by_mode.get(&mode) {
-            Some(trie) => trie.lookup(chords),
-            None => LookupResult::Unbound,
+        let minors = self.registry.minor_mode_tries.load();
+        let mut sorted: Vec<ModeId> = minors.keys().copied().collect();
+        sorted.sort();
+        self.lookup_with_context(mode, chords, &sorted)
+    }
+
+    /// K.1.c (2026-05-30): mode-aware lookup.
+    ///
+    /// Composes a fresh per-keystroke merged trie:
+    /// 1. Start with the cached always-on merge
+    ///    (`Builtin + MajorMode + User + Buffer`).
+    /// 2. For each `mode_id` in `active_modes` (first to
+    ///    last activation order) overlay that mode's
+    ///    minor-mode layer on top — **last-activated wins**
+    ///    among minor modes.
+    /// 3. Note: the always-on cache already has `User /
+    ///    Buffer` overlaid above `Builtin / MajorMode`. The
+    ///    minor-mode overlay applied in step 2 therefore
+    ///    sits *above* User/Buffer at lookup time — which
+    ///    differs from the pre-K.1.c "MinorMode < User <
+    ///    Buffer" priority. Rationale: mode-scoped chords
+    ///    (`do` in `diff-mode`, `M-d` in
+    ///    `corfu-popupinfo-map`) intentionally claim their
+    ///    chord while the mode is active, even over the
+    ///    user's global rebinds; users wanting to override
+    ///    a specific mode's binding use the
+    ///    `OwnedLayer { mode_id }` capability to bind
+    ///    inside that mode's layer (where same-layer
+    ///    last-write-wins applies). This matches emacs's
+    ///    minor-mode-precedence-over-global semantics.
+    ///
+    /// Wait-free reads: two `ArcSwap::load` calls
+    /// (`merged`, `minor_mode_tries`) + per-`active_modes`
+    /// merge work. Typical `active_modes.len()` is 0-3 so
+    /// the overhead is small.
+    pub fn lookup_with_context(
+        &self,
+        mode: BindingMode,
+        chords: &[KeyChord],
+        active_modes: &[ModeId],
+    ) -> LookupResult {
+        let always_on = self.registry.merged.load();
+        // Fast path: no minor modes active → use the cached
+        // always-on trie directly, no per-tick allocation.
+        if active_modes.is_empty() {
+            return match always_on.by_mode.get(&mode) {
+                Some(trie) => trie.lookup(chords),
+                None => LookupResult::Unbound,
+            };
         }
+        // Per-tick fold: start from always-on, overlay each
+        // active minor mode in activation order (last wins).
+        let minors = self.registry.minor_mode_tries.load();
+        let mut composite = KeymapTrie::new();
+        if let Some(base) = always_on.by_mode.get(&mode) {
+            composite.merge_over(base);
+        }
+        for mode_id in active_modes {
+            if let Some(per_mode) = minors.get(mode_id) {
+                if let Some(trie) = per_mode.get(&mode) {
+                    composite.merge_over(trie);
+                }
+            }
+        }
+        composite.lookup(chords)
     }
 
     /// Register a binding at `(layer, mode, path)`. Replaces
@@ -340,13 +460,17 @@ impl KeymapHandle {
         bound: Arc<BoundCommand>,
     ) {
         let label = default_label(layer);
-        let merged = {
+        let (merged, minors) = {
             let mut inner = self.registry.inner.lock().expect("registry mutex");
             let layer_ref = inner.layer_mut(layer, &label);
             layer_ref.modes.entry(mode).or_default().insert(path, bound);
-            inner.build_merged()
+            (
+                inner.build_always_on_merged(),
+                inner.build_minor_mode_tries(),
+            )
         };
         self.registry.merged.store(Arc::new(merged));
+        self.registry.minor_mode_tries.store(Arc::new(minors));
     }
 
     /// Remove the binding at `(layer, mode, path)`. No-op if
@@ -359,16 +483,20 @@ impl KeymapHandle {
         mode: BindingMode,
         path: &[ChordPattern],
     ) -> Option<Arc<BoundCommand>> {
-        let (dropped, merged) = {
+        let (dropped, merged, minors) = {
             let mut inner = self.registry.inner.lock().expect("registry mutex");
             let pos = inner.layers.iter().position(|l| l.layer == layer)?;
             let layer_ref = &mut inner.layers[pos];
             let trie = layer_ref.modes.get_mut(&mode)?;
             let dropped = trie.remove(path);
-            let merged = inner.build_merged();
-            (dropped, merged)
+            (
+                dropped,
+                inner.build_always_on_merged(),
+                inner.build_minor_mode_tries(),
+            )
         };
         self.registry.merged.store(Arc::new(merged));
+        self.registry.minor_mode_tries.store(Arc::new(minors));
         dropped
     }
 
@@ -400,7 +528,7 @@ impl KeymapHandle {
         bindings: HashMap<BindingMode, KeymapTrie>,
     ) -> LayerId {
         let label = label.into();
-        let (id, merged) = {
+        let (id, merged, minors) = {
             let mut inner = self.registry.inner.lock().expect("registry mutex");
             let layer = match kind {
                 PushLayerKind::MinorMode(mode_id) => KeymapLayer::MinorMode(mode_id),
@@ -412,11 +540,11 @@ impl KeymapHandle {
             // Buffer always mints fresh (Buffer layer is a
             // singleton in practice but we don't enforce that
             // here).
-            if let Some(pos) = inner.layers.iter().position(|l| l.layer == layer) {
+            let id = if let Some(pos) = inner.layers.iter().position(|l| l.layer == layer) {
                 let existing_id = inner.layers[pos].id;
                 inner.layers[pos].label = label;
                 inner.layers[pos].modes = bindings;
-                (existing_id, inner.build_merged())
+                existing_id
             } else {
                 let id = LayerId(inner.next_layer_id);
                 inner.next_layer_id += 1;
@@ -432,10 +560,16 @@ impl KeymapHandle {
                     .position(|l| l.layer > layer)
                     .unwrap_or(inner.layers.len());
                 inner.layers.insert(pos, new);
-                (id, inner.build_merged())
-            }
+                id
+            };
+            (
+                id,
+                inner.build_always_on_merged(),
+                inner.build_minor_mode_tries(),
+            )
         };
         self.registry.merged.store(Arc::new(merged));
+        self.registry.minor_mode_tries.store(Arc::new(minors));
         id
     }
 
@@ -443,15 +577,19 @@ impl KeymapHandle {
     /// No-op if the id is unknown (caller may double-pop on
     /// the way out of an error path; defensive).
     pub fn pop_layer(&self, id: LayerId) {
-        let merged = {
+        let (merged, minors) = {
             let mut inner = self.registry.inner.lock().expect("registry mutex");
             let pos = inner.layers.iter().position(|l| l.id == id);
             if let Some(pos) = pos {
                 inner.layers.remove(pos);
             }
-            inner.build_merged()
+            (
+                inner.build_always_on_merged(),
+                inner.build_minor_mode_tries(),
+            )
         };
         self.registry.merged.store(Arc::new(merged));
+        self.registry.minor_mode_tries.store(Arc::new(minors));
     }
 
     /// Total binding count across all layers. Telemetry +
@@ -587,20 +725,26 @@ impl KeymapHandle {
     /// installed (defensive against double-pop on error paths).
     /// Returns `true` iff a layer was removed.
     pub fn pop_minor_mode_layer(&self, mode_id: ModeId) -> bool {
-        let (removed, merged) = {
+        let (removed, merged, minors) = {
             let mut inner = self.registry.inner.lock().expect("registry mutex");
             let pos = inner
                 .layers
                 .iter()
                 .position(|l| l.layer == KeymapLayer::MinorMode(mode_id));
-            if let Some(pos) = pos {
+            let removed = if let Some(pos) = pos {
                 inner.layers.remove(pos);
-                (true, inner.build_merged())
+                true
             } else {
-                (false, inner.build_merged())
-            }
+                false
+            };
+            (
+                removed,
+                inner.build_always_on_merged(),
+                inner.build_minor_mode_tries(),
+            )
         };
         self.registry.merged.store(Arc::new(merged));
+        self.registry.minor_mode_tries.store(Arc::new(minors));
         removed
     }
 }
@@ -1354,6 +1498,198 @@ mod tests {
                 assert_eq!(command.layer, KeymapLayer::MinorMode(mode_id));
             }
             other => panic!("expected Bound (plugin command), got {other:?}"),
+        }
+    }
+
+    // ---- K.1.c: per-buffer active-mode filter ----
+
+    /// K.1.c: `lookup_with_context` with empty `active_modes`
+    /// skips every minor-mode layer's bindings. Legacy
+    /// `lookup` (which iterates *all* registered minor modes)
+    /// continues to see them — that's the back-compat path.
+    /// Together: the new context-aware API lets callers opt
+    /// into per-buffer gating without disrupting any existing
+    /// dispatch path.
+    #[test]
+    fn lookup_with_context_empty_active_modes_skips_minor_modes() {
+        let h = KeymapHandle::new();
+        let diff_mode = ModeId::new("diff-mode");
+        // Push diff-mode with `do` → command 42.
+        let mut bindings = HashMap::new();
+        let mut trie = KeymapTrie::new();
+        let bound = Arc::new(BoundCommand::from_invocation(
+            invocation(42),
+            src("diff-mode.do"),
+            KeymapLayer::MinorMode(diff_mode),
+        ));
+        trie.insert(&[lit('d'), lit('o')], bound);
+        bindings.insert(BindingMode::Normal, trie);
+        h.push_layer(
+            PushLayerKind::MinorMode(diff_mode),
+            "diff-mode",
+            bindings,
+        );
+
+        // Legacy lookup sees the binding (all modes active).
+        let legacy = h.lookup(BindingMode::Normal, &[pressed('d'), pressed('o')]);
+        assert!(
+            matches!(legacy, LookupResult::Bound { .. }),
+            "legacy lookup must see diff-mode.do"
+        );
+
+        // Context-aware lookup with empty active_modes does NOT
+        // fire the diff-mode binding — diff-mode isn't active.
+        let ctx_empty =
+            h.lookup_with_context(BindingMode::Normal, &[pressed('d'), pressed('o')], &[]);
+        assert!(
+            matches!(ctx_empty, LookupResult::Unbound),
+            "lookup_with_context(&[]) must NOT see diff-mode.do (mode not active)"
+        );
+
+        // Context-aware with diff-mode listed → fires.
+        let ctx_active = h.lookup_with_context(
+            BindingMode::Normal,
+            &[pressed('d'), pressed('o')],
+            &[diff_mode],
+        );
+        match ctx_active {
+            LookupResult::Bound { command, .. } => {
+                assert_eq!(command.command.command, CommandId::new(42));
+            }
+            other => panic!("expected Bound (diff-mode.do active), got {other:?}"),
+        }
+    }
+
+    /// K.1.c: chord reuse across modes is the headline
+    /// composability story. Two modes both bind `do` to
+    /// different commands; the lookup result depends on which
+    /// mode is in `active_modes` for that buffer. Per-buffer
+    /// activation drives semantics — exactly the emacs
+    /// `(:map foo-mode-map …)` shape.
+    #[test]
+    fn lookup_with_context_chord_reuse_across_modes() {
+        let h = KeymapHandle::new();
+        let diff_mode = ModeId::new("diff-mode");
+        let overlay_mode = ModeId::new("my-overlay-mode");
+
+        // diff-mode binds `do` → command 100 (diff-get).
+        let mut diff_bindings = HashMap::new();
+        let mut diff_trie = KeymapTrie::new();
+        diff_trie.insert(
+            &[lit('d'), lit('o')],
+            Arc::new(BoundCommand::from_invocation(
+                invocation(100),
+                src("diff-mode.do"),
+                KeymapLayer::MinorMode(diff_mode),
+            )),
+        );
+        diff_bindings.insert(BindingMode::Normal, diff_trie);
+        h.push_layer(
+            PushLayerKind::MinorMode(diff_mode),
+            "diff-mode",
+            diff_bindings,
+        );
+
+        // overlay-mode binds the same `do` → command 200.
+        let mut overlay_bindings = HashMap::new();
+        let mut overlay_trie = KeymapTrie::new();
+        overlay_trie.insert(
+            &[lit('d'), lit('o')],
+            Arc::new(BoundCommand::from_invocation(
+                invocation(200),
+                src("overlay.do"),
+                KeymapLayer::MinorMode(overlay_mode),
+            )),
+        );
+        overlay_bindings.insert(BindingMode::Normal, overlay_trie);
+        h.push_layer(
+            PushLayerKind::MinorMode(overlay_mode),
+            "overlay",
+            overlay_bindings,
+        );
+
+        // Buffer A: only diff-mode active → diff-mode.do wins.
+        match h.lookup_with_context(
+            BindingMode::Normal,
+            &[pressed('d'), pressed('o')],
+            &[diff_mode],
+        ) {
+            LookupResult::Bound { command, .. } => {
+                assert_eq!(command.command.command, CommandId::new(100));
+            }
+            other => panic!("expected diff-mode.do, got {other:?}"),
+        }
+
+        // Buffer B: only overlay-mode active → overlay.do wins.
+        match h.lookup_with_context(
+            BindingMode::Normal,
+            &[pressed('d'), pressed('o')],
+            &[overlay_mode],
+        ) {
+            LookupResult::Bound { command, .. } => {
+                assert_eq!(command.command.command, CommandId::new(200));
+            }
+            other => panic!("expected overlay.do, got {other:?}"),
+        }
+
+        // Buffer C: neither active → no binding.
+        let neither =
+            h.lookup_with_context(BindingMode::Normal, &[pressed('d'), pressed('o')], &[]);
+        assert!(matches!(neither, LookupResult::Unbound));
+    }
+
+    /// K.1.c: "last-activated wins" for overlapping minor-mode
+    /// bindings — the per-buffer activation order in
+    /// `active_modes` is iterated in order, with later
+    /// entries overlaying earlier ones (matching emacs's
+    /// `minor-mode-map-alist` re-promotion semantics).
+    /// Reordering `active_modes` flips the winner without
+    /// re-registering anything in the keymap registry.
+    #[test]
+    fn lookup_with_context_last_activated_wins() {
+        let h = KeymapHandle::new();
+        let mode_a = ModeId::new("mode-a");
+        let mode_b = ModeId::new("mode-b");
+
+        let bind_in = |mode_id: ModeId, cmd: u64| {
+            let mut bindings = HashMap::new();
+            let mut trie = KeymapTrie::new();
+            trie.insert(
+                &[lit('x')],
+                Arc::new(BoundCommand::from_invocation(
+                    invocation(cmd),
+                    src("test"),
+                    KeymapLayer::MinorMode(mode_id),
+                )),
+            );
+            bindings.insert(BindingMode::Normal, trie);
+            h.push_layer(PushLayerKind::MinorMode(mode_id), "test", bindings);
+        };
+        bind_in(mode_a, 1);
+        bind_in(mode_b, 2);
+
+        // [a, b] order: b activated last → b wins.
+        match h.lookup_with_context(BindingMode::Normal, &[pressed('x')], &[mode_a, mode_b]) {
+            LookupResult::Bound { command, .. } => {
+                assert_eq!(
+                    command.command.command,
+                    CommandId::new(2),
+                    "last-activated (b) must win",
+                );
+            }
+            other => panic!("expected Bound, got {other:?}"),
+        }
+
+        // [b, a] order: a activated last → a wins.
+        match h.lookup_with_context(BindingMode::Normal, &[pressed('x')], &[mode_b, mode_a]) {
+            LookupResult::Bound { command, .. } => {
+                assert_eq!(
+                    command.command.command,
+                    CommandId::new(1),
+                    "reordering active_modes flips the winner",
+                );
+            }
+            other => panic!("expected Bound, got {other:?}"),
         }
     }
 }

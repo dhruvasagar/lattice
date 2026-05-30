@@ -270,7 +270,7 @@ impl Editor {
             // consulted by K.1.c per-keystroke lookup so D.5.b/c
             // `do`/`dp` chords gate on per-buffer diff
             // participation.
-            crate::diff_mode::register_diff_modes(&mut mr);
+            crate::diff::mode::register_diff_modes(&mut mr);
             mr
         };
         register_mode_toggle_commands(&mut registry, &mode_registry);
@@ -760,7 +760,7 @@ impl Editor {
         // tears down. `_enter` lets us spawn the drainer task
         // onto `runtime_handle` even though `bind` uses
         // `tokio::spawn`.
-        let diff_subsystem: std::sync::Arc<crate::diff_subsystem::DiffSubsystem> =
+        let diff_subsystem: std::sync::Arc<crate::diff::subsystem::DiffSubsystem> =
             std::sync::Arc::default();
         // D.5.a (2026-05-30): the subsystem owns its diff-mode
         // bridge via `Default`. Editor accesses it through
@@ -770,9 +770,9 @@ impl Editor {
         let diff_subscription_guard = {
             let _enter = runtime_handle.enter();
             let resolver: std::sync::Arc<
-                dyn crate::diff_subsystem::DocumentBufferResolver,
+                dyn crate::diff::subsystem::DocumentBufferResolver,
             > = std::sync::Arc::new(
-                crate::diff_subsystem::BufferRegistryDocumentResolver::new(
+                crate::diff::subsystem::BufferRegistryDocumentResolver::new(
                     buffers.clone(),
                 ),
             );

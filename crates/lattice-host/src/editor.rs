@@ -1112,7 +1112,7 @@ pub struct Editor {
     /// baselines / current sources. `:describe-diff` reads
     /// `diff_subsystem.build_describe_diff_content()` directly.
     /// See `docs/dev/architecture/diff-system.md` §3.4.
-    pub diff_subsystem: std::sync::Arc<crate::diff_subsystem::DiffSubsystem>,
+    pub diff_subsystem: std::sync::Arc<crate::diff::subsystem::DiffSubsystem>,
     /// D.0a.1 (2026-05-29): virtual-rows worker output cell.
     /// Same stability pattern as `cells_matrix_cell`: the Arc
     /// identity lives on `Editor` so `build_render_state`
@@ -1179,7 +1179,7 @@ pub struct Editor {
     /// boot through `editor_boot`) can leave it unset without
     /// the bind machinery firing.
     pub diff_subscription_guard:
-        Option<crate::diff_subsystem::DiffSubscriptionGuard>,
+        Option<crate::diff::subsystem::DiffSubscriptionGuard>,
     /// D.3.a.1 (2026-05-29): per-session wake-forwarder
     /// `JoinHandle`s. `:diff` spawns a tokio task that awaits
     /// `DiffSession::publish_notify().notified()` and fires

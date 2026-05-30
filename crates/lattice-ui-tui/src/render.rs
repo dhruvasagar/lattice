@@ -4451,7 +4451,7 @@ fn render_virtual_row(
 /// `DiffRemove` theme entries (deferred to the theme
 /// expansion slice).
 fn diff_tint_bg(view: &FrameView<'_>, line_idx: u32) -> Option<Color> {
-    use lattice_host::diff_overlay::DiffSignKind;
+    use lattice_host::diff::overlay::DiffSignKind;
     let rs = view.app.render_state.load();
     match rs.diff.sign_map.sign_at(line_idx)? {
         // D.3.b.3: read tint colours from the theme.
@@ -4490,7 +4490,7 @@ fn render_diff_sign_cell(
     view: &FrameView<'_>,
     line_idx: u32,
 ) -> Span<'static> {
-    use lattice_host::diff_overlay::DiffSignKind;
+    use lattice_host::diff::overlay::DiffSignKind;
     let blank = Span::styled(" ".to_string(), TuiStyle::default());
     let rs = view.app.render_state.load();
     let Some(kind) = rs.diff.sign_map.sign_at(line_idx) else {

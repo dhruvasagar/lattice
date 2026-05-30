@@ -228,7 +228,7 @@ impl VirtualRowsRenderState {
 /// empty map's `sign_at` is `None` for every line.
 #[derive(Clone, Debug, Default)]
 pub struct DiffRenderState {
-    pub sign_map: Arc<crate::diff_overlay::DiffSignMap>,
+    pub sign_map: Arc<crate::diff::overlay::DiffSignMap>,
     /// D.3.g (2026-05-29): hunk count for the active
     /// document's `DiffSession`, if any. `None` means no
     /// session is open for the active buffer. `Some(0)` means

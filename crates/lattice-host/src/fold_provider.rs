@@ -96,7 +96,7 @@ impl FoldRegistry {
         // composition as the editor-boot path without a
         // manual `add_overlay` call.
         let overlays: Vec<Arc<dyn FoldProvider>> =
-            vec![Arc::new(crate::diff_fold::HunkFoldProvider)];
+            vec![Arc::new(crate::diff::fold::HunkFoldProvider)];
         Self {
             primaries,
             overlays,
@@ -229,7 +229,7 @@ mod tests {
         let r = FoldRegistry::with_builtins();
         assert!(
             r.overlays()
-                .any(|p| p.id() == crate::diff_fold::HUNK_FOLD_PROVIDER_ID),
+                .any(|p| p.id() == crate::diff::fold::HUNK_FOLD_PROVIDER_ID),
             "HunkFoldProvider must be pre-seeded so `Editor::default()` matches editor-boot composition"
         );
     }

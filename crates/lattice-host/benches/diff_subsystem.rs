@@ -60,7 +60,7 @@ use ropey::Rope;
 
 use lattice_core::BufferId;
 use lattice_diff::DiffAlgorithm;
-use lattice_host::diff_subsystem::{
+use lattice_host::diff::subsystem::{
 	BufferCurrentSource, BufferTextProvider, Debouncer, DiffDescriptor, DiffSession,
 	DiffSubsystem, StaticBaseline,
 };

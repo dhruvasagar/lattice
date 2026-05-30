@@ -1205,7 +1205,7 @@ impl EditorView {
                     .sign_map
                     .sign_at(line_idx as u32)
                     .map(|kind| {
-                        use lattice_host::diff_overlay::DiffSignKind;
+                        use lattice_host::diff::overlay::DiffSignKind;
                         // D.3.b.3 (2026-05-29): read sign
                         // colours from the host theme. Glyphs
                         // stay hardcoded (convention).
@@ -1245,7 +1245,7 @@ impl EditorView {
             .filter(|line_idx| !fold_index.line_inside_closed_fold(*line_idx as u32))
             .map(|line_idx| {
                 rs_guard.diff.sign_map.sign_at(line_idx as u32).and_then(|kind| {
-                    use lattice_host::diff_overlay::DiffSignKind;
+                    use lattice_host::diff::overlay::DiffSignKind;
                     // D.3.b.3 (2026-05-29): read line tint
                     // colours from the host theme.
                     match kind {

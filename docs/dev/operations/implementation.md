@@ -1334,7 +1334,7 @@ shared with multibuffer-views and post-v1 inlay hints.
   recorded (`benches/recompute.rs`); CI gate enforcement
   deferred to D.2 per design plan.
 - ✅ **D.2.a** (2026-05-28) — `DiffSubsystem` skeleton landed
-  in `lattice-host::diff_subsystem`. Process-wide registry of
+  in `lattice-host::diff::subsystem`. Process-wide registry of
   `Arc<DiffSession>` keyed by `BufferId`, behind a
   `std::sync::Mutex` (mutation is buffer-open / buffer-close
   frequency, never per-frame). Each `DiffSession` carries
@@ -1347,7 +1347,7 @@ shared with multibuffer-views and post-v1 inlay hints.
   the entry but in-flight clones stay coherent. **11 tests
   green** (registry + session). No compute yet — that lands D.2.b.
 - ✅ **D.2.b** (2026-05-28) — Compute path on `spawn_blocking`
-  landed in `lattice-host::diff_subsystem`. New
+  landed in `lattice-host::diff::subsystem`. New
   `BaselineSource: Send + Sync + 'static` trait with one impl
   (`StaticBaseline` wrapping an owned `Rope` — clones are cheap,
   it's `Arc`-shared chunks). Future `GitBaseline` (D.7),
@@ -1369,7 +1369,7 @@ shared with multibuffer-views and post-v1 inlay hints.
   drop, unregistered-buffer None handle, tokio happy-path
   publish, tokio serial-pair monotonicity).
 - ✅ **D.2.c** (2026-05-29) — Routing + debounce + bus
-  subscription landed in `lattice-host::diff_subsystem`. Final
+  subscription landed in `lattice-host::diff::subsystem`. Final
   shape per the
   [`docs/dev/architecture/diff-system.md`](../architecture/diff-system.md)
   §3.4 redesign:
@@ -1836,7 +1836,7 @@ shared with multibuffer-views and post-v1 inlay hints.
     **1461 workspace tests green** (regression sweep
     end-to-end).
   - ✅ **D.3.f.1** (2026-05-29) — `HunkFoldProvider` overlay
-    landed. New `lattice-host/src/diff_fold.rs` houses the
+    landed. New `lattice-host/src/diff/fold.rs` houses the
     provider (`ProviderId(100)`, `ProviderKind::Overlay`) +
     the `hunk_fold_identity` helper that namespaces hashes
     with the literal `"diff:hunk"` so closed-state survives
@@ -1926,7 +1926,7 @@ shared with multibuffer-views and post-v1 inlay hints.
     suspension, prune-on-empty). 475 host + 1461 workspace
     tests green.
   - ✅ **D.4.b** (2026-05-29) — `HunkRowMapper` landed.
-    New `lattice-host/src/diff_pane_group.rs`. Constructed
+    New `lattice-host/src/diff/pane_group.rs`. Constructed
     with `Arc<DiffSession>` + the baseline / current member
     indices into `PaneGroup::members`. `RowMapper::map_row`
     dispatches on the (from, to) pair: matches the baseline
@@ -1955,7 +1955,7 @@ shared with multibuffer-views and post-v1 inlay hints.
     published session. 487 host + 1461 workspace tests
     green.
   - ✅ **D.4.c** (2026-05-29) — `FillerRowProvider` landed.
-    New `lattice-host/src/diff_filler.rs`. `Side` enum
+    New `lattice-host/src/diff/filler.rs`. `Side` enum
     distinguishes the two providers a side-by-side session
     needs (one per pane). Pure-sync `collect()` walks the
     session's published `HunkIndex` and translates each
@@ -2631,7 +2631,7 @@ shared with multibuffer-views and post-v1 inlay hints.
     two-pane, `:diffoff`, doc-close auto-drop, two
     independent sessions, refcount-correct shared buffer,
     scratch-to-scratch). Workspace green. New files:
-    `crates/lattice-host/src/diff_mode.rs`. Touched:
+    `crates/lattice-host/src/diff/mode.rs`. Touched:
     `crates/lattice-host/src/{diff_subsystem.rs,
     editor_boot.rs, dispatch.rs, lib.rs}` +
     `crates/lattice-host/benches/diff_subsystem.rs`. Arch

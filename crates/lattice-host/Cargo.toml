@@ -72,7 +72,7 @@ lattice-diff = { path = "../lattice-diff" }
 # D.2.b (2026-05-28): `BaselineSource::snapshot(&self) -> Rope`
 # trait + `StaticBaseline` impl + `DiffSession::recompute_blocking`
 # (and `DiffSubsystem::schedule_recompute` on `spawn_blocking`)
-# need direct `ropey::Rope` paths in the diff_subsystem module.
+# need direct `ropey::Rope` paths in the diff::subsystem module.
 ropey = { workspace = true }
 tree-sitter = { workspace = true }
 streaming-iterator = { workspace = true }

@@ -48,7 +48,7 @@ use smallvec::smallvec;
 
 use lattice_core::{BufferId, Fold, ProviderId};
 use lattice_diff::{DiffAlgorithm, Hunk, HunkIndex, HunkKind, LineRange};
-use lattice_host::diff_fold::{hunk_fold_identity, HunkFoldProvider};
+use lattice_host::diff::fold::{hunk_fold_identity, HunkFoldProvider};
 use lattice_host::editor::Editor;
 use lattice_host::fold_provider::{FoldContext, FoldProvider};
 
@@ -134,7 +134,7 @@ fn bench_fold_identity_hash(c: &mut Criterion) {
 // Sanity: the `HunkFoldProvider`'s id is the constant we
 // expect (would fail to compile if the API drifted).
 #[allow(dead_code)]
-const _ASSERT_OVERLAY_ID: ProviderId = lattice_host::diff_fold::HUNK_FOLD_PROVIDER_ID;
+const _ASSERT_OVERLAY_ID: ProviderId = lattice_host::diff::fold::HUNK_FOLD_PROVIDER_ID;
 
 criterion_group!(
     benches,

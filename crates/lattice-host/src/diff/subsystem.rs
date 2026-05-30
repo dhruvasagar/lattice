@@ -146,7 +146,7 @@ impl BaselineSource for StaticBaseline {
 /// defensible degradation that the user can resolve via
 /// `:diffoff` and a corrected path. We log the error at
 /// `tracing::debug` so the failure surfaces under
-/// `RUST_LOG=lattice_host::diff_subsystem=debug` without
+/// `RUST_LOG=lattice_host::diff::subsystem=debug` without
 /// blocking the recompute path.
 #[derive(Clone, Debug)]
 pub struct OnDiskBaseline {
@@ -169,7 +169,7 @@ impl BaselineSource for OnDiskBaseline {
 			Ok(s) => Rope::from(s),
 			Err(err) => {
 				debug!(
-					target: "lattice_host::diff_subsystem",
+					target: "lattice_host::diff::subsystem",
 					path = ?self.path,
 					?err,
 					"OnDiskBaseline::snapshot failed; returning empty rope"
@@ -573,12 +573,12 @@ pub struct DiffSession {
 	/// classification derived from the current `HunkIndex`.
 	/// Renderers read via `sign_map()` (lock-free `ArcSwap`
 	/// load) per-frame; the
-	/// [`crate::diff_overlay::DiffOverlayRefreshTask`] writes
+	/// [`crate::diff::overlay::DiffOverlayRefreshTask`] writes
 	/// this cell on every hunk publish, keeping it in lockstep
 	/// with `hunks`. Initialised to an empty map at session
 	/// construction; first refresh populates it once the
 	/// initial recompute completes.
-	sign_map: ArcSwap<crate::diff_overlay::DiffSignMap>,
+	sign_map: ArcSwap<crate::diff::overlay::DiffSignMap>,
 	/// D.4.d.3.a (2026-05-30): linkage from a two-pane diff
 	/// session to its `PaneGroup` (the scroll-binding
 	/// mechanism with `HunkRowMapper`). `None` for inline
@@ -602,7 +602,7 @@ impl DiffSession {
 			next_revision: AtomicU64::new(1),
 			publish_notify: Arc::new(tokio::sync::Notify::new()),
 			sign_map: ArcSwap::from_pointee(
-				crate::diff_overlay::DiffSignMap::default(),
+				crate::diff::overlay::DiffSignMap::default(),
 			),
 			pane_group_id: Mutex::new(None),
 		}
@@ -636,8 +636,8 @@ impl DiffSession {
 	/// D.3.d.0 (2026-05-29): snapshot the latest published
 	/// `DiffSignMap`. Lock-free `ArcSwap::load_full`; renderer
 	/// hot path. The map is refreshed in lockstep with
-	/// `hunks` by [`crate::diff_overlay::DiffOverlayRefreshTask`].
-	pub fn sign_map(&self) -> Arc<crate::diff_overlay::DiffSignMap> {
+	/// `hunks` by [`crate::diff::overlay::DiffOverlayRefreshTask`].
+	pub fn sign_map(&self) -> Arc<crate::diff::overlay::DiffSignMap> {
 		self.sign_map.load_full()
 	}
 
@@ -648,7 +648,7 @@ impl DiffSession {
 	/// landing isn't possible from the refresh-task side.
 	/// Direct callers (tests, future consumers) bear the
 	/// ordering responsibility.
-	pub fn publish_sign_map(&self, map: Arc<crate::diff_overlay::DiffSignMap>) {
+	pub fn publish_sign_map(&self, map: Arc<crate::diff::overlay::DiffSignMap>) {
 		self.sign_map.store(map);
 	}
 
@@ -817,7 +817,7 @@ pub struct DiffSubsystem {
 	/// bridge. Created on `Default` so the subsystem is the
 	/// single owner of the bridge identity; the editor accesses
 	/// it via [`Self::mode_bridge`] for the dispatch-tail drain.
-	mode_bridge: Arc<crate::diff_mode::DiffModeBridge>,
+	mode_bridge: Arc<crate::diff::mode::DiffModeBridge>,
 }
 
 impl Default for DiffSubsystem {
@@ -829,7 +829,7 @@ impl Default for DiffSubsystem {
 			secondary_index: Mutex::new(HashMap::new()),
 			debouncers: Mutex::new(HashMap::new()),
 			debounce_window: DEFAULT_DEBOUNCE_WINDOW,
-			mode_bridge: Arc::new(crate::diff_mode::DiffModeBridge::new()),
+			mode_bridge: Arc::new(crate::diff::mode::DiffModeBridge::new()),
 		}
 	}
 }
@@ -859,7 +859,7 @@ impl DiffSubsystem {
 	/// bridge so the editor's dispatch tail can drain queued
 	/// activations. The subsystem owns the bridge identity; the
 	/// returned `Arc` is a cheap reference clone, not a take.
-	pub fn mode_bridge(&self) -> Arc<crate::diff_mode::DiffModeBridge> {
+	pub fn mode_bridge(&self) -> Arc<crate::diff::mode::DiffModeBridge> {
 		Arc::clone(&self.mode_bridge)
 	}
 
@@ -1295,7 +1295,7 @@ impl DiffSubsystem {
 			return;
 		}
 		debug!(
-			target: "lattice_host::diff_subsystem",
+			target: "lattice_host::diff::subsystem",
 			?buffer_id,
 			n_dependents = dependents.len(),
 			"diff: buffer edited, poking debouncers"
@@ -1317,7 +1317,7 @@ impl DiffSubsystem {
 	/// close.
 	pub fn note_buffer_closed(&self, buffer_id: BufferId) {
 		debug!(
-			target: "lattice_host::diff_subsystem",
+			target: "lattice_host::diff::subsystem",
 			?buffer_id,
 			"diff: buffer closed, dropping session if registered"
 		);

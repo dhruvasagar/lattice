@@ -1,6 +1,6 @@
 //! D.3.a (2026-05-29) — `DiffOverlayVirtualRowProvider`.
 //!
-//! Bridges [`crate::diff_subsystem::DiffSession`]'s published
+//! Bridges [`crate::diff::subsystem::DiffSession`]'s published
 //! `HunkIndex` to the `virtual_rows_worker`'s
 //! [`lattice_cells::VirtualRowProvider`] surface. One provider
 //! per active diff session; registered with
@@ -48,7 +48,7 @@
 //!
 //! `version()` returns the session's currently-published
 //! `HunkIndex::revision`. Bumps on every successful publish
-//! through [`crate::diff_subsystem::DiffSession::try_publish_if_newer`];
+//! through [`crate::diff::subsystem::DiffSession::try_publish_if_newer`];
 //! the `virtual_rows_worker`'s fingerprint pass picks up the
 //! change on its next wake and triggers a recompute.
 //! D.3.a.1's `:diff` ex-command also wires a wake forwarder
@@ -65,7 +65,7 @@ use lattice_core::BufferId;
 use tokio::task::JoinHandle;
 use tracing::debug;
 
-use crate::diff_subsystem::{BaselineSource, DiffSession};
+use crate::diff::subsystem::{BaselineSource, DiffSession};
 
 // ──────────────────────────────────────────────────────────────
 // D.3.d.0 (2026-05-29): per-line sign classification.
@@ -504,7 +504,7 @@ impl DiffOverlayRefreshTask {
 		let (rendered_revision, rows) =
 			DiffOverlayVirtualRowProvider::render_rows(session, baseline, syntax);
 		debug!(
-			target: "lattice_host::diff_overlay",
+			target: "lattice_host::diff::overlay",
 			buffer_id = ?session.buffer_id(),
 			rendered_revision,
 			n_rows = rows.len(),
@@ -581,7 +581,7 @@ mod tests {
 	// The pure render path is `render_rows(session, baseline)`;
 	// tests below exercise it directly so they stay sync.
 
-	use crate::diff_subsystem::StaticBaseline;
+	use crate::diff::subsystem::StaticBaseline;
 	use ropey::Rope;
 
 	fn render(session: &DiffSession, baseline_text: &str) -> Vec<VirtualRow> {

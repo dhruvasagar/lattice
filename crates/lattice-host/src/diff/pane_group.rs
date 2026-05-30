@@ -49,7 +49,7 @@ use std::sync::Arc;
 
 use lattice_diff::HunkIndex;
 
-use crate::diff_subsystem::DiffSession;
+use crate::diff::subsystem::DiffSession;
 use crate::pane_group::RowMapper;
 
 /// D.4.b: maps rows between the baseline and current sides

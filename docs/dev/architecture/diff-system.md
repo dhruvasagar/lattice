@@ -209,7 +209,7 @@ came from a `DiffMap` or directly from the document.
 
 A `DiffSubsystem` lives next to `LspSupervisor` and the
 existing terminal supervisor on `lattice-host`
-(`lattice-host::diff_subsystem`, landed D.2.a 2026-05-28).
+(`lattice-host::diff::subsystem`, landed D.2.a 2026-05-28).
 What follows is the model the subsystem implements end-to-end
 across D.2.a (registry) → D.2.b (compute) → D.2.c (routing +
 debounce). Each piece names the slice that landed it so the

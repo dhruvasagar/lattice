@@ -6,7 +6,7 @@
 //! so the hunks align visually between the two panes.
 //!
 //! Composes with D.4.a ([`crate::pane_group`]), D.4.b
-//! ([`crate::diff_pane_group`]), and D.0a virtual rows
+//! ([`crate::diff::pane_group`]), and D.0a virtual rows
 //! ([`lattice_cells::VirtualRowProvider`]); consumed by
 //! D.4.d (`:diffsplit` / `:diffthis`).
 //!
@@ -51,7 +51,7 @@ use lattice_cells::{AnchorPosition, Cell, ProviderId, VirtualRow, VirtualRowProv
 use lattice_core::BufferId;
 use lattice_diff::{HunkIndex, HunkKind};
 
-use crate::diff_subsystem::DiffSession;
+use crate::diff::subsystem::DiffSession;
 
 /// Which pane of a side-by-side session this provider
 /// emits rows for.
@@ -80,7 +80,7 @@ pub fn diff_filler_provider_id(buffer_id: BufferId, side: Side) -> ProviderId {
 }
 
 /// Namespace prefix for the baseline-side filler provider.
-/// Distinct from `diff_overlay::DIFF_OVERLAY_PROVIDER_NAMESPACE`
+/// Distinct from `diff::overlay::DIFF_OVERLAY_PROVIDER_NAMESPACE`
 /// (`0xD1FF_0000_0000_0000`) so the two coexist in the
 /// global provider registry without collision.
 const DIFF_FILLER_BASELINE_NAMESPACE: u64 = 0xD1FF_0001_0000_0000;
@@ -387,7 +387,7 @@ mod tests {
     #[test]
     fn provider_id_does_not_collide_with_overlay_namespace() {
         let bid = BufferId(7);
-        let overlay = crate::diff_overlay::diff_overlay_provider_id(bid);
+        let overlay = crate::diff::overlay::diff_overlay_provider_id(bid);
         assert_ne!(diff_filler_provider_id(bid, Side::Baseline), overlay);
         assert_ne!(diff_filler_provider_id(bid, Side::Current), overlay);
     }

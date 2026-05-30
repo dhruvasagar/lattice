@@ -2537,18 +2537,18 @@ impl Editor {
             return;
         }
         let provider_text: std::sync::Arc<
-            dyn crate::diff_subsystem::BufferTextProvider,
+            dyn crate::diff::subsystem::BufferTextProvider,
         > = std::sync::Arc::new(
-            crate::diff_subsystem::BufferRegistryTextProvider::new(self.buffers.clone()),
+            crate::diff::subsystem::BufferRegistryTextProvider::new(self.buffers.clone()),
         );
-        let baseline: std::sync::Arc<dyn crate::diff_subsystem::BaselineSource> =
+        let baseline: std::sync::Arc<dyn crate::diff::subsystem::BaselineSource> =
             std::sync::Arc::new(
-                crate::diff_subsystem::OnDiskBaseline::new(path.clone()),
+                crate::diff::subsystem::OnDiskBaseline::new(path.clone()),
             );
-        let descriptor = crate::diff_subsystem::DiffDescriptor {
+        let descriptor = crate::diff::subsystem::DiffDescriptor {
             baseline: std::sync::Arc::clone(&baseline),
             current: std::sync::Arc::new(
-                crate::diff_subsystem::BufferCurrentSource::new(
+                crate::diff::subsystem::BufferCurrentSource::new(
                     std::sync::Arc::clone(&provider_text),
                     buffer_id,
                 ),
@@ -2569,7 +2569,7 @@ impl Editor {
         // same `Mutex<DiffOverlayCache>` the provider reads
         // from in `collect()` / `version()`.
         let overlay = std::sync::Arc::new(
-            crate::diff_overlay::DiffOverlayVirtualRowProvider::new(
+            crate::diff::overlay::DiffOverlayVirtualRowProvider::new(
                 std::sync::Arc::clone(&session),
             ),
         );
@@ -2586,7 +2586,7 @@ impl Editor {
             // still in place. Clear it and try again.
             self.virtual_row_providers.unregister(
                 buffer_id,
-                crate::diff_overlay::diff_overlay_provider_id(buffer_id),
+                crate::diff::overlay::diff_overlay_provider_id(buffer_id),
             );
             self.virtual_row_providers
                 .register(buffer_id, overlay_provider);
@@ -2611,14 +2611,14 @@ impl Editor {
             if matches!(lang, lattice_syntax::Lang::Plain) {
                 None
             } else {
-                Some(crate::diff_overlay::SyntaxContext {
+                Some(crate::diff::overlay::SyntaxContext {
                     lang,
                     registry: self.lang_registry.clone(),
                     theme: self.host_theme,
                 })
             }
         };
-        let forwarder = crate::diff_overlay::DiffOverlayRefreshTask::spawn(
+        let forwarder = crate::diff::overlay::DiffOverlayRefreshTask::spawn(
             std::sync::Arc::clone(&session),
             baseline,
             overlay_cache_handle,
@@ -2831,7 +2831,7 @@ impl Editor {
         if changes.is_empty() {
             return;
         }
-        let diff_mode_id = crate::diff_mode::DiffMode::mode_id();
+        let diff_mode_id = crate::diff::mode::DiffMode::mode_id();
         for change in changes {
             let buffer_id = change.buffer;
             let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
@@ -2840,7 +2840,7 @@ impl Editor {
                 .remove(&buffer_id)
                 .unwrap_or_default();
             let res = match change.action {
-                crate::diff_mode::DiffModeAction::Activate => self
+                crate::diff::mode::DiffModeAction::Activate => self
                     .mode_registry
                     .activate_minor(
                         &mut active,
@@ -2852,7 +2852,7 @@ impl Editor {
                         diff_mode_id,
                         lattice_mode::CapabilitySet::empty(),
                     ),
-                crate::diff_mode::DiffModeAction::Deactivate => self
+                crate::diff::mode::DiffModeAction::Deactivate => self
                     .mode_registry
                     .deactivate_minor(
                         &mut active,
@@ -2864,7 +2864,7 @@ impl Editor {
             };
             if let Err(e) = res {
                 tracing::debug!(
-                    target: "lattice_host::diff_mode",
+                    target: "lattice_host::diff::mode",
                     ?buffer_id,
                     ?change,
                     error = ?e,
@@ -2952,7 +2952,7 @@ impl Editor {
     /// is open for the active buffer; renderers fall back to
     /// the no-gutter path. Lock-free `ArcSwap::load_full`;
     /// renderer hot path.
-    pub fn diff_signs_for_active(&self) -> Option<std::sync::Arc<crate::diff_overlay::DiffSignMap>> {
+    pub fn diff_signs_for_active(&self) -> Option<std::sync::Arc<crate::diff::overlay::DiffSignMap>> {
         let session = self.diff_subsystem.lookup(self.document_buffer_id)?;
         Some(session.sign_map())
     }
@@ -2997,20 +2997,20 @@ impl Editor {
         for buf in &watch {
             self.virtual_row_providers.unregister(
                 *buf,
-                crate::diff_overlay::diff_overlay_provider_id(*buf),
+                crate::diff::overlay::diff_overlay_provider_id(*buf),
             );
             self.virtual_row_providers.unregister(
                 *buf,
-                crate::diff_filler::diff_filler_provider_id(
+                crate::diff::filler::diff_filler_provider_id(
                     primary,
-                    crate::diff_filler::Side::Baseline,
+                    crate::diff::filler::Side::Baseline,
                 ),
             );
             self.virtual_row_providers.unregister(
                 *buf,
-                crate::diff_filler::diff_filler_provider_id(
+                crate::diff::filler::diff_filler_provider_id(
                     primary,
-                    crate::diff_filler::Side::Current,
+                    crate::diff::filler::Side::Current,
                 ),
             );
         }
@@ -3182,7 +3182,7 @@ impl Editor {
     ///
     /// The session's primary key is the *current* side's
     /// `BufferId`. Either side's buffer resolves to the same
-    /// session via [`crate::diff_subsystem::DiffSubsystem::lookup_session_for`]
+    /// session via [`crate::diff::subsystem::DiffSubsystem::lookup_session_for`]
     /// (the secondary index points baseline → current).
     fn register_two_pane_diff(
         &mut self,
@@ -3205,16 +3205,16 @@ impl Editor {
         }
 
         let provider_text: std::sync::Arc<
-            dyn crate::diff_subsystem::BufferTextProvider,
+            dyn crate::diff::subsystem::BufferTextProvider,
         > = std::sync::Arc::new(
-            crate::diff_subsystem::BufferRegistryTextProvider::new(self.buffers.clone()),
+            crate::diff::subsystem::BufferRegistryTextProvider::new(self.buffers.clone()),
         );
-        let descriptor = crate::diff_subsystem::DiffDescriptor {
-            baseline: std::sync::Arc::new(crate::diff_subsystem::BufferBaseline::new(
+        let descriptor = crate::diff::subsystem::DiffDescriptor {
+            baseline: std::sync::Arc::new(crate::diff::subsystem::BufferBaseline::new(
                 std::sync::Arc::clone(&provider_text),
                 baseline.buffer,
             )),
-            current: std::sync::Arc::new(crate::diff_subsystem::BufferCurrentSource::new(
+            current: std::sync::Arc::new(crate::diff::subsystem::BufferCurrentSource::new(
                 std::sync::Arc::clone(&provider_text),
                 primary,
             )),
@@ -3236,7 +3236,7 @@ impl Editor {
         // (session, baseline_idx, current_idx).
         let members = vec![baseline, current];
         let mapper: std::sync::Arc<dyn crate::pane_group::RowMapper> =
-            std::sync::Arc::new(crate::diff_pane_group::HunkRowMapper::new(
+            std::sync::Arc::new(crate::diff::pane_group::HunkRowMapper::new(
                 std::sync::Arc::clone(&session),
                 0,
                 1,
@@ -3256,14 +3256,14 @@ impl Editor {
         // collide; per-BufferId scoping (D.4.d.2.1.a) routes
         // the registration to the right side's buffer.
         let baseline_filler: std::sync::Arc<dyn lattice_cells::VirtualRowProvider> =
-            std::sync::Arc::new(crate::diff_filler::FillerRowProvider::new(
+            std::sync::Arc::new(crate::diff::filler::FillerRowProvider::new(
                 std::sync::Arc::clone(&session),
-                crate::diff_filler::Side::Baseline,
+                crate::diff::filler::Side::Baseline,
             ));
         let current_filler: std::sync::Arc<dyn lattice_cells::VirtualRowProvider> =
-            std::sync::Arc::new(crate::diff_filler::FillerRowProvider::new(
+            std::sync::Arc::new(crate::diff::filler::FillerRowProvider::new(
                 std::sync::Arc::clone(&session),
-                crate::diff_filler::Side::Current,
+                crate::diff::filler::Side::Current,
             ));
         self.virtual_row_providers
             .register(baseline.buffer, baseline_filler);
@@ -23930,7 +23930,7 @@ mod tests {
         );
         assert_eq!(
             hunk_fold.unwrap().identity,
-            Some(crate::diff_fold::hunk_fold_identity(3, 6)),
+            Some(crate::diff::fold::hunk_fold_identity(3, 6)),
             "hunk fold identity must namespace via diff:hunk hash"
         );
     }
@@ -23970,7 +23970,7 @@ mod tests {
             editor
                 .folds
                 .iter()
-                .all(|f| f.identity != Some(crate::diff_fold::hunk_fold_identity(0, 3))),
+                .all(|f| f.identity != Some(crate::diff::fold::hunk_fold_identity(0, 3))),
             "after drop_session, the hunk fold must be gone"
         );
     }
@@ -24183,7 +24183,7 @@ mod tests {
         let pos = editor
             .folds
             .iter()
-            .position(|f| f.identity == Some(crate::diff_fold::hunk_fold_identity(1, 3)))
+            .position(|f| f.identity == Some(crate::diff::fold::hunk_fold_identity(1, 3)))
             .expect("hunk fold present after first publish");
         editor.folds[pos].closed = true;
 
@@ -24192,7 +24192,7 @@ mod tests {
         let f = editor
             .folds
             .iter()
-            .find(|f| f.identity == Some(crate::diff_fold::hunk_fold_identity(1, 3)))
+            .find(|f| f.identity == Some(crate::diff::fold::hunk_fold_identity(1, 3)))
             .expect("hunk fold still present after republish");
         assert!(
             f.closed,
@@ -24551,7 +24551,7 @@ mod tests {
     //   `:diffthis` / `:diff` → `register_with_sources` → bridge
     //     queue → `apply_pending_diff_mode_changes` → `ActiveModes`.
     // Plus the symmetric teardown path. The pure-bridge tests
-    // live in `crate::diff_mode::tests`; these tests assert the
+    // live in `crate::diff::mode::tests`; these tests assert the
     // integration is wired correctly.
     // ─────────────────────────────────────────────────────────
 
@@ -24559,7 +24559,7 @@ mod tests {
         editor
             .active_modes
             .get(&buffer)
-            .map(|am| am.has_minor(crate::diff_mode::DiffMode::mode_id()))
+            .map(|am| am.has_minor(crate::diff::mode::DiffMode::mode_id()))
             .unwrap_or(false)
     }
 
@@ -24574,7 +24574,7 @@ mod tests {
     fn editor_with_diff_mode_registered() -> crate::editor::Editor {
         let mut editor = crate::editor::Editor::default();
         let mut registry = lattice_mode::ModeRegistry::new();
-        crate::diff_mode::register_diff_modes(&mut registry);
+        crate::diff::mode::register_diff_modes(&mut registry);
         editor.mode_registry = std::sync::Arc::new(registry);
         editor
     }
@@ -24590,15 +24590,15 @@ mod tests {
         // we exercise the same `register_with_sources` path
         // `do_diff_open` uses, without depending on a real
         // file. participants = [primary].
-        let provider_text: std::sync::Arc<dyn crate::diff_subsystem::BufferTextProvider> =
-            std::sync::Arc::new(crate::diff_subsystem::BufferRegistryTextProvider::new(
+        let provider_text: std::sync::Arc<dyn crate::diff::subsystem::BufferTextProvider> =
+            std::sync::Arc::new(crate::diff::subsystem::BufferRegistryTextProvider::new(
                 editor.buffers.clone(),
             ));
-        let descriptor = crate::diff_subsystem::DiffDescriptor {
-            baseline: std::sync::Arc::new(crate::diff_subsystem::StaticBaseline::new(
+        let descriptor = crate::diff::subsystem::DiffDescriptor {
+            baseline: std::sync::Arc::new(crate::diff::subsystem::StaticBaseline::new(
                 ropey::Rope::new(),
             )),
-            current: std::sync::Arc::new(crate::diff_subsystem::BufferCurrentSource::new(
+            current: std::sync::Arc::new(crate::diff::subsystem::BufferCurrentSource::new(
                 provider_text,
                 primary,
             )),
@@ -24706,20 +24706,20 @@ mod tests {
     #[tokio::test]
     async fn two_independent_sessions_have_independent_diff_mode_state() {
         let mut editor = editor_with_diff_mode_registered();
-        let provider_text: std::sync::Arc<dyn crate::diff_subsystem::BufferTextProvider> =
-            std::sync::Arc::new(crate::diff_subsystem::BufferRegistryTextProvider::new(
+        let provider_text: std::sync::Arc<dyn crate::diff::subsystem::BufferTextProvider> =
+            std::sync::Arc::new(crate::diff::subsystem::BufferRegistryTextProvider::new(
                 editor.buffers.clone(),
             ));
         let mk = |baseline: lattice_core::BufferId, current: lattice_core::BufferId| {
-            crate::diff_subsystem::DiffDescriptor {
+            crate::diff::subsystem::DiffDescriptor {
                 baseline: std::sync::Arc::new(
-                    crate::diff_subsystem::BufferBaseline::new(
+                    crate::diff::subsystem::BufferBaseline::new(
                         std::sync::Arc::clone(&provider_text),
                         baseline,
                     ),
                 ),
                 current: std::sync::Arc::new(
-                    crate::diff_subsystem::BufferCurrentSource::new(
+                    crate::diff::subsystem::BufferCurrentSource::new(
                         std::sync::Arc::clone(&provider_text),
                         current,
                     ),
@@ -24766,23 +24766,23 @@ mod tests {
     #[tokio::test]
     async fn shared_buffer_in_two_sessions_keeps_diff_mode_until_last_close() {
         let mut editor = editor_with_diff_mode_registered();
-        let provider_text: std::sync::Arc<dyn crate::diff_subsystem::BufferTextProvider> =
-            std::sync::Arc::new(crate::diff_subsystem::BufferRegistryTextProvider::new(
+        let provider_text: std::sync::Arc<dyn crate::diff::subsystem::BufferTextProvider> =
+            std::sync::Arc::new(crate::diff::subsystem::BufferRegistryTextProvider::new(
                 editor.buffers.clone(),
             ));
         let shared = lattice_core::BufferId(201);
         let peer_a = lattice_core::BufferId(202);
         let peer_b = lattice_core::BufferId(203);
         let mk = |baseline: lattice_core::BufferId, current: lattice_core::BufferId| {
-            crate::diff_subsystem::DiffDescriptor {
+            crate::diff::subsystem::DiffDescriptor {
                 baseline: std::sync::Arc::new(
-                    crate::diff_subsystem::BufferBaseline::new(
+                    crate::diff::subsystem::BufferBaseline::new(
                         std::sync::Arc::clone(&provider_text),
                         baseline,
                     ),
                 ),
                 current: std::sync::Arc::new(
-                    crate::diff_subsystem::BufferCurrentSource::new(
+                    crate::diff::subsystem::BufferCurrentSource::new(
                         std::sync::Arc::clone(&provider_text),
                         current,
                     ),
@@ -24857,7 +24857,7 @@ mod tests {
     /// `:diffthis` completion path.
     #[test]
     fn subsystem_lookup_session_for_resolves_secondary_to_primary() {
-        let sub = crate::diff_subsystem::DiffSubsystem::new();
+        let sub = crate::diff::subsystem::DiffSubsystem::new();
         let primary = lattice_core::BufferId(7);
         let secondary = lattice_core::BufferId(8);
 
@@ -24865,18 +24865,18 @@ mod tests {
         // return empty ropes); what matters is the `watch`
         // list shape: `[primary, secondary]`.
         let provider_text: std::sync::Arc<
-            dyn crate::diff_subsystem::BufferTextProvider,
+            dyn crate::diff::subsystem::BufferTextProvider,
         > = std::sync::Arc::new(
-            crate::diff_subsystem::BufferRegistryTextProvider::new(
+            crate::diff::subsystem::BufferRegistryTextProvider::new(
                 crate::buffer_registry::BufferRegistry::new().into(),
             ),
         );
-        let descriptor = crate::diff_subsystem::DiffDescriptor {
-            baseline: std::sync::Arc::new(crate::diff_subsystem::BufferBaseline::new(
+        let descriptor = crate::diff::subsystem::DiffDescriptor {
+            baseline: std::sync::Arc::new(crate::diff::subsystem::BufferBaseline::new(
                 std::sync::Arc::clone(&provider_text),
                 secondary,
             )),
-            current: std::sync::Arc::new(crate::diff_subsystem::BufferCurrentSource::new(
+            current: std::sync::Arc::new(crate::diff::subsystem::BufferCurrentSource::new(
                 std::sync::Arc::clone(&provider_text),
                 primary,
             )),

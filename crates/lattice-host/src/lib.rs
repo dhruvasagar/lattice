@@ -51,38 +51,20 @@ pub mod folds;
 // providers wrapping today's `compute_*_folds` helpers. The
 // first overlay consumer (`HunkFoldProvider`) lands in D.3.f.1.
 pub mod fold_provider;
-// D.3.f.1 (2026-05-29): HunkFoldProvider — overlay that
-// emits one Fold per non-empty current-side hunk range in
-// the active diff session. Registered as an overlay at
-// editor boot; emits empty when no diff session is active.
-// See `docs/dev/architecture/fold-architecture.md` and
-// `docs/dev/architecture/diff-system.md` §6.5.
-pub mod diff_fold;
-// D.5.a (2026-05-30): `diff-mode` minor mode + the host-side
-// bridge that toggles it on participating buffers as
-// `DiffSession`s open and close. See
-// `docs/dev/architecture/diff-system.md` §3.4.7.
-pub mod diff_mode;
+// Diff subsystem (D.1–D.5+) lives under `crate::diff::*` as
+// a submodule group; see `diff/mod.rs` for the per-submodule
+// breakdown and `docs/dev/architecture/diff-system.md` for
+// the design fragment. The pure algorithm layer (`Hunk`,
+// `HunkIndex`, `compute_two_way`, `compute_three_way`) stays
+// in the `lattice-diff` crate per design §3 so it remains
+// reusable by non-editor consumers.
+pub mod diff;
 // D.4.a (2026-05-29): pane-group substrate. `PaneGroup` is
 // a set of `(pane, buffer)` pairs that scroll together
 // under a pluggable `RowMapper`. The trait + registry
 // land in this slice; the `HunkRowMapper` consumer is
 // D.4.b. See `docs/dev/architecture/pane-groups.md`.
 pub mod pane_group;
-// D.4.b (2026-05-29): `HunkRowMapper` — `RowMapper` impl
-// that translates rows between the baseline and current
-// sides of a two-way diff via cumulative-shift walks over
-// the published `HunkIndex`. Pure function of the session
-// + row + member-index pair. Composed with D.4.a, consumed
-// by D.4.d (`:diffsplit` / `:diffthis`).
-pub mod diff_pane_group;
-// D.4.c (2026-05-29): `FillerRowProvider` — emits blank
-// virtual rows on whichever side of a side-by-side diff is
-// shorter for each hunk, so hunks align visually between
-// the two panes. One provider per side. Pure-sync collect
-// (no off-thread render needed — work is O(hunks)).
-// Consumed by D.4.d (`:diffsplit` / `:diffthis`).
-pub mod diff_filler;
 pub mod help;
 pub mod help_topics;
 pub mod highlights;
@@ -93,24 +75,12 @@ pub mod highlights_worker;
 // `Editor::cells_matrix_cell`. See
 // `docs/dev/architecture/cell-grid-renderer.md`.
 pub mod cells_worker;
-// D.2.a (2026-05-28): diff-subsystem registry skeleton.
-// `DiffSubsystem` keys `DiffSession` entries by `BufferId`;
-// sessions publish `Arc<HunkIndex>` via `ArcSwap`. Compute +
-// recompute scheduling land D.2.b. See
-// `docs/dev/architecture/diff-system.md` §6.
-pub mod diff_subsystem;
 // D.0a.1 (2026-05-29): virtual-rows worker. Sibling of
 // `cells_worker`; owns the `VirtualRowMatrix` rebuild path,
 // polls registered `VirtualRowProvider`s on wake, publishes
 // via `Editor::virtual_rows_matrix_cell`. See
 // `docs/dev/architecture/virtual-rows.md`.
 pub mod virtual_rows_worker;
-// D.3.a (2026-05-29): inline diff overlay's
-// `VirtualRowProvider` impl. Converts the active
-// `DiffSession`'s published `HunkIndex` to deletion-block
-// `VirtualRow`s anchored above the current-side hunk start.
-// See `docs/dev/architecture/diff-system.md` §3.3.
-pub mod diff_overlay;
 pub mod host_generators;
 pub mod input;
 pub mod keymap;

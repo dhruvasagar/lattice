@@ -49,7 +49,7 @@ mod tests {
     fn populated_handle_with_popup() -> KeymapHandle {
         let h = populated_handle();
         h.push_layer(
-            PushLayerKind::MinorMode,
+            PushLayerKind::MinorMode(completion_popup_mode_id()),
             "completion-popup",
             completion_popup_layer_bindings(shared_actions()),
         );
@@ -59,7 +59,7 @@ mod tests {
     fn populated_handle_with_snippet() -> KeymapHandle {
         let h = populated_handle();
         h.push_layer(
-            PushLayerKind::MinorMode,
+            PushLayerKind::MinorMode(active_snippet_mode_id()),
             "active-snippet",
             active_snippet_layer_bindings(shared_actions()),
         );
@@ -67,17 +67,20 @@ mod tests {
     }
 
     fn populated_handle_with_both() -> KeymapHandle {
-        // Order matters: snippet first, then popup. Popup's
-        // higher LayerId means popup wins on overlapping chords
-        // (legacy "popup precedes snippet" gating).
+        // Order matters under the pre-K.1.c global pre-merge:
+        // snippet first, then popup, so popup's later
+        // installation wins on overlapping chords. After K.1.c
+        // the per-buffer active-mode order drives precedence
+        // — this fixture still exercises the lower-level
+        // registry merge ordering directly.
         let h = populated_handle();
         h.push_layer(
-            PushLayerKind::MinorMode,
+            PushLayerKind::MinorMode(active_snippet_mode_id()),
             "active-snippet",
             active_snippet_layer_bindings(shared_actions()),
         );
         h.push_layer(
-            PushLayerKind::MinorMode,
+            PushLayerKind::MinorMode(completion_popup_mode_id()),
             "completion-popup",
             completion_popup_layer_bindings(shared_actions()),
         );

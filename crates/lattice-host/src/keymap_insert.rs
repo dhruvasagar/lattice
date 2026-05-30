@@ -104,6 +104,7 @@ use std::sync::Arc;
 
 use lattice_grammar::CommandInvocation;
 use lattice_grammar::SourceLocation;
+use lattice_mode::mode::ModeId;
 use lattice_protocol::ids::CommandId;
 
 use crate::action::Action;
@@ -112,6 +113,24 @@ use crate::chord::{KeyChord, KeyKind, KeyMods, SpecialKey};
 use crate::keymap::BindingMode;
 use crate::keymap_registry::KeymapHandle;
 use crate::keymap_trie::{BoundCommand, ChordPattern, KeymapLayer, KeymapTrie, LookupResult};
+
+/// K.1.b (2026-05-30): canonical `ModeId` for the
+/// completion-popup minor-mode keymap layer. Used both by
+/// `completion_popup_layer_bindings` (the per-binding
+/// provenance tag at build time) and by
+/// `App::sync_keymap_overlays` (the push site). Centralised
+/// here so the two stay in lockstep — drift would surface as
+/// `:describe-key` showing the wrong mode name.
+pub fn completion_popup_mode_id() -> ModeId {
+    ModeId::new("completion-popup-mode")
+}
+
+/// K.1.b (2026-05-30): canonical `ModeId` for the
+/// active-snippet minor-mode keymap layer. Same pattern as
+/// [`completion_popup_mode_id`].
+pub fn active_snippet_mode_id() -> ModeId {
+    ModeId::new("active-snippet-mode")
+}
 
 /// Register every chord the legacy `input::translate_insert`
 /// recognised into the supplied handle's `Builtin` layer under
@@ -184,7 +203,10 @@ pub fn register_insert_bindings(handle: &KeymapHandle, actions: &ActionIds) {
 /// every entry under that mode whenever the layer is pushed.
 pub fn completion_popup_layer_bindings(actions: &ActionIds) -> HashMap<BindingMode, KeymapTrie> {
     let mut trie = KeymapTrie::new();
-    let layer = KeymapLayer::MinorMode(0); // tag overridden by registry on push
+    // K.1.b: per-binding provenance tag — same ModeId the
+    // push site uses, so `:describe-key` shows the binding's
+    // layer correctly.
+    let layer = KeymapLayer::MinorMode(completion_popup_mode_id());
 
     bind_invocation(
         &mut trie,
@@ -337,7 +359,10 @@ pub fn completion_popup_layer_bindings(actions: &ActionIds) -> HashMap<BindingMo
 /// activates; popped on snippet exit.
 pub fn active_snippet_layer_bindings(actions: &ActionIds) -> HashMap<BindingMode, KeymapTrie> {
     let mut trie = KeymapTrie::new();
-    let layer = KeymapLayer::MinorMode(0); // tag overridden by registry
+    // K.1.b: per-binding provenance tag — same ModeId the
+    // push site uses, so `:describe-key` shows the binding's
+    // layer correctly.
+    let layer = KeymapLayer::MinorMode(active_snippet_mode_id());
 
     bind_invocation(
         &mut trie,

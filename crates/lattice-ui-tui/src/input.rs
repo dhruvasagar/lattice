@@ -110,7 +110,9 @@ mod tests {
         H.get_or_init(|| {
             let h = build_base_keymap();
             h.push_layer(
-                crate::keymap_registry::PushLayerKind::MinorMode,
+                crate::keymap_registry::PushLayerKind::MinorMode(
+                    crate::keymap_insert::completion_popup_mode_id(),
+                ),
                 "completion-popup",
                 crate::keymap_insert::completion_popup_layer_bindings(shared_actions()),
             );
@@ -125,7 +127,9 @@ mod tests {
         H.get_or_init(|| {
             let h = build_base_keymap();
             h.push_layer(
-                crate::keymap_registry::PushLayerKind::MinorMode,
+                crate::keymap_registry::PushLayerKind::MinorMode(
+                    crate::keymap_insert::active_snippet_mode_id(),
+                ),
                 "active-snippet",
                 crate::keymap_insert::active_snippet_layer_bindings(shared_actions()),
             );
@@ -142,12 +146,16 @@ mod tests {
         H.get_or_init(|| {
             let h = build_base_keymap();
             h.push_layer(
-                crate::keymap_registry::PushLayerKind::MinorMode,
+                crate::keymap_registry::PushLayerKind::MinorMode(
+                    crate::keymap_insert::active_snippet_mode_id(),
+                ),
                 "active-snippet",
                 crate::keymap_insert::active_snippet_layer_bindings(shared_actions()),
             );
             h.push_layer(
-                crate::keymap_registry::PushLayerKind::MinorMode,
+                crate::keymap_registry::PushLayerKind::MinorMode(
+                    crate::keymap_insert::completion_popup_mode_id(),
+                ),
                 "completion-popup",
                 crate::keymap_insert::completion_popup_layer_bindings(shared_actions()),
             );

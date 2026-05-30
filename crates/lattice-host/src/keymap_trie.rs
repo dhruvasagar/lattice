@@ -53,6 +53,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use lattice_grammar::{CommandInvocation, SourceLocation};
+use lattice_mode::mode::ModeId;
 
 use crate::chord::{KeyChord, KeyKind, KeyMods};
 
@@ -60,6 +61,16 @@ use crate::chord::{KeyChord, KeyKind, KeyMods};
 /// originated. Higher value wins on cross-layer conflict; the
 /// trie itself doesn't enforce this, the registry does at merge
 /// time.
+///
+/// K.1.b (2026-05-30): `MinorMode` now carries a typed
+/// [`ModeId`] instead of an opaque `u32`. The layer's
+/// identity = the mode's identity; one layer per mode (not
+/// per-push). A re-push for the same `ModeId` replaces the
+/// layer's bindings rather than minting a new layer.
+/// `OwnedLayer` capability keys off `ModeId` so user /
+/// plugin bindings targeting a specific mode's keymap go
+/// into that mode's layer and live + die with the mode's
+/// activation lifecycle (matching emacs's `(:map foo-mode-map ...)`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum KeymapLayer {
     /// Built-in vim default keymap. Lowest priority; user /
@@ -67,10 +78,13 @@ pub enum KeymapLayer {
     Builtin,
     /// Major-mode keymap (rust, markdown, ...).
     MajorMode,
-    /// Active minor-mode keymap (active-snippet,
-    /// completion-popup, picker, ...). Tag distinguishes
-    /// concurrent stacks.
-    MinorMode(u32),
+    /// Active minor-mode keymap. The `ModeId` is the layer's
+    /// identity — push for the same mode is idempotent on the
+    /// layer (bindings replaced, not appended as a sibling).
+    /// Cross-mode order at merge time comes from
+    /// `active_modes[active_buffer]` (K.1.c), not from the
+    /// `ModeId` ordering.
+    MinorMode(ModeId),
     /// User config (`init.rs`).
     User,
     /// Per-buffer ad-hoc binding (`:nmap <buffer>`).

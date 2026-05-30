@@ -42,6 +42,7 @@ use std::sync::{Arc, Mutex};
 
 use arc_swap::ArcSwap;
 use lattice_grammar::{CommandInvocation, SourceLocation};
+use lattice_mode::mode::ModeId;
 
 use crate::chord::{ChordParseError, KeyChord, parse_chord_sequence};
 use crate::keymap::BindingMode;
@@ -77,12 +78,20 @@ pub enum KeymapCapability {
     /// overrides) but denies writes to `Builtin` / `MajorMode` /
     /// `User`.
     MinorMode,
-    /// Write only to a single specified `KeymapLayer::MinorMode`
-    /// id. Mirror of the WIT `keymap-write:plugin-layer`
-    /// variant: each plugin gets one dedicated layer at load
-    /// time, and this capability scopes writes to that one
-    /// layer (a stricter `MinorMode`).
-    OwnedLayer { layer_id: LayerId },
+    /// Write only to a single specified [`KeymapLayer::MinorMode`]
+    /// identified by its [`ModeId`]. Mirror of the WIT
+    /// `keymap-write:plugin-layer` variant: each subsystem
+    /// (plugin, user init.rs extending an existing mode) gets
+    /// a capability scoped to one specific mode's keymap layer
+    /// — e.g. `OwnedLayer { mode_id: ModeId::new("diff-mode") }`
+    /// authorises writes only to the `diff-mode` layer.
+    ///
+    /// K.1.b (2026-05-30): re-keyed from opaque `LayerId` to
+    /// `ModeId` so the capability names the mode it targets
+    /// directly. Matches emacs's `(:map foo-mode-map ...)`
+    /// shape: the binding is scoped to the mode, lives + dies
+    /// with the mode's activation lifecycle.
+    OwnedLayer { mode_id: ModeId },
 }
 
 /// Errors returned by the capability-gated bind APIs.
@@ -123,8 +132,8 @@ fn capability_allows(capability: KeymapCapability, layer: KeymapLayer) -> bool {
         (KeymapCapability::Full, _) => true,
         (KeymapCapability::User, KeymapLayer::User) => true,
         (KeymapCapability::MinorMode, KeymapLayer::MinorMode(_) | KeymapLayer::Buffer) => true,
-        (KeymapCapability::OwnedLayer { layer_id }, KeymapLayer::MinorMode(id)) => {
-            layer_id.raw() == id
+        (KeymapCapability::OwnedLayer { mode_id: cap_mode }, KeymapLayer::MinorMode(layer_mode)) => {
+            cap_mode == layer_mode
         }
         _ => false,
     }
@@ -363,20 +372,27 @@ impl KeymapHandle {
         dropped
     }
 
-    /// Push a fresh minor-mode (or buffer) layer. Returns the
-    /// stable id the caller passes to [`Self::pop_layer`] to
-    /// remove it.
+    /// Install a minor-mode or buffer layer.
+    ///
+    /// K.1.b (2026-05-30): for `PushLayerKind::MinorMode(mode_id)`,
+    /// the layer's identity is the `mode_id` — pushing for the
+    /// same mode_id is **idempotent on the layer**: the
+    /// existing layer's bindings are replaced, no sibling layer
+    /// is minted. `Buffer` continues to mint a fresh opaque
+    /// `LayerId` per push.
     ///
     /// `bindings` is the layer's full per-mode binding set --
-    /// computed by the caller (e.g. completion-popup wires
-    /// its overrides at activation time). The registry copies
-    /// the tries in; the caller's `KeymapTrie` instances are
-    /// no longer needed.
+    /// computed by the caller (e.g. completion-popup wires its
+    /// overrides at activation time). The registry copies the
+    /// tries in; the caller's `KeymapTrie` instances are no
+    /// longer needed after the call returns.
     ///
-    /// `layer` must be either `MinorMode(_)` (the registry
-    /// allocates the tag; whatever caller passes is ignored)
-    /// or `Buffer`. Other layer kinds error-back as a no-op
-    /// today; future revisions can lift this if needed.
+    /// Returns the `LayerId` of the installed layer (whether
+    /// freshly minted or pre-existing for the same `mode_id`).
+    /// For `MinorMode`, prefer popping via
+    /// [`Self::pop_minor_mode_layer`] (by `mode_id`) over
+    /// [`Self::pop_layer`] (by `LayerId`); both work but the
+    /// former is what matches the install signature.
     pub fn push_layer(
         &self,
         kind: PushLayerKind,
@@ -386,25 +402,38 @@ impl KeymapHandle {
         let label = label.into();
         let (id, merged) = {
             let mut inner = self.registry.inner.lock().expect("registry mutex");
-            let id = LayerId(inner.next_layer_id);
-            inner.next_layer_id += 1;
             let layer = match kind {
-                PushLayerKind::MinorMode => KeymapLayer::MinorMode(id.0),
+                PushLayerKind::MinorMode(mode_id) => KeymapLayer::MinorMode(mode_id),
                 PushLayerKind::Buffer => KeymapLayer::Buffer,
             };
-            let new = RegistryLayer {
-                layer,
-                id,
-                label,
-                modes: bindings,
-            };
-            let pos = inner
-                .layers
-                .iter()
-                .position(|l| l.layer > layer)
-                .unwrap_or(inner.layers.len());
-            inner.layers.insert(pos, new);
-            (id, inner.build_merged())
+            // K.1.b: idempotent-on-identity for MinorMode —
+            // re-pushing the same mode_id replaces bindings on
+            // the existing layer rather than minting a new one.
+            // Buffer always mints fresh (Buffer layer is a
+            // singleton in practice but we don't enforce that
+            // here).
+            if let Some(pos) = inner.layers.iter().position(|l| l.layer == layer) {
+                let existing_id = inner.layers[pos].id;
+                inner.layers[pos].label = label;
+                inner.layers[pos].modes = bindings;
+                (existing_id, inner.build_merged())
+            } else {
+                let id = LayerId(inner.next_layer_id);
+                inner.next_layer_id += 1;
+                let new = RegistryLayer {
+                    layer,
+                    id,
+                    label,
+                    modes: bindings,
+                };
+                let pos = inner
+                    .layers
+                    .iter()
+                    .position(|l| l.layer > layer)
+                    .unwrap_or(inner.layers.len());
+                inner.layers.insert(pos, new);
+                (id, inner.build_merged())
+            }
         };
         self.registry.merged.store(Arc::new(merged));
         id
@@ -534,11 +563,11 @@ impl KeymapHandle {
         if matches!(capability, KeymapCapability::User) {
             // Synthesise a `KeymapLayer` tag for the error so
             // the message is consistent with `try_bind`'s
-            // denials. The actual layer hasn't been minted; the
-            // `MinorMode(0)` placeholder is just the layer
-            // *kind* the caller tried to write to.
+            // denials. The actual layer hasn't been installed;
+            // the synthesised tag reflects the layer *kind* the
+            // caller tried to write to.
             let placeholder = match kind {
-                PushLayerKind::MinorMode => KeymapLayer::MinorMode(0),
+                PushLayerKind::MinorMode(mode_id) => KeymapLayer::MinorMode(mode_id),
                 PushLayerKind::Buffer => KeymapLayer::Buffer,
             };
             return Err(KeymapError::CapabilityDenied {
@@ -548,6 +577,32 @@ impl KeymapHandle {
         }
         Ok(self.push_layer(kind, label, bindings))
     }
+
+    /// K.1.b (2026-05-30): pop a minor-mode layer by its
+    /// `ModeId`. The natural complement to
+    /// `push_layer(PushLayerKind::MinorMode(mode_id), …)` —
+    /// callers don't have to thread a separate `LayerId`
+    /// through teardown when the mode id is what they already
+    /// know. No-op if no layer for `mode_id` is currently
+    /// installed (defensive against double-pop on error paths).
+    /// Returns `true` iff a layer was removed.
+    pub fn pop_minor_mode_layer(&self, mode_id: ModeId) -> bool {
+        let (removed, merged) = {
+            let mut inner = self.registry.inner.lock().expect("registry mutex");
+            let pos = inner
+                .layers
+                .iter()
+                .position(|l| l.layer == KeymapLayer::MinorMode(mode_id));
+            if let Some(pos) = pos {
+                inner.layers.remove(pos);
+                (true, inner.build_merged())
+            } else {
+                (false, inner.build_merged())
+            }
+        };
+        self.registry.merged.store(Arc::new(merged));
+        removed
+    }
 }
 
 impl Default for KeymapHandle {
@@ -556,12 +611,17 @@ impl Default for KeymapHandle {
     }
 }
 
-/// What kind of runtime-pushed layer to allocate.
-/// `MinorMode` gets a fresh `MinorMode(id)` tag (multiple
-/// minor modes can stack); `Buffer` is a singleton.
+/// What kind of runtime-pushed layer to install.
+///
+/// K.1.b (2026-05-30): `MinorMode` now carries a typed
+/// [`ModeId`] — the layer's identity = the mode's identity.
+/// Pushing for the same `mode_id` is idempotent on the layer
+/// (replaces bindings; no sibling layer minted). `Buffer`
+/// stays opaque (a future K.1.x slice will type it on
+/// [`lattice_core::BufferId`] for symmetry).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PushLayerKind {
-    MinorMode,
+    MinorMode(ModeId),
     Buffer,
 }
 
@@ -569,7 +629,12 @@ fn default_label(layer: KeymapLayer) -> String {
     match layer {
         KeymapLayer::Builtin => "builtin".into(),
         KeymapLayer::MajorMode => "major-mode".into(),
-        KeymapLayer::MinorMode(id) => format!("minor-mode:{id}"),
+        // K.1.b: layer label derives from the ModeId's canonical
+        // name, so `:describe-key` provenance reads
+        // `minor-mode:diff-mode` directly from the typed id —
+        // no label-string indirection that could drift from the
+        // mode's actual name.
+        KeymapLayer::MinorMode(mode_id) => format!("minor-mode:{mode_id}"),
         KeymapLayer::User => "user".into(),
         KeymapLayer::Buffer => "buffer".into(),
     }
@@ -743,12 +808,13 @@ mod tests {
         // Active-snippet minor mode wants <Tab> for placeholder
         // navigation. Push a minor-mode layer with its own
         // <Tab> binding.
+        let snippet_mode = ModeId::new("snippet");
         let mut minor_modes = HashMap::new();
         let mut t = KeymapTrie::new();
         let bound = Arc::new(BoundCommand::from_invocation(
             invocation(99),
             src("snippet.tab"),
-            KeymapLayer::MinorMode(0), // tag overridden by registry
+            KeymapLayer::MinorMode(snippet_mode),
         ));
         t.insert(
             &[ChordPattern::Literal(KeyChord::special(
@@ -757,7 +823,11 @@ mod tests {
             bound,
         );
         minor_modes.insert(BindingMode::Insert, t);
-        let id = h.push_layer(PushLayerKind::MinorMode, "snippet", minor_modes);
+        let id = h.push_layer(
+            PushLayerKind::MinorMode(snippet_mode),
+            "snippet",
+            minor_modes,
+        );
 
         // <Tab> -> snippet.tab.
         let r = h.lookup(
@@ -848,16 +918,21 @@ mod tests {
     #[test]
     fn layer_label_round_trips_for_runtime_pushed_layers() {
         let h = KeymapHandle::new();
+        let snippet_mode = ModeId::new("snippet");
         let mut bindings = HashMap::new();
         let mut t = KeymapTrie::new();
         let bound = Arc::new(BoundCommand::from_invocation(
             invocation(1),
             src("snippet"),
-            KeymapLayer::MinorMode(0),
+            KeymapLayer::MinorMode(snippet_mode),
         ));
         t.insert(&[lit('q')], bound);
         bindings.insert(BindingMode::Normal, t);
-        let id = h.push_layer(PushLayerKind::MinorMode, "snippet", bindings);
+        let id = h.push_layer(
+            PushLayerKind::MinorMode(snippet_mode),
+            "snippet",
+            bindings,
+        );
         assert_eq!(h.layer_label(id).as_deref(), Some("snippet"));
         // Unknown id -> None.
         assert!(h.layer_label(LayerId(9999)).is_none());
@@ -874,7 +949,7 @@ mod tests {
         for layer in [
             KeymapLayer::Builtin,
             KeymapLayer::MajorMode,
-            KeymapLayer::MinorMode(7),
+            KeymapLayer::MinorMode(ModeId::new("test-minor-7")),
             KeymapLayer::User,
             KeymapLayer::Buffer,
         ] {
@@ -933,7 +1008,10 @@ mod tests {
     #[test]
     fn user_capability_denies_minor_mode_and_buffer_layers() {
         let h = KeymapHandle::new();
-        for layer in [KeymapLayer::MinorMode(0), KeymapLayer::Buffer] {
+        for layer in [
+            KeymapLayer::MinorMode(ModeId::new("test-minor")),
+            KeymapLayer::Buffer,
+        ] {
             let r = h.try_bind(
                 KeymapCapability::User,
                 layer,
@@ -952,7 +1030,10 @@ mod tests {
     #[test]
     fn minor_mode_capability_accepts_minor_mode_and_buffer() {
         let h = KeymapHandle::new();
-        for layer in [KeymapLayer::MinorMode(3), KeymapLayer::Buffer] {
+        for layer in [
+            KeymapLayer::MinorMode(ModeId::new("test-minor-3")),
+            KeymapLayer::Buffer,
+        ] {
             let r = h.try_bind(
                 KeymapCapability::MinorMode,
                 layer,
@@ -992,16 +1073,18 @@ mod tests {
     #[test]
     fn owned_layer_capability_accepts_only_its_own_id() {
         let h = KeymapHandle::new();
-        // Push two minor-mode layers; only the first's id is
+        // Push two minor-mode layers; only the first's mode is
         // authorised by the OwnedLayer capability we mint.
-        let id_a = h.push_layer(PushLayerKind::MinorMode, "plugin-a", HashMap::new());
-        let id_b = h.push_layer(PushLayerKind::MinorMode, "plugin-b", HashMap::new());
-        let cap = KeymapCapability::OwnedLayer { layer_id: id_a };
+        let mode_a = ModeId::new("plugin-a");
+        let mode_b = ModeId::new("plugin-b");
+        let _id_a = h.push_layer(PushLayerKind::MinorMode(mode_a), "plugin-a", HashMap::new());
+        let _id_b = h.push_layer(PushLayerKind::MinorMode(mode_b), "plugin-b", HashMap::new());
+        let cap = KeymapCapability::OwnedLayer { mode_id: mode_a };
 
-        // Plugin-a writes to its own MinorMode(id_a) -- ok.
+        // Plugin-a writes to its own MinorMode(mode_a) -- ok.
         let r = h.try_bind(
             cap,
-            KeymapLayer::MinorMode(id_a.raw()),
+            KeymapLayer::MinorMode(mode_a),
             BindingMode::Normal,
             &[lit('j')],
             invocation(1),
@@ -1012,7 +1095,7 @@ mod tests {
         // Plugin-a tries to write to plugin-b's layer -- denied.
         let r = h.try_bind(
             cap,
-            KeymapLayer::MinorMode(id_b.raw()),
+            KeymapLayer::MinorMode(mode_b),
             BindingMode::Normal,
             &[lit('k')],
             invocation(2),
@@ -1037,7 +1120,7 @@ mod tests {
         let h = KeymapHandle::new();
         let r = h.try_push_layer(
             KeymapCapability::User,
-            PushLayerKind::MinorMode,
+            PushLayerKind::MinorMode(ModeId::new("should-fail-mode")),
             "should-fail",
             HashMap::new(),
         );
@@ -1049,7 +1132,7 @@ mod tests {
         let h = KeymapHandle::new();
         let r = h.try_push_layer(
             KeymapCapability::MinorMode,
-            PushLayerKind::MinorMode,
+            PushLayerKind::MinorMode(ModeId::new("plugin-overlay")),
             "plugin-overlay",
             HashMap::new(),
         );
@@ -1176,12 +1259,14 @@ mod tests {
     #[test]
     fn conflicting_plugins_resolve_via_layer_priority() {
         let h = KeymapHandle::new();
+        let mode_a = ModeId::new("plugin-a");
+        let mode_b = ModeId::new("plugin-b");
 
         // Plugin A pushes its layer + binds `<leader>x`.
-        let id_a = h.push_layer(PushLayerKind::MinorMode, "plugin-a", HashMap::new());
+        let _id_a = h.push_layer(PushLayerKind::MinorMode(mode_a), "plugin-a", HashMap::new());
         h.try_bind(
-            KeymapCapability::OwnedLayer { layer_id: id_a },
-            KeymapLayer::MinorMode(id_a.raw()),
+            KeymapCapability::OwnedLayer { mode_id: mode_a },
+            KeymapLayer::MinorMode(mode_a),
             BindingMode::Normal,
             &[lit('x')],
             invocation(1),
@@ -1189,11 +1274,17 @@ mod tests {
         )
         .unwrap();
 
-        // Plugin B pushes after A -- higher LayerId, wins.
-        let id_b = h.push_layer(PushLayerKind::MinorMode, "plugin-b", HashMap::new());
+        // Plugin B pushes after A. K.1.b: the registry sorts
+        // MinorMode layers by ModeId (alphabetical via the
+        // interned string), so "plugin-b" > "plugin-a"; B's
+        // layer ends up higher in the merge and wins on
+        // overlapping chords. K.1.c will replace this
+        // ModeId-alphabetic ordering with per-buffer active-
+        // mode reverse-activation order.
+        let id_b = h.push_layer(PushLayerKind::MinorMode(mode_b), "plugin-b", HashMap::new());
         h.try_bind(
-            KeymapCapability::OwnedLayer { layer_id: id_b },
-            KeymapLayer::MinorMode(id_b.raw()),
+            KeymapCapability::OwnedLayer { mode_id: mode_b },
+            KeymapLayer::MinorMode(mode_b),
             BindingMode::Normal,
             &[lit('x')],
             invocation(2),
@@ -1201,7 +1292,7 @@ mod tests {
         )
         .unwrap();
 
-        // Plugin B's binding wins.
+        // Plugin B's binding wins (higher ModeId in alpha order).
         let r = h.lookup(BindingMode::Normal, &[pressed('x')]);
         match r {
             LookupResult::Bound { command, .. } => {
@@ -1234,15 +1325,16 @@ mod tests {
     #[test]
     fn plugin_binds_chord_that_fires_plugin_command() {
         let h = KeymapHandle::new();
-        let id = h.push_layer(PushLayerKind::MinorMode, "plugin-foo", HashMap::new());
-        let cap = KeymapCapability::OwnedLayer { layer_id: id };
+        let mode_id = ModeId::new("plugin-foo");
+        let _id = h.push_layer(PushLayerKind::MinorMode(mode_id), "plugin-foo", HashMap::new());
+        let cap = KeymapCapability::OwnedLayer { mode_id };
         let plugin_cmd = invocation(0xFEED);
 
         // Bind `<C-x>fo` (multi-chord prefix, since `<leader>`
         // isn't yet parseable by `parse_chord_sequence`).
         h.try_bind_chord_string(
             cap,
-            KeymapLayer::MinorMode(id.raw()),
+            KeymapLayer::MinorMode(mode_id),
             BindingMode::Normal,
             "<C-x>fo",
             plugin_cmd.clone(),
@@ -1259,7 +1351,7 @@ mod tests {
         match r {
             LookupResult::Bound { command, .. } => {
                 assert_eq!(command.command.command, plugin_cmd.command);
-                assert_eq!(command.layer, KeymapLayer::MinorMode(id.raw()));
+                assert_eq!(command.layer, KeymapLayer::MinorMode(mode_id));
             }
             other => panic!("expected Bound (plugin command), got {other:?}"),
         }

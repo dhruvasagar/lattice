@@ -2420,13 +2420,44 @@ shared with multibuffer-views and post-v1 inlay hints.
     test-build gap: `lattice-mode`'s dev-dep `tokio`
     needed the `time` feature for the cascade-rollback
     tests at `registry.rs:1436` to compile.
-  - 🗒 **K.1.b** — `KeymapLayer::MinorMode(u32)` →
-    `KeymapLayer::MinorMode(ModeId)`. Rename
-    `push_layer`/`pop_layer`/`OwnedLayer` capability to
-    key off `ModeId` directly; per-layer label derives
-    from the mode id. Updates all minor-mode call sites
-    (`completion`, `help`, `hover`, `terminal_insert_mode`,
-    snippet test layers, plugin tests).
+  - ✅ **K.1.b** (2026-05-30) — `KeymapLayer::MinorMode(u32)`
+    → `KeymapLayer::MinorMode(ModeId)`. Layer identity is
+    now the mode identity — re-pushing for the same
+    `mode_id` is idempotent on the layer (replaces
+    bindings rather than minting a sibling). Five-tier
+    changes: (1) `lattice_mode::ModeId` derives
+    `PartialOrd, Ord` so `KeymapLayer` can keep its
+    derived Ord (used for the sorted layers vec).
+    (2) `KeymapLayer::MinorMode` re-typed to carry
+    `ModeId`. (3) `PushLayerKind::MinorMode(ModeId)`
+    carries the mode id directly; `push_layer` short-
+    circuits to bindings-replace on re-push for the same
+    mode. (4) New `pop_minor_mode_layer(mode_id)` complements
+    the new push signature; `pop_layer(LayerId)` continues
+    to work for back-compat. (5)
+    `KeymapCapability::OwnedLayer { layer_id }` →
+    `{ mode_id: ModeId }` matching emacs's `(:map
+    foo-mode-map …)` shape. Per-layer label derives
+    from the ModeId's interned string, so
+    `:describe-key` provenance reads
+    `minor-mode:diff-mode` directly.
+    Production callers updated: dispatch.rs's
+    `sync_keymap_overlays` (snippet + completion-popup
+    pushes) plus the test helpers in lattice-ui-tui's
+    input.rs / keymap_insert.rs. Two new mode-id helper
+    functions (`completion_popup_mode_id`,
+    `active_snippet_mode_id`) in `keymap_insert.rs`
+    keep the layer-tag and the push-site mode-id in
+    lockstep (a future drift would surface as
+    `:describe-key` showing the wrong mode name).
+    8 keymap_registry test sites updated to use typed
+    ModeIds. **Note**: the existing
+    `conflicting_plugins_resolve_via_layer_priority`
+    test now reflects ModeId-alphabetic ordering at the
+    registry-merge level (plugin-b > plugin-a wins);
+    K.1.c will replace this with per-buffer active-mode
+    reverse-activation order. 542 host tests green; 79
+    lattice-mode tests green; workspace build green.
   - 🗒 **K.1.c** — Per-keystroke merge filters minor-mode
     layers by `active_modes[active_buffer].iter().rev()`.
     Last-activated-wins. Drops the global pre-merge for

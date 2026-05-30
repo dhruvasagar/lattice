@@ -27,7 +27,7 @@ use lattice_config::OptionOverrideSet;
 /// Naming convention: mode names always end in `-mode`. Group
 /// names (M.2) never end in `-mode`. The disambiguation rule
 /// in mode-architecture.md §6.7.1 depends on this convention.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ModeId(Intern<String>);
 
 impl ModeId {

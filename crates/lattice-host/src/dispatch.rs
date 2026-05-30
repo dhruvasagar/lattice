@@ -9498,8 +9498,14 @@ impl Editor {
             self.keymap.pop_layer(id);
         }
         if want_snippet {
+            // K.1.b (2026-05-30): push the minor-mode layer
+            // keyed by the canonical ModeId so the per-keystroke
+            // merge (K.1.c) and `:describe-key` (K.1.d) resolve
+            // the right mode.
             let id = self.keymap.push_layer(
-                crate::keymap_registry::PushLayerKind::MinorMode,
+                crate::keymap_registry::PushLayerKind::MinorMode(
+                    crate::keymap_insert::active_snippet_mode_id(),
+                ),
                 "active-snippet",
                 crate::keymap_insert::active_snippet_layer_bindings(&self.action_ids),
             );
@@ -9507,7 +9513,9 @@ impl Editor {
         }
         if want_popup {
             let id = self.keymap.push_layer(
-                crate::keymap_registry::PushLayerKind::MinorMode,
+                crate::keymap_registry::PushLayerKind::MinorMode(
+                    crate::keymap_insert::completion_popup_mode_id(),
+                ),
                 "completion-popup",
                 crate::keymap_insert::completion_popup_layer_bindings(&self.action_ids),
             );

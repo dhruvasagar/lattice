@@ -1764,6 +1764,9 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         // the cursor and rewrite the current side to match
         // the baseline.
         Action::DiffGet => editor.do_diff_get(),
+        // D.5.c: diff-mode `dp` — push the current side's
+        // hunk into the peer buffer.
+        Action::DiffPut => editor.do_diff_put(),
         // 5.5.G.9: paste cluster (`p` / `P` / bracketed-paste).
         Action::PasteAfter => editor.do_paste(false),
         Action::PasteBefore => editor.do_paste(true),
@@ -4226,6 +4229,7 @@ impl Editor {
             }
             AppEffect::SnippetLeave => out.next_actions.push(Action::SnippetLeave),
             AppEffect::DiffGet => out.next_actions.push(Action::DiffGet),
+            AppEffect::DiffPut => out.next_actions.push(Action::DiffPut),
         }
     }
 
@@ -13446,6 +13450,90 @@ impl Editor {
                     "diff-mode `do` apply_edit_blocking failed; cursor unchanged"
                 );
             }
+        }
+    }
+
+    /// D.5.c (2026-05-30): handler for the diff-mode `dp`
+    /// (diff-put) chord. Reads the active document's cursor
+    /// row, asks the subsystem for a put-plan, then:
+    /// - **Two-pane peer:** applies the carried edit to the
+    ///   peer buffer via the registry's `DocumentHandle`,
+    ///   publishes `DocumentChanged` on the peer's id so its
+    ///   diff session recomputes through the standard
+    ///   pipeline, and parks the cursor at the hunk start on
+    ///   the current side.
+    /// - **No peer buffer (inline file-on-disk; D.7 git):**
+    ///   emits a clear error message — `dp` only makes sense
+    ///   when there's a live buffer to push into. Vim
+    ///   behaviour for `:diff <file>` against a non-buffer
+    ///   baseline is identical: `dp` fails with a clear
+    ///   diagnostic, not a silent no-op.
+    /// - **Nothing under cursor:** silent no-op (matches
+    ///   `do_diff_get`'s no-hunk semantics).
+    pub fn do_diff_put(&mut self) {
+        let buffer_id = self.document_buffer_id;
+        let cursor_row = self.cursor.line;
+        match self
+            .diff_subsystem
+            .compute_put_plan(buffer_id, cursor_row)
+        {
+            crate::diff::subsystem::DiffPutOutcome::Edit {
+                peer_buffer_id,
+                edit,
+                post_cursor_row,
+            } => {
+                let Some(handle) = self.buffers.document_handle(peer_buffer_id)
+                else {
+                    // Descriptor named a peer that has since
+                    // closed (race with auto-drop). Silent
+                    // no-op — the session is on its way out.
+                    return;
+                };
+                match block_on(handle.apply_edit(edit)) {
+                    Ok(applied) => {
+                        // Fan out a DocumentChanged for the peer
+                        // on the event bus. The peer's diff
+                        // session (sharing the same key) wakes
+                        // its debouncer and recomputes; other
+                        // peer-side subscribers (LSP fan-in,
+                        // syntax reparse) react through their
+                        // existing bus subscriptions.
+                        let snap = handle.snapshot();
+                        let path = snap.path().map(|p| p.to_path_buf());
+                        let edit_event = lattice_protocol::event::AppliedEdit {
+                            original_range: applied.original_range,
+                            inserted_range: applied.inserted_range,
+                            replaced_text: applied.replaced_text.clone(),
+                            inserted_text: applied.inserted_text.clone(),
+                        };
+                        self.event_bus.publish(Event::DocumentChanged {
+                            id: snap.id,
+                            path,
+                            version: snap.version,
+                            edits: vec![edit_event],
+                        });
+                        self.cursor = lattice_protocol::position::Position::new(
+                            post_cursor_row,
+                            0,
+                        );
+                    }
+                    Err(err) => {
+                        tracing::debug!(
+                            target: "lattice_host::diff::mode",
+                            ?peer_buffer_id,
+                            ?err,
+                            "diff-mode `dp` peer apply_edit failed; cursor unchanged"
+                        );
+                    }
+                }
+            }
+            crate::diff::subsystem::DiffPutOutcome::NoPeerBuffer => {
+                self.set_message(
+                    EchoLevel::Error,
+                    "dp: baseline is not a buffer; use :write",
+                );
+            }
+            crate::diff::subsystem::DiffPutOutcome::Nothing => {}
         }
     }
 
@@ -24054,6 +24142,145 @@ mod tests {
             editor.document.snapshot().buffer.to_rope().to_string();
         assert_eq!(snapshot_before, snapshot_after);
         assert_eq!(editor.cursor, cursor_before);
+    }
+
+    /// D.5.c: `dp` on a Change hunk pushes the current side's
+    /// text into the peer buffer's range; the cursor parks
+    /// at the hunk start on the current side (it didn't
+    /// move, since the current side isn't mutated).
+    ///
+    /// Uses `do_diffsplit` to set up a real two-pane session
+    /// with the registry populated for both sides. The
+    /// manual `publish` overrides whatever the diffsplit
+    /// auto-recompute produced (higher revision wins);
+    /// `compute_put_plan` reads from the published hunks +
+    /// the buffer-backed current source.
+    #[tokio::test]
+    async fn do_diff_put_change_pushes_current_into_peer_buffer() {
+        use lattice_diff::{Hunk, HunkIndex, HunkKind, LineRange};
+        use smallvec::smallvec;
+
+        // File becomes the current side after diffsplit;
+        // baseline = the original empty document.
+        let file = write_temp("current-a\ncurrent-b\n", "dp-change");
+        let document = lattice_core::Document::empty();
+        let mut editor = crate::editor::Editor::boot(document);
+        let baseline_buffer = editor.document_buffer_id;
+        editor.do_diffsplit(file.0.clone());
+        let current_buffer = editor.pane_tree.active().buffer_id;
+        assert_ne!(current_buffer, baseline_buffer);
+
+        // Drain the diffsplit's auto-recompute so our
+        // manual publish is the final word before do_diff_put.
+        tokio::task::yield_now().await;
+        tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+
+        let session = editor
+            .diff_subsystem
+            .lookup(current_buffer)
+            .expect("session keyed under current buffer");
+        let rev = session.allocate_revision();
+        session.publish(std::sync::Arc::new(HunkIndex {
+            hunks: vec![Hunk {
+                kind: HunkKind::Add,
+                // Baseline is empty (original Document::empty);
+                // current has 2 lines from the file. Add hunk:
+                // baseline empty range at row 0, current rows
+                // 0..2.
+                ranges: smallvec![LineRange::new(0, 0), LineRange::new(0, 2)],
+            }],
+            algorithm: lattice_diff::DiffAlgorithm::Histogram,
+            revision: rev,
+        }));
+
+        editor.cursor = lattice_protocol::position::Position::new(0, 0);
+        editor.do_diff_put();
+
+        // Peer (baseline) buffer now holds the current
+        // side's content.
+        let peer_handle = editor
+            .buffers
+            .document_handle(baseline_buffer)
+            .expect("peer handle present");
+        let peer_text = peer_handle.snapshot().buffer.to_rope().to_string();
+        assert_eq!(peer_text, "current-a\ncurrent-b\n");
+        // Cursor stays at the hunk start on the current side.
+        assert_eq!(editor.cursor.line, 0);
+        assert_eq!(editor.cursor.byte, 0);
+    }
+
+    /// D.5.c: `dp` against an inline (file-on-disk) baseline
+    /// emits a clear error message instead of silently
+    /// no-op'ing — vim parity for `:diff <file>` where the
+    /// baseline isn't a live buffer.
+    #[tokio::test]
+    async fn do_diff_put_inline_baseline_emits_error_message() {
+        use crate::diff::subsystem::{
+            BufferCurrentSource, BufferTextProvider, DiffDescriptor,
+            StaticBaseline,
+        };
+        use lattice_diff::{
+            DiffAlgorithm, Hunk, HunkIndex, HunkKind, LineRange,
+        };
+        use ropey::Rope;
+        use smallvec::smallvec;
+
+        #[derive(Debug)]
+        struct NoneProvider;
+        impl BufferTextProvider for NoneProvider {
+            fn buffer_rope(&self, _: lattice_core::BufferId) -> Option<Rope> {
+                None
+            }
+        }
+
+        let document = lattice_core::Document::from_text("live-a\n");
+        let mut editor = crate::editor::Editor::boot(document);
+        let bid = editor.document_buffer_id;
+        // Single-participant descriptor mirrors the
+        // `:diff <file>` shape: file-on-disk baseline, no
+        // peer buffer.
+        let provider: std::sync::Arc<dyn BufferTextProvider> =
+            std::sync::Arc::new(NoneProvider);
+        let desc = DiffDescriptor {
+            baseline: std::sync::Arc::new(StaticBaseline::new(Rope::from("base-a\n"))),
+            current: std::sync::Arc::new(BufferCurrentSource::new(provider, bid)),
+            watch: vec![bid],
+            participants: vec![bid],
+        };
+        let session = editor.diff_subsystem.register_with_sources(
+            bid,
+            DiffAlgorithm::Histogram,
+            desc,
+        );
+        let rev = session.allocate_revision();
+        session.publish(std::sync::Arc::new(HunkIndex {
+            hunks: vec![Hunk {
+                kind: HunkKind::Change,
+                ranges: smallvec![LineRange::new(0, 1), LineRange::new(0, 1)],
+            }],
+            algorithm: DiffAlgorithm::Histogram,
+            revision: rev,
+        }));
+
+        editor.cursor = lattice_protocol::position::Position::new(0, 0);
+        let text_before =
+            editor.document.snapshot().buffer.to_rope().to_string();
+        editor.do_diff_put();
+
+        // Error message surfaced, no document mutation.
+        let msg = editor.last_message.as_ref().expect("error message set");
+        assert!(
+            msg.text.contains("baseline is not a buffer"),
+            "expected NoPeerBuffer message, got: {}",
+            msg.text
+        );
+        assert_eq!(msg.level, EchoLevel::Error);
+        let text_after =
+            editor.document.snapshot().buffer.to_rope().to_string();
+        assert_eq!(
+            text_before, text_after,
+            "current buffer must not be mutated by inline `dp`"
+        );
     }
 
     /// Cursor sitting outside every hunk → silent no-op.

@@ -200,6 +200,12 @@ pub struct ActionIds {
     /// baseline. Per K.1.c the binding only fires on buffers
     /// where diff-mode is in `ActiveModes.minors()`.
     pub diff_get: CommandId,
+    /// D.5.c (2026-05-30): `dp` chord under
+    /// `MinorMode(diff-mode)`. Mirror of [`Self::diff_get`]:
+    /// pushes current-side hunk text into the peer buffer
+    /// for two-pane sessions; emits a clear error for
+    /// inline file-on-disk baselines (no peer to push to).
+    pub diff_put: CommandId,
     pub snippet_next_placeholder: CommandId,
     pub snippet_prev_placeholder: CommandId,
     pub snippet_leave: CommandId,
@@ -986,6 +992,12 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "diff-mode `do`: rewrite the current side's hunk to match the baseline.",
             AppEffect::DiffGet,
         ),
+        diff_put: register_simple(
+            registry,
+            "action:diff-put",
+            "diff-mode `dp`: push the current side's hunk into the peer buffer.",
+            AppEffect::DiffPut,
+        ),
         snippet_next_placeholder: register_simple(
             registry,
             "action:snippet-next-placeholder",
@@ -1311,6 +1323,7 @@ mod tests {
             ),
             (ids.snippet_leave, "action:snippet-leave"),
             (ids.diff_get, "action:diff-get"),
+            (ids.diff_put, "action:diff-put"),
         ] {
             let spec = registry
                 .lookup(id)

@@ -544,6 +544,35 @@ pub struct DiffGetPlan {
 	pub post_cursor_row: u32,
 }
 
+/// D.5.c (2026-05-30): outcome of resolving the diff-mode
+/// `dp` (diff-put) operator. Distinguishes three cases the
+/// dispatch handler must surface differently to the user:
+///
+/// - [`DiffPutOutcome::Edit`]: two-pane session with a peer
+///   buffer — apply the carried edit to `peer_buffer_id` via
+///   the registry's `DocumentHandle::apply_edit` and park
+///   the cursor at `post_cursor_row` on the current side.
+/// - [`DiffPutOutcome::NoPeerBuffer`]: inline session whose
+///   baseline is not a live buffer (file-on-disk for
+///   `:diff`, git blob for D.7's future `:Gdiff`).
+///   `dp` cannot push to a non-buffer; the handler emits a
+///   clear error message ("dp: baseline is not a buffer;
+///   use :write") rather than silently no-op'ing.
+/// - [`DiffPutOutcome::Nothing`]: no session, no descriptor,
+///   no hunk under the cursor, or the matched hunk is a
+///   three-way `Conflict` (D.6) — silent no-op, matches
+///   `compute_get_edit`'s `None` semantics.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DiffPutOutcome {
+	Edit {
+		peer_buffer_id: BufferId,
+		edit: lattice_protocol::edit::Edit,
+		post_cursor_row: u32,
+	},
+	NoPeerBuffer,
+	Nothing,
+}
+
 /// D.5.b helper: slice the rope at the given line range and
 /// return the contents as a `String`. Half-open `[start, end)`.
 /// Empty range returns the empty string. Tolerant of an
@@ -1098,6 +1127,99 @@ impl DiffSubsystem {
 			edit,
 			post_cursor_row: current_range.start,
 		})
+	}
+
+	/// D.5.c (2026-05-30): compute the outcome the diff-mode
+	/// `dp` chord would produce for `buffer_id` at
+	/// `cursor_row`. Mirror of [`Self::compute_get_edit`] but
+	/// pushes the current side's text *into the peer* instead
+	/// of pulling from the baseline.
+	///
+	/// Returns:
+	/// - [`DiffPutOutcome::Edit`] for two-pane sessions —
+	///   carries `peer_buffer_id`, the `Edit` to apply to
+	///   the peer, and the current-side cursor row.
+	/// - [`DiffPutOutcome::NoPeerBuffer`] when the session's
+	///   participants don't include a peer buffer (inline
+	///   file-on-disk; D.7 git baseline). Dispatch surfaces
+	///   the clear error rather than silently doing nothing.
+	/// - [`DiffPutOutcome::Nothing`] for the same silent
+	///   no-op cases as [`Self::compute_get_edit`]: no
+	///   session, no descriptor, no covering hunk, three-way
+	///   `Conflict`.
+	///
+	/// Reads the current side via
+	/// [`DiffDescriptor::current`]`.snapshot()`. Cheap for
+	/// buffer-backed current sources (rope-Arc clone); the
+	/// snapshot reads happen once per `dp` keystroke at the
+	/// production rate.
+	///
+	/// **Three-way scope.** Participants length other than
+	/// 2 is treated as "no peer" rather than synthesising a
+	/// best-guess target. D.6 lands `:diffput <bufnr>` /
+	/// `:diffget <bufnr>` with the disambiguating argument
+	/// and replaces this conservative bail-out with a
+	/// participant-indexed peer lookup. v1's two-pane shape
+	/// (the only one D.5.c claims) cleanly hits the `2`
+	/// arm.
+	pub fn compute_put_plan(
+		&self,
+		buffer_id: BufferId,
+		cursor_row: u32,
+	) -> DiffPutOutcome {
+		let Some(session) = self.lookup(buffer_id) else {
+			return DiffPutOutcome::Nothing;
+		};
+		let Some(descriptor) = self.lookup_descriptor(buffer_id) else {
+			return DiffPutOutcome::Nothing;
+		};
+		let hunks = session.current_hunks();
+		let Some(hunk) = hunks.hunks.iter().find(|h| {
+			if matches!(h.kind, HunkKind::Conflict) {
+				return false;
+			}
+			let Some(current) = h.ranges.get(1).copied() else {
+				return false;
+			};
+			if current.is_empty() {
+				current.start == cursor_row
+			} else {
+				cursor_row >= current.start && cursor_row < current.end
+			}
+		}) else {
+			return DiffPutOutcome::Nothing;
+		};
+		let baseline_range = match hunk.ranges.first().copied() {
+			Some(r) => r,
+			None => return DiffPutOutcome::Nothing,
+		};
+		let current_range = match hunk.ranges.get(1).copied() {
+			Some(r) => r,
+			None => return DiffPutOutcome::Nothing,
+		};
+		// Peer = participants[0] for two-pane sessions.
+		// Inline sessions are `[primary]` (one entry) and
+		// have no peer buffer; D.6 three-way will route
+		// through the disambiguating `:diffput <bufnr>`.
+		let peer_buffer_id = match descriptor.participants.as_slice() {
+			[_only] => return DiffPutOutcome::NoPeerBuffer,
+			[peer, _current] => *peer,
+			_ => return DiffPutOutcome::NoPeerBuffer,
+		};
+		let current_rope = descriptor.current.snapshot();
+		let current_text = slice_line_range(&current_rope, current_range);
+		let edit = lattice_protocol::edit::Edit::replace(
+			lattice_protocol::position::Range::new(
+				lattice_protocol::position::Position::new(baseline_range.start, 0),
+				lattice_protocol::position::Position::new(baseline_range.end, 0),
+			),
+			current_text,
+		);
+		DiffPutOutcome::Edit {
+			peer_buffer_id,
+			edit,
+			post_cursor_row: current_range.start,
+		}
 	}
 
 	/// D.2.c: snapshot of the inverse routing index for
@@ -2609,6 +2731,228 @@ mod tests {
 			}],
 		);
 		assert!(sub.compute_get_edit(bid(1), 0).is_none());
+	}
+
+	// ── D.5.c: compute_put_plan ────────────────────────────────
+
+	/// Build a two-pane session fixture: baseline + current
+	/// are both buffer-backed via a shared `MockProvider`
+	/// with the supplied ropes. `participants =
+	/// [baseline_bid, current_bid]`, so `compute_put_plan`
+	/// resolves the peer to `baseline_bid`. Returns the
+	/// subsystem + the session key.
+	fn fixture_two_pane(
+		baseline_text: &str,
+		current_text: &str,
+	) -> (DiffSubsystem, BufferId, BufferId) {
+		let sub = DiffSubsystem::new();
+		let provider = Arc::new(MockProvider::default());
+		let baseline_bid = bid(100);
+		let current_bid = bid(200);
+		provider.set(baseline_bid, Rope::from(baseline_text));
+		provider.set(current_bid, Rope::from(current_text));
+		let provider_dyn: Arc<dyn BufferTextProvider> = provider;
+		let desc = DiffDescriptor {
+			baseline: Arc::new(BufferBaseline::new(
+				Arc::clone(&provider_dyn),
+				baseline_bid,
+			)),
+			current: Arc::new(BufferCurrentSource::new(
+				Arc::clone(&provider_dyn),
+				current_bid,
+			)),
+			watch: vec![baseline_bid, current_bid],
+			participants: vec![baseline_bid, current_bid],
+		};
+		sub.register_with_sources(current_bid, DiffAlgorithm::Histogram, desc);
+		(sub, current_bid, baseline_bid)
+	}
+
+	/// `Change` on the current side: `dp` replaces the
+	/// peer's baseline lines with the current-side slice.
+	#[test]
+	fn compute_put_plan_change_pushes_current_into_peer() {
+		let (sub, current, peer) =
+			fixture_two_pane("base-a\nbase-b\n", "live-a\nlive-b\n");
+		publish_hunks(
+			&sub,
+			current,
+			vec![Hunk {
+				kind: HunkKind::Change,
+				ranges: smallvec![lr(0, 2), lr(0, 2)],
+			}],
+		);
+		let outcome = sub.compute_put_plan(current, 0);
+		match outcome {
+			DiffPutOutcome::Edit {
+				peer_buffer_id,
+				edit,
+				post_cursor_row,
+			} => {
+				assert_eq!(peer_buffer_id, peer);
+				assert_eq!(post_cursor_row, 0);
+				assert_eq!(edit.range.start.line, 0);
+				assert_eq!(edit.range.end.line, 2);
+				match edit.kind {
+					lattice_protocol::edit::EditKind::Replace {
+						ref text,
+					} => {
+						assert_eq!(text, "live-a\nlive-b\n");
+					}
+				}
+			}
+			other => panic!("expected Edit, got {other:?}"),
+		}
+	}
+
+	/// `Add` hunk (current has extra lines; baseline range
+	/// empty): `dp` *inserts* those lines into the peer at
+	/// `baseline.start` (empty-range replace == insertion).
+	#[test]
+	fn compute_put_plan_add_inserts_into_peer_at_baseline_anchor() {
+		let (sub, current, peer) = fixture_two_pane("", "added\n");
+		publish_hunks(
+			&sub,
+			current,
+			vec![Hunk {
+				kind: HunkKind::Add,
+				ranges: smallvec![lr(0, 0), lr(0, 1)],
+			}],
+		);
+		let outcome = sub.compute_put_plan(current, 0);
+		match outcome {
+			DiffPutOutcome::Edit {
+				peer_buffer_id,
+				edit,
+				..
+			} => {
+				assert_eq!(peer_buffer_id, peer);
+				// Empty baseline range → insertion point.
+				assert_eq!(edit.range.start.line, 0);
+				assert_eq!(edit.range.end.line, 0);
+				match edit.kind {
+					lattice_protocol::edit::EditKind::Replace {
+						ref text,
+					} => {
+						assert_eq!(text, "added\n");
+					}
+				}
+			}
+			other => panic!("expected Edit, got {other:?}"),
+		}
+	}
+
+	/// `Remove` hunk (current empty, baseline has lines):
+	/// `dp` deletes the peer's lines (push the empty
+	/// current-side state into the peer).
+	#[test]
+	fn compute_put_plan_remove_deletes_peer_range() {
+		let (sub, current, peer) =
+			fixture_two_pane("removed-1\nremoved-2\n", "");
+		publish_hunks(
+			&sub,
+			current,
+			vec![Hunk {
+				kind: HunkKind::Remove,
+				ranges: smallvec![lr(0, 2), lr(0, 0)],
+			}],
+		);
+		let outcome = sub.compute_put_plan(current, 0);
+		match outcome {
+			DiffPutOutcome::Edit {
+				peer_buffer_id,
+				edit,
+				..
+			} => {
+				assert_eq!(peer_buffer_id, peer);
+				assert_eq!(edit.range.start.line, 0);
+				assert_eq!(edit.range.end.line, 2);
+				match edit.kind {
+					lattice_protocol::edit::EditKind::Replace {
+						ref text,
+					} => {
+						assert!(
+							text.is_empty(),
+							"Remove `dp` deletes peer range; text was {text:?}"
+						);
+					}
+				}
+			}
+			other => panic!("expected Edit, got {other:?}"),
+		}
+	}
+
+	/// Inline (single-participant) session has no peer
+	/// buffer — `dp` returns `NoPeerBuffer` so dispatch can
+	/// surface the clear error. Single-participant is the
+	/// shape that `:diff` (file-on-disk baseline) and
+	/// future `:Gdiff` produce.
+	#[test]
+	fn compute_put_plan_inline_session_returns_no_peer_buffer() {
+		let (sub, key) = fixture_with_baseline("base\n");
+		// `fixture_with_baseline` creates a single-participant
+		// inline descriptor.
+		publish_hunks(
+			&sub,
+			key,
+			vec![Hunk {
+				kind: HunkKind::Change,
+				ranges: smallvec![lr(0, 1), lr(0, 1)],
+			}],
+		);
+		assert_eq!(
+			sub.compute_put_plan(key, 0),
+			DiffPutOutcome::NoPeerBuffer
+		);
+	}
+
+	/// No session → `Nothing` (silent no-op shape). The
+	/// per-buffer K.1.c gate suppresses `dp` on non-diff
+	/// buffers; this is the defensive belt-and-braces case.
+	#[test]
+	fn compute_put_plan_no_session_returns_nothing() {
+		let sub = DiffSubsystem::new();
+		assert_eq!(
+			sub.compute_put_plan(bid(99), 0),
+			DiffPutOutcome::Nothing
+		);
+	}
+
+	/// Cursor outside every hunk → `Nothing`.
+	#[test]
+	fn compute_put_plan_cursor_outside_hunks_returns_nothing() {
+		let (sub, current, _peer) = fixture_two_pane("a\n", "b\n");
+		publish_hunks(
+			&sub,
+			current,
+			vec![Hunk {
+				kind: HunkKind::Change,
+				ranges: smallvec![lr(0, 1), lr(0, 1)],
+			}],
+		);
+		assert_eq!(
+			sub.compute_put_plan(current, 5),
+			DiffPutOutcome::Nothing
+		);
+	}
+
+	/// Three-way `Conflict` hunks are skipped (D.6 owns
+	/// `:diffput <bufnr>` with the disambiguating arg).
+	#[test]
+	fn compute_put_plan_conflict_hunk_is_skipped() {
+		let (sub, current, _peer) = fixture_two_pane("a\n", "a\n");
+		publish_hunks(
+			&sub,
+			current,
+			vec![Hunk {
+				kind: HunkKind::Conflict,
+				ranges: smallvec![lr(0, 1), lr(0, 1)],
+			}],
+		);
+		assert_eq!(
+			sub.compute_put_plan(current, 0),
+			DiffPutOutcome::Nothing
+		);
 	}
 
 	/// First hunk wins when several hunks coexist — the

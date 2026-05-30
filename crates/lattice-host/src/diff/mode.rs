@@ -93,19 +93,21 @@ pub fn register_diff_modes(registry: &mut ModeRegistry) {
         .expect("diff-mode must register without conflict");
 }
 
-/// D.5.b (2026-05-30): chord bindings for the `diff-mode`
+/// D.5.b/c (2026-05-30): chord bindings for the `diff-mode`
 /// keymap layer.
 ///
-/// `do` → `action:diff-get`. The layer is pushed once at
-/// editor boot under `PushLayerKind::MinorMode(diff-mode)`;
-/// K.1.c's per-keystroke filter gates the binding so it only
-/// fires on buffers where `diff-mode` is in
-/// `ActiveModes.minors()`. Buffers without diff-mode active
-/// fall through to the normal `do` resolution (operator `d`
-/// followed by `o`) — the diff-mode binding is invisible to
-/// them.
+/// - `do` → `action:diff-get` (D.5.b): rewrite the current
+///   side's hunk to match the baseline.
+/// - `dp` → `action:diff-put` (D.5.c): push the current
+///   side's hunk into the peer buffer.
 ///
-/// D.5.c will add `dp` (diff-put) to the same trie.
+/// The layer is pushed once at editor boot under
+/// `PushLayerKind::MinorMode(diff-mode)`; K.1.c's
+/// per-keystroke filter gates the bindings so they only
+/// fire on buffers where `diff-mode` is in
+/// `ActiveModes.minors()`. Buffers without diff-mode active
+/// fall through to the normal `d`-operator resolution — the
+/// diff-mode bindings are invisible to them.
 pub fn diff_mode_layer_bindings(
     actions: &crate::actions::ActionIds,
 ) -> std::collections::HashMap<
@@ -135,6 +137,14 @@ pub fn diff_mode_layer_bindings(
         &[lit_char('d'), lit_char('o')],
         Arc::new(BoundCommand::from_invocation(
             CommandInvocation::of(actions.diff_get),
+            SourceLocation::builtin_file(file!(), line!()),
+            layer,
+        )),
+    );
+    trie.insert(
+        &[lit_char('d'), lit_char('p')],
+        Arc::new(BoundCommand::from_invocation(
+            CommandInvocation::of(actions.diff_put),
             SourceLocation::builtin_file(file!(), line!()),
             layer,
         )),

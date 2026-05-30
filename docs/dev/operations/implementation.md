@@ -2724,8 +2724,80 @@ shared with multibuffer-views and post-v1 inlay hints.
     settles is verified at the subsystem level by D.2.b/c
     tests. No new integration test added here to avoid
     duplicating their coverage.
-- 🗒 **D.5.c** — `dp` (diff-put). Mirror of `do`. File-on-disk
-    inline baseline → clear error, no silent failure.
+- ✅ **D.5.c** (2026-05-30) — `dp` (diff-put) operator.
+    Mirror of D.5.b: the diff-mode `dp` chord pushes the
+    current side's hunk text into the peer buffer (two-pane
+    sessions); inline file-on-disk baselines have no peer
+    so the handler emits a clear error rather than silently
+    no-op'ing. Wiring shape:
+
+    1. `AppEffect::DiffPut` (lattice-grammar) + `Action::DiffPut`
+       (lattice-host) + `ActionIds::diff_put` register as
+       `action:diff-put` via `register_simple` and are
+       listed in the verification table. Translate +
+       dispatch routing matches the D.5.b shape exactly
+       (`AppEffect → Action → editor.do_diff_put`).
+    2. `crate::diff::mode::diff_mode_layer_bindings` is
+       extended with the `dp` chord under the same
+       `MinorMode(diff-mode)` layer as `do`. K.1.c
+       per-buffer filter handles per-buffer gating
+       (already-plumbed `active_minor_modes` from D.5.b).
+    3. `DiffSubsystem::compute_put_plan(buffer_id,
+       cursor_row) → DiffPutOutcome` returns a tri-state:
+       - `Edit { peer_buffer_id, edit, post_cursor_row }`:
+         two-pane (participants length 2 — peer =
+         `participants[0]`). Reads the current side via
+         `descriptor.current.snapshot()`, slices the
+         current rope at `ranges[1]`, builds an Edit that
+         replaces the peer's `ranges[0]` with that slice.
+       - `NoPeerBuffer`: participants length 1 — inline
+         file-on-disk baseline (today's `:diff`) or D.7's
+         git-baseline. No live peer to push into.
+       - `Nothing`: no session / no descriptor / no hunk /
+         three-way `Conflict` (D.6 owns
+         `:diffput <bufnr>` with the disambiguating arg).
+    4. `Editor::do_diff_put` matches on the outcome:
+       - `Edit` → look up the peer's `DocumentHandle` via
+         `BufferRegistry::document_handle`,
+         `block_on(handle.apply_edit(edit))`, fan out a
+         `DocumentChanged` event for the peer's document
+         id + version (the peer's diff session shares the
+         key with the current side via the indirection
+         map; recomputes happen via the standard
+         pipeline), park the cursor at
+         `post_cursor_row` on the current side.
+       - `NoPeerBuffer` →
+         `set_message(EchoLevel::Error,
+         "dp: baseline is not a buffer; use :write")`.
+       - `Nothing` → silent.
+    5. Peer-side event fan-out is intentionally minimal:
+       a single `DocumentChanged` publish to drive the
+       diff recompute. LSP fan-in and syntax reparse for
+       peer edits will follow the same path the active
+       buffer uses today; the v1 cut is debounced diff
+       recompute only.
+
+    **Tests (9 new):** 7 pure `compute_put_plan` (Change
+    pushes current into peer, Add inserts at peer anchor,
+    Remove deletes peer range, inline single-participant
+    returns `NoPeerBuffer`, no-session returns `Nothing`,
+    cursor-outside returns `Nothing`, three-way `Conflict`
+    skipped) + 2 dispatch integration: `dp` Change
+    end-to-end through a real `do_diffsplit`-built two-pane
+    session (manual `publish` overrides the auto-recompute
+    via higher revision; peer buffer's content verified
+    after; cursor parks at hunk start), inline
+    single-participant session emits the
+    "dp: baseline is not a buffer" error and leaves the
+    current buffer unmutated. 583 host + workspace tests
+    green (+9 new).
+
+    Touched: `crates/lattice-grammar/src/app_effect.rs`,
+    `crates/lattice-host/src/{action.rs, actions.rs,
+    diff/mode.rs, diff/subsystem.rs, dispatch.rs}`,
+    `crates/lattice-ui-tui/src/app/dispatch.rs`. Arch doc:
+    design fragment §6.2 already describes `do`/`dp`
+    semantics; no doc edit needed.
 - 🗒 **D.6** — Three-way merge: conflict regions, `:diffput
   <bufnr>` / `:diffget <bufnr>`, `:diff-accept` /
   `:diff-reject`.

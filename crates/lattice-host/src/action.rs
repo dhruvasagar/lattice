@@ -312,6 +312,14 @@ pub enum Action {
     /// if there's no hunk under the cursor or a recompute
     /// hasn't published one yet.
     DiffGet,
+    /// D.5.c (2026-05-30): diff-mode `dp` (diff-put) operator.
+    /// Pushes the current side's hunk text into the peer
+    /// buffer (two-pane sessions). For inline file-on-disk
+    /// baselines (no peer buffer) the dispatch handler emits
+    /// a clear error rather than silently no-op'ing — see
+    /// `Editor::do_diff_put` and
+    /// `crate::diff::subsystem::DiffSubsystem::compute_put_plan`.
+    DiffPut,
     /// `:lsp-symbols` (Phase 4.2.e). Send
     /// `textDocument/documentSymbol` to every attached server;
     /// render the merged outline as a vertico picker. Selecting

@@ -525,6 +525,14 @@ pub enum AppEffect {
     /// `Action::DiffGet` by the translate path; routed to
     /// `editor.do_diff_get()` from the dispatch path.
     DiffGet,
+    /// D.5.c (2026-05-30): diff-mode `dp` (diff-put) operator.
+    /// Mirror of [`Self::DiffGet`] — pushes the current
+    /// side's hunk text into the peer buffer (two-pane
+    /// sessions). For inline file-on-disk baselines (and
+    /// D.7's future git-baseline) there's no peer buffer;
+    /// the dispatch handler emits "dp: baseline is not a
+    /// buffer; use :write" rather than silently no-op'ing.
+    DiffPut,
 }
 
 #[cfg(test)]

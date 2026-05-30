@@ -330,6 +330,11 @@ impl App {
             // the hunk under cursor and replaces the
             // current side via `apply_edit_blocking`.
             | Action::DiffGet
+            // D.5.c (2026-05-30): diff-mode `dp` is
+            // host-resident — `Editor::do_diff_put` resolves
+            // the hunk under cursor and pushes the current
+            // side's text into the peer buffer.
+            | Action::DiffPut
             // 5.5.G.9: paste cluster arms.
             | Action::PasteAfter
             | Action::PasteBefore

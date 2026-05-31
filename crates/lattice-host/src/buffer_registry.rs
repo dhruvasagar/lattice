@@ -1006,4 +1006,107 @@ mod tests {
         assert_eq!(r.by_name("new"), Some(id));
         assert_eq!(r.by_name("old"), None);
     }
+
+    // ─────────────────────────────────────────────────────────────
+    // M.1.b (2026-05-31): `MultibufferDocumentHandle` registers
+    // through the same `BufferData::Document` slot a regular
+    // `RopeDocumentHandle` uses. The slot's handle field is
+    // `Arc<dyn Document>` (M.0 Phase D); multibuffer wraps in via
+    // the same Arc and is observable through `document_handle(id)`
+    // / `with_document(id, ...)` / the `BufferStore` trait — no
+    // kind-branching at the registry boundary.
+    // ─────────────────────────────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn multibuffer_registers_through_document_slot() {
+        use lattice_runtime::{Excerpt, MultibufferDocumentHandle, spawn_document};
+        use std::collections::HashMap;
+
+        // Two source documents.
+        let registry = std::sync::Arc::new(lattice_grammar::CommandRegistry::new());
+        let s1 = spawn_document(
+            lattice_core::Document::from_text("alpha\nbeta\ngamma\n"),
+            registry.clone(),
+        );
+        let s2 = spawn_document(
+            lattice_core::Document::from_text("delta\nepsilon\nzeta\n"),
+            registry.clone(),
+        );
+
+        // Reserve BufferIds for the sources; register them so the
+        // registry round-trips correctly.
+        let s1_id = BufferId::next();
+        let s2_id = BufferId::next();
+        let r = BufferRegistry::new();
+        let s1_handle: std::sync::Arc<dyn lattice_runtime::Document> =
+            std::sync::Arc::new(s1);
+        let s2_handle: std::sync::Arc<dyn lattice_runtime::Document> =
+            std::sync::Arc::new(s2);
+        r.insert(BufferEntry {
+            id: s1_id,
+            flags: BufferFlags::default(),
+            data: BufferData::Document(DocumentEntry {
+                id: s1_id,
+                handle: s1_handle.clone(),
+            }),
+            name: None,
+        });
+        r.insert(BufferEntry {
+            id: s2_id,
+            flags: BufferFlags::default(),
+            data: BufferData::Document(DocumentEntry {
+                id: s2_id,
+                handle: s2_handle.clone(),
+            }),
+            name: None,
+        });
+
+        // Build a multibuffer composing the two sources.
+        let mut sources: HashMap<BufferId, std::sync::Arc<dyn lattice_runtime::Document>> =
+            HashMap::new();
+        sources.insert(s1_id, s1_handle);
+        sources.insert(s2_id, s2_handle);
+        let excerpts = vec![
+            Excerpt::new(s1_id, 0, 1),
+            Excerpt::new(s2_id, 1, 2),
+        ];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts).expect("mb constructs");
+        let mb_buffer_id = mb.buffer_id();
+        let mb_handle: std::sync::Arc<dyn lattice_runtime::Document> = std::sync::Arc::new(mb);
+
+        // Register the multibuffer through the same Document
+        // slot regular handles use.
+        r.insert(BufferEntry {
+            id: mb_buffer_id,
+            flags: BufferFlags::default(),
+            data: BufferData::Document(DocumentEntry {
+                id: mb_buffer_id,
+                handle: mb_handle.clone(),
+            }),
+            name: Some("*search-results*".to_string()),
+        });
+
+        // The registry exposes the multibuffer through the same
+        // public API as any other document.
+        assert!(r.contains(mb_buffer_id));
+        assert_eq!(r.kind_of(mb_buffer_id), Some(BufferKind::Document));
+        assert_eq!(r.name_of(mb_buffer_id), Some("*search-results*".to_string()));
+
+        // `document_handle` returns the trait-object handle —
+        // reading through it yields the composed snapshot.
+        let handle_from_registry = r
+            .document_handle(mb_buffer_id)
+            .expect("multibuffer reachable via document_handle");
+        let composed = handle_from_registry.text();
+        assert_eq!(composed, "alpha\nbeta\nepsilon\nzeta\n");
+
+        // `BufferStore::handle_for` returns the same handle —
+        // the polymorphic surface that mode-owned tasks
+        // (lattice-lsp, future plugin modes) consume.
+        use lattice_mode::BufferStore;
+        let store_handle = r
+            .handle_for(mb_buffer_id)
+            .expect("multibuffer reachable via BufferStore");
+        assert_eq!(store_handle.text(), composed);
+    }
 }

@@ -120,7 +120,16 @@ pub struct PublishedSnapshot {
 }
 
 impl PublishedSnapshot {
-    pub(crate) fn new(initial: DocumentSnapshot) -> Self {
+    /// M.2.b.1 (2026-05-31): promoted from `pub(crate)` so
+    /// external `Document` impls (`MultibufferDocumentHandle` in
+    /// `lattice-multibuffer`, future plugin-defined kinds) can
+    /// publish their own composed snapshots. The publish
+    /// **discipline** still applies — every impl is responsible
+    /// for "publish-after-mutate" ordering against its own
+    /// readers. The actor model in this crate enforces that
+    /// discipline through the message loop; multibuffer enforces
+    /// it through its own internal serialisation.
+    pub fn new(initial: DocumentSnapshot) -> Self {
         Self {
             cell: Arc::new(ArcSwap::from_pointee(initial)),
         }
@@ -128,10 +137,11 @@ impl PublishedSnapshot {
 
     /// Borrowed handle to the shared `Arc<ArcSwap<...>>`. Used by
     /// [`SnapshotCache::new`] to share the underlying cell with a
-    /// per-thread reader cache without exposing the field
-    /// publicly. Crate-private so external callers can't bypass
-    /// the publish discipline.
-    pub(crate) fn cell_arc(&self) -> Arc<ArcSwap<DocumentSnapshot>> {
+    /// per-thread reader cache. Promoted from `pub(crate)` for
+    /// the same reason as [`Self::new`] — external impls need to
+    /// hand the cell to `SnapshotCache::new` for their own
+    /// `snapshot_cache()` trait method.
+    pub fn cell_arc(&self) -> Arc<ArcSwap<DocumentSnapshot>> {
         self.cell.clone()
     }
 
@@ -144,9 +154,11 @@ impl PublishedSnapshot {
 
     /// Replace the published snapshot with `next`. Atomic; any
     /// reader that observes the new pointer also observes all writes
-    /// the publisher ordered before the store. Crate-private so the
-    /// actor is the only writer.
-    pub(crate) fn store(&self, next: DocumentSnapshot) {
+    /// the publisher ordered before the store. Promoted from
+    /// `pub(crate)` so external `Document` impls publish their
+    /// own snapshots; the actor model in this crate is no longer
+    /// the only writer.
+    pub fn store(&self, next: DocumentSnapshot) {
         self.cell.store(Arc::new(next));
     }
 

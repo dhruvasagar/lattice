@@ -254,7 +254,15 @@ pub fn major_mode_id_for_buffer_kind(kind: BufferKind) -> Option<ModeId> {
         // contributes `ReadOnly` + `NoFile`. The buffer is
         // rope-backed so motions / yank / search work like any
         // Document — the mode just gates writes.
+
         BufferKind::Messages => Some(lattice_mode::MessagesMode::mode_id()),
+        // M.2.b.1 (2026-05-31): placeholder. M.2.b.2 lands
+        // `MultibufferMode` in `lattice-multibuffer` and returns
+        // its id here. For now (multibuffer buffers aren't
+        // openable yet via any user-facing path), `None` is
+        // observably equivalent to "no major mode" and tests
+        // don't exercise this branch.
+        BufferKind::Multibuffer => None,
     }
 }
 
@@ -271,7 +279,8 @@ pub fn default_minor_mode_id_for_buffer_kind(kind: BufferKind) -> Option<ModeId>
         | BufferKind::FileTree
         | BufferKind::Oil
         | BufferKind::Terminal
-        | BufferKind::Messages => None,
+        | BufferKind::Messages
+        | BufferKind::Multibuffer => None,
     }
 }
 
@@ -310,7 +319,8 @@ pub fn auto_activated_minors_for_buffer_kind(kind: BufferKind) -> Vec<ModeId> {
         | BufferKind::FileTree
         | BufferKind::Oil
         | BufferKind::Terminal
-        | BufferKind::Messages => Vec::new(),
+        | BufferKind::Messages
+        | BufferKind::Multibuffer => Vec::new(),
     }
 }
 

@@ -1019,7 +1019,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn multibuffer_registers_through_document_slot() {
-        use lattice_runtime::{Excerpt, MultibufferDocumentHandle, spawn_document};
+        use lattice_multibuffer::{Excerpt, MultibufferDocumentHandle};
+        use lattice_runtime::spawn_document;
         use std::collections::HashMap;
 
         // Two source documents.

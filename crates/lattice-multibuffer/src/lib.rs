@@ -1,55 +1,56 @@
-//! M.1 (2026-05-31): `MultibufferDocumentHandle` — the
-//! handle-layer sibling to `RopeDocumentHandle` that composes N
-//! source documents into one read-only view.
+//! # `lattice-multibuffer`
 //!
-//! ## What this slice ships (M.1)
+//! M.2.b.1 (2026-05-31): dedicated crate for every multibuffer
+//! concern. Lives outside `lattice-runtime` so that:
 //!
-//! * Core types: `ExcerptId`, `Excerpt`, and the basic geometry
-//!   for "show source rows [start..=end] of buffer B in the
-//!   composed view." Headers / separators / partial-line edges
-//!   are M.2 rendering concerns; this slice keeps the composed
-//!   buffer as pure concatenated source content.
-//! * `MultibufferDocumentHandle` impl of [`crate::Document`].
-//!   `snapshot()` returns a `DocumentSnapshot` whose `buffer`
-//!   field is the composed rope of all excerpt content.
-//! * Writes (`apply_edit`, `apply_edit_batch`, `undo`, `redo`,
-//!   `save`, `save_as`, `set_selections`, `dispatch_with_cancel`)
-//!   all reject with `Pending::ready(Err(RuntimeError::
-//!   ReadOnly))`. M.3 replaces the rejections with translation-
-//!   table-driven propagation to source handles.
+//! - The runtime crate stays focused on the actor + handle +
+//!   Document-trait substrate; multibuffer is one specific kind
+//!   of document built on top of that substrate, not part of it.
+//! - Plugins (post-v1) can depend on `lattice-multibuffer`
+//!   directly without pulling in the full actor machinery.
+//! - The crate boundary makes the design self-documenting —
+//!   every multibuffer concern is in one tree; nothing else
+//!   knows multibuffer exists except `lattice-host`'s tiny
+//!   boot-wiring registration.
 //!
-//! ## What lands in later M-slices
+//! See `docs/dev/architecture/multibuffer-views.md` §3.6 for the
+//! crate-layout decision.
 //!
-//! * **M.2** — excerpt headers / separators as virtual rows; the
-//!   composed buffer's text remains unchanged, headers render
-//!   alongside via the existing virtual-rows pipeline.
-//! * **M.3** — write propagation: edit at multibuffer row →
-//!   translation lookup → source handle's `apply_edit`. Removes
-//!   the `ReadOnly` rejection.
-//! * **M.4** — live updates from sources: anchor-driven excerpt
-//!   tracking + debounced rebuild + cross-pane consistency.
-//!   M.1 ships with manual `recompose()` for tests; auto-rebuild
-//!   on source change lands in M.4.
-//! * **M.5** — expand-context affordance.
-//! * **M.6** — `MultibufferProvider` trait + first consumer.
+//! ## What this crate ships (M.2.b.1)
 //!
-//! ## Anchor semantics — deliberately deferred
+//! * **Data model**: `Excerpt`, `ExcerptId`, `ExcerptHeader`,
+//!   `ExcerptHeaderStyle`, `RowEntry`, `RowTranslation`.
+//! * **Handle**: `MultibufferDocumentHandle` — read-only impl of
+//!   `lattice_runtime::Document` composing N source handles into
+//!   one view. M.3 lifts the read-only restriction.
+//! * **Header provider**: `MultibufferHeaderProvider` (impl
+//!   `lattice_cells::VirtualRowProvider`) emitting one virtual
+//!   row per excerpt header.
 //!
-//! The design fragment §3.2 specifies excerpts use anchors with
-//! generation tracking so they slide on source edits. M.1 ships
-//! with simple `(start_line, end_line)` integer ranges; anchors
-//! get introduced in M.4 alongside the slide-on-edits behaviour
-//! they enable. Defining Anchor in M.1 with no slide logic would
-//! be a placeholder promising semantics it doesn't have. The
-//! Excerpt struct's field shape is preserved when M.4 swaps in
-//! `Anchor` (the field names change but the shape — two
-//! character-positions — doesn't).
+//! ## What lands later
+//!
+//! * **M.2.b.2** — `MultibufferMode` as the major mode for
+//!   `BufferKind::Multibuffer`. Activation owns the header
+//!   provider registration + per-buffer typed context Guard.
+//! * **M.2.b.3** — `]e` / `[e` / `]E` / `[E` motions registered
+//!   through the grammar; bound in `MultibufferMode` keymap.
+//! * **M.3** — edit propagation (writes flow back to source
+//!   handles via the row translation).
+//! * **M.4** — live updates from sources (auto-recompose on
+//!   `EventKind::DocumentChanged`; anchor sliding; source-close
+//!   auto-remove).
+//! * **M.5–M.8** — expand-context, provider trait + first
+//!   consumer, fold providers.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use arc_swap::ArcSwap;
+use lattice_cells::cell::Cell;
+use lattice_cells::virtual_rows::{
+    AnchorPosition, ProviderId, VirtualRow, VirtualRowKind, VirtualRowProvider,
+};
 use lattice_core::buffer::AppliedEdit;
 use lattice_core::{Buffer, BufferId};
 use lattice_grammar::{CancellationToken, CommandInvocation, Effect};
@@ -57,45 +58,39 @@ use lattice_protocol::edit::Edit;
 use lattice_protocol::ids::DocumentId;
 use lattice_protocol::position::Position;
 use lattice_protocol::selection::SelectionSet;
+use lattice_runtime::{
+    Document, DocumentSnapshot, Pending, PublishedSnapshot, RuntimeError, SnapshotCache,
+};
 
-use crate::document::Document;
-use crate::pending::{Pending, RuntimeError};
-use crate::snapshot::{DocumentSnapshot, PublishedSnapshot, SnapshotCache};
+// ─────────────────────────────────────────────────────────────────
+// Excerpt + identity + header
+// ─────────────────────────────────────────────────────────────────
 
 /// Unique identity for an excerpt within a multibuffer. Stable
 /// for the excerpt's lifetime; survives reorders / source-edit
-/// rebuilds. M.6's `MultibufferProvider` uses this to match
-/// re-emitted excerpts against existing ones (avoiding spurious
-/// removal + re-addition when the provider's set is unchanged
-/// modulo ordering).
+/// rebuilds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ExcerptId(pub u64);
 
 impl ExcerptId {
-    /// Allocate the next id. Lock-free.
     pub fn next() -> Self {
         static SEQ: AtomicU64 = AtomicU64::new(1);
         Self(SEQ.fetch_add(1, Ordering::Relaxed))
     }
 }
 
-/// Header presentation for an excerpt — title + style. M.2
-/// renders this as a virtual row above the excerpt's first
-/// composed line.
+/// Header presentation for an excerpt — title + style.
 #[derive(Debug, Clone)]
 pub struct ExcerptHeader {
     /// Human-readable label. Conventionally
     /// `"<path> : <start_line+1>-<end_line+1>"` for a regular
-    /// file excerpt (1-indexed for display). Empty string =
-    /// no header rendered (the renderer treats empty title
-    /// as a separator-only row).
+    /// file excerpt (1-indexed for display). Empty string = no
+    /// header rendered.
     pub title: String,
     pub style: ExcerptHeaderStyle,
 }
 
 impl ExcerptHeader {
-    /// Convenience constructor for a default-styled header
-    /// with the given title.
     pub fn new(title: impl Into<String>) -> Self {
         Self {
             title: title.into(),
@@ -114,47 +109,31 @@ impl Default for ExcerptHeader {
 }
 
 /// Style discriminator for excerpt headers. M.2 ships with a
-/// single `Default` variant; future variants distinguish
-/// header presentation (e.g., severity-prefixed headers for
-/// the diagnostics provider, hunk-decorated headers for the
-/// project-diff provider).
+/// single `Default` variant; future variants distinguish header
+/// presentation (severity-prefixed for diagnostics provider,
+/// hunk-decorated for project-diff provider).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ExcerptHeaderStyle {
-    /// Default header presentation: title centered with box-
-    /// drawing rules on either side. Renderer-side detail.
     #[default]
     Default,
 }
 
 /// One excerpt of a source document, identified by its source
-/// `BufferId` and an inclusive line range `[start_line, end_line]`.
+/// `BufferId` and an inclusive line range
+/// `[start_line, end_line]`.
 ///
 /// M.1 keeps the range as integer line numbers; M.4 swaps to
 /// `Anchor`-based positions that slide on source edits.
 #[derive(Debug, Clone)]
 pub struct Excerpt {
     pub id: ExcerptId,
-    /// The source buffer this excerpt projects rows from.
     pub source: BufferId,
-    /// First source row included in the composed view
-    /// (0-indexed, inclusive).
     pub start_line: u32,
-    /// Last source row included in the composed view
-    /// (0-indexed, inclusive). When `start_line == end_line`,
-    /// the excerpt is one row tall.
     pub end_line: u32,
-    /// Header presentation. M.2 renders this as a virtual row
-    /// above the excerpt's first composed line via
-    /// `MultibufferHeaderProvider` (lattice-host).
     pub header: ExcerptHeader,
 }
 
 impl Excerpt {
-    /// Build an excerpt covering `[start_line..=end_line]` of
-    /// `source`. Allocates a fresh `ExcerptId`. The header is
-    /// empty by default — callers (or providers) set a
-    /// meaningful title via [`Self::with_header`] or by
-    /// mutating the `header` field.
     pub fn new(source: BufferId, start_line: u32, end_line: u32) -> Self {
         Self {
             id: ExcerptId::next(),
@@ -165,29 +144,26 @@ impl Excerpt {
         }
     }
 
-    /// Fluent setter for the header title — useful in test
-    /// fixtures and provider implementations.
     pub fn with_header(mut self, header: ExcerptHeader) -> Self {
         self.header = header;
         self
     }
 
-    /// Number of source rows this excerpt covers. Always
-    /// `>= 1` for a well-formed excerpt.
+    /// Number of source rows this excerpt covers. Always `>= 1`
+    /// for a well-formed excerpt.
     pub fn line_count(&self) -> u32 {
         self.end_line.saturating_sub(self.start_line) + 1
     }
 }
 
+// ─────────────────────────────────────────────────────────────────
+// Row translation
+// ─────────────────────────────────────────────────────────────────
+
 /// One row in the composed multibuffer view, mapped back to its
-/// source. M.2 (excerpt rendering) adds `Header` / `Separator`
-/// variants for virtual rows; M.1 only emits `Excerpt` rows
-/// because the composed buffer holds pure source content.
+/// source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RowEntry {
-    /// A row of source content. `excerpt_id` identifies which
-    /// excerpt this row belongs to; `source_row` is the row
-    /// number in the original source buffer.
     Excerpt {
         excerpt_id: ExcerptId,
         source_row: u32,
@@ -195,21 +171,13 @@ pub enum RowEntry {
 }
 
 /// Composed-row → source-row mapping. One entry per composed
-/// row, in display order. Rebuilt fresh from the current excerpt
-/// list on every recompose; M.3 (edit propagation) and M.2
-/// (rendering) both lean on this to dispatch composed rows back
-/// to their source.
-///
-/// M.1 doesn't render or dispatch edits, so the translation is
-/// constructed but mostly unused; M.2 / M.3 wire it into their
-/// hot paths.
+/// row, in display order. Rebuilt on every recompose.
 #[derive(Debug, Clone, Default)]
 pub struct RowTranslation {
     pub entries: Vec<RowEntry>,
 }
 
 impl RowTranslation {
-    /// Build a fresh translation table from `excerpts` in order.
     pub fn build(excerpts: &[Excerpt]) -> Self {
         let mut entries = Vec::new();
         for excerpt in excerpts {
@@ -224,68 +192,29 @@ impl RowTranslation {
     }
 }
 
-/// The owned state of one multibuffer. Held inside an `Arc` by
-/// every clone of [`MultibufferDocumentHandle`].
+// ─────────────────────────────────────────────────────────────────
+// MultibufferDocumentHandle
+// ─────────────────────────────────────────────────────────────────
+
 struct MultibufferInner {
-    /// Stable identity for the composed buffer. Distinct from
-    /// any source's `DocumentId`. Allocated from a high
-    /// counter range so it can't collide with `DocumentId`s
-    /// minted by `lattice_core::Document::next_document_id()`.
     id: DocumentId,
-    /// Per-process unique buffer id, parallel to what a regular
-    /// `RopeDocumentHandle` registers under in `BufferRegistry`.
-    /// Exposed via [`MultibufferDocumentHandle::buffer_id`] —
-    /// callers that need to register the handle in a registry
-    /// keyed by `BufferId` use this.
     buffer_id: BufferId,
-    /// Source handles indexed by `BufferId`. An excerpt's
-    /// `source` field is looked up here. M.1 takes the map at
-    /// construction; M.4 will extend it via subscription.
     sources: HashMap<BufferId, Arc<dyn Document>>,
-    /// Excerpts in composed-display order. M.1 stores them as
-    /// a frozen `Vec`; M.6 will rebuild this from a
-    /// `MultibufferProvider`.
     excerpts: Vec<Excerpt>,
-    /// Composed snapshot publish cell — readers `load()` from
-    /// this to get the current state; `recompose()` builds a
-    /// new snapshot and `store()`s it.
     snapshot_cell: Arc<PublishedSnapshot>,
-    /// Cached row-translation table. Rebuilt alongside the
-    /// snapshot on every recompose. Published via `ArcSwap` so
-    /// downstream consumers (M.2 renderer / M.3 dispatch) get a
-    /// lock-free load.
     row_translation: ArcSwap<RowTranslation>,
 }
 
-/// M.1 (2026-05-31): a multibuffer document handle. Composes N
-/// source `Arc<dyn Document>`s into one read-only composed
-/// view; impls [`Document`] so dispatch / motion / render code
-/// paths serve it the same as a regular `RopeDocumentHandle`.
-///
-/// Cheap to clone (one atomic Arc bump). Lives in the
-/// `Editor.document` slot (via `ActiveDocument::new`) or in
-/// `BufferRegistry::DocumentEntry::handle` (via direct `Arc`).
-///
-/// Writes are rejected with `RuntimeError::ReadOnly` until M.3
-/// lands translation-table-driven propagation to source handles.
+/// A multibuffer document handle. Composes N source
+/// `Arc<dyn Document>`s into one read-only composed view; impls
+/// [`Document`] so dispatch / motion / render code paths serve
+/// it the same as a regular `RopeDocumentHandle`.
 #[derive(Clone)]
 pub struct MultibufferDocumentHandle {
     inner: Arc<MultibufferInner>,
 }
 
 impl MultibufferDocumentHandle {
-    /// Build a multibuffer from a fixed map of source handles
-    /// (indexed by `BufferId`) and an ordered list of
-    /// excerpts. Composes the initial snapshot eagerly. M.4
-    /// will add an auto-rebuild path that subscribes to source
-    /// edit events; for M.1 callers invoke [`Self::recompose`]
-    /// manually after mutating sources.
-    ///
-    /// Errors:
-    /// * [`MultibufferError::EmptyExcerpts`] if `excerpts` is
-    ///   empty — a multibuffer with no excerpts is degenerate.
-    /// * [`MultibufferError::UnknownSource`] if any excerpt
-    ///   references a `BufferId` not present in `sources`.
     pub fn new(
         sources: HashMap<BufferId, Arc<dyn Document>>,
         excerpts: Vec<Excerpt>,
@@ -320,44 +249,28 @@ impl MultibufferDocumentHandle {
         })
     }
 
-    /// Per-process unique buffer id for registry use. Stable
-    /// across the multibuffer's lifetime.
     pub fn buffer_id(&self) -> BufferId {
         self.inner.buffer_id
     }
 
-    /// Current row-translation table snapshot. Lock-free.
-    /// Renderer + edit-dispatch use this to map composed rows
-    /// back to source rows.
     pub fn row_translation(&self) -> Arc<RowTranslation> {
         self.inner.row_translation.load_full()
     }
 
-    /// Read-side accessor for the underlying excerpt list.
-    /// Returned by reference into the `Arc<MultibufferInner>`
-    /// so callers don't pay an allocation. M.1 holds the
-    /// excerpt list immutably; M.6 swaps it via `ArcSwap` when
-    /// providers re-emit.
     pub fn excerpts(&self) -> &[Excerpt] {
         &self.inner.excerpts
     }
 
-    /// Source `BufferId`s this multibuffer composes from, in
-    /// no particular order. M.4 / M.5 / M.6 lean on this to
-    /// wire subscriptions / propagate updates / handle source
-    /// removal.
     pub fn source_buffer_ids(&self) -> impl Iterator<Item = BufferId> + '_ {
         self.inner.sources.keys().copied()
     }
 
     /// Recompose the snapshot from current source state.
     /// Rebuilds the composed buffer + row translation, then
-    /// publishes the new snapshot via `ArcSwap::store`.
+    /// publishes via `ArcSwap::store`.
     ///
-    /// M.1 ships with this as a manual API (test fixtures call
-    /// it explicitly after mutating sources). M.4 wires
-    /// automatic invocation via source-edit event
-    /// subscriptions.
+    /// M.1 ships this as a manual API; M.4 wires automatic
+    /// invocation via source-edit event subscriptions.
     pub fn recompose(&self) {
         let new_snapshot = compose_snapshot(
             self.inner.id,
@@ -430,19 +343,10 @@ impl std::fmt::Debug for MultibufferDocumentHandle {
     }
 }
 
-/// Errors surfaced by multibuffer construction.
 #[derive(Debug, thiserror::Error)]
 pub enum MultibufferError {
-    /// Construction was passed an empty excerpt list. A
-    /// multibuffer needs at least one excerpt to be a valid
-    /// composed view.
     #[error("multibuffer must have at least one excerpt")]
     EmptyExcerpts,
-    /// An excerpt references a source `BufferId` not present in
-    /// the `sources` map at construction time. (`source_buffer`
-    /// is named to avoid `thiserror`'s magic `source` field
-    /// behaviour, which would require `BufferId: std::error::
-    /// Error`.)
     #[error("excerpt {excerpt:?} references unknown source buffer {source_buffer:?}")]
     UnknownSource {
         excerpt: ExcerptId,
@@ -451,27 +355,99 @@ pub enum MultibufferError {
 }
 
 // ─────────────────────────────────────────────────────────────────
+// Header provider (VirtualRowProvider impl) — moved from
+// `lattice-host::multibuffer` in M.2.b.1.
+// ─────────────────────────────────────────────────────────────────
+
+/// Namespace prefix for multibuffer header provider ids.
+/// Distinct from the diff filler / overlay namespaces (`0xD1FF_*`).
+const MULTIBUFFER_HEADER_NAMESPACE: u64 = 0xBBBB_0001_0000_0000;
+
+pub fn multibuffer_header_provider_id(buffer_id: BufferId) -> ProviderId {
+    MULTIBUFFER_HEADER_NAMESPACE | u64::from(buffer_id.0)
+}
+
+/// Emits one virtual row per excerpt header, anchored above the
+/// excerpt's first composed row. Cheap-clone reference to the
+/// multibuffer handle; re-reads excerpts on each `collect()`.
+#[derive(Debug)]
+pub struct MultibufferHeaderProvider {
+    multibuffer: MultibufferDocumentHandle,
+}
+
+impl MultibufferHeaderProvider {
+    pub fn new(multibuffer: MultibufferDocumentHandle) -> Self {
+        Self { multibuffer }
+    }
+}
+
+impl VirtualRowProvider for MultibufferHeaderProvider {
+    fn id(&self) -> ProviderId {
+        multibuffer_header_provider_id(self.multibuffer.buffer_id())
+    }
+
+    fn version(&self) -> u64 {
+        self.multibuffer.snapshot().version
+    }
+
+    fn collect(&self) -> Vec<VirtualRow> {
+        compose_header_rows(self.multibuffer.excerpts(), default_header_cells)
+    }
+}
+
+/// Pure function from excerpt list → header virtual rows. Each
+/// excerpt contributes one row, anchored `Above` its first
+/// composed line.
+pub fn compose_header_rows(
+    excerpts: &[Excerpt],
+    mut render_cells: impl FnMut(&Excerpt) -> Arc<[Cell]>,
+) -> Vec<VirtualRow> {
+    let mut rows = Vec::with_capacity(excerpts.len());
+    let mut composed_cursor: u32 = 0;
+    for excerpt in excerpts {
+        let cells = render_cells(excerpt);
+        rows.push(VirtualRow {
+            anchor_line: composed_cursor,
+            position: AnchorPosition::Above,
+            cells,
+            height: 1,
+            kind: VirtualRowKind::Generic,
+        });
+        composed_cursor = composed_cursor.saturating_add(excerpt.line_count());
+    }
+    rows
+}
+
+/// Default header-rendering: `── <title> ──` (box-drawing
+/// rules). Empty title yields a row of box rules only.
+pub fn default_header_cells(excerpt: &Excerpt) -> Arc<[Cell]> {
+    let title = &excerpt.header.title;
+    let mut cells = Vec::new();
+    for _ in 0..2 {
+        cells.push(Cell::with_codepoint('─' as u32));
+    }
+    if !title.is_empty() {
+        cells.push(Cell::with_codepoint(' ' as u32));
+        for ch in title.chars() {
+            cells.push(Cell::with_codepoint(ch as u32));
+        }
+        cells.push(Cell::with_codepoint(' ' as u32));
+    }
+    for _ in 0..2 {
+        cells.push(Cell::with_codepoint('─' as u32));
+    }
+    Arc::from(cells)
+}
+
+// ─────────────────────────────────────────────────────────────────
 // Internals
 // ─────────────────────────────────────────────────────────────────
 
 fn next_multibuffer_document_id() -> DocumentId {
-    // Multibuffer ids live in a high range that won't collide
-    // with regular per-process `DocumentId`s minted by
-    // `lattice_core::Document::next_document_id()` (which
-    // starts at 1).
     static NEXT: AtomicU64 = AtomicU64::new(0x1000_0000_0000_0000);
     DocumentId::new(NEXT.fetch_add(1, Ordering::Relaxed))
 }
 
-/// Compose the snapshot for the multibuffer from current source
-/// snapshots. Builds the composed rope text by concatenating
-/// each excerpt's source-row range in order; one trailing
-/// newline per source row keeps the line geometry stable.
-///
-/// Orphaned excerpts (whose `source` is no longer in
-/// `sources`) are silently skipped — this is the v1 behaviour
-/// for a closed source (per §8 decision); M.1.d wires
-/// auto-pruning of the excerpt list when its source closes.
 fn compose_snapshot(
     id: DocumentId,
     sources: &HashMap<BufferId, Arc<dyn Document>>,
@@ -513,49 +489,38 @@ fn compose_snapshot(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
-    use crate::handle::spawn_document;
     use lattice_core::Document as CoreDocument;
     use lattice_grammar::CommandRegistry;
+    use lattice_runtime::spawn_document;
 
     fn empty_registry() -> Arc<CommandRegistry> {
         Arc::new(CommandRegistry::new())
     }
 
-    /// Build sources keyed by fresh `BufferId`s — returns
-    /// `(sources_map, buffer_ids_in_order)` so tests can
-    /// reference buffer ids when constructing excerpts.
     fn make_sources(texts: &[&str]) -> (HashMap<BufferId, Arc<dyn Document>>, Vec<BufferId>) {
         let mut map: HashMap<BufferId, Arc<dyn Document>> = HashMap::new();
         let mut ids = Vec::new();
         for text in texts {
-            let handle = spawn_document(lattice_core::BufferId(0), CoreDocument::from_text(*text), empty_registry());
             let id = BufferId::next();
+            let handle = spawn_document(id, CoreDocument::from_text(*text), empty_registry());
             map.insert(id, Arc::new(handle));
             ids.push(id);
         }
         (map, ids)
     }
 
-    /// Smoke test: build a multibuffer with one source + one
-    /// excerpt; verify the composed snapshot exposes the
-    /// excerpt's rows as its rope content.
     #[tokio::test(flavor = "multi_thread")]
     async fn single_source_single_excerpt_composes() {
         let (sources, ids) = make_sources(&["alpha\nbeta\ngamma\ndelta\nepsilon\n"]);
         let excerpts = vec![Excerpt::new(ids[0], 1, 3)];
-
         let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
         let snap = mb.snapshot();
         assert_eq!(snap.buffer.as_string(), "beta\ngamma\ndelta\n");
         assert_eq!(snap.dirty, false);
         assert!(snap.path.is_none());
-        // `SelectionSet::default()` is a single cursor at origin,
-        // matching read-only "no selection" semantics.
         assert_eq!(snap.selections.all().len(), 1);
     }
 
-    /// Two excerpts across two sources concatenate in display
-    /// order (composed top-to-bottom matches excerpt vec order).
     #[tokio::test(flavor = "multi_thread")]
     async fn multi_source_multi_excerpt_composes_in_order() {
         let (sources, ids) = make_sources(&["a1\na2\na3\n", "b1\nb2\nb3\n"]);
@@ -563,33 +528,29 @@ mod tests {
             Excerpt::new(ids[0], 0, 1),
             Excerpt::new(ids[1], 2, 2),
         ];
-
         let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
         let snap = mb.snapshot();
         assert_eq!(snap.buffer.as_string(), "a1\na2\nb3\n");
     }
 
-    /// Write methods all return `Pending::ready(Err(ReadOnly))`.
     #[tokio::test(flavor = "multi_thread")]
     async fn writes_are_rejected() {
         let (sources, ids) = make_sources(&["x"]);
         let excerpts = vec![Excerpt::new(ids[0], 0, 0)];
         let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
 
-        let edit_result = mb.apply_edit(Edit::insert(Position::ZERO, "y")).await;
-        assert!(matches!(edit_result, Err(RuntimeError::ReadOnly)));
-
-        let undo_result = mb.undo().await;
-        assert!(matches!(undo_result, Err(RuntimeError::ReadOnly)));
-
-        let save_result = mb.save().await;
-        assert!(matches!(save_result, Err(RuntimeError::ReadOnly)));
-
-        let select_result = mb.set_selections(SelectionSet::default()).await;
-        assert!(matches!(select_result, Err(RuntimeError::ReadOnly)));
+        assert!(matches!(
+            mb.apply_edit(Edit::insert(Position::ZERO, "y")).await,
+            Err(RuntimeError::ReadOnly)
+        ));
+        assert!(matches!(mb.undo().await, Err(RuntimeError::ReadOnly)));
+        assert!(matches!(mb.save().await, Err(RuntimeError::ReadOnly)));
+        assert!(matches!(
+            mb.set_selections(SelectionSet::default()).await,
+            Err(RuntimeError::ReadOnly)
+        ));
     }
 
-    /// Empty excerpt list at construction surfaces a typed error.
     #[tokio::test(flavor = "multi_thread")]
     async fn empty_excerpts_returns_error() {
         let (sources, _ids) = make_sources(&["x"]);
@@ -597,8 +558,6 @@ mod tests {
         assert!(matches!(err, MultibufferError::EmptyExcerpts));
     }
 
-    /// Excerpt referencing a source not in the map surfaces a
-    /// typed error.
     #[tokio::test(flavor = "multi_thread")]
     async fn unknown_source_returns_error() {
         let (sources, _ids) = make_sources(&["x"]);
@@ -611,8 +570,6 @@ mod tests {
         ));
     }
 
-    /// Trait-object dispatch: `Arc<dyn Document>` callers see
-    /// the same observable behaviour as the concrete handle.
     #[tokio::test(flavor = "multi_thread")]
     async fn dispatches_via_dyn_document() {
         let (sources, ids) = make_sources(&["foo\nbar\nbaz\n"]);
@@ -628,30 +585,109 @@ mod tests {
         ));
     }
 
-    /// Source edit + manual `recompose()` reflects in the
-    /// multibuffer's snapshot.
     #[tokio::test(flavor = "multi_thread")]
     async fn source_edit_propagates_after_recompose() {
         let (sources, ids) = make_sources(&["alpha\nbeta\ngamma\n"]);
-        // Grab the concrete handle so we can drive the actor;
-        // we still pass it through the trait-object map.
         let source_handle = sources.get(&ids[0]).expect("source present").clone();
-
         let excerpts = vec![Excerpt::new(ids[0], 0, 2)];
         let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
         assert_eq!(mb.snapshot().text(), "alpha\nbeta\ngamma\n");
 
-        // Mutate the source via the trait surface. End-of-line
-        // 1 (after "beta") is the start of line 2 in 0-indexed
-        // terms; the source rope has 3 lines + trailing newline.
         source_handle
             .apply_edit(Edit::insert(Position::new(1, 0), "BB-"))
             .await
             .unwrap();
-        // Before recompose: stale.
         assert_eq!(mb.snapshot().text(), "alpha\nbeta\ngamma\n");
-        // After recompose: fresh.
         mb.recompose();
         assert_eq!(mb.snapshot().text(), "alpha\nBB-beta\ngamma\n");
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Header provider tests (moved from `lattice-host::multibuffer`)
+    // ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn header_rows_anchor_at_each_excerpts_first_composed_row() {
+        let mb_source = BufferId::next();
+        let excerpts = vec![
+            Excerpt::new(mb_source, 0, 2).with_header(ExcerptHeader::new("a")),
+            Excerpt::new(mb_source, 0, 1).with_header(ExcerptHeader::new("b")),
+            Excerpt::new(mb_source, 0, 0).with_header(ExcerptHeader::new("c")),
+        ];
+        let rows = compose_header_rows(&excerpts, |_| Arc::from(Vec::<Cell>::new()));
+
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].anchor_line, 0);
+        assert_eq!(rows[1].anchor_line, 3);
+        assert_eq!(rows[2].anchor_line, 5);
+        for row in &rows {
+            assert_eq!(row.position, AnchorPosition::Above);
+            assert_eq!(row.height, 1);
+            assert_eq!(row.kind, VirtualRowKind::Generic);
+        }
+    }
+
+    #[test]
+    fn default_header_paints_box_rules_around_title() {
+        let mb_source = BufferId::next();
+        let with_title = Excerpt::new(mb_source, 0, 0)
+            .with_header(ExcerptHeader::new("hi"));
+        let cells = default_header_cells(&with_title);
+        assert_eq!(cells.len(), 8);
+        assert_eq!(cells[0].codepoint, '─' as u32);
+        assert_eq!(cells[3].codepoint, 'h' as u32);
+        assert_eq!(cells[4].codepoint, 'i' as u32);
+
+        let without_title = Excerpt::new(mb_source, 0, 0);
+        let cells = default_header_cells(&without_title);
+        assert_eq!(cells.len(), 4);
+        for cell in cells.iter() {
+            assert_eq!(cell.codepoint, '─' as u32);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn provider_collects_one_row_per_excerpt() {
+        let (sources, ids) = make_sources(&["alpha\nbeta\ngamma\n"]);
+        let excerpts = vec![
+            Excerpt::new(ids[0], 0, 1).with_header(ExcerptHeader::new("first")),
+            Excerpt::new(ids[0], 2, 2).with_header(ExcerptHeader::new("second")),
+        ];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+        let provider = MultibufferHeaderProvider::new(mb);
+        let rows = provider.collect();
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].anchor_line, 0);
+        assert_eq!(rows[1].anchor_line, 2);
+    }
+
+    #[test]
+    fn provider_id_namespace_is_stable() {
+        let buffer_id = BufferId(42);
+        let id = multibuffer_header_provider_id(buffer_id);
+        assert_eq!(id & 0xFFFF_FFFF, 42);
+        assert!(id < 0xD1FF_0000_0000_0000 || id >= 0xD200_0000_0000_0000);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn provider_version_bumps_with_recompose() {
+        let (sources, ids) = make_sources(&["alpha\nbeta\n"]);
+        let source = sources.get(&ids[0]).unwrap().clone();
+        let excerpts = vec![Excerpt::new(ids[0], 0, 0)];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts).unwrap();
+        let provider = MultibufferHeaderProvider::new(mb.clone());
+
+        let v_before = provider.version();
+        source
+            .apply_edit(Edit::insert(Position::ZERO, "X"))
+            .await
+            .unwrap();
+        mb.recompose();
+        let v_after = provider.version();
+        assert!(
+            v_after > v_before,
+            "version must bump after recompose; before={v_before} after={v_after}"
+        );
     }
 }

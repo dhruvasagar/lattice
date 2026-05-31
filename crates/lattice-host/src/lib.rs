@@ -59,15 +59,10 @@ pub mod fold_provider;
 // in the `lattice-diff` crate per design §3 so it remains
 // reusable by non-editor consumers.
 pub mod diff;
-// M.2 (2026-05-31): host-side multibuffer rendering.
-// `MultibufferHeaderProvider` (impl VirtualRowProvider) lives
-// here because the trait is in `lattice-cells` and the
-// registration target is the host's `virtual_row_providers`
-// registry. The data model
-// (`MultibufferDocumentHandle`, `Excerpt`, `RowTranslation`)
-// lives in `lattice-runtime::multibuffer` next to the
-// `Document` trait it sibling-impls.
-pub mod multibuffer;
+// M.2.b.1 (2026-05-31): all multibuffer concerns extracted into
+// the dedicated `lattice-multibuffer` crate. Host has no
+// multibuffer-specific code beyond a one-line `register(...)`
+// call at boot once M.2.b.2 lands the major mode.
 // D.4.a (2026-05-29): pane-group substrate. `PaneGroup` is
 // a set of `(pane, buffer)` pairs that scroll together
 // under a pluggable `RowMapper`. The trait + registry

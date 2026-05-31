@@ -1844,7 +1844,8 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
             BufferKind::Document
             | BufferKind::Oil
             | BufferKind::Terminal
-            | BufferKind::Messages => {}
+            | BufferKind::Messages
+            | BufferKind::Multibuffer => {}
         },
         // 5.5.G.13: pure-editor command-line arms. `EnterCommandLine`
         // opens the `:` line, clears any in-flight completion popup,
@@ -2045,7 +2046,8 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
                 // so the GPUI peer reaches the same dispatch.
                 editor.do_help_follow_link(_out);
             }
-            BufferKind::Document | BufferKind::Terminal | BufferKind::Messages => {}
+            BufferKind::Document | BufferKind::Terminal | BufferKind::Messages
+            | BufferKind::Multibuffer => {}
         },
     }
     // 5.8.AF.3 closeout: every renderer-neutral `Action` is now
@@ -4080,7 +4082,8 @@ impl Editor {
             | BufferKind::FileTree
             | BufferKind::Oil
             | BufferKind::Terminal
-            | BufferKind::Messages => self.pane_tree.active().buffer_id,
+            | BufferKind::Messages
+            | BufferKind::Multibuffer => self.pane_tree.active().buffer_id,
         }
     }
 
@@ -4124,7 +4127,8 @@ impl Editor {
                 .unwrap_or_else(|| self.document.snapshot().buffer.clone()),
             // `*messages*` shares Document storage; `self.document`
             // points at it when activated through `activate_document`.
-            BufferKind::Document | BufferKind::Messages => self.document.snapshot().buffer.clone(),
+            BufferKind::Document | BufferKind::Messages
+            | BufferKind::Multibuffer => self.document.snapshot().buffer.clone(),
             BufferKind::Oil => self
                 .buffers
                 .with_oil(self.active_pane_buffer_id(), |o| o.content.clone())
@@ -4157,7 +4161,8 @@ impl Editor {
     /// file-tree / oil.
     pub fn active_cursor(&self) -> lattice_protocol::position::Position {
         match self.active_buffer {
-            BufferKind::Document | BufferKind::Messages => self.cursor,
+            BufferKind::Document | BufferKind::Messages
+            | BufferKind::Multibuffer => self.cursor,
             BufferKind::Help => self.popup_help().map(|h| h.cursor).unwrap_or(self.cursor),
             BufferKind::FileTree => self
                 .buffers
@@ -14536,7 +14541,8 @@ impl Editor {
                 | BufferKind::FileTree
                 | BufferKind::Oil
                 | BufferKind::Terminal
-                | BufferKind::Messages => self.buffers.contains(e.buffer_id),
+                | BufferKind::Messages
+            | BufferKind::Multibuffer => self.buffers.contains(e.buffer_id),
                 BufferKind::Help => {
                     self.buffers.contains_help(e.buffer_id) || popup_help_id == Some(e.buffer_id)
                 }
@@ -14568,7 +14574,8 @@ impl Editor {
             // Messages buffers share the activate_document path
             // (rope-backed); the kind tag is preserved via
             // self.active_buffer set inside activate_buffer.
-            BufferKind::Document | BufferKind::Messages => {
+            BufferKind::Document | BufferKind::Messages
+            | BufferKind::Multibuffer => {
                 if self.buffers.contains_document(entry.buffer_id) {
                     let _ = self.activate_document(entry.buffer_id);
                     self.cursor = entry.position;
@@ -20781,7 +20788,7 @@ impl Editor {
                         id.0
                     ));
                 }
-                BufferKind::Messages => {
+                BufferKind::Messages | BufferKind::Multibuffer => {
                     let label = row.name.clone().unwrap_or_else(|| "*messages*".to_string());
                     let dirty = if row.doc_dirty { "[+]" } else { "   " };
                     lines.push(format!(
@@ -21482,7 +21489,8 @@ impl Editor {
             }
             // Document + Messages share the same hot-path stash
             // (cursor/scroll captured on the active pane below).
-            BufferKind::Document | BufferKind::Messages => {}
+            BufferKind::Document | BufferKind::Messages
+            | BufferKind::Multibuffer => {}
             // Terminal: nothing to stash beyond the pane state
             // captured below (cursor/scroll on pane). T3
             // introduces a scrollback-cursor model that may
@@ -21630,7 +21638,8 @@ impl Editor {
             // same activation pipeline; `activate_document` reads
             // the kind from the registry and propagates it onto
             // `self.active_buffer`.
-            BufferKind::Document | BufferKind::Messages => self.activate_document(id),
+            BufferKind::Document | BufferKind::Messages
+            | BufferKind::Multibuffer => self.activate_document(id),
             BufferKind::FileTree => {
                 self.activate_file_tree(id);
                 false

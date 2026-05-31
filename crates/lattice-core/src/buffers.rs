@@ -63,6 +63,15 @@ pub enum BufferKind {
     ///
     /// [`Document`]: crate::Document
     Messages,
+    /// M.2.b.1 (2026-05-31): composed view over N source buffers,
+    /// owned by `lattice_multibuffer::MultibufferDocumentHandle`.
+    /// Read-only in M.1; edit propagation lands in M.3.
+    /// `MultibufferMode` (the major mode registered against this
+    /// kind in M.2.b.2) owns the typed handle as its per-buffer
+    /// context Guard, plus the `]e` / `[e` / `]E` / `[E` motion
+    /// keymap. See `docs/dev/architecture/multibuffer-views.md`
+    /// §3.6.
+    Multibuffer,
 }
 
 impl BufferKind {
@@ -80,6 +89,7 @@ impl BufferKind {
                 | BufferKind::FileTree
                 | BufferKind::Terminal
                 | BufferKind::Messages
+                | BufferKind::Multibuffer
         )
     }
 
@@ -92,6 +102,7 @@ impl BufferKind {
             BufferKind::Oil => "oil",
             BufferKind::Terminal => "terminal",
             BufferKind::Messages => "messages",
+            BufferKind::Multibuffer => "multibuffer",
         }
     }
 }

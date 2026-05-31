@@ -80,6 +80,10 @@ streaming-iterator = { workspace = true }
 lattice-snippet = { path = "../lattice-snippet" }
 # buffer_registry.rs uses `lattice_runtime::RopeDocumentHandle`.
 lattice-runtime = { path = "../lattice-runtime" }
+# M.2.b.1 (2026-05-31): host depends on `lattice-multibuffer` for
+# boot-wiring registration only (every multibuffer-specific
+# concern lives in that crate).
+lattice-multibuffer = { path = "../lattice-multibuffer" }
 # Phase 5.B.11: `Editor` holds typed `tokio::sync::mpsc`
 # receivers (message events; later: LSP request channels).
 # Naming those receiver types requires tokio as a direct dep.

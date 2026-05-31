@@ -68,7 +68,6 @@ pub mod events;
 pub mod handle;
 pub mod messages;
 pub mod messages_subscriber;
-pub mod multibuffer;
 pub mod pending;
 pub mod runtime;
 pub mod snapshot;
@@ -77,10 +76,10 @@ pub use actor::DocumentActor;
 pub use document::{ActiveDocument, Document};
 pub use events::{EventBus, EventFilter, SubscriptionId, SubscriptionTarget};
 pub use handle::{RopeDocumentHandle, spawn_document};
-pub use multibuffer::{
-    Excerpt, ExcerptHeader, ExcerptHeaderStyle, ExcerptId, MultibufferDocumentHandle,
-    MultibufferError, RowEntry, RowTranslation,
-};
+// M.2.b.1 (2026-05-31): multibuffer types moved out to the
+// dedicated `lattice-multibuffer` crate. The Document trait
+// they impl + the PublishedSnapshot they publish through stay
+// here.
 pub use lattice_grammar::CancellationToken;
 pub use messages::{MessagePushed, MessageRecord, MessagesRing};
 pub use messages_subscriber::{

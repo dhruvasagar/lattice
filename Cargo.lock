@@ -3478,6 +3478,7 @@ dependencies = [
  "lattice-help",
  "lattice-lsp",
  "lattice-mode",
+ "lattice-multibuffer",
  "lattice-oil",
  "lattice-picker",
  "lattice-protocol",
@@ -3535,6 +3536,21 @@ dependencies = [
  "lattice-runtime",
  "linkme",
  "smallvec",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
+name = "lattice-multibuffer"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "lattice-cells",
+ "lattice-core",
+ "lattice-grammar",
+ "lattice-mode",
+ "lattice-protocol",
+ "lattice-runtime",
  "thiserror 2.0.18",
  "tokio",
 ]

@@ -1,0 +1,28 @@
+[package]
+name = "lattice-multibuffer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# M.2.b.1 (2026-05-31): dedicated crate for every multibuffer
+# concern (data model, major mode, motions, header / fold
+# providers). Host depends on this crate to wire boot
+# registration; host has no other multibuffer-specific code.
+# See `docs/dev/architecture/multibuffer-views.md` §3.6.
+
+[dependencies]
+lattice-protocol = { path = "../lattice-protocol" }
+lattice-core = { path = "../lattice-core" }
+lattice-grammar = { path = "../lattice-grammar" }
+lattice-runtime = { path = "../lattice-runtime" }
+lattice-mode = { path = "../lattice-mode" }
+lattice-cells = { path = "../lattice-cells" }
+arc-swap = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "time", "macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

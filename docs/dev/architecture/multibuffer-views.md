@@ -202,15 +202,57 @@ forbids per-kind branching in those paths.
    `DocumentHandle` to `Arc<dyn Document>`. Same for any
    buffer-registry slot that today stores a `DocumentHandle`
    for a regular document.
-4. Update `RopeDocumentHandle`-specific call sites where
-   `replace(document)` (actor-internal Document swap) or
-   other non-trait methods are used — those keep the
-   concrete type.
+4. **Remove `RopeDocumentHandle::replace(...)` entirely**
+   (today's `DocumentHandle::replace`). Slot replacement —
+   not in-place actor swap — is the only mechanism for
+   "the active document changes." `do_edit` (currently calls
+   `replace_document_blocking`) is rewritten to:
+   `BufferRegistry::open(path) -> BufferId` → spawn a fresh
+   `RopeDocumentHandle` for the buffer → assign
+   `editor.document = registry.handle_for(buffer_id)`. The
+   old handle drops when no caller holds it; its actor task
+   exits cleanly. One uniform path for `:edit foo`, `:edit
+   bar`, regular ↔ multibuffer transitions, `:b N` switches,
+   etc.
 
 **Zero change** to the inner `Document` struct, the
 `DocumentActor`, `PublishedSnapshot`, `DocumentSnapshot`, or
 the mpsc-mediated write path. The trait is a thin
 abstraction over the existing handle API.
+
+#### Why no `replace`
+
+The in-place actor swap (`DocumentHandle::replace`) was a
+vim-shaped shortcut: it preserved BufferId across a content
+replacement so `:edit path` re-used the active buffer's
+slot in the actor map. Under everything-is-a-buffer the
+shortcut becomes a quirk: `:edit foo` should create a new
+buffer (vim semantic is `:edit` *replaces*; emacs `find-file`
+*opens*; lattice's BufferRegistry-keyed model aligns with the
+latter). With slot replacement:
+
+- `:edit path` creates a fresh `BufferId` for the new file,
+  registers a `RopeDocumentHandle` for it, swaps the slot.
+  The previous buffer stays in `BufferRegistry` reachable via
+  `:bn` / `:b N` / `:ls`.
+- Cross-kind transitions (regular → multibuffer, multibuffer
+  → regular) use the exact same mechanism. The edit-time
+  dispatch never branches on kind.
+- Subscribers that care about a specific buffer (LSP,
+  syntax worker, diff overlay) key by `BufferId` and resolve
+  through `BufferRegistry` per operation — slot replacement
+  is invisible to them.
+- WIT plugins hold `Resource<Buffer>` (a `BufferId`-shaped
+  capability) and re-resolve through the host on each call —
+  again invisible.
+- The renderer's `SnapshotCache` is held per-frame and
+  rebuilds from `Editor.document` each frame; slot
+  replacement is naturally absorbed at the frame boundary.
+
+No subscriber needs an explicit invalidation hook because
+no subscriber holds `Arc<dyn Document>` long-term across a
+slot change — they all go through the registry's stable
+`BufferId` indirection.
 
 `MultibufferDocumentHandle` arrives in M.1. It owns:
 

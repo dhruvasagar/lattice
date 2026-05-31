@@ -185,13 +185,24 @@ Plus a cross-slice integration test (lands in H.3): construct a buffer of each k
 
 ### Q1 — `BufferEntry` location
 
-If `BufferStore::insert_buffer` takes a `BufferEntry`, that type needs to be reachable by extension crates. Today it lives in `lattice-host::buffer_registry`. Options:
+Initial framing assumed `BufferStore::insert_buffer` would take a `BufferEntry`, requiring the type to be reachable by extension crates. That would mean hoisting `BufferEntry` + `BufferData` from `lattice-host`, which drags `FileTreeBuffer` / `OilBuffer` / `HelpBuffer` / `TerminalBuffer` with them — or inverts deps.
 
-- Hoist to `lattice-mode` (where the BufferStore trait lives).
-- Hoist to `lattice-core` (alongside `BufferKind`).
-- Re-export from `lattice-mode` while keeping the canonical home in `lattice-host`.
+**Revised decision (2026-05-31)**: the trait method takes **primitives** instead. Signature:
 
-**Decision (2026-05-31)**: hoist to `lattice-mode`. The trait lives there; the types it operates on belong there too. Host re-exports for convenience.
+```rust
+fn insert_document_buffer(
+    &self,
+    id: BufferId,
+    kind: BufferKind,
+    handle: Arc<dyn lattice_runtime::Document>,
+    flags: BufferFlags,
+    name: Option<String>,
+);
+```
+
+All five argument types already live in `lattice-core` / `lattice-runtime` (reachable by `lattice-mode`). Host's `BufferStore` impl constructs the appropriate `BufferData::Document` / `BufferData::Messages` / `BufferData::Multibuffer` variant from the `kind` tag. Kinds whose payload is NOT a `Arc<dyn Document>` (FileTree, Oil, Terminal, Help) keep their host-internal insertion path — they're not extension-crate-relevant.
+
+Net effect: no hoist needed. `lattice-multibuffer` (and future Document-shaped extension crates) calls the trait method with primitives; host's impl maps to the right variant internally.
 
 ### Q2 — `BufferData` payload variants for plugin kinds
 

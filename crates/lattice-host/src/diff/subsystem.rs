@@ -67,12 +67,12 @@ use std::time::Duration;
 
 use arc_swap::ArcSwap;
 use ropey::Rope;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::debug;
 
 use lattice_core::BufferId;
-use lattice_diff::{compute_two_way, DiffAlgorithm, HunkIndex, HunkKind, LineRange};
+use lattice_diff::{compute_three_way, compute_two_way, DiffAlgorithm, HunkIndex, HunkKind, LineRange};
 use lattice_protocol::event::{Event, EventKind};
 use lattice_protocol::ids::DocumentId;
 use lattice_runtime::{EventBus, EventFilter, SubscriptionId, SubscriptionTarget};
@@ -346,6 +346,21 @@ impl CurrentSource for BufferCurrentSource {
 pub struct DiffDescriptor {
 	pub baseline: Arc<dyn BaselineSource>,
 	pub current: Arc<dyn CurrentSource>,
+	/// D.6.a (2026-05-30): third side of a three-way merge.
+	/// `None` for two-way sessions (the v1.0 default); `Some`
+	/// for three-way merges, where `baseline` plays the role
+	/// of the common ancestor (base), `current` plays the
+	/// role of "local" (the side this session is keyed
+	/// under), and `remote` is the third party. The recompute
+	/// path dispatches on this field:
+	/// - `None` → [`compute_two_way(baseline, current)`].
+	/// - `Some(remote)` → [`compute_three_way(baseline,
+	///   current, remote)`]; emitted hunks carry three ranges
+	///   per [`Hunk::ranges`] and may include
+	///   [`HunkKind::Conflict`].
+	///
+	/// Cloned via `Arc` so descriptor `Clone` stays cheap.
+	pub remote: Option<Arc<dyn CurrentSource>>,
 	pub watch: Vec<BufferId>,
 	/// D.5.a (2026-05-30): user-visible diff sides that should
 	/// receive `diff-mode` activation while this session is
@@ -358,8 +373,21 @@ pub struct DiffDescriptor {
 	/// when a baseline source contributes no live buffer
 	/// (file-on-disk inline → `[primary]`; D.7 git baseline
 	/// → `[primary]`). Two-pane is `[baseline, primary]`; D.6
-	/// three-way will be `[doc_a, doc_b, doc_c]`.
+	/// three-way is `[base, local, remote]` (length 3).
 	pub participants: Vec<BufferId>,
+}
+
+impl DiffDescriptor {
+	/// D.6.a (2026-05-30): `true` if this descriptor carries a
+	/// `remote` source — i.e. the session is a three-way
+	/// merge. Convenience for callers that need to branch on
+	/// session shape (recompute dispatch, the future
+	/// `:diffput <bufnr>` / `:diffget <bufnr>` argument-aware
+	/// operators in D.6.c, and three-way-specific UI surfaces
+	/// in D.6.e).
+	pub fn is_three_way(&self) -> bool {
+		self.remote.is_some()
+	}
 }
 
 
@@ -527,49 +555,147 @@ pub struct DiffSessionDescription {
 	pub watch: Vec<BufferId>,
 }
 
+/// D.6.e (2026-05-31): resolution signal fired through a
+/// [`DiffSession`]'s completion channel when the user
+/// invokes `:diff-accept` / `:diff-reject`. Consumed by
+/// the future `openDiff` plugin flow (Claude Code, AI
+/// multi-file edits) and by any in-tree consumer (magit
+/// plugin, AI proposals) that wants to know how the user
+/// resolved a session.
+///
+/// `#[non_exhaustive]` so future variants — notably the
+/// `Partial(Vec<HunkId>)` case from the design doc, which
+/// would require per-hunk acceptance tracking — can be
+/// added without breaking exhaustiveness in pattern-match
+/// consumers.
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DiffOutcome {
+	/// User confirmed they're done reviewing; the
+	/// buffer's *current* content (whatever they applied
+	/// via `do`/`dp` or left alone) is the accepted
+	/// resolution. Plugins typically commit the active
+	/// buffer's rope on receiving this.
+	Accept,
+	/// User dismissed the session without committing.
+	/// Plugins should revert to pre-session state if they
+	/// modified the buffer for the diff display.
+	Reject,
+}
+
 /// D.5.b (2026-05-30): describes the edit the diff-mode `do`
 /// (diff-get) operator would apply when invoked at a given
-/// cursor row on the current side of a session. Produced by
+/// cursor row on the active side of a session. Produced by
 /// [`DiffSubsystem::compute_get_edit`]; consumed by dispatch
 /// which translates it into an `apply_edit_blocking` call
 /// and re-positions the cursor.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DiffGetPlan {
-	/// The mutation to apply to the current side's buffer.
+	/// The mutation to apply to the active buffer (the side
+	/// the cursor is on).
 	pub edit: lattice_protocol::edit::Edit,
 	/// Post-edit cursor line — the start of the resolved
-	/// hunk on the current side. Cursor stays "on the hunk"
+	/// hunk on the active side. Cursor stays "on the hunk"
 	/// so successive `]c` / `[c` jumps walk through
 	/// neighbouring hunks naturally.
 	pub post_cursor_row: u32,
 }
 
-/// D.5.c (2026-05-30): outcome of resolving the diff-mode
-/// `dp` (diff-put) operator. Distinguishes three cases the
-/// dispatch handler must surface differently to the user:
+/// D.6.d (2026-05-31): outcome of resolving the diff-mode
+/// `do` chord or `:diffget [<bufnr>]` ex-command. Mirrors
+/// [`DiffPutOutcome`]'s tri-state but for the get
+/// direction:
 ///
-/// - [`DiffPutOutcome::Edit`]: two-pane session with a peer
-///   buffer — apply the carried edit to `peer_buffer_id` via
-///   the registry's `DocumentHandle::apply_edit` and park
-///   the cursor at `post_cursor_row` on the current side.
-/// - [`DiffPutOutcome::NoPeerBuffer`]: inline session whose
-///   baseline is not a live buffer (file-on-disk for
-///   `:diff`, git blob for D.7's future `:Gdiff`).
-///   `dp` cannot push to a non-buffer; the handler emits a
-///   clear error message ("dp: baseline is not a buffer;
-///   use :write") rather than silently no-op'ing.
-/// - [`DiffPutOutcome::Nothing`]: no session, no descriptor,
-///   no hunk under the cursor, or the matched hunk is a
-///   three-way `Conflict` (D.6) — silent no-op, matches
-///   `compute_get_edit`'s `None` semantics.
+/// - [`DiffGetOutcome::Edit`]: edit ready to apply to the
+///   active buffer. The carried `target_buffer_id` names
+///   the side the edit's content was pulled FROM.
+/// - [`DiffGetOutcome::TargetRequired`]: three-way session
+///   and the caller didn't disambiguate. The
+///   `available_targets` field lists the other
+///   participant buffers so dispatch can surface a clear
+///   error.
+/// - [`DiffGetOutcome::Nothing`]: no session, no
+///   descriptor, no covering hunk under the cursor on the
+///   active side, or — for the `do` chord with no
+///   explicit target — a two-way Conflict hunk (which
+///   shouldn't exist anyway since compute_two_way doesn't
+///   emit it; defensive).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DiffGetOutcome {
+	Edit {
+		target_buffer_id: BufferId,
+		edit: lattice_protocol::edit::Edit,
+		post_cursor_row: u32,
+	},
+	TargetRequired {
+		available_targets: Vec<BufferId>,
+	},
+	Nothing,
+}
+
+impl DiffGetOutcome {
+	/// Test-friendly: project the Edit variant down to a
+	/// [`DiffGetPlan`] (the D.5.b shape) or `None` for
+	/// non-Edit outcomes. Keeps existing tests' `Option`
+	/// ergonomics post-D.6.d.
+	pub fn into_plan(self) -> Option<DiffGetPlan> {
+		match self {
+			DiffGetOutcome::Edit {
+				edit,
+				post_cursor_row,
+				..
+			} => Some(DiffGetPlan {
+				edit,
+				post_cursor_row,
+			}),
+			_ => None,
+		}
+	}
+
+	/// `true` iff this outcome is `Nothing` (silent no-op).
+	pub fn is_nothing(&self) -> bool {
+		matches!(self, DiffGetOutcome::Nothing)
+	}
+}
+
+/// D.5.c (2026-05-30) / D.6.d (2026-05-31): outcome of
+/// resolving the diff-mode `dp` chord or `:diffput
+/// [<bufnr>]` ex-command. Distinguishes four cases the
+/// dispatch handler must surface differently:
+///
+/// - [`DiffPutOutcome::Edit`]: an edit is ready to apply
+///   to the buffer identified by `target_buffer_id`. The
+///   target is the destination side; the active buffer is
+///   the source. Apply via the registry's
+///   `DocumentHandle::apply_edit` and park the cursor at
+///   `post_cursor_row` on the active side.
+/// - [`DiffPutOutcome::NoPeerBuffer`]: inline session
+///   whose baseline is not a live buffer (file-on-disk
+///   for `:diff`, git blob for D.7's future `:Gdiff`).
+///   `dp` cannot push to a non-buffer; the handler emits
+///   a clear error message ("dp: baseline is not a
+///   buffer; use :write") rather than silently no-op'ing.
+/// - [`DiffPutOutcome::TargetRequired`] (D.6.d): three-way
+///   session and the caller didn't disambiguate. The
+///   `available_targets` field lists the other
+///   participant buffers so dispatch surfaces a clear
+///   error.
+/// - [`DiffPutOutcome::Nothing`]: no session, no
+///   descriptor, no hunk under the cursor, or — for the
+///   `dp` chord with no explicit target — a two-way
+///   Conflict hunk (defensive; compute_two_way doesn't
+///   emit Conflict).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DiffPutOutcome {
 	Edit {
-		peer_buffer_id: BufferId,
+		target_buffer_id: BufferId,
 		edit: lattice_protocol::edit::Edit,
 		post_cursor_row: u32,
 	},
 	NoPeerBuffer,
+	TargetRequired {
+		available_targets: Vec<BufferId>,
+	},
 	Nothing,
 }
 
@@ -598,6 +724,136 @@ fn format_algorithm(alg: DiffAlgorithm) -> &'static str {
 		DiffAlgorithm::Myers => "Myers",
 		DiffAlgorithm::MyersMinimal => "MyersMinimal",
 	}
+}
+
+// ──────────────────────────────────────────────────────────────
+// D.6.d (2026-05-31): pane-index helpers for compute_get_edit /
+// compute_put_plan with target-aware dispatch.
+// ──────────────────────────────────────────────────────────────
+
+/// Result of resolving a target buffer to a slot index in
+/// `Hunk::ranges` (0/1 in two-way; 0/1/2 in three-way).
+enum TargetResolution {
+	/// Caller specified a target (or two-way default
+	/// resolved to the unique peer). Use this pane slot.
+	Pane(usize),
+	/// Three-way session and caller didn't supply a target.
+	/// Dispatch must surface a "diffput/diffget: target
+	/// required" error.
+	Required,
+	/// Caller specified a target buffer that isn't a
+	/// participant of this session, or is the active
+	/// buffer itself.
+	Unknown,
+}
+
+/// Find the slot index in `hunk.ranges` corresponding to
+/// `buffer_id`. Slot count comes from the descriptor's
+/// shape (2 for two-way, 3 for three-way via `remote =
+/// Some`); slot-to-buffer mapping comes from
+/// `descriptor.participants`.
+///
+/// Inline sessions (single participant) are a special
+/// case: the sole live buffer is the current side, which
+/// always sits at slot 1; slot 0 is the non-buffer-backed
+/// baseline. Multi-participant sessions use the position
+/// in the `participants` list directly (slot 0 = base /
+/// baseline, slot 1 = local / current, slot 2 = remote).
+fn pane_index_of(descriptor: &DiffDescriptor, buffer_id: BufferId) -> Option<usize> {
+	if descriptor.participants.len() == 1 {
+		return (descriptor.participants[0] == buffer_id).then_some(1);
+	}
+	descriptor
+		.participants
+		.iter()
+		.position(|&b| b == buffer_id)
+}
+
+/// Resolve `target` to a pane slot index:
+/// - `Some(b)` ⇒ slot of `b` (via [`pane_index_of`]), or
+///   `Unknown` if not present / equals active.
+/// - `None` ⇒ two-way auto-targets the unique peer slot;
+///   three-way returns `Required`.
+fn resolve_target_pane(
+	descriptor: &DiffDescriptor,
+	active_pane: usize,
+	target: Option<BufferId>,
+) -> TargetResolution {
+	if let Some(t) = target {
+		let Some(pane) = pane_index_of(descriptor, t) else {
+			return TargetResolution::Unknown;
+		};
+		if pane == active_pane {
+			return TargetResolution::Unknown;
+		}
+		return TargetResolution::Pane(pane);
+	}
+	// No explicit target. Total slots in hunk.ranges is
+	// driven by the descriptor's source shape, not the
+	// participants length (inline = 2 slots with one
+	// non-buffer-backed baseline; three-way = 3 slots).
+	if descriptor.remote.is_some() {
+		TargetResolution::Required
+	} else {
+		// Two-way (inline or two-pane): peer is the other slot.
+		TargetResolution::Pane(if active_pane == 0 { 1 } else { 0 })
+	}
+}
+
+/// Other participants (buffer ids) besides the active
+/// pane's. Returned in slot order so dispatch can render a
+/// stable error message ("expected one of: 7, 9").
+fn other_participants(descriptor: &DiffDescriptor, active_pane: usize) -> Vec<BufferId> {
+	descriptor
+		.participants
+		.iter()
+		.enumerate()
+		.filter_map(|(i, b)| if i == active_pane { None } else { Some(*b) })
+		.collect()
+}
+
+/// Snapshot the rope for the source corresponding to a
+/// pane slot. Slot 0 = baseline, 1 = current, 2 = remote
+/// (D.6.a). Returns `None` if the slot isn't backed (e.g.
+/// remote on a two-way descriptor).
+fn snapshot_for_pane(descriptor: &DiffDescriptor, pane: usize) -> Option<Rope> {
+	match pane {
+		0 => Some(descriptor.baseline.snapshot()),
+		1 => Some(descriptor.current.snapshot()),
+		2 => descriptor.remote.as_ref().map(|r| r.snapshot()),
+		_ => None,
+	}
+}
+
+/// Find the first hunk whose `active_pane`-side range
+/// covers `cursor_row`. Vim-parity rules: empty ranges
+/// match only at the exact start row (the deletion-marker
+/// row); non-empty ranges match by half-open inclusion.
+///
+/// When `allow_conflict` is `true`, Conflict hunks
+/// participate in the search (D.6.d target-aware path
+/// resolves them); when `false`, they're skipped
+/// defensively (the `do` / `dp` chord path without an
+/// explicit target — preserves D.5.b/c semantics).
+fn find_covering_hunk<'a>(
+	index: &'a HunkIndex,
+	active_pane: usize,
+	cursor_row: u32,
+	allow_conflict: bool,
+) -> Option<&'a lattice_diff::Hunk> {
+	index.hunks.iter().find(|h| {
+		if !allow_conflict && matches!(h.kind, HunkKind::Conflict) {
+			return false;
+		}
+		let Some(range) = h.ranges.get(active_pane).copied() else {
+			return false;
+		};
+		if range.is_empty() {
+			range.start == cursor_row
+		} else {
+			cursor_row >= range.start && cursor_row < range.end
+		}
+	})
 }
 
 /// Per-document diff state. Wraps an `ArcSwap<HunkIndex>` so
@@ -653,6 +909,18 @@ pub struct DiffSession {
 	/// and read by `do_diff_off` at teardown to drop the
 	/// group cleanly.
 	pane_group_id: Mutex<Option<lattice_core::ui::pane::PaneGroupId>>,
+	/// D.6.e (2026-05-31): one-shot resolution channel.
+	/// Set by callers that want to know when the user
+	/// runs `:diff-accept` / `:diff-reject` (or by
+	/// programmatic flows via [`Self::bind_completion`]).
+	/// The Editor's `do_diff_accept` / `do_diff_reject`
+	/// path takes the sender out
+	/// ([`Self::take_completion`]) and sends the matching
+	/// [`DiffOutcome`] before tearing the session down.
+	/// `None` for sessions that don't need outcome
+	/// notification (the default — most interactive flows
+	/// don't bind one).
+	completion: Mutex<Option<oneshot::Sender<DiffOutcome>>>,
 }
 
 impl DiffSession {
@@ -670,6 +938,7 @@ impl DiffSession {
 				crate::diff::overlay::DiffSignMap::default(),
 			),
 			pane_group_id: Mutex::new(None),
+			completion: Mutex::new(None),
 		}
 	}
 
@@ -691,6 +960,36 @@ impl DiffSession {
 	/// `:diffsplit`. The teardown path (`do_diff_off`)
 	/// reads this to drop the linked group atomically with
 	/// the session.
+	/// D.6.e (2026-05-31): bind a [`DiffOutcome`] one-shot
+	/// sender to this session. Called once after
+	/// registration by callers (`openDiff` plugin flow,
+	/// magit-style consumers) that want to be notified
+	/// when the user resolves the session via
+	/// `:diff-accept` / `:diff-reject`. Subsequent binds
+	/// overwrite (a re-bind scenario isn't expected in v1
+	/// but is safe — the previous sender is dropped, so
+	/// any awaiting receiver observes a `Closed` error,
+	/// matching the typical "session superseded" UX).
+	pub fn bind_completion(&self, tx: oneshot::Sender<DiffOutcome>) {
+		*self
+			.completion
+			.lock()
+			.expect("DiffSession completion mutex poisoned") = Some(tx);
+	}
+
+	/// D.6.e (2026-05-31): take the bound `DiffOutcome`
+	/// sender, if any. Single-shot: returns `Some` on the
+	/// first call after a `bind_completion`; subsequent
+	/// calls return `None`. Used by the
+	/// `do_diff_accept` / `do_diff_reject` teardown path
+	/// to fire the signal before dropping the session.
+	pub fn take_completion(&self) -> Option<oneshot::Sender<DiffOutcome>> {
+		self.completion
+			.lock()
+			.expect("DiffSession completion mutex poisoned")
+			.take()
+	}
+
 	pub fn pane_group_id(&self) -> Option<lattice_core::ui::pane::PaneGroupId> {
 		*self
 			.pane_group_id
@@ -795,10 +1094,20 @@ impl DiffSession {
 		took
 	}
 
-	/// D.2.b: synchronous recompute. Allocates a revision, calls
-	/// `lattice_diff::compute_two_way`, builds a `HunkIndex`
-	/// stamped with the allocated revision + the session's
-	/// algorithm, and publishes via the revision-gated path.
+	/// D.2.b / D.6.a: synchronous recompute. Allocates a
+	/// revision, runs the diff engine appropriate to the
+	/// session shape (`compute_two_way` when `remote` is
+	/// `None`; `compute_three_way` when `Some`), builds a
+	/// `HunkIndex` stamped with the allocated revision + the
+	/// session's algorithm, and publishes via the
+	/// revision-gated path.
+	///
+	/// In three-way mode `baseline` plays the role of the
+	/// common ancestor (base), `current` is "local", and
+	/// `remote` is the third side. Emitted hunks carry three
+	/// ranges in `[base, local, remote]` order and may include
+	/// `HunkKind::Conflict` per the engine's overlap
+	/// classification (`lattice_diff::compute_three_way`).
 	///
 	/// Returns `Some(idx)` on successful publish, `None` if a
 	/// newer revision was already published (stale result
@@ -809,9 +1118,13 @@ impl DiffSession {
 		&self,
 		baseline: &Rope,
 		current: &Rope,
+		remote: Option<&Rope>,
 	) -> Option<Arc<HunkIndex>> {
 		let revision = self.allocate_revision();
-		let raw = compute_two_way(baseline, current, self.algorithm);
+		let raw = match remote {
+			Some(r) => compute_three_way(baseline, current, r, self.algorithm),
+			None => compute_two_way(baseline, current, self.algorithm),
+		};
 		let idx = Arc::new(HunkIndex {
 			hunks: raw.hunks,
 			algorithm: self.algorithm,
@@ -1037,6 +1350,43 @@ impl DiffSubsystem {
 		self.lookup(primary)
 	}
 
+	/// D.6.g (2026-05-31): every session `buffer_id`
+	/// participates in — as primary key *or* as a member
+	/// of any descriptor's `watch` list. Used by
+	/// `:diffoff!` (the force bang) to cascade tear-down
+	/// across all sessions the active buffer belongs to,
+	/// not just the one [`Self::lookup_session_for`]
+	/// happens to resolve.
+	///
+	/// Today's secondary_index is single-valued
+	/// (`HashMap<BufferId, BufferId>`), so a buffer
+	/// participating in two simultaneous sessions only
+	/// resolves to the most-recently-registered one via
+	/// `lookup_session_for`. This method iterates the
+	/// `descriptors` map directly and returns every
+	/// session whose descriptor's `watch` list contains
+	/// `buffer_id`. Order is unspecified (HashMap
+	/// iteration). Empty when the buffer is not a
+	/// participant anywhere.
+	pub fn all_sessions_for(&self, buffer_id: BufferId) -> Vec<Arc<DiffSession>> {
+		let sessions = self.sessions.lock().expect("DiffSubsystem mutex poisoned");
+		let descriptors = self
+			.descriptors
+			.lock()
+			.expect("DiffSubsystem mutex poisoned");
+		sessions
+			.iter()
+			.filter(|(key, _)| {
+				**key == buffer_id
+					|| descriptors
+						.get(*key)
+						.map(|d| d.watch.contains(&buffer_id))
+						.unwrap_or(false)
+			})
+			.map(|(_, session)| session.clone())
+			.collect()
+	}
+
 	/// Look up the session for `buffer_id`. Returns `None` if no
 	/// session is registered.
 	pub fn lookup(&self, buffer_id: BufferId) -> Option<Arc<DiffSession>> {
@@ -1089,44 +1439,85 @@ impl DiffSubsystem {
 	/// snapshot is potentially expensive (file re-read for
 	/// [`OnDiskBaseline`]); callers invoke once per `do`
 	/// keystroke, never inside a tight loop.
+	/// D.6.d (2026-05-31): compute the edit the diff-mode
+	/// `do` chord or `:diffget [<bufnr>]` ex-command would
+	/// apply at `cursor_row` on `active_buffer_id`.
+	///
+	/// `target` semantics:
+	/// - `None` in two-way: pull from the peer (the only
+	///   other side) — preserves D.5.b's `do` chord
+	///   behaviour.
+	/// - `Some(buffer)` in two-way: pull from that side
+	///   (must be the peer, else `DiffGetOutcome::Nothing`).
+	/// - `None` in three-way: ambiguous →
+	///   `DiffGetOutcome::TargetRequired` with the two
+	///   available targets.
+	/// - `Some(buffer)` in three-way: pull from that
+	///   participant's side; allows resolving Conflict
+	///   hunks by picking which side wins.
+	///
+	/// Reads the target side's rope via
+	/// [`snapshot_for_pane`]. Cheap for buffer-backed
+	/// sources (rope-Arc clone); the snapshot is called
+	/// once per dispatch, never inside a tight loop.
 	pub fn compute_get_edit(
 		&self,
-		buffer_id: BufferId,
+		active_buffer_id: BufferId,
 		cursor_row: u32,
-	) -> Option<DiffGetPlan> {
-		let session = self.lookup(buffer_id)?;
-		let descriptor = self.lookup_descriptor(buffer_id)?;
+		target: Option<BufferId>,
+	) -> DiffGetOutcome {
+		let Some(session) = self.lookup_session_for(active_buffer_id) else {
+			return DiffGetOutcome::Nothing;
+		};
+		let session_key = session.buffer_id();
+		let Some(descriptor) = self.lookup_descriptor(session_key) else {
+			return DiffGetOutcome::Nothing;
+		};
+		let Some(active_pane) = pane_index_of(&descriptor, active_buffer_id) else {
+			return DiffGetOutcome::Nothing;
+		};
+		let target_pane = match resolve_target_pane(&descriptor, active_pane, target) {
+			TargetResolution::Pane(p) => p,
+			TargetResolution::Required => {
+				return DiffGetOutcome::TargetRequired {
+					available_targets: other_participants(&descriptor, active_pane),
+				};
+			}
+			TargetResolution::Unknown => return DiffGetOutcome::Nothing,
+		};
+		let allow_conflict = target.is_some();
 		let hunks = session.current_hunks();
-		let hunk = hunks.hunks.iter().find(|h| {
-			if matches!(h.kind, HunkKind::Conflict) {
-				return false;
-			}
-			let Some(current) = h.ranges.get(1).copied() else {
-				return false;
-			};
-			if current.is_empty() {
-				// Remove hunk on the current side — cursor
-				// must sit exactly at the deletion-point row.
-				current.start == cursor_row
-			} else {
-				cursor_row >= current.start && cursor_row < current.end
-			}
-		})?;
-		let baseline_range = hunk.ranges.first().copied()?;
-		let current_range = hunk.ranges.get(1).copied()?;
-		let baseline_rope = descriptor.baseline.snapshot();
-		let baseline_text = slice_line_range(&baseline_rope, baseline_range);
+		let Some(hunk) = find_covering_hunk(&hunks, active_pane, cursor_row, allow_conflict)
+		else {
+			return DiffGetOutcome::Nothing;
+		};
+		let Some(active_range) = hunk.ranges.get(active_pane).copied() else {
+			return DiffGetOutcome::Nothing;
+		};
+		let Some(target_range) = hunk.ranges.get(target_pane).copied() else {
+			return DiffGetOutcome::Nothing;
+		};
+		let Some(target_rope) = snapshot_for_pane(&descriptor, target_pane) else {
+			return DiffGetOutcome::Nothing;
+		};
+		let target_text = slice_line_range(&target_rope, target_range);
 		let edit = lattice_protocol::edit::Edit::replace(
 			lattice_protocol::position::Range::new(
-				lattice_protocol::position::Position::new(current_range.start, 0),
-				lattice_protocol::position::Position::new(current_range.end, 0),
+				lattice_protocol::position::Position::new(active_range.start, 0),
+				lattice_protocol::position::Position::new(active_range.end, 0),
 			),
-			baseline_text,
+			target_text,
 		);
-		Some(DiffGetPlan {
+		let target_buffer_id = descriptor
+			.participants
+			.get(target_pane)
+			.copied()
+			.unwrap_or(active_buffer_id);
+		DiffGetOutcome::Edit {
+			target_buffer_id,
 			edit,
-			post_cursor_row: current_range.start,
-		})
+			post_cursor_row: active_range.start,
+		}
 	}
 
 	/// D.5.c (2026-05-30): compute the outcome the diff-mode
@@ -1164,61 +1555,68 @@ impl DiffSubsystem {
 	/// arm.
 	pub fn compute_put_plan(
 		&self,
-		buffer_id: BufferId,
+		active_buffer_id: BufferId,
 		cursor_row: u32,
+		target: Option<BufferId>,
 	) -> DiffPutOutcome {
-		let Some(session) = self.lookup(buffer_id) else {
+		let Some(session) = self.lookup_session_for(active_buffer_id) else {
 			return DiffPutOutcome::Nothing;
 		};
-		let Some(descriptor) = self.lookup_descriptor(buffer_id) else {
+		let session_key = session.buffer_id();
+		let Some(descriptor) = self.lookup_descriptor(session_key) else {
 			return DiffPutOutcome::Nothing;
 		};
+		// Inline session (single participant — no peer to
+		// push to). Defensive against any future
+		// non-buffer-backed baseline source (D.7 `:Gdiff`).
+		if descriptor.participants.len() < 2 {
+			return DiffPutOutcome::NoPeerBuffer;
+		}
+		let Some(active_pane) = pane_index_of(&descriptor, active_buffer_id) else {
+			return DiffPutOutcome::Nothing;
+		};
+		let target_pane = match resolve_target_pane(&descriptor, active_pane, target) {
+			TargetResolution::Pane(p) => p,
+			TargetResolution::Required => {
+				return DiffPutOutcome::TargetRequired {
+					available_targets: other_participants(&descriptor, active_pane),
+				};
+			}
+			TargetResolution::Unknown => return DiffPutOutcome::Nothing,
+		};
+		let allow_conflict = target.is_some();
 		let hunks = session.current_hunks();
-		let Some(hunk) = hunks.hunks.iter().find(|h| {
-			if matches!(h.kind, HunkKind::Conflict) {
-				return false;
-			}
-			let Some(current) = h.ranges.get(1).copied() else {
-				return false;
-			};
-			if current.is_empty() {
-				current.start == cursor_row
-			} else {
-				cursor_row >= current.start && cursor_row < current.end
-			}
-		}) else {
+		let Some(hunk) = find_covering_hunk(&hunks, active_pane, cursor_row, allow_conflict)
+		else {
 			return DiffPutOutcome::Nothing;
 		};
-		let baseline_range = match hunk.ranges.first().copied() {
-			Some(r) => r,
-			None => return DiffPutOutcome::Nothing,
+		let Some(active_range) = hunk.ranges.get(active_pane).copied() else {
+			return DiffPutOutcome::Nothing;
 		};
-		let current_range = match hunk.ranges.get(1).copied() {
-			Some(r) => r,
-			None => return DiffPutOutcome::Nothing,
+		let Some(target_range) = hunk.ranges.get(target_pane).copied() else {
+			return DiffPutOutcome::Nothing;
 		};
-		// Peer = participants[0] for two-pane sessions.
-		// Inline sessions are `[primary]` (one entry) and
-		// have no peer buffer; D.6 three-way will route
-		// through the disambiguating `:diffput <bufnr>`.
-		let peer_buffer_id = match descriptor.participants.as_slice() {
-			[_only] => return DiffPutOutcome::NoPeerBuffer,
-			[peer, _current] => *peer,
-			_ => return DiffPutOutcome::NoPeerBuffer,
+		// The active side's rope is the source we copy
+		// FROM; the target's range is what we overwrite.
+		let Some(active_rope) = snapshot_for_pane(&descriptor, active_pane) else {
+			return DiffPutOutcome::Nothing;
 		};
-		let current_rope = descriptor.current.snapshot();
-		let current_text = slice_line_range(&current_rope, current_range);
+		let active_text = slice_line_range(&active_rope, active_range);
 		let edit = lattice_protocol::edit::Edit::replace(
 			lattice_protocol::position::Range::new(
-				lattice_protocol::position::Position::new(baseline_range.start, 0),
-				lattice_protocol::position::Position::new(baseline_range.end, 0),
+				lattice_protocol::position::Position::new(target_range.start, 0),
+				lattice_protocol::position::Position::new(target_range.end, 0),
 			),
-			current_text,
+			active_text,
 		);
+		let target_buffer_id = match descriptor.participants.get(target_pane).copied() {
+			Some(b) => b,
+			None => return DiffPutOutcome::NoPeerBuffer,
+		};
 		DiffPutOutcome::Edit {
-			peer_buffer_id,
+			target_buffer_id,
 			edit,
-			post_cursor_row: current_range.start,
+			post_cursor_row: active_range.start,
 		}
 	}
 
@@ -1497,11 +1895,13 @@ impl DiffSubsystem {
 		buffer_id: BufferId,
 		baseline: Arc<dyn BaselineSource>,
 		current: Rope,
+		remote: Option<Arc<dyn CurrentSource>>,
 	) -> Option<JoinHandle<Option<Arc<HunkIndex>>>> {
 		let session = self.lookup(buffer_id)?;
 		Some(tokio::task::spawn_blocking(move || {
 			let base = baseline.snapshot();
-			session.recompute_blocking(&base, &current)
+			let remote_rope = remote.as_ref().map(|r| r.snapshot());
+			session.recompute_blocking(&base, &current, remote_rope.as_ref())
 		}))
 	}
 
@@ -1587,7 +1987,12 @@ impl DiffSubsystem {
 			None => return,
 		};
 		let current = descriptor.current.snapshot();
-		let _ = self.schedule_recompute(session_key, descriptor.baseline, current);
+		let _ = self.schedule_recompute(
+			session_key,
+			descriptor.baseline,
+			current,
+			descriptor.remote,
+		);
 	}
 
 	/// D.2.c: bind the subsystem to an event bus. Subscribes to
@@ -1822,7 +2227,7 @@ mod tests {
 		let s = DiffSession::new(bid(1), DiffAlgorithm::Histogram);
 		let r = Rope::from("alpha\nbeta\ngamma\n");
 		let published = s
-			.recompute_blocking(&r, &r)
+			.recompute_blocking(&r, &r, None)
 			.expect("first publish should always take");
 		assert!(published.is_empty());
 		assert_eq!(published.algorithm, DiffAlgorithm::Histogram);
@@ -1838,7 +2243,7 @@ mod tests {
 		let a = Rope::from("alpha\nbeta\ngamma\n");
 		let b = Rope::from("alpha\nBETA\ngamma\n");
 		let idx = s
-			.recompute_blocking(&a, &b)
+			.recompute_blocking(&a, &b, None)
 			.expect("first publish should take");
 		assert_eq!(idx.len(), 1);
 		assert_eq!(idx.hunks[0].kind, HunkKind::Change);
@@ -1850,9 +2255,9 @@ mod tests {
 		let s = DiffSession::new(bid(1), DiffAlgorithm::Histogram);
 		let a = Rope::from("alpha\n");
 		let b = Rope::from("beta\n");
-		let r1 = s.recompute_blocking(&a, &b).unwrap();
-		let r2 = s.recompute_blocking(&a, &b).unwrap();
-		let r3 = s.recompute_blocking(&a, &b).unwrap();
+		let r1 = s.recompute_blocking(&a, &b, None).unwrap();
+		let r2 = s.recompute_blocking(&a, &b, None).unwrap();
+		let r3 = s.recompute_blocking(&a, &b, None).unwrap();
 		assert_eq!(r1.revision, 1);
 		assert_eq!(r2.revision, 2);
 		assert_eq!(r3.revision, 3);
@@ -1913,7 +2318,7 @@ mod tests {
 		});
 		assert!(s.try_publish_if_newer(high));
 		let r = Rope::from("x\n");
-		let result = s.recompute_blocking(&r, &r);
+		let result = s.recompute_blocking(&r, &r, None);
 		assert!(result.is_none(), "stale recompute should not publish");
 		assert_eq!(s.current_hunks().revision, 100);
 	}
@@ -1923,7 +2328,7 @@ mod tests {
 		let sub = DiffSubsystem::new();
 		let baseline: Arc<dyn BaselineSource> =
 			Arc::new(StaticBaseline::new(Rope::from("x\n")));
-		let handle = sub.schedule_recompute(bid(999), baseline, Rope::from("y\n"));
+		let handle = sub.schedule_recompute(bid(999), baseline, Rope::from("y\n"), None);
 		assert!(handle.is_none());
 	}
 
@@ -1936,7 +2341,7 @@ mod tests {
 		let current = Rope::from("alpha\nBETA\n");
 
 		let handle = sub
-			.schedule_recompute(bid(1), baseline, current)
+			.schedule_recompute(bid(1), baseline, current, None)
 			.expect("registered buffer has a session");
 		let result = handle.await.expect("blocking task didn't panic");
 		let idx = result.expect("first recompute publishes");
@@ -1954,12 +2359,12 @@ mod tests {
 			Arc::new(StaticBaseline::new(Rope::from("alpha\n")));
 
 		let h1 = sub
-			.schedule_recompute(bid(1), Arc::clone(&baseline), Rope::from("alpha\n"))
+			.schedule_recompute(bid(1), Arc::clone(&baseline), Rope::from("alpha\n"), None)
 			.unwrap();
 		h1.await.unwrap().unwrap();
 
 		let h2 = sub
-			.schedule_recompute(bid(1), Arc::clone(&baseline), Rope::from("beta\n"))
+			.schedule_recompute(bid(1), Arc::clone(&baseline), Rope::from("beta\n"), None)
 			.unwrap();
 		let idx2 = h2.await.unwrap().unwrap();
 
@@ -2026,10 +2431,41 @@ mod tests {
 				Arc::clone(provider),
 				current_buf,
 			)),
+			remote: None,
 			watch: vec![baseline_buf, current_buf],
 			// D.5.a: tests don't exercise the mode bridge,
 			// so participants stays empty by default.
 			participants: vec![],
+		}
+	}
+
+	/// D.6.a (2026-05-30): test helper for three-way merge
+	/// descriptors. `base` plays the role of common
+	/// ancestor; `local` is the side the session is keyed
+	/// under; `remote` is the third party. watch +
+	/// participants = all three buffers so the routing index
+	/// + mode bridge would activate uniformly.
+	fn three_way_descriptor(
+		provider: &Arc<dyn BufferTextProvider>,
+		base_buf: BufferId,
+		local_buf: BufferId,
+		remote_buf: BufferId,
+	) -> DiffDescriptor {
+		DiffDescriptor {
+			baseline: Arc::new(BufferBaseline::new(
+				Arc::clone(provider),
+				base_buf,
+			)),
+			current: Arc::new(BufferCurrentSource::new(
+				Arc::clone(provider),
+				local_buf,
+			)),
+			remote: Some(Arc::new(BufferCurrentSource::new(
+				Arc::clone(provider),
+				remote_buf,
+			))),
+			watch: vec![base_buf, local_buf, remote_buf],
+			participants: vec![base_buf, local_buf, remote_buf],
 		}
 	}
 
@@ -2086,12 +2522,14 @@ mod tests {
 			baseline: Arc::new(BufferBaseline::new(Arc::clone(&provider), bid(10))),
 			current: Arc::new(BufferCurrentSource::new(Arc::clone(&provider), bid(1))),
 			watch: vec![bid(10), bid(1)],
+			remote: None,
 			participants: vec![],
 		};
 		let desc_b = DiffDescriptor {
 			baseline: Arc::new(BufferBaseline::new(Arc::clone(&provider), bid(10))),
 			current: Arc::new(BufferCurrentSource::new(Arc::clone(&provider), bid(2))),
 			watch: vec![bid(10), bid(2)],
+			remote: None,
 			participants: vec![],
 		};
 		sub.register_with_sources(bid(1), DiffAlgorithm::Histogram, desc_a);
@@ -2126,12 +2564,14 @@ mod tests {
 			baseline: Arc::new(BufferBaseline::new(Arc::clone(&provider), bid(10))),
 			current: Arc::new(BufferCurrentSource::new(Arc::clone(&provider), bid(1))),
 			watch: vec![bid(10), bid(1)],
+			remote: None,
 			participants: vec![],
 		};
 		let desc_b = DiffDescriptor {
 			baseline: Arc::new(BufferBaseline::new(Arc::clone(&provider), bid(10))),
 			current: Arc::new(BufferCurrentSource::new(Arc::clone(&provider), bid(2))),
 			watch: vec![bid(10), bid(2)],
+			remote: None,
 			participants: vec![],
 		};
 		sub.register_with_sources(bid(1), DiffAlgorithm::Histogram, desc_a);
@@ -2151,6 +2591,7 @@ mod tests {
 			baseline: Arc::new(StaticBaseline::new(Rope::from(""))),
 			current: Arc::new(BufferCurrentSource::new(Arc::clone(&provider), bid(1))),
 			watch: vec![bid(10), bid(1)],
+			remote: None,
 			participants: vec![],
 		};
 		sub.register_with_sources(bid(1), DiffAlgorithm::Histogram, desc_a);
@@ -2160,6 +2601,7 @@ mod tests {
 			baseline: Arc::new(StaticBaseline::new(Rope::from(""))),
 			current: Arc::new(BufferCurrentSource::new(Arc::clone(&provider), bid(1))),
 			watch: vec![bid(1)],
+			remote: None,
 			participants: vec![],
 		};
 		sub.register_with_sources(bid(1), DiffAlgorithm::Histogram, desc_b);
@@ -2541,6 +2983,7 @@ mod tests {
 			baseline: Arc::new(StaticBaseline::new(Rope::from(baseline))),
 			current: Arc::new(BufferCurrentSource::new(Arc::clone(&provider), bid(1))),
 			watch: vec![bid(1)],
+			remote: None,
 			participants: vec![bid(1)],
 		};
 		sub.register_with_sources(bid(1), DiffAlgorithm::Histogram, desc);
@@ -2575,7 +3018,7 @@ mod tests {
 				ranges: smallvec![lr(0, 2), lr(3, 5)],
 			}],
 		);
-		let plan = sub.compute_get_edit(key, 3).expect("hunk covers row 3");
+		let plan = sub.compute_get_edit(key, 3, None).into_plan().expect("hunk covers row 3");
 		assert_eq!(plan.post_cursor_row, 3);
 		// Edit: replace current range (lines 3..5) with the
 		// baseline lines 0..2 → "base-a\nbase-b\n".
@@ -2603,7 +3046,7 @@ mod tests {
 				ranges: smallvec![lr(0, 0), lr(2, 4)],
 			}],
 		);
-		let plan = sub.compute_get_edit(key, 3).expect("hunk covers row 3");
+		let plan = sub.compute_get_edit(key, 3, None).into_plan().expect("hunk covers row 3");
 		// Cursor parks at the hunk start (row 2).
 		assert_eq!(plan.post_cursor_row, 2);
 		assert_eq!(plan.edit.range.start.line, 2);
@@ -2632,8 +3075,7 @@ mod tests {
 		// Cursor must sit exactly at the empty-current anchor
 		// (row 5) for the Remove lookup to match — vim parity.
 		let plan = sub
-			.compute_get_edit(key, 5)
-			.expect("Remove hunk anchored at row 5 must match");
+			.compute_get_edit(key, 5, None).into_plan().expect("Remove hunk anchored at row 5 must match");
 		assert_eq!(plan.post_cursor_row, 5);
 		// Edit: insert at line 5 (empty range), text is
 		// the baseline's "removed-1\nremoved-2\n".
@@ -2661,8 +3103,8 @@ mod tests {
 				ranges: smallvec![lr(0, 1), lr(5, 5)],
 			}],
 		);
-		assert!(sub.compute_get_edit(key, 4).is_none());
-		assert!(sub.compute_get_edit(key, 6).is_none());
+		assert!(sub.compute_get_edit(key, 4, None).is_nothing());
+		assert!(sub.compute_get_edit(key, 6, None).is_nothing());
 	}
 
 	/// Cursor outside every hunk returns `None`.
@@ -2677,10 +3119,10 @@ mod tests {
 				ranges: smallvec![lr(0, 2), lr(10, 12)],
 			}],
 		);
-		assert!(sub.compute_get_edit(key, 0).is_none());
-		assert!(sub.compute_get_edit(key, 9).is_none());
+		assert!(sub.compute_get_edit(key, 0, None).is_nothing());
+		assert!(sub.compute_get_edit(key, 9, None).is_nothing());
 		// End is exclusive — row 12 is past the hunk.
-		assert!(sub.compute_get_edit(key, 12).is_none());
+		assert!(sub.compute_get_edit(key, 12, None).is_nothing());
 	}
 
 	/// Three-way `Conflict` hunks are skipped — D.6 owns the
@@ -2696,7 +3138,7 @@ mod tests {
 				ranges: smallvec![lr(0, 1), lr(0, 1)],
 			}],
 		);
-		assert!(sub.compute_get_edit(key, 0).is_none());
+		assert!(sub.compute_get_edit(key, 0, None).is_nothing());
 	}
 
 	/// No session registered → no-op `None`. The keymap
@@ -2707,7 +3149,7 @@ mod tests {
 	#[test]
 	fn compute_get_edit_no_session_returns_none() {
 		let sub = DiffSubsystem::new();
-		assert!(sub.compute_get_edit(bid(42), 0).is_none());
+		assert!(sub.compute_get_edit(bid(42), 0, None).is_nothing());
 	}
 
 	/// Session registered without a descriptor (the
@@ -2730,7 +3172,7 @@ mod tests {
 				ranges: smallvec![lr(0, 1), lr(0, 1)],
 			}],
 		);
-		assert!(sub.compute_get_edit(bid(1), 0).is_none());
+		assert!(sub.compute_get_edit(bid(1), 0, None).is_nothing());
 	}
 
 	// ── D.5.c: compute_put_plan ────────────────────────────────
@@ -2762,6 +3204,7 @@ mod tests {
 				current_bid,
 			)),
 			watch: vec![baseline_bid, current_bid],
+			remote: None,
 			participants: vec![baseline_bid, current_bid],
 		};
 		sub.register_with_sources(current_bid, DiffAlgorithm::Histogram, desc);
@@ -2782,14 +3225,14 @@ mod tests {
 				ranges: smallvec![lr(0, 2), lr(0, 2)],
 			}],
 		);
-		let outcome = sub.compute_put_plan(current, 0);
+		let outcome = sub.compute_put_plan(current, 0, None);
 		match outcome {
 			DiffPutOutcome::Edit {
-				peer_buffer_id,
+				target_buffer_id,
 				edit,
 				post_cursor_row,
 			} => {
-				assert_eq!(peer_buffer_id, peer);
+				assert_eq!(target_buffer_id, peer);
 				assert_eq!(post_cursor_row, 0);
 				assert_eq!(edit.range.start.line, 0);
 				assert_eq!(edit.range.end.line, 2);
@@ -2819,14 +3262,14 @@ mod tests {
 				ranges: smallvec![lr(0, 0), lr(0, 1)],
 			}],
 		);
-		let outcome = sub.compute_put_plan(current, 0);
+		let outcome = sub.compute_put_plan(current, 0, None);
 		match outcome {
 			DiffPutOutcome::Edit {
-				peer_buffer_id,
+				target_buffer_id,
 				edit,
 				..
 			} => {
-				assert_eq!(peer_buffer_id, peer);
+				assert_eq!(target_buffer_id, peer);
 				// Empty baseline range → insertion point.
 				assert_eq!(edit.range.start.line, 0);
 				assert_eq!(edit.range.end.line, 0);
@@ -2857,14 +3300,14 @@ mod tests {
 				ranges: smallvec![lr(0, 2), lr(0, 0)],
 			}],
 		);
-		let outcome = sub.compute_put_plan(current, 0);
+		let outcome = sub.compute_put_plan(current, 0, None);
 		match outcome {
 			DiffPutOutcome::Edit {
-				peer_buffer_id,
+				target_buffer_id,
 				edit,
 				..
 			} => {
-				assert_eq!(peer_buffer_id, peer);
+				assert_eq!(target_buffer_id, peer);
 				assert_eq!(edit.range.start.line, 0);
 				assert_eq!(edit.range.end.line, 2);
 				match edit.kind {
@@ -2901,7 +3344,7 @@ mod tests {
 			}],
 		);
 		assert_eq!(
-			sub.compute_put_plan(key, 0),
+			sub.compute_put_plan(key, 0, None),
 			DiffPutOutcome::NoPeerBuffer
 		);
 	}
@@ -2913,7 +3356,7 @@ mod tests {
 	fn compute_put_plan_no_session_returns_nothing() {
 		let sub = DiffSubsystem::new();
 		assert_eq!(
-			sub.compute_put_plan(bid(99), 0),
+			sub.compute_put_plan(bid(99), 0, None),
 			DiffPutOutcome::Nothing
 		);
 	}
@@ -2931,7 +3374,7 @@ mod tests {
 			}],
 		);
 		assert_eq!(
-			sub.compute_put_plan(current, 5),
+			sub.compute_put_plan(current, 5, None),
 			DiffPutOutcome::Nothing
 		);
 	}
@@ -2950,7 +3393,7 @@ mod tests {
 			}],
 		);
 		assert_eq!(
-			sub.compute_put_plan(current, 0),
+			sub.compute_put_plan(current, 0, None),
 			DiffPutOutcome::Nothing
 		);
 	}
@@ -2984,12 +3427,654 @@ mod tests {
 				},
 			],
 		);
-		let plan = sub.compute_get_edit(key, 5).expect("second hunk covers 5");
+		let plan = sub.compute_get_edit(key, 5, None).into_plan().expect("second hunk covers 5");
 		match plan.edit.kind {
 			lattice_protocol::edit::EditKind::Replace { ref text } => {
 				assert_eq!(text, "second-hunk\n");
 			}
 		}
 		assert_eq!(plan.post_cursor_row, 5);
+	}
+
+	// ──────────────────────────────────────────────────────────
+	// D.6.a (2026-05-30): three-way merge lifecycle
+	// ──────────────────────────────────────────────────────────
+
+	/// Three sources, non-overlapping changes (local mutates one
+	/// region, remote mutates a disjoint region) — engine emits
+	/// two non-conflict hunks with three ranges each.
+	#[test]
+	fn three_way_non_overlapping_changes_produce_no_conflict_hunks() {
+		let provider = Arc::new(MockProvider::default());
+		provider.set(bid(1), Rope::from("aaa\nbbb\nccc\nddd\neee\n"));
+		provider.set(bid(2), Rope::from("aaa\nBBB\nccc\nddd\neee\n"));
+		provider.set(bid(3), Rope::from("aaa\nbbb\nccc\nddd\nEEE\n"));
+		let dyn_provider: Arc<dyn BufferTextProvider> = provider.clone();
+
+		let sub = DiffSubsystem::new();
+		let desc = three_way_descriptor(&dyn_provider, bid(1), bid(2), bid(3));
+		let session = sub.register_with_sources(bid(2), DiffAlgorithm::Histogram, desc);
+
+		let base = provider.buffer_rope(bid(1)).unwrap();
+		let local = provider.buffer_rope(bid(2)).unwrap();
+		let remote = provider.buffer_rope(bid(3)).unwrap();
+		let idx = session
+			.recompute_blocking(&base, &local, Some(&remote))
+			.expect("three-way recompute publishes");
+
+		assert!(
+			idx.hunks.iter().all(|h| !matches!(h.kind, HunkKind::Conflict)),
+			"disjoint edits must not conflict; got {:?}",
+			idx.hunks
+		);
+		assert_eq!(idx.hunks.len(), 2, "one hunk per side");
+		// All three ranges per hunk — `[base, local, remote]`.
+		for h in &idx.hunks {
+			assert_eq!(h.ranges.len(), 3, "three-way hunks carry 3 ranges");
+		}
+	}
+
+	/// Three sources, overlapping changes (local and remote both
+	/// mutate the same base region) — engine emits a Conflict
+	/// hunk.
+	#[test]
+	fn three_way_overlapping_changes_produce_conflict_hunk() {
+		let provider = Arc::new(MockProvider::default());
+		provider.set(bid(1), Rope::from("aaa\nbbb\nccc\n"));
+		provider.set(bid(2), Rope::from("aaa\nBBB-local\nccc\n"));
+		provider.set(bid(3), Rope::from("aaa\nBBB-remote\nccc\n"));
+		let dyn_provider: Arc<dyn BufferTextProvider> = provider.clone();
+
+		let sub = DiffSubsystem::new();
+		let desc = three_way_descriptor(&dyn_provider, bid(1), bid(2), bid(3));
+		let session = sub.register_with_sources(bid(2), DiffAlgorithm::Histogram, desc);
+
+		let base = provider.buffer_rope(bid(1)).unwrap();
+		let local = provider.buffer_rope(bid(2)).unwrap();
+		let remote = provider.buffer_rope(bid(3)).unwrap();
+		let idx = session
+			.recompute_blocking(&base, &local, Some(&remote))
+			.expect("three-way recompute publishes");
+
+		assert!(
+			idx.hunks.iter().any(|h| matches!(h.kind, HunkKind::Conflict)),
+			"overlapping edits must surface at least one Conflict; got {:?}",
+			idx.hunks
+		);
+	}
+
+	/// `is_three_way()` discriminates on the `remote` field —
+	/// load-bearing for the D.6.c compute_get_plan /
+	/// compute_put_plan dispatch.
+	#[test]
+	fn is_three_way_reflects_remote_presence() {
+		let provider: Arc<dyn BufferTextProvider> = Arc::new(MockProvider::default());
+		let two_way = descriptor(&provider, bid(1), bid(2));
+		assert!(!two_way.is_three_way());
+		let three_way = three_way_descriptor(&provider, bid(1), bid(2), bid(3));
+		assert!(three_way.is_three_way());
+	}
+
+	/// `register_with_sources` on a three-source descriptor
+	/// installs secondary-index entries for every non-primary
+	/// participant, so `lookup_session_for` resolves the same
+	/// session from any of the three buffers.
+	#[test]
+	fn three_way_lookup_session_for_resolves_all_three_participants() {
+		let provider: Arc<dyn BufferTextProvider> = Arc::new(MockProvider::default());
+		let sub = DiffSubsystem::new();
+		let desc = three_way_descriptor(&provider, bid(1), bid(2), bid(3));
+		let session = sub.register_with_sources(bid(2), DiffAlgorithm::Histogram, desc);
+
+		for participant in [bid(1), bid(2), bid(3)] {
+			let resolved = sub
+				.lookup_session_for(participant)
+				.unwrap_or_else(|| panic!("lookup_session_for({participant:?}) returned None"));
+			assert!(
+				Arc::ptr_eq(&session, &resolved),
+				"all three participants must resolve to the same session"
+			);
+		}
+	}
+
+	/// `register_with_sources` for a three-source descriptor
+	/// activates `diff-mode` on every participating buffer via
+	/// the ref-counting bridge; `drop_session` deactivates all
+	/// three.
+	#[test]
+	fn three_way_session_activates_and_deactivates_diff_mode_for_all_three() {
+		let provider: Arc<dyn BufferTextProvider> = Arc::new(MockProvider::default());
+		let sub = DiffSubsystem::new();
+		let bridge = sub.mode_bridge();
+		let desc = three_way_descriptor(&provider, bid(1), bid(2), bid(3));
+		sub.register_with_sources(bid(2), DiffAlgorithm::Histogram, desc);
+
+		for participant in [bid(1), bid(2), bid(3)] {
+			assert_eq!(
+				bridge.refcount(participant),
+				1,
+				"buffer {participant:?} should be diff-mode active after 3-way open"
+			);
+		}
+
+		sub.drop_session(bid(2));
+		for participant in [bid(1), bid(2), bid(3)] {
+			assert_eq!(
+				bridge.refcount(participant),
+				0,
+				"buffer {participant:?} should be deactivated after drop"
+			);
+		}
+	}
+
+	/// Same buffer participating in both a two-way and a
+	/// three-way session simultaneously stays diff-mode-active
+	/// until the *last* session closes. Verifies refcount
+	/// semantics hold across mixed session shapes.
+	#[test]
+	fn shared_buffer_across_two_way_and_three_way_keeps_diff_mode_until_last_close() {
+		let provider: Arc<dyn BufferTextProvider> = Arc::new(MockProvider::default());
+		let sub = DiffSubsystem::new();
+		let bridge = sub.mode_bridge();
+
+		// Three-way: bid(1) is the base of a [bid(1), bid(2), bid(3)]
+		// session.
+		let three_way = three_way_descriptor(&provider, bid(1), bid(2), bid(3));
+		sub.register_with_sources(bid(2), DiffAlgorithm::Histogram, three_way);
+
+		// Two-way: bid(1) is also the baseline of a [bid(1), bid(4)]
+		// session. Participant list mirrors what the two-pane
+		// dispatch helper produces.
+		let mut two_way = descriptor(&provider, bid(1), bid(4));
+		two_way.participants = vec![bid(1), bid(4)];
+		sub.register_with_sources(bid(4), DiffAlgorithm::Histogram, two_way);
+
+		// bid(1) participates in both sessions.
+		assert_eq!(bridge.refcount(bid(1)), 2);
+		assert_eq!(bridge.refcount(bid(2)), 1);
+		assert_eq!(bridge.refcount(bid(3)), 1);
+		assert_eq!(bridge.refcount(bid(4)), 1);
+
+		// Close the three-way. bid(1) still in the two-way → mode
+		// stays active.
+		sub.drop_session(bid(2));
+		assert_eq!(bridge.refcount(bid(1)), 1);
+		assert_eq!(bridge.refcount(bid(2)), 0);
+		assert_eq!(bridge.refcount(bid(3)), 0);
+		assert_eq!(bridge.refcount(bid(4)), 1);
+
+		// Close the two-way. bid(1) finally deactivates.
+		sub.drop_session(bid(4));
+		assert_eq!(bridge.refcount(bid(1)), 0);
+		assert_eq!(bridge.refcount(bid(4)), 0);
+	}
+
+	/// `recompute_from_descriptor` (the path driven by the
+	/// debounce/bus pipeline) forwards `descriptor.remote` to
+	/// `schedule_recompute`. End-to-end check via the public
+	/// `note_buffer_edited` driver: edit any of the three
+	/// watched buffers, expect a three-range hunk to publish.
+	#[tokio::test]
+	async fn three_way_routing_publishes_three_way_hunks_on_edit() {
+		let provider = Arc::new(MockProvider::default());
+		provider.set(bid(1), Rope::from("aaa\nbbb\nccc\n"));
+		provider.set(bid(2), Rope::from("aaa\nbbb\nccc\n"));
+		provider.set(bid(3), Rope::from("aaa\nbbb\nccc\n"));
+		let dyn_provider: Arc<dyn BufferTextProvider> = provider.clone();
+
+		let sub = Arc::new(DiffSubsystem::with_debounce_window(Duration::from_millis(1)));
+		let desc = three_way_descriptor(&dyn_provider, bid(1), bid(2), bid(3));
+		let session = sub.register_with_sources(bid(2), DiffAlgorithm::Histogram, desc);
+
+		// Edit the remote side and let the debounce → spawn_blocking
+		// → publish chain run.
+		provider.set(bid(3), Rope::from("aaa\nbbb\nREMOTE\n"));
+		sub.note_buffer_edited(bid(3));
+		// Wait up to ~200ms for the debounce + blocking task to
+		// land a publish. Polls the revision counter so the test
+		// finishes as soon as the publish lands rather than
+		// burning the full window.
+		let deadline = std::time::Instant::now() + Duration::from_millis(200);
+		while session.current_hunks().revision == 0 {
+			if std::time::Instant::now() >= deadline {
+				panic!("three-way recompute never published");
+			}
+			tokio::time::sleep(Duration::from_millis(5)).await;
+		}
+		let idx = session.current_hunks();
+		assert!(
+			idx.hunks.iter().any(|h| h.ranges.len() == 3),
+			"expected three-range hunks from compute_three_way; got {:?}",
+			idx.hunks
+		);
+	}
+
+	/// D.6.h (2026-05-31) — design-doc §11 risk gate:
+	/// **multi-doc edit-event coalesce**. A three-way
+	/// session subscribes to three documents' edit
+	/// streams. If two (or all three) documents edit
+	/// "simultaneously" (within the debounce window),
+	/// exactly *one* recompute must reflect the
+	/// combined state — not N parallel recomputes (one
+	/// per event).
+	///
+	/// The debouncer's "reset on each poke" semantic
+	/// (D.2.c) is the load-bearing piece: each
+	/// `note_buffer_edited` call within the window
+	/// bumps the epoch but doesn't spawn a fresh
+	/// recompute; the trailing spawn fires only after
+	/// the burst quiesces.
+	///
+	/// Uses a deliberately wide debounce window (50ms)
+	/// to keep three `note_buffer_edited` calls
+	/// comfortably inside the burst, then waits for the
+	/// settled publish. Asserts revision == 1
+	/// post-burst.
+	#[tokio::test]
+	async fn three_way_rapid_edits_coalesce_to_one_recompute() {
+		let provider = Arc::new(MockProvider::default());
+		provider.set(bid(1), Rope::from("aaa\nbbb\nccc\n"));
+		provider.set(bid(2), Rope::from("aaa\nbbb\nccc\n"));
+		provider.set(bid(3), Rope::from("aaa\nbbb\nccc\n"));
+		let dyn_provider: Arc<dyn BufferTextProvider> = provider.clone();
+
+		// 50ms debounce window: long enough that three
+		// poke()s inside the same task tick stay inside
+		// the burst. The runtime's `sleep().await` after
+		// the bursts lets the debouncer settle.
+		let sub = Arc::new(DiffSubsystem::with_debounce_window(Duration::from_millis(
+			50,
+		)));
+		let desc = three_way_descriptor(&dyn_provider, bid(1), bid(2), bid(3));
+		let session = sub.register_with_sources(bid(2), DiffAlgorithm::Histogram, desc);
+
+		// Three rapid edits, one per participant. Each
+		// mutation diverges in a different region so
+		// `compute_three_way` produces a multi-hunk
+		// index — but only ONE recompute should fire.
+		provider.set(bid(1), Rope::from("AAA\nbbb\nccc\n"));
+		sub.note_buffer_edited(bid(1));
+		provider.set(bid(2), Rope::from("aaa\nBBB\nccc\n"));
+		sub.note_buffer_edited(bid(2));
+		provider.set(bid(3), Rope::from("aaa\nbbb\nCCC\n"));
+		sub.note_buffer_edited(bid(3));
+
+		// Wait for the debounce window + spawn_blocking
+		// to settle. Use a deadline poll rather than a
+		// fixed sleep so the test doesn't artificially
+		// inflate CI runtime.
+		let deadline = std::time::Instant::now() + Duration::from_millis(500);
+		while session.current_hunks().revision == 0 {
+			if std::time::Instant::now() >= deadline {
+				panic!("recompute never published after burst");
+			}
+			tokio::time::sleep(Duration::from_millis(5)).await;
+		}
+
+		// The key invariant: exactly one recompute fired.
+		// The session's revision counter starts at 1 and
+		// allocates a fresh number per recompute, so
+		// "coalesced to one" means revision == 1 after
+		// the burst settles. If the debouncer spawned
+		// per-event we'd see revision == 3.
+		assert_eq!(
+			session.current_hunks().revision,
+			1,
+			"3 rapid edits within the debounce window must coalesce \
+			 to a single recompute; got revision={}",
+			session.current_hunks().revision
+		);
+
+		// And the resulting HunkIndex reflects ALL three
+		// edits in one combined output — not just the
+		// last one. Each side modified a distinct row
+		// (0/1/2) so we expect three hunks.
+		let idx = session.current_hunks();
+		assert!(
+			!idx.hunks.is_empty(),
+			"combined-state recompute should produce hunks"
+		);
+	}
+
+	// ──────────────────────────────────────────────────────
+	// D.6.d (2026-05-31): target-aware compute_get_edit /
+	// compute_put_plan
+	// ──────────────────────────────────────────────────────
+
+	/// Build a three-pane session fixture with three buffer-
+	/// backed sides, returning the subsystem + the three
+	/// buffer ids in role order (base, local, remote).
+	fn fixture_three_pane(
+		base_text: &str,
+		local_text: &str,
+		remote_text: &str,
+	) -> (DiffSubsystem, BufferId, BufferId, BufferId) {
+		let provider = Arc::new(MockProvider::default());
+		provider.set(bid(1), Rope::from(base_text));
+		provider.set(bid(2), Rope::from(local_text));
+		provider.set(bid(3), Rope::from(remote_text));
+		let dyn_provider: Arc<dyn BufferTextProvider> = provider;
+		let sub = DiffSubsystem::new();
+		let desc = three_way_descriptor(&dyn_provider, bid(1), bid(2), bid(3));
+		sub.register_with_sources(bid(2), DiffAlgorithm::Histogram, desc);
+		(sub, bid(1), bid(2), bid(3))
+	}
+
+	/// Three-way `compute_get_edit` with no target returns
+	/// `TargetRequired` listing the two non-active
+	/// participants.
+	#[test]
+	fn compute_get_edit_three_way_no_target_requires_one() {
+		let (sub, base, local, remote) = fixture_three_pane("a\n", "b\n", "c\n");
+		let outcome = sub.compute_get_edit(local, 0, None);
+		match outcome {
+			DiffGetOutcome::TargetRequired { available_targets } => {
+				assert_eq!(available_targets, vec![base, remote]);
+			}
+			other => panic!("expected TargetRequired, got {other:?}"),
+		}
+	}
+
+	/// Three-way `compute_get_edit` with explicit target
+	/// pulls from that side. Conflict hunks resolvable.
+	#[test]
+	fn compute_get_edit_three_way_with_target_resolves_conflict() {
+		let (sub, _base, local, remote) =
+			fixture_three_pane("a\n", "LOCAL\n", "REMOTE\n");
+		publish_hunks(
+			&sub,
+			local, // session key
+			vec![Hunk {
+				kind: HunkKind::Conflict,
+				ranges: smallvec![lr(0, 1), lr(0, 1), lr(0, 1)],
+			}],
+		);
+		// Active = local, target = remote → pull REMOTE's
+		// text into local.
+		let outcome = sub.compute_get_edit(local, 0, Some(remote));
+		match outcome {
+			DiffGetOutcome::Edit {
+				target_buffer_id,
+				edit,
+				post_cursor_row,
+			} => {
+				assert_eq!(target_buffer_id, remote);
+				assert_eq!(post_cursor_row, 0);
+				match edit.kind {
+					lattice_protocol::edit::EditKind::Replace { ref text } => {
+						assert_eq!(text, "REMOTE\n");
+					}
+				}
+			}
+			other => panic!("expected Edit, got {other:?}"),
+		}
+	}
+
+	/// Target buffer that isn't a participant → `Nothing`.
+	#[test]
+	fn compute_get_edit_unknown_target_buffer_returns_nothing() {
+		let (sub, _base, local, _remote) = fixture_three_pane("a\n", "b\n", "c\n");
+		publish_hunks(
+			&sub,
+			local,
+			vec![Hunk {
+				kind: HunkKind::Conflict,
+				ranges: smallvec![lr(0, 1), lr(0, 1), lr(0, 1)],
+			}],
+		);
+		let outcome = sub.compute_get_edit(local, 0, Some(bid(99)));
+		assert!(matches!(outcome, DiffGetOutcome::Nothing));
+	}
+
+	/// Two-way `compute_get_edit` with explicit target =
+	/// peer behaves identically to no-target (back-compat
+	/// for callers that want to be explicit).
+	#[test]
+	fn compute_get_edit_two_way_explicit_target_matches_default() {
+		// fixture_two_pane registers a session with
+		// participants = [baseline_buf, current_buf]. Use
+		// current as the session key (= active), baseline
+		// as the peer/target.
+		let (sub, current, baseline) = fixture_two_pane("base\n", "curr\n");
+		publish_hunks(
+			&sub,
+			current,
+			vec![Hunk {
+				kind: HunkKind::Change,
+				ranges: smallvec![lr(0, 1), lr(0, 1)],
+			}],
+		);
+		let default = sub.compute_get_edit(current, 0, None);
+		let explicit = sub.compute_get_edit(current, 0, Some(baseline));
+		assert_eq!(default, explicit);
+	}
+
+	/// Three-way `compute_put_plan` with no target returns
+	/// `TargetRequired`.
+	#[test]
+	fn compute_put_plan_three_way_no_target_requires_one() {
+		let (sub, base, local, remote) = fixture_three_pane("a\n", "b\n", "c\n");
+		let outcome = sub.compute_put_plan(local, 0, None);
+		match outcome {
+			DiffPutOutcome::TargetRequired { available_targets } => {
+				assert_eq!(available_targets, vec![base, remote]);
+			}
+			other => panic!("expected TargetRequired, got {other:?}"),
+		}
+	}
+
+	/// Three-way `:diffput <bufnr>` resolves a Conflict by
+	/// pushing the active side's content into the target's
+	/// range. From the slice plan: `:diffput 2` resolves a
+	/// conflict by pushing pane 1's (= local's) version.
+	#[test]
+	fn compute_put_plan_three_way_resolves_conflict_to_explicit_target() {
+		let (sub, _base, local, remote) =
+			fixture_three_pane("a\n", "LOCAL\n", "REMOTE\n");
+		publish_hunks(
+			&sub,
+			local,
+			vec![Hunk {
+				kind: HunkKind::Conflict,
+				ranges: smallvec![lr(0, 1), lr(0, 1), lr(0, 1)],
+			}],
+		);
+		// Active = local (pane 1), target = remote (pane 2).
+		// Push LOCAL\n into remote's range [0, 1).
+		let outcome = sub.compute_put_plan(local, 0, Some(remote));
+		match outcome {
+			DiffPutOutcome::Edit {
+				target_buffer_id,
+				edit,
+				post_cursor_row,
+			} => {
+				assert_eq!(target_buffer_id, remote);
+				assert_eq!(post_cursor_row, 0);
+				match edit.kind {
+					lattice_protocol::edit::EditKind::Replace { ref text } => {
+						assert_eq!(text, "LOCAL\n");
+					}
+				}
+			}
+			other => panic!("expected Edit, got {other:?}"),
+		}
+	}
+
+	/// Two-way unchanged: `compute_put_plan` with no target
+	/// targets the peer (D.5.c semantics preserved).
+	#[test]
+	fn compute_put_plan_two_way_no_target_targets_peer() {
+		let (sub, current, baseline) = fixture_two_pane("base\n", "curr\n");
+		publish_hunks(
+			&sub,
+			current,
+			vec![Hunk {
+				kind: HunkKind::Change,
+				ranges: smallvec![lr(0, 1), lr(0, 1)],
+			}],
+		);
+		let outcome = sub.compute_put_plan(current, 0, None);
+		match outcome {
+			DiffPutOutcome::Edit {
+				target_buffer_id, ..
+			} => {
+				assert_eq!(target_buffer_id, baseline);
+			}
+			other => panic!("expected Edit targeting baseline, got {other:?}"),
+		}
+	}
+
+	// ──────────────────────────────────────────────────────
+	// D.6.e (2026-05-31): completion-signal lifecycle
+	// ──────────────────────────────────────────────────────
+
+	/// `bind_completion` + `take_completion` are
+	/// single-shot: the first take returns Some, the
+	/// second None.
+	#[test]
+	fn completion_take_is_single_shot() {
+		let session = DiffSession::new(bid(1), DiffAlgorithm::Histogram);
+		assert!(session.take_completion().is_none(), "no sender before bind");
+		let (tx, _rx) = oneshot::channel::<DiffOutcome>();
+		session.bind_completion(tx);
+		let taken_first = session.take_completion();
+		assert!(taken_first.is_some(), "first take after bind returns Some");
+		assert!(
+			session.take_completion().is_none(),
+			"subsequent take returns None"
+		);
+	}
+
+	/// Re-binding overwrites the previous sender; the
+	/// previously-bound receiver observes Closed (its
+	/// sender is dropped).
+	#[tokio::test]
+	async fn completion_rebind_drops_previous_sender() {
+		let session = DiffSession::new(bid(1), DiffAlgorithm::Histogram);
+		let (tx1, rx1) = oneshot::channel::<DiffOutcome>();
+		session.bind_completion(tx1);
+		let (tx2, _rx2) = oneshot::channel::<DiffOutcome>();
+		session.bind_completion(tx2);
+		// rx1 must observe Closed since tx1 was overwritten.
+		assert!(matches!(rx1.await, Err(_)));
+	}
+
+	/// Programmatic API: a consumer binds a sender,
+	/// `:diff-accept` (simulated by direct
+	/// `take_completion` + `send(Accept)`) fires it, and
+	/// the awaiting receiver sees Accept.
+	#[tokio::test]
+	async fn completion_send_accept_routes_to_receiver() {
+		let session = DiffSession::new(bid(1), DiffAlgorithm::Histogram);
+		let (tx, rx) = oneshot::channel::<DiffOutcome>();
+		session.bind_completion(tx);
+		// Simulate the `do_diff_accept` flow: take the
+		// sender and send Accept.
+		let taken = session.take_completion().expect("sender bound");
+		taken.send(DiffOutcome::Accept).expect("receiver still alive");
+		let outcome = rx.await.expect("receiver returns the sent outcome");
+		assert_eq!(outcome, DiffOutcome::Accept);
+	}
+
+	/// Receiver dropped before the user resolves: the
+	/// teardown path's `let _ = tx.send(...)` ignores the
+	/// Err. Verifies the send error is non-fatal.
+	#[test]
+	fn completion_send_after_receiver_dropped_is_ignored() {
+		let session = DiffSession::new(bid(1), DiffAlgorithm::Histogram);
+		let (tx, rx) = oneshot::channel::<DiffOutcome>();
+		session.bind_completion(tx);
+		drop(rx);
+		let taken = session.take_completion().expect("sender bound");
+		// `Result::Err` is returned but the call doesn't
+		// panic — matches the production teardown's
+		// `let _ =` discard.
+		let result = taken.send(DiffOutcome::Reject);
+		assert!(result.is_err());
+	}
+
+	/// Sessions without a bound completion silently
+	/// no-op on outcome dispatch: the teardown helper's
+	/// `take_completion()` returns None and the rest of
+	/// the teardown proceeds unaffected.
+	#[test]
+	fn unbound_completion_take_returns_none() {
+		let session = DiffSession::new(bid(1), DiffAlgorithm::Histogram);
+		assert!(session.take_completion().is_none());
+	}
+
+	// ──────────────────────────────────────────────────────
+	// D.6.g (2026-05-31): all_sessions_for lookup
+	// ──────────────────────────────────────────────────────
+
+	/// Buffer not in any session → empty vec, not None.
+	#[test]
+	fn all_sessions_for_unregistered_buffer_is_empty() {
+		let sub = DiffSubsystem::new();
+		assert!(sub.all_sessions_for(bid(99)).is_empty());
+	}
+
+	/// Single-session buffer: returns exactly one session.
+	#[test]
+	fn all_sessions_for_single_session_returns_one() {
+		let provider: Arc<dyn BufferTextProvider> = Arc::new(MockProvider::default());
+		let sub = DiffSubsystem::new();
+		let desc = descriptor(&provider, bid(1), bid(2));
+		sub.register_with_sources(bid(2), DiffAlgorithm::Histogram, desc);
+		// Primary lookup.
+		assert_eq!(sub.all_sessions_for(bid(2)).len(), 1);
+		// Watched-side lookup (bid(1) is in the watch list as baseline).
+		assert_eq!(sub.all_sessions_for(bid(1)).len(), 1);
+	}
+
+	/// **The key D.6.g case.** A shared buffer participating
+	/// in two simultaneous sessions: `lookup_session_for`
+	/// resolves to one (the most recently registered, per
+	/// secondary-index single-valued map), but
+	/// `all_sessions_for` returns both — letting
+	/// `:diffoff!` cascade-close them.
+	#[test]
+	fn all_sessions_for_shared_buffer_returns_every_session() {
+		let provider: Arc<dyn BufferTextProvider> = Arc::new(MockProvider::default());
+		let sub = DiffSubsystem::new();
+		// Session A: shared (slot 0) ↔ peer_a (primary).
+		let desc_a = descriptor(&provider, bid(10), bid(20));
+		sub.register_with_sources(bid(20), DiffAlgorithm::Histogram, desc_a);
+		// Session B: shared (slot 0) ↔ peer_b (primary).
+		let desc_b = descriptor(&provider, bid(10), bid(30));
+		sub.register_with_sources(bid(30), DiffAlgorithm::Histogram, desc_b);
+		// shared participates in both A and B.
+		let all = sub.all_sessions_for(bid(10));
+		assert_eq!(all.len(), 2);
+		let buffer_ids: std::collections::HashSet<BufferId> =
+			all.iter().map(|s| s.buffer_id()).collect();
+		assert!(buffer_ids.contains(&bid(20)));
+		assert!(buffer_ids.contains(&bid(30)));
+		// `lookup_session_for` only finds one of them.
+		assert!(sub.lookup_session_for(bid(10)).is_some());
+		assert_eq!(
+			sub.all_sessions_for(bid(20)).len(),
+			1,
+			"non-shared buffer still resolves to its single session"
+		);
+	}
+
+	/// Target = active buffer itself is rejected (Unknown
+	/// path → Nothing). Prevents accidental self-edits via
+	/// `:diffput <self-bufnr>`.
+	#[test]
+	fn compute_put_plan_target_equal_to_active_returns_nothing() {
+		let (sub, _base, local, _remote) =
+			fixture_three_pane("a\n", "LOCAL\n", "REMOTE\n");
+		publish_hunks(
+			&sub,
+			local,
+			vec![Hunk {
+				kind: HunkKind::Change,
+				ranges: smallvec![lr(0, 1), lr(0, 1), lr(0, 1)],
+			}],
+		);
+		let outcome = sub.compute_put_plan(local, 0, Some(local));
+		assert!(matches!(outcome, DiffPutOutcome::Nothing));
 	}
 }

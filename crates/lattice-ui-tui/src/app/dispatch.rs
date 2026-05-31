@@ -821,6 +821,10 @@ impl App {
             | Effect::DiffOff { .. }
             | Effect::Diffthis
             | Effect::Diffsplit { .. }
+            | Effect::DiffGetCmd { .. }
+            | Effect::DiffPutCmd { .. }
+            | Effect::DiffAccept
+            | Effect::DiffReject
             | Effect::NextHunk
             | Effect::PrevHunk
             | Effect::BufferNext
@@ -1117,6 +1121,10 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::DiffOff { .. }
         | Effect::Diffthis
         | Effect::Diffsplit { .. }
+        | Effect::DiffGetCmd { .. }
+        | Effect::DiffPutCmd { .. }
+        | Effect::DiffAccept
+        | Effect::DiffReject
         | Effect::NextHunk
         | Effect::PrevHunk
         | Effect::ListModes
@@ -1207,6 +1215,10 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::DiffOff { .. }
         | Effect::Diffthis
         | Effect::Diffsplit { .. }
+        | Effect::DiffGetCmd { .. }
+        | Effect::DiffPutCmd { .. }
+        | Effect::DiffAccept
+        | Effect::DiffReject
         | Effect::NextHunk
         | Effect::PrevHunk
         | Effect::ListModes

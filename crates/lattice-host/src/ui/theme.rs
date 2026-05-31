@@ -90,6 +90,13 @@ pub struct Theme {
     /// may want to mark the deletion anchor. Default is bold
     /// red.
     pub diff_remove_sign_style: Style,
+    /// D.6.f (2026-05-31): `?` sign in the diff gutter for
+    /// three-way Conflict hunks. The user reads this as
+    /// "both sides modified this region differently — pick
+    /// a winner via `:diffput <bufnr>` / `:diffget
+    /// <bufnr>`". Default is bold magenta to distinguish
+    /// from the Add/Change/Remove triad.
+    pub diff_conflict_sign_style: Style,
     /// Background tint applied to lines added in the current
     /// side (D.3.e). Default is a faint dark green that sits
     /// behind syntax-coloured text without crushing legibility.
@@ -431,6 +438,13 @@ impl Default for Theme {
                 .bold(),
             diff_remove_sign_style: Style::empty()
                 .fg(Color::Named(NamedColor::Red))
+                .bold(),
+            // D.6.f (2026-05-31): bold magenta sign for
+            // three-way Conflict hunks. Distinct from the
+            // Add/Change/Remove triad so users instantly
+            // spot conflicts in the gutter.
+            diff_conflict_sign_style: Style::empty()
+                .fg(Color::Named(NamedColor::Magenta))
                 .bold(),
             diff_add_line_bg: Color::Rgb(0, 50, 0),
             diff_change_line_bg: Color::Rgb(50, 50, 0),

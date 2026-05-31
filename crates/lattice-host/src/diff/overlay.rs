@@ -84,13 +84,20 @@ use crate::diff::subsystem::{BaselineSource, DiffSession};
 /// renderer "this line replaces baseline content" — useful
 /// for the tint pass.
 ///
-/// `Conflict` is collapsed into `Change` for D.3.d.0 —
-/// three-way merge (D.6) will refine.
+/// `Conflict` (D.6.f, 2026-05-31) classifies a current-side
+/// row that sits inside a three-way merge Conflict hunk —
+/// both `local` and `remote` mutated the same `base` region
+/// differently. Renders with a distinct glyph (`?`) and tint
+/// (`theme.diff_conflict_line_bg`). The variant only fires
+/// for three-way sessions; two-way `compute_two_way`
+/// doesn't emit `HunkKind::Conflict`, so two-way overlays
+/// never produce `DiffSignKind::Conflict`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum DiffSignKind {
 	Add,
 	Remove,
 	Change,
+	Conflict,
 }
 
 /// Sparse per-line classification of the current-side rope.
@@ -167,7 +174,14 @@ pub fn compute_diff_sign_map(hunks: &HunkIndex) -> DiffSignMap {
 		};
 		let kind = match hunk.kind {
 			HunkKind::Add => DiffSignKind::Add,
-			HunkKind::Change | HunkKind::Conflict => DiffSignKind::Change,
+			HunkKind::Change => DiffSignKind::Change,
+			// D.6.f (2026-05-31): three-way Conflict gets its
+			// own classification so renderers can decorate it
+			// distinctly from a plain Change. Two-way sessions
+			// never see Conflict hunks (`compute_two_way`
+			// doesn't emit them) so this arm only fires for
+			// three-way overlays.
+			HunkKind::Conflict => DiffSignKind::Conflict,
 			HunkKind::Remove => continue,
 		};
 		for line in current_range.start..current_range.end {
@@ -840,8 +854,13 @@ mod tests {
 		assert!(map.is_empty());
 	}
 
+	/// D.6.f (2026-05-31): three-way Conflict hunks now
+	/// emit their own `DiffSignKind::Conflict` rather than
+	/// collapsing into Change, so renderers can decorate
+	/// them with a distinct glyph (`?`) and tint
+	/// (`diff_conflict_line_bg`).
 	#[test]
-	fn conflict_hunk_emits_change_signs() {
+	fn conflict_hunk_emits_conflict_signs() {
 		let idx = HunkIndex {
 			hunks: vec![Hunk {
 				kind: HunkKind::Conflict,
@@ -856,8 +875,70 @@ mod tests {
 		};
 		let map = compute_diff_sign_map(&idx);
 		assert_eq!(map.len(), 2);
+		assert_eq!(map.sign_at(0), Some(DiffSignKind::Conflict));
+		assert_eq!(map.sign_at(1), Some(DiffSignKind::Conflict));
+	}
+
+	/// D.6.f: Conflict signs are emitted for the
+	/// current-side range only (slot 1), same shape as
+	/// Change. Other slots (base, remote) carry their own
+	/// data but the sign map is a *current-side*
+	/// decoration.
+	#[test]
+	fn conflict_signs_use_current_side_range() {
+		// Conflict on lines 5..7 (current). base + remote
+		// have different ranges in the hunk but we should
+		// only see slots [5, 6] in the map.
+		let idx = HunkIndex {
+			hunks: vec![Hunk {
+				kind: HunkKind::Conflict,
+				ranges: smallvec![
+					LineRange::new(10, 12), // base
+					LineRange::new(5, 7),   // local / current
+					LineRange::new(20, 22), // remote
+				],
+			}],
+			algorithm: DiffAlgorithm::Histogram,
+			revision: 1,
+		};
+		let map = compute_diff_sign_map(&idx);
+		assert_eq!(map.len(), 2);
+		assert_eq!(map.sign_at(5), Some(DiffSignKind::Conflict));
+		assert_eq!(map.sign_at(6), Some(DiffSignKind::Conflict));
+		// Base / remote slots not classified here.
+		assert_eq!(map.sign_at(10), None);
+		assert_eq!(map.sign_at(20), None);
+	}
+
+	/// D.6.f: mixed Change + Conflict hunks keep their
+	/// distinct classifications — a renderer walking the
+	/// sign map sees both kinds in the order they appear.
+	#[test]
+	fn mixed_change_and_conflict_keep_distinct_signs() {
+		let idx = HunkIndex {
+			hunks: vec![
+				Hunk {
+					kind: HunkKind::Change,
+					ranges: smallvec![
+						LineRange::new(0, 1),
+						LineRange::new(0, 1),
+					],
+				},
+				Hunk {
+					kind: HunkKind::Conflict,
+					ranges: smallvec![
+						LineRange::new(5, 6),
+						LineRange::new(5, 6),
+						LineRange::new(5, 6),
+					],
+				},
+			],
+			algorithm: DiffAlgorithm::Histogram,
+			revision: 1,
+		};
+		let map = compute_diff_sign_map(&idx);
 		assert_eq!(map.sign_at(0), Some(DiffSignKind::Change));
-		assert_eq!(map.sign_at(1), Some(DiffSignKind::Change));
+		assert_eq!(map.sign_at(5), Some(DiffSignKind::Conflict));
 	}
 
 	#[test]

@@ -2798,11 +2798,589 @@ shared with multibuffer-views and post-v1 inlay hints.
     `crates/lattice-ui-tui/src/app/dispatch.rs`. Arch doc:
     design fragment §6.2 already describes `do`/`dp`
     semantics; no doc edit needed.
-- 🗒 **D.6** — Three-way merge: conflict regions, `:diffput
-  <bufnr>` / `:diffget <bufnr>`, `:diff-accept` /
-  `:diff-reject`.
+- ✅ **D.6** (2026-05-31, closed) — Three-way merge: conflict
+  regions, `:diffput <bufnr>` / `:diffget <bufnr>`,
+  `:diff-accept` / `:diff-reject`. Carved during build into
+  eight sub-slices (D.6.a–h); see
+  [`slice-plans/diff-system.md`](slice-plans/diff-system.md)
+  for sequencing. **Three-way merge UX shipped end-to-end:**
+  subsystem (D.6.a), pane-group + filler for 3 sides (D.6.b),
+  `:diffsplit <base> <remote>` create (D.6.c), target-aware
+  `:diffput [<bufnr>]` / `:diffget [<bufnr>]` (D.6.d),
+  `:diff-accept` / `:diff-reject` + `DiffOutcome` completion
+  signal for `openDiff`-style plugin flows (D.6.e),
+  `DiffConflict` rendering (D.6.f), `:diffoff!` cascade
+  tear-down across multi-session shared buffers (D.6.g),
+  bench + integration covering the slice-plan canonical
+  case + §11 risk gate (D.6.h). Per-sub-slice details
+  below.
+  - ✅ **D.6.a** (2026-05-30) — Three-pane subsystem
+    lifecycle. New `DiffDescriptor::remote:
+    Option<Arc<dyn CurrentSource>>` field +
+    `DiffDescriptor::is_three_way()` accessor; `None` for
+    two-way (the v1 default), `Some` for three-way. The
+    recompute body switches engines on this field:
+    `DiffSession::recompute_blocking(baseline, current,
+    remote: Option<&Rope>)` dispatches to
+    `lattice_diff::compute_three_way(base, local, remote)`
+    when `remote.is_some()` and `compute_two_way(baseline,
+    current)` otherwise.
+    `DiffSubsystem::schedule_recompute` gains a matching
+    `remote: Option<Arc<dyn CurrentSource>>` parameter and
+    snapshots inside the `spawn_blocking` closure when
+    present;
+    `DiffSubsystem::recompute_from_descriptor` forwards
+    `descriptor.remote` so the bus/debounce-driven
+    recompute path inherits the three-way engine selection
+    without any extra wiring. `register_with_sources` is
+    already general over `participants.len()` + `watch` +
+    the diff-mode bridge's per-buffer refcount (D.5.a) —
+    a three-element descriptor activates `diff-mode` on
+    all three participants and drops it cleanly when
+    dropped; the secondary-index already maps every
+    watched buffer back to the primary, so
+    `lookup_session_for` resolves from any of the three
+    sides without any code change.
+    **8 new tests** in `diff::subsystem::tests`
+    (`three_way_non_overlapping_changes_produce_no_conflict_hunks`
+    — engine integration produces 2 disjoint hunks with 3
+    ranges each;
+    `three_way_overlapping_changes_produce_conflict_hunk`
+    — overlap → `HunkKind::Conflict` surfaces through the
+    session boundary; `is_three_way_reflects_remote_presence`
+    — discriminator for D.6.c's `do`/`dp` dispatch;
+    `three_way_lookup_session_for_resolves_all_three_participants`
+    — secondary index handles 3-source descriptors
+    uniformly;
+    `three_way_session_activates_and_deactivates_diff_mode_for_all_three`
+    — bridge refcount goes 0→1→0 on all three buffers;
+    `shared_buffer_across_two_way_and_three_way_keeps_diff_mode_until_last_close`
+    — mixed-shape refcount correctness;
+    `three_way_routing_publishes_three_way_hunks_on_edit`
+    — `tokio::test` end-to-end through `note_buffer_edited`
+    → debounce → `spawn_blocking` → publish, asserts the
+    published hunks carry 3 ranges). New test helper
+    `three_way_descriptor(provider, base, local, remote)`
+    parallels the existing two-way `descriptor` helper.
+    590 host + workspace tests green (+7 new; the eighth
+    test was a pure-helper-coverage assertion folded into
+    `is_three_way_reflects_remote_presence`). Touched:
+    `crates/lattice-host/src/diff/subsystem.rs`,
+    `crates/lattice-host/src/dispatch.rs` (descriptor
+    literals add `remote: None`),
+    `crates/lattice-host/benches/diff_subsystem.rs`
+    (call-site signature update). Arch doc: design
+    fragment §3.4.1 (DiffDescriptor) needs a one-line note
+    about the `remote` field; landed alongside this slice.
+  - ✅ **D.6.b** (2026-05-31) — `HunkRowMapper` +
+    `FillerRowProvider` extended to three sides. Two
+    surfaces:
+    1. **`HunkRowMapper`** generalised from a two-index
+       struct to one carrying a `MapperShape { TwoWay |
+       ThreeWay }`. New constructor
+       `HunkRowMapper::three_pane(session, base_idx,
+       local_idx, remote_idx)` alongside the existing
+       two-way `new(session, baseline_idx, current_idx)`.
+       Internal dispatch via
+       `MapperShape::pane_index_of(member_idx) ->
+       Option<usize>` resolves any `PaneGroup::members`
+       index to its slot in `Hunk::ranges` (0/1 in two-way;
+       0/1/2 in three-way) or `None` for unfamiliar
+       members. The cumulative-shift walk collapses to one
+       pane-index-parametric body `map_between(index,
+       from_pane, to_pane, row)`; the D.4.b-shape free
+       functions `map_baseline_to_current` /
+       `map_current_to_baseline` become thin aliases for
+       `map_between(_, 0, 1, _)` / `map_between(_, 1, 0,
+       _)` (back-compat preserved for D.4.b callers — same
+       observable behaviour on two-way hunks). Conflict
+       hunks contribute to cumulative shift the same way
+       Change hunks do — the conflict is about content,
+       not row geometry. Member-pair dispatch on a 3-pane
+       mapper handles all six directions (base↔local,
+       base↔remote, local↔remote); same-member identity
+       returns immediately; any unknown member returns
+       identity rather than guessing.
+    2. **`FillerRowProvider`** extended with
+       `Side::Remote` enum variant + new `Side::pane_index()`
+       accessor (0/1/2 for Baseline/Current/Remote). New
+       namespace constant `DIFF_FILLER_REMOTE_NAMESPACE =
+       0xD1FF_0003_0000_0000` keeps the remote-side
+       provider id distinct from baseline (`0xD1FF_0001_*`),
+       current (`0xD1FF_0002_*`), and overlay
+       (`0xD1FF_0000_*`). `compute_filler_rows` rewritten
+       to align all participating panes to `max(lens)`
+       across the hunk's ranges: the longest pane gets
+       zero fillers, each shorter pane gets `max - this`.
+       Two-way semantics preserved (with 2 ranges,
+       `max(lens)` = the other side's len, matching the
+       D.4.c algorithm). Conflict handling is hunk-shape-
+       aware: `ranges.len() < 3` (two-way) skips Conflict
+       defensively (compute_two_way doesn't emit it);
+       `ranges.len() >= 3` (three-way) emits fillers for
+       Conflict the same way as Change. Cross-shape
+       safety: a 2-way hunk queried for `Side::Remote`
+       returns no fillers (slot absent), no panic.
+       Provider-`version` salt extended (`Remote = 2`) so
+       the worker's fingerprint distinguishes all three
+       sides at revision 0.
+    3. **Scroll-binding 3-pane propagation** rides free —
+       D.4.a's `propagate_pane_group_scroll` already walks
+       every `group.members` entry and calls
+       `mapper.map_row(active.member_idx, other.member_idx,
+       active_scroll_row)` for each peer. With the
+       three-pane mapper installed, the same loop drives
+       three-column scroll-bind correctly without any
+       dispatch-side change.
+    **17 new tests across two modules** (10 in
+    `diff::pane_group::tests`, 11 in
+    `diff::filler::tests` — 17 total in D.6.b after
+    deduplicating one cross-module helper):
+    - `map_between_is_pane_index_parametric_for_two_way` —
+      generic body produces identical results to the
+      D.4.b-shape aliases.
+    - `three_way_change_hunk_maps_all_six_directions` —
+      all six directional shifts on a 3-3-4-6 change hunk.
+    - `three_way_conflict_hunk_contributes_to_shift_like_change`
+      — Conflict ≡ Change for row geometry.
+    - `three_way_add_on_one_side_collapses_inside_to_anchor`
+      — inside-hunk collapse when target side is empty.
+    - `three_pane_mapper_dispatches_all_six_member_pair_directions`
+      — non-trivial member indices (7/4/9) to verify
+      identity-based lookup, plus same-member and
+      unknown-member fall-through.
+    - `three_pane_mapper_with_two_way_hunks_is_still_safe`
+      — 3-pane mapper over a 2-way hunk: base↔local
+      direction works; any direction involving remote is
+      identity (slot absent).
+    - Filler module: 3-way Change aligns to max, 3-way Add
+      emits fillers on base + remote, 3-way Conflict emits
+      fillers, equal-lengths zero fillers,
+      2-way-hunk-via-remote-side returns empty without
+      panic, 3-way malformed single-range skipped, remote
+      provider id distinct from baseline/current/overlay,
+      version distinct across all three sides at rev 0,
+      remote provider `collect` reads published 3-way
+      hunks, `Side::pane_index()` matches `ranges` slots.
+    607 lattice-host lib tests (+17) + 1461 workspace
+    tests + all other crates green; 0 failures across the
+    whole workspace.
+    Touched:
+    `crates/lattice-host/src/diff/pane_group.rs`,
+    `crates/lattice-host/src/diff/filler.rs`. Arch doc:
+    design fragment §5.2 describes the algorithm at the
+    "what" level (cumulative shift, filler = max - this);
+    pane-index parametrisation is a "how" detail and stays
+    in this ledger — no doc edit needed.
+  - ✅ **D.6.c** (2026-05-31) — `:diffsplit <base>
+    [<remote>]`. Extends the existing 1-arg `:diffsplit`
+    parser to accept an optional 2nd path. One arg ⇒
+    two-way (D.4.d.3.b unchanged). Two args ⇒ three-way
+    merge with current pane as local, arg1 = base
+    (common ancestor), arg2 = remote.
+    `Effect::Diffsplit { path, remote: Option<PathBuf> }`
+    + `Editor::do_diffsplit(path, remote)` + new
+    `Editor::register_three_pane_diff(base, local,
+    remote)` dispatch helper that wires the 3-pane
+    `DiffDescriptor` (D.6.a `remote: Some(...)`),
+    `HunkRowMapper::three_pane` (D.6.b), and three
+    `FillerRowProvider`s (one per Side: Baseline/Current/
+    Remote per D.6.b).
+    The grammar parser splits on whitespace, encodes both
+    paths into a `\x1f`-joined `Args::String` (since
+    `Args` has no `Vec<String>` variant in v1 and a single
+    2-arg ex-command wasn't worth the schema change), and
+    the apply callback decodes back to
+    `Effect::Diffsplit`. Three-arg or more rejected at
+    parse time with "takes at most two paths." On 2nd-path
+    open failure (`do_edit` returns `Failed` /
+    `Directory(_)` / `NoFileName`) both new vsplits roll
+    back so the user lands back on the original pane —
+    mirroring the D.4.d.3.b two-way rollback discipline.
+    **Chained `:diffthis` N-way deferred to D.8** —
+    initial D.6.c sketch widened `pending_diffthis` to
+    `Vec<PaneGroupMember>` with a 3-stage state machine,
+    but per user feedback that's the wrong model: vim's
+    `:diffthis` toggles a per-buffer `:set diff` flag with
+    any-N membership, not two-phase staging. The
+    `pending_diffthis` field stays at
+    `Option<PaneGroupMember>` with D.4.d.3.a's two-way-
+    only semantics; D.8 (new top-level slice) refactors
+    the descriptor to arity-agnostic + replaces staging
+    with dynamic membership. **2 new tests** in
+    `dispatch::tests`
+    (`diffsplit_two_args_opens_three_way_session` — full
+    happy path through `Editor::boot` + temp files +
+    descriptor + pane-group + per-side filler assertions;
+    `diffsplit_three_way_rolls_back_when_remote_open_fails`
+    — both vsplits collapse on remote-open failure, no
+    leak). 12 `:diffthis`/`:diffsplit` tests green (+2
+    new); full workspace test run green.
+    Touched: `crates/lattice-grammar/src/{effect.rs,
+    ex_commands.rs}`,
+    `crates/lattice-host/src/{dispatch.rs, editor.rs}`.
+    Arch doc: design fragment §6.3 ex-commands table
+    needs the optional `<remote>` arg on `:diffsplit`;
+    landed alongside this slice.
+  - ✅ **D.6.d** (2026-05-31) — `:diffput [<bufnr>]` /
+    `:diffget [<bufnr>]` target-aware operators.
+    `DiffSubsystem::compute_get_edit` / `compute_put_plan`
+    gain an `Option<BufferId>` target argument; return
+    types upgraded to rich tri/quad-state outcomes:
+    - `DiffGetOutcome::{Edit, TargetRequired, Nothing}`
+    - `DiffPutOutcome::{Edit, NoPeerBuffer,
+      TargetRequired, Nothing}`
+    `TargetRequired` carries `available_targets:
+    Vec<BufferId>` so dispatch surfaces a clear
+    "use :diffget <bufnr> (one of: …)" error when a
+    three-way invocation arrives without disambiguation.
+    `peer_buffer_id` renamed `target_buffer_id` to drop
+    the two-pane-only connotation. The 2-way `do` / `dp`
+    chord path preserves D.5.b/c semantics by passing
+    `target=None` — `resolve_target_pane` auto-resolves
+    to the unique peer slot in 2-way; in 3-way it
+    surfaces `TargetRequired`. Three-way Conflict hunks
+    are resolvable when target is explicit (the
+    `allow_conflict = target.is_some()` switch in
+    `find_covering_hunk`); the chord path with no target
+    stays defensively skipping Conflict (matches D.5.b/c).
+    New free-function helpers in `subsystem.rs`:
+    `pane_index_of` (active slot lookup, special-cases
+    inline 1-participant sessions where the sole live
+    buffer sits at slot 1 with no buffer-backed slot 0
+    baseline), `resolve_target_pane` (target slot
+    resolution; checks `descriptor.remote.is_some()` for
+    arity, not `participants.len()`, since inline has 2
+    slots but 1 participant), `snapshot_for_pane`
+    (slot-0 → baseline, 1 → current, 2 → remote),
+    `find_covering_hunk` (active-pane-parametric search).
+    New grammar surface: `Effect::DiffGetCmd { target:
+    Option<u32> }` + `Effect::DiffPutCmd { target:
+    Option<u32> }` (u32 stays in the grammar to avoid a
+    lattice-core dep; dispatch converts to BufferId).
+    Ex-command parser `parse_optional_bufnr` validates
+    non-negative-integer when present; apply callbacks
+    `apply_diffget` / `apply_diffput` decode to the
+    corresponding effects. `:diffget` / `:diffput`
+    aliases added to the canonical-name table. Editor
+    handlers `do_diff_get(target: Option<BufferId>)` /
+    `do_diff_put(target)` match against the new outcome
+    enums and surface `TargetRequired` as a user-facing
+    error message naming the available targets. Chord
+    callers (`Action::DiffGet` / `Action::DiffPut`)
+    invoke with `target=None`; ex-command callers with
+    `target=Some(buf)` (or `None` when bang-less).
+    **8 new tests** in `diff::subsystem::tests`:
+    `compute_get_edit_three_way_no_target_requires_one`,
+    `compute_get_edit_three_way_with_target_resolves_conflict`
+    (the slice-plan "`:diffput 2` resolves a conflict"
+    case mirrored for the get direction),
+    `compute_get_edit_unknown_target_buffer_returns_nothing`,
+    `compute_get_edit_two_way_explicit_target_matches_default`
+    (back-compat regression guard),
+    `compute_put_plan_three_way_no_target_requires_one`,
+    `compute_put_plan_three_way_resolves_conflict_to_explicit_target`
+    (the canonical slice-plan test —
+    `:diffput 2` pushes pane-1's LOCAL into pane-2's range),
+    `compute_put_plan_two_way_no_target_targets_peer`
+    (back-compat),
+    `compute_put_plan_target_equal_to_active_returns_nothing`
+    (defence against `:diffput <self-bufnr>`). 617 host
+    + 1461 workspace tests green. Touched:
+    `crates/lattice-grammar/src/{effect.rs, ex_commands.rs}`,
+    `crates/lattice-host/src/{diff/subsystem.rs,
+    dispatch.rs, excommand.rs}`,
+    `crates/lattice-ui-tui/src/app/dispatch.rs`,
+    `crates/lattice-ui-gpui/src/lib.rs`. Arch doc §6.3
+    table for `:diffput` / `:diffget` accurately
+    describes the target-aware behaviour; no edit needed.
+  - ✅ **D.6.e** (2026-05-31) — `:diff-accept` /
+    `:diff-reject` + completion-signal threading.
+    New types in `lattice-host::diff::subsystem`:
+    - `pub enum DiffOutcome { Accept, Reject }`,
+      `#[non_exhaustive]` so the design-doc `Partial`
+      variant can land later without breaking
+      exhaustive pattern-match consumers.
+    - `DiffSession::completion: Mutex<Option<oneshot::Sender<DiffOutcome>>>`
+      with `bind_completion(tx)` + `take_completion()`
+      API. Post-hoc binding — caller registers the
+      session via the existing `register_with_sources`
+      / `register_two_pane_diff` /
+      `register_three_pane_diff` path, then binds the
+      sender on the returned `Arc<DiffSession>`. Take is
+      single-shot; re-bind overwrites and the prior
+      receiver observes `Closed`.
+    New ex-commands `:diff-accept` / `:diff-reject` +
+    parallel `Effect::DiffAccept` / `Effect::DiffReject`
+    variants. Aliases added to the canonical-name table
+    (`excommand.rs`). `Editor::do_diff_accept` /
+    `do_diff_reject` are API-callable directly by
+    in-tree consumers (magit plugin, AI proposal flows,
+    `openDiff` callers).
+    The teardown path is shared: `do_diff_off` /
+    `do_diff_accept` / `do_diff_reject` all delegate to
+    a new private `tear_down_active_diff_session(force,
+    outcome, ok_message)` helper. When `outcome` is
+    `Some` and a sender is bound, the helper fires the
+    signal *before* dropping the session (so the
+    receiver observes the outcome, not a Closed error
+    from the dropped session). When the receiver was
+    already dropped, the `let _ = tx.send(...)` discards
+    the Err — teardown still proceeds. **Side-effect
+    fix landed alongside D.6.e**: the teardown helper
+    now also unregisters `Side::Remote` filler
+    providers (D.6.b) when the descriptor's
+    `is_three_way()` returns true — prior `do_diff_off`
+    leaked them for 3-pane sessions; latent bug, no
+    user-visible regression since no production caller
+    had landed a 3-way teardown path yet (D.6.c shipped
+    the create, this is the close).
+    **10 new tests**:
+    - 5 in `diff::subsystem::tests`:
+      `completion_take_is_single_shot`,
+      `completion_rebind_drops_previous_sender`
+      (`tokio::test` — verifies the dropped sender
+      Closes the previous receiver),
+      `completion_send_accept_routes_to_receiver`
+      (`tokio::test` — programmatic-consumer flow),
+      `completion_send_after_receiver_dropped_is_ignored`
+      (Err is non-fatal),
+      `unbound_completion_take_returns_none`.
+    - 5 in `dispatch::tests`:
+      `do_diff_accept_with_no_session_messages`,
+      `do_diff_reject_with_no_session_messages`,
+      `do_diff_accept_fires_accept_signal_and_tears_down`
+      (`tokio::test` — register session via `:diffthis`
+      x2, bind sender, accept, assert receiver gets
+      Accept + session torn down),
+      `do_diff_reject_fires_reject_signal_and_tears_down`,
+      `do_diff_accept_without_bound_completion_still_tears_down`
+      (no signal needed; teardown unaffected). 627 host
+      + 1461 workspace tests green (+10 new).
+    Touched: `crates/lattice-grammar/src/{effect.rs,
+    ex_commands.rs}`,
+    `crates/lattice-host/src/{diff/subsystem.rs,
+    dispatch.rs, excommand.rs}`,
+    `crates/lattice-ui-tui/src/app/dispatch.rs`,
+    `crates/lattice-ui-gpui/src/lib.rs`. Arch doc §3.2's
+    `DiffSession::completion: Option<oneshot::Sender<DiffOutcome>>`
+    sketch already matches what landed; no doc edit
+    needed.
+  - ✅ **D.6.f** (2026-05-31) — `DiffConflict`
+    classification + conflict-region rendering. New
+    `DiffSignKind::Conflict` variant (was previously
+    collapsed into `Change` per D.3.d.0's "three-way
+    will refine" comment). `compute_diff_sign_map` now
+    routes `HunkKind::Conflict` to
+    `DiffSignKind::Conflict` instead of `Change` —
+    behavioural change for three-way sessions; two-way
+    (D.3.d.0's only consumer pre-D.6) unaffected since
+    `compute_two_way` never emits `Conflict`.
+    Host theme (`lattice-host::ui::theme::Theme`) gains
+    `diff_conflict_sign_style: Style` (the existing
+    `diff_conflict_line_bg: Color` was already there as
+    a reserved field). Defaults: bold magenta glyph,
+    `Color::Rgb(60, 0, 60)` faint magenta line tint —
+    distinct from the Add/Change/Remove green/yellow/red
+    triad so users spot conflicts at a glance.
+    Renderer surface — TUI (`lattice-ui-tui`):
+    `Theme::diff_conflict_sign_style` propagated through
+    the `host_theme → tui_theme` bridge;
+    `render_diff_sign_cell` emits `?` for Conflict;
+    `diff_tint_bg` returns `Some(diff_conflict_line_bg)`.
+    Renderer surface — GPUI
+    (`lattice-ui-gpui::window`): same two match arms
+    (glyph + tint) extended with the Conflict variant
+    reading from `host_theme.diff_conflict_*`. The
+    deletion-block overlay path (`overlay.rs:323`)
+    already handled `HunkKind::Conflict` since D.3, so
+    Conflict hunks with non-empty baseline ranges show
+    the deletion-block backdrop too — no change needed.
+    **3 new tests** in `diff::overlay::tests`:
+    `conflict_hunk_emits_conflict_signs` (replaces the
+    old `conflict_hunk_emits_change_signs`, which
+    asserted the now-removed collapse-to-Change
+    behaviour), `conflict_signs_use_current_side_range`
+    (slot-1 decoration; base/remote slots not
+    classified), `mixed_change_and_conflict_keep_distinct_signs`
+    (regression guard against accidental
+    re-collapsing). 629 host + 1461 workspace tests
+    green. Touched: `crates/lattice-host/src/{diff/overlay.rs,
+    ui/theme.rs}`,
+    `crates/lattice-ui-tui/src/{render.rs, theme.rs}`,
+    `crates/lattice-ui-gpui/src/window.rs`. Arch doc
+    §3.1 already lists `HunkKind::Conflict`; §6.4 / §6.5
+    don't enumerate sign-kind glyphs (renderer-internal
+    detail) so no doc edit needed.
+  - ✅ **D.6.g** (2026-05-31) — `:diffoff!` cascade
+    tear-down. The `force` parameter that D.4.d.3.a
+    parked as a v1 no-op now means something:
+    - `:diffoff` (no bang): tears down the single
+      session resolved by
+      `DiffSubsystem::lookup_session_for(active)` — the
+      same secondary-index-driven lookup the rest of
+      the diff code uses.
+    - `:diffoff!` (bang): cascades teardown across
+      *every* session the active buffer participates in,
+      via the new
+      `DiffSubsystem::all_sessions_for(buffer_id) ->
+      Vec<Arc<DiffSession>>` method. Iterates the
+      `descriptors` map and returns every session whose
+      `descriptor.watch` contains `buffer_id`.
+    The bang only differs from non-bang for the
+    multi-session shared-buffer case (a buffer that
+    participates in two simultaneous diff sessions —
+    rare but architecturally supported via the
+    refcounted diff-mode bridge, D.5.a). For typical
+    single-session interactive use, the bang is
+    operationally identical to the unbang.
+    Teardown body refactored: extracted
+    `tear_down_single_diff_session(session, outcome)`
+    helper for per-session work, with
+    `tear_down_active_diff_session(force, outcome,
+    ok_message)` iterating over the resolved session
+    set (one for unbang, all for bang). The
+    virtual-rows-worker wake fires once after all
+    sessions tear down (batched). Status message
+    distinguishes the multi-session case:
+    `"{ok_message} ({count} sessions)"` when `force &&
+    count > 1`, otherwise the plain `ok_message`.
+    **API surface for programmatic consumers:**
+    `Editor::do_diff_off(force: bool)` keeps its
+    existing shape; `DiffSubsystem::all_sessions_for`
+    is the new in-tree-plugin entry point for "find
+    everything this buffer is in" (useful for cleanup
+    flows that don't go through the active-pane
+    convention).
+    **6 new tests:**
+    - 3 in `diff::subsystem::tests`:
+      `all_sessions_for_unregistered_buffer_is_empty`,
+      `all_sessions_for_single_session_returns_one`
+      (primary + watched-side lookups both work),
+      `all_sessions_for_shared_buffer_returns_every_session`
+      (the key case — shows
+      `lookup_session_for` finds 1 while
+      `all_sessions_for` finds 2).
+    - 3 in `dispatch::tests`:
+      `do_diff_off_bang_with_single_session_matches_unbang`
+      (regression guard — bang on a 1-session buffer is
+      identical to no-bang, plain "Diff closed"
+      message),
+      `do_diff_off_bang_cascades_across_multiple_sessions`
+      (the canonical case — registers 2 sessions
+      sharing one buffer via direct subsystem calls,
+      verifies `:diffoff!` closes both and emits
+      "(2 sessions)"),
+      `do_diff_off_unbang_on_shared_buffer_closes_only_one_session`
+      (the contrast case — without bang, only one
+      closes; the other survives).
+    635 host + workspace tests green. Touched:
+    `crates/lattice-host/src/{diff/subsystem.rs,
+    dispatch.rs}`. Arch doc §6.3 ex-command table
+    accurately describes `:diffoff[!]`; no doc edit
+    needed.
+  - ✅ **D.6.h** (2026-05-31) — Bench + integration
+    tests close D.6.
+    **Bench:** new `bench_recompute_blocking_three_way`
+    in `crates/lattice-host/benches/diff_subsystem.rs`,
+    mirror of the existing `bench_recompute_blocking`
+    but exercising the `compute_three_way` path via
+    `recompute_blocking(_, _, Some(_))`. Workloads:
+    1k / 5k / 50k lines, base + local + remote each
+    mutated on disjoint stride-spaced rows so the
+    engine output mixes non-conflict and conflict
+    hunks. Design fragment §7's
+    `diff_recompute_p99_us` budget (≤ 1000µs at v1 P95
+    5k lines) is for two-way; three-way is ~2× the
+    work (two pairwise diffs against base) so the
+    equivalent gate sits around 2000µs at 5k lines —
+    bench just records the value; CI threshold
+    gating is a later infra decision.
+    **Integration tests** — 2 new:
+    - `three_way_rapid_edits_coalesce_to_one_recompute`
+      (`subsystem.rs`) — addresses §11 risk
+      "multi-doc edit-event coordination". Fires three
+      `note_buffer_edited` calls in rapid succession
+      across the three watched buffers of a three-way
+      session; asserts the resulting revision is `1`
+      (exactly one recompute), not `3` (per-event).
+      Load-bearing for the §3.4 debouncer-reset
+      semantics — if the debouncer ever regresses to
+      per-event spawn, this test catches it.
+    - `three_way_diffput_resolves_conflict_by_pushing_active_into_target`
+      (`dispatch.rs`) — the slice-plan canonical
+      end-to-end case: `:diffsplit base remote` →
+      manually publish a Conflict hunk → `:diffput
+      <remote-bufnr>` → verify remote buffer's row
+      mutated to local's content, local + base
+      unmodified. Exercises the full chain from
+      ex-command-equivalent dispatch through the
+      target-aware `compute_put_plan` through
+      `apply_edit_blocking` on the resolved peer's
+      `DocumentHandle`.
+    637 host tests + workspace tests green;
+    `cargo bench --bench diff_subsystem -- --test`
+    smoke-passes the new bench. Touched:
+    `crates/lattice-host/benches/diff_subsystem.rs`,
+    `crates/lattice-host/src/{diff/subsystem.rs,
+    dispatch.rs}`. **D.6 closed.** Arch doc: no edit
+    needed — §7 budget claims and §11 risk both
+    backed by the new artefacts.
 - 🗒 **D.7** — Git baseline integration (`:Gdiff`) via a
   small `lattice-vcs` crate over `gix`.
+- 🗒 **D.8** — `:diffthis` as buffer-group membership +
+  arity-agnostic descriptor refactor. Replaces the
+  D.4.d.3.a `pending_diffthis: Option<PaneGroupMember>`
+  singleton with vim-style per-buffer `:set diff` toggle
+  semantics: each `:diffthis` flips one buffer's
+  membership in the current diff group; the diff session
+  is derived state with N participants (N=1 dormant,
+  N=2 two-way, N=3 three-way, N≥4 returns a clear engine
+  error). Companion refactor:
+  - `DiffDescriptor` becomes arity-agnostic — drop the
+    explicit `baseline + current + remote` slots, replace
+    with `sources: Vec<Arc<dyn DiffParticipantSource>>`.
+    The trait collapses today's `BaselineSource` +
+    `CurrentSource` (both shape `snapshot() -> Rope`)
+    into one. The descriptor / subsystem don't know the
+    arity any more — that's session state.
+  - `lattice-diff` exposes a unified
+    `compute_diff(participants: &[Rope], algorithm) ->
+    HunkIndex`. The engine internally dispatches to
+    `compute_two_way` for N=2, `compute_three_way` for
+    N=3, returns a typed error for N≥4 in v1. Hunks
+    carry N ranges per `Hunk::ranges`.
+  - Subsystem APIs: `DiffSubsystem::add_participant(
+    session_key, buffer_id)` /
+    `remove_participant(session_key, buffer_id)` to
+    mutate group membership; auto-tear-down when N
+    drops below 2.
+  - `:diffthis` becomes a per-buffer toggle:
+    - First call (no current group): create N=1 dormant
+      session keyed under the active buffer.
+    - Subsequent call on a fresh buffer: extend the
+      group's participants.
+    - Call on a buffer already in the group: shrink
+      (= per-buffer `:set nodiff`).
+  - `:diffoff` per-buffer semantics preserved; the
+    session auto-collapses when membership falls below
+    2.
+  - `:diffsplit <file>` / `:diffsplit base remote` keep
+    their current shape but compose through the new
+    arity-agnostic descriptor; internally call
+    `add_participant` for each path opened, not the
+    fixed-arity `register_*_pane_diff` helpers (those
+    become thin wrappers).
+  - Pane-group dynamic membership: `add_member` /
+    `remove_member` on `PaneGroup`; `HunkRowMapper`
+    consults `session.participants().len()` for arity at
+    map-time rather than holding a fixed `MapperShape`.
+  - Filler-row provider: registered/unregistered as
+    members join/leave.
+  Lands after D.6 closes — D.6's named scope is explicit
+  three-way merge resolution UX, which `:diffsplit base
+  remote` (D.6.c) already provides. D.8 generalises the
+  model.
 
 Slice sequencing: D.0 / D.1 in parallel; D.2 after D.1; D.3
 after D.0 (a) + D.2; D.4 after D.0 (b) + D.3; D.5 after D.2;

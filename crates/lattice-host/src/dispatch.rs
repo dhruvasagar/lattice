@@ -1763,10 +1763,10 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         // D.5.b: diff-mode `do` — resolve the hunk under
         // the cursor and rewrite the current side to match
         // the baseline.
-        Action::DiffGet => editor.do_diff_get(),
+        Action::DiffGet => editor.do_diff_get(None),
         // D.5.c: diff-mode `dp` — push the current side's
         // hunk into the peer buffer.
-        Action::DiffPut => editor.do_diff_put(),
+        Action::DiffPut => editor.do_diff_put(None),
         // 5.5.G.9: paste cluster (`p` / `P` / bracketed-paste).
         Action::PasteAfter => editor.do_paste(false),
         Action::PasteBefore => editor.do_paste(true),
@@ -2351,16 +2351,47 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             // pane errors out — v1 is two-way only.
             editor.do_diffthis();
         }
-        Effect::Diffsplit { path } => {
-            // D.4.d.3.b: `:diffsplit <file>` — open `<file>`
-            // in a new vertical split and immediately
-            // register a two-pane diff between the current
-            // pane (baseline) and the new pane (current).
-            // Composes vsplit + `:edit <path>` in the new
-            // pane + the `register_two_pane_diff` helper
-            // that backs `:diffthis`. Cursor lands in the
-            // new pane (vim parity).
-            editor.do_diffsplit(path);
+        Effect::Diffsplit { path, remote } => {
+            // D.4.d.3.b / D.6.c: `:diffsplit <base> [<remote>]`.
+            // One arg ⇒ two-way (current vs base in a new
+            // pane). Two args ⇒ three-way merge (current
+            // pane = local; new panes = base + remote).
+            // Composes vsplit + `:edit <path>` per new pane
+            // and dispatches into `register_two_pane_diff`
+            // or `register_three_pane_diff`. Cursor lands
+            // in the first new pane (vim parity).
+            editor.do_diffsplit(path, remote);
+        }
+        Effect::DiffGetCmd { target } => {
+            // D.6.d: `:diffget [<bufnr>]` — pull the hunk
+            // under the cursor from the named (or
+            // auto-resolved) buffer side. Same
+            // computation as the `do` chord, but
+            // target-aware: explicit `<bufnr>` resolves
+            // three-way ambiguity and unlocks Conflict
+            // resolution. No-arg semantics match the
+            // chord (None ⇒ peer in 2-way, "target
+            // required" error in 3-way).
+            editor.do_diff_get(target.map(lattice_core::BufferId));
+        }
+        Effect::DiffAccept => {
+            // D.6.e: `:diff-accept` — resolve the active
+            // session with Accept, fire the completion
+            // signal, and tear down.
+            editor.do_diff_accept();
+        }
+        Effect::DiffReject => {
+            // D.6.e: `:diff-reject` — resolve the active
+            // session with Reject, fire the completion
+            // signal, and tear down.
+            editor.do_diff_reject();
+        }
+        Effect::DiffPutCmd { target } => {
+            // D.6.d: `:diffput [<bufnr>]` — push the hunk
+            // under the cursor into the named (or
+            // auto-resolved) buffer side. Mirror of
+            // `:diffget` for the put direction.
+            editor.do_diff_put(target.map(lattice_core::BufferId));
         }
         Effect::NextHunk => {
             // D.3.c: `]c` — jump cursor to next hunk start
@@ -2582,6 +2613,7 @@ impl Editor {
             // D.5.a (2026-05-30): file-on-disk baseline has
             // no live buffer, so only the current side
             // receives `diff-mode`.
+            remote: None,
             participants: vec![buffer_id],
         };
         let session = self.diff_subsystem.register_with_sources(
@@ -3000,25 +3032,158 @@ impl Editor {
     /// merge but is a no-op in v1: removing one side of a
     /// two-way diff already collapses the whole session, so
     /// `:diffoff` and `:diffoff!` are operationally identical.
-    pub fn do_diff_off(&mut self, _force: bool) {
+    pub fn do_diff_off(&mut self, force: bool) {
+        self.tear_down_active_diff_session(force, None, "Diff closed");
+    }
+
+    /// D.6.e (2026-05-31): resolve the active pane's diff
+    /// session with [`DiffOutcome::Accept`]. v1 semantics:
+    /// equivalent to `:diffoff` + signal Accept on any
+    /// bound completion channel. The buffer's current
+    /// content is the accepted resolution — plugins commit
+    /// from there.
+    ///
+    /// API surface for in-tree consumers (magit-style
+    /// plugins, AI proposal flows): bind a oneshot sender
+    /// to the session via
+    /// [`crate::diff::subsystem::DiffSession::bind_completion`]
+    /// after registration, then await the
+    /// `oneshot::Receiver<DiffOutcome>`. When the user
+    /// invokes `:diff-accept`, this method fires the
+    /// `Accept` signal on the channel.
+    pub fn do_diff_accept(&mut self) {
+        self.tear_down_active_diff_session(
+            false,
+            Some(crate::diff::subsystem::DiffOutcome::Accept),
+            "Diff accepted",
+        );
+    }
+
+    /// D.6.e (2026-05-31): resolve the active pane's diff
+    /// session with [`DiffOutcome::Reject`]. v1 semantics:
+    /// equivalent to `:diffoff!` + signal Reject.
+    pub fn do_diff_reject(&mut self) {
+        self.tear_down_active_diff_session(
+            true,
+            Some(crate::diff::subsystem::DiffOutcome::Reject),
+            "Diff rejected",
+        );
+    }
+
+    /// D.4.d.3.a / D.6.e / D.6.g shared teardown helper.
+    ///
+    /// **`force` semantics (D.6.g):**
+    /// - `false` (no bang): tears down the *one* session
+    ///   resolved by [`DiffSubsystem::lookup_session_for`]
+    ///   for the active buffer. If the buffer participates
+    ///   in multiple sessions (a shared baseline across
+    ///   independent diffs), only the one the secondary
+    ///   index currently points at is closed.
+    /// - `true` (bang): cascades teardown across *every*
+    ///   session the active buffer participates in, via
+    ///   [`DiffSubsystem::all_sessions_for`]. Useful when a
+    ///   shared buffer has accumulated multiple diff
+    ///   sessions and the user wants a single command to
+    ///   close them all.
+    ///
+    /// Each session's teardown is identical regardless of
+    /// `force`: fire the bound `DiffOutcome` (if a sender
+    /// is present), unregister overlay + filler providers
+    /// per participant (Side::Baseline + Side::Current
+    /// always; Side::Remote when three-way per D.6.b),
+    /// drop the pane group, abort refresh tasks, drop the
+    /// session from the registry. The wake + status
+    /// message fire once after all teardowns complete.
+    fn tear_down_active_diff_session(
+        &mut self,
+        force: bool,
+        outcome: Option<crate::diff::subsystem::DiffOutcome>,
+        ok_message: &str,
+    ) {
         let active_buffer_id = self.document_buffer_id;
-        let Some(session) = self.diff_subsystem.lookup_session_for(active_buffer_id) else {
+        let sessions: Vec<std::sync::Arc<crate::diff::subsystem::DiffSession>> = if force {
+            self.diff_subsystem.all_sessions_for(active_buffer_id)
+        } else {
+            self.diff_subsystem
+                .lookup_session_for(active_buffer_id)
+                .into_iter()
+                .collect()
+        };
+
+        if sessions.is_empty() {
             self.set_message(EchoLevel::Info, "No active diff session");
             return;
-        };
+        }
+
+        let count = sessions.len();
+        for session in sessions {
+            self.tear_down_single_diff_session(&session, outcome.clone());
+        }
+
+        // Wake the virtual-rows worker so it observes the
+        // provider removals and republishes empty matrices
+        // (otherwise stale rows linger until the next edit).
+        self.virtual_rows_wake.0.notify_one();
+
+        // D.6.g: when `:diffoff!` closed more than one
+        // session, the status message reports the count so
+        // the user knows the bang actually mattered.
+        if force && count > 1 {
+            self.set_message(
+                EchoLevel::Info,
+                format!("{ok_message} ({count} sessions)"),
+            );
+        } else {
+            self.set_message(EchoLevel::Info, ok_message);
+        }
+    }
+
+    /// D.6.g (2026-05-31): per-session teardown body —
+    /// extracted from the multi-session iteration in
+    /// [`Self::tear_down_active_diff_session`]. Fires the
+    /// outcome on this session's completion channel (if
+    /// bound), unregisters every overlay / filler provider
+    /// on every participant, drops the linked pane group,
+    /// aborts any refresh task, and drops the session from
+    /// the subsystem registry. Does *not* wake the
+    /// virtual-rows worker — caller batches that after the
+    /// last session.
+    fn tear_down_single_diff_session(
+        &mut self,
+        session: &std::sync::Arc<crate::diff::subsystem::DiffSession>,
+        outcome: Option<crate::diff::subsystem::DiffOutcome>,
+    ) {
         let primary = session.buffer_id();
         let pane_group_id = session.pane_group_id();
         let descriptor = self.diff_subsystem.lookup_descriptor(primary);
+        let is_three_way = descriptor
+            .as_ref()
+            .map(|d| d.is_three_way())
+            .unwrap_or(false);
         let watch: Vec<lattice_core::BufferId> = descriptor
             .as_ref()
             .map(|d| d.watch.clone())
             .unwrap_or_else(|| vec![primary]);
 
+        // D.6.e: fire the completion signal first, before
+        // any teardown. If the sender's receiver was
+        // dropped (plugin gave up), `send` returns Err —
+        // we ignore that, the teardown still proceeds.
+        if let Some(o) = outcome {
+            if let Some(tx) = session.take_completion() {
+                let _ = tx.send(o);
+            }
+        }
+
         // Walk every participant. Each unregister call is
         // safe-idempotent (returns false if absent), so we
-        // can blindly try inline-overlay + both filler-side
+        // can blindly try inline-overlay + all filler-side
         // ids on every watched buffer without first
-        // distinguishing inline-vs-two-pane sessions.
+        // distinguishing inline / two-pane / three-pane
+        // sessions. D.6.b: Side::Remote is unregistered
+        // only when the session is three-way (the provider
+        // id would collide otherwise — different namespace
+        // bits but same low-32 buffer-id pattern).
         for buf in &watch {
             self.virtual_row_providers.unregister(
                 *buf,
@@ -3038,20 +3203,28 @@ impl Editor {
                     crate::diff::filler::Side::Current,
                 ),
             );
+            if is_three_way {
+                self.virtual_row_providers.unregister(
+                    *buf,
+                    crate::diff::filler::diff_filler_provider_id(
+                        primary,
+                        crate::diff::filler::Side::Remote,
+                    ),
+                );
+            }
         }
 
-        // Drop the linked pane group (two-pane sessions
-        // only; `None` for inline `:diff`). Idempotent.
+        // Drop the linked pane group (two/three-pane
+        // sessions only; `None` for inline `:diff`).
+        // Idempotent.
         if let Some(id) = pane_group_id {
             self.drop_pane_group(id);
         }
 
         // Abort any refresh task. The forwarders map is
         // keyed by the inline session's buffer_id (D.3.a.1);
-        // two-pane sessions don't currently spawn one (filler
-        // providers are pure-sync per D.4.c). Walk every
-        // watched buffer to be defensive against a future
-        // refresh task added on either side.
+        // multi-pane sessions don't currently spawn one
+        // (filler providers are pure-sync per D.4.c).
         if let Ok(mut map) = self.diff_forwarders.lock() {
             for buf in &watch {
                 if let Some(handle) = map.remove(buf) {
@@ -3064,12 +3237,6 @@ impl Editor {
         // watcher buckets, descriptor, secondary index, and
         // debouncer in one shot.
         self.diff_subsystem.drop_session(primary);
-
-        // Wake the virtual-rows worker so it observes the
-        // provider removals and republishes empty matrices
-        // (otherwise stale rows linger until the next edit).
-        self.virtual_rows_wake.0.notify_one();
-        self.set_message(EchoLevel::Info, "Diff closed");
     }
 
     /// D.4.d.3.a (2026-05-30): `:diffthis` — stage the active
@@ -3087,9 +3254,15 @@ impl Editor {
     ///   longer matches the tree (pane closed or buffer
     ///   swapped): silently clear the stale stage and treat
     ///   this invocation as the first.
-    /// - v1 explicitly two-way: a future third-pane invocation
-    ///   would land here once `pending_diffthis` widens to
-    ///   `Vec`; not exercised in v1.
+    ///
+    /// **v1 is two-way only.** Vim's chained-N-buffer
+    /// `:set diff` model lands in D.8, which replaces the
+    /// staging singleton with dynamic group membership and
+    /// generalises the descriptor to N participants. For
+    /// explicit three-way merge in D.6, use `:diffsplit
+    /// base remote` — it goes through
+    /// [`Self::register_three_pane_diff`] directly without
+    /// any staging.
     pub fn do_diffthis(&mut self) {
         // Gate on Document kind — `:diffthis` over a file
         // tree or help leaf is meaningless.
@@ -3168,10 +3341,7 @@ impl Editor {
                 // Different pane: complete the two-pane
                 // setup. Staged side is the "baseline"
                 // (first to stage); active side is the
-                // "current" (second to stage). Arbitrary but
-                // stable — the mapper is symmetric in the
-                // sense that both directions are wired
-                // through `HunkRowMapper`.
+                // "current" (second to stage).
                 self.pending_diffthis = None;
                 match self.register_two_pane_diff(staged, active_member) {
                     Ok(()) => {
@@ -3243,6 +3413,7 @@ impl Editor {
                 std::sync::Arc::clone(&provider_text),
                 primary,
             )),
+            remote: None,
             watch: vec![baseline.buffer, primary],
             // D.5.a (2026-05-30): both sides are live buffers
             // backing the two-pane diff; both receive
@@ -3303,6 +3474,127 @@ impl Editor {
         Ok(())
     }
 
+    /// D.6.c (2026-05-31): three-pane variant of
+    /// [`Self::register_two_pane_diff`]. Inputs are the
+    /// three [`PaneGroupMember`]s in role order:
+    /// `base` (common ancestor), `local` (the side
+    /// keyed under the session — typically the user's
+    /// current pane), `remote` (the third party).
+    ///
+    /// Builds a [`DiffDescriptor`] with `BufferBaseline`
+    /// + `BufferCurrentSource` + `Some(BufferCurrentSource)`
+    /// for the three sides, `watch` + `participants` = all
+    /// three buffers, primary key = `local.buffer`. Wires
+    /// a `PaneGroup` with `HunkRowMapper::three_pane(...)`
+    /// (member layout: 0 = base, 1 = local, 2 = remote)
+    /// and three `FillerRowProvider`s — one per
+    /// `(buffer, Side)` pair, scoped to the right buffer
+    /// in the per-`BufferId` virtual-row registry.
+    ///
+    /// The API surface for in-tree consumers (e.g. a
+    /// future magit-style plugin) is identical in shape to
+    /// the two-pane helper: pass three already-attached
+    /// `PaneGroupMember`s, get back `Ok(())` or an error.
+    /// On pane-group registration failure the session is
+    /// rolled back so we don't leave a session with no UI
+    /// binding.
+    fn register_three_pane_diff(
+        &mut self,
+        base: crate::pane_group::PaneGroupMember,
+        local: crate::pane_group::PaneGroupMember,
+        remote: crate::pane_group::PaneGroupMember,
+    ) -> Result<(), String> {
+        if base == local || base == remote || local == remote {
+            return Err("three-pane members must be pairwise distinct".to_string());
+        }
+        let primary = local.buffer;
+        if self.diff_subsystem.lookup_session_for(primary).is_some() {
+            return Err(format!(
+                "buffer {} already has an active diff session",
+                primary.0
+            ));
+        }
+        // Defence-in-depth: neither remote nor base side
+        // should already participate in a session either.
+        for (label, side) in [("base", base.buffer), ("remote", remote.buffer)] {
+            if self.diff_subsystem.lookup_session_for(side).is_some() {
+                return Err(format!(
+                    "{} buffer {} already participates in a diff session",
+                    label, side.0
+                ));
+            }
+        }
+
+        let provider_text: std::sync::Arc<
+            dyn crate::diff::subsystem::BufferTextProvider,
+        > = std::sync::Arc::new(
+            crate::diff::subsystem::BufferRegistryTextProvider::new(self.buffers.clone()),
+        );
+        let descriptor = crate::diff::subsystem::DiffDescriptor {
+            baseline: std::sync::Arc::new(crate::diff::subsystem::BufferBaseline::new(
+                std::sync::Arc::clone(&provider_text),
+                base.buffer,
+            )),
+            current: std::sync::Arc::new(crate::diff::subsystem::BufferCurrentSource::new(
+                std::sync::Arc::clone(&provider_text),
+                primary,
+            )),
+            remote: Some(std::sync::Arc::new(
+                crate::diff::subsystem::BufferCurrentSource::new(
+                    std::sync::Arc::clone(&provider_text),
+                    remote.buffer,
+                ),
+            )),
+            watch: vec![base.buffer, primary, remote.buffer],
+            // All three live buffers participate; the
+            // mode-bridge refcount activates `diff-mode`
+            // on each.
+            participants: vec![base.buffer, primary, remote.buffer],
+        };
+        let session = self.diff_subsystem.register_with_sources(
+            primary,
+            lattice_diff::DiffAlgorithm::Histogram,
+            descriptor,
+        );
+
+        // Pane group + HunkRowMapper::three_pane. Member
+        // layout: 0 = base, 1 = local, 2 = remote.
+        let members = vec![base, local, remote];
+        let mapper: std::sync::Arc<dyn crate::pane_group::RowMapper> =
+            std::sync::Arc::new(crate::diff::pane_group::HunkRowMapper::three_pane(
+                std::sync::Arc::clone(&session),
+                0,
+                1,
+                2,
+            ));
+        let pane_group_id = self.add_pane_group(members, mapper).map_err(|e| {
+            self.diff_subsystem.drop_session(primary);
+            e
+        })?;
+        session.bind_pane_group(pane_group_id);
+
+        // Three filler providers — one per side, each
+        // scoped to its own buffer.
+        for (buf, side) in [
+            (base.buffer, crate::diff::filler::Side::Baseline),
+            (primary, crate::diff::filler::Side::Current),
+            (remote.buffer, crate::diff::filler::Side::Remote),
+        ] {
+            let provider: std::sync::Arc<dyn lattice_cells::VirtualRowProvider> =
+                std::sync::Arc::new(crate::diff::filler::FillerRowProvider::new(
+                    std::sync::Arc::clone(&session),
+                    side,
+                ));
+            self.virtual_row_providers.register(buf, provider);
+        }
+
+        // Kick the initial compute. Mirror of the two-pane
+        // helper.
+        std::sync::Arc::clone(&self.diff_subsystem).note_buffer_edited(primary);
+
+        Ok(())
+    }
+
     /// D.4.d.3.b (2026-05-30): `:diffsplit <file>` — open
     /// `<file>` in a new vertical split and immediately
     /// register a two-pane diff between the current pane
@@ -3332,7 +3624,11 @@ impl Editor {
     ///   `set_message`; the new pane stays open with
     ///   `<file>` loaded (the user can `:diffoff` or
     ///   `<C-w>q` from there).
-    pub fn do_diffsplit(&mut self, path: std::path::PathBuf) {
+    pub fn do_diffsplit(
+        &mut self,
+        path: std::path::PathBuf,
+        remote: Option<std::path::PathBuf>,
+    ) {
         use lattice_core::ui::pane::SplitOrientation;
 
         // Gate 1: active pane must be a Document leaf.
@@ -3344,17 +3640,21 @@ impl Editor {
             );
             return;
         }
-        let baseline = crate::pane_group::PaneGroupMember {
+        // In two-way the active pane is the baseline side;
+        // in three-way it's the local side. Capture
+        // identity once.
+        let active_member = crate::pane_group::PaneGroupMember {
             pane: active_leaf.id,
             buffer: active_leaf.buffer_id,
         };
 
-        // Gate 2: active buffer must not already have a diff
-        // session — defence-in-depth so the user gets a clear
-        // error before any split / open work happens.
+        // Gate 2: active buffer must not already have a
+        // diff session — defence-in-depth so the user gets
+        // a clear error before any split / open work
+        // happens.
         if self
             .diff_subsystem
-            .lookup_session_for(baseline.buffer)
+            .lookup_session_for(active_member.buffer)
             .is_some()
         {
             self.set_message(
@@ -3362,67 +3662,104 @@ impl Editor {
                 format!(
                     "diffsplit: buffer {} already has an active diff session; \
                      use :diffoff first",
-                    baseline.buffer.0
+                    active_member.buffer.0
                 ),
             );
             return;
         }
 
-        // Open the vertical split. `split_active` keeps the
-        // original pane active and returns the new leaf's
-        // index. We then switch active to the new leaf so
-        // `do_edit` (which operates on the active pane)
-        // loads `<file>` there.
-        let new_idx = self.pane_tree.split_active(SplitOrientation::Vertical);
-        self.pane_tree.set_active(new_idx);
+        // Helper: vsplit + `:edit <path>` into the new
+        // (now-active) pane, returning the new pane's
+        // member or `Err(())` after closing the new pane
+        // on open failure. The outer `do_diffsplit` already
+        // surfaced an error via `do_edit`'s own message.
+        let open_into_new_split =
+            |this: &mut Self, p: std::path::PathBuf| -> Result<crate::pane_group::PaneGroupMember, ()> {
+                let new_idx = this.pane_tree.split_active(SplitOrientation::Vertical);
+                this.pane_tree.set_active(new_idx);
+                match this.do_edit(Some(p), false) {
+                    DoEditOutcome::Opened(_)
+                    | DoEditOutcome::Activated(_)
+                    | DoEditOutcome::Reloaded(_) => {
+                        let leaf = this.pane_tree.active();
+                        Ok(crate::pane_group::PaneGroupMember {
+                            pane: leaf.id,
+                            buffer: leaf.buffer_id,
+                        })
+                    }
+                    DoEditOutcome::Failed
+                    | DoEditOutcome::Directory(_)
+                    | DoEditOutcome::NoFileName => {
+                        this.pane_tree.close_active();
+                        Err(())
+                    }
+                }
+            };
 
-        // Load `<file>` into the new (now active) pane.
-        let outcome = self.do_edit(Some(path), false);
-        match outcome {
-            DoEditOutcome::Opened(_)
-            | DoEditOutcome::Activated(_)
-            | DoEditOutcome::Reloaded(_) => {
-                // Fall through to session setup.
+        match remote {
+            None => {
+                // ── Two-way: D.4.d.3.b ───────────────────
+                // Open `<file>` in a new vsplit, register
+                // the two-pane diff between the original
+                // (baseline) and new (current) panes.
+                let Ok(new_current) = open_into_new_split(self, path) else {
+                    return;
+                };
+                let baseline = active_member;
+                if let Err(msg) =
+                    self.register_two_pane_diff(baseline, new_current)
+                {
+                    self.set_message(EchoLevel::Error, format!("diffsplit: {msg}"));
+                    return;
+                }
+                self.set_message(
+                    EchoLevel::Info,
+                    format!(
+                        "diffsplit: opened (baseline buffer {} ↔ current \
+                         buffer {})",
+                        baseline.buffer.0, new_current.buffer.0
+                    ),
+                );
             }
-            DoEditOutcome::Failed
-            | DoEditOutcome::Directory(_)
-            | DoEditOutcome::NoFileName => {
-                // `do_edit` already surfaced an error; close
-                // the new pane so we don't leave the user
-                // stranded in an empty vsplit. `close_active`
-                // restores active to the sibling (= original
-                // pane).
-                self.pane_tree.close_active();
-                return;
+            Some(remote_path) => {
+                // ── Three-way: D.6.c ─────────────────────
+                // Active pane = local. Open `<base>` in a
+                // new vsplit; then `<remote>` in another
+                // vsplit. Cursor lands in the first new
+                // pane (base) per vim's `vimdiff a b c`
+                // ordering. Roll back both splits on any
+                // open failure to keep the user from being
+                // stranded.
+                let local = active_member;
+                let Ok(base) = open_into_new_split(self, path) else {
+                    return;
+                };
+                let Ok(remote_member) = open_into_new_split(self, remote_path)
+                else {
+                    // Base opened OK but remote failed —
+                    // close the base pane too so we leave
+                    // no orphan splits behind.
+                    // (open_into_new_split has already
+                    // closed the second pane on failure.)
+                    self.pane_tree.close_active(); // closes the base pane (now active)
+                    return;
+                };
+                if let Err(msg) =
+                    self.register_three_pane_diff(base, local, remote_member)
+                {
+                    self.set_message(EchoLevel::Error, format!("diffsplit: {msg}"));
+                    return;
+                }
+                self.set_message(
+                    EchoLevel::Info,
+                    format!(
+                        "diffsplit: opened three-way (base {} ↔ local {} ↔ \
+                         remote {})",
+                        base.buffer.0, local.buffer.0, remote_member.buffer.0
+                    ),
+                );
             }
         }
-
-        // Read the new pane's id + the just-loaded buffer's
-        // id from the live tree. `do_edit` may have reused
-        // an existing buffer (`Activated`) or opened a fresh
-        // one (`Opened`); either way the active leaf now
-        // reflects the right pair.
-        let new_leaf = self.pane_tree.active();
-        let current = crate::pane_group::PaneGroupMember {
-            pane: new_leaf.id,
-            buffer: new_leaf.buffer_id,
-        };
-
-        // Register the two-pane diff. Baseline = the
-        // original pane; current = the newly-split pane
-        // (which holds the just-loaded file). Mirror of
-        // the `:diffthis` completion path.
-        if let Err(msg) = self.register_two_pane_diff(baseline, current) {
-            self.set_message(EchoLevel::Error, format!("diffsplit: {msg}"));
-            return;
-        }
-        self.set_message(
-            EchoLevel::Info,
-            format!(
-                "diffsplit: opened (baseline buffer {} ↔ current buffer {})",
-                baseline.buffer.0, current.buffer.0
-            ),
-        );
     }
 
     /// Surface a one-line message in the echo area. Replaces the
@@ -13419,37 +13756,59 @@ impl Editor {
     /// means the buffer *had* diff-mode active but the
     /// session's hunks haven't published yet (mid-recompute)
     /// or the cursor sits outside every hunk.
-    pub fn do_diff_get(&mut self) {
+    pub fn do_diff_get(&mut self, target: Option<lattice_core::BufferId>) {
         let buffer_id = self.document_buffer_id;
         let cursor_row = self.cursor.line;
-        let Some(plan) = self
+        match self
             .diff_subsystem
-            .compute_get_edit(buffer_id, cursor_row)
-        else {
-            return;
-        };
-        // The edit cascades through `apply_edit_blocking`
-        // which fires `DocumentChanged` on the bus; the diff
-        // subsystem's debouncer collapses the burst into one
-        // recompute and republishes a fresh `HunkIndex`
-        // (the hunk we just resolved vanishes). On failure
-        // (e.g., undo stack saturation) we log at debug and
-        // skip the cursor reposition.
-        match self.apply_edit_blocking(plan.edit) {
-            Ok(_) => {
-                self.cursor = lattice_protocol::position::Position::new(
-                    plan.post_cursor_row,
-                    0,
+            .compute_get_edit(buffer_id, cursor_row, target)
+        {
+            crate::diff::subsystem::DiffGetOutcome::Edit {
+                edit,
+                post_cursor_row,
+                ..
+            } => {
+                // The edit cascades through `apply_edit_blocking`
+                // which fires `DocumentChanged` on the bus; the diff
+                // subsystem's debouncer collapses the burst into one
+                // recompute and republishes a fresh `HunkIndex`.
+                match self.apply_edit_blocking(edit) {
+                    Ok(_) => {
+                        self.cursor = lattice_protocol::position::Position::new(
+                            post_cursor_row,
+                            0,
+                        );
+                    }
+                    Err(err) => {
+                        tracing::debug!(
+                            target: "lattice_host::diff::mode",
+                            ?buffer_id,
+                            ?err,
+                            "diff-mode `do` apply_edit_blocking failed; cursor unchanged"
+                        );
+                    }
+                }
+            }
+            crate::diff::subsystem::DiffGetOutcome::TargetRequired {
+                available_targets,
+            } => {
+                // D.6.d: three-way merge needs an explicit
+                // bufnr. Surface a clear error pointing the
+                // user at the available choices.
+                let avail = available_targets
+                    .iter()
+                    .map(|b| b.0.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                self.set_message(
+                    EchoLevel::Error,
+                    format!(
+                        "diffget: target required for three-way merge; \
+                         use :diffget <bufnr> (one of: {avail})"
+                    ),
                 );
             }
-            Err(err) => {
-                tracing::debug!(
-                    target: "lattice_host::diff::mode",
-                    ?buffer_id,
-                    ?err,
-                    "diff-mode `do` apply_edit_blocking failed; cursor unchanged"
-                );
-            }
+            crate::diff::subsystem::DiffGetOutcome::Nothing => {}
         }
     }
 
@@ -13470,34 +13829,32 @@ impl Editor {
     ///   diagnostic, not a silent no-op.
     /// - **Nothing under cursor:** silent no-op (matches
     ///   `do_diff_get`'s no-hunk semantics).
-    pub fn do_diff_put(&mut self) {
+    pub fn do_diff_put(&mut self, target: Option<lattice_core::BufferId>) {
         let buffer_id = self.document_buffer_id;
         let cursor_row = self.cursor.line;
         match self
             .diff_subsystem
-            .compute_put_plan(buffer_id, cursor_row)
+            .compute_put_plan(buffer_id, cursor_row, target)
         {
             crate::diff::subsystem::DiffPutOutcome::Edit {
-                peer_buffer_id,
+                target_buffer_id,
                 edit,
                 post_cursor_row,
             } => {
-                let Some(handle) = self.buffers.document_handle(peer_buffer_id)
+                let Some(handle) = self.buffers.document_handle(target_buffer_id)
                 else {
-                    // Descriptor named a peer that has since
+                    // Descriptor named a target that has since
                     // closed (race with auto-drop). Silent
                     // no-op — the session is on its way out.
                     return;
                 };
                 match block_on(handle.apply_edit(edit)) {
                     Ok(applied) => {
-                        // Fan out a DocumentChanged for the peer
-                        // on the event bus. The peer's diff
-                        // session (sharing the same key) wakes
-                        // its debouncer and recomputes; other
-                        // peer-side subscribers (LSP fan-in,
-                        // syntax reparse) react through their
-                        // existing bus subscriptions.
+                        // Fan out a DocumentChanged for the
+                        // target on the event bus. The
+                        // target's diff session (sharing the
+                        // same key) wakes its debouncer and
+                        // recomputes.
                         let snap = handle.snapshot();
                         let path = snap.path().map(|p| p.to_path_buf());
                         let edit_event = lattice_protocol::event::AppliedEdit {
@@ -13520,9 +13877,9 @@ impl Editor {
                     Err(err) => {
                         tracing::debug!(
                             target: "lattice_host::diff::mode",
-                            ?peer_buffer_id,
+                            ?target_buffer_id,
                             ?err,
-                            "diff-mode `dp` peer apply_edit failed; cursor unchanged"
+                            "diff-mode `dp` target apply_edit failed; cursor unchanged"
                         );
                     }
                 }
@@ -13531,6 +13888,22 @@ impl Editor {
                 self.set_message(
                     EchoLevel::Error,
                     "dp: baseline is not a buffer; use :write",
+                );
+            }
+            crate::diff::subsystem::DiffPutOutcome::TargetRequired {
+                available_targets,
+            } => {
+                let avail = available_targets
+                    .iter()
+                    .map(|b| b.0.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                self.set_message(
+                    EchoLevel::Error,
+                    format!(
+                        "diffput: target required for three-way merge; \
+                         use :diffput <bufnr> (one of: {avail})"
+                    ),
                 );
             }
             crate::diff::subsystem::DiffPutOutcome::Nothing => {}
@@ -22353,6 +22726,10 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::DiffOff { .. }
         | Effect::Diffthis
         | Effect::Diffsplit { .. }
+        | Effect::DiffGetCmd { .. }
+        | Effect::DiffPutCmd { .. }
+        | Effect::DiffAccept
+        | Effect::DiffReject
         | Effect::NextHunk
         | Effect::PrevHunk
         | Effect::ListModes
@@ -22444,6 +22821,10 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::DiffOff { .. }
         | Effect::Diffthis
         | Effect::Diffsplit { .. }
+        | Effect::DiffGetCmd { .. }
+        | Effect::DiffPutCmd { .. }
+        | Effect::DiffAccept
+        | Effect::DiffReject
         | Effect::NextHunk
         | Effect::PrevHunk
         | Effect::ListModes
@@ -23941,6 +24322,302 @@ mod tests {
         );
     }
 
+    // ── D.6.e: do_diff_accept / do_diff_reject ─────────────
+
+    /// `do_diff_accept` with no active session emits the
+    /// same "No active diff session" message as
+    /// `do_diff_off` — mirror behaviour, no panic.
+    #[test]
+    fn do_diff_accept_with_no_session_messages() {
+        let mut editor = Editor::default();
+        editor.do_diff_accept();
+        let msg = editor.last_message.as_ref().expect("message set");
+        assert!(
+            msg.text.contains("No active diff session"),
+            "unexpected message: {}",
+            msg.text
+        );
+    }
+
+    #[test]
+    fn do_diff_reject_with_no_session_messages() {
+        let mut editor = Editor::default();
+        editor.do_diff_reject();
+        let msg = editor.last_message.as_ref().expect("message set");
+        assert!(
+            msg.text.contains("No active diff session"),
+            "unexpected message: {}",
+            msg.text
+        );
+    }
+
+    /// `do_diff_accept` against a two-pane session bound
+    /// to a completion sender: fires `DiffOutcome::Accept`
+    /// on the channel, then tears down. Verifies the
+    /// programmatic-consumer flow (a magit plugin /
+    /// openDiff caller binds a sender and awaits the
+    /// signal).
+    #[tokio::test]
+    async fn do_diff_accept_fires_accept_signal_and_tears_down() {
+        use tokio::sync::oneshot;
+        let mut editor = Editor::default();
+        let (_a, ab, _o, _ob) = vsplit_two_buffers(&mut editor);
+
+        // Stage + complete a two-pane session via
+        // :diffthis x2.
+        editor.pane_tree.set_active(0);
+        editor.do_diffthis();
+        editor.pane_tree.set_active(1);
+        editor.do_diffthis();
+        let primary = editor
+            .diff_subsystem
+            .lookup_session_for(ab)
+            .expect("session exists after :diffthis")
+            .buffer_id();
+
+        // Bind a completion sender post-hoc.
+        let (tx, rx) = oneshot::channel::<crate::diff::subsystem::DiffOutcome>();
+        editor
+            .diff_subsystem
+            .lookup(primary)
+            .expect("session present")
+            .bind_completion(tx);
+
+        // Now accept. Should fire Accept and drop the session.
+        editor.do_diff_accept();
+        assert!(
+            editor.diff_subsystem.is_empty(),
+            "session should be torn down after :diff-accept"
+        );
+
+        // Receiver gets Accept (sync — already sent before
+        // teardown returned, so the recv is immediate).
+        let outcome = rx.await.expect("sender fired before drop");
+        assert_eq!(outcome, crate::diff::subsystem::DiffOutcome::Accept);
+    }
+
+    /// `do_diff_reject` mirrors `do_diff_accept` but fires
+    /// `DiffOutcome::Reject`.
+    #[tokio::test]
+    async fn do_diff_reject_fires_reject_signal_and_tears_down() {
+        use tokio::sync::oneshot;
+        let mut editor = Editor::default();
+        let (_a, ab, _o, _ob) = vsplit_two_buffers(&mut editor);
+        editor.pane_tree.set_active(0);
+        editor.do_diffthis();
+        editor.pane_tree.set_active(1);
+        editor.do_diffthis();
+        let primary = editor
+            .diff_subsystem
+            .lookup_session_for(ab)
+            .expect("session exists")
+            .buffer_id();
+        let (tx, rx) = oneshot::channel::<crate::diff::subsystem::DiffOutcome>();
+        editor
+            .diff_subsystem
+            .lookup(primary)
+            .expect("session present")
+            .bind_completion(tx);
+
+        editor.do_diff_reject();
+        assert!(editor.diff_subsystem.is_empty());
+        let outcome = rx.await.expect("sender fired before drop");
+        assert_eq!(outcome, crate::diff::subsystem::DiffOutcome::Reject);
+    }
+
+    /// Sessions without a bound completion are still
+    /// torn down cleanly by `do_diff_accept` —
+    /// `take_completion()` returns None, the teardown
+    /// proceeds without firing a signal.
+    #[tokio::test]
+    async fn do_diff_accept_without_bound_completion_still_tears_down() {
+        let mut editor = Editor::default();
+        let _ = vsplit_two_buffers(&mut editor);
+        editor.pane_tree.set_active(0);
+        editor.do_diffthis();
+        editor.pane_tree.set_active(1);
+        editor.do_diffthis();
+        assert!(
+            !editor.diff_subsystem.is_empty(),
+            "session exists after :diffthis x2"
+        );
+        editor.do_diff_accept();
+        assert!(
+            editor.diff_subsystem.is_empty(),
+            "session torn down even without a bound completion"
+        );
+    }
+
+    // ── D.6.g: :diffoff! cascade tear-down ─────────────────
+
+    /// `:diffoff!` on a buffer with a single session is
+    /// operationally identical to `:diffoff` (the
+    /// regression guard for the bang's "subset of normal"
+    /// semantics in the common case).
+    #[tokio::test]
+    async fn do_diff_off_bang_with_single_session_matches_unbang() {
+        let mut editor = Editor::default();
+        let _ = vsplit_two_buffers(&mut editor);
+        editor.pane_tree.set_active(0);
+        editor.do_diffthis();
+        editor.pane_tree.set_active(1);
+        editor.do_diffthis();
+        assert!(!editor.diff_subsystem.is_empty());
+        // Force-bang on a single-session buffer.
+        editor.do_diff_off(true);
+        assert!(
+            editor.diff_subsystem.is_empty(),
+            "single-session :diffoff! tears down the session"
+        );
+        // Message: when force=true and count == 1, the
+        // simple "Diff closed" form fires (no "(N sessions)"
+        // suffix).
+        let msg = editor.last_message.as_ref().expect("message set");
+        assert_eq!(msg.text, "Diff closed");
+    }
+
+    /// **The key D.6.g case.** A shared buffer in two
+    /// simultaneous sessions: plain `:diffoff` only closes
+    /// one (the one secondary-index resolves to);
+    /// `:diffoff!` cascades and closes both.
+    #[tokio::test]
+    async fn do_diff_off_bang_cascades_across_multiple_sessions() {
+        use std::sync::Arc;
+        let mut editor = Editor::default();
+
+        // Set up three panes / three distinct buffer ids
+        // so we can register two sessions that share a
+        // common participant. Bypass the BufferRegistry
+        // path — we directly invoke
+        // `register_with_sources` because the test only
+        // needs the subsystem-level wiring, not full UI
+        // (pane groups / filler providers) lit up.
+        use lattice_core::ui::pane::SplitOrientation;
+        editor.pane_tree.split_active(SplitOrientation::Vertical);
+        editor.pane_tree.split_active(SplitOrientation::Vertical);
+        editor.pane_tree.leaves_mut()[1].buffer_id = lattice_core::BufferId(101);
+        editor.pane_tree.leaves_mut()[2].buffer_id = lattice_core::BufferId(102);
+        let shared = editor.pane_tree.leaves()[0].buffer_id;
+
+        // Register two sessions through the shared buffer.
+        let provider: Arc<dyn crate::diff::subsystem::BufferTextProvider> =
+            Arc::new(
+                crate::diff::subsystem::BufferRegistryTextProvider::new(
+                    editor.buffers.clone(),
+                ),
+            );
+        let desc_a = crate::diff::subsystem::DiffDescriptor {
+            baseline: Arc::new(crate::diff::subsystem::BufferBaseline::new(
+                Arc::clone(&provider),
+                shared,
+            )),
+            current: Arc::new(crate::diff::subsystem::BufferCurrentSource::new(
+                Arc::clone(&provider),
+                lattice_core::BufferId(101),
+            )),
+            remote: None,
+            watch: vec![shared, lattice_core::BufferId(101)],
+            participants: vec![shared, lattice_core::BufferId(101)],
+        };
+        let desc_b = crate::diff::subsystem::DiffDescriptor {
+            baseline: Arc::new(crate::diff::subsystem::BufferBaseline::new(
+                Arc::clone(&provider),
+                shared,
+            )),
+            current: Arc::new(crate::diff::subsystem::BufferCurrentSource::new(
+                Arc::clone(&provider),
+                lattice_core::BufferId(102),
+            )),
+            remote: None,
+            watch: vec![shared, lattice_core::BufferId(102)],
+            participants: vec![shared, lattice_core::BufferId(102)],
+        };
+        editor.diff_subsystem.register_with_sources(
+            lattice_core::BufferId(101),
+            lattice_diff::DiffAlgorithm::Histogram,
+            desc_a,
+        );
+        editor.diff_subsystem.register_with_sources(
+            lattice_core::BufferId(102),
+            lattice_diff::DiffAlgorithm::Histogram,
+            desc_b,
+        );
+        assert_eq!(editor.diff_subsystem.len(), 2);
+
+        // Cursor lives on the shared pane (pane 0). bang
+        // cascades to both sessions.
+        editor.pane_tree.set_active(0);
+        editor.document_buffer_id = shared;
+        editor.do_diff_off(true);
+
+        assert!(
+            editor.diff_subsystem.is_empty(),
+            ":diffoff! must close every session the buffer participates in"
+        );
+        // Message names the count so the user knows the
+        // bang actually did extra work.
+        let msg = editor.last_message.as_ref().expect("message set");
+        assert!(
+            msg.text.contains("2 sessions"),
+            "unexpected message: {}",
+            msg.text
+        );
+    }
+
+    /// Without the bang, only the secondary-index-resolved
+    /// session is closed; the other survives.
+    #[tokio::test]
+    async fn do_diff_off_unbang_on_shared_buffer_closes_only_one_session() {
+        use std::sync::Arc;
+        let mut editor = Editor::default();
+        use lattice_core::ui::pane::SplitOrientation;
+        editor.pane_tree.split_active(SplitOrientation::Vertical);
+        editor.pane_tree.split_active(SplitOrientation::Vertical);
+        editor.pane_tree.leaves_mut()[1].buffer_id = lattice_core::BufferId(201);
+        editor.pane_tree.leaves_mut()[2].buffer_id = lattice_core::BufferId(202);
+        let shared = editor.pane_tree.leaves()[0].buffer_id;
+        let provider: Arc<dyn crate::diff::subsystem::BufferTextProvider> =
+            Arc::new(
+                crate::diff::subsystem::BufferRegistryTextProvider::new(
+                    editor.buffers.clone(),
+                ),
+            );
+        let mk = |peer: lattice_core::BufferId| crate::diff::subsystem::DiffDescriptor {
+            baseline: Arc::new(crate::diff::subsystem::BufferBaseline::new(
+                Arc::clone(&provider),
+                shared,
+            )),
+            current: Arc::new(crate::diff::subsystem::BufferCurrentSource::new(
+                Arc::clone(&provider),
+                peer,
+            )),
+            remote: None,
+            watch: vec![shared, peer],
+            participants: vec![shared, peer],
+        };
+        editor.diff_subsystem.register_with_sources(
+            lattice_core::BufferId(201),
+            lattice_diff::DiffAlgorithm::Histogram,
+            mk(lattice_core::BufferId(201)),
+        );
+        editor.diff_subsystem.register_with_sources(
+            lattice_core::BufferId(202),
+            lattice_diff::DiffAlgorithm::Histogram,
+            mk(lattice_core::BufferId(202)),
+        );
+        assert_eq!(editor.diff_subsystem.len(), 2);
+
+        editor.pane_tree.set_active(0);
+        editor.document_buffer_id = shared;
+        editor.do_diff_off(false);
+        // Exactly one session closed; the other survives.
+        assert_eq!(
+            editor.diff_subsystem.len(),
+            1,
+            ":diffoff (no bang) closes only the session secondary_index resolves to"
+        );
+    }
+
     // ── D.3.c: ]c / [c hunk navigation ─────────────────────
 
     #[test]
@@ -24073,6 +24750,7 @@ mod tests {
             baseline: Arc::new(StaticBaseline::new(Rope::from(baseline_text))),
             current: Arc::new(BufferCurrentSource::new(provider, bid)),
             watch: vec![bid],
+            remote: None,
             participants: vec![bid],
         };
         editor.diff_subsystem.register_with_sources(
@@ -24112,7 +24790,7 @@ mod tests {
 
         // Park cursor in the middle of the hunk.
         editor.cursor = lattice_protocol::position::Position::new(1, 0);
-        editor.do_diff_get();
+        editor.do_diff_get(None);
 
         // Buffer now matches the baseline.
         let snapshot = editor.document.snapshot();
@@ -24136,7 +24814,7 @@ mod tests {
         let snapshot_before =
             editor.document.snapshot().buffer.to_rope().to_string();
 
-        editor.do_diff_get();
+        editor.do_diff_get(None);
 
         let snapshot_after =
             editor.document.snapshot().buffer.to_rope().to_string();
@@ -24166,7 +24844,7 @@ mod tests {
         let document = lattice_core::Document::empty();
         let mut editor = crate::editor::Editor::boot(document);
         let baseline_buffer = editor.document_buffer_id;
-        editor.do_diffsplit(file.0.clone());
+        editor.do_diffsplit(file.0.clone(), None);
         let current_buffer = editor.pane_tree.active().buffer_id;
         assert_ne!(current_buffer, baseline_buffer);
 
@@ -24194,7 +24872,7 @@ mod tests {
         }));
 
         editor.cursor = lattice_protocol::position::Position::new(0, 0);
-        editor.do_diff_put();
+        editor.do_diff_put(None);
 
         // Peer (baseline) buffer now holds the current
         // side's content.
@@ -24245,6 +24923,7 @@ mod tests {
             baseline: std::sync::Arc::new(StaticBaseline::new(Rope::from("base-a\n"))),
             current: std::sync::Arc::new(BufferCurrentSource::new(provider, bid)),
             watch: vec![bid],
+            remote: None,
             participants: vec![bid],
         };
         let session = editor.diff_subsystem.register_with_sources(
@@ -24265,7 +24944,7 @@ mod tests {
         editor.cursor = lattice_protocol::position::Position::new(0, 0);
         let text_before =
             editor.document.snapshot().buffer.to_rope().to_string();
-        editor.do_diff_put();
+        editor.do_diff_put(None);
 
         // Error message surfaced, no document mutation.
         let msg = editor.last_message.as_ref().expect("error message set");
@@ -24310,7 +24989,7 @@ mod tests {
         editor.cursor = lattice_protocol::position::Position::new(2, 0);
         let snapshot_before =
             editor.document.snapshot().buffer.to_rope().to_string();
-        editor.do_diff_get();
+        editor.do_diff_get(None);
         let snapshot_after =
             editor.document.snapshot().buffer.to_rope().to_string();
         assert_eq!(snapshot_before, snapshot_after);
@@ -25044,6 +25723,7 @@ mod tests {
                 primary,
             )),
             watch: vec![primary],
+            remote: None,
             participants: vec![primary],
         };
         editor.diff_subsystem.register_with_sources(
@@ -25165,6 +25845,7 @@ mod tests {
                         current,
                     ),
                 ),
+                remote: None,
                 watch: vec![baseline, current],
                 participants: vec![baseline, current],
             }
@@ -25228,6 +25909,7 @@ mod tests {
                         current,
                     ),
                 ),
+                remote: None,
                 watch: vec![baseline, current],
                 participants: vec![baseline, current],
             }
@@ -25322,6 +26004,7 @@ mod tests {
                 primary,
             )),
             watch: vec![primary, secondary],
+            remote: None,
             participants: vec![primary, secondary],
         };
         sub.register_with_sources(primary, lattice_diff::DiffAlgorithm::Histogram, descriptor);
@@ -25438,7 +26121,7 @@ mod tests {
             lattice_core::BufferKind::FileTree;
         let pane_count_before = editor.pane_tree.leaves().len();
 
-        editor.do_diffsplit(std::path::PathBuf::from("/dev/null"));
+        editor.do_diffsplit(std::path::PathBuf::from("/dev/null"), None);
 
         let msg = editor.last_message.as_ref().expect("error msg");
         assert!(
@@ -25465,7 +26148,7 @@ mod tests {
             .register(active_buffer, lattice_diff::DiffAlgorithm::Histogram);
         let pane_count_before = editor.pane_tree.leaves().len();
 
-        editor.do_diffsplit(std::path::PathBuf::from("/dev/null"));
+        editor.do_diffsplit(std::path::PathBuf::from("/dev/null"), None);
 
         let msg = editor.last_message.as_ref().expect("error msg");
         assert!(
@@ -25499,7 +26182,7 @@ mod tests {
         let mut editor = crate::editor::Editor::boot(document);
         let baseline_buffer = editor.document_buffer_id;
 
-        editor.do_diffsplit(file.0.clone());
+        editor.do_diffsplit(file.0.clone(), None);
 
         // Two panes now: baseline + the newly-loaded file.
         assert_eq!(
@@ -25555,7 +26238,7 @@ mod tests {
         // guaranteed not to exist (which is racy across CI
         // environments).
         let bogus = std::env::temp_dir();
-        editor.do_diffsplit(bogus);
+        editor.do_diffsplit(bogus, None);
 
         assert_eq!(
             editor.pane_tree.leaves().len(),
@@ -25569,6 +26252,221 @@ mod tests {
         assert!(
             editor.pane_groups.is_empty(),
             "no pane group should be registered on the failure path"
+        );
+    }
+
+    // ──────────────────────────────────────────────────────
+    // D.6.c (2026-05-31): :diffsplit base remote (3-way)
+    // ──────────────────────────────────────────────────────
+    //
+    // Chained `:diffthis` N-way + the arity-agnostic
+    // descriptor refactor are out of scope for D.6.c; that
+    // lands in D.8 (see implementation ledger).
+
+    /// `:diffsplit base remote` (two args) loads both files
+    /// in new vsplits and registers a three-way merge
+    /// session.
+    #[tokio::test]
+    async fn diffsplit_two_args_opens_three_way_session() {
+        let base_file = write_temp("base-a\nbase-b\nbase-c\n", "d6c-base");
+        let remote_file = write_temp("base-a\nREMOTE-b\nbase-c\n", "d6c-remote");
+        let document = lattice_core::Document::empty();
+        let mut editor = crate::editor::Editor::boot(document);
+        let local_buffer = editor.document_buffer_id;
+        let pane_count_before = editor.pane_tree.leaves().len();
+
+        editor.do_diffsplit(base_file.0.clone(), Some(remote_file.0.clone()));
+
+        // Two new vsplits opened.
+        assert_eq!(
+            editor.pane_tree.leaves().len(),
+            pane_count_before + 2,
+            "three-way diffsplit must open two new panes"
+        );
+        // Session registered under the local (original)
+        // buffer.
+        let session = editor
+            .diff_subsystem
+            .lookup(local_buffer)
+            .expect("three-way session keyed under local buffer");
+        let descriptor = editor
+            .diff_subsystem
+            .lookup_descriptor(local_buffer)
+            .expect("descriptor present");
+        assert!(descriptor.is_three_way());
+        assert_eq!(descriptor.participants.len(), 3);
+        assert_eq!(descriptor.participants[1], local_buffer);
+        // Pane group with three members.
+        let pg_id = session.pane_group_id().expect("pane group bound");
+        let pg = editor
+            .pane_groups
+            .iter()
+            .find(|g| g.id == pg_id)
+            .expect("pane group present");
+        assert_eq!(pg.members.len(), 3);
+        // Filler provider on every participant buffer.
+        for b in &descriptor.participants {
+            assert_eq!(
+                editor.virtual_row_providers.snapshot(*b).len(),
+                1,
+                "filler registered on buffer {b:?}"
+            );
+        }
+    }
+
+    /// `:diffsplit base remote` rolls back both new vsplits
+    /// when the second path (`remote`) fails to open. The
+    /// user lands back on the original pane, no session
+    /// or pane group leaks.
+    #[tokio::test]
+    async fn diffsplit_three_way_rolls_back_when_remote_open_fails() {
+        let base_file = write_temp("base-a\n", "d6c-rollback-base");
+        let document = lattice_core::Document::empty();
+        let mut editor = crate::editor::Editor::boot(document);
+        let pane_count_before = editor.pane_tree.leaves().len();
+
+        // Remote path = a directory ⇒ `do_edit` returns
+        // `Directory(_)` ⇒ the second `open_into_new_split`
+        // call closes that pane; then our handler closes
+        // the base pane too.
+        let bogus_remote = std::env::temp_dir();
+        editor.do_diffsplit(base_file.0.clone(), Some(bogus_remote));
+
+        assert_eq!(
+            editor.pane_tree.leaves().len(),
+            pane_count_before,
+            "both new vsplits must be rolled back on remote open failure"
+        );
+        assert!(editor.diff_subsystem.is_empty());
+        assert!(editor.pane_groups.is_empty());
+    }
+
+    // ──────────────────────────────────────────────────────
+    // D.6.h (2026-05-31): slice-plan canonical integration
+    // test — `:diffput <bufnr>` resolves a three-way Conflict
+    // by pushing the active side's content into the named
+    // target. Full chain: `:diffsplit base remote` →
+    // manually publish a Conflict hunk → `:diffput
+    // <remote-bufnr>` → verify the remote buffer's
+    // content was mutated to match local's.
+    // ──────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn three_way_diffput_resolves_conflict_by_pushing_active_into_target() {
+        use lattice_diff::{Hunk, HunkIndex, HunkKind, LineRange};
+        use smallvec::smallvec;
+
+        // Set up three on-disk files. The user-visible
+        // pane sequence after :diffsplit base remote will
+        // be: [local (current pane), base (new pane 1),
+        // remote (new pane 2)]. Diverging content per
+        // side ensures a Conflict region.
+        let base_file = write_temp("aaa\nbbb\nccc\n", "d6h-base");
+        let remote_file = write_temp("aaa\nREMOTE-bbb\nccc\n", "d6h-remote");
+
+        // Local document carries "LOCAL-bbb" on the same
+        // row remote mutated → both modified row 1
+        // differently → Conflict.
+        let document = lattice_core::Document::from_text("aaa\nLOCAL-bbb\nccc\n");
+        let mut editor = crate::editor::Editor::boot(document);
+        let local_buffer = editor.document_buffer_id;
+
+        editor.do_diffsplit(base_file.0.clone(), Some(remote_file.0.clone()));
+
+        // After :diffsplit, the new panes have been opened.
+        // The session is keyed under the local buffer.
+        let descriptor = editor
+            .diff_subsystem
+            .lookup_descriptor(local_buffer)
+            .expect("descriptor present after :diffsplit base remote");
+        assert!(descriptor.is_three_way());
+        assert_eq!(descriptor.participants.len(), 3);
+        assert_eq!(descriptor.participants[1], local_buffer, "local slot");
+        let base_buffer = descriptor.participants[0];
+        let remote_buffer = descriptor.participants[2];
+
+        // Drain :diffsplit's auto-recompute so the manual
+        // publish below is the published version when
+        // `do_diff_put` reads `current_hunks()`.
+        tokio::task::yield_now().await;
+        tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+
+        // Manually publish a Conflict hunk on row 1 of
+        // each side. (We can't easily depend on the real
+        // engine producing exactly the shape we want
+        // synchronously here — manual publish keeps the
+        // test deterministic and isolated to the
+        // dispatch path.)
+        let session = editor
+            .diff_subsystem
+            .lookup(local_buffer)
+            .expect("three-way session present");
+        let rev = session.allocate_revision();
+        session.publish(std::sync::Arc::new(HunkIndex {
+            hunks: vec![Hunk {
+                kind: HunkKind::Conflict,
+                // [base, local, remote] — all touch row 1.
+                ranges: smallvec![
+                    LineRange::new(1, 2), // base: "bbb"
+                    LineRange::new(1, 2), // local: "LOCAL-bbb"
+                    LineRange::new(1, 2), // remote: "REMOTE-bbb"
+                ],
+            }],
+            algorithm: lattice_diff::DiffAlgorithm::Histogram,
+            revision: rev,
+        }));
+
+        // Make the local pane active. After :diffsplit
+        // the cursor was parked in the first new (base)
+        // pane per vim parity — we need to switch back
+        // to the local pane for `:diffput` to read the
+        // right `document_buffer_id`.
+        let local_pane_idx = editor
+            .pane_tree
+            .leaves()
+            .iter()
+            .position(|l| l.buffer_id == local_buffer)
+            .expect("local pane still in tree");
+        editor.pane_tree.set_active(local_pane_idx);
+        editor.document_buffer_id = local_buffer;
+        editor.cursor = lattice_protocol::position::Position::new(1, 0);
+
+        // The canonical case: `:diffput <remote-bufnr>`
+        // pushes local's content into remote's range.
+        editor.do_diff_put(Some(remote_buffer));
+
+        // Remote buffer's row 1 should now contain
+        // local's "LOCAL-bbb" (replacing "REMOTE-bbb").
+        let remote_handle = editor
+            .buffers
+            .document_handle(remote_buffer)
+            .expect("remote handle present");
+        let remote_text = remote_handle.snapshot().buffer.to_rope().to_string();
+        assert_eq!(
+            remote_text, "aaa\nLOCAL-bbb\nccc\n",
+            "`:diffput {}` (remote bufnr) must push local's content into remote's range",
+            remote_buffer.0
+        );
+
+        // Local + base unmodified — only the target was
+        // mutated.
+        let local_handle = editor
+            .buffers
+            .document_handle(local_buffer)
+            .expect("local handle present");
+        assert_eq!(
+            local_handle.snapshot().buffer.to_rope().to_string(),
+            "aaa\nLOCAL-bbb\nccc\n",
+            "local buffer must remain unmutated by :diffput"
+        );
+        let base_handle = editor
+            .buffers
+            .document_handle(base_buffer)
+            .expect("base handle present");
+        assert_eq!(
+            base_handle.snapshot().buffer.to_rope().to_string(),
+            "aaa\nbbb\nccc\n",
+            "base buffer must remain unmutated by :diffput"
         );
     }
 }

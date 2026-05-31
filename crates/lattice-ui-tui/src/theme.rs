@@ -134,6 +134,9 @@ pub struct Theme {
     /// side (deletion blocks surface removes), but the entry
     /// is reserved for future renderers.
     pub diff_remove_sign_style: Style,
+    /// D.6.f (2026-05-31): glyph colour for the `?` sign in
+    /// the diff gutter — three-way Conflict hunks.
+    pub diff_conflict_sign_style: Style,
     /// Background tint applied to lines added in the current
     /// side (D.3.e).
     pub diff_add_line_bg: Color,
@@ -144,8 +147,10 @@ pub struct Theme {
     /// (D.3.b.1 / D.3.b.2). Sits behind the baseline-text cells
     /// in the deletion block.
     pub diff_deletion_block_bg: Color,
-    /// Background tint reserved for three-way conflict regions
-    /// (D.6). Unused in v1.
+    /// D.6.f (2026-05-31): background tint for three-way
+    /// conflict regions. Visually distinct from
+    /// Add/Change/Remove tints so users spot conflicts at a
+    /// glance even when the gutter glyph is off-screen.
     pub diff_conflict_line_bg: Color,
 }
 
@@ -197,6 +202,9 @@ impl Default for Theme {
             diff_add_sign_style: Style::new().fg(Color::Green).add_modifier(Modifier::BOLD),
             diff_change_sign_style: Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
             diff_remove_sign_style: Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
+            diff_conflict_sign_style: Style::new()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
             diff_add_line_bg: Color::Rgb(0, 50, 0),
             diff_change_line_bg: Color::Rgb(50, 50, 0),
             diff_deletion_block_bg: Color::Rgb(60, 0, 0),
@@ -343,6 +351,7 @@ impl From<&host_theme::Theme> for Theme {
             diff_add_sign_style: host_style_to_ratatui(h.diff_add_sign_style),
             diff_change_sign_style: host_style_to_ratatui(h.diff_change_sign_style),
             diff_remove_sign_style: host_style_to_ratatui(h.diff_remove_sign_style),
+            diff_conflict_sign_style: host_style_to_ratatui(h.diff_conflict_sign_style),
             diff_add_line_bg: host_color_to_ratatui(h.diff_add_line_bg),
             diff_change_line_bg: host_color_to_ratatui(h.diff_change_line_bg),
             diff_deletion_block_bg: host_color_to_ratatui(h.diff_deletion_block_bg),

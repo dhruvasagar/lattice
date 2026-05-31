@@ -235,6 +235,12 @@ pub trait BufferTextProvider: Send + Sync + 'static + Debug {
 pub struct DiffDescriptor {
     pub baseline: Arc<dyn BaselineSource>,
     pub current:  Arc<dyn CurrentSource>,
+    /// `None` ⇒ two-way; `Some` ⇒ three-way merge (D.6.a).
+    /// In three-way, `baseline` is the common ancestor (base),
+    /// `current` is "local", and `remote` is the third side.
+    /// The recompute body dispatches on this field:
+    /// `None → compute_two_way`, `Some → compute_three_way`.
+    pub remote:   Option<Arc<dyn CurrentSource>>,
     /// Buffers whose edits should trigger a recompute of this
     /// session. The descriptor's author declares this
     /// explicitly because only the author knows which sources
@@ -636,7 +642,7 @@ code path — the edit invalidates and recomputes uniformly.
 | `:diff <buf>` | Open side-by-side diff of current buffer vs `<buf>` |
 | `:diffthis` | Mark current buffer as participating; combine with peer buffers via additional `:diffthis` calls |
 | `:diffoff` | Drop diff state on current buffer |
-| `:diffsplit <file>` | Split-load `<file>` and run `:diff` against it |
+| `:diffsplit <file>` | Split-load `<file>` and run `:diff` against it. D.6.c: optional 2nd arg ⇒ `:diffsplit <base> <remote>` opens a three-way merge with the current pane as local. |
 | `:diffput [bufnr]` | Push hunk under cursor; `bufnr` mandatory in three-way |
 | `:diffget [bufnr]` | Pull hunk under cursor |
 | `:diff-mode <inline\|split\|three-way>` | Switch presentation mode on the active diff session |
@@ -870,6 +876,20 @@ exposes per-buffer language overrides.
   reopens; (c) session retains the document's last rope as
   a baseline and continues. Lean (a) — explicit, no surprise
   state. Decide before D.2.
+- **Arity-agnostic descriptor + dynamic membership
+  (D.8).** v1's `DiffDescriptor` has explicit
+  `baseline + current + remote` slots — fixed-arity
+  ergonomic for 2-way (D.4) and 3-way merge (D.6). D.8
+  collapses to `sources: Vec<Arc<dyn
+  DiffParticipantSource>>` so the descriptor / subsystem
+  don't know arity (the session/group is the source of
+  truth) and `:diffthis` can grow to vim-style per-buffer
+  `:set diff` membership semantics with any N. Engine
+  surface generalises to `compute_diff(&[Rope],
+  algorithm) -> HunkIndex` — internally dispatches to
+  `compute_two_way` / `compute_three_way` for N=2/3, returns
+  a typed error for N≥4 in v1. The arity cap lives in the
+  engine, not in the descriptor API.
 
 ## 9. Slice plan
 

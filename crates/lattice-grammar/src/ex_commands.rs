@@ -81,6 +81,18 @@ pub struct ExBuiltins {
     /// `<file>` in a new vsplit and register a two-pane diff
     /// between the current pane and the new pane.
     pub diff_split: ExCommandId,
+    /// D.6.d (2026-05-31): `:diffget [<bufnr>]` — pull the
+    /// hunk under the cursor from another buffer's side.
+    pub diff_get_cmd: ExCommandId,
+    /// D.6.d (2026-05-31): `:diffput [<bufnr>]` — push the
+    /// hunk under the cursor into another buffer's side.
+    pub diff_put_cmd: ExCommandId,
+    /// D.6.e (2026-05-31): `:diff-accept` — resolve the
+    /// active session with `DiffOutcome::Accept`.
+    pub diff_accept: ExCommandId,
+    /// D.6.e (2026-05-31): `:diff-reject` — resolve the
+    /// active session with `DiffOutcome::Reject`.
+    pub diff_reject: ExCommandId,
     /// D.3.c (2026-05-29): `:hunk-next` / `]c` — jump to next
     /// diff hunk on the current side.
     pub hunk_next: ExCommandId,
@@ -927,25 +939,141 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
     );
     let diff_split = registry.register_ex_command(
         "ex:diffsplit",
-        "Open `<file>` in a new vertical split and register a \
-         two-pane diff between the current pane and the new \
-         pane (`:diffsplit <file>`). Composes a vsplit with \
-         `:edit <file>` in the new pane plus the same two-pane \
-         setup `:diffthis` performs. Path is required. D.4.d.3.b.",
+        "Open `<base>` (and optionally `<remote>`) in new \
+         vertical splits and register a diff session. One arg \
+         ⇒ two-way diff: current pane vs the new pane loading \
+         `<base>` (`:diffsplit <base>`, D.4.d.3.b). Two args ⇒ \
+         three-way merge: current pane (local) vs two new \
+         panes loading `<base>` (common ancestor) and \
+         `<remote>` (other side) (`:diffsplit <base> <remote>`, \
+         D.6.c). Composes a vsplit + `:edit` in each new pane \
+         plus the appropriate `register_two_pane_diff` / \
+         `register_three_pane_diff` helper. First path is \
+         required; cursor lands in the first new pane.",
         ExCommandSpec {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
             parse_args: Box::new(parse_required_path),
             apply: Box::new(apply_diffsplit),
+            args_schema: vec![
+                ArgSpec {
+                    name: "base",
+                    kind: ArgKind::String,
+                    doc: "File path. In two-way (single arg) this \
+                          is the baseline; in three-way this is \
+                          the common ancestor (base).",
+                    prompt: "base path:",
+                    default: ArgDefault::Required,
+                    completion: Some("gen:files"),
+                },
+                ArgSpec {
+                    name: "remote",
+                    kind: ArgKind::String,
+                    doc: "Optional second file path. When present, \
+                          opens a three-way merge with the current \
+                          pane as local, `base` as the common \
+                          ancestor, and this file as the other \
+                          side. D.6.c.",
+                    prompt: "remote path:",
+                    default: ArgDefault::None,
+                    completion: Some("gen:files"),
+                },
+            ],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let diff_get_cmd = registry.register_ex_command(
+        "ex:diffget",
+        "Pull the hunk under the cursor from another buffer's \
+         side into the active buffer (`:diffget [<bufnr>]`). \
+         No arg: in a two-pane diff, defaults to the peer side \
+         (chord-equivalent); in three-way merge, errors with \
+         \"target required\". `<bufnr>` selects which side to \
+         pull from — required for three-way, optional for \
+         two-way. Allows resolving three-way Conflict hunks by \
+         explicit pick. D.6.d.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_optional_bufnr),
+            apply: Box::new(apply_diffget),
             args_schema: vec![ArgSpec {
-                name: "path",
+                name: "bufnr",
                 kind: ArgKind::String,
-                doc: "File path to load into the new split pane.",
-                prompt: "path:",
-                default: ArgDefault::Required,
-                completion: Some("gen:files"),
+                doc: "Optional buffer number to pull from. \
+                      Required in three-way merge to disambiguate \
+                      which side wins.",
+                prompt: "bufnr:",
+                default: ArgDefault::None,
+                completion: None,
             }],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let diff_put_cmd = registry.register_ex_command(
+        "ex:diffput",
+        "Push the hunk under the cursor from the active buffer \
+         into another buffer's side (`:diffput [<bufnr>]`). No \
+         arg: in a two-pane diff, defaults to the peer side; in \
+         three-way merge, errors with \"target required\". \
+         `<bufnr>` selects the destination side — required for \
+         three-way, optional for two-way. Allows resolving \
+         three-way Conflict hunks by explicit pick. D.6.d.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_optional_bufnr),
+            apply: Box::new(apply_diffput),
+            args_schema: vec![ArgSpec {
+                name: "bufnr",
+                kind: ArgKind::String,
+                doc: "Optional buffer number to push to. \
+                      Required in three-way merge to disambiguate \
+                      which side receives the edit.",
+                prompt: "bufnr:",
+                default: ArgDefault::None,
+                completion: None,
+            }],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let diff_accept = registry.register_ex_command(
+        "ex:diff-accept",
+        "Resolve the active pane's diff session with \
+         `DiffOutcome::Accept`. Tears down the session \
+         (`:diffoff`-equivalent) and fires the Accept \
+         signal on any bound completion channel. The \
+         buffer's current content is the accepted \
+         resolution — plugins consuming the outcome commit \
+         from there. D.6.e.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::DiffAccept)),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let diff_reject = registry.register_ex_command(
+        "ex:diff-reject",
+        "Resolve the active pane's diff session with \
+         `DiffOutcome::Reject`. Tears down the session \
+         (`:diffoff!`-equivalent) and fires the Reject \
+         signal on any bound completion channel. Plugins \
+         consuming the outcome should revert any \
+         pre-session state. D.6.e.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::DiffReject)),
+            args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
     );
@@ -1814,6 +1942,10 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         diff_off,
         diff_this,
         diff_split,
+        diff_get_cmd,
+        diff_put_cmd,
+        diff_accept,
+        diff_reject,
         hunk_next,
         hunk_prev,
         list_modes,
@@ -1879,33 +2011,119 @@ fn parse_optional_path(rest: &str, _bang: bool) -> GrammarResult<Args> {
     }
 }
 
-/// D.4.d.3.b: required-path parser for `:diffsplit <file>`.
-/// Empty argument errors at parse time so the user gets a
-/// clear `expected path` message instead of falling into
-/// the apply path with a confusing `Args::None`.
+/// D.4.d.3.b / D.6.c: 1-or-2-path parser for
+/// `:diffsplit <file> [<remote>]`. Joins the two paths
+/// with a `\x1f` (unit separator) inside `Args::String` so
+/// the apply callback can split them back out — `Args` has
+/// no `Vec<String>` variant in v1 and adding one for a
+/// single 2-arg ex-command is more surface than it's
+/// worth. Whitespace splits the two args; the second is
+/// optional. Empty first arg errors at parse time.
+///
+/// Vim's `:diffsplit` is single-arg only — the optional
+/// second arg is a Lattice extension for three-way merge
+/// (D.6.c). The split-by-whitespace shape matches vim's
+/// `vimdiff a b c` argv conventions.
 fn parse_required_path(rest: &str, _bang: bool) -> GrammarResult<Args> {
     let trimmed = rest.trim();
     if trimmed.is_empty() {
-        Err(CommandError::BadArgs(
-            "expected file path (`:diffsplit <file>`)".into(),
-        ))
-    } else {
-        Ok(Args::String(trimmed.to_string()))
+        return Err(CommandError::BadArgs(
+            "expected file path (`:diffsplit <base> [<remote>]`)".into(),
+        ));
     }
+    let mut parts = trimmed.split_whitespace();
+    let base = parts.next().expect("non-empty after trim");
+    let remote = parts.next();
+    if parts.next().is_some() {
+        return Err(CommandError::BadArgs(
+            ":diffsplit takes at most two paths (\
+             `:diffsplit <base> [<remote>]`)"
+                .into(),
+        ));
+    }
+    let encoded = match remote {
+        Some(r) => format!("{base}\x1f{r}"),
+        None => base.to_string(),
+    };
+    Ok(Args::String(encoded))
 }
 
-/// D.4.d.3.b: apply callback for `:diffsplit <file>` —
-/// pulls the path out of the parser's `Args::String`.
-fn apply_diffsplit(ctx: &ExCommandContext) -> GrammarResult<Effect> {
-    let path = match &ctx.args {
-        Args::String(s) => std::path::PathBuf::from(s),
+/// D.6.d (2026-05-31): optional `<bufnr>` parser for
+/// `:diffput [<bufnr>]` / `:diffget [<bufnr>]`. Empty arg
+/// ⇒ `Args::None` (chord-equivalent semantics); non-empty
+/// ⇒ `Args::String(bufnr)` after validating it's a
+/// non-negative u32.
+fn parse_optional_bufnr(rest: &str, _bang: bool) -> GrammarResult<Args> {
+    let trimmed = rest.trim();
+    if trimmed.is_empty() {
+        return Ok(Args::None);
+    }
+    trimmed.parse::<u32>().map_err(|e| {
+        CommandError::BadArgs(format!(
+            "bufnr must be a non-negative integer: {e}"
+        ))
+    })?;
+    Ok(Args::String(trimmed.to_string()))
+}
+
+/// D.6.d apply callback for `:diffget [<bufnr>]`. `None`
+/// arg → `target = None` (chord semantics: peer in 2-way,
+/// "required" error in 3-way). `Some(bufnr)` →
+/// `target = Some(bufnr as u32)`.
+fn apply_diffget(ctx: &ExCommandContext) -> GrammarResult<Effect> {
+    let target = match &ctx.args {
+        Args::None => None,
+        Args::String(s) => Some(s.parse::<u32>().map_err(|e| {
+            CommandError::BadArgs(format!("bufnr: {e}"))
+        })?),
         _ => {
             return Err(CommandError::BadArgs(
-                "expected file path (`:diffsplit <file>`)".into(),
+                "expected optional bufnr (`:diffget [<bufnr>]`)".into(),
             ));
         }
     };
-    Ok(Effect::Diffsplit { path })
+    Ok(Effect::DiffGetCmd { target })
+}
+
+/// D.6.d apply callback for `:diffput [<bufnr>]`. Mirror
+/// of [`apply_diffget`] for the put direction.
+fn apply_diffput(ctx: &ExCommandContext) -> GrammarResult<Effect> {
+    let target = match &ctx.args {
+        Args::None => None,
+        Args::String(s) => Some(s.parse::<u32>().map_err(|e| {
+            CommandError::BadArgs(format!("bufnr: {e}"))
+        })?),
+        _ => {
+            return Err(CommandError::BadArgs(
+                "expected optional bufnr (`:diffput [<bufnr>]`)".into(),
+            ));
+        }
+    };
+    Ok(Effect::DiffPutCmd { target })
+}
+
+/// D.4.d.3.b / D.6.c: apply callback for `:diffsplit`.
+/// Decodes the parser's `\x1f`-joined paths (when present)
+/// and emits `Effect::Diffsplit { path, remote }`. Single
+/// path ⇒ `remote = None` (two-way). Two paths ⇒
+/// `remote = Some` (three-way merge).
+fn apply_diffsplit(ctx: &ExCommandContext) -> GrammarResult<Effect> {
+    let encoded = match &ctx.args {
+        Args::String(s) => s,
+        _ => {
+            return Err(CommandError::BadArgs(
+                "expected file path (`:diffsplit <base> [<remote>]`)".into(),
+            ));
+        }
+    };
+    let (path, remote) = match encoded.split_once('\x1f') {
+        Some((base, rem)) => (
+            std::path::PathBuf::from(base),
+            Some(std::path::PathBuf::from(rem)),
+        ),
+        None => (std::path::PathBuf::from(encoded), None),
+    };
+    Ok(Effect::Diffsplit { path, remote })
 }
 
 /// `:tabmove [N]` parser (issue #29 slice 3). Optional

@@ -1213,6 +1213,8 @@ impl EditorView {
                             DiffSignKind::Add => host_theme.diff_add_sign_style,
                             DiffSignKind::Change => host_theme.diff_change_sign_style,
                             DiffSignKind::Remove => host_theme.diff_remove_sign_style,
+                            // D.6.f (2026-05-31): three-way Conflict.
+                            DiffSignKind::Conflict => host_theme.diff_conflict_sign_style,
                         };
                         let fg = style
                             .fg
@@ -1222,6 +1224,8 @@ impl EditorView {
                             DiffSignKind::Add => '+',
                             DiffSignKind::Change => '~',
                             DiffSignKind::Remove => '-',
+                            // D.6.f: `?` for Conflict.
+                            DiffSignKind::Conflict => '?',
                         };
                         (glyph, fg)
                     });
@@ -1254,6 +1258,10 @@ impl EditorView {
                             Some(host_theme.diff_change_line_bg.to_rgb_u32(0))
                         }
                         DiffSignKind::Remove => None,
+                        // D.6.f (2026-05-31): three-way Conflict tint.
+                        DiffSignKind::Conflict => {
+                            Some(host_theme.diff_conflict_line_bg.to_rgb_u32(0))
+                        }
                     }
                 })
             })

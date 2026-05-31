@@ -4460,6 +4460,10 @@ fn diff_tint_bg(view: &FrameView<'_>, line_idx: u32) -> Option<Color> {
         // Remove hunks have no current-side row to tint;
         // D.3.b's deletion block is the visible surface.
         DiffSignKind::Remove => None,
+        // D.6.f (2026-05-31): three-way Conflict gets its
+        // own tint so a 30-row file with one conflict block
+        // is readable at a glance.
+        DiffSignKind::Conflict => Some(view.app.theme.diff_conflict_line_bg),
     }
 }
 
@@ -4508,6 +4512,10 @@ fn render_diff_sign_cell(
         // anyway in case a future refactor (e.g., classifying
         // deletion-block anchors) starts emitting it.
         DiffSignKind::Remove => ('-', view.app.theme.diff_remove_sign_style),
+        // D.6.f (2026-05-31): `?` for three-way Conflict
+        // hunks — distinct from Add/Change/Remove so the
+        // user spots conflicts immediately in the gutter.
+        DiffSignKind::Conflict => ('?', view.app.theme.diff_conflict_sign_style),
     };
     Span::styled(glyph.to_string(), style)
 }

@@ -473,20 +473,64 @@ pub enum Effect {
     /// errors out — v1 is two-way only; multi-way arrives
     /// with D.6 three-way merge. D.4.d.3.a.
     Diffthis,
-    /// `:diffsplit <file>` -- open `<file>` in a new vertical
-    /// split and immediately register a two-pane diff between
-    /// the current pane (baseline) and the new pane (current).
-    /// Composes vsplit + `:edit <file>` in the new pane +
-    /// the `register_two_pane_diff` helper that backs
-    /// `:diffthis`. Path is required; empty arg errors at
-    /// parse time. The cursor lands in the new pane (vim
-    /// parity). D.4.d.3.b.
+    /// `:diffsplit <file> [<remote>]` -- open `<file>` (and
+    /// optionally `<remote>`) in new vertical splits and
+    /// register a diff session between the current pane and
+    /// the new pane(s).
+    ///
+    /// - **One arg** (`:diffsplit base`): two-way diff
+    ///   between the current pane (current side) and a new
+    ///   pane loading `base` (baseline side). D.4.d.3.b.
+    /// - **Two args** (`:diffsplit base remote`): three-way
+    ///   merge with the current pane as "local", a new pane
+    ///   loading `base` as the common ancestor, and a third
+    ///   new pane loading `remote` as the other side. D.6.c.
+    ///
+    /// Composes vsplit + `:edit <path>` in each new pane +
+    /// the appropriate registration helper
+    /// (`register_two_pane_diff` for one arg,
+    /// `register_three_pane_diff` for two). Empty first arg
+    /// errors at parse time. Cursor lands in the *first*
+    /// new pane (vim parity).
     Diffsplit {
         path: std::path::PathBuf,
+        remote: Option<std::path::PathBuf>,
     },
     /// `]c` / `:hunk-next` -- jump cursor to the start of the
     /// next diff hunk on the current side (`ranges[1]`).
     /// Wraps to top. D.3.c.
+    /// `:diffget [<bufnr>]` -- pull the hunk under the cursor
+    /// from the named (or auto-resolved) buffer side. D.6.d.
+    /// `target` is the optional buffer number passed by the
+    /// user; `None` means "the peer side" (two-way: unique;
+    /// three-way: ambiguous — dispatch emits "target required").
+    /// The chord-driven `do` operator stays unit-variant
+    /// `Action::DiffGet`; this ex-command variant is a parallel
+    /// entry point for explicit-target invocations.
+    DiffGetCmd {
+        target: Option<u32>,
+    },
+    /// `:diffput [<bufnr>]` -- push the hunk under the cursor
+    /// into the named (or auto-resolved) buffer side. D.6.d.
+    /// Mirror of [`Self::DiffGetCmd`] but for the put direction.
+    DiffPutCmd {
+        target: Option<u32>,
+    },
+    /// `:diff-accept` -- resolve the active pane's diff
+    /// session with [`DiffOutcome::Accept`]. v1 semantics:
+    /// equivalent to `:diffoff` + signal Accept on the
+    /// session's completion channel (if any). The buffer's
+    /// current content (whatever the user applied via
+    /// `do`/`dp` or left alone) becomes the accepted
+    /// resolution; plugins consuming the outcome commit
+    /// from there. D.6.e.
+    DiffAccept,
+    /// `:diff-reject` -- resolve the active pane's diff
+    /// session with [`DiffOutcome::Reject`]. v1 semantics:
+    /// equivalent to `:diffoff!` + signal Reject. Plugins
+    /// consuming the outcome should revert any
+    /// pre-session state. D.6.e.
+    DiffReject,
     NextHunk,
     /// `[c` / `:hunk-prev` -- jump cursor to the start of the
     /// previous diff hunk on the current side. Wraps to

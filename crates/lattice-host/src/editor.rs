@@ -640,10 +640,25 @@ pub struct Editor {
     /// back to `None`) or a *different* pane runs `:diffthis`
     /// (which completes the two-pane setup via
     /// `register_two_pane_diff` and clears back to `None`).
-    /// Reuses `PaneGroupMember` because the staged pair
-    /// becomes the first member of the new pane group at
-    /// completion time. v1 supports two-way diffs only; D.6
-    /// (three-way merge) will widen this to `Vec<PaneGroupMember>`.
+    ///
+    /// **v1 is two-way only.** Vim's actual model — each
+    /// `:diffthis` toggles a per-buffer `:set diff` flag and
+    /// the live set of flagged buffers participates in one
+    /// diff group, with any arity N≥2 — is deferred to D.8.
+    /// That slice replaces this `Option` field with a
+    /// dynamic-membership model, drops the singleton "first
+    /// pane awaiting peer" semantics, and refactors
+    /// `DiffDescriptor` to be arity-agnostic
+    /// (`Vec<Source>` instead of explicit
+    /// `baseline + current + remote`). The "staged"
+    /// terminology is provisional and reflects this v1
+    /// limitation: there's no real two-phase staging in
+    /// diff semantics — D.4.d.3.a's `:diffthis` is just a
+    /// "tentative first pane, waiting for the peer call to
+    /// complete the 2-way session" pattern, picked because
+    /// the explicit 3-way merge UX (D.6) ships through
+    /// `:diffsplit base remote` rather than chained
+    /// `:diffthis`.
     pub pending_diffthis: Option<crate::pane_group::PaneGroupMember>,
     /// Picker source registry -- `:picker` source kinds.
     pub picker_registry: Arc<PickerRegistry>,

@@ -30,18 +30,31 @@ target rather than just a slower number.
 
 ## M.-0 — Document hot-path baseline (2026-05-31)
 
-Pre-M.0 baseline numbers for `lattice-core::Document` before
-the trait + ArcSwap refactor. The two bench groups
-(`document_read_p99_us`, `document_edit_p99_us`) give M.0 a
-no-regression gate per the multibuffer slice plan. M.0's
-PR description quotes the before/after delta against these
-rows.
+Baseline numbers for `lattice-core::Document` (the inner
+struct owned by `DocumentActor`). Two bench groups
+(`document_read_p99_us`, `document_edit_p99_us`) measure the
+per-frame read cost and per-keystroke write cost.
+
+**Scope clarification (2026-05-31):** when these benches
+were added we expected them to gate M.0 (Document-as-trait
+refactor). After an architectural review the M.0 design moved
+to a handle-layer trait (Path B per
+`docs/dev/architecture/multibuffer-views.md` §3.1) which
+does **not** touch the inner Document struct — so these
+benches are no longer the M.0 gate. They stay as
+general-purpose regression infrastructure: the inner
+Document remains performance-sensitive and any future
+change to it (e.g., post-v1 rope-storage swap, buffer-side
+optimisations) should clear the same envelope. The M.0
+review uses `dispatch_publish` / snapshot-cache benches
+instead, where the handle-layer trait dispatch actually
+lives.
 
 Bench file: `crates/lattice-core/benches/document_hotpath.rs`.
 Run: `cargo bench -p lattice-core --bench document_hotpath`.
 Numbers below are from `--quick` mode (criterion's fast
-estimate, 100 samples instead of 100k); the merge-gate run
-should use the full criterion mode.
+estimate, 100 samples instead of 100k); future regression
+checks should use the full criterion mode.
 
 | Bench / size | Median time | Notes |
 |---|---|---|
@@ -58,25 +71,15 @@ should use the full criterion mode.
 | `document_edit_p99_us::set_selections_motion/1000` | 4.4 ns | |
 | `document_edit_p99_us::set_selections_motion/100000` | 4.2 ns | Size-independent (no rope access) |
 
-**What M.0 should change here:**
-
-- `viewport_walk` — should be **flat or faster**: the trait
-  surfaces `rope_snapshot() -> Arc<Rope>` so callers slice the
-  rope directly instead of `Buffer::line()` cloning a `String`
-  per line. The bench retains `Buffer::line()` for now so the
-  comparison is apples-to-apples on the trait refactor itself;
-  follow-on slices may swap call sites to the Arc<Rope> path.
-- `insert_at_middle` / `delete_at_middle` — should be **flat
-  or slightly slower**: extra `Arc::new(Rope)` allocation on
-  every commit + `ArcSwap::store`. Expected overhead ~200–500
-  ns per write at the small sizes; lost in the noise at 100k.
-- `set_selections_motion` — will go from **~4 ns to ~250–400
-  ns**: today is a field overwrite, M.0 makes it
-  `ArcSwap::store(Arc::new(SelectionSet))`. The absolute cost
-  remains well under the 8 ms / 120 Hz frame budget (250 ns is
-  0.003 % of the budget at one call per frame).
-
-A regression past these envelopes is the M.0 review's blocker.
+**Envelope for future regressions on this layer:** any
+change to `lattice-core::Document` (the inner struct, not
+the handle) should keep these numbers within noise of the
+above. `viewport_walk` reads are dominated by
+`Buffer::line()` String allocation today (~6–7 µs for 50
+lines) — an optimisation that switches callers to direct
+`&Rope` slicing should improve this. Edit benches scale with
+rope size and are dominated by `ropey` internals; the bench
+catches regressions there too.
 
 ## Post-3c.unify (slice 7 + 8, 2026-05-21)
 

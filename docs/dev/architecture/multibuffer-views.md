@@ -109,121 +109,175 @@ shift (M.0).
 
 ### 3.1 The Document trait (M.0)
 
-Today `Document` is a struct around a rope. Multibuffer
-requires at least two implementations sharing one interface —
-the rope-backed file Document and the excerpt-composed
-multibuffer Document. The shift:
+Today's architecture (verified 2026-05-31):
+
+```
+Caller (Editor, renderer, plugin) → DocumentHandle (handle)
+                                          ↓ writes (mpsc)
+                                    DocumentActor (tokio task)
+                                          ↓ owns
+                                    Document (struct, &mut self)
+                                          ↓ reads (publish)
+                                    PublishedSnapshot<DocumentSnapshot>
+                                    └─ Arc-snapshot, lock-free
+```
+
+`DocumentHandle` (`lattice-runtime`) is the cheap-clone
+public surface for one document. Writes round-trip through
+an `UnboundedSender<ActorMsg>` to a `DocumentActor` that
+owns the inner `Document` struct (`lattice-core`) and mutates
+it through `&mut self` under single-writer discipline. Reads
+go through `snapshot() -> Arc<DocumentSnapshot>` backed by a
+`PublishedSnapshot` cell (lock-free, ~17 ns per load, ~2 ns
+through the per-thread `SnapshotCache`).
+
+The lock-free read path + actor-mediated write path is
+**already the ArcSwap pattern we want.** Multibuffer's job
+is not to redo this at the inner Document layer — that
+layer is owned by one actor and never crosses threads. The
+job is to add a sibling implementation **at the handle
+layer** so dispatch / renderers / plugins can hold a
+uniform reference to either a regular document or a
+multibuffer composition.
+
+#### The trait, at the handle layer
 
 ```rust
-pub trait Document: Send + Sync {
+pub trait Document: Send + Sync + 'static {
+	// Identity / metadata — direct snapshot reads.
 	fn id(&self) -> DocumentId;
-	fn rope_snapshot(&self) -> Arc<Rope>;       // lock-free
-	fn selections_snapshot(&self) -> Arc<SelectionSet>;  // lock-free
-	fn revision(&self) -> Revision;
-	fn line_count(&self) -> usize;
-	fn apply_edit(&self, edit: Edit) -> EditResult;
-	fn set_selections(&self, selections: SelectionSet);
-	fn anchor_at(&self, pos: Position) -> Anchor;
-	fn position_at(&self, anchor: &Anchor) -> Position;
-	// ... existing Document API surface, hoisted to the trait
+	fn path(&self) -> Option<PathBuf>;
+	fn version(&self) -> u64;
+	fn text_version(&self) -> u64;
+	fn dirty(&self) -> bool;
+
+	// Read snapshots — Arc-backed, lock-free.
+	fn snapshot(&self) -> Arc<DocumentSnapshot>;
+	fn snapshot_cache(&self) -> SnapshotCache;
+	fn selections(&self) -> Arc<SelectionSet>;
+	fn text(&self) -> String;
+
+	// Writes — `Pending<T>` round-trips through the
+	// implementation's internal write path. For
+	// `RopeDocumentHandle` that's the actor mpsc; for
+	// `MultibufferDocumentHandle` it's a fan-out across
+	// source handles.
+	fn apply_edit(&self, edit: Edit) -> Pending<AppliedEdit>;
+	fn apply_edit_batch(&self, edits: Vec<Edit>) -> Pending<Vec<AppliedEdit>>;
+	fn set_selections(&self, selections: SelectionSet) -> Pending<()>;
+	fn undo(&self) -> Pending<Vec<AppliedEdit>>;
+	fn redo(&self) -> Pending<Vec<AppliedEdit>>;
+	fn save(&self) -> Pending<PathBuf>;
+	fn save_as(&self, path: PathBuf) -> Pending<()>;
+
+	// Grammar dispatch — multibuffer routes the
+	// invocation through its row-translation table to
+	// the underlying source(s).
+	fn dispatch(&self, invocation: CommandInvocation, cursor: Position) -> Pending<Effect>;
 }
 
-pub struct RopeDocument {
-	id: DocumentId,
-	rope: ArcSwap<Rope>,
-	selections: ArcSwap<SelectionSet>,
-	inner: Mutex<RopeDocumentInner>,  // Buffer + undo stack + dirty flag
-	// ...
-}
-impl Document for RopeDocument { /* ... */ }
+pub struct RopeDocumentHandle { /* today's DocumentHandle */ }
+impl Document for RopeDocumentHandle { /* delegates to actor */ }
 
-pub struct MultibufferDocument { /* §3.3 */ }
-impl Document for MultibufferDocument { /* ... */ }
+pub struct MultibufferDocumentHandle { /* §3.3 */ }
+impl Document for MultibufferDocumentHandle { /* fans out to source handles */ }
 ```
 
-M.0 lands the trait split with **zero behavioural change**:
-every call site that touched `Document` today touches the
-trait, with `RopeDocument` as the sole implementation. The
-multibuffer Document arrives in M.1.
+`Arc<dyn Document>` is the canonical reference type. The
+Editor's active document slot becomes `Arc<dyn Document>` so
+the same dispatch / motion / render code paths serve both
+kinds — honoring the everything-is-a-buffer principle that
+forbids per-kind branching in those paths.
 
-#### Interior mutability (decided 2026-05-31)
+#### What M.0 actually does
 
-Every trait method takes `&self`. Mutating methods
-(`apply_edit`, `set_selections`, `undo`, `redo`, `save`)
-serialise internally through `Mutex<RopeDocumentInner>` for
-the write path, then publish the new rope / selection state
-via `ArcSwap::store(Arc::new(new))`. Readers (renderer,
-motion handlers, status line, plugin tasks) call
-`rope_snapshot()` / `selections_snapshot()` and get an
-`Arc<...>` back via `ArcSwap::load_full()` — **lock-free,
-~5–10 ns per call, p99 ≈ p50 under any writer concurrency.**
+1. Define the `Document` trait in `lattice-runtime` (next to
+   `DocumentHandle` today).
+2. Rename `DocumentHandle` → `RopeDocumentHandle`. Add
+   `impl Document for RopeDocumentHandle` that delegates to
+   each existing method (most are already `&self` with the
+   right return shape — the trait reflects today's API
+   surface almost verbatim).
+3. Switch the Editor's active document slot from concrete
+   `DocumentHandle` to `Arc<dyn Document>`. Same for any
+   buffer-registry slot that today stores a `DocumentHandle`
+   for a regular document.
+4. Update `RopeDocumentHandle`-specific call sites where
+   `replace(document)` (actor-internal Document swap) or
+   other non-trait methods are used — those keep the
+   concrete type.
 
-The pattern matches lattice's existing
-`DiffSession::current_hunks` and the cells-layer ArcSwap
-guards. Trait-level consistency means `MultibufferDocument`'s
-composed rope cache (§3.3) drops in as an `ArcSwap<Rope>`
-without changing the read-path call sites.
+**Zero change** to the inner `Document` struct, the
+`DocumentActor`, `PublishedSnapshot`, `DocumentSnapshot`, or
+the mpsc-mediated write path. The trait is a thin
+abstraction over the existing handle API.
 
-**Rejected alternatives:**
+`MultibufferDocumentHandle` arrives in M.1. It owns:
 
-- `&mut self` on writes (today's struct shape). Forces every
-  plugin-originated edit (paramount goal #2) through the
-  central editor to acquire exclusive ownership — a
-  serialisation point that collides with the
-  "multi-threaded by construction" mandate (paramount goal
-  #4). Also precludes cross-document edits (M.4 source
-  propagation, future project-wide ops): Rust's borrow
-  checker forbids simultaneous `&mut` on two Documents.
-- Split read / write traits (`Document` for `&self` reads,
-  `DocumentMut` for `&mut self` writes). Cosmetic improvement
-  over `&mut self`; the write path is still a serialisation
-  point and the cross-document edit blocker remains.
-- `parking_lot::RwLock<SelectionSet>` for the selections.
-  Read cost (~15–30 ns) is comparable to `ArcSwap::load_full`
-  (~5–10 ns) at v1's single-writer cadence, **but read
-  latency degrades to the worst concurrent write duration
-  under any future contention** (plugin-task writers,
-  multi-cursor anchor recompute). `ArcSwap` keeps reads at
-  p99 ≈ p50 regardless of writer activity. Per-op cost
-  difference is sub-microsecond — irrelevant against the
-  8 ms / 120 Hz frame budget — but the tail-latency
-  guarantee is what paramount goal #1 actually commits to.
+- A `Vec<Excerpt>` (§3.2),
+- An `Arc<RowTranslation>` cache (§3.3) backed by
+  `ArcSwap<RowTranslation>` so renderer-side translation
+  lookups stay lock-free across cache rebuilds,
+- `Vec<Arc<dyn Document>>` references to its source documents
+  (typically `RopeDocumentHandle` instances but the trait
+  bound allows multibuffer-of-multibuffer composition for
+  N.1's stacked narrow case),
+- Its own `PublishedSnapshot<MultibufferSnapshot>` for
+  composed reads (so `multibuffer.snapshot()` returns the
+  same `Arc<DocumentSnapshot>` shape the renderer already
+  consumes — buffer + selections + version + path + dirty —
+  with `buffer` containing the composed rope cache).
 
-**Cost paid:** every selection / rope mutation allocates a
-new `Arc<...>`. At ~100 Hz typing cadence this is ~8 KB/s
-churn for SelectionSet; at 1 kHz macro replay ~80 KB/s.
-Trivial for any modern allocator. If profiling ever surfaces
-allocator pressure here, the M.-0 benches catch the
-regression and `Arc::make_mut` / a small free-list mitigate
-without changing the trait shape.
+#### Rejected alternatives
 
-Mutations against the current state use `ArcSwap::rcu`:
+- **Trait at the inner `Document` struct layer with
+  `&self` + `ArcSwap<Rope>` + `ArcSwap<SelectionSet>`
+  interior mutability** (the architecture sketched in the
+  pre-2026-05-31 draft of this section). This proposal
+  duplicated infrastructure that `DocumentActor` +
+  `PublishedSnapshot` already provide: the actor already
+  serialises writes; the `PublishedSnapshot` already
+  publishes lock-free Arc snapshots to readers. Adding a
+  second ArcSwap layer inside the actor's owned struct
+  would add per-write Arc-clone allocations for no
+  paramount-goal benefit, and would force replacing the
+  actor model to take advantage of `Arc<dyn Document>`
+  direct sharing across threads — a substantially larger
+  architectural change that the paramount goals don't
+  demand (the actor model **is** goal #4's "multi-threaded
+  by construction" principle expressed in code, with
+  natural send-order edit-ordering guarantees lock-based
+  sharing would have to re-derive).
+- **Trait at the snapshot layer only** (`DocumentReadable`
+  for read-side composition; no write-side trait). Edit
+  dispatch would have to branch on whether the active
+  buffer is a regular document or a multibuffer to know
+  whether to route to one actor or fan out to N actors —
+  violating the "buffers must not have kind-specific
+  logic" rule that everything-is-a-buffer rests on.
+- **Replacing the actor model with `Arc<dyn Document>` +
+  internal `Mutex`.** Possible, but trades one expression
+  of paramount goal #4 for another that's slightly worse
+  on edit-ordering guarantees and dismantles a working
+  abstraction without a paramount-goal-justified reason
+  to. The handle-layer trait gets us the same WIT-plugin
+  resource shape (`Arc<dyn Document>`) without touching
+  the actor.
 
-```rust
-self.selections.rcu(|prev| {
-	let mut next = SelectionSet::clone(prev);
-	next.extend(...);
-	Arc::new(next)
-});
-```
+#### Performance
 
-`rcu` is compare-and-swap-correct under future N-writer
-paths and reduces to a single CAS cycle in v1's single-writer
-world.
+Trait dispatch through `Arc<dyn Document>` adds one vtable
+indirection per call — measured at ~1–3 ns on x86-64.
+Negligible against:
+- The actor mpsc round-trip on writes (~few µs).
+- The per-frame snapshot Arc-load (~17 ns, ~2 ns through
+  the per-thread cache).
+- The 8 ms / 120 Hz frame budget.
 
-#### Composed-rope view (M.1)
-
-`MultibufferDocument::rope_snapshot()` returns an `Arc<Rope>`
-backed by an internal `ArcSwap<Rope>` cache. The cache is
-rebuilt off-thread when any source `Document::revision()`
-bumps or any excerpt range mutates; the rebuilt `Arc<Rope>`
-publishes atomically via `ArcSwap::store`. The composition
-is not a byte-for-byte copy of the source ropes — it's a
-freshly-built rope whose lines reference the source excerpt
-ranges' content. Cache invalidates on source-revision change
-or excerpt mutation; readers between invalidation and rebuild
-see the previous snapshot (eventual consistency at the cache
-layer; strict consistency at the source-rope layer).
+The `PublishedSnapshot` machinery and the `SnapshotCache`
+optimisation (~17 ns → ~2 ns for thread-local repeat reads)
+both compose with the trait — `Arc<dyn Document>` callers
+keep both fast paths.
 
 ### 3.2 `Excerpt`
 
